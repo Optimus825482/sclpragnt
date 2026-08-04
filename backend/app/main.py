@@ -125,6 +125,7 @@ CONFIG_FIELDS = {
     "gainer_radar_min_score": "GAINER_RADAR_MIN_SCORE",
     "min_notional": "MIN_NOTIONAL",
     "default_order_usdt": "DEFAULT_ORDER_USDT",
+    "take_profit_pct": "SPOT_PROFIT_TARGET_PCT",
     "ut_enabled": "UT_ENABLED",
     "ut_key_value": "UT_KEY_VALUE",
     "ut_atr_period": "UT_ATR_PERIOD",

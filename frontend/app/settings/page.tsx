@@ -199,7 +199,7 @@ export default function SettingsPage() {
               </button>
             </div>
               <p className="text-xs text-bunker-muted mb-4">
-              Spot scalping: %0,5 hedef, 12 saat maksimum bekleme, zıt sinyal çıkışı ve aynı sembolde en fazla 3 katman.
+              Spot scalping: ayarlanabilir kâr hedefi, 12 saat maksimum bekleme, zıt sinyal çıkışı ve aynı sembolde en fazla 3 katman.
             </p>
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
@@ -250,14 +250,14 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
                 <div className="min-w-0">
                   <p className="font-mono text-sm text-white">Take Profit</p>
-                  <p className="text-xs text-bunker-muted mt-0.5">Sabit hedef: +%0,5</p>
+                  <p className="text-xs text-bunker-muted mt-0.5">Pozisyon bu kâr oranına ulaştığında satılır (komisyon hariç)</p>
                 </div>
                 <input
                   type="number"
                   step={0.1}
                   min={0.1}
-                  value={0.5}
-                  disabled
+                  value={num(draft.take_profit_pct) * 100}
+                  onChange={(e) => setDraft((d) => ({ ...d, take_profit_pct: (e.target.value === "" ? NaN : Number(e.target.value)) / 100 }))}
                   className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
                 />
               </div>
