@@ -19,7 +19,10 @@ export default function Sidebar() {
     const [open, setOpen] = useState(false);
     const [installEvent, setInstallEvent] = useState<any>(null);
     useEffect(() => {
-        if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+        if ("serviceWorker" in navigator) {
+            if (process.env.NODE_ENV === "production") navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+            else navigator.serviceWorker.getRegistrations().then((registrations) => registrations.forEach((registration) => registration.unregister()));
+        }
         const handler = (event: Event) => { event.preventDefault(); setInstallEvent(event); };
         window.addEventListener("beforeinstallprompt", handler);
         return () => window.removeEventListener("beforeinstallprompt", handler);
