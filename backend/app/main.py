@@ -365,6 +365,7 @@ async def get_positions():
         ticker = market.get_ticker(sym)
         current = ticker["last_price"] if ticker else pos["entry_price"]
         pnl_pct = ((current - pos["entry_price"]) / pos["entry_price"]) * 100 if pos["entry_price"] else 0.0
+        pnl_try = (current - pos["entry_price"]) * pos["quantity"]
         positions.append({
             "symbol": sym,
             "side": pos["side"],
@@ -372,6 +373,7 @@ async def get_positions():
             "entry": pos["entry_price"],
             "current": current,
             "pnl_pct": pnl_pct,
+            "pnl_try": pnl_try,
             "quantity": pos["quantity"],
             "entry_time": pos.get("entry_time"),
             "stop": pos.get("stop_price"),

@@ -1151,6 +1151,7 @@ export default function ChartsPage() {
                             ) : (
                                 positions.map((p) => {
                                     const pnl = p.pnl_pct ?? 0;
+                                    const pnlTry = p.pnl_try ?? 0;
                                     const time = p.entry_time
                                         ? new Date(p.entry_time * 1000).toLocaleTimeString("tr-TR")
                                         : "-";
@@ -1162,7 +1163,8 @@ export default function ChartsPage() {
                                             <td className="px-4 py-2 text-white">{p.current?.toFixed?.(4) ?? p.current}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{p.quantity?.toFixed?.(4) ?? p.quantity}</td>
                                             <td className={`px-4 py-2 text-right font-bold ${pnl >= 0 ? "text-neon-green" : "text-red-400"}`}>
-                                                {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}%
+                                                <div>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}%</div>
+                                                <div className="text-xs mt-1">{pnlTry >= 0 ? "+" : ""}₺{pnlTry.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                                             </td>
                                         </tr>
                                     );
