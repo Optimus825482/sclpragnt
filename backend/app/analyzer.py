@@ -492,9 +492,8 @@ class ScalpAnalyzer:
                 result = fn(strategy_kline, symbol)
                 if result == "sell":
                     return [await self.close_position(symbol, price, "opposite_signal")]
-                if result == "buy" and self.positions[symbol].get("layers", 1) < config.MAX_POSITION_LAYERS:
-                    added = await self.open_position(symbol, price, "LONG", name)
-                    if added: signals.append(added)
+                # Spotta aynı sembole tekrar katman ekleme yok: tek sembol = tek pozisyon.
+                # Pozisyon açıkken yeni BUY sinyali işlem sinyaline dönüştürülmez.
             return signals
 
         # Açık pozisyon yok: kapanış sonrası sembol cooldown'ını uygula.
