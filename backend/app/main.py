@@ -400,6 +400,10 @@ async def get_trades():
     """Kapanan pozisyonların işlem geçmişi."""
     return {"trades": await database.get_trades()}
 
+@app.get("/api/signals")
+async def get_signals(limit: int = 100):
+    return {"signals": await database.get_signals(limit)}
+
 @app.get("/api/strategies/stats")
 async def get_strategy_stats():
     """Her stratejinin başarı istatistikleri (işlem sayısı, kazanma oranı, PnL)."""

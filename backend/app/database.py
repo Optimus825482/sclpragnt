@@ -271,6 +271,17 @@ async def save_signal(sig):
     await _run_db(op)
 
 
+async def get_signals(limit: int = 100):
+    def op(conn: sqlite3.Connection):
+        rows = conn.execute(
+            "SELECT id, timestamp, symbol, action, price, reason FROM signals ORDER BY timestamp DESC LIMIT ?",
+            (max(1, min(limit, 500)),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    return await _run_db(op)
+
+
 async def get_chart_settings(symbol):
     def op(conn: sqlite3.Connection):
         row = conn.execute("SELECT data FROM chart_settings WHERE symbol=?", (symbol,)).fetchone()

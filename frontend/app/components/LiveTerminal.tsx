@@ -1,9 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
-import { WS_BASE } from "../lib/api";
+import { API_BASE, WS_BASE } from "../lib/api";
 
 type Ticker = { symbol: string; last_price: number; volume: number; avg_volume?: number };
-type Signal = { symbol: string; action: string; price?: number; reason?: string; timestamp?: number };
+type Signal = { id?: number; symbol: string; action: string; price?: number; reason?: string; timestamp?: number };
 type Position = { symbol: string; entry: number; current: number; pnl_pct: number; value: number };
 type Portfolio = { try: number; total_value: number; positions: Position[] };
 
@@ -16,12 +16,17 @@ export default function LiveTerminal() {
     let retry: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
 
+    fetch(`${API_BASE}/api/signals?limit=100`)
+      .then((response) => response.json())
+      .then((data) => setSignals((data.signals || []).slice(0, 100)))
+      .catch(() => undefined);
+
     const connect = () => {
       ws = new WebSocket(`${WS_BASE}/ws`);
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
         if (msg.type === "tickers") return;
-        else if (msg.type === "signal") setSignals((p) => [msg.data, ...p].slice(0, 20));
+        else if (msg.type === "signal") setSignals((p) => [msg.data, ...p].slice(0, 100));
         else if (msg.type === "portfolio") setPortfolio(msg.data);
       };
       ws.onclose = () => {
@@ -68,7 +73,7 @@ export default function LiveTerminal() {
           <div className="p-4 font-mono text-sm h-64 overflow-y-auto">
             {signals.length === 0 && <p className="text-bunker-muted">$ Bot çalışıyor, strateji sinyali bekleniyor...</p>}
             {signals.map((s, i) => (
-              <div key={i} className={`py-1 ${s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
+              <div key={s.id ?? `${s.timestamp}-${s.symbol}-${s.action}-${i}`} className={`py-1 ${s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
                 <span className="text-bunker-muted">[{s.timestamp ? new Date(s.timestamp * 1000).toLocaleTimeString("tr-TR") : "--"}]</span>{" "}
                 <span className="font-bold">{s.action}</span>{" "}
                 {s.symbol} {s.price && `@ ₺${s.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{" "}
