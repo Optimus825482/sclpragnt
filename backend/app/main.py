@@ -128,6 +128,7 @@ CONFIG_FIELDS = {
     "min_volume_ratio": "MIN_VOLUME_RATIO",
     "max_spread_pct": "MAX_SPREAD_PCT",
     "min_orderbook_depth_multiplier": "MIN_ORDERBOOK_DEPTH_MULTIPLIER",
+    "liquidity_filter_enabled": "LIQUIDITY_FILTER_ENABLED",
     "default_order_usdt": "DEFAULT_ORDER_USDT",
     "take_profit_pct": "SPOT_PROFIT_TARGET_PCT",
     "hard_stop_loss_pct": "HARD_STOP_LOSS_PCT",
@@ -183,7 +184,7 @@ CONFIG_FIELDS = {
     "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
+BOOL_FIELDS = {"liquidity_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
 INT_FIELDS = {"gainer_radar_min_score", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
 STR_FIELDS = {"ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
@@ -197,6 +198,7 @@ async def get_config():
         "min_volume_ratio": config.MIN_VOLUME_RATIO,
         "max_spread_pct": config.MAX_SPREAD_PCT,
         "min_orderbook_depth_multiplier": config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
+        "liquidity_filter_enabled": config.LIQUIDITY_FILTER_ENABLED,
         "default_order_usdt": config.DEFAULT_ORDER_USDT,
         "max_open_positions": max(1, len(config.SYMBOLS) * 2),
         "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
@@ -461,6 +463,11 @@ async def get_strategy_stats():
 async def reset_all():
     """Paper trading geçmişini ve açık pozisyonları sil, cüzdanı 10.000 TRY'ye sıfırla."""
     analyzer.positions.clear()
+    # Reset sonrası mevcut mum uzunlukları eski sinyal durumuyla karşılaştırılmasın;
+    # aksi halde yeni mum kapanana kadar tüm stratejiler sessiz kalabiliyordu.
+    analyzer._last_signal_lengths.clear()
+    analyzer._cooldown_until.clear()
+    analyzer._timeout_block_until.clear()
     await database.reset_trading_data()
     await ws_manager.broadcast({"type": "reset", "data": {"ok": True}})
     return {"ok": True, "message": "Paper trading kayıtları silindi, cüzdan 10.000 TRY'ye sıfırlandı"}

@@ -190,6 +190,8 @@ class MarketData:
 
     def liquidity_status(self, symbol, order_value_try):
         sym = symbol.upper()
+        if not config.LIQUIDITY_FILTER_ENABLED:
+            return True, {"disabled": True}
         ticker = self.get_ticker(sym) or {}
         hist = self.klines.get(config.MOMENTUM_TIMEFRAME, {}).get(sym, {})
         volumes = hist.get("volumes", [])
@@ -200,11 +202,13 @@ class MarketData:
         spread = flow.get("spread_pct")
         price = float(ticker.get("last_price", 0) or 0)
         depth_try = (float(flow.get("bid_qty", 0) or 0) + float(flow.get("ask_qty", 0) or 0)) * price
+        quote_volume = float(self.ticker_24h.get(sym, 0) or 0)
+        # Veri henüz ısınmadıysa false-negative üretme; geldiğinde filtre uygula.
         checks = {
-            "quote_volume": float(self.ticker_24h.get(sym, 0) or 0) >= config.MIN_24H_QUOTE_VOLUME_TRY,
-            "volume_ratio": ratio >= config.MIN_VOLUME_RATIO,
-            "spread": spread is not None and spread <= config.MAX_SPREAD_PCT,
-            "orderbook_depth": depth_try >= order_value_try * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
+            "quote_volume": quote_volume <= 0 or quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY,
+            "volume_ratio": average <= 0 or ratio >= config.MIN_VOLUME_RATIO,
+            "spread": spread is None or spread <= config.MAX_SPREAD_PCT,
+            "orderbook_depth": depth_try <= 0 or depth_try >= order_value_try * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
         }
         return all(checks.values()), {"volume_ratio": ratio, "spread": spread, "depth_try": depth_try, "checks": checks}
 

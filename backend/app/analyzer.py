@@ -575,8 +575,9 @@ class ScalpAnalyzer:
         if symbol not in self.positions and len(self.positions) >= self.max_open_positions():
             return None
         if self.market:
-            liquid, _ = self.market.liquidity_status(symbol, config.DEFAULT_ORDER_USDT)
+            liquid, details = self.market.liquidity_status(symbol, config.DEFAULT_ORDER_USDT)
             if not liquid:
+                print(f"[Likidite] {symbol} işlem engellendi: {details}")
                 return None
         try_balance = await database.get_wallet_balance("TRY")
         if try_balance < config.DEFAULT_ORDER_USDT:

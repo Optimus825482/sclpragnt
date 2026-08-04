@@ -199,7 +199,7 @@ export default function SettingsPage() {
                   </label>
                 ))}
               </div>
-              <p className="text-[11px] text-bunker-muted mt-2 font-mono">Önerilen: 1.000.000 TL · 0,5x · %0,30 · 5x</p>
+              <p className="text-[11px] text-bunker-muted mt-2 font-mono">Önerilen: 1.000.000 TL · 0,3x · %0,30 · 5x</p>
             </div>
           </div>
 
