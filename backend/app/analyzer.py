@@ -577,8 +577,13 @@ class ScalpAnalyzer:
         if self.market:
             liquid, details = self.market.liquidity_status(symbol, config.DEFAULT_ORDER_USDT)
             if not liquid:
-                print(f"[Likidite] {symbol} işlem engellendi: {details}")
-                return None
+                failed = [key for key, ok in details.get("checks", {}).items() if not ok]
+                reason = "liquidity_filter:" + ",".join(failed or ["unknown"])
+                blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                           "reason": reason, "strategy": strat_name, "timestamp": time.time()}
+                print(f"[Likidite] {symbol} işlem engellendi: {reason}")
+                await database.save_signal(blocked)
+                return blocked
         try_balance = await database.get_wallet_balance("TRY")
         if try_balance < config.DEFAULT_ORDER_USDT:
             return None 
