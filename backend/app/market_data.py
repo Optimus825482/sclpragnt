@@ -5,7 +5,7 @@ import numpy as np
 import websockets
 from collections import defaultdict
 from app.config import config
-from app.binance_tr_public import WS_BASE, klines as fetch_klines
+from app.binance_tr_public import WS_BASE, klines as fetch_klines, ticker_24h
 
 class MarketData:
     def __init__(self, symbols):
@@ -27,6 +27,7 @@ class MarketData:
         # klines[tf][symbol] = {opens, highs, lows, closes, volumes}
         self.klines = defaultdict(lambda: defaultdict(lambda: {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}))
         self.tickers = {}
+        self.ticker_24h = {}
         self.orderflow = defaultdict(lambda: {"bid_qty": 0.0, "ask_qty": 0.0, "spread_pct": None, "last_trade_qty": 0.0, "last_trade_side": None, "updated_at": 0.0})
         self.running = False
         self.history_loaded = False
@@ -76,6 +77,14 @@ class MarketData:
                     print(f"[MarketData] {s.upper()} {tf} geçmiş veri hatası: {e}")
         print(f"[MarketData] Geçmiş veri yüklendi ({len(self.timeframes)} timeframe).")
         self.history_loaded = bool(self.tickers)
+        await self.refresh_24h_tickers()
+
+    async def refresh_24h_tickers(self):
+        try:
+            rows = await ticker_24h()
+            self.ticker_24h = {str(r.get("symbol", "")).upper(): float(r.get("quoteVolume", 0) or 0) for r in rows if r.get("symbol")}
+        except Exception as exc:
+            print(f"[MarketData] 24h ticker yenileme hatası: {exc}")
 
     async def connect(self):
         # 1) Önce geçmiş veriyi yükle
@@ -178,6 +187,26 @@ class MarketData:
 
     def get_orderflow(self, symbol):
         return dict(self.orderflow.get(symbol.upper(), {}))
+
+    def liquidity_status(self, symbol, order_value_try):
+        sym = symbol.upper()
+        ticker = self.get_ticker(sym) or {}
+        hist = self.klines.get(config.MOMENTUM_TIMEFRAME, {}).get(sym, {})
+        volumes = hist.get("volumes", [])
+        current = volumes[-1] if volumes else 0.0
+        average = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else 0.0
+        ratio = current / average if average > 0 else 0.0
+        flow = self.get_orderflow(sym)
+        spread = flow.get("spread_pct")
+        price = float(ticker.get("last_price", 0) or 0)
+        depth_try = (float(flow.get("bid_qty", 0) or 0) + float(flow.get("ask_qty", 0) or 0)) * price
+        checks = {
+            "quote_volume": float(self.ticker_24h.get(sym, 0) or 0) >= config.MIN_24H_QUOTE_VOLUME_TRY,
+            "volume_ratio": ratio >= config.MIN_VOLUME_RATIO,
+            "spread": spread is not None and spread <= config.MAX_SPREAD_PCT,
+            "orderbook_depth": depth_try >= order_value_try * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
+        }
+        return all(checks.values()), {"volume_ratio": ratio, "spread": spread, "depth_try": depth_try, "checks": checks}
 
     def stop(self):
         self.running = False

@@ -9,6 +9,7 @@ class ScalpAnalyzer:
         self.positions = {}
         self._last_signal_lengths = {}
         self._cooldown_until = {}
+        self._timeout_block_until = {}
 
     def max_open_positions(self):
         """Aktif sembol evrenine göre dinamik pozisyon limiti."""
@@ -325,14 +326,14 @@ class ScalpAnalyzer:
     async def _manage_open_position(self, symbol, price, strat_name):
         tf = self._strategy_tf(strat_name)
         kline = self.market.get_ut_kline(symbol, tf)
-        # Spot scalping: %0,5 hedef, 12 saat zaman çıkışı ve zıt sinyal çıkışı.
+        # Önce hedef/stop kontrolü; aynı anda süre dolduysa gerçek kapanış nedeni korunur.
         pos = self.positions.get(symbol)
-        if pos and time.time() - pos.get("entry_time", time.time()) >= config.MAX_POSITION_HOLD_SEC:
-            return await self.close_position(symbol, price, "max_hold_12h")
         if pos and config.HARD_STOP_LOSS_PCT > 0 and price <= pos["entry_price"] * (1 - config.HARD_STOP_LOSS_PCT):
             return await self.close_position(symbol, price, "hard_stop_loss")
         if pos and price >= pos["entry_price"] * (1 + config.SPOT_PROFIT_TARGET_PCT):
             return await self.close_position(symbol, price, "profit_target_0_5pct")
+        if pos and time.time() - pos.get("entry_time", time.time()) >= config.MAX_POSITION_HOLD_SEC:
+            return await self.close_position(symbol, price, "max_hold_1h")
         return None
 
     def _flow_filter(self, symbol):
@@ -497,6 +498,11 @@ class ScalpAnalyzer:
             return signals
 
         # Açık pozisyon yok: kapanış sonrası sembol cooldown'ını uygula.
+        blocked_until = self._timeout_block_until.get(symbol)
+        if blocked_until and time.time() < blocked_until:
+            return signals
+        if blocked_until:
+            self._timeout_block_until.pop(symbol, None)
         if symbol in self._cooldown_until:
             bar = self._current_bar(symbol, config.MOMENTUM_TIMEFRAME)
             if bar is not None and bar < self._cooldown_until[symbol]:
@@ -544,6 +550,8 @@ class ScalpAnalyzer:
         current_bar = self._current_bar(symbol, tf)
         if current_bar is not None:
             self._cooldown_until[symbol] = current_bar + config.COOLDOWN_BARS
+        if reason == "max_hold_1h":
+            self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
         sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price, "timestamp": time.time()}
         await database.save_signal(sig)
         return sig
@@ -566,6 +574,10 @@ class ScalpAnalyzer:
     async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT"):
         if symbol not in self.positions and len(self.positions) >= self.max_open_positions():
             return None
+        if self.market:
+            liquid, _ = self.market.liquidity_status(symbol, config.DEFAULT_ORDER_USDT)
+            if not liquid:
+                return None
         try_balance = await database.get_wallet_balance("TRY")
         if try_balance < config.DEFAULT_ORDER_USDT:
             return None 

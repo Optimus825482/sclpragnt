@@ -6,6 +6,10 @@ type Config = {
   symbols: string[];
   min_notional: number;
   default_order_usdt: number;
+  min_24h_quote_volume_try: number;
+  min_volume_ratio: number;
+  max_spread_pct: number;
+  min_orderbook_depth_multiplier: number;
   max_open_positions: number;
   hard_stop_loss_pct: number;
   cooldown_bars: number;
@@ -178,6 +182,24 @@ export default function SettingsPage() {
                 <p className="text-xs text-bunker-muted mt-1">Bu skorun altındaki adaylar otomatik paper işlem için kullanılmaz. Önerilen başlangıç: 50.</p>
               </div>
               <input type="number" min={0} max={100} step={1} value={num(draft.gainer_radar_min_score)} onChange={(e) => setDraft((d) => ({ ...d, gainer_radar_min_score: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none" />
+            </div>
+            <div className="mt-5 border-t border-bunker-800 pt-4">
+              <p className="eyebrow">LİKİDİTE FİLTRESİ</p>
+              <p className="text-xs text-bunker-muted mt-1">İşlem açılmadan önce düşük hacim, geniş spread ve sığ emir defteri engellenir.</p>
+              <div className="grid sm:grid-cols-2 gap-3 mt-3">
+                {([
+                  ["min_24h_quote_volume_try", "Minimum 24s hacim (TL)", 1000],
+                  ["min_volume_ratio", "Minimum hacim oranı", 0.1],
+                  ["max_spread_pct", "Maksimum spread (%)", 0.01],
+                  ["min_orderbook_depth_multiplier", "Emir defteri çarpanı", 0.5],
+                ] as const).map(([key, label, step]) => (
+                  <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2">
+                    <span className="font-mono text-xs text-bunker-muted">{label}</span>
+                    <input type="number" min={0} step={step} value={num((draft as any)[key])} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-32 bg-bunker-950 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right outline-none focus:border-neon-green/50" />
+                  </label>
+                ))}
+              </div>
+              <p className="text-[11px] text-bunker-muted mt-2 font-mono">Önerilen: 1.000.000 TL · 0,5x · %0,30 · 5x</p>
             </div>
           </div>
 

@@ -5,8 +5,7 @@ import {
     createChart, createSeriesMarkers, CandlestickSeries, LineSeries, HistogramSeries,
     IChartApi, ISeriesApi, IPriceLine, UTCTimestamp, Time
 } from "lightweight-charts";
-import { indicatorRegistry } from "lightweight-charts-indicators";
-import IndicatorPicker from "./IndicatorPicker";
+import IndicatorPicker, { findIndicatorEntry } from "./IndicatorPicker";
 import IndicatorSettings from "./IndicatorSettings";
 import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "./types";
 
@@ -581,10 +580,21 @@ export default function ChartsPage() {
             paneIdx = 2;
         }
         for (const inst of instances) {
-            const entry = indicatorRegistry.find((e: any) => e.id === inst.registryId) as RegistryEntry | undefined;
+            const entry = findIndicatorEntry(inst.registryId);
             if (!entry) continue;
-            const result = entry.calculate(bars, inst.params);
-            const plots = Object.values(result.plots).filter((p) => p.some((pt) => pt.value != null && !Number.isNaN(pt.value)));
+            let result;
+            try {
+                result = entry.calculate(bars, inst.params);
+            } catch {
+                // Eksik/uyumsuz parametre tek bir indikatörün tüm grafiği bozmasını engeller.
+                continue;
+            }
+            // Bazı community/pattern indikatörleri çizim primitive'i döndürür;
+            // bu renderer yalnızca numeric plot serilerini destekler.
+            // Böyle bir sonuç tüm grafik akışını kırmadan marker/primitive katmanına bırakılır.
+            const plots = result?.plots
+                ? Object.values(result.plots).filter((p) => Array.isArray(p) && p.some((pt) => pt.value != null && !Number.isNaN(pt.value)))
+                : [];
             if (!plots.length) continue;
 
             const style = inst.style;
@@ -665,7 +675,7 @@ export default function ChartsPage() {
 
         // manuel min/max bant değerleri varsa bunları da çiz
         instances.forEach((inst) => {
-            const entry = indicatorRegistry.find((e: any) => e.id === inst.registryId) as RegistryEntry | undefined;
+            const entry = findIndicatorEntry(inst.registryId);
             if (!entry || inst.overlay) return;
             const style = inst.style;
             if (!style.showBounds) return;
@@ -781,7 +791,7 @@ export default function ChartsPage() {
                     gear.style.cssText = "background:none;border:none;color:#9ca3af;cursor:pointer;font-size:11px;padding:0 2px;";
                     gear.title = "Ayarlar";
                     gear.onclick = () => {
-                        const entry = indicatorRegistry.find((e: any) => e.id === inst.registryId) as RegistryEntry | undefined;
+                        const entry = findIndicatorEntry(inst.registryId);
                         if (entry) setEditTarget({ entry, editUid: inst.uid });
                     };
                     const x = document.createElement("button");
@@ -884,6 +894,11 @@ export default function ChartsPage() {
         return out;
     };
     const strategySignalFns: Record<string, (bars: Bar[], params: Record<string, any>) => { time: number; type: "buy" | "sell" }[]> = {
+        ut_bot: utBotSignals,
+        bb_squeeze: bbSqueezeSignals,
+        ema_pullback: emaPullbackSignals,
+        vwap_macd: vwapMacdSignals,
+        cmo_crsi: cmoCrsiSignals,
         ema_vwap_pullback: (bars) => extendedStrategySignals(bars, "ema_vwap"),
         bb_squeeze_orderflow: (bars) => extendedStrategySignals(bars, "breakout"),
         orderflow: (bars) => extendedStrategySignals(bars, "orderflow"),
@@ -894,10 +909,12 @@ export default function ChartsPage() {
         donchian_breakout: (bars) => extendedStrategySignals(bars, "breakout"),
     };
     const strategyColors: Record<string, { buy: string; sell: string }> = {
+        ut_bot: { buy: "#22c55e", sell: "#ef4444" }, bb_squeeze: { buy: "#f97316", sell: "#ef4444" }, ema_pullback: { buy: "#38bdf8", sell: "#ef4444" }, vwap_macd: { buy: "#c084fc", sell: "#ef4444" }, cmo_crsi: { buy: "#eab308", sell: "#ef4444" },
         ema_vwap_pullback: { buy: "#22c55e", sell: "#ef4444" }, bb_squeeze_orderflow: { buy: "#f97316", sell: "#ef4444" }, orderflow: { buy: "#38bdf8", sell: "#ef4444" }, momentum: { buy: "#eab308", sell: "#ef4444" }, vwap_mean_reversion: { buy: "#c084fc", sell: "#ef4444" },
         keltner_breakout: { buy: "#fb7185", sell: "#ef4444" }, chop_trend_filter: { buy: "#a3e635", sell: "#ef4444" }, donchian_breakout: { buy: "#60a5fa", sell: "#ef4444" },
     };
     const strategyLabels: Record<string, string> = {
+        ut_bot: "UT", bb_squeeze: "BB SQ", ema_pullback: "EMA PB", vwap_macd: "VWAP MACD", cmo_crsi: "CMO CRSI",
         ema_vwap_pullback: "EMA+VWAP", bb_squeeze_orderflow: "BB+FLOW", orderflow: "FLOW", momentum: "MTF MOM", vwap_mean_reversion: "VWAP MR",
         keltner_breakout: "KELT", chop_trend_filter: "CHOP", donchian_breakout: "DONCH",
     };
@@ -1044,7 +1061,7 @@ export default function ChartsPage() {
                     </h1>
                     <p className="eyebrow mt-1">Binance public API · son 200 mum</p>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="w-full lg:w-auto flex flex-wrap items-center gap-2 sm:gap-3">
                     <select
                         value={symbol}
                         onChange={(e) => changeSymbol(e.target.value)}
@@ -1052,7 +1069,7 @@ export default function ChartsPage() {
                     >
                         {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
-                    <div className="flex rounded-lg border border-bunker-700 overflow-hidden">
+                    <div className="max-w-full overflow-x-auto flex rounded-lg border border-bunker-700">
                         {INTERVALS.map((i) => (
                             <button
                                 key={i.v}
@@ -1065,7 +1082,7 @@ export default function ChartsPage() {
                     </div>
                     <button
                         onClick={() => setPicking(true)}
-                        className="px-4 py-2 rounded-lg border border-neon-green/40 bg-neon-green/10 font-mono text-sm text-neon-green hover:bg-neon-green/20"
+                        className="order-first lg:order-none px-4 py-2 min-h-10 rounded-lg border border-neon-green/40 bg-neon-green/10 font-mono text-sm text-neon-green hover:bg-neon-green/20 active:scale-[0.98] transition-transform"
                     >
                         + İNDİKATÖR
                     </button>
@@ -1090,6 +1107,14 @@ export default function ChartsPage() {
                     </button>
                 </div>
             </header>
+
+            <button
+                onClick={() => setPicking(true)}
+                aria-label="İndikatör ekle"
+                className="lg:hidden fixed bottom-5 right-4 z-40 min-h-12 px-4 rounded-full border border-neon-green/50 bg-bunker-950/95 text-neon-green shadow-[0_8px_30px_rgba(16,185,129,0.2)] backdrop-blur font-mono text-sm font-bold active:scale-95 transition-transform"
+            >
+                ＋ İNDİKATÖR
+            </button>
 
             {instances.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2">

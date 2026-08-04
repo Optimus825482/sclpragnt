@@ -9,7 +9,7 @@ type Props = {
 };
 
 // UT Bot özel indikatörü: buy/sell sinyallerini grafikte marker olarak gösterir
-const UT_BOT_ENTRY: RegistryEntry = {
+export const UT_BOT_ENTRY: RegistryEntry = {
     id: "ut_bot",
     name: "UT Bot Alerts (Buy/Sell)",
     shortName: "UT Bot",
@@ -29,7 +29,7 @@ const UT_BOT_ENTRY: RegistryEntry = {
 };
 
 // BB Squeeze: Bollinger bandı daralması + hacim patlaması → buy/sell marker
-const BB_SQUEEZE_ENTRY: RegistryEntry = {
+export const BB_SQUEEZE_ENTRY: RegistryEntry = {
     id: "bb_squeeze",
     name: "BB Squeeze Alerts (Buy/Sell)",
     shortName: "BB Squeeze",
@@ -48,7 +48,7 @@ const BB_SQUEEZE_ENTRY: RegistryEntry = {
 };
 
 // EMA Pullback: EMA9>EMA21>EMA50 trend + EMA21'e pullback + RSI soğuma → buy/sell marker
-const EMA_PULLBACK_ENTRY: RegistryEntry = {
+export const EMA_PULLBACK_ENTRY: RegistryEntry = {
     id: "ema_pullback",
     name: "EMA Pullback Alerts (Buy/Sell)",
     shortName: "EMA Pullback",
@@ -67,7 +67,7 @@ const EMA_PULLBACK_ENTRY: RegistryEntry = {
 };
 
 // VWAP + MACD: fiyat VWAP üstü + MACD pozitif → buy/sell marker
-const VWAP_MACD_ENTRY: RegistryEntry = {
+export const VWAP_MACD_ENTRY: RegistryEntry = {
     id: "vwap_macd",
     name: "VWAP + MACD Alerts (Buy/Sell)",
     shortName: "VWAP+MACD",
@@ -86,7 +86,7 @@ const VWAP_MACD_ENTRY: RegistryEntry = {
 };
 
 // CMO + CRSI Derin Dip: aşırı düşmüş coinleri avlar → buy/sell marker
-const CMO_CRSI_ENTRY: RegistryEntry = {
+export const CMO_CRSI_ENTRY: RegistryEntry = {
     id: "cmo_crsi",
     name: "CMO+CRSI Dip Alerts (Buy/Sell)",
     shortName: "CMO+CRSI",
@@ -118,7 +118,7 @@ const ORDERFLOW_ENTRY = SIMPLE_STRATEGY_ENTRY("orderflow", "Order Flow Alerts", 
 const MOMENTUM_ENTRY = SIMPLE_STRATEGY_ENTRY("momentum", "Momentum Alerts", "Momentum");
 const MEAN_REVERSION_ENTRY = SIMPLE_STRATEGY_ENTRY("mean_reversion", "Mean Reversion Alerts", "Mean Rev.");
 
-const STRATEGY_ENTRIES = [
+export const STRATEGY_ENTRIES = [
     SIMPLE_STRATEGY_ENTRY("ema_vwap_pullback", "EMA + VWAP Pullback", "EMA+VWAP"),
     SIMPLE_STRATEGY_ENTRY("bb_squeeze_orderflow", "BB Squeeze + Order-Flow Confirmation", "BB+FLOW"),
     ORDERFLOW_ENTRY,
@@ -129,12 +129,27 @@ const STRATEGY_ENTRIES = [
     SIMPLE_STRATEGY_ENTRY("donchian_breakout", "Donchian Breakout", "Donchian"),
 ];
 
+// Uygulama içi özel kayıtlar da paket registry'siyle aynı kaynaktan seçilebilmeli.
+// Aksi halde picker'da görünen ancak grafik renderer'ında bulunamayan indikatörler oluşuyordu.
+export const CUSTOM_INDICATOR_ENTRIES: RegistryEntry[] = [
+    UT_BOT_ENTRY,
+    BB_SQUEEZE_ENTRY,
+    EMA_PULLBACK_ENTRY,
+    VWAP_MACD_ENTRY,
+    CMO_CRSI_ENTRY,
+    ...STRATEGY_ENTRIES,
+];
+
+export const findIndicatorEntry = (id: string): RegistryEntry | undefined =>
+    CUSTOM_INDICATOR_ENTRIES.find((entry) => entry.id === id) ||
+    (indicatorRegistry.find((entry: any) => entry.id === id) as RegistryEntry | undefined);
+
 export default function IndicatorPicker({ onSelect, onClose }: Props) {
     const [q, setQ] = useState("");
     const [cat, setCat] = useState("Tümü");
 
     const indicators = useMemo(
-        () => [...STRATEGY_ENTRIES, ...indicatorRegistry.filter((i: any) => i.group !== "candlestick-port")] as RegistryEntry[],
+        () => [...CUSTOM_INDICATOR_ENTRIES, ...indicatorRegistry.filter((i: any) => i.group !== "candlestick-port")] as RegistryEntry[],
         []
     );
     const cats = useMemo(
