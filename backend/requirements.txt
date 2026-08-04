@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+websockets
+aiohttp
+python-binance
+pandas
+numpy
+python-dotenv
+pydantic
+aiosqlite

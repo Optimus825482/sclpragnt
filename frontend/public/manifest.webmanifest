@@ -1,0 +1,13 @@
+{
+  "name": "Scalper Agent V4",
+  "short_name": "Scalper Agent",
+  "description": "Binance TR public-data paper scalping terminal",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#05080d",
+  "theme_color": "#05080d",
+  "lang": "tr",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

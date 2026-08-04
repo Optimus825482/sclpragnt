@@ -1,0 +1,10 @@
+.env
+backend/.env
+backend/venv/
+backend/__pycache__/
+backend/scalper_db_v4.sqlite*
+scalper_db_v4.sqlite*
+frontend/node_modules/
+frontend/.next/
+*.pyc
+*.tsbuildinfo
