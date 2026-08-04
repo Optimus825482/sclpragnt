@@ -25,7 +25,8 @@ class Config:
     GAINER_RADAR_AUTO_TRADE = True
     GAINER_RADAR_MIN_SCORE = 50
     
-    HARD_STOP_LOSS_PCT = 0.015
+    HARD_STOP_LOSS_PCT = 0.02
+    COOLDOWN_BARS = 2
     TAKE_PROFIT_PCT = 0.02
     SPOT_PROFIT_TARGET_PCT = 0.005
     TRAILING_STOP_PCT = 0.005
@@ -54,6 +55,21 @@ class Config:
     KELTNER_ENABLED = os.getenv("KELTNER_ENABLED", "true").lower() == "true"
     CHOP_ENABLED = os.getenv("CHOP_ENABLED", "true").lower() == "true"
     DONCHIAN_ENABLED = os.getenv("DONCHIAN_ENABLED", "true").lower() == "true"
+
+    # Canlı strateji eşikleri (Ayarlar > Stratejiler üzerinden güncellenebilir)
+    ORDERFLOW_MIN_IMBALANCE = 0.10
+    MOMENTUM_SHORT_LOOKBACK = 5
+    MOMENTUM_LONG_LOOKBACK = 21
+    MOMENTUM_MIN_RETURN_PCT = 0.003
+    KELTNER_EMA_PERIOD = 20
+    KELTNER_ATR_PERIOD = 20
+    KELTNER_ATR_MULTIPLIER = 1.5
+    KELTNER_VOLUME_MULTIPLIER = 1.2
+    CHOP_PERIOD = 14
+    CHOP_MAX_VALUE = 50.0
+    CHOP_MIN_RSI = 50.0
+    DONCHIAN_LOOKBACK = 20
+    DONCHIAN_VOLUME_MULTIPLIER = 1.15
 
     # Her stratejinin kendi timeframe'i
     BB_SQUEEZE_TIMEFRAME = os.getenv("BB_SQUEEZE_TIMEFRAME", "5m")

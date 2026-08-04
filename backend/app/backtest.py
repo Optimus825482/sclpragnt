@@ -116,9 +116,10 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                 if position:
                     window = {key: values[:i + 1] for key, values in data.items()}
                     target_price = position["entry"] * (1 + profit_target_pct)
+                    stop_price = position["entry"] * (1 - config.HARD_STOP_LOSS_PCT) if config.HARD_STOP_LOSS_PCT > 0 else None
                     # Pozisyon yalnızca kendi stratejisinin sell sinyaliyle kapanır.
-                    exit_price = target_price if high >= target_price else None
-                    reason = "profit_target_configured"
+                    exit_price = stop_price if stop_price is not None and low <= stop_price else (target_price if high >= target_price else None)
+                    reason = "hard_stop_loss" if exit_price == stop_price and stop_price is not None else "profit_target_configured"
                     if data["times"][i] - position["entry_time"] >= config.MAX_POSITION_HOLD_SEC:
                         exit_price = close
                         reason = "max_hold_12h"

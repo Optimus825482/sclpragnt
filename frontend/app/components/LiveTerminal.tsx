@@ -4,7 +4,7 @@ import { API_BASE, WS_BASE } from "../lib/api";
 
 type Ticker = { symbol: string; last_price: number; volume: number; avg_volume?: number };
 type Signal = { id?: number; symbol: string; action: string; price?: number; reason?: string; timestamp?: number };
-type Position = { symbol: string; entry: number; current: number; pnl_pct: number; value: number };
+type Position = { symbol: string; entry: number; current: number; pnl_pct: number; pnl_try?: number; value: number };
 type Portfolio = { try: number; total_value: number; positions: Position[] };
 
 export default function LiveTerminal() {
@@ -108,6 +108,9 @@ export default function LiveTerminal() {
                   <span>Anlık: ₺{p.current.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
                 <div className="mt-2 text-xs text-right text-bunker-muted font-mono">
+                  PnL: <span className={pnlColor(p.pnl_pct)}>{p.pnl_try != null && p.pnl_try >= 0 ? "+" : ""}₺{formatTL(p.pnl_try)}</span> · {p.pnl_pct.toFixed(2)}%
+                </div>
+                <div className="mt-1 text-xs text-right text-bunker-muted font-mono">
                   Değer: ₺{p.value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>

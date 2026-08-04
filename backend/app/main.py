@@ -126,6 +126,21 @@ CONFIG_FIELDS = {
     "min_notional": "MIN_NOTIONAL",
     "default_order_usdt": "DEFAULT_ORDER_USDT",
     "take_profit_pct": "SPOT_PROFIT_TARGET_PCT",
+    "hard_stop_loss_pct": "HARD_STOP_LOSS_PCT",
+    "cooldown_bars": "COOLDOWN_BARS",
+    "orderflow_min_imbalance": "ORDERFLOW_MIN_IMBALANCE",
+    "momentum_short_lookback": "MOMENTUM_SHORT_LOOKBACK",
+    "momentum_long_lookback": "MOMENTUM_LONG_LOOKBACK",
+    "momentum_min_return_pct": "MOMENTUM_MIN_RETURN_PCT",
+    "keltner_ema_period": "KELTNER_EMA_PERIOD",
+    "keltner_atr_period": "KELTNER_ATR_PERIOD",
+    "keltner_atr_multiplier": "KELTNER_ATR_MULTIPLIER",
+    "keltner_volume_multiplier": "KELTNER_VOLUME_MULTIPLIER",
+    "chop_period": "CHOP_PERIOD",
+    "chop_max_value": "CHOP_MAX_VALUE",
+    "chop_min_rsi": "CHOP_MIN_RSI",
+    "donchian_lookback": "DONCHIAN_LOOKBACK",
+    "donchian_volume_multiplier": "DONCHIAN_VOLUME_MULTIPLIER",
     "ut_enabled": "UT_ENABLED",
     "ut_key_value": "UT_KEY_VALUE",
     "ut_atr_period": "UT_ATR_PERIOD",
@@ -165,7 +180,7 @@ CONFIG_FIELDS = {
 }
 
 BOOL_FIELDS = {"ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
+INT_FIELDS = {"gainer_radar_min_score", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
 STR_FIELDS = {"ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
@@ -176,7 +191,21 @@ async def get_config():
         "min_notional": config.MIN_NOTIONAL,
         "default_order_usdt": config.DEFAULT_ORDER_USDT,
         "max_open_positions": max(1, len(config.SYMBOLS) * 2),
-        "hard_stop_loss_pct": 0.0,
+        "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
+        "cooldown_bars": config.COOLDOWN_BARS,
+        "orderflow_min_imbalance": config.ORDERFLOW_MIN_IMBALANCE,
+        "momentum_short_lookback": config.MOMENTUM_SHORT_LOOKBACK,
+        "momentum_long_lookback": config.MOMENTUM_LONG_LOOKBACK,
+        "momentum_min_return_pct": config.MOMENTUM_MIN_RETURN_PCT,
+        "keltner_ema_period": config.KELTNER_EMA_PERIOD,
+        "keltner_atr_period": config.KELTNER_ATR_PERIOD,
+        "keltner_atr_multiplier": config.KELTNER_ATR_MULTIPLIER,
+        "keltner_volume_multiplier": config.KELTNER_VOLUME_MULTIPLIER,
+        "chop_period": config.CHOP_PERIOD,
+        "chop_max_value": config.CHOP_MAX_VALUE,
+        "chop_min_rsi": config.CHOP_MIN_RSI,
+        "donchian_lookback": config.DONCHIAN_LOOKBACK,
+        "donchian_volume_multiplier": config.DONCHIAN_VOLUME_MULTIPLIER,
         "take_profit_pct": config.SPOT_PROFIT_TARGET_PCT,
         "trailing_stop_pct": 0.0,
         "ut_enabled": config.UT_ENABLED,

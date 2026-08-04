@@ -38,6 +38,10 @@ export default function StrategyCards() {
                 DONCHIAN_BREAKOUT: d.donchian_enabled,
             }))
             .catch(() => { });
+        const timer = setInterval(() => {
+            fetch(`${API_BASE}/api/strategies/stats`).then((r) => r.json()).then((d) => setStats(d.stats || {})).catch(() => undefined);
+        }, 3000);
+        return () => clearInterval(timer);
     }, []);
 
     const formatTL = (v: number) =>

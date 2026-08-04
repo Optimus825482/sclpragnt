@@ -8,6 +8,7 @@ class ScalpAnalyzer:
         self.market = market
         self.positions = {}
         self._last_signal_lengths = {}
+        self._cooldown_until = {}
 
     def max_open_positions(self):
         """Aktif sembol evrenine göre dinamik pozisyon limiti."""
@@ -15,6 +16,13 @@ class ScalpAnalyzer:
 
     async def load_state(self):
         self.positions = await database.load_positions()
+
+    def _current_bar(self, symbol, timeframe):
+        if not self.market:
+            return None
+        kline = self.market.get_ut_kline(symbol, timeframe)
+        times = kline.get("times", [])
+        return len(times) - 1 if times else len(kline.get("closes", [])) - 1
 
     def calculate_atr(self, kline, period=11):
         highs = kline.get("highs", [])
@@ -304,6 +312,14 @@ class ScalpAnalyzer:
             "EMA_Pullback": config.EMA_PULLBACK_TIMEFRAME,
             "VWAP_MACD": config.VWAP_MACD_TIMEFRAME,
             "CMO_CRSI_Dip": config.CMO_CRSI_TIMEFRAME,
+            "EMA_VWAP_PULLBACK": config.EMA_VWAP_TIMEFRAME,
+            "BB_SQUEEZE_ORDERFLOW": config.BB_SQUEEZE_TIMEFRAME,
+            "ORDERFLOW": config.ORDERFLOW_TIMEFRAME,
+            "MOMENTUM": config.MOMENTUM_TIMEFRAME,
+            "VWAP_MEAN_REVERSION": config.MEAN_REVERSION_TIMEFRAME,
+            "KELTNER_BREAKOUT": config.KELTNER_TIMEFRAME,
+            "CHOP_TREND_FILTER": config.CHOP_TIMEFRAME,
+            "DONCHIAN_BREAKOUT": config.DONCHIAN_TIMEFRAME,
         }.get(strat_name, config.UT_TIMEFRAME)
 
     async def _manage_open_position(self, symbol, price, strat_name):
@@ -313,6 +329,8 @@ class ScalpAnalyzer:
         pos = self.positions.get(symbol)
         if pos and time.time() - pos.get("entry_time", time.time()) >= config.MAX_POSITION_HOLD_SEC:
             return await self.close_position(symbol, price, "max_hold_12h")
+        if pos and config.HARD_STOP_LOSS_PCT > 0 and price <= pos["entry_price"] * (1 - config.HARD_STOP_LOSS_PCT):
+            return await self.close_position(symbol, price, "hard_stop_loss")
         if pos and price >= pos["entry_price"] * (1 + config.SPOT_PROFIT_TARGET_PCT):
             return await self.close_position(symbol, price, "profit_target_0_5pct")
         return None
@@ -326,7 +344,7 @@ class ScalpAnalyzer:
         if not bid or not ask or spread is None:
             return False, 0.0
         imbalance = (bid - ask) / (bid + ask)
-        return imbalance >= 0.10 and spread <= 0.25, imbalance
+        return imbalance >= config.ORDERFLOW_MIN_IMBALANCE and spread <= 0.25, imbalance
 
     def _optional_flow_filter(self, symbol):
         """Akış verisi yoksa trend stratejisini kilitleme; varsa kalite filtresi uygula."""
@@ -353,7 +371,7 @@ class ScalpAnalyzer:
     def strategy_ema_vwap(self, kline, symbol=None):
         closes, highs, lows, volumes = kline.get("closes", []), kline.get("highs", []), kline.get("lows", []), kline.get("volumes", [])
         if len(closes) < 55: return None
-        e9, e21, e50 = self.calculate_ema(closes, 9), self.calculate_ema(closes, 21), self.calculate_ema(closes, 50)
+        e9, e21, e50 = self.calculate_ema(closes, config.EMA_SHORT), self.calculate_ema(closes, config.EMA_MID), self.calculate_ema(closes, config.EMA_TREND)
         typical = (np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3
         vol = np.array(volumes[-20:]); vwap = float(np.sum(typical * vol) / np.sum(vol)) if np.sum(vol) else None
         if None in (e9, e21, e50, vwap): return None
@@ -382,22 +400,24 @@ class ScalpAnalyzer:
             flow_ok, imbalance = self._flow_filter(symbol)
         else:
             imbalance = self.calculate_orderflow_proxy(kline) or 0
-            flow_ok = imbalance >= 0.15
+            flow_ok = imbalance >= config.ORDERFLOW_MIN_IMBALANCE
         if flow_ok and closes[-1] > closes[-2] > closes[-3]: return "buy"
         return None
 
     def strategy_momentum(self, kline, symbol=None):
         closes = kline.get("closes", [])
         if len(closes) < 30: return None
-        r1 = closes[-1] / closes[-6] - 1; r2 = closes[-1] / closes[-21] - 1
+        short = config.MOMENTUM_SHORT_LOOKBACK; long = config.MOMENTUM_LONG_LOOKBACK
+        if len(closes) <= long: return None
+        r1 = closes[-1] / closes[-short - 1] - 1; r2 = closes[-1] / closes[-long] - 1
         flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
-        if r1 > 0.003 and r2 > 0 and flow_ok: return "buy"
+        if r1 > config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 and flow_ok: return "buy"
         return None
 
     def strategy_mean_reversion(self, kline, symbol=None):
         closes = kline.get("closes", [])
         if len(closes) < 110: return None
-        bb = self.calculate_bollinger_bands(closes, 20, 2.0); crsi = self.calculate_crsi(closes)
+        bb = self.calculate_bollinger_bands(closes, config.BB_PERIOD, config.BB_STD_DEV); crsi = self.calculate_crsi(closes)
         flow_ok, imbalance = self._optional_flow_filter(symbol) if symbol else (True, 0)
         if bb and crsi is not None and closes[-1] < bb["lower"] and crsi < 30 and imbalance >= 0 and flow_ok: return "buy"
         return None
@@ -412,10 +432,10 @@ class ScalpAnalyzer:
     def strategy_keltner_breakout(self, kline, symbol=None):
         closes, highs, lows, volumes = [kline.get(k, []) for k in ("closes", "highs", "lows", "volumes")]
         if len(closes) < 30: return None
-        ema = self.calculate_ema(closes, 20); atr = self.calculate_atr(kline, 20)
+        ema = self.calculate_ema(closes, config.KELTNER_EMA_PERIOD); atr = self.calculate_atr(kline, config.KELTNER_ATR_PERIOD)
         avg_vol = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else 0
         flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0.05, 0)
-        if ema is not None and atr and closes[-1] > ema + 1.5 * atr and volumes[-1] >= avg_vol * 1.2 and flow_ok: return "buy"
+        if ema is not None and atr and closes[-1] > ema + config.KELTNER_ATR_MULTIPLIER * atr and volumes[-1] >= avg_vol * config.KELTNER_VOLUME_MULTIPLIER and flow_ok: return "buy"
         return None
 
     def calculate_chop(self, kline, period=14):
@@ -428,17 +448,18 @@ class ScalpAnalyzer:
     def strategy_chop_trend(self, kline, symbol=None):
         closes = kline.get("closes", [])
         if len(closes) < 30: return None
-        chop = self.calculate_chop(kline); rsi = self.calculate_rsi(closes, 14)
+        chop = self.calculate_chop(kline, config.CHOP_PERIOD); rsi = self.calculate_rsi(closes, config.RSI_PERIOD)
         flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0, 0)
-        if chop is not None and chop < 50 and rsi is not None and rsi > 50 and closes[-1] > closes[-2] and flow_ok: return "buy"
+        if chop is not None and chop < config.CHOP_MAX_VALUE and rsi is not None and rsi > config.CHOP_MIN_RSI and closes[-1] > closes[-2] and flow_ok: return "buy"
         return None
 
     def strategy_donchian_breakout(self, kline, symbol=None):
         closes, volumes = kline.get("closes", []), kline.get("volumes", [])
-        if len(closes) < 22: return None
-        upper = max(closes[-21:-1]); avg_vol = float(np.mean(volumes[-21:-1]))
+        lookback = config.DONCHIAN_LOOKBACK
+        if len(closes) < lookback + 2: return None
+        upper = max(closes[-lookback-1:-1]); avg_vol = float(np.mean(volumes[-lookback-1:-1]))
         flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0, 0)
-        if closes[-1] > upper and volumes[-1] >= avg_vol * 1.15 and flow_ok: return "buy"
+        if closes[-1] > upper and volumes[-1] >= avg_vol * config.DONCHIAN_VOLUME_MULTIPLIER and flow_ok: return "buy"
         return None
 
     async def evaluate(self, symbol, ticker):
@@ -474,6 +495,13 @@ class ScalpAnalyzer:
                     added = await self.open_position(symbol, price, "LONG", name)
                     if added: signals.append(added)
             return signals
+
+        # Açık pozisyon yok: kapanış sonrası sembol cooldown'ını uygula.
+        if symbol in self._cooldown_until:
+            bar = self._current_bar(symbol, config.MOMENTUM_TIMEFRAME)
+            if bar is not None and bar < self._cooldown_until[symbol]:
+                return signals
+            self._cooldown_until.pop(symbol, None)
 
         # Açık pozisyon yok: aktif stratejileri sırayla değerlendir
         eval_order = [
@@ -512,6 +540,10 @@ class ScalpAnalyzer:
         await self._record_trade(symbol, pos, price, reason, commission)
         del self.positions[symbol]
         await database.delete_position(symbol)
+        tf = self._strategy_tf(pos.get("strategy", "UT"))
+        current_bar = self._current_bar(symbol, tf)
+        if current_bar is not None:
+            self._cooldown_until[symbol] = current_bar + config.COOLDOWN_BARS
         sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price, "timestamp": time.time()}
         await database.save_signal(sig)
         return sig

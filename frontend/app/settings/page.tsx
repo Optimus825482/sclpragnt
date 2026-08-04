@@ -8,6 +8,7 @@ type Config = {
   default_order_usdt: number;
   max_open_positions: number;
   hard_stop_loss_pct: number;
+  cooldown_bars: number;
   take_profit_pct: number;
   trailing_stop_pct: number;
   ut_enabled: boolean;
@@ -241,14 +242,17 @@ export default function SettingsPage() {
                   type="number"
                   step={0.1}
                   min={0.1}
-                  value={0}
-                  disabled
-                  onChange={(e) => setDraft((d) => ({ ...d, hard_stop_loss_pct: e.target.value === "" ? NaN : Number(e.target.value) }))}
+                  value={num(draft.hard_stop_loss_pct) * 100}
+                  onChange={(e) => setDraft((d) => ({ ...d, hard_stop_loss_pct: (e.target.value === "" ? NaN : Number(e.target.value)) / 100 }))}
                   className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
                 />
               </div>
               <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
                 <div className="min-w-0">
+                  <div className="mb-4 flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
+                    <div className="min-w-0"><p className="font-mono text-sm text-white">Kapanış Sonrası Cooldown</p><p className="text-xs text-bunker-muted mt-0.5">Yeni girişten önce beklenecek mum sayısı</p></div>
+                    <input type="number" step={1} min={0} max={100} value={num(draft.cooldown_bars)} onChange={(e) => setDraft((d) => ({ ...d, cooldown_bars: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right outline-none" />
+                  </div>
                   <p className="font-mono text-sm text-white">Take Profit</p>
                   <p className="text-xs text-bunker-muted mt-0.5">Pozisyon bu kâr oranına ulaştığında satılır (komisyon hariç)</p>
                 </div>
