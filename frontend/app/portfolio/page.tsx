@@ -10,13 +10,11 @@ const STRATEGY_LABEL: Record<string, string> = {
     VWAP_MEAN_REVERSION: "VWAP Mean Reversion",
 };
 
-type Position = { symbol: string; entry: number; current: number; pnl_pct: number; value: number; strategy?: string };
+type Position = { symbol: string; entry: number; current: number; pnl_pct: number; pnl_try?: number; value: number; strategy?: string };
 type Portfolio = { try: number; total_value: number; positions: Position[] };
-type Ticker = { symbol: string; last_price: number; volume: number; avg_volume?: number };
 
 export default function PortfolioPage() {
     const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
-    const [tickers, setTickers] = useState<Map<string, Ticker>>(new Map());
     const [closing, setClosing] = useState<string | null>(null);
     const [msg, setMsg] = useState<string | null>(null);
 
@@ -30,7 +28,6 @@ export default function PortfolioPage() {
             ws.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
                 if (msg.type === "portfolio") setPortfolio(msg.data);
-                else if (msg.type === "tickers") setTickers(new Map(msg.data.map((t: Ticker) => [t.symbol, t])));
             };
             ws.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
         };
@@ -133,7 +130,8 @@ export default function PortfolioPage() {
                                         <td className="p-3 text-bunker-muted">${p.entry.toFixed(4)}</td>
                                         <td className="p-3 text-bunker-muted">${p.current.toFixed(4)}</td>
                                         <td className={`p-3 font-bold ${p.pnl_pct >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                                            {p.pnl_pct > 0 ? "+" : ""}{p.pnl_pct.toFixed(2)}%
+                                            <div>{p.pnl_pct > 0 ? "+" : ""}{p.pnl_pct.toFixed(2)}%</div>
+                                            <div className="text-xs mt-1">{p.pnl_try != null && p.pnl_try >= 0 ? "+" : ""}₺{formatTL(p.pnl_try ?? 0)}</div>
                                         </td>
                                         <td className="p-3 text-white">₺{formatTL(p.value)}</td>
                                         <td className="p-3">
@@ -152,19 +150,6 @@ export default function PortfolioPage() {
                     </div>
                 </div>
 
-                <div className="card bg-bunker-950 p-0 overflow-hidden">
-                    <div className="p-4 border-b border-bunker-800">
-                        <p className="eyebrow">İZLENEN SEMBOLLER</p>
-                    </div>
-                    <div className="p-3 space-y-1 max-h-96 overflow-y-auto">
-                        {[...tickers.values()].map((t) => (
-                            <div key={t.symbol} className="flex justify-between items-center px-2 py-1.5 rounded hover:bg-bunker-800/40 font-mono text-xs">
-                                <span className="text-white font-bold">{t.symbol}</span>
-                                <span className="text-bunker-muted">${t.last_price.toLocaleString("en-US", { maximumFractionDigits: 6 })}</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
             </div>
         </div>
     );

@@ -77,9 +77,10 @@ async def ws_broadcast_loop():
                     current_value = pos["quantity"] * ticker["last_price"]
                     total_value += current_value
                     pnl_pct = ((ticker["last_price"] - pos["entry_price"]) / pos["entry_price"]) * 100
+                    pnl_try = (ticker["last_price"] - pos["entry_price"]) * pos["quantity"]
                     open_positions.append({
                         "symbol": sym, "entry": pos["entry_price"], "current": ticker["last_price"],
-                        "pnl_pct": pnl_pct, "value": current_value, "strategy": pos.get("strategy", "UT")
+                        "pnl_pct": pnl_pct, "pnl_try": pnl_try, "value": current_value, "strategy": pos.get("strategy", "UT")
                     })
                     
             await ws_manager.broadcast({
