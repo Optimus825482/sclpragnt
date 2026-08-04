@@ -188,16 +188,7 @@ export default function SettingsPage() {
 
           <div className="card bg-bunker-950">
             <div className="flex justify-between items-center mb-4">
-              <p className="eyebrow">UT BOT STRATEJİSİ (M30)</p>
-              <button
-                onClick={() => setDraft((d) => ({ ...d, ut_enabled: !d.ut_enabled }))}
-                className={`px-3 py-1.5 rounded-lg border font-mono text-xs transition-colors ${draft.ut_enabled
-                  ? "border-neon-green/60 bg-neon-green/20 text-neon-green"
-                  : "border-bunker-700 bg-bunker-900 text-bunker-muted"
-                  }`}
-              >
-                {draft.ut_enabled ? "AKTİF" : "PASİF"}
-              </button>
+              <p className="eyebrow">İŞLEM VE RİSK YÖNETİMİ</p>
             </div>
               <p className="text-xs text-bunker-muted mb-4">
               Spot scalping: ayarlanabilir kâr hedefi, 12 saat maksimum bekleme, zıt sinyal çıkışı ve aynı sembolde en fazla 3 katman.
@@ -262,21 +253,6 @@ export default function SettingsPage() {
                   min={0.1}
                   value={num(draft.take_profit_pct) * 100}
                   onChange={(e) => setDraft((d) => ({ ...d, take_profit_pct: (e.target.value === "" ? NaN : Number(e.target.value)) / 100 }))}
-                  className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
-                />
-              </div>
-              <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
-                <div className="min-w-0">
-                  <p className="font-mono text-sm text-white">Trailing Stop</p>
-                  <p className="text-xs text-bunker-muted mt-0.5">Spot modelde kullanılmaz</p>
-                </div>
-                <input
-                  type="number"
-                  step={0.1}
-                  min={0.1}
-                  value={0}
-                  disabled
-                  onChange={(e) => setDraft((d) => ({ ...d, trailing_stop_pct: e.target.value === "" ? NaN : Number(e.target.value) }))}
                   className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
                 />
               </div>
