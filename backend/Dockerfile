@@ -4,6 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+COPY .well-known ./.well-known
 RUN mkdir -p /data
 ENV SCALPER_DB_PATH=/data/scalper_db_v4.sqlite
 EXPOSE 8004
