@@ -3,6 +3,7 @@
 import asyncio
 import threading
 import time
+from collections import Counter
 from typing import Any
 
 from app import database
@@ -115,12 +116,15 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                 if position:
                     window = {key: values[:i + 1] for key, values in data.items()}
                     target_price = position["entry"] * (1 + profit_target_pct)
-                    # Spot scalping: %0,5 hedef veya maksimum 12 saat bekleme.
+                    # Pozisyon yalnızca kendi stratejisinin sell sinyaliyle kapanır.
                     exit_price = target_price if high >= target_price else None
-                    reason = "profit_target_0_5pct"
+                    reason = "profit_target_configured"
                     if data["times"][i] - position["entry_time"] >= config.MAX_POSITION_HOLD_SEC:
                         exit_price = close
                         reason = "max_hold_12h"
+                    elif exit_price is None and fn(window, symbol) == "sell":
+                        exit_price = close
+                        reason = "opposite_signal"
                     if exit_price is not None:
                         balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size * position.get("layers", 1), reason)
                         trade.update({"entry_time": position["entry_time"], "exit_time": data["times"][i],
@@ -161,15 +165,23 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
 
             total = len(trades)
             net = balance - config.INITIAL_BALANCE_TRY
+            winning_pnls = [t["pnl"] for t in trades if t["pnl"] > 0]
+            losing_pnls = [t["pnl"] for t in trades if t["pnl"] <= 0]
+            gross_profit = sum(winning_pnls)
+            gross_loss = abs(sum(losing_pnls))
             return {"symbol": symbol, "interval": interval, "strategy": strategy, "params": params, "days_back": days_back,
                     "initial_balance": config.INITIAL_BALANCE_TRY, "final_balance": round(balance, 2),
                     "net_pnl": round(net, 2), "net_pnl_pct": round(net / config.INITIAL_BALANCE_TRY * 100, 2),
                     "total_trades": total, "wins": int(wins), "losses": int(losses),
                     "win_rate": round(wins / total * 100, 2) if total else 0.0,
+                    "avg_win": round(sum(winning_pnls) / len(winning_pnls), 2) if winning_pnls else 0.0,
+                    "avg_loss": round(sum(losing_pnls) / len(losing_pnls), 2) if losing_pnls else 0.0,
+                    "profit_factor": round(gross_profit / gross_loss, 3) if gross_loss else (999.0 if gross_profit else 0.0),
+                    "exit_reason_counts": dict(Counter(t["reason"] for t in trades)),
                     "max_drawdown_pct": round(max_drawdown * 100, 2), "commission_pct": config.COMMISSION_PCT,
                     "order_size": order_size, "stop_loss_pct": 0.0, "take_profit_pct": profit_target_pct,
                     "flow_model": "candle_orderflow_proxy_for_backtest",
-                    "trailing_stop_pct": 0.0, "exit_model": "spot_sell_only_at_fixed_2pct_profit",
+                    "trailing_stop_pct": 0.0, "exit_model": "strategy_specific_sell_or_configured_profit_or_12h",
                     "open_position_at_end": open_at_end, "unrealized_pnl": round(unrealized_pnl, 8),
                     "trades": trades, "timestamp": time.time()}
         finally:

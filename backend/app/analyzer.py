@@ -452,27 +452,27 @@ class ScalpAnalyzer:
             sig = await self._manage_open_position(symbol, price, strat or "EMA_VWAP_PULLBACK")
             if sig: signals.append(sig)
             if sig: return signals
-            # Zıt sinyal çıkışı ve aynı sembolde kademeli alış.
-            eval_order = [
+            # Pozisyon yalnızca kendisini açan stratejinin sinyaliyle yönetilir.
+            strategy_specs = [
                 (config.EMA_VWAP_ENABLED, "EMA_VWAP_PULLBACK", self.strategy_ema_vwap, config.EMA_VWAP_TIMEFRAME),
                 (config.BB_SQUEEZE_ENABLED, "BB_SQUEEZE_ORDERFLOW", self.strategy_bb_squeeze_orderflow, config.BB_SQUEEZE_TIMEFRAME),
                 (config.ORDERFLOW_ENABLED, "ORDERFLOW", self.strategy_orderflow, config.ORDERFLOW_TIMEFRAME),
                 (config.MOMENTUM_ENABLED, "MOMENTUM", self.strategy_momentum, config.MOMENTUM_TIMEFRAME),
                 (config.MEAN_REVERSION_ENABLED, "VWAP_MEAN_REVERSION", self.strategy_mean_reversion, config.MEAN_REVERSION_TIMEFRAME),
+                (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
+                (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),
+                (config.DONCHIAN_ENABLED, "DONCHIAN_BREAKOUT", self.strategy_donchian_breakout, config.DONCHIAN_TIMEFRAME),
             ]
-            for enabled, name, fn, tf in eval_order:
-                if not enabled: continue
+            selected = next((item for item in strategy_specs if item[1] == strat and item[0]), None)
+            if selected:
+                _, name, fn, tf = selected
                 strategy_kline = self.market.get_ut_kline(symbol, tf)
-                closes = strategy_kline.get("closes", [])
-                if len(closes) >= 22 and closes[-1] < sum(closes[-21:]) / 21 and closes[-1] < closes[-2] < closes[-3]:
-                    return [await self.close_position(symbol, price, "opposite_signal")]
                 result = fn(strategy_kline, symbol)
                 if result == "sell":
                     return [await self.close_position(symbol, price, "opposite_signal")]
                 if result == "buy" and self.positions[symbol].get("layers", 1) < config.MAX_POSITION_LAYERS:
                     added = await self.open_position(symbol, price, "LONG", name)
                     if added: signals.append(added)
-                    break
             return signals
 
         # Açık pozisyon yok: aktif stratejileri sırayla değerlendir
