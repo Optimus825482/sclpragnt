@@ -1,4 +1,5 @@
 import time
+import asyncio
 import numpy as np
 from app.config import config
 from app import database
@@ -11,6 +12,7 @@ class ScalpAnalyzer:
         self._cooldown_until = {}
         self._timeout_block_until = {}
         self._hard_stop_block_until = {}
+        self._open_position_lock = asyncio.Lock()
 
     def max_open_positions(self):
         """Aktif sembol evrenine göre dinamik pozisyon limiti."""
@@ -579,6 +581,12 @@ class ScalpAnalyzer:
         })
 
     async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT"):
+        # Strategy loop ve Gainer Radar aynı anda aynı sembolü tetikleyebilir.
+        # Cüzdan düşümü ile pozisyon kaydı tek atomik akışta yapılmalı.
+        async with self._open_position_lock:
+            return await self._open_position_unlocked(symbol, entry_price, side, strat_name)
+
+    async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT"):
         if symbol not in self.positions and len(self.positions) >= self.max_open_positions():
             return None
         if self.market:
