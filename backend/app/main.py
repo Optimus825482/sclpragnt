@@ -470,6 +470,7 @@ async def reset_all():
     analyzer._last_signal_lengths.clear()
     analyzer._cooldown_until.clear()
     analyzer._timeout_block_until.clear()
+    analyzer._hard_stop_block_until.clear()
     await database.reset_trading_data()
     await ws_manager.broadcast({"type": "reset", "data": {"ok": True}})
     return {"ok": True, "message": "Paper trading kayıtları silindi, cüzdan 10.000 TRY'ye sıfırlandı"}

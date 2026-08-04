@@ -10,6 +10,7 @@ class ScalpAnalyzer:
         self._last_signal_lengths = {}
         self._cooldown_until = {}
         self._timeout_block_until = {}
+        self._hard_stop_block_until = {}
 
     def max_open_positions(self):
         """Aktif sembol evrenine göre dinamik pozisyon limiti."""
@@ -502,6 +503,11 @@ class ScalpAnalyzer:
             return signals
         if blocked_until:
             self._timeout_block_until.pop(symbol, None)
+        hard_stop_block_until = self._hard_stop_block_until.get(symbol)
+        if hard_stop_block_until and time.time() < hard_stop_block_until:
+            return signals
+        if hard_stop_block_until:
+            self._hard_stop_block_until.pop(symbol, None)
         if symbol in self._cooldown_until:
             bar = self._current_bar(symbol, config.MOMENTUM_TIMEFRAME)
             if bar is not None and bar < self._cooldown_until[symbol]:
@@ -551,6 +557,8 @@ class ScalpAnalyzer:
             self._cooldown_until[symbol] = current_bar + config.COOLDOWN_BARS
         if reason == "max_hold_1h":
             self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
+        elif reason == "hard_stop_loss":
+            self._hard_stop_block_until[symbol] = time.time() + config.HARD_STOP_REENTRY_BLOCK_SEC
         sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price, "timestamp": time.time()}
         await database.save_signal(sig)
         return sig
