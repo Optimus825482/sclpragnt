@@ -13,6 +13,7 @@ type Trade = {
     pnl: number;
     pnl_pct: number;
     commission?: number;
+    reason?: string;
     entry_time: number;
     exit_time: number;
 };
@@ -90,19 +91,20 @@ export default function HistoryPage() {
                                 <th className="p-3">KOMİSYON</th>
                                 <th className="p-3">PnL</th>
                                 <th className="p-3">PnL %</th>
+                                <th className="p-3">KAPANIŞ NEDENİ</th>
                                 <th className="p-3">AÇILIŞ</th>
                                 <th className="p-3">KAPANIŞ</th>
                             </tr>
                         </thead>
                         <tbody>
                             {loading && (
-                                <tr><td colSpan={11} className="p-4 text-bunker-muted animate-pulse">Yükleniyor...</td></tr>
+                                <tr><td colSpan={12} className="p-4 text-bunker-muted animate-pulse">Yükleniyor...</td></tr>
                             )}
                             {!loading && !error && trades.length === 0 && (
-                                <tr><td colSpan={11} className="p-4 text-bunker-muted">Henüz kapanan pozisyon yok.</td></tr>
+                                <tr><td colSpan={12} className="p-4 text-bunker-muted">Henüz kapanan pozisyon yok.</td></tr>
                             )}
                             {error && (
-                                <tr><td colSpan={11} className="p-4 text-neon-red">{error}</td></tr>
+                                <tr><td colSpan={12} className="p-4 text-neon-red">{error}</td></tr>
                             )}
                             {trades.map((t) => (
                                 <tr key={t.id} className="border-b border-bunker-800/50 hover:bg-bunker-800/30">
@@ -123,6 +125,7 @@ export default function HistoryPage() {
                                     <td className={`p-3 font-bold ${t.pnl_pct >= 0 ? "text-neon-green" : "text-neon-red"}`}>
                                         {t.pnl_pct > 0 ? "+" : ""}{t.pnl_pct.toFixed(2)}%
                                     </td>
+                                    <td className="p-3 text-neon-yellow text-xs whitespace-nowrap">{t.reason || "-"}</td>
                                     <td className="p-3 text-bunker-muted text-xs">{fmtTime(t.entry_time)}</td>
                                     <td className="p-3 text-bunker-muted text-xs">{fmtTime(t.exit_time)}</td>
                                 </tr>

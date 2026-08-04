@@ -328,6 +328,14 @@ class ScalpAnalyzer:
         imbalance = (bid - ask) / (bid + ask)
         return imbalance >= 0.10 and spread <= 0.25, imbalance
 
+    def _optional_flow_filter(self, symbol):
+        """Akış verisi yoksa trend stratejisini kilitleme; varsa kalite filtresi uygula."""
+        if not self.market: return True, 0.0
+        flow = self.market.get_orderflow(symbol)
+        if not flow.get("bid_qty") or not flow.get("ask_qty") or flow.get("spread_pct") is None:
+            return True, 0.0
+        return self._flow_filter(symbol)
+
     def calculate_orderflow_proxy(self, kline, lookback=20):
         """Backtest proxy: mum kapanış konumu + gövde yönü + hacim ile baskı tahmini."""
         opens, highs, lows = kline.get("opens", []), kline.get("highs", []), kline.get("lows", [])
@@ -349,7 +357,7 @@ class ScalpAnalyzer:
         typical = (np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3
         vol = np.array(volumes[-20:]); vwap = float(np.sum(typical * vol) / np.sum(vol)) if np.sum(vol) else None
         if None in (e9, e21, e50, vwap): return None
-        flow_ok, _ = self._flow_filter(symbol) if symbol else (True, 0)
+        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
         # Tek mumluk crossover yerine son 3 mum içinde EMA21'e gerçek pullback
         # arıyoruz; böylece strateji yalnızca 1 kez değil, yeni kurulumlarda tekrar
         # sinyal üretebilir. Kapanış EMA21 üzerine dönerken trend ve VWAP korunmalı.
@@ -363,7 +371,7 @@ class ScalpAnalyzer:
         closes, volumes = kline.get("closes", []), kline.get("volumes", [])
         if len(closes) < 25: return None
         high = max(closes[-21:-1]); avg_vol = float(np.mean(volumes[-21:-1]))
-        flow_ok, _ = self._flow_filter(symbol) if symbol else (True, 0)
+        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
         if closes[-1] > high and volumes[-1] > avg_vol * 1.5 and flow_ok: return "buy"
         return None
 
@@ -382,7 +390,7 @@ class ScalpAnalyzer:
         closes = kline.get("closes", [])
         if len(closes) < 30: return None
         r1 = closes[-1] / closes[-6] - 1; r2 = closes[-1] / closes[-21] - 1
-        flow_ok, _ = self._flow_filter(symbol) if symbol else (True, 0)
+        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
         if r1 > 0.003 and r2 > 0 and flow_ok: return "buy"
         return None
 
@@ -390,7 +398,7 @@ class ScalpAnalyzer:
         closes = kline.get("closes", [])
         if len(closes) < 110: return None
         bb = self.calculate_bollinger_bands(closes, 20, 2.0); crsi = self.calculate_crsi(closes)
-        flow_ok, imbalance = self._flow_filter(symbol) if symbol else (True, 0)
+        flow_ok, imbalance = self._optional_flow_filter(symbol) if symbol else (True, 0)
         if bb and crsi is not None and closes[-1] < bb["lower"] and crsi < 30 and imbalance >= 0 and flow_ok: return "buy"
         return None
 
@@ -406,7 +414,7 @@ class ScalpAnalyzer:
         if len(closes) < 30: return None
         ema = self.calculate_ema(closes, 20); atr = self.calculate_atr(kline, 20)
         avg_vol = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else 0
-        flow_ok, _ = self._flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0.05, 0)
+        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0.05, 0)
         if ema is not None and atr and closes[-1] > ema + 1.5 * atr and volumes[-1] >= avg_vol * 1.2 and flow_ok: return "buy"
         return None
 
@@ -421,7 +429,7 @@ class ScalpAnalyzer:
         closes = kline.get("closes", [])
         if len(closes) < 30: return None
         chop = self.calculate_chop(kline); rsi = self.calculate_rsi(closes, 14)
-        flow_ok, _ = self._flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0, 0)
+        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0, 0)
         if chop is not None and chop < 50 and rsi is not None and rsi > 50 and closes[-1] > closes[-2] and flow_ok: return "buy"
         return None
 
@@ -429,7 +437,7 @@ class ScalpAnalyzer:
         closes, volumes = kline.get("closes", []), kline.get("volumes", [])
         if len(closes) < 22: return None
         upper = max(closes[-21:-1]); avg_vol = float(np.mean(volumes[-21:-1]))
-        flow_ok, _ = self._flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0, 0)
+        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0, 0)
         if closes[-1] > upper and volumes[-1] >= avg_vol * 1.15 and flow_ok: return "buy"
         return None
 
@@ -520,7 +528,7 @@ class ScalpAnalyzer:
             "side": pos.get("side", "LONG"), "entry_price": entry, "exit_price": exit_price,
             "quantity": pos.get("quantity", 0.0), "pnl": pnl, "pnl_pct": pnl_pct,
             "entry_time": pos.get("entry_time"), "exit_time": time.time(),
-            "commission": total_commission
+            "commission": total_commission, "reason": reason
         })
 
     async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT"):
