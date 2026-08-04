@@ -100,8 +100,8 @@ export default function PortfolioPage() {
                 </div>
             )}
 
-            <div className="grid lg:grid-cols-3 gap-4">
-                <div className="card bg-bunker-950 p-0 overflow-hidden lg:col-span-2">
+            <div className="w-full">
+                <div className="card bg-bunker-950 p-0 overflow-hidden w-full">
                     <div className="p-4 border-b border-bunker-800 flex justify-between items-center">
                         <p className="eyebrow">POZİSYONLAR</p>
                         <span className="font-mono text-xs text-bunker-muted">Kazanma: %{winRate.toFixed(0)}</span>
