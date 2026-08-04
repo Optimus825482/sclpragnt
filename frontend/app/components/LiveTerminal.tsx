@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { API_BASE, WS_BASE } from "../lib/api";
 
 type Ticker = { symbol: string; last_price: number; volume: number; avg_volume?: number };
@@ -10,6 +10,7 @@ type Portfolio = { try: number; total_value: number; positions: Position[] };
 export default function LiveTerminal() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const logEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -18,7 +19,7 @@ export default function LiveTerminal() {
 
     fetch(`${API_BASE}/api/signals?limit=100`)
       .then((response) => response.json())
-      .then((data) => setSignals((data.signals || []).slice(0, 100)))
+      .then((data) => setSignals((data.signals || []).slice(0, 100).reverse()))
       .catch(() => undefined);
 
     const connect = () => {
@@ -26,7 +27,7 @@ export default function LiveTerminal() {
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
         if (msg.type === "tickers") return;
-        else if (msg.type === "signal") setSignals((p) => [msg.data, ...p].slice(0, 100));
+        else if (msg.type === "signal") setSignals((p) => [...p, msg.data].slice(-100));
         else if (msg.type === "portfolio") setPortfolio(msg.data);
       };
       ws.onclose = () => {
@@ -41,6 +42,10 @@ export default function LiveTerminal() {
       ws?.close();
     };
   }, []);
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [signals]);
 
   const pnlColor = (pnl: number) => pnl >= 0 ? "text-neon-green" : "text-neon-red";
 
@@ -80,6 +85,7 @@ export default function LiveTerminal() {
                 <span className="text-bunker-700 text-xs">// {s.reason}</span>
               </div>
             ))}
+            <div ref={logEndRef} />
           </div>
         </div>
       </div >
