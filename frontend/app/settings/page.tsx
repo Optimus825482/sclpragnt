@@ -230,7 +230,7 @@ export default function SettingsPage() {
               <p className="eyebrow">İŞLEM VE RİSK YÖNETİMİ</p>
             </div>
               <p className="text-xs text-bunker-muted mb-4">
-              Spot scalping: ayarlanabilir kâr hedefi, 12 saat maksimum bekleme, zıt sinyal çıkışı ve aynı sembolde en fazla 3 katman.
+              Spot scalping: ayarlanabilir kâr hedefi, 2 saat maksimum bekleme ve aynı sembolde tek pozisyon.
             </p>
             <div className="space-y-4">
               <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
