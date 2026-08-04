@@ -204,13 +204,16 @@ class MarketData:
         depth_try = (float(flow.get("bid_qty", 0) or 0) + float(flow.get("ask_qty", 0) or 0)) * price
         quote_volume = float(self.ticker_24h.get(sym, 0) or 0)
         # Veri henüz ısınmadıysa false-negative üretme; geldiğinde filtre uygula.
+        high_liquidity = quote_volume >= config.HIGH_LIQUIDITY_BYPASS_VOLUME_TRY
         checks = {
             "quote_volume": quote_volume <= 0 or quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY,
-            "volume_ratio": average <= 0 or ratio >= config.MIN_VOLUME_RATIO,
+            # Büyük hacimli BTC/ETH gibi piyasalarda tek düşük mum işlem kalitesini
+            # temsil etmez; hacim oranı filtresi yalnızca düşük/orta likiditede serttir.
+            "volume_ratio": high_liquidity or average <= 0 or ratio >= config.MIN_VOLUME_RATIO,
             "spread": spread is None or spread <= config.MAX_SPREAD_PCT,
             "orderbook_depth": depth_try <= 0 or depth_try >= order_value_try * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
         }
-        return all(checks.values()), {"volume_ratio": ratio, "spread": spread, "depth_try": depth_try, "checks": checks}
+        return all(checks.values()), {"quote_volume": quote_volume, "high_liquidity": high_liquidity, "volume_ratio": ratio, "spread": spread, "depth_try": depth_try, "checks": checks}
 
     def stop(self):
         self.running = False

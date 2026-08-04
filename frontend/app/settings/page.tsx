@@ -7,6 +7,7 @@ type Config = {
   min_notional: number;
   default_order_usdt: number;
   min_24h_quote_volume_try: number;
+  high_liquidity_bypass_volume_try: number;
   min_volume_ratio: number;
   max_spread_pct: number;
   min_orderbook_depth_multiplier: number;
@@ -189,6 +190,7 @@ export default function SettingsPage() {
               <div className="grid sm:grid-cols-2 gap-3 mt-3">
                 {([
                   ["min_24h_quote_volume_try", "Minimum 24s hacim (TL)", 1000],
+                  ["high_liquidity_bypass_volume_try", "Yüksek likidite eşiği (TL)", 1000],
                   ["min_volume_ratio", "Minimum hacim oranı", 0.1],
                   ["max_spread_pct", "Maksimum spread (%)", 0.01],
                   ["min_orderbook_depth_multiplier", "Emir defteri çarpanı", 0.5],

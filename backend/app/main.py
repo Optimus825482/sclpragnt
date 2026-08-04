@@ -125,6 +125,7 @@ CONFIG_FIELDS = {
     "gainer_radar_min_score": "GAINER_RADAR_MIN_SCORE",
     "min_notional": "MIN_NOTIONAL",
     "min_24h_quote_volume_try": "MIN_24H_QUOTE_VOLUME_TRY",
+    "high_liquidity_bypass_volume_try": "HIGH_LIQUIDITY_BYPASS_VOLUME_TRY",
     "min_volume_ratio": "MIN_VOLUME_RATIO",
     "max_spread_pct": "MAX_SPREAD_PCT",
     "min_orderbook_depth_multiplier": "MIN_ORDERBOOK_DEPTH_MULTIPLIER",
@@ -195,6 +196,7 @@ async def get_config():
         "symbols": config.SYMBOLS,
         "min_notional": config.MIN_NOTIONAL,
         "min_24h_quote_volume_try": config.MIN_24H_QUOTE_VOLUME_TRY,
+        "high_liquidity_bypass_volume_try": config.HIGH_LIQUIDITY_BYPASS_VOLUME_TRY,
         "min_volume_ratio": config.MIN_VOLUME_RATIO,
         "max_spread_pct": config.MAX_SPREAD_PCT,
         "min_orderbook_depth_multiplier": config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
@@ -363,7 +365,7 @@ async def update_config(payload: dict):
                 setattr(config, attr, str(val))
             else:
                 number = float(val)
-                if key in {"min_notional", "default_order_usdt", "min_24h_quote_volume_try", "min_volume_ratio", "max_spread_pct", "min_orderbook_depth_multiplier"} and number <= 0:
+                if key in {"min_notional", "default_order_usdt", "min_24h_quote_volume_try", "high_liquidity_bypass_volume_try", "min_volume_ratio", "max_spread_pct", "min_orderbook_depth_multiplier"} and number <= 0:
                     raise ValueError(f"{key} pozitif olmalıdır")
                 if key in {"hard_stop_loss_pct", "take_profit_pct", "trailing_stop_pct"} and not 0 < number < 1:
                     raise ValueError(f"{key} 0 ile 1 arasında olmalıdır")
