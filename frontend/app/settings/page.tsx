@@ -23,6 +23,7 @@ type Config = {
 };
 
 export default function SettingsPage() {
+  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -126,8 +127,22 @@ export default function SettingsPage() {
       )}
 
       {cfg && (
+        <nav className="flex gap-2 overflow-x-auto border-b border-bunker-800 pb-2" aria-label="Ayar sekmeleri">
+          {([
+            ["symbols", "Semboller", "🪙"],
+            ["app", "Uygulama Ayarları", "⚙️"],
+            ["strategies", "Strateji Ayarları", "📈"],
+          ] as const).map(([key, label, icon]) => (
+            <button key={key} onClick={() => setActiveTab(key)} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${activeTab === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>
+              {icon} {label}
+            </button>
+          ))}
+        </nav>
+      )}
+
+      {cfg && (
         <>
-          <div className="card bg-bunker-950">
+          <div className={`card bg-bunker-950 ${activeTab !== "symbols" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
               <div>
                 <p className="eyebrow">BINANCE TR SEMBOLLERİ</p>
@@ -156,7 +171,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="card bg-bunker-950">
+          <div className={`card bg-bunker-950 ${activeTab !== "app" ? "hidden" : ""}`}>
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="eyebrow">GAINER RADAR MİNİMUM SKOR</p>
@@ -166,7 +181,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="card border-neon-red/30 bg-neon-red/5">
+          <div className={`card border-neon-red/30 bg-neon-red/5 ${activeTab !== "app" ? "hidden" : ""}`}>
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <div>
                 <p className="eyebrow text-neon-red">PAPER TRADING KAYITLARI</p>
@@ -186,7 +201,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="card bg-bunker-950">
+          <div className={`card bg-bunker-950 ${activeTab !== "strategies" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
               <p className="eyebrow">İŞLEM VE RİSK YÖNETİMİ</p>
             </div>
@@ -327,7 +342,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="card bg-bunker-950">
+          <div className={`card bg-bunker-950 ${activeTab !== "app" ? "hidden" : ""}`}>
             <p className="eyebrow mb-3">MOD</p>
             <div className="flex gap-3">
               <span className="px-3 py-1.5 rounded-full border border-neon-green/40 text-neon-green font-mono text-xs">
