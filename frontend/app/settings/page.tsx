@@ -314,7 +314,7 @@ export default function SettingsPage() {
                   {draft.ut_heikin_ashi ? "AÇIK" : "KAPALI"}
                 </button>
               </div>
-              <div>
+              <div className="hidden">
                 <p className="font-mono text-sm text-white mb-2">AKTİF SEMBOLLER</p>
                 <div className="flex flex-wrap gap-2">
                   {cfg.symbols.map((s) => {
