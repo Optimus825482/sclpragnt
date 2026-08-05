@@ -981,8 +981,13 @@ async def strategies_llm_chat(payload: dict = None):
             success = False
             raise
         finally:
-            await database.save_llm_tool_log({"scope": "strategies", "tool_name": name, "arguments": args,
-                "result_summary": "success" if success else "error", "duration_ms": (time.perf_counter() - started) * 1000, "success": success})
+            try:
+                await database.save_llm_tool_log({"scope": "strategies", "tool_name": name, "arguments": args,
+                    "result_summary": "success" if success else "error", "duration_ms": (time.perf_counter() - started) * 1000, "success": success})
+            except Exception as log_error:
+                # Observability must never turn a valid LLM/tool response into
+                # a failed chat request.
+                print(f"[LLM] tool log kaydedilemedi: {log_error}")
     return await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool)
 
 @app.post("/api/reset")
