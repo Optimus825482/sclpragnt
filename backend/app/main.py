@@ -219,6 +219,8 @@ async def memory_retrieve(payload: dict = None):
     text = str(body.get("query", "")).strip()
     if not text: raise HTTPException(status_code=400, detail="query gerekli")
     embedded = await llm_analysis.embedding(text, body.get("model_id"))
+    if embedded.get("status") == "disabled":
+        return {"query": text, "results": [], "count": 0, "status": "disabled", "message": embedded.get("error", "Embedding modeli aktif değil")}
     if embedded.get("status") != "ok": raise HTTPException(status_code=502, detail=embedded.get("error", "Embedding üretilemedi"))
     async with _pg_pool.acquire() as conn:
         rows = await memory_service.retrieve(conn, embedded["vector"], limit=body.get("limit", 8), layer=body.get("layer"), symbol=body.get("symbol"), strategy=body.get("strategy"), timeframe=body.get("timeframe"), model_id=embedded.get("model_id"))
