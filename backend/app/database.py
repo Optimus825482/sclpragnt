@@ -108,6 +108,13 @@ async def init_db():
         conn.execute("""CREATE TABLE IF NOT EXISTS llm_settings (
             key TEXT PRIMARY KEY, value TEXT NOT NULL
         )""")
+        default_skills = [
+            ("Scalping Teknik Analiz", "Evaluate trend, momentum, volatility, volume and liquidity as separate dimensions. Prefer confirmed multi-timeframe alignment over one indicator."),
+            ("Maliyet ve Net PnL", "Always distinguish gross move, entry fee, exit fee, slippage and net PnL. Never call a trade profitable when supplied net PnL is non-positive."),
+            ("Veri Güvenilirliği", "Treat null, zero or stale spread/depth/volume as missing data. Do not invent values; explicitly state confidence and data limitations."),
+            ("Paper Trading Risk", "This is public-data paper trading. Never place orders, recommend bypassing risk filters, or override hard stop, liquidity, timeout or position-limit rules."),
+        ]
+        conn.executemany("INSERT OR IGNORE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)", [(n,i,time.time()) for n,i in default_skills])
         conn.execute("""
             CREATE TABLE IF NOT EXISTS backtests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
