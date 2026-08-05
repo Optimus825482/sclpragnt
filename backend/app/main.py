@@ -140,6 +140,11 @@ CONFIG_FIELDS = {
     "momentum_short_lookback": "MOMENTUM_SHORT_LOOKBACK",
     "momentum_long_lookback": "MOMENTUM_LONG_LOOKBACK",
     "momentum_min_return_pct": "MOMENTUM_MIN_RETURN_PCT",
+    "adr_filter_enabled": "ADR_FILTER_ENABLED",
+    "adr_period": "ADR_PERIOD",
+    "adr_min_pct": "ADR_MIN_PCT",
+    "adr_max_utilization_pct": "ADR_MAX_UTILIZATION_PCT",
+    "adr_min_remaining_pct": "ADR_MIN_REMAINING_PCT",
     "keltner_ema_period": "KELTNER_EMA_PERIOD",
     "keltner_atr_period": "KELTNER_ATR_PERIOD",
     "keltner_atr_multiplier": "KELTNER_ATR_MULTIPLIER",
@@ -187,8 +192,8 @@ CONFIG_FIELDS = {
     "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"liquidity_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
+BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
+INT_FIELDS = {"gainer_radar_min_score", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
 STR_FIELDS = {"ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
@@ -211,6 +216,11 @@ async def get_config():
         "momentum_short_lookback": config.MOMENTUM_SHORT_LOOKBACK,
         "momentum_long_lookback": config.MOMENTUM_LONG_LOOKBACK,
         "momentum_min_return_pct": config.MOMENTUM_MIN_RETURN_PCT,
+        "adr_filter_enabled": config.ADR_FILTER_ENABLED,
+        "adr_period": config.ADR_PERIOD,
+        "adr_min_pct": config.ADR_MIN_PCT,
+        "adr_max_utilization_pct": config.ADR_MAX_UTILIZATION_PCT,
+        "adr_min_remaining_pct": config.ADR_MIN_REMAINING_PCT,
         "keltner_ema_period": config.KELTNER_EMA_PERIOD,
         "keltner_atr_period": config.KELTNER_ATR_PERIOD,
         "keltner_atr_multiplier": config.KELTNER_ATR_MULTIPLIER,
@@ -358,6 +368,8 @@ async def update_config(payload: dict):
                 setattr(config, attr, bool(val))
             elif key in INT_FIELDS:
                 number = int(val)
+                if key == "adr_period" and not 5 <= number <= 60:
+                    raise ValueError("adr_period 5 ile 60 arasında olmalıdır")
                 if key == "max_open_positions" and not 1 <= number <= 17:
                     raise ValueError("max_open_positions 1 ile 17 arasında olmalıdır")
                 if key == "gainer_radar_min_score" and not 0 <= number <= 100:
@@ -369,7 +381,7 @@ async def update_config(payload: dict):
                 number = float(val)
                 if key in {"min_notional", "default_order_usdt", "min_24h_quote_volume_try", "high_liquidity_bypass_volume_try", "min_volume_ratio", "max_spread_pct", "min_orderbook_depth_multiplier"} and number <= 0:
                     raise ValueError(f"{key} pozitif olmalıdır")
-                if key in {"hard_stop_loss_pct", "take_profit_pct", "trailing_stop_pct"} and not 0 < number < 1:
+                if key in {"hard_stop_loss_pct", "take_profit_pct", "trailing_stop_pct", "adr_min_pct", "adr_max_utilization_pct", "adr_min_remaining_pct"} and not 0 < number < 1:
                     raise ValueError(f"{key} 0 ile 1 arasında olmalıdır")
                 setattr(config, attr, number)
     if "ut_symbols" in payload:

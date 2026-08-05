@@ -25,6 +25,11 @@ type Config = {
   mode: string;
   market_data: string;
   gainer_radar_min_score: number;
+  adr_filter_enabled: boolean;
+  adr_period: number;
+  adr_min_pct: number;
+  adr_max_utilization_pct: number;
+  adr_min_remaining_pct: number;
 };
 
 export default function SettingsPage() {
@@ -229,6 +234,15 @@ export default function SettingsPage() {
                 ))}
               </div>
               <p className="text-[11px] text-bunker-muted mt-2 font-mono">Önerilen: 1.000.000 TL · 0,3x · %0,30 · 5x</p>
+            </div>
+            <div className="mt-5 border-t border-bunker-800 pt-4">
+              <p className="eyebrow">MTF MOMENTUM · ADR FİLTRESİ</p>
+              <p className="text-xs text-bunker-muted mt-1">Yalnızca MTF Momentum girişlerinde, sembolün günlük hareket kapasitesi ve gün içi aşırı uzama kontrol edilir.</p>
+              <div className="grid sm:grid-cols-2 gap-3 mt-3">
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">ADR filtresi</span><input type="checkbox" checked={Boolean(draft.adr_filter_enabled)} onChange={(e) => setDraft((d) => ({ ...d, adr_filter_enabled: e.target.checked }))} /></label>
+                {([ ["adr_period", "ADR periyodu (gün)", 1], ["adr_min_pct", "Minimum ADR (%)", 0.1], ["adr_max_utilization_pct", "Maksimum kullanım (%)", 0.01], ["adr_min_remaining_pct", "Minimum kalan hareket (%)", 0.1] ] as const).map(([key, label, step]) => <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">{label}</span><input type="number" min={0} step={step} value={key === "adr_period" ? num((draft as any)[key]) : num((draft as any)[key]) * 100} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value === "" ? NaN : key === "adr_period" ? Number(e.target.value) : Number(e.target.value) / 100 }))} className="w-32 bg-bunker-950 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right outline-none focus:border-neon-green/50" /></label>)}
+              </div>
+              <p className="text-[11px] text-bunker-muted mt-2 font-mono">Başlangıç: 14 gün · minimum ADR %2 · gün içi kullanım en fazla %80 · kalan kapasite en az %1</p>
             </div>
           </div>
 

@@ -21,6 +21,7 @@ class MarketData:
             config.BREAKOUT_TIMEFRAME,
             config.ORDERFLOW_TIMEFRAME,
             config.MOMENTUM_TIMEFRAME,
+            config.ADR_TIMEFRAME,
             config.MEAN_REVERSION_TIMEFRAME,
             config.KELTNER_TIMEFRAME, config.CHOP_TIMEFRAME, config.DONCHIAN_TIMEFRAME,
         ]))
@@ -49,6 +50,7 @@ class MarketData:
             config.BREAKOUT_TIMEFRAME,
             config.ORDERFLOW_TIMEFRAME,
             config.MOMENTUM_TIMEFRAME,
+            config.ADR_TIMEFRAME,
             config.MEAN_REVERSION_TIMEFRAME,
         ]))
 

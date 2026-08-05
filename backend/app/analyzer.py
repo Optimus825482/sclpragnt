@@ -418,6 +418,38 @@ class ScalpAnalyzer:
         if r1 > config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 and flow_ok: return "buy"
         return None
 
+    def adr_status(self, symbol, price):
+        """Return ADR capacity for a momentum entry without using future data."""
+        if not config.ADR_FILTER_ENABLED:
+            return True, {"enabled": False}
+        daily = self.market.klines.get(config.ADR_TIMEFRAME, {}).get(symbol.upper(), {})
+        highs, lows, closes, opens = (daily.get(k, []) for k in ("highs", "lows", "closes", "opens"))
+        period = config.ADR_PERIOD
+        if len(closes) < period + 1 or len(opens) < 1:
+            return True, {"enabled": True, "ready": False, "reason": "warming_up"}
+        # Exclude the current incomplete daily candle from ADR history.
+        hist_highs, hist_lows, hist_closes = highs[-period-1:-1], lows[-period-1:-1], closes[-period-1:-1]
+        ranges = [(h - l) / c for h, l, c in zip(hist_highs, hist_lows, hist_closes) if c > 0]
+        if len(ranges) < period:
+            return True, {"enabled": True, "ready": False, "reason": "warming_up"}
+        adr_pct = float(np.mean(ranges))
+        today_open = float(opens[-1])
+        if today_open <= 0:
+            return True, {"enabled": True, "ready": False, "reason": "invalid_open"}
+        current_range_pct = max(price, today_open) / min(price, today_open) - 1 if price > 0 else 0.0
+        remaining_pct = adr_pct - current_range_pct
+        utilization = current_range_pct / adr_pct if adr_pct > 0 else 1.0
+        checks = {
+            "minimum_adr": adr_pct >= config.ADR_MIN_PCT,
+            "remaining_capacity": remaining_pct >= config.ADR_MIN_REMAINING_PCT,
+            "not_overextended": utilization <= config.ADR_MAX_UTILIZATION_PCT,
+        }
+        return all(checks.values()), {
+            "enabled": True, "ready": True, "adr_pct": adr_pct,
+            "current_range_pct": current_range_pct, "remaining_pct": remaining_pct,
+            "utilization": utilization, "checks": checks,
+        }
+
     def strategy_mean_reversion(self, kline, symbol=None):
         closes = kline.get("closes", [])
         if len(closes) < 110: return None
@@ -537,6 +569,15 @@ class ScalpAnalyzer:
             self._last_signal_lengths[length_key] = current_length
             result = fn(kline, symbol)
             if result == "buy":
+                if name == "MOMENTUM":
+                    adr_ok, adr = self.adr_status(symbol, price)
+                    if not adr_ok:
+                        failed = [key for key, ok in adr.get("checks", {}).items() if not ok]
+                        reason = "adr_filter:" + ",".join(failed or [adr.get("reason", "unknown")])
+                        blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": price,
+                                   "reason": reason, "strategy": name, "timestamp": time.time()}
+                        await database.save_signal(blocked)
+                        return signals + [blocked]
                 sig = await self.open_position(symbol, price, "LONG", name)
                 if sig: signals.append(sig)
                 break
