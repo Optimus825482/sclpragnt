@@ -221,7 +221,7 @@ async def get_config():
         "min_orderbook_depth_multiplier": config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
         "liquidity_filter_enabled": config.LIQUIDITY_FILTER_ENABLED,
         "default_order_usdt": config.DEFAULT_ORDER_USDT,
-        "max_open_positions": max(1, len(config.SYMBOLS) * 2),
+        "max_open_positions": max(1, int(config.MAX_OPEN_POSITIONS)),
         "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
         "cooldown_bars": config.COOLDOWN_BARS,
         "orderflow_min_imbalance": config.ORDERFLOW_MIN_IMBALANCE,

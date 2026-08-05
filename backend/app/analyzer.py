@@ -16,8 +16,8 @@ class ScalpAnalyzer:
         self._open_position_lock = asyncio.Lock()
 
     def max_open_positions(self):
-        """Aktif sembol evrenine göre dinamik pozisyon limiti."""
-        return max(1, len(config.SYMBOLS) * 2)
+        """Use the configured global paper-trading position limit."""
+        return max(1, int(config.MAX_OPEN_POSITIONS))
 
     async def load_state(self):
         self.positions = await database.load_positions()
@@ -689,8 +689,9 @@ class ScalpAnalyzer:
         if self.market:
             entry_context["technical"] = calculate_snapshot(symbol, entry_price, self.market.klines, self.market.get_orderflow(symbol), self.market.ticker_24h.get(symbol, 0), config.DEFAULT_ORDER_USDT, self._strategy_tf(strat_name))
         try_balance = await database.get_wallet_balance("TRY")
-        if try_balance < config.DEFAULT_ORDER_USDT:
-            return None 
+        required_cash = config.DEFAULT_ORDER_USDT * (1 + config.COMMISSION_PCT)
+        if try_balance < required_cash:
+            return None
 
         quantity = config.DEFAULT_ORDER_USDT / entry_price
         commission = config.DEFAULT_ORDER_USDT * config.COMMISSION_PCT
