@@ -671,7 +671,7 @@ class ScalpAnalyzer:
                          "estimated_slippage_pct": config.ESTIMATED_SLIPPAGE_PCT,
                          "profit_target_pct": config.SPOT_PROFIT_TARGET_PCT}
         if self.market:
-            entry_context["technical"] = calculate_snapshot(symbol, entry_price, self.market.klines, self.market.get_orderflow(symbol), self.market.ticker_24h.get(symbol, 0), config.DEFAULT_ORDER_USDT)
+            entry_context["technical"] = calculate_snapshot(symbol, entry_price, self.market.klines, self.market.get_orderflow(symbol), self.market.ticker_24h.get(symbol, 0), config.DEFAULT_ORDER_USDT, self._strategy_tf(strat_name))
         try_balance = await database.get_wallet_balance("TRY")
         if try_balance < config.DEFAULT_ORDER_USDT:
             return None 

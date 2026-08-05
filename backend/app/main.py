@@ -87,7 +87,8 @@ async def ws_broadcast_loop():
                     })
             realized_pnl = await database.get_realized_pnl()
             unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
-            reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl
+            open_entry_commission = sum(pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT for pos in analyzer.positions.values())
+            reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl - open_entry_commission
             reconciliation_delta = total_value - reconciliation_expected
             await ws_manager.broadcast({
                 "type": "portfolio",
@@ -104,7 +105,12 @@ async def strategy_loop():
             ticker = market.get_ticker(sym)
             if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
                 continue
-            signals = await analyzer.evaluate(sym, ticker)
+            try:
+                signals = await analyzer.evaluate(sym, ticker)
+            except Exception as exc:
+                # Tek bir sembolün DB/strateji hatası bütün strategy loop'u düşürmemeli.
+                print(f"[Strategy] {sym} değerlendirme hatası: {exc}")
+                continue
             for sig in signals:
                 print(f"[Sinyal] {sig}")
                 await ws_manager.broadcast({"type": "signal", "data": sig})
@@ -449,7 +455,8 @@ async def symbol_analysis(symbol: str):
     ticker = market.get_ticker(sym)
     if not ticker:
         return {"symbol": sym, "data_ready": False, "error": "Sembol verisi bulunamadı"}
-    return calculate_snapshot(sym, ticker["last_price"], market.klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT)
+    timeframe = config.MOMENTUM_TIMEFRAME
+    return calculate_snapshot(sym, ticker["last_price"], market.klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, timeframe)
 
 @app.post("/api/positions/{symbol}/close")
 async def close_position_manual(symbol: str):

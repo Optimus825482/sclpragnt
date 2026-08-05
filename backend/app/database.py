@@ -250,7 +250,7 @@ async def save_position(symbol, pos):
 async def save_trade(trade):
     def op(conn: sqlite3.Connection):
         conn.execute(
-            "INSERT INTO trades (symbol, strategy, side, entry_price, exit_price, quantity, pnl, pnl_pct, entry_time, exit_time, commission, reason, entry_context, max_favorable_pct, max_adverse_pct, hold_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO trades (symbol, strategy, side, entry_price, exit_price, quantity, pnl, pnl_pct, entry_time, exit_time, commission, reason, entry_context, max_favorable_pct, max_adverse_pct, hold_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (trade.get("symbol"), trade.get("strategy"), trade.get("side"),
              trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"),
              trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"),
