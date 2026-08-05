@@ -468,33 +468,35 @@ async def symbol_analysis(symbol: str):
     # unknown. This remains read-only and paper-trading safe.
     primary_history = market.klines.get(config.MOMENTUM_TIMEFRAME, {}).get(sym, {})
     history_ready = len(primary_history.get("closes", [])) >= 55
+    analysis_klines = market.klines
     if not ticker or not history_ready:
         try:
             available = set(await trading_symbols("TRY"))
             if sym not in available:
                 return {"symbol": sym, "data_ready": False, "error": "Sembol Binance TR'de işlem görmüyor"}
             rows = await fetch_klines(sym, config.MOMENTUM_TIMEFRAME, limit=300)
-            if rows:
-                hist = market.klines[config.MOMENTUM_TIMEFRAME][sym]
-                for key in ("opens", "highs", "lows", "closes", "volumes"):
-                    hist[key] = []
+            if rows and len(rows) >= 55:
+                hydrated = {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
                 for row in rows:
-                    hist["opens"].append(float(row[1]))
-                    hist["highs"].append(float(row[2]))
-                    hist["lows"].append(float(row[3]))
-                    hist["closes"].append(float(row[4]))
-                    hist["volumes"].append(float(row[5]))
+                    hydrated["opens"].append(float(row[1]))
+                    hydrated["highs"].append(float(row[2]))
+                    hydrated["lows"].append(float(row[3]))
+                    hydrated["closes"].append(float(row[4]))
+                    hydrated["volumes"].append(float(row[5]))
+                market.klines[config.MOMENTUM_TIMEFRAME][sym] = hydrated
+                analysis_klines = {config.MOMENTUM_TIMEFRAME: {sym: hydrated}, "1d": market.klines.get("1d", {})}
                 last_price = float(rows[-1][4])
                 ticker = {"symbol": sym, "last_price": last_price, "timestamp": int(time.time() * 1000)}
                 market.tickers[sym] = ticker
             else:
-                return {"symbol": sym, "data_ready": False, "error": "Teknik analiz için mum verisi alınamadı"}
+                count = len(rows) if rows else 0
+                return {"symbol": sym, "timeframes": {config.MOMENTUM_TIMEFRAME: {"candles": count, "required": 55}}, "data_ready": False, "error": "Teknik analiz için yeterli mum verisi alınamadı"}
         except Exception as exc:
             return {"symbol": sym, "data_ready": False, "error": f"Sembol verisi alınamadı: {exc}"}
     if not ticker:
         return {"symbol": sym, "data_ready": False, "error": "Sembol verisi bulunamadı"}
     timeframe = config.MOMENTUM_TIMEFRAME
-    return calculate_snapshot(sym, ticker["last_price"], market.klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, timeframe)
+    return calculate_snapshot(sym, ticker["last_price"], analysis_klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, timeframe)
 
 @app.post("/api/positions/{symbol}/close")
 async def close_position_manual(symbol: str):
