@@ -38,7 +38,8 @@ async def run(source, database_url, publish=None):
             try:
                 schema = Path(__file__).resolve().parent.parent / "migrations" / "001_pgvector_schema.sql"
                 async with pool.acquire() as pg:
-                    await pg.execute(schema.read_text(encoding="utf-8"))
+                    _log("PostgreSQL şema SQL'i çalıştırılıyor")
+                    await asyncio.wait_for(pg.execute(schema.read_text(encoding="utf-8")), timeout=120)
                 _log("PostgreSQL şeması hazır")
                 await _set(phase="transfer", progress=25, message="SQLite kayıtları aktarılıyor")
                 await asyncio.to_thread(_copy_rows, source, database_url)
