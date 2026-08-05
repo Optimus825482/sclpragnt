@@ -18,6 +18,7 @@ from app.binance_tr_public import klines as fetch_klines, trading_symbols, ticke
 from app.technical_analysis import calculate_snapshot
 from app import llm_analysis
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
+from app.memory_service import build_document
 from app import memory_service
 from app import migration_monitor
 try:
@@ -34,6 +35,17 @@ analyzer = ScalpAnalyzer(market)
 _pg_pool = None
 _embedding_backfill = {"status": "idle", "queued": 0, "message": None}
 _embedding_repair = {"status": "idle", "queued": 0, "message": None}
+
+def _chat_memory_document(messages, *, layer="session", symbol=None, strategy=None, session_id="default"):
+    recent = [m for m in (messages or [])[-4:] if isinstance(m, dict)]
+    content = json.dumps(recent, ensure_ascii=False, default=str)
+    return build_document(layer=layer, scope=session_id, symbol=symbol, strategy=strategy,
+                          source_type="chat_message", source_id=f"{session_id}:{len(messages or [])}",
+                          content=content, metadata={"session_id": session_id, "message_count": len(messages or [])})
+
+async def _persist_chat_memory(messages, **kwargs):
+    if _pg_pool and messages:
+        embedding_worker.enqueue_nowait(_chat_memory_document(messages, **kwargs))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WELL_KNOWN_DIR = os.path.join(BASE_DIR, "..", ".well-known")
@@ -833,7 +845,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     snapshot = await symbol_llm_context(symbol, str(body.get("timeframe", "")))
     if not snapshot.get("data_ready"):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
-    tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}]
+    tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
         if name == "get_symbol_analysis": return await symbol_analysis(symbol, str(args.get("timeframe") or body.get("timeframe") or "5m"))
         if name == "get_historical_klines":
@@ -844,8 +856,17 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             rows = [r for r in await database.get_trades() if str(r.get("symbol", "")).upper() == symbol.upper()]
             limited = rows[-max(1, min(int(args.get("limit", 100)), 500)):]
             return {"count": len(rows), "trades": limited}
+        if name == "search_memory":
+            if not _pg_pool: return {"count": 0, "results": [], "message": "Memory backend aktif değil"}
+            embedded = await llm_analysis.embedding(str(args.get("query", "")))
+            if embedded.get("status") != "ok": return {"count": 0, "results": [], "error": embedded.get("error")}
+            async with _pg_pool.acquire() as conn:
+                rows = await memory_service.retrieve(conn, embedded["vector"], limit=max(1, min(int(args.get("limit", 6)), 20)), symbol=symbol.upper(), model_id=embedded.get("model_id"))
+            return {"count": len(rows), "results": rows}
         return {"error": "Bilinmeyen araç"}
-    return await llm_analysis.chat(snapshot, body.get("messages", []), tools, execute_tool)
+    result = await llm_analysis.chat(snapshot, body.get("messages", []), tools, execute_tool)
+    await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
+    return result
 
 @app.post("/api/positions/{symbol}/close")
 async def close_position_manual(symbol: str):
@@ -975,7 +996,7 @@ async def risk_summary():
 async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
     context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data."}
-    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}]
+    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
         started = time.perf_counter(); success = True
         try:
@@ -993,6 +1014,13 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "get_decision_logs":
                 rows = await database.get_decision_logs(args.get("limit", 100), args.get("symbol"), args.get("strategy"))
                 return {"count": len(rows), "decisions": rows}
+            if name == "search_memory":
+                if not _pg_pool: return {"count": 0, "results": [], "message": "Memory backend aktif değil"}
+                embedded = await llm_analysis.embedding(str(args.get("query", "")))
+                if embedded.get("status") != "ok": return {"count": 0, "results": [], "error": embedded.get("error")}
+                async with _pg_pool.acquire() as conn:
+                    rows = await memory_service.retrieve(conn, embedded["vector"], limit=max(1, min(int(args.get("limit", 6)), 20)), symbol=args.get("symbol"), strategy=args.get("strategy"), model_id=embedded.get("model_id"))
+                return {"count": len(rows), "results": rows}
             return {"error": f"Bilinmeyen araç: {name}"}
         except Exception:
             success = False
@@ -1005,7 +1033,9 @@ async def strategies_llm_chat(payload: dict = None):
                 # Observability must never turn a valid LLM/tool response into
                 # a failed chat request.
                 print(f"[LLM] tool log kaydedilemedi: {log_error}")
-    return await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool)
+    result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool)
+    await _persist_chat_memory(body.get("messages", []), layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=str(body.get("session_id") or "strategy:default"))
+    return result
 
 @app.post("/api/reset")
 async def reset_all():
