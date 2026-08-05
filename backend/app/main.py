@@ -142,6 +142,12 @@ async def health():
         "market_error": market.last_error, "open_positions": list(analyzer.positions.keys())
     }
 
+@app.get("/api/system/health")
+async def system_health():
+    now_ms = time.time() * 1000
+    ages = [max(0.0, (now_ms - float(t.get("timestamp", now_ms))) / 1000) for t in market.tickers.values() if t.get("timestamp")]
+    return {"status": "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions()}, "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": bool(await database.get_active_llm_config())}}
+
 CONFIG_FIELDS = {
     "gainer_radar_min_score": "GAINER_RADAR_MIN_SCORE",
     "min_notional": "MIN_NOTIONAL",
@@ -600,6 +606,9 @@ async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
             snapshots[tf] = snapshot
     selected = snapshots.get(preferred) or await symbol_analysis(symbol, preferred)
     if selected.get("data_ready"):
+        # Do not attach the context to the same object stored inside snapshots;
+        # that would create a circular JSON reference.
+        selected = dict(selected)
         selected["llm_context"] = {
             "selected_timeframe": preferred,
             "available_timeframes": list(snapshots.keys()),
@@ -656,6 +665,14 @@ async def download_backup():
 async def get_signals(limit: int = 100):
     return {"signals": await database.get_signals(limit)}
 
+@app.get("/api/decisions")
+async def get_decisions(limit: int = 500, symbol: str = "", strategy: str = ""):
+    return {"decisions": await database.get_decision_logs(limit, symbol or None, strategy or None)}
+
+@app.get("/api/llm/tool-logs")
+async def get_llm_tool_logs(limit: int = 500):
+    return {"logs": await database.get_llm_tool_logs(limit)}
+
 @app.get("/api/strategies/stats")
 async def get_strategy_stats():
     """Her stratejinin başarı istatistikleri (işlem sayısı, kazanma oranı, PnL)."""
@@ -672,23 +689,74 @@ async def get_strategy_stats():
         s["win_rate"] = (s["wins"] / s["trades"] * 100) if s["trades"] else 0.0
     return {"stats": stats}
 
+@app.get("/api/strategies/comparison")
+async def strategy_comparison():
+    trades = await database.get_trades()
+    grouped = {}
+    for trade in trades:
+        name = trade.get("strategy") or "Bilinmeyen"
+        item = grouped.setdefault(name, {"strategy": name, "trades": 0, "wins": 0, "losses": 0, "net_pnl": 0.0, "commission": 0.0, "hold_seconds": 0.0, "timeouts": 0, "gross_wins": 0.0, "gross_losses": 0.0})
+        pnl = float(trade.get("pnl") or 0.0)
+        item["trades"] += 1; item["net_pnl"] += pnl
+        item["commission"] += float(trade.get("commission") or 0.0)
+        item["hold_seconds"] += float(trade.get("hold_seconds") or 0.0)
+        item["wins"] += int(pnl > 0); item["losses"] += int(pnl <= 0)
+        item["gross_wins"] += max(0.0, pnl); item["gross_losses"] += min(0.0, pnl)
+        item["timeouts"] += int("time" in str(trade.get("reason") or "").lower() or "timeout" in str(trade.get("reason") or "").lower())
+    for item in grouped.values():
+        n = item["trades"]
+        item["win_rate"] = item["wins"] / n * 100 if n else 0.0
+        item["avg_pnl"] = item["net_pnl"] / n if n else 0.0
+        item["avg_hold_seconds"] = item["hold_seconds"] / n if n else 0.0
+        item["profit_factor"] = item["gross_wins"] / abs(item["gross_losses"]) if item["gross_losses"] else None
+        del item["hold_seconds"], item["gross_wins"], item["gross_losses"]
+    return {"strategies": sorted(grouped.values(), key=lambda x: x["net_pnl"], reverse=True)}
+
+@app.get("/api/risk/summary")
+async def risk_summary():
+    trades = await database.get_trades()
+    positions = analyzer.positions
+    realized = sum(float(t.get("pnl") or 0.0) for t in trades)
+    commission = sum(float(t.get("commission") or 0.0) for t in trades)
+    losses = 0
+    for trade in trades:
+        if float(trade.get("pnl") or 0.0) < 0: losses += 1
+        else: break
+    today_start = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+    today_pnl = sum(float(t.get("pnl") or 0.0) for t in trades if float(t.get("exit_time") or 0) >= today_start)
+    return {"open_positions": len(positions), "realized_pnl": realized, "today_pnl": today_pnl,
+            "commission": commission, "consecutive_losses": losses, "max_positions": config.MAX_OPEN_POSITIONS,
+            "risk_flags": {"consecutive_loss_streak": losses >= 3, "daily_loss": today_pnl < 0}}
+
 @app.post("/api/strategies/llm/chat")
 async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
     context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data."}
-    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}]
+    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}]
     async def execute_tool(name, args):
-        if name == "get_strategy_config": return await get_config()
-        if name == "get_strategy_stats": return (await get_strategy_stats()).get("stats", {})
-        if name == "get_trades":
-            rows = await database.get_trades(); strategy, symbol = args.get("strategy"), args.get("symbol")
-            rows = [r for r in rows if (not strategy or r.get("strategy") == strategy) and (not symbol or r.get("symbol") == symbol)]
-            return {"count": len(rows), "trades": rows[-max(1, min(int(args.get("limit", 100)), 500)):]}
-        if name == "get_signals":
-            rows = await database.get_signals(max(1, min(int(args.get("limit", 100)), 500))); strategy, symbol = args.get("strategy"), args.get("symbol")
-            rows = [r for r in rows if (not strategy or r.get("strategy") == strategy) and (not symbol or r.get("symbol") == symbol)]
-            return {"count": len(rows), "signals": rows}
-        return {"error": f"Bilinmeyen araç: {name}"}
+        started = time.perf_counter(); success = True
+        try:
+            if name == "get_strategy_config": return await get_config()
+            if name == "get_strategy_stats": return (await get_strategy_stats()).get("stats", {})
+            if name == "get_trades":
+                rows = await database.get_trades(); strategy, symbol = args.get("strategy"), args.get("symbol")
+                rows = [r for r in rows if (not strategy or r.get("strategy") == strategy) and (not symbol or r.get("symbol") == symbol)]
+                limit = max(1, min(int(args.get("limit", 100)), 500))
+                return {"count": len(rows), "trades": rows[-limit:]}
+            if name == "get_signals":
+                rows = await database.get_signals(max(1, min(int(args.get("limit", 100)), 500))); strategy, symbol = args.get("strategy"), args.get("symbol")
+                rows = [r for r in rows if (not strategy or r.get("strategy") == strategy) and (not symbol or r.get("symbol") == symbol)]
+                return {"count": len(rows), "signals": rows}
+            if name == "get_decision_logs":
+                rows = await database.get_decision_logs(args.get("limit", 100), args.get("symbol"), args.get("strategy"))
+                return {"count": len(rows), "decisions": rows}
+            return {"error": f"Bilinmeyen araç: {name}"}
+        except Exception:
+            success = False
+            raise
+        finally:
+            await database.save_llm_tool_log({"scope": "strategies", "tool_name": name, "arguments": args,
+                "result_summary": "success" if success else "error", "duration_ms": (time.perf_counter() - started) * 1000, "success": success})
     return await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool)
 
 @app.post("/api/reset")

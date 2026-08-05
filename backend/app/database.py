@@ -80,6 +80,22 @@ async def init_db():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS decision_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                symbol TEXT, strategy TEXT, decision TEXT,
+                reason TEXT, price REAL, metadata TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS llm_tool_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                scope TEXT, tool_name TEXT, arguments TEXT,
+                result_summary TEXT, duration_ms REAL, success INTEGER
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS virtual_wallet (
                 asset TEXT PRIMARY KEY,
                 amount REAL
@@ -409,6 +425,11 @@ async def save_signal(sig):
             "INSERT INTO signals (timestamp, symbol, action, price, reason) VALUES (?, ?, ?, ?, ?)",
             (sig.get("timestamp"), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason"))
         )
+        conn.execute(
+            "INSERT INTO decision_logs (timestamp, symbol, strategy, decision, reason, price, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"),
+             sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str))
+        )
         conn.commit()
 
     await _run_db(op)
@@ -422,6 +443,47 @@ async def get_signals(limit: int = 100):
         ).fetchall()
         return [dict(r) for r in rows]
 
+    return await _run_db(op)
+
+
+async def get_decision_logs(limit=500, symbol=None, strategy=None):
+    def op(conn: sqlite3.Connection):
+        clauses, values = [], []
+        if symbol:
+            clauses.append("symbol=?"); values.append(symbol.upper())
+        if strategy:
+            clauses.append("strategy=?"); values.append(strategy)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        values.append(max(1, min(int(limit), 1000)))
+        rows = conn.execute(f"SELECT * FROM decision_logs{where} ORDER BY timestamp DESC LIMIT ?", values).fetchall()
+        result = [dict(r) for r in rows]
+        for row in result:
+            try: row["metadata"] = json.loads(row["metadata"]) if row.get("metadata") else {}
+            except (TypeError, json.JSONDecodeError): pass
+        return result
+    return await _run_db(op)
+
+
+async def save_llm_tool_log(item):
+    def op(conn: sqlite3.Connection):
+        conn.execute(
+            "INSERT INTO llm_tool_logs (timestamp, scope, tool_name, arguments, result_summary, duration_ms, success) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (item.get("timestamp") or time.time(), item.get("scope"), item.get("tool_name"),
+             json.dumps(item.get("arguments") or {}, default=str), item.get("result_summary"),
+             item.get("duration_ms"), int(bool(item.get("success"))))
+        )
+        conn.commit()
+    await _run_db(op)
+
+
+async def get_llm_tool_logs(limit=500):
+    def op(conn: sqlite3.Connection):
+        rows = conn.execute("SELECT * FROM llm_tool_logs ORDER BY timestamp DESC LIMIT ?", (max(1, min(int(limit), 1000)),)).fetchall()
+        result = [dict(r) for r in rows]
+        for row in result:
+            try: row["arguments"] = json.loads(row["arguments"]) if row.get("arguments") else {}
+            except (TypeError, json.JSONDecodeError): pass
+        return result
     return await _run_db(op)
 
 
