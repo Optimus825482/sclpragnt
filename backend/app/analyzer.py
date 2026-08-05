@@ -356,7 +356,7 @@ class ScalpAnalyzer:
             if price >= pos["entry_price"] * (1 + target_pct):
                 return await self.close_position(symbol, price, target_reason)
         if pos and time.time() - pos.get("entry_time", time.time()) >= config.MAX_POSITION_HOLD_SEC:
-            return await self.close_position(symbol, price, "max_hold_2h")
+            return await self.close_position(symbol, price, "max_hold_4h")
         return None
 
     def _flow_filter(self, symbol):
@@ -618,7 +618,7 @@ class ScalpAnalyzer:
         current_bar = self._current_bar(symbol, tf)
         if current_bar is not None:
             self._cooldown_until[symbol] = current_bar + config.COOLDOWN_BARS
-        if reason == "max_hold_2h":
+        if reason == "max_hold_4h":
             self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
         elif reason == "hard_stop_loss":
             self._hard_stop_block_until[symbol] = time.time() + config.HARD_STOP_REENTRY_BLOCK_SEC

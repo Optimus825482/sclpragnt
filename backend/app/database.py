@@ -113,6 +113,10 @@ async def init_db():
             ("Maliyet ve Net PnL", "Always distinguish gross move, entry fee, exit fee, slippage and net PnL. Never call a trade profitable when supplied net PnL is non-positive."),
             ("Veri Güvenilirliği", "Treat null, zero or stale spread/depth/volume as missing data. Do not invent values; explicitly state confidence and data limitations."),
             ("Paper Trading Risk", "This is public-data paper trading. Never place orders, recommend bypassing risk filters, or override hard stop, liquidity, timeout or position-limit rules."),
+            ("Trend ve Rejim", "Classify trend using EMA structure, ADX and multi-timeframe agreement. Separate trend, range and transition regimes; do not infer a trend from one indicator."),
+            ("Osilatör ve Formasyon", "Interpret RSI, Stochastic, CCI, MACD, Williams %R, candle patterns and channels together. Treat overbought or oversold as context, not an automatic reversal signal."),
+            ("Destek Direnç ve Pivot", "Use classic and Fibonacci pivots, Bollinger, Donchian and Keltner levels as context. Distinguish a level from a confirmed break and state timeframe."),
+            ("Scalping Karar Raporu", "Return concise sections: market regime, bullish evidence, bearish evidence, liquidity and volatility risks, missing data, confidence, and paper-trading scenarios. Never invent a price target."),
         ]
         conn.executemany("INSERT OR IGNORE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)", [(n,i,time.time()) for n,i in default_skills])
         conn.execute("""
@@ -269,13 +273,48 @@ async def save_llm_provider(name, base_url, encrypted_key):
 
 async def save_llm_model(provider_id, name, temperature):
     def op(conn):
-        cur = conn.execute("INSERT INTO llm_models(provider_id,name,temperature) VALUES(?,?,?)", (provider_id,name,temperature)); conn.commit(); return cur.lastrowid
+        cur = conn.execute("INSERT INTO llm_models(provider_id,name,temperature,created_at) VALUES(?,?,?,?)", (provider_id,name,temperature,time.time())); conn.commit(); return cur.lastrowid
     return await _run_db(op)
 
 async def save_llm_skill(name, instructions):
     def op(conn):
         cur = conn.execute("INSERT OR REPLACE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)", (name,instructions,time.time())); conn.commit(); return cur.lastrowid
     return await _run_db(op)
+
+async def update_llm_provider(provider_id, name, base_url, encrypted_key=None):
+    def op(conn):
+        if encrypted_key:
+            conn.execute("UPDATE llm_providers SET name=?,base_url=?,api_key_encrypted=?,updated_at=? WHERE id=?", (name,base_url,encrypted_key,time.time(),provider_id))
+        else:
+            conn.execute("UPDATE llm_providers SET name=?,base_url=?,updated_at=? WHERE id=?", (name,base_url,time.time(),provider_id))
+        conn.commit()
+    await _run_db(op)
+
+async def delete_llm_provider(provider_id):
+    def op(conn):
+        conn.execute("DELETE FROM llm_models WHERE provider_id=?", (provider_id,))
+        conn.execute("DELETE FROM llm_providers WHERE id=?", (provider_id,)); conn.commit()
+    await _run_db(op)
+
+async def update_llm_model(model_id, name, temperature):
+    def op(conn):
+        conn.execute("UPDATE llm_models SET name=?,temperature=? WHERE id=?", (name,temperature,model_id)); conn.commit()
+    await _run_db(op)
+
+async def delete_llm_model(model_id):
+    def op(conn):
+        conn.execute("DELETE FROM llm_models WHERE id=?", (model_id,)); conn.commit()
+    await _run_db(op)
+
+async def update_llm_skill(skill_id, name, instructions):
+    def op(conn):
+        conn.execute("UPDATE llm_skills SET name=?,instructions=? WHERE id=?", (name,instructions,skill_id)); conn.commit()
+    await _run_db(op)
+
+async def delete_llm_skill(skill_id):
+    def op(conn):
+        conn.execute("DELETE FROM llm_skills WHERE id=?", (skill_id,)); conn.commit()
+    await _run_db(op)
 
 async def set_llm_setting(key, value):
     def op(conn):

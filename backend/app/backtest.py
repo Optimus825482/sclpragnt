@@ -136,7 +136,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     reason = "hard_stop_loss" if exit_price == stop_price and stop_price is not None else target_reason
                     if data["times"][i] - position["entry_time"] >= config.MAX_POSITION_HOLD_SEC:
                         exit_price = close
-                        reason = "max_hold_2h"
+                        reason = "max_hold_4h"
                     elif exit_price is None and fn(window, symbol) == "sell":
                         exit_price = close
                         reason = "opposite_signal"
@@ -196,7 +196,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     "max_drawdown_pct": round(max_drawdown * 100, 2), "commission_pct": config.COMMISSION_PCT,
                     "order_size": order_size, "stop_loss_pct": float(stop_pct), "take_profit_pct": first_target_pct,
                     "flow_model": "candle_orderflow_proxy_for_backtest",
-                    "trailing_stop_pct": 0.0, "exit_model": "time_decay_profit_or_hard_stop_or_2h_timeout",
+                    "trailing_stop_pct": 0.0, "exit_model": "time_decay_profit_or_hard_stop_or_4h_timeout",
                     "open_position_at_end": open_at_end, "unrealized_pnl": round(unrealized_pnl, 8),
                     "trades": trades, "timestamp": time.time()}
         finally:

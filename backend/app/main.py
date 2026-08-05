@@ -462,17 +462,18 @@ async def get_positions():
     return {"positions": positions}
 
 @app.get("/api/symbol-analysis/{symbol}")
-async def symbol_analysis(symbol: str):
+async def symbol_analysis(symbol: str, timeframe: str = ""):
     sym = symbol.upper()
+    requested_timeframe = timeframe if timeframe in {"1m", "5m", "15m", "1h", "4h", "1d"} else config.MOMENTUM_TIMEFRAME
     ticker = market.get_ticker(sym)
     # The analysis page can request a valid market that was not warm when the
     # process started (or whose websocket stream briefly missed an event).
     # Hydrate that symbol from the public REST API instead of reporting it as
     # unknown. This remains read-only and paper-trading safe.
-    primary_history = market.klines.get(config.MOMENTUM_TIMEFRAME, {}).get(sym, {})
+    primary_history = market.klines.get(requested_timeframe, {}).get(sym, {})
     history_ready = len(primary_history.get("closes", [])) >= 55
     analysis_klines = {
-        config.MOMENTUM_TIMEFRAME: primary_history,
+        requested_timeframe: primary_history,
         "1d": market.klines.get("1d", {}).get(sym, {}),
     }
     if not ticker or not history_ready:
@@ -480,7 +481,7 @@ async def symbol_analysis(symbol: str):
             available = set(await trading_symbols("TRY"))
             if sym not in available:
                 return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": "Sembol Binance TR'de işlem görmüyor"}
-            rows = await fetch_klines(sym, config.MOMENTUM_TIMEFRAME, limit=300)
+            rows = await fetch_klines(sym, requested_timeframe, limit=300)
             if rows and len(rows) >= 55:
                 hydrated = {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
                 for row in rows:
@@ -489,9 +490,9 @@ async def symbol_analysis(symbol: str):
                     hydrated["lows"].append(float(row[3]))
                     hydrated["closes"].append(float(row[4]))
                     hydrated["volumes"].append(float(row[5]))
-                market.klines[config.MOMENTUM_TIMEFRAME][sym] = hydrated
+                market.klines[requested_timeframe][sym] = hydrated
                 analysis_klines = {
-                    config.MOMENTUM_TIMEFRAME: hydrated,
+                    requested_timeframe: hydrated,
                     "1d": market.klines.get("1d", {}).get(sym, {}),
                 }
                 last_price = float(rows[-1][4])
@@ -499,13 +500,12 @@ async def symbol_analysis(symbol: str):
                 market.tickers[sym] = ticker
             else:
                 count = len(rows) if rows else 0
-                return {"symbol": sym, "analysis_build": "rest-fallback-v4", "timeframes": {config.MOMENTUM_TIMEFRAME: {"candles": count, "required": 55}}, "data_ready": False, "error": "Teknik analiz için yeterli mum verisi alınamadı"}
+                return {"symbol": sym, "analysis_build": "rest-fallback-v4", "timeframes": {requested_timeframe: {"candles": count, "required": 55}}, "data_ready": False, "error": "Teknik analiz için yeterli mum verisi alınamadı"}
         except Exception as exc:
             return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": f"Sembol verisi alınamadı: {exc}"}
     if not ticker:
         return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": "Sembol verisi bulunamadı"}
-    timeframe = config.MOMENTUM_TIMEFRAME
-    snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, timeframe)
+    snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, requested_timeframe)
     snapshot["analysis_build"] = "rest-fallback-v4"
     return snapshot
 
@@ -547,6 +547,37 @@ async def add_llm_skill(payload: dict):
     try: return {"ok": True, "skill_id": await database.save_llm_skill(name, instructions)}
     except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
 
+@app.put("/api/llm/providers/{provider_id}")
+async def update_llm_provider(provider_id: int, payload: dict):
+    name, base_url, key = str(payload.get("name", "")).strip(), str(payload.get("base_url", "")).strip(), str(payload.get("api_key", "")).strip()
+    if not name or not base_url.startswith(("http://", "https://")): raise HTTPException(status_code=400, detail="Provider adı ve geçerli Base URL gerekli")
+    try: await database.update_llm_provider(provider_id, name, base_url, llm_analysis.encrypt_key(key) if key else None); return {"ok": True}
+    except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
+
+@app.delete("/api/llm/providers/{provider_id}")
+async def delete_llm_provider(provider_id: int):
+    await database.delete_llm_provider(provider_id); return {"ok": True}
+
+@app.put("/api/llm/models/{model_id}")
+async def update_llm_model(model_id: int, payload: dict):
+    name = str(payload.get("name", "")).strip()
+    if not name: raise HTTPException(status_code=400, detail="Model adı gerekli")
+    await database.update_llm_model(model_id, name, float(payload.get("temperature", 0.2))); return {"ok": True}
+
+@app.delete("/api/llm/models/{model_id}")
+async def delete_llm_model(model_id: int):
+    await database.delete_llm_model(model_id); return {"ok": True}
+
+@app.put("/api/llm/skills/{skill_id}")
+async def update_llm_skill(skill_id: int, payload: dict):
+    name, instructions = str(payload.get("name", "")).strip(), str(payload.get("instructions", "")).strip()
+    if not name or not instructions: raise HTTPException(status_code=400, detail="Uzmanlık adı ve talimatları gerekli")
+    await database.update_llm_skill(skill_id, name, instructions); return {"ok": True}
+
+@app.delete("/api/llm/skills/{skill_id}")
+async def delete_llm_skill(skill_id: int):
+    await database.delete_llm_skill(skill_id); return {"ok": True}
+
 @app.put("/api/llm/active")
 async def activate_llm(payload: dict):
     await database.set_llm_setting("llm_enabled", "1" if payload.get("enabled") else "0")
@@ -559,8 +590,10 @@ async def test_llm(payload: dict = None):
     return result
 
 @app.post("/api/symbol-analysis/{symbol}/llm")
-async def symbol_analysis_llm(symbol: str):
-    snapshot = await symbol_analysis(symbol)
+async def symbol_analysis_llm(symbol: str, payload: dict = None):
+    snapshot = (payload or {}).get("snapshot") if payload else None
+    if not snapshot:
+        snapshot = await symbol_analysis(symbol, (payload or {}).get("timeframe", "") if payload else "")
     if not snapshot.get("data_ready"): return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
     return await llm_analysis.analyze(snapshot)
 

@@ -131,7 +131,7 @@ export default function LiveTerminal() {
           <p className="eyebrow mb-3">RİSK YÖNETİMİ</p>
           <div className="space-y-2 font-mono text-xs">
             <div className="flex justify-between"><span className="text-bunker-muted">İşlem Başına</span><span className="text-white">1.000,00 TL</span></div>
-            <div className="flex justify-between"><span className="text-bunker-muted">Maksimum Bekleme</span><span className="text-neon-yellow">2 saat</span></div>
+            <div className="flex justify-between"><span className="text-bunker-muted">Maksimum Bekleme</span><span className="text-neon-yellow">4 saat</span></div>
             <div className="flex justify-between"><span className="text-bunker-muted">Take Profit</span><span className="text-neon-green">1% → 0,75% → 0,5% → başa baş</span></div>
             <div className="flex justify-between"><span className="text-bunker-muted">Katman</span><span className="text-white">3</span></div>
           </div>
