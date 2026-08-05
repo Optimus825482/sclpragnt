@@ -106,8 +106,10 @@ async def ws_broadcast_loop():
                 current_price = float((ticker or {}).get("last_price") or pos["entry_price"])
                 current_value = pos["quantity"] * current_price
                 total_value += current_value
-                pnl_pct = ((current_price - pos["entry_price"]) / pos["entry_price"]) * 100
-                pnl_try = (current_price - pos["entry_price"]) * pos["quantity"]
+                gross_pnl_try = (current_price - pos["entry_price"]) * pos["quantity"]
+                entry_commission = pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT
+                pnl_try = gross_pnl_try - entry_commission
+                pnl_pct = (pnl_try / (pos["entry_price"] * pos["quantity"]) * 100) if pos["entry_price"] and pos["quantity"] else 0.0
                 open_positions.append({
                     "symbol": sym, "entry": pos["entry_price"], "current": current_price,
                     "pnl_pct": pnl_pct, "pnl_try": pnl_try, "value": current_value,
@@ -238,6 +240,19 @@ async def repair_historical_memory():
                         except json.JSONDecodeError: context = {}
                     context = context if isinstance(context, dict) else {}
                     technical = context.get("technical") if isinstance(context.get("technical"), dict) else {}
+                    # Reconstruct OHLCV-based indicators around the original
+                    # entry time. Order-book fields remain explicitly unknown.
+                    try:
+                        entry_ms = int(float(trade.get("entry_time") or 0) * 1000)
+                        symbol = str(trade.get("symbol") or "").upper()
+                        rows_5m = await fetch_klines(symbol, "5m", 300, max(0, entry_ms - 300 * 5 * 60 * 1000))
+                        rows_1d = await fetch_klines(symbol, "1d", 250, max(0, entry_ms - 250 * 86400 * 1000))
+                        def pack(rows):
+                            return {"opens": [float(r[1]) for r in rows], "highs": [float(r[2]) for r in rows], "lows": [float(r[3]) for r in rows], "closes": [float(r[4]) for r in rows], "volumes": [float(r[5]) for r in rows]}
+                        rebuilt = calculate_snapshot(symbol, float(trade.get("entry_price") or 0), {"5m": pack(rows_5m), "1d": pack(rows_1d)}, {"source": "historical_reconstruction", "spread_pct": None, "bid_qty": 0, "ask_qty": 0}, 0, float(trade.get("entry_price") or 0) * float(trade.get("quantity") or 0), "5m")
+                        technical = rebuilt if rebuilt.get("data_ready") else technical
+                    except Exception as exc:
+                        _embedding_repair["message"] = f"Bazı kayıtlar yeniden hesaplanamadı: {exc}"
                     liquidity = technical.get("liquidity") if isinstance(technical.get("liquidity"), dict) else {}
                     missing = [key for key in ("spread_pct", "orderbook_depth_try", "orderflow_imbalance") if liquidity.get(key) in (None, 0, 0.0)]
                     if not missing: continue
@@ -605,8 +620,9 @@ async def get_positions():
     for sym, pos in analyzer.positions.items():
         ticker = market.get_ticker(sym)
         current = ticker["last_price"] if ticker else pos["entry_price"]
-        pnl_pct = ((current - pos["entry_price"]) / pos["entry_price"]) * 100 if pos["entry_price"] else 0.0
-        pnl_try = (current - pos["entry_price"]) * pos["quantity"]
+        gross_pnl_try = (current - pos["entry_price"]) * pos["quantity"]
+        pnl_try = gross_pnl_try - pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT
+        pnl_pct = (pnl_try / (pos["entry_price"] * pos["quantity"]) * 100) if pos["entry_price"] and pos["quantity"] else 0.0
         positions.append({
             "symbol": sym,
             "side": pos["side"],
