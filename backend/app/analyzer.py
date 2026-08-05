@@ -689,6 +689,8 @@ class ScalpAnalyzer:
 
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT"):
         if symbol not in self.positions and len(self.positions) >= self.max_open_positions():
+            await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                        "reason": "position_limit_reached", "strategy": strat_name, "timestamp": time.time()})
             return None
         try_balance = await database.get_wallet_balance("TRY")
         required_full_cash = config.DEFAULT_ORDER_USDT * (1 + config.COMMISSION_PCT)
@@ -699,6 +701,8 @@ class ScalpAnalyzer:
             # reserve the entry commission before sizing the paper order.
             order_value = try_balance / (1 + config.COMMISSION_PCT)
             if order_value <= config.MIN_PARTIAL_ORDER_TRY:
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                            "reason": "insufficient_balance_for_minimum_order", "strategy": strat_name, "timestamp": time.time()})
                 return None
         details = {}
         expected_gross = None

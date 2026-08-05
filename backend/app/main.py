@@ -849,14 +849,42 @@ async def symbol_analysis_llm(symbol: str, payload: dict = None):
     if not snapshot.get("data_ready"): return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
     return await llm_analysis.analyze(snapshot)
 
+async def llm_query_database(args: dict, default_symbol: str | None = None):
+    """Read-only structured DB query exposed to LLMs; never executes raw SQL."""
+    resource = str(args.get("resource", "trades")).lower()
+    symbol = str(args.get("symbol") or default_symbol or "").upper() or None
+    strategy = str(args.get("strategy") or "").upper() or None
+    limit = max(1, min(int(args.get("limit", 100)), 500))
+    if resource == "positions":
+        rows = [dict(v, symbol=k) for k, v in analyzer.positions.items()]
+    elif resource == "trades":
+        rows = await database.get_trades()
+    elif resource == "signals":
+        rows = await database.get_signals(limit)
+    elif resource in {"decisions", "decision_logs"}:
+        rows = await database.get_decision_logs(limit, symbol, strategy)
+    elif resource == "wallet":
+        return {"resource": resource, "balances": {"TRY": await database.get_wallet_balance("TRY")}}
+    else:
+        return {"error": "resource yalnızca positions, trades, signals, decisions veya wallet olabilir"}
+    if symbol: rows = [r for r in rows if str(r.get("symbol", "")).upper() == symbol]
+    if strategy: rows = [r for r in rows if str(r.get("strategy", "")).upper() == strategy]
+    if args.get("action"): rows = [r for r in rows if str(r.get("action", "")).upper() == str(args["action"]).upper()]
+    return {"resource": resource, "count": len(rows), "rows": rows[-limit:]}
+
+LLM_DATABASE_TOOL = {"type":"function","function":{"name":"query_database","description":"Sistemin PostgreSQL/SQLite veri katmanında güvenli, salt-okunur sorgu yapar. Açık pozisyon, kapanmış işlem, sinyal, karar logu veya cüzdan kayıtlarını filtreleyerek getirir. Ham SQL çalıştırmaz.","parameters":{"type":"object","properties":{"resource":{"type":"string","enum":["positions","trades","signals","decisions","wallet"]},"symbol":{"type":"string"},"strategy":{"type":"string"},"action":{"type":"string"},"limit":{"type":"integer"}},"required":["resource"]}}}
+LLM_READONLY_SQL_TOOL = {"type":"function","function":{"name":"read_only_sql","description":"İleri seviye salt-okunur veritabanı incelemesi. Yalnızca tek SELECT veya WITH...SELECT sorgusu çalıştırır; yazma/DDL komutları ve izin verilmeyen tablolar reddedilir. Sadece gerektiğinde kullan.","parameters":{"type":"object","properties":{"sql":{"type":"string","description":"Tek bir SELECT veya WITH...SELECT sorgusu"},"limit":{"type":"integer"}},"required":["sql"]}}}
+
 @app.post("/api/symbol-analysis/{symbol}/llm/chat")
 async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     body = payload or {}
     snapshot = await symbol_llm_context(symbol, str(body.get("timeframe", "")))
     if not snapshot.get("data_ready"):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
-    tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
+    tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
+        if name == "query_database": return await llm_query_database(args, symbol.upper())
+        if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
         if name == "get_symbol_analysis": return await symbol_analysis(symbol, str(args.get("timeframe") or body.get("timeframe") or "5m"))
         if name == "get_historical_klines":
             interval = str(args.get("interval") or "5m"); limit = max(1, min(int(args.get("limit", 300)), 1000))
@@ -1006,10 +1034,12 @@ async def risk_summary():
 async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
     context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data."}
-    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
+    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
         started = time.perf_counter(); success = True
         try:
+            if name == "query_database": return await llm_query_database(args)
+            if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
             if name == "get_strategy_config": return await get_config()
             if name == "get_strategy_stats": return (await get_strategy_stats()).get("stats", {})
             if name == "get_trades":

@@ -679,6 +679,30 @@ async def get_decision_logs(limit=500, symbol=None, strategy=None):
         return result
     return await _run_db(op)
 
+async def read_only_query(sql: str, limit: int = 500):
+    """Execute a narrowly validated, read-only query for LLM inspection."""
+    statement = str(sql or "").strip()
+    if not statement or ";" in statement:
+        raise ValueError("Tek bir SELECT sorgusu gerekli; çoklu ifade veya noktalı virgül yasak")
+    if not re.match(r"^(SELECT|WITH)\b", statement, re.I):
+        raise ValueError("Yalnızca SELECT veya WITH ... SELECT sorgularına izin verilir")
+    if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|PRAGMA|COPY|GRANT|REVOKE|CALL|DO|VACUUM|ATTACH|DETACH)\b", statement, re.I):
+        raise ValueError("Yazma, DDL veya yönetim komutu tespit edildi")
+    allowed = {"positions", "trades", "signals", "decision_logs", "virtual_wallet", "backtests", "llm_tool_logs"}
+    referenced = set(re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)", statement, re.I))
+    if not referenced or not referenced.issubset(allowed):
+        raise ValueError("Sorgu yalnızca izin verilen uygulama tablolarını kullanabilir")
+    bounded = statement
+    if not re.search(r"\bLIMIT\s+\d+\b", bounded, re.I):
+        bounded = f"SELECT * FROM ({bounded}) AS llm_read_only_result LIMIT {max(1, min(int(limit), 500))}"
+    else:
+        bounded = re.sub(r"(\bLIMIT\s+)\d+", lambda m: f"{m.group(1)}{max(1, min(int(limit), 500))}", bounded, count=1, flags=re.I)
+    def op(conn):
+        cur = conn.execute(bounded)
+        rows = cur.fetchall()
+        return [dict(row) if isinstance(row, dict) else dict(zip([d[0] for d in cur.description], row)) for row in rows]
+    return await _run_db(op)
+
 
 async def save_llm_tool_log(item):
     def op(conn: sqlite3.Connection):
