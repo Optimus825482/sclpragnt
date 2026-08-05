@@ -331,6 +331,9 @@ class ScalpAnalyzer:
         kline = self.market.get_ut_kline(symbol, tf)
         # Önce hedef/stop kontrolü; aynı anda süre dolduysa gerçek kapanış nedeni korunur.
         pos = self.positions.get(symbol)
+        if pos:
+            pos["max_price"] = max(pos.get("max_price", pos["entry_price"]), price)
+            pos["min_price"] = min(pos.get("min_price", pos["entry_price"]), price)
         if pos and config.HARD_STOP_LOSS_PCT > 0 and price <= pos["entry_price"] * (1 - config.HARD_STOP_LOSS_PCT):
             return await self.close_position(symbol, price, "hard_stop_loss")
         if pos and price >= pos["entry_price"] * (1 + config.SPOT_PROFIT_TARGET_PCT):
@@ -613,12 +616,19 @@ class ScalpAnalyzer:
         total_commission = buy_commission + commission
         pnl = (exit_price - entry) * pos["quantity"] - total_commission
         pnl_pct = (pnl / (entry * pos["quantity"])) * 100 if entry else 0.0
+        hold_seconds = max(0.0, time.time() - pos.get("entry_time", time.time()))
+        max_favorable_pct = ((pos.get("max_price", entry) - entry) / entry) if entry else 0.0
+        max_adverse_pct = ((pos.get("min_price", entry) - entry) / entry) if entry else 0.0
         await database.save_trade({
             "symbol": symbol, "strategy": pos.get("strategy", "UT"),
             "side": pos.get("side", "LONG"), "entry_price": entry, "exit_price": exit_price,
             "quantity": pos.get("quantity", 0.0), "pnl": pnl, "pnl_pct": pnl_pct,
             "entry_time": pos.get("entry_time"), "exit_time": time.time(),
-            "commission": total_commission, "reason": reason
+            "commission": total_commission, "reason": reason,
+            "entry_context": pos.get("entry_context", {}),
+            "max_favorable_pct": max_favorable_pct,
+            "max_adverse_pct": max_adverse_pct,
+            "hold_seconds": hold_seconds,
         })
 
     async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT"):
@@ -630,6 +640,9 @@ class ScalpAnalyzer:
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT"):
         if symbol not in self.positions and len(self.positions) >= self.max_open_positions():
             return None
+        details = {}
+        expected_gross = None
+        expected_net = None
         if self.market:
             liquid, details = self.market.liquidity_status(symbol, config.DEFAULT_ORDER_USDT)
             if not liquid:
@@ -640,6 +653,22 @@ class ScalpAnalyzer:
                 print(f"[Likidite] {symbol} işlem engellendi: {reason}")
                 await database.save_signal(blocked)
                 return blocked
+            target_value = config.DEFAULT_ORDER_USDT * (1 + config.SPOT_PROFIT_TARGET_PCT)
+            expected_gross = config.DEFAULT_ORDER_USDT * config.SPOT_PROFIT_TARGET_PCT
+            expected_fees = (config.DEFAULT_ORDER_USDT + target_value) * config.COMMISSION_PCT
+            expected_slippage = config.DEFAULT_ORDER_USDT * config.ESTIMATED_SLIPPAGE_PCT * 2
+            expected_net = expected_gross - expected_fees - expected_slippage
+            if expected_net < config.MIN_EXPECTED_NET_PNL_TRY:
+                blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                           "reason": "net_profit_filter:expected_net_below_minimum", "strategy": strat_name, "timestamp": time.time()}
+                await database.save_signal(blocked)
+                return blocked
+        entry_context = {"liquidity": details if self.market else {},
+                         "expected_gross_pnl_try": expected_gross if self.market else None,
+                         "expected_net_pnl_try": expected_net if self.market else None,
+                         "commission_pct": config.COMMISSION_PCT,
+                         "estimated_slippage_pct": config.ESTIMATED_SLIPPAGE_PCT,
+                         "profit_target_pct": config.SPOT_PROFIT_TARGET_PCT}
         try_balance = await database.get_wallet_balance("TRY")
         if try_balance < config.DEFAULT_ORDER_USDT:
             return None 
@@ -660,7 +689,8 @@ class ScalpAnalyzer:
             "side": "LONG",  # Binance TR Spot olduğu için her zaman LONG
             "entry_price": entry_price,
             "spot_profit_target": entry_price * (1 + config.SPOT_PROFIT_TARGET_PCT),
-            "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1
+                "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1,
+                "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
             }
         self.positions[symbol] = pos
         await database.save_position(symbol, pos)

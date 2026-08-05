@@ -11,7 +11,7 @@ const STRATEGY_LABEL: Record<string, string> = {
 };
 
 type Position = { symbol: string; entry: number; current: number; pnl_pct: number; pnl_try?: number; value: number; strategy?: string };
-type Portfolio = { try: number; total_value: number; realized_pnl?: number; positions: Position[] };
+type Portfolio = { try: number; total_value: number; realized_pnl?: number; unrealized_pnl?: number; reconciliation_expected?: number; reconciliation_delta?: number; positions: Position[] };
 
 export default function PortfolioPage() {
     const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
@@ -100,6 +100,13 @@ export default function PortfolioPage() {
                     <p className="font-mono text-sm text-neon-green">{msg}</p>
                 </div>
             )}
+
+            <div className={`card border ${Math.abs(portfolio?.reconciliation_delta ?? 0) < 0.05 ? "border-neon-green/30 bg-neon-green/5" : "border-neon-red/50 bg-neon-red/5"}`}>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    <div><p className="eyebrow">MUHASEBE MUTABAKATI</p><p className="text-xs text-bunker-muted mt-1">Toplam değer ile başlangıç bakiyesi + gerçekleşmiş/açık PnL karşılaştırması.</p></div>
+                    <div className="text-right font-mono text-sm"><p className={Math.abs(portfolio?.reconciliation_delta ?? 0) < 0.05 ? "text-neon-green" : "text-neon-red"}>{Math.abs(portfolio?.reconciliation_delta ?? 0) < 0.05 ? "✓ TUTARLI" : "⚠ FARK VAR"}</p><p className="text-xs text-bunker-muted">Fark: ₺{formatTL(portfolio?.reconciliation_delta)}</p></div>
+                </div>
+            </div>
 
             <div className="w-full">
                 <div className="card bg-bunker-950 p-0 overflow-hidden w-full">

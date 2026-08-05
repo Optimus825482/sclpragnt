@@ -60,6 +60,12 @@ async def init_db():
             conn.commit()
         except sqlite3.OperationalError:
             pass  # kolon zaten var
+        for col in ("entry_context TEXT", "max_favorable_pct REAL", "max_adverse_pct REAL", "hold_seconds REAL"):
+            try:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {col}")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
         # Kapanış nedeni eski veritabanlarında bulunmayabilir.
         try:
             conn.execute("ALTER TABLE trades ADD COLUMN reason TEXT")
@@ -111,6 +117,11 @@ async def init_db():
                 conn.commit()
             except sqlite3.OperationalError:
                 pass  # kolon zaten var
+        try:
+            conn.execute("ALTER TABLE positions ADD COLUMN entry_context TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
         _migrate_old_trades(conn)
         _backfill_commission(conn)
@@ -216,7 +227,8 @@ async def load_positions():
                 "side": row[1], "entry_price": row[2], "stop_price": row[3],
                 "take_profit": row[4], "peak_price": row[5], "breakeven_hit": bool(row[6]),
                 "quantity": row[7], "entry_time": row[8] if len(row) > 8 else None,
-                "strategy": row[9] if len(row) > 9 else None
+                "strategy": row[9] if len(row) > 9 else None,
+                "entry_context": json.loads(row[10]) if len(row) > 10 and row[10] else {},
             }
         return positions
 
@@ -226,10 +238,10 @@ async def load_positions():
 async def save_position(symbol, pos):
     def op(conn: sqlite3.Connection):
         conn.execute(
-            "INSERT OR REPLACE INTO positions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO positions (symbol, side, entry_price, stop_price, take_profit, peak_price, breakeven_hit, quantity, entry_time, strategy, entry_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (symbol, pos["side"], pos["entry_price"], pos.get("stop_price"),
              pos.get("take_profit"), pos.get("peak_price", pos["entry_price"]), int(pos.get("breakeven_hit", False)), pos["quantity"],
-             pos.get("entry_time"), pos.get("strategy"))
+             pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {})))
         )
         conn.commit()
 
@@ -238,11 +250,12 @@ async def save_position(symbol, pos):
 async def save_trade(trade):
     def op(conn: sqlite3.Connection):
         conn.execute(
-            "INSERT INTO trades (symbol, strategy, side, entry_price, exit_price, quantity, pnl, pnl_pct, entry_time, exit_time, commission, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO trades (symbol, strategy, side, entry_price, exit_price, quantity, pnl, pnl_pct, entry_time, exit_time, commission, reason, entry_context, max_favorable_pct, max_adverse_pct, hold_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (trade.get("symbol"), trade.get("strategy"), trade.get("side"),
              trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"),
              trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"),
-            trade.get("commission"), trade.get("reason"))
+            trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})),
+            trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"))
         )
         conn.commit()
 

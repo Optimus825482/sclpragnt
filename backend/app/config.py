@@ -41,6 +41,8 @@ class Config:
 
     # Binance TR spot komisyonu (Bronz/Standart taker %0.15) - işlem başına
     COMMISSION_PCT = float(os.getenv("COMMISSION_PCT", "0.0015"))
+    ESTIMATED_SLIPPAGE_PCT = 0.00025
+    MIN_EXPECTED_NET_PNL_TRY = 0.5
 
     # UT Bot stratejisi — tek aktif strateji
     UT_ENABLED = os.getenv("UT_ENABLED", "false").lower() == "true"

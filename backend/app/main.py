@@ -84,10 +84,15 @@ async def ws_broadcast_loop():
                         "symbol": sym, "entry": pos["entry_price"], "current": ticker["last_price"],
                         "pnl_pct": pnl_pct, "pnl_try": pnl_try, "value": current_value, "strategy": pos.get("strategy", "UT")
                     })
-                    
+            realized_pnl = await database.get_realized_pnl()
+            unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
+            reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl
+            reconciliation_delta = total_value - reconciliation_expected
             await ws_manager.broadcast({
                 "type": "portfolio",
-                "data": {"try": try_bal, "total_value": total_value, "realized_pnl": await database.get_realized_pnl(), "positions": open_positions}
+                "data": {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
+                         "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
+                         "reconciliation_delta": reconciliation_delta, "positions": open_positions}
             })
         await asyncio.sleep(1.0)
 
