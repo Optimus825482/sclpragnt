@@ -476,7 +476,8 @@ async def symbol_analysis(symbol: str):
             rows = await fetch_klines(sym, config.MOMENTUM_TIMEFRAME, limit=300)
             if rows:
                 hist = market.klines[config.MOMENTUM_TIMEFRAME][sym]
-                hist.clear()
+                for key in ("opens", "highs", "lows", "closes", "volumes"):
+                    hist[key] = []
                 for row in rows:
                     hist["opens"].append(float(row[1]))
                     hist["highs"].append(float(row[2]))

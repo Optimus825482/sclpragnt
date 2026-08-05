@@ -66,7 +66,8 @@ class MarketData:
                 try:
                     klines = await fetch_klines(s, tf, limit=300)
                     hist = self.klines[tf][s.upper()]
-                    hist.clear()
+                    for key in ("opens", "highs", "lows", "closes", "volumes"):
+                        hist[key] = []
                     for k in klines:
                         # Binance kline formatı: [OpenTime, Open, High, Low, Close, Volume...]
                         hist["opens"].append(float(k[1]))
