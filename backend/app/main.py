@@ -33,6 +33,7 @@ market = MarketData(config.SYMBOLS)
 analyzer = ScalpAnalyzer(market)
 _pg_pool = None
 _embedding_backfill = {"status": "idle", "queued": 0, "message": None}
+_embedding_repair = {"status": "idle", "queued": 0, "message": None}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WELL_KNOWN_DIR = os.path.join(BASE_DIR, "..", ".well-known")
@@ -195,7 +196,7 @@ async def system_health():
 
 @app.get("/api/memory/status")
 async def memory_status():
-    return {"enabled": bool(_pg_pool), "backend": os.getenv("DB_BACKEND", "sqlite"), "worker": embedding_worker.snapshot(), "backfill": dict(_embedding_backfill), "message": None if _pg_pool else "PostgreSQL memory backend aktif değil"}
+    return {"enabled": bool(_pg_pool), "backend": os.getenv("DB_BACKEND", "sqlite"), "worker": embedding_worker.snapshot(), "backfill": dict(_embedding_backfill), "repair": dict(_embedding_repair), "message": None if _pg_pool else "PostgreSQL memory backend aktif değil"}
 
 @app.post("/api/memory/backfill")
 async def memory_backfill():
@@ -218,6 +219,43 @@ async def memory_backfill():
             _embedding_backfill.update({"status": "error", "message": str(exc)})
     asyncio.create_task(enqueue_existing(), name="embedding-backfill")
     return {"ok": True, **_embedding_backfill}
+
+@app.post("/api/memory/repair-historical")
+async def repair_historical_memory():
+    """Rebuild historical trade memory without inventing unavailable market data."""
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
+    if _embedding_repair["status"] == "running": return {"ok": False, **_embedding_repair}
+    _embedding_repair.update({"status": "running", "queued": 0, "message": "Tarihsel snapshot'lar onarılıyor"})
+    async def repair():
+        try:
+            queued = 0
+            async with _pg_pool.acquire() as conn:
+                trades = [dict(row) for row in await conn.fetch("SELECT * FROM trades ORDER BY id")]
+                for trade in trades:
+                    context = trade.get("entry_context")
+                    if isinstance(context, str):
+                        try: context = json.loads(context)
+                        except json.JSONDecodeError: context = {}
+                    context = context if isinstance(context, dict) else {}
+                    technical = context.get("technical") if isinstance(context.get("technical"), dict) else {}
+                    liquidity = technical.get("liquidity") if isinstance(technical.get("liquidity"), dict) else {}
+                    missing = [key for key in ("spread_pct", "orderbook_depth_try", "orderflow_imbalance") if liquidity.get(key) in (None, 0, 0.0)]
+                    if not missing: continue
+                    technical["liquidity"] = {**liquidity, "spread_pct": None, "orderbook_depth_try": None, "depth_multiplier": None, "orderflow_imbalance": None, "source": "historical_reconstruction", "missing_fields": missing}
+                    context["technical"] = technical
+                    context["data_provenance"] = "historical_reconstruction"
+                    context["data_quality"] = {"missing_fields": missing, "note": "Historical order-book data was not available; no values were estimated."}
+                    trade["entry_context"] = context
+                    source_id = str(trade.get("id"))
+                    await conn.execute("DELETE FROM memory_embeddings WHERE memory_document_id IN (SELECT id FROM memory_documents WHERE source_type='trade_historical' AND source_id=$1)", source_id)
+                    await conn.execute("DELETE FROM memory_documents WHERE source_type='trade_historical' AND source_id=$1", source_id)
+                    doc = trade_document("historical", trade.get("symbol") or "unknown", trade, {"action": "HISTORICAL_TRADE", "timestamp": trade.get("exit_time")})
+                    queued += int(embedding_worker.enqueue_nowait(doc))
+            _embedding_repair.update({"status": "completed", "queued": queued, "message": "Eksik tarihsel likidite alanları tahmin edilmeden yeniden embedding kuyruğuna alındı"})
+        except Exception as exc:
+            _embedding_repair.update({"status": "error", "message": str(exc)})
+    asyncio.create_task(repair(), name="historical-memory-repair")
+    return {"ok": True, **_embedding_repair}
 
 @app.get("/api/migration/status")
 async def migration_status():
