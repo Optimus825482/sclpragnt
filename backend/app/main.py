@@ -589,13 +589,39 @@ async def test_llm(payload: dict = None):
     result = await llm_analysis.analyze({"test": True, "message": "Return exactly: CONNECTION_OK"})
     return result
 
+async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
+    """Build a fresh, read-only multi-timeframe tool context for the LLM."""
+    supported = ("1m", "5m", "15m", "1h", "4h", "1d")
+    preferred = preferred_timeframe if preferred_timeframe in supported else config.MOMENTUM_TIMEFRAME
+    snapshots = {}
+    for tf in supported:
+        snapshot = await symbol_analysis(symbol, tf)
+        if snapshot.get("data_ready"):
+            snapshots[tf] = snapshot
+    selected = snapshots.get(preferred) or await symbol_analysis(symbol, preferred)
+    if selected.get("data_ready"):
+        selected["llm_context"] = {
+            "selected_timeframe": preferred,
+            "available_timeframes": list(snapshots.keys()),
+            "data_policy": "Use only supplied public OHLCV, ticker, order-flow and calculated indicators. Missing values remain unknown.",
+            "available_calculations": ["trend", "oscillators", "moving_averages", "candlestick_patterns", "channels", "volatility", "volume", "pivots", "liquidity"],
+            "timeframes": snapshots,
+        }
+    return selected
+
 @app.post("/api/symbol-analysis/{symbol}/llm")
 async def symbol_analysis_llm(symbol: str, payload: dict = None):
-    snapshot = (payload or {}).get("snapshot") if payload else None
-    if not snapshot:
-        snapshot = await symbol_analysis(symbol, (payload or {}).get("timeframe", "") if payload else "")
+    snapshot = await symbol_llm_context(symbol, str((payload or {}).get("timeframe", "")))
     if not snapshot.get("data_ready"): return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
     return await llm_analysis.analyze(snapshot)
+
+@app.post("/api/symbol-analysis/{symbol}/llm/chat")
+async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
+    body = payload or {}
+    snapshot = await symbol_llm_context(symbol, str(body.get("timeframe", "")))
+    if not snapshot.get("data_ready"):
+        return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
+    return await llm_analysis.chat(snapshot, body.get("messages", []))
 
 @app.post("/api/positions/{symbol}/close")
 async def close_position_manual(symbol: str):
@@ -645,6 +671,25 @@ async def get_strategy_stats():
     for s in stats.values():
         s["win_rate"] = (s["wins"] / s["trades"] * 100) if s["trades"] else 0.0
     return {"stats": stats}
+
+@app.post("/api/strategies/llm/chat")
+async def strategies_llm_chat(payload: dict = None):
+    body = payload or {}
+    context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data."}
+    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}]
+    async def execute_tool(name, args):
+        if name == "get_strategy_config": return await get_config()
+        if name == "get_strategy_stats": return (await get_strategy_stats()).get("stats", {})
+        if name == "get_trades":
+            rows = await database.get_trades(); strategy, symbol = args.get("strategy"), args.get("symbol")
+            rows = [r for r in rows if (not strategy or r.get("strategy") == strategy) and (not symbol or r.get("symbol") == symbol)]
+            return {"count": len(rows), "trades": rows[-max(1, min(int(args.get("limit", 100)), 500)):]}
+        if name == "get_signals":
+            rows = await database.get_signals(max(1, min(int(args.get("limit", 100)), 500))); strategy, symbol = args.get("strategy"), args.get("symbol")
+            rows = [r for r in rows if (not strategy or r.get("strategy") == strategy) and (not symbol or r.get("symbol") == symbol)]
+            return {"count": len(rows), "signals": rows}
+        return {"error": f"Bilinmeyen araç: {name}"}
+    return await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool)
 
 @app.post("/api/reset")
 async def reset_all():
