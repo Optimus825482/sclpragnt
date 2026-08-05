@@ -255,7 +255,6 @@ async def repair_historical_memory():
                         _embedding_repair["message"] = f"Bazı kayıtlar yeniden hesaplanamadı: {exc}"
                     liquidity = technical.get("liquidity") if isinstance(technical.get("liquidity"), dict) else {}
                     missing = [key for key in ("spread_pct", "orderbook_depth_try", "orderflow_imbalance") if liquidity.get(key) in (None, 0, 0.0)]
-                    if not missing: continue
                     technical["liquidity"] = {**liquidity, "spread_pct": None, "orderbook_depth_try": None, "depth_multiplier": None, "orderflow_imbalance": None, "source": "historical_reconstruction", "missing_fields": missing}
                     context["technical"] = technical
                     context["data_provenance"] = "historical_reconstruction"
