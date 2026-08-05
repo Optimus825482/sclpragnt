@@ -787,7 +787,7 @@ class ScalpAnalyzer:
                 "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
             }
         self.positions[symbol] = pos
-        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": strat_name, "timestamp": time.time()}
+        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "timestamp": time.time()}
         await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
         return sig
 

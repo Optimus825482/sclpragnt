@@ -14,9 +14,10 @@ function DecisionTab({decisions,trades}:{decisions:Decision[];trades:Trade[]}){
  const [page,setPage]=useState(1); const pageSize=25;
  const strategies=Array.from(new Set(decisions.map(d=>d.strategy).filter(Boolean))) as string[];
  const rows=useMemo(()=>decisions.filter(d=>["BUY_SIGNAL","BUY_BLOCKED"].includes(d.decision)).map(d=>{
-   const trade=trades.find(t=>t.symbol===d.symbol&&t.strategy===d.strategy&&Math.abs((t.entry_time||0)-d.timestamp)<180);
+   const inferredStrategy=d.strategy||((d.decision==="BUY_SIGNAL"&&d.reason&&d.reason.includes("_"))?d.reason:undefined);
+   const trade=trades.find(t=>t.symbol===d.symbol&&t.strategy===inferredStrategy&&Math.abs((t.entry_time||0)-d.timestamp)<180);
    const opened=d.decision==="BUY_SIGNAL";
-   return {...d,trade,opened,status:opened?(trade?"closed":"open"):"blocked"};
+   return {...d,strategy:inferredStrategy,reason:d.reason===(inferredStrategy||"__none__")&&opened?"position_opened":d.reason,trade,opened,status:opened?(trade?"closed":"open"):"blocked"};
  }).filter(r=>(status==="all"||r.status===status)&&(strategy==="all"||r.strategy===strategy)&&(!query||`${r.symbol} ${r.strategy||""} ${r.reason||""}`.toLowerCase().includes(query.toLowerCase()))),[decisions,trades,status,strategy,query]);
  const pages=Math.max(1,Math.ceil(rows.length/pageSize)); const visible=rows.slice((page-1)*pageSize,page*pageSize);
  const exportCsv=()=>{const head=["Zaman","Sembol","Strateji","Sinyal","Durum","Fiyat","Neden","PnL","PnL %","Komisyon","Aktif Süre"];const esc=(v:any)=>`"${String(v??"").replaceAll('"','""')}"`;const body=rows.map(r=>[new Date(r.timestamp*1000).toLocaleString("tr-TR"),r.symbol,label(r.strategy||""),r.decision,r.status,r.price,r.reason,r.trade?.pnl,r.trade?.pnl_pct,r.trade?.commission,r.trade?.hold_seconds].map(esc).join(","));const blob=new Blob(["\ufeff"+[head.map(esc).join(","),...body].join("\n")],{type:"text/csv;charset=utf-8"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="sinyal-karar-analizi.csv";a.click();URL.revokeObjectURL(a.href)};
