@@ -304,15 +304,14 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
                 <div className="min-w-0">
                   <p className="font-mono text-sm text-white">Maksimum Açık Pozisyon</p>
-                  <p className="text-xs text-bunker-muted mt-0.5">Aktif sembol sayısının 2 katı olarak otomatik hesaplanır</p>
+                  <p className="text-xs text-bunker-muted mt-0.5">Yeni pozisyon girişleri için global üst sınır</p>
                 </div>
                 <input
                   type="number"
                   step={1}
                   min={1}
-                  max={17}
+                  max={36}
                   value={num(draft.max_open_positions)}
-                  disabled
                   onChange={(e) => setDraft((d) => ({ ...d, max_open_positions: e.target.value === "" ? NaN : Number(e.target.value) }))}
                   className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
                 />

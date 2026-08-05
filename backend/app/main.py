@@ -387,8 +387,8 @@ async def update_config(payload: dict):
                 number = int(val)
                 if key == "adr_period" and not 5 <= number <= 60:
                     raise ValueError("adr_period 5 ile 60 arasında olmalıdır")
-                if key == "max_open_positions" and not 1 <= number <= 17:
-                    raise ValueError("max_open_positions 1 ile 17 arasında olmalıdır")
+                if key == "max_open_positions" and not 1 <= number <= 36:
+                    raise ValueError("max_open_positions 1 ile 36 arasında olmalıdır")
                 if key == "gainer_radar_min_score" and not 0 <= number <= 100:
                     raise ValueError("gainer_radar_min_score 0 ile 100 arasında olmalıdır")
                 setattr(config, attr, number)
