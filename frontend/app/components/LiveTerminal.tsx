@@ -48,6 +48,7 @@ export default function LiveTerminal() {
   }, [signals]);
 
   const pnlColor = (pnl: number) => pnl >= 0 ? "text-neon-green" : "text-neon-red";
+  const openPnl = portfolio?.positions.reduce((total, position) => total + (position.pnl_try ?? 0), 0) ?? 0;
 
   const formatTL = (v?: number) =>
     v == null ? "0,00" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -92,7 +93,15 @@ export default function LiveTerminal() {
 
       <div className="space-y-6">
         <div className="card">
-          <p className="eyebrow mb-4">AÇIK POZİSYONLAR</p>
+          <div className="flex justify-between items-center mb-4">
+            <p className="eyebrow">AÇIK POZİSYONLAR</p>
+            <div className="text-right font-mono">
+              <p className="text-[10px] text-bunker-muted">TOPLAM PnL</p>
+              <p className={`text-sm font-bold ${pnlColor(openPnl)}`}>
+                {openPnl >= 0 ? "+" : ""}₺{formatTL(openPnl)}
+              </p>
+            </div>
+          </div>
           <div className="space-y-3">
             {portfolio?.positions.length === 0 && <p className="text-bunker-muted text-sm font-mono">Açık pozisyon yok.</p>}
             {portfolio?.positions.map((p) => (
