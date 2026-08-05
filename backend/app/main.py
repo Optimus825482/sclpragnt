@@ -457,7 +457,9 @@ async def symbol_analysis(symbol: str):
     # process started (or whose websocket stream briefly missed an event).
     # Hydrate that symbol from the public REST API instead of reporting it as
     # unknown. This remains read-only and paper-trading safe.
-    if not ticker:
+    primary_history = market.klines.get(config.MOMENTUM_TIMEFRAME, {}).get(sym, {})
+    history_ready = len(primary_history.get("closes", [])) >= 55
+    if not ticker or not history_ready:
         try:
             available = set(await trading_symbols("TRY"))
             if sym not in available:
@@ -475,6 +477,8 @@ async def symbol_analysis(symbol: str):
                 last_price = float(rows[-1][4])
                 ticker = {"symbol": sym, "last_price": last_price, "timestamp": int(time.time() * 1000)}
                 market.tickers[sym] = ticker
+            else:
+                return {"symbol": sym, "data_ready": False, "error": "Teknik analiz için mum verisi alınamadı"}
         except Exception as exc:
             return {"symbol": sym, "data_ready": False, "error": f"Sembol verisi alınamadı: {exc}"}
     if not ticker:
