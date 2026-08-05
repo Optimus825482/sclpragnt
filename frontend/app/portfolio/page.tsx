@@ -13,11 +13,15 @@ const STRATEGY_LABEL: Record<string, string> = {
 
 type Position = { symbol: string; entry: number; current: number; pnl_pct: number; pnl_try?: number; value: number; strategy?: string };
 type Portfolio = { try: number; total_value: number; realized_pnl?: number; unrealized_pnl?: number; reconciliation_expected?: number; reconciliation_delta?: number; positions: Position[] };
+type Trade = { id: number; symbol: string; strategy: string; entry_price: number; exit_price: number; pnl: number; pnl_pct: number; reason?: string; exit_time?: number };
 
 export default function PortfolioPage() {
     const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
     const [closing, setClosing] = useState<string | null>(null);
     const [msg, setMsg] = useState<string | null>(null);
+    const [trades, setTrades] = useState<Trade[]>([]);
+    const [tradePage, setTradePage] = useState(1);
+    const tradesPerPage = 10;
 
     useEffect(() => {
         let ws: WebSocket | null = null;
@@ -36,6 +40,8 @@ export default function PortfolioPage() {
         connect();
         return () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); };
     }, []);
+
+    useEffect(() => { fetch(`${API_BASE}/api/trades`).then((r) => r.json()).then((d) => setTrades(d.trades || [])).catch(() => undefined); }, []);
 
     const unrealizedPnl = portfolio?.positions.reduce((s, p) => s + (p.pnl_try ?? ((p.current - p.entry) * (p.value / p.current))), 0) ?? 0;
     const totalPnl = (portfolio?.realized_pnl ?? 0) + unrealizedPnl;
@@ -58,6 +64,15 @@ export default function PortfolioPage() {
         } finally {
             setClosing(null);
         }
+    };
+    const tradePageCount = Math.max(1, Math.ceil(trades.length / tradesPerPage));
+    const visibleTrades = trades.slice((tradePage - 1) * tradesPerPage, tradePage * tradesPerPage);
+    const exportTrades = () => {
+        const headers = ["ID", "Sembol", "Strateji", "Giriş", "Çıkış", "PnL", "PnL %", "Kapanış Nedeni", "Kapanış Zamanı"];
+        const rows = trades.map((t) => [t.id, t.symbol, t.strategy, t.entry_price, t.exit_price, t.pnl, t.pnl_pct, t.reason || "", t.exit_time ? new Date(t.exit_time * 1000).toISOString() : ""]);
+        const csv = [headers, ...rows].map((row) => row.map((v) => `"${String(v).replaceAll('"', '""')}"`).join(",")).join("\n");
+        const url = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
+        const a = document.createElement("a"); a.href = url; a.download = "islem-gecmisi.csv"; a.click(); URL.revokeObjectURL(url);
     };
 
     return (
@@ -160,6 +175,15 @@ export default function PortfolioPage() {
                 </div>
 
             </div>
+
+            <section className="card bg-bunker-950 p-0 overflow-hidden">
+                <div className="p-4 border-b border-bunker-800 flex flex-wrap gap-3 justify-between items-center">
+                    <div><p className="eyebrow">İŞLEM GEÇMİŞİ</p><p className="text-xs text-bunker-muted mt-1">Kapanan pozisyonlar · {trades.length} kayıt</p></div>
+                    <button onClick={exportTrades} disabled={!trades.length} className="px-3 py-2 rounded-lg border border-neon-green/40 text-neon-green font-mono text-xs disabled:opacity-40">CSV DIŞA AKTAR</button>
+                </div>
+                <div className="overflow-x-auto"><table className="w-full font-mono text-xs"><thead><tr className="text-left text-bunker-muted border-b border-bunker-800"><th className="p-3">SEMBOL</th><th className="p-3">STRATEJİ</th><th className="p-3">GİRİŞ</th><th className="p-3">ÇIKIŞ</th><th className="p-3">PnL</th><th className="p-3">NEDEN</th></tr></thead><tbody>{visibleTrades.map((t) => <tr key={t.id} className="border-b border-bunker-800/50"><td className="p-3 font-bold"><Link href={`/symbol-analysis?symbol=${t.symbol}`} className="text-white hover:text-neon-green">{t.symbol}</Link></td><td className="p-3 text-neon-yellow">{STRATEGY_LABEL[t.strategy] ?? t.strategy}</td><td className="p-3">₺{formatTL(t.entry_price)}</td><td className="p-3">₺{formatTL(t.exit_price)}</td><td className={`p-3 font-bold ${t.pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>{t.pnl >= 0 ? "+" : ""}₺{formatTL(t.pnl)}</td><td className="p-3 text-bunker-muted">{t.reason || "-"}</td></tr>)}</tbody></table></div>
+                <div className="p-3 flex justify-between items-center text-xs font-mono text-bunker-muted"><span>Sayfa {tradePage} / {tradePageCount}</span><div className="flex gap-2"><button onClick={() => setTradePage((p) => Math.max(1, p - 1))} disabled={tradePage === 1} className="px-2 py-1 border border-bunker-700 rounded disabled:opacity-40">ÖNCEKİ</button><button onClick={() => setTradePage((p) => Math.min(tradePageCount, p + 1))} disabled={tradePage === tradePageCount} className="px-2 py-1 border border-bunker-700 rounded disabled:opacity-40">SONRAKİ</button></div></div>
+            </section>
         </div>
     );
 }

@@ -8,7 +8,6 @@ const MENU = [
     { href: "/portfolio", label: "Portföy", icon: "📊", desc: "Varlıklar & PnL" },
     { href: "/strategies", label: "Stratejiler", icon: "🧠", desc: "Aktif/pasif & ayarlar" },
     { href: "/gainer-radar", label: "Gainer Radar", icon: "🎯", desc: "Fırsat tarayıcı" },
-    { href: "/history", label: "İşlem Geçmişi", icon: "📜", desc: "Kapanan pozisyonlar" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
     { href: "/backtest", label: "Backtest", icon: "🧪", desc: "Strateji test lab" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
