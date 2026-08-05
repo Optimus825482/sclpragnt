@@ -856,7 +856,15 @@ async def llm_query_database(args: dict, default_symbol: str | None = None):
     strategy = str(args.get("strategy") or "").upper() or None
     limit = max(1, min(int(args.get("limit", 100)), 500))
     if resource == "positions":
-        rows = [dict(v, symbol=k) for k, v in analyzer.positions.items()]
+        db_positions = await database.load_positions()
+        db_rows = [dict(v, symbol=k) for k, v in db_positions.items()]
+        live_rows = [dict(v, symbol=k) for k, v in analyzer.positions.items()]
+        if symbol:
+            db_rows = [r for r in db_rows if str(r.get("symbol", "")).upper() == symbol]
+            live_rows = [r for r in live_rows if str(r.get("symbol", "")).upper() == symbol]
+        return {"resource": resource, "database_count": len(db_rows), "live_count": len(live_rows),
+                "database_rows": db_rows[-limit:], "live_rows": live_rows[-limit:],
+                "consistent": {k: k in db_positions for k in analyzer.positions}}
     elif resource == "trades":
         rows = await database.get_trades()
     elif resource == "signals":
@@ -864,7 +872,8 @@ async def llm_query_database(args: dict, default_symbol: str | None = None):
     elif resource in {"decisions", "decision_logs"}:
         rows = await database.get_decision_logs(limit, symbol, strategy)
     elif resource == "wallet":
-        return {"resource": resource, "balances": {"TRY": await database.get_wallet_balance("TRY")}}
+        return {"resource": resource, "balances": {"TRY": await database.get_wallet_balance("TRY")},
+                "live_open_position_count": len(analyzer.positions)}
     else:
         return {"error": "resource yalnızca positions, trades, signals, decisions veya wallet olabilir"}
     if symbol: rows = [r for r in rows if str(r.get("symbol", "")).upper() == symbol]
@@ -872,7 +881,7 @@ async def llm_query_database(args: dict, default_symbol: str | None = None):
     if args.get("action"): rows = [r for r in rows if str(r.get("action", "")).upper() == str(args["action"]).upper()]
     return {"resource": resource, "count": len(rows), "rows": rows[-limit:]}
 
-LLM_DATABASE_TOOL = {"type":"function","function":{"name":"query_database","description":"Sistemin PostgreSQL/SQLite veri katmanında güvenli, salt-okunur sorgu yapar. Açık pozisyon, kapanmış işlem, sinyal, karar logu veya cüzdan kayıtlarını filtreleyerek getirir. Ham SQL çalıştırmaz.","parameters":{"type":"object","properties":{"resource":{"type":"string","enum":["positions","trades","signals","decisions","wallet"]},"symbol":{"type":"string"},"strategy":{"type":"string"},"action":{"type":"string"},"limit":{"type":"integer"}},"required":["resource"]}}}
+LLM_DATABASE_TOOL = {"type":"function","function":{"name":"query_database","description":"Sistemin PostgreSQL/SQLite veri katmanında güvenli, salt-okunur sorgu yapar. Açık pozisyon sorgusunda hem veritabanı hem canlı portföy belleğini karşılaştırır; böylece stale/mutabakat farkını gizlemez. Ham SQL çalıştırmaz.","parameters":{"type":"object","properties":{"resource":{"type":"string","enum":["positions","trades","signals","decisions","wallet"]},"symbol":{"type":"string"},"strategy":{"type":"string"},"action":{"type":"string"},"limit":{"type":"integer"}},"required":["resource"]}}}
 LLM_READONLY_SQL_TOOL = {"type":"function","function":{"name":"read_only_sql","description":"İleri seviye salt-okunur veritabanı incelemesi. Yalnızca tek SELECT veya WITH...SELECT sorgusu çalıştırır; yazma/DDL komutları ve izin verilmeyen tablolar reddedilir. Sadece gerektiğinde kullan.","parameters":{"type":"object","properties":{"sql":{"type":"string","description":"Tek bir SELECT veya WITH...SELECT sorgusu"},"limit":{"type":"integer"}},"required":["sql"]}}}
 
 @app.post("/api/symbol-analysis/{symbol}/llm/chat")
