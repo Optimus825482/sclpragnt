@@ -833,7 +833,19 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     snapshot = await symbol_llm_context(symbol, str(body.get("timeframe", "")))
     if not snapshot.get("data_ready"):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
-    return await llm_analysis.chat(snapshot, body.get("messages", []))
+    tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}]
+    async def execute_tool(name, args):
+        if name == "get_symbol_analysis": return await symbol_analysis(symbol, str(args.get("timeframe") or body.get("timeframe") or "5m"))
+        if name == "get_historical_klines":
+            interval = str(args.get("interval") or "5m"); limit = max(1, min(int(args.get("limit", 300)), 1000))
+            rows = await fetch_klines(symbol, interval, limit)
+            return {"symbol": symbol.upper(), "interval": interval, "count": len(rows), "klines": rows}
+        if name == "get_symbol_trades":
+            rows = [r for r in await database.get_trades() if str(r.get("symbol", "")).upper() == symbol.upper()]
+            limited = rows[-max(1, min(int(args.get("limit", 100)), 500)):]
+            return {"count": len(rows), "trades": limited}
+        return {"error": "Bilinmeyen araç"}
+    return await llm_analysis.chat(snapshot, body.get("messages", []), tools, execute_tool)
 
 @app.post("/api/positions/{symbol}/close")
 async def close_position_manual(symbol: str):

@@ -116,10 +116,18 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
     base_url = cfg["provider"]["base_url"].rstrip("/"); url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with urlopen(req, timeout=90) as response: return _decode_provider_response(response.read())
+        with urlopen(req, timeout=45) as response: return _decode_provider_response(response.read())
     try:
+        result = None
+        for attempt in range(2):
+            try:
+                result = await asyncio.to_thread(call)
+                break
+            except TimeoutError:
+                if attempt == 1: raise RuntimeError("LLM gateway zaman aşımına uğradı; istek iki kez denendi")
+                await asyncio.sleep(0.4)
         for _ in range(3):
-            result = await asyncio.to_thread(call); data = result.get("data", result) if isinstance(result, dict) else result
+            data = result.get("data", result) if isinstance(result, dict) else result
             choices = data.get("choices", []) if isinstance(data, dict) else []
             first = choices[0] if choices else {}
             tool_calls = (first.get("message") or {}).get("tool_calls", [])
