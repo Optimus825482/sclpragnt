@@ -33,7 +33,7 @@ type Config = {
 };
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -45,6 +45,8 @@ export default function SettingsPage() {
   const [symbolQuery, setSymbolQuery] = useState("");
   const [backingUp, setBackingUp] = useState(false);
   const [backupDone, setBackupDone] = useState(false);
+  const [llm, setLlm] = useState<any>({ providers: [], models: [], skills: [], active_model_id: null, encryption_configured: false });
+  const [llmForm, setLlmForm] = useState({ name: "OpenAI Compatible", base_url: "", api_key: "", provider_id: "", model: "", skill: "", instructions: "" });
 
   useEffect(() => {
     fetch(`${API_BASE}/api/config`)
@@ -55,6 +57,7 @@ export default function SettingsPage() {
       .then((r) => r.json())
       .then((d) => setMarketSymbols(d.symbols || []))
       .catch(() => setError("Binance TR sembolleri alınamadı"));
+    fetch(`${API_BASE}/api/llm/config`).then((r) => r.json()).then(setLlm).catch(() => undefined);
   }, []);
 
   const save = async () => {
@@ -169,6 +172,7 @@ export default function SettingsPage() {
             ["symbols", "Semboller", "🪙"],
             ["app", "Uygulama Ayarları", "⚙️"],
             ["strategies", "Strateji Ayarları", "📈"],
+            ["llm", "LLM / Provider", "🤖"],
           ] as const).map(([key, label, icon]) => (
             <button key={key} onClick={() => setActiveTab(key)} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${activeTab === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>
               {icon} {label}
@@ -244,6 +248,11 @@ export default function SettingsPage() {
               </div>
               <p className="text-[11px] text-bunker-muted mt-2 font-mono">Başlangıç: 14 gün · minimum ADR %2 · gün içi kullanım en fazla %80 · kalan kapasite en az %1</p>
             </div>
+          </div>
+          <div className={`space-y-4 ${activeTab !== "llm" ? "hidden" : ""}`}>
+            <div className="card bg-bunker-950"><p className="eyebrow mb-3">LLM PROVIDER EKLE</p><p className="text-xs text-bunker-muted mb-3">Yalnızca teknik yorum üretir; emir veya pozisyon kararı vermez.</p><div className="grid md:grid-cols-2 gap-3"><input placeholder="Provider adı" value={llmForm.name} onChange={e => setLlmForm({...llmForm,name:e.target.value})} className="input" /><input placeholder="Base URL (https://.../v1)" value={llmForm.base_url} onChange={e => setLlmForm({...llmForm,base_url:e.target.value})} className="input" /><input type="password" placeholder="API key" value={llmForm.api_key} onChange={e => setLlmForm({...llmForm,api_key:e.target.value})} className="input" /><button onClick={async () => { const r = await fetch(`${API_BASE}/api/llm/providers`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(llmForm)}); if(r.ok) setLlm(await (await fetch(`${API_BASE}/api/llm/config`)).json()); }} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded-lg font-mono text-xs">PROVIDER KAYDET</button></div><p className="text-xs text-bunker-muted mt-3">Şifreleme anahtarı: {llm.encryption_configured ? "hazır" : "sunucuda LLM_ENCRYPTION_KEY eksik"}</p></div>
+            <div className="card bg-bunker-950"><p className="eyebrow mb-3">MODEL / UZMANLIK</p><div className="grid md:grid-cols-2 gap-3"><select value={llmForm.provider_id} onChange={e => setLlmForm({...llmForm,provider_id:e.target.value})} className="input"><option value="">Provider seç</option>{llm.providers.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}</select><input placeholder="Model adı" value={llmForm.model} onChange={e => setLlmForm({...llmForm,model:e.target.value})} className="input" /><button onClick={async () => { await fetch(`${API_BASE}/api/llm/models`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider_id:Number(llmForm.provider_id),name:llmForm.model})}); setLlm(await (await fetch(`${API_BASE}/api/llm/config`)).json()); }} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">MODEL EKLE</button><input placeholder="Uzmanlık adı" value={llmForm.skill} onChange={e => setLlmForm({...llmForm,skill:e.target.value})} className="input" /><textarea placeholder="Uzmanlık talimatları" value={llmForm.instructions} onChange={e => setLlmForm({...llmForm,instructions:e.target.value})} className="input min-h-24" /><button onClick={async () => { await fetch(`${API_BASE}/api/llm/skills`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:llmForm.skill,instructions:llmForm.instructions})}); setLlm(await (await fetch(`${API_BASE}/api/llm/config`)).json()); }} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">UZMANLIK EKLE</button></div></div>
+            <div className="card bg-bunker-950 flex flex-wrap gap-3"><select value={llm.active_model_id || ""} onChange={async e => { await fetch(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:Number(e.target.value)})}); setLlm({...llm,active_model_id:Number(e.target.value)}); }} className="input"><option value="">Aktif model seç</option>{llm.models.map((m:any)=><option key={m.id} value={m.id}>{m.name}</option>)}</select><button onClick={async () => { await fetch(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:llm.active_model_id})}); }} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded-lg font-mono text-xs">LLM AKTİF</button><button onClick={async () => { const r=await fetch(`${API_BASE}/api/llm/test`,{method:"POST"}); alert((await r.json()).status); }} className="px-3 py-2 border border-yellow-400/40 text-yellow-300 rounded-lg font-mono text-xs">TEST ET</button></div>
           </div>
 
           <div className={`card border-neon-red/30 bg-neon-red/5 ${activeTab !== "app" ? "hidden" : ""}`}>

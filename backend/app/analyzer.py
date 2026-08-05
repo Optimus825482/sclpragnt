@@ -657,11 +657,21 @@ class ScalpAnalyzer:
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT"):
         if symbol not in self.positions and len(self.positions) >= self.max_open_positions():
             return None
+        try_balance = await database.get_wallet_balance("TRY")
+        required_full_cash = config.DEFAULT_ORDER_USDT * (1 + config.COMMISSION_PCT)
+        if try_balance >= required_full_cash:
+            order_value = config.DEFAULT_ORDER_USDT
+        else:
+            # Use the remaining cash when it is still economically meaningful;
+            # reserve the entry commission before sizing the paper order.
+            order_value = try_balance / (1 + config.COMMISSION_PCT)
+            if order_value <= config.MIN_PARTIAL_ORDER_TRY:
+                return None
         details = {}
         expected_gross = None
         expected_net = None
         if self.market:
-            liquid, details = self.market.liquidity_status(symbol, config.DEFAULT_ORDER_USDT)
+            liquid, details = self.market.liquidity_status(symbol, order_value)
             if not liquid:
                 failed = [key for key, ok in details.get("checks", {}).items() if not ok]
                 reason = "liquidity_filter:" + ",".join(failed or ["unknown"])
@@ -670,12 +680,13 @@ class ScalpAnalyzer:
                 print(f"[Likidite] {symbol} işlem engellendi: {reason}")
                 await database.save_signal(blocked)
                 return blocked
-            target_value = config.DEFAULT_ORDER_USDT * (1 + config.SPOT_PROFIT_TARGET_PCT)
-            expected_gross = config.DEFAULT_ORDER_USDT * config.SPOT_PROFIT_TARGET_PCT
-            expected_fees = (config.DEFAULT_ORDER_USDT + target_value) * config.COMMISSION_PCT
-            expected_slippage = config.DEFAULT_ORDER_USDT * config.ESTIMATED_SLIPPAGE_PCT * 2
+            target_value = order_value * (1 + config.SPOT_PROFIT_TARGET_PCT)
+            expected_gross = order_value * config.SPOT_PROFIT_TARGET_PCT
+            expected_fees = (order_value + target_value) * config.COMMISSION_PCT
+            expected_slippage = order_value * config.ESTIMATED_SLIPPAGE_PCT * 2
             expected_net = expected_gross - expected_fees - expected_slippage
-            if expected_net < config.MIN_EXPECTED_NET_PNL_TRY:
+            minimum_net = min(config.MIN_EXPECTED_NET_PNL_TRY, order_value * config.MIN_EXPECTED_NET_PNL_TRY / config.DEFAULT_ORDER_USDT)
+            if expected_net < minimum_net:
                 blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                            "reason": "net_profit_filter:expected_net_below_minimum", "strategy": strat_name, "timestamp": time.time()}
                 await database.save_signal(blocked)
@@ -685,7 +696,9 @@ class ScalpAnalyzer:
                          "expected_net_pnl_try": expected_net if self.market else None,
                          "commission_pct": config.COMMISSION_PCT,
                          "estimated_slippage_pct": config.ESTIMATED_SLIPPAGE_PCT,
-                         "profit_target_pct": config.SPOT_PROFIT_TARGET_PCT}
+                         "profit_target_pct": config.SPOT_PROFIT_TARGET_PCT,
+                         "order_value_try": order_value,
+                         "partial_order": order_value < config.DEFAULT_ORDER_USDT}
         if self.market:
             technical_tf = self._strategy_tf(strat_name)
             symbol_klines = {
@@ -696,17 +709,12 @@ class ScalpAnalyzer:
                 symbol, entry_price, symbol_klines,
                 self.market.get_orderflow(symbol),
                 self.market.ticker_24h.get(symbol, 0),
-                config.DEFAULT_ORDER_USDT, technical_tf
+                order_value, technical_tf
             )
-        try_balance = await database.get_wallet_balance("TRY")
-        required_cash = config.DEFAULT_ORDER_USDT * (1 + config.COMMISSION_PCT)
-        if try_balance < required_cash:
-            return None
+        quantity = order_value / entry_price
+        commission = order_value * config.COMMISSION_PCT
 
-        quantity = config.DEFAULT_ORDER_USDT / entry_price
-        commission = config.DEFAULT_ORDER_USDT * config.COMMISSION_PCT
-        
-        await database.update_wallet_balance("TRY", try_balance - config.DEFAULT_ORDER_USDT - commission)
+        await database.update_wallet_balance("TRY", try_balance - order_value - commission)
         await database.update_wallet_balance(symbol.replace("TRY", ""), quantity)
 
         existing = self.positions.get(symbol)

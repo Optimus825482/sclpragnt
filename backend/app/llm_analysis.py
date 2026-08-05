@@ -1,0 +1,33 @@
+import asyncio, base64, json, os, time
+from urllib.request import Request, urlopen
+from cryptography.fernet import Fernet
+from app import database
+
+def _fernet():
+    key = os.getenv("LLM_ENCRYPTION_KEY", "").strip()
+    if not key:
+        raise RuntimeError("LLM_ENCRYPTION_KEY tanımlı değil")
+    return Fernet(key.encode())
+
+def encrypt_key(value): return _fernet().encrypt(value.encode()).decode()
+def decrypt_key(value): return _fernet().decrypt(value.encode()).decode()
+
+async def list_config():
+    return await database.get_llm_config()
+
+async def analyze(snapshot):
+    cfg = await database.get_active_llm_config()
+    if not cfg: return {"enabled": False, "status": "disabled", "text": None}
+    skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
+    system = "You are a crypto scalping technical analyst. Explain only the supplied data. Never invent missing liquidity values. Do not place orders or give execution commands.\n" + skills
+    payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False)}]}
+    url = cfg["provider"]["base_url"].rstrip("/") + "/chat/completions"
+    def call():
+        req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
+        with urlopen(req, timeout=30) as response: return json.loads(response.read().decode())
+    try:
+        result = await asyncio.to_thread(call)
+        text = result["choices"][0]["message"]["content"]
+        return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"], "generated_at": time.time()}
+    except Exception as exc:
+        return {"enabled": True, "status": "error", "text": None, "error": str(exc)}

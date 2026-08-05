@@ -18,6 +18,7 @@ class Config:
     INITIAL_BALANCE_TRY = 10000.0
     # Spot paper işlemlerde varsayılan işlem tutarı (TRY).
     DEFAULT_ORDER_USDT = 500.0
+    MIN_PARTIAL_ORDER_TRY = 100.0
     MAX_OPEN_POSITIONS = 36
     MAX_TICKER_AGE_SEC = 15
     MAX_POSITION_HOLD_SEC = 2 * 60 * 60

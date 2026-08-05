@@ -91,6 +91,23 @@ async def init_db():
                 data TEXT NOT NULL
             )
         """)
+        conn.execute("""CREATE TABLE IF NOT EXISTS llm_providers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, base_url TEXT NOT NULL,
+            api_key_encrypted TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS llm_models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, name TEXT NOT NULL,
+            temperature REAL NOT NULL DEFAULT 0.2, enabled INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL, FOREIGN KEY(provider_id) REFERENCES llm_providers(id) ON DELETE CASCADE
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS llm_skills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, instructions TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS llm_settings (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL
+        )""")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS backtests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -216,6 +233,46 @@ async def update_wallet_balance(asset, amount):
         )
         conn.commit()
 
+    await _run_db(op)
+
+async def get_llm_config():
+    def op(conn):
+        providers = [dict(r) for r in conn.execute("SELECT id,name,base_url,enabled,created_at,updated_at FROM llm_providers ORDER BY id").fetchall()]
+        models = [dict(r) for r in conn.execute("SELECT id,provider_id,name,temperature,enabled,created_at FROM llm_models ORDER BY id").fetchall()]
+        skills = [dict(r) for r in conn.execute("SELECT id,name,instructions,enabled,created_at FROM llm_skills ORDER BY id").fetchall()]
+        active = conn.execute("SELECT value FROM llm_settings WHERE key='active_model_id'").fetchone()
+        return {"providers": providers, "models": models, "skills": skills, "active_model_id": int(active[0]) if active else None}
+    return await _run_db(op)
+
+async def get_active_llm_config():
+    def op(conn):
+        setting = conn.execute("SELECT value FROM llm_settings WHERE key='llm_enabled'").fetchone()
+        if not setting or setting[0] != "1": return None
+        row = conn.execute("SELECT m.*, p.name provider_name,p.base_url,p.api_key_encrypted,p.enabled provider_enabled FROM llm_models m JOIN llm_providers p ON p.id=m.provider_id JOIN llm_settings s ON s.key='active_model_id' AND s.value=CAST(m.id AS TEXT) WHERE m.enabled=1 AND p.enabled=1").fetchone()
+        if not row: return None
+        skills = [dict(r) for r in conn.execute("SELECT id,name,instructions,enabled FROM llm_skills WHERE enabled=1").fetchall()]
+        return {"provider": dict(row), "model": dict(row), "skills": skills}
+    return await _run_db(op)
+
+async def save_llm_provider(name, base_url, encrypted_key):
+    now = time.time()
+    def op(conn):
+        cur = conn.execute("INSERT INTO llm_providers(name,base_url,api_key_encrypted,created_at,updated_at) VALUES(?,?,?,?,?)", (name,base_url,encrypted_key,now,now)); conn.commit(); return cur.lastrowid
+    return await _run_db(op)
+
+async def save_llm_model(provider_id, name, temperature):
+    def op(conn):
+        cur = conn.execute("INSERT INTO llm_models(provider_id,name,temperature) VALUES(?,?,?)", (provider_id,name,temperature)); conn.commit(); return cur.lastrowid
+    return await _run_db(op)
+
+async def save_llm_skill(name, instructions):
+    def op(conn):
+        cur = conn.execute("INSERT OR REPLACE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)", (name,instructions,time.time())); conn.commit(); return cur.lastrowid
+    return await _run_db(op)
+
+async def set_llm_setting(key, value):
+    def op(conn):
+        conn.execute("INSERT INTO llm_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key,str(value))); conn.commit()
     await _run_db(op)
 
 

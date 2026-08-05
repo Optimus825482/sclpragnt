@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 
 const MENU = [
     { href: "/", label: "Scalping", icon: "⚡", desc: "Canlı terminal" },
-    { href: "/portfolio", label: "Portföy", icon: "📊", desc: "Varlıklar & PnL" },
+    { href: "/portfolio", label: "Portföy", icon: "📊", desc: "Varlıklar & PnL", children: [{ href: "/portfolio?tab=history", label: "İşlem Geçmişi" }] },
     { href: "/strategies", label: "Stratejiler", icon: "🧠", desc: "Aktif/pasif & ayarlar" },
     { href: "/gainer-radar", label: "Gainer Radar", icon: "🎯", desc: "Fırsat tarayıcı" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
@@ -54,8 +54,8 @@ export default function Sidebar() {
                 {MENU.map((m) => {
                     const active = pathname === m.href;
                     return (
+                        <div key={m.href}>
                         <Link
-                            key={m.href}
                             href={m.href}
                             className={`block px-3 py-2.5 rounded-lg border transition-colors ${active
                                 ? "bg-neon-green/10 border-neon-green/30"
@@ -70,6 +70,8 @@ export default function Sidebar() {
                             </span>
                             <span className="block text-[11px] text-bunker-muted mt-0.5 ml-7">{m.desc}</span>
                         </Link>
+                        {(m as any).children && (active || open) && <div className="ml-8 mt-1 space-y-1">{(m as any).children.map((child:any) => <Link key={child.href} href={child.href} className={`block px-2 py-1 rounded font-mono text-[11px] ${pathname === "/portfolio" && typeof window !== "undefined" && window.location.search.includes("tab=history") ? "text-neon-green" : "text-bunker-muted hover:text-white"}`}>↳ {child.label}</Link>)}</div>}
+                        </div>
                     );
                 })}
             </nav>

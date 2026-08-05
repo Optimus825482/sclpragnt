@@ -14,6 +14,7 @@ from app import database
 from app.backtest import run_backtest
 from app.binance_tr_public import klines as fetch_klines, trading_symbols, ticker_24h
 from app.technical_analysis import calculate_snapshot
+from app import llm_analysis
 
 app = FastAPI(title="Scalper Agent V4 - Paper Trading")
 cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3004,http://localhost:3000").split(",") if origin.strip()]
@@ -505,6 +506,47 @@ async def symbol_analysis(symbol: str):
     snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, timeframe)
     snapshot["analysis_build"] = "rest-fallback-v4"
     return snapshot
+
+@app.get("/api/llm/config")
+async def llm_config():
+    data = await llm_analysis.list_config()
+    return {**data, "encryption_configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip())}
+
+@app.post("/api/llm/providers")
+async def add_llm_provider(payload: dict):
+    key = str(payload.get("api_key", "")).strip()
+    if not key: return {"ok": False, "error": "API key gerekli"}
+    try:
+        provider_id = await database.save_llm_provider(str(payload.get("name", "Provider")), str(payload.get("base_url", "")).strip(), llm_analysis.encrypt_key(key))
+        return {"ok": True, "provider_id": provider_id}
+    except Exception as exc: return {"ok": False, "error": str(exc)}
+
+@app.post("/api/llm/models")
+async def add_llm_model(payload: dict):
+    try: return {"ok": True, "model_id": await database.save_llm_model(int(payload["provider_id"]), str(payload["name"]), float(payload.get("temperature", 0.2)))}
+    except Exception as exc: return {"ok": False, "error": str(exc)}
+
+@app.post("/api/llm/skills")
+async def add_llm_skill(payload: dict):
+    try: return {"ok": True, "skill_id": await database.save_llm_skill(str(payload["name"]), str(payload["instructions"]))}
+    except Exception as exc: return {"ok": False, "error": str(exc)}
+
+@app.put("/api/llm/active")
+async def activate_llm(payload: dict):
+    await database.set_llm_setting("llm_enabled", "1" if payload.get("enabled") else "0")
+    if payload.get("model_id") is not None: await database.set_llm_setting("active_model_id", payload["model_id"])
+    return {"ok": True}
+
+@app.post("/api/llm/test")
+async def test_llm(payload: dict):
+    result = await llm_analysis.analyze({"test": True, "message": "Return a short technical connectivity confirmation."})
+    return result
+
+@app.post("/api/symbol-analysis/{symbol}/llm")
+async def symbol_analysis_llm(symbol: str):
+    snapshot = await symbol_analysis(symbol)
+    if not snapshot.get("data_ready"): return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
+    return await llm_analysis.analyze(snapshot)
 
 @app.post("/api/positions/{symbol}/close")
 async def close_position_manual(symbol: str):
