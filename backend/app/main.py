@@ -12,7 +12,7 @@ from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app import database
 from app.backtest import run_backtest
-from app.binance_tr_public import trading_symbols, ticker_24h
+from app.binance_tr_public import klines as fetch_klines, trading_symbols, ticker_24h
 from app.technical_analysis import calculate_snapshot
 
 app = FastAPI(title="Scalper Agent V4 - Paper Trading")
@@ -453,6 +453,30 @@ async def get_positions():
 async def symbol_analysis(symbol: str):
     sym = symbol.upper()
     ticker = market.get_ticker(sym)
+    # The analysis page can request a valid market that was not warm when the
+    # process started (or whose websocket stream briefly missed an event).
+    # Hydrate that symbol from the public REST API instead of reporting it as
+    # unknown. This remains read-only and paper-trading safe.
+    if not ticker:
+        try:
+            available = set(await trading_symbols("TRY"))
+            if sym not in available:
+                return {"symbol": sym, "data_ready": False, "error": "Sembol Binance TR'de işlem görmüyor"}
+            rows = await fetch_klines(sym, config.MOMENTUM_TIMEFRAME, limit=300)
+            if rows:
+                hist = market.klines[config.MOMENTUM_TIMEFRAME][sym]
+                hist.clear()
+                for row in rows:
+                    hist["opens"].append(float(row[1]))
+                    hist["highs"].append(float(row[2]))
+                    hist["lows"].append(float(row[3]))
+                    hist["closes"].append(float(row[4]))
+                    hist["volumes"].append(float(row[5]))
+                last_price = float(rows[-1][4])
+                ticker = {"symbol": sym, "last_price": last_price, "timestamp": int(time.time() * 1000)}
+                market.tickers[sym] = ticker
+        except Exception as exc:
+            return {"symbol": sym, "data_ready": False, "error": f"Sembol verisi alınamadı: {exc}"}
     if not ticker:
         return {"symbol": sym, "data_ready": False, "error": "Sembol verisi bulunamadı"}
     timeframe = config.MOMENTUM_TIMEFRAME
