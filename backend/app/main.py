@@ -86,8 +86,8 @@ async def ws_broadcast_loop():
                     })
                     
             await ws_manager.broadcast({
-                "type": "portfolio", 
-                "data": {"try": try_bal, "total_value": total_value, "positions": open_positions}
+                "type": "portfolio",
+                "data": {"try": try_bal, "total_value": total_value, "realized_pnl": await database.get_realized_pnl(), "positions": open_positions}
             })
         await asyncio.sleep(1.0)
 

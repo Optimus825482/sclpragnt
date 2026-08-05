@@ -8,7 +8,10 @@ import tempfile
 
 from app.config import config
 
-DB_NAME = os.getenv("SCALPER_DB_PATH", "scalper_db_v4.sqlite")
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_DB_PATH = os.path.abspath(os.path.join(_APP_DIR, "..", "scalper_db_v4.sqlite"))
+_CONFIGURED_DB_PATH = os.getenv("SCALPER_DB_PATH", "").strip()
+DB_NAME = os.path.abspath(_CONFIGURED_DB_PATH) if _CONFIGURED_DB_PATH else _DEFAULT_DB_PATH
 _DB_LOCK = threading.Lock()
 _DB_CONN: sqlite3.Connection | None = None
 
@@ -249,6 +252,13 @@ async def get_trades():
     def op(conn: sqlite3.Connection):
         rows = conn.execute("SELECT * FROM trades ORDER BY exit_time DESC").fetchall()
         return [dict(r) for r in rows]
+
+    return await _run_db(op)
+
+async def get_realized_pnl():
+    def op(conn: sqlite3.Connection):
+        row = conn.execute("SELECT COALESCE(SUM(pnl), 0) AS pnl FROM trades").fetchone()
+        return float(row["pnl"] or 0.0)
 
     return await _run_db(op)
 

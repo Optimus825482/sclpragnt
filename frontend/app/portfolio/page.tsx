@@ -11,7 +11,7 @@ const STRATEGY_LABEL: Record<string, string> = {
 };
 
 type Position = { symbol: string; entry: number; current: number; pnl_pct: number; pnl_try?: number; value: number; strategy?: string };
-type Portfolio = { try: number; total_value: number; positions: Position[] };
+type Portfolio = { try: number; total_value: number; realized_pnl?: number; positions: Position[] };
 
 export default function PortfolioPage() {
     const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
@@ -36,7 +36,8 @@ export default function PortfolioPage() {
         return () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); };
     }, []);
 
-    const totalPnl = portfolio?.positions.reduce((s, p) => s + (p.current - p.entry) * (p.value / p.current), 0) ?? 0;
+    const unrealizedPnl = portfolio?.positions.reduce((s, p) => s + (p.pnl_try ?? ((p.current - p.entry) * (p.value / p.current))), 0) ?? 0;
+    const totalPnl = (portfolio?.realized_pnl ?? 0) + unrealizedPnl;
     const winRate = portfolio && portfolio.positions.length > 0
         ? (portfolio.positions.filter((p) => p.pnl_pct > 0).length / portfolio.positions.length) * 100
         : 0;
