@@ -126,7 +126,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
             except TimeoutError:
                 if attempt == 1: raise RuntimeError("LLM gateway zaman aşımına uğradı; istek iki kez denendi")
                 await asyncio.sleep(0.4)
-        for _ in range(3):
+        for tool_round in range(3):
             data = result.get("data", result) if isinstance(result, dict) else result
             choices = data.get("choices", []) if isinstance(data, dict) else []
             first = choices[0] if choices else {}
@@ -140,6 +140,10 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
                 tool_result = await tool_executor(name, arguments)
                 conversation.append({"role": "tool", "tool_call_id": call_item.get("id", name), "name": name, "content": json.dumps(tool_result, ensure_ascii=False, default=str)})
             payload["messages"] = conversation
+            # Tool sonucu tek başına kullanıcıya gönderilmez; provider'a geri
+            # gönderilerek nihai Türkçe yanıtın üretilmesi gerekir.
+            if tool_round < 2:
+                result = await asyncio.to_thread(call)
         data = result.get("data", result) if isinstance(result, dict) else result
         if isinstance(data, str):
             try: data = json.loads(data)
