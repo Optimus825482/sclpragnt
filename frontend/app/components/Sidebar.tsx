@@ -10,7 +10,6 @@ const MENU = [
     { href: "/strategies", label: "Stratejiler", icon: "🧠", desc: "Aktif/pasif & ayarlar" },
     { href: "/gainer-radar", label: "Gainer Radar", icon: "🎯", desc: "Fırsat tarayıcı" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
-    { href: "/memory", label: "LLM Hafızası", icon: "🧬", desc: "Embedding & retrieval" },
     { href: "/backtest", label: "Backtest", icon: "🧪", desc: "Strateji test lab" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
     { href: "/symbol-analysis", label: "Sembol Analizi", icon: "🔬", desc: "Teknik göstergeler" },
