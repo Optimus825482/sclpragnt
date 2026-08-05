@@ -21,10 +21,11 @@ async def analyze(snapshot):
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
     system = "You are a crypto scalping technical analyst. Explain only the supplied data. Never invent missing liquidity values. Do not place orders or give execution commands.\n" + skills
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False)}]}
-    url = cfg["provider"]["base_url"].rstrip("/") + "/chat/completions"
+    base_url = cfg["provider"]["base_url"].rstrip("/")
+    url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with urlopen(req, timeout=30) as response: return json.loads(response.read().decode())
+        with urlopen(req, timeout=90) as response: return json.loads(response.read().decode())
     try:
         result = await asyncio.to_thread(call)
         text = result["choices"][0]["message"]["content"]

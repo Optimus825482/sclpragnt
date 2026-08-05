@@ -586,7 +586,7 @@ async def activate_llm(payload: dict):
 
 @app.post("/api/llm/test")
 async def test_llm(payload: dict = None):
-    result = await llm_analysis.analyze({"test": True, "message": "Return a short technical connectivity confirmation."})
+    result = await llm_analysis.analyze({"test": True, "message": "Return exactly: CONNECTION_OK"})
     return result
 
 @app.post("/api/symbol-analysis/{symbol}/llm")
