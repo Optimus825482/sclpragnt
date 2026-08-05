@@ -68,6 +68,16 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 }
 
 .ui-card { @apply bg-bunker-900/90 border border-bunker-800 rounded-xl p-5; box-shadow: 0 10px 30px rgb(0 0 0 / .12); }
+.ui-section-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.ui-section-header h2 { margin-top: .35rem; color: white; font: 600 1rem/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ui-section-description { margin-top: .4rem; color: rgb(148 163 184); font-size: .78rem; line-height: 1.5; }
+.ui-section-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.ui-badge { display: inline-flex; align-items: center; min-height: 1.5rem; padding: .2rem .55rem; border: 1px solid transparent; border-radius: 999px; font: 600 .65rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+.ui-badge-neutral { color: #cbd5e1; background: rgb(51 65 85 / .45); border-color: rgb(71 85 105 / .6); }
+.ui-badge-positive { color: #79f2b4; background: rgb(16 185 129 / .12); border-color: rgb(52 211 153 / .3); }
+.ui-badge-negative { color: #fda4af; background: rgb(244 63 94 / .12); border-color: rgb(244 63 94 / .3); }
+.ui-badge-warning { color: #fde68a; background: rgb(234 179 8 / .12); border-color: rgb(250 204 21 / .3); }
+.ui-badge-info { color: #93c5fd; background: rgb(59 130 246 / .12); border-color: rgb(96 165 250 / .3); }
 .ui-button { min-height: 2.5rem; padding: .65rem .9rem; border-radius: .65rem; border: 1px solid transparent; font: 600 .72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; transition: background-color 160ms ease-out, border-color 160ms ease-out, color 160ms ease-out, transform 160ms ease-out; }
 .ui-button:active { transform: scale(.97); }
 .ui-button:disabled { cursor: not-allowed; opacity: .5; }
@@ -91,6 +101,7 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .ui-tabs button:hover { color: white; background: rgb(31 41 55 / .55); }
 .ui-tabs button:active { transform: scale(.97); }
 .ui-tabs button.active { color: #79f2b4; background: linear-gradient(180deg, rgb(16 185 129 / .2), rgb(16 185 129 / .08)); box-shadow: inset 0 0 0 1px rgb(52 211 153 / .45), 0 2px 8px rgb(16 185 129 / .12); }
+.ui-tabs button:focus-visible, .ui-button:focus-visible, .input:focus-visible { outline: 2px solid rgb(52 211 153 / .8); outline-offset: 2px; }
 
 .mobile-menu-button, .mobile-menu-backdrop { display: none; }
 
@@ -109,6 +120,8 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .card { padding: 1rem; border-radius: .75rem; }
   .page-heading h1 { font-size: 1.15rem; }
   .ui-stat-value { font-size: 1.35rem; }
+  .ui-section-header { flex-direction: column; }
+  .ui-section-actions { width: 100%; }
   .data-table th, .data-table td { padding: .7rem .75rem; }
   h1 { font-size: 1rem; }
   table { min-width: 680px; }
