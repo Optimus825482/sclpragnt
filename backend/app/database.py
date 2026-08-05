@@ -341,6 +341,29 @@ async def update_wallet_balance(asset, amount):
 
     await _run_db(op)
 
+def _chronological_overallocation_candidates(conn):
+    """Return only positions whose opening event made the ledger insolvent."""
+    cash = float(config.INITIAL_BALANCE_TRY)
+    events = []
+    trades = conn.execute("SELECT entry_time,exit_time,entry_price,quantity,pnl FROM trades").fetchall()
+    for row in trades:
+        cost = float(row[2] or 0) * float(row[3] or 0)
+        events.append((float(row[0] or 0), 0, "debit", None, cost * (1 + config.COMMISSION_PCT)))
+        events.append((float(row[1] or 0), 1, "credit", None, cost + float(row[4] or 0)))
+    positions = conn.execute("SELECT symbol,entry_time,entry_price,quantity FROM positions").fetchall()
+    for row in positions:
+        cost = float(row[2] or 0) * float(row[3] or 0)
+        events.append((float(row[1] or 0), 0, "open", row, cost * (1 + config.COMMISSION_PCT)))
+    candidates = []
+    for _, _, kind, row, amount in sorted(events, key=lambda item: (item[0], item[1])):
+        if kind == "credit":
+            cash += amount
+        else:
+            cash -= amount
+            if kind == "open" and cash < -0.01:
+                candidates.append({"symbol": row[0], "entry_time": row[1], "entry_price": row[2], "quantity": row[3], "cost": float(row[2] or 0) * float(row[3] or 0), "reason": "entry_cash_was_insufficient"})
+    return candidates
+
 async def reconcile_portfolio():
     """Rebuild TRY cash and remove only over-allocated newest open positions."""
     def op(conn):
@@ -351,11 +374,10 @@ async def reconcile_portfolio():
         entry_commission = open_cost * config.COMMISSION_PCT
         after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
         removed = []
-        if after < 0:
-            rows = conn.execute("SELECT symbol,entry_time,entry_price,quantity FROM positions ORDER BY entry_time DESC").fetchall()
-            for row in rows:
-                if after >= 0: break
-                symbol, entry_time, entry_price, quantity = row[0], row[1], row[2], row[3]
+        candidates = _chronological_overallocation_candidates(conn)
+        if candidates:
+            for candidate in candidates:
+                symbol, entry_time, entry_price, quantity = candidate["symbol"], candidate["entry_time"], candidate["entry_price"], candidate["quantity"]
                 position_cost = float(entry_price or 0) * float(quantity or 0)
                 conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
                 # Remove only the opening signal/log tied to this position.
@@ -365,6 +387,8 @@ async def reconcile_portfolio():
                 open_cost -= position_cost
                 entry_commission = open_cost * config.COMMISSION_PCT
                 after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
+            # A valid partial position opened from remaining cash must never be
+            # removed merely because later mark-to-market PnL changed.
             if removed:
                 open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
                 entry_commission = open_cost * config.COMMISSION_PCT
@@ -384,15 +408,12 @@ async def preview_portfolio_reconcile():
         realized = float(conn.execute("SELECT COALESCE(SUM(pnl),0) FROM trades").fetchone()[0] or 0)
         open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
         after = config.INITIAL_BALANCE_TRY + realized - open_cost - open_cost * config.COMMISSION_PCT
-        candidates = []
-        for row in conn.execute("SELECT symbol,entry_time,entry_price,quantity FROM positions ORDER BY entry_time DESC").fetchall():
-            if after >= 0: break
-            cost = float(row[2] or 0) * float(row[3] or 0)
-            candidates.append({"symbol": row[0], "entry_time": row[1], "entry_price": row[2], "quantity": row[3], "cost": cost})
-            open_cost -= cost
-            after = config.INITIAL_BALANCE_TRY + realized - open_cost - open_cost * config.COMMISSION_PCT
-        return {"would_remove": candidates, "projected_try": after, "realized_pnl": realized,
-                "open_entry_cost": open_cost, "requires_confirmation": bool(candidates)}
+        candidates = _chronological_overallocation_candidates(conn)
+        projected_open_cost = open_cost - sum(float(item["cost"] or 0) for item in candidates)
+        projected_try = config.INITIAL_BALANCE_TRY + realized - projected_open_cost - projected_open_cost * config.COMMISSION_PCT
+        return {"would_remove": candidates, "projected_try": projected_try, "realized_pnl": realized,
+                "open_entry_cost": projected_open_cost,
+                "requires_confirmation": bool(candidates)}
     return await _run_db(op)
 
 async def get_llm_config():

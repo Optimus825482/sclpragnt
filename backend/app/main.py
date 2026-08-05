@@ -2,6 +2,7 @@ import os
 import asyncio
 import time
 import subprocess
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
