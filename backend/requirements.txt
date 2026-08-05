@@ -9,3 +9,5 @@ python-dotenv
 pydantic
 aiosqlite
 cryptography
+asyncpg
+psycopg[binary]

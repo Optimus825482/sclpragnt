@@ -14,6 +14,15 @@ body {
   overflow-x: hidden;
 }
 
+.app-sidebar { position: sticky; top: 0; height: 100dvh; max-height: 100dvh; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.section-tabs { display: flex; gap: .5rem; overflow-x: auto; padding: .25rem; border: 1px solid rgb(31 41 55); border-radius: .75rem; background: rgb(5 8 13 / .72); scrollbar-width: none; }
+.section-tabs::-webkit-scrollbar { display: none; }
+.section-tabs button { flex: 0 0 auto; min-height: 2.75rem; padding: .65rem .9rem; border-radius: .55rem; color: rgb(148 163 184); font: 600 .72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; transition: color 160ms ease-out, background-color 160ms ease-out, transform 160ms ease-out; }
+.section-tabs button:hover { color: white; background: rgb(31 41 55 / .55); }
+.section-tabs button:active { transform: scale(.97); }
+.section-tabs button.active { color: #79f2b4; background: rgb(16 185 129 / .13); box-shadow: inset 0 0 0 1px rgb(16 185 129 / .3); }
+.report-stat { min-height: 7.2rem; }
+
 button, a, select, input, textarea { -webkit-tap-highlight-color: transparent; }
 button, a { touch-action: manipulation; }
 .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
@@ -41,4 +50,9 @@ button, a { touch-action: manipulation; }
   table { min-width: 680px; }
   .table-scroll { position: relative; }
   .mobile-menu-button { top: calc(12px + env(safe-area-inset-top)); }
+  .app-sidebar { position: fixed; height: 100dvh; max-height: 100dvh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .section-tabs button, .app-sidebar { transition: none !important; }
 }

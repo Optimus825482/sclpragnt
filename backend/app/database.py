@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 import tempfile
+import re
 
 from app.config import config
 
@@ -14,10 +15,60 @@ _CONFIGURED_DB_PATH = os.getenv("SCALPER_DB_PATH", "").strip()
 DB_NAME = os.path.abspath(_CONFIGURED_DB_PATH) if _CONFIGURED_DB_PATH else _DEFAULT_DB_PATH
 _DB_LOCK = threading.Lock()
 _DB_CONN: sqlite3.Connection | None = None
+_PG_CONN = None
+
+def _json_value(value, fallback):
+    if value in (None, ""): return fallback
+    if isinstance(value, (dict, list)): return value
+    try: return json.loads(value)
+    except (TypeError, json.JSONDecodeError): return fallback
+
+class _PostgresCompat:
+    def __init__(self, conn): self.conn = conn
+    def execute(self, sql, params=()):
+        sql = sql.replace("?", "%s")
+        sql = re.sub(r"\b([mp])\.enabled\s*=\s*1\b", r"\1.enabled=TRUE", sql, flags=re.I)
+        sql = re.sub(r"\benabled\s*=\s*1\b", "enabled=TRUE", sql, flags=re.I)
+        was_ignore = bool(re.search(r"INSERT OR IGNORE INTO", sql, flags=re.I))
+        sql = re.sub(r"INSERT OR IGNORE INTO", "INSERT INTO", sql, flags=re.I)
+        if was_ignore and "ON CONFLICT" not in sql.upper(): sql += " ON CONFLICT DO NOTHING"
+        sql = re.sub(r"INSERT OR REPLACE INTO positions", "INSERT INTO positions", sql, flags=re.I)
+        sql = re.sub(r"INSERT OR REPLACE INTO llm_skills", "INSERT INTO llm_skills", sql, flags=re.I)
+        if "INSERT INTO llm_skills" in sql.upper() and "ON CONFLICT" not in sql.upper(): sql += " ON CONFLICT(name) DO UPDATE SET instructions=EXCLUDED.instructions,enabled=EXCLUDED.enabled,created_at=EXCLUDED.created_at"
+        if "INSERT INTO positions" in sql.upper() and "ON CONFLICT" not in sql.upper():
+            sql += " ON CONFLICT(symbol) DO UPDATE SET side=EXCLUDED.side,entry_price=EXCLUDED.entry_price,stop_price=EXCLUDED.stop_price,take_profit=EXCLUDED.take_profit,peak_price=EXCLUDED.peak_price,breakeven_hit=EXCLUDED.breakeven_hit,quantity=EXCLUDED.quantity,entry_time=EXCLUDED.entry_time,strategy=EXCLUDED.strategy,entry_context=EXCLUDED.entry_context"
+        cur = self.conn.cursor(); cur.execute(sql, params); return cur
+    def executemany(self, sql, params):
+        sql = sql.replace("?", "%s"); cur = self.conn.cursor(); cur.executemany(sql, params); return cur
+    def commit(self): self.conn.commit()
+    def rollback(self): self.conn.rollback()
+    def close(self): self.conn.close()
+
+class _HybridRow(dict):
+    def __getitem__(self, key):
+        if isinstance(key, int): return list(self.values())[key]
+        return super().__getitem__(key)
+
+def _hybrid_row_factory(cursor):
+    if cursor.description is None:
+        return lambda values: values
+    names = [col.name for col in cursor.description]
+    return lambda values: _HybridRow(zip(names, values))
+
+def _postgres_enabled(): return os.getenv("DB_BACKEND", "sqlite").lower() == "postgres"
 
 
 def _get_connection() -> sqlite3.Connection:
     global _DB_CONN
+    if _postgres_enabled():
+        global _PG_CONN
+        if _PG_CONN is None:
+            try:
+                import psycopg
+                _PG_CONN = _PostgresCompat(psycopg.connect(os.environ["DATABASE_URL"], row_factory=_hybrid_row_factory))
+            except Exception as exc:
+                raise RuntimeError(f"PostgreSQL bağlantısı kurulamadı: {exc}") from exc
+        return _PG_CONN
     if _DB_CONN is None:
         _DB_CONN = sqlite3.connect(DB_NAME, check_same_thread=False)
         _DB_CONN.row_factory = sqlite3.Row
@@ -34,10 +85,25 @@ async def _run_db(operation):
 def _execute(operation):
     with _DB_LOCK:
         conn = _get_connection()
-        return operation(conn)
+        try:
+            return operation(conn)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
 
 
 async def init_db():
+    if _postgres_enabled():
+        def pg_op(conn):
+            schema_path = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations", "001_pgvector_schema.sql"))
+            with open(schema_path, encoding="utf-8") as schema_file:
+                conn.conn.execute(schema_file.read())
+            conn.conn.commit()
+        await _run_db(pg_op)
+        return
     def op(conn: sqlite3.Connection):
         conn.execute("""
             CREATE TABLE IF NOT EXISTS positions (
@@ -114,9 +180,14 @@ async def init_db():
         )""")
         conn.execute("""CREATE TABLE IF NOT EXISTS llm_models (
             id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, name TEXT NOT NULL,
-            temperature REAL NOT NULL DEFAULT 0.2, enabled INTEGER NOT NULL DEFAULT 1,
+            temperature REAL NOT NULL DEFAULT 0.2, model_type TEXT NOT NULL DEFAULT 'chat',
+            dimensions INTEGER, embedding_metric TEXT NOT NULL DEFAULT 'cosine',
+            enabled INTEGER NOT NULL DEFAULT 1,
             created_at REAL NOT NULL, FOREIGN KEY(provider_id) REFERENCES llm_providers(id) ON DELETE CASCADE
         )""")
+        for col in ("model_type TEXT NOT NULL DEFAULT 'chat'", "dimensions INTEGER", "embedding_metric TEXT NOT NULL DEFAULT 'cosine'"):
+            try: conn.execute(f"ALTER TABLE llm_models ADD COLUMN {col}"); conn.commit()
+            except sqlite3.OperationalError: pass
         conn.execute("""CREATE TABLE IF NOT EXISTS llm_skills (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, instructions TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL
@@ -265,7 +336,7 @@ async def update_wallet_balance(asset, amount):
 async def get_llm_config():
     def op(conn):
         providers = [dict(r) for r in conn.execute("SELECT id,name,base_url,enabled,created_at,updated_at FROM llm_providers ORDER BY id").fetchall()]
-        models = [dict(r) for r in conn.execute("SELECT id,provider_id,name,temperature,enabled,created_at FROM llm_models ORDER BY id").fetchall()]
+        models = [dict(r) for r in conn.execute("SELECT id,provider_id,name,temperature,model_type,dimensions,embedding_metric,enabled,created_at FROM llm_models ORDER BY id").fetchall()]
         skills = [dict(r) for r in conn.execute("SELECT id,name,instructions,enabled,created_at FROM llm_skills ORDER BY id").fetchall()]
         active = conn.execute("SELECT value FROM llm_settings WHERE key='active_model_id'").fetchone()
         return {"providers": providers, "models": models, "skills": skills, "active_model_id": int(active[0]) if active else None}
@@ -275,10 +346,19 @@ async def get_active_llm_config():
     def op(conn):
         setting = conn.execute("SELECT value FROM llm_settings WHERE key='llm_enabled'").fetchone()
         if not setting or setting[0] != "1": return None
-        row = conn.execute("SELECT m.*, p.name provider_name,p.base_url,p.api_key_encrypted,p.enabled provider_enabled FROM llm_models m JOIN llm_providers p ON p.id=m.provider_id JOIN llm_settings s ON s.key='active_model_id' AND s.value=CAST(m.id AS TEXT) WHERE m.enabled=1 AND p.enabled=1").fetchone()
+        row = conn.execute("SELECT m.*, p.name provider_name,p.base_url,p.api_key_encrypted,p.enabled provider_enabled FROM llm_models m JOIN llm_providers p ON p.id=m.provider_id JOIN llm_settings s ON s.key='active_model_id' AND s.value=CAST(m.id AS TEXT) WHERE m.enabled=1 AND p.enabled=1 AND m.model_type='chat'").fetchone()
         if not row: return None
         skills = [dict(r) for r in conn.execute("SELECT id,name,instructions,enabled FROM llm_skills WHERE enabled=1").fetchall()]
         return {"provider": dict(row), "model": dict(row), "skills": skills}
+    return await _run_db(op)
+
+async def get_embedding_llm_config(model_id=None):
+    def op(conn):
+        query = "SELECT m.*, p.name provider_name,p.base_url,p.api_key_encrypted,p.enabled provider_enabled FROM llm_models m JOIN llm_providers p ON p.id=m.provider_id WHERE m.enabled=1 AND p.enabled=1 AND m.model_type='embedding'"
+        args = []
+        if model_id is not None: query += " AND m.id=?"; args.append(int(model_id))
+        row = conn.execute(query + " ORDER BY m.id LIMIT 1", args).fetchone()
+        return {"provider": dict(row), "model": dict(row)} if row else None
     return await _run_db(op)
 
 async def save_llm_provider(name, base_url, encrypted_key):
@@ -287,9 +367,9 @@ async def save_llm_provider(name, base_url, encrypted_key):
         cur = conn.execute("INSERT INTO llm_providers(name,base_url,api_key_encrypted,created_at,updated_at) VALUES(?,?,?,?,?)", (name,base_url,encrypted_key,now,now)); conn.commit(); return cur.lastrowid
     return await _run_db(op)
 
-async def save_llm_model(provider_id, name, temperature):
+async def save_llm_model(provider_id, name, temperature, model_type="chat", dimensions=None, embedding_metric="cosine"):
     def op(conn):
-        cur = conn.execute("INSERT INTO llm_models(provider_id,name,temperature,created_at) VALUES(?,?,?,?)", (provider_id,name,temperature,time.time())); conn.commit(); return cur.lastrowid
+        cur = conn.execute("INSERT INTO llm_models(provider_id,name,temperature,model_type,dimensions,embedding_metric,created_at) VALUES(?,?,?,?,?,?,?)", (provider_id,name,temperature,model_type,dimensions,embedding_metric,time.time())); conn.commit(); return cur.lastrowid
     return await _run_db(op)
 
 async def save_llm_skill(name, instructions):
@@ -312,9 +392,13 @@ async def delete_llm_provider(provider_id):
         conn.execute("DELETE FROM llm_providers WHERE id=?", (provider_id,)); conn.commit()
     await _run_db(op)
 
-async def update_llm_model(model_id, name, temperature):
+async def update_llm_model(model_id, name, temperature, model_type=None, dimensions=None, embedding_metric=None):
     def op(conn):
-        conn.execute("UPDATE llm_models SET name=?,temperature=? WHERE id=?", (name,temperature,model_id)); conn.commit()
+        if model_type is None:
+            conn.execute("UPDATE llm_models SET name=?,temperature=? WHERE id=?", (name,temperature,model_id))
+        else:
+            conn.execute("UPDATE llm_models SET name=?,temperature=?,model_type=?,dimensions=?,embedding_metric=? WHERE id=?", (name,temperature,model_type,dimensions,embedding_metric or "cosine",model_id))
+        conn.commit()
     await _run_db(op)
 
 async def delete_llm_model(model_id):
@@ -348,7 +432,7 @@ async def load_positions():
                 "take_profit": row[4], "peak_price": row[5], "breakeven_hit": bool(row[6]),
                 "quantity": row[7], "entry_time": row[8] if len(row) > 8 else None,
                 "strategy": row[9] if len(row) > 9 else None,
-                "entry_context": json.loads(row[10]) if len(row) > 10 and row[10] else {},
+                "entry_context": _json_value(row[10] if len(row) > 10 else None, {}),
             }
         return positions
 
@@ -431,8 +515,45 @@ async def save_signal(sig):
              sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str))
         )
         conn.commit()
-
     await _run_db(op)
+    try:
+        from app.embedding_worker import worker, signal_document
+        worker.enqueue_nowait(signal_document(sig))
+    except Exception:
+        pass
+
+async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, sig):
+    """Atomically persist wallet balances, position and opening decision."""
+    def op(conn):
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", cash_amount))
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, asset_amount))
+        conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), int(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {}))))
+        conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason) VALUES(?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason")))
+        conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
+        conn.commit()
+    await _run_db(op)
+    try:
+        from app.embedding_worker import worker, trade_document
+        worker.enqueue_nowait(trade_document("entry", symbol, pos, sig))
+    except Exception: pass
+
+async def commit_close_position(symbol, asset, cash_amount, trade, sig):
+    """Atomically persist close proceeds, trade, position deletion and signal."""
+    def op(conn):
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", cash_amount))
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, 0.0))
+        conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds")))
+        conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
+        conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason) VALUES(?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason")))
+        conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), trade.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
+        conn.commit()
+    await _run_db(op)
+    try:
+        from app.embedding_worker import worker, trade_document
+        worker.enqueue_nowait(trade_document("exit", symbol, trade, sig))
+    except Exception: pass
 
 
 async def get_signals(limit: int = 100):
@@ -458,7 +579,7 @@ async def get_decision_logs(limit=500, symbol=None, strategy=None):
         rows = conn.execute(f"SELECT * FROM decision_logs{where} ORDER BY timestamp DESC LIMIT ?", values).fetchall()
         result = [dict(r) for r in rows]
         for row in result:
-            try: row["metadata"] = json.loads(row["metadata"]) if row.get("metadata") else {}
+            try: row["metadata"] = _json_value(row.get("metadata"), {})
             except (TypeError, json.JSONDecodeError): pass
         return result
     return await _run_db(op)
@@ -481,7 +602,7 @@ async def get_llm_tool_logs(limit=500):
         rows = conn.execute("SELECT * FROM llm_tool_logs ORDER BY timestamp DESC LIMIT ?", (max(1, min(int(limit), 1000)),)).fetchall()
         result = [dict(r) for r in rows]
         for row in result:
-            try: row["arguments"] = json.loads(row["arguments"]) if row.get("arguments") else {}
+            try: row["arguments"] = _json_value(row.get("arguments"), {})
             except (TypeError, json.JSONDecodeError): pass
         return result
     return await _run_db(op)
@@ -490,7 +611,7 @@ async def get_llm_tool_logs(limit=500):
 async def get_chart_settings(symbol):
     def op(conn: sqlite3.Connection):
         row = conn.execute("SELECT data FROM chart_settings WHERE symbol=?", (symbol,)).fetchone()
-        return json.loads(row[0]) if row else None
+        return _json_value(row[0], None) if row else None
 
     return await _run_db(op)
 
@@ -535,8 +656,8 @@ async def get_backtests(limit=50):
         out = []
         for r in rows:
             d = dict(r)
-            d["params"] = json.loads(d["params"]) if d["params"] else {}
-            d["trades"] = json.loads(d["trades"]) if d["trades"] else []
+            d["params"] = _json_value(d.get("params"), {})
+            d["trades"] = _json_value(d.get("trades"), [])
             out.append(d)
         return out
 
@@ -556,5 +677,6 @@ async def close_db():
         conn.close()
 
     await _run_db(op)
-    global _DB_CONN
+    global _DB_CONN, _PG_CONN
     _DB_CONN = None
+    _PG_CONN = None

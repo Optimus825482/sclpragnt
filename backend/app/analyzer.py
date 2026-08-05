@@ -609,11 +609,10 @@ class ScalpAnalyzer:
         sell_value = pos["quantity"] * price
         commission = sell_value * config.COMMISSION_PCT
         try_balance = await database.get_wallet_balance("TRY")
-        await database.update_wallet_balance("TRY", try_balance + sell_value - commission)
-        await database.update_wallet_balance(symbol.replace("TRY", ""), 0.0)
-        await self._record_trade(symbol, pos, price, reason, commission)
+        trade = await self._record_trade(symbol, pos, price, reason, commission)
+        sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price, "timestamp": time.time()}
+        await database.commit_close_position(symbol, symbol.replace("TRY", ""), try_balance + sell_value - commission, trade, sig)
         del self.positions[symbol]
-        await database.delete_position(symbol)
         tf = self._strategy_tf(pos.get("strategy", "UT"))
         current_bar = self._current_bar(symbol, tf)
         if current_bar is not None:
@@ -622,8 +621,6 @@ class ScalpAnalyzer:
             self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
         elif reason == "hard_stop_loss":
             self._hard_stop_block_until[symbol] = time.time() + config.HARD_STOP_REENTRY_BLOCK_SEC
-        sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price, "timestamp": time.time()}
-        await database.save_signal(sig)
         return sig
 
     async def _record_trade(self, symbol, pos, exit_price, reason, commission=0.0):
@@ -636,7 +633,7 @@ class ScalpAnalyzer:
         hold_seconds = max(0.0, time.time() - pos.get("entry_time", time.time()))
         max_favorable_pct = ((pos.get("max_price", entry) - entry) / entry) if entry else 0.0
         max_adverse_pct = ((pos.get("min_price", entry) - entry) / entry) if entry else 0.0
-        await database.save_trade({
+        return {
             "symbol": symbol, "strategy": pos.get("strategy", "UT"),
             "side": pos.get("side", "LONG"), "entry_price": entry, "exit_price": exit_price,
             "quantity": pos.get("quantity", 0.0), "pnl": pnl, "pnl_pct": pnl_pct,
@@ -646,7 +643,7 @@ class ScalpAnalyzer:
             "max_favorable_pct": max_favorable_pct,
             "max_adverse_pct": max_adverse_pct,
             "hold_seconds": hold_seconds,
-        })
+        }
 
     async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT"):
         # Strategy loop ve Gainer Radar aynı anda aynı sembolü tetikleyebilir.
@@ -714,8 +711,7 @@ class ScalpAnalyzer:
         quantity = order_value / entry_price
         commission = order_value * config.COMMISSION_PCT
 
-        await database.update_wallet_balance("TRY", try_balance - order_value - commission)
-        await database.update_wallet_balance(symbol.replace("TRY", ""), quantity)
+        next_cash = try_balance - order_value - commission
 
         existing = self.positions.get(symbol)
         if existing:
@@ -731,9 +727,7 @@ class ScalpAnalyzer:
                 "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
             }
         self.positions[symbol] = pos
-        await database.save_position(symbol, pos)
-        
         sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": strat_name, "timestamp": time.time()}
-        await database.save_signal(sig)
+        await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
         return sig
 

@@ -3,6 +3,35 @@ from urllib.request import Request, urlopen
 from cryptography.fernet import Fernet
 from app import database
 
+PERSONA = """Persona adın Scalper. Bu uygulamanın yetkili kullanıcısı Admin Erkan'dır ve onunla Türkçe, doğrudan ve teknik bir çalışma arkadaşı gibi iletişim kurarsın. Admin Erkan'ın talimatlarını mevcut sistem kapsamı içinde uygularsın; kimlik, yetki veya kişisel bilgi uydurmazsın. Paper-trading güvenlik kurallarını aşmayı önermezsin."""
+
+def _decode_provider_response(raw):
+    """Decode normal JSON, NDJSON and providers that append a second JSON object."""
+    if isinstance(raw, (dict, list)): return raw
+    text = raw.decode("utf-8-sig", errors="replace") if isinstance(raw, bytes) else str(raw)
+    text = text.strip()
+    try: return json.loads(text)
+    except json.JSONDecodeError as first_error:
+        decoder = json.JSONDecoder()
+        objects = []
+        cursor = 0
+        while cursor < len(text):
+            while cursor < len(text) and text[cursor].isspace(): cursor += 1
+            if cursor >= len(text): break
+            try:
+                item, end = decoder.raw_decode(text, cursor)
+                objects.append(item); cursor = end
+            except json.JSONDecodeError:
+                # Ignore non-JSON trailing log/proxy text after a valid object.
+                if objects: break
+                raise first_error
+        if len(objects) == 1: return objects[0]
+        for item in objects:
+            candidate = item.get("data", item) if isinstance(item, dict) else item
+            if isinstance(candidate, dict) and (candidate.get("choices") or candidate.get("output_text") or candidate.get("response")):
+                return candidate
+        return objects[0] if objects else text
+
 def _fernet():
     key = os.getenv("LLM_ENCRYPTION_KEY", "").strip()
     if not key:
@@ -19,13 +48,13 @@ async def analyze(snapshot):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = "Sen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Yanıtını piyasa rejimi, kanıtlar, riskler, veri eksikleri ve güven seviyesi başlıklarıyla açıkla. Bu sistem paper trading kullanır.\n" + skills
+    system = PERSONA + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Yanıtını piyasa rejimi, kanıtlar, riskler, veri eksikleri ve güven seviyesi başlıklarıyla açıkla. Bu sistem paper trading kullanır.\n" + skills
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False)}]}
     base_url = cfg["provider"]["base_url"].rstrip("/")
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with urlopen(req, timeout=90) as response: return json.loads(response.read().decode())
+        with urlopen(req, timeout=90) as response: return _decode_provider_response(response.read())
     try:
         result = await asyncio.to_thread(call)
         # Some compatible gateways wrap the upstream response in {success, data}.
@@ -52,11 +81,34 @@ async def analyze(snapshot):
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}
 
+async def embedding(text, model_id=None):
+    cfg = await database.get_embedding_llm_config(model_id)
+    if not cfg: return {"status": "disabled", "error": "Aktif LLM yapılandırması yok"}
+    model = cfg["model"]
+    if model.get("model_type", "chat") != "embedding":
+        return {"status": "error", "error": "Aktif model embedding modeli değil"}
+    payload = {"model": model["name"], "input": text}
+    base_url = cfg["provider"]["base_url"].rstrip("/")
+    url = base_url if base_url.endswith("/embeddings") else base_url + "/embeddings"
+    def call():
+        req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
+        with urlopen(req, timeout=30) as response: return _decode_provider_response(response.read())
+    try:
+        result = await asyncio.to_thread(call); data = result.get("data", result) if isinstance(result, dict) else result
+        vector = data[0].get("embedding") if isinstance(data, list) and data else None
+        if vector is None and isinstance(data, dict): vector = data.get("embedding")
+        if not isinstance(vector, list) or not vector: raise RuntimeError("Provider embedding yanıtında vector bulunamadı")
+        expected = model.get("dimensions") or 2048
+        if expected and len(vector) != int(expected): raise RuntimeError(f"Dimension uyumsuzluğu: beklenen {expected}, gelen {len(vector)}")
+        return {"status":"ok", "model":model["name"], "model_id":model.get("id"), "dimensions":len(vector), "vector":vector, "latency_ms":None}
+    except Exception as exc:
+        return {"status":"error", "error":str(exc), "model":model.get("name")}
+
 async def chat(snapshot, messages, tools=None, tool_executor=None):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = "Sen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. İşlem, sinyal veya ayar bilgisi gerekiyorsa mevcut araçlardan uygun olanı çağır; araç çağırmadan veri uydurma. Kullanıcı istemedikçe geçmiş verileri çekme. Gerçek emir veya yatırım talimatı verme; bu sistem paper trading kullanır.\n" + skills
+    system = PERSONA + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. İşlem, sinyal veya ayar bilgisi gerekiyorsa mevcut araçlardan uygun olanı çağır; araç çağırmadan veri uydurma. Kullanıcı istemedikçe geçmiş verileri çekme. Bu sistem paper trading kullanır.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False)}]
     conversation.extend([{"role": str(m.get("role", "user")), "content": str(m.get("content", ""))} for m in (messages or [])[-12:]])
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation}
@@ -64,7 +116,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
     base_url = cfg["provider"]["base_url"].rstrip("/"); url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with urlopen(req, timeout=90) as response: return json.loads(response.read().decode())
+        with urlopen(req, timeout=90) as response: return _decode_provider_response(response.read())
     try:
         for _ in range(3):
             result = await asyncio.to_thread(call); data = result.get("data", result) if isinstance(result, dict) else result

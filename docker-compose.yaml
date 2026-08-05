@@ -1,10 +1,27 @@
 services:
+  postgres:
+    profiles: ["postgres"]
+    image: pgvector/pgvector:pg17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-scalper}
+      POSTGRES_USER: ${POSTGRES_USER:-scalper}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-change-me}
+    volumes:
+      - scalper_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scalper} -d ${POSTGRES_DB:-scalper}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
   backend:
     build:
       context: ./backend
     restart: unless-stopped
     environment:
       SCALPER_DB_PATH: /data/scalper_db_v4.sqlite
+      DATABASE_URL: ${DATABASE_URL:-postgresql://scalper:${POSTGRES_PASSWORD}@postgres:5432/scalper}
+      DB_BACKEND: ${DB_BACKEND:-sqlite}
       LIVE_TRADING: "false"
       USE_TESTNET: "false"
       CORS_ORIGINS: https://scalper.erkanerdem.online
@@ -41,3 +58,4 @@ services:
 
 volumes:
   scalper_data:
+  scalper_postgres_data:

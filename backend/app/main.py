@@ -1,6 +1,7 @@
 import os
 import asyncio
 import time
+import subprocess
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -15,6 +16,13 @@ from app.backtest import run_backtest
 from app.binance_tr_public import klines as fetch_klines, trading_symbols, ticker_24h
 from app.technical_analysis import calculate_snapshot
 from app import llm_analysis
+from app.embedding_worker import worker as embedding_worker
+from app import memory_service
+from app import migration_monitor
+try:
+    import asyncpg
+except ImportError:
+    asyncpg = None
 
 app = FastAPI(title="Scalper Agent V4 - Paper Trading")
 cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3004,http://localhost:3000").split(",") if origin.strip()]
@@ -22,6 +30,7 @@ app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials
 
 market = MarketData(config.SYMBOLS)
 analyzer = ScalpAnalyzer(market)
+_pg_pool = None
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WELL_KNOWN_DIR = os.path.join(BASE_DIR, "..", ".well-known")
@@ -43,8 +52,15 @@ ws_manager = ConnectionManager()
 
 @app.on_event("startup")
 async def startup():
+    global _pg_pool
     await database.init_db()
     await analyzer.load_state()
+    if os.getenv("DB_BACKEND", "sqlite").lower() == "postgres" and asyncpg and os.getenv("DATABASE_URL"):
+        try:
+            _pg_pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=4)
+            await embedding_worker.start(_pg_pool, llm_analysis.embedding)
+        except Exception as exc:
+            print(f"[Memory] PostgreSQL/embedding worker başlatılamadı: {exc}")
     asyncio.create_task(market.connect())
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
@@ -52,7 +68,11 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    global _pg_pool
     market.stop()
+    await embedding_worker.stop()
+    if _pg_pool:
+        await _pg_pool.close()
     await database.close_db()
 
 @app.websocket("/ws")
@@ -107,6 +127,9 @@ async def strategy_loop():
     await asyncio.sleep(5)
     while True:
         for sym in config.SYMBOLS:
+            if migration_monitor.state["status"] == "running":
+                await asyncio.sleep(0.1)
+                continue
             ticker = market.get_ticker(sym)
             if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
                 continue
@@ -126,6 +149,9 @@ async def strategy_loop():
 async def radar_loop():
     await asyncio.sleep(15)
     while True:
+        if migration_monitor.state["status"] == "running":
+            await asyncio.sleep(1)
+            continue
         try:
             await gainers_radar(execute=True)
         except Exception as exc:
@@ -146,7 +172,58 @@ async def health():
 async def system_health():
     now_ms = time.time() * 1000
     ages = [max(0.0, (now_ms - float(t.get("timestamp", now_ms))) / 1000) for t in market.tickers.values() if t.get("timestamp")]
-    return {"status": "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions()}, "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": bool(await database.get_active_llm_config())}}
+    vector_status = "not_checked_until_postgres_backend_is_enabled"
+    db_status = "sqlite"
+    if _pg_pool:
+        try:
+            async with _pg_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+                vector_status = bool(await conn.fetchval("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector')"))
+                db_status = "postgres_healthy"
+        except Exception as exc:
+            db_status = f"postgres_error:{type(exc).__name__}"
+            vector_status = False
+    try:
+        llm_active = bool(await database.get_active_llm_config())
+        llm_error = None
+    except Exception as exc:
+        llm_active = False
+        llm_error = f"{type(exc).__name__}: {exc}"
+    return {"status": "degraded" if db_status.startswith("postgres_error") or llm_error else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions()}, "database": {"backend": os.getenv("DB_BACKEND", "sqlite"), "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}}
+
+@app.get("/api/memory/status")
+async def memory_status():
+    return {"enabled": bool(_pg_pool), "backend": os.getenv("DB_BACKEND", "sqlite"), "worker": embedding_worker.snapshot(), "message": None if _pg_pool else "PostgreSQL memory backend aktif değil"}
+
+@app.get("/api/migration/status")
+async def migration_status():
+    return dict(migration_monitor.state)
+
+@app.post("/api/migration/start")
+async def migration_start(payload: dict = None):
+    body = payload or {}
+    source = str(body.get("source") or os.getenv("MIGRATION_SOURCE_PATH") or database.DB_NAME)
+    if migration_monitor.state["status"] == "running": return {"ok": False, "message": "Migration zaten çalışıyor"}
+    try: info = migration_monitor.inspect_source(source)
+    except Exception as exc: raise HTTPException(status_code=400, detail=str(exc))
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url: raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
+    migration_monitor.state.update({"source":info, "status":"queued", "phase":"queued", "progress":0, "message":"Migration kuyruğa alındı"})
+    asyncio.create_task(migration_monitor.run(source, database_url), name="sqlite-postgres-migration")
+    return {"ok":True, "source":info}
+
+@app.post("/api/memory/retrieve")
+async def memory_retrieve(payload: dict = None):
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
+    body = payload or {}
+    text = str(body.get("query", "")).strip()
+    if not text: raise HTTPException(status_code=400, detail="query gerekli")
+    embedded = await llm_analysis.embedding(text, body.get("model_id"))
+    if embedded.get("status") != "ok": raise HTTPException(status_code=502, detail=embedded.get("error", "Embedding üretilemedi"))
+    async with _pg_pool.acquire() as conn:
+        rows = await memory_service.retrieve(conn, embedded["vector"], limit=body.get("limit", 8), layer=body.get("layer"), symbol=body.get("symbol"), strategy=body.get("strategy"), timeframe=body.get("timeframe"), model_id=embedded.get("model_id"))
+        await conn.execute("INSERT INTO memory_retrieval_logs(query_scope,query_text_hash,filters,model_id,result_ids,latency_ms) VALUES($1,$2,$3::jsonb,$4,$5::jsonb,$6)", body.get("scope", "memory"), memory_service.content_hash(text), json.dumps({k: body.get(k) for k in ("layer", "symbol", "strategy", "timeframe") if body.get(k) is not None}), embedded.get("model_id"), json.dumps([r.get("id") for r in rows]), None)
+    return {"query": text, "results": rows, "count": len(rows)}
 
 CONFIG_FIELDS = {
     "gainer_radar_min_score": "GAINER_RADAR_MIN_SCORE",
@@ -541,7 +618,12 @@ async def add_llm_model(payload: dict):
         name = str(payload["name"]).strip()
         if not name: raise ValueError("Model adı gerekli")
         if provider_id <= 0: raise ValueError("Geçerli bir provider seçin")
-        return {"ok": True, "model_id": await database.save_llm_model(provider_id, name, float(payload.get("temperature", 0.2)))}
+        model_type = str(payload.get("model_type", "chat")).strip().lower()
+        if model_type not in ("chat", "embedding"): raise ValueError("Model tipi chat veya embedding olmalı")
+        dimensions = payload.get("dimensions")
+        dimensions = int(dimensions) if dimensions not in (None, "") else None
+        if model_type == "embedding" and dimensions != 2048: raise ValueError("Bu deployment için embedding dimension 2048 olmalı")
+        return {"ok": True, "model_id": await database.save_llm_model(provider_id, name, float(payload.get("temperature", 0.2)), model_type, dimensions, payload.get("embedding_metric", "cosine"))}
     except (KeyError, ValueError) as exc: raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
 
@@ -568,7 +650,9 @@ async def delete_llm_provider(provider_id: int):
 async def update_llm_model(model_id: int, payload: dict):
     name = str(payload.get("name", "")).strip()
     if not name: raise HTTPException(status_code=400, detail="Model adı gerekli")
-    await database.update_llm_model(model_id, name, float(payload.get("temperature", 0.2))); return {"ok": True}
+    model_type = payload.get("model_type")
+    dimensions = payload.get("dimensions")
+    await database.update_llm_model(model_id, name, float(payload.get("temperature", 0.2)), model_type, int(dimensions) if dimensions not in (None, "") else None, payload.get("embedding_metric")); return {"ok": True}
 
 @app.delete("/api/llm/models/{model_id}")
 async def delete_llm_model(model_id: int):
@@ -594,6 +678,12 @@ async def activate_llm(payload: dict):
 async def test_llm(payload: dict = None):
     result = await llm_analysis.analyze({"test": True, "message": "Return exactly: CONNECTION_OK"})
     return result
+
+@app.post("/api/llm/embedding/test")
+async def test_embedding(payload: dict = None):
+    body = payload or {}
+    text = str(body.get("text", "embedding bağlantı testi"))[:4000]
+    return await llm_analysis.embedding(text, body.get("model_id"))
 
 async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
     """Build a fresh, read-only multi-timeframe tool context for the LLM."""
@@ -660,6 +750,34 @@ async def download_backup():
         filename=f"scalperagent-backup-{time.strftime('%Y%m%d-%H%M%S')}.sqlite",
         background=BackgroundTask(lambda: os.unlink(path) if os.path.exists(path) else None),
     )
+
+@app.get("/api/postgres/backup")
+async def download_postgres_backup():
+    if not os.getenv("DATABASE_URL"): raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
+    import tempfile, subprocess
+    fd, path = tempfile.mkstemp(prefix="scalper-postgres-", suffix=".dump"); os.close(fd)
+    result = await asyncio.to_thread(subprocess.run, ["pg_dump", "--format=custom", "--no-owner", "--file", path, os.environ["DATABASE_URL"]], capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        if os.path.exists(path): os.unlink(path)
+        raise HTTPException(status_code=502, detail=result.stderr[-2000:] or "pg_dump başarısız")
+    return FileResponse(path, media_type="application/octet-stream", filename=f"scalper-postgres-{time.strftime('%Y%m%d-%H%M%S')}.dump", background=BackgroundTask(lambda: os.unlink(path) if os.path.exists(path) else None))
+
+@app.post("/api/postgres/restore")
+async def restore_postgres_backup(payload: dict = None):
+    body = payload or {}; path = os.path.abspath(str(body.get("path", "")))
+    if body.get("confirmation") != "RESTORE_POSTGRES": raise HTTPException(status_code=400, detail="RESTORE_POSTGRES onayı gerekli")
+    if not os.getenv("DATABASE_URL") or not path or not os.path.isfile(path): raise HTTPException(status_code=400, detail="Geçerli backup yolu ve DATABASE_URL gerekli")
+    result = await asyncio.to_thread(subprocess.run, ["pg_restore", "--clean", "--if-exists", "--no-owner", "--dbname", os.environ["DATABASE_URL"], path], capture_output=True, text=True, timeout=1200)
+    if result.returncode != 0: raise HTTPException(status_code=502, detail=result.stderr[-3000:] or "pg_restore başarısız")
+    return {"ok": True, "message": "PostgreSQL backup geri yüklendi; backend yeniden başlatılması önerilir"}
+
+@app.post("/api/memory/reset")
+async def reset_memory():
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
+    async with _pg_pool.acquire() as conn:
+        await conn.execute("TRUNCATE memory_retrieval_logs, memory_embeddings, memory_documents RESTART IDENTITY")
+    embedding_worker.stats.update({"queued":0,"processed":0,"failed":0,"last_error":None,"last_processed_at":None})
+    return {"ok": True, "message": "LLM memory kayıtları sıfırlandı; paper-trading kayıtları korunuyor"}
 
 @app.get("/api/signals")
 async def get_signals(limit: int = 100):

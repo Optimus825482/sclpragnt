@@ -345,6 +345,7 @@ export default function ChartsPage() {
     const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
     const [showPositions, setShowPositions] = useState(false);
     const [positions, setPositions] = useState<any[]>([]);
+    const chartHeightRef = useRef(TOTAL_HEIGHT);
     const positionLinesRef = useRef<Map<string, IPriceLine[]>>(new Map());
     const positionMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const utBotMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
@@ -396,7 +397,7 @@ export default function ChartsPage() {
         if (!containerRef.current) return;
         const chart = createChart(containerRef.current, {
             width: containerRef.current.clientWidth,
-            height: TOTAL_HEIGHT,
+            height: chartHeightRef.current,
             layout: { background: { color: "transparent" }, textColor: "#6b7280", fontFamily: "JetBrains Mono, monospace" },
             grid: {
                 vertLines: { color: "rgba(55, 65, 81, 0.2)" },
@@ -434,7 +435,9 @@ export default function ChartsPage() {
         // pencere boyutu değişince grafiği yeniden boyutlandır (autoSize yerine manuel — pane yükseklikleri sabit)
         const ro = new ResizeObserver(() => {
             if (!chartRef.current || !containerRef.current) return;
-            chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
+            const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 900;
+            chartHeightRef.current = clamp(Math.round(viewportHeight * (window.innerWidth < 768 ? 0.52 : 0.62)), 420, 600);
+            chartRef.current.applyOptions({ width: containerRef.current.clientWidth, height: chartHeightRef.current });
         });
         ro.observe(containerRef.current);
 
@@ -722,13 +725,13 @@ export default function ChartsPage() {
                 key,
                 h: i === 0
                     ? MAIN_MIN
-                    : clamp(paneHeightsRef.current[key] || (key === "volume" ? 90 : PANE_H), PANE_MIN, TOTAL_HEIGHT)
+                    : clamp(paneHeightsRef.current[key] || (key === "volume" ? 90 : PANE_H), PANE_MIN, chartHeightRef.current)
             }));
             const nonMain = alloc.reduce((s, x, i) => (i === 0 ? s : s + x.h), 0);
-            const mainH = clamp(TOTAL_HEIGHT - nonMain, MAIN_MIN, TOTAL_HEIGHT);
+            const mainH = clamp(chartHeightRef.current - nonMain, MAIN_MIN, chartHeightRef.current);
             const targetH = alloc.map((x, i) => (i === 0 ? mainH : x.h));
 
-            chart.applyOptions({ height: TOTAL_HEIGHT });
+            chart.applyOptions({ height: chartHeightRef.current });
             chart.panes().forEach((p, i) => {
                 const key = paneKeys[i] || `pane${i}`;
                 paneKeyByIndexRef.current.set(i, key);
