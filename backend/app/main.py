@@ -198,7 +198,12 @@ async def system_health():
 
 @app.get("/api/memory/status")
 async def memory_status():
-    return {"enabled": bool(_pg_pool), "backend": os.getenv("DB_BACKEND", "sqlite"), "worker": embedding_worker.snapshot(), "backfill": dict(_embedding_backfill), "repair": dict(_embedding_repair), "message": None if _pg_pool else "PostgreSQL memory backend aktif değil"}
+    persistent = {"documents": 0, "embedded": 0}
+    if _pg_pool:
+        async with _pg_pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT COUNT(*) AS documents, COUNT(*) FILTER (WHERE embedding_status='ready') AS embedded FROM memory_documents")
+            persistent = {"documents": int(row["documents"]), "embedded": int(row["embedded"])}
+    return {"enabled": bool(_pg_pool), "backend": os.getenv("DB_BACKEND", "sqlite"), "worker": embedding_worker.snapshot(), "persistent": persistent, "backfill": dict(_embedding_backfill), "repair": dict(_embedding_repair), "message": None if _pg_pool else "PostgreSQL memory backend aktif değil"}
 
 @app.post("/api/memory/backfill")
 async def memory_backfill():
