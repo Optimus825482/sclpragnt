@@ -473,7 +473,7 @@ async def symbol_analysis(symbol: str):
         try:
             available = set(await trading_symbols("TRY"))
             if sym not in available:
-                return {"symbol": sym, "data_ready": False, "error": "Sembol Binance TR'de işlem görmüyor"}
+                return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": "Sembol Binance TR'de işlem görmüyor"}
             rows = await fetch_klines(sym, config.MOMENTUM_TIMEFRAME, limit=300)
             if rows and len(rows) >= 55:
                 hydrated = {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
@@ -490,13 +490,15 @@ async def symbol_analysis(symbol: str):
                 market.tickers[sym] = ticker
             else:
                 count = len(rows) if rows else 0
-                return {"symbol": sym, "timeframes": {config.MOMENTUM_TIMEFRAME: {"candles": count, "required": 55}}, "data_ready": False, "error": "Teknik analiz için yeterli mum verisi alınamadı"}
+                return {"symbol": sym, "analysis_build": "rest-fallback-v4", "timeframes": {config.MOMENTUM_TIMEFRAME: {"candles": count, "required": 55}}, "data_ready": False, "error": "Teknik analiz için yeterli mum verisi alınamadı"}
         except Exception as exc:
-            return {"symbol": sym, "data_ready": False, "error": f"Sembol verisi alınamadı: {exc}"}
+            return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": f"Sembol verisi alınamadı: {exc}"}
     if not ticker:
-        return {"symbol": sym, "data_ready": False, "error": "Sembol verisi bulunamadı"}
+        return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": "Sembol verisi bulunamadı"}
     timeframe = config.MOMENTUM_TIMEFRAME
-    return calculate_snapshot(sym, ticker["last_price"], analysis_klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, timeframe)
+    snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, timeframe)
+    snapshot["analysis_build"] = "rest-fallback-v4"
+    return snapshot
 
 @app.post("/api/positions/{symbol}/close")
 async def close_position_manual(symbol: str):
