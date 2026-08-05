@@ -337,8 +337,24 @@ class ScalpAnalyzer:
             pos["min_price"] = min(pos.get("min_price", pos["entry_price"]), price)
         if pos and config.HARD_STOP_LOSS_PCT > 0 and price <= pos["entry_price"] * (1 - config.HARD_STOP_LOSS_PCT):
             return await self.close_position(symbol, price, "hard_stop_loss")
-        if pos and price >= pos["entry_price"] * (1 + config.SPOT_PROFIT_TARGET_PCT):
-            return await self.close_position(symbol, price, "profit_target_0_5pct")
+        if pos:
+            elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
+            if elapsed < config.TIME_DECAY_TP_STAGE_2_SEC:
+                target_pct = config.TIME_DECAY_TP_1_PCT
+                target_reason = "time_decay_target_1_0pct"
+            elif elapsed < config.TIME_DECAY_TP_STAGE_3_SEC:
+                target_pct = config.TIME_DECAY_TP_2_PCT
+                target_reason = "time_decay_target_0_75pct"
+            elif elapsed < config.TIME_DECAY_BREAKEVEN_SEC:
+                target_pct = config.TIME_DECAY_TP_3_PCT
+                target_reason = "time_decay_target_0_5pct"
+            else:
+                # Never exit below the amount required to cover both sides'
+                # costs, slippage and the configured minimum net PnL.
+                target_pct = config.min_net_exit_pct(pos.get("quantity", 0) * pos["entry_price"])
+                target_reason = "breakeven_exit"
+            if price >= pos["entry_price"] * (1 + target_pct):
+                return await self.close_position(symbol, price, target_reason)
         if pos and time.time() - pos.get("entry_time", time.time()) >= config.MAX_POSITION_HOLD_SEC:
             return await self.close_position(symbol, price, "max_hold_2h")
         return None

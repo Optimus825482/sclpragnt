@@ -36,13 +36,31 @@ class Config:
     HARD_STOP_LOSS_PCT = 0.02
     COOLDOWN_BARS = 2
     TAKE_PROFIT_PCT = 0.02
-    SPOT_PROFIT_TARGET_PCT = 0.005
+    # Time-decay spot take-profit: start ambitious, then accept the first
+    # cost-covered exit as the position ages.
+    SPOT_PROFIT_TARGET_PCT = 0.01
+    TIME_DECAY_TP_1_PCT = 0.01
+    TIME_DECAY_TP_2_PCT = 0.0075
+    TIME_DECAY_TP_3_PCT = 0.005
+    TIME_DECAY_TP_STAGE_2_SEC = 20 * 60
+    TIME_DECAY_TP_STAGE_3_SEC = 40 * 60
+    TIME_DECAY_BREAKEVEN_SEC = 60 * 60
     TRAILING_STOP_PCT = 0.005
 
     # Binance TR spot komisyonu (Bronz/Standart taker %0.15) - işlem başına
     COMMISSION_PCT = float(os.getenv("COMMISSION_PCT", "0.0015"))
     ESTIMATED_SLIPPAGE_PCT = 0.00025
     MIN_EXPECTED_NET_PNL_TRY = 0.5
+
+    @classmethod
+    def min_net_exit_pct(cls, order_value: float | None = None) -> float:
+        """Gross move needed to cover round-trip costs plus minimum net PnL."""
+        value = float(order_value or cls.DEFAULT_ORDER_USDT)
+        if value <= 0:
+            return cls.COMMISSION_PCT * 2 + cls.ESTIMATED_SLIPPAGE_PCT * 2
+        return (cls.COMMISSION_PCT * 2
+                + cls.ESTIMATED_SLIPPAGE_PCT * 2
+                + cls.MIN_EXPECTED_NET_PNL_TRY / value)
 
     # UT Bot stratejisi — tek aktif strateji
     UT_ENABLED = os.getenv("UT_ENABLED", "false").lower() == "true"
