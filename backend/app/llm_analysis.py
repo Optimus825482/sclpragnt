@@ -28,7 +28,18 @@ async def analyze(snapshot):
         with urlopen(req, timeout=90) as response: return json.loads(response.read().decode())
     try:
         result = await asyncio.to_thread(call)
-        text = result["choices"][0]["message"]["content"]
+        choices = result.get("choices") if isinstance(result, dict) else None
+        text = None
+        if choices and isinstance(choices, list):
+            first = choices[0] or {}
+            message = first.get("message") or {}
+            text = message.get("content") or first.get("text")
+        if not text and isinstance(result, dict):
+            text = result.get("output_text") or result.get("response") or result.get("content")
+        if not text:
+            provider_error = result.get("error") if isinstance(result, dict) else None
+            detail = provider_error.get("message") if isinstance(provider_error, dict) else provider_error
+            raise RuntimeError(detail or f"Provider beklenmeyen yanıt döndürdü (alanlar: {', '.join(result.keys()) if isinstance(result, dict) else type(result).__name__})")
         return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"], "generated_at": time.time()}
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}
