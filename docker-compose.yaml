@@ -1,6 +1,5 @@
 services:
   postgres:
-    profiles: ["postgres"]
     image: pgvector/pgvector:pg17-bookworm
     restart: unless-stopped
     environment:
@@ -18,10 +17,13 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       SCALPER_DB_PATH: /data/scalper_db_v4.sqlite
-      DATABASE_URL: ${DATABASE_URL:-postgresql://scalper:${POSTGRES_PASSWORD}@postgres:5432/scalper}
-      DB_BACKEND: ${DB_BACKEND:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://scalper:local-dev-change-me@postgres:5432/scalper}
+      DB_BACKEND: ${DB_BACKEND:-postgres}
       LIVE_TRADING: "false"
       USE_TESTNET: "false"
       CORS_ORIGINS: https://scalper.erkanerdem.online
