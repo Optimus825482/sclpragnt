@@ -511,6 +511,12 @@ async def update_config(payload: dict):
     analyzer._last_signal_lengths.clear()
     return await get_config()
 
+@app.post("/api/portfolio/reconcile")
+async def reconcile_portfolio():
+    result = await database.reconcile_portfolio()
+    await ws_manager.broadcast({"type": "portfolio_reconciled", "data": result})
+    return {"status": "ok", **result}
+
 @app.get("/api/chart/{symbol}")
 async def get_chart_settings(symbol: str):
     data = await database.get_chart_settings(symbol)

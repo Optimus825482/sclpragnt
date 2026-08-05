@@ -101,6 +101,14 @@ async def init_db():
             schema_path = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations", "001_pgvector_schema.sql"))
             with open(schema_path, encoding="utf-8") as schema_file:
                 conn.conn.execute(schema_file.read())
+            # Reconcile migrated cash with trades and open positions. The
+            # SQLite wallet snapshot can predate the final position snapshot;
+            # using it directly would double-count open position capital.
+            conn.execute("""UPDATE virtual_wallet SET amount=(
+                %s + COALESCE((SELECT SUM(pnl) FROM trades), 0)
+                - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
+                - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0) * %s
+            ) WHERE asset='TRY'""", (config.INITIAL_BALANCE_TRY, config.COMMISSION_PCT))
             conn.conn.commit()
         await _run_db(pg_op)
         return
@@ -332,6 +340,25 @@ async def update_wallet_balance(asset, amount):
         conn.commit()
 
     await _run_db(op)
+
+async def reconcile_portfolio():
+    """Rebuild TRY cash from the complete trade and open-position ledger."""
+    def op(conn):
+        before_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", ("TRY",)).fetchone()
+        before = float(before_row[0]) if before_row else 0.0
+        realized = float(conn.execute("SELECT COALESCE(SUM(pnl),0) FROM trades").fetchone()[0] or 0)
+        open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
+        entry_commission = open_cost * config.COMMISSION_PCT
+        after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", after))
+        conn.commit()
+        trade_count = int(conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0])
+        position_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0])
+        return {"before_try": before, "after_try": after, "realized_pnl": realized,
+                "open_entry_cost": open_cost, "open_entry_commission": entry_commission,
+                "trade_count": trade_count, "open_position_count": position_count,
+                "difference": after - before}
+    return await _run_db(op)
 
 async def get_llm_config():
     def op(conn):

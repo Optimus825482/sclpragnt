@@ -68,6 +68,14 @@ async def main():
             migrated = await pg.fetchval(f'SELECT COUNT(*) FROM "{table}"')
             if int(migrated) < len(rows): raise RuntimeError(f"{table}: hedef satır sayısı eksik ({migrated}/{len(rows)})")
             print(f"{table}: {len(rows)} kayıt aktarıldı", flush=True)
+        initial_balance = float(os.getenv("INITIAL_BALANCE_TRY", "10000"))
+        commission_pct = float(os.getenv("COMMISSION_PCT", "0.0015"))
+        await pg.execute("""UPDATE virtual_wallet SET amount=(
+            $1 + COALESCE((SELECT SUM(pnl) FROM trades), 0)
+            - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
+            - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0) * $2
+        ) WHERE asset='TRY'""", initial_balance, commission_pct)
+        print("TRY cüzdanı açık pozisyonlar ve net PnL ile mutabıklandı", flush=True)
         print("Migration completed with row-count lower-bound validation. SQLite source was not modified.")
     finally: await pg.close(); sqlite_conn.close()
 

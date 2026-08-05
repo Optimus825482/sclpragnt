@@ -46,6 +46,8 @@ export default function SettingsPage() {
   const [symbolQuery, setSymbolQuery] = useState("");
   const [backingUp, setBackingUp] = useState(false);
   const [backupDone, setBackupDone] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileDone, setReconcileDone] = useState(false);
   const [llm, setLlm] = useState<any>({ providers: [], models: [], skills: [], active_model_id: null, encryption_configured: false });
   const [llmForm, setLlmForm] = useState({ name: "OpenAI Compatible", base_url: "", api_key: "", provider_id: "", model: "", model_type: "chat", dimensions: "", skill: "", instructions: "" });
   const [llmMessage, setLlmMessage] = useState<string | null>(null);
@@ -110,6 +112,20 @@ export default function SettingsPage() {
     } finally {
       setResetting(false);
     }
+  };
+
+  const reconcilePortfolio = async () => {
+    if (!window.confirm("Açık pozisyonlar, kapanan işlemler ve komisyonlar kontrol edilerek TRY cüzdanı yeniden hesaplanacak. İşlem kayıtları silinmeyecek. Devam edilsin mi?")) return;
+    setReconciling(true); setError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/portfolio/reconcile`, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Portföy mutabakatı başarısız");
+      setReconcileDone(true);
+      window.alert(`Portföy mutabakatı tamamlandı. TRY: ₺${Number(body.after_try).toFixed(2)}`);
+      setTimeout(() => setReconcileDone(false), 2500);
+    } catch (err) { setError(err instanceof Error ? err.message : "Portföy mutabakatı başarısız"); }
+    finally { setReconciling(false); }
   };
 
   const reloadLlm = async () => setLlm(await (await fetch(`${API_BASE}/api/llm/config`, { cache: "no-store" })).json());
@@ -304,6 +320,19 @@ export default function SettingsPage() {
               </div>
               <button onClick={downloadBackup} disabled={backingUp} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${backupDone ? "border-neon-green/60 bg-neon-green/20 text-neon-green" : "border-neon-green/50 bg-neon-green/10 text-neon-green hover:bg-neon-green/20"}`}>
                 {backingUp ? "YEDEKLENİYOR..." : backupDone ? "✓ YEDEK İNDİRİLDİ" : "SQLITE YEDEĞİ AL"}
+              </button>
+            </div>
+          </div>
+
+          <div className={`card border-sky-400/30 bg-sky-400/5 ${activeTab !== "app" ? "hidden" : ""}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <p className="eyebrow text-sky-300">PORTFÖY MUTABAKATI</p>
+                <p className="font-mono text-sm text-white mt-2">Cüzdanı tüm işlem ve pozisyon kayıtlarıyla eşleştir</p>
+                <p className="text-xs text-bunker-muted mt-1">Kapanan işlemler, açık pozisyon maliyetleri ve komisyonlar kontrol edilir; kayıtlar silinmez.</p>
+              </div>
+              <button onClick={reconcilePortfolio} disabled={reconciling} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${reconcileDone ? "border-neon-green/60 bg-neon-green/20 text-neon-green" : "border-sky-400/50 bg-sky-400/10 text-sky-300 hover:bg-sky-400/20"}`}>
+                {reconciling ? "MUTABAKAT YAPILIYOR..." : reconcileDone ? "✓ MUTABAKAT TAMAM" : "PORTFÖYÜ MUTABIKLAŞTIR"}
               </button>
             </div>
           </div>
