@@ -13,7 +13,7 @@ from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app import database
 from app.backtest import run_backtest
-from app.binance_tr_public import klines as fetch_klines, trading_symbols, ticker_24h
+from app.binance_tr_public import klines as fetch_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot
 from app import llm_analysis
 from app.embedding_worker import worker as embedding_worker
@@ -596,7 +596,22 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
             return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": f"Sembol verisi alınamadı: {exc}"}
     if not ticker:
         return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": "Sembol verisi bulunamadı"}
-    snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, requested_timeframe)
+    flow = market.get_orderflow(sym)
+    if not flow.get("spread_pct") or not (flow.get("bid_qty") or flow.get("ask_qty")):
+        try:
+            book = await orderbook(sym, 5)
+            bids, asks = book.get("bids", []), book.get("asks", [])
+            if bids and asks:
+                bid_qty = sum(float(row[1]) for row in bids[:5])
+                ask_qty = sum(float(row[1]) for row in asks[:5])
+                bid, ask = float(bids[0][0]), float(asks[0][0])
+                flow.update({"bid_qty": bid_qty, "ask_qty": ask_qty,
+                             "spread_pct": ((ask - bid) / bid * 100) if bid else None,
+                             "source": "binance_tr_public_rest", "updated_at": time.time()})
+                market.orderflow[sym] = flow
+        except Exception as exc:
+            flow["rest_error"] = str(exc)
+    snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, flow, market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, requested_timeframe)
     snapshot["analysis_build"] = "rest-fallback-v4"
     return snapshot
 

@@ -391,17 +391,29 @@ async def get_embedding_llm_config(model_id=None):
 async def save_llm_provider(name, base_url, encrypted_key):
     now = time.time()
     def op(conn):
-        cur = conn.execute("INSERT INTO llm_providers(name,base_url,api_key_encrypted,created_at,updated_at) VALUES(?,?,?,?,?)", (name,base_url,encrypted_key,now,now)); conn.commit(); return cur.lastrowid
+        sql = "INSERT INTO llm_providers(name,base_url,api_key_encrypted,created_at,updated_at) VALUES(?,?,?,?,?)"
+        params = (name,base_url,encrypted_key,now,now)
+        if _postgres_enabled():
+            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
+        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
     return await _run_db(op)
 
 async def save_llm_model(provider_id, name, temperature, model_type="chat", dimensions=None, embedding_metric="cosine"):
     def op(conn):
-        cur = conn.execute("INSERT INTO llm_models(provider_id,name,temperature,model_type,dimensions,embedding_metric,created_at) VALUES(?,?,?,?,?,?,?)", (provider_id,name,temperature,model_type,dimensions,embedding_metric,time.time())); conn.commit(); return cur.lastrowid
+        sql = "INSERT INTO llm_models(provider_id,name,temperature,model_type,dimensions,embedding_metric,created_at) VALUES(?,?,?,?,?,?,?)"
+        params = (provider_id,name,temperature,model_type,dimensions,embedding_metric,time.time())
+        if _postgres_enabled():
+            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
+        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
     return await _run_db(op)
 
 async def save_llm_skill(name, instructions):
     def op(conn):
-        cur = conn.execute("INSERT OR REPLACE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)", (name,instructions,time.time())); conn.commit(); return cur.lastrowid
+        sql = "INSERT OR REPLACE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)"
+        params = (name,instructions,time.time())
+        if _postgres_enabled():
+            conn.execute(sql, params); row = conn.execute("SELECT id FROM llm_skills WHERE name=?", (name,)).fetchone(); conn.commit(); return row[0]
+        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
     return await _run_db(op)
 
 async def update_llm_provider(provider_id, name, base_url, encrypted_key=None):
@@ -656,19 +668,20 @@ async def save_chart_settings(symbol, data):
 async def save_backtest(result):
     """Backtest sonucunu kaydet, kayıt id'sini döndür."""
     def op(conn: sqlite3.Connection):
-        cur = conn.execute(
-            "INSERT INTO backtests (timestamp, symbol, interval, strategy, params, days_back, "
+        sql = ("INSERT INTO backtests (timestamp, symbol, interval, strategy, params, days_back, "
             "initial_balance, final_balance, net_pnl, net_pnl_pct, total_trades, wins, losses, "
             "win_rate, max_drawdown_pct, order_size, stop_loss_pct, take_profit_pct, trailing_stop_pct, trades) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (result.get("timestamp"), result.get("symbol"), result.get("interval"),
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        params = (result.get("timestamp"), result.get("symbol"), result.get("interval"),
              result.get("strategy"), json.dumps(result.get("params", {})), result.get("days_back"),
              result.get("initial_balance"), result.get("final_balance"), result.get("net_pnl"),
              result.get("net_pnl_pct"), result.get("total_trades"), result.get("wins"),
              result.get("losses"), result.get("win_rate"), result.get("max_drawdown_pct"), result.get("order_size"),
              result.get("stop_loss_pct"), result.get("take_profit_pct"),
              result.get("trailing_stop_pct"), json.dumps(result.get("trades", [])))
-        )
+        if _postgres_enabled():
+            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
+        cur = conn.execute(sql, params)
         conn.commit()
         return cur.lastrowid
 

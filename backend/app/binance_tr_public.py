@@ -55,3 +55,9 @@ async def trading_symbols(quote_asset: str = "TRY"):
 
 async def ticker_24h():
     return await asyncio.to_thread(_get_json, "/api/v3/ticker/24hr", {})
+
+async def orderbook(symbol: str, limit: int = 5):
+    """Read-only best bid/ask depth from Binance TR public API."""
+    return await asyncio.to_thread(_get_json, "/api/v3/depth", {
+        "symbol": symbol.replace("_", "").upper(), "limit": limit
+    })
