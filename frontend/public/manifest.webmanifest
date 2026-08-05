@@ -4,6 +4,8 @@
   "description": "Binance TR public-data paper scalping terminal",
   "start_url": "/",
   "display": "standalone",
+  "orientation": "portrait-primary",
+  "scope": "/",
   "background_color": "#05080d",
   "theme_color": "#05080d",
   "lang": "tr",

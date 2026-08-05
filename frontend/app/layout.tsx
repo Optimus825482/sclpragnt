@@ -5,7 +5,16 @@ import Sidebar from "./components/Sidebar";
 export const metadata: Metadata = {
   title: "Scalper Agent V4 — Paper Trading",
   description: "Binance TR public-data paper scalping terminal",
-  manifest: "/manifest.webmanifest"
+  manifest: "/manifest.webmanifest",
+  icons: { icon: "/icon.svg", apple: "/icon.svg" },
+  appleWebApp: { capable: true, title: "Scalper Agent", statusBarStyle: "black-translucent" }
+};
+
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#05080d"
 };
 
 export default function RootLayout({
