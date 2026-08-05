@@ -339,6 +339,8 @@ CONFIG_FIELDS = {
     "momentum_short_lookback": "MOMENTUM_SHORT_LOOKBACK",
     "momentum_long_lookback": "MOMENTUM_LONG_LOOKBACK",
     "momentum_min_return_pct": "MOMENTUM_MIN_RETURN_PCT",
+    "momentum_min_volume_ratio": "MOMENTUM_MIN_VOLUME_RATIO",
+    "momentum_require_mtf_alignment": "MOMENTUM_REQUIRE_MTF_ALIGNMENT",
     "adr_filter_enabled": "ADR_FILTER_ENABLED",
     "adr_period": "ADR_PERIOD",
     "adr_min_pct": "ADR_MIN_PCT",
@@ -348,6 +350,9 @@ CONFIG_FIELDS = {
     "keltner_atr_period": "KELTNER_ATR_PERIOD",
     "keltner_atr_multiplier": "KELTNER_ATR_MULTIPLIER",
     "keltner_volume_multiplier": "KELTNER_VOLUME_MULTIPLIER",
+    "keltner_require_mtf_alignment": "KELTNER_REQUIRE_MTF_ALIGNMENT",
+    "ema_vwap_min_volume_ratio": "EMA_VWAP_MIN_VOLUME_RATIO",
+    "ema_vwap_require_mtf_alignment": "EMA_VWAP_REQUIRE_MTF_ALIGNMENT",
     "chop_period": "CHOP_PERIOD",
     "chop_max_value": "CHOP_MAX_VALUE",
     "chop_min_rsi": "CHOP_MIN_RSI",
@@ -391,7 +396,7 @@ CONFIG_FIELDS = {
     "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
+BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment"}
 INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
 STR_FIELDS = {"ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
@@ -415,6 +420,8 @@ async def get_config():
         "momentum_short_lookback": config.MOMENTUM_SHORT_LOOKBACK,
         "momentum_long_lookback": config.MOMENTUM_LONG_LOOKBACK,
         "momentum_min_return_pct": config.MOMENTUM_MIN_RETURN_PCT,
+        "momentum_min_volume_ratio": config.MOMENTUM_MIN_VOLUME_RATIO,
+        "momentum_require_mtf_alignment": config.MOMENTUM_REQUIRE_MTF_ALIGNMENT,
         "adr_filter_enabled": config.ADR_FILTER_ENABLED,
         "adr_period": config.ADR_PERIOD,
         "adr_min_pct": config.ADR_MIN_PCT,
@@ -424,6 +431,9 @@ async def get_config():
         "keltner_atr_period": config.KELTNER_ATR_PERIOD,
         "keltner_atr_multiplier": config.KELTNER_ATR_MULTIPLIER,
         "keltner_volume_multiplier": config.KELTNER_VOLUME_MULTIPLIER,
+        "keltner_require_mtf_alignment": config.KELTNER_REQUIRE_MTF_ALIGNMENT,
+        "ema_vwap_min_volume_ratio": config.EMA_VWAP_MIN_VOLUME_RATIO,
+        "ema_vwap_require_mtf_alignment": config.EMA_VWAP_REQUIRE_MTF_ALIGNMENT,
         "chop_period": config.CHOP_PERIOD,
         "chop_max_value": config.CHOP_MAX_VALUE,
         "chop_min_rsi": config.CHOP_MIN_RSI,

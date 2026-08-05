@@ -40,8 +40,9 @@ type Config = {
     mean_reversion_timeframe: string;
     keltner_enabled: boolean; chop_enabled: boolean; donchian_enabled: boolean;
     keltner_timeframe: string; chop_timeframe: string; donchian_timeframe: string;
-    orderflow_min_imbalance: number; momentum_short_lookback: number; momentum_long_lookback: number; momentum_min_return_pct: number;
-    keltner_ema_period: number; keltner_atr_period: number; keltner_atr_multiplier: number; keltner_volume_multiplier: number;
+    orderflow_min_imbalance: number; momentum_short_lookback: number; momentum_long_lookback: number; momentum_min_return_pct: number; momentum_min_volume_ratio: number; momentum_require_mtf_alignment: boolean;
+    keltner_ema_period: number; keltner_atr_period: number; keltner_atr_multiplier: number; keltner_volume_multiplier: number; keltner_require_mtf_alignment: boolean;
+    ema_vwap_min_volume_ratio: number; ema_vwap_require_mtf_alignment: boolean;
     chop_period: number; chop_max_value: number; chop_min_rsi: number; donchian_lookback: number; donchian_volume_multiplier: number;
 };
 
@@ -58,10 +59,10 @@ type StrategyMeta = {
 };
 
 const STRATEGIES: StrategyMeta[] = [
-    { key: "EMA_VWAP_PULLBACK", name: "EMA + VWAP Pullback", icon: "📈", desc: "EMA trendi, VWAP üzeri fiyat ve pullback dönüşünü arar.", enabledKey: "ema_vwap_enabled", timeframeKey: "ema_vwap_timeframe", params: [{ key: "ema_short", label: "EMA Kısa", hint: "Hızlı EMA", step: 1, min: 3 }, { key: "ema_mid", label: "EMA Orta", hint: "Pullback EMA", step: 1, min: 5 }, { key: "ema_trend", label: "EMA Trend", hint: "Ana trend EMA", step: 1, min: 10 }] },
+    { key: "EMA_VWAP_PULLBACK", name: "EMA + VWAP Pullback", icon: "📈", desc: "EMA trendi, VWAP üzeri fiyat ve pullback dönüşünü arar.", enabledKey: "ema_vwap_enabled", timeframeKey: "ema_vwap_timeframe", params: [{ key: "ema_short", label: "EMA Kısa", hint: "Hızlı EMA", step: 1, min: 3 }, { key: "ema_mid", label: "EMA Orta", hint: "Pullback EMA", step: 1, min: 5 }, { key: "ema_trend", label: "EMA Trend", hint: "Ana trend EMA", step: 1, min: 10 }, { key: "ema_vwap_min_volume_ratio", label: "Minimum Hacim Oranı", hint: "Son hacim / önceki 20 mum ortalaması", step: 0.1, min: 0 }] },
     { key: "BB_SQUEEZE_ORDERFLOW", name: "BB Squeeze + Order-Flow Confirmation", icon: "📦", desc: "Bollinger sıkışması ve akış teyitli kırılımı arar.", enabledKey: "bb_squeeze_enabled", timeframeKey: "bb_squeeze_timeframe", params: [{ key: "squeeze_lookback", label: "Squeeze Lookback", hint: "Sıkışma karşılaştırma penceresi", step: 1, min: 10 }, { key: "bb_period", label: "BB Periyodu", hint: "Bant hesaplama periyodu", step: 1, min: 5 }, { key: "bb_std_dev", label: "BB Std Dev", hint: "Bant genişliği çarpanı", step: 0.1, min: 0.5 }] },
     { key: "ORDERFLOW", name: "Order-Flow Imbalance", icon: "🌊", desc: "Bid/ask dengesizliği ve art arda alış akışını izler.", enabledKey: "orderflow_enabled", timeframeKey: "orderflow_timeframe", params: [{ key: "orderflow_min_imbalance", label: "Minimum Imbalance", hint: "Minimum bid/ask dengesizliği", step: 0.01, min: 0 }] },
-    { key: "MOMENTUM", name: "Multi-Timeframe Momentum Ranking", icon: "⚡", desc: "Kısa ve orta vadeli momentumun aynı yönde olmasını arar.", enabledKey: "momentum_enabled", timeframeKey: "momentum_timeframe", params: [{ key: "momentum_short_lookback", label: "Kısa Lookback", hint: "Kısa momentum mum sayısı", step: 1, min: 2 }, { key: "momentum_long_lookback", label: "Uzun Lookback", hint: "Uzun momentum mum sayısı", step: 1, min: 5 }, { key: "momentum_min_return_pct", label: "Minimum Getiri", hint: "Ondalık oran; 0.003 = %0,3", step: 0.0005, min: 0 }] },
+    { key: "MOMENTUM", name: "Multi-Timeframe Momentum Ranking", icon: "⚡", desc: "Kısa ve orta vadeli momentumun aynı yönde olmasını arar.", enabledKey: "momentum_enabled", timeframeKey: "momentum_timeframe", params: [{ key: "momentum_short_lookback", label: "Kısa Lookback", hint: "Kısa momentum mum sayısı", step: 1, min: 2 }, { key: "momentum_long_lookback", label: "Uzun Lookback", hint: "Uzun momentum mum sayısı", step: 1, min: 5 }, { key: "momentum_min_return_pct", label: "Minimum Getiri", hint: "Ondalık oran; 0.003 = %0,3", step: 0.0005, min: 0 }, { key: "momentum_min_volume_ratio", label: "Minimum Hacim Oranı", hint: "Son hacim / önceki 20 mum ortalaması", step: 0.1, min: 0 }] },
     { key: "VWAP_MEAN_REVERSION", name: "VWAP Mean Reversion", icon: "↩️", desc: "Bant altındaki aşırı satımdan VWAP dönüşünü arar.", enabledKey: "mean_reversion_enabled", timeframeKey: "mean_reversion_timeframe", params: [{ key: "bb_period", label: "BB Periyodu", hint: "Mean-reversion bant periyodu", step: 1, min: 5 }, { key: "bb_std_dev", label: "BB Std Dev", hint: "Aşırı sapma seviyesi", step: 0.1, min: 0.5 }] },
     { key: "KELTNER_BREAKOUT", name: "Keltner Breakout", icon: "🔔", desc: "ATR tabanlı Keltner üst bandı kırılımını arar.", enabledKey: "keltner_enabled", timeframeKey: "keltner_timeframe", params: [{ key: "keltner_ema_period", label: "EMA Periyodu", hint: "Keltner merkez EMA", step: 1, min: 5 }, { key: "keltner_atr_period", label: "ATR Periyodu", hint: "Volatilite periyodu", step: 1, min: 5 }, { key: "keltner_atr_multiplier", label: "ATR Çarpanı", hint: "Kanal mesafesi", step: 0.1, min: 0.5 }, { key: "keltner_volume_multiplier", label: "Hacim Çarpanı", hint: "Ortalama hacim üstü eşik", step: 0.1, min: 1 }] },
     { key: "CHOP_TREND_FILTER", name: "CHOP Trend Filter", icon: "📐", desc: "Yatay piyasayı CHOP ile eler, trend momentumunu kullanır.", enabledKey: "chop_enabled", timeframeKey: "chop_timeframe", params: [{ key: "chop_period", label: "CHOP Periyodu", hint: "Piyasa rejimi penceresi", step: 1, min: 5 }, { key: "chop_max_value", label: "Maksimum CHOP", hint: "Bunun altında trend kabul edilir", step: 1, min: 20 }, { key: "chop_min_rsi", label: "Minimum RSI", hint: "Trend momentum filtresi", step: 1, min: 1 }] },
@@ -271,6 +272,24 @@ export default function StrategiesPage() {
                                     ))}
                                 </select>
                             </div>
+                            {s.key === "EMA_VWAP_PULLBACK" && (
+                                <label className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3 cursor-pointer">
+                                    <span><p className="font-mono text-sm text-white">Üst zaman dilimi teyidi</p><p className="text-xs text-bunker-muted mt-0.5">Bir üst timeframe EMA trendi bullish olmalı</p></span>
+                                    <input type="checkbox" checked={!!draft.ema_vwap_require_mtf_alignment} onChange={(e) => setDraft((d) => ({ ...d, ema_vwap_require_mtf_alignment: e.target.checked }))} className="h-4 w-4 accent-green-400" />
+                                </label>
+                            )}
+                            {s.key === "MOMENTUM" && (
+                                <label className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3 cursor-pointer">
+                                    <span><p className="font-mono text-sm text-white">Üst zaman dilimi teyidi</p><p className="text-xs text-bunker-muted mt-0.5">Bir üst timeframe EMA trendi bullish olmalı</p></span>
+                                    <input type="checkbox" checked={!!draft.momentum_require_mtf_alignment} onChange={(e) => setDraft((d) => ({ ...d, momentum_require_mtf_alignment: e.target.checked }))} className="h-4 w-4 accent-green-400" />
+                                </label>
+                            )}
+                            {s.key === "KELTNER_BREAKOUT" && (
+                                <label className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3 cursor-pointer">
+                                    <span><p className="font-mono text-sm text-white">Üst zaman dilimi teyidi</p><p className="text-xs text-bunker-muted mt-0.5">Bir üst timeframe EMA trendi bullish olmalı</p></span>
+                                    <input type="checkbox" checked={!!draft.keltner_require_mtf_alignment} onChange={(e) => setDraft((d) => ({ ...d, keltner_require_mtf_alignment: e.target.checked }))} className="h-4 w-4 accent-green-400" />
+                                </label>
+                            )}
                             {s.params.map((p) => (
                                 <div key={p.key as string} className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
                                     <div className="min-w-0">

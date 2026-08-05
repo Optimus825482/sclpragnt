@@ -393,6 +393,30 @@ class ScalpAnalyzer:
         total_volume = sum(volumes[-lookback:])
         return max(-1.0, min(1.0, sum(pressure) / total_volume)) if total_volume else None
 
+    @staticmethod
+    def _volume_ratio(kline, lookback=20):
+        volumes = kline.get("volumes", [])
+        if len(volumes) < lookback + 1:
+            return None
+        baseline = float(np.mean(volumes[-lookback - 1:-1]))
+        return float(volumes[-1] / baseline) if baseline > 0 else None
+
+    def _mtf_bullish(self, symbol, timeframe):
+        """Require a bullish EMA structure on the next higher loaded timeframe."""
+        if not symbol or not self.market:
+            return True
+        higher = {"1m": "5m", "5m": "15m", "15m": "1h", "1h": "4h", "4h": "1d"}.get(timeframe)
+        if not higher:
+            return True
+        kline = self.market.get_ut_kline(symbol, higher)
+        closes = kline.get("closes", [])
+        if len(closes) < 55:
+            return False
+        e9 = self.calculate_ema(closes, config.EMA_SHORT)
+        e21 = self.calculate_ema(closes, config.EMA_MID)
+        e50 = self.calculate_ema(closes, config.EMA_TREND)
+        return all(value is not None for value in (e9, e21, e50)) and e9 > e21 > e50 and closes[-1] > e21
+
     def strategy_ema_vwap(self, kline, symbol=None):
         closes, highs, lows, volumes = kline.get("closes", []), kline.get("highs", []), kline.get("lows", []), kline.get("volumes", [])
         if len(closes) < 55: return None
@@ -401,13 +425,16 @@ class ScalpAnalyzer:
         vol = np.array(volumes[-20:]); vwap = float(np.sum(typical * vol) / np.sum(vol)) if np.sum(vol) else None
         if None in (e9, e21, e50, vwap): return None
         flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
+        volume_ratio = self._volume_ratio(kline)
+        volume_ok = volume_ratio is not None and volume_ratio >= config.EMA_VWAP_MIN_VOLUME_RATIO
+        mtf_ok = self._mtf_bullish(symbol, config.EMA_VWAP_TIMEFRAME) if config.EMA_VWAP_REQUIRE_MTF_ALIGNMENT else True
         # Tek mumluk crossover yerine son 3 mum içinde EMA21'e gerçek pullback
         # arıyoruz; böylece strateji yalnızca 1 kez değil, yeni kurulumlarda tekrar
         # sinyal üretebilir. Kapanış EMA21 üzerine dönerken trend ve VWAP korunmalı.
         recent_lows = lows[-4:-1]
         touched_ema = any(low <= e21 * 1.002 for low in recent_lows)
         bullish_reclaim = closes[-1] > closes[-2] and closes[-1] > e21
-        if e9 > e21 > e50 and closes[-1] > vwap and touched_ema and bullish_reclaim and flow_ok: return "buy"
+        if e9 > e21 > e50 and closes[-1] > vwap and touched_ema and bullish_reclaim and flow_ok and volume_ok and mtf_ok: return "buy"
         return None
 
     def strategy_breakout(self, kline, symbol=None):
@@ -436,7 +463,10 @@ class ScalpAnalyzer:
         if len(closes) <= long: return None
         r1 = closes[-1] / closes[-short - 1] - 1; r2 = closes[-1] / closes[-long] - 1
         flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
-        if r1 > config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 and flow_ok: return "buy"
+        volume_ratio = self._volume_ratio(kline)
+        volume_ok = volume_ratio is not None and volume_ratio >= config.MOMENTUM_MIN_VOLUME_RATIO
+        mtf_ok = self._mtf_bullish(symbol, config.MOMENTUM_TIMEFRAME) if config.MOMENTUM_REQUIRE_MTF_ALIGNMENT else True
+        if r1 > config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 and flow_ok and volume_ok and mtf_ok: return "buy"
         return None
 
     def adr_status(self, symbol, price):
@@ -492,7 +522,12 @@ class ScalpAnalyzer:
         ema = self.calculate_ema(closes, config.KELTNER_EMA_PERIOD); atr = self.calculate_atr(kline, config.KELTNER_ATR_PERIOD)
         avg_vol = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else 0
         flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0.05, 0)
-        if ema is not None and atr and closes[-1] > ema + config.KELTNER_ATR_MULTIPLIER * atr and volumes[-1] >= avg_vol * config.KELTNER_VOLUME_MULTIPLIER and flow_ok: return "buy"
+        mtf_ok = self._mtf_bullish(symbol, config.KELTNER_TIMEFRAME) if config.KELTNER_REQUIRE_MTF_ALIGNMENT else True
+        previous = {key: values[:-1] for key, values in kline.items() if isinstance(values, list)}
+        prev_ema = self.calculate_ema(previous.get("closes", []), config.KELTNER_EMA_PERIOD)
+        prev_atr = self.calculate_atr(previous, config.KELTNER_ATR_PERIOD)
+        was_below_band = prev_ema is not None and prev_atr is not None and closes[-2] <= prev_ema + config.KELTNER_ATR_MULTIPLIER * prev_atr
+        if ema is not None and atr and was_below_band and closes[-1] > ema + config.KELTNER_ATR_MULTIPLIER * atr and volumes[-1] >= avg_vol * config.KELTNER_VOLUME_MULTIPLIER and flow_ok and mtf_ok: return "buy"
         return None
 
     def calculate_chop(self, kline, period=14):
