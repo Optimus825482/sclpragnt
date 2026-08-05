@@ -150,8 +150,43 @@ def _candlestick_patterns(opens, highs, lows, closes):
     if max(o,c)-l < body and h-min(o,c) > body*2: patterns.append("shooting_star")
     if pc < po and c > o and c >= po and o <= pc: patterns.append("bullish_engulfing")
     if pc > po and c < o and c <= po and o >= pc: patterns.append("bearish_engulfing")
+    # Strong, common multi-candle confirmations. These are deliberately
+    # conservative and require body/range relationships rather than names
+    # inferred from a single candle.
+    avg_body = float(np.mean([abs(closes[i]-opens[i]) for i in range(max(0, len(closes)-20), len(closes))])) or 1e-12
+    if len(closes) >= 3:
+        a,b = len(closes)-3, len(closes)-2
+        if closes[a] < opens[a] and abs(closes[b]-opens[b]) <= avg_body*.6 and closes[-1] > opens[-1] and closes[-1] > (opens[a]+closes[a])/2: patterns.append("morning_star")
+        if closes[a] > opens[a] and abs(closes[b]-opens[b]) <= avg_body*.6 and closes[-1] < opens[-1] and closes[-1] < (opens[a]+closes[a])/2: patterns.append("evening_star")
+    if len(closes) >= 4:
+        last4 = range(len(closes)-4, len(closes)-1)
+        if all(closes[i] > opens[i] and closes[i] > closes[i-1] for i in last4): patterns.append("three_white_soldiers")
+        if all(closes[i] < opens[i] and closes[i] < closes[i-1] for i in last4): patterns.append("three_black_crows")
+    if len(closes) >= 2:
+        prev_mid = (opens[-2]+closes[-2])/2
+        if closes[-2] < opens[-2] and opens[-1] <= closes[-2] and closes[-1] > prev_mid: patterns.append("piercing_line")
+        if closes[-2] > opens[-2] and opens[-1] >= closes[-2] and closes[-1] < prev_mid: patterns.append("dark_cloud_cover")
+        if closes[-2] < opens[-2] and abs(closes[-1]-opens[-1]) < abs(closes[-2]-opens[-2])*.6 and min(opens[-1],closes[-1]) > min(opens[-2],closes[-2]) and max(opens[-1],closes[-1]) < max(opens[-2],closes[-2]): patterns.append("bullish_harami")
+        if closes[-2] > opens[-2] and abs(closes[-1]-opens[-1]) < abs(closes[-2]-opens[-2])*.6 and min(opens[-1],closes[-1]) > min(opens[-2],closes[-2]) and max(opens[-1],closes[-1]) < max(opens[-2],closes[-2]): patterns.append("bearish_harami")
+        if abs(highs[-1]-highs[-2]) <= max(highs[-1], highs[-2])*.001: patterns.append("tweezer_top")
+        if abs(lows[-1]-lows[-2]) <= max(lows[-1], lows[-2])*.001: patterns.append("tweezer_bottom")
     if not patterns: patterns.append("none")
     return patterns
+
+CANDLESTICK_PATTERN_INFO = {
+    "bullish_engulfing": {"direction": "bullish", "strength": "strong", "tr": "Güçlü boğa yutan formasyonu; alıcı baskısında artış."},
+    "bearish_engulfing": {"direction": "bearish", "strength": "strong", "tr": "Güçlü ayı yutan formasyonu; satıcı baskısında artış."},
+    "morning_star": {"direction": "bullish", "strength": "strong", "tr": "Üç mumlu boğa dönüşü; düşüş momentumunun zayıfladığına işaret eder."},
+    "evening_star": {"direction": "bearish", "strength": "strong", "tr": "Üç mumlu ayı dönüşü; yükseliş momentumunun zayıfladığına işaret eder."},
+    "three_white_soldiers": {"direction": "bullish", "strength": "strong", "tr": "Üç beyaz asker; ardışık güçlü alıcı devamlılığı."},
+    "three_black_crows": {"direction": "bearish", "strength": "strong", "tr": "Üç siyah karga; ardışık güçlü satıcı devamlılığı."},
+    "piercing_line": {"direction": "bullish", "strength": "medium", "tr": "Delici çizgi; düşüş sonrası boğa toparlanması."},
+    "dark_cloud_cover": {"direction": "bearish", "strength": "medium", "tr": "Kara bulut örtüsü; yükseliş sonrası satıcı baskısı."},
+    "bullish_harami": {"direction": "bullish", "strength": "medium", "tr": "Boğa haramisi; düşüş momentumunda yavaşlama."},
+    "bearish_harami": {"direction": "bearish", "strength": "medium", "tr": "Ayı haramisi; yükseliş momentumunda yavaşlama."},
+    "tweezer_top": {"direction": "bearish", "strength": "medium", "tr": "Cımbız tepe; dirençte başarısızlık işareti."},
+    "tweezer_bottom": {"direction": "bullish", "strength": "medium", "tr": "Cımbız dip; destekte tepki işareti."},
+}
 
 
 def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, order_value=500, primary_timeframe="5m"):
@@ -186,8 +221,12 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
         adr = float(np.mean(ranges)) if ranges else None
     vavg = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else None
     spread = flow.get("spread_pct"); depth = ((flow.get("bid_qty", 0) or 0) + (flow.get("ask_qty", 0) or 0)) * price
+    candle_patterns = _candlestick_patterns(opens, highs, lows, closes)
     alignment = "bullish" if ema9 and ema21 and ema50 and ema9 > ema21 > ema50 else "bearish" if ema9 and ema21 and ema50 and ema9 < ema21 < ema50 else "mixed"
     result.update({"timeframe": primary_timeframe, "data_ready": True, "trend": {"ema_9": ema9, "ema_21": ema21, "ema_50": ema50, "alignment": alignment, "adx": adx}, "momentum": {"return_5m": ret(1), "return_15m": ret(3), "return_1h": ret(12), "rsi_14": _rsi(closes), "roc_21": ret(21), "macd": macd, "stochastic": stochastic, "mfi_14": mfi}, "oscillators": {"values": oscillator_values, "signals": oscillator_signals}, "moving_averages": moving_averages, "candlestick_patterns": _candlestick_patterns(opens, highs, lows, closes), "channels": {"bollinger": bollinger, "donchian": {"upper": max(highs[-20:]), "middle": _sma(closes, 20), "lower": min(lows[-20:])} if len(closes) >= 20 else None, "keltner": {"middle": ema20, "upper": ema20 + 2*atr if ema20 and atr else None, "lower": ema20 - 2*atr if ema20 and atr else None}}, "volatility": {"atr_14": atr, "atr_pct": atr / price if atr and price else None, "adr_14_pct": adr, "adr_basis": "1d", "bollinger": bollinger, "day_range_used_pct": None, "adr_utilization": None, "remaining_capacity_pct": None}, "volume": {"volume_ratio_20": volumes[-1] / vavg if vavg else None, "volume_quality": "insufficient_history" if len(volumes) < 21 else "low_volume" if vavg and volumes[-1] / vavg < 0.2 else "valid", "volume_timeframe": primary_timeframe, "vwap": float(np.sum(((np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3) * np.array(volumes[-20:])) / np.sum(volumes[-20:])) if len(volumes) >= 20 and np.sum(volumes[-20:]) else None, "obv": obv}, "pivots": _pivots(dhigh[-1], dlow[-1], dclose[-1]) if len(dclose) else None, "liquidity": {"quote_volume_24h": ticker_24h, "spread_pct": spread, "orderbook_depth_try": depth, "depth_multiplier": depth / order_value if order_value else None, "orderflow_imbalance": ((flow.get("bid_qty", 0) - flow.get("ask_qty", 0)) / (flow.get("bid_qty", 0) + flow.get("ask_qty", 0))) if (flow.get("bid_qty", 0) + flow.get("ask_qty", 0)) else None, "scope": "realtime_market", "timeframe_independent": True, "source": flow.get("source", "binance_tr_public_websocket"), "updated_at": flow.get("updated_at")}})
+    result["candlestick_patterns"] = candle_patterns
+    result["candlestick_pattern_details"] = [CANDLESTICK_PATTERN_INFO.get(name, {"direction": "neutral", "strength": "info", "tr": name}) for name in candle_patterns]
+    result["candlestick_pattern_status"] = "calculated_no_pattern" if candle_patterns == ["none"] else "detected"
     if adr and len(dclose) and dclose[-1]:
         day_open = daily.get("opens", [])[-1] if daily.get("opens") else dclose[-1]
         used = max(price, day_open) / min(price, day_open) - 1 if price > 0 and day_open > 0 else 0

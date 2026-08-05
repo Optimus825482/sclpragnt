@@ -109,7 +109,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
     system = PERSONA + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. İşlem, sinyal veya ayar bilgisi gerekiyorsa mevcut araçlardan uygun olanı çağır; araç çağırmadan veri uydurma. Kullanıcı istemedikçe geçmiş verileri çekme. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
-    conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False)}]
+    conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     conversation.extend([{"role": str(m.get("role", "user")), "content": str(m.get("content", ""))} for m in (messages or [])[-12:]])
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation}
     if tools: payload["tools"] = tools; payload["tool_choice"] = "auto"
@@ -138,7 +138,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
                 try: arguments = json.loads(fn.get("arguments", "{}"))
                 except json.JSONDecodeError: arguments = {}
                 tool_result = await tool_executor(name, arguments)
-                conversation.append({"role": "tool", "tool_call_id": call_item.get("id", name), "name": name, "content": json.dumps(tool_result, ensure_ascii=False)})
+                conversation.append({"role": "tool", "tool_call_id": call_item.get("id", name), "name": name, "content": json.dumps(tool_result, ensure_ascii=False, default=str)})
             payload["messages"] = conversation
         data = result.get("data", result) if isinstance(result, dict) else result
         if isinstance(data, str):
