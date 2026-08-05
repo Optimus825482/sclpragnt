@@ -68,7 +68,9 @@ BEGIN
     END;
   END IF;
 END $$;
-CREATE INDEX IF NOT EXISTS memory_embeddings_hnsw_idx ON memory_embeddings USING hnsw (embedding halfvec_cosine_ops);
+-- HNSW index is intentionally created after the first embedding model is
+-- configured. Creating it during the base migration can block on an existing
+-- PostgreSQL relation and is unnecessary while the table has no embeddings.
 
 CREATE TABLE IF NOT EXISTS memory_retrieval_logs (
   id BIGSERIAL PRIMARY KEY,
