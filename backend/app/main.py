@@ -76,15 +76,19 @@ async def ws_broadcast_loop():
             open_positions = []
             for sym, pos in analyzer.positions.items():
                 ticker = market.get_ticker(sym)
-                if ticker:
-                    current_value = pos["quantity"] * ticker["last_price"]
-                    total_value += current_value
-                    pnl_pct = ((ticker["last_price"] - pos["entry_price"]) / pos["entry_price"]) * 100
-                    pnl_try = (ticker["last_price"] - pos["entry_price"]) * pos["quantity"]
-                    open_positions.append({
-                        "symbol": sym, "entry": pos["entry_price"], "current": ticker["last_price"],
-                        "pnl_pct": pnl_pct, "pnl_try": pnl_try, "value": current_value, "strategy": pos.get("strategy", "UT")
-                    })
+                # A stale/missing ticker must not make a real open position
+                # disappear from equity or reconciliation. Mark it at entry
+                # until a fresh public price arrives.
+                current_price = float((ticker or {}).get("last_price") or pos["entry_price"])
+                current_value = pos["quantity"] * current_price
+                total_value += current_value
+                pnl_pct = ((current_price - pos["entry_price"]) / pos["entry_price"]) * 100
+                pnl_try = (current_price - pos["entry_price"]) * pos["quantity"]
+                open_positions.append({
+                    "symbol": sym, "entry": pos["entry_price"], "current": current_price,
+                    "pnl_pct": pnl_pct, "pnl_try": pnl_try, "value": current_value,
+                    "strategy": pos.get("strategy", "UT"), "price_stale": ticker is None
+                })
             realized_pnl = await database.get_realized_pnl()
             unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
             open_entry_commission = sum(pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT for pos in analyzer.positions.values())
@@ -145,6 +149,7 @@ CONFIG_FIELDS = {
     "min_orderbook_depth_multiplier": "MIN_ORDERBOOK_DEPTH_MULTIPLIER",
     "liquidity_filter_enabled": "LIQUIDITY_FILTER_ENABLED",
     "default_order_usdt": "DEFAULT_ORDER_USDT",
+    "max_open_positions": "MAX_OPEN_POSITIONS",
     "take_profit_pct": "SPOT_PROFIT_TARGET_PCT",
     "hard_stop_loss_pct": "HARD_STOP_LOSS_PCT",
     "cooldown_bars": "COOLDOWN_BARS",
@@ -205,7 +210,7 @@ CONFIG_FIELDS = {
 }
 
 BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
+INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
 STR_FIELDS = {"ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
@@ -409,9 +414,13 @@ async def update_config(payload: dict):
         config.SYMBOLS = symbols
         config.UT_SYMBOLS = symbols
         market.symbols = [s.lower() for s in symbols]
-        market.timeframes = market._all_timeframes()
     # timeframe değiştiyse market veri setini güncelle
     market.timeframes = market._all_timeframes()
+    # Apply symbol/timeframe changes immediately. Settings are runtime-only,
+    # but the running websocket/cache must not continue using the old universe.
+    market.reconnect_requested = True
+    await market.fetch_historical_data()
+    analyzer._last_signal_lengths.clear()
     return await get_config()
 
 @app.get("/api/chart/{symbol}")
@@ -559,7 +568,7 @@ async def backtest_run(payload: dict):
     params = payload.get("params") or {}
     order_size = float(payload.get("order_size", 500.0))
     stop_pct = float(payload.get("stop_loss_pct", 0.005))
-    tp_pct = float(payload.get("take_profit_pct", 0.015))
+    tp_pct = float(payload.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
     trail_pct = float(payload.get("trailing_stop_pct", 0.003))
     try:
         run_id, result = await run_backtest(

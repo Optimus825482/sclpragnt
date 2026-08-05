@@ -142,7 +142,8 @@ def _recalculate_wallet(conn: sqlite3.Connection):
     comm = conn.execute("SELECT COALESCE(SUM(commission),0) FROM trades").fetchone()[0]
     received = conn.execute("SELECT COALESCE(SUM(exit_price*quantity),0) FROM trades").fetchone()[0]
     open_cost = conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0]
-    try_balance = start - spent - comm + received - open_cost
+    open_entry_commission = open_cost * config.COMMISSION_PCT
+    try_balance = start - spent - comm + received - open_cost - open_entry_commission
     conn.execute("UPDATE virtual_wallet SET amount=? WHERE asset='TRY'", (try_balance,))
 
 def _backfill_commission(conn: sqlite3.Connection):

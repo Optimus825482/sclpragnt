@@ -522,7 +522,7 @@ class ScalpAnalyzer:
         signals = []
         price = ticker["last_price"]
 
-        # Açık pozisyonu spot kurallarıyla yönet (yalnızca sabit %2 kâr hedefi)
+        # Açık spot pozisyonu time-decay hedef, hard stop ve timeout ile yönet.
         if symbol in self.positions:
             strat = self.positions[symbol].get("strategy")
             # UT stratejisi de artık _manage_open_position'a girer

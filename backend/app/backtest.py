@@ -67,7 +67,7 @@ def _validate(symbol, interval, days_back, strategy, params, order_size, stop_pc
         raise ValueError("days_back 1 ile 365 arasında olmalıdır")
     if not 0 < order_size <= config.INITIAL_BALANCE_TRY:
         raise ValueError("order_size başlangıç bakiyesi ile 0 arasında olmalıdır")
-    # Spot modelinde SL/trailing ve karşıt-sinyal çıkışı yoktur; satış yalnızca sabit %2 kârla yapılır.
+    # Spot backtest, canlıdaki hard-stop/time-decay/timeout modelini kullanır.
     unknown = set(params) - set(PARAM_FIELDS)
     if unknown:
         raise ValueError(f"Bilinmeyen parametre: {sorted(unknown)[0]}")
@@ -102,7 +102,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
             analyzer = ScalpAnalyzer(None)
             fn = getattr(analyzer, STRATEGIES[strategy][2])
             balance = config.INITIAL_BALANCE_TRY
-            profit_target_pct = config.SPOT_PROFIT_TARGET_PCT
+            first_target_pct = float(tp_pct if tp_pct is not None else config.TIME_DECAY_TP_1_PCT)
             equity_peak = balance
             max_drawdown = 0.0
             position = None
@@ -115,14 +115,28 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                 high, low = data["highs"][i], data["lows"][i]
                 if position:
                     window = {key: values[:i + 1] for key, values in data.items()}
-                    target_price = position["entry"] * (1 + profit_target_pct)
-                    stop_price = position["entry"] * (1 - config.HARD_STOP_LOSS_PCT) if config.HARD_STOP_LOSS_PCT > 0 else None
+                    elapsed = max(0, data["times"][i] - position["entry_time"])
+                    if elapsed < config.TIME_DECAY_TP_STAGE_2_SEC:
+                        target_pct = first_target_pct
+                        target_reason = "time_decay_target_1_0pct"
+                    elif elapsed < config.TIME_DECAY_TP_STAGE_3_SEC:
+                        target_pct = config.TIME_DECAY_TP_2_PCT
+                        target_reason = "time_decay_target_0_75pct"
+                    elif elapsed < config.TIME_DECAY_BREAKEVEN_SEC:
+                        target_pct = config.TIME_DECAY_TP_3_PCT
+                        target_reason = "time_decay_target_0_5pct"
+                    else:
+                        target_pct = config.min_net_exit_pct(order_size * position.get("layers", 1))
+                        target_reason = "breakeven_exit"
+                    target_price = position["entry"] * (1 + target_pct)
+                    effective_stop_pct = float(stop_pct) if stop_pct and stop_pct > 0 else config.HARD_STOP_LOSS_PCT
+                    stop_price = position["entry"] * (1 - effective_stop_pct) if effective_stop_pct > 0 else None
                     # Pozisyon yalnızca kendi stratejisinin sell sinyaliyle kapanır.
                     exit_price = stop_price if stop_price is not None and low <= stop_price else (target_price if high >= target_price else None)
-                    reason = "hard_stop_loss" if exit_price == stop_price and stop_price is not None else "profit_target_configured"
+                    reason = "hard_stop_loss" if exit_price == stop_price and stop_price is not None else target_reason
                     if data["times"][i] - position["entry_time"] >= config.MAX_POSITION_HOLD_SEC:
                         exit_price = close
-                        reason = "max_hold_12h"
+                        reason = "max_hold_2h"
                     elif exit_price is None and fn(window, symbol) == "sell":
                         exit_price = close
                         reason = "opposite_signal"
@@ -180,9 +194,9 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     "profit_factor": round(gross_profit / gross_loss, 3) if gross_loss else (999.0 if gross_profit else 0.0),
                     "exit_reason_counts": dict(Counter(t["reason"] for t in trades)),
                     "max_drawdown_pct": round(max_drawdown * 100, 2), "commission_pct": config.COMMISSION_PCT,
-                    "order_size": order_size, "stop_loss_pct": 0.0, "take_profit_pct": profit_target_pct,
+                    "order_size": order_size, "stop_loss_pct": float(stop_pct), "take_profit_pct": first_target_pct,
                     "flow_model": "candle_orderflow_proxy_for_backtest",
-                    "trailing_stop_pct": 0.0, "exit_model": "strategy_specific_sell_or_configured_profit_or_12h",
+                    "trailing_stop_pct": 0.0, "exit_model": "time_decay_profit_or_hard_stop_or_2h_timeout",
                     "open_position_at_end": open_at_end, "unrealized_pnl": round(unrealized_pnl, 8),
                     "trades": trades, "timestamp": time.time()}
         finally:

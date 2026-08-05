@@ -52,6 +52,9 @@ class MarketData:
             config.MOMENTUM_TIMEFRAME,
             config.ADR_TIMEFRAME,
             config.MEAN_REVERSION_TIMEFRAME,
+            config.KELTNER_TIMEFRAME,
+            config.CHOP_TIMEFRAME,
+            config.DONCHIAN_TIMEFRAME,
         ]))
 
     async def fetch_historical_data(self):
@@ -63,6 +66,7 @@ class MarketData:
                 try:
                     klines = await fetch_klines(s, tf, limit=300)
                     hist = self.klines[tf][s.upper()]
+                    hist.clear()
                     for k in klines:
                         # Binance kline formatı: [OpenTime, Open, High, Low, Close, Volume...]
                         hist["opens"].append(float(k[1]))
