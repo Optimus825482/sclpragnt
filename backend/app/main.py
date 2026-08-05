@@ -16,7 +16,7 @@ from app.backtest import run_backtest
 from app.binance_tr_public import klines as fetch_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot
 from app import llm_analysis
-from app.embedding_worker import worker as embedding_worker
+from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app import memory_service
 from app import migration_monitor
 try:
@@ -31,6 +31,7 @@ app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials
 market = MarketData(config.SYMBOLS)
 analyzer = ScalpAnalyzer(market)
 _pg_pool = None
+_embedding_backfill = {"status": "idle", "queued": 0, "message": None}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WELL_KNOWN_DIR = os.path.join(BASE_DIR, "..", ".well-known")
@@ -193,7 +194,29 @@ async def system_health():
 
 @app.get("/api/memory/status")
 async def memory_status():
-    return {"enabled": bool(_pg_pool), "backend": os.getenv("DB_BACKEND", "sqlite"), "worker": embedding_worker.snapshot(), "message": None if _pg_pool else "PostgreSQL memory backend aktif değil"}
+    return {"enabled": bool(_pg_pool), "backend": os.getenv("DB_BACKEND", "sqlite"), "worker": embedding_worker.snapshot(), "backfill": dict(_embedding_backfill), "message": None if _pg_pool else "PostgreSQL memory backend aktif değil"}
+
+@app.post("/api/memory/backfill")
+async def memory_backfill():
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
+    if _embedding_backfill["status"] == "running": return {"ok": False, **_embedding_backfill}
+    _embedding_backfill.update({"status": "running", "queued": 0, "message": "Kayıtlar embedding kuyruğuna alınıyor"})
+    async def enqueue_existing():
+        try:
+            queued = 0
+            async with _pg_pool.acquire() as conn:
+                trades = [dict(row) for row in await conn.fetch("SELECT * FROM trades ORDER BY id")]
+                signals = [dict(row) for row in await conn.fetch("SELECT * FROM signals ORDER BY id")]
+            for trade in trades:
+                doc = trade_document("historical", trade.get("symbol") or "unknown", trade, {"action": "HISTORICAL_TRADE", "timestamp": trade.get("exit_time")})
+                queued += int(embedding_worker.enqueue_nowait(doc))
+            for signal in signals:
+                queued += int(embedding_worker.enqueue_nowait(signal_document(signal)))
+            _embedding_backfill.update({"status": "completed", "queued": queued, "message": "Embedding kuyruğu hazır; worker kayıtları işliyor"})
+        except Exception as exc:
+            _embedding_backfill.update({"status": "error", "message": str(exc)})
+    asyncio.create_task(enqueue_existing(), name="embedding-backfill")
+    return {"ok": True, **_embedding_backfill}
 
 @app.get("/api/migration/status")
 async def migration_status():
@@ -512,7 +535,9 @@ async def update_config(payload: dict):
     return await get_config()
 
 @app.post("/api/portfolio/reconcile")
-async def reconcile_portfolio():
+async def reconcile_portfolio(payload: dict = None):
+    if not (payload or {}).get("confirm", False):
+        return {"status": "preview", **await database.preview_portfolio_reconcile()}
     result = await database.reconcile_portfolio()
     await ws_manager.broadcast({"type": "portfolio_reconciled", "data": result})
     return {"status": "ok", **result}

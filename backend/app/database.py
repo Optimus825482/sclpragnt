@@ -342,7 +342,7 @@ async def update_wallet_balance(asset, amount):
     await _run_db(op)
 
 async def reconcile_portfolio():
-    """Rebuild TRY cash from the complete trade and open-position ledger."""
+    """Rebuild TRY cash and remove only over-allocated newest open positions."""
     def op(conn):
         before_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", ("TRY",)).fetchone()
         before = float(before_row[0]) if before_row else 0.0
@@ -350,6 +350,25 @@ async def reconcile_portfolio():
         open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
         entry_commission = open_cost * config.COMMISSION_PCT
         after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
+        removed = []
+        if after < 0:
+            rows = conn.execute("SELECT symbol,entry_time,entry_price,quantity FROM positions ORDER BY entry_time DESC").fetchall()
+            for row in rows:
+                if after >= 0: break
+                symbol, entry_time, entry_price, quantity = row[0], row[1], row[2], row[3]
+                position_cost = float(entry_price or 0) * float(quantity or 0)
+                conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
+                # Remove only the opening signal/log tied to this position.
+                conn.execute("DELETE FROM signals WHERE symbol=? AND action='BUY_SIGNAL' AND ABS(timestamp-?) <= 10", (symbol, entry_time))
+                conn.execute("DELETE FROM decision_logs WHERE symbol=? AND decision='BUY_SIGNAL' AND ABS(timestamp-?) <= 10", (symbol, entry_time))
+                removed.append({"symbol": symbol, "entry_time": entry_time, "cost": position_cost})
+                open_cost -= position_cost
+                entry_commission = open_cost * config.COMMISSION_PCT
+                after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
+            if removed:
+                open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
+                entry_commission = open_cost * config.COMMISSION_PCT
+                after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", after))
         conn.commit()
         trade_count = int(conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0])
@@ -357,7 +376,23 @@ async def reconcile_portfolio():
         return {"before_try": before, "after_try": after, "realized_pnl": realized,
                 "open_entry_cost": open_cost, "open_entry_commission": entry_commission,
                 "trade_count": trade_count, "open_position_count": position_count,
-                "difference": after - before}
+                "difference": after - before, "removed_overallocated_positions": removed}
+    return await _run_db(op)
+
+async def preview_portfolio_reconcile():
+    def op(conn):
+        realized = float(conn.execute("SELECT COALESCE(SUM(pnl),0) FROM trades").fetchone()[0] or 0)
+        open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
+        after = config.INITIAL_BALANCE_TRY + realized - open_cost - open_cost * config.COMMISSION_PCT
+        candidates = []
+        for row in conn.execute("SELECT symbol,entry_time,entry_price,quantity FROM positions ORDER BY entry_time DESC").fetchall():
+            if after >= 0: break
+            cost = float(row[2] or 0) * float(row[3] or 0)
+            candidates.append({"symbol": row[0], "entry_time": row[1], "entry_price": row[2], "quantity": row[3], "cost": cost})
+            open_cost -= cost
+            after = config.INITIAL_BALANCE_TRY + realized - open_cost - open_cost * config.COMMISSION_PCT
+        return {"would_remove": candidates, "projected_try": after, "realized_pnl": realized,
+                "open_entry_cost": open_cost, "requires_confirmation": bool(candidates)}
     return await _run_db(op)
 
 async def get_llm_config():
