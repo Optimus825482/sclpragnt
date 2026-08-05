@@ -686,7 +686,7 @@ async def save_llm_tool_log(item):
             "INSERT INTO llm_tool_logs (timestamp, scope, tool_name, arguments, result_summary, duration_ms, success) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (item.get("timestamp") or time.time(), item.get("scope"), item.get("tool_name"),
              json.dumps(item.get("arguments") or {}, default=str), item.get("result_summary"),
-             item.get("duration_ms"), int(bool(item.get("success"))))
+             item.get("duration_ms"), bool(item.get("success")))
         )
         conn.commit()
     await _run_db(op)

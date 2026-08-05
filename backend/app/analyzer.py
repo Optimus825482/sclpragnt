@@ -3,6 +3,7 @@ import asyncio
 import numpy as np
 from app.config import config
 from app.technical_analysis import calculate_snapshot
+from app.binance_tr_public import orderbook
 from app import database
 
 class ScalpAnalyzer:
@@ -668,6 +669,26 @@ class ScalpAnalyzer:
         expected_gross = None
         expected_net = None
         if self.market:
+            # WebSocket depth can still be warming up when a signal arrives.
+            # Capture a read-only REST snapshot so the opening context does
+            # not silently persist null spread/depth/order-flow values.
+            flow = self.market.get_orderflow(symbol)
+            if not flow.get("bid_qty") or not flow.get("ask_qty") or flow.get("spread_pct") is None:
+                try:
+                    book = await orderbook(symbol, 5)
+                    bids = book.get("bids") or []
+                    asks = book.get("asks") or []
+                    if bids and asks:
+                        bid_price, bid_qty = float(bids[0][0]), float(bids[0][1])
+                        ask_price, ask_qty = float(asks[0][0]), float(asks[0][1])
+                        mid = (bid_price + ask_price) / 2
+                        flow.update({"bid_qty": bid_qty, "ask_qty": ask_qty,
+                                     "spread_pct": ((ask_price - bid_price) / mid * 100) if mid else None,
+                                     "source": "binance_tr_public_rest",
+                                     "updated_at": time.time()})
+                        self.market.orderflow[symbol.upper()] = flow
+                except Exception as exc:
+                    print(f"[Likidite] {symbol} REST order-book snapshot alınamadı: {exc}")
             liquid, details = self.market.liquidity_status(symbol, order_value)
             if not liquid:
                 failed = [key for key, ok in details.get("checks", {}).items() if not ok]
@@ -704,7 +725,7 @@ class ScalpAnalyzer:
             }
             entry_context["technical"] = calculate_snapshot(
                 symbol, entry_price, symbol_klines,
-                self.market.get_orderflow(symbol),
+                flow,
                 self.market.ticker_24h.get(symbol, 0),
                 order_value, technical_tf
             )
