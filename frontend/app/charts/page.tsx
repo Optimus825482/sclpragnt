@@ -35,6 +35,36 @@ const API = `${API_BASE}/api/chart`;
 
 type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 
+type PatternMarker = { time: number; type: "buy" | "sell"; text: string };
+const patternDescriptions: Record<string, string> = {
+    "BOĞA SARMA": "Düşüş sonrası gelen güçlü boğa mumu, önceki ayı mumunun gövdesini tamamen sarar.",
+    "AYI SARMA": "Yükseliş sonrası gelen güçlü ayı mumu, önceki boğa mumunun gövdesini tamamen sarar.",
+    "ÇEKİÇ": "Uzun alt fitil ve küçük gövde, aşağı yönlü baskının reddedildiğini gösterir.",
+    "TERS ÇEKİÇ": "Uzun üst fitil, yükseliş denemesini ve kararsızlığı gösterir.",
+    "DOJİ": "Açılış ve kapanışın birbirine yakın olması piyasa kararsızlığına işaret eder.",
+    "ÜÇ BEYAZ ASKER": "Ardışık güçlü boğa mumları kısa vadeli alım baskısını gösterir.",
+    "ÜÇ SİYAH KARGA": "Ardışık güçlü ayı mumları kısa vadeli satış baskısını gösterir."
+};
+const strongCandlestickPatterns = (bars: Bar[]): PatternMarker[] => {
+    const out: PatternMarker[] = [];
+    for (let i = 1; i < bars.length; i++) {
+        const p = bars[i - 1], c = bars[i];
+        const pBull = p.close > p.open, cBull = c.close > c.open;
+        const pBody = Math.abs(p.close - p.open), cBody = Math.abs(c.close - c.open);
+        const pRange = Math.max(p.high - p.low, Number.EPSILON), cRange = Math.max(c.high - c.low, Number.EPSILON);
+        const pTop = p.high - Math.max(p.open, p.close), pBottom = Math.min(p.open, p.close) - p.low;
+        const cTop = c.high - Math.max(c.open, c.close), cBottom = Math.min(c.open, c.close) - c.low;
+        if (!pBull && cBull && c.open <= p.close && c.close >= p.open && cBody >= pBody * .8) out.push({ time: c.time, type: "buy", text: "BOĞA SARMA" });
+        else if (pBull && !cBull && c.open >= p.close && c.close <= p.open && cBody >= pBody * .8) out.push({ time: c.time, type: "sell", text: "AYI SARMA" });
+        else if (cBottom >= cBody * 2 && cTop <= cBody * .6 && c.close >= c.open) out.push({ time: c.time, type: "buy", text: "ÇEKİÇ" });
+        else if (cTop >= cBody * 2 && cBottom <= cBody * .6 && c.close <= c.open) out.push({ time: c.time, type: "sell", text: "TERS ÇEKİÇ" });
+        else if (cBody <= cRange * .1 && Math.abs(c.close - p.close) <= pRange * .12) out.push({ time: c.time, type: "buy", text: "DOJİ" });
+        else if (i >= 2 && cBull && bars[i - 2].close > bars[i - 2].open && pBull && c.close > p.close) out.push({ time: c.time, type: "buy", text: "ÜÇ BEYAZ ASKER" });
+        else if (i >= 2 && !cBull && bars[i - 2].close < bars[i - 2].open && !pBull && c.close < p.close) out.push({ time: c.time, type: "sell", text: "ÜÇ SİYAH KARGA" });
+    }
+    return out.slice(-80);
+};
+
 const loadPersisted = <T,>(key: string, fallback: T): T => {
     try {
         const raw = localStorage.getItem(key);
@@ -344,11 +374,14 @@ export default function ChartsPage() {
     const [countdown, setCountdown] = useState<number>(0);
     const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
     const [showPositions, setShowPositions] = useState(false);
+    const [showPatterns, setShowPatterns] = useState(false);
+    const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
     const chartHeightRef = useRef(TOTAL_HEIGHT);
     const positionLinesRef = useRef<Map<string, IPriceLine[]>>(new Map());
     const positionMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const utBotMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
+    const patternMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
 
     // localStorage yükleme: hydration uyumluluğu için client tarafında yap
     useEffect(() => {
@@ -980,6 +1013,40 @@ export default function ChartsPage() {
         } catch { /* marker hatası sessiz geç */ }
     }, [instances, bars, symbol]);
 
+    // Güçlü mum formasyonlarını seçili timeframe üzerinde marker olarak göster.
+    useEffect(() => {
+        patternMarkersRef.current?.setMarkers([]);
+        patternMarkersRef.current = null;
+        if (!showPatterns || !bars.length || !candleRef.current) return;
+        try {
+            const markers = createSeriesMarkers(candleRef.current, []);
+            patternMarkersRef.current = markers;
+            markers.setMarkers(strongCandlestickPatterns(bars).map((p) => ({
+                time: p.time as UTCTimestamp,
+                position: p.type === "buy" ? "belowBar" : "aboveBar",
+                color: "#60a5fa",
+                shape: "circle",
+                text: "P",
+                size: 1
+            })));
+        } catch { /* marker zamanı veri aralığı dışındaysa sessiz geç */ }
+    }, [showPatterns, bars, symbol, interval]);
+
+    useEffect(() => {
+        const chart = chartRef.current;
+        if (!chart || !showPatterns) { setPatternTooltip(null); return; }
+        const patterns = new Map(strongCandlestickPatterns(bars).map((p) => [p.time, p]));
+        const onMove = (param: any) => {
+            const time = typeof param.time === "number" ? param.time : null;
+            const point = param.point;
+            const pattern = time == null ? null : patterns.get(time);
+            if (!pattern || !point) { setPatternTooltip(null); return; }
+            setPatternTooltip({ x: point.x, y: point.y, pattern });
+        };
+        chart.subscribeCrosshairMove(onMove);
+        return () => chart.unsubscribeCrosshairMove(onMove);
+    }, [showPatterns, bars, symbol, interval]);
+
     const addIndicator = (entry: RegistryEntry, params: Record<string, any>, style: IndicatorStyle) => {
         const next = [...instances, { uid: uid(), registryId: entry.id, name: entry.shortName, overlay: entry.overlay, params, style }];
         setInstances(next);
@@ -1108,6 +1175,17 @@ export default function ChartsPage() {
                     >
                         POZİSYONLAR {showPositions ? "GİZLE" : "GÖSTER"}
                     </button>
+                    <button
+                        onClick={() => setShowPatterns(!showPatterns)}
+                        aria-label={showPatterns ? "Mum formasyonlarını gizle" : "Mum formasyonlarını göster"}
+                        title={showPatterns ? "Mum formasyonlarını gizle" : "Mum formasyonlarını göster"}
+                        className={`px-4 py-2 rounded-lg border font-mono text-sm transition-colors ${showPatterns
+                            ? "border-neon-green bg-neon-green/20 text-neon-green"
+                            : "border-bunker-600 bg-bunker-900 text-bunker-muted hover:text-white"
+                            }`}
+                    >
+                        {showPatterns ? "◉ FORMASYONLARI GİZLE" : "◌ FORMASYONLARI GÖSTER"}
+                    </button>
                 </div>
             </header>
 
@@ -1144,6 +1222,19 @@ export default function ChartsPage() {
                     </div>
                 )}
                 <div ref={containerRef} className="w-full" />
+                {patternTooltip && (
+                    <div
+                        className="absolute z-30 w-64 rounded-xl border border-blue-400/40 bg-bunker-950/95 p-3 shadow-[0_12px_35px_rgba(0,0,0,0.45)] backdrop-blur pointer-events-none"
+                        style={{ left: Math.min(Math.max(patternTooltip.x + 16, 12), 360), top: Math.max(patternTooltip.y - 24, 12) }}
+                    >
+                        <div className="flex items-center gap-2">
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-blue-300 bg-blue-500/25 font-mono text-xs font-bold text-blue-200">P</span>
+                            <span className="font-mono text-xs font-bold text-blue-200">{patternTooltip.pattern.text}</span>
+                        </div>
+                        <p className="mt-2 text-xs leading-5 text-slate-300">{patternDescriptions[patternTooltip.pattern.text]}</p>
+                        <p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">{patternTooltip.pattern.type === "buy" ? "Boğa yönlü" : "Ayı yönlü"} · {interval}</p>
+                    </div>
+                )}
                 {/* mum kapanış geri sayımı: grafiğin üzerinde sağ üst köşe */}
                 <div className="absolute top-3 right-3 z-20 flex items-center gap-2 px-3 py-1.5 rounded-lg border border-bunker-700 bg-bunker-900/90 backdrop-blur font-mono text-xs text-bunker-muted pointer-events-none">
                     <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" />
