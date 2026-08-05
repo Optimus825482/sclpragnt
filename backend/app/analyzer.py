@@ -2,6 +2,7 @@ import time
 import asyncio
 import numpy as np
 from app.config import config
+from app.technical_analysis import calculate_snapshot
 from app import database
 
 class ScalpAnalyzer:
@@ -669,6 +670,8 @@ class ScalpAnalyzer:
                          "commission_pct": config.COMMISSION_PCT,
                          "estimated_slippage_pct": config.ESTIMATED_SLIPPAGE_PCT,
                          "profit_target_pct": config.SPOT_PROFIT_TARGET_PCT}
+        if self.market:
+            entry_context["technical"] = calculate_snapshot(symbol, entry_price, self.market.klines, self.market.get_orderflow(symbol), self.market.ticker_24h.get(symbol, 0), config.DEFAULT_ORDER_USDT)
         try_balance = await database.get_wallet_balance("TRY")
         if try_balance < config.DEFAULT_ORDER_USDT:
             return None 

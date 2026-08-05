@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { API_BASE, WS_BASE } from "../lib/api";
 
 const STRATEGY_LABEL: Record<string, string> = {
@@ -133,7 +134,7 @@ export default function PortfolioPage() {
                                 )}
                                 {portfolio?.positions.map((p) => (
                                     <tr key={p.symbol} className="border-b border-bunker-800/50 hover:bg-bunker-800/30">
-                                        <td className="p-3 font-bold text-white">{p.symbol}</td>
+                                        <td className="p-3 font-bold"><Link href={`/symbol-analysis?symbol=${p.symbol}`} className="text-white hover:text-neon-green">{p.symbol}</Link></td>
                                         <td className="p-3 text-neon-yellow">{STRATEGY_LABEL[p.strategy ?? "UT"] ?? p.strategy}</td>
                                         <td className="p-3 text-bunker-muted">${p.entry.toFixed(4)}</td>
                                         <td className="p-3 text-bunker-muted">${p.current.toFixed(4)}</td>

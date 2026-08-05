@@ -13,6 +13,7 @@ from app.analyzer import ScalpAnalyzer
 from app import database
 from app.backtest import run_backtest
 from app.binance_tr_public import trading_symbols, ticker_24h
+from app.technical_analysis import calculate_snapshot
 
 app = FastAPI(title="Scalper Agent V4 - Paper Trading")
 cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3004,http://localhost:3000").split(",") if origin.strip()]
@@ -441,6 +442,14 @@ async def get_positions():
             "take_profit": pos.get("take_profit")
         })
     return {"positions": positions}
+
+@app.get("/api/symbol-analysis/{symbol}")
+async def symbol_analysis(symbol: str):
+    sym = symbol.upper()
+    ticker = market.get_ticker(sym)
+    if not ticker:
+        return {"symbol": sym, "data_ready": False, "error": "Sembol verisi bulunamadı"}
+    return calculate_snapshot(sym, ticker["last_price"], market.klines, market.get_orderflow(sym), market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT)
 
 @app.post("/api/positions/{symbol}/close")
 async def close_position_manual(symbol: str):
