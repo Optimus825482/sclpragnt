@@ -468,7 +468,10 @@ async def symbol_analysis(symbol: str):
     # unknown. This remains read-only and paper-trading safe.
     primary_history = market.klines.get(config.MOMENTUM_TIMEFRAME, {}).get(sym, {})
     history_ready = len(primary_history.get("closes", [])) >= 55
-    analysis_klines = market.klines
+    analysis_klines = {
+        config.MOMENTUM_TIMEFRAME: primary_history,
+        "1d": market.klines.get("1d", {}).get(sym, {}),
+    }
     if not ticker or not history_ready:
         try:
             available = set(await trading_symbols("TRY"))
@@ -484,7 +487,10 @@ async def symbol_analysis(symbol: str):
                     hydrated["closes"].append(float(row[4]))
                     hydrated["volumes"].append(float(row[5]))
                 market.klines[config.MOMENTUM_TIMEFRAME][sym] = hydrated
-                analysis_klines = {config.MOMENTUM_TIMEFRAME: {sym: hydrated}, "1d": market.klines.get("1d", {})}
+                analysis_klines = {
+                    config.MOMENTUM_TIMEFRAME: hydrated,
+                    "1d": market.klines.get("1d", {}).get(sym, {}),
+                }
                 last_price = float(rows[-1][4])
                 ticker = {"symbol": sym, "last_price": last_price, "timestamp": int(time.time() * 1000)}
                 market.tickers[sym] = ticker
