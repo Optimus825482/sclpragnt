@@ -1,7 +1,7 @@
 import os
 import asyncio
 import time
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
@@ -119,6 +119,8 @@ async def strategy_loop():
             for sig in signals:
                 print(f"[Sinyal] {sig}")
                 await ws_manager.broadcast({"type": "signal", "data": sig})
+                if str(sig.get("action", "")).startswith("CLOSE"):
+                    await ws_manager.broadcast({"type": "trade_updated", "data": {"symbol": sig.get("symbol"), "reason": sig.get("reason")}})
         await asyncio.sleep(2)
 
 async def radar_loop():
@@ -514,22 +516,36 @@ async def llm_config():
 
 @app.post("/api/llm/providers")
 async def add_llm_provider(payload: dict):
+    name = str(payload.get("name", "")).strip()
+    base_url = str(payload.get("base_url", "")).strip()
     key = str(payload.get("api_key", "")).strip()
-    if not key: return {"ok": False, "error": "API key gerekli"}
+    if not name: raise HTTPException(status_code=400, detail="Provider adı gerekli")
+    if not base_url.startswith(("http://", "https://")): raise HTTPException(status_code=400, detail="Base URL http:// veya https:// ile başlamalı")
+    if not key: raise HTTPException(status_code=400, detail="API key gerekli")
     try:
-        provider_id = await database.save_llm_provider(str(payload.get("name", "Provider")), str(payload.get("base_url", "")).strip(), llm_analysis.encrypt_key(key))
+        provider_id = await database.save_llm_provider(name, base_url, llm_analysis.encrypt_key(key))
         return {"ok": True, "provider_id": provider_id}
-    except Exception as exc: return {"ok": False, "error": str(exc)}
+    except RuntimeError as exc: raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
 
 @app.post("/api/llm/models")
 async def add_llm_model(payload: dict):
-    try: return {"ok": True, "model_id": await database.save_llm_model(int(payload["provider_id"]), str(payload["name"]), float(payload.get("temperature", 0.2)))}
-    except Exception as exc: return {"ok": False, "error": str(exc)}
+    try:
+        provider_id = int(payload["provider_id"])
+        name = str(payload["name"]).strip()
+        if not name: raise ValueError("Model adı gerekli")
+        if provider_id <= 0: raise ValueError("Geçerli bir provider seçin")
+        return {"ok": True, "model_id": await database.save_llm_model(provider_id, name, float(payload.get("temperature", 0.2)))}
+    except (KeyError, ValueError) as exc: raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
 
 @app.post("/api/llm/skills")
 async def add_llm_skill(payload: dict):
-    try: return {"ok": True, "skill_id": await database.save_llm_skill(str(payload["name"]), str(payload["instructions"]))}
-    except Exception as exc: return {"ok": False, "error": str(exc)}
+    name = str(payload.get("name", "")).strip()
+    instructions = str(payload.get("instructions", "")).strip()
+    if not name or not instructions: raise HTTPException(status_code=400, detail="Uzmanlık adı ve talimatları gerekli")
+    try: return {"ok": True, "skill_id": await database.save_llm_skill(name, instructions)}
+    except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
 
 @app.put("/api/llm/active")
 async def activate_llm(payload: dict):
@@ -538,7 +554,7 @@ async def activate_llm(payload: dict):
     return {"ok": True}
 
 @app.post("/api/llm/test")
-async def test_llm(payload: dict):
+async def test_llm(payload: dict = None):
     result = await llm_analysis.analyze({"test": True, "message": "Return a short technical connectivity confirmation."})
     return result
 

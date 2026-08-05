@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, WS_BASE } from "../lib/api";
 
 type Trade = { id: number; symbol: string; strategy: string; pnl: number; pnl_pct: number; reason?: string; entry_time: number; exit_time: number; commission?: number; max_favorable_pct?: number; max_adverse_pct?: number; hold_seconds?: number };
 type Signal = { symbol: string; action: string; reason?: string; timestamp?: number };
@@ -11,7 +11,31 @@ const time = (v?: number) => v ? new Date(v * 1000).toLocaleString("tr-TR", { ho
 
 export default function ReportsPage() {
   const [trades, setTrades] = useState<Trade[]>([]); const [signals, setSignals] = useState<Signal[]>([]); const [error, setError] = useState<string | null>(null);
-  useEffect(() => { Promise.all([fetch(`${API_BASE}/api/trades`).then(r => r.json()), fetch(`${API_BASE}/api/signals?limit=500`).then(r => r.json())]).then(([t, s]) => { setTrades(t.trades || []); setSignals(s.signals || []); }).catch(() => setError("Rapor verileri alınamadı")); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
+    const loadReportData = () => Promise.all([
+      fetch(`${API_BASE}/api/trades`, { cache: "no-store" }).then(r => r.json()),
+      fetch(`${API_BASE}/api/signals?limit=500`, { cache: "no-store" }).then(r => r.json()),
+    ]).then(([t, s]) => {
+      if (cancelled) return;
+      setTrades(t.trades || []);
+      setSignals(s.signals || []);
+    }).catch(() => { if (!cancelled) setError("Rapor verileri alınamadı"); });
+    const connect = () => {
+      ws = new WebSocket(`${WS_BASE}/ws`);
+      ws.onmessage = e => {
+        const message = JSON.parse(e.data);
+        if (message.type === "signal" || message.type === "trade_updated" || message.type === "reset") loadReportData();
+      };
+      ws.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
+    };
+    loadReportData();
+    connect();
+    return () => { cancelled = true; closed = true; if (retry) clearTimeout(retry); ws?.close(); };
+  }, []);
   const grouped = (key: "symbol" | "strategy" | "reason") => Object.entries(trades.reduce<Record<string, { n: number; pnl: number; wins: number }>>((a, t) => { const k = String(t[key] || "Bilinmiyor"); const x = a[k] || { n: 0, pnl: 0, wins: 0 }; x.n++; x.pnl += t.pnl || 0; if (t.pnl > 0) x.wins++; a[k] = x; return a; }, {})).sort((a, b) => a[1].pnl - b[1].pnl);
   const timeout = trades.filter(t => t.reason === "max_hold_2h"); const missing = useMemo(() => ({ liquidity: trades.length, scores: trades.length }), [trades.length]);
   return <div className="max-w-7xl mx-auto space-y-6"><header><h1 className="font-mono text-xl font-bold"><span className="text-neon-green">RAPORLAR</span></h1><p className="eyebrow mt-1">İşlem kalitesi · timeout · sembol ve strateji analizi</p></header>{error && <div className="card border-neon-red/40 text-neon-red font-mono text-sm">{error}</div>}

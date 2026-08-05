@@ -15,8 +15,28 @@ export default function PortfolioPage() {
   const [tab,setTab] = useState<"portfolio"|"history">("portfolio"); const [portfolio,setPortfolio] = useState<Portfolio|null>(null); const [trades,setTrades] = useState<Trade[]>([]); const [closing,setClosing] = useState<string|null>(null); const [msg,setMsg] = useState<string|null>(null);
   const [query,setQuery] = useState(""); const [strategy,setStrategy] = useState("all"); const [reason,setReason] = useState("all"); const [page,setPage] = useState(1); const [pageSize,setPageSize] = useState(10);
   useEffect(() => { const requested = new URLSearchParams(window.location.search).get("tab"); if (requested === "history") setTab("history"); }, []);
-  useEffect(() => { fetch(`${API_BASE}/api/trades`).then(r=>r.json()).then(d=>setTrades(d.trades||[])).catch(()=>undefined); }, []);
-  useEffect(() => { let ws:WebSocket|null=null, retry:ReturnType<typeof setTimeout>|null=null, closed=false; const connect=()=>{ ws=new WebSocket(`${WS_BASE}/ws`); ws.onmessage=e=>{const m=JSON.parse(e.data); if(m.type==="portfolio") setPortfolio(m.data);}; ws.onclose=()=>{if(!closed) retry=setTimeout(connect,2000);}; }; connect(); return()=>{closed=true;if(retry)clearTimeout(retry);ws?.close();}; },[]);
+  useEffect(() => {
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+    let retry: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
+    const loadTrades = () => fetch(`${API_BASE}/api/trades`, { cache: "no-store" })
+      .then(r=>r.json())
+      .then(d=>{ if (!cancelled) setTrades(d.trades || []); })
+      .catch(()=>undefined);
+    const connect = () => {
+      ws = new WebSocket(`${WS_BASE}/ws`);
+      ws.onmessage = e => {
+        const m = JSON.parse(e.data);
+        if (m.type === "portfolio") setPortfolio(m.data);
+        if (m.type === "signal" || m.type === "trade_updated" || m.type === "reset") loadTrades();
+      };
+      ws.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
+    };
+    loadTrades();
+    connect();
+    return () => { cancelled = true; closed = true; if (retry) clearTimeout(retry); ws?.close(); };
+  }, []);
   const formatTab=(next:"portfolio"|"history")=>{setTab(next);setPage(1);window.history.replaceState({},"",`/portfolio${next==="history"?"?tab=history":""}`);};
   const closePosition=async(symbol:string)=>{setClosing(symbol);setMsg(null);try{const r=await fetch(`${API_BASE}/api/positions/${symbol}/close`,{method:"POST"});const d=await r.json();setMsg(d.message||(d.ok?"Kapatıldı":"Hata"));}catch{setMsg("Kapatılamadı");}finally{setClosing(null);}};
   const [sortState,setSortState]=useState<{key:keyof Trade;dir:"asc"|"desc"}>({key:"exit_time",dir:"desc"});
