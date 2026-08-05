@@ -17,7 +17,8 @@ def sha256(path):
     return digest.hexdigest()
 
 def snapshot(path):
-    conn = sqlite3.connect(path); conn.row_factory = sqlite3.Row
+    conn = sqlite3.connect(path, timeout=30); conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
     counts = {}
     for table in TABLES:
         try: counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -63,9 +64,10 @@ async def main():
                         except (TypeError, json.JSONDecodeError): value = json.dumps(value)
                     item.append(value)
                 values.append(item)
-            await pg.executemany(sql, values)
+            await pg.executemany(sql, values, timeout=120)
             migrated = await pg.fetchval(f'SELECT COUNT(*) FROM "{table}"')
             if int(migrated) < len(rows): raise RuntimeError(f"{table}: hedef satır sayısı eksik ({migrated}/{len(rows)})")
+            print(f"{table}: {len(rows)} kayıt aktarıldı", flush=True)
         print("Migration completed with row-count lower-bound validation. SQLite source was not modified.")
     finally: await pg.close(); sqlite_conn.close()
 
