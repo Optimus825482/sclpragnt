@@ -117,6 +117,18 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
         with urlopen(req, timeout=45) as response: return _decode_provider_response(response.read())
+    def response_data(value):
+        """Normalize compatible gateway wrappers and JSON-string data fields."""
+        current = value
+        for _ in range(3):
+            if isinstance(current, str):
+                try: current = json.loads(current)
+                except json.JSONDecodeError: return current
+            if isinstance(current, dict) and isinstance(current.get("data"), (dict, list, str)):
+                current = current["data"]
+                continue
+            return current
+        return current
     try:
         result = None
         for attempt in range(2):
@@ -127,7 +139,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
                 if attempt == 1: raise RuntimeError("LLM gateway zaman aşımına uğradı; istek iki kez denendi")
                 await asyncio.sleep(0.4)
         for tool_round in range(3):
-            data = result.get("data", result) if isinstance(result, dict) else result
+            data = response_data(result)
             choices = data.get("choices", []) if isinstance(data, dict) else []
             first = choices[0] if choices else {}
             tool_calls = (first.get("message") or {}).get("tool_calls", [])
@@ -144,10 +156,8 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
             # gönderilerek nihai Türkçe yanıtın üretilmesi gerekir.
             if tool_round < 2:
                 result = await asyncio.to_thread(call)
-        data = result.get("data", result) if isinstance(result, dict) else result
-        if isinstance(data, str):
-            try: data = json.loads(data)
-            except json.JSONDecodeError: return {"enabled": True, "status": "ok", "text": data}
+        data = response_data(result)
+        if isinstance(data, str): return {"enabled": True, "status": "ok", "text": data}
         choices = data.get("choices", []) if isinstance(data, dict) else []
         text = ((choices[0].get("message") or {}).get("content") if choices else None) or (data.get("output_text") if isinstance(data, dict) else None)
         if not text: raise RuntimeError("Provider chat yanıtında metin bulunamadı")

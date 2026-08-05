@@ -37,11 +37,7 @@ type Bar = { time: number; open: number; high: number; low: number; close: numbe
 
 type PatternMarker = { time: number; type: "buy" | "sell"; text: string };
 const patternDescriptions: Record<string, string> = {
-    "BOĞA SARMA": "Düşüş sonrası gelen güçlü boğa mumu, önceki ayı mumunun gövdesini tamamen sarar.",
-    "AYI SARMA": "Yükseliş sonrası gelen güçlü ayı mumu, önceki boğa mumunun gövdesini tamamen sarar.",
     "ÇEKİÇ": "Uzun alt fitil ve küçük gövde, aşağı yönlü baskının reddedildiğini gösterir.",
-    "TERS ÇEKİÇ": "Uzun üst fitil, yükseliş denemesini ve kararsızlığı gösterir.",
-    "DOJİ": "Açılış ve kapanışın birbirine yakın olması piyasa kararsızlığına işaret eder.",
     "ÜÇ BEYAZ ASKER": "Ardışık güçlü boğa mumları kısa vadeli alım baskısını gösterir.",
     "ÜÇ SİYAH KARGA": "Ardışık güçlü ayı mumları kısa vadeli satış baskısını gösterir."
 };
@@ -50,15 +46,10 @@ const strongCandlestickPatterns = (bars: Bar[]): PatternMarker[] => {
     for (let i = 1; i < bars.length; i++) {
         const p = bars[i - 1], c = bars[i];
         const pBull = p.close > p.open, cBull = c.close > c.open;
-        const pBody = Math.abs(p.close - p.open), cBody = Math.abs(c.close - c.open);
-        const pRange = Math.max(p.high - p.low, Number.EPSILON), cRange = Math.max(c.high - c.low, Number.EPSILON);
-        const pTop = p.high - Math.max(p.open, p.close), pBottom = Math.min(p.open, p.close) - p.low;
+        const cBody = Math.abs(c.close - c.open);
+        const pRange = Math.max(p.high - p.low, Number.EPSILON);
         const cTop = c.high - Math.max(c.open, c.close), cBottom = Math.min(c.open, c.close) - c.low;
-        if (!pBull && cBull && c.open <= p.close && c.close >= p.open && cBody >= pBody * .8) out.push({ time: c.time, type: "buy", text: "BOĞA SARMA" });
-        else if (pBull && !cBull && c.open >= p.close && c.close <= p.open && cBody >= pBody * .8) out.push({ time: c.time, type: "sell", text: "AYI SARMA" });
-        else if (cBottom >= cBody * 2 && cTop <= cBody * .6 && c.close >= c.open) out.push({ time: c.time, type: "buy", text: "ÇEKİÇ" });
-        else if (cTop >= cBody * 2 && cBottom <= cBody * .6 && c.close <= c.open) out.push({ time: c.time, type: "sell", text: "TERS ÇEKİÇ" });
-        else if (cBody <= cRange * .1 && Math.abs(c.close - p.close) <= pRange * .12) out.push({ time: c.time, type: "buy", text: "DOJİ" });
+        if (cBottom >= cBody * 2 && cTop <= cBody * .6 && c.close >= c.open) out.push({ time: c.time, type: "buy", text: "ÇEKİÇ" });
         else if (i >= 2 && cBull && bars[i - 2].close > bars[i - 2].open && pBull && c.close > p.close) out.push({ time: c.time, type: "buy", text: "ÜÇ BEYAZ ASKER" });
         else if (i >= 2 && !cBull && bars[i - 2].close < bars[i - 2].open && !pBull && c.close < p.close) out.push({ time: c.time, type: "sell", text: "ÜÇ SİYAH KARGA" });
     }
