@@ -4,6 +4,7 @@ import os
 import sqlite3
 import threading
 import time
+import tempfile
 
 from app.config import config
 
@@ -248,6 +249,21 @@ async def get_trades():
     def op(conn: sqlite3.Connection):
         rows = conn.execute("SELECT * FROM trades ORDER BY exit_time DESC").fetchall()
         return [dict(r) for r in rows]
+
+    return await _run_db(op)
+
+async def create_backup_file():
+    """Create a consistent SQLite snapshot for download while the bot is running."""
+    def op(conn: sqlite3.Connection):
+        fd, path = tempfile.mkstemp(prefix="scalperagent-backup-", suffix=".sqlite")
+        os.close(fd)
+        backup_conn = sqlite3.connect(path)
+        try:
+            conn.backup(backup_conn)
+            backup_conn.commit()
+        finally:
+            backup_conn.close()
+        return path
 
     return await _run_db(op)
 

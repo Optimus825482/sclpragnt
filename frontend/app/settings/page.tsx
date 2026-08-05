@@ -38,6 +38,8 @@ export default function SettingsPage() {
   const [resetDone, setResetDone] = useState(false);
   const [marketSymbols, setMarketSymbols] = useState<string[]>([]);
   const [symbolQuery, setSymbolQuery] = useState("");
+  const [backingUp, setBackingUp] = useState(false);
+  const [backupDone, setBackupDone] = useState(false);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/config`)
@@ -95,6 +97,31 @@ export default function SettingsPage() {
       setError("Kayıtlar sıfırlanamadı - backend bağlantısını kontrol et");
     } finally {
       setResetting(false);
+    }
+  };
+
+  const downloadBackup = async () => {
+    setBackingUp(true);
+    setError(null);
+    setBackupDone(false);
+    try {
+      const res = await fetch(`${API_BASE}/api/backup`);
+      if (!res.ok) throw new Error("backup failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `scalperagent-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.sqlite`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setBackupDone(true);
+      setTimeout(() => setBackupDone(false), 3000);
+    } catch {
+      setError("Veritabanı yedeği alınamadı - backend bağlantısını kontrol et");
+    } finally {
+      setBackingUp(false);
     }
   };
 
@@ -221,6 +248,19 @@ export default function SettingsPage() {
                   }`}
               >
                 {resetting ? "TEMİZLENİYOR..." : resetDone ? "✓ TEMİZLENDİ" : "ESKİ KAYITLARI RESETLE"}
+              </button>
+            </div>
+          </div>
+
+          <div className={`card border-neon-green/30 bg-neon-green/5 ${activeTab !== "app" ? "hidden" : ""}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <p className="eyebrow text-neon-green">VERİTABANI YEDEĞİ</p>
+                <p className="font-mono text-sm text-white mt-2">Canlı paper-trading veritabanının tutarlı kopyasını indir</p>
+                <p className="text-xs text-bunker-muted mt-1">İşlemler, sinyaller, açık pozisyonlar ve backtest kayıtları dahil edilir. Bot durmaz.</p>
+              </div>
+              <button onClick={downloadBackup} disabled={backingUp} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${backupDone ? "border-neon-green/60 bg-neon-green/20 text-neon-green" : "border-neon-green/50 bg-neon-green/10 text-neon-green hover:bg-neon-green/20"}`}>
+                {backingUp ? "YEDEKLENİYOR..." : backupDone ? "✓ YEDEK İNDİRİLDİ" : "SQLITE YEDEĞİ AL"}
               </button>
             </div>
           </div>

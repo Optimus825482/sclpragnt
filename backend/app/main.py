@@ -2,6 +2,8 @@ import os
 import asyncio
 import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -440,6 +442,17 @@ async def close_position_manual(symbol: str):
 async def get_trades():
     """Kapanan pozisyonların işlem geçmişi."""
     return {"trades": await database.get_trades()}
+
+@app.get("/api/backup")
+async def download_backup():
+    """Download a consistent snapshot of the live paper-trading database."""
+    path = await database.create_backup_file()
+    return FileResponse(
+        path,
+        media_type="application/vnd.sqlite3",
+        filename=f"scalperagent-backup-{time.strftime('%Y%m%d-%H%M%S')}.sqlite",
+        background=BackgroundTask(lambda: os.unlink(path) if os.path.exists(path) else None),
+    )
 
 @app.get("/api/signals")
 async def get_signals(limit: int = 100):
