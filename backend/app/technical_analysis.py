@@ -32,7 +32,10 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     flow = orderflow or {}; result = {"symbol": symbol, "price": price, "timeframes": {}, "data_ready": False}
     primary = klines.get(primary_timeframe, {})
     closes = primary.get("closes", []); highs = primary.get("highs", []); lows = primary.get("lows", []); volumes = primary.get("volumes", [])
-    if len(closes) < 55: return result
+    result["timeframes"] = {primary_timeframe: {"candles": len(closes), "required": 55}}
+    if len(closes) < 55:
+        result["error"] = f"{primary_timeframe} timeframe için {len(closes)}/55 mum hazır"
+        return result
     def ret(n): return float(closes[-1] / closes[-n-1] - 1) if len(closes) > n else None
     ema9, ema21, ema50 = _ema(closes, 9), _ema(closes, 21), _ema(closes, 50)
     atr = _atr(highs, lows, closes)
