@@ -444,7 +444,7 @@ async def save_position(symbol, pos):
         conn.execute(
             "INSERT OR REPLACE INTO positions (symbol, side, entry_price, stop_price, take_profit, peak_price, breakeven_hit, quantity, entry_time, strategy, entry_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (symbol, pos["side"], pos["entry_price"], pos.get("stop_price"),
-             pos.get("take_profit"), pos.get("peak_price", pos["entry_price"]), int(pos.get("breakeven_hit", False)), pos["quantity"],
+             pos.get("take_profit"), pos.get("peak_price", pos["entry_price"]), bool(pos.get("breakeven_hit", False)), pos["quantity"],
              pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {})))
         )
         conn.commit()
@@ -528,7 +528,7 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", cash_amount))
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, asset_amount))
         conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), int(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {}))))
+                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {}))))
         conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason) VALUES(?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason")))
         conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
         conn.commit()
