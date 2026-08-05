@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Button } from "./ui";
 
 const MENU = [
     { href: "/", label: "Scalping", icon: "⚡", desc: "Canlı terminal" },
@@ -38,7 +39,7 @@ export default function Sidebar() {
 
     return (
         <>
-            <button className="mobile-menu-button" onClick={() => setOpen(true)} aria-label="Menüyü aç">☰</button>
+            <Button className="mobile-menu-button" onClick={() => setOpen(true)} aria-label="Menüyü aç">☰</Button>
             {open && <button className="mobile-menu-backdrop" onClick={() => setOpen(false)} aria-label="Menüyü kapat" />}
         <aside className={`app-sidebar w-56 shrink-0 border-r border-bunker-800 bg-bunker-900/95 flex flex-col h-screen sticky top-0 ${open ? "is-open" : ""}`}>
             <div className="p-5 border-b border-bunker-800">
@@ -78,7 +79,7 @@ export default function Sidebar() {
             </nav>
 
             <div className="p-4 border-t border-bunker-800">
-                <button onClick={install} disabled={!installEvent} className={`w-full mb-4 px-3 py-2 rounded-lg border font-mono text-xs ${installEvent ? "border-neon-green/50 bg-neon-green/10 text-neon-green hover:bg-neon-green/20" : "border-bunker-700 bg-bunker-900 text-bunker-muted"}`}>⬇ {installEvent ? "UYGULAMA OLARAK YÜKLE" : "YÜKLEME İÇİN TARAYICI MENÜSÜ"}</button>
+                <Button variant={installEvent ? "primary" : "secondary"} onClick={install} disabled={!installEvent} className="w-full mb-4">⬇ {installEvent ? "UYGULAMA OLARAK YÜKLE" : "YÜKLEME İÇİN TARAYICI MENÜSÜ"}</Button>
                 <p className="eyebrow">SİSTEM DURUMU</p>
                 <p className="font-mono text-xs text-neon-green mt-2 flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" /> Çalışıyor

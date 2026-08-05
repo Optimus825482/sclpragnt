@@ -15,6 +15,12 @@ body {
 }
 
 .app-sidebar { position: sticky; top: 0; height: 100dvh; max-height: 100dvh; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.topbar { position: sticky; top: 0; z-index: 20; min-height: 4.25rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem 1.5rem; background: rgb(5 8 13 / .82); border-bottom: 1px solid rgb(31 41 55 / .75); backdrop-filter: blur(14px); }
+.topbar-kicker { color: rgb(100 116 139); font: 600 .58rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; }
+.topbar-title { margin-top: .3rem; color: white; font: 600 .9rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.topbar-status { display: flex; align-items: center; gap: .5rem; color: rgb(148 163 184); font: 600 .62rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; }
+.content-shell { padding: 1.5rem; }
+@media (min-width: 1024px) { .content-shell { padding: 2rem; } }
 .section-tabs { display: flex; gap: .5rem; overflow-x: auto; padding: .25rem; border: 1px solid rgb(31 41 55); border-radius: .75rem; background: rgb(5 8 13 / .72); scrollbar-width: none; }
 .section-tabs::-webkit-scrollbar { display: none; }
 .section-tabs button { flex: 0 0 auto; min-height: 2.75rem; padding: .65rem .9rem; border-radius: .55rem; color: rgb(148 163 184); font: 600 .72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; transition: color 160ms ease-out, background-color 160ms ease-out, transform 160ms ease-out; }
@@ -28,13 +34,63 @@ button, a { touch-action: manipulation; }
 .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
 .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
 
+.page-shell { width: min(100%, 1180px); margin: 0 auto; }
+.page-heading { display: flex; flex-direction: column; gap: .35rem; margin-bottom: 1.5rem; }
+.page-heading h1 { @apply font-mono text-2xl font-bold tracking-tight; }
+.page-heading p:not(.eyebrow) { max-width: 68ch; font-size: .9rem; color: rgb(148 163 184); }
+.panel { @apply bg-bunker-900/90 border border-bunker-800 rounded-xl; box-shadow: 0 10px 30px rgb(0 0 0 / .12); }
+.input { @apply min-h-10 rounded-lg border border-bunker-700 bg-bunker-950 px-3 py-2 text-sm text-white outline-none; transition: border-color 160ms ease-out, box-shadow 160ms ease-out, background-color 160ms ease-out; }
+.input::placeholder { color: rgb(100 116 139); }
+.input:hover { border-color: rgb(71 85 105); }
+.input:focus { border-color: rgb(52 211 153 / .7); box-shadow: 0 0 0 3px rgb(16 185 129 / .12); }
+select.input { cursor: pointer; }
+textarea.input { min-height: 6rem; resize: vertical; }
+input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
+.data-table { width: 100%; border-collapse: separate; border-spacing: 0; font: .78rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.data-table th { padding: .8rem .9rem; color: rgb(148 163 184); font-size: .68rem; font-weight: 600; letter-spacing: .08em; text-align: left; text-transform: uppercase; white-space: nowrap; background: rgb(5 8 13 / .45); border-bottom: 1px solid rgb(31 41 55); }
+.data-table td { padding: .8rem .9rem; color: rgb(226 232 240); border-bottom: 1px solid rgb(31 41 55 / .7); white-space: nowrap; }
+.data-table tbody tr { transition: background-color 120ms ease-out; }
+.data-table tbody tr:hover { background: rgb(30 41 59 / .35); }
+.data-table tbody tr:last-child td { border-bottom: 0; }
+.table-scroll { border-radius: .75rem; }
+.status-dot { width: .45rem; height: .45rem; border-radius: 999px; display: inline-block; background: #79f2b4; box-shadow: 0 0 0 .2rem rgb(16 185 129 / .12); }
+.skeleton { position: relative; overflow: hidden; background: rgb(30 41 59 / .65); border-radius: .5rem; }
+.skeleton::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgb(148 163 184 / .12), transparent); animation: skeleton-shimmer 1.4s infinite; }
+@keyframes skeleton-shimmer { 100% { transform: translateX(100%); } }
+
 .eyebrow {
   @apply text-xs uppercase tracking-[0.15em] text-bunker-muted font-medium;
 }
 
 .card {
-  @apply bg-bunker-900 border border-bunker-800 rounded-xl p-6;
+  @apply bg-bunker-900/90 border border-bunker-800 rounded-xl p-6;
+  box-shadow: 0 10px 30px rgb(0 0 0 / .10);
 }
+
+.ui-card { @apply bg-bunker-900/90 border border-bunker-800 rounded-xl p-5; box-shadow: 0 10px 30px rgb(0 0 0 / .12); }
+.ui-button { min-height: 2.5rem; padding: .65rem .9rem; border-radius: .65rem; border: 1px solid transparent; font: 600 .72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; transition: background-color 160ms ease-out, border-color 160ms ease-out, color 160ms ease-out, transform 160ms ease-out; }
+.ui-button:active { transform: scale(.97); }
+.ui-button:disabled { cursor: not-allowed; opacity: .5; }
+.ui-button-primary { color: #06110c; background: #79f2b4; border-color: #79f2b4; }
+.ui-button-primary:hover { background: #a2f8cb; }
+.ui-button-secondary { color: #cbd5e1; background: rgb(30 41 59 / .7); border-color: rgb(71 85 105 / .7); }
+.ui-button-secondary:hover { color: white; background: rgb(51 65 85 / .8); }
+.ui-button-danger { color: #fda4af; background: rgb(127 29 29 / .18); border-color: rgb(244 63 94 / .35); }
+.ui-button-danger:hover { background: rgb(127 29 29 / .3); }
+.ui-button-ghost { color: #94a3b8; background: transparent; }
+.ui-button-ghost:hover { color: white; background: rgb(30 41 59 / .6); }
+.ui-stat-card { min-height: 7rem; }
+.ui-stat-value { @apply font-mono text-2xl text-white mt-2; }
+.ui-stat-detail { @apply font-mono text-xs text-bunker-muted mt-2; }
+.ui-tone-positive { color: #79f2b4; }
+.ui-tone-negative { color: #fb7185; }
+.ui-tone-warning { color: #facc15; }
+.ui-tabs { display: flex; gap: .35rem; overflow-x: auto; padding: .25rem; border: 1px solid rgb(31 41 55); border-radius: .75rem; background: rgb(5 8 13 / .72); scrollbar-width: none; }
+.ui-tabs::-webkit-scrollbar { display: none; }
+.ui-tabs button { flex: 0 0 auto; min-height: 2.5rem; padding: .6rem .85rem; border-radius: .55rem; color: rgb(148 163 184); font: 600 .72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; transition: color 160ms ease-out, background-color 160ms ease-out, transform 160ms ease-out; }
+.ui-tabs button:hover { color: white; background: rgb(31 41 55 / .55); }
+.ui-tabs button:active { transform: scale(.97); }
+.ui-tabs button.active { color: #79f2b4; background: rgb(16 185 129 / .13); box-shadow: inset 0 0 0 1px rgb(16 185 129 / .3); }
 
 .mobile-menu-button, .mobile-menu-backdrop { display: none; }
 
@@ -44,8 +100,16 @@ button, a { touch-action: manipulation; }
   .app-sidebar.is-open { transform: translateX(0); }
   .mobile-menu-button { display: block; position: fixed; top: 12px; left: 12px; z-index: 40; width: 42px; height: 42px; border: 1px solid rgb(55 65 81); border-radius: 10px; background: rgb(15 23 42 / .95); color: white; font-size: 20px; }
   .mobile-menu-backdrop { display: block; position: fixed; inset: 0; z-index: 45; background: rgb(0 0 0 / .65); }
-  main { padding: calc(4.5rem + env(safe-area-inset-top)) 1rem calc(1.25rem + env(safe-area-inset-bottom)) !important; width: 100%; min-width: 0; overflow-x: hidden; }
+  main { padding: 0 !important; width: 100%; min-width: 0; overflow-x: hidden; }
+  .content-shell { padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(1.25rem + env(safe-area-inset-bottom)); }
+  .topbar { min-height: 3.75rem; padding: .7rem 1rem .7rem 4.25rem; }
+  .topbar-kicker { font-size: .5rem; }
+  .topbar-title { font-size: .78rem; }
+  .topbar-status { font-size: .52rem; }
   .card { padding: 1rem; border-radius: .75rem; }
+  .page-heading h1 { font-size: 1.15rem; }
+  .ui-stat-value { font-size: 1.35rem; }
+  .data-table th, .data-table td { padding: .7rem .75rem; }
   h1 { font-size: 1rem; }
   table { min-width: 680px; }
   .table-scroll { position: relative; }
@@ -54,5 +118,5 @@ button, a { touch-action: manipulation; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .section-tabs button, .app-sidebar { transition: none !important; }
+  .section-tabs button, .ui-button, .ui-tabs button, .app-sidebar { transition: none !important; }
 }
