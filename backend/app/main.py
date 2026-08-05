@@ -539,6 +539,11 @@ async def reconcile_portfolio(payload: dict = None):
     if not (payload or {}).get("confirm", False):
         return {"status": "preview", **await database.preview_portfolio_reconcile()}
     result = await database.reconcile_portfolio()
+    # The reconciliation mutates the persistent position set. Keep the
+    # long-running analyzer in sync immediately; otherwise its next portfolio
+    # broadcast can resurrect positions that were just removed from the DB.
+    for item in result.get("removed_overallocated_positions", []):
+        analyzer.positions.pop(str(item.get("symbol", "")).upper(), None)
     await ws_manager.broadcast({"type": "portfolio_reconciled", "data": result})
     return {"status": "ok", **result}
 
