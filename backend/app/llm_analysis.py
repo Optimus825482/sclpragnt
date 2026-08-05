@@ -28,18 +28,26 @@ async def analyze(snapshot):
         with urlopen(req, timeout=90) as response: return json.loads(response.read().decode())
     try:
         result = await asyncio.to_thread(call)
-        choices = result.get("choices") if isinstance(result, dict) else None
+        # Some compatible gateways wrap the upstream response in {success, data}.
+        payload_result = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), (dict, list, str)) else result
+        if isinstance(payload_result, str):
+            try: payload_result = json.loads(payload_result)
+            except json.JSONDecodeError: pass
+        choices = payload_result.get("choices") if isinstance(payload_result, dict) else None
         text = None
         if choices and isinstance(choices, list):
             first = choices[0] or {}
             message = first.get("message") or {}
             text = message.get("content") or first.get("text")
-        if not text and isinstance(result, dict):
-            text = result.get("output_text") or result.get("response") or result.get("content")
+        if not text and isinstance(payload_result, dict):
+            text = payload_result.get("output_text") or payload_result.get("response") or payload_result.get("content")
+        if not text and isinstance(payload_result, str):
+            text = payload_result
         if not text:
-            provider_error = result.get("error") if isinstance(result, dict) else None
+            provider_error = (payload_result.get("error") if isinstance(payload_result, dict) else None) or (result.get("error") if isinstance(result, dict) else None)
             detail = provider_error.get("message") if isinstance(provider_error, dict) else provider_error
-            raise RuntimeError(detail or f"Provider beklenmeyen yanıt döndürdü (alanlar: {', '.join(result.keys()) if isinstance(result, dict) else type(result).__name__})")
+            fields = ', '.join(payload_result.keys()) if isinstance(payload_result, dict) else type(payload_result).__name__
+            raise RuntimeError(detail or f"Provider beklenmeyen yanıt döndürdü (alanlar: {fields})")
         return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"], "generated_at": time.time()}
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}
