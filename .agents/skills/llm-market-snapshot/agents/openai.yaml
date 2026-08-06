@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Market Snapshot"
+  short_description: "Live market snapshot and trend analyst"
+  default_prompt: "Scan configured symbols, rank bullish candidates, then deeply analyze selected symbols using public paper-trading data."

@@ -1,0 +1,4 @@
+# Optional local research dependencies. These are intentionally separate from
+# the production runtime requirements.
+vectorbt==1.1.0
+quantstats==0.0.81

@@ -513,6 +513,45 @@ class ScalpAnalyzer:
             return "buy"
         return None
 
+    def strategy_adaptive_volatility_trend(self, kline, symbol=None):
+        """15m trend entry gated by a usable ATR regime and 4h EMA alignment."""
+        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
+        if len(closes) < 55 or not closes[-1]: return None
+        ema9 = self.calculate_ema(closes, 9); ema21 = self.calculate_ema(closes, 21); ema50 = self.calculate_ema(closes, 50)
+        adx_value = _adx(highs, lows, closes).get("adx")
+        atr = self.calculate_atr(kline, 14); atr_pct = atr / closes[-1] if atr else None
+        higher_ok = True
+        if symbol and self.market:
+            higher = self.market.get_ut_kline(symbol, "4h")
+            hc = higher.get("closes", [])
+            if len(hc) < 55: higher_ok = False
+            else:
+                he9 = self.calculate_ema(hc, 9); he21 = self.calculate_ema(hc, 21); he50 = self.calculate_ema(hc, 50)
+                higher_ok = all(v is not None for v in (he9, he21, he50)) and he9 > he21 > he50 and hc[-1] > he21
+        if (all(v is not None for v in (ema9, ema21, ema50, adx_value, atr_pct)) and
+                ema9 > ema21 > ema50 and adx_value >= config.ADAPTIVE_VOLATILITY_MIN_ADX and
+                config.ADAPTIVE_VOLATILITY_MIN_ATR_PCT <= atr_pct <= config.ADAPTIVE_VOLATILITY_MAX_ATR_PCT and higher_ok):
+            return "buy"
+        return None
+
+    def strategy_regime_gate_low_turnover(self, kline, symbol=None):
+        """Low-turnover 1h trend entry; trades only a confirmed trend regime."""
+        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", []); volumes = kline.get("volumes", [])
+        if len(closes) < 55 or len(volumes) < 21: return None
+        ema9 = self.calculate_ema(closes, 9); ema21 = self.calculate_ema(closes, 21); ema50 = self.calculate_ema(closes, 50)
+        adx_value = _adx(highs, lows, closes).get("adx"); return_21 = closes[-1] / closes[-22] - 1 if closes[-22] else 0
+        volume_ratio = self._volume_ratio(kline); higher_ok = True
+        if symbol and self.market:
+            higher = self.market.get_ut_kline(symbol, "4h"); hc = higher.get("closes", [])
+            if len(hc) < 55: higher_ok = False
+            else:
+                he9 = self.calculate_ema(hc, 9); he21 = self.calculate_ema(hc, 21); he50 = self.calculate_ema(hc, 50)
+                higher_ok = all(v is not None for v in (he9, he21, he50)) and he9 > he21 > he50 and hc[-1] > he21
+        if (all(v is not None for v in (ema9, ema21, ema50, adx_value, volume_ratio)) and ema9 > ema21 > ema50 and
+                adx_value >= config.REGIME_GATE_MIN_ADX and return_21 >= config.REGIME_GATE_MIN_RETURN_PCT and
+                volume_ratio >= config.REGIME_GATE_MIN_VOLUME_RATIO and higher_ok): return "buy"
+        return None
+
     def adr_status(self, symbol, price):
         """Return ADR capacity for a momentum entry without using future data."""
         if not config.ADR_FILTER_ENABLED:
@@ -619,6 +658,8 @@ class ScalpAnalyzer:
                 (config.MOMENTUM_ENABLED, "MOMENTUM", self.strategy_momentum, config.MOMENTUM_TIMEFRAME),
                 (config.MOMENTUM_COST_AWARE_ENABLED, "MOMENTUM_COST_AWARE", self.strategy_momentum_cost_aware, config.MOMENTUM_TIMEFRAME),
                 (config.OVERSOLD_TREND_REENTRY_ENABLED, "OVERSOLD_TREND_REENTRY", self.strategy_oversold_trend_reentry, config.OVERSOLD_TREND_REENTRY_TIMEFRAME),
+                (config.ADAPTIVE_VOLATILITY_TREND_ENABLED, "ADAPTIVE_VOLATILITY_TREND", self.strategy_adaptive_volatility_trend, config.ADAPTIVE_VOLATILITY_TREND_TIMEFRAME),
+                (config.REGIME_GATE_LOW_TURNOVER_ENABLED, "REGIME_GATE_LOW_TURNOVER", self.strategy_regime_gate_low_turnover, config.REGIME_GATE_LOW_TURNOVER_TIMEFRAME),
                 (config.MEAN_REVERSION_ENABLED, "VWAP_MEAN_REVERSION", self.strategy_mean_reversion, config.MEAN_REVERSION_TIMEFRAME),
                 (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
                 (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),
@@ -629,7 +670,7 @@ class ScalpAnalyzer:
                 _, name, fn, tf = selected
                 strategy_kline = self.market.get_ut_kline(symbol, tf)
                 result = fn(strategy_kline, symbol)
-                if result == "sell":
+                if result == "sell" and config.EXIT_ON_OPPOSITE_SIGNAL:
                     return [await self.close_position(symbol, price, "opposite_signal")]
                 # Spotta aynı sembole tekrar katman ekleme yok: tek sembol = tek pozisyon.
                 # Pozisyon açıkken yeni BUY sinyali işlem sinyaline dönüştürülmez.
@@ -660,6 +701,8 @@ class ScalpAnalyzer:
             (config.MOMENTUM_ENABLED, "MOMENTUM", self.strategy_momentum, config.MOMENTUM_TIMEFRAME),
             (config.MOMENTUM_COST_AWARE_ENABLED, "MOMENTUM_COST_AWARE", self.strategy_momentum_cost_aware, config.MOMENTUM_TIMEFRAME),
             (config.OVERSOLD_TREND_REENTRY_ENABLED, "OVERSOLD_TREND_REENTRY", self.strategy_oversold_trend_reentry, config.OVERSOLD_TREND_REENTRY_TIMEFRAME),
+            (config.ADAPTIVE_VOLATILITY_TREND_ENABLED, "ADAPTIVE_VOLATILITY_TREND", self.strategy_adaptive_volatility_trend, config.ADAPTIVE_VOLATILITY_TREND_TIMEFRAME),
+            (config.REGIME_GATE_LOW_TURNOVER_ENABLED, "REGIME_GATE_LOW_TURNOVER", self.strategy_regime_gate_low_turnover, config.REGIME_GATE_LOW_TURNOVER_TIMEFRAME),
             (config.MEAN_REVERSION_ENABLED, "VWAP_MEAN_REVERSION", self.strategy_mean_reversion, config.MEAN_REVERSION_TIMEFRAME),
             (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
             (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),

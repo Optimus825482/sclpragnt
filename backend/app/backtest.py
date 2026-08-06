@@ -19,6 +19,8 @@ STRATEGIES = {
     "MOMENTUM": ("MOMENTUM_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum"),
     "MOMENTUM_COST_AWARE": ("MOMENTUM_COST_AWARE_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum_cost_aware"),
     "OVERSOLD_TREND_REENTRY": ("OVERSOLD_TREND_REENTRY_ENABLED", "OVERSOLD_TREND_REENTRY_TIMEFRAME", "strategy_oversold_trend_reentry"),
+    "ADAPTIVE_VOLATILITY_TREND": ("ADAPTIVE_VOLATILITY_TREND_ENABLED", "ADAPTIVE_VOLATILITY_TREND_TIMEFRAME", "strategy_adaptive_volatility_trend"),
+    "REGIME_GATE_LOW_TURNOVER": ("REGIME_GATE_LOW_TURNOVER_ENABLED", "REGIME_GATE_LOW_TURNOVER_TIMEFRAME", "strategy_regime_gate_low_turnover"),
     "VWAP_MEAN_REVERSION": ("MEAN_REVERSION_ENABLED", "MEAN_REVERSION_TIMEFRAME", "strategy_mean_reversion"),
     "KELTNER_BREAKOUT": ("KELTNER_ENABLED", "KELTNER_TIMEFRAME", "strategy_keltner_breakout"),
     "CHOP_TREND_FILTER": ("CHOP_ENABLED", "CHOP_TIMEFRAME", "strategy_chop_trend"),
@@ -157,6 +159,8 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
     if len(entry) > 8 or len(exit_conditions) > 8: raise ValueError("En fazla 8 giriş ve 8 çıkış koşulu kullanılabilir")
     rows = _fetch_klines(symbol, interval, days_back); analyzer = ScalpAnalyzer(None); balance = config.INITIAL_BALANCE_TRY; position = None; trades = []; entry_armed = True; cooldown_until = -1
     stop_pct = float(stop_pct if stop_pct is not None else config.HARD_STOP_LOSS_PCT); tp_pct = float(tp_pct if tp_pct is not None else config.TIME_DECAY_TP_1_PCT)
+    interval_seconds = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400}.get(interval, 300)
+    early_failure_seconds = max(20 * 60, interval_seconds)
     for i, close in enumerate(rows["closes"]):
         window = {k:v[:i+1] for k,v in rows.items()}; now = rows["times"][i]
         if position:
@@ -167,7 +171,7 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
             if rows["lows"][i] <= stop_price: exit_price=stop_price; reason="atr_stop_loss" if atr_stop and stop_price == atr_stop else "hard_stop_loss"
             elif rows["highs"][i] >= position["entry"] * (1+tp_pct): exit_price=position["entry"]*(1+tp_pct); reason="take_profit"
             elif _custom_conditions(analyzer, window, exit_conditions): exit_price=close; reason="custom_exit"
-            elif now-position["entry_time"] >= 20 * 60 and close < position["entry"] + position.get("min_net_exit", 0.0): exit_price=close; reason="early_failure_no_progress"
+            elif now-position["entry_time"] >= early_failure_seconds and close < position["entry"] + position.get("min_net_exit", 0.0): exit_price=close; reason="early_failure_no_progress"
             elif now-position["entry_time"] >= config.MAX_POSITION_HOLD_SEC: exit_price=close; reason="max_hold_4h"
             if exit_price is not None:
                 balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size, reason); trade.update({"entry_time":position["entry_time"],"exit_time":now}); trades.append(trade); position=None; cooldown_until = i + 1; entry_armed = False
@@ -237,7 +241,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     # Pozisyon yalnızca kendi stratejisinin sell sinyaliyle kapanır.
                     exit_price = stop_price if stop_price is not None and low <= stop_price else (target_price if high >= target_price else None)
                     reason = "hard_stop_loss" if exit_price == stop_price and stop_price is not None else target_reason
-                    if data["times"][i] - position["entry_time"] >= config.MAX_POSITION_HOLD_SEC:
+                    if exit_price is None and data["times"][i] - position["entry_time"] >= config.MAX_POSITION_HOLD_SEC:
                         exit_price = close
                         reason = "max_hold_4h"
                     elif (config.STALE_POSITION_EXIT_BELOW_COST and
@@ -245,7 +249,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                           close < position["entry"] * (1 + config.min_net_exit_pct(order_size * position.get("layers", 1)))):
                         exit_price = close
                         reason = "stale_position_below_cost"
-                    elif exit_price is None and fn(window, symbol) == "sell":
+                    elif exit_price is None and config.EXIT_ON_OPPOSITE_SIGNAL and fn(window, symbol) == "sell":
                         exit_price = close
                         reason = "opposite_signal"
                     if exit_price is not None:

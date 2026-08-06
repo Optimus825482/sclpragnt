@@ -32,6 +32,34 @@ def _decode_provider_response(raw):
                 return candidate
         return objects[0] if objects else text
 
+def _decode_json_value(value, label="JSON"):
+    """Accept dicts, fenced JSON, NDJSON and provider JSON-string arguments."""
+    if isinstance(value, (dict, list)):
+        return value
+    if value is None:
+        return {}
+    text = str(value).strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text
+        text = text.rsplit("```", 1)[0].strip()
+    try:
+        return _decode_provider_response(text)
+    except Exception as exc:
+        raise ValueError(f"{label} çözümlenemedi: {exc}") from exc
+
+def _message_text(message):
+    """Normalize OpenAI-compatible content strings and content block arrays."""
+    content = (message or {}).get("content") if isinstance(message, dict) else message
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str): parts.append(block)
+            elif isinstance(block, dict) and block.get("text"): parts.append(str(block["text"]))
+        return "".join(parts).strip() or None
+    return None
+
 def _fernet():
     key = os.getenv("LLM_ENCRYPTION_KEY", "").strip()
     if not key:
@@ -67,7 +95,7 @@ async def analyze(snapshot):
         if choices and isinstance(choices, list):
             first = choices[0] or {}
             message = first.get("message") or {}
-            text = message.get("content") or first.get("text")
+            text = _message_text(message) or first.get("text")
         if not text and isinstance(payload_result, dict):
             text = payload_result.get("output_text") or payload_result.get("response") or payload_result.get("content")
         if not text and isinstance(payload_result, str):
@@ -110,13 +138,31 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
     system = PERSONA + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
-    conversation.extend([{"role": str(m.get("role", "user")), "content": str(m.get("content", ""))} for m in (messages or [])[-12:]])
+    for item in (messages or [])[-12:]:
+        if not isinstance(item, dict):
+            continue
+        # Preserve tool-call metadata when the frontend sends a previous
+        # assistant/tool exchange. Dropping it makes OpenAI-compatible APIs
+        # reject the next request or return an empty answer.
+        message = {"role": str(item.get("role", "user")), "content": item.get("content", "")}
+        for key in ("tool_calls", "tool_call_id", "name"):
+            if key in item: message[key] = item[key]
+        conversation.append(message)
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation}
     if tools: payload["tools"] = tools; payload["tool_choice"] = "auto"
     base_url = cfg["provider"]["base_url"].rstrip("/"); url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
         with urlopen(req, timeout=45) as response: return _decode_provider_response(response.read())
+    async def call_with_retry():
+        last_error = None
+        for attempt in range(2):
+            try:
+                return await asyncio.to_thread(call)
+            except (TimeoutError, OSError) as exc:
+                last_error = exc
+                if attempt == 0: await asyncio.sleep(0.4)
+        raise RuntimeError(f"LLM gateway yanıt vermedi: {last_error}") from last_error
     def response_data(value):
         """Normalize compatible gateway wrappers and JSON-string data fields."""
         current = value
@@ -131,35 +177,36 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
         return current
     try:
         result = None
-        for attempt in range(2):
-            try:
-                result = await asyncio.to_thread(call)
-                break
-            except TimeoutError:
-                if attempt == 1: raise RuntimeError("LLM gateway zaman aşımına uğradı; istek iki kez denendi")
-                await asyncio.sleep(0.4)
-        for tool_round in range(3):
+        result = await call_with_retry()
+        max_tool_rounds = 6
+        for tool_round in range(max_tool_rounds):
             data = response_data(result)
             choices = data.get("choices", []) if isinstance(data, dict) else []
             first = choices[0] if choices else {}
             tool_calls = (first.get("message") or {}).get("tool_calls", [])
             if not tool_calls or not tool_executor: break
-            conversation.append(first.get("message") or {})
+            assistant_message = first.get("message") or {}
+            conversation.append(assistant_message)
             for call_item in tool_calls:
                 fn = call_item.get("function") or {}; name = fn.get("name", "")
-                try: arguments = json.loads(fn.get("arguments", "{}"))
-                except json.JSONDecodeError: arguments = {}
-                tool_result = await tool_executor(name, arguments)
+                try:
+                    arguments = _decode_json_value(fn.get("arguments", "{}"), f"{name} araç argümanları")
+                    if not isinstance(arguments, dict): raise ValueError("Araç argümanları nesne olmalı")
+                    tool_result = await tool_executor(name, arguments)
+                except Exception as tool_error:
+                    tool_result = {"error": str(tool_error), "tool": name, "retryable": False}
                 conversation.append({"role": "tool", "tool_call_id": call_item.get("id", name), "name": name, "content": json.dumps(tool_result, ensure_ascii=False, default=str)})
             payload["messages"] = conversation
-            # Tool sonucu tek başına kullanıcıya gönderilmez; provider'a geri
-            # gönderilerek nihai Türkçe yanıtın üretilmesi gerekir.
-            if tool_round < 2:
-                result = await asyncio.to_thread(call)
+            # Every tool round must be followed by a provider call, including
+            # the last allowed round. Otherwise the last tool-call object is
+            # incorrectly treated as the final assistant answer.
+            result = await call_with_retry()
+        else:
+            raise RuntimeError(f"LLM araç döngüsü {max_tool_rounds} turda tamamlanamadı")
         data = response_data(result)
         if isinstance(data, str): return {"enabled": True, "status": "ok", "text": data}
         choices = data.get("choices", []) if isinstance(data, dict) else []
-        text = ((choices[0].get("message") or {}).get("content") if choices else None) or (data.get("output_text") if isinstance(data, dict) else None)
+        text = _message_text(choices[0].get("message") if choices else None) or (data.get("output_text") if isinstance(data, dict) else None)
         if not text: raise RuntimeError("Provider chat yanıtında metin bulunamadı")
         return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"], "generated_at": time.time()}
     except Exception as exc:

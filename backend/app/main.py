@@ -1126,6 +1126,93 @@ async def llm_query_database(args: dict, default_symbol: str | None = None):
     if args.get("action"): rows = [r for r in rows if str(r.get("action", "")).upper() == str(args["action"]).upper()]
     return {"resource": resource, "count": len(rows), "rows": rows[-limit:]}
 
+def _market_candidate_score(snapshot: dict):
+    """Deterministic ranking used before asking the LLM for deeper analysis."""
+    trend = snapshot.get("trend") or {}
+    momentum = snapshot.get("momentum") or {}
+    volume = snapshot.get("volume") or {}
+    liquidity = snapshot.get("liquidity") or {}
+    methodology = snapshot.get("methodology") or {}
+    score = 0.0; evidence = []; risks = []
+    alignment = str(trend.get("alignment") or "").lower()
+    if alignment == "bullish": score += 2.5; evidence.append("EMA hizalaması bullish")
+    elif alignment == "bearish": score -= 2.5; risks.append("EMA hizalaması bearish")
+    else: risks.append("EMA hizalaması karışık")
+    adx = trend.get("adx") if trend.get("adx") is not None else (trend.get("adx_14") if trend else None)
+    if isinstance(adx, dict): adx = adx.get("adx")
+    if adx is not None:
+        if float(adx) >= 20: score += 1.0; evidence.append(f"ADX {float(adx):.1f} ile trend gücü var")
+        else: risks.append(f"ADX düşük ({float(adx):.1f})")
+    for key in ("return_5m", "return_15m", "return_1h"):
+        value = momentum.get(key)
+        if value is not None:
+            if float(value) > 0: score += 0.35
+            elif float(value) < 0: score -= 0.35
+    if momentum.get("return_15m", 0) > 0 and momentum.get("return_1h", 0) > 0:
+        score += 1.0; evidence.append("15m ve 1h momentum aynı yönde")
+    vr = volume.get("volume_ratio_20")
+    if vr is not None and float(vr) >= 1.1: score += .6; evidence.append("hacim ortalamanın üzerinde")
+    elif vr in (None, 0): risks.append("hacim verisi eksik veya sıfır")
+    spread = liquidity.get("spread_pct")
+    depth = liquidity.get("orderbook_depth_try")
+    if spread is None or depth in (None, 0): risks.append("spread/derinlik eksik")
+    elif float(spread) <= .25: score += .4; evidence.append("spread kabul edilebilir")
+    regime = (methodology.get("regime") or {}).get("name") if isinstance(methodology, dict) else None
+    if regime and str(regime).startswith("bull"): score += .8; evidence.append(f"rejim {regime}")
+    return round(score, 3), evidence, risks
+
+async def scan_market_snapshots(args: dict | None = None):
+    args = args or {}
+    requested = args.get("symbols") or config.SYMBOLS
+    symbols = list(dict.fromkeys(str(s).replace("_", "").upper() for s in requested if str(s).strip()))[:100]
+    timeframes = [str(tf) for tf in (args.get("timeframes") or ["1m", "5m", "15m", "1h", "4h", "1d"]) if str(tf) in {"1m","5m","15m","1h","4h","1d"}]
+    if not timeframes: timeframes = ["5m", "15m", "1h"]
+    sem = asyncio.Semaphore(4)
+    async def one(sym):
+        async with sem:
+            rows = {}
+            for tf in timeframes:
+                try: rows[tf] = await symbol_analysis(sym, tf)
+                except Exception as exc: rows[tf] = {"symbol": sym, "data_ready": False, "error": str(exc)}
+            ready = [row for row in rows.values() if row.get("data_ready")]
+            selected = rows.get("5m") if rows.get("5m", {}).get("data_ready") else (ready[0] if ready else rows.get(timeframes[0], {}))
+            score, evidence, risks = _market_candidate_score(selected)
+            return {"symbol": sym, "selected_timeframe": selected.get("timeframe", "5m"), "score": score,
+                    "trend_direction": (selected.get("summary") or (selected.get("trend") or {}).get("alignment") or "unknown"),
+                    "evidence": evidence, "risks": risks, "data_ready_timeframes": list(rows.keys()),
+                    "snapshot": selected, "timeframes": rows}
+    results = await asyncio.gather(*(one(sym) for sym in symbols))
+    results.sort(key=lambda row: row["score"], reverse=True)
+    limit = max(1, min(int(args.get("limit", 10)), 30))
+    bullish = [row for row in results if row["score"] >= 2 and str(row.get("trend_direction", "")).lower() not in {"bearish", "mixed"}]
+    return {"generated_at": time.time(), "symbols_scanned": len(symbols), "timeframes": timeframes,
+            "bullish_candidates": bullish[:limit], "ranked": results[:limit],
+            "paper_only": True, "live_portfolio_changed": False,
+            "data_policy": "Binance TR public market data; missing values remain unknown."}
+
+async def deep_analyze_symbol(args: dict):
+    symbol = str(args.get("symbol", "")).replace("_", "").upper()
+    if not symbol: return {"error": "symbol gerekli"}
+    context = await symbol_llm_context(symbol, str(args.get("timeframe") or "5m"))
+    if not context.get("data_ready"): return context
+    score, evidence, risks = _market_candidate_score(context)
+    context = dict(context); context["candidate_assessment"] = {"score": score, "bullish_evidence": evidence, "risks": risks,
+        "paper_candidate": "candidate" if score >= 2.5 and not risks else "watch"}
+    return context
+
+@app.post("/api/market-snapshot-scan")
+async def market_snapshot_scan(payload: dict = None):
+    """Tüm etkin sembolleri salt-okunur biçimde tarar; canlı portföyü değiştirmez."""
+    return await scan_market_snapshots(payload or {})
+
+@app.get("/api/market-snapshot/{symbol}/deep")
+async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
+    """Tek sembol için LLM'e sunulacak güncel derin snapshot'ı döndürür."""
+    return await deep_analyze_symbol({"symbol": symbol, "timeframe": timeframe})
+
+LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Tüm etkin paper-trading sembollerini güncel public market verisiyle tarar, bullish adayları deterministik olarak sıralar. Salt-okunur; pozisyon açmaz.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]}},"limit":{"type":"integer"}},"required":[]}}}
+LLM_DEEP_SYMBOL_TOOL = {"type":"function","function":{"name":"deep_analyze_symbol","description":"Bir sembolün seçili timeframe ve çoklu timeframe teknik snapshot'ını getirir; trend fazı ve aday değerlendirmesi için kullanılır. Salt-okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframe":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]}},"required":["symbol"]}}}
+
 LLM_DATABASE_TOOL = {"type":"function","function":{"name":"query_database","description":"Sistemin PostgreSQL/SQLite veri katmanında güvenli, salt-okunur sorgu yapar. Açık pozisyon sorgusunda hem veritabanı hem canlı portföy belleğini karşılaştırır; böylece stale/mutabakat farkını gizlemez. Ham SQL çalıştırmaz.","parameters":{"type":"object","properties":{"resource":{"type":"string","enum":["positions","trades","signals","decisions","wallet"]},"symbol":{"type":"string"},"strategy":{"type":"string"},"action":{"type":"string"},"limit":{"type":"integer"}},"required":["resource"]}}}
 LLM_READONLY_SQL_TOOL = {"type":"function","function":{"name":"read_only_sql","description":"İleri seviye salt-okunur veritabanı incelemesi. Yalnızca tek SELECT veya WITH...SELECT sorgusu çalıştırır; yazma/DDL komutları ve izin verilmeyen tablolar reddedilir. Sadece gerektiğinde kullan.","parameters":{"type":"object","properties":{"sql":{"type":"string","description":"Tek bir SELECT veya WITH...SELECT sorgusu"},"limit":{"type":"integer"}},"required":["sql"]}}}
 
@@ -1137,6 +1224,8 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
     tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Seçili sembol üzerinde public historical candles ile paper-only mevcut strateji backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy":{"type":"string"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"Seçili sembol üzerinde güvenli deklaratif gösterge koşullarıyla paper-only backtest çalıştırır; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Seçili sembol ve stratejiyi farklı tarih pencerelerinde ve deterministik Monte Carlo özetiyle test eder; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"windows":{"type":"array","items":{"type":"integer"}}},"required":["strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}}}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
+        if name == "scan_market_snapshots": return await scan_market_snapshots(args)
+        if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
         if name == "query_database": return await llm_query_database(args, symbol.upper())
         if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
         if name == "get_symbol_analysis": return await symbol_analysis(symbol, str(args.get("timeframe") or body.get("timeframe") or "5m"))
@@ -1189,6 +1278,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                 rows = await memory_service.retrieve(conn, embedded["vector"], limit=max(1, min(int(args.get("limit", 6)), 20)), symbol=symbol.upper(), model_id=embedded.get("model_id"))
             return {"count": len(rows), "results": rows}
         return {"error": "Bilinmeyen araç"}
+    tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL])
     result = await llm_analysis.chat(snapshot, body.get("messages", []), tools, execute_tool)
     await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
     return result
@@ -1354,6 +1444,8 @@ async def strategies_llm_chat(payload: dict = None):
     async def execute_tool(name, args):
         started = time.perf_counter(); success = True
         try:
+            if name == "scan_market_snapshots": return await scan_market_snapshots(args)
+            if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
             if name == "query_database": return await llm_query_database(args)
             if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
             if name == "get_strategy_config": return await get_config()
@@ -1419,6 +1511,7 @@ async def strategies_llm_chat(payload: dict = None):
                 # Observability must never turn a valid LLM/tool response into
                 # a failed chat request.
                 print(f"[LLM] tool log kaydedilemedi: {log_error}")
+    tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL])
     result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool)
     await _persist_chat_memory(body.get("messages", []), layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=str(body.get("session_id") or "strategy:default"))
     return result

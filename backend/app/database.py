@@ -217,6 +217,7 @@ async def init_db():
             ("Osilatör ve Formasyon", "Interpret RSI, Stochastic, CCI, MACD, Williams %R, candle patterns and channels together. Treat overbought or oversold as context, not an automatic reversal signal."),
             ("Destek Direnç ve Pivot", "Use classic and Fibonacci pivots, Bollinger, Donchian and Keltner levels as context. Distinguish a level from a confirmed break and state timeframe."),
             ("Scalping Karar Raporu", "Return concise sections: market regime, bullish evidence, bearish evidence, liquidity and volatility risks, missing data, confidence, and paper-trading scenarios. Never invent a price target."),
+            ("Canlı Sembol Tarama ve Trend Adayı", "Önce tüm etkin semboller için scan_market_snapshots aracını kullan. EMA hizalaması, ADX/DI, çoklu timeframe momentum, VWAP, hacim, spread, derinlik, ATR ve rejimi birlikte değerlendir. Yukarı adayları deep_analyze_symbol ile derinleştir; trend fazı ve süresini yalnızca mevcut mum zaman damgalarından çıkar, yoksa bilinmiyor de. Sonucu Türkçe ve paper_candidate=watch/candidate/avoid alanlarıyla ver; gerçek emir açma ve değer uydurma."),
         ]
         conn.executemany("INSERT OR IGNORE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)", [(n,i,time.time()) for n,i in default_skills])
         conn.execute("""
