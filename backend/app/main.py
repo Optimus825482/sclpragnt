@@ -285,9 +285,23 @@ async def btc_odds_strategy_loop():
                 action = "BUY_SIGNAL" if verdict in {"ENTER UP", "ENTER DOWN"} else "BUY_BLOCKED"
                 spot_price = float(spot_ticker.get("lastPrice") or spot_ticker.get("price") or 0)
                 reason = json.dumps({"verdict": verdict, "paper_only": True, "signal_source": "BTCUSDT/Polymarket", "execution_symbol": "BTCTRY", "spot_price": spot_price, "signals": scan.get("signals"), "odds": scan.get("odds")}, ensure_ascii=False, default=str)
-                await database.save_signal({"timestamp": time.time(), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": action, "price": spot_price, "reason": reason, "metadata": {**scan, "execution_symbol": "BTCTRY", "spot_price": spot_price}})
+                signal = None
+                if action == "BUY_SIGNAL":
+                    if "BTCTRY" in analyzer.positions:
+                        signal = {"timestamp": time.time(), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": "BUY_BLOCKED", "price": spot_price, "reason": "position_already_open", "paper_only": True}
+                        await database.save_signal(signal)
+                    else:
+                    # Reuse the normal paper-wallet, liquidity, commission,
+                    # position-limit and entry-snapshot transaction.
+                        signal = await analyzer.open_position("BTCTRY", spot_price, "LONG", "BTC_5M_ODDS_SCALPER")
+                        if signal:
+                            signal["odds_context"] = {"verdict": verdict, "signal_source": "BTCUSDT/Polymarket", "signals": scan.get("signals"), "odds": scan.get("odds")}
+                            action = signal.get("action", action)
+                else:
+                    signal = {"timestamp": time.time(), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": action, "price": spot_price, "reason": reason, "metadata": {**scan, "execution_symbol": "BTCTRY", "spot_price": spot_price}}
+                    await database.save_signal(signal)
                 _btc_odds_last_window = window
-                await ws_manager.broadcast({"type": "signal", "data": {"symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": action, "price": spot_price, "reason": reason, "paper_only": True}})
+                await ws_manager.broadcast({"type": "signal", "data": {**(signal or {}), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": action, "price": spot_price, "reason": reason, "paper_only": True}})
         except Exception as exc:
             print(f"[BTC Odds] paper tarama hatası: {exc}")
         await asyncio.sleep(20)
