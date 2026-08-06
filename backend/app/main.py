@@ -668,6 +668,29 @@ async def trade_repair_apply(payload: dict = None):
         _repair_log("error", str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
+@app.get("/api/trade-repair/legacy-cleanup")
+async def legacy_trade_cleanup_preview():
+    return {"records": await database.preview_legacy_trade_cleanup(), "requires_confirmation": True}
+
+@app.post("/api/trade-repair/legacy-cleanup")
+async def legacy_trade_cleanup_apply(payload: dict = None):
+    body = payload or {}
+    ids = body.get("trade_ids") or []
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="Silme işlemi için confirm=true gerekli")
+    try:
+        _trade_repair.update({"status":"running", "phase":"legacy_cleanup", "progress":20, "message":"Onaylı legacy kayıt temizliği çalışıyor", "result":None})
+        _repair_log("warning", f"Onaylı legacy temizlik başlatıldı: {', '.join(map(str, ids))}")
+        result = await database.purge_legacy_trade_records(ids)
+        _trade_repair.update({"status":"complete", "phase":"complete", "progress":100, "message":"Legacy kayıt temizliği tamamlandı", "result":result})
+        _repair_log("info", f"Legacy kayıt temizlendi: {result['deleted_count']}")
+        await ws_manager.broadcast({"type":"trade_repair_completed", "data":result})
+        return {"ok":True, **result, "monitor":dict(_trade_repair)}
+    except Exception as exc:
+        _trade_repair.update({"status":"error", "phase":"error", "progress":100, "message":str(exc)})
+        _repair_log("error", str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+
 @app.get("/api/chart/{symbol}")
 async def get_chart_settings(symbol: str):
     data = await database.get_chart_settings(symbol)

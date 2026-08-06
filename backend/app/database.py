@@ -466,6 +466,38 @@ async def apply_trade_repair():
         return {"updated_trades":updated_trades, "updated_positions":updated_positions, "enriched_close_logs":enriched_logs, "deleted":0}
     return await _run_db(op)
 
+async def preview_legacy_trade_cleanup():
+    def op(conn):
+        rows = conn.execute("SELECT id,symbol,strategy,pnl,commission,entry_time,exit_time,reason,trade_id FROM trades WHERE trade_id IN ('legacy-trade-573','legacy-trade-574') ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+    return await _run_db(op)
+
+async def purge_legacy_trade_records(trade_ids):
+    allowed = {"legacy-trade-573", "legacy-trade-574"}
+    ids = sorted(allowed.intersection(str(x) for x in (trade_ids or [])))
+    if not ids:
+        raise ValueError("Silinecek onaylı legacy işlem bulunamadı")
+    def op(conn):
+        placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(f"SELECT id,symbol,exit_time,trade_id FROM trades WHERE trade_id IN ({placeholders})", tuple(ids)).fetchall()
+        if len(rows) != len(ids):
+            raise ValueError("Onaylanan legacy kayıtların tamamı bulunamadı; işlem iptal edildi")
+        deleted = []
+        for row in rows:
+            symbol, exit_time = row[1], row[2]
+            conn.execute("DELETE FROM trades WHERE trade_id=?", (row[3],))
+            conn.execute("DELETE FROM signals WHERE symbol=? AND action='CLOSE_LONG' AND ABS(timestamp-?) <= 30", (symbol, exit_time))
+            conn.execute("DELETE FROM decision_logs WHERE symbol=? AND decision='CLOSE_LONG' AND ABS(timestamp-?) <= 30", (symbol, exit_time))
+            try:
+                conn.execute("DELETE FROM memory_embeddings WHERE memory_document_id IN (SELECT id FROM memory_documents WHERE source_id=? OR source_id=? )", (str(row[0]), str(row[3])))
+                conn.execute("DELETE FROM memory_documents WHERE source_id=? OR source_id=?", (str(row[0]), str(row[3])))
+            except Exception:
+                pass
+            deleted.append({"trade_id": row[3], "symbol": symbol, "id": row[0]})
+        conn.commit()
+        return {"deleted": deleted, "deleted_count": len(deleted)}
+    return await _run_db(op)
+
 async def get_llm_config():
     def op(conn):
         providers = [dict(r) for r in conn.execute("SELECT id,name,base_url,enabled,created_at,updated_at FROM llm_providers ORDER BY id").fetchall()]
