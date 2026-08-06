@@ -71,12 +71,25 @@ async def btc_5min_scan():
     s3 = "UP" if rsi < 30 else "DOWN" if rsi > 70 else "NONE"
     avg_volume = sum(x["volume"] for x in parsed[-26:-1]) / 25; volume_ratio = parsed[-1]["volume"] / avg_volume if avg_volume else 0
     s4 = "DOWN" if now % 86400 // 3600 >= 15 and mom5 > 200 else "UP" if now % 86400 // 3600 >= 15 and mom5 < -200 else "NONE"
-    market = next((m for m in markets if "bitcoin" in str(m.get("question", "")).lower() and ("up" in str(m.get("question", "")).lower() and "down" in str(m.get("question", "")).lower()) and ("5m" in str(m.get("slug", "")).lower() or "5 minute" in str(m.get("question", "")).lower())), None)
+    candidates = [m for m in markets if "bitcoin" in str(m.get("question", "")).lower() and "up" in str(m.get("question", "")).lower() and "down" in str(m.get("question", "")).lower() and ("5m" in str(m.get("slug", "")).lower() or "5 minute" in str(m.get("question", "")).lower() or "5 minutes" in str(m.get("question", "")).lower())]
+    market = sorted(candidates, key=lambda item: str(item.get("endDate") or item.get("endDateIso") or ""))[-1] if candidates else None
     prices = market.get("outcomePrices") if market else None
     if isinstance(prices, str):
         try: prices = json.loads(prices)
         except json.JSONDecodeError: prices = None
     up_price = float(prices[0]) if isinstance(prices, list) and len(prices) >= 2 else None; down_price = float(prices[1]) if isinstance(prices, list) and len(prices) >= 2 else None
+    if market and (up_price is None or down_price is None):
+        token_ids = market.get("clobTokenIds") or []
+        if isinstance(token_ids, str):
+            try: token_ids = json.loads(token_ids)
+            except json.JSONDecodeError: token_ids = []
+        if isinstance(token_ids, list) and len(token_ids) >= 2:
+            try:
+                up_quote = await _public_json("https://clob.polymarket.com/price?" + urlencode({"token_id": token_ids[0], "side": "BUY"}))
+                down_quote = await _public_json("https://clob.polymarket.com/price?" + urlencode({"token_id": token_ids[1], "side": "BUY"}))
+                up_price = float(up_quote.get("price")); down_price = float(down_quote.get("price"))
+            except Exception:
+                up_price = down_price = None
     s5 = "UP" if up_price is not None and up_price < 0.45 else "DOWN" if down_price is not None and down_price < 0.45 else "UNKNOWN"
     support, resistance = float(ticker.get("lowPrice", 0)), float(ticker.get("highPrice", 0))
     s6 = "UP" if support and (price - support) / price < 0.003 else "DOWN" if resistance and (resistance - price) / price < 0.003 else "NONE"
