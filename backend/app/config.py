@@ -127,7 +127,9 @@ class Config:
     KELTNER_VOLUME_MULTIPLIER = 1.5
     KELTNER_REQUIRE_MTF_ALIGNMENT = True
     KELTNER_REQUIRE_RETEST = True
-    EMA_VWAP_MIN_VOLUME_RATIO = 0.8
+    # VWAP + EMA trend/pullback stratejisi: maliyet sonrası daha seçici giriş.
+    EMA_VWAP_MIN_VOLUME_RATIO = float(os.getenv("EMA_VWAP_MIN_VOLUME_RATIO", "1.0"))
+    EMA_VWAP_MIN_ADX = float(os.getenv("EMA_VWAP_MIN_ADX", "18"))
     EMA_VWAP_REQUIRE_MTF_ALIGNMENT = True
     CHOP_PERIOD = 14
     CHOP_MAX_VALUE = float(os.getenv("CHOP_MAX_VALUE", "45"))

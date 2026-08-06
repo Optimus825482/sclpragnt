@@ -437,6 +437,9 @@ class ScalpAnalyzer:
         typical = (np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3
         vol = np.array(volumes[-20:]); vwap = float(np.sum(typical * vol) / np.sum(vol)) if np.sum(vol) else None
         if None in (e9, e21, e50, vwap): return None
+        adx_result = _adx(highs, lows, closes)
+        adx_value = adx_result.get("adx") if adx_result else None
+        adx_ok = adx_value is not None and adx_value >= config.EMA_VWAP_MIN_ADX
         flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
         volume_ratio = self._volume_ratio(kline)
         volume_ok = volume_ratio is not None and volume_ratio >= config.EMA_VWAP_MIN_VOLUME_RATIO
@@ -447,7 +450,7 @@ class ScalpAnalyzer:
         recent_lows = lows[-4:-1]
         touched_ema = any(low <= e21 * 1.002 for low in recent_lows)
         bullish_reclaim = closes[-1] > closes[-2] and closes[-1] > e21
-        if e9 > e21 > e50 and closes[-1] > vwap and touched_ema and bullish_reclaim and flow_ok and volume_ok and mtf_ok: return "buy"
+        if e9 > e21 > e50 and adx_ok and closes[-1] > vwap and touched_ema and bullish_reclaim and flow_ok and volume_ok and mtf_ok: return "buy"
         return None
 
     def strategy_breakout(self, kline, symbol=None):
