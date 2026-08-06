@@ -1327,7 +1327,15 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
 @app.post("/api/positions/{symbol}/close")
 async def close_position_manual(symbol: str):
     """Açık pozisyonu manuel kapat (komisyon + işlem geçmişi dahil)."""
+    symbol = symbol.replace("_", "").upper()
     ticker = market.get_ticker(symbol)
+    if not ticker or not ticker.get("last_price"):
+        try:
+            latest = await fetch_klines(symbol, "1m", 2)
+            if latest:
+                ticker = {"symbol": symbol, "last_price": float(latest[-1][4]), "source": "binance_tr_public_rest"}
+        except Exception as exc:
+            print(f"[Manual close] {symbol} fiyat fallback hatası: {exc}")
     price = ticker["last_price"] if ticker else None
     if price is None:
         return {"ok": False, "message": f"{symbol} için güncel fiyat bulunamadı"}
