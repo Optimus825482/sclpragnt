@@ -1087,6 +1087,20 @@ async def reset_memory():
 async def get_signals(limit: int = 100):
     return {"signals": await database.get_signals(limit), "total": await database.get_signal_count()}
 
+@app.get("/api/analysis-snapshots/{symbol}")
+async def get_analysis_snapshots(symbol: str, limit: int = 50):
+    """İşlem açılışında kaydedilen metodoloji snapshot'larını getirir."""
+    limit = max(1, min(int(limit), 500))
+    def op(conn):
+        rows = conn.execute("SELECT * FROM analysis_snapshots WHERE symbol=? ORDER BY captured_at DESC LIMIT ?", (symbol.upper(), limit)).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = database._json_value(item.get("payload"), {})
+            output.append(item)
+        return output
+    return {"symbol": symbol.upper(), "snapshots": await database._run_db(op)}
+
 @app.get("/api/decisions")
 async def get_decisions(limit: int = 500, symbol: str = "", strategy: str = ""):
     return {"decisions": await database.get_decision_logs(limit, symbol or None, strategy or None)}
@@ -1175,7 +1189,7 @@ async def strategies_llm_chat(payload: dict = None):
                 symbol = str(args.get("symbol") or "BTCTRY").upper(); interval = str(args.get("interval") or "5m")
                 days = max(1, min(int(args.get("days_back", 30)), 90)); order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
                 result = await run_custom_backtest(symbol, interval, days, args.get("strategy_definition") or {}, order_size, args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
-                return {"result": result, "paper_only": True, "live_portfolio_changed": False, "allowed_indicators":["rsi","ema_9","ema_21","ema_50","adx","volume_ratio","price_vs_vwap","return_5","return_21","chop","macd_histogram","stochastic_k","bollinger_position","atr_pct","mfi","cci","williams_r","price_vs_ema_21","cmo","crsi"]}
+                return {"result": result, "paper_only": True, "live_portfolio_changed": False, "allowed_indicators":["rsi","ema_9","ema_21","ema_50","adx","volume_ratio","price_vs_vwap","return_5","return_21","chop","macd_histogram","stochastic_k","bollinger_position","atr_pct","mfi","cci","williams_r","price_vs_ema_21","cmo","crsi","confluence_score","regime_confidence","turtle_breakout","wyckoff_score","elliott_score","fib_distance_support","fib_distance_resistance"]}
             if name == "get_backtest_history":
                 limit = max(1, min(int(args.get("limit", 20)), 50))
                 rows = await database.get_backtests(limit)

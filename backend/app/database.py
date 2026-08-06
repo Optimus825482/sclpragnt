@@ -235,6 +235,8 @@ async def init_db():
             conn.execute("ALTER TABLE backtests ADD COLUMN max_drawdown_pct REAL")
         except sqlite3.OperationalError:
             pass
+        conn.execute("CREATE TABLE IF NOT EXISTS analysis_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, captured_at REAL NOT NULL, source TEXT NOT NULL DEFAULT 'entry', methodology_version TEXT, regime TEXT, regime_confidence REAL, confluence_score REAL, payload TEXT NOT NULL DEFAULT '{}', trade_id TEXT)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_symbol_time ON analysis_snapshots(symbol, captured_at DESC)")
         conn.commit()
         conn.execute("INSERT OR IGNORE INTO virtual_wallet (asset, amount) VALUES ('TRY', ?)", (config.INITIAL_BALANCE_TRY,))
         conn.commit()
@@ -712,6 +714,11 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
             raise RuntimeError("Açılan pozisyon kaydı doğrulanamadı; transaction geri alınacak")
         conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason) VALUES(?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason")))
         conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
+        technical = (pos.get("entry_context") or {}).get("technical") or {}
+        methods = technical.get("methodologies") or {}
+        regime = methods.get("regime") or {}
+        confluence = methods.get("confluence") or {}
+        conn.execute("INSERT INTO analysis_snapshots(symbol,timeframe,captured_at,source,methodology_version,regime,regime_confidence,confluence_score,payload,trade_id) VALUES(?,?,?,?,?,?,?,?,?,?)", (symbol, technical.get("timeframe") or "5m", pos.get("entry_time") or time.time(), "entry", methods.get("methodology_version"), regime.get("name"), regime.get("confidence"), confluence.get("score"), json.dumps(technical, default=str), pos.get("trade_id")))
         conn.commit()
     await _run_db(op)
     try:
@@ -787,7 +794,7 @@ async def read_only_query(sql: str, limit: int = 500):
         raise ValueError("Yalnızca SELECT veya WITH ... SELECT sorgularına izin verilir")
     if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|PRAGMA|COPY|GRANT|REVOKE|CALL|DO|VACUUM|ATTACH|DETACH)\b", statement, re.I):
         raise ValueError("Yazma, DDL veya yönetim komutu tespit edildi")
-    allowed = {"positions", "trades", "signals", "decision_logs", "virtual_wallet", "backtests", "llm_tool_logs"}
+    allowed = {"positions", "trades", "signals", "decision_logs", "virtual_wallet", "backtests", "analysis_snapshots", "llm_tool_logs"}
     referenced = set(re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)", statement, re.I))
     if not referenced or not referenced.issubset(allowed):
         raise ValueError("Sorgu yalnızca izin verilen uygulama tablolarını kullanabilir")

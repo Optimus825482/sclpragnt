@@ -8,7 +8,7 @@ from typing import Any
 
 from app import database
 from app.analyzer import ScalpAnalyzer
-from app.technical_analysis import _adx, _macd, _bollinger, _stochastic, _mfi, _cci, _williams_r
+from app.technical_analysis import _adx, _macd, _bollinger, _stochastic, _mfi, _cci, _williams_r, _methodology_analysis
 from app.binance_tr_public import historical_klines
 from app.config import config
 
@@ -84,7 +84,7 @@ def _close_trade(balance, entry, exit_price, quantity, order_size, reason):
         "pnl": round(pnl, 8), "commission": round(entry_fee + exit_fee, 8), "reason": reason,
     }
 
-CUSTOM_INDICATORS = {"rsi", "ema_9", "ema_21", "ema_50", "adx", "volume_ratio", "price_vs_vwap", "return_5", "return_21", "chop", "macd_histogram", "stochastic_k", "bollinger_position", "atr_pct", "mfi", "cci", "williams_r", "price_vs_ema_21", "cmo", "crsi"}
+CUSTOM_INDICATORS = {"rsi", "ema_9", "ema_21", "ema_50", "adx", "volume_ratio", "price_vs_vwap", "return_5", "return_21", "chop", "macd_histogram", "stochastic_k", "bollinger_position", "atr_pct", "mfi", "cci", "williams_r", "price_vs_ema_21", "cmo", "crsi", "confluence_score", "regime_confidence", "turtle_breakout", "wyckoff_score", "elliott_score", "fib_distance_support", "fib_distance_resistance"}
 CUSTOM_OPS = {"<", "<=", ">", ">=", "=="}
 
 def _custom_value(analyzer, window, name):
@@ -119,6 +119,15 @@ def _custom_value(analyzer, window, name):
         ema = analyzer.calculate_ema(closes, 21); return closes[-1] / ema - 1 if ema else None
     if name == "cmo": return analyzer.calculate_cmo(closes, 9)
     if name == "crsi": return analyzer.calculate_crsi(closes)
+    if name in {"confluence_score", "regime_confidence", "turtle_breakout", "wyckoff_score", "elliott_score", "fib_distance_support", "fib_distance_resistance"}:
+        methods = _methodology_analysis(window["opens"], highs, lows, closes, volumes, _adx(highs, lows, closes), "bullish" if analyzer.calculate_ema(closes, 9) and analyzer.calculate_ema(closes, 21) and analyzer.calculate_ema(closes, 9) > analyzer.calculate_ema(closes, 21) else "mixed")
+        if name == "confluence_score": return methods["confluence"]["score"]
+        if name == "regime_confidence": return methods["regime"]["confidence"]
+        if name == "turtle_breakout": return 1 if methods["turtle"]["breakout"] == "up_20" else -1 if methods["turtle"]["breakout"] == "down_20" else 0
+        if name == "wyckoff_score": return methods["confluence"]["components"]["wyckoff"]
+        if name == "elliott_score": return methods["elliott"]["confidence"]
+        fib = methods["fibonacci"]
+        return (closes[-1] / fib["0.786"] - 1) if name == "fib_distance_support" and fib["0.786"] else (closes[-1] / fib["0.236"] - 1) if fib["0.236"] else None
     return None
 
 def _custom_conditions(analyzer, window, conditions):
