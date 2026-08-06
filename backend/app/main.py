@@ -983,9 +983,14 @@ async def llm_open_paper_trade(payload: dict):
     candidates = []
     if not symbol:
         scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "timeframes": ["5m", "15m", "1h"], "limit": 5})
-        candidates = [x for x in scan.get("bullish_candidates", []) if float(x.get("score", 0)) >= 2.5]
+        # scan_market_snapshots zaten bullish adayları deterministik eşik ve
+        # trend filtresinden geçiriyor; burada ikinci, daha sert eşik adayları
+        # gereksiz yere silip "aday yok" üretiyordu.
+        candidates = list(scan.get("bullish_candidates", []))
         if not candidates:
-            raise HTTPException(status_code=409, detail="Paper işlem için yeterli güvene sahip bullish aday bulunamadı")
+            top = [{"symbol": row.get("symbol"), "score": row.get("score"), "risks": row.get("risks", [])}
+                   for row in scan.get("ranked", [])[:5]]
+            raise HTTPException(status_code=409, detail={"message": "Paper işlem için bullish aday bulunamadı", "top_ranked": top, "action": "işlem açılmadı"})
     else:
         candidates = [{"symbol": symbol, "score": None}]
     # Otomatik seçimde symbol başlangıçta boştur; geçerlilik kontrolü yalnızca
