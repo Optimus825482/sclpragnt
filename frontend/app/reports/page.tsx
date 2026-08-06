@@ -12,9 +12,10 @@ function Stat({title,value,tone="text-white"}:{title:string;value:string;tone?:s
 function DecisionTab({decisions,trades}:{decisions:Decision[];trades:Trade[]}){
  const [query,setQuery]=useState(""); const [status,setStatus]=useState("all"); const [strategy,setStrategy]=useState("all");
  const [page,setPage]=useState(1); const pageSize=25;
+ const knownStrategies=["MOMENTUM","ORDERFLOW","EMA_VWAP_PULLBACK","VWAP_MEAN_REVERSION","CHOP_TREND_FILTER","KELTNER_BREAKOUT","DONCHIAN_BREAKOUT","BB_SQUEEZE_ORDERFLOW","GAINER_RADAR"];
  const strategies=Array.from(new Set(decisions.map(d=>d.strategy).filter(Boolean))) as string[];
  const rows=useMemo(()=>decisions.filter(d=>["BUY_SIGNAL","BUY_BLOCKED"].includes(d.decision)).map(d=>{
-   const inferredStrategy=d.strategy||((d.decision==="BUY_SIGNAL"&&d.reason&&d.reason.includes("_"))?d.reason:undefined);
+   const inferredStrategy=d.strategy||(d.decision==="BUY_SIGNAL"&&knownStrategies.includes(String(d.reason||""))?d.reason:undefined);
    const trade=trades.find(t=>t.symbol===d.symbol&&t.strategy===inferredStrategy&&Math.abs((t.entry_time||0)-d.timestamp)<180);
    const opened=d.decision==="BUY_SIGNAL";
    return {...d,strategy:inferredStrategy,reason:d.reason===(inferredStrategy||"__none__")&&opened?"position_opened":d.reason,trade,opened,status:opened?(trade?"closed":"open"):"blocked"};
