@@ -18,6 +18,7 @@ STRATEGIES = {
     "ORDERFLOW": ("ORDERFLOW_ENABLED", "ORDERFLOW_TIMEFRAME", "strategy_orderflow"),
     "MOMENTUM": ("MOMENTUM_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum"),
     "MOMENTUM_COST_AWARE": ("MOMENTUM_COST_AWARE_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum_cost_aware"),
+    "OVERSOLD_TREND_REENTRY": ("OVERSOLD_TREND_REENTRY_ENABLED", "OVERSOLD_TREND_REENTRY_TIMEFRAME", "strategy_oversold_trend_reentry"),
     "VWAP_MEAN_REVERSION": ("MEAN_REVERSION_ENABLED", "MEAN_REVERSION_TIMEFRAME", "strategy_mean_reversion"),
     "KELTNER_BREAKOUT": ("KELTNER_ENABLED", "KELTNER_TIMEFRAME", "strategy_keltner_breakout"),
     "CHOP_TREND_FILTER": ("CHOP_ENABLED", "CHOP_TIMEFRAME", "strategy_chop_trend"),
@@ -35,9 +36,14 @@ PARAM_FIELDS = {
 
 # Analyzer stratejileri mevcut global config'i okuduğu için backtest config değişimini serileştir.
 _CONFIG_LOCK = threading.RLock()
+_KLINE_CACHE: dict[tuple[str, str, int], dict[str, list[float]]] = {}
 
 
 def _fetch_klines(symbol: str, interval: str, days_back: int) -> dict[str, list[float]]:
+    cache_key = (symbol.upper(), interval, int(days_back))
+    cached = _KLINE_CACHE.get(cache_key)
+    if cached:
+        return {key: list(values) for key, values in cached.items()}
     rows = asyncio.run(historical_klines(symbol, interval, days_back))
     if not rows:
         raise ValueError(f"{symbol} için tarihsel veri bulunamadı")
@@ -55,6 +61,7 @@ def _fetch_klines(symbol: str, interval: str, days_back: int) -> dict[str, list[
         result["times"].append(int(row[6] / 1000) if len(row) > 6 else int(row[0] / 1000))
     if not result["closes"]:
         raise ValueError(f"{symbol} için kullanılabilir mum bulunamadı")
+    _KLINE_CACHE[cache_key] = {key: list(values) for key, values in result.items()}
     return result
 
 
@@ -233,6 +240,11 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     if data["times"][i] - position["entry_time"] >= config.MAX_POSITION_HOLD_SEC:
                         exit_price = close
                         reason = "max_hold_4h"
+                    elif (config.STALE_POSITION_EXIT_BELOW_COST and
+                          elapsed >= config.STALE_POSITION_SEC and
+                          close < position["entry"] * (1 + config.min_net_exit_pct(order_size * position.get("layers", 1)))):
+                        exit_price = close
+                        reason = "stale_position_below_cost"
                     elif exit_price is None and fn(window, symbol) == "sell":
                         exit_price = close
                         reason = "opposite_signal"

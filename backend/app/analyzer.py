@@ -3,7 +3,7 @@ import asyncio
 import numpy as np
 import uuid
 from app.config import config
-from app.technical_analysis import calculate_snapshot, _adx
+from app.technical_analysis import calculate_snapshot, _adx, _stochastic
 from app.binance_tr_public import orderbook
 from app import database
 
@@ -347,6 +347,9 @@ class ScalpAnalyzer:
                 return await self.close_position(symbol, price, "early_failure_no_progress")
             if elapsed >= config.STALE_POSITION_SEC and max_progress < config.STALE_POSITION_MIN_PROGRESS_PCT:
                 return await self.close_position(symbol, price, "stale_position_no_progress")
+            if (config.STALE_POSITION_EXIT_BELOW_COST and elapsed >= config.STALE_POSITION_SEC and
+                    price < entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))):
+                return await self.close_position(symbol, price, "stale_position_below_cost")
             if elapsed < config.TIME_DECAY_TP_STAGE_2_SEC:
                 target_pct = config.TIME_DECAY_TP_1_PCT
                 target_reason = "time_decay_target_1_0pct"
@@ -497,6 +500,19 @@ class ScalpAnalyzer:
             return "buy"
         return None
 
+    def strategy_oversold_trend_reentry(self, kline, symbol=None):
+        """Long re-entry candidate: oversold oscillators with bullish EMA structure."""
+        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
+        if len(closes) < 55: return None
+        rsi = self.calculate_rsi(closes, config.RSI_PERIOD)
+        cmo = self.calculate_cmo(closes, 9)
+        stoch = _stochastic(highs, lows, closes)
+        ema9 = self.calculate_ema(closes, 9); ema21 = self.calculate_ema(closes, 21)
+        if (rsi is not None and cmo is not None and stoch and ema9 is not None and ema21 is not None and
+                cmo < 0 and stoch.get("k") is not None and stoch["k"] < 40 and rsi < config.OVERSOLD_TREND_REENTRY_RSI_MAX and ema9 > ema21):
+            return "buy"
+        return None
+
     def adr_status(self, symbol, price):
         """Return ADR capacity for a momentum entry without using future data."""
         if not config.ADR_FILTER_ENABLED:
@@ -602,6 +618,7 @@ class ScalpAnalyzer:
                 (config.ORDERFLOW_ENABLED, "ORDERFLOW", self.strategy_orderflow, config.ORDERFLOW_TIMEFRAME),
                 (config.MOMENTUM_ENABLED, "MOMENTUM", self.strategy_momentum, config.MOMENTUM_TIMEFRAME),
                 (config.MOMENTUM_COST_AWARE_ENABLED, "MOMENTUM_COST_AWARE", self.strategy_momentum_cost_aware, config.MOMENTUM_TIMEFRAME),
+                (config.OVERSOLD_TREND_REENTRY_ENABLED, "OVERSOLD_TREND_REENTRY", self.strategy_oversold_trend_reentry, config.OVERSOLD_TREND_REENTRY_TIMEFRAME),
                 (config.MEAN_REVERSION_ENABLED, "VWAP_MEAN_REVERSION", self.strategy_mean_reversion, config.MEAN_REVERSION_TIMEFRAME),
                 (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
                 (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),
@@ -642,6 +659,7 @@ class ScalpAnalyzer:
             (config.ORDERFLOW_ENABLED, "ORDERFLOW", self.strategy_orderflow, config.ORDERFLOW_TIMEFRAME),
             (config.MOMENTUM_ENABLED, "MOMENTUM", self.strategy_momentum, config.MOMENTUM_TIMEFRAME),
             (config.MOMENTUM_COST_AWARE_ENABLED, "MOMENTUM_COST_AWARE", self.strategy_momentum_cost_aware, config.MOMENTUM_TIMEFRAME),
+            (config.OVERSOLD_TREND_REENTRY_ENABLED, "OVERSOLD_TREND_REENTRY", self.strategy_oversold_trend_reentry, config.OVERSOLD_TREND_REENTRY_TIMEFRAME),
             (config.MEAN_REVERSION_ENABLED, "VWAP_MEAN_REVERSION", self.strategy_mean_reversion, config.MEAN_REVERSION_TIMEFRAME),
             (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
             (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),
