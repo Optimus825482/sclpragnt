@@ -975,12 +975,14 @@ async def llm_open_paper_trade(payload: dict):
     if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
         raise HTTPException(status_code=403, detail="LLM paper işlem açma yetkisi ayarlardan kapalı")
     symbol = str(payload.get("symbol", "")).replace("_", "").upper()
+    candidates = []
     if not symbol:
         scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "timeframes": ["5m", "15m", "1h"], "limit": 5})
         candidates = [x for x in scan.get("bullish_candidates", []) if float(x.get("score", 0)) >= 2.5]
         if not candidates:
             raise HTTPException(status_code=409, detail="Paper işlem için yeterli güvene sahip bullish aday bulunamadı")
-        symbol = str(candidates[0]["symbol"]).upper()
+    else:
+        candidates = [{"symbol": symbol, "score": None}]
     if symbol not in config.SYMBOLS:
         try:
             available_symbols = set(await trading_symbols("TRY"))
@@ -988,21 +990,28 @@ async def llm_open_paper_trade(payload: dict):
             available_symbols = set()
         if symbol not in available_symbols:
             raise HTTPException(status_code=400, detail="Geçerli TRY sembolü gerekli")
-    ticker = market.get_ticker(symbol)
-    if not ticker or not ticker.get("last_price"):
-        try:
-            latest = await fetch_klines(symbol, "1m", 2)
-            if latest:
-                ticker = {"symbol": symbol, "last_price": float(latest[-1][4]), "timestamp": time.time() * 1000, "source": "binance_tr_public_rest"}
-        except Exception as exc:
-            print(f"[LLM paper] {symbol} fiyat fallback hatası: {exc}")
-    if not ticker or not ticker.get("last_price"):
-        raise HTTPException(status_code=502, detail="Güncel public fiyat bulunamadı")
-    signal = await analyzer.open_position(symbol, float(ticker["last_price"]), "LONG", "LLM_PAPER")
-    if not signal:
-        raise HTTPException(status_code=409, detail="Paper pozisyon açılamadı; risk veya pozisyon sınırı engelledi")
-    await ws_manager.broadcast({"type": "signal", "data": signal})
-    return {"ok": True, "paper_only": True, "real_trading": False, "signal": signal}
+    blocked = []
+    for candidate in candidates:
+        symbol = str(candidate["symbol"]).upper()
+        if symbol not in config.SYMBOLS:
+            continue
+        ticker = market.get_ticker(symbol)
+        if not ticker or not ticker.get("last_price"):
+            try:
+                latest = await fetch_klines(symbol, "1m", 2)
+                if latest:
+                    ticker = {"symbol": symbol, "last_price": float(latest[-1][4]), "timestamp": time.time() * 1000, "source": "binance_tr_public_rest"}
+            except Exception as exc:
+                blocked.append({"symbol": symbol, "reason": f"price_unavailable:{exc}"})
+        if not ticker or not ticker.get("last_price"):
+            blocked.append({"symbol": symbol, "reason": "price_unavailable"})
+            continue
+        signal = await analyzer.open_position(symbol, float(ticker["last_price"]), "LONG", "LLM_PAPER")
+        if signal and str(signal.get("action", "")).upper() == "BUY_SIGNAL":
+            await ws_manager.broadcast({"type": "signal", "data": signal})
+            return {"ok": True, "paper_only": True, "real_trading": False, "signal": signal, "research_attempts": blocked}
+        blocked.append({"symbol": symbol, "reason": (signal or {}).get("reason", "risk_or_position_limit")})
+    raise HTTPException(status_code=409, detail={"message": "Hiçbir aday paper işlem kurallarını geçemedi; işlem açılmadı", "blocked_candidates": blocked, "retry_research": True})
 
 @app.post("/api/llm/providers")
 async def add_llm_provider(payload: dict):

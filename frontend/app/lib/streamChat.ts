@@ -15,7 +15,10 @@ export async function streamChat(
       body: JSON.stringify({}),
     });
     const body = await action.json().catch(() => ({}));
-    if (!action.ok) throw new Error(body.detail || body.error || "Paper işlem açılamadı");
+    if (!action.ok) {
+      const detail = typeof body.detail === "string" ? body.detail : body.detail?.message || body.error || "Paper işlem açılamadı";
+      throw new Error(detail);
+    }
     const signal = body.signal || {};
     onDelta(`### Paper işlem açıldı\n\n- **Sembol:** \`${signal.symbol || "—"}\`\n- **Yön:** ${signal.side || "LONG"}\n- **Giriş:** \`${signal.entry_price || "—"}\`\n- **Durum:** Mevcut risk ve paper-trading kuralları geçti.\n\nBu gerçek emir değildir; sanal portföye kaydedildi.`);
     return { model: "paper-risk-engine" };

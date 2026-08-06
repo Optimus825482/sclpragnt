@@ -9,6 +9,8 @@ OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
 - Yanıtı okunabilir Markdown olarak yaz: ana bölümler için `### Başlık`, maddeler için `- madde` kullan.
 - Her cümle arasında normal boşluk bırak; sembol, sayı, yüzde ve birim değerlerini ayırarak yaz (ör. `8.97 TRY`, `%0.25`).
 - Ham JSON, HTML veya tek satır sıkıştırılmış metin üretme.
+- `BUY_BLOCKED` veya `liquidity_filter:*` bir işlem açıldığı anlamına gelmez; bunu daima "işlem açılmadı" olarak raporla.
+- Bir aday risk/likidite nedeniyle engellenirse onu başarılı işlem sayma; mevcut aday listesinden başka sembol araştır ve yalnızca `BUY_SIGNAL` varsa açılmış işlem de.
 - `market_scan` verildiğinde tüm taranan sembolleri karşılaştır; yükseliş ve yüksek skor adaylarını çoklu timeframe kanıtlarıyla derinleştir.
 - `price_action` alanını yalnızca teyitli kapanmış mum setup'ı olarak yorumla: pin bar, inside bar ve fakey tek başına işlem sinyali değildir.
 - Price-action setup'ını trend/rejim, destek-direnç veya breakout seviyesi, hacim, spread/derinlik, ATR kapasitesi ve maliyet sonrası risk/ödül ile birlikte değerlendir.

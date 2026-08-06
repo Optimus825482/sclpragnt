@@ -18,7 +18,8 @@ class Config:
     MIN_NOTIONAL = 10.0
     INITIAL_BALANCE_TRY = 10000.0
     # Spot paper işlemlerde varsayılan işlem tutarı (TRY).
-    DEFAULT_ORDER_USDT = 500.0
+    # Varsayılan paper işlem büyüklüğü (TRY). Arayüzden ayrıca değiştirilebilir.
+    DEFAULT_ORDER_USDT = float(os.getenv("DEFAULT_ORDER_USDT", "1000.0"))
     MIN_PARTIAL_ORDER_TRY = 100.0
     MAX_OPEN_POSITIONS = 36
     MAX_TICKER_AGE_SEC = 15
