@@ -968,7 +968,7 @@ async def llm_open_paper_trade(payload: dict):
         raise HTTPException(status_code=403, detail="LLM paper işlem açma yetkisi ayarlardan kapalı")
     symbol = str(payload.get("symbol", "")).replace("_", "").upper()
     if not symbol:
-        scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "limit": 5})
+        scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "timeframes": ["5m", "15m", "1h"], "limit": 5})
         candidates = [x for x in scan.get("bullish_candidates", []) if float(x.get("score", 0)) >= 2.5]
         if not candidates:
             raise HTTPException(status_code=409, detail="Paper işlem için yeterli güvene sahip bullish aday bulunamadı")
@@ -1238,6 +1238,22 @@ LLM_READONLY_SQL_TOOL = {"type":"function","function":{"name":"read_only_sql","d
 @app.post("/api/symbol-analysis/{symbol}/llm/chat")
 async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     body = payload or {}
+    last_message = str((body.get("messages") or [{}])[-1].get("content", "")).lower().replace("ı", "i").replace("ş", "s")
+    is_trade_command = ("islem" in last_message or "pozisyon" in last_message) and ("ac" in last_message or "aç" in last_message)
+    if body.get("stream") is True and is_trade_command:
+        async def paper_events():
+            yield "event: status\ndata: {\"text\":\"Tüm semboller taranıyor, risk kontrolleri hazırlanıyor...\"}\n\n"
+            try:
+                result = await llm_open_paper_trade({})
+                signal = result.get("signal", {})
+                text = f"### Paper işlem açıldı\\n\\n- **Sembol:** `{signal.get('symbol', '—')}`\\n- **Yön:** {signal.get('side', 'LONG')}\\n- **Giriş:** `{signal.get('entry_price', '—')}`\\n- **Durum:** Mevcut risk kuralları geçti."
+                yield f"event: delta\ndata: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
+                yield "event: done\ndata: {\"status\":\"ok\",\"paper_only\":true}\n\n"
+            except HTTPException as exc:
+                yield f"event: error\ndata: {json.dumps({'error': exc.detail}, ensure_ascii=False)}\n\n"
+            except Exception as exc:
+                yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(paper_events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
     snapshot = await symbol_llm_context(symbol, str(body.get("timeframe", "")))
     if not snapshot.get("data_ready"):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
