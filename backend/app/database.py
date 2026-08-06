@@ -672,6 +672,11 @@ async def get_signals(limit: int = 100):
 
     return await _run_db(op)
 
+async def get_signal_count():
+    def op(conn):
+        return int(conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0] or 0)
+    return await _run_db(op)
+
 
 async def get_decision_logs(limit=500, symbol=None, strategy=None):
     def op(conn: sqlite3.Connection):

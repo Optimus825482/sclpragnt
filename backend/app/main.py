@@ -989,7 +989,7 @@ async def reset_memory():
 
 @app.get("/api/signals")
 async def get_signals(limit: int = 100):
-    return {"signals": await database.get_signals(limit)}
+    return {"signals": await database.get_signals(limit), "total": await database.get_signal_count()}
 
 @app.get("/api/decisions")
 async def get_decisions(limit: int = 500, symbol: str = "", strategy: str = ""):
