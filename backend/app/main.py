@@ -929,7 +929,30 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
 @app.get("/api/llm/config")
 async def llm_config():
     data = await llm_analysis.list_config()
-    return {**data, "encryption_configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip())}
+    paper_enabled = (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
+    return {**data, "encryption_configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "paper_trade_enabled": paper_enabled}
+
+@app.put("/api/llm/paper-trading")
+async def set_llm_paper_trading(payload: dict):
+    enabled = bool(payload.get("enabled"))
+    await database.set_llm_setting("llm_paper_trade_enabled", "1" if enabled else "0")
+    return {"ok": True, "paper_trade_enabled": enabled, "real_trading": False}
+
+@app.post("/api/llm/paper-trade")
+async def llm_open_paper_trade(payload: dict):
+    if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
+        raise HTTPException(status_code=403, detail="LLM paper işlem açma yetkisi ayarlardan kapalı")
+    symbol = str(payload.get("symbol", "")).replace("_", "").upper()
+    if not symbol or symbol not in config.SYMBOLS:
+        raise HTTPException(status_code=400, detail="Geçerli etkin sembol gerekli")
+    ticker = market.get_ticker(symbol)
+    if not ticker or not ticker.get("last_price"):
+        raise HTTPException(status_code=502, detail="Güncel public fiyat bulunamadı")
+    signal = await analyzer.open_position(symbol, float(ticker["last_price"]), "LONG", "LLM_PAPER")
+    if not signal:
+        raise HTTPException(status_code=409, detail="Paper pozisyon açılamadı; risk veya pozisyon sınırı engelledi")
+    await ws_manager.broadcast({"type": "signal", "data": signal})
+    return {"ok": True, "paper_only": True, "real_trading": False, "signal": signal}
 
 @app.post("/api/llm/providers")
 async def add_llm_provider(payload: dict):
@@ -1176,6 +1199,23 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     snapshot = await symbol_llm_context(symbol, str(body.get("timeframe", "")))
     if not snapshot.get("data_ready"):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
+    try:
+        market_scan = await scan_market_snapshots({
+            "symbols": config.SYMBOLS,
+            "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
+            "limit": 8,
+        })
+        snapshot = dict(snapshot)
+        snapshot["market_scan"] = {
+            "symbols_scanned": market_scan["symbols_scanned"],
+            "bullish_candidates": market_scan["bullish_candidates"][:5],
+            "ranked": market_scan["ranked"],
+            "paper_only": True,
+            "data_policy": market_scan["data_policy"],
+        }
+    except Exception as exc:
+        snapshot = dict(snapshot)
+        snapshot["market_scan"] = {"error": str(exc), "paper_only": True}
     if body.get("stream") is True:
         async def events():
             async for event in llm_analysis.stream_chat(snapshot, body.get("messages", [])):

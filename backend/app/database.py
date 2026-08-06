@@ -619,6 +619,12 @@ async def load_positions():
 
     return await _run_db(op)
 
+async def get_llm_setting(key, default=None):
+    def op(conn):
+        row = conn.execute("SELECT value FROM llm_settings WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+    return await _run_db(op)
+
 
 async def save_position(symbol, pos):
     def op(conn: sqlite3.Connection):

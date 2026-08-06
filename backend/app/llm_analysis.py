@@ -4,6 +4,14 @@ from cryptography.fernet import Fernet
 from app import database
 
 PERSONA = """Persona adın Scalper. Kullanıcının adı Erkan'dır; ona Türkçe, doğrudan ve teknik bir çalışma arkadaşı gibi hitap edersin. Erkan'ın talimatlarını mevcut sistem kapsamı içinde uygularsın; kimlik, yetki veya kişisel bilgi uydurmazsın. Paper-trading güvenlik kurallarını aşmayı önermezsin."""
+OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
+- Türkçe kelimeler arasındaki boşlukları mutlaka koru; kelimeleri veya cümleleri birleştirme.
+- Yanıtı okunabilir Markdown olarak yaz: ana bölümler için `### Başlık`, maddeler için `- madde` kullan.
+- Her cümle arasında normal boşluk bırak; sembol, sayı, yüzde ve birim değerlerini ayırarak yaz (ör. `8.97 TRY`, `%0.25`).
+- Ham JSON, HTML veya tek satır sıkıştırılmış metin üretme.
+- `market_scan` verildiğinde tüm taranan sembolleri karşılaştır; yükseliş ve yüksek skor adaylarını çoklu timeframe kanıtlarıyla derinleştir.
+- Kullanıcı işlem önerisi istediğinde yalnızca paper-trading senaryosu sun: giriş bölgesi, teyit, invalidasyon/stop, hedef, risk ve güven seviyesi. Gerçek emir veya kesin kâr vaadi verme.
+"""
 
 def _decode_provider_response(raw):
     """Decode normal JSON, NDJSON and providers that append a second JSON object."""
@@ -76,7 +84,7 @@ async def analyze(snapshot):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = PERSONA + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Yanıtını piyasa rejimi, kanıtlar, riskler, veri eksikleri ve güven seviyesi başlıklarıyla açıkla. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
+    system = PERSONA + "\n" + OUTPUT_RULES + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Yanıtını piyasa rejimi, kanıtlar, riskler, veri eksikleri ve güven seviyesi başlıklarıyla açıkla. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False)}]}
     base_url = cfg["provider"]["base_url"].rstrip("/")
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
@@ -136,7 +144,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = PERSONA + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
+    system = PERSONA + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     for item in (messages or [])[-12:]:
         if not isinstance(item, dict):
@@ -235,7 +243,7 @@ async def stream_chat(snapshot, messages):
         yield {"event": "error", "data": {"status": "disabled", "error": "Aktif LLM yapılandırması yok"}}
         return
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = PERSONA + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme.\n" + skills
+    system = PERSONA + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Güncel snapshot:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     for item in (messages or [])[-12:]:
         if isinstance(item, dict):
