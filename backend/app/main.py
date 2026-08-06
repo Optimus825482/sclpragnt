@@ -954,7 +954,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     snapshot = await symbol_llm_context(symbol, str(body.get("timeframe", "")))
     if not snapshot.get("data_ready"):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
-    tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
+    tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Seçili sembol üzerinde public historical candles ile paper-only mevcut strateji backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy":{"type":"string"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"Seçili sembol üzerinde güvenli deklaratif gösterge koşullarıyla paper-only backtest çalıştırır; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Seçili sembol ve stratejiyi farklı tarih pencerelerinde ve deterministik Monte Carlo özetiyle test eder; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"windows":{"type":"array","items":{"type":"integer"}}},"required":["strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}}}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
         if name == "query_database": return await llm_query_database(args, symbol.upper())
         if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
@@ -967,6 +967,39 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             rows = [r for r in await database.get_trades() if str(r.get("symbol", "")).upper() == symbol.upper()]
             limited = rows[-max(1, min(int(args.get("limit", 100)), 500)):]
             return {"count": len(rows), "trades": limited}
+        if name == "run_backtest":
+            target = str(args.get("symbol") or symbol).upper()
+            interval = str(args.get("interval") or "5m")
+            days = max(1, min(int(args.get("days_back", 30)), 90))
+            strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
+            order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
+            run_id, result = await run_backtest(target, interval, days, strategy, args.get("params") or {}, order_size, float(args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT)), float(args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT)), 0.0)
+            return {"run_id": run_id, "result": result, "paper_only": True, "live_portfolio_changed": False}
+        if name == "run_custom_backtest":
+            target = str(args.get("symbol") or symbol).upper()
+            interval = str(args.get("interval") or "5m")
+            days = max(1, min(int(args.get("days_back", 30)), 90))
+            order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
+            result = await run_custom_backtest(target, interval, days, args.get("strategy_definition") or {}, order_size, args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
+            return {"result": result, "paper_only": True, "live_portfolio_changed": False}
+        if name == "get_backtest_history":
+            rows = await database.get_backtests(max(1, min(int(args.get("limit", 20)), 50)))
+            return {"count": len(rows), "backtests": rows}
+        if name == "run_backtest_robustness":
+            target = str(args.get("symbol") or symbol).upper()
+            interval = str(args.get("interval") or "5m")
+            strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
+            windows = [max(7, min(int(x), 90)) for x in (args.get("windows") or [14, 30, 60])][:3]
+            runs = []; first_result = None
+            for days in windows:
+                _, result = await run_backtest(target, interval, days, strategy, {}, 500.0, config.HARD_STOP_LOSS_PCT, config.TIME_DECAY_TP_1_PCT, 0.0)
+                if first_result is None: first_result = result
+                runs.append({"days_back": days, "net_pnl": result.get("net_pnl"), "win_rate": result.get("win_rate"), "profit_factor": result.get("profit_factor"), "max_drawdown_pct": result.get("max_drawdown_pct"), "trades": result.get("total_trades"), "exit_reason_counts": result.get("exit_reason_counts")})
+            pnls = [float(t.get("pnl") or 0) for t in (first_result or {}).get("trades", [])]
+            rng = random.Random(42)
+            samples = [sum(rng.choice(pnls) for _ in pnls) for _ in range(1000)] if pnls else []
+            samples.sort()
+            return {"paper_only": True, "windows": runs, "monte_carlo": {"iterations": len(samples), "p05": samples[int(len(samples) * 0.05)] if samples else None, "median": samples[len(samples) // 2] if samples else None, "p95": samples[int(len(samples) * 0.95) - 1] if samples else None}, "limitations": ["Gerçek out-of-sample tarih aralığı ayrımı yoktur", "Order-book yerine candle/order-flow proxy kullanılır", "Monte Carlo trade sırasını yeniden örnekler; piyasa rejimi garantisi değildir"]}
         if name == "search_memory":
             if not _pg_pool: return {"count": 0, "results": [], "message": "Memory backend aktif değil"}
             embedded = await llm_analysis.embedding(str(args.get("query", "")))
