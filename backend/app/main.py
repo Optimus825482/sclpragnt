@@ -219,6 +219,7 @@ async def startup():
     asyncio.create_task(market.connect())
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
+    asyncio.create_task(llm_auto_paper_loop())
     asyncio.create_task(ws_broadcast_loop())
 
 @app.on_event("shutdown")
@@ -313,7 +314,23 @@ async def radar_loop():
             await gainers_radar(execute=True)
         except Exception as exc:
             print(f"[Radar] otomatik tarama hatası: {exc}")
-        await asyncio.sleep(30)
+            await asyncio.sleep(30)
+
+async def llm_auto_paper_loop():
+    """Optional 15-minute public-data paper scanner; disabled by default."""
+    while True:
+        try:
+            enabled = (await database.get_llm_setting("llm_auto_paper_enabled", "0")) == "1"
+            allowed = (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
+            if enabled and allowed and len(analyzer.positions) < analyzer.max_open_positions():
+                scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "limit": 5})
+                candidates = [x for x in scan.get("bullish_candidates", []) if x.get("score", 0) >= 2.5]
+                if candidates:
+                    candidate = candidates[0]
+                    await llm_open_paper_trade({"symbol": candidate["symbol"], "source": "llm_auto_scan"})
+        except Exception as exc:
+            print(f"[LLM auto paper] {exc}")
+        await asyncio.sleep(900)
 
 @app.get("/health")
 async def health():
@@ -930,13 +947,20 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
 async def llm_config():
     data = await llm_analysis.list_config()
     paper_enabled = (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
-    return {**data, "encryption_configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "paper_trade_enabled": paper_enabled}
+    auto_enabled = (await database.get_llm_setting("llm_auto_paper_enabled", "0")) == "1"
+    return {**data, "encryption_configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "paper_trade_enabled": paper_enabled, "auto_paper_enabled": auto_enabled, "auto_paper_interval_minutes": 15}
 
 @app.put("/api/llm/paper-trading")
 async def set_llm_paper_trading(payload: dict):
     enabled = bool(payload.get("enabled"))
     await database.set_llm_setting("llm_paper_trade_enabled", "1" if enabled else "0")
     return {"ok": True, "paper_trade_enabled": enabled, "real_trading": False}
+
+@app.put("/api/llm/auto-paper-trading")
+async def set_llm_auto_paper_trading(payload: dict):
+    enabled = bool(payload.get("enabled"))
+    await database.set_llm_setting("llm_auto_paper_enabled", "1" if enabled else "0")
+    return {"ok": True, "auto_paper_enabled": enabled, "interval_minutes": 15, "paper_only": True}
 
 @app.post("/api/llm/paper-trade")
 async def llm_open_paper_trade(payload: dict):
