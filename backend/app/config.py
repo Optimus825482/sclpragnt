@@ -22,6 +22,17 @@ class Config:
     MAX_OPEN_POSITIONS = 36
     MAX_TICKER_AGE_SEC = 15
     MAX_POSITION_HOLD_SEC = 4 * 60 * 60
+    EARLY_FAILURE_SEC = int(os.getenv("EARLY_FAILURE_SEC", str(20 * 60)))
+    EARLY_FAILURE_MIN_PROGRESS_PCT = float(os.getenv("EARLY_FAILURE_MIN_PROGRESS_PCT", "0.0025"))
+    STALE_POSITION_SEC = int(os.getenv("STALE_POSITION_SEC", str(60 * 60)))
+    STALE_POSITION_MIN_PROGRESS_PCT = float(os.getenv("STALE_POSITION_MIN_PROGRESS_PCT", "0.004"))
+    STRATEGY_MAX_HOLD_SEC = {
+        "KELTNER_BREAKOUT": int(os.getenv("KELTNER_MAX_HOLD_SEC", str(60 * 60))),
+        "MOMENTUM": int(os.getenv("MOMENTUM_MAX_HOLD_SEC", str(90 * 60))),
+        "EMA_VWAP_PULLBACK": int(os.getenv("EMA_VWAP_MAX_HOLD_SEC", str(90 * 60))),
+        "CHOP_TREND_FILTER": int(os.getenv("CHOP_MAX_HOLD_SEC", str(120 * 60))),
+        "VWAP_MEAN_REVERSION": int(os.getenv("VWAP_MAX_HOLD_SEC", str(120 * 60))),
+    }
     TIMEOUT_REENTRY_BLOCK_SEC = 24 * 60 * 60
     HARD_STOP_REENTRY_BLOCK_SEC = 2 * 60 * 60
     MAX_POSITION_LAYERS = 1

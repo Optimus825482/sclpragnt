@@ -1,6 +1,7 @@
 import time
 import asyncio
 import numpy as np
+import uuid
 from app.config import config
 from app.technical_analysis import calculate_snapshot
 from app.binance_tr_public import orderbook
@@ -340,6 +341,12 @@ class ScalpAnalyzer:
             return await self.close_position(symbol, price, "hard_stop_loss")
         if pos:
             elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
+            entry = pos.get("entry_price", price)
+            max_progress = max(0.0, (pos.get("max_price", entry) - entry) / entry) if entry else 0.0
+            if elapsed >= config.EARLY_FAILURE_SEC and max_progress < config.EARLY_FAILURE_MIN_PROGRESS_PCT:
+                return await self.close_position(symbol, price, "early_failure_no_progress")
+            if elapsed >= config.STALE_POSITION_SEC and max_progress < config.STALE_POSITION_MIN_PROGRESS_PCT:
+                return await self.close_position(symbol, price, "stale_position_no_progress")
             if elapsed < config.TIME_DECAY_TP_STAGE_2_SEC:
                 target_pct = config.TIME_DECAY_TP_1_PCT
                 target_reason = "time_decay_target_1_0pct"
@@ -356,8 +363,11 @@ class ScalpAnalyzer:
                 target_reason = "breakeven_exit"
             if price >= pos["entry_price"] * (1 + target_pct):
                 return await self.close_position(symbol, price, target_reason)
-        if pos and time.time() - pos.get("entry_time", time.time()) >= config.MAX_POSITION_HOLD_SEC:
-            return await self.close_position(symbol, price, "max_hold_4h")
+        if pos:
+            max_hold = config.STRATEGY_MAX_HOLD_SEC.get(strat_name, config.MAX_POSITION_HOLD_SEC)
+            if time.time() - pos.get("entry_time", time.time()) >= max_hold:
+                reason = f"max_hold_{max_hold // 3600}h" if max_hold % 3600 == 0 else f"max_hold_{max_hold // 60}m"
+                return await self.close_position(symbol, price, reason)
         return None
 
     def _flow_filter(self, symbol):
@@ -660,7 +670,7 @@ class ScalpAnalyzer:
         current_bar = self._current_bar(symbol, tf)
         if current_bar is not None:
             self._cooldown_until[symbol] = current_bar + config.COOLDOWN_BARS
-        if reason == "max_hold_4h":
+        if reason.startswith("max_hold_") or reason in {"early_failure_no_progress", "stale_position_no_progress"}:
             self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
         elif reason == "hard_stop_loss":
             self._hard_stop_block_until[symbol] = time.time() + config.HARD_STOP_REENTRY_BLOCK_SEC
@@ -678,6 +688,7 @@ class ScalpAnalyzer:
         max_adverse_pct = ((pos.get("min_price", entry) - entry) / entry) if entry else 0.0
         return {
             "symbol": symbol, "strategy": pos.get("strategy", "UT"),
+            "trade_id": pos.get("trade_id"),
             "side": pos.get("side", "LONG"), "entry_price": entry, "exit_price": exit_price,
             "quantity": pos.get("quantity", 0.0), "pnl": pnl, "pnl_pct": pnl_pct,
             "entry_time": pos.get("entry_time"), "exit_time": time.time(),
@@ -791,6 +802,7 @@ class ScalpAnalyzer:
             "entry_price": entry_price,
             "spot_profit_target": entry_price * (1 + config.SPOT_PROFIT_TARGET_PCT),
                 "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1,
+                "trade_id": uuid.uuid4().hex,
                 "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
             }
         self.positions[symbol] = pos

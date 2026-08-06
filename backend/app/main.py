@@ -36,6 +36,11 @@ analyzer = ScalpAnalyzer(market)
 _pg_pool = None
 _embedding_backfill = {"status": "idle", "queued": 0, "message": None}
 _embedding_repair = {"status": "idle", "queued": 0, "message": None}
+_trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
+
+def _repair_log(level, message):
+    _trade_repair["logs"].append({"time": time.time(), "level": level, "message": message})
+    _trade_repair["logs"] = _trade_repair["logs"][-100:]
 
 def _chat_memory_document(messages, *, layer="session", symbol=None, strategy=None, session_id="default"):
     recent = [m for m in (messages or [])[-4:] if isinstance(m, dict)]
@@ -629,6 +634,40 @@ async def reconcile_portfolio(payload: dict = None):
     await ws_manager.broadcast({"type": "portfolio_reconciled", "data": result})
     return {"status": "ok", **result}
 
+@app.get("/api/trade-repair/status")
+async def trade_repair_status():
+    return dict(_trade_repair)
+
+@app.post("/api/trade-repair/preview")
+async def trade_repair_preview():
+    if _trade_repair["status"] == "running":
+        return {"ok": False, **_trade_repair}
+    _trade_repair.update({"status":"preview", "phase":"audit", "progress":10, "message":"Geçmiş işlem bağlantıları denetleniyor", "logs":[], "result":None})
+    _repair_log("info", "Salt-okunur onarım önizlemesi başlatıldı")
+    preview = await database.preview_trade_repair()
+    _trade_repair.update({"progress":100, "message":"Önizleme tamamlandı", "preview":preview})
+    _repair_log("info", f"Önizleme tamamlandı: {preview['actions']['assign_trade_ids']} bağlantı adayı")
+    return {"ok":True, **_trade_repair}
+
+@app.post("/api/trade-repair/apply")
+async def trade_repair_apply(payload: dict = None):
+    body = payload or {}
+    if body.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="Onarım için confirm=true gerekli")
+    preview = await database.preview_trade_repair()
+    _trade_repair.update({"status":"running", "phase":"apply", "progress":15, "message":"Onaylı deterministik onarım uygulanıyor", "preview":preview, "result":None, "logs":[]})
+    _repair_log("warning", "Kullanıcı onayı alındı; yalnızca silme yapmayan onarım çalışıyor")
+    try:
+        result = await database.apply_trade_repair()
+        _trade_repair.update({"status":"complete", "phase":"complete", "progress":100, "message":"Onarım tamamlandı", "result":result})
+        _repair_log("info", f"Güncellenen trade: {result['updated_trades']}, pozisyon: {result['updated_positions']}, karar logu: {result['enriched_close_logs']}")
+        await ws_manager.broadcast({"type":"trade_repair_completed", "data":result})
+        return {"ok":True, **_trade_repair}
+    except Exception as exc:
+        _trade_repair.update({"status":"error", "phase":"error", "message":str(exc)})
+        _repair_log("error", str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+
 @app.get("/api/chart/{symbol}")
 async def get_chart_settings(symbol: str):
     data = await database.get_chart_settings(symbol)
@@ -1028,7 +1067,8 @@ async def strategy_comparison():
         item["hold_seconds"] += float(trade.get("hold_seconds") or 0.0)
         item["wins"] += int(pnl > 0); item["losses"] += int(pnl <= 0)
         item["gross_wins"] += max(0.0, pnl); item["gross_losses"] += min(0.0, pnl)
-        item["timeouts"] += int("time" in str(trade.get("reason") or "").lower() or "timeout" in str(trade.get("reason") or "").lower())
+        reason = str(trade.get("reason") or "").lower()
+        item["timeouts"] += int(any(token in reason for token in ("time", "timeout", "max_hold", "early_failure", "stale_position")))
     for item in grouped.values():
         n = item["trades"]
         item["win_rate"] = item["wins"] / n * 100 if n else 0.0

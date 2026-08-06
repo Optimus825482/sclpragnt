@@ -8,8 +8,10 @@ CREATE TABLE IF NOT EXISTS migration_meta (
   applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS positions (symbol TEXT PRIMARY KEY, side TEXT, entry_price DOUBLE PRECISION, stop_price DOUBLE PRECISION, take_profit DOUBLE PRECISION, peak_price DOUBLE PRECISION, breakeven_hit BOOLEAN, quantity DOUBLE PRECISION, entry_time DOUBLE PRECISION, strategy TEXT, entry_context JSONB);
-CREATE TABLE IF NOT EXISTS trades (id BIGINT PRIMARY KEY, symbol TEXT, strategy TEXT, side TEXT, entry_price DOUBLE PRECISION, exit_price DOUBLE PRECISION, quantity DOUBLE PRECISION, pnl DOUBLE PRECISION, pnl_pct DOUBLE PRECISION, entry_time DOUBLE PRECISION, exit_time DOUBLE PRECISION, commission DOUBLE PRECISION, reason TEXT, entry_context JSONB, max_favorable_pct DOUBLE PRECISION, max_adverse_pct DOUBLE PRECISION, hold_seconds DOUBLE PRECISION);
+CREATE TABLE IF NOT EXISTS positions (symbol TEXT PRIMARY KEY, side TEXT, entry_price DOUBLE PRECISION, stop_price DOUBLE PRECISION, take_profit DOUBLE PRECISION, peak_price DOUBLE PRECISION, breakeven_hit BOOLEAN, quantity DOUBLE PRECISION, entry_time DOUBLE PRECISION, strategy TEXT, entry_context JSONB, trade_id TEXT);
+CREATE TABLE IF NOT EXISTS trades (id BIGINT PRIMARY KEY, symbol TEXT, strategy TEXT, side TEXT, entry_price DOUBLE PRECISION, exit_price DOUBLE PRECISION, quantity DOUBLE PRECISION, pnl DOUBLE PRECISION, pnl_pct DOUBLE PRECISION, entry_time DOUBLE PRECISION, exit_time DOUBLE PRECISION, commission DOUBLE PRECISION, reason TEXT, entry_context JSONB, max_favorable_pct DOUBLE PRECISION, max_adverse_pct DOUBLE PRECISION, hold_seconds DOUBLE PRECISION, trade_id TEXT);
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS trade_id TEXT;
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_id TEXT;
 CREATE TABLE IF NOT EXISTS signals (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION, symbol TEXT, action TEXT, price DOUBLE PRECISION, reason TEXT);
 CREATE TABLE IF NOT EXISTS decision_logs (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION NOT NULL, symbol TEXT, strategy TEXT, decision TEXT, reason TEXT, price DOUBLE PRECISION, metadata JSONB);
 CREATE TABLE IF NOT EXISTS llm_tool_logs (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION NOT NULL, scope TEXT, tool_name TEXT, arguments JSONB, result_summary TEXT, duration_ms DOUBLE PRECISION, success BOOLEAN);

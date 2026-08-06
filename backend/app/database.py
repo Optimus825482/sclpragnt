@@ -36,7 +36,7 @@ class _PostgresCompat:
         sql = re.sub(r"INSERT OR REPLACE INTO llm_skills", "INSERT INTO llm_skills", sql, flags=re.I)
         if "INSERT INTO llm_skills" in sql.upper() and "ON CONFLICT" not in sql.upper(): sql += " ON CONFLICT(name) DO UPDATE SET instructions=EXCLUDED.instructions,enabled=EXCLUDED.enabled,created_at=EXCLUDED.created_at"
         if "INSERT INTO positions" in sql.upper() and "ON CONFLICT" not in sql.upper():
-            sql += " ON CONFLICT(symbol) DO UPDATE SET side=EXCLUDED.side,entry_price=EXCLUDED.entry_price,stop_price=EXCLUDED.stop_price,take_profit=EXCLUDED.take_profit,peak_price=EXCLUDED.peak_price,breakeven_hit=EXCLUDED.breakeven_hit,quantity=EXCLUDED.quantity,entry_time=EXCLUDED.entry_time,strategy=EXCLUDED.strategy,entry_context=EXCLUDED.entry_context"
+            sql += " ON CONFLICT(symbol) DO UPDATE SET side=EXCLUDED.side,entry_price=EXCLUDED.entry_price,stop_price=EXCLUDED.stop_price,take_profit=EXCLUDED.take_profit,peak_price=EXCLUDED.peak_price,breakeven_hit=EXCLUDED.breakeven_hit,quantity=EXCLUDED.quantity,entry_time=EXCLUDED.entry_time,strategy=EXCLUDED.strategy,entry_context=EXCLUDED.entry_context,trade_id=EXCLUDED.trade_id"
         cur = self.conn.cursor(); cur.execute(sql, params); return cur
     def executemany(self, sql, params):
         sql = sql.replace("?", "%s"); cur = self.conn.cursor(); cur.executemany(sql, params); return cur
@@ -134,7 +134,7 @@ async def init_db():
             conn.commit()
         except sqlite3.OperationalError:
             pass  # kolon zaten var
-        for col in ("entry_context TEXT", "max_favorable_pct REAL", "max_adverse_pct REAL", "hold_seconds REAL"):
+        for col in ("entry_context TEXT", "max_favorable_pct REAL", "max_adverse_pct REAL", "hold_seconds REAL", "trade_id TEXT"):
             try:
                 conn.execute(f"ALTER TABLE trades ADD COLUMN {col}")
                 conn.commit()
@@ -146,6 +146,11 @@ async def init_db():
             conn.commit()
         except sqlite3.OperationalError:
             pass  # kolon zaten var
+        try:
+            conn.execute("ALTER TABLE positions ADD COLUMN trade_id TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -416,6 +421,51 @@ async def preview_portfolio_reconcile():
                 "requires_confirmation": bool(candidates)}
     return await _run_db(op)
 
+async def preview_trade_repair():
+    """Read-only audit for legacy trade/position linkage and report integrity."""
+    def op(conn):
+        missing_trade_ids = [dict(r) for r in conn.execute("SELECT id,symbol,entry_time FROM trades WHERE trade_id IS NULL OR trade_id='' ORDER BY id").fetchall()]
+        missing_position_ids = [dict(r) for r in conn.execute("SELECT symbol,entry_time FROM positions WHERE trade_id IS NULL OR trade_id='' ORDER BY entry_time").fetchall()]
+        trades = conn.execute("SELECT id,symbol,strategy,entry_time,exit_time,trade_id FROM trades ORDER BY exit_time").fetchall()
+        close_logs = conn.execute("SELECT id,symbol,timestamp,strategy FROM decision_logs WHERE decision='CLOSE_LONG' ORDER BY timestamp").fetchall()
+        unmatched_closes = []
+        for log in close_logs:
+            matches = [t for t in trades if t[1] == log[1] and t[4] is not None and abs(float(t[4]) - float(log[2] or 0)) <= 30]
+            if not matches:
+                unmatched_closes.append({"id": log[0], "symbol": log[1], "timestamp": log[2], "reason": "matching_trade_not_found"})
+        return {"status":"preview", "missing_trade_ids":missing_trade_ids, "missing_position_ids":missing_position_ids,
+                "unmatched_close_logs":unmatched_closes, "actions": {
+                    "assign_trade_ids": len(missing_trade_ids) + len(missing_position_ids),
+                    "enrich_close_log_strategy": sum(1 for log in close_logs if not log[3]),
+                    "delete_records": 0,
+                }, "requires_confirmation": bool(missing_trade_ids or missing_position_ids or any(not log[3] for log in close_logs))}
+    return await _run_db(op)
+
+async def apply_trade_repair():
+    """Apply only deterministic linkage repairs; never deletes historical rows."""
+    def op(conn):
+        updated_trades = updated_positions = enriched_logs = 0
+        trade_rows = conn.execute("SELECT id,symbol,entry_time,trade_id FROM trades ORDER BY id").fetchall()
+        for row in trade_rows:
+            if not row[3]:
+                conn.execute("UPDATE trades SET trade_id=? WHERE id=?", (f"legacy-trade-{row[0]}", row[0]))
+                updated_trades += 1
+        position_rows = conn.execute("SELECT symbol,entry_time,trade_id FROM positions ORDER BY entry_time").fetchall()
+        for row in position_rows:
+            if not row[2]:
+                conn.execute("UPDATE positions SET trade_id=? WHERE symbol=?", (f"legacy-position-{row[0]}-{row[1]}", row[0]))
+                updated_positions += 1
+        trades = conn.execute("SELECT id,symbol,strategy,exit_time FROM trades WHERE strategy IS NOT NULL AND strategy<>''").fetchall()
+        logs = conn.execute("SELECT id,symbol,timestamp FROM decision_logs WHERE decision='CLOSE_LONG' AND (strategy IS NULL OR strategy='')").fetchall()
+        for log in logs:
+            matches = [t for t in trades if t[1] == log[1] and t[3] is not None and abs(float(t[3]) - float(log[2] or 0)) <= 30]
+            if len(matches) == 1:
+                conn.execute("UPDATE decision_logs SET strategy=? WHERE id=?", (matches[0][2], log[0]))
+                enriched_logs += 1
+        conn.commit()
+        return {"updated_trades":updated_trades, "updated_positions":updated_positions, "enriched_close_logs":enriched_logs, "deleted":0}
+    return await _run_db(op)
+
 async def get_llm_config():
     def op(conn):
         providers = [dict(r) for r in conn.execute("SELECT id,name,base_url,enabled,created_at,updated_at FROM llm_providers ORDER BY id").fetchall()]
@@ -528,6 +578,7 @@ async def load_positions():
                 "quantity": row[7], "entry_time": row[8] if len(row) > 8 else None,
                 "strategy": row[9] if len(row) > 9 else None,
                 "entry_context": _json_value(row[10] if len(row) > 10 else None, {}),
+                "trade_id": row[11] if len(row) > 11 and row[11] else f"legacy-{row[0]}-{row[8]}",
             }
         return positions
 
@@ -537,10 +588,10 @@ async def load_positions():
 async def save_position(symbol, pos):
     def op(conn: sqlite3.Connection):
         conn.execute(
-            "INSERT OR REPLACE INTO positions (symbol, side, entry_price, stop_price, take_profit, peak_price, breakeven_hit, quantity, entry_time, strategy, entry_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO positions (symbol, side, entry_price, stop_price, take_profit, peak_price, breakeven_hit, quantity, entry_time, strategy, entry_context, trade_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (symbol, pos["side"], pos["entry_price"], pos.get("stop_price"),
              pos.get("take_profit"), pos.get("peak_price", pos["entry_price"]), bool(pos.get("breakeven_hit", False)), pos["quantity"],
-             pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {})))
+             pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {})), pos.get("trade_id"))
         )
         conn.commit()
 
@@ -549,12 +600,12 @@ async def save_position(symbol, pos):
 async def save_trade(trade):
     def op(conn: sqlite3.Connection):
         conn.execute(
-            "INSERT INTO trades (symbol, strategy, side, entry_price, exit_price, quantity, pnl, pnl_pct, entry_time, exit_time, commission, reason, entry_context, max_favorable_pct, max_adverse_pct, hold_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO trades (symbol, strategy, side, entry_price, exit_price, quantity, pnl, pnl_pct, entry_time, exit_time, commission, reason, entry_context, max_favorable_pct, max_adverse_pct, hold_seconds, trade_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (trade.get("symbol"), trade.get("strategy"), trade.get("side"),
              trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"),
              trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"),
             trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})),
-            trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"))
+            trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id"))
         )
         conn.commit()
 
@@ -622,8 +673,8 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
     def op(conn):
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", cash_amount))
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, asset_amount))
-        conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {}))))
+        conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {})), pos.get("trade_id")))
         persisted = conn.execute("SELECT quantity,entry_time FROM positions WHERE symbol=?", (symbol,)).fetchone()
         if not persisted or float(persisted[0] or 0) != float(pos.get("quantity") or 0) or float(persisted[1] or 0) != float(pos.get("entry_time") or 0):
             raise RuntimeError("Açılan pozisyon kaydı doğrulanamadı; transaction geri alınacak")
@@ -641,11 +692,11 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     def op(conn):
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", cash_amount))
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, 0.0))
-        conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                     (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds")))
+        conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id")))
         persisted = conn.execute(
-            "SELECT COUNT(*) FROM trades WHERE symbol=? AND entry_time=? AND exit_time=?",
-            (trade.get("symbol"), trade.get("entry_time"), trade.get("exit_time")),
+            "SELECT COUNT(*) FROM trades WHERE trade_id=?",
+            (trade.get("trade_id"),),
         ).fetchone()[0]
         if int(persisted or 0) != 1:
             raise RuntimeError("Kapanan işlem kaydı doğrulanamadı; transaction geri alınacak")
