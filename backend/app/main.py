@@ -135,6 +135,39 @@ async def btc_5min_scan():
     matched_count = len(candidates) if candidates else (1 if market else 0)
     return {"symbol": "BTCUSDT", "window_start": window, "price": price, "session": session, "ema": {"ema9": ema9, "ema21": ema21, "direction": ema_dir}, "rsi": rsi, "momentum_5m": mom5, "range_5m": range5, "volume_ratio": volume_ratio, "signals": {"S1_momentum": s1, "S2_ema": s2, "S3_rsi": s3, "S4_mean_reversion": s4, "S5_odds_bias": s5, "S6_support_resistance": s6}, "odds": {"available": up_price is not None and down_price is not None, "up": up_price, "down": down_price, "market_slug": market.get("slug") if market else None, "source": odds_source if market else "unavailable"}, "levels": {"support_24h": support, "resistance_24h": resistance}, "up_signals": up, "down_signals": down, "verdict": verdict, "paper_only": True, "odds_diagnostics": {"gamma_market_count": len(markets) if isinstance(markets, list) else 0, "matched_market_count": matched_count}}
 
+@app.get("/api/btc-5min-backtest")
+async def btc_5min_backtest(days_back: int = 7, order_size: float = 500.0, take_profit_pct: float = 0.01, stop_loss_pct: float = 0.02):
+    """Replay recorded BTC odds signals against real BTCTRY 5m candles.
+
+    Historical Polymarket odds are not reconstructed or invented. Only
+    recorded BUY_SIGNAL entries are evaluated; missing odds remain reported.
+    """
+    days_back = max(1, min(int(days_back), 90)); order_size = max(100.0, min(float(order_size), 10000.0))
+    candles = await fetch_klines("BTCTRY", "5m", min(1000, max(100, days_back * 288)))
+    rows = []
+    for row in candles:
+        if len(row) >= 7:
+            rows.append({"time": float(row[0]) / 1000, "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
+    if not rows: raise HTTPException(status_code=502, detail="BTCTRY 5m geçmiş verisi alınamadı")
+    signals = await database.get_decision_logs(5000, "BTCTRY", "BTC_5M_ODDS_SCALPER")
+    candidates = [s for s in signals if s.get("decision") == "BUY_SIGNAL"]
+    commission_pct = config.COMMISSION_PCT
+    trades = []; missing_candle = 0
+    for signal in sorted(candidates, key=lambda item: float(item.get("timestamp") or 0)):
+        entry_time = float(signal.get("timestamp") or 0)
+        index = min(range(len(rows)), key=lambda i: abs(rows[i]["time"] - entry_time))
+        if abs(rows[index]["time"] - entry_time) > 600: missing_candle += 1; continue
+        entry = rows[index]["close"]; exit_price = None; reason = "max_hold_4h"
+        end = min(len(rows), index + 48 + 1)
+        for candle in rows[index + 1:end]:
+            if candle["low"] <= entry * (1 - stop_loss_pct): exit_price = entry * (1 - stop_loss_pct); reason = "hard_stop_loss"; break
+            if candle["high"] >= entry * (1 + take_profit_pct): exit_price = entry * (1 + take_profit_pct); reason = "profit_target"; break
+        if exit_price is None: exit_price = rows[end - 1]["close"]
+        gross = order_size * ((exit_price / entry) - 1); commission = (order_size + order_size * (exit_price / entry)) * commission_pct; net = gross - commission
+        trades.append({"signal_id": signal.get("id"), "entry": entry, "exit": exit_price, "gross_pnl": gross, "commission": commission, "net_pnl": net, "reason": reason, "hold_minutes": round((rows[min(end - 1, len(rows) - 1)]["time"] - rows[index]["time"]) / 60, 2)})
+    wins = sum(1 for trade in trades if trade["net_pnl"] > 0); net = sum(trade["net_pnl"] for trade in trades); commission = sum(trade["commission"] for trade in trades)
+    return {"strategy": "BTC_5M_ODDS_SCALPER", "symbol": "BTCTRY", "days_back": days_back, "source": "recorded_signals_plus_binance_tr_public_5m", "odds_policy": "historical_odds_not_invented", "total_signals": len(candidates), "evaluated_trades": len(trades), "missing_candle_matches": missing_candle, "wins": wins, "losses": len(trades) - wins, "win_rate": round(wins / len(trades) * 100, 2) if trades else 0, "net_pnl": round(net, 4), "commission": round(commission, 4), "trades": trades, "paper_only": True}
+
 def _repair_log(level, message):
     _trade_repair["logs"].append({"time": time.time(), "level": level, "message": message})
     _trade_repair["logs"] = _trade_repair["logs"][-100:]
@@ -282,9 +315,11 @@ async def btc_odds_strategy_loop():
             spot_ticker = market.get_ticker("BTCTRY")
             if window is not None and window != _btc_odds_last_window and spot_ticker:
                 verdict = str(scan.get("verdict", ""))
-                action = "BUY_SIGNAL" if verdict in {"ENTER UP", "ENTER DOWN"} else "BUY_BLOCKED"
+                action = "BUY_SIGNAL" if verdict == "ENTER UP" else "BUY_BLOCKED"
                 spot_price = float(spot_ticker.get("lastPrice") or spot_ticker.get("price") or 0)
                 reason = json.dumps({"verdict": verdict, "paper_only": True, "signal_source": "BTCUSDT/Polymarket", "execution_symbol": "BTCTRY", "spot_price": spot_price, "signals": scan.get("signals"), "odds": scan.get("odds")}, ensure_ascii=False, default=str)
+                if verdict == "ENTER DOWN":
+                    reason = "spot_short_not_supported: " + reason
                 signal = None
                 if action == "BUY_SIGNAL":
                     if "BTCTRY" in analyzer.positions:
