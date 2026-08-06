@@ -5,21 +5,27 @@ import MemoryTab from "../memory/MemoryTab";
 
 const money=(v:number)=>`₺${v.toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 const label=(s:string)=>({MOMENTUM:"MTF Momentum Ranking",EMA_VWAP_PULLBACK:"EMA + VWAP Pullback",VWAP_MEAN_REVERSION:"VWAP Mean Reversion",CHOP_TREND_FILTER:"CHOP Trend Filter",KELTNER_BREAKOUT:"Keltner Breakout",DONCHIAN_BREAKOUT:"Donchian Breakout",GAINER_RADAR:"Gainer Radar"}[s]||s||"Bilinmiyor");
-type Trade={id:number;symbol:string;strategy:string;pnl:number;pnl_pct:number;reason?:string;entry_time:number;commission?:number;hold_seconds?:number};
+type Trade={id:number;symbol:string;strategy:string;pnl:number;pnl_pct:number;reason?:string;entry_time:number;exit_time?:number;commission?:number;hold_seconds?:number};
 type Decision={id:number;timestamp:number;symbol:string;strategy?:string;decision:string;reason?:string;price?:number;metadata?:any};
 
 function Stat({title,value,tone="text-white"}:{title:string;value:string;tone?:string}){return <div className="card report-stat"><p className="eyebrow">{title}</p><p className={`font-mono text-2xl mt-2 ${tone}`}>{value}</p></div>}
-function DecisionTab({decisions,trades}:{decisions:Decision[];trades:Trade[]}){
+function DecisionTab({decisions:signals,trades}:{decisions:any[];trades:Trade[]}){
  const [query,setQuery]=useState(""); const [status,setStatus]=useState("all"); const [strategy,setStrategy]=useState("all");
  const [page,setPage]=useState(1); const pageSize=25;
+ const [signalRows,setSignalRows]=useState<any[]>([]);
+ useEffect(()=>{fetch(`${API_BASE}/api/signals?limit=5000`,{cache:"no-store"}).then(r=>r.json()).then(x=>setSignalRows(x.signals||[])).catch(()=>setSignalRows([]))},[]);
+ const source=signalRows.length?signalRows:signals;
  const knownStrategies=["MOMENTUM","ORDERFLOW","EMA_VWAP_PULLBACK","VWAP_MEAN_REVERSION","CHOP_TREND_FILTER","KELTNER_BREAKOUT","DONCHIAN_BREAKOUT","BB_SQUEEZE_ORDERFLOW","GAINER_RADAR"];
- const strategies=Array.from(new Set(decisions.map(d=>d.strategy).filter(Boolean))) as string[];
- const rows=useMemo(()=>decisions.filter(d=>["BUY_SIGNAL","BUY_BLOCKED"].includes(d.decision)).map(d=>{
-   const inferredStrategy=d.strategy||(d.decision==="BUY_SIGNAL"&&knownStrategies.includes(String(d.reason||""))?d.reason:undefined);
-   const trade=trades.find(t=>t.symbol===d.symbol&&t.strategy===inferredStrategy&&Math.abs((t.entry_time||0)-d.timestamp)<180);
-   const opened=d.decision==="BUY_SIGNAL";
-   return {...d,strategy:inferredStrategy,reason:d.reason===(inferredStrategy||"__none__")&&opened?"position_opened":d.reason,trade,opened,status:opened?(trade?"closed":"open"):"blocked"};
- }).filter(r=>(status==="all"||r.status===status)&&(strategy==="all"||r.strategy===strategy)&&(!query||`${r.symbol} ${r.strategy||""} ${r.reason||""}`.toLowerCase().includes(query.toLowerCase()))),[decisions,trades,status,strategy,query]);
+ const strategies=Array.from(new Set(source.map(d=>d.strategy||d.reason).filter(Boolean))) as string[];
+ const rows=useMemo(()=>source.filter(d=>["BUY_SIGNAL","BUY_BLOCKED","CLOSE_LONG"].includes(d.action)).map(d=>{
+   const decision=d.action;
+   const inferredStrategy=d.strategy||(knownStrategies.includes(String(d.reason||""))?d.reason:undefined);
+   const trade=trades.find(t=>t.symbol===d.symbol&&(!inferredStrategy||t.strategy===inferredStrategy)&&(
+     (decision==="CLOSE_LONG" ? Math.abs((t.exit_time||0)-d.timestamp)<180 : Math.abs((t.entry_time||0)-d.timestamp)<180)
+   ));
+   const opened=decision==="BUY_SIGNAL";
+   return {...d,decision,strategy:inferredStrategy,reason:d.reason===(inferredStrategy||"__none__")&&opened?"position_opened":d.reason,trade,opened,status:decision==="BUY_BLOCKED"?"blocked":decision==="CLOSE_LONG"?"closed":(trade?"closed":"open")};
+ }).filter(r=>(status==="all"||r.status===status)&&(strategy==="all"||r.strategy===strategy)&&(!query||`${r.symbol} ${r.strategy||""} ${r.reason||""}`.toLowerCase().includes(query.toLowerCase()))),[source,trades,status,strategy,query]);
  const pages=Math.max(1,Math.ceil(rows.length/pageSize)); const visible=rows.slice((page-1)*pageSize,page*pageSize);
  const exportCsv=()=>{const head=["Zaman","Sembol","Strateji","Sinyal","Durum","Fiyat","Neden","PnL","PnL %","Komisyon","Aktif Süre"];const esc=(v:any)=>`"${String(v??"").replaceAll('"','""')}"`;const body=rows.map(r=>[new Date(r.timestamp*1000).toLocaleString("tr-TR"),r.symbol,label(r.strategy||""),r.decision,r.status,r.price,r.reason,r.trade?.pnl,r.trade?.pnl_pct,r.trade?.commission,r.trade?.hold_seconds].map(esc).join(","));const blob=new Blob(["\ufeff"+[head.map(esc).join(","),...body].join("\n")],{type:"text/csv;charset=utf-8"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="sinyal-karar-analizi.csv";a.click();URL.revokeObjectURL(a.href)};
  const blocked=rows.filter(r=>r.status==="blocked").length, opened=rows.filter(r=>r.opened).length, closed=rows.filter(r=>r.trade).length;
