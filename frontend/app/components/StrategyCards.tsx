@@ -49,7 +49,7 @@ export default function StrategyCards() {
 
     return (
         <div className="grid md:grid-cols-2 xl:grid-cols-5 gap-4">
-            {Object.entries(STRATEGY_META).map(([key, meta]) => {
+            {Object.entries(STRATEGY_META).filter(([key]) => key === "GAINER_RADAR").map(([key, meta]) => {
                 const s = stats[key];
                 const isOn = enabled[key];
                 return (

@@ -221,7 +221,7 @@ export default function StrategiesPage() {
                     {pageTab === "llm" && <StrategyLlm />}
                     {pageTab === "strategies" && <>
                     <div className="flex gap-2 flex-wrap">
-                        {STRATEGIES.map((st, i) => {
+                        {STRATEGIES.filter(st => st.key === "GAINER_RADAR").map((st, i) => {
                             const enabled = !!draft[st.enabledKey];
                             return (
                                 <button

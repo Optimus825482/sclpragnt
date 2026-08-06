@@ -659,7 +659,7 @@ async def gainers_radar(execute: bool = False):
             symbol = str(item.get("symbol", "")).upper()
             change = float(item.get("priceChangePercent", 0) or 0)
             quote_volume = float(item.get("quoteVolume", 0) or 0)
-            if symbol in known_try and 5 <= change <= 25 and quote_volume >= 100000:
+            if symbol in known_try and 3 <= change <= 18 and quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY:
                 gainer_candidates.append((change, quote_volume, symbol))
         for _, _, symbol in sorted(gainer_candidates, reverse=True)[:10]:
             if symbol not in config.SYMBOLS:
@@ -698,7 +698,7 @@ async def gainers_radar(execute: bool = False):
         score += min(max(ret_1h * 3, 0), 15)
         score += 10 if 0 < spread <= 0.20 else 0
         score += crsi_score
-        eligible = 5 <= ret_24h <= 25 and ret_1h > 0 and volume_ratio >= 1.5 and spread <= 0.20 and crsi is not None and 15 <= crsi <= 85 and score >= config.GAINER_RADAR_MIN_SCORE
+        eligible = 3 <= ret_24h <= 18 and ret_1h > 0 and volume_ratio >= 2.0 and spread <= 0.15 and crsi is not None and 20 <= crsi <= 80 and score >= config.GAINER_RADAR_MIN_SCORE
         rows.append({"symbol": symbol, "price": price, "score": round(score, 1), "eligible": eligible,
                      "ret_5m": round(ret_5m, 2), "ret_1h": round(ret_1h, 2), "ret_24h": round(ret_24h, 2),
                      "volume_ratio": round(volume_ratio, 2), "imbalance": round(imbalance, 2), "spread": round(spread, 3), "trend": trend, "crsi": round(crsi, 2) if crsi is not None else None})

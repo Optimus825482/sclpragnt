@@ -128,7 +128,7 @@ export default function BacktestPage() {
                         <label className="eyebrow block mb-1.5">STRATEJİ</label>
                         <select value={strategy} onChange={(e) => setStrategy(e.target.value)}
                             className="w-full bg-bunker-950 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm">
-                            {STRATEGIES.map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}
+                            {STRATEGIES.filter(s => s.key === "GAINER_RADAR").map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}
                         </select>
                     </div>
                     <div>

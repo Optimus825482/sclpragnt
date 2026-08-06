@@ -23,8 +23,8 @@ class Config:
     MAX_OPEN_POSITIONS = 36
     MAX_TICKER_AGE_SEC = 15
     MAX_POSITION_HOLD_SEC = 4 * 60 * 60
-    EARLY_FAILURE_SEC = int(os.getenv("EARLY_FAILURE_SEC", str(30 * 60)))
-    EARLY_FAILURE_MIN_PROGRESS_PCT = float(os.getenv("EARLY_FAILURE_MIN_PROGRESS_PCT", "0.0025"))
+    EARLY_FAILURE_SEC = int(os.getenv("EARLY_FAILURE_SEC", str(45 * 60)))
+    EARLY_FAILURE_MIN_PROGRESS_PCT = float(os.getenv("EARLY_FAILURE_MIN_PROGRESS_PCT", "0.0015"))
     STALE_POSITION_SEC = int(os.getenv("STALE_POSITION_SEC", str(90 * 60)))
     STALE_POSITION_MIN_PROGRESS_PCT = float(os.getenv("STALE_POSITION_MIN_PROGRESS_PCT", "0.004"))
     STALE_POSITION_EXIT_BELOW_COST = os.getenv("STALE_POSITION_EXIT_BELOW_COST", "false").lower() == "true"
@@ -46,15 +46,15 @@ class Config:
     MIN_ORDERBOOK_DEPTH_MULTIPLIER = 5.0
     LIQUIDITY_FILTER_ENABLED = True
     GAINER_RADAR_AUTO_TRADE = True
-    GAINER_RADAR_MIN_SCORE = 50
+    GAINER_RADAR_MIN_SCORE = 65
     
-    HARD_STOP_LOSS_PCT = 0.02
+    HARD_STOP_LOSS_PCT = 0.012
     COOLDOWN_BARS = 2
     TAKE_PROFIT_PCT = 0.02
     # Time-decay spot take-profit: start ambitious, then accept the first
     # cost-covered exit as the position ages.
     SPOT_PROFIT_TARGET_PCT = 0.01
-    TIME_DECAY_TP_1_PCT = 0.01
+    TIME_DECAY_TP_1_PCT = 0.012
     TIME_DECAY_TP_2_PCT = 0.0075
     TIME_DECAY_TP_3_PCT = 0.005
     TIME_DECAY_TP_STAGE_2_SEC = 20 * 60
@@ -90,7 +90,7 @@ class Config:
     UT_TIMEFRAME = os.getenv("UT_TIMEFRAME", "5m")
 
     # Ek stratejiler (ayrı ayrı aç/kapat)
-    BB_SQUEEZE_ENABLED = os.getenv("BB_SQUEEZE_ENABLED", "true").lower() == "true"
+    BB_SQUEEZE_ENABLED = False
     EMA_PULLBACK_ENABLED = os.getenv("EMA_PULLBACK_ENABLED", "false").lower() == "true"
     VWAP_MACD_ENABLED = os.getenv("VWAP_MACD_ENABLED", "false").lower() == "true"
     CMO_CRSI_ENABLED = os.getenv("CMO_CRSI_ENABLED", "false").lower() == "true"
@@ -98,15 +98,15 @@ class Config:
     ADAPTIVE_VOLATILITY_TREND_ENABLED = os.getenv("ADAPTIVE_VOLATILITY_TREND_ENABLED", "false").lower() == "true"
     REGIME_GATE_LOW_TURNOVER_ENABLED = os.getenv("REGIME_GATE_LOW_TURNOVER_ENABLED", "false").lower() == "true"
     OVERSOLD_TREND_REENTRY_RSI_MAX = float(os.getenv("OVERSOLD_TREND_REENTRY_RSI_MAX", "40"))
-    EMA_VWAP_ENABLED = os.getenv("EMA_VWAP_ENABLED", "true").lower() == "true"
+    EMA_VWAP_ENABLED = False
     BREAKOUT_ENABLED = os.getenv("BREAKOUT_ENABLED", "false").lower() == "true"
-    ORDERFLOW_ENABLED = os.getenv("ORDERFLOW_ENABLED", "true").lower() == "true"
+    ORDERFLOW_ENABLED = False
     MOMENTUM_ENABLED = os.getenv("MOMENTUM_ENABLED", "false").lower() == "true"
     MOMENTUM_COST_AWARE_ENABLED = os.getenv("MOMENTUM_COST_AWARE_ENABLED", "false").lower() == "true"
-    MEAN_REVERSION_ENABLED = os.getenv("MEAN_REVERSION_ENABLED", "true").lower() == "true"
-    KELTNER_ENABLED = os.getenv("KELTNER_ENABLED", "true").lower() == "true"
-    CHOP_ENABLED = os.getenv("CHOP_ENABLED", "true").lower() == "true"
-    DONCHIAN_ENABLED = os.getenv("DONCHIAN_ENABLED", "true").lower() == "true"
+    MEAN_REVERSION_ENABLED = False
+    KELTNER_ENABLED = False
+    CHOP_ENABLED = False
+    DONCHIAN_ENABLED = False
 
     # Canlı strateji eşikleri (Ayarlar > Stratejiler üzerinden güncellenebilir)
     ORDERFLOW_MIN_IMBALANCE = 0.10
