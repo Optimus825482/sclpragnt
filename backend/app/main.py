@@ -316,7 +316,14 @@ async def btc_odds_strategy_loop():
             if window is not None and window != _btc_odds_last_window and spot_ticker:
                 verdict = str(scan.get("verdict", ""))
                 action = "BUY_SIGNAL" if verdict == "ENTER UP" else "BUY_BLOCKED"
-                spot_price = float(spot_ticker.get("lastPrice") or spot_ticker.get("price") or 0)
+                spot_price = float(spot_ticker.get("last_price") or spot_ticker.get("lastPrice") or spot_ticker.get("price") or 0)
+                if spot_price <= 0:
+                    signal = {"timestamp": time.time(), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": "BUY_BLOCKED", "price": spot_price, "reason": "invalid_spot_price", "paper_only": True}
+                    await database.save_signal(signal)
+                    _btc_odds_last_window = window
+                    await ws_manager.broadcast({"type": "signal", "data": signal})
+                    await asyncio.sleep(20)
+                    continue
                 reason = json.dumps({"verdict": verdict, "paper_only": True, "signal_source": "BTCUSDT/Polymarket", "execution_symbol": "BTCTRY", "spot_price": spot_price, "signals": scan.get("signals"), "odds": scan.get("odds")}, ensure_ascii=False, default=str)
                 if verdict == "ENTER DOWN":
                     reason = "spot_short_not_supported: " + reason
