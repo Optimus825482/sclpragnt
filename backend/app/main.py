@@ -967,7 +967,13 @@ async def llm_open_paper_trade(payload: dict):
     if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
         raise HTTPException(status_code=403, detail="LLM paper işlem açma yetkisi ayarlardan kapalı")
     symbol = str(payload.get("symbol", "")).replace("_", "").upper()
-    if not symbol or symbol not in config.SYMBOLS:
+    if not symbol:
+        scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "limit": 5})
+        candidates = [x for x in scan.get("bullish_candidates", []) if float(x.get("score", 0)) >= 2.5]
+        if not candidates:
+            raise HTTPException(status_code=409, detail="Paper işlem için yeterli güvene sahip bullish aday bulunamadı")
+        symbol = str(candidates[0]["symbol"]).upper()
+    if symbol not in config.SYMBOLS:
         raise HTTPException(status_code=400, detail="Geçerli etkin sembol gerekli")
     ticker = market.get_ticker(symbol)
     if not ticker or not ticker.get("last_price"):

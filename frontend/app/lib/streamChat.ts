@@ -5,6 +5,20 @@ export async function streamChat(
   messages: ChatMessage[],
   onDelta: (text: string) => void,
 ): Promise<{ model?: string }> {
+  const last = messages[messages.length - 1]?.content?.toLocaleLowerCase("tr-TR") || "";
+  if (/\b(işlem|pozisyon)\s+aç\b|\baç\s+işlem\b/.test(last)) {
+    const origin = url.slice(0, url.indexOf("/api/"));
+    const action = await fetch(`${origin}/api/llm/paper-trade`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const body = await action.json().catch(() => ({}));
+    if (!action.ok) throw new Error(body.detail || body.error || "Paper işlem açılamadı");
+    const signal = body.signal || {};
+    onDelta(`### Paper işlem açıldı\n\n- **Sembol:** \`${signal.symbol || "—"}\`\n- **Yön:** ${signal.side || "LONG"}\n- **Giriş:** \`${signal.entry_price || "—"}\`\n- **Durum:** Mevcut risk ve paper-trading kuralları geçti.\n\nBu gerçek emir değildir; sanal portföye kaydedildi.`);
+    return { model: "paper-risk-engine" };
+  }
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },

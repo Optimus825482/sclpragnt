@@ -9,7 +9,11 @@ function inline(text: string) {
 }
 
 export default function MarkdownMessage({ content }: { content: string }) {
-  return <div className="space-y-2 leading-6">{String(content || "").split(/\r?\n/).map((line, index) => {
+  const normalized = String(content || "")
+    .replace(/\s*(#{2,4})\s*/g, "\n$1 ")
+    .replace(/\s*---\s*/g, "\n---\n")
+    .replace(/\|/g, " | ");
+  return <div className="space-y-2 leading-6">{normalized.split(/\r?\n/).map((line, index) => {
     const trimmed = line.trim();
     if (!trimmed) return <div key={index} className="h-1" />;
     if (trimmed === "---") return <hr key={index} className="border-bunker-700" />;
