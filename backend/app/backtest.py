@@ -8,6 +8,7 @@ from typing import Any
 
 from app import database
 from app.analyzer import ScalpAnalyzer
+from app.technical_analysis import _adx, _macd, _bollinger, _stochastic, _mfi, _cci, _williams_r
 from app.binance_tr_public import historical_klines
 from app.config import config
 
@@ -82,6 +83,82 @@ def _close_trade(balance, entry, exit_price, quantity, order_size, reason):
         "side": "LONG", "entry": entry, "exit": exit_price, "quantity": quantity,
         "pnl": round(pnl, 8), "commission": round(entry_fee + exit_fee, 8), "reason": reason,
     }
+
+CUSTOM_INDICATORS = {"rsi", "ema_9", "ema_21", "ema_50", "adx", "volume_ratio", "price_vs_vwap", "return_5", "return_21", "chop", "macd_histogram", "stochastic_k", "bollinger_position", "atr_pct", "mfi", "cci", "williams_r", "price_vs_ema_21", "cmo", "crsi"}
+CUSTOM_OPS = {"<", "<=", ">", ">=", "=="}
+
+def _custom_value(analyzer, window, name):
+    closes, highs, lows, volumes = window["closes"], window["highs"], window["lows"], window["volumes"]
+    if name == "rsi": return analyzer.calculate_rsi(closes, 14)
+    if name == "ema_9": return analyzer.calculate_ema(closes, 9)
+    if name == "ema_21": return analyzer.calculate_ema(closes, 21)
+    if name == "ema_50": return analyzer.calculate_ema(closes, 50)
+    if name == "adx":
+        result = _adx(highs, lows, closes); return result.get("adx") if result else None
+    if name == "volume_ratio": return analyzer._volume_ratio(window)
+    if name == "price_vs_vwap":
+        if len(closes) < 20 or not sum(volumes[-20:]): return None
+        typical = [(highs[i] + lows[i] + closes[i]) / 3 for i in range(len(closes)-20, len(closes))]
+        vwap = sum(p*v for p,v in zip(typical, volumes[-20:])) / sum(volumes[-20:])
+        return closes[-1] / vwap - 1
+    if name == "return_5": return closes[-1] / closes[-6] - 1 if len(closes) >= 6 else None
+    if name == "return_21": return closes[-1] / closes[-22] - 1 if len(closes) >= 22 else None
+    if name == "chop": return analyzer.calculate_chop(window, 14)
+    if name == "macd_histogram":
+        value = _macd(closes); return value.get("histogram") if value else None
+    if name == "stochastic_k":
+        value = _stochastic(highs, lows, closes); return value.get("k") if value else None
+    if name == "bollinger_position":
+        value = _bollinger(closes); return (closes[-1] - value["lower"]) / (value["upper"] - value["lower"]) if value and value["upper"] != value["lower"] else None
+    if name == "atr_pct":
+        atr = analyzer.calculate_atr(window, 14); return atr / closes[-1] if atr and closes[-1] else None
+    if name == "mfi": return _mfi(highs, lows, closes, volumes)
+    if name == "cci": return _cci(highs, lows, closes)
+    if name == "williams_r": return _williams_r(highs, lows, closes)
+    if name == "price_vs_ema_21":
+        ema = analyzer.calculate_ema(closes, 21); return closes[-1] / ema - 1 if ema else None
+    if name == "cmo": return analyzer.calculate_cmo(closes, 9)
+    if name == "crsi": return analyzer.calculate_crsi(closes)
+    return None
+
+def _custom_conditions(analyzer, window, conditions):
+    for condition in conditions or []:
+        name, op, expected = condition.get("indicator"), condition.get("op"), condition.get("value")
+        if name not in CUSTOM_INDICATORS or op not in CUSTOM_OPS:
+            raise ValueError(f"Geçersiz custom koşul: {name} {op}")
+        try: expected = float(expected)
+        except (TypeError, ValueError): raise ValueError(f"Koşul değeri sayısal olmalıdır: {name}")
+        actual = _custom_value(analyzer, window, name)
+        if actual is None: return False
+        ok = {"<": actual < expected, "<=": actual <= expected, ">": actual > expected, ">=": actual >= expected, "==": abs(actual - expected) < 1e-9}[op]
+        if not ok: return False
+    return bool(conditions)
+
+def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_pct=None, tp_pct=None):
+    if not isinstance(definition, dict): raise ValueError("strategy_definition nesne olmalıdır")
+    entry = definition.get("entry") or []; exit_conditions = definition.get("exit") or []
+    if len(entry) > 8 or len(exit_conditions) > 8: raise ValueError("En fazla 8 giriş ve 8 çıkış koşulu kullanılabilir")
+    rows = _fetch_klines(symbol, interval, days_back); analyzer = ScalpAnalyzer(None); balance = config.INITIAL_BALANCE_TRY; position = None; trades = []
+    stop_pct = float(stop_pct if stop_pct is not None else config.HARD_STOP_LOSS_PCT); tp_pct = float(tp_pct if tp_pct is not None else config.TIME_DECAY_TP_1_PCT)
+    for i, close in enumerate(rows["closes"]):
+        window = {k:v[:i+1] for k,v in rows.items()}; now = rows["times"][i]
+        if position:
+            exit_price = None; reason = None
+            if rows["lows"][i] <= position["entry"] * (1-stop_pct): exit_price=position["entry"]*(1-stop_pct); reason="hard_stop_loss"
+            elif rows["highs"][i] >= position["entry"] * (1+tp_pct): exit_price=position["entry"]*(1+tp_pct); reason="take_profit"
+            elif _custom_conditions(analyzer, window, exit_conditions): exit_price=close; reason="custom_exit"
+            elif now-position["entry_time"] >= config.MAX_POSITION_HOLD_SEC: exit_price=close; reason="max_hold_4h"
+            if exit_price is not None:
+                balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size, reason); trade.update({"entry_time":position["entry_time"],"exit_time":now}); trades.append(trade); position=None
+        elif balance >= order_size and _custom_conditions(analyzer, window, entry):
+            fee=order_size*config.COMMISSION_PCT; balance-=order_size+fee; position={"entry":close,"quantity":order_size/close,"entry_time":now}
+    if position:
+        balance, pnl, _, trade = _close_trade(balance, position["entry"], rows["closes"][-1], position["quantity"], order_size, "open_at_end_mark_to_market"); trade.update({"entry_time":position["entry_time"],"exit_time":rows["times"][-1]}); trades.append(trade)
+    wins=sum(t["pnl"]>0 for t in trades); net=balance-config.INITIAL_BALANCE_TRY; losses=[t["pnl"] for t in trades if t["pnl"]<=0]; gains=[t["pnl"] for t in trades if t["pnl"]>0]
+    return {"strategy":"CUSTOM","symbol":symbol,"interval":interval,"days_back":days_back,"definition":definition,"initial_balance":config.INITIAL_BALANCE_TRY,"final_balance":round(balance,2),"net_pnl":round(net,2),"total_trades":len(trades),"wins":wins,"losses":len(trades)-wins,"win_rate":round(wins/len(trades)*100,2) if trades else 0,"profit_factor":round(sum(gains)/abs(sum(losses)),3) if losses else None,"trades":trades,"exit_reason_counts":dict(Counter(t["reason"] for t in trades)),"paper_only":True,"custom_strategy":True}
+
+async def run_custom_backtest(symbol, interval, days_back, definition, order_size=500.0, stop_pct=None, tp_pct=None):
+    return await asyncio.to_thread(_run_custom, symbol, interval, days_back, definition, order_size, stop_pct, tp_pct)
 
 
 def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct):

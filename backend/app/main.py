@@ -4,6 +4,7 @@ import time
 import subprocess
 import json
 import tempfile
+import random
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -14,7 +15,7 @@ from app.config import config
 from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app import database
-from app.backtest import run_backtest
+from app.backtest import run_backtest, run_custom_backtest
 from app.binance_tr_public import klines as fetch_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot
 from app import llm_analysis
@@ -112,7 +113,7 @@ async def ws_broadcast_loop():
                 item["avg_volume"] = market.get_avg_volume(t["symbol"])
                 tickers.append(item)
             await ws_manager.broadcast({"type": "tickers", "data": tickers})
-            
+
             try_bal = await database.get_wallet_balance("TRY")
             total_value = try_bal
             open_positions = []
@@ -1121,7 +1122,7 @@ async def risk_summary():
 async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
     context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data."}
-    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
+    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Public historical candles üzerinde yalnızca paper/backtest simülasyonu çalıştırır. Gerçek emir ve canlı portföy değişikliği yoktur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","3m","5m","15m","30m","1h","2h","4h","1d"]},"days_back":{"type":"integer","description":"1-90 arası tarihsel gün"},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"params":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını candle verisi üzerinde backtest eder; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object","description":"entry/exit koşulları: indicator, op, value. En fazla 8 koşul.","properties":{"entry":{"type":"array"},"exit":{"type":"array"}}},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Aynı stratejiyi birden fazla tarih penceresinde çalıştırır ve trade PnL'leri üzerinde deterministik Monte Carlo dayanıklılık özeti üretir. Sonuçlar araştırma amaçlıdır; walk-forward için gerçek tarih aralığı ayrımı olmadığını açıkça belirtir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"windows":{"type":"array","items":{"type":"integer"},"description":"En fazla 3 pencere; 7-90 gün"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
         started = time.perf_counter(); success = True
         try:
@@ -1129,6 +1130,36 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
             if name == "get_strategy_config": return await get_config()
             if name == "get_strategy_stats": return (await get_strategy_stats()).get("stats", {})
+            if name == "run_backtest":
+                symbol = str(args.get("symbol") or "BTCTRY").upper()
+                interval = str(args.get("interval") or "5m")
+                days = max(1, min(int(args.get("days_back", 30)), 90))
+                strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
+                order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
+                run_id, result = await run_backtest(symbol, interval, days, strategy, args.get("params") or {}, order_size, float(args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT)), float(args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT)), float(args.get("trailing_stop_pct", 0.0)))
+                return {"run_id": run_id, "result": result, "paper_only": True, "live_portfolio_changed": False}
+            if name == "run_custom_backtest":
+                symbol = str(args.get("symbol") or "BTCTRY").upper(); interval = str(args.get("interval") or "5m")
+                days = max(1, min(int(args.get("days_back", 30)), 90)); order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
+                result = await run_custom_backtest(symbol, interval, days, args.get("strategy_definition") or {}, order_size, args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
+                return {"result": result, "paper_only": True, "live_portfolio_changed": False, "allowed_indicators":["rsi","ema_9","ema_21","ema_50","adx","volume_ratio","price_vs_vwap","return_5","return_21","chop","macd_histogram","stochastic_k","bollinger_position","atr_pct","mfi","cci","williams_r","price_vs_ema_21","cmo","crsi"]}
+            if name == "get_backtest_history":
+                limit = max(1, min(int(args.get("limit", 20)), 50))
+                rows = await database.get_backtests(limit)
+                rows = [r for r in rows if (not args.get("strategy") or r.get("strategy") == args.get("strategy")) and (not args.get("symbol") or r.get("symbol") == str(args.get("symbol")).upper())]
+                return {"count": len(rows), "backtests": rows}
+            if name == "run_backtest_robustness":
+                symbol = str(args.get("symbol") or "BTCTRY").upper(); interval = str(args.get("interval") or "5m"); strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
+                windows = [max(7, min(int(x), 90)) for x in (args.get("windows") or [14, 30, 60])][:3]
+                runs = []; first_result = None
+                for days in windows:
+                    _, result = await run_backtest(symbol, interval, days, strategy, {}, 500.0, config.HARD_STOP_LOSS_PCT, config.TIME_DECAY_TP_1_PCT, 0.0)
+                    if first_result is None: first_result = result
+                    runs.append({"days_back": days, "net_pnl": result.get("net_pnl"), "win_rate": result.get("win_rate"), "profit_factor": result.get("profit_factor"), "max_drawdown_pct": result.get("max_drawdown_pct"), "trades": result.get("total_trades"), "exit_reason_counts": result.get("exit_reason_counts")})
+                pnls = [float(t.get("pnl") or 0) for t in (first_result or {}).get("trades", [])]
+                rng = random.Random(42); samples = [sum(rng.choice(pnls) for _ in pnls) for _ in range(1000)] if pnls else []
+                samples.sort()
+                return {"paper_only":True,"windows":runs,"monte_carlo":{"iterations":len(samples),"p05":samples[int(len(samples)*0.05)] if samples else None,"median":samples[len(samples)//2] if samples else None,"p95":samples[int(len(samples)*0.95)-1] if samples else None},"limitations":["Gerçek out-of-sample tarih aralığı ayrımı yoktur","Order-book yerine candle/order-flow proxy kullanılır","Monte Carlo trade sırasını yeniden örnekler; piyasa rejimi garantisi değildir"]}
             if name == "get_trades":
                 rows = await database.get_trades(); strategy, symbol = args.get("strategy"), args.get("symbol")
                 rows = [r for r in rows if (not strategy or r.get("strategy") == strategy) and (not symbol or r.get("symbol") == symbol)]
