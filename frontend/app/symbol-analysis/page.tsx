@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { API_BASE } from "../lib/api";
 import { streamChat } from "../lib/streamChat";
+import MarkdownMessage from "../components/MarkdownMessage";
 
 async function readJsonResponse(response: Response, label: string) {
   const contentType = response.headers.get("content-type") || "";
