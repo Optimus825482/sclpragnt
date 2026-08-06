@@ -222,3 +222,71 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
         return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"], "generated_at": time.time()}
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}
+
+async def stream_chat(snapshot, messages):
+    """Stream provider deltas without buffering or simulating token output.
+
+    The endpoint deliberately has no tool loop: tool calls require a complete
+    assistant message and continue through ``chat``. This keeps streamed text
+    strictly provider-owned while preserving the existing tool-capable path.
+    """
+    cfg = await database.get_active_llm_config()
+    if not cfg:
+        yield {"event": "error", "data": {"status": "disabled", "error": "Aktif LLM yapılandırması yok"}}
+        return
+    skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
+    system = PERSONA + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme.\n" + skills
+    conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Güncel snapshot:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
+    for item in (messages or [])[-12:]:
+        if isinstance(item, dict):
+            conversation.append({k: item[k] for k in ("role", "content") if k in item})
+    payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation, "stream": True}
+    base_url = cfg["provider"]["base_url"].rstrip("/")
+    url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
+    try:
+        headers = {"Content-Type": "application/json", "Authorization": "Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}
+        import queue
+        lines = queue.Queue()
+        def read_stream():
+            try:
+                request = Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
+                with urlopen(request, timeout=120) as response:
+                    if response.status >= 400:
+                        lines.put(("error", f"Provider HTTP {response.status}: {response.read(1000).decode(errors='replace')}"))
+                    else:
+                        for raw_line in response:
+                            lines.put(("line", raw_line.decode("utf-8", errors="replace")))
+            except Exception as exc:
+                lines.put(("error", str(exc)))
+            finally:
+                lines.put(("done", None))
+        reader = asyncio.create_task(asyncio.to_thread(read_stream))
+        emitted = False
+        while True:
+            kind, raw_line = await asyncio.to_thread(lines.get)
+            if kind == "error":
+                raise RuntimeError(raw_line)
+            if kind == "done":
+                break
+            line = raw_line.strip()
+            if not line or line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if line == "[DONE]":
+                break
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            data = item.get("data", item) if isinstance(item, dict) else item
+            choices = data.get("choices", []) if isinstance(data, dict) else []
+            delta = choices[0].get("delta", {}) if choices else {}
+            text = _message_text(delta) or (choices[0].get("text") if choices else None)
+            if text:
+                emitted = True
+                yield {"event": "delta", "data": {"text": text}}
+        await reader
+        yield {"event": "done", "data": {"status": "ok", "model": cfg["model"]["name"], "generated_at": time.time(), "provider_stream": True, "emitted": emitted}}
+    except Exception as exc:
+        yield {"event": "error", "data": {"status": "error", "error": str(exc)}}

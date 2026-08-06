@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -1176,6 +1176,11 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     snapshot = await symbol_llm_context(symbol, str(body.get("timeframe", "")))
     if not snapshot.get("data_ready"):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
+    if body.get("stream") is True:
+        async def events():
+            async for event in llm_analysis.stream_chat(snapshot, body.get("messages", [])):
+                yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
     tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Seçili sembol üzerinde public historical candles ile paper-only mevcut strateji backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy":{"type":"string"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"Seçili sembol üzerinde güvenli deklaratif gösterge koşullarıyla paper-only backtest çalıştırır; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Seçili sembol ve stratejiyi farklı tarih pencerelerinde ve deterministik Monte Carlo özetiyle test eder; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"windows":{"type":"array","items":{"type":"integer"}}},"required":["strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}}}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
         if name == "scan_market_snapshots": return await scan_market_snapshots(args)
@@ -1466,6 +1471,11 @@ async def strategies_llm_chat(payload: dict = None):
                 # a failed chat request.
                 print(f"[LLM] tool log kaydedilemedi: {log_error}")
     tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL])
+    if body.get("stream") is True:
+        async def events():
+            async for event in llm_analysis.stream_chat(context, body.get("messages", [])):
+                yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
     result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool)
     await _persist_chat_memory(body.get("messages", []), layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=str(body.get("session_id") or "strategy:default"))
     return result
