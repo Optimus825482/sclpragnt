@@ -481,6 +481,22 @@ class ScalpAnalyzer:
         if r1 > config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 and flow_ok and volume_ok and mtf_ok and adx_ok: return "buy"
         return None
 
+    def strategy_momentum_cost_aware(self, kline, symbol=None):
+        """Lower-turnover momentum variant with stricter cost-aware confirmation."""
+        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
+        if len(closes) < 55: return None
+        short, long = config.MOMENTUM_SHORT_LOOKBACK, config.MOMENTUM_LONG_LOOKBACK
+        r1 = closes[-1] / closes[-short - 1] - 1; r2 = closes[-1] / closes[-long] - 1
+        volume_ratio = self._volume_ratio(kline)
+        adx = _adx(highs, lows, closes).get("adx")
+        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
+        mtf_ok = self._mtf_bullish(symbol, config.MOMENTUM_TIMEFRAME)
+        if (r1 >= config.MOMENTUM_COST_AWARE_MIN_RETURN_PCT and r2 > 0 and
+                volume_ratio is not None and volume_ratio >= config.MOMENTUM_COST_AWARE_MIN_VOLUME_RATIO and
+                adx is not None and adx >= config.MOMENTUM_COST_AWARE_MIN_ADX and flow_ok and mtf_ok):
+            return "buy"
+        return None
+
     def adr_status(self, symbol, price):
         """Return ADR capacity for a momentum entry without using future data."""
         if not config.ADR_FILTER_ENABLED:
@@ -585,6 +601,7 @@ class ScalpAnalyzer:
                 (config.BB_SQUEEZE_ENABLED, "BB_SQUEEZE_ORDERFLOW", self.strategy_bb_squeeze_orderflow, config.BB_SQUEEZE_TIMEFRAME),
                 (config.ORDERFLOW_ENABLED, "ORDERFLOW", self.strategy_orderflow, config.ORDERFLOW_TIMEFRAME),
                 (config.MOMENTUM_ENABLED, "MOMENTUM", self.strategy_momentum, config.MOMENTUM_TIMEFRAME),
+                (config.MOMENTUM_COST_AWARE_ENABLED, "MOMENTUM_COST_AWARE", self.strategy_momentum_cost_aware, config.MOMENTUM_TIMEFRAME),
                 (config.MEAN_REVERSION_ENABLED, "VWAP_MEAN_REVERSION", self.strategy_mean_reversion, config.MEAN_REVERSION_TIMEFRAME),
                 (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
                 (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),
@@ -624,6 +641,7 @@ class ScalpAnalyzer:
             (config.BB_SQUEEZE_ENABLED, "BB_SQUEEZE_ORDERFLOW", self.strategy_bb_squeeze_orderflow, config.BB_SQUEEZE_TIMEFRAME),
             (config.ORDERFLOW_ENABLED, "ORDERFLOW", self.strategy_orderflow, config.ORDERFLOW_TIMEFRAME),
             (config.MOMENTUM_ENABLED, "MOMENTUM", self.strategy_momentum, config.MOMENTUM_TIMEFRAME),
+            (config.MOMENTUM_COST_AWARE_ENABLED, "MOMENTUM_COST_AWARE", self.strategy_momentum_cost_aware, config.MOMENTUM_TIMEFRAME),
             (config.MEAN_REVERSION_ENABLED, "VWAP_MEAN_REVERSION", self.strategy_mean_reversion, config.MEAN_REVERSION_TIMEFRAME),
             (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
             (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),

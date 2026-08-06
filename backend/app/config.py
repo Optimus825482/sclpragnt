@@ -92,6 +92,7 @@ class Config:
     BREAKOUT_ENABLED = os.getenv("BREAKOUT_ENABLED", "false").lower() == "true"
     ORDERFLOW_ENABLED = os.getenv("ORDERFLOW_ENABLED", "true").lower() == "true"
     MOMENTUM_ENABLED = os.getenv("MOMENTUM_ENABLED", "true").lower() == "true"
+    MOMENTUM_COST_AWARE_ENABLED = os.getenv("MOMENTUM_COST_AWARE_ENABLED", "false").lower() == "true"
     MEAN_REVERSION_ENABLED = os.getenv("MEAN_REVERSION_ENABLED", "true").lower() == "true"
     KELTNER_ENABLED = os.getenv("KELTNER_ENABLED", "true").lower() == "true"
     CHOP_ENABLED = os.getenv("CHOP_ENABLED", "true").lower() == "true"
@@ -105,6 +106,9 @@ class Config:
     MOMENTUM_MIN_VOLUME_RATIO = 1.0
     MOMENTUM_REQUIRE_MTF_ALIGNMENT = True
     MOMENTUM_MIN_ADX = float(os.getenv("MOMENTUM_MIN_ADX", "18"))
+    MOMENTUM_COST_AWARE_MIN_RETURN_PCT = float(os.getenv("MOMENTUM_COST_AWARE_MIN_RETURN_PCT", "0.004"))
+    MOMENTUM_COST_AWARE_MIN_VOLUME_RATIO = float(os.getenv("MOMENTUM_COST_AWARE_MIN_VOLUME_RATIO", "1.2"))
+    MOMENTUM_COST_AWARE_MIN_ADX = float(os.getenv("MOMENTUM_COST_AWARE_MIN_ADX", "22"))
     # MTF Momentum için volatilite kapasitesi filtresi (ADR).
     ADR_FILTER_ENABLED = True
     ADR_PERIOD = 14
