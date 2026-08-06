@@ -70,14 +70,26 @@ async def btc_5min_scan():
     s2 = ema_dir if ema_dir in {"UP", "DOWN"} else "NONE"
     s3 = "UP" if rsi < 30 else "DOWN" if rsi > 70 else "NONE"
     avg_volume = sum(x["volume"] for x in parsed[-26:-1]) / 25; volume_ratio = parsed[-1]["volume"] / avg_volume if avg_volume else 0
-    s4 = "DOWN" if now % 86400 // 3600 >= 15 and mom5 > 200 else "UP" if now % 86400 // 3600 >= 15 and mom5 < -200 else "NONE"
-    candidates = [m for m in markets if "bitcoin" in str(m.get("question", "")).lower() and "up" in str(m.get("question", "")).lower() and "down" in str(m.get("question", "")).lower() and ("5m" in str(m.get("slug", "")).lower() or "5 minute" in str(m.get("question", "")).lower() or "5 minutes" in str(m.get("question", "")).lower())]
+    utc_hour = datetime.now(timezone.utc).hour
+    s4 = "DOWN" if utc_hour >= 15 and mom5 > 200 else "UP" if utc_hour >= 15 and mom5 < -200 else "NONE"
+    if isinstance(markets, dict):
+        markets = markets.get("data") or markets.get("markets") or []
+    candidates = []
+    for item in markets if isinstance(markets, list) else []:
+        question = str(item.get("question", "")).lower()
+        slug = str(item.get("slug", "")).lower()
+        is_btc = "bitcoin" in question or slug.startswith("btc-")
+        is_binary = ("up" in question and "down" in question) or "updown" in slug
+        is_5m = any(marker in slug for marker in ("5m", "5-min", "5_min")) or any(marker in question for marker in ("5 minute", "5 minutes", "5-minute"))
+        if is_btc and is_binary and is_5m and item.get("active") is not False and item.get("closed") is not True:
+            candidates.append(item)
     market = sorted(candidates, key=lambda item: str(item.get("endDate") or item.get("endDateIso") or ""))[-1] if candidates else None
     prices = market.get("outcomePrices") if market else None
     if isinstance(prices, str):
         try: prices = json.loads(prices)
         except json.JSONDecodeError: prices = None
     up_price = float(prices[0]) if isinstance(prices, list) and len(prices) >= 2 else None; down_price = float(prices[1]) if isinstance(prices, list) and len(prices) >= 2 else None
+    odds_source = "polymarket_gamma"
     if market and (up_price is None or down_price is None):
         token_ids = market.get("clobTokenIds") or []
         if isinstance(token_ids, str):
@@ -88,6 +100,7 @@ async def btc_5min_scan():
                 up_quote = await _public_json("https://clob.polymarket.com/price?" + urlencode({"token_id": token_ids[0], "side": "BUY"}))
                 down_quote = await _public_json("https://clob.polymarket.com/price?" + urlencode({"token_id": token_ids[1], "side": "BUY"}))
                 up_price = float(up_quote.get("price")); down_price = float(down_quote.get("price"))
+                odds_source = "polymarket_clob"
             except Exception:
                 up_price = down_price = None
     s5 = "UP" if up_price is not None and up_price < 0.45 else "DOWN" if down_price is not None and down_price < 0.45 else "UNKNOWN"
@@ -96,7 +109,7 @@ async def btc_5min_scan():
     session = "ASIAN_MOMENTUM" if 3 <= datetime.now(timezone.utc).hour < 7 else "US_REVERSION" if 15 <= datetime.now(timezone.utc).hour < 18 else "DANGER" if 13 <= datetime.now(timezone.utc).hour < 14 else "NEUTRAL"
     active = [s1, s2, s3, s4, s5, s6]; up = sum(x == "UP" for x in active); down = sum(x == "DOWN" for x in active)
     verdict = "SKIP - danger zone" if session == "DANGER" else "ENTER UP" if up >= 2 and up > down else "ENTER DOWN" if down >= 2 and down > up else "SKIP - one signal only" if up or down else "SKIP - no signal"
-    return {"symbol": "BTCUSDT", "window_start": window, "price": price, "session": session, "ema": {"ema9": ema9, "ema21": ema21, "direction": ema_dir}, "rsi": rsi, "momentum_5m": mom5, "range_5m": range5, "volume_ratio": volume_ratio, "signals": {"S1_momentum": s1, "S2_ema": s2, "S3_rsi": s3, "S4_mean_reversion": s4, "S5_odds_bias": s5, "S6_support_resistance": s6}, "odds": {"available": up_price is not None and down_price is not None, "up": up_price, "down": down_price, "market_slug": market.get("slug") if market else None, "source": "polymarket_gamma"}, "levels": {"support_24h": support, "resistance_24h": resistance}, "up_signals": up, "down_signals": down, "verdict": verdict, "paper_only": True}
+    return {"symbol": "BTCUSDT", "window_start": window, "price": price, "session": session, "ema": {"ema9": ema9, "ema21": ema21, "direction": ema_dir}, "rsi": rsi, "momentum_5m": mom5, "range_5m": range5, "volume_ratio": volume_ratio, "signals": {"S1_momentum": s1, "S2_ema": s2, "S3_rsi": s3, "S4_mean_reversion": s4, "S5_odds_bias": s5, "S6_support_resistance": s6}, "odds": {"available": up_price is not None and down_price is not None, "up": up_price, "down": down_price, "market_slug": market.get("slug") if market else None, "source": odds_source if market else "unavailable"}, "levels": {"support_24h": support, "resistance_24h": resistance}, "up_signals": up, "down_signals": down, "verdict": verdict, "paper_only": True}
 
 def _repair_log(level, message):
     _trade_repair["logs"].append({"time": time.time(), "level": level, "message": message})
