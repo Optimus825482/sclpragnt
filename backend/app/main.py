@@ -1226,7 +1226,9 @@ async def scan_market_snapshots(args: dict | None = None):
     symbols = [symbol for symbol in requested_symbols if symbol not in open_symbols]
     timeframes = [str(tf) for tf in (args.get("timeframes") or ["1m", "5m", "15m", "1h", "4h", "1d"]) if str(tf) in {"1m","5m","15m","1h","4h","1d"}]
     if not timeframes: timeframes = ["5m", "15m", "1h"]
-    sem = asyncio.Semaphore(4)
+    # Public REST fallback'leri seri birikmesin; tek sembol hatası tüm taramayı
+    # düşürmeden sınırlı paralellikte ilerle.
+    sem = asyncio.Semaphore(8)
     async def one(sym):
         async with sem:
             rows = {}
