@@ -640,6 +640,13 @@ class ScalpAnalyzer:
         return signals
 
     async def close_position(self, symbol, price, reason):
+        # Strategy loop and manual close can arrive concurrently. Keep the
+        # wallet/trade/position transition under the same lock used by opens
+        # so one position can produce at most one close transaction.
+        async with self._open_position_lock:
+            return await self._close_position_unlocked(symbol, price, reason)
+
+    async def _close_position_unlocked(self, symbol, price, reason):
         pos = self.positions.get(symbol)
         if not pos: return None
         sell_value = pos["quantity"] * price

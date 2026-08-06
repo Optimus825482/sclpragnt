@@ -624,6 +624,9 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, asset_amount))
         conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                      (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {}))))
+        persisted = conn.execute("SELECT quantity,entry_time FROM positions WHERE symbol=?", (symbol,)).fetchone()
+        if not persisted or float(persisted[0] or 0) != float(pos.get("quantity") or 0) or float(persisted[1] or 0) != float(pos.get("entry_time") or 0):
+            raise RuntimeError("Açılan pozisyon kaydı doğrulanamadı; transaction geri alınacak")
         conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason) VALUES(?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason")))
         conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
         conn.commit()
@@ -640,7 +643,15 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, 0.0))
         conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds")))
+        persisted = conn.execute(
+            "SELECT COUNT(*) FROM trades WHERE symbol=? AND entry_time=? AND exit_time=?",
+            (trade.get("symbol"), trade.get("entry_time"), trade.get("exit_time")),
+        ).fetchone()[0]
+        if int(persisted or 0) != 1:
+            raise RuntimeError("Kapanan işlem kaydı doğrulanamadı; transaction geri alınacak")
         conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
+        if int(conn.execute("SELECT COUNT(*) FROM positions WHERE symbol=?", (symbol,)).fetchone()[0] or 0) != 0:
+            raise RuntimeError("Kapanan pozisyon silinemedi; transaction geri alınacak")
         conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason) VALUES(?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason")))
         conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), trade.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
         conn.commit()
