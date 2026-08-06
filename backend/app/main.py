@@ -942,7 +942,11 @@ async def download_backup():
             raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
         fd, path = tempfile.mkstemp(prefix="scalper-postgres-", suffix=".dump")
         os.close(fd)
-        result = await asyncio.to_thread(subprocess.run, ["pg_dump", "--format=custom", "--no-owner", "--file", path, os.environ["DATABASE_URL"]], capture_output=True, text=True, timeout=600)
+        try:
+            result = await asyncio.to_thread(subprocess.run, ["pg_dump", "--format=custom", "--no-owner", "--file", path, os.environ["DATABASE_URL"]], capture_output=True, text=True, timeout=600)
+        except FileNotFoundError as exc:
+            if os.path.exists(path): os.unlink(path)
+            raise HTTPException(status_code=503, detail="PostgreSQL yedek aracı pg_dump backend imajında kurulu değil") from exc
         if result.returncode != 0:
             if os.path.exists(path): os.unlink(path)
             raise HTTPException(status_code=502, detail=result.stderr[-2000:] or "pg_dump başarısız")
