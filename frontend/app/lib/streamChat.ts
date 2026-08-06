@@ -1,3 +1,5 @@
+import { API_BASE } from "./api";
+
 export type ChatMessage = { role: string; content: string; [key: string]: unknown };
 
 export async function streamChat(
@@ -7,8 +9,7 @@ export async function streamChat(
 ): Promise<{ model?: string }> {
   const last = (messages[messages.length - 1]?.content || "").toLocaleLowerCase("tr-TR").replace(/[ıİ]/g, "i").replace(/[şŞ]/g, "s");
   if (/\b(islem|pozisyon)\s+a[çc]\b|\ba[çc]\s+islem\b/.test(last)) {
-    const origin = url.slice(0, url.indexOf("/api/"));
-    const action = await fetch(`${origin}/api/llm/paper-trade`, {
+    const action = await fetch(`${API_BASE}/api/llm/paper-trade`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
