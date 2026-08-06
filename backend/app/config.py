@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Config:
+    STRATEGY_REVISION = os.getenv("STRATEGY_REVISION", "filters-2026-08-06-adx18-keltner-retest-chop45")
     API_KEY = os.getenv("BINANCE_API_KEY", "")
     API_SECRET = os.getenv("BINANCE_API_SECRET", "")
     
@@ -103,6 +104,7 @@ class Config:
     MOMENTUM_MIN_RETURN_PCT = 0.003
     MOMENTUM_MIN_VOLUME_RATIO = 1.0
     MOMENTUM_REQUIRE_MTF_ALIGNMENT = True
+    MOMENTUM_MIN_ADX = float(os.getenv("MOMENTUM_MIN_ADX", "18"))
     # MTF Momentum için volatilite kapasitesi filtresi (ADR).
     ADR_FILTER_ENABLED = True
     ADR_PERIOD = 14
@@ -114,11 +116,12 @@ class Config:
     KELTNER_ATR_MULTIPLIER = 1.8
     KELTNER_VOLUME_MULTIPLIER = 1.5
     KELTNER_REQUIRE_MTF_ALIGNMENT = True
+    KELTNER_REQUIRE_RETEST = True
     EMA_VWAP_MIN_VOLUME_RATIO = 0.8
     EMA_VWAP_REQUIRE_MTF_ALIGNMENT = True
     CHOP_PERIOD = 14
-    CHOP_MAX_VALUE = 50.0
-    CHOP_MIN_RSI = 50.0
+    CHOP_MAX_VALUE = float(os.getenv("CHOP_MAX_VALUE", "45"))
+    CHOP_MIN_RSI = float(os.getenv("CHOP_MIN_RSI", "52"))
     DONCHIAN_LOOKBACK = 20
     DONCHIAN_VOLUME_MULTIPLIER = 1.15
 

@@ -3,7 +3,7 @@ import asyncio
 import numpy as np
 import uuid
 from app.config import config
-from app.technical_analysis import calculate_snapshot
+from app.technical_analysis import calculate_snapshot, _adx
 from app.binance_tr_public import orderbook
 from app import database
 
@@ -467,7 +467,7 @@ class ScalpAnalyzer:
         return None
 
     def strategy_momentum(self, kline, symbol=None):
-        closes = kline.get("closes", [])
+        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
         if len(closes) < 30: return None
         short = config.MOMENTUM_SHORT_LOOKBACK; long = config.MOMENTUM_LONG_LOOKBACK
         if len(closes) <= long: return None
@@ -476,7 +476,9 @@ class ScalpAnalyzer:
         volume_ratio = self._volume_ratio(kline)
         volume_ok = volume_ratio is not None and volume_ratio >= config.MOMENTUM_MIN_VOLUME_RATIO
         mtf_ok = self._mtf_bullish(symbol, config.MOMENTUM_TIMEFRAME) if config.MOMENTUM_REQUIRE_MTF_ALIGNMENT else True
-        if r1 > config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 and flow_ok and volume_ok and mtf_ok: return "buy"
+        adx = _adx(highs, lows, closes).get("adx") if len(closes) >= 30 else None
+        adx_ok = adx is not None and adx >= config.MOMENTUM_MIN_ADX
+        if r1 > config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 and flow_ok and volume_ok and mtf_ok and adx_ok: return "buy"
         return None
 
     def adr_status(self, symbol, price):
@@ -536,8 +538,10 @@ class ScalpAnalyzer:
         previous = {key: values[:-1] for key, values in kline.items() if isinstance(values, list)}
         prev_ema = self.calculate_ema(previous.get("closes", []), config.KELTNER_EMA_PERIOD)
         prev_atr = self.calculate_atr(previous, config.KELTNER_ATR_PERIOD)
+        upper = ema + config.KELTNER_ATR_MULTIPLIER * atr if ema is not None and atr else None
         was_below_band = prev_ema is not None and prev_atr is not None and closes[-2] <= prev_ema + config.KELTNER_ATR_MULTIPLIER * prev_atr
-        if ema is not None and atr and was_below_band and closes[-1] > ema + config.KELTNER_ATR_MULTIPLIER * atr and volumes[-1] >= avg_vol * config.KELTNER_VOLUME_MULTIPLIER and flow_ok and mtf_ok: return "buy"
+        retest_ok = not config.KELTNER_REQUIRE_RETEST or (upper is not None and lows[-1] <= upper * 1.001 and closes[-1] > upper)
+        if ema is not None and atr and was_below_band and retest_ok and volumes[-1] >= avg_vol * config.KELTNER_VOLUME_MULTIPLIER and flow_ok and mtf_ok: return "buy"
         return None
 
     def calculate_chop(self, kline, period=14):
@@ -694,6 +698,7 @@ class ScalpAnalyzer:
             "entry_time": pos.get("entry_time"), "exit_time": time.time(),
             "commission": total_commission, "reason": reason,
             "entry_context": pos.get("entry_context", {}),
+            "strategy_revision": pos.get("entry_context", {}).get("strategy_revision", config.STRATEGY_REVISION),
             "max_favorable_pct": max_favorable_pct,
             "max_adverse_pct": max_adverse_pct,
             "hold_seconds": hold_seconds,
@@ -766,7 +771,8 @@ class ScalpAnalyzer:
                            "reason": "net_profit_filter:expected_net_below_minimum", "strategy": strat_name, "timestamp": time.time()}
                 await database.save_signal(blocked)
                 return blocked
-        entry_context = {"liquidity": details if self.market else {},
+        entry_context = {"strategy_revision": config.STRATEGY_REVISION,
+                         "liquidity": details if self.market else {},
                          "expected_gross_pnl_try": expected_gross if self.market else None,
                          "expected_net_pnl_try": expected_net if self.market else None,
                          "commission_pct": config.COMMISSION_PCT,
@@ -806,7 +812,7 @@ class ScalpAnalyzer:
                 "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
             }
         self.positions[symbol] = pos
-        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "timestamp": time.time()}
+        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time()}
         await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
         return sig
 
