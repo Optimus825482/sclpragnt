@@ -983,7 +983,9 @@ async def llm_open_paper_trade(payload: dict):
             raise HTTPException(status_code=409, detail="Paper işlem için yeterli güvene sahip bullish aday bulunamadı")
     else:
         candidates = [{"symbol": symbol, "score": None}]
-    if symbol not in config.SYMBOLS:
+    # Otomatik seçimde symbol başlangıçta boştur; geçerlilik kontrolü yalnızca
+    # kullanıcı belirli bir sembol gönderdiğinde uygulanmalıdır.
+    if symbol and symbol not in config.SYMBOLS:
         try:
             available_symbols = set(await trading_symbols("TRY"))
         except Exception:
