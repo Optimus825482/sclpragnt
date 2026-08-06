@@ -804,6 +804,15 @@ class ScalpAnalyzer:
             return await self._open_position_unlocked(symbol, entry_price, side, strat_name)
 
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT"):
+        # The in-memory portfolio can lag after a restart or another worker's
+        # write. Reconcile this symbol before attempting the unique DB insert.
+        db_positions = await database.load_positions()
+        if symbol not in self.positions and symbol in db_positions:
+            self.positions[symbol] = db_positions[symbol]
+        if symbol in self.positions:
+            await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                        "reason": "position_already_open", "strategy": strat_name, "timestamp": time.time()})
+            return None
         if symbol not in self.positions and len(self.positions) >= self.max_open_positions():
             await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                         "reason": "position_limit_reached", "strategy": strat_name, "timestamp": time.time()})
@@ -906,6 +915,14 @@ class ScalpAnalyzer:
             }
         self.positions[symbol] = pos
         sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time()}
-        await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
+        try:
+            await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
+        except Exception as exc:
+            if "duplicate key" in str(exc).lower() or "unique constraint" in str(exc).lower():
+                self.positions = await database.load_positions()
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                            "reason": "position_already_open", "strategy": strat_name, "timestamp": time.time()})
+                return None
+            raise
         return sig
 

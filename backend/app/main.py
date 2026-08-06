@@ -1183,7 +1183,10 @@ def _market_candidate_score(snapshot: dict):
 async def scan_market_snapshots(args: dict | None = None):
     args = args or {}
     requested = args.get("symbols") or config.SYMBOLS
-    symbols = list(dict.fromkeys(str(s).replace("_", "").upper() for s in requested if str(s).strip()))[:100]
+    requested_symbols = list(dict.fromkeys(str(s).replace("_", "").upper() for s in requested if str(s).strip()))[:100]
+    db_positions = await database.load_positions()
+    open_symbols = set(db_positions) | set(analyzer.positions)
+    symbols = [symbol for symbol in requested_symbols if symbol not in open_symbols]
     timeframes = [str(tf) for tf in (args.get("timeframes") or ["1m", "5m", "15m", "1h", "4h", "1d"]) if str(tf) in {"1m","5m","15m","1h","4h","1d"}]
     if not timeframes: timeframes = ["5m", "15m", "1h"]
     sem = asyncio.Semaphore(4)
@@ -1204,7 +1207,7 @@ async def scan_market_snapshots(args: dict | None = None):
     results.sort(key=lambda row: row["score"], reverse=True)
     limit = max(1, min(int(args.get("limit", 10)), 30))
     bullish = [row for row in results if row["score"] >= 2 and str(row.get("trend_direction", "")).lower() not in {"bearish", "mixed"}]
-    return {"generated_at": time.time(), "symbols_scanned": len(symbols), "timeframes": timeframes,
+    return {"generated_at": time.time(), "symbols_scanned": len(symbols), "symbols_skipped_open": sorted(open_symbols & set(requested_symbols)), "timeframes": timeframes,
             "bullish_candidates": bullish[:limit], "ranked": results[:limit],
             "paper_only": True, "live_portfolio_changed": False,
             "data_policy": "Binance TR public market data; missing values remain unknown."}
