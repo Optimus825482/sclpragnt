@@ -55,6 +55,8 @@ export default function BacktestPage() {
     const [error, setError] = useState<string | null>(null);
     const [result, setResult] = useState<BacktestResult | null>(null);
     const [history, setHistory] = useState<BacktestResult[]>([]);
+    const [robustness, setRobustness] = useState<any>(null);
+    const [robustnessRunning, setRobustnessRunning] = useState(false);
 
     const loadHistory = () => {
         fetch(`${API_BASE}/api/backtests?limit=50`)
@@ -89,6 +91,15 @@ export default function BacktestPage() {
     const remove = async (id: number) => {
         await fetch(`${API_BASE}/api/backtests/${id}`, { method: "DELETE" });
         loadHistory();
+    };
+
+    const runRobustness = async () => {
+        setRobustnessRunning(true);
+        try {
+            const res = await fetch(`${API_BASE}/api/backtest/robustness`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol, interval, strategy, windows: [14, 30, 60] }) });
+            setRobustness(await res.json());
+        } catch { setRobustness({ ok: false, error: "Robustness testi çalıştırılamadı" }); }
+        finally { setRobustnessRunning(false); }
     };
 
     const strat = STRATEGIES.find((s) => s.key === strategy);
@@ -147,7 +158,17 @@ export default function BacktestPage() {
                 <p className="text-[11px] text-bunker-muted mt-3 font-mono">
                     {strat?.icon} {strat?.name} · SL %{(0.5).toFixed(1)} · TP %{(1.5).toFixed(1)} · Trailing %{(0.3).toFixed(1)} · Başlangıç 10.000 ₺
                 </p>
+                <button onClick={runRobustness} disabled={robustnessRunning}
+                    className="mt-3 px-4 py-2 rounded-lg border border-yellow-400/40 bg-yellow-400/10 text-yellow-300 font-mono text-xs disabled:opacity-50">
+                    {robustnessRunning ? "DAYANIKLILIK TESTİ..." : "↗ 14/30/60 GÜN DAYANIKLILIK TESTİ"}
+                </button>
             </div>
+
+            {robustness && <div className="card border-yellow-400/20 bg-yellow-400/5">
+                <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="eyebrow text-yellow-300">DAYANIKLILIK / MALİYET SONRASI</p><p className="text-xs text-bunker-muted mt-1">Bu test gerçek out-of-sample kanıtı değildir; farklı tarih pencerelerini karşılaştırır.</p></div><span className={`font-mono font-bold ${robustness.walk_forward_assessment?.status === "STABLE" ? "text-neon-green" : "text-yellow-300"}`}>{robustness.walk_forward_assessment?.status || "—"}</span></div>
+                <div className="grid sm:grid-cols-3 gap-3 mt-4 text-sm font-mono">{(robustness.windows || []).map((w: any) => <div key={w.days_back} className="border border-bunker-800 rounded-lg p-3"><p className="eyebrow">{w.days_back} GÜN</p><p className={Number(w.net_pnl) >= 0 ? "text-neon-green mt-1" : "text-neon-red mt-1"}>₺{fmtTL(Number(w.net_pnl || 0))}</p><p className="text-bunker-muted text-xs mt-1">{w.trades || 0} işlem · PF {w.profit_factor ?? "—"}</p></div>)}</div>
+                {robustness.error && <p className="text-sm text-neon-red mt-3">{robustness.error}</p>}
+            </div>}
 
             {error && (
                 <div className="card border-neon-red/40 bg-neon-red/5">

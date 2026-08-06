@@ -15,6 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import config
+from app.market_intelligence import (estimate_local_regime, execution_quality,
+                                     symbol_safety, cost_aware_trade_metrics,
+                                     walk_forward_assessment)
 from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app import database
@@ -1177,6 +1180,14 @@ def _market_candidate_score(snapshot: dict):
     elif float(spread) <= .25: score += .4; evidence.append("spread kabul edilebilir")
     regime = (methodology.get("regime") or {}).get("name") if isinstance(methodology, dict) else None
     if regime and str(regime).startswith("bull"): score += .8; evidence.append(f"rejim {regime}")
+    execution = execution_quality(snapshot, config.DEFAULT_ORDER_USDT)
+    if execution["score"] >= 0.8:
+        score += 0.5; evidence.append("işlem kalitesi uygun")
+    elif execution["score"] < 0.5:
+        score -= 0.8; risks.extend(execution["reasons"][:2])
+    safety = symbol_safety(snapshot)
+    if safety["status"] != "PASS":
+        risks.extend(safety["flags"][:2])
     return round(score, 3), evidence, risks
 
 async def scan_market_snapshots(args: dict | None = None):
@@ -1199,17 +1210,26 @@ async def scan_market_snapshots(args: dict | None = None):
             selected = rows.get("5m") if rows.get("5m", {}).get("data_ready") else (ready[0] if ready else rows.get(timeframes[0], {}))
             score, evidence, risks = _market_candidate_score(selected)
             return {"symbol": sym, "selected_timeframe": selected.get("timeframe", "5m"), "score": score,
+                    "data_ready": bool(selected.get("data_ready")),
                     "trend_direction": (selected.get("summary") or (selected.get("trend") or {}).get("alignment") or "unknown"),
                     "evidence": evidence, "risks": risks, "data_ready_timeframes": list(rows.keys()),
                     "snapshot": selected, "timeframes": rows}
     results = await asyncio.gather(*(one(sym) for sym in symbols))
     results.sort(key=lambda row: row["score"], reverse=True)
+    regime = estimate_local_regime(results)
+    # Regime is a soft selector: hard paper risk rules remain authoritative.
+    if regime["zone"] == "RISK_OFF":
+        for row in results:
+            row["score"] = round(float(row["score"]) - 0.75, 3)
+            row.setdefault("risks", []).append("genel piyasa rejimi risk-off")
+        results.sort(key=lambda row: row["score"], reverse=True)
     limit = max(1, min(int(args.get("limit", 10)), 30))
     bullish = [row for row in results if row["score"] >= 2 and str(row.get("trend_direction", "")).lower() not in {"bearish", "mixed"}]
     return {"generated_at": time.time(), "symbols_scanned": len(symbols), "symbols_skipped_open": sorted(open_symbols & set(requested_symbols)), "timeframes": timeframes,
             "bullish_candidates": bullish[:limit], "ranked": results[:limit],
+            "market_regime": regime,
             "paper_only": True, "live_portfolio_changed": False,
-            "data_policy": "Binance TR public market data; missing values remain unknown."}
+            "data_policy": "Binance TR public market data; missing values remain unknown. Contract/wallet safety is not inferred."}
 
 async def deep_analyze_symbol(args: dict):
     symbol = str(args.get("symbol", "")).replace("_", "").upper()
@@ -1328,7 +1348,11 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             rng = random.Random(42)
             samples = [sum(rng.choice(pnls) for _ in pnls) for _ in range(1000)] if pnls else []
             samples.sort()
-            return {"paper_only": True, "windows": runs, "monte_carlo": {"iterations": len(samples), "p05": samples[int(len(samples) * 0.05)] if samples else None, "median": samples[len(samples) // 2] if samples else None, "p95": samples[int(len(samples) * 0.95) - 1] if samples else None}, "limitations": ["Gerçek out-of-sample tarih aralığı ayrımı yoktur", "Order-book yerine candle/order-flow proxy kullanılır", "Monte Carlo trade sırasını yeniden örnekler; piyasa rejimi garantisi değildir"]}
+            return {"paper_only": True, "windows": runs,
+                    "walk_forward_assessment": walk_forward_assessment(runs),
+                    "cost_aware_metrics": cost_aware_trade_metrics((first_result or {}).get("trades", [])),
+                    "monte_carlo": {"iterations": len(samples), "p05": samples[int(len(samples) * 0.05)] if samples else None, "median": samples[len(samples) // 2] if samples else None, "p95": samples[int(len(samples) * 0.95) - 1] if samples else None},
+                    "limitations": ["Gerçek out-of-sample tarih aralığı ayrımı yoktur", "Order-book yerine candle/order-flow proxy kullanılır", "Monte Carlo trade sırasını yeniden örnekler; piyasa rejimi garantisi değildir"]}
         if name == "search_memory":
             if not _pg_pool: return {"count": 0, "results": [], "message": "Memory backend aktif değil"}
             embedded = await llm_analysis.embedding(str(args.get("query", "")))
@@ -1628,6 +1652,29 @@ async def backtest_run(payload: dict):
 async def backtest_list(limit: int = 50):
     """Kayıtlı backtest sonuçları."""
     return {"backtests": await database.get_backtests(limit)}
+
+@app.post("/api/backtest/robustness")
+async def backtest_robustness(payload: dict):
+    """Run bounded multi-window paper research; never changes live paper state."""
+    target = str(payload.get("symbol", "BTCTRY")).upper()
+    interval = str(payload.get("interval", "5m"))
+    strategy = str(payload.get("strategy", "EMA_VWAP_PULLBACK"))
+    windows = [max(7, min(int(x), 90)) for x in (payload.get("windows") or [14, 30, 60])][:3]
+    runs = []
+    try:
+        for days in windows:
+            _, result = await run_backtest(target, interval, days, strategy, {}, 500.0,
+                                           config.HARD_STOP_LOSS_PCT,
+                                           config.TIME_DECAY_TP_1_PCT, 0.0)
+            runs.append({"days_back": days, "net_pnl": result.get("net_pnl"),
+                         "win_rate": result.get("win_rate"),
+                         "profit_factor": result.get("profit_factor"),
+                         "max_drawdown_pct": result.get("max_drawdown_pct"),
+                         "trades": result.get("total_trades")})
+        return {"ok": True, "paper_only": True, "windows": runs,
+                "walk_forward_assessment": walk_forward_assessment(runs)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "paper_only": True}
 
 @app.delete("/api/backtests/{run_id}")
 async def backtest_delete(run_id: int):
