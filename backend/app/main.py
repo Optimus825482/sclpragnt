@@ -19,7 +19,7 @@ from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app import database
 from app.backtest import run_backtest, run_custom_backtest
-from app.binance_tr_public import klines as fetch_klines, trading_symbols, ticker_24h, orderbook
+from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot
 from app import llm_analysis
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
@@ -143,7 +143,7 @@ async def btc_5min_backtest(days_back: int = 7, order_size: float = 500.0, take_
     recorded BUY_SIGNAL entries are evaluated; missing odds remain reported.
     """
     days_back = max(1, min(int(days_back), 90)); order_size = max(100.0, min(float(order_size), 10000.0))
-    candles = await fetch_klines("BTCTRY", "5m", min(1000, max(100, days_back * 288)))
+    candles = await historical_klines("BTCTRY", "5m", days_back)
     rows = []
     for row in candles:
         if len(row) >= 7:
