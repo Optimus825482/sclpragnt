@@ -189,7 +189,9 @@ export default function SettingsPage() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `scalperagent-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.sqlite`;
+      const disposition = res.headers.get("content-disposition") || "";
+      const serverFilename = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+      anchor.download = serverFilename || `scalperagent-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.sqlite`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -352,10 +354,10 @@ export default function SettingsPage() {
               <div>
                 <p className="eyebrow text-neon-green">VERİTABANI YEDEĞİ</p>
                 <p className="font-mono text-sm text-white mt-2">Canlı paper-trading veritabanının tutarlı kopyasını indir</p>
-                <p className="text-xs text-bunker-muted mt-1">İşlemler, sinyaller, açık pozisyonlar ve backtest kayıtları dahil edilir. Bot durmaz.</p>
+                <p className="text-xs text-bunker-muted mt-1">SQLite modunda .sqlite, PostgreSQL modunda .dump alınır. İşlemler, sinyaller, açık pozisyonlar ve backtest kayıtları dahil edilir.</p>
               </div>
               <button onClick={downloadBackup} disabled={backingUp} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${backupDone ? "border-neon-green/60 bg-neon-green/20 text-neon-green" : "border-neon-green/50 bg-neon-green/10 text-neon-green hover:bg-neon-green/20"}`}>
-                {backingUp ? "YEDEKLENİYOR..." : backupDone ? "✓ YEDEK İNDİRİLDİ" : "SQLITE YEDEĞİ AL"}
+                {backingUp ? "YEDEKLENİYOR..." : backupDone ? "✓ YEDEK İNDİRİLDİ" : "VERİTABANI YEDEĞİ AL"}
               </button>
             </div>
           </div>

@@ -3,6 +3,7 @@ import asyncio
 import time
 import subprocess
 import json
+import tempfile
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -935,7 +936,17 @@ async def get_trades():
 
 @app.get("/api/backup")
 async def download_backup():
-    """Download a consistent snapshot of the live paper-trading database."""
+    """Download a consistent snapshot of the active SQLite or PostgreSQL database."""
+    if os.getenv("DB_BACKEND", "sqlite").lower() == "postgres":
+        if not os.getenv("DATABASE_URL"):
+            raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
+        fd, path = tempfile.mkstemp(prefix="scalper-postgres-", suffix=".dump")
+        os.close(fd)
+        result = await asyncio.to_thread(subprocess.run, ["pg_dump", "--format=custom", "--no-owner", "--file", path, os.environ["DATABASE_URL"]], capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            if os.path.exists(path): os.unlink(path)
+            raise HTTPException(status_code=502, detail=result.stderr[-2000:] or "pg_dump başarısız")
+        return FileResponse(path, media_type="application/octet-stream", filename=f"scalperagent-postgres-{time.strftime('%Y%m%d-%H%M%S')}.dump", background=BackgroundTask(lambda: os.unlink(path) if os.path.exists(path) else None))
     path = await database.create_backup_file()
     return FileResponse(
         path,
