@@ -60,7 +60,11 @@ class Config:
     TIME_DECAY_TP_STAGE_2_SEC = 20 * 60
     TIME_DECAY_TP_STAGE_3_SEC = 40 * 60
     TIME_DECAY_BREAKEVEN_SEC = 60 * 60
-    TRAILING_STOP_PCT = 0.005
+    # Kâr koruma: hedefe ulaşmadan önce yeterli ilerleme oluştuğunda
+    # maksimum fiyatın gerisinden takip eden stop devreye girer.
+    TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"
+    TRAILING_ACTIVATION_PCT = float(os.getenv("TRAILING_ACTIVATION_PCT", "0.0075"))
+    TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "0.005"))
 
     # Binance TR spot komisyonu (Bronz/Standart taker %0.15) - işlem başına
     COMMISSION_PCT = float(os.getenv("COMMISSION_PCT", "0.0015"))

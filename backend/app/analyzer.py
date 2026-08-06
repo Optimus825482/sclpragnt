@@ -347,6 +347,17 @@ class ScalpAnalyzer:
                 return await self.close_position(symbol, price, "early_failure_no_progress")
             if elapsed >= config.STALE_POSITION_SEC and max_progress < config.STALE_POSITION_MIN_PROGRESS_PCT:
                 return await self.close_position(symbol, price, "stale_position_no_progress")
+            # Kârı koru: hedefe ulaşmadan önce pozisyon yeterince ilerlediyse
+            # tepe fiyatın gerisinden takip eden stop ile geri dönüşte çık.
+            # Stop hiçbir zaman komisyon/slippage sonrası başa-baş seviyesinin
+            # altında çalıştırılmaz.
+            if (config.TRAILING_STOP_ENABLED
+                    and max_progress >= config.TRAILING_ACTIVATION_PCT
+                    and config.TRAILING_STOP_PCT > 0):
+                trail_price = pos.get("max_price", entry) * (1 - config.TRAILING_STOP_PCT)
+                net_floor = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
+                if price <= trail_price and price >= net_floor:
+                    return await self.close_position(symbol, price, "trailing_profit_protection")
             if (config.STALE_POSITION_EXIT_BELOW_COST and elapsed >= config.STALE_POSITION_SEC and
                     price < entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))):
                 return await self.close_position(symbol, price, "stale_position_below_cost")

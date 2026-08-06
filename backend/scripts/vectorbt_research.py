@@ -109,6 +109,30 @@ def _supertrend_direction(frame: pd.DataFrame, period: int = 9, multiplier: floa
             direction.iloc[i] = previous_direction
     return direction
 
+def _luxy_ut_god_long(frame: pd.DataFrame, atr_period: int = 7, key: float = 1.0, crypto_mult: float = 1.5, chop_strength: float = 1.3) -> pd.Series:
+    """Luxy UT GOD long-only core; bearish flips never close a position."""
+    close = frame["closes"].astype(float)
+    atr = _atr(frame, atr_period)
+    volume_ratio = frame["volumes"] / frame["volumes"].rolling(20, min_periods=20).mean()
+    er_change = (close - close.shift(10)).abs()
+    er_volume = close.diff().abs().rolling(10, min_periods=10).sum()
+    er = (er_change / er_volume.replace(0, np.nan)).fillna(0.0).clip(0.0, 1.0)
+    chop_mult = 1.0 + (1.0 - er) * chop_strength
+    adaptive = volume_ratio.clip(lower=0.8, upper=1.2).fillna(1.0)
+    distance = atr * key * crypto_mult * adaptive * chop_mult
+    stop = pd.Series(np.nan, index=frame.index, dtype=float)
+    for i in range(len(frame)):
+        if pd.isna(distance.iloc[i]): continue
+        price = close.iloc[i]
+        if i == 0 or pd.isna(stop.iloc[i - 1]): stop.iloc[i] = price; continue
+        previous = stop.iloc[i - 1]; previous_price = close.iloc[i - 1]; dist = distance.iloc[i]
+        if price > previous and previous_price > previous: stop.iloc[i] = max(previous, price - dist)
+        elif price < previous and previous_price < previous: stop.iloc[i] = min(previous, price + dist)
+        elif price > previous: stop.iloc[i] = price - dist
+        else: stop.iloc[i] = price + dist
+    bullish = close > stop
+    return bullish & ~bullish.shift(1).fillna(False)
+
 
 def _heikin_ashi(frame: pd.DataFrame) -> pd.DataFrame:
     """Build HA candles only for research; execution price remains real close."""
@@ -527,6 +551,9 @@ def _signals(frame: pd.DataFrame, candidate: str, higher_frame: pd.DataFrame | N
         # Supertrend is an entry filter only. Bearish flips do not close a long.
         entries = (direction > 0) & (direction.shift(1) < 0)
         exits = pd.Series(False, index=frame.index, dtype=bool)
+    elif candidate == "luxy_ut_god_long":
+        entries = _luxy_ut_god_long(frame)
+        exits = pd.Series(False, index=frame.index, dtype=bool)
     else:
         raise ValueError(f"Unknown candidate: {candidate}")
     # Signals are calculated at candle close; shift execution to the next bar.
@@ -542,10 +569,10 @@ def _run(frame: pd.DataFrame, candidate: str, order_size: float, take_profit: fl
             stop_kwargs["tp_stop"] = atr_pct * atr_target_mult
         if atr_stop_mult is not None:
             stop_kwargs["sl_stop"] = atr_pct * atr_stop_mult
-    if candidate in {"supertrend_long", "supertrend_long_ha"}:
+    if candidate in {"supertrend_long", "supertrend_long_ha", "luxy_ut_god_long"}:
         stop_kwargs.setdefault("tp_stop", take_profit)
         stop_kwargs.setdefault("sl_stop", stop_loss)
-    elif candidate in {"ess_long", "std_dpmo_smartsar_long", "std_dpmo_smartsar_relaxed_long", "std_dpmo_smartsar_quality_long", "std_dpmo_smartsar_regime_long", "trend_phase_long", "tv_confluence_trend_long", "tv_mtf_confluence_long", "tv_mtf_confluence_relaxed_long", "tv_mtf_regime_long", "tv_mtf_regime_relaxed_long", "williams_fractal_ma_long"}:
+    elif candidate in {"ess_long", "std_dpmo_smartsar_long", "std_dpmo_smartsar_relaxed_long", "std_dpmo_smartsar_quality_long", "std_dpmo_smartsar_regime_long", "trend_phase_long", "tv_confluence_trend_long", "tv_mtf_confluence_long", "tv_mtf_confluence_relaxed_long", "tv_mtf_regime_long", "tv_mtf_regime_relaxed_long", "williams_fractal_ma_long", "luxy_ut_god_long"}:
         stop_kwargs.setdefault("tp_stop", take_profit)
         stop_kwargs.setdefault("sl_stop", stop_loss)
     if trailing_stop:
@@ -655,7 +682,7 @@ def main() -> None:
     parser.add_argument("--risk-reward", type=float, default=1.5)
     parser.add_argument("--min-atr-stop", type=float, default=1.0)
     parser.add_argument("--cooldown-bars", type=int, default=5)
-    parser.add_argument("--candidates", default="trend_regime,donchian_volume,rsi_bollinger,strong_candlestick,supertrend_long,supertrend_long_ha,ess_long,std_dpmo_smartsar_long,std_dpmo_smartsar_relaxed_long,trend_phase_long,tv_confluence_trend_long,tv_mtf_confluence_long,tv_mtf_confluence_relaxed_long,tv_mtf_regime_long,tv_mtf_regime_relaxed_long,williams_fractal_ma_long")
+    parser.add_argument("--candidates", default="trend_regime,donchian_volume,rsi_bollinger,strong_candlestick,supertrend_long,supertrend_long_ha,luxy_ut_god_long,ess_long,std_dpmo_smartsar_long,std_dpmo_smartsar_relaxed_long,trend_phase_long,tv_confluence_trend_long,tv_mtf_confluence_long,tv_mtf_confluence_relaxed_long,tv_mtf_regime_long,tv_mtf_regime_relaxed_long,williams_fractal_ma_long")
     ARGS = parser.parse_args()
     if not 1 <= ARGS.days <= 365:
         parser.error("--days 1 ile 365 arasında olmalı")
