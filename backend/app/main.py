@@ -303,8 +303,8 @@ async def strategy_loop():
 async def btc_odds_strategy_loop():
     """Record one paper-only BTC 5m odds decision per market window.
 
-    This is deliberately separate from the TRY spot portfolio: Polymarket's
-    BTC/USD resolution source must never open a Binance TR position.
+    The signal source is BTC/USD/Polymarket, while any paper execution uses
+    the BTCTRY spot price through the normal portfolio transaction path.
     """
     global _btc_odds_last_window
     await asyncio.sleep(20)
@@ -338,10 +338,10 @@ async def btc_odds_strategy_loop():
                         signal = await analyzer.open_position("BTCTRY", spot_price, "LONG", "BTC_5M_ODDS_SCALPER")
                         if signal:
                             signal["odds_context"] = {"verdict": verdict, "signal_source": "BTCUSDT/Polymarket", "signals": scan.get("signals"), "odds": scan.get("odds")}
-                            action = signal.get("action", action)
                 else:
                     signal = {"timestamp": time.time(), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": action, "price": spot_price, "reason": reason, "metadata": {**scan, "execution_symbol": "BTCTRY", "spot_price": spot_price}}
                     await database.save_signal(signal)
+                action = signal.get("action", action) if signal else "BUY_BLOCKED"
                 _btc_odds_last_window = window
                 await ws_manager.broadcast({"type": "signal", "data": {**(signal or {}), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": action, "price": spot_price, "reason": reason, "paper_only": True}})
         except Exception as exc:
