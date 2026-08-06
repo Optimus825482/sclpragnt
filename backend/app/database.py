@@ -666,7 +666,7 @@ async def get_signals(limit: int = 100):
     def op(conn: sqlite3.Connection):
         rows = conn.execute(
             "SELECT id, timestamp, symbol, action, price, reason FROM signals ORDER BY timestamp DESC LIMIT ?",
-            (max(1, min(limit, 500)),),
+            (max(1, min(limit, 5000)),),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -686,7 +686,7 @@ async def get_decision_logs(limit=500, symbol=None, strategy=None):
         if strategy:
             clauses.append("strategy=?"); values.append(strategy)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        values.append(max(1, min(int(limit), 1000)))
+        values.append(max(1, min(int(limit), 5000)))
         rows = conn.execute(f"SELECT * FROM decision_logs{where} ORDER BY timestamp DESC LIMIT ?", values).fetchall()
         result = [dict(r) for r in rows]
         for row in result:
