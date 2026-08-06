@@ -49,7 +49,10 @@ export async function streamChat(
         if (!dataLine) continue;
         const data = JSON.parse(dataLine);
         if (eventName === "delta") onDelta(String(data.text || ""));
-        else if (eventName === "error") throw new Error(data.error || "LLM streaming hatası");
+        else if (eventName === "error") {
+          const detail = typeof data.error === "string" ? data.error : data.error?.message || "LLM streaming hatası";
+          throw new Error(detail);
+        }
         else if (eventName === "done") result = data;
       }
       if (chunk.done) break;

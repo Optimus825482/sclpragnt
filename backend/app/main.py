@@ -324,14 +324,19 @@ async def radar_loop():
 async def llm_replenish_after_close():
     """Replace each closed paper position with one fresh eligible candidate."""
     if (await database.get_llm_setting("llm_auto_paper_enabled", "0")) != "1":
+        print("[LLM replenish] tetikleme atlandı: otomatik paper yenileme ayarı kapalı")
         return
     if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
+        print("[LLM replenish] tetikleme atlandı: LLM paper işlem yetkisi kapalı")
         return
     async with _llm_replenish_lock:
         if len(analyzer.positions) >= analyzer.max_open_positions():
+            print("[LLM replenish] tetikleme atlandı: maksimum açık pozisyon limiti dolu")
             return
         try:
-            await llm_open_paper_trade({"source": "llm_after_close"})
+            result = await llm_open_paper_trade({"source": "llm_after_close"})
+            signal = result.get("signal") or {}
+            print(f"[LLM replenish] kapanış sonrası yeni paper işlem: {signal.get('symbol')} action={signal.get('action')}")
         except Exception as exc:
             print(f"[LLM replenish] yeni aday bulunamadı: {exc}")
 
@@ -1290,11 +1295,13 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             try:
                 result = await llm_open_paper_trade({})
                 signal = result.get("signal", {})
-                text = f"### Paper işlem açıldı\\n\\n- **Sembol:** `{signal.get('symbol', '—')}`\\n- **Yön:** {signal.get('side', 'LONG')}\\n- **Giriş:** `{signal.get('entry_price', '—')}`\\n- **Durum:** Mevcut risk kuralları geçti."
+                entry = signal.get("entry_price", signal.get("price", "—"))
+                text = f"### Paper işlem açıldı\n\n- **Sembol:** `{signal.get('symbol', '—')}`\n- **Yön:** {signal.get('side', 'LONG')}\n- **Giriş:** `{entry}`\n- **Durum:** Mevcut risk kuralları geçti."
                 yield f"event: delta\ndata: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
                 yield "event: done\ndata: {\"status\":\"ok\",\"paper_only\":true}\n\n"
             except HTTPException as exc:
-                yield f"event: error\ndata: {json.dumps({'error': exc.detail}, ensure_ascii=False)}\n\n"
+                detail = exc.detail if isinstance(exc.detail, str) else (exc.detail or {}).get("message", "Paper işlem açılamadı")
+                yield f"event: error\ndata: {json.dumps({'error': detail}, ensure_ascii=False)}\n\n"
             except Exception as exc:
                 yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
         return StreamingResponse(paper_events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
