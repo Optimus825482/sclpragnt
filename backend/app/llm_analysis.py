@@ -10,6 +10,10 @@ OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
 - Her cümle arasında normal boşluk bırak; sembol, sayı, yüzde ve birim değerlerini ayırarak yaz (ör. `8.97 TRY`, `%0.25`).
 - Ham JSON, HTML veya tek satır sıkıştırılmış metin üretme.
 - `market_scan` verildiğinde tüm taranan sembolleri karşılaştır; yükseliş ve yüksek skor adaylarını çoklu timeframe kanıtlarıyla derinleştir.
+- `price_action` alanını yalnızca teyitli kapanmış mum setup'ı olarak yorumla: pin bar, inside bar ve fakey tek başına işlem sinyali değildir.
+- Price-action setup'ını trend/rejim, destek-direnç veya breakout seviyesi, hacim, spread/derinlik, ATR kapasitesi ve maliyet sonrası risk/ödül ile birlikte değerlendir.
+- Açık mumdan sinyal üretme; teyit kapanışını bekle. Chop/range ortasında ve "no man's land" bölgelerinde setup skorunu düşür veya `watch/avoid` de.
+- Kırılımı kapanış teyidi olmadan onaylama; false-break/fakey ile gerçek breakout'u ayır ve belirsizliği açıkça belirt.
 - Kullanıcı işlem önerisi istediğinde yalnızca paper-trading senaryosu sun: giriş bölgesi, teyit, invalidasyon/stop, hedef, risk ve güven seviyesi. Gerçek emir veya kesin kâr vaadi verme.
 """
 

@@ -215,6 +215,35 @@ def _candlestick_patterns(opens, highs, lows, closes):
     if not patterns: patterns.append("none")
     return patterns
 
+def _price_action_setup(opens, highs, lows, closes):
+    """Conservative, non-repainting price-action labels from closed candles."""
+    if len(closes) < 4:
+        return {"setup": "none", "direction": "neutral", "confirmed": False, "reason": "insufficient_data"}
+    i = len(closes) - 2  # exclude the currently forming candle
+    o, h, l, c = map(float, (opens[i], highs[i], lows[i], closes[i]))
+    rng = max(h - l, 1e-12); body = abs(c - o)
+    upper = h - max(o, c); lower = min(o, c) - l
+    direction = "bullish" if c > o else "bearish" if c < o else "neutral"
+    setup = "none"; reason = "no_confirmed_setup"
+    if lower >= body * 2 and lower >= upper * 1.5 and c >= l + rng * .6:
+        setup, reason = "bullish_pin_bar", "closed candle rejected lower prices"
+    elif upper >= body * 2 and upper >= lower * 1.5 and c <= l + rng * .4:
+        setup, direction, reason = "bearish_pin_bar", "bearish", "closed candle rejected higher prices"
+    mother_range = highs[i-1] - lows[i-1]
+    inside = highs[i] < highs[i-1] and lows[i] > lows[i-1] if mother_range > 0 else False
+    if inside:
+        setup, reason = "inside_bar", "closed candle compressed inside the prior candle"
+    # Fakey: prior inside bar, then the confirmed candle breaks and closes back
+    # inside the mother range. This is a setup label, not an entry signal.
+    if i >= 2 and highs[i-1] < highs[i-2] and lows[i-1] > lows[i-2]:
+        if highs[i] > highs[i-2] and c < highs[i-2]:
+            setup, direction, reason = "bearish_fakey", "bearish", "false upside break returned below mother high"
+        elif lows[i] < lows[i-2] and c > lows[i-2]:
+            setup, direction, reason = "bullish_fakey", "bullish", "false downside break returned above mother low"
+    return {"setup": setup, "direction": direction, "confirmed": setup != "none",
+            "candle_index": i, "entry_confirmation_required": setup != "none", "reason": reason,
+            "data_policy": "confirmed candle only; no future bars"}
+
 CANDLESTICK_PATTERN_INFO = {
     "bullish_engulfing": {"direction": "bullish", "strength": "strong", "tr": "Güçlü boğa yutan formasyonu; alıcı baskısında artış."},
     "bearish_engulfing": {"direction": "bearish", "strength": "strong", "tr": "Güçlü ayı yutan formasyonu; satıcı baskısında artış."},
@@ -268,6 +297,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     methodologies = _methodology_analysis(opens, highs, lows, closes, volumes, adx, alignment)
     result.update({"timeframe": primary_timeframe, "data_ready": True, "trend": {"ema_9": ema9, "ema_21": ema21, "ema_50": ema50, "alignment": alignment, "adx": adx}, "momentum": {"return_5m": ret(1), "return_15m": ret(3), "return_1h": ret(12), "rsi_14": _rsi(closes), "roc_21": ret(21), "macd": macd, "stochastic": stochastic, "mfi_14": mfi}, "oscillators": {"values": oscillator_values, "signals": oscillator_signals}, "moving_averages": moving_averages, "candlestick_patterns": _candlestick_patterns(opens, highs, lows, closes), "channels": {"bollinger": bollinger, "donchian": {"upper": max(highs[-20:]), "middle": _sma(closes, 20), "lower": min(lows[-20:])} if len(closes) >= 20 else None, "keltner": {"middle": ema20, "upper": ema20 + 2*atr if ema20 and atr else None, "lower": ema20 - 2*atr if ema20 and atr else None}}, "volatility": {"atr_14": atr, "atr_pct": atr / price if atr and price else None, "adr_14_pct": adr, "adr_basis": "1d", "bollinger": bollinger, "day_range_used_pct": None, "adr_utilization": None, "remaining_capacity_pct": None}, "volume": {"volume_ratio_20": volumes[-1] / vavg if vavg else None, "volume_quality": "insufficient_history" if len(volumes) < 21 else "low_volume" if vavg and volumes[-1] / vavg < 0.2 else "valid", "volume_timeframe": primary_timeframe, "vwap": float(np.sum(((np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3) * np.array(volumes[-20:])) / np.sum(volumes[-20:])) if len(volumes) >= 20 and np.sum(volumes[-20:]) else None, "obv": obv}, "pivots": _pivots(dhigh[-1], dlow[-1], dclose[-1]) if len(dclose) else None, "liquidity": {"quote_volume_24h": ticker_24h, "spread_pct": spread, "orderbook_depth_try": depth, "depth_multiplier": depth / order_value if order_value else None, "orderflow_imbalance": ((flow.get("bid_qty", 0) - flow.get("ask_qty", 0)) / (flow.get("bid_qty", 0) + flow.get("ask_qty", 0))) if (flow.get("bid_qty", 0) + flow.get("ask_qty", 0)) else None, "scope": "realtime_market", "timeframe_independent": True, "source": flow.get("source", "binance_tr_public_websocket"), "updated_at": flow.get("updated_at")}, "methodologies": methodologies})
     result["candlestick_patterns"] = candle_patterns
+    result["price_action"] = _price_action_setup(opens, highs, lows, closes)
     result["candlestick_pattern_details"] = [CANDLESTICK_PATTERN_INFO.get(name, {"direction": "neutral", "strength": "info", "tr": name}) for name in candle_patterns]
     result["candlestick_pattern_status"] = "calculated_no_pattern" if candle_patterns == ["none"] else "detected"
     if adr and len(dclose) and dclose[-1]:
