@@ -16,7 +16,9 @@ export async function streamChat(
     });
     const body = await action.json().catch(() => ({}));
     if (!action.ok) {
-      const detail = typeof body.detail === "string" ? body.detail : body.detail?.message || body.error || "Paper işlem açılamadı";
+      const detail = typeof body.detail === "string" ? body.detail : body.detail?.message
+        ? `${body.detail.message}${(body.detail.blocked_candidates || body.detail.top_ranked || []).length ? "\n\nElenen adaylar:\n" + (body.detail.blocked_candidates || body.detail.top_ranked).slice(0, 8).map((x: any) => `- ${x.symbol || "—"}: ${x.reason || (x.risks || []).join(", ") || "bilinmiyor"}`).join("\n") : ""}`
+        : body.error || "Paper işlem açılamadı";
       throw new Error(detail);
     }
     const signal = body.signal || {};

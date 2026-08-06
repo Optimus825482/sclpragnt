@@ -46,6 +46,7 @@ _embedding_backfill = {"status": "idle", "queued": 0, "message": None}
 _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
 _llm_replenish_lock = asyncio.Lock()
+_llm_last_idle_attempt_at = time.time()
 
 async def _public_json(url, timeout=10):
     def read():
@@ -224,6 +225,7 @@ async def startup():
     asyncio.create_task(market.connect())
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
+    asyncio.create_task(llm_idle_trigger_loop())
     asyncio.create_task(ws_broadcast_loop())
 
 @app.on_event("shutdown")
@@ -337,8 +339,37 @@ async def llm_replenish_after_close():
             result = await llm_open_paper_trade({"source": "llm_after_close"})
             signal = result.get("signal") or {}
             print(f"[LLM replenish] kapanış sonrası yeni paper işlem: {signal.get('symbol')} action={signal.get('action')}")
+            global _llm_last_idle_attempt_at
+            _llm_last_idle_attempt_at = time.time()
         except Exception as exc:
             print(f"[LLM replenish] yeni aday bulunamadı: {exc}")
+
+async def llm_idle_trigger_loop():
+    """Trigger LLM paper research after 10 minutes of idle time and cash."""
+    global _llm_last_idle_attempt_at
+    await asyncio.sleep(15)
+    while True:
+        try:
+            enabled = (await database.get_llm_setting("llm_auto_paper_enabled", "0")) == "1"
+            paper_enabled = (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
+            balance = float(await database.get_wallet_balance("TRY") or 0)
+            idle = time.time() - _llm_last_idle_attempt_at
+            if enabled and paper_enabled and balance > 100.0 and idle >= 10 * 60:
+                async with _llm_replenish_lock:
+                    # Re-check after waiting for a concurrent close-triggered run.
+                    now = time.time()
+                    if now - _llm_last_idle_attempt_at < 10 * 60:
+                        continue
+                    _llm_last_idle_attempt_at = now
+                    try:
+                        result = await llm_open_paper_trade({"source": "llm_idle_10m", "balance_try": balance})
+                        signal = result.get("signal") or {}
+                        print(f"[LLM idle] 10 dakika sonrası paper işlem: {signal.get('symbol')} action={signal.get('action')} balance={balance:.2f}")
+                    except Exception as exc:
+                        print(f"[LLM idle] aday bulunamadı/işlem açılmadı: {exc}")
+        except Exception as exc:
+            print(f"[LLM idle] tetikleyici hatası: {exc}")
+        await asyncio.sleep(15)
 
 @app.get("/health")
 async def health():
@@ -973,7 +1004,7 @@ async def set_llm_paper_trading(payload: dict):
 async def set_llm_auto_paper_trading(payload: dict):
     enabled = bool(payload.get("enabled"))
     await database.set_llm_setting("llm_auto_paper_enabled", "1" if enabled else "0")
-    return {"ok": True, "auto_paper_enabled": enabled, "trigger": "after_each_closed_position", "paper_only": True}
+    return {"ok": True, "auto_paper_enabled": enabled, "trigger": "after_each_closed_position_or_10m_idle_with_balance_over_100_try", "paper_only": True}
 
 @app.post("/api/llm/paper-trade")
 async def llm_open_paper_trade(payload: dict):
@@ -1023,7 +1054,7 @@ async def llm_open_paper_trade(payload: dict):
             await ws_manager.broadcast({"type": "signal", "data": signal})
             return {"ok": True, "paper_only": True, "real_trading": False, "signal": signal, "research_attempts": blocked}
         blocked.append({"symbol": symbol, "reason": (signal or {}).get("reason", "risk_or_position_limit")})
-    raise HTTPException(status_code=409, detail={"message": "Hiçbir aday paper işlem kurallarını geçemedi; işlem açılmadı", "blocked_candidates": blocked, "retry_research": True})
+    raise HTTPException(status_code=409, detail={"message": "Hiçbir aday paper işlem kurallarını geçemedi; işlem açılmadı", "blocked_candidates": blocked[:10], "retry_research": True})
 
 @app.post("/api/llm/providers")
 async def add_llm_provider(payload: dict):
@@ -1307,7 +1338,17 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                 yield f"event: delta\ndata: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
                 yield "event: done\ndata: {\"status\":\"ok\",\"paper_only\":true}\n\n"
             except HTTPException as exc:
-                detail = exc.detail if isinstance(exc.detail, str) else (exc.detail or {}).get("message", "Paper işlem açılamadı")
+                if isinstance(exc.detail, str):
+                    detail = exc.detail
+                else:
+                    payload = exc.detail or {}
+                    detail = payload.get("message", "Paper işlem açılamadı")
+                    blocked = payload.get("blocked_candidates") or payload.get("top_ranked") or []
+                    if blocked:
+                        detail += "\n\nElenen adaylar:\n" + "\n".join(
+                            f"- {item.get('symbol', '—')}: {item.get('reason', item.get('risks', 'bilinmiyor'))}"
+                            for item in blocked[:8]
+                        )
                 yield f"event: error\ndata: {json.dumps({'error': detail}, ensure_ascii=False)}\n\n"
             except Exception as exc:
                 yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
