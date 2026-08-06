@@ -18,6 +18,7 @@ from app.config import config
 from app.market_intelligence import (estimate_local_regime, execution_quality,
                                      symbol_safety, cost_aware_trade_metrics,
                                      walk_forward_assessment)
+from app.self_learning import build_learning_context
 from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app import database
@@ -952,6 +953,11 @@ async def llm_config():
     auto_enabled = (await database.get_llm_setting("llm_auto_paper_enabled", "0")) == "1"
     return {**data, "encryption_configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "paper_trade_enabled": paper_enabled, "auto_paper_enabled": auto_enabled, "auto_paper_interval_minutes": 15}
 
+@app.get("/api/llm/learning")
+async def llm_learning():
+    """Expose the descriptive closed-trade learning summary for audit/UI."""
+    return build_learning_context(await database.get_trades(), limit=200)
+
 @app.put("/api/llm/paper-trading")
 async def set_llm_paper_trading(payload: dict):
     enabled = bool(payload.get("enabled"))
@@ -1091,9 +1097,9 @@ async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
     supported = ("1m", "5m", "15m", "1h", "4h", "1d")
     preferred = preferred_timeframe if preferred_timeframe in supported else config.MOMENTUM_TIMEFRAME
     snapshots = {}
-    for tf in supported:
-        snapshot = await symbol_analysis(symbol, tf)
-        if snapshot.get("data_ready"):
+    results = await asyncio.gather(*(symbol_analysis(symbol, tf) for tf in supported), return_exceptions=True)
+    for tf, snapshot in zip(supported, results):
+        if isinstance(snapshot, dict) and snapshot.get("data_ready"):
             snapshots[tf] = snapshot
     selected = snapshots.get(preferred) or await symbol_analysis(symbol, preferred)
     if selected.get("data_ready"):
@@ -1217,6 +1223,7 @@ async def scan_market_snapshots(args: dict | None = None):
     results = await asyncio.gather(*(one(sym) for sym in symbols))
     results.sort(key=lambda row: row["score"], reverse=True)
     regime = estimate_local_regime(results)
+    learning = build_learning_context(await database.get_trades(), limit=200)
     # Regime is a soft selector: hard paper risk rules remain authoritative.
     if regime["zone"] == "RISK_OFF":
         for row in results:
@@ -1228,6 +1235,7 @@ async def scan_market_snapshots(args: dict | None = None):
     return {"generated_at": time.time(), "symbols_scanned": len(symbols), "symbols_skipped_open": sorted(open_symbols & set(requested_symbols)), "timeframes": timeframes,
             "bullish_candidates": bullish[:limit], "ranked": results[:limit],
             "market_regime": regime,
+            "learning_context": learning,
             "paper_only": True, "live_portfolio_changed": False,
             "data_policy": "Binance TR public market data; missing values remain unknown. Contract/wallet safety is not inferred."}
 
@@ -1263,6 +1271,7 @@ LLM_READONLY_SQL_TOOL = {"type":"function","function":{"name":"read_only_sql","d
 async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     body = payload or {}
     last_message = str((body.get("messages") or [{}])[-1].get("content", "")).lower().replace("ı", "i").replace("ş", "s")
+    broad_scan = any(token in last_message for token in ("tum sembol", "tüm sembol", "en uygun", "en guclu", "en güçlü", "gainer", "piyasa tar"))
     is_trade_command = ("islem" in last_message or "pozisyon" in last_message) and ("ac" in last_message or "aç" in last_message)
     if body.get("stream") is True and is_trade_command:
         async def paper_events():
@@ -1283,8 +1292,8 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
     try:
         market_scan = await scan_market_snapshots({
-            "symbols": config.SYMBOLS,
-            "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
+            "symbols": config.SYMBOLS if broad_scan else [symbol.upper()],
+            "timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"] if broad_scan else ["5m", "15m", "1h"],
             "limit": 8,
         })
         snapshot = dict(snapshot)
@@ -1293,6 +1302,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             "bullish_candidates": market_scan["bullish_candidates"][:5],
             "ranked": market_scan["ranked"],
             "market_regime": market_scan.get("market_regime"),
+            "learning_context": market_scan.get("learning_context"),
             "paper_only": True,
             "data_policy": market_scan["data_policy"],
         }
@@ -1534,7 +1544,7 @@ async def risk_summary():
 @app.post("/api/strategies/llm/chat")
 async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
-    context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data."}
+    context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data.", "self_learning": build_learning_context(await database.get_trades(), limit=200)}
     tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Public historical candles üzerinde yalnızca paper/backtest simülasyonu çalıştırır. Gerçek emir ve canlı portföy değişikliği yoktur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","3m","5m","15m","30m","1h","2h","4h","1d"]},"days_back":{"type":"integer","description":"1-90 arası tarihsel gün"},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"params":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını candle verisi üzerinde backtest eder; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object","description":"entry/exit koşulları: indicator, op, value. En fazla 8 koşul.","properties":{"entry":{"type":"array"},"exit":{"type":"array"}}},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Aynı stratejiyi birden fazla tarih penceresinde çalıştırır ve trade PnL'leri üzerinde deterministik Monte Carlo dayanıklılık özeti üretir. Sonuçlar araştırma amaçlıdır; walk-forward için gerçek tarih aralığı ayrımı olmadığını açıkça belirtir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"windows":{"type":"array","items":{"type":"integer"},"description":"En fazla 3 pencere; 7-90 gün"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
         started = time.perf_counter(); success = True
