@@ -41,6 +41,7 @@ _pg_pool = None
 _embedding_backfill = {"status": "idle", "queued": 0, "message": None}
 _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
+_llm_replenish_lock = asyncio.Lock()
 
 async def _public_json(url, timeout=10):
     def read():
@@ -219,7 +220,6 @@ async def startup():
     asyncio.create_task(market.connect())
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
-    asyncio.create_task(llm_auto_paper_loop())
     asyncio.create_task(ws_broadcast_loop())
 
 @app.on_event("shutdown")
@@ -302,6 +302,7 @@ async def strategy_loop():
                 await ws_manager.broadcast({"type": "signal", "data": sig})
                 if str(sig.get("action", "")).startswith("CLOSE"):
                     await ws_manager.broadcast({"type": "trade_updated", "data": {"symbol": sig.get("symbol"), "reason": sig.get("reason")}})
+                    asyncio.create_task(llm_replenish_after_close())
         await asyncio.sleep(2)
 
 async def radar_loop():
@@ -316,21 +317,19 @@ async def radar_loop():
             print(f"[Radar] otomatik tarama hatası: {exc}")
             await asyncio.sleep(30)
 
-async def llm_auto_paper_loop():
-    """Optional 15-minute public-data paper scanner; disabled by default."""
-    while True:
+async def llm_replenish_after_close():
+    """Replace each closed paper position with one fresh eligible candidate."""
+    if (await database.get_llm_setting("llm_auto_paper_enabled", "0")) != "1":
+        return
+    if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
+        return
+    async with _llm_replenish_lock:
+        if len(analyzer.positions) >= analyzer.max_open_positions():
+            return
         try:
-            enabled = (await database.get_llm_setting("llm_auto_paper_enabled", "0")) == "1"
-            allowed = (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
-            if enabled and allowed and len(analyzer.positions) < analyzer.max_open_positions():
-                scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "limit": 5})
-                candidates = [x for x in scan.get("bullish_candidates", []) if x.get("score", 0) >= 2.5]
-                if candidates:
-                    candidate = candidates[0]
-                    await llm_open_paper_trade({"symbol": candidate["symbol"], "source": "llm_auto_scan"})
+            await llm_open_paper_trade({"source": "llm_after_close"})
         except Exception as exc:
-            print(f"[LLM auto paper] {exc}")
-        await asyncio.sleep(900)
+            print(f"[LLM replenish] yeni aday bulunamadı: {exc}")
 
 @app.get("/health")
 async def health():
@@ -960,7 +959,7 @@ async def set_llm_paper_trading(payload: dict):
 async def set_llm_auto_paper_trading(payload: dict):
     enabled = bool(payload.get("enabled"))
     await database.set_llm_setting("llm_auto_paper_enabled", "1" if enabled else "0")
-    return {"ok": True, "auto_paper_enabled": enabled, "interval_minutes": 15, "paper_only": True}
+    return {"ok": True, "auto_paper_enabled": enabled, "trigger": "after_each_closed_position", "paper_only": True}
 
 @app.post("/api/llm/paper-trade")
 async def llm_open_paper_trade(payload: dict):
@@ -1362,6 +1361,7 @@ async def close_position_manual(symbol: str):
     if not sig:
         return {"ok": False, "message": f"{symbol} için açık pozisyon yok"}
     await ws_manager.broadcast({"type": "signal", "data": sig})
+    asyncio.create_task(llm_replenish_after_close())
     return {"ok": True, "message": f"{symbol} kapatıldı @ {price:.2f}", "signal": sig}
 
 @app.get("/api/trades")
