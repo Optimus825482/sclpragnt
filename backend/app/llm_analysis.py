@@ -183,10 +183,21 @@ async def chat(snapshot, messages, tools=None, tool_executor=None):
             data = response_data(result)
             choices = data.get("choices", []) if isinstance(data, dict) else []
             first = choices[0] if choices else {}
-            tool_calls = (first.get("message") or {}).get("tool_calls", [])
+            assistant = first.get("message") or {}
+            tool_calls = assistant.get("tool_calls", []) or []
+            # A number of OpenAI-compatible gateways still emit the legacy
+            # single-call function_call shape. Normalize it to the modern
+            # tool_calls protocol before appending the follow-up messages.
+            legacy_call = assistant.get("function_call")
+            if not tool_calls and isinstance(legacy_call, dict) and legacy_call.get("name"):
+                tool_calls = [{
+                    "id": f"legacy_call_{tool_round}",
+                    "type": "function",
+                    "function": legacy_call,
+                }]
+                assistant = {**assistant, "tool_calls": tool_calls}
             if not tool_calls or not tool_executor: break
-            assistant_message = first.get("message") or {}
-            conversation.append(assistant_message)
+            conversation.append(assistant)
             for call_item in tool_calls:
                 fn = call_item.get("function") or {}; name = fn.get("name", "")
                 try:
