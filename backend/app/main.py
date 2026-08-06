@@ -1238,6 +1238,8 @@ async def deep_analyze_symbol(args: dict):
     if not context.get("data_ready"): return context
     score, evidence, risks = _market_candidate_score(context)
     context = dict(context); context["candidate_assessment"] = {"score": score, "bullish_evidence": evidence, "risks": risks,
+        "execution_quality": execution_quality(context, config.DEFAULT_ORDER_USDT),
+        "symbol_safety": symbol_safety(context),
         "paper_candidate": "candidate" if score >= 2.5 and not risks else "watch"}
     return context
 
@@ -1290,6 +1292,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             "symbols_scanned": market_scan["symbols_scanned"],
             "bullish_candidates": market_scan["bullish_candidates"][:5],
             "ranked": market_scan["ranked"],
+            "market_regime": market_scan.get("market_regime"),
             "paper_only": True,
             "data_policy": market_scan["data_policy"],
         }

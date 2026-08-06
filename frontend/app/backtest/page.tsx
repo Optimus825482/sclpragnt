@@ -22,7 +22,7 @@ type BacktestResult = {
     stop_loss_pct: number;
     take_profit_pct: number;
     trailing_stop_pct: number;
-    trades: { side: string; entry: number; exit: number; pnl: number; reason: string; entry_time?: number; exit_time?: number; bars_held?: number }[];
+    trades: { side: string; entry: number; exit: number; pnl: number; commission?: number; reason: string; entry_time?: number; exit_time?: number; bars_held?: number }[];
 };
 
 const STRATEGIES = [
@@ -103,6 +103,8 @@ export default function BacktestPage() {
     };
 
     const strat = STRATEGIES.find((s) => s.key === strategy);
+    const resultProfitFactor = result ? (() => { const gains = result.trades.filter(t => t.pnl > 0).reduce((a, t) => a + t.pnl, 0); const losses = Math.abs(result.trades.filter(t => t.pnl < 0).reduce((a, t) => a + t.pnl, 0)); return losses ? gains / losses : null; })() : null;
+    const resultCommission = result ? result.trades.reduce((a, t) => a + Number(t.commission || 0), 0) : 0;
 
     return (
         <div className="max-w-7xl mx-auto space-y-6">
@@ -210,6 +212,11 @@ export default function BacktestPage() {
                                 <span className="text-neon-red">{result.losses}</span>
                             </p>
                         </div>
+                    </div>
+                    <div className="grid sm:grid-cols-3 gap-3 mt-4 text-sm font-mono">
+                        <div className="border border-bunker-800 rounded-lg p-3"><p className="eyebrow">KOMİSYON</p><p className="mt-1 text-yellow-300">₺{fmtTL(resultCommission)}</p></div>
+                        <div className="border border-bunker-800 rounded-lg p-3"><p className="eyebrow">PROFIT FACTOR</p><p className="mt-1">{resultProfitFactor == null ? "—" : resultProfitFactor.toFixed(2)}</p></div>
+                        <div className="border border-bunker-800 rounded-lg p-3"><p className="eyebrow">DEĞERLENDİRME</p><p className={`mt-1 font-bold ${result.net_pnl > 0 && (resultProfitFactor == null || resultProfitFactor >= 1) ? "text-neon-green" : "text-neon-red"}`}>{result.net_pnl > 0 && (resultProfitFactor == null || resultProfitFactor >= 1) ? "MALİYET SONRASI POZİTİF" : "MALİYET SONRASI ZAYIF"}</p></div>
                     </div>
                     {result.trades.length > 0 && (
                         <div className="mt-4 overflow-x-auto">
