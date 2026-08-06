@@ -41,7 +41,6 @@ _pg_pool = None
 _embedding_backfill = {"status": "idle", "queued": 0, "message": None}
 _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
-_btc_odds_last_window = None
 
 async def _public_json(url, timeout=10):
     def read():
@@ -52,6 +51,7 @@ async def _public_json(url, timeout=10):
 
 @app.get("/api/btc-5min-scan")
 async def btc_5min_scan():
+    raise HTTPException(status_code=410, detail="BTC_5M_ODDS_SCALPER sistemden kaldırıldı")
     """Return a read-only BTC 5-minute Up/Down signal summary (S1-S6)."""
     try:
         candles = await _public_json("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=60")
@@ -137,6 +137,7 @@ async def btc_5min_scan():
 
 @app.get("/api/btc-5min-backtest")
 async def btc_5min_backtest(days_back: int = 7, order_size: float = 500.0, take_profit_pct: float = 0.01, stop_loss_pct: float = 0.02):
+    raise HTTPException(status_code=410, detail="BTC_5M_ODDS_SCALPER sistemden kaldırıldı")
     """Replay recorded BTC odds signals against real BTCTRY 5m candles.
 
     Historical Polymarket odds are not reconstructed or invented. Only
@@ -217,7 +218,6 @@ async def startup():
             print(f"[Memory] PostgreSQL/embedding worker başlatılamadı: {exc}")
     asyncio.create_task(market.connect())
     asyncio.create_task(strategy_loop())
-    asyncio.create_task(btc_odds_strategy_loop())
     asyncio.create_task(radar_loop())
     asyncio.create_task(ws_broadcast_loop())
 
@@ -302,54 +302,6 @@ async def strategy_loop():
                 if str(sig.get("action", "")).startswith("CLOSE"):
                     await ws_manager.broadcast({"type": "trade_updated", "data": {"symbol": sig.get("symbol"), "reason": sig.get("reason")}})
         await asyncio.sleep(2)
-
-async def btc_odds_strategy_loop():
-    """Record one paper-only BTC 5m odds decision per market window.
-
-    The signal source is BTC/USD/Polymarket, while any paper execution uses
-    the BTCTRY spot price through the normal portfolio transaction path.
-    """
-    global _btc_odds_last_window
-    await asyncio.sleep(20)
-    while True:
-        try:
-            scan = await btc_5min_scan()
-            window = scan.get("window_start")
-            spot_ticker = market.get_ticker("BTCTRY")
-            if window is not None and window != _btc_odds_last_window and spot_ticker:
-                verdict = str(scan.get("verdict", ""))
-                action = "BUY_SIGNAL" if verdict == "ENTER UP" else "BUY_BLOCKED"
-                spot_price = float(spot_ticker.get("last_price") or spot_ticker.get("lastPrice") or spot_ticker.get("price") or 0)
-                if spot_price <= 0:
-                    signal = {"timestamp": time.time(), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": "BUY_BLOCKED", "price": spot_price, "reason": "invalid_spot_price", "paper_only": True}
-                    await database.save_signal(signal)
-                    _btc_odds_last_window = window
-                    await ws_manager.broadcast({"type": "signal", "data": signal})
-                    await asyncio.sleep(20)
-                    continue
-                reason = json.dumps({"verdict": verdict, "paper_only": True, "signal_source": "BTCUSDT/Polymarket", "execution_symbol": "BTCTRY", "spot_price": spot_price, "signals": scan.get("signals"), "odds": scan.get("odds")}, ensure_ascii=False, default=str)
-                if verdict == "ENTER DOWN":
-                    reason = "spot_short_not_supported: " + reason
-                signal = None
-                if action == "BUY_SIGNAL":
-                    if "BTCTRY" in analyzer.positions:
-                        signal = {"timestamp": time.time(), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": "BUY_BLOCKED", "price": spot_price, "reason": "position_already_open", "paper_only": True}
-                        await database.save_signal(signal)
-                    else:
-                    # Reuse the normal paper-wallet, liquidity, commission,
-                    # position-limit and entry-snapshot transaction.
-                        signal = await analyzer.open_position("BTCTRY", spot_price, "LONG", "BTC_5M_ODDS_SCALPER")
-                        if signal:
-                            signal["odds_context"] = {"verdict": verdict, "signal_source": "BTCUSDT/Polymarket", "signals": scan.get("signals"), "odds": scan.get("odds")}
-                else:
-                    signal = {"timestamp": time.time(), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": action, "price": spot_price, "reason": reason, "metadata": {**scan, "execution_symbol": "BTCTRY", "spot_price": spot_price}}
-                    await database.save_signal(signal)
-                action = signal.get("action", action) if signal else "BUY_BLOCKED"
-                _btc_odds_last_window = window
-                await ws_manager.broadcast({"type": "signal", "data": {**(signal or {}), "symbol": "BTCTRY", "strategy": "BTC_5M_ODDS_SCALPER", "action": action, "price": spot_price, "reason": reason, "paper_only": True}})
-        except Exception as exc:
-            print(f"[BTC Odds] paper tarama hatası: {exc}")
-        await asyncio.sleep(20)
 
 async def radar_loop():
     await asyncio.sleep(15)
