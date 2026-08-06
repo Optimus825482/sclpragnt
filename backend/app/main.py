@@ -974,8 +974,20 @@ async def llm_open_paper_trade(payload: dict):
             raise HTTPException(status_code=409, detail="Paper işlem için yeterli güvene sahip bullish aday bulunamadı")
         symbol = str(candidates[0]["symbol"]).upper()
     if symbol not in config.SYMBOLS:
-        raise HTTPException(status_code=400, detail="Geçerli etkin sembol gerekli")
+        try:
+            available_symbols = set(await trading_symbols("TRY"))
+        except Exception:
+            available_symbols = set()
+        if symbol not in available_symbols:
+            raise HTTPException(status_code=400, detail="Geçerli TRY sembolü gerekli")
     ticker = market.get_ticker(symbol)
+    if not ticker or not ticker.get("last_price"):
+        try:
+            latest = await fetch_klines(symbol, "1m", 2)
+            if latest:
+                ticker = {"symbol": symbol, "last_price": float(latest[-1][4]), "timestamp": time.time() * 1000, "source": "binance_tr_public_rest"}
+        except Exception as exc:
+            print(f"[LLM paper] {symbol} fiyat fallback hatası: {exc}")
     if not ticker or not ticker.get("last_price"):
         raise HTTPException(status_code=502, detail="Güncel public fiyat bulunamadı")
     signal = await analyzer.open_position(symbol, float(ticker["last_price"]), "LONG", "LLM_PAPER")

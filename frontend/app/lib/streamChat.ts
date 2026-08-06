@@ -5,8 +5,8 @@ export async function streamChat(
   messages: ChatMessage[],
   onDelta: (text: string) => void,
 ): Promise<{ model?: string }> {
-  const last = messages[messages.length - 1]?.content?.toLocaleLowerCase("tr-TR") || "";
-  if (/\b(işlem|pozisyon)\s+aç\b|\baç\s+işlem\b/.test(last)) {
+  const last = (messages[messages.length - 1]?.content || "").toLocaleLowerCase("tr-TR").replace(/[ıİ]/g, "i").replace(/[şŞ]/g, "s");
+  if (/\b(islem|pozisyon)\s+a[çc]\b|\ba[çc]\s+islem\b/.test(last)) {
     const origin = url.slice(0, url.indexOf("/api/"));
     const action = await fetch(`${origin}/api/llm/paper-trade`, {
       method: "POST",
