@@ -142,7 +142,7 @@ def _pivots(high, low, close):
 def _methodology_analysis(opens, highs, lows, closes, volumes, adx=None, alignment="mixed"):
     """Deterministic, explainable methodology layer; never uses future candles."""
     if len(closes) < 55:
-        return {"regime": {"name": "unknown", "confidence": 0.0}, "elliott": {"structure": "insufficient_data", "confidence": 0.0}, "wyckoff": {"phase": "unknown", "confidence": 0.0}, "turtle": None, "fibonacci": None, "confluence": {"score": 0.0, "label": "unknown"}, "methodology_version": "methodology-v1"}
+        return {"regime": {"name": "unknown", "confidence": 0.0}, "elliott": {"structure": "insufficient_data", "confidence": 0.0}, "wyckoff": {"phase": "unknown", "confidence": 0.0}, "turtle": {"breakout": "none"}, "fibonacci": {"0.236": None, "0.786": None}, "confluence": {"score": 0.0, "label": "unknown", "components": {"trend": 0.0, "turtle": 0.0, "wyckoff": 0.0, "elliott": 0.0}}, "methodology_version": "methodology-v1"}
     price = float(closes[-1]); atr = _atr(highs, lows, closes, 14) or 0.0
     atr_pct = atr / price if price else 0.0
     adx_value = float((adx or {}).get("adx") or 0.0); plus = float((adx or {}).get("plus_di") or 0.0); minus = float((adx or {}).get("minus_di") or 0.0)

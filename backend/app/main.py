@@ -5,6 +5,9 @@ import subprocess
 import json
 import tempfile
 import random
+from datetime import datetime, timezone
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -38,6 +41,49 @@ _pg_pool = None
 _embedding_backfill = {"status": "idle", "queued": 0, "message": None}
 _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
+
+async def _public_json(url, timeout=10):
+    def read():
+        request = Request(url, headers={"User-Agent": "ScalperAgent/4.0"})
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    return await asyncio.to_thread(read)
+
+@app.get("/api/btc-5min-scan")
+async def btc_5min_scan():
+    """Return a read-only BTC 5-minute Up/Down signal summary (S1-S6)."""
+    try:
+        candles = await _public_json("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=60")
+        ticker = await _public_json("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT")
+        now = int(time.time()); window = now // 300 * 300
+        markets = await _public_json("https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Public market data unavailable: {exc}") from exc
+    parsed = [{"open": float(k[1]), "high": float(k[2]), "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])} for k in candles if len(k) >= 6]
+    if len(parsed) < 25: raise HTTPException(status_code=502, detail="Insufficient 1m candles")
+    price = parsed[-1]["close"]; changes = [x["close"] - x["open"] for x in parsed]
+    ema9 = sum(x["close"] for x in parsed[-9:]) / 9; ema21 = sum(x["close"] for x in parsed[-21:]) / 21
+    ema_dir = "UP" if ema9 > ema21 else "DOWN" if ema9 < ema21 else "FLAT"
+    mom5 = sum(changes[-5:]); range5 = max(x["high"] for x in parsed[-5:]) - min(x["low"] for x in parsed[-5:])
+    gains = sum(max(x, 0) for x in changes[-14:]); losses = sum(max(-x, 0) for x in changes[-14:]); rsi = 100 if not losses and gains else 50 if not losses else 100 - 100 / (1 + gains / losses)
+    s1 = "UP" if all(x > 0 for x in changes[-2:]) else "DOWN" if all(x < 0 for x in changes[-2:]) else "NONE"
+    s2 = ema_dir if ema_dir in {"UP", "DOWN"} else "NONE"
+    s3 = "UP" if rsi < 30 else "DOWN" if rsi > 70 else "NONE"
+    avg_volume = sum(x["volume"] for x in parsed[-26:-1]) / 25; volume_ratio = parsed[-1]["volume"] / avg_volume if avg_volume else 0
+    s4 = "DOWN" if now % 86400 // 3600 >= 15 and mom5 > 200 else "UP" if now % 86400 // 3600 >= 15 and mom5 < -200 else "NONE"
+    market = next((m for m in markets if "bitcoin" in str(m.get("question", "")).lower() and ("up" in str(m.get("question", "")).lower() and "down" in str(m.get("question", "")).lower()) and ("5m" in str(m.get("slug", "")).lower() or "5 minute" in str(m.get("question", "")).lower())), None)
+    prices = market.get("outcomePrices") if market else None
+    if isinstance(prices, str):
+        try: prices = json.loads(prices)
+        except json.JSONDecodeError: prices = None
+    up_price = float(prices[0]) if isinstance(prices, list) and len(prices) >= 2 else None; down_price = float(prices[1]) if isinstance(prices, list) and len(prices) >= 2 else None
+    s5 = "UP" if up_price is not None and up_price < 0.45 else "DOWN" if down_price is not None and down_price < 0.45 else "UNKNOWN"
+    support, resistance = float(ticker.get("lowPrice", 0)), float(ticker.get("highPrice", 0))
+    s6 = "UP" if support and (price - support) / price < 0.003 else "DOWN" if resistance and (resistance - price) / price < 0.003 else "NONE"
+    session = "ASIAN_MOMENTUM" if 3 <= datetime.now(timezone.utc).hour < 7 else "US_REVERSION" if 15 <= datetime.now(timezone.utc).hour < 18 else "DANGER" if 13 <= datetime.now(timezone.utc).hour < 14 else "NEUTRAL"
+    active = [s1, s2, s3, s4, s5, s6]; up = sum(x == "UP" for x in active); down = sum(x == "DOWN" for x in active)
+    verdict = "SKIP - danger zone" if session == "DANGER" else "ENTER UP" if up >= 2 and up > down else "ENTER DOWN" if down >= 2 and down > up else "SKIP - one signal only" if up or down else "SKIP - no signal"
+    return {"symbol": "BTCUSDT", "window_start": window, "price": price, "session": session, "ema": {"ema9": ema9, "ema21": ema21, "direction": ema_dir}, "rsi": rsi, "momentum_5m": mom5, "range_5m": range5, "volume_ratio": volume_ratio, "signals": {"S1_momentum": s1, "S2_ema": s2, "S3_rsi": s3, "S4_mean_reversion": s4, "S5_odds_bias": s5, "S6_support_resistance": s6}, "odds": {"available": up_price is not None and down_price is not None, "up": up_price, "down": down_price, "market_slug": market.get("slug") if market else None, "source": "polymarket_gamma"}, "levels": {"support_24h": support, "resistance_24h": resistance}, "up_signals": up, "down_signals": down, "verdict": verdict, "paper_only": True}
 
 def _repair_log(level, message):
     _trade_repair["logs"].append({"time": time.time(), "level": level, "message": message})

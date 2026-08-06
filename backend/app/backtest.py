@@ -147,20 +147,29 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
     if not isinstance(definition, dict): raise ValueError("strategy_definition nesne olmalıdır")
     entry = definition.get("entry") or []; exit_conditions = definition.get("exit") or []
     if len(entry) > 8 or len(exit_conditions) > 8: raise ValueError("En fazla 8 giriş ve 8 çıkış koşulu kullanılabilir")
-    rows = _fetch_klines(symbol, interval, days_back); analyzer = ScalpAnalyzer(None); balance = config.INITIAL_BALANCE_TRY; position = None; trades = []
+    rows = _fetch_klines(symbol, interval, days_back); analyzer = ScalpAnalyzer(None); balance = config.INITIAL_BALANCE_TRY; position = None; trades = []; entry_armed = True; cooldown_until = -1
     stop_pct = float(stop_pct if stop_pct is not None else config.HARD_STOP_LOSS_PCT); tp_pct = float(tp_pct if tp_pct is not None else config.TIME_DECAY_TP_1_PCT)
     for i, close in enumerate(rows["closes"]):
         window = {k:v[:i+1] for k,v in rows.items()}; now = rows["times"][i]
         if position:
             exit_price = None; reason = None
-            if rows["lows"][i] <= position["entry"] * (1-stop_pct): exit_price=position["entry"]*(1-stop_pct); reason="hard_stop_loss"
+            atr_stop = position.get("atr_stop")
+            hard_stop = position["entry"] * (1-stop_pct)
+            stop_price = max(hard_stop, atr_stop) if atr_stop else hard_stop
+            if rows["lows"][i] <= stop_price: exit_price=stop_price; reason="atr_stop_loss" if atr_stop and stop_price == atr_stop else "hard_stop_loss"
             elif rows["highs"][i] >= position["entry"] * (1+tp_pct): exit_price=position["entry"]*(1+tp_pct); reason="take_profit"
             elif _custom_conditions(analyzer, window, exit_conditions): exit_price=close; reason="custom_exit"
+            elif now-position["entry_time"] >= 20 * 60 and close < position["entry"] + position.get("min_net_exit", 0.0): exit_price=close; reason="early_failure_no_progress"
             elif now-position["entry_time"] >= config.MAX_POSITION_HOLD_SEC: exit_price=close; reason="max_hold_4h"
             if exit_price is not None:
-                balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size, reason); trade.update({"entry_time":position["entry_time"],"exit_time":now}); trades.append(trade); position=None
-        elif balance >= order_size and _custom_conditions(analyzer, window, entry):
-            fee=order_size*config.COMMISSION_PCT; balance-=order_size+fee; position={"entry":close,"quantity":order_size/close,"entry_time":now}
+                balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size, reason); trade.update({"entry_time":position["entry_time"],"exit_time":now}); trades.append(trade); position=None; cooldown_until = i + 1; entry_armed = False
+        entry_signal = _custom_conditions(analyzer, window, entry)
+        if not entry_signal: entry_armed = True
+        if position is None and i >= cooldown_until and entry_armed and balance >= order_size and entry_signal:
+            fee=order_size*config.COMMISSION_PCT; balance-=order_size+fee
+            atr_entry = analyzer.calculate_atr(window, 14) or 0.0
+            position={"entry":close,"quantity":order_size/close,"entry_time":now,"atr_stop":close - atr_entry * 2.5 if atr_entry else None,"min_net_exit":close * config.min_net_exit_pct(order_size)}
+            entry_armed = False
     if position:
         balance, pnl, _, trade = _close_trade(balance, position["entry"], rows["closes"][-1], position["quantity"], order_size, "open_at_end_mark_to_market"); trade.update({"entry_time":position["entry_time"],"exit_time":rows["times"][-1]}); trades.append(trade)
     wins=sum(t["pnl"]>0 for t in trades); net=balance-config.INITIAL_BALANCE_TRY; losses=[t["pnl"] for t in trades if t["pnl"]<=0]; gains=[t["pnl"] for t in trades if t["pnl"]>0]
