@@ -152,11 +152,14 @@ async def btc_5min_backtest(days_back: int = 7, order_size: float = 500.0, take_
     signals = await database.get_decision_logs(5000, "BTCTRY", "BTC_5M_ODDS_SCALPER")
     candidates = [s for s in signals if s.get("decision") == "BUY_SIGNAL"]
     commission_pct = config.COMMISSION_PCT
-    trades = []; missing_candle = 0
+    trades = []; missing_candle = 0; incomplete_forward_window = 0
     for signal in sorted(candidates, key=lambda item: float(item.get("timestamp") or 0)):
         entry_time = float(signal.get("timestamp") or 0)
         index = min(range(len(rows)), key=lambda i: abs(rows[i]["time"] - entry_time))
         if abs(rows[index]["time"] - entry_time) > 600: missing_candle += 1; continue
+        if len(rows) - index < 49:
+            incomplete_forward_window += 1
+            continue
         entry = rows[index]["close"]; exit_price = None; reason = "max_hold_4h"
         end = min(len(rows), index + 48 + 1)
         for candle in rows[index + 1:end]:
@@ -166,7 +169,7 @@ async def btc_5min_backtest(days_back: int = 7, order_size: float = 500.0, take_
         gross = order_size * ((exit_price / entry) - 1); commission = (order_size + order_size * (exit_price / entry)) * commission_pct; net = gross - commission
         trades.append({"signal_id": signal.get("id"), "entry": entry, "exit": exit_price, "gross_pnl": gross, "commission": commission, "net_pnl": net, "reason": reason, "hold_minutes": round((rows[min(end - 1, len(rows) - 1)]["time"] - rows[index]["time"]) / 60, 2)})
     wins = sum(1 for trade in trades if trade["net_pnl"] > 0); net = sum(trade["net_pnl"] for trade in trades); commission = sum(trade["commission"] for trade in trades)
-    return {"strategy": "BTC_5M_ODDS_SCALPER", "symbol": "BTCTRY", "days_back": days_back, "source": "recorded_signals_plus_binance_tr_public_5m", "odds_policy": "historical_odds_not_invented", "total_signals": len(candidates), "evaluated_trades": len(trades), "missing_candle_matches": missing_candle, "wins": wins, "losses": len(trades) - wins, "win_rate": round(wins / len(trades) * 100, 2) if trades else 0, "net_pnl": round(net, 4), "commission": round(commission, 4), "trades": trades, "paper_only": True}
+    return {"strategy": "BTC_5M_ODDS_SCALPER", "symbol": "BTCTRY", "days_back": days_back, "source": "recorded_signals_plus_binance_tr_public_5m", "odds_policy": "historical_odds_not_invented", "total_signals": len(candidates), "evaluated_trades": len(trades), "missing_candle_matches": missing_candle, "incomplete_forward_window": incomplete_forward_window, "wins": wins, "losses": len(trades) - wins, "win_rate": round(wins / len(trades) * 100, 2) if trades else 0, "net_pnl": round(net, 4), "commission": round(commission, 4), "trades": trades, "paper_only": True}
 
 def _repair_log(level, message):
     _trade_repair["logs"].append({"time": time.time(), "level": level, "message": message})
