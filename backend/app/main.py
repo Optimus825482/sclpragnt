@@ -88,6 +88,8 @@ async def btc_5min_scan():
         # Gamma's paginated active list can omit the short-lived market. Try
         # the documented event-by-slug shape for the current and next window.
         for slug in (
+            f"btc-updown-5m-{window}",
+            f"btc-updown-5m-{window + 300}",
             f"btc-up-or-down-5m-{window}",
             f"btc-up-or-down-5m-{window + 300}",
             f"bitcoin-up-or-down-5m-{window}",
@@ -98,6 +100,9 @@ async def btc_5min_scan():
                 direct_markets = direct.get("markets") if isinstance(direct, dict) else None
                 if isinstance(direct_markets, list) and direct_markets:
                     market = direct_markets[0]
+                    break
+                if isinstance(direct, dict) and direct.get("clobTokenIds"):
+                    market = direct
                     break
             except Exception:
                 continue
