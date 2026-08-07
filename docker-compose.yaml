@@ -27,6 +27,8 @@ services:
       LIVE_TRADING: "false"
       USE_TESTNET: "false"
       CORS_ORIGINS: https://scalper.erkanerdem.online
+      A2A_RELAY_URL: ${A2A_RELAY_URL:-}
+      A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:-}
     volumes:
       - scalper_data:/data
     expose:
