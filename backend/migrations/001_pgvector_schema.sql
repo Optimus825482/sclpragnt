@@ -78,7 +78,10 @@ END $$;
 -- HNSW index is intentionally created after the first embedding model is
 -- configured. Creating it during the base migration can block on an existing
 -- PostgreSQL relation and is unnecessary while the table has no embeddings.
-CREATE INDEX IF NOT EXISTS memory_embeddings_hnsw_idx ON memory_embeddings USING hnsw (embedding halfvec_cosine_ops);
+-- Keep large HNSW builds out of startup migrations. Create this index in a
+-- controlled maintenance job after the first embedding backfill:
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS memory_embeddings_hnsw_idx
+--   ON memory_embeddings USING hnsw (embedding halfvec_cosine_ops);
 
 CREATE TABLE IF NOT EXISTS memory_retrieval_logs (
   id BIGSERIAL PRIMARY KEY,
@@ -102,3 +105,73 @@ CREATE TABLE IF NOT EXISTS embedding_jobs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS embedding_jobs_ready_idx ON embedding_jobs(status, available_at);
+
+CREATE TABLE IF NOT EXISTS agent_traces (
+  id BIGSERIAL PRIMARY KEY, trace_id TEXT NOT NULL UNIQUE, parent_trace_id TEXT,
+  session_id TEXT, intent TEXT, status TEXT NOT NULL DEFAULT 'running',
+  model_id BIGINT, prompt_version TEXT, memory_snapshot_id TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(), completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS agent_traces_session_idx ON agent_traces(session_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS agent_traces_status_idx ON agent_traces(status, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_trace_events (
+  id BIGSERIAL PRIMARY KEY, trace_id TEXT NOT NULL REFERENCES agent_traces(trace_id) ON DELETE CASCADE,
+  sequence_no INTEGER NOT NULL, event_type TEXT NOT NULL, tool_name TEXT,
+  input_json JSONB, output_json JSONB, latency_ms DOUBLE PRECISION,
+  success BOOLEAN, error_code TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(trace_id, sequence_no)
+);
+CREATE INDEX IF NOT EXISTS agent_trace_events_trace_idx ON agent_trace_events(trace_id, sequence_no);
+
+CREATE TABLE IF NOT EXISTS agent_experiences (
+  id BIGSERIAL PRIMARY KEY, trace_id TEXT REFERENCES agent_traces(trace_id) ON DELETE SET NULL,
+  experience_type TEXT NOT NULL, symbol TEXT, strategy TEXT, timeframe TEXT,
+  trigger TEXT, action TEXT, outcome TEXT, lesson TEXT, evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+  confidence DOUBLE PRECISION NOT NULL DEFAULT 0.3, status TEXT NOT NULL DEFAULT 'candidate',
+  observed_at TIMESTAMPTZ NOT NULL DEFAULT now(), validated_at TIMESTAMPTZ,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS agent_experiences_filter_idx ON agent_experiences(experience_type, symbol, strategy, status, confidence DESC);
+
+CREATE TABLE IF NOT EXISTS trading_instincts (
+  id BIGSERIAL PRIMARY KEY, instinct_key TEXT NOT NULL UNIQUE, scope TEXT NOT NULL DEFAULT 'strategy',
+  symbol TEXT, strategy TEXT, domain TEXT NOT NULL, trigger TEXT NOT NULL, action TEXT NOT NULL,
+  confidence DOUBLE PRECISION NOT NULL DEFAULT 0.3, evidence_count INTEGER NOT NULL DEFAULT 0,
+  contradiction_count INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'candidate',
+  source_experience_ids JSONB NOT NULL DEFAULT '[]'::jsonb, metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  approved_at TIMESTAMPTZ, deprecated_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS trading_instincts_active_idx ON trading_instincts(status, scope, symbol, strategy, confidence DESC);
+CREATE TABLE IF NOT EXISTS memory_relations (
+  source_id BIGINT NOT NULL REFERENCES memory_documents(id) ON DELETE CASCADE,
+  target_id BIGINT NOT NULL REFERENCES memory_documents(id) ON DELETE CASCADE,
+  relation_type TEXT NOT NULL CHECK (relation_type IN ('supports','contradicts','supersedes')),
+  confidence DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY(source_id,target_id,relation_type)
+);
+CREATE INDEX IF NOT EXISTS memory_relations_target_idx ON memory_relations(target_id, relation_type);
+
+CREATE TABLE IF NOT EXISTS agent_evaluations (
+  id BIGSERIAL PRIMARY KEY, trace_id TEXT REFERENCES agent_traces(trace_id) ON DELETE SET NULL,
+  evaluator_type TEXT NOT NULL, score DOUBLE PRECISION, passed BOOLEAN NOT NULL,
+  rubric JSONB NOT NULL DEFAULT '{}'::jsonb, failure_category TEXT, explanation TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_evaluations_trace_idx ON agent_evaluations(trace_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_eval_cases (
+  id BIGSERIAL PRIMARY KEY, case_key TEXT NOT NULL UNIQUE, category TEXT NOT NULL,
+  input JSONB NOT NULL, expected JSONB NOT NULL DEFAULT '{}'::jsonb,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS agent_eval_runs (
+  id BIGSERIAL PRIMARY KEY, case_id BIGINT REFERENCES agent_eval_cases(id) ON DELETE CASCADE,
+  trace_id TEXT, attempt_no INTEGER NOT NULL DEFAULT 1, passed BOOLEAN NOT NULL,
+  score DOUBLE PRECISION, details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_eval_runs_case_idx ON agent_eval_runs(case_id, created_at DESC);

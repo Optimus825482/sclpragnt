@@ -6,6 +6,7 @@ from app.config import config
 from app.technical_analysis import calculate_snapshot, _adx, _stochastic
 from app.binance_tr_public import orderbook
 from app import database
+from app import agent_learning
 
 class ScalpAnalyzer:
     def __init__(self, market):
@@ -814,6 +815,10 @@ class ScalpAnalyzer:
         trade = await self._record_trade(symbol, pos, price, reason, commission)
         sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price, "timestamp": time.time()}
         await database.commit_close_position(symbol, symbol.replace("TRY", ""), try_balance + sell_value - commission, trade, sig)
+        try:
+            await agent_learning.record_paper_trade_outcome(trade)
+        except Exception as learning_error:
+            print(f"[Learning] paper outcome kaydedilemedi: {learning_error}")
         del self.positions[symbol]
         tf = self._strategy_tf(pos.get("strategy", "UT"))
         current_bar = self._current_bar(symbol, tf)

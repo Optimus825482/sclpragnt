@@ -711,7 +711,7 @@ async def save_signal(sig):
     await _run_db(op)
     try:
         from app.embedding_worker import worker, signal_document
-        worker.enqueue_nowait(signal_document(sig))
+        await worker.enqueue_persistent(signal_document(sig))
     except Exception:
         pass
 
@@ -736,7 +736,7 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
     await _run_db(op)
     try:
         from app.embedding_worker import worker, trade_document
-        worker.enqueue_nowait(trade_document("entry", symbol, pos, sig))
+        await worker.enqueue_persistent(trade_document("entry", symbol, pos, sig))
     except Exception: pass
 
 async def commit_close_position(symbol, asset, cash_amount, trade, sig):
@@ -761,7 +761,7 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     await _run_db(op)
     try:
         from app.embedding_worker import worker, trade_document
-        worker.enqueue_nowait(trade_document("exit", symbol, trade, sig))
+        await worker.enqueue_persistent(trade_document("exit", symbol, trade, sig))
     except Exception: pass
 
 

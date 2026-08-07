@@ -31,6 +31,9 @@ from app.embedding_worker import worker as embedding_worker, trade_document, sig
 from app.memory_service import build_document
 from app import memory_service
 from app import migration_monitor
+from app.agent_learning import (new_trace_id, start_trace, append_event, finish_trace,
+                                 evaluate_output, save_evaluation, save_experience, upsert_instinct, set_runtime_pool,
+                                 promote_validated_instincts)
 try:
     import asyncpg
 except ImportError:
@@ -200,10 +203,10 @@ async def _persist_chat_memory(messages, **kwargs):
                 await conn.execute("""INSERT INTO chat_messages(session_id,sequence_no,role,content,symbol,strategy)
                     VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(session_id,sequence_no) DO UPDATE SET content=EXCLUDED.content,role=EXCLUDED.role""",
                     session_id, index, str(message.get("role", "user")), str(message.get("content")), symbol, strategy)
-        embedding_worker.enqueue_nowait(_chat_memory_document(messages, **kwargs))
+        await embedding_worker.enqueue_persistent(_chat_memory_document(messages, **kwargs))
         if len(messages) >= 8 and len(messages) % 8 == 0:
             summary = {"session_id": session_id, "message_count": len(messages), "recent_messages": messages[-12:]}
-            embedding_worker.enqueue_nowait(build_document(layer="session", scope=session_id, symbol=symbol, strategy=strategy,
+            await embedding_worker.enqueue_persistent(build_document(layer="session", scope=session_id, symbol=symbol, strategy=strategy,
                 source_type="chat_summary", source_id=f"{session_id}:summary:{len(messages)}",
                 content=json.dumps(summary, ensure_ascii=False, default=str), metadata={"summary": True, "message_count": len(messages)}))
 
@@ -214,7 +217,11 @@ async def _chat_memory_context(query: str, *, symbol=None, strategy=None, limit=
         if embedded.get("status") != "ok": return {"enabled": False, "results": [], "error": embedded.get("error")}
         async with _pg_pool.acquire() as conn:
             rows = await memory_service.retrieve(conn, embedded["vector"], limit=limit, symbol=symbol, strategy=strategy, model_id=embedded.get("model_id"), query_text=query)
-        return {"enabled": True, "results": rows, "model_id": embedded.get("model_id")}
+            instincts = await conn.fetch("""SELECT instinct_key,scope,symbol,strategy,domain,trigger,action,confidence,evidence_count
+                FROM trading_instincts WHERE status IN ('approved','active')
+                AND (symbol IS NULL OR symbol=$1) AND (strategy IS NULL OR strategy=$2)
+                ORDER BY confidence DESC,evidence_count DESC LIMIT 8""", symbol, strategy)
+        return {"enabled": True, "results": rows, "instincts": [dict(row) for row in instincts], "model_id": embedded.get("model_id")}
     except Exception as exc:
         return {"enabled": False, "results": [], "error": str(exc)}
 
@@ -236,6 +243,18 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 
+async def learning_promotion_loop():
+    """Promote only evidence-backed instincts; never changes system prompts directly."""
+    while True:
+        try:
+            if _pg_pool:
+                result = await promote_validated_instincts(_pg_pool, dry_run=False)
+                if result.get("promoted"):
+                    print(f"[Learning] promoted instincts: {result['promoted']}")
+        except Exception as exc:
+            print(f"[Learning] promotion loop: {exc}")
+        await asyncio.sleep(15 * 60)
+
 @app.on_event("startup")
 async def startup():
     global _pg_pool
@@ -254,6 +273,7 @@ async def startup():
     if os.getenv("DB_BACKEND", "sqlite").lower() == "postgres" and asyncpg and os.getenv("DATABASE_URL"):
         try:
             _pg_pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=4)
+            set_runtime_pool(_pg_pool)
             await embedding_worker.start(_pg_pool, llm_analysis.embedding)
         except Exception as exc:
             print(f"[Memory] PostgreSQL/embedding worker başlatılamadı: {exc}")
@@ -261,6 +281,7 @@ async def startup():
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
     asyncio.create_task(llm_idle_trigger_loop())
+    asyncio.create_task(learning_promotion_loop(), name="learning-promotion")
     asyncio.create_task(ws_broadcast_loop())
 
 @app.on_event("shutdown")
@@ -461,9 +482,9 @@ async def memory_backfill():
                 signals = [dict(row) for row in await conn.fetch("SELECT * FROM signals ORDER BY id")]
             for trade in trades:
                 doc = trade_document("historical", trade.get("symbol") or "unknown", trade, {"action": "HISTORICAL_TRADE", "timestamp": trade.get("exit_time")})
-                queued += int(embedding_worker.enqueue_nowait(doc))
+                queued += int(await embedding_worker.enqueue_persistent(doc))
             for signal in signals:
-                queued += int(embedding_worker.enqueue_nowait(signal_document(signal)))
+                queued += int(await embedding_worker.enqueue_persistent(signal_document(signal)))
             _embedding_backfill.update({"status": "completed", "queued": queued, "message": "Embedding kuyruğu hazır; worker kayıtları işliyor"})
         except Exception as exc:
             _embedding_backfill.update({"status": "error", "message": str(exc)})
@@ -512,7 +533,7 @@ async def repair_historical_memory():
                     await conn.execute("DELETE FROM memory_embeddings WHERE memory_document_id IN (SELECT id FROM memory_documents WHERE source_type='trade_historical' AND source_id=$1)", source_id)
                     await conn.execute("DELETE FROM memory_documents WHERE source_type='trade_historical' AND source_id=$1", source_id)
                     doc = trade_document("historical", trade.get("symbol") or "unknown", trade, {"action": "HISTORICAL_TRADE", "timestamp": trade.get("exit_time")})
-                    queued += int(embedding_worker.enqueue_nowait(doc))
+                    queued += int(await embedding_worker.enqueue_persistent(doc))
             _embedding_repair.update({"status": "completed", "queued": queued, "message": "Eksik tarihsel likidite alanları tahmin edilmeden yeniden embedding kuyruğuna alındı"})
         except Exception as exc:
             _embedding_repair.update({"status": "error", "message": str(exc)})
@@ -1315,7 +1336,7 @@ async def scan_market_snapshots(args: dict | None = None):
     db_positions = await database.load_positions()
     open_symbols = set(db_positions) | set(analyzer.positions)
     symbols = [symbol for symbol in requested_symbols if symbol not in open_symbols]
-    timeframes = [str(tf) for tf in (args.get("timeframes") or ["1m", "5m", "15m", "1h", "4h", "1d"]) if str(tf) in {"1m","5m","15m","1h","4h","1d"}]
+    timeframes = [str(tf) for tf in (args.get("timeframes") or ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]) if str(tf) in {"1m","5m","15m","30m","1h","4h","1d"}]
     if not timeframes: timeframes = ["5m", "15m", "1h"]
     # Public REST fallback'leri seri birikmesin; tek sembol hatası tüm taramayı
     # düşürmeden sınırlı paralellikte ilerle.
@@ -1375,7 +1396,7 @@ async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
     """Tek sembol için LLM'e sunulacak güncel derin snapshot'ı döndürür."""
     return await deep_analyze_symbol({"symbol": symbol, "timeframe": timeframe})
 
-LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Tüm etkin paper-trading sembollerini güncel public market verisiyle tarar, bullish adayları deterministik olarak sıralar. Salt-okunur; pozisyon açmaz.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]}},"limit":{"type":"integer"}},"required":[]}}}
+LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Tüm etkin paper-trading sembollerini güncel public market verisiyle tarar, bullish adayları deterministik olarak sıralar. Salt-okunur; pozisyon açmaz.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","30m","1h","4h","1d"]}},"limit":{"type":"integer"}},"required":[]}}}
 LLM_DEEP_SYMBOL_TOOL = {"type":"function","function":{"name":"deep_analyze_symbol","description":"Bir sembolün seçili timeframe ve çoklu timeframe teknik snapshot'ını getirir; trend fazı ve aday değerlendirmesi için kullanılır. Salt-okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframe":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]}},"required":["symbol"]}}}
 
 LLM_DATABASE_TOOL = {"type":"function","function":{"name":"query_database","description":"Sistemin PostgreSQL/SQLite veri katmanında güvenli, salt-okunur sorgu yapar. Açık pozisyon sorgusunda hem veritabanı hem canlı portföy belleğini karşılaştırır; böylece stale/mutabakat farkını gizlemez. Ham SQL çalıştırmaz.","parameters":{"type":"object","properties":{"resource":{"type":"string","enum":["positions","trades","signals","decisions","wallet"]},"symbol":{"type":"string"},"strategy":{"type":"string"},"action":{"type":"string"},"limit":{"type":"integer"}},"required":["resource"]}}}
@@ -1612,6 +1633,99 @@ async def get_decisions(limit: int = 500, symbol: str = "", strategy: str = ""):
 async def get_llm_tool_logs(limit: int = 500):
     return {"logs": await database.get_llm_tool_logs(limit)}
 
+@app.get("/api/llm/agent-traces")
+async def get_agent_traces(limit: int = 50):
+    if not _pg_pool: return {"enabled": False, "traces": []}
+    async with _pg_pool.acquire() as conn:
+        rows = await conn.fetch("""SELECT trace_id,session_id,intent,status,started_at,completed_at
+            FROM agent_traces ORDER BY started_at DESC LIMIT $1""", max(1, min(int(limit), 200)))
+    return {"enabled": True, "traces": [dict(row) for row in rows]}
+
+@app.get("/api/llm/evaluations")
+async def get_agent_evaluations(limit: int = 100):
+    if not _pg_pool: return {"enabled": False, "evaluations": []}
+    async with _pg_pool.acquire() as conn:
+        rows = await conn.fetch("""SELECT id,trace_id,evaluator_type,score,passed,failure_category,explanation,created_at
+            FROM agent_evaluations ORDER BY created_at DESC LIMIT $1""", max(1, min(int(limit), 500)))
+    return {"enabled": True, "evaluations": [dict(row) for row in rows]}
+
+@app.get("/api/llm/instincts")
+async def get_agent_instincts(status: str = "", limit: int = 100):
+    if not _pg_pool: return {"enabled": False, "instincts": []}
+    async with _pg_pool.acquire() as conn:
+        if status:
+            rows = await conn.fetch("""SELECT * FROM trading_instincts WHERE status=$1
+                ORDER BY confidence DESC,last_seen_at DESC LIMIT $2""", status, max(1, min(int(limit), 500)))
+        else:
+            rows = await conn.fetch("""SELECT * FROM trading_instincts
+                ORDER BY confidence DESC,last_seen_at DESC LIMIT $1""", max(1, min(int(limit), 500)))
+    return {"enabled": True, "instincts": [dict(row) for row in rows]}
+
+@app.get("/api/llm/eval-cases")
+async def get_agent_eval_cases():
+    path = os.path.join(os.path.dirname(__file__), "..", "evals", "golden_cases.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return {"cases": json.load(handle)}
+    except Exception as exc:
+        return {"cases": [], "error": str(exc)}
+
+@app.post("/api/llm/evals/run")
+async def run_agent_golden_evals(payload: dict = None):
+    """Run the versioned golden cases against the configured LLM and persist results."""
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL eval backend aktif değil")
+    cases_response = await get_agent_eval_cases()
+    cases = cases_response.get("cases", [])
+    requested = set((payload or {}).get("case_keys") or [])
+    attempts = max(1, min(int((payload or {}).get("attempts", 1)), 3))
+    results = []
+    for case in cases:
+            if requested and case.get("case_key") not in requested: continue
+            async with _pg_pool.acquire() as conn:
+                case_row = await conn.fetchrow("""INSERT INTO agent_eval_cases(case_key,category,input,expected)
+                    VALUES($1,$2,$3::jsonb,$4::jsonb)
+                    ON CONFLICT(case_key) DO UPDATE SET category=EXCLUDED.category,input=EXCLUDED.input,expected=EXCLUDED.expected
+                    RETURNING id""", case["case_key"], case["category"], json.dumps(case["input"], ensure_ascii=False), json.dumps(case.get("expected", {}), ensure_ascii=False))
+            for attempt in range(1, attempts + 1):
+                trace_id = new_trace_id(f"eval-{case['case_key']}")
+                await start_trace(_pg_pool, trace_id=trace_id, session_id=f"eval:{case['case_key']}", intent=case["case_key"], metadata={"golden": True})
+                result = await llm_analysis.chat({"type":"golden_eval", "case":case["case_key"], "expected":case.get("expected", {}), "data_policy":"Paper-only; do not invent live data."}, case["input"].get("messages", []), [], None)
+                evaluation = evaluate_output(result.get("text"), intent=case["case_key"], expected=case.get("expected", {}))
+                passed = bool(evaluation.get("passed")) and result.get("status") == "ok"
+                trajectory = {"checked": False, "reason": "Golden runner buffered response pathında araç çağrısı devre dışı"}
+                details = {"response": result.get("text"), "evaluation": evaluation, "trajectory": trajectory, "model": result.get("model")}
+                async with _pg_pool.acquire() as conn:
+                    await conn.execute("""INSERT INTO agent_eval_runs(case_id,trace_id,attempt_no,passed,score,details)
+                        VALUES($1,$2,$3,$4,$5,$6::jsonb)""", int(case_row["id"]), trace_id, attempt, passed, evaluation.get("score"), json.dumps(details, ensure_ascii=False, default=str))
+                await save_evaluation(_pg_pool, trace_id, {**evaluation, "passed": passed}, evaluator_type="golden_deterministic")
+                await finish_trace(_pg_pool, trace_id, "completed" if passed else "failed")
+                results.append({"case_key":case["case_key"],"attempt":attempt,"passed":passed,"score":evaluation.get("score"),"trace_id":trace_id,"trajectory":trajectory})
+    aggregates = []
+    for case_key in sorted({item["case_key"] for item in results}):
+        items = [item for item in results if item["case_key"] == case_key]
+        pass_count = sum(1 for item in items if item["passed"])
+        k = len(items)
+        aggregates.append({"case_key": case_key, "k": k, "pass_at_k": pass_count > 0, "pass_all_k": pass_count == k,
+                           "pass_rate": round(pass_count / k, 4) if k else 0.0})
+    return {"ok": True, "total": len(results), "passed": sum(1 for item in results if item["passed"]),
+            "pass_at_k": sum(1 for item in aggregates if item["pass_at_k"]),
+            "pass_all_k": sum(1 for item in aggregates if item["pass_all_k"]),
+            "aggregates": aggregates, "results": results}
+
+@app.put("/api/llm/instincts/{instinct_id}/approve")
+async def approve_agent_instinct(instinct_id: int):
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL learning backend aktif değil")
+    async with _pg_pool.acquire() as conn:
+        row = await conn.fetchrow("""UPDATE trading_instincts SET status='approved',approved_at=now()
+            WHERE id=$1 RETURNING id,instinct_key,status,confidence""", int(instinct_id))
+    if not row: raise HTTPException(status_code=404, detail="Instinct bulunamadı")
+    return {"ok": True, "instinct": dict(row)}
+
+@app.post("/api/llm/instincts/promote")
+async def promote_agent_instincts(payload: dict = None):
+    if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL learning backend aktif değil")
+    return await promote_validated_instincts(_pg_pool, dry_run=not bool((payload or {}).get("apply")))
+
 @app.get("/api/strategies/stats")
 async def get_strategy_stats():
     """Her stratejinin başarı istatistikleri (işlem sayısı, kazanma oranı, PnL)."""
@@ -1671,13 +1785,41 @@ async def risk_summary():
 @app.post("/api/strategies/llm/chat")
 async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
-    context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data.", "self_learning": build_learning_context(await database.get_trades(), limit=200)}
-    last_text = str((body.get("messages") or [{}])[-1].get("content", ""))
+    messages = body.get("messages") or []
+    last_text = str(messages[-1].get("content", "")) if isinstance(messages[-1], dict) else ""
+    trace_id = str(body.get("trace_id") or new_trace_id("strategy-chat"))
+    session_id = str(body.get("session_id") or "strategy:default")
+    await start_trace(_pg_pool, trace_id=trace_id, session_id=session_id, intent=last_text,
+                      metadata={"scope": "strategies", "stream": body.get("stream") is True})
+    context = {"type": "strategy_research_tool_mode", "trace_id": trace_id, "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data.", "self_learning": build_learning_context(await database.get_trades(), limit=200)}
     context["memory_context"] = await _chat_memory_context(last_text, strategy=str(body.get("strategy") or "") or None)
     trade_intent = bool(re.search(r"(işlem|islem|pozisyon|paper|trade|coin|sembol|emir|market|limit|stop|oco).*(aç|ac|açar|acar|aktif|ekle|giriş|giris|kur|kullan)|\b(aç|ac|aktif|ekle|kur|kullan)\b.*(işlem|islem|pozisyon|paper|trade|coin|sembol|emir|market|limit|stop|oco)", last_text.lower()))
     requested_symbols = [token.upper() for token in re.findall(r"\b[A-Za-z]{2,12}TRY\b", last_text.upper())]
+    market_opportunity_intent = bool(re.search(
+        r"(güncel|guncel|fırsat|firsat|piyasa|tarama|sembol|art(?:ar|ış|is)|%\s*5|h1|m30|30m|1h|momentum|yüksel|yuksel)",
+        last_text.lower(),
+    ))
     if requested_symbols:
         trade_intent = True
+    if market_opportunity_intent and not requested_symbols:
+        try:
+            market_scan = await scan_market_snapshots({
+                "symbols": config.SYMBOLS,
+                "timeframes": ["15m", "30m", "1h"],
+                "limit": 10,
+            })
+            context["market_scan"] = {
+                "source": "live_binance_tr_public",
+                "generated_at": market_scan.get("generated_at"),
+                "symbols_scanned": market_scan.get("symbols_scanned"),
+                "timeframes": market_scan.get("timeframes"),
+                "market_regime": market_scan.get("market_regime"),
+                "bullish_candidates": market_scan.get("bullish_candidates", [])[:10],
+                "ranked": market_scan.get("ranked", [])[:10],
+                "data_policy": market_scan.get("data_policy"),
+            }
+        except Exception as exc:
+            context["market_scan"] = {"source": "live_binance_tr_public", "error": str(exc), "data_ready": False}
     if requested_symbols:
         requested = requested_symbols[0].replace("_", "")
         if requested not in config.SYMBOLS:
@@ -1766,6 +1908,12 @@ async def strategies_llm_chat(payload: dict = None):
             raise
         finally:
             try:
+                await append_event(_pg_pool, trace_id, sequence_no=int(time.time() * 1000000) % 2147483647,
+                                   event_type="tool_call", tool_name=name, input_json=args,
+                                   latency_ms=(time.perf_counter() - started) * 1000, success=success)
+            except Exception as trace_error:
+                print(f"[LLM] trace event kaydedilemedi: {trace_error}")
+            try:
                 await database.save_llm_tool_log({"scope": "strategies", "tool_name": name, "arguments": args,
                     "result_summary": "success" if success else "error", "duration_ms": (time.perf_counter() - started) * 1000, "success": success})
             except Exception as log_error:
@@ -1778,7 +1926,10 @@ async def strategies_llm_chat(payload: dict = None):
             tools.append({"type":"function","function":{"name":"activate_coin","description":"Binance TR public TRY piyasasında aktif olan bir coini paper-trading analiz evrenine ekler; gerçek emir açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}})
             tools.append({"type":"function","function":{"name":"place_paper_order","description":"MARKET, LIMIT, STOP_LIMIT, STOP_MARKET veya OCO türünde yalnızca sanal paper emir oluşturur/çalıştırır.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"side":{"type":"string","enum":["BUY","SELL","LONG"]},"order_type":{"type":"string","enum":["MARKET","LIMIT","STOP_LIMIT","STOP_MARKET","OCO"]},"order_value_try":{"type":"number"},"price":{"type":"number"},"limit_price":{"type":"number"},"stop_price":{"type":"number"},"take_profit_pct":{"type":"number"},"stop_loss_pct":{"type":"number"},"max_hold_seconds":{"type":"integer"},"oco_group":{"type":"string"}},"required":["symbol","side","order_type"]}}})
             if not trade_intent:
-                tools[:] = [tool for tool in tools if tool.get("function", {}).get("name") != "open_llm_paper_trade"]
+                tools[:] = [tool for tool in tools if tool.get("function", {}).get("name") not in {"open_llm_paper_trade", "place_paper_order"}]
+            requested_tools = {str(value) for value in (body.get("active_tools") or [])}
+            if requested_tools:
+                tools[:] = [tool for tool in tools if str(tool.get("function", {}).get("name")) in requested_tools]
             if any(tool.get("function", {}).get("name") == "open_llm_paper_trade" for tool in tools):
                 result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"))
                 yield f"event: delta\ndata: {json.dumps({'text': result.get('text') or 'Paper işlem planı oluşturulamadı.'}, ensure_ascii=False)}\n\n"
@@ -1787,15 +1938,36 @@ async def strategies_llm_chat(payload: dict = None):
             try:
                 async for event in llm_analysis.stream_chat(context, body.get("messages", [])):
                     yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-                await _persist_chat_memory(body.get("messages", []), layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=str(body.get("session_id") or "strategy:default"))
+                await _persist_chat_memory(messages, layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=session_id)
+                await finish_trace(_pg_pool, trace_id)
             except Exception as exc:
                 yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
     active_tools = {str(value) for value in (body.get("active_tools") or [])}
     if active_tools:
         tools = [tool for tool in tools if str(tool.get("function", {}).get("name")) in active_tools]
-    result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"))
-    await _persist_chat_memory(body.get("messages", []), layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=str(body.get("session_id") or "strategy:default"))
+    result = await llm_analysis.chat(context, messages, tools, execute_tool, body.get("active_skills"))
+    evaluation = evaluate_output(result.get("text"), intent=last_text)
+    await save_evaluation(_pg_pool, trace_id, evaluation)
+    if evaluation.get("passed"):
+        experience_id = await save_experience(_pg_pool, trace_id=trace_id, experience_type="success", trigger=last_text,
+                                              action="chat_response", outcome="passed", lesson="Yapılandırılmış ve paper sınırlarına uygun yanıt.",
+                                              evidence=evaluation, confidence=0.55, status="candidate")
+        await upsert_instinct(_pg_pool, instinct_key="quality:structured-paper-response", scope="global",
+                              symbol=None, strategy=None, domain="quality", trigger="LLM chat yanıtı üretirken",
+                              action="Yapılandırılmış Markdown ve paper-only sınırını koru.", confidence=0.55,
+                              experience_id=experience_id)
+    else:
+        experience_id = await save_experience(_pg_pool, trace_id=trace_id, experience_type="failure", trigger=last_text,
+                              action="chat_response", outcome="failed", lesson="Yanıt deterministic evaluator kontrolünden geçmedi.",
+                              evidence=evaluation, confidence=0.35)
+        await upsert_instinct(_pg_pool, instinct_key=f"failure:{evaluation.get('failure_category')}", scope="global",
+                              symbol=None, strategy=str(body.get("strategy") or "") or None, domain="quality",
+                              trigger=evaluation.get("failure_category") or "agent failure",
+                              action="Yanıtı göndermeden önce deterministic evaluator ile doğrula.", confidence=0.35,
+                              experience_id=experience_id)
+    await _persist_chat_memory(messages, layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=session_id)
+    await finish_trace(_pg_pool, trace_id, "completed" if result.get("status") == "ok" else "error")
     return result
 
 @app.post("/api/reset")

@@ -10,7 +10,10 @@ COPY app ./app
 COPY migrations ./migrations
 COPY scripts ./scripts
 COPY .well-known ./.well-known
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 RUN mkdir -p /data
 ENV SCALPER_DB_PATH=/data/scalper_db_v4.sqlite
 EXPOSE 8004
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004"]

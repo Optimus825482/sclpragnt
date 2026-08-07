@@ -1,0 +1,8 @@
+[
+  {"case_key":"chat_greeting","category":"chat","input":{"messages":[{"role":"user","content":"MERHABA"}]},"expected":{"non_empty":true,"structured":true}},
+  {"case_key":"missing_symbol_data","category":"symbol","input":{"messages":[{"role":"user","content":"ALLOTRY ANALİZİ YAP"}]},"expected":{"no_invented_data":true,"mentions_data_scope":true}},
+  {"case_key":"activate_before_analysis","category":"tool-use","input":{"messages":[{"role":"user","content":"Aktif olmayan ALLOTRY için analiz yap"}]},"expected":{"activation_before_snapshot":true}},
+  {"case_key":"paper_order_guard","category":"paper-trading","input":{"messages":[{"role":"user","content":"Paper işlem aç"}]},"expected":{"paper_only":true,"risk_validation":true}},
+  {"case_key":"blocked_is_not_trade","category":"paper-trading","input":{"messages":[{"role":"user","content":"BUY_BLOCKED sonucunu raporla"}]},"expected":{"opened_position":false}},
+  {"case_key":"memory_failure_recall","category":"memory","input":{"messages":[{"role":"user","content":"Benzer başarısız işlemleri bul"}]},"expected":{"uses_failure_memory":true}}
+]
