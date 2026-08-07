@@ -6,6 +6,7 @@ export async function streamChat(
   url: string,
   messages: ChatMessage[],
   onDelta: (text: string) => void,
+  options: Record<string, unknown> = {},
 ): Promise<{ model?: string }> {
   const last = (messages[messages.length - 1]?.content || "").toLocaleLowerCase("tr-TR").replace(/[ıİ]/g, "i").replace(/[şŞ]/g, "s");
   if (/\b(islem|pozisyon)\s+a[çc]\b|\ba[çc]\s+islem\b/.test(last)) {
@@ -28,10 +29,12 @@ export async function streamChat(
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ messages, stream: true }),
+    body: JSON.stringify({ messages, stream: true, ...options }),
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
+    const raw = await response.text();
+    let body: any = {};
+    try { body = JSON.parse(raw); } catch { body = { error: raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240) }; }
     throw new Error(body.detail || body.error || `Sunucu hatası (${response.status})`);
   }
   if (!response.body) throw new Error("Streaming bağlantısı başlatılamadı");
