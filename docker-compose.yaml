@@ -23,7 +23,9 @@ services:
     environment:
       SCALPER_DB_PATH: /data/scalper_db_v4.sqlite
       DATABASE_URL: ${DATABASE_URL:-postgresql://scalper:local-dev-change-me@postgres:5432/scalper}
-      DB_BACKEND: ${DB_BACKEND:-postgres}
+      # This application is PostgreSQL-only. Do not allow a stale Coolify
+      # variable to silently switch the backend to the retired SQLite path.
+      DB_BACKEND: postgres
       LIVE_TRADING: "false"
       USE_TESTNET: "false"
       CORS_ORIGINS: https://scalper.erkanerdem.online

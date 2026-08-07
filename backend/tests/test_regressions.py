@@ -110,6 +110,11 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('await asyncio.sleep(5)', source)
         self.assertIn('PostgreSQL migration bağlantısı kurulamadı', source)
 
+    def test_compose_forces_postgres_backend(self):
+        source = (ROOT.parent / "docker-compose.yaml").read_text()
+        self.assertIn("DB_BACKEND: postgres", source)
+        self.assertNotIn("DB_BACKEND: ${DB_BACKEND:-postgres}", source)
+
     def test_hourly_top_gainer_activation_is_public_and_bounded(self):
         source = (ROOT / "app" / "main.py").read_text()
         config_source = (ROOT / "app" / "config.py").read_text()
