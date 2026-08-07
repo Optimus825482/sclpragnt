@@ -2585,8 +2585,9 @@ async def strategies_llm_chat(payload: dict = None):
             if not trade_intent or research_only_intent:
                 tools[:] = [tool for tool in tools if tool.get("function", {}).get("name") not in {"open_llm_paper_trade", "place_paper_order"}]
             requested_tools = {str(value) for value in (body.get("active_tools") or [])}
-            if requested_tools:
-                tools[:] = [tool for tool in tools if str(tool.get("function", {}).get("name")) in requested_tools or str(tool.get("function", {}).get("name")) in A2A_SYSTEM_TOOL_NAMES]
+            # `active_tools` eski kullanıcı tercihidir; genel sohbetin ortak
+            # capability registry'sini daraltıp alarm/pozisyon araçlarını
+            # provider payload'ından çıkarmasına izin verme.
             if any(tool.get("function", {}).get("name") == "open_llm_paper_trade" for tool in tools):
                 result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"))
                 yield f"event: delta\ndata: {json.dumps({'text': result.get('text') or 'Paper işlem planı oluşturulamadı.'}, ensure_ascii=False)}\n\n"

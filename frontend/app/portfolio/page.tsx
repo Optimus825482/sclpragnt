@@ -62,6 +62,12 @@ const money = (value?: number) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+const pnlTone = (value?: number) =>
+  value == null || value === 0
+    ? ""
+    : value > 0
+      ? "ui-tone-positive"
+      : "ui-tone-negative";
 const when = (value?: number) =>
   value
     ? new Date(value * 1000).toLocaleString("tr-TR", { hour12: false })
@@ -323,11 +329,7 @@ function PositionTable({
                   <td>₺{money(position.entry)}</td>
                   <td>₺{money(position.current)}</td>
                   <td
-                    className={
-                      position.pnl_pct > 0
-                        ? "ui-tone-positive"
-                        : "ui-tone-negative"
-                    }
+                    className={pnlTone(position.pnl_try ?? position.pnl_pct)}
                   >
                     ₺{money(position.pnl_try)}
                     <small className="table-subvalue">
@@ -839,7 +841,9 @@ export default function PortfolioPage() {
                             className={
                               trade.pnl > 0
                                 ? "ui-tone-positive"
-                                : "ui-tone-negative"
+                                : trade.pnl < 0
+                                  ? "ui-tone-negative"
+                                  : ""
                             }
                           >
                             ₺{money(trade.pnl)}
