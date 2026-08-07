@@ -57,6 +57,12 @@ const TOOL_GROUPS = [
       "get_backtest_history",
       "scan_market_snapshots",
       "deep_analyze_symbol",
+      "get_data_quality",
+      "get_microstructure_snapshot",
+      "get_regime_snapshot",
+      "calculate_trade_economics",
+      "get_symbol_outcome_profile",
+      "run_walk_forward",
       "activate_coin",
       "place_paper_order",
       "open_llm_paper_trade",
@@ -307,10 +313,24 @@ export default function ChatPage() {
             description="Mevcut sohbet, siz Yeni sohbet başlatana kadar korunur."
           />
           <div className="chat-conversation-actions">
-            <span className={`chat-context-meter ${contextTone}`}>{Math.min(100, contextRatio * 100).toFixed(2)}% context</span>
-            <Button variant="secondary" onClick={startNewChat}>＋ YENİ SOHBET</Button>
+            <span className={`chat-context-meter ${contextTone}`}>
+              {Math.min(100, contextRatio * 100).toFixed(2)}% context
+            </span>
+            <Button variant="secondary" onClick={startNewChat}>
+              ＋ YENİ SOHBET
+            </Button>
           </div>
-          {contextTone !== "normal" && <div className={`chat-context-alert ${contextTone}`} role="status">{contextTone === "critical" ? "Context penceresi dolmaya çok yakın. Yeni sohbet başlatın veya sohbeti özetleyin." : "Sohbet context penceresinin %80'ini geçti. Yeni sohbet başlatmayı planlayın."}<span>Yaklaşık {contextTokens.toLocaleString("tr-TR")} / {CONTEXT_WINDOW_TOKENS.toLocaleString("tr-TR")} token</span></div>}
+          {contextTone !== "normal" && (
+            <div className={`chat-context-alert ${contextTone}`} role="status">
+              {contextTone === "critical"
+                ? "Context penceresi dolmaya çok yakın. Yeni sohbet başlatın veya sohbeti özetleyin."
+                : "Sohbet context penceresinin %80'ini geçti. Yeni sohbet başlatmayı planlayın."}
+              <span>
+                Yaklaşık {contextTokens.toLocaleString("tr-TR")} /{" "}
+                {CONTEXT_WINDOW_TOKENS.toLocaleString("tr-TR")} token
+              </span>
+            </div>
+          )}
           <div className="chat-messages">
             {messages.map((message, index) => (
               <div key={index} className={`chat-message ${message.role}`}>

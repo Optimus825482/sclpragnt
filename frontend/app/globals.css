@@ -119,6 +119,9 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .portfolio-plan-heading, .portfolio-trade-top, .portfolio-trade-meta, .portfolio-pagination { display: flex; align-items: center; justify-content: space-between; gap: .75rem; min-width: 0; }
 .portfolio-symbol { color: white; font-weight: 700; text-decoration: none; }
 .portfolio-symbol:hover { color: #79f2b4; }
+.portfolio-symbol-badge { display: inline-flex; align-items: center; min-height: 1.7rem; padding: .25rem .55rem; border: 1px solid; border-radius: .5rem; font: 700 .7rem/1 ui-monospace, monospace; letter-spacing: .04em; white-space: nowrap; }
+.portfolio-symbol-badge.positive { color: #79f2b4; background: rgb(16 185 129 / .13); border-color: rgb(52 211 153 / .4); }
+.portfolio-symbol-badge.negative { color: #fda4af; background: rgb(244 63 94 / .13); border-color: rgb(244 63 94 / .4); }
 .portfolio-plan-values, .portfolio-trade-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin-top: .8rem; }
 .portfolio-plan-values div, .portfolio-trade-values div { min-width: 0; }
 .portfolio-plan-values span, .portfolio-trade-values span { display: block; margin-bottom: .2rem; color: #64748b; font-size: .62rem; }
@@ -127,7 +130,16 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .portfolio-table-card, .portfolio-history-card { overflow: hidden; }
 .portfolio-table-scroll, .portfolio-history-table-scroll { margin: 0 -.1rem; max-width: 100%; overflow-x: auto; }
 .portfolio-table, .portfolio-history-table { min-width: 760px; }
-.portfolio-history-table { min-width: 1160px; }
+.portfolio-history-table { min-width: 0; table-layout: fixed; }
+.portfolio-history-table th:nth-child(1), .portfolio-history-table td:nth-child(1) { width: 16%; }
+.portfolio-history-table th:nth-child(2), .portfolio-history-table td:nth-child(2) { width: 28%; }
+.portfolio-history-table th:nth-child(3), .portfolio-history-table td:nth-child(3) { width: 16%; }
+.portfolio-history-table th:nth-child(4), .portfolio-history-table td:nth-child(4) { width: 15%; }
+.portfolio-history-table th:nth-child(5), .portfolio-history-table td:nth-child(5) { width: 13%; }
+.portfolio-history-table th:nth-child(6), .portfolio-history-table td:nth-child(6) { width: 12%; }
+.portfolio-history-table tbody tr { cursor: pointer; }
+.portfolio-history-table tbody tr:focus-visible, .portfolio-trade-card:focus-visible { outline: 2px solid rgb(52 211 153 / .8); outline-offset: -2px; }
+.portfolio-history-table-wrap { max-width: 100%; overflow: hidden; }
 .portfolio-table th, .portfolio-table td, .portfolio-history-table th, .portfolio-history-table td { vertical-align: middle; }
 .portfolio-strategy { display: block; max-width: 13rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fde047; }
 .table-subvalue { display: block; margin-top: .15rem; color: #94a3b8; font-size: .65rem; }
@@ -144,12 +156,25 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .portfolio-pagination > div { display: flex; gap: .5rem; }
 .ui-button-compact { min-height: 2rem; padding: .45rem .65rem; font-size: .63rem; }
 .portfolio-trade-card { padding: .85rem; border: 1px solid rgb(51 65 85 / .8); border-radius: .75rem; background: rgb(5 8 13 / .5); font-family: ui-monospace, monospace; }
+.portfolio-trade-card { cursor: pointer; transition: border-color 160ms ease-out, background-color 160ms ease-out; }
+.portfolio-trade-card:hover { border-color: rgb(52 211 153 / .45); background: rgb(16 185 129 / .06); }
 .portfolio-trade-meta { margin-top: .45rem; color: #94a3b8; font-size: .65rem; }
 .portfolio-trade-meta span:first-child { max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .portfolio-trade-values { margin-top: .75rem; }
 .portfolio-trade-values strong small { display: block; margin-top: .15rem; color: #94a3b8; font-size: .62rem; }
 .portfolio-trade-footer { display: flex; justify-content: space-between; gap: .75rem; margin-top: .75rem; padding-top: .65rem; border-top: 1px solid rgb(51 65 85 / .6); color: #64748b; font-size: .64rem; }
 .portfolio-trade-footer span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-detail-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 1rem; background: rgb(0 0 0 / .72); backdrop-filter: blur(5px); }
+.portfolio-detail-modal { width: min(100%, 42rem); max-height: 90dvh; overflow-y: auto; padding: 1.25rem; border: 1px solid rgb(71 85 105 / .85); border-radius: 1rem; background: #0f172a; box-shadow: 0 24px 80px rgb(0 0 0 / .48); }
+.portfolio-detail-head, .portfolio-detail-status { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.portfolio-detail-status { align-items: center; justify-content: flex-start; margin-top: 1rem; font: .72rem/1.3 ui-monospace, monospace; }
+.portfolio-detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-top: 1.25rem; }
+.portfolio-detail-grid div { min-width: 0; padding: .75rem; border: 1px solid rgb(51 65 85 / .7); border-radius: .65rem; background: rgb(5 8 13 / .42); }
+.portfolio-detail-grid span, .portfolio-detail-reason > span { display: block; margin-bottom: .35rem; color: #64748b; font: 600 .61rem/1 ui-monospace, monospace; letter-spacing: .08em; }
+.portfolio-detail-grid strong { display: block; overflow-wrap: anywhere; color: white; font: 700 .82rem/1.3 ui-monospace, monospace; }
+.portfolio-detail-grid strong small { display: block; margin-top: .2rem; color: inherit; font-size: .67rem; }
+.portfolio-detail-reason { margin-top: .75rem; padding: .85rem; border: 1px solid rgb(51 65 85 / .7); border-radius: .65rem; background: rgb(5 8 13 / .42); }
+.portfolio-detail-reason p { color: #cbd5e1; font: .75rem/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
 .status-dot { width: .45rem; height: .45rem; border-radius: 999px; display: inline-block; background: #79f2b4; box-shadow: 0 0 0 .2rem rgb(16 185 129 / .12); }
 .skeleton { position: relative; overflow: hidden; background: rgb(30 41 59 / .65); border-radius: .5rem; }
 .skeleton::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgb(148 163 184 / .12), transparent); animation: skeleton-shimmer 1.4s infinite; }
@@ -247,12 +272,13 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .portfolio-actions .ui-button { flex: 1 1 0; }
   .portfolio-filter-grid { grid-template-columns: 1fr 1fr; }
   .portfolio-filter-search, .portfolio-filter-page { grid-column: 1 / -1; }
-  .portfolio-history-table-scroll { display: none; }
+  .portfolio-history-table-wrap { display: none; }
   .portfolio-mobile-trades { display: grid; gap: .65rem; }
   .portfolio-pagination { align-items: flex-start; flex-direction: column; }
   .portfolio-pagination > div { width: 100%; }
   .portfolio-pagination .ui-button { flex: 1 1 0; }
   .portfolio-tabs button { min-width: 0; padding-inline: .65rem; font-size: .64rem; }
+  .portfolio-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mobile-menu-button { top: calc(12px + env(safe-area-inset-top)); }
   .app-sidebar { position: fixed; height: 100dvh; max-height: 100dvh; }
 }
