@@ -1624,10 +1624,31 @@ async def get_data_quality(args: dict):
 async def get_microstructure_snapshot(args: dict):
     symbol = str(args.get("symbol") or "").replace("_", "").upper()
     timeframe = str(args.get("timeframe") or "5m")
+    # Do not reuse an old websocket orderbook for an explicit microstructure
+    # request. Pull a fresh public REST book first, then let the normal
+    # snapshot builder expose the refreshed cache and timestamp.
+    refresh_error = None
+    try:
+        book = await orderbook(symbol, 5)
+        bids, asks = book.get("bids", []), book.get("asks", [])
+        if bids and asks:
+            bid_qty = sum(float(row[1]) for row in bids[:5])
+            ask_qty = sum(float(row[1]) for row in asks[:5])
+            bid, ask = float(bids[0][0]), float(asks[0][0])
+            flow = market.get_orderflow(symbol)
+            flow.update({"bid_qty": bid_qty, "ask_qty": ask_qty,
+                         "spread_pct": ((ask - bid) / bid * 100) if bid else None,
+                         "source": "binance_tr_public_rest", "updated_at": time.time()})
+            market.orderflow[symbol] = flow
+    except Exception as exc:
+        refresh_error = str(exc)
     snapshot = await symbol_analysis(symbol, timeframe)
     if not snapshot.get("data_ready"):
         return {"symbol": symbol, "data_ready": False, "error": snapshot.get("error"), "paper_only": True}
-    return microstructure_snapshot(snapshot, float(args.get("order_value_try") or config.DEFAULT_ORDER_USDT))
+    result = microstructure_snapshot(snapshot, float(args.get("order_value_try") or config.DEFAULT_ORDER_USDT))
+    if refresh_error:
+        result["refresh_error"] = refresh_error
+    return result
 
 
 async def get_regime_snapshot(args: dict):
