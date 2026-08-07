@@ -59,7 +59,7 @@ def _hybrid_row_factory(cursor):
     names = [col.name for col in cursor.description]
     return lambda values: _HybridRow(zip(names, values))
 
-def _postgres_enabled(): return os.getenv("DB_BACKEND", "sqlite").lower() == "postgres"
+def _postgres_enabled(): return os.getenv("DB_BACKEND", "postgres").lower() == "postgres"
 
 def _db_timestamp():
     return datetime.now(timezone.utc) if _postgres_enabled() else time.time()
@@ -205,6 +205,9 @@ async def init_db():
                 last_error TEXT, attempts INTEGER NOT NULL DEFAULT 0
         )
         """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_exit_symbol_strategy ON trades(exit_time DESC, symbol, strategy)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_time_symbol_action ON signals(timestamp DESC, symbol, action)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_decisions_time_symbol_strategy ON decision_logs(timestamp DESC, symbol, strategy)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS llm_symbol_guards (
                 symbol TEXT PRIMARY KEY, guard_type TEXT NOT NULL DEFAULT 'cooldown',
@@ -766,9 +769,14 @@ async def save_trade(trade):
 
     await _run_db(op)
 
-async def get_trades():
+async def get_trades(limit: int = 100, offset: int = 0, symbol: str | None = None, strategy: str | None = None):
     def op(conn: sqlite3.Connection):
-        rows = conn.execute("SELECT * FROM trades ORDER BY exit_time DESC").fetchall()
+        clauses, values = [], []
+        if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
+        if strategy: clauses.append("strategy=?"); values.append(strategy)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+        rows = conn.execute(f"SELECT * FROM trades{where} ORDER BY exit_time DESC LIMIT ? OFFSET ?", values).fetchall()
         return [dict(r) for r in rows]
 
     return await _run_db(op)
@@ -885,23 +893,29 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     except Exception: pass
 
 
-async def get_signals(limit: int = 100):
+async def get_signals(limit: int = 100, offset: int = 0, symbol: str | None = None, action: str | None = None):
     def op(conn: sqlite3.Connection):
-        rows = conn.execute(
-            "SELECT id, timestamp, symbol, action, price, reason FROM signals ORDER BY timestamp DESC LIMIT ?",
-            (max(1, min(limit, 5000)),),
-        ).fetchall()
+        clauses, values = [], []
+        if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
+        if action: clauses.append("action=?"); values.append(action)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+        rows = conn.execute(f"SELECT id, timestamp, symbol, action, price, reason FROM signals{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?", values).fetchall()
         return [dict(r) for r in rows]
 
     return await _run_db(op)
 
-async def get_signal_count():
+async def get_signal_count(symbol: str | None = None, action: str | None = None):
     def op(conn):
-        return int(conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0] or 0)
+        clauses, values = [], []
+        if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
+        if action: clauses.append("action=?"); values.append(action)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        return int(conn.execute(f"SELECT COUNT(*) FROM signals{where}", values).fetchone()[0] or 0)
     return await _run_db(op)
 
 
-async def get_decision_logs(limit=500, symbol=None, strategy=None):
+async def get_decision_logs(limit=500, symbol=None, strategy=None, offset=0):
     def op(conn: sqlite3.Connection):
         clauses, values = [], []
         if symbol:
@@ -909,8 +923,8 @@ async def get_decision_logs(limit=500, symbol=None, strategy=None):
         if strategy:
             clauses.append("strategy=?"); values.append(strategy)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        values.append(max(1, min(int(limit), 5000)))
-        rows = conn.execute(f"SELECT * FROM decision_logs{where} ORDER BY timestamp DESC LIMIT ?", values).fetchall()
+        values.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+        rows = conn.execute(f"SELECT * FROM decision_logs{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?", values).fetchall()
         result = [dict(r) for r in rows]
         for row in result:
             try: row["metadata"] = _json_value(row.get("metadata"), {})

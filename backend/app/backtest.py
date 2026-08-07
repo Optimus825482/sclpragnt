@@ -258,6 +258,20 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
                 spread_pct=0.0, slippage_pct=None):
     if not isinstance(definition, dict): raise ValueError("strategy_definition nesne olmalıdır")
     entry = definition.get("entry") or []; exit_conditions = definition.get("exit") or []
+    policy = definition.get("exit_policy") or {}
+    if not isinstance(policy, dict):
+        raise ValueError("exit_policy nesne olmalıdır")
+    exit_mode = str(policy.get("mode", "conditions_plus_protection")).lower()
+    if exit_mode not in {"conditions_only", "conditions_plus_protection", "protection_only"}:
+        raise ValueError("exit_policy.mode: conditions_only, conditions_plus_protection veya protection_only olmalı")
+    use_stop = bool(policy.get("use_stop_loss", exit_mode != "conditions_only"))
+    use_target = bool(policy.get("use_take_profit", exit_mode != "conditions_only"))
+    use_trailing = bool(policy.get("use_trailing_stop", False))
+    use_max_hold = bool(policy.get("use_max_hold", False))
+    max_hold_bars = int(policy.get("max_hold_bars", 0) or 0)
+    trailing_pct = float(policy.get("trailing_stop_pct", 0) or 0)
+    if use_max_hold and max_hold_bars < 1: raise ValueError("max_hold_bars pozitif olmalı")
+    if use_trailing and not 0 < trailing_pct < 1: raise ValueError("trailing_stop_pct 0 ile 1 arasında olmalı")
     if len(entry) > 8 or len(exit_conditions) > 8: raise ValueError("En fazla 8 giriş ve 8 çıkış koşulu kullanılabilir")
     rows = _fetch_klines(symbol, interval, days_back); analyzer = ScalpAnalyzer(None); balance = config.INITIAL_BALANCE_TRY; position = None; trades = []; entry_armed = True; cooldown_until = -1
     stop_pct = float(stop_pct if stop_pct is not None else config.HARD_STOP_LOSS_PCT)
@@ -267,11 +281,21 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
         window = {k:v[:i+1] for k,v in rows.items()}; now = rows["times"][i]
         if position:
             exit_price = None; reason = None
-            stop_price = position["stop_price"]
-            target_price = position["target_price"]
-            if rows["lows"][i] <= stop_price: exit_price=stop_price; reason="custom_stop_loss"
-            elif rows["highs"][i] >= target_price: exit_price=target_price; reason="custom_take_profit"
-            elif _custom_conditions(analyzer, window, exit_conditions): exit_price=close; reason="custom_exit"
+            position["max_price"] = max(position.get("max_price", position["entry"]), rows["highs"][i])
+            stop_price = position.get("stop_price")
+            target_price = position.get("target_price")
+            trailing_price = position["max_price"] * (1 - trailing_pct) if use_trailing else None
+            condition_hit = bool(exit_conditions) and _custom_conditions(analyzer, window, exit_conditions)
+            if use_stop and stop_price is not None and rows["lows"][i] <= stop_price:
+                exit_price=stop_price; reason="custom_stop_loss"
+            elif use_target and target_price is not None and rows["highs"][i] >= target_price:
+                exit_price=target_price; reason="custom_take_profit"
+            elif use_trailing and trailing_price is not None and rows["lows"][i] <= trailing_price:
+                exit_price=trailing_price; reason="custom_trailing_stop"
+            elif use_max_hold and i - position["entry_bar"] >= max_hold_bars:
+                exit_price=close; reason="custom_max_hold"
+            elif exit_mode != "protection_only" and condition_hit:
+                exit_price=close; reason="custom_exit_condition"
             if exit_price is not None:
                 balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size, reason, spread_pct, slippage_pct); trade.update({"entry_time":position["entry_time"],"exit_time":now}); trades.append(trade); position=None; cooldown_until = i + 1; entry_armed = False
         entry_signal = _custom_conditions(analyzer, window, entry)
@@ -283,12 +307,12 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
             fee=order_size*config.COMMISSION_PCT; balance-=order_size+fee
             position={"entry":entry_price,"quantity":order_size/entry_price,"entry_time":rows["times"][i + 1],
                       "entry_bar":i + 1, "stop_price":entry_price * (1 - stop_pct),
-                      "target_price":entry_price * (1 + tp_pct)}
+                      "target_price":entry_price * (1 + tp_pct), "max_price": entry_price}
             entry_armed = False
     if position:
         balance, pnl, _, trade = _close_trade(balance, position["entry"], rows["closes"][-1], position["quantity"], order_size, "open_at_end_mark_to_market", spread_pct, slippage_pct); trade.update({"entry_time":position["entry_time"],"exit_time":rows["times"][-1]}); trades.append(trade)
     wins=sum(t["pnl"]>0 for t in trades); net=balance-config.INITIAL_BALANCE_TRY; losses=[t["pnl"] for t in trades if t["pnl"]<=0]; gains=[t["pnl"] for t in trades if t["pnl"]>0]
-    return {"strategy":"CUSTOM","symbol":symbol,"interval":interval,"days_back":days_back,"definition":definition,"initial_balance":config.INITIAL_BALANCE_TRY,"final_balance":round(balance,2),"net_pnl":round(net,2),"total_trades":len(trades),"wins":wins,"losses":len(trades)-wins,"win_rate":round(wins/len(trades)*100,2) if trades else 0,"profit_factor":round(sum(gains)/abs(sum(losses)),3) if losses else None,"trades":trades,"exit_reason_counts":dict(Counter(t["reason"] for t in trades)),"data_quality":_data_quality(rows, interval),"fill_model":"next_bar_open_entry_executable_exit","spread_pct":spread_pct,"slippage_pct":config.ESTIMATED_SLIPPAGE_PCT if slippage_pct is None else slippage_pct,"paper_only":True,"custom_strategy":True,"exit_model":"custom_conditions_plus_explicit_tp_sl"}
+    return {"strategy":"CUSTOM","symbol":symbol,"interval":interval,"days_back":days_back,"definition":definition,"exit_policy":policy,"initial_balance":config.INITIAL_BALANCE_TRY,"final_balance":round(balance,2),"net_pnl":round(net,2),"total_trades":len(trades),"wins":wins,"losses":len(trades)-wins,"win_rate":round(wins/len(trades)*100,2) if trades else 0,"profit_factor":round(sum(gains)/abs(sum(losses)),3) if losses else None,"trades":trades,"exit_reason_counts":dict(Counter(t["reason"] for t in trades)),"data_quality":_data_quality(rows, interval),"fill_model":"next_bar_open_entry_executable_exit","spread_pct":spread_pct,"slippage_pct":config.ESTIMATED_SLIPPAGE_PCT if slippage_pct is None else slippage_pct,"paper_only":True,"custom_strategy":True,"exit_model":exit_mode,"exit_controls":{"stop_loss":use_stop,"take_profit":use_target,"trailing_stop":use_trailing,"max_hold":use_max_hold}}
 
 async def run_custom_backtest(symbol, interval, days_back, definition, order_size=500.0, stop_pct=None, tp_pct=None,
                               spread_pct=0.0, slippage_pct=None):
@@ -298,6 +322,10 @@ async def run_custom_backtest(symbol, interval, days_back, definition, order_siz
 def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct,
                 start_ts=None, end_ts=None, spread_pct=0.0, slippage_pct=None):
     _validate(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct)
+    # Historical candles have no bid/ask; use an explicit conservative spread
+    # assumption unless a stress scenario supplies its own value.
+    if spread_pct == 0.0:
+        spread_pct = config.BACKTEST_ASSUMED_SPREAD_PCT
     with _CONFIG_LOCK:
         saved = {attr: getattr(config, attr) for attr in PARAM_FIELDS.values() if attr in {PARAM_FIELDS[k] for k in params}}
         saved_flags = {flag: getattr(config, flag) for flag, _, _ in STRATEGIES.values()}
@@ -431,6 +459,8 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     "max_drawdown_pct": round(max_drawdown * 100, 2), "commission_pct": config.COMMISSION_PCT,
                     "order_size": order_size, "stop_loss_pct": float(stop_pct), "take_profit_pct": first_target_pct,
                     "flow_model": "candle_orderflow_proxy_for_backtest",
+                    "microstructure_model": "historical_bid_ask_unavailable_candle_proxy",
+                    "cost_model": "round_trip_commission_spread_slippage",
                     "trailing_stop_pct": 0.0, "atr_trailing_multiplier": config.SYSTEM_ATR_TRAILING_MULTIPLIER,
                     "risk_reward": config.SYSTEM_RISK_REWARD,
                     "exit_model": "atr_trailing_after_rr_target",

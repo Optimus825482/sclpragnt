@@ -47,6 +47,7 @@ class Config:
     LIQUIDITY_FILTER_ENABLED = True
     GAINER_RADAR_AUTO_TRADE = True
     GAINER_RADAR_MIN_SCORE = 65
+    GAINER_RADAR_INTERVAL_SEC = max(15, int(os.getenv("GAINER_RADAR_INTERVAL_SEC", "60")))
     
     HARD_STOP_LOSS_PCT = 0.012
     COOLDOWN_BARS = 2
@@ -77,6 +78,7 @@ class Config:
     # Binance TR spot komisyonu (Bronz/Standart taker %0.15) - işlem başına
     COMMISSION_PCT = float(os.getenv("COMMISSION_PCT", "0.0015"))
     ESTIMATED_SLIPPAGE_PCT = 0.00025
+    BACKTEST_ASSUMED_SPREAD_PCT = float(os.getenv("BACKTEST_ASSUMED_SPREAD_PCT", "0.001"))
     MIN_EXPECTED_NET_PNL_TRY = 0.5
 
     @classmethod

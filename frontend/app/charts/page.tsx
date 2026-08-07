@@ -480,8 +480,9 @@ export default function ChartsPage() {
         setLoading(true);
         const load = async () => {
             try {
-                const res = await fetch(`https://api.binance.me/api/v1/klines?symbol=${symbol}&interval=${interval}&limit=200`);
-                const data = await res.json();
+                const res = await fetch(`${API_BASE}/api/market-klines/${symbol}?interval=${interval}&limit=200`);
+                const payload = await res.json();
+                const data = payload.candles || [];
                 if (cancelled || !candleRef.current) return;
                 const candles: Bar[] = data.map((k: number[]) => ({
                     time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5]

@@ -27,6 +27,7 @@ from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app import database
 from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, run_execution_stress, run_parameter_sensitivity, run_holdout_test, run_statistical_validation, get_backtest_data_quality, CUSTOM_IDENTIFIER_SCHEMA, CUSTOM_INDICATORS
+CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot
 from app import llm_analysis
@@ -39,6 +40,7 @@ from app import alerting
 from app.agent_learning import (new_trace_id, start_trace, append_event, finish_trace,
                                  evaluate_output, save_evaluation, save_experience, upsert_instinct, set_runtime_pool,
                                  promote_validated_instincts)
+from app.ws_runtime import ws_manager
 try:
     import asyncpg
 except ImportError:
@@ -56,6 +58,8 @@ _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
 _llm_replenish_lock = asyncio.Lock()
 _llm_last_idle_attempt_at = time.time()
+_radar_lock = asyncio.Lock()
+_ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
 
 
 async def publish_a2a_event(message_type, payload, *, correlation_id=None, requires_user_approval=False):
@@ -390,20 +394,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WELL_KNOWN_DIR = os.path.join(BASE_DIR, "..", ".well-known")
 app.mount("/.well-known", StaticFiles(directory=WELL_KNOWN_DIR), name="wellknown")
 
-class ConnectionManager:
-    def __init__(self): self.active_connections = []
-    async def connect(self, ws: WebSocket):
-        await ws.accept()
-        self.active_connections.append(ws)
-    def disconnect(self, ws: WebSocket):
-        if ws in self.active_connections: self.active_connections.remove(ws)
-    async def broadcast(self, message: dict):
-        for c in list(self.active_connections):
-            try: await c.send_json(message)
-            except: self.disconnect(c)
-
-ws_manager = ConnectionManager()
-
 async def learning_promotion_loop():
     """Promote only evidence-backed instincts; never changes system prompts directly."""
     while True:
@@ -431,7 +421,7 @@ async def startup():
         except Exception as exc:
             print(f"[Config] Kalıcı ayarlar yüklenemedi: {exc}")
     await analyzer.load_state()
-    if os.getenv("DB_BACKEND", "sqlite").lower() == "postgres" and asyncpg and os.getenv("DATABASE_URL"):
+    if os.getenv("DB_BACKEND", "postgres").lower() == "postgres" and asyncpg and os.getenv("DATABASE_URL"):
         try:
             _pg_pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=4)
             set_runtime_pool(_pg_pool)
@@ -465,6 +455,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect: ws_manager.disconnect(websocket)
 
 async def ws_broadcast_loop():
+    global _ws_snapshot_cache
     while True:
         if market.tickers:
             tickers = []
@@ -472,7 +463,9 @@ async def ws_broadcast_loop():
                 item = dict(t)
                 item["avg_volume"] = market.get_avg_volume(t["symbol"])
                 tickers.append(item)
-            await ws_manager.broadcast({"type": "tickers", "data": tickers})
+            _ws_snapshot_cache["tickers"] = tickers
+            _ws_snapshot_cache["generated_at"] = time.time()
+            await ws_manager.broadcast({"type": "tickers", "data": _ws_snapshot_cache["tickers"]})
 
             try_bal = await database.get_wallet_balance("TRY")
             total_value = try_bal
@@ -507,12 +500,10 @@ async def ws_broadcast_loop():
             open_entry_commission = sum(pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT for pos in analyzer.positions.values())
             reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl - open_entry_commission
             reconciliation_delta = total_value - reconciliation_expected
-            await ws_manager.broadcast({
-                "type": "portfolio",
-                "data": {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
-                         "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
-                         "reconciliation_delta": reconciliation_delta, "positions": open_positions}
-            })
+            _ws_snapshot_cache["portfolio"] = {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
+                                                "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
+                                                "reconciliation_delta": reconciliation_delta, "positions": open_positions}
+            await ws_manager.broadcast({"type": "portfolio", "data": _ws_snapshot_cache["portfolio"]})
         await asyncio.sleep(1.0)
 
 async def alert_loop():
@@ -556,10 +547,11 @@ async def radar_loop():
             await asyncio.sleep(1)
             continue
         try:
-            await gainers_radar(execute=True)
+            async with _radar_lock:
+                await gainers_radar(execute=True)
         except Exception as exc:
             print(f"[Radar] otomatik tarama hatası: {exc}")
-            await asyncio.sleep(30)
+        await asyncio.sleep(config.GAINER_RADAR_INTERVAL_SEC)
 
 async def llm_replenish_after_close():
     """Replace each closed paper position with one fresh eligible candidate."""
@@ -648,7 +640,7 @@ async def system_health():
     now_ms = time.time() * 1000
     ages = [max(0.0, (now_ms - float(t.get("timestamp", now_ms))) / 1000) for t in market.tickers.values() if t.get("timestamp")]
     vector_status = "not_checked_until_postgres_backend_is_enabled"
-    db_status = "sqlite"
+    db_status = "postgres_not_configured"
     if _pg_pool:
         try:
             async with _pg_pool.acquire() as conn:
@@ -664,7 +656,7 @@ async def system_health():
     except Exception as exc:
         llm_active = False
         llm_error = f"{type(exc).__name__}: {exc}"
-    return {"status": "degraded" if db_status.startswith("postgres_error") or llm_error else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions(), "pending_paper_orders": len(analyzer.pending_orders)}, "database": {"backend": os.getenv("DB_BACKEND", "sqlite"), "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}, "a2a": {"enabled": bool(os.getenv("A2A_RELAY_URL", "").strip() and os.getenv("A2A_SHARED_SECRET", "").strip()), "relay_configured": bool(os.getenv("A2A_RELAY_URL", "").strip()), "outbox_paper_only": True}, "safety": {"paper_only": True, "memory_content_untrusted": True, "tool_audit_enabled": True}}
+    return {"status": "degraded" if db_status.startswith("postgres_") and db_status != "postgres_healthy" or llm_error else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions(), "pending_paper_orders": len(analyzer.pending_orders)}, "database": {"backend": "postgres", "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}, "a2a": {"enabled": bool(os.getenv("A2A_RELAY_URL", "").strip() and os.getenv("A2A_SHARED_SECRET", "").strip()), "relay_configured": bool(os.getenv("A2A_RELAY_URL", "").strip()), "outbox_paper_only": True}, "safety": {"paper_only": True, "memory_content_untrusted": True, "tool_audit_enabled": True}}
 
 @app.get("/api/memory/status")
 async def memory_status():
@@ -946,6 +938,15 @@ async def get_market_symbols():
         return {"symbols": await trading_symbols("TRY"), "quote_asset": "TRY"}
     except Exception as exc:
         return {"symbols": [], "quote_asset": "TRY", "error": str(exc)}
+
+@app.get("/api/market-klines/{symbol}")
+async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200):
+    """Single public market-data adapter used by all UI candle consumers."""
+    if interval not in {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}:
+        raise HTTPException(status_code=400, detail="Geçersiz timeframe")
+    rows = await fetch_klines(symbol, interval, limit=max(20, min(int(limit), 500)))
+    return {"symbol": symbol.replace("_", "").upper(), "interval": interval,
+            "candles": rows, "source": "binance_tr_public"}
 
 @app.get("/api/radar/gainers")
 async def gainers_radar(execute: bool = False):
@@ -1720,7 +1721,7 @@ async def deactivate_coin(args: dict):
     await database.set_llm_setting("active_symbols", json.dumps(config.SYMBOLS, ensure_ascii=False))
     return {"ok": True, "symbol": symbol, "active": False, "paper_only": True}
 
-async def reconcile_portfolio():
+async def reconcile_portfolio_state():
     db_positions = await database.load_positions()
     live = {str(key).upper(): value for key, value in analyzer.positions.items()}
     differences = []
@@ -1851,7 +1852,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL])
     for tool in tools:
         if tool.get("function", {}).get("name") == "run_custom_backtest":
-            tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını backtest eder. Her koşul {indicator, op, value} biçimindedir; desteklenen identifier şeması sonuçta ve açıklamada verilir. Kategoriler: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda veri yoksa null/0 üretir; bu değerleri zorunlu gate olarak kullanmadan önce veri kaynağını dikkate al. Python çalıştırmaz, paper-only'dir."
+            tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını backtest eder. Her koşul {indicator, op, value} biçimindedir; desteklenen identifier şeması sonuçta ve açıklamada verilir. Kategoriler: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda veri yoksa null/0 üretir; bu değerleri zorunlu gate olarak kullanmadan önce veri kaynağını dikkate al. Python çalıştırmaz, paper-only'dir." + CUSTOM_EXIT_POLICY_GUIDANCE
     tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Seçili sembol üzerinde public historical candles ile paper-only mevcut strateji backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy":{"type":"string"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"Seçili sembol üzerinde güvenli deklaratif gösterge koşullarıyla paper-only backtest çalıştırır; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Seçili sembol ve stratejiyi farklı tarih pencerelerinde ve deterministik Monte Carlo özetiyle test eder; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"windows":{"type":"array","items":{"type":"integer"}}},"required":["strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}}}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     # The symbol-chat route builds a second base list below; append alert and
     # research tools after that list so they are not lost when the list is
@@ -1863,7 +1864,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                   LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL])
     for tool in tools:
         if tool.get("function", {}).get("name") == "run_custom_backtest":
-            tool["function"]["description"] = "Deklaratif paper-only backtest. Her koşul {indicator, op, value}; identifier şeması: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + "."
+            tool["function"]["description"] = "Deklaratif paper-only backtest. Her koşul {indicator, op, value}; identifier şeması: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + "." + CUSTOM_EXIT_POLICY_GUIDANCE
 
     async def execute_tool(name, args):
         if name == "scan_market_snapshots": return await scan_market_snapshots(args)
@@ -2004,32 +2005,32 @@ async def close_position_manual(symbol: str):
     return {"ok": True, "message": f"{symbol} kapatıldı @ {price:.2f}", "signal": sig}
 
 @app.get("/api/trades")
-async def get_trades():
+async def get_trades(limit: int = 100, offset: int = 0, symbol: str = "", strategy: str = ""):
     """Kapanan pozisyonların işlem geçmişi."""
-    return {"trades": await database.get_trades()}
+    return {"trades": await database.get_trades(limit, offset, symbol or None, strategy or None), "limit": limit, "offset": offset}
 
 @app.get("/api/backup")
 async def download_backup():
-    """Download a consistent snapshot of the active SQLite or PostgreSQL database."""
-    if os.getenv("DB_BACKEND", "sqlite").lower() == "postgres":
-        if not os.getenv("DATABASE_URL"):
-            raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
-        fd, path = tempfile.mkstemp(prefix="scalper-postgres-", suffix=".dump")
-        os.close(fd)
-        try:
-            result = await asyncio.to_thread(subprocess.run, ["pg_dump", "--format=custom", "--no-owner", "--file", path, os.environ["DATABASE_URL"]], capture_output=True, text=True, timeout=600)
-        except FileNotFoundError as exc:
-            if os.path.exists(path): os.unlink(path)
-            raise HTTPException(status_code=503, detail="PostgreSQL yedek aracı pg_dump backend imajında kurulu değil") from exc
-        if result.returncode != 0:
-            if os.path.exists(path): os.unlink(path)
-            raise HTTPException(status_code=502, detail=result.stderr[-2000:] or "pg_dump başarısız")
-        return FileResponse(path, media_type="application/octet-stream", filename=f"scalperagent-postgres-{time.strftime('%Y%m%d-%H%M%S')}.dump", background=BackgroundTask(lambda: os.unlink(path) if os.path.exists(path) else None))
-    path = await database.create_backup_file()
+    """Download a custom-format dump of the PostgreSQL production database."""
+    if os.getenv("DB_BACKEND", "postgres").lower() != "postgres":
+        raise HTTPException(status_code=503, detail="Sistem yalnızca PostgreSQL kullanmalıdır; DB_BACKEND=postgres yapın")
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if not database_url:
+        raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
+    fd, path = tempfile.mkstemp(prefix="scalper-postgres-", suffix=".dump")
+    os.close(fd)
+    try:
+        result = await asyncio.to_thread(subprocess.run, ["pg_dump", "--format=custom", "--no-owner", "--file", path, database_url], capture_output=True, text=True, timeout=600)
+    except FileNotFoundError as exc:
+        if os.path.exists(path): os.unlink(path)
+        raise HTTPException(status_code=503, detail="PostgreSQL yedek aracı pg_dump backend imajında kurulu değil") from exc
+    if result.returncode != 0:
+        if os.path.exists(path): os.unlink(path)
+        raise HTTPException(status_code=502, detail=result.stderr[-2000:] or "pg_dump başarısız")
     return FileResponse(
         path,
-        media_type="application/vnd.sqlite3",
-        filename=f"scalperagent-backup-{time.strftime('%Y%m%d-%H%M%S')}.sqlite",
+        media_type="application/octet-stream",
+        filename=f"scalperagent-postgres-{time.strftime('%Y%m%d-%H%M%S')}.dump",
         background=BackgroundTask(lambda: os.unlink(path) if os.path.exists(path) else None),
     )
 
@@ -2062,8 +2063,8 @@ async def reset_memory():
     return {"ok": True, "message": "LLM memory kayıtları sıfırlandı; paper-trading kayıtları korunuyor"}
 
 @app.get("/api/signals")
-async def get_signals(limit: int = 100):
-    return {"signals": await database.get_signals(limit), "total": await database.get_signal_count()}
+async def get_signals(limit: int = 100, offset: int = 0, symbol: str = "", action: str = ""):
+    return {"signals": await database.get_signals(limit, offset, symbol or None, action or None), "total": await database.get_signal_count(symbol or None, action or None), "limit": limit, "offset": offset}
 
 @app.get("/api/analysis-snapshots/{symbol}")
 async def get_analysis_snapshots(symbol: str, limit: int = 50):
@@ -2080,8 +2081,8 @@ async def get_analysis_snapshots(symbol: str, limit: int = 50):
     return {"symbol": symbol.upper(), "snapshots": await database._run_db(op)}
 
 @app.get("/api/decisions")
-async def get_decisions(limit: int = 500, symbol: str = "", strategy: str = ""):
-    return {"decisions": await database.get_decision_logs(limit, symbol or None, strategy or None)}
+async def get_decisions(limit: int = 500, offset: int = 0, symbol: str = "", strategy: str = ""):
+    return {"decisions": await database.get_decision_logs(limit, symbol or None, strategy or None, offset), "limit": limit, "offset": offset}
 
 @app.get("/api/llm/tool-logs")
 async def get_llm_tool_logs(limit: int = 500):
@@ -2414,7 +2415,7 @@ async def strategies_llm_chat(payload: dict = None):
                 return {"count": len(rows), "orders": rows, "paper_only": True}
             if name == "cancel_paper_order": return await analyzer.cancel_paper_order(args.get("order_id"))
             if name == "modify_paper_order": return await analyzer.modify_paper_order(args.get("order_id"), args.get("changes"))
-            if name == "reconcile_portfolio": return await reconcile_portfolio()
+            if name == "reconcile_portfolio": return await reconcile_portfolio_state()
             if name == "deactivate_coin": return await deactivate_coin(args)
             if name == "get_llm_open_position":
                 target = str(args.get("symbol") or "").replace("_", "").upper()
@@ -2692,6 +2693,15 @@ async def backtest_run(payload: dict):
             symbol, interval, days_back, strategy, params,
             order_size, stop_pct, tp_pct, trail_pct
         )
+        # A headline backtest is not accepted without a chronological OOS check.
+        # Keep the base result for inspection, but expose the validation beside it.
+        oos = await run_walk_forward(symbol, interval, strategy,
+                                     train_days=max(7, min(days_back, 90)),
+                                     test_days=max(1, min(days_back // 3, 30)),
+                                     folds=3, order_size=order_size,
+                                     stop_pct=stop_pct, tp_pct=tp_pct)
+        result["oos_validation"] = oos
+        result["validation_status"] = "PASS" if oos.get("oos_consistent") else "FAIL"
         return {"ok": True, "run_id": run_id, "result": result}
     except Exception as e:
         return {"ok": False, "error": str(e)}

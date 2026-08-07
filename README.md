@@ -15,7 +15,7 @@ analyzer.py (her 2 sn, tüm coinler)
         │
         ├── Hacim patlaması?  (hacim > 1.5x son 10 bar ortalaması)
         ├── Trend yukarı?     (fiyat > 9 periyotluk EMA)
-        └── İkisi de TRUE ──► BUY (50 USDT)
+        └── İkisi de TRUE ──► BUY (varsayılan 1.000 TRY paper emir)
         │
         ▼
 executor.py ──► sanal cüzdan güncelle (USDT düş, coin ekle)
@@ -26,7 +26,7 @@ main.py ──► WebSocket /ws üzerinden frontend'e yayınla
 
 ## Pozisyon Yönetimi (Trailing Stop)
 
-- **Giriş:** Hacim patlaması + fiyat > EMA(9) → 50 USDT ile LONG
+- **Giriş:** Etkin paper stratejisi ve likidite/maliyet kontrolleri → varsayılan 1.000 TRY ile LONG
 - **Hard Stop:** Fiyat girişin %1 altına düşerse kapat
 - **Take Profit:** Fiyat girişin %2 üstüne çıkarsa kapat
 - **Break-even:** Fiyat girişin %0.2 üstüne çıkınca stop giriş fiyatına taşınır (zarar imkansızlaşır)
@@ -36,7 +36,7 @@ main.py ──► WebSocket /ws üzerinden frontend'e yayınla
 
 | Katman   | Teknoloji                                                    |
 | -------- | ------------------------------------------------------------ |
-| Backend  | Python, FastAPI, WebSocket, SQLite (aiosqlite)               |
+| Backend  | Python, FastAPI, WebSocket, PostgreSQL (psycopg/asyncpg)     |
 | Veri     | Binance Public WS (1m kline stream, tek bağlantıda birleşik) |
 | Analiz   | NumPy (EMA, ortalama hacim)                                  |
 | Frontend | Next.js, React, Tailwind                                     |
@@ -62,13 +62,18 @@ Veya kök dizinde: `.\start.ps1` (iki servisi birden başlatır)
 | ---------------------------------------- | ---------- | --------------------------------------------- |
 | Market API                               | public     | Yalnızca herkese açık piyasa verisi kullanılır |
 | Başlangıç bakiyesi                       | 10.000 TL  | Sanal paper trading cüzdanı                   |
+| Varsayılan paper emir tutarı              | 1.000 TRY   | `DEFAULT_ORDER_USDT` adı geriye dönük uyumluluk içindir |
 
-İnce ayarlar `backend/app/config.py` içinde: `SYMBOLS` (17 coin), `VOLUME_SPIKE_THRESHOLD` (1.5x), `DEFAULT_ORDER_USDT` (50), stop/tp/trailing yüzdeleri.
+İnce ayarlar `backend/app/config.py` içinde: sembol evreni, maliyet/likidite filtreleri, `DEFAULT_ORDER_USDT` (1.000 TRY), stop/tp/trailing yüzdeleri, `BACKTEST_ASSUMED_SPREAD_PCT` (varsayılan 0,1%) ve `GAINER_RADAR_INTERVAL_SEC` (varsayılan 60 saniye).
 
 ## API
 
 - `GET /health` - durum, paper/public API bilgisi, açık pozisyonlar
 - `WS /ws` - ticker / signal / portfolio mesajları (frontend bunu dinler)
+- `GET /api/market-klines/{symbol}` - frontend ve backend için ortak Binance TR public candle adapter’ı
+- `GET /api/trades`, `/api/signals`, `/api/decisions` - `limit`, `offset` ve ilgili sembol/strateji filtreleriyle server-side listeleme
+
+Custom backtest çıkış modeli `strategy_definition.exit_policy` ile seçilir. `mode` değerleri `conditions_only`, `conditions_plus_protection` veya `protection_only` olabilir; ayrıca `use_stop_loss`, `use_take_profit`, `use_trailing_stop`, `trailing_stop_pct`, `use_max_hold` ve `max_hold_bars` alanları desteklenir. Böylece koşullu çıkış seçildiğinde sistem zorla TP/SL uygulamaz.
 - `.well-known` - alan doğrulama dosyaları için mount
 
 ## Uyarı
