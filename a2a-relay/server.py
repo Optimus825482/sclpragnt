@@ -41,6 +41,10 @@ def forward(url, message):
 
 
 class Handler(BaseHTTPRequestHandler):
+    @staticmethod
+    def is_message_path(path):
+        return path.rstrip("/").split("?", 1)[0] in {"/api/a2a/messages", "/messages", ""}
+
     def json_response(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(status)
@@ -52,7 +56,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self.json_response(200, {"ok": True, "service": "a2a-relay", "paper_only": True, "peer_configured": bool(PEER_URL), "backend_configured": bool(BACKEND_URL)})
-        elif self.path.startswith("/api/a2a/messages") and BACKEND_URL:
+        elif self.is_message_path(self.path) and BACKEND_URL:
             parts = urlsplit(self.path)
             target = urlsplit(BACKEND_URL)
             url = urlunsplit((target.scheme, target.netloc, target.path, parts.query, ""))
@@ -65,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response(404, {"ok": False})
 
     def do_POST(self):
-        if self.path.rstrip("/") != "/api/a2a/messages":
+        if not self.is_message_path(self.path):
             self.json_response(404, {"ok": False})
             return
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
