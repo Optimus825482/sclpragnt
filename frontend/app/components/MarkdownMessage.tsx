@@ -1,5 +1,6 @@
 "use client";
 
+import React, { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -23,7 +24,7 @@ function cleanProviderMarkdown(value: string) {
     .replace(/\. (?=[\p{L}])/gu, ". ");
 }
 
-export default function MarkdownMessage({ content }: { content: string }) {
+function MarkdownMessage({ content }: { content: string }) {
   return <div className="message-markdown">
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -38,3 +39,7 @@ export default function MarkdownMessage({ content }: { content: string }) {
     >{cleanProviderMarkdown(content)}</ReactMarkdown>
   </div>;
 }
+
+// Chat input changes re-render the parent; avoid reparsing every previous
+// assistant message on each keystroke.
+export default memo(MarkdownMessage);
