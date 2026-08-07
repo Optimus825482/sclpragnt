@@ -58,6 +58,13 @@ button, a { touch-action: manipulation; }
 .chat-toggle input { margin-top:.1rem; }
 .chat-controls { min-height:0; overflow-y:auto; }
 .chat-controls-header { display:flex; justify-content:space-between; gap:.75rem; align-items:flex-start; }
+.chat-conversation-actions { display:flex; align-items:center; justify-content:flex-end; gap:.6rem; margin:-.25rem 0 .8rem; }
+.chat-context-meter { color:#94a3b8; font:600 .65rem/1 ui-monospace,monospace; letter-spacing:.04em; }
+.chat-context-meter.warning { color:#fde68a; }
+.chat-context-meter.critical { color:#fda4af; }
+.chat-context-alert { display:flex; justify-content:space-between; gap:.75rem; margin:0 0 .8rem; padding:.65rem .75rem; border:1px solid rgb(234 179 8 / .35); border-radius:.6rem; color:#fde68a; background:rgb(234 179 8 / .08); font:600 .68rem/1.4 ui-monospace,monospace; }
+.chat-context-alert span { flex:0 0 auto; color:inherit; white-space:nowrap; }
+.chat-context-alert.critical { border-color:rgb(244 63 94 / .45); color:#fda4af; background:rgb(244 63 94 / .08); }
 .chat-live-tools { padding:.8rem; border:1px solid rgb(51 65 85 / .65); border-radius:.7rem; background:rgb(5 8 13 / .4); }
 .chat-tool-chips { display:flex; flex-wrap:wrap; gap:.35rem; max-height:8rem; overflow-y:auto; }
 .chat-log-panel { margin-top:1rem; border-top:1px solid rgb(51 65 85 / .65); padding-top:1rem; }
@@ -212,6 +219,10 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .chat-conversation, .chat-controls { width:100%; }
   .chat-layout { height:auto; min-height:0; }
   .chat-conversation { min-height:calc(100dvh - 9rem); }
+  .chat-conversation-actions { justify-content:space-between; }
+  .chat-conversation-actions .ui-button { min-height:2.25rem; padding:.55rem .7rem; }
+  .chat-context-alert { align-items:flex-start; flex-direction:column; }
+  .chat-context-alert span { white-space:normal; }
   .chat-messages { min-height:24rem; max-height:none; }
   .chat-message { max-width:97%; }
   .chat-footer { margin-top:.65rem; padding-bottom:calc(.45rem + env(safe-area-inset-bottom)); }

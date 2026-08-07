@@ -87,6 +87,25 @@ def _message_text(message):
         return "".join(parts).strip() or None
     return None
 
+
+def _context_window_messages(messages, token_budget=900_000):
+    """Keep the newest conversation messages inside the 1M-token model window.
+
+    The frontend persists the complete session. The provider request keeps the
+    newest messages up to a conservative budget so system/context instructions
+    and the model response still have headroom.
+    """
+    selected = []
+    used = 0
+    for item in reversed([message for message in (messages or []) if isinstance(message, dict)]):
+        content = str(item.get("content") or "")
+        estimated = max(1, (len(content) + 24) // 4)
+        if selected and used + estimated > token_budget:
+            break
+        selected.append(item)
+        used += estimated
+    return list(reversed(selected)), used
+
 def _fernet():
     key = os.getenv("LLM_ENCRYPTION_KEY", "").strip()
     if not key:
@@ -166,7 +185,8 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"] and (not selected or str(s["id"]) in selected or s["name"] in selected))
     system = PERSONA + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
-    for item in (messages or [])[-12:]:
+    context_messages, _estimated_tokens = _context_window_messages(messages)
+    for item in context_messages:
         if not isinstance(item, dict):
             continue
         # Preserve tool-call metadata when the frontend sends a previous
