@@ -29,6 +29,16 @@ services:
       CORS_ORIGINS: https://scalper.erkanerdem.online
       A2A_RELAY_URL: ${A2A_RELAY_URL:-}
       A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:-}
+    volumes:
+      - scalper_data:/data
+    expose:
+      - "8004"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=3)"]
+      start_period: 90s
+      interval: 15s
+      timeout: 5s
+      retries: 5
   a2a-relay:
     build:
       context: ./a2a-relay
@@ -42,13 +52,8 @@ services:
       - scalper_a2a_relay:/data
     expose:
       - "8010"
-    volumes:
-      - scalper_data:/data
-    expose:
-      - "8004"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=3)"]
-      start_period: 90s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 5
