@@ -34,6 +34,9 @@ class _PostgresCompat:
         if was_ignore and "ON CONFLICT" not in sql.upper(): sql += " ON CONFLICT DO NOTHING"
         sql = re.sub(r"INSERT OR REPLACE INTO positions", "INSERT INTO positions", sql, flags=re.I)
         sql = re.sub(r"INSERT OR REPLACE INTO llm_skills", "INSERT INTO llm_skills", sql, flags=re.I)
+        sql = re.sub(r"INSERT OR REPLACE INTO a2a_messages", "INSERT INTO a2a_messages", sql, flags=re.I)
+        if "INSERT INTO A2A_MESSAGES" in sql.upper() and "ON CONFLICT" not in sql.upper():
+            sql += " ON CONFLICT(message_id) DO UPDATE SET correlation_id=EXCLUDED.correlation_id,direction=EXCLUDED.direction,message_type=EXCLUDED.message_type,sender=EXCLUDED.sender,recipient=EXCLUDED.recipient,status=EXCLUDED.status,payload=EXCLUDED.payload,created_at=EXCLUDED.created_at,delivered_at=EXCLUDED.delivered_at,acknowledged_at=EXCLUDED.acknowledged_at,last_error=EXCLUDED.last_error,attempts=EXCLUDED.attempts"
         if "INSERT INTO llm_skills" in sql.upper() and "ON CONFLICT" not in sql.upper(): sql += " ON CONFLICT(name) DO UPDATE SET instructions=EXCLUDED.instructions,enabled=EXCLUDED.enabled,created_at=EXCLUDED.created_at"
         if "INSERT INTO positions" in sql.upper() and "ON CONFLICT" not in sql.upper():
             sql += " ON CONFLICT(symbol) DO UPDATE SET side=EXCLUDED.side,entry_price=EXCLUDED.entry_price,stop_price=EXCLUDED.stop_price,take_profit=EXCLUDED.take_profit,peak_price=EXCLUDED.peak_price,breakeven_hit=EXCLUDED.breakeven_hit,quantity=EXCLUDED.quantity,entry_time=EXCLUDED.entry_time,strategy=EXCLUDED.strategy,entry_context=EXCLUDED.entry_context,trade_id=EXCLUDED.trade_id"
