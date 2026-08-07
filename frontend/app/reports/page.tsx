@@ -17,7 +17,7 @@ function DecisionTab({decisions:signals,trades}:{decisions:any[];trades:Trade[]}
  const source=signalRows.length?signalRows:signals;
  const knownStrategies=["MOMENTUM","ORDERFLOW","EMA_VWAP_PULLBACK","VWAP_MEAN_REVERSION","CHOP_TREND_FILTER","KELTNER_BREAKOUT","DONCHIAN_BREAKOUT","BB_SQUEEZE_ORDERFLOW","GAINER_RADAR"];
  const strategies=Array.from(new Set(source.map(d=>d.strategy||d.reason).filter(Boolean))) as string[];
- const rows=useMemo(()=>source.filter(d=>["BUY_SIGNAL","BUY_BLOCKED","CLOSE_LONG"].includes(d.action)).map(d=>{
+ const rows=useMemo(()=>source.filter(d=>["BUY_SIGNAL","BUY_BLOCKED","LLM_REENTRY_BLOCKED","CLOSE_LONG"].includes(d.action)).map(d=>{
    const decision=d.action;
    const inferredStrategy=d.strategy||(knownStrategies.includes(String(d.reason||""))?d.reason:undefined);
    const trade=decision==="BUY_BLOCKED"?undefined:trades.find(t=>t.symbol===d.symbol&&(!inferredStrategy||t.strategy===inferredStrategy)&&(
@@ -25,7 +25,7 @@ function DecisionTab({decisions:signals,trades}:{decisions:any[];trades:Trade[]}
    ));
    const opened=decision==="BUY_SIGNAL";
    const resolvedStrategy=inferredStrategy||trade?.strategy;
-   return {...d,decision,strategy:resolvedStrategy,reason:d.reason===(resolvedStrategy||"__none__")&&opened?"position_opened":d.reason,trade,opened,status:decision==="BUY_BLOCKED"?"blocked":decision==="CLOSE_LONG"?(trade?"closed":"unmatched"):(trade?"closed":"open")};
+   return {...d,decision,strategy:resolvedStrategy,reason:d.reason===(resolvedStrategy||"__none__")&&opened?"position_opened":d.reason,trade,opened,status:["BUY_BLOCKED","LLM_REENTRY_BLOCKED"].includes(decision)?"blocked":decision==="CLOSE_LONG"?(trade?"closed":"unmatched"):(trade?"closed":"open")};
  }).filter(r=>(status==="all"||r.status===status)&&(strategy==="all"||r.strategy===strategy)&&(!query||`${r.symbol} ${r.strategy||""} ${r.reason||""}`.toLowerCase().includes(query.toLowerCase()))),[source,trades,status,strategy,query]);
  const pages=Math.max(1,Math.ceil(rows.length/pageSize)); const visible=rows.slice((page-1)*pageSize,page*pageSize);
  const exportCsv=()=>{const head=["Zaman","Sembol","Strateji","Sinyal","Durum","Fiyat","Neden","PnL","PnL %","Komisyon","Aktif Süre","Trade ID","Strateji Sürümü"];const esc=(v:any)=>`"${String(v??"").replaceAll('"','""')}"`;const body=rows.map(r=>[new Date(r.timestamp*1000).toLocaleString("tr-TR"),r.symbol,label(r.strategy||""),r.decision,r.status,r.price,r.reason,r.trade?.pnl,r.trade?.pnl_pct,r.trade?.commission,r.trade?.hold_seconds,r.trade?.trade_id,r.trade?.strategy_revision||r.trade?.entry_context?.strategy_revision].map(esc).join(","));const blob=new Blob(["\ufeff"+[head.map(esc).join(","),...body].join("\n")],{type:"text/csv;charset=utf-8"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="sinyal-karar-analizi.csv";a.click();URL.revokeObjectURL(a.href)};

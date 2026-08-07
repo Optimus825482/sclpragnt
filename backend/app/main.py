@@ -410,6 +410,7 @@ async def learning_promotion_loop():
 async def startup():
     global _pg_pool
     await database.init_db()
+    await database.ensure_default_scalper_skill()
     saved_config = await database.get_llm_setting("runtime_config")
     if saved_config:
         try:
@@ -537,7 +538,11 @@ async def strategy_loop():
                 await ws_manager.broadcast({"type": "signal", "data": sig})
                 if str(sig.get("action", "")).startswith("CLOSE"):
                     await ws_manager.broadcast({"type": "trade_updated", "data": {"symbol": sig.get("symbol"), "reason": sig.get("reason")}})
-                    asyncio.create_task(llm_replenish_after_close())
+                    # An LLM close is a risk decision, not an instruction to
+                    # immediately buy again. Let the symbol guard settle and
+                    # wait for a later idle research cycle.
+                    if str(sig.get("strategy", "")).upper() != "LLM_PAPER":
+                        asyncio.create_task(llm_replenish_after_close())
         await asyncio.sleep(2)
 
 async def radar_loop():
@@ -665,7 +670,7 @@ async def memory_status():
         async with _pg_pool.acquire() as conn:
             row = await conn.fetchrow("SELECT COUNT(*) AS documents, COUNT(*) FILTER (WHERE embedding_status='ready') AS embedded FROM memory_documents")
             persistent = {"documents": int(row["documents"]), "embedded": int(row["embedded"])}
-    return {"enabled": bool(_pg_pool), "backend": os.getenv("DB_BACKEND", "sqlite"), "worker": embedding_worker.snapshot(), "persistent": persistent, "backfill": dict(_embedding_backfill), "repair": dict(_embedding_repair), "message": None if _pg_pool else "PostgreSQL memory backend aktif değil"}
+    return {"enabled": bool(_pg_pool), "backend": os.getenv("DB_BACKEND", "postgres"), "worker": embedding_worker.snapshot(), "persistent": persistent, "backfill": dict(_embedding_backfill), "repair": dict(_embedding_repair), "message": None if _pg_pool else "PostgreSQL memory backend aktif değil"}
 
 @app.post("/api/memory/backfill")
 async def memory_backfill():
@@ -1286,6 +1291,28 @@ async def llm_learning():
     """Expose the descriptive closed-trade learning summary for audit/UI."""
     return build_learning_context(await database.get_trades(), limit=200)
 
+@app.get("/api/llm/entry-policy")
+async def llm_entry_policy():
+    """Expose the active deterministic LLM paper-entry contract for audit."""
+    return {
+        "paper_only": True,
+        "policy_version": "scalper-trade-manager-v2",
+        "cooldown_seconds": config.LLM_REENTRY_COOLDOWN_SEC,
+        "minimum_rearm_move_pct": config.LLM_REENTRY_MIN_MOVE_PCT,
+        "hard_gates": {
+            "max_rsi": 72,
+            "max_stochastic": 92,
+            "max_mfi": 80,
+            "max_cci": 220,
+            "max_spread_pct": 0.15,
+            "min_orderflow_imbalance": -0.10,
+            "higher_timeframes": ["15m", "1h"],
+            "loss_streak_block_at": 2,
+            "negative_expectancy_min_trades": 4,
+        },
+        "entry_contract": "BUY_SIGNAL only; BUY_BLOCKED and LLM_REENTRY_BLOCKED are not trades",
+    }
+
 @app.put("/api/llm/paper-trading")
 async def set_llm_paper_trading(payload: dict):
     enabled = bool(payload.get("enabled"))
@@ -1326,9 +1353,21 @@ async def llm_open_paper_trade(payload: dict):
         if symbol not in available_symbols:
             raise HTTPException(status_code=400, detail="Geçerli TRY sembolü gerekli")
     blocked = []
+    historical_trades = await database.get_trades(limit=500)
     for candidate in candidates:
         symbol = str(candidate["symbol"]).upper()
         if symbol not in config.SYMBOLS:
+            continue
+        # Enforce re-entry policy at the orchestration boundary too; callers
+        # cannot bypass the portfolio writer's guard by hitting this endpoint.
+        llm_guard = await database.get_llm_symbol_guard(symbol)
+        if llm_guard and llm_guard.get("status") == "active":
+            blocked.append({"symbol": symbol, "reason": "llm_guard:cooldown"})
+            await database.save_signal({
+                "symbol": symbol, "action": "BUY_BLOCKED", "price": None,
+                "reason": "llm_guard:cooldown", "strategy": "LLM_PAPER", "timestamp": time.time(),
+                "guard_revision": llm_guard.get("revision"),
+            })
             continue
         ticker = market.get_ticker(symbol)
         if not ticker or not ticker.get("last_price"):
@@ -1340,6 +1379,43 @@ async def llm_open_paper_trade(payload: dict):
                 blocked.append({"symbol": symbol, "reason": f"price_unavailable:{exc}"})
         if not ticker or not ticker.get("last_price"):
             blocked.append({"symbol": symbol, "reason": "price_unavailable"})
+            continue
+        higher_timeframes = []
+        entry_snapshot = {}
+        outcome_profile = {}
+        try:
+            entry_snapshot = await symbol_analysis(symbol, "5m")
+            outcome_profile = symbol_outcome_profile(historical_trades, symbol, "LLM_PAPER", 100)
+            gate_ok, gate_reasons = _llm_entry_quality_gate(entry_snapshot, outcome_profile)
+            # A scalp entry still needs higher-timeframe direction; otherwise a
+            # short 5m bounce repeatedly buys into a larger bearish structure.
+            for higher_tf in ("15m", "1h"):
+                higher = await symbol_analysis(symbol, higher_tf)
+                higher_timeframes.append(higher)
+                if not higher.get("data_ready"):
+                    gate_reasons.append(f"{higher_tf}_data_not_ready")
+                elif str((higher.get("trend") or {}).get("alignment") or "").lower() == "bearish":
+                    gate_reasons.append(f"{higher_tf}_bearish_trend")
+            if gate_reasons:
+                gate_ok = False
+        except Exception as exc:
+            gate_ok, gate_reasons = False, [f"entry_snapshot_error:{type(exc).__name__}"]
+        if not gate_ok:
+            reason = "llm_entry_quality_gate:" + ",".join(gate_reasons)
+            blocked.append({"symbol": symbol, "reason": reason})
+            await database.save_signal({
+                "symbol": symbol, "action": "BUY_BLOCKED", "price": ticker["last_price"],
+                "reason": reason, "strategy": "LLM_PAPER", "timestamp": time.time(),
+                "entry_gate_evidence": {
+                    "reasons": gate_reasons,
+                    "outcome_profile": outcome_profile,
+                    "timeframes": {
+                        "5m": (entry_snapshot.get("trend") or {}).get("alignment") if isinstance(entry_snapshot, dict) else None,
+                        "15m": (higher_timeframes[0].get("trend") or {}).get("alignment") if len(higher_timeframes) > 0 else None,
+                        "1h": (higher_timeframes[1].get("trend") or {}).get("alignment") if len(higher_timeframes) > 1 else None,
+                    },
+                },
+            })
             continue
         llm_plan = payload.get("plan") or {}
         def _pct(value, fallback):
@@ -1547,6 +1623,49 @@ def _market_candidate_score(snapshot: dict):
     if safety["status"] != "PASS":
         risks.extend(safety["flags"][:2])
     return round(score, 3), evidence, risks
+
+
+def _llm_entry_quality_gate(snapshot: dict, outcome_profile: dict | None = None):
+    """Hard paper-entry gate shared by explicit and automatic LLM entries.
+
+    The LLM may choose among candidates, but it cannot override objective
+    microstructure/overextension failures such as the BIOTRY re-entry loop.
+    """
+    if not snapshot or not snapshot.get("data_ready"):
+        return False, ["technical_data_not_ready"]
+    reasons = []
+    trend = snapshot.get("trend") or {}
+    momentum = snapshot.get("momentum") or {}
+    oscillators = (snapshot.get("oscillators") or {}).get("values") or {}
+    liquidity = snapshot.get("liquidity") or {}
+    channels = snapshot.get("channels") or {}
+    price = float(snapshot.get("price") or 0)
+    alignment = str(trend.get("alignment") or "").lower()
+    if alignment == "bearish": reasons.append("bearish_trend_alignment")
+    rsi = momentum.get("rsi_14")
+    stoch = momentum.get("stochastic", {}).get("k") if isinstance(momentum.get("stochastic"), dict) else oscillators.get("stochastic_k")
+    mfi = momentum.get("mfi_14")
+    cci = oscillators.get("cci_20")
+    if rsi is not None and float(rsi) >= 72: reasons.append("overbought_rsi")
+    if stoch is not None and float(stoch) >= 92: reasons.append("overbought_stochastic")
+    if mfi is not None and float(mfi) >= 80: reasons.append("overbought_mfi")
+    if cci is not None and float(cci) >= 220: reasons.append("overextended_cci")
+    spread = liquidity.get("spread_pct")
+    if spread is not None and float(spread) > 0.15: reasons.append("spread_above_entry_limit")
+    imbalance = liquidity.get("orderflow_imbalance")
+    if imbalance is not None and float(imbalance) < -0.10: reasons.append("negative_orderflow")
+    upper = ((channels.get("bollinger") or {}).get("upper"))
+    if price and upper and price >= float(upper) * 0.999:
+        reasons.append("at_or_above_bollinger_upper_without_pullback")
+    profile = outcome_profile or {}
+    sample = int(profile.get("trades") or 0)
+    loss_streak = int(profile.get("current_loss_streak") or 0)
+    expectancy = profile.get("expectancy_net_pnl")
+    if sample >= 2 and loss_streak >= 2:
+        reasons.append("symbol_loss_streak")
+    if sample >= 4 and expectancy is not None and float(expectancy) <= 0:
+        reasons.append("symbol_negative_net_expectancy")
+    return not reasons, reasons
 
 async def scan_market_snapshots(args: dict | None = None):
     args = args or {}
@@ -2001,7 +2120,8 @@ async def close_position_manual(symbol: str):
     if not sig:
         return {"ok": False, "message": f"{symbol} için açık pozisyon yok"}
     await ws_manager.broadcast({"type": "signal", "data": sig})
-    asyncio.create_task(llm_replenish_after_close())
+    if str(sig.get("strategy", "")).upper() != "LLM_PAPER":
+        asyncio.create_task(llm_replenish_after_close())
     return {"ok": True, "message": f"{symbol} kapatıldı @ {price:.2f}", "signal": sig}
 
 @app.get("/api/trades")

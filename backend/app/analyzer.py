@@ -928,13 +928,37 @@ class ScalpAnalyzer:
         commission = sell_value * config.COMMISSION_PCT
         try_balance = await database.get_wallet_balance("TRY")
         trade = await self._record_trade(symbol, pos, price, reason, commission)
-        sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price, "timestamp": time.time()}
+        sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price,
+               "strategy": pos.get("strategy", "UT"), "timestamp": time.time()}
         await database.commit_close_position(symbol, symbol.replace("TRY", ""), try_balance + sell_value - commission, trade, sig)
         try:
             await agent_learning.record_paper_trade_outcome(trade)
         except Exception as learning_error:
             print(f"[Learning] paper outcome kaydedilemedi: {learning_error}")
+        closed_strategy = pos.get("strategy")
         del self.positions[symbol]
+        if closed_strategy == "LLM_PAPER":
+            # Closing is not an implicit permission to re-enter the same setup.
+            # Require a fresh post-exit setup before the LLM can buy this symbol.
+            technical = (pos.get("entry_context") or {}).get("technical") or {}
+            volatility = technical.get("volatility") or {}
+            try:
+                atr_pct = max(0.0, float(volatility.get("atr_pct") or 0))
+            except (TypeError, ValueError):
+                atr_pct = 0.0
+            rearm_pct = max(config.LLM_REENTRY_MIN_MOVE_PCT, min(0.02, atr_pct * 0.75 or 0))
+            guard_reason = "llm_exit_reentry_lock:" + str(reason)
+            await database.upsert_llm_symbol_guard(
+                symbol, "cooldown", "active",
+                time.time() + config.LLM_REENTRY_COOLDOWN_SEC,
+                guard_reason,
+                {"exit_reason": reason, "exit_price": price, "requires_fresh_setup": True,
+                 "atr_pct_at_exit": atr_pct, "rearm_required_pct": rearm_pct},
+            )
+            await database.save_signal({
+                "symbol": symbol, "action": "LLM_REENTRY_BLOCKED", "price": price,
+                "reason": guard_reason, "strategy": "LLM_PAPER", "timestamp": time.time(),
+            })
         tf = self._strategy_tf(pos.get("strategy", "UT"))
         current_bar = self._current_bar(symbol, tf)
         if current_bar is not None:
@@ -983,7 +1007,21 @@ class ScalpAnalyzer:
                 reason = f"llm_guard:{llm_guard.get('guard_type', 'symbol_block')}"
                 await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price, "reason": reason, "strategy": strat_name, "timestamp": time.time(), "guard_revision": llm_guard.get("revision")})
                 return None
-            await database.upsert_llm_symbol_guard(symbol, llm_guard.get("guard_type", "cooldown"), "expired", blocked_until, "cooldown_expired", llm_guard.get("evidence"))
+            llm_guard = await database.upsert_llm_symbol_guard(symbol, llm_guard.get("guard_type", "cooldown"), "expired", blocked_until, "cooldown_expired", llm_guard.get("evidence"))
+        if llm_guard and llm_guard.get("status") == "expired":
+            evidence = llm_guard.get("evidence") or {}
+            exit_price = evidence.get("exit_price")
+            try:
+                moved = abs(float(entry_price) - float(exit_price)) / float(exit_price) if exit_price else 1.0
+            except (TypeError, ValueError, ZeroDivisionError):
+                moved = 1.0
+            required_move = max(config.LLM_REENTRY_MIN_MOVE_PCT, float(evidence.get("rearm_required_pct") or 0))
+            if moved < required_move:
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                            "reason": "llm_guard_rearm_not_reached", "strategy": strat_name,
+                                            "timestamp": time.time(), "rearm_required_pct": required_move,
+                                            "last_exit_price": exit_price})
+                return None
         # The in-memory portfolio can lag after a restart or another worker's
         # write. Reconcile this symbol before attempting the unique DB insert.
         db_positions = await database.load_positions()

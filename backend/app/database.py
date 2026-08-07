@@ -18,6 +18,15 @@ _DB_LOCK = threading.Lock()
 _DB_CONN: sqlite3.Connection | None = None
 _PG_CONN = None
 
+DEFAULT_SCALPER_SKILL_NAME = "Scalper Trade Manager"
+DEFAULT_SCALPER_SKILL_INSTRUCTIONS = (
+    "Paper-only scalper trade manager. Build a symbol-specific setup from 5m, 15m and 1h data; "
+    "require trend/regime alignment, liquidity, spread/order-flow and cost-aware net edge before entry. "
+    "Do not chase overbought resistance or reopen after a close without cooldown, fresh setup and required "
+    "price rearm. Treat BUY_BLOCKED as no trade, and learn only from validated multi-trade out-of-sample "
+    "evidence; never invent data or place real orders."
+)
+
 def _json_value(value, fallback):
     if value in (None, ""): return fallback
     if isinstance(value, (dict, list)): return value
@@ -304,6 +313,7 @@ async def init_db():
             ("Destek Direnç ve Pivot", "Use classic and Fibonacci pivots, Bollinger, Donchian and Keltner levels as context. Distinguish a level from a confirmed break and state timeframe."),
             ("Scalping Karar Raporu", "Return concise sections: market regime, bullish evidence, bearish evidence, liquidity and volatility risks, missing data, confidence, and paper-trading scenarios. Never invent a price target."),
             ("Canlı Sembol Tarama ve Trend Adayı", "Önce tüm etkin semboller için scan_market_snapshots aracını kullan. EMA hizalaması, ADX/DI, çoklu timeframe momentum, VWAP, hacim, spread, derinlik, ATR ve rejimi birlikte değerlendir. Yukarı adayları deep_analyze_symbol ile derinleştir; trend fazı ve süresini yalnızca mevcut mum zaman damgalarından çıkar, yoksa bilinmiyor de. Sonucu Türkçe ve paper_candidate=watch/candidate/avoid alanlarıyla ver; gerçek emir açma ve değer uydurma."),
+            (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS),
         ]
         conn.executemany("INSERT OR IGNORE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)", [(n,i,time.time()) for n,i in default_skills])
         conn.execute("""
@@ -347,6 +357,19 @@ async def init_db():
         conn.commit()
 
     await _run_db(op)
+
+async def ensure_default_scalper_skill():
+    """Keep the built-in trade manager visible in the active database skill registry."""
+    def op(conn):
+        if _postgres_enabled():
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_skills_name ON llm_skills(name)")
+        conn.execute(
+            "INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?) "
+            "ON CONFLICT(name) DO NOTHING",
+            (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS, time.time()),
+        )
+        conn.commit()
+    return await _run_db(op)
 
 def _backfill_position_strategy(conn: sqlite3.Connection):
     """strategy NULL olan açık pozisyonlara UT ata (eski kayıtlar)."""

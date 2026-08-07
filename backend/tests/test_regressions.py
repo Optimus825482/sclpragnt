@@ -37,6 +37,73 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('"custom_trailing_stop"', source)
         self.assertIn('"custom_max_hold"', source)
 
+    def test_llm_exit_creates_symbol_reentry_lock(self):
+        source = (ROOT / "app" / "analyzer.py").read_text()
+        self.assertIn("LLM_REENTRY_COOLDOWN_SEC", source)
+        self.assertIn("LLM_REENTRY_MIN_MOVE_PCT", source)
+        self.assertIn("rearm_required_pct", source)
+        self.assertIn("atr_pct_at_exit", source)
+        self.assertIn("except (TypeError, ValueError)", source)
+        self.assertIn("LLM_REENTRY_BLOCKED", source)
+        self.assertIn("requires_fresh_setup", source)
+
+    def test_llm_entry_has_overextension_and_microstructure_gate(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        self.assertIn("_llm_entry_quality_gate", source)
+        self.assertIn("overbought_rsi", source)
+        self.assertIn("negative_orderflow", source)
+        self.assertIn("spread_above_entry_limit", source)
+        self.assertIn("symbol_loss_streak", source)
+        self.assertIn("symbol_negative_net_expectancy", source)
+        self.assertIn('f"{higher_tf}_bearish_trend"', source)
+        self.assertIn('for higher_tf in ("15m", "1h")', source)
+
+    def test_llm_entry_gate_rejects_biotry_like_overbought_setup(self):
+        from app.main import _llm_entry_quality_gate
+
+        snapshot = {
+            "data_ready": True,
+            "price": 1.203,
+            "trend": {"alignment": "bullish"},
+            "momentum": {"rsi_14": 75, "stochastic": {"k": 96}, "mfi_14": 83},
+            "oscillators": {"values": {"cci_20": 253}},
+            "liquidity": {"spread_pct": 0.166, "orderflow_imbalance": -0.399},
+            "channels": {"bollinger": {"upper": 1.202}},
+        }
+        ok, reasons = _llm_entry_quality_gate(snapshot, {
+            "trades": 4, "current_loss_streak": 3, "expectancy_net_pnl": -0.5,
+        })
+        self.assertFalse(ok)
+        self.assertIn("overbought_rsi", reasons)
+        self.assertIn("negative_orderflow", reasons)
+        self.assertIn("symbol_loss_streak", reasons)
+
+    def test_llm_system_prompt_has_trade_manager_rules(self):
+        source = (ROOT / "app" / "llm_analysis.py").read_text()
+        self.assertIn("TRADE_MANAGER_RULES", source)
+        self.assertIn("cooldown ve sembolün dinamik re-arm", source)
+
+    def test_entry_policy_endpoint_exposes_auditable_contract(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        self.assertIn('@app.get("/api/llm/entry-policy")', source)
+        self.assertIn('"policy_version": "scalper-trade-manager-v2"', source)
+
+    def test_llm_close_does_not_schedule_immediate_replenishment(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        self.assertGreaterEqual(source.count('if str(sig.get("strategy", "")).upper() != "LLM_PAPER":'), 2)
+        self.assertIn('llm_guard = await database.get_llm_symbol_guard(symbol)', source)
+        self.assertIn('"reason": "llm_guard:cooldown"', source)
+
+    def test_health_defaults_to_postgres(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        self.assertIn('os.getenv("DB_BACKEND", "postgres")', source)
+
+    def test_production_entrypoint_is_postgres_only(self):
+        source = (ROOT / "entrypoint.sh").read_text()
+        self.assertIn('${DB_BACKEND:-postgres}', source)
+        self.assertIn('DATABASE_URL', source)
+        self.assertIn('exit 1', source)
+
     def test_main_has_one_reconcile_function(self):
         tree = ast.parse((ROOT / "app" / "main.py").read_text())
         names = [node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
@@ -70,6 +137,13 @@ class RegressionContracts(unittest.TestCase):
             database._DB_CONN = sqlite3.connect(":memory:", check_same_thread=False)
             database._DB_CONN.row_factory = sqlite3.Row
             asyncio.run(database.init_db())
+            asyncio.run(database.ensure_default_scalper_skill())
+            skills = database._DB_CONN.execute(
+                "SELECT name,enabled FROM llm_skills WHERE name=?",
+                ("Scalper Trade Manager",),
+            ).fetchall()
+            self.assertEqual(len(skills), 1)
+            self.assertEqual(skills[0]["enabled"], 1)
             database._DB_CONN.execute(
                 "INSERT INTO trades(symbol,strategy,exit_time,pnl) VALUES (?,?,?,?)",
                 ("BTCTRY", "MOMENTUM", 3, 1.0),

@@ -66,6 +66,12 @@ Veya kök dizinde: `.\start.ps1` (iki servisi birden başlatır)
 
 İnce ayarlar `backend/app/config.py` içinde: sembol evreni, maliyet/likidite filtreleri, `DEFAULT_ORDER_USDT` (1.000 TRY), stop/tp/trailing yüzdeleri, `BACKTEST_ASSUMED_SPREAD_PCT` (varsayılan 0,1%) ve `GAINER_RADAR_INTERVAL_SEC` (varsayılan 60 saniye).
 
+LLM paper giriş/çıkış ve sembol bazlı öğrenme sözleşmesi: [`docs/SCALPER_TRADE_POLICY.md`](docs/SCALPER_TRADE_POLICY.md).
+
+Özel paper scalping agent skill'i: [`.agents/skills/scalper-trade-manager/SKILL.md`](.agents/skills/scalper-trade-manager/SKILL.md).
+
+Kaynaklı araştırma ve uygulama eşlemesi: [`docs/SCALPER_RESEARCH_EVIDENCE.md`](docs/SCALPER_RESEARCH_EVIDENCE.md).
+
 ## API
 
 - `GET /health` - durum, paper/public API bilgisi, açık pozisyonlar
