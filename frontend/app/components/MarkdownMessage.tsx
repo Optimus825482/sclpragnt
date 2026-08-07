@@ -11,8 +11,9 @@ function inline(text: string) {
 function repairSpacing(text: string) {
   return text
     // Keep provider output readable when it omits spaces around punctuation.
-    .replace(/([.!?;:])(?=[\p{L}\d])/gu, "$1 ")
-    .replace(/([,])(?=[\p{L}\d])/gu, "$1 ")
+    .replace(/([!?;:])(?=[\p{L}])/gu, "$1 ")
+    .replace(/\.(?=[\p{L}])/gu, ". ")
+    .replace(/,(?=[\p{L}])/gu, ", ")
     // Also repair common token-boundary loss such as "MerhabaErkan".
     .replace(/([\p{Ll}\d])([\p{Lu}ÇĞİÖŞÜ])/gu, "$1 $2")
     .replace(/\s{2,}/g, " ")

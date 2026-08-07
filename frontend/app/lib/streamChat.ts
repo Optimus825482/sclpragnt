@@ -52,7 +52,8 @@ export async function streamChat(
         const eventName = event.match(/^event:\s*(.+)$/m)?.[1];
         const dataLine = event.match(/^data:\s*(.+)$/m)?.[1];
         if (!dataLine) continue;
-        const data = JSON.parse(dataLine);
+        let data: any;
+        try { data = JSON.parse(dataLine); } catch { continue; }
         if (eventName === "delta") onDelta(String(data.text || ""));
         else if (eventName === "error") {
           const detail = typeof data.error === "string" ? data.error : data.error?.message || "LLM streaming hatası";
