@@ -1815,6 +1815,15 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     except Exception as exc:
         snapshot = dict(snapshot)
         snapshot["market_scan"] = {"error": str(exc), "paper_only": True}
+    snapshot = dict(snapshot)
+    snapshot["llm_tool_instructions"] = {
+        "paper_only": True,
+        "market_alerts": {
+            "available": True,
+            "tool": "create_market_alert",
+            "rule": "Kullanıcı izlemeye al/takibe al/alarm kur dediğinde bu tool'u çağır; aracı yokmuş gibi davranma. Alarm yalnızca websocket/web push bildirimi üretir, emir açmaz."
+        }
+    }
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL,
                   LLM_ECONOMICS_TOOL, LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL,
                   LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
@@ -2552,6 +2561,25 @@ async def strategies_llm_chat(payload: dict = None):
     tools.append({"type":"function","function":{"name":"activate_coin","description":"Binance TR public TRY piyasasındaki coini paper analiz evrenine ekler; gerçek emir açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}})
     tools.append({"type":"function","function":{"name":"place_paper_order","description":"Yalnızca sanal paper emir oluşturur; gerçek borsa emri göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"side":{"type":"string","enum":["BUY","SELL","LONG"]},"order_type":{"type":"string","enum":["MARKET","LIMIT","STOP_LIMIT","STOP_MARKET","OCO"]},"order_value_try":{"type":"number"},"price":{"type":"number"},"limit_price":{"type":"number"},"stop_price":{"type":"number"},"take_profit_pct":{"type":"number"},"stop_loss_pct":{"type":"number"},"max_hold_seconds":{"type":"integer"},"oco_group":{"type":"string"}},"required":["symbol","side","order_type"]}}})
     tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, {"type":"function","function":{"name":"open_llm_paper_trade","description":"LLM planına göre yalnızca sanal paper pozisyon açar. Tutar, stop, take-profit ve maksimum elde tutma süresini model belirler; gerçek emir göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"plan":{"type":"object","properties":{"order_value_try":{"type":"number","description":"TRY cinsinden paper pozisyon tutarı"},"stop_loss_pct":{"type":"number","description":"Ondalık stop oranı; örn. 0.012"},"take_profit_pct":{"type":"number","description":"Ondalık kar hedefi; örn. 0.02"},"max_hold_seconds":{"type":"integer","description":"Pozisyonun maksimum elde tutulma süresi"}},"required":["order_value_try","stop_loss_pct","take_profit_pct","max_hold_seconds"]}},"required":["symbol","plan"]}}}])
+    # Genel sohbet, diğer LLM yüzeyleriyle aynı capability registry'sini
+    # kullanmalıdır. Yeni bir tool yalnızca sembol/özel sohbet listesine
+    # eklenip genel sohbetten unutulmamalı.
+    tools.extend([
+        LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
+        LLM_MARKET_SCAN_TOOL, LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL,
+        LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL, LLM_DEEP_SYMBOL_TOOL,
+        LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
+        LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL,
+        LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_VALIDATE_PLAN_TOOL,
+        LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL,
+        LLM_DEACTIVATE_TOOL, LLM_READONLY_SQL_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
+        LLM_LIST_SYMBOL_GUARDS_TOOL,
+    ])
+    # Provider'lara aynı isimli function iki kez gönderilmesini engelle.
+    unique_tools = {}
+    for tool in tools:
+        unique_tools[tool.get("function", {}).get("name")] = tool
+    tools = list(unique_tools.values())
     if body.get("stream") is True:
         async def events():
             if not trade_intent or research_only_intent:
@@ -2575,8 +2603,9 @@ async def strategies_llm_chat(payload: dict = None):
     active_tools = {str(value) for value in (body.get("active_tools") or [])}
     if not trade_intent or research_only_intent:
         tools = [tool for tool in tools if tool.get("function", {}).get("name") not in {"open_llm_paper_trade", "place_paper_order"}]
-    if active_tools:
-        tools = [tool for tool in tools if str(tool.get("function", {}).get("name")) in active_tools or str(tool.get("function", {}).get("name")) in A2A_SYSTEM_TOOL_NAMES]
+    # Genel sohbet capability'leri kullanıcı ayarındaki eski/eksik listeyle
+    # daraltılmaz. `active_tools` yalnızca UI tercih bilgisidir; güvenlik ve
+    # paper-only sınırları executor içinde uygulanır.
     result = await llm_analysis.chat(context, messages, tools, execute_tool, body.get("active_skills"))
     evaluation = evaluate_output(result.get("text"), intent=last_text, tool_errors=tool_error_count)
     await save_evaluation(_pg_pool, trace_id, evaluation)
