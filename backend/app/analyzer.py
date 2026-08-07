@@ -337,7 +337,9 @@ class ScalpAnalyzer:
         if pos:
             pos["max_price"] = max(pos.get("max_price", pos["entry_price"]), price)
             pos["min_price"] = min(pos.get("min_price", pos["entry_price"]), price)
-        if pos and config.HARD_STOP_LOSS_PCT > 0 and price <= pos["entry_price"] * (1 - config.HARD_STOP_LOSS_PCT):
+        if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_stop_price") and price <= pos["llm_stop_price"]:
+            return await self.close_position(symbol, price, "llm_stop_loss")
+        if pos and pos.get("strategy") != "LLM_PAPER" and config.HARD_STOP_LOSS_PCT > 0 and price <= pos["entry_price"] * (1 - config.HARD_STOP_LOSS_PCT):
             return await self.close_position(symbol, price, "hard_stop_loss")
         if pos:
             elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
@@ -361,7 +363,11 @@ class ScalpAnalyzer:
             if (config.STALE_POSITION_EXIT_BELOW_COST and elapsed >= config.STALE_POSITION_SEC and
                     price < entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))):
                 return await self.close_position(symbol, price, "stale_position_below_cost")
-            if elapsed < config.TIME_DECAY_TP_STAGE_2_SEC:
+            if pos.get("strategy") == "LLM_PAPER" and pos.get("llm_take_profit_price") and price >= pos["llm_take_profit_price"]:
+                return await self.close_position(symbol, price, "llm_take_profit")
+            if pos.get("strategy") == "LLM_PAPER":
+                target_pct = None
+            elif elapsed < config.TIME_DECAY_TP_STAGE_2_SEC:
                 target_pct = config.TIME_DECAY_TP_1_PCT
                 target_reason = "time_decay_target_1_0pct"
             elif elapsed < config.TIME_DECAY_TP_STAGE_3_SEC:
@@ -375,10 +381,10 @@ class ScalpAnalyzer:
                 # costs, slippage and the configured minimum net PnL.
                 target_pct = config.min_net_exit_pct(pos.get("quantity", 0) * pos["entry_price"])
                 target_reason = "breakeven_exit"
-            if price >= pos["entry_price"] * (1 + target_pct):
+            if target_pct is not None and price >= pos["entry_price"] * (1 + target_pct):
                 return await self.close_position(symbol, price, target_reason)
         if pos:
-            max_hold = config.STRATEGY_MAX_HOLD_SEC.get(strat_name, config.MAX_POSITION_HOLD_SEC)
+            max_hold = pos.get("llm_max_hold_sec") if pos.get("strategy") == "LLM_PAPER" else config.STRATEGY_MAX_HOLD_SEC.get(strat_name, config.MAX_POSITION_HOLD_SEC)
             if time.time() - pos.get("entry_time", time.time()) >= max_hold:
                 reason = f"max_hold_{max_hold // 3600}h" if max_hold % 3600 == 0 else f"max_hold_{max_hold // 60}m"
                 return await self.close_position(symbol, price, reason)
@@ -797,13 +803,13 @@ class ScalpAnalyzer:
             "hold_seconds": hold_seconds,
         }
 
-    async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT"):
+    async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT", order_value=None, stop_loss_pct=None, take_profit_pct=None, max_hold_sec=None):
         # Strategy loop ve Gainer Radar aynı anda aynı sembolü tetikleyebilir.
         # Cüzdan düşümü ile pozisyon kaydı tek atomik akışta yapılmalı.
         async with self._open_position_lock:
-            return await self._open_position_unlocked(symbol, entry_price, side, strat_name)
+            return await self._open_position_unlocked(symbol, entry_price, side, strat_name, order_value, stop_loss_pct, take_profit_pct, max_hold_sec)
 
-    async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT"):
+    async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None):
         # The in-memory portfolio can lag after a restart or another worker's
         # write. Reconcile this symbol before attempting the unique DB insert.
         db_positions = await database.load_positions()
@@ -818,8 +824,13 @@ class ScalpAnalyzer:
                                         "reason": "position_limit_reached", "strategy": strat_name, "timestamp": time.time()})
             return None
         try_balance = await database.get_wallet_balance("TRY")
-        required_full_cash = config.DEFAULT_ORDER_USDT * (1 + config.COMMISSION_PCT)
-        if try_balance >= required_full_cash:
+        requested_order_value = float(requested_order_value or 0)
+        if strat_name == "LLM_PAPER" and requested_order_value > 0:
+            order_value = min(requested_order_value, try_balance / (1 + config.COMMISSION_PCT))
+            if order_value < config.MIN_PARTIAL_ORDER_TRY:
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price, "reason": "llm_order_below_minimum_or_balance", "strategy": strat_name, "timestamp": time.time()})
+                return None
+        elif try_balance >= config.DEFAULT_ORDER_USDT * (1 + config.COMMISSION_PCT):
             order_value = config.DEFAULT_ORDER_USDT
         else:
             # Use the remaining cash when it is still economically meaningful;
@@ -879,7 +890,9 @@ class ScalpAnalyzer:
                          "expected_net_pnl_try": expected_net if self.market else None,
                          "commission_pct": config.COMMISSION_PCT,
                          "estimated_slippage_pct": config.ESTIMATED_SLIPPAGE_PCT,
-                         "profit_target_pct": config.SPOT_PROFIT_TARGET_PCT,
+                         "profit_target_pct": float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT,
+                         "stop_loss_pct": float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None else config.HARD_STOP_LOSS_PCT,
+                         "max_hold_sec": int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None else config.MAX_POSITION_HOLD_SEC,
                          "order_value_try": order_value,
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
         if self.market:
@@ -903,16 +916,20 @@ class ScalpAnalyzer:
         if existing:
             total_qty = existing["quantity"] + quantity
             entry_price = ((existing["entry_price"] * existing["quantity"]) + (entry_price * quantity)) / total_qty
-            pos = {**existing, "entry_price": entry_price, "spot_profit_target": entry_price * (1 + config.SPOT_PROFIT_TARGET_PCT), "quantity": total_qty, "layers": existing.get("layers", 1) + 1}
+            pos = {**existing, "entry_price": entry_price, "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)), "quantity": total_qty, "layers": existing.get("layers", 1) + 1}
         else:
             pos = {
             "side": "LONG",  # Binance TR Spot olduğu için her zaman LONG
             "entry_price": entry_price,
-            "spot_profit_target": entry_price * (1 + config.SPOT_PROFIT_TARGET_PCT),
+                "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)),
                 "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1,
                 "trade_id": uuid.uuid4().hex,
                 "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
             }
+            if strat_name == "LLM_PAPER":
+                pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(requested_stop_pct or config.HARD_STOP_LOSS_PCT)))
+                pos["llm_take_profit_price"] = entry_price * (1 + max(0.0001, float(requested_tp_pct or config.SPOT_PROFIT_TARGET_PCT)))
+                pos["llm_max_hold_sec"] = max(60, int(requested_hold_sec or config.MAX_POSITION_HOLD_SEC))
         self.positions[symbol] = pos
         sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time()}
         try:

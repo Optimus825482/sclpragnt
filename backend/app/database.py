@@ -607,14 +607,20 @@ async def load_positions():
         positions = {}
         rows = conn.execute("SELECT * FROM positions").fetchall()
         for row in rows:
+            context = _json_value(row[10] if len(row) > 10 else None, {})
             positions[row[0]] = {
                 "side": row[1], "entry_price": row[2], "stop_price": row[3],
                 "take_profit": row[4], "peak_price": row[5], "breakeven_hit": bool(row[6]),
                 "quantity": row[7], "entry_time": row[8] if len(row) > 8 else None,
                 "strategy": row[9] if len(row) > 9 else None,
-                "entry_context": _json_value(row[10] if len(row) > 10 else None, {}),
+                "entry_context": context,
                 "trade_id": row[11] if len(row) > 11 and row[11] else f"legacy-{row[0]}-{row[8]}",
             }
+            if positions[row[0]].get("strategy") == "LLM_PAPER":
+                entry = float(row[2] or 0)
+                positions[row[0]]["llm_stop_price"] = entry * (1 - float(context.get("stop_loss_pct") or 0.005))
+                positions[row[0]]["llm_take_profit_price"] = entry * (1 + float(context.get("profit_target_pct") or 0.01))
+                positions[row[0]]["llm_max_hold_sec"] = int(context.get("max_hold_sec") or 7200)
         return positions
 
     return await _run_db(op)
