@@ -17,6 +17,11 @@ const MENU = [
     { href: "/symbol-analysis", label: "Sembol Analizi", icon: "🔬", desc: "Teknik göstergeler" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" }
 ];
+const formatNotificationDate = (value: unknown) => {
+    const numeric = Number(value);
+    const date = Number.isFinite(numeric) ? new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric) : new Date(String(value || ""));
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("tr-TR");
+};
 
 export default function Sidebar() {
     const pathname = usePathname();
@@ -128,7 +133,7 @@ export default function Sidebar() {
                     <button type="button" onClick={() => setNotificationsOpen(false)} className="text-bunker-muted hover:text-white" aria-label="Bildirimleri kapat">✕</button>
                 </div>
                 <div className="max-h-[65vh] overflow-y-auto p-4">
-                    {notifications.length === 0 ? <p className="py-8 text-center font-mono text-sm text-bunker-muted">Henüz bildirim yok.</p> : <div className="space-y-2">{notifications.map((item, index) => <article key={item.id || index} className="rounded-lg border border-bunker-800 bg-bunker-900/70 p-3"><div className="flex items-start justify-between gap-3"><span className="font-mono text-sm font-bold text-neon-green">{item.symbol || "SİSTEM"}</span><time className="font-mono text-[10px] text-bunker-muted">{item.triggered_at ? new Date(Number(item.triggered_at) * 1000).toLocaleString("tr-TR") : "—"}</time></div><p className="mt-1 text-sm text-white">{item.message || item.reason || "Yeni alarm bildirimi"}</p></article>)}</div>}
+                    {notifications.length === 0 ? <p className="py-8 text-center font-mono text-sm text-bunker-muted">Henüz bildirim yok.</p> : <div className="space-y-2">{notifications.map((item, index) => <article key={item.id || index} className="rounded-lg border border-bunker-800 bg-bunker-900/70 p-3"><div className="flex items-start justify-between gap-3"><span className="font-mono text-sm font-bold text-neon-green">{item.symbol || "SİSTEM"}</span><time className="font-mono text-[10px] text-bunker-muted">{formatNotificationDate(item.triggered_at)}</time></div><p className="mt-1 text-sm text-white">{item.message || item.reason || "Yeni alarm bildirimi"}</p></article>)}</div>}
                 </div>
             </section>
         </div>}

@@ -1116,7 +1116,13 @@ async def record_alert_trigger(rule_id, event_key, value, message, severity="inf
     return await _run_db(op)
 
 async def get_alert_events(limit=100):
-    def op(conn): return [dict(row) for row in conn.execute("SELECT * FROM alert_events ORDER BY triggered_at DESC LIMIT ?", (max(1, min(int(limit), 500)),)).fetchall()]
+    def op(conn):
+        result = []
+        for row in conn.execute("SELECT * FROM alert_events ORDER BY triggered_at DESC LIMIT ?", (max(1, min(int(limit), 500)),)).fetchall():
+            item = dict(row)
+            item["triggered_at"] = _epoch_value(item.get("triggered_at"))
+            result.append(item)
+        return result
     return await _run_db(op)
 
 async def save_push_subscription(subscription):
