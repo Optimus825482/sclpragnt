@@ -101,6 +101,14 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .data-table tbody tr { transition: background-color 120ms ease-out; }
 .data-table tbody tr:hover { background: rgb(30 41 59 / .35); }
 .data-table tbody tr:last-child td { border-bottom: 0; }
+.message-table-wrap { max-width: 100%; overflow-x: auto; border: 1px solid rgb(51 65 85 / .75); border-radius: .65rem; background: rgb(2 6 12 / .55); scrollbar-width: thin; }
+.message-table-wrap:focus-visible { outline: 2px solid rgb(74 222 128 / .7); outline-offset: 2px; }
+.message-table { min-width: 100%; width: max-content; border-collapse: separate; border-spacing: 0; font: .75rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.message-table th, .message-table td { min-width: 7rem; max-width: 20rem; padding: .55rem .7rem; text-align: left; vertical-align: top; border-bottom: 1px solid rgb(51 65 85 / .55); border-right: 1px solid rgb(51 65 85 / .35); white-space: normal; overflow-wrap: anywhere; }
+.message-table th { color: rgb(134 239 172); font-size: .67rem; letter-spacing: .06em; text-transform: uppercase; background: rgb(15 23 42 / .8); }
+.message-table td { color: rgb(226 232 240); }
+.message-table tr:last-child td { border-bottom: 0; }
+.message-table th:last-child, .message-table td:last-child { border-right: 0; }
 .table-scroll { border-radius: .75rem; }
 .portfolio-page { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
 .portfolio-heading { flex-direction: row; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 0; }

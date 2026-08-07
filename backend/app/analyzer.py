@@ -448,8 +448,11 @@ class ScalpAnalyzer:
         # or legacy max-hold policies to these positions.
         if pos and pos.get("strategy") == "LLM_PAPER":
             return None
-        if pos and pos.get("strategy") != "LLM_PAPER" and config.HARD_STOP_LOSS_PCT > 0 and price <= pos["entry_price"] * (1 - config.HARD_STOP_LOSS_PCT):
-            return await self.close_position(symbol, price, "hard_stop_loss")
+        if pos and pos.get("strategy") != "LLM_PAPER":
+            entry = float(pos.get("entry_price") or price)
+            system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - config.HARD_STOP_LOSS_PCT))
+            if price <= system_stop:
+                return await self.close_position(symbol, price, "system_stop_loss")
         if pos:
             elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
             entry = pos.get("entry_price", price)
@@ -458,45 +461,24 @@ class ScalpAnalyzer:
                 return await self.close_position(symbol, price, "early_failure_no_progress")
             if elapsed >= config.STALE_POSITION_SEC and max_progress < config.STALE_POSITION_MIN_PROGRESS_PCT:
                 return await self.close_position(symbol, price, "stale_position_no_progress")
-            # Kârı koru: hedefe ulaşmadan önce pozisyon yeterince ilerlediyse
-            # tepe fiyatın gerisinden takip eden stop ile geri dönüşte çık.
-            # Stop hiçbir zaman komisyon/slippage sonrası başa-baş seviyesinin
-            # altında çalıştırılmaz.
-            if (config.TRAILING_STOP_ENABLED
-                    and max_progress >= config.TRAILING_ACTIVATION_PCT
-                    and config.TRAILING_STOP_PCT > 0):
-                trail_price = pos.get("max_price", entry) * (1 - config.TRAILING_STOP_PCT)
+            # Klasik stratejilerde sabit yüzdeli trailing yerine ATR trailing kullanılır.
+            # Stop yalnızca yukarı taşınır; trend devam ettiği sürece pozisyon süreyle kesilmez.
+            atr = self.calculate_atr(kline, config.SYSTEM_ATR_PERIOD) if kline else None
+            if atr and max_progress >= (atr * config.SYSTEM_ATR_TRAILING_ACTIVATION_ATR / entry):
+                candidate = pos.get("max_price", entry) - atr * config.SYSTEM_ATR_TRAILING_MULTIPLIER
+                previous = float(pos.get("system_trailing_stop_price") or 0)
+                pos["system_trailing_stop_price"] = max(previous, candidate)
                 net_floor = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
-                if price <= trail_price and price >= net_floor:
-                    return await self.close_position(symbol, price, "trailing_profit_protection")
+                if price <= pos["system_trailing_stop_price"] and price >= net_floor:
+                    return await self.close_position(symbol, price, "atr_trailing_stop")
             if (config.STALE_POSITION_EXIT_BELOW_COST and elapsed >= config.STALE_POSITION_SEC and
                     price < entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))):
                 return await self.close_position(symbol, price, "stale_position_below_cost")
-            if pos.get("strategy") == "LLM_PAPER" and pos.get("llm_take_profit_price") and price >= pos["llm_take_profit_price"]:
-                return await self.close_position(symbol, price, "llm_take_profit")
-            if pos.get("strategy") == "LLM_PAPER":
-                target_pct = None
-            elif elapsed < config.TIME_DECAY_TP_STAGE_2_SEC:
-                target_pct = config.TIME_DECAY_TP_1_PCT
-                target_reason = "time_decay_target_1_0pct"
-            elif elapsed < config.TIME_DECAY_TP_STAGE_3_SEC:
-                target_pct = config.TIME_DECAY_TP_2_PCT
-                target_reason = "time_decay_target_0_75pct"
-            elif elapsed < config.TIME_DECAY_BREAKEVEN_SEC:
-                target_pct = config.TIME_DECAY_TP_3_PCT
-                target_reason = "time_decay_target_0_5pct"
-            else:
-                # Never exit below the amount required to cover both sides'
-                # costs, slippage and the configured minimum net PnL.
-                target_pct = config.min_net_exit_pct(pos.get("quantity", 0) * pos["entry_price"])
-                target_reason = "breakeven_exit"
-            if target_pct is not None and price >= pos["entry_price"] * (1 + target_pct):
-                return await self.close_position(symbol, price, target_reason)
-        if pos:
-            max_hold = pos.get("llm_max_hold_sec") if pos.get("strategy") == "LLM_PAPER" else config.STRATEGY_MAX_HOLD_SEC.get(strat_name, config.MAX_POSITION_HOLD_SEC)
-            if time.time() - pos.get("entry_time", time.time()) >= max_hold:
-                reason = f"max_hold_{max_hold // 3600}h" if max_hold % 3600 == 0 else f"max_hold_{max_hold // 60}m"
-                return await self.close_position(symbol, price, reason)
+            # Sistem TP'si sabit erken kapanış değildir: RR hedefi görüldüğünde
+            # işaretlenir, pozisyon ATR trailing stop ile trendi takip etmeye devam eder.
+            system_target = pos.get("system_take_profit_price") or pos.get("take_profit")
+            if system_target and price >= float(system_target):
+                pos["system_target_reached"] = True
         return None
 
     def llm_position_context(self, symbol, price=None):
@@ -1121,6 +1103,23 @@ class ScalpAnalyzer:
                 "trade_id": uuid.uuid4().hex,
                 "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
             }
+            if strat_name != "LLM_PAPER":
+                technical_tf = self._strategy_tf(strat_name)
+                system_kline = self.market.get_ut_kline(symbol, technical_tf) if self.market else None
+                atr = self.calculate_atr(system_kline, config.SYSTEM_ATR_PERIOD) if system_kline else None
+                stop_distance = max(
+                    entry_price * config.HARD_STOP_LOSS_PCT,
+                    float(atr or 0) * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER,
+                )
+                if stop_distance <= 0:
+                    stop_distance = entry_price * config.HARD_STOP_LOSS_PCT
+                pos["system_stop_price"] = entry_price - stop_distance
+                pos["system_take_profit_price"] = entry_price + stop_distance * config.SYSTEM_RISK_REWARD
+                pos["stop_price"] = pos["system_stop_price"]
+                pos["take_profit"] = pos["system_take_profit_price"]
+                pos["system_atr"] = float(atr or 0)
+                pos["system_risk_reward"] = config.SYSTEM_RISK_REWARD
+                pos["system_exit_model"] = "atr_trailing_after_rr_target"
             if strat_name == "LLM_PAPER":
                 if requested_stop_pct is not None:
                     pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(requested_stop_pct)))

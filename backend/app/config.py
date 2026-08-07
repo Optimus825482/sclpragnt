@@ -67,6 +67,14 @@ class Config:
     TRAILING_ACTIVATION_PCT = float(os.getenv("TRAILING_ACTIVATION_PCT", "0.0075"))
     TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "0.005"))
 
+    # Klasik/sistem stratejileri için exit modeli. LLM_PAPER bu ayarları kullanmaz;
+    # kendi planındaki stop, hedef ve max-hold değerleriyle yönetilir.
+    SYSTEM_RISK_REWARD = 2.0 if float(os.getenv("SYSTEM_RISK_REWARD", "1.5")) >= 1.75 else 1.5
+    SYSTEM_ATR_PERIOD = max(2, int(os.getenv("SYSTEM_ATR_PERIOD", "14")))
+    SYSTEM_INITIAL_STOP_ATR_MULTIPLIER = max(0.1, float(os.getenv("SYSTEM_INITIAL_STOP_ATR_MULTIPLIER", "1.0")))
+    SYSTEM_ATR_TRAILING_MULTIPLIER = max(0.5, float(os.getenv("SYSTEM_ATR_TRAILING_MULTIPLIER", "2.5")))
+    SYSTEM_ATR_TRAILING_ACTIVATION_ATR = max(0.25, float(os.getenv("SYSTEM_ATR_TRAILING_ACTIVATION_ATR", "1.0")))
+
     # Binance TR spot komisyonu (Bronz/Standart taker %0.15) - işlem başına
     COMMISSION_PCT = float(os.getenv("COMMISSION_PCT", "0.0015"))
     ESTIMATED_SLIPPAGE_PCT = 0.00025

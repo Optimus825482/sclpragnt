@@ -169,29 +169,35 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
     entry = definition.get("entry") or []; exit_conditions = definition.get("exit") or []
     if len(entry) > 8 or len(exit_conditions) > 8: raise ValueError("En fazla 8 giriş ve 8 çıkış koşulu kullanılabilir")
     rows = _fetch_klines(symbol, interval, days_back); analyzer = ScalpAnalyzer(None); balance = config.INITIAL_BALANCE_TRY; position = None; trades = []; entry_armed = True; cooldown_until = -1
-    stop_pct = float(stop_pct if stop_pct is not None else config.HARD_STOP_LOSS_PCT); tp_pct = float(tp_pct if tp_pct is not None else config.TIME_DECAY_TP_1_PCT)
+    stop_pct = float(stop_pct if stop_pct is not None else config.HARD_STOP_LOSS_PCT)
     interval_seconds = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400}.get(interval, 300)
     early_failure_seconds = max(20 * 60, interval_seconds)
     for i, close in enumerate(rows["closes"]):
         window = {k:v[:i+1] for k,v in rows.items()}; now = rows["times"][i]
         if position:
             exit_price = None; reason = None
-            atr_stop = position.get("atr_stop")
-            hard_stop = position["entry"] * (1-stop_pct)
-            stop_price = max(hard_stop, atr_stop) if atr_stop else hard_stop
-            if rows["lows"][i] <= stop_price: exit_price=stop_price; reason="atr_stop_loss" if atr_stop and stop_price == atr_stop else "hard_stop_loss"
-            elif rows["highs"][i] >= position["entry"] * (1+tp_pct): exit_price=position["entry"]*(1+tp_pct); reason="take_profit"
+            position["max_price"] = max(position.get("max_price", position["entry"]), rows["highs"][i])
+            atr = analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD)
+            if atr and position["max_price"] - position["entry"] >= atr * config.SYSTEM_ATR_TRAILING_ACTIVATION_ATR:
+                position["trailing_stop"] = max(position.get("trailing_stop", 0), position["max_price"] - atr * config.SYSTEM_ATR_TRAILING_MULTIPLIER)
+            if rows["highs"][i] >= position["target_price"]:
+                position["target_reached"] = True
+            stop_price = max(position["stop_price"], position.get("trailing_stop", 0))
+            if rows["lows"][i] <= stop_price: exit_price=stop_price; reason="atr_trailing_stop" if position.get("trailing_stop", 0) else "system_stop_loss"
             elif _custom_conditions(analyzer, window, exit_conditions): exit_price=close; reason="custom_exit"
             elif now-position["entry_time"] >= early_failure_seconds and close < position["entry"] + position.get("min_net_exit", 0.0): exit_price=close; reason="early_failure_no_progress"
-            elif now-position["entry_time"] >= config.MAX_POSITION_HOLD_SEC: exit_price=close; reason="max_hold_4h"
             if exit_price is not None:
                 balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size, reason); trade.update({"entry_time":position["entry_time"],"exit_time":now}); trades.append(trade); position=None; cooldown_until = i + 1; entry_armed = False
         entry_signal = _custom_conditions(analyzer, window, entry)
         if not entry_signal: entry_armed = True
         if position is None and i >= cooldown_until and entry_armed and balance >= order_size and entry_signal:
             fee=order_size*config.COMMISSION_PCT; balance-=order_size+fee
-            atr_entry = analyzer.calculate_atr(window, 14) or 0.0
-            position={"entry":close,"quantity":order_size/close,"entry_time":now,"atr_stop":close - atr_entry * 2.5 if atr_entry else None,"min_net_exit":close * config.min_net_exit_pct(order_size)}
+            atr_entry = analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD) or close * stop_pct
+            stop_distance = max(close * stop_pct, atr_entry * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER)
+            position={"entry":close,"quantity":order_size/close,"entry_time":now,
+                      "stop_price":close - stop_distance,
+                      "target_price":close + stop_distance * config.SYSTEM_RISK_REWARD,
+                      "max_price":close,"min_net_exit":close * config.min_net_exit_pct(order_size)}
             entry_armed = False
     if position:
         balance, pnl, _, trade = _close_trade(balance, position["entry"], rows["closes"][-1], position["quantity"], order_size, "open_at_end_mark_to_market"); trade.update({"entry_time":position["entry_time"],"exit_time":rows["times"][-1]}); trades.append(trade)
@@ -221,7 +227,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
             analyzer = ScalpAnalyzer(None)
             fn = getattr(analyzer, STRATEGIES[strategy][2])
             balance = config.INITIAL_BALANCE_TRY
-            first_target_pct = float(tp_pct if tp_pct is not None else config.TIME_DECAY_TP_1_PCT)
+            first_target_pct = float(tp_pct if tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)
             equity_peak = balance
             max_drawdown = 0.0
             position = None
@@ -242,28 +248,20 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                 if position:
                     window = {key: values[:i + 1] for key, values in data.items()}
                     elapsed = max(0, data["times"][i] - position["entry_time"])
-                    if elapsed < config.TIME_DECAY_TP_STAGE_2_SEC:
-                        target_pct = first_target_pct
-                        target_reason = "time_decay_target_1_0pct"
-                    elif elapsed < config.TIME_DECAY_TP_STAGE_3_SEC:
-                        target_pct = config.TIME_DECAY_TP_2_PCT
-                        target_reason = "time_decay_target_0_75pct"
-                    elif elapsed < config.TIME_DECAY_BREAKEVEN_SEC:
-                        target_pct = config.TIME_DECAY_TP_3_PCT
-                        target_reason = "time_decay_target_0_5pct"
-                    else:
-                        target_pct = config.min_net_exit_pct(order_size * position.get("layers", 1))
-                        target_reason = "breakeven_exit"
-                    target_price = position["entry"] * (1 + target_pct)
-                    effective_stop_pct = float(stop_pct) if stop_pct and stop_pct > 0 else config.HARD_STOP_LOSS_PCT
-                    stop_price = position["entry"] * (1 - effective_stop_pct) if effective_stop_pct > 0 else None
-                    # Pozisyon yalnızca kendi stratejisinin sell sinyaliyle kapanır.
-                    exit_price = stop_price if stop_price is not None and low <= stop_price else (target_price if high >= target_price else None)
-                    reason = "hard_stop_loss" if exit_price == stop_price and stop_price is not None else target_reason
-                    if exit_price is None and data["times"][i] - position["entry_time"] >= config.MAX_POSITION_HOLD_SEC:
-                        exit_price = close
-                        reason = "max_hold_4h"
-                    elif (config.STALE_POSITION_EXIT_BELOW_COST and
+                    atr = analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD)
+                    position["max_price"] = max(position.get("max_price", position["entry"]), high)
+                    if atr:
+                        activation = atr * config.SYSTEM_ATR_TRAILING_ACTIVATION_ATR
+                        if position["max_price"] - position["entry"] >= activation:
+                            candidate = position["max_price"] - atr * config.SYSTEM_ATR_TRAILING_MULTIPLIER
+                            position["trailing_stop"] = max(position.get("trailing_stop", 0), candidate)
+                    if high >= position["target_price"]:
+                        position["target_reached"] = True
+                    stop_price = max(position.get("stop_price", 0), position.get("trailing_stop", 0))
+                    # RR hedefi bir minimum kâr eşiğidir; kapanışı ATR trailing belirler.
+                    exit_price = stop_price if stop_price > 0 and low <= stop_price else None
+                    reason = "atr_trailing_stop" if position.get("trailing_stop", 0) and exit_price == stop_price else "system_stop_loss"
+                    if exit_price is None and (config.STALE_POSITION_EXIT_BELOW_COST and
                           elapsed >= config.STALE_POSITION_SEC and
                           close < position["entry"] * (1 + config.min_net_exit_pct(order_size * position.get("layers", 1)))):
                         exit_price = close
@@ -293,8 +291,13 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     if balance >= order_size and result == "buy":
                         entry_fee = order_size * config.COMMISSION_PCT
                         balance -= order_size + entry_fee
+                        atr = analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD) or close * config.HARD_STOP_LOSS_PCT
+                        stop_distance = max(close * config.HARD_STOP_LOSS_PCT, atr * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER)
                         position = {"entry": close, "quantity": order_size / close,
                                     "entry_time": data["times"][i], "entry_bar": i, "layers": 1}
+                        position["stop_price"] = close - stop_distance
+                        position["target_price"] = close + stop_distance * config.SYSTEM_RISK_REWARD
+                        position["max_price"] = close
                 marked = balance + (position["quantity"] * close if position else 0)
                 equity_peak = max(equity_peak, marked)
                 max_drawdown = max(max_drawdown, (equity_peak - marked) / equity_peak if equity_peak else 0)
@@ -328,7 +331,9 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     "max_drawdown_pct": round(max_drawdown * 100, 2), "commission_pct": config.COMMISSION_PCT,
                     "order_size": order_size, "stop_loss_pct": float(stop_pct), "take_profit_pct": first_target_pct,
                     "flow_model": "candle_orderflow_proxy_for_backtest",
-                    "trailing_stop_pct": 0.0, "exit_model": "time_decay_profit_or_hard_stop_or_4h_timeout",
+                    "trailing_stop_pct": 0.0, "atr_trailing_multiplier": config.SYSTEM_ATR_TRAILING_MULTIPLIER,
+                    "risk_reward": config.SYSTEM_RISK_REWARD,
+                    "exit_model": "atr_trailing_after_rr_target",
                     "open_position_at_end": open_at_end, "unrealized_pnl": round(unrealized_pnl, 8),
                     "trades": trades, "timestamp": time.time(),
                     "evaluation_start": start_ts, "evaluation_end": end_ts}

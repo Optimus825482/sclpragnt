@@ -1,5 +1,7 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 function inline(text: string) {
   return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, index) => {
     if (part.startsWith("**") && part.endsWith("**")) return <strong key={index} className="text-white">{part.slice(2, -2)}</strong>;
@@ -16,22 +18,55 @@ function repairSpacing(text: string) {
     .replace(/,(?=[\p{L}])/gu, ", ")
     // Also repair common token-boundary loss such as "MerhabaErkan".
     .replace(/([\p{Ll}\d])([\p{Lu}ÇĞİÖŞÜ])/gu, "$1 $2")
-    .replace(/\s{2,}/g, " ")
+    .replace(/[ \t]{2,}/g, " ")
     .trim();
+}
+
+function isTableSeparator(line: string) {
+  const cells = line.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim());
+  return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+}
+
+function tableCells(line: string) {
+  return line.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim());
+}
+
+function MessageTable({ rows }: { rows: string[][] }) {
+  const [head, ...body] = rows;
+  return <div className="message-table-wrap" role="region" aria-label="LLM tablosu" tabIndex={0}>
+    <table className="message-table">
+      <thead><tr>{head.map((cell, index) => <th key={index}>{inline(cell)}</th>)}</tr></thead>
+      <tbody>{body.map((row, rowIndex) => <tr key={rowIndex}>{head.map((_, cellIndex) => <td key={cellIndex}>{inline(row[cellIndex] || "—")}</td>)}</tr>)}</tbody>
+    </table>
+  </div>;
 }
 
 export default function MarkdownMessage({ content }: { content: string }) {
   const normalized = repairSpacing(String(content || ""))
     .replace(/\s*(#{2,4})\s*/g, "\n$1 ")
-    .replace(/\s*---\s*/g, "\n---\n")
-    .replace(/\|/g, " | ");
-  return <div className="space-y-2 leading-6">{normalized.split(/\r?\n/).map((line, index) => {
+    .replace(/\s*---\s*/g, "\n---\n");
+  const lines = normalized.split(/\r?\n/);
+  const rendered: ReactNode[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
+      const rows: string[][] = [tableCells(line)];
+      index += 2;
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+        rows.push(tableCells(lines[index]));
+        index += 1;
+      }
+      rendered.push(<MessageTable key={`table-${index}`} rows={rows} />);
+      index -= 1;
+      continue;
+    }
     const trimmed = line.trim();
-    if (!trimmed) return <div key={index} className="h-1" />;
-    if (trimmed === "---") return <hr key={index} className="border-bunker-700" />;
-    if (trimmed.startsWith("### ")) return <h3 key={index} className="pt-2 font-semibold text-neon-green">{inline(trimmed.slice(4))}</h3>;
-    if (trimmed.startsWith("## ")) return <h2 key={index} className="pt-2 text-base font-bold text-white">{inline(trimmed.slice(3))}</h2>;
-    if (/^[-*] /.test(trimmed)) return <div key={index} className="pl-4 before:mr-2 before:text-neon-green before:content-['•']">{inline(trimmed.slice(2))}</div>;
-    return <p key={index}>{inline(line)}</p>;
-  })}</div>;
+    if (!trimmed) rendered.push(<div key={index} className="h-1" />);
+    else if (trimmed === "---") rendered.push(<hr key={index} className="border-bunker-700" />);
+    else if (trimmed.startsWith("### ")) rendered.push(<h3 key={index} className="pt-2 font-semibold text-neon-green">{inline(trimmed.slice(4))}</h3>);
+    else if (trimmed.startsWith("## ")) rendered.push(<h2 key={index} className="pt-2 text-base font-bold text-white">{inline(trimmed.slice(3))}</h2>);
+    else if (/^[-*] /.test(trimmed)) rendered.push(<div key={index} className="pl-4 before:mr-2 before:text-neon-green before:content-['•']">{inline(trimmed.slice(2))}</div>);
+    else rendered.push(<p key={index}>{inline(line)}</p>);
+  }
+  return <div className="space-y-2 leading-6">{rendered}</div>;
 }
