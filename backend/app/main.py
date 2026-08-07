@@ -59,6 +59,7 @@ _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": No
 _llm_replenish_lock = asyncio.Lock()
 _llm_last_idle_attempt_at = time.time()
 _radar_lock = asyncio.Lock()
+_top_gainers_lock = asyncio.Lock()
 _ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
 
 
@@ -432,6 +433,7 @@ async def startup():
     asyncio.create_task(market.connect())
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
+    asyncio.create_task(top_gainers_refresh_loop(), name="top-gainers-refresh")
     asyncio.create_task(llm_idle_trigger_loop())
     asyncio.create_task(a2a_inbox_loop(), name="a2a-inbox")
     asyncio.create_task(llm_position_manager_loop(), name="llm-position-manager")
@@ -557,6 +559,60 @@ async def radar_loop():
         except Exception as exc:
             print(f"[Radar] otomatik tarama hatası: {exc}")
         await asyncio.sleep(config.GAINER_RADAR_INTERVAL_SEC)
+
+async def refresh_top_gainer_symbols():
+    """Refresh active TRY symbols from Binance TR's public 24h ticker data."""
+    if not config.TOP_GAINERS_AUTO_ACTIVATE:
+        return {"ok": False, "enabled": False, "symbols": config.SYMBOLS}
+    async with _top_gainers_lock:
+        all_tickers = await ticker_24h()
+        known_try = set(await trading_symbols("TRY"))
+        ranked = []
+        for item in all_tickers or []:
+            symbol = str(item.get("symbol", "")).replace("_", "").upper()
+            if symbol not in known_try:
+                continue
+            try:
+                change = float(item.get("priceChangePercent", 0) or 0)
+                volume = float(item.get("quoteVolume", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            ranked.append({"symbol": symbol, "change_pct": change, "quote_volume": volume})
+        ranked.sort(key=lambda row: (row["change_pct"], row["quote_volume"]), reverse=True)
+        selected = [row["symbol"] for row in ranked[:config.TOP_GAINERS_LIMIT]]
+        open_symbols = set(analyzer.positions) | set((await database.load_positions()).keys())
+        active = list(dict.fromkeys(selected + sorted(open_symbols)))
+        if not active:
+            raise RuntimeError("Binance TR top-gainer TRY listesi boş döndü")
+        config.SYMBOLS = active
+        config.UT_SYMBOLS = list(active)
+        market.symbols = [symbol.lower() for symbol in active]
+        market.reconnect_requested = True
+        analyzer._last_signal_lengths.clear()
+        persisted = await database.get_llm_setting("runtime_config", "{}")
+        try:
+            runtime = json.loads(persisted or "{}")
+        except json.JSONDecodeError:
+            runtime = {}
+        runtime.update({"symbols": active, "ut_symbols": active,
+                        "top_gainers_limit": config.TOP_GAINERS_LIMIT,
+                        "top_gainers_refreshed_at": time.time()})
+        await database.set_llm_setting("runtime_config", json.dumps(runtime, ensure_ascii=False))
+        return {"ok": True, "enabled": True, "limit": config.TOP_GAINERS_LIMIT,
+                "symbols": active, "selected": selected,
+                "preserved_open_positions": sorted(open_symbols),
+                "generated_at": time.time(), "source": "binance_tr_public_24h_ticker"}
+
+async def top_gainers_refresh_loop():
+    await asyncio.sleep(10)
+    while True:
+        try:
+            result = await refresh_top_gainer_symbols()
+            if result.get("ok"):
+                print(f"[Top Gainers] {len(result.get('selected', []))} TRY sembolü aktive edildi")
+        except Exception as exc:
+            print(f"[Top Gainers] saatlik yenileme hatası: {exc}")
+        await asyncio.sleep(config.TOP_GAINERS_REFRESH_SEC)
 
 async def llm_replenish_after_close():
     """Replace each closed paper position with one fresh eligible candidate."""
@@ -1028,6 +1084,24 @@ async def gainers_radar(execute: bool = False):
                         await ws_manager.broadcast({"type": "signal", "data": signal})
     return {"items": rows[:20], "auto_added": auto_added, "symbols": config.SYMBOLS, "paper_trades": radar_trades,
             "auto_trade": config.GAINER_RADAR_AUTO_TRADE, "generated_at": time.time(), "model": "public_data_continuation_2pct"}
+
+@app.get("/api/market/top-gainers")
+async def top_gainers_status(refresh: bool = False):
+    """Return/optionally refresh the hourly Binance TR top-gainer activation set."""
+    if refresh:
+        try:
+            return await refresh_top_gainer_symbols()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Binance TR top-gainer verisi alınamadı: {exc}")
+    persisted = await database.get_llm_setting("runtime_config", "{}")
+    try:
+        runtime = json.loads(persisted or "{}")
+    except json.JSONDecodeError:
+        runtime = {}
+    return {"ok": True, "enabled": config.TOP_GAINERS_AUTO_ACTIVATE,
+            "limit": config.TOP_GAINERS_LIMIT, "refresh_seconds": config.TOP_GAINERS_REFRESH_SEC,
+            "symbols": config.SYMBOLS, "refreshed_at": runtime.get("top_gainers_refreshed_at"),
+            "source": "binance_tr_public_24h_ticker"}
 
 @app.post("/api/radar/execute")
 async def execute_gainers_radar():

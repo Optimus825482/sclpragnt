@@ -48,6 +48,9 @@ class Config:
     GAINER_RADAR_AUTO_TRADE = True
     GAINER_RADAR_MIN_SCORE = 65
     GAINER_RADAR_INTERVAL_SEC = max(15, int(os.getenv("GAINER_RADAR_INTERVAL_SEC", "60")))
+    TOP_GAINERS_LIMIT = max(1, min(70, int(os.getenv("TOP_GAINERS_LIMIT", "70"))))
+    TOP_GAINERS_REFRESH_SEC = max(300, int(os.getenv("TOP_GAINERS_REFRESH_SEC", str(60 * 60))))
+    TOP_GAINERS_AUTO_ACTIVATE = os.getenv("TOP_GAINERS_AUTO_ACTIVATE", "true").lower() == "true"
     LLM_REENTRY_COOLDOWN_SEC = max(60, int(os.getenv("LLM_REENTRY_COOLDOWN_SEC", str(30 * 60))))
     LLM_REENTRY_MIN_MOVE_PCT = max(0.001, float(os.getenv("LLM_REENTRY_MIN_MOVE_PCT", "0.005")))
     

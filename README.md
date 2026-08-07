@@ -75,6 +75,7 @@ Kaynaklı araştırma ve uygulama eşlemesi: [`docs/SCALPER_RESEARCH_EVIDENCE.md
 ## API
 
 - `GET /health` - durum, paper/public API bilgisi, açık pozisyonlar
+- `GET /api/market/top-gainers?refresh=true` - Binance TR public 24 saatlik ticker verisinden ilk 70 TRY top-gainer sembolünü ve saatlik aktivasyon durumunu getirir/yeniler.
 - `WS /ws` - ticker / signal / portfolio mesajları (frontend bunu dinler)
 - `GET /api/market-klines/{symbol}` - frontend ve backend için ortak Binance TR public candle adapter’ı
 - `GET /api/trades`, `/api/signals`, `/api/decisions` - `limit`, `offset` ve ilgili sembol/strateji filtreleriyle server-side listeleme
@@ -87,7 +88,11 @@ Custom backtest çıkış modeli `strategy_definition.exit_policy` ile seçilir.
 Sistem yalnızca paper trading modunda çalışır; gerçek emir göndermez ve API anahtarı gerektirmez.
 ## Production deployment (Coolify / Docker Compose)
 
-The repository is deployable as three containers: `frontend`, `backend`, and an Nginx gateway. The gateway serves the frontend and proxies `/api`, `/health`, and `/ws` to the backend. SQLite is stored in the named `scalper_data` volume and survives container recreation.
+The repository is deployable as three containers: `frontend`, `backend`, and an Nginx gateway. The gateway serves the frontend and proxies `/api`, `/health`, and `/ws` to the backend. Persistent runtime data is stored in PostgreSQL; the named `scalper_data` volume is reserved for paper/runtime artifacts.
+
+### Otomatik top-gainer sembol aktivasyonu
+
+Backend, `TOP_GAINERS_AUTO_ACTIVATE=true` (varsayılan) iken Binance TR public `/api/v3/ticker/24hr` ve TRY `exchangeInfo` verilerini saatlik (`TOP_GAINERS_REFRESH_SEC=3600`) kontrol eder. 24 saatlik değişime göre ilk `TOP_GAINERS_LIMIT=70` TRY sembolü analiz evrenine alınır. Açık pozisyon sembolleri yeni listenin dışında kalsa bile sistem tarafından korunur ve yönetilmeye devam eder. Bu akış yalnızca paper/public-data aktivasyonudur; gerçek emir göndermez.
 
 Use `docker-compose.yaml` as the Compose file and point `scalper.erkanerdem.online` to the gateway service/port `80`. Coolify should terminate HTTPS at the domain proxy. The backend is deliberately paper-only (`LIVE_TRADING=false`); no Binance credentials are required for public market data.
 

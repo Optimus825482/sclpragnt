@@ -110,6 +110,16 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('await asyncio.sleep(5)', source)
         self.assertIn('PostgreSQL migration bağlantısı kurulamadı', source)
 
+    def test_hourly_top_gainer_activation_is_public_and_bounded(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        config_source = (ROOT / "app" / "config.py").read_text()
+        self.assertIn('async def refresh_top_gainer_symbols()', source)
+        self.assertIn('asyncio.create_task(top_gainers_refresh_loop()', source)
+        self.assertIn('@app.get("/api/market/top-gainers")', source)
+        self.assertIn('TOP_GAINERS_LIMIT = max(1, min(70', config_source)
+        self.assertIn('source": "binance_tr_public_24h_ticker"', source)
+        self.assertIn('open_symbols = set(analyzer.positions)', source)
+
     def test_main_has_one_reconcile_function(self):
         tree = ast.parse((ROOT / "app" / "main.py").read_text())
         names = [node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
