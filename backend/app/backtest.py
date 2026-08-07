@@ -347,7 +347,14 @@ async def run_walk_forward(symbol: str, interval: str, strategy: str,
                            train_days: int = 30, test_days: int = 7,
                            folds: int = 3, order_size: float = 500.0,
                            stop_pct: float = 0.005, tp_pct: float = 0.015):
-    """Chronological OOS folds with indicator warm-up before each test window."""
+    """Chronological OOS folds for classic system strategies only.
+
+    LLM_PAPER cannot be replayed here because historical LLM decisions/plans
+    are not reconstructed candle-by-candle. Its exact exit model belongs to
+    run_custom_backtest with explicit TP/SL and exit conditions.
+    """
+    if str(strategy).upper() == "LLM_PAPER":
+        raise ValueError("LLM_PAPER walk-forward için explicit plan/exit koşulları gerekir; run_custom_backtest kullanın")
     train_days = max(7, min(int(train_days), 90)); test_days = max(1, min(int(test_days), 30))
     folds = max(1, min(int(folds), 6))
     now = time.time(); results = []

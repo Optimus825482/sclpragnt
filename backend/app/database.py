@@ -194,6 +194,39 @@ async def init_db():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS alert_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                symbol TEXT NOT NULL, timeframe TEXT NOT NULL DEFAULT '5m',
+                rule_type TEXT NOT NULL DEFAULT 'price', operator TEXT NOT NULL,
+                threshold REAL NOT NULL, cooldown_seconds INTEGER NOT NULL DEFAULT 1800,
+                enabled INTEGER NOT NULL DEFAULT 1, last_triggered_at REAL,
+                last_value REAL, rearm_threshold REAL, expires_at REAL,
+            notify_channels TEXT NOT NULL DEFAULT '["websocket"]',
+                created_by TEXT NOT NULL DEFAULT 'user', reason TEXT,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS alert_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL, event_key TEXT NOT NULL UNIQUE,
+                value REAL, message TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'info',
+                triggered_at REAL NOT NULL, acknowledged_at REAL,
+                FOREIGN KEY(rule_id) REFERENCES alert_rules(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS notification_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, channel_type TEXT NOT NULL,
+                destination TEXT NOT NULL, secret_ref TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL, UNIQUE(channel_type, destination)
+            )
+        """)
+        conn.execute("""CREATE TABLE IF NOT EXISTS push_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL UNIQUE,
+            subscription TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL
+        )""")
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS paper_orders (
                 order_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT NOT NULL,
                 order_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
@@ -1002,6 +1035,69 @@ async def remove_llm_symbol_guard(symbol, reason="llm_guard_removed"):
     def op(conn):
         cur = conn.execute("UPDATE llm_symbol_guards SET status='removed',reason=?,updated_at=? WHERE symbol=?", (reason, time.time(), symbol))
         conn.commit(); return cur.rowcount > 0
+    return await _run_db(op)
+
+async def create_alert_rule(rule):
+    now = time.time()
+    def op(conn):
+        cur = conn.execute("""INSERT INTO alert_rules
+            (name,symbol,timeframe,rule_type,operator,threshold,cooldown_seconds,enabled,rearm_threshold,expires_at,notify_channels,created_by,reason,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+            rule.get("name") or f"{rule['symbol']} alarm", str(rule["symbol"]).upper(), rule.get("timeframe", "5m"),
+            rule.get("rule_type", "price"), rule.get("operator", "lte"), float(rule["threshold"]),
+            max(0, int(rule.get("cooldown_seconds", 1800))), 1, rule.get("rearm_threshold"), rule.get("expires_at"),
+            json.dumps(rule.get("notify_channels") or ["websocket"]), rule.get("created_by", "user"), rule.get("reason"), now, now))
+        conn.commit(); return cur.lastrowid
+    return await _run_db(op)
+
+async def list_alert_rules(active_only=False):
+    def op(conn):
+        sql = "SELECT * FROM alert_rules" + (" WHERE enabled=1" if active_only else "") + " ORDER BY created_at DESC"
+        rows = conn.execute(sql).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row); item["notify_channels"] = _json_value(item.get("notify_channels"), ["websocket"]); result.append(item)
+        return result
+    return await _run_db(op)
+
+async def update_alert_rule(rule_id, changes):
+    allowed = {"name", "enabled", "threshold", "operator", "cooldown_seconds", "rearm_threshold", "expires_at", "notify_channels", "reason"}
+    fields = [key for key in changes if key in allowed]
+    if not fields: return None
+    values = [json.dumps(changes[key]) if key == "notify_channels" else changes[key] for key in fields]
+    values.extend([time.time(), rule_id])
+    def op(conn):
+        conn.execute(f"UPDATE alert_rules SET {', '.join(f'{key}=?' for key in fields)}, updated_at=? WHERE id=?", values); conn.commit()
+        row = conn.execute("SELECT * FROM alert_rules WHERE id=?", (rule_id,)).fetchone(); return dict(row) if row else None
+    return await _run_db(op)
+
+async def delete_alert_rule(rule_id):
+    def op(conn):
+        conn.execute("DELETE FROM alert_rules WHERE id=?", (rule_id,)); conn.commit(); return True
+    return await _run_db(op)
+
+async def record_alert_trigger(rule_id, event_key, value, message, severity="info"):
+    now = time.time()
+    def op(conn):
+        inserted = conn.execute("INSERT INTO alert_events(rule_id,symbol,event_key,value,message,severity,triggered_at) SELECT id,symbol,?,?,?,?,? FROM alert_rules WHERE id=? ON CONFLICT(event_key) DO NOTHING", (event_key, value, message, severity, now, rule_id))
+        if inserted.rowcount == 0: conn.rollback(); return None
+        conn.execute("UPDATE alert_rules SET last_triggered_at=?, last_value=?, updated_at=? WHERE id=?", (now, value, now, rule_id)); conn.commit()
+        row = conn.execute("SELECT * FROM alert_events WHERE event_key=?", (event_key,)).fetchone(); return dict(row) if row else None
+    return await _run_db(op)
+
+async def get_alert_events(limit=100):
+    def op(conn): return [dict(row) for row in conn.execute("SELECT * FROM alert_events ORDER BY triggered_at DESC LIMIT ?", (max(1, min(int(limit), 500)),)).fetchall()]
+    return await _run_db(op)
+
+async def save_push_subscription(subscription):
+    now = time.time(); endpoint = str(subscription.get("endpoint") or "")
+    if not endpoint: raise ValueError("push subscription endpoint gerekli")
+    def op(conn):
+        conn.execute("INSERT INTO push_subscriptions(endpoint,subscription,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at", (endpoint, json.dumps(subscription), now, now)); conn.commit(); return True
+    return await _run_db(op)
+
+async def list_push_subscriptions():
+    def op(conn): return [_json_value(row["subscription"], {}) for row in conn.execute("SELECT subscription FROM push_subscriptions").fetchall()]
     return await _run_db(op)
 
 

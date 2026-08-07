@@ -13,6 +13,24 @@ self.addEventListener("activate", function (event) {
   event.waitUntil(self.clients.claim());
 });
 
+self.addEventListener("push", function (event) {
+  var data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (_) { data = { title: "Scalper Agent", body: event.data ? event.data.text() : "Yeni alarm" }; }
+  event.waitUntil(self.registration.showNotification(data.title || "Scalper Agent alarmı", {
+    body: data.body || data.message || "Yeni market alarmı",
+    icon: "/icon.svg",
+    badge: "/icon.svg",
+    vibrate: [180, 80, 180, 80, 280],
+    tag: data.tag || "scalper-alert",
+    data: { url: data.url || "/alerts" }
+  }));
+});
+
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close();
+  event.waitUntil(clients.openWindow(event.notification.data?.url || "/alerts"));
+});
+
 self.addEventListener("fetch", function (event) {
   const url = new URL(event.request.url);
   const eligible = event.request.method === "GET" &&

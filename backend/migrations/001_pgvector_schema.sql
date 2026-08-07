@@ -191,3 +191,31 @@ CREATE TABLE IF NOT EXISTS paper_orders (
 );
 CREATE INDEX IF NOT EXISTS paper_orders_symbol_status_idx ON paper_orders(symbol, status, created_at DESC);
 CREATE INDEX IF NOT EXISTS paper_orders_oco_idx ON paper_orders(oco_group) WHERE oco_group IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS alert_rules (
+  id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, symbol TEXT NOT NULL,
+  timeframe TEXT NOT NULL DEFAULT '5m', rule_type TEXT NOT NULL DEFAULT 'price',
+  operator TEXT NOT NULL, threshold DOUBLE PRECISION NOT NULL,
+  cooldown_seconds INTEGER NOT NULL DEFAULT 1800, enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  last_triggered_at TIMESTAMPTZ, last_value DOUBLE PRECISION, rearm_threshold DOUBLE PRECISION,
+  expires_at TIMESTAMPTZ, notify_channels JSONB NOT NULL DEFAULT '["websocket"]'::jsonb,
+  created_by TEXT NOT NULL DEFAULT 'user', reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS alert_rules_active_idx ON alert_rules(enabled, symbol);
+CREATE TABLE IF NOT EXISTS alert_events (
+  id BIGSERIAL PRIMARY KEY, rule_id BIGINT NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
+  symbol TEXT NOT NULL, event_key TEXT NOT NULL UNIQUE, value DOUBLE PRECISION,
+  message TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'info',
+  triggered_at TIMESTAMPTZ NOT NULL DEFAULT now(), acknowledged_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS alert_events_recent_idx ON alert_events(triggered_at DESC);
+CREATE TABLE IF NOT EXISTS notification_channels (
+  id BIGSERIAL PRIMARY KEY, channel_type TEXT NOT NULL, destination TEXT NOT NULL,
+  secret_ref TEXT, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(channel_type, destination)
+);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id BIGSERIAL PRIMARY KEY, endpoint TEXT NOT NULL UNIQUE, subscription JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -29,6 +29,8 @@ services:
       CORS_ORIGINS: https://scalper.erkanerdem.online
       A2A_RELAY_URL: ${A2A_RELAY_URL:-}
       A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:alerts@example.com}
     volumes:
       - scalper_data:/data
     expose:
@@ -69,6 +71,8 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    environment:
+      NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     expose:
       - "3004"
 
