@@ -104,6 +104,12 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('DATABASE_URL', source)
         self.assertIn('exit 1', source)
 
+    def test_postgres_migration_retries_transient_connection_failures(self):
+        source = (ROOT / "scripts" / "run_postgres_migration.py").read_text()
+        self.assertIn('for attempt in range(1, 13)', source)
+        self.assertIn('await asyncio.sleep(5)', source)
+        self.assertIn('PostgreSQL migration bağlantısı kurulamadı', source)
+
     def test_main_has_one_reconcile_function(self):
         tree = ast.parse((ROOT / "app" / "main.py").read_text())
         names = [node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
