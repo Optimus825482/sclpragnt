@@ -48,6 +48,10 @@ services:
       A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:-}
       A2A_PEER_URL: ${A2A_PEER_URL:-}
       SCALPER_A2A_URL: ${SCALPER_A2A_URL:-}
+      A2A_BACKEND_URL: http://backend:8004/api/a2a/messages
+    depends_on:
+      backend:
+        condition: service_healthy
     volumes:
       - scalper_a2a_relay:/data
     expose:

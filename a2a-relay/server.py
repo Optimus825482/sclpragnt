@@ -4,11 +4,13 @@ import json
 import os
 import time
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SECRET = os.getenv("A2A_SHARED_SECRET", "").strip()
 PEER_URL = os.getenv("A2A_PEER_URL", "").strip()
 SCALPER_URL = os.getenv("SCALPER_A2A_URL", "").strip()
+BACKEND_URL = os.getenv("A2A_BACKEND_URL", "").strip()
 LOG_PATH = os.getenv("A2A_LOG_PATH", "/data/a2a-relay.jsonl")
 
 
@@ -49,7 +51,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self.json_response(200, {"ok": True, "service": "a2a-relay", "paper_only": True, "peer_configured": bool(PEER_URL)})
+            self.json_response(200, {"ok": True, "service": "a2a-relay", "paper_only": True, "peer_configured": bool(PEER_URL), "backend_configured": bool(BACKEND_URL)})
+        elif self.path.startswith("/api/a2a/messages") and BACKEND_URL:
+            parts = urlsplit(self.path)
+            target = urlsplit(BACKEND_URL)
+            url = urlunsplit((target.scheme, target.netloc, target.path, parts.query, ""))
+            try:
+                with urllib.request.urlopen(url, timeout=10) as response:
+                    self.json_response(response.status, json.loads(response.read()))
+            except Exception as exc:
+                self.json_response(502, {"ok": False, "error": f"backend_a2a_unavailable: {exc}"})
         else:
             self.json_response(404, {"ok": False})
 
