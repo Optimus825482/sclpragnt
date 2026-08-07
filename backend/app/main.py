@@ -1908,7 +1908,11 @@ async def strategies_llm_chat(payload: dict = None):
             except Exception as exc:
                 context["symbol_data"] = {"symbol": requested, "data_ready": False, "error": str(exc)}
     tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Public historical candles üzerinde yalnızca paper/backtest simülasyonu çalıştırır. Gerçek emir ve canlı portföy değişikliği yoktur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","3m","5m","15m","30m","1h","2h","4h","1d"]},"days_back":{"type":"integer","description":"1-90 arası tarihsel gün"},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"params":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını candle verisi üzerinde backtest eder; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object","description":"entry/exit koşulları: indicator, op, value. En fazla 8 koşul.","properties":{"entry":{"type":"array"},"exit":{"type":"array"}}},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Aynı stratejiyi birden fazla tarih penceresinde çalıştırır ve trade PnL'leri üzerinde deterministik Monte Carlo dayanıklılık özeti üretir. Sonuçlar araştırma amaçlıdır; walk-forward için gerçek tarih aralığı ayrımı olmadığını açıkça belirtir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"windows":{"type":"array","items":{"type":"integer"},"description":"En fazla 3 pencere; 7-90 gün"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
+    tool_error_count = 0
+    failed_tool_calls = set()
+
     async def execute_tool(name, args):
+        nonlocal tool_error_count
         started = time.perf_counter(); success = True
         try:
             if name == "scan_market_snapshots": return await scan_market_snapshots(args)
@@ -1952,7 +1956,15 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "run_custom_backtest":
                 symbol = str(args.get("symbol") or "BTCTRY").upper(); interval = str(args.get("interval") or "5m")
                 days = max(1, min(int(args.get("days_back", 30)), 90)); order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
-                result = await run_custom_backtest(symbol, interval, days, args.get("strategy_definition") or {}, order_size, args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
+                definition = args.get("strategy_definition") or {}
+                if not isinstance(definition, dict) or not isinstance(definition.get("entry"), list) or not isinstance(definition.get("exit"), list):
+                    return {"ok": False, "retryable": False, "error": "strategy_definition entry ve exit dizileri içermeli; koşullar {indicator, op, value} biçiminde olmalı", "paper_only": True}
+                try:
+                    result = await run_custom_backtest(symbol, interval, days, definition, order_size, args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
+                except (TypeError, ValueError) as exc:
+                    return {"ok": False, "retryable": False, "error": f"Custom backtest doğrulama hatası: {exc}", "paper_only": True}
+                except Exception as exc:
+                    return {"ok": False, "retryable": True, "error": f"Custom backtest çalıştırılamadı: {type(exc).__name__}: {exc}", "paper_only": True}
                 return {"result": result, "paper_only": True, "live_portfolio_changed": False, "allowed_indicators":["rsi","ema_9","ema_21","ema_50","adx","volume_ratio","price_vs_vwap","return_5","return_21","chop","macd_histogram","stochastic_k","bollinger_position","atr_pct","mfi","cci","williams_r","price_vs_ema_21","cmo","crsi","confluence_score","regime_confidence","turtle_breakout","wyckoff_score","elliott_score","fib_distance_support","fib_distance_resistance"]}
             if name == "get_backtest_history":
                 limit = max(1, min(int(args.get("limit", 20)), 50))
@@ -1984,15 +1996,21 @@ async def strategies_llm_chat(payload: dict = None):
                 rows = await database.get_decision_logs(args.get("limit", 100), args.get("symbol"), args.get("strategy"))
                 return {"count": len(rows), "decisions": rows}
             if name == "search_memory":
-                if not _pg_pool: return {"count": 0, "results": [], "message": "Memory backend aktif değil"}
-                embedded = await llm_analysis.embedding(str(args.get("query", "")))
-                if embedded.get("status") != "ok": return {"count": 0, "results": [], "error": embedded.get("error")}
-                async with _pg_pool.acquire() as conn:
-                    rows = await memory_service.retrieve(conn, embedded["vector"], limit=max(1, min(int(args.get("limit", 6)), 20)), symbol=args.get("symbol"), strategy=args.get("strategy"), model_id=embedded.get("model_id"))
-                return {"count": len(rows), "results": rows}
+                if not _pg_pool: return {"count": 0, "results": [], "message": "Memory backend aktif değil; trade geçmişi ve SQL araçları kullanılabilir", "retryable": False}
+                query = str(args.get("query", "")).strip()
+                if not query: return {"count": 0, "results": [], "message": "Memory sorgusu boş; tekrar çağırma", "retryable": False}
+                try:
+                    embedded = await llm_analysis.embedding(query)
+                    if embedded.get("status") != "ok": return {"count": 0, "results": [], "error": embedded.get("error"), "retryable": False}
+                    async with _pg_pool.acquire() as conn:
+                        rows = await memory_service.retrieve(conn, embedded["vector"], limit=max(1, min(int(args.get("limit", 6)), 20)), symbol=args.get("symbol"), strategy=args.get("strategy"), model_id=embedded.get("model_id"))
+                    return {"count": len(rows), "results": rows, "retryable": False}
+                except Exception as exc:
+                    return {"count": 0, "results": [], "error": f"Memory kullanılamıyor: {type(exc).__name__}: {exc}", "retryable": False}
             return {"error": f"Bilinmeyen araç: {name}"}
         except Exception:
             success = False
+            tool_error_count += 1
             raise
         finally:
             try:
@@ -2036,7 +2054,7 @@ async def strategies_llm_chat(payload: dict = None):
     if active_tools:
         tools = [tool for tool in tools if str(tool.get("function", {}).get("name")) in active_tools]
     result = await llm_analysis.chat(context, messages, tools, execute_tool, body.get("active_skills"))
-    evaluation = evaluate_output(result.get("text"), intent=last_text)
+    evaluation = evaluate_output(result.get("text"), intent=last_text, tool_errors=tool_error_count)
     await save_evaluation(_pg_pool, trace_id, evaluation)
     if evaluation.get("passed"):
         experience_id = await save_experience(_pg_pool, trace_id=trace_id, experience_type="success", trigger=last_text,

@@ -96,6 +96,11 @@ def _close_trade(balance, entry, exit_price, quantity, order_size, reason):
 
 CUSTOM_INDICATORS = {"rsi", "ema_9", "ema_21", "ema_50", "adx", "volume_ratio", "price_vs_vwap", "return_5", "return_21", "chop", "macd_histogram", "stochastic_k", "bollinger_position", "atr_pct", "mfi", "cci", "williams_r", "price_vs_ema_21", "cmo", "crsi", "confluence_score", "regime_confidence", "turtle_breakout", "wyckoff_score", "elliott_score", "fib_distance_support", "fib_distance_resistance"}
 CUSTOM_OPS = {"<", "<=", ">", ">=", "=="}
+CUSTOM_OP_ALIASES = {
+    "lt": "<", "lte": "<=", "less_than": "<", "less_than_or_equal": "<=",
+    "gt": ">", "gte": ">=", "greater_than": ">", "greater_than_or_equal": ">=",
+    "eq": "==", "equal": "==", "equals": "==",
+}
 
 def _custom_value(analyzer, window, name):
     closes, highs, lows, volumes = window["closes"], window["highs"], window["lows"], window["volumes"]
@@ -142,9 +147,15 @@ def _custom_value(analyzer, window, name):
 
 def _custom_conditions(analyzer, window, conditions):
     for condition in conditions or []:
-        name, op, expected = condition.get("indicator"), condition.get("op"), condition.get("value")
+        if not isinstance(condition, dict):
+            raise ValueError("Her koşul nesne olmalı: {indicator, op, value}; metin koşulları desteklenmiyor")
+        name = str(condition.get("indicator") or "").strip().lower()
+        op = str(condition.get("op") or "").strip().lower()
+        op = CUSTOM_OP_ALIASES.get(op, op)
+        expected = condition.get("value")
         if name not in CUSTOM_INDICATORS or op not in CUSTOM_OPS:
-            raise ValueError(f"Geçersiz custom koşul: {name} {op}")
+            allowed = ", ".join(sorted(CUSTOM_INDICATORS))
+            raise ValueError(f"Geçersiz custom koşul: {name} {op}; indicator/op şeması kullanılmalı, desteklenen indicator örnekleri: {allowed}")
         try: expected = float(expected)
         except (TypeError, ValueError): raise ValueError(f"Koşul değeri sayısal olmalıdır: {name}")
         actual = _custom_value(analyzer, window, name)
