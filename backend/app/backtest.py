@@ -202,7 +202,8 @@ async def run_custom_backtest(symbol, interval, days_back, definition, order_siz
     return await asyncio.to_thread(_run_custom, symbol, interval, days_back, definition, order_size, stop_pct, tp_pct)
 
 
-def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct):
+def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct,
+                start_ts=None, end_ts=None):
     _validate(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct)
     with _CONFIG_LOCK:
         saved = {attr: getattr(config, attr) for attr in PARAM_FIELDS.values() if attr in {PARAM_FIELDS[k] for k in params}}
@@ -228,8 +229,15 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
             trades = []
             open_at_end = False
             unrealized_pnl = 0.0
+            last_eval_i = None
 
             for i, close in enumerate(data["closes"]):
+                candle_time = data["times"][i]
+                if start_ts is not None and candle_time < start_ts:
+                    continue
+                if end_ts is not None and candle_time > end_ts:
+                    break
+                last_eval_i = i
                 high, low = data["highs"][i], data["lows"][i]
                 if position:
                     window = {key: values[:i + 1] for key, values in data.items()}
@@ -293,12 +301,13 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
 
             if position:
                 open_at_end = True
-                final_price = data["closes"][-1]
+                final_i = last_eval_i if last_eval_i is not None else len(data["closes"]) - 1
+                final_price = data["closes"][final_i]
                 unrealized_pnl = (final_price - position["entry"]) * position["quantity"]
                 balance, pnl, _, trade = _close_trade(balance, position["entry"], final_price, position["quantity"], order_size * position.get("layers", 1), "open_at_end_mark_to_market")
-                trade.update({"entry_time": position["entry_time"], "exit_time": data["times"][-1],
-                              "entry_bar": position["entry_bar"], "exit_bar": len(data["closes"]) - 1,
-                              "bars_held": len(data["closes"]) - position["entry_bar"]})
+                trade.update({"entry_time": position["entry_time"], "exit_time": data["times"][final_i],
+                              "entry_bar": position["entry_bar"], "exit_bar": final_i,
+                              "bars_held": final_i - position["entry_bar"] + 1})
                 trades.append(trade)
 
             total = len(trades)
@@ -321,7 +330,8 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     "flow_model": "candle_orderflow_proxy_for_backtest",
                     "trailing_stop_pct": 0.0, "exit_model": "time_decay_profit_or_hard_stop_or_4h_timeout",
                     "open_position_at_end": open_at_end, "unrealized_pnl": round(unrealized_pnl, 8),
-                    "trades": trades, "timestamp": time.time()}
+                    "trades": trades, "timestamp": time.time(),
+                    "evaluation_start": start_ts, "evaluation_end": end_ts}
         finally:
             for attr, value in {**saved, **saved_flags, **saved_tfs}.items():
                 setattr(config, attr, value)
@@ -334,3 +344,32 @@ async def run_backtest(symbol: str, interval: str, days_back: int, strategy: str
     result = await asyncio.to_thread(_run_single, symbol, interval, days_back, strategy, params,
                                      order_size, stop_pct, tp_pct, trail_pct)
     return await database.save_backtest(result), result
+
+
+async def run_walk_forward(symbol: str, interval: str, strategy: str,
+                           train_days: int = 30, test_days: int = 7,
+                           folds: int = 3, order_size: float = 500.0,
+                           stop_pct: float = 0.005, tp_pct: float = 0.015):
+    """Chronological OOS folds with indicator warm-up before each test window."""
+    train_days = max(7, min(int(train_days), 90)); test_days = max(1, min(int(test_days), 30))
+    folds = max(1, min(int(folds), 6))
+    now = time.time(); results = []
+    for fold in range(folds):
+        end_ts = now - (folds - fold - 1) * test_days * 86400
+        start_ts = end_ts - test_days * 86400
+        result = await asyncio.to_thread(
+            _run_single, symbol, interval, train_days + test_days, strategy, {},
+            order_size, stop_pct, tp_pct, 0.0, start_ts, end_ts)
+        result["fold"] = fold + 1
+        results.append(result)
+    pnl = [float(row.get("net_pnl") or 0) for row in results]
+    positive_folds = sum(value > 0 for value in pnl)
+    return {"symbol": symbol, "interval": interval, "strategy": strategy,
+            "method": "chronological_oos_folds", "train_days": train_days,
+            "test_days": test_days, "folds": len(results),
+            "positive_oos_folds": positive_folds,
+            "oos_consistent": bool(results) and positive_folds >= max(1, len(results) // 2 + 1),
+            "net_pnl": round(sum(pnl), 2),
+            "average_fold_pnl": round(sum(pnl) / len(pnl), 2) if pnl else 0.0,
+            "fold_results": results, "paper_only": True,
+            "warning": "OOS sonucu kârlılık garantisi değildir; maliyet varsayımları ve örneklem büyüklüğü ayrıca incelenmelidir."}
