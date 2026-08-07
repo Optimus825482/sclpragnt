@@ -35,7 +35,6 @@ class Config:
         "MOMENTUM": int(os.getenv("MOMENTUM_MAX_HOLD_SEC", str(90 * 60))),
         "EMA_VWAP_PULLBACK": int(os.getenv("EMA_VWAP_MAX_HOLD_SEC", str(90 * 60))),
         "CHOP_TREND_FILTER": int(os.getenv("CHOP_MAX_HOLD_SEC", str(120 * 60))),
-        "VWAP_MEAN_REVERSION": int(os.getenv("VWAP_MAX_HOLD_SEC", str(120 * 60))),
     }
     TIMEOUT_REENTRY_BLOCK_SEC = 24 * 60 * 60
     HARD_STOP_REENTRY_BLOCK_SEC = 2 * 60 * 60
@@ -90,8 +89,9 @@ class Config:
                 + cls.ESTIMATED_SLIPPAGE_PCT * 2
                 + cls.MIN_EXPECTED_NET_PNL_TRY / value)
 
-    # UT Bot stratejisi — tek aktif strateji
-    UT_ENABLED = os.getenv("UT_ENABLED", "false").lower() == "true"
+    # Live giriş evreni: yalnızca Gainer Radar ve LLM_PAPER. Klasik stratejiler
+    # araştırma/backtest için kodda tutulabilir, canlı strategy_loop'a alınmaz.
+    UT_ENABLED = False
     UT_SYMBOLS = os.getenv("UT_SYMBOLS", "").split(",") if os.getenv("UT_SYMBOLS") else SYMBOLS
     UT_KEY_VALUE = 1.0
     UT_ATR_PERIOD = 11
@@ -100,18 +100,18 @@ class Config:
 
     # Ek stratejiler (ayrı ayrı aç/kapat)
     BB_SQUEEZE_ENABLED = False
-    EMA_PULLBACK_ENABLED = os.getenv("EMA_PULLBACK_ENABLED", "false").lower() == "true"
-    VWAP_MACD_ENABLED = os.getenv("VWAP_MACD_ENABLED", "false").lower() == "true"
-    CMO_CRSI_ENABLED = os.getenv("CMO_CRSI_ENABLED", "false").lower() == "true"
-    OVERSOLD_TREND_REENTRY_ENABLED = os.getenv("OVERSOLD_TREND_REENTRY_ENABLED", "false").lower() == "true"
-    ADAPTIVE_VOLATILITY_TREND_ENABLED = os.getenv("ADAPTIVE_VOLATILITY_TREND_ENABLED", "false").lower() == "true"
-    REGIME_GATE_LOW_TURNOVER_ENABLED = os.getenv("REGIME_GATE_LOW_TURNOVER_ENABLED", "false").lower() == "true"
+    EMA_PULLBACK_ENABLED = False
+    VWAP_MACD_ENABLED = False
+    CMO_CRSI_ENABLED = False
+    OVERSOLD_TREND_REENTRY_ENABLED = False
+    ADAPTIVE_VOLATILITY_TREND_ENABLED = False
+    REGIME_GATE_LOW_TURNOVER_ENABLED = False
     OVERSOLD_TREND_REENTRY_RSI_MAX = float(os.getenv("OVERSOLD_TREND_REENTRY_RSI_MAX", "40"))
     EMA_VWAP_ENABLED = False
-    BREAKOUT_ENABLED = os.getenv("BREAKOUT_ENABLED", "false").lower() == "true"
+    BREAKOUT_ENABLED = False
     ORDERFLOW_ENABLED = False
-    MOMENTUM_ENABLED = os.getenv("MOMENTUM_ENABLED", "false").lower() == "true"
-    MOMENTUM_COST_AWARE_ENABLED = os.getenv("MOMENTUM_COST_AWARE_ENABLED", "false").lower() == "true"
+    MOMENTUM_ENABLED = False
+    MOMENTUM_COST_AWARE_ENABLED = False
     MEAN_REVERSION_ENABLED = False
     KELTNER_ENABLED = False
     CHOP_ENABLED = False

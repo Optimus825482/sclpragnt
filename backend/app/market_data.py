@@ -22,7 +22,6 @@ class MarketData:
             config.ORDERFLOW_TIMEFRAME,
             config.MOMENTUM_TIMEFRAME,
             config.ADR_TIMEFRAME,
-            config.MEAN_REVERSION_TIMEFRAME,
             config.KELTNER_TIMEFRAME, config.CHOP_TIMEFRAME, config.DONCHIAN_TIMEFRAME,
         ]))
         # klines[tf][symbol] = {opens, highs, lows, closes, volumes}

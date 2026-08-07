@@ -26,7 +26,7 @@ from app.self_learning import build_learning_context
 from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app import database
-from app.backtest import run_backtest, run_custom_backtest, run_walk_forward
+from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, run_execution_stress, run_parameter_sensitivity, run_holdout_test, run_statistical_validation, get_backtest_data_quality, CUSTOM_IDENTIFIER_SCHEMA, CUSTOM_INDICATORS
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot
 from app import llm_analysis
@@ -856,6 +856,7 @@ CONFIG_FIELDS = {
 }
 
 BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment"}
+DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
 INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
 STR_FIELDS = {"ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
@@ -1032,6 +1033,10 @@ async def update_config(payload: dict):
         if key in payload:
             val = payload[key]
             if key in BOOL_FIELDS:
+                if key in DISABLED_LIVE_STRATEGY_FIELDS:
+                    # Gainer Radar and LLM_PAPER are the only live entry sources.
+                    setattr(config, attr, False)
+                    continue
                 if isinstance(val, str):
                     val = val.strip().lower() in {"1", "true", "yes", "on"}
                 setattr(config, attr, bool(val))
@@ -1742,6 +1747,11 @@ LLM_REGIME_TOOL = {"type":"function","function":{"name":"get_regime_snapshot","d
 LLM_ECONOMICS_TOOL = {"type":"function","function":{"name":"calculate_trade_economics","description":"Komisyon, spread ve slippage dahil paper işlem break-even, beklenen net PnL ve edge/cost oranını hesaplar; işlem açmaz.","parameters":{"type":"object","properties":{"entry_price":{"type":"number"},"stop_price":{"type":"number"},"take_profit":{"type":"number"},"quantity":{"type":"number"},"order_value_try":{"type":"number"},"spread_pct":{"type":"number"}},"required":["entry_price"]}}}
 LLM_OUTCOME_PROFILE_TOOL = {"type":"function","function":{"name":"get_symbol_outcome_profile","description":"Sembol/strateji geçmişinin komisyon sonrası expectancy, profit factor, drawdown, loss streak ve örnek yeterliliğini getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}
 LLM_WALK_FORWARD_TOOL = {"type":"function","function":{"name":"run_walk_forward","description":"Public candle verisi üzerinde kronolojik out-of-sample fold backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"train_days":{"type":"integer"},"test_days":{"type":"integer"},"folds":{"type":"integer"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy"]}}}
+LLM_EXECUTION_STRESS_TOOL = {"type":"function","function":{"name":"run_execution_stress_test","description":"Paper-only backtesti spread, slippage ve maliyet senaryolarında tekrarlar; gerçek emir göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"days_back":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
+LLM_SENSITIVITY_TOOL = {"type":"function","function":{"name":"run_parameter_sensitivity","description":"Paper-only TP/SL ve risk/ödül komşu varyantlarını karşılaştırır; tek bir parametre noktasına güvenmeyi engeller.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"days_back":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
+LLM_HOLDOUT_TOOL = {"type":"function","function":{"name":"run_holdout_test","description":"Seçimden sonra kullanılmak üzere dokunulmamış son tarih penceresinde paper-only test çalıştırır.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"train_days":{"type":"integer"},"holdout_days":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
+LLM_STATISTICAL_TOOL = {"type":"function","function":{"name":"run_statistical_validation","description":"Paper-only bootstrap, örneklem, işlem belirsizliği ve çoklu-deneme düzeltmeli screening raporu üretir; resmi kârlılık kanıtı değildir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"days_back":{"type":"integer"},"trials":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
+LLM_BACKTEST_DATA_TOOL = {"type":"function","function":{"name":"get_backtest_data_quality","description":"Backtest mumlarının eksik, duplicate, sıralama ve zaman boşluğu durumunu kontrol eder; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"days_back":{"type":"integer"}},"required":["symbol","interval"]}}}
 LLM_VALIDATE_PLAN_TOOL = {"type":"function","function":{"name":"validate_trade_plan","description":"Paper işlem planını bakiye, stop/TP, risk/ödül ve maliyet sonrası beklenen net sonuçla doğrular; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"entry_price":{"type":"number"},"order_value_try":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","order_value_try","stop_loss_pct","take_profit_pct"]}}}
 LLM_ORDER_STATUS_TOOL = {"type":"function","function":{"name":"get_order_status","description":"Paper emirlerinin durumunu salt-okunur getirir.","parameters":{"type":"object","properties":{"order_id":{"type":"string"},"symbol":{"type":"string"},"status":{"type":"string"}},"required":[]}}}
 LLM_CANCEL_ORDER_TOOL = {"type":"function","function":{"name":"cancel_paper_order","description":"Açık paper emrini iptal eder; gerçek borsa emri göndermez.","parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"]}}}
@@ -1805,7 +1815,11 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         snapshot = dict(snapshot)
         snapshot["market_scan"] = {"error": str(exc), "paper_only": True}
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL,
-                  LLM_ECONOMICS_TOOL, LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL, LLM_VALIDATE_PLAN_TOOL])
+                  LLM_ECONOMICS_TOOL, LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL,
+                  LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_VALIDATE_PLAN_TOOL])
+    for tool in tools:
+        if tool.get("function", {}).get("name") == "run_custom_backtest":
+            tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını backtest eder. Her koşul {indicator, op, value} biçimindedir; desteklenen identifier şeması sonuçta ve açıklamada verilir. Kategoriler: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda veri yoksa null/0 üretir; bu değerleri zorunlu gate olarak kullanmadan önce veri kaynağını dikkate al. Python çalıştırmaz, paper-only'dir."
     if body.get("stream") is True:
         async def events():
             async for event in llm_analysis.stream_chat(snapshot, body.get("messages", [])):
@@ -1825,6 +1839,11 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
             if strategy.upper() == "LLM_PAPER": return {"ok": False, "retryable": False, "paper_only": True, "error": "LLM_PAPER için explicit plan ve exit koşulları gerekir; run_custom_backtest kullanın."}
             return await run_walk_forward(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), strategy, args.get("train_days", 30), args.get("test_days", 7), args.get("folds", 3), args.get("order_size", 500.0), args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
+        if name == "run_execution_stress_test": return await run_execution_stress(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 30), args.get("order_size", 500.0))
+        if name == "run_parameter_sensitivity": return await run_parameter_sensitivity(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 30), args.get("order_size", 500.0))
+        if name == "run_holdout_test": return await run_holdout_test(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("train_days", 60), args.get("holdout_days", 14), args.get("order_size", 500.0))
+        if name == "run_statistical_validation": return await run_statistical_validation(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 60), args.get("order_size", 500.0), args.get("trials", 3))
+        if name == "get_backtest_data_quality": return await get_backtest_data_quality(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), args.get("days_back", 30))
         if name == "validate_trade_plan": return await validate_trade_plan(args)
         if name == "query_database": return await llm_query_database(args, symbol.upper())
         if name == "read_only_sql": return await safe_read_only_sql(args)
@@ -1851,7 +1870,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             days = max(1, min(int(args.get("days_back", 30)), 90))
             order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
             result = await run_custom_backtest(target, interval, days, args.get("strategy_definition") or {}, order_size, args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
-            return {"result": result, "paper_only": True, "live_portfolio_changed": False}
+            return {"result": result, "paper_only": True, "live_portfolio_changed": False, "identifier_schema": CUSTOM_IDENTIFIER_SCHEMA}
         if name == "get_backtest_history":
             rows = await database.get_backtests(max(1, min(int(args.get("limit", 20)), 50)))
             return {"count": len(rows), "backtests": rows}
@@ -2275,8 +2294,12 @@ async def strategies_llm_chat(payload: dict = None):
                 context["symbol_data"] = {"symbol": requested, "data_ready": False, "error": str(exc)}
     tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Public historical candles üzerinde yalnızca paper/backtest simülasyonu çalıştırır. Gerçek emir ve canlı portföy değişikliği yoktur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","3m","5m","15m","30m","1h","2h","4h","1d"]},"days_back":{"type":"integer","description":"1-90 arası tarihsel gün"},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"params":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını candle verisi üzerinde backtest eder; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object","description":"entry/exit koşulları: indicator, op, value. En fazla 8 koşul.","properties":{"entry":{"type":"array"},"exit":{"type":"array"}}},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Aynı stratejiyi birden fazla tarih penceresinde çalıştırır ve trade PnL'leri üzerinde deterministik Monte Carlo dayanıklılık özeti üretir. Sonuçlar araştırma amaçlıdır; walk-forward için gerçek tarih aralığı ayrımı olmadığını açıkça belirtir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"windows":{"type":"array","items":{"type":"integer"},"description":"En fazla 3 pencere; 7-90 gün"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     tools.extend([LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
-                  LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL, LLM_DATA_QUALITY_TOOL,
+                  LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL,
+                  LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_DATA_QUALITY_TOOL,
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL])
+    for tool in tools:
+        if tool.get("function", {}).get("name") == "run_custom_backtest":
+            tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif koşulları backtest eder. Şema: {indicator, op, value}; identifier kategorileri: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda doğrudan ölçülemez; null/0 değerini bilinmeyen olarak değerlendir. Python çalıştırmaz, paper-only'dir."
     tool_error_count = 0
     failed_tool_calls = set()
 
@@ -2296,6 +2319,11 @@ async def strategies_llm_chat(payload: dict = None):
                 if strategy.upper() == "LLM_PAPER":
                     return {"ok": False, "retryable": False, "paper_only": True, "error": "LLM_PAPER tarihsel kararlarını birebir replay edemeyen sistem walk-forward motoru kullanılamaz; explicit LLM planı için run_custom_backtest kullanın."}
                 return await run_walk_forward(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), strategy, args.get("train_days", 30), args.get("test_days", 7), args.get("folds", 3), args.get("order_size", 500.0), args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
+            if name == "run_execution_stress_test": return await run_execution_stress(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 30), args.get("order_size", 500.0))
+            if name == "run_parameter_sensitivity": return await run_parameter_sensitivity(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 30), args.get("order_size", 500.0))
+            if name == "run_holdout_test": return await run_holdout_test(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("train_days", 60), args.get("holdout_days", 14), args.get("order_size", 500.0))
+            if name == "run_statistical_validation": return await run_statistical_validation(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 60), args.get("order_size", 500.0), args.get("trials", 3))
+            if name == "get_backtest_data_quality": return await get_backtest_data_quality(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), args.get("days_back", 30))
             if name == "validate_trade_plan": return await validate_trade_plan(args)
             if name == "get_order_status":
                 rows = analyzer.list_paper_orders(args.get("symbol"), args.get("status"))
@@ -2343,7 +2371,7 @@ async def strategies_llm_chat(payload: dict = None):
                     return {"ok": False, "retryable": False, "error": f"Custom backtest doğrulama hatası: {exc}", "paper_only": True}
                 except Exception as exc:
                     return {"ok": False, "retryable": True, "error": f"Custom backtest çalıştırılamadı: {type(exc).__name__}: {exc}", "paper_only": True}
-                return {"result": result, "paper_only": True, "live_portfolio_changed": False, "exit_model": "custom_conditions_plus_explicit_tp_sl", "system_exit_rules_applied": False, "allowed_indicators":["rsi","ema_9","ema_21","ema_50","adx","volume_ratio","price_vs_vwap","return_5","return_21","chop","macd_histogram","stochastic_k","bollinger_position","atr_pct","mfi","cci","williams_r","price_vs_ema_21","cmo","crsi","confluence_score","regime_confidence","turtle_breakout","wyckoff_score","elliott_score","fib_distance_support","fib_distance_resistance"]}
+                return {"result": result, "paper_only": True, "live_portfolio_changed": False, "exit_model": "custom_conditions_plus_explicit_tp_sl", "system_exit_rules_applied": False, "allowed_indicators": sorted(CUSTOM_INDICATORS), "identifier_schema": CUSTOM_IDENTIFIER_SCHEMA}
             if name == "get_backtest_history":
                 limit = max(1, min(int(args.get("limit", 20)), 50))
                 rows = await database.get_backtests(limit)
