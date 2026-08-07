@@ -29,6 +29,19 @@ services:
       CORS_ORIGINS: https://scalper.erkanerdem.online
       A2A_RELAY_URL: ${A2A_RELAY_URL:-}
       A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:-}
+  a2a-relay:
+    build:
+      context: ./a2a-relay
+    restart: unless-stopped
+    environment:
+      PORT: "8010"
+      A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:-}
+      A2A_PEER_URL: ${A2A_PEER_URL:-}
+      SCALPER_A2A_URL: ${SCALPER_A2A_URL:-}
+    volumes:
+      - scalper_a2a_relay:/data
+    expose:
+      - "8010"
     volumes:
       - scalper_data:/data
     expose:
@@ -58,9 +71,11 @@ services:
     depends_on:
       - frontend
       - backend
+      - a2a-relay
     expose:
       - "80"
 
 volumes:
   scalper_data:
   scalper_postgres_data:
+  scalper_a2a_relay:

@@ -8,6 +8,8 @@ events to a configured relay. The relay never executes trades or tools.
 ```env
 A2A_RELAY_URL=https://relay.example/api/a2a/messages
 A2A_SHARED_SECRET=replace-with-a-long-random-secret
+# Optional: relay forwards to a second agent endpoint when configured.
+A2A_PEER_URL=
 ```
 
 When either value is absent, events remain in the local `a2a_messages` outbox
@@ -27,6 +29,11 @@ Every message includes `protocol`, `version`, `message_id`, `correlation_id`,
 `from`, `to`, `type`, `requires_user_approval`, `paper_only`, and `payload`.
 Inbound research is treated as untrusted evidence. It is evaluated by the
 server LLM and cannot directly mutate strategy settings or execute real orders.
+
+The included `a2a-relay` container listens on port `8010`. Route the public
+Cloudflare hostname to the Docker gateway and let Nginx route `/api/a2a/` to
+that container. DNS alone is not a relay; the container and route must be
+running. The relay keeps an append-only JSONL audit log in its data volume.
 
 ## LLM_PAPER position ownership
 
