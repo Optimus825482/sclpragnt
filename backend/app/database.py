@@ -363,8 +363,11 @@ async def ensure_default_scalper_skill():
     def op(conn):
         if _postgres_enabled():
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_skills_name ON llm_skills(name)")
+            enabled_literal = "TRUE"
+        else:
+            enabled_literal = "1"
         conn.execute(
-            "INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?) "
+            f"INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,{enabled_literal},?) "
             "ON CONFLICT(name) DO NOTHING",
             (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS, time.time()),
         )

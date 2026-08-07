@@ -104,6 +104,12 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('DATABASE_URL', source)
         self.assertIn('exit 1', source)
 
+    def test_default_skill_uses_postgres_boolean_literal(self):
+        source = (ROOT / "app" / "database.py").read_text()
+        self.assertIn('enabled_literal = "TRUE"', source)
+        self.assertIn('enabled_literal = "1"', source)
+        self.assertIn('VALUES(?,?,{enabled_literal},?)', source)
+
     def test_postgres_migration_retries_transient_connection_failures(self):
         source = (ROOT / "scripts" / "run_postgres_migration.py").read_text()
         self.assertIn('for attempt in range(1, 13)', source)
