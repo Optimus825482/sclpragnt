@@ -421,6 +421,15 @@ class ScalpAnalyzer:
     async def _manage_open_position(self, symbol, price, strat_name):
         tf = self._strategy_tf(strat_name)
         kline = self.market.get_ut_kline(symbol, tf)
+        ticker = self.market.get_ticker(symbol) if self.market else None
+        ticker_age = time.time() - float((ticker or {}).get("timestamp", 0) or 0) / 1000 if ticker else float("inf")
+        if ticker_age > config.MAX_TICKER_AGE_SEC:
+            # Never turn a missing/stale public price into a fake flat move or
+            # a stale-position loss. The strategy loop will retry after the
+            # market adapter repairs the ticker through REST/WebSocket.
+            return {"action": "POSITION_DATA_UNAVAILABLE", "symbol": symbol,
+                    "price": price, "reason": "public_price_stale", "age_seconds": round(ticker_age, 2),
+                    "strategy": strat_name, "paper_only": True}
         # Önce hedef/stop kontrolü; aynı anda süre dolduysa gerçek kapanış nedeni korunur.
         pos = self.positions.get(symbol)
         if pos:

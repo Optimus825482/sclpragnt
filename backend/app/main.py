@@ -133,6 +133,27 @@ LLM_REMOVE_SYMBOL_GUARD_TOOL = {"type":"function","function":{"name":"remove_llm
 LLM_LIST_SYMBOL_GUARDS_TOOL = {"type":"function","function":{"name":"list_llm_symbol_guards","description":"Aktif ve geçmiş LLM sembol guard’larını getirir.","parameters":{"type":"object","properties":{"active_only":{"type":"boolean"}},"required":[]}}}
 
 
+async def _fresh_public_price(symbol: str):
+    """Return a fresh public price, repairing stale websocket state via REST."""
+    normalized = str(symbol or "").replace("_", "").upper()
+    now_ms = time.time() * 1000
+    ticker = market.get_ticker(normalized) or {}
+    price = float(ticker.get("last_price") or 0)
+    timestamp = float(ticker.get("timestamp") or 0)
+    if price > 0 and timestamp > 0 and now_ms - timestamp <= config.MAX_TICKER_AGE_SEC * 1000:
+        return price, {**ticker, "source": ticker.get("source", "binance_tr_public_websocket")}
+    try:
+        latest = await fetch_klines(normalized, "1m", 2)
+        if latest:
+            price = float(latest[-1][4])
+            repaired = {"symbol": normalized, "last_price": price, "timestamp": int(now_ms), "source": "binance_tr_public_rest"}
+            market.tickers[normalized] = repaired
+            return price, repaired
+    except Exception as exc:
+        print(f"[Public price fallback] {normalized}: {exc}")
+    return None, None
+
+
 async def manage_llm_position(symbol):
     position = analyzer.llm_position_context(symbol)
     if not position:
@@ -152,9 +173,8 @@ async def manage_llm_position(symbol):
             return await analyzer.update_llm_position_plan(target, args.get("changes"), args.get("reason", "llm_plan_update"), args.get("evidence"))
         if name == "close_llm_position":
             decision_action["value"] = "CLOSE"
-            ticker = market.get_ticker(target) or {}
-            price = float(ticker.get("last_price") or 0)
-            if price <= 0: return {"ok": False, "error": "güncel public fiyat yok", "retryable": True}
+            price, ticker = await _fresh_public_price(target)
+            if price is None: return {"ok": False, "error": "güncel public fiyat yok", "retryable": True}
             result = await analyzer.close_position(target, price, "llm_decision:" + str(args.get("reason") or "close"))
             return {"ok": bool(result), "paper_only": True, "signal": result, "reason": args.get("reason")}
         return {"ok": False, "error": f"Bilinmeyen yönetim aracı: {name}"}
@@ -457,6 +477,7 @@ async def ws_broadcast_loop():
             open_positions = []
             for sym, pos in analyzer.positions.items():
                 ticker = market.get_ticker(sym)
+                ticker_age = time.time() - float((ticker or {}).get("timestamp", 0) or 0) / 1000 if ticker else float("inf")
                 # A stale/missing ticker must not make a real open position
                 # disappear from equity or reconciliation. Mark it at entry
                 # until a fresh public price arrives.
@@ -470,7 +491,8 @@ async def ws_broadcast_loop():
                 open_positions.append({
                     "symbol": sym, "entry": pos["entry_price"], "current": current_price,
                     "pnl_pct": pnl_pct, "pnl_try": pnl_try, "value": current_value,
-                    "strategy": pos.get("strategy", "UT"), "price_stale": ticker is None,
+                    "strategy": pos.get("strategy", "UT"), "price_stale": ticker_age > config.MAX_TICKER_AGE_SEC,
+                    "price_age_seconds": round(ticker_age, 2) if ticker_age != float("inf") else None,
                     "llm_managed": pos.get("strategy") == "LLM_PAPER",
                     "llm_stop_price": pos.get("llm_stop_price"),
                     "llm_take_profit_price": pos.get("llm_take_profit_price"),
@@ -1827,15 +1849,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
 async def close_position_manual(symbol: str):
     """Açık pozisyonu manuel kapat (komisyon + işlem geçmişi dahil)."""
     symbol = symbol.replace("_", "").upper()
-    ticker = market.get_ticker(symbol)
-    if not ticker or not ticker.get("last_price"):
-        try:
-            latest = await fetch_klines(symbol, "1m", 2)
-            if latest:
-                ticker = {"symbol": symbol, "last_price": float(latest[-1][4]), "source": "binance_tr_public_rest"}
-        except Exception as exc:
-            print(f"[Manual close] {symbol} fiyat fallback hatası: {exc}")
-    price = ticker["last_price"] if ticker else None
+    price, ticker = await _fresh_public_price(symbol)
     if price is None:
         return {"ok": False, "message": f"{symbol} için güncel fiyat bulunamadı"}
     sig = await analyzer.close_position(symbol.upper(), price, "manual_close")

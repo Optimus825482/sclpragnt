@@ -35,6 +35,7 @@ class MarketData:
         self.last_event_at = None
         self.last_error = None
         self.reconnect_requested = False
+        self._rest_refresh_task = None
         # Kimlik doğrulama gerektirmeyen public market API.
         self.WS_URL = f"{WS_BASE}/stream?streams={{}}"
 
@@ -90,8 +91,26 @@ class MarketData:
         try:
             rows = await ticker_24h()
             self.ticker_24h = {str(r.get("symbol", "")).upper(): float(r.get("quoteVolume", 0) or 0) for r in rows if r.get("symbol")}
+            now_ms = int(time.time() * 1000)
+            for row in rows:
+                symbol = str(row.get("symbol", "")).upper()
+                last_price = float(row.get("lastPrice", 0) or 0)
+                if symbol and last_price > 0:
+                    previous = self.tickers.get(symbol) or {}
+                    self.tickers[symbol] = {**previous, "symbol": symbol, "last_price": last_price,
+                                            "timestamp": now_ms, "source": "binance_tr_public_rest"}
+            self.last_event_at = time.time()
+            self.last_error = None
         except Exception as exc:
             print(f"[MarketData] 24h ticker yenileme hatası: {exc}")
+
+    async def _rest_refresh_loop(self):
+        while self.running:
+            try:
+                await self.refresh_24h_tickers()
+            except Exception as exc:
+                print(f"[MarketData] REST ticker yenileme döngüsü hatası: {exc}")
+            await asyncio.sleep(10)
 
     async def connect(self):
         # 1) Önce geçmiş veriyi yükle
@@ -99,8 +118,14 @@ class MarketData:
 
         # 2) Canlı WebSocket ile tüm timeframe'leri dinle
         self.running = True
+        if self._rest_refresh_task is None or self._rest_refresh_task.done():
+            self._rest_refresh_task = asyncio.create_task(self._rest_refresh_loop())
+        last_rest_refresh = 0.0
         while self.running:
             try:
+                if time.time() - last_rest_refresh >= 10:
+                    await self.refresh_24h_tickers()
+                    last_rest_refresh = time.time()
                 streams = "/".join([f"{s}@kline_{tf}" for tf in self.timeframes for s in self.symbols] + [f"{s}@depth5@100ms" for s in self.symbols] + [f"{s}@aggTrade" for s in self.symbols])
                 url = self.WS_URL.format(streams)
                 self.reconnect_requested = False
@@ -114,6 +139,13 @@ class MarketData:
             except Exception as e:
                 self.last_error = str(e)
                 print(f"[MarketData] WS Hata: {e}")
+                # Keep positions and manual/LLM closes supplied with a fresh
+                # public price while the websocket reconnects.
+                try:
+                    await self.refresh_24h_tickers()
+                    last_rest_refresh = time.time()
+                except Exception as refresh_error:
+                    print(f"[MarketData] REST ticker fallback hatası: {refresh_error}")
                 await asyncio.sleep(2)
 
     def _process_kline(self, kline_data):
@@ -224,3 +256,6 @@ class MarketData:
 
     def stop(self):
         self.running = False
+        if self._rest_refresh_task and not self._rest_refresh_task.done():
+            self._rest_refresh_task.cancel()
+        self._rest_refresh_task = None
