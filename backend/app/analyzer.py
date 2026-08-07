@@ -16,6 +16,7 @@ class ScalpAnalyzer:
         self._timeout_block_until = {}
         self._hard_stop_block_until = {}
         self._open_position_lock = asyncio.Lock()
+        self.pending_orders = []
 
     def max_open_positions(self):
         """Use the configured global paper-trading position limit."""
@@ -23,6 +24,50 @@ class ScalpAnalyzer:
 
     async def load_state(self):
         self.positions = await database.load_positions()
+
+    async def place_paper_order(self, order):
+        """Execute or queue an exchange-like order entirely in paper trading."""
+        order_type = str(order.get("order_type", "MARKET")).upper()
+        if order_type not in {"MARKET", "LIMIT", "STOP_LIMIT", "STOP_MARKET", "OCO"}:
+            return {"ok": False, "error": "Desteklenmeyen paper emir türü"}
+        symbol = str(order.get("symbol") or "").replace("_", "").upper()
+        ticker = self.market.get_ticker(symbol) if self.market else None
+        price = float(order.get("price") or (ticker or {}).get("last_price") or 0)
+        if not symbol or price <= 0: return {"ok": False, "error": "Geçerli sembol ve fiyat gerekli"}
+        if order_type == "MARKET":
+            return await self.open_position(symbol, price, str(order.get("side", "LONG")).upper(), "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
+        pending = {**order, "symbol": symbol, "status": "OPEN", "created_at": time.time(), "reference_price": price, "order_id": uuid.uuid4().hex}
+        self.pending_orders.append(pending)
+        return {"ok": True, "paper_only": True, "status": "PENDING", "order": pending}
+
+    async def _evaluate_pending_orders(self, symbol, price):
+        for order in list(self.pending_orders):
+            if order.get("symbol") != symbol or order.get("status") != "OPEN": continue
+            side = str(order.get("side", "BUY")).upper(); order_type = str(order.get("order_type", "LIMIT")).upper()
+            stop = float(order.get("stop_price") or 0); limit = float(order.get("limit_price") or order.get("price") or 0)
+            if order_type == "OCO":
+                take_profit_price = float(order.get("take_profit_price") or order.get("limit_price") or 0)
+                triggered = (price >= take_profit_price if side in {"SELL", "SHORT"} else price <= take_profit_price) or (price <= stop if side in {"SELL", "SHORT"} else price >= stop)
+                if not triggered: continue
+                execution_price = price
+                result = await self.close_position(symbol, execution_price, "paper_oco_take_profit" if price == take_profit_price else "paper_oco_stop") if side in {"SELL", "SHORT"} and symbol in self.positions else await self.open_position(symbol, execution_price, "LONG", "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
+                order["status"] = "FILLED" if result else "REJECTED"
+                for other in self.pending_orders:
+                    if other.get("oco_group") == order.get("oco_group") and other is not order: other["status"] = "CANCELLED"
+                continue
+            triggered = (price <= limit if side in {"BUY", "LONG"} else price >= limit) if order_type == "LIMIT" else (price <= stop if side in {"SELL", "SHORT"} else price >= stop)
+            if order_type == "STOP_LIMIT" and triggered: triggered = price <= limit if side in {"SELL", "SHORT"} else price >= limit
+            if not triggered: continue
+            if order_type == "STOP_LIMIT" and limit <= 0: continue
+            execution_price = price if order_type in {"STOP_MARKET", "OCO"} else limit
+            if side in {"BUY", "LONG"}:
+                result = await self.open_position(symbol, execution_price, "LONG", "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
+            else:
+                result = await self.close_position(symbol, execution_price, f"paper_{order_type.lower()}") if symbol in self.positions else None
+            order["status"] = "FILLED" if result else "REJECTED"
+            if order_type == "OCO":
+                for other in self.pending_orders:
+                    if other.get("oco_group") == order.get("oco_group") and other is not order: other["status"] = "CANCELLED"
 
     def _current_bar(self, symbol, timeframe):
         if not self.market:
@@ -662,6 +707,7 @@ class ScalpAnalyzer:
     async def evaluate(self, symbol, ticker):
         signals = []
         price = ticker["last_price"]
+        await self._evaluate_pending_orders(symbol, price)
 
         # Açık spot pozisyonu time-decay hedef, hard stop ve timeout ile yönet.
         if symbol in self.positions:

@@ -11,7 +11,7 @@ type Skill = { id: number; name: string; instructions: string; enabled: boolean 
 type ToolLog = { id: number; tool_name: string; timestamp: number; success: boolean; duration_ms?: number; result_summary?: string };
 const TOOL_GROUPS = [
   ["Veri", ["get_strategy_config", "get_strategy_stats", "get_trades", "get_signals", "get_decision_logs", "query_database", "read_only_sql", "search_memory"]],
-  ["Araştırma", ["run_backtest", "run_custom_backtest", "run_backtest_robustness", "get_backtest_history", "scan_market_snapshots", "deep_analyze_symbol", "activate_coin", "open_llm_paper_trade"]],
+  ["Araştırma", ["run_backtest", "run_custom_backtest", "run_backtest_robustness", "get_backtest_history", "scan_market_snapshots", "deep_analyze_symbol", "activate_coin", "place_paper_order", "open_llm_paper_trade"]],
 ] as const;
 const ALL_TOOLS = TOOL_GROUPS.flatMap(([, names]) => names);
 const starter: Message[] = [{ role: "assistant", content: "Merhaba. Paper-trading verilerini, strateji performansını ve backtest sonuçlarını birlikte inceleyebilirim. Ne araştırmak istersin?" }];
