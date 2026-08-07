@@ -1,4 +1,5 @@
 import asyncio, base64, json, os, time
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from cryptography.fernet import Fernet
 from app import database
@@ -45,6 +46,18 @@ def _decode_provider_response(raw):
             if isinstance(candidate, dict) and (candidate.get("choices") or candidate.get("output_text") or candidate.get("response")):
                 return candidate
         return objects[0] if objects else text
+
+def _provider_http_error(error: HTTPError):
+    """Keep the upstream error body; compatible gateways often explain 5xx here."""
+    try:
+        raw = error.read(2000).decode("utf-8-sig", errors="replace")
+        detail = _decode_provider_response(raw)
+        if isinstance(detail, dict):
+            detail = detail.get("error", detail.get("message", detail))
+            if isinstance(detail, dict): detail = detail.get("message", detail)
+        return f"Provider HTTP {error.code}: {detail}"
+    except Exception:
+        return f"Provider HTTP {error.code}: {error.reason}"
 
 def _decode_json_value(value, label="JSON"):
     """Accept dicts, fenced JSON, NDJSON and provider JSON-string arguments."""
@@ -271,6 +284,8 @@ async def stream_chat(snapshot, messages):
                     else:
                         for raw_line in response:
                             lines.put(("line", raw_line.decode("utf-8", errors="replace")))
+            except HTTPError as exc:
+                lines.put(("error", _provider_http_error(exc)))
             except Exception as exc:
                 lines.put(("error", str(exc)))
             finally:
