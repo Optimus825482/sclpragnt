@@ -1688,7 +1688,10 @@ async def strategies_llm_chat(payload: dict = None):
             async for event in llm_analysis.stream_chat(context, body.get("messages", [])):
                 yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
-    result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool)
+    active_tools = {str(value) for value in (body.get("active_tools") or [])}
+    if active_tools:
+        tools = [tool for tool in tools if str(tool.get("function", {}).get("name")) in active_tools]
+    result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"))
     await _persist_chat_memory(body.get("messages", []), layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=str(body.get("session_id") or "strategy:default"))
     return result
 

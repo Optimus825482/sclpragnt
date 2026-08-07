@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Button } from "./ui";
 
 const MENU = [
+    { href: "/chat", label: "Chat", icon: "✦", desc: "LLM sohbet merkezi" },
     { href: "/", label: "Scalping", icon: "⚡", desc: "Canlı terminal" },
     { href: "/portfolio", label: "Portföy", icon: "📊", desc: "Varlıklar & PnL", children: [{ href: "/portfolio?tab=history", label: "İşlem Geçmişi" }] },
     { href: "/strategies", label: "Stratejiler", icon: "🧠", desc: "Aktif/pasif & ayarlar" },

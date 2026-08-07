@@ -146,10 +146,11 @@ async def embedding(text, model_id=None):
     except Exception as exc:
         return {"status":"error", "error":str(exc), "model":model.get("name")}
 
-async def chat(snapshot, messages, tools=None, tool_executor=None):
+async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
-    skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
+    selected = set(str(value) for value in (active_skills or []))
+    skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"] and (not selected or str(s["id"]) in selected or s["name"] in selected))
     system = PERSONA + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     for item in (messages or [])[-12:]:
