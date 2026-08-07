@@ -22,9 +22,20 @@ function repairSpacing(text: string) {
     .trim();
 }
 
-function isTableSeparator(line: string) {
-  const cells = line.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim());
-  return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+function isTableNoise(line: string) {
+  return /^[|\s-]+$/.test(line.trim());
+}
+
+function isTableRow(line: string) {
+  return line.includes("|") && tableCells(line).some(cell => /[\p{L}\p{N}%₺]/u.test(cell));
+}
+
+function isTableStart(lines: string[], index: number) {
+  if (!isTableRow(lines[index]) || tableCells(lines[index]).length < 2) return false;
+  for (let lookahead = index + 1; lookahead < Math.min(lines.length, index + 7); lookahead += 1) {
+    if (isTableRow(lines[lookahead]) && !isTableNoise(lines[lookahead])) return true;
+  }
+  return false;
 }
 
 function tableCells(line: string) {
@@ -49,10 +60,12 @@ export default function MarkdownMessage({ content }: { content: string }) {
   const rendered: ReactNode[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (line.includes("|") && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
+    if (isTableStart(lines, index)) {
       const rows: string[][] = [tableCells(line)];
-      index += 2;
-      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+      index += 1;
+      while (index < lines.length && lines[index].includes("|")) {
+        if (isTableNoise(lines[index])) { index += 1; continue; }
+        if (!isTableRow(lines[index])) break;
         rows.push(tableCells(lines[index]));
         index += 1;
       }
