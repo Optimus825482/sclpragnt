@@ -175,6 +175,14 @@ async def init_db():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS a2a_messages (
+                message_id TEXT PRIMARY KEY, correlation_id TEXT, direction TEXT NOT NULL,
+                message_type TEXT NOT NULL, sender TEXT, recipient TEXT, status TEXT NOT NULL DEFAULT 'queued',
+                payload TEXT NOT NULL, created_at REAL NOT NULL, delivered_at REAL, acknowledged_at REAL,
+                last_error TEXT, attempts INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS paper_orders (
                 order_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT NOT NULL,
                 order_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
@@ -618,20 +626,22 @@ async def load_positions():
         positions = {}
         rows = conn.execute("SELECT * FROM positions").fetchall()
         for row in rows:
-            context = _json_value(row[10] if len(row) > 10 else None, {})
-            positions[row[0]] = {
-                "side": row[1], "entry_price": row[2], "stop_price": row[3],
-                "take_profit": row[4], "peak_price": row[5], "breakeven_hit": bool(row[6]),
-                "quantity": row[7], "entry_time": row[8] if len(row) > 8 else None,
-                "strategy": row[9] if len(row) > 9 else None,
+            values = dict(row)
+            context = _json_value(values.get("entry_context"), {})
+            symbol = values.get("symbol")
+            positions[symbol] = {
+                "side": values.get("side"), "entry_price": values.get("entry_price"), "stop_price": values.get("stop_price"),
+                "take_profit": values.get("take_profit"), "peak_price": values.get("peak_price"), "breakeven_hit": bool(values.get("breakeven_hit")),
+                "quantity": values.get("quantity"), "entry_time": values.get("entry_time"),
+                "strategy": values.get("strategy"),
                 "entry_context": context,
-                "trade_id": row[11] if len(row) > 11 and row[11] else f"legacy-{row[0]}-{row[8]}",
+                "trade_id": values.get("trade_id") or f"legacy-{symbol}-{values.get('entry_time')}",
             }
-            if positions[row[0]].get("strategy") == "LLM_PAPER":
-                entry = float(row[2] or 0)
-                positions[row[0]]["llm_stop_price"] = entry * (1 - float(context.get("stop_loss_pct") or 0.005))
-                positions[row[0]]["llm_take_profit_price"] = entry * (1 + float(context.get("profit_target_pct") or 0.01))
-                positions[row[0]]["llm_max_hold_sec"] = int(context.get("max_hold_sec") or 7200)
+            if positions[symbol].get("strategy") == "LLM_PAPER":
+                entry = float(values.get("entry_price") or 0)
+                positions[symbol]["llm_stop_price"] = entry * (1 - float(context.get("stop_loss_pct") or 0.005))
+                positions[symbol]["llm_take_profit_price"] = entry * (1 + float(context.get("profit_target_pct") or 0.01))
+                positions[symbol]["llm_max_hold_sec"] = int(context.get("max_hold_sec") or 7200)
         return positions
 
     return await _run_db(op)
@@ -748,6 +758,18 @@ async def save_signal(sig):
         await worker.enqueue_persistent(signal_document(sig))
     except Exception:
         pass
+
+
+async def save_decision_log(decision):
+    def op(conn: sqlite3.Connection):
+        conn.execute(
+            "INSERT INTO decision_logs (timestamp,symbol,strategy,decision,reason,price,metadata) VALUES (?,?,?,?,?,?,?)",
+            (decision.get("timestamp") or time.time(), decision.get("symbol"), decision.get("strategy"),
+             decision.get("decision"), decision.get("reason"), decision.get("price"),
+             json.dumps(decision.get("metadata") or {}, ensure_ascii=False, default=str)),
+        )
+        conn.commit()
+    await _run_db(op)
 
 async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, sig):
     """Atomically persist wallet balances, position and opening decision."""
@@ -877,6 +899,53 @@ async def get_llm_tool_logs(limit=500):
             try: row["arguments"] = _json_value(row.get("arguments"), {})
             except (TypeError, json.JSONDecodeError): pass
         return result
+    return await _run_db(op)
+
+
+async def save_a2a_message(message, direction="outbound", status="queued", error=None):
+    def op(conn: sqlite3.Connection):
+        conn.execute("""INSERT OR REPLACE INTO a2a_messages
+            (message_id,correlation_id,direction,message_type,sender,recipient,status,payload,created_at,delivered_at,acknowledged_at,last_error,attempts)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,COALESCE((SELECT attempts FROM a2a_messages WHERE message_id=?),0))""",
+            (message.get("message_id"), message.get("correlation_id"), direction, message.get("type"),
+             message.get("from"), message.get("to"), status, json.dumps(message, ensure_ascii=False, default=str),
+             message.get("created_at") or time.time(), time.time() if status == "delivered" else None,
+             time.time() if status == "acknowledged" else None, error, message.get("message_id")))
+        conn.commit()
+    await _run_db(op)
+
+
+async def get_a2a_messages(limit=100, status=None):
+    def op(conn: sqlite3.Connection):
+        params = [max(1, min(int(limit), 500))]
+        where = ""
+        if status:
+            where = " WHERE status=?"
+            params.insert(0, str(status))
+        rows = conn.execute(f"SELECT * FROM a2a_messages{where} ORDER BY created_at DESC LIMIT ?", params).fetchall()
+        result = [dict(row) for row in rows]
+        for row in result:
+            row["payload"] = _json_value(row.get("payload"), {})
+        return result
+    return await _run_db(op)
+
+
+async def acknowledge_a2a_message(message_id):
+    def op(conn: sqlite3.Connection):
+        cur = conn.execute("UPDATE a2a_messages SET status='acknowledged', acknowledged_at=? WHERE message_id=?", (time.time(), str(message_id)))
+        conn.commit()
+        return cur.rowcount > 0
+    return await _run_db(op)
+
+
+async def update_a2a_message_status(message_id, status, payload=None):
+    def op(conn: sqlite3.Connection):
+        if payload is None:
+            cur = conn.execute("UPDATE a2a_messages SET status=?, acknowledged_at=? WHERE message_id=?", (status, time.time() if status == "acknowledged" else None, str(message_id)))
+        else:
+            cur = conn.execute("UPDATE a2a_messages SET status=?, payload=?, acknowledged_at=? WHERE message_id=?", (status, json.dumps(payload, ensure_ascii=False, default=str), time.time() if status == "acknowledged" else None, str(message_id)))
+        conn.commit()
+        return cur.rowcount > 0
     return await _run_db(op)
 
 

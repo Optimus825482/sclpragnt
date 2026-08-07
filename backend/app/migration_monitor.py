@@ -2,7 +2,7 @@ import asyncio, hashlib, json, os, sqlite3, time, subprocess, sys
 from pathlib import Path
 from . import database
 
-TABLES = ("positions", "trades", "signals", "decision_logs", "llm_tool_logs", "virtual_wallet", "chart_settings", "llm_providers", "llm_models", "llm_skills", "llm_settings", "backtests")
+TABLES = ("positions", "trades", "signals", "decision_logs", "llm_tool_logs", "a2a_messages", "virtual_wallet", "chart_settings", "llm_providers", "llm_models", "llm_skills", "llm_settings", "backtests")
 state = {"status":"idle", "phase":"idle", "progress":0, "message":"Migration hazır", "source":None, "counts":{}, "error":None, "started_at":None, "finished_at":None, "logs":[]}
 lock = asyncio.Lock()
 

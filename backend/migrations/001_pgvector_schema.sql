@@ -15,6 +15,7 @@ ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_id TEXT;
 CREATE TABLE IF NOT EXISTS signals (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION, symbol TEXT, action TEXT, price DOUBLE PRECISION, reason TEXT);
 CREATE TABLE IF NOT EXISTS decision_logs (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION NOT NULL, symbol TEXT, strategy TEXT, decision TEXT, reason TEXT, price DOUBLE PRECISION, metadata JSONB);
 CREATE TABLE IF NOT EXISTS llm_tool_logs (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION NOT NULL, scope TEXT, tool_name TEXT, arguments JSONB, result_summary TEXT, duration_ms DOUBLE PRECISION, success BOOLEAN);
+CREATE TABLE IF NOT EXISTS a2a_messages (message_id TEXT PRIMARY KEY, correlation_id TEXT, direction TEXT NOT NULL, message_type TEXT NOT NULL, sender TEXT, recipient TEXT, status TEXT NOT NULL DEFAULT 'queued', payload JSONB NOT NULL, created_at DOUBLE PRECISION NOT NULL, delivered_at DOUBLE PRECISION, acknowledged_at DOUBLE PRECISION, last_error TEXT, attempts INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS virtual_wallet (asset TEXT PRIMARY KEY, amount DOUBLE PRECISION);
 CREATE TABLE IF NOT EXISTS chart_settings (symbol TEXT PRIMARY KEY, data JSONB NOT NULL);
 CREATE TABLE IF NOT EXISTS llm_providers (id BIGINT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL, api_key_encrypted TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at DOUBLE PRECISION NOT NULL, updated_at DOUBLE PRECISION NOT NULL);

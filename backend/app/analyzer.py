@@ -428,6 +428,17 @@ class ScalpAnalyzer:
             pos["min_price"] = min(pos.get("min_price", pos["entry_price"]), price)
         if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_stop_price") and price <= pos["llm_stop_price"]:
             return await self.close_position(symbol, price, "llm_stop_loss")
+        if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_take_profit_price") and price >= pos["llm_take_profit_price"]:
+            return await self.close_position(symbol, price, "llm_take_profit")
+        if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_max_hold_sec"):
+            entry_time = float(pos.get("entry_time") or 0)
+            if entry_time and time.time() - entry_time >= float(pos["llm_max_hold_sec"]):
+                return await self.close_position(symbol, price, "llm_max_hold")
+        # LLM_PAPER exits are owned by the LLM plan and position manager. Do
+        # not apply legacy fixed early-failure, stale, trailing, time-decay,
+        # or legacy max-hold policies to these positions.
+        if pos and pos.get("strategy") == "LLM_PAPER":
+            return None
         if pos and pos.get("strategy") != "LLM_PAPER" and config.HARD_STOP_LOSS_PCT > 0 and price <= pos["entry_price"] * (1 - config.HARD_STOP_LOSS_PCT):
             return await self.close_position(symbol, price, "hard_stop_loss")
         if pos:
@@ -478,6 +489,71 @@ class ScalpAnalyzer:
                 reason = f"max_hold_{max_hold // 3600}h" if max_hold % 3600 == 0 else f"max_hold_{max_hold // 60}m"
                 return await self.close_position(symbol, price, reason)
         return None
+
+    def llm_position_context(self, symbol, price=None):
+        symbol = str(symbol).replace("_", "").upper()
+        pos = self.positions.get(symbol)
+        if not pos or pos.get("strategy") != "LLM_PAPER":
+            return None
+        ticker = self.market.get_ticker(symbol) if self.market else None
+        current = float(price or (ticker or {}).get("last_price") or pos.get("entry_price") or 0)
+        entry = float(pos.get("entry_price") or 0)
+        return {
+            "symbol": symbol,
+            "strategy": "LLM_PAPER",
+            "side": pos.get("side", "LONG"),
+            "entry_price": entry,
+            "current_price": current,
+            "unrealized_gross_pct": ((current - entry) / entry) if entry else None,
+            "quantity": pos.get("quantity"),
+            "entry_time": pos.get("entry_time"),
+            "plan_revision": (pos.get("entry_context") or {}).get("plan_revision", 0),
+            "stop_loss_pct": (pos.get("entry_context") or {}).get("stop_loss_pct"),
+            "take_profit_pct": (pos.get("entry_context") or {}).get("profit_target_pct"),
+            "max_hold_seconds": pos.get("llm_max_hold_sec"),
+            "llm_stop_price": pos.get("llm_stop_price"),
+            "llm_take_profit_price": pos.get("llm_take_profit_price"),
+            "max_price": pos.get("max_price", entry),
+            "min_price": pos.get("min_price", entry),
+            "entry_context": pos.get("entry_context", {}),
+            "paper_only": True,
+        }
+
+    async def update_llm_position_plan(self, symbol, changes, reason="llm_plan_update", evidence=None):
+        symbol = str(symbol).replace("_", "").upper()
+        async with self._open_position_lock:
+            pos = self.positions.get(symbol)
+            if not pos or pos.get("strategy") != "LLM_PAPER":
+                return {"ok": False, "error": "LLM paper pozisyonu bulunamadı", "paper_only": True}
+            changes = changes or {}
+            context = dict(pos.get("entry_context") or {})
+            revision = int(context.get("plan_revision") or 0) + 1
+            try:
+                if "stop_loss_pct" in changes:
+                    stop = float(changes["stop_loss_pct"])
+                    if not 0.0001 <= stop <= 0.25: raise ValueError("stop_loss_pct 0.0001-0.25 arasında olmalı")
+                    context["stop_loss_pct"] = stop
+                    pos["llm_stop_price"] = float(pos["entry_price"]) * (1 - stop)
+                if "take_profit_pct" in changes:
+                    target = float(changes["take_profit_pct"])
+                    if not 0.0001 <= target <= 0.25: raise ValueError("take_profit_pct 0.0001-0.25 arasında olmalı")
+                    context["profit_target_pct"] = target
+                    pos["llm_take_profit_price"] = float(pos["entry_price"]) * (1 + target)
+                if "max_hold_seconds" in changes:
+                    hold = int(changes["max_hold_seconds"])
+                    if hold < 60 or hold > 7 * 24 * 3600: raise ValueError("max_hold_seconds 60-604800 arasında olmalı")
+                    context["max_hold_sec"] = hold
+                    pos["llm_max_hold_sec"] = hold
+                context["plan_revision"] = revision
+                context["last_plan_reason"] = str(reason)
+                context["last_plan_evidence"] = evidence or {}
+                context["plan_updated_at"] = time.time()
+                pos["entry_context"] = context
+                await database.save_position(symbol, pos)
+                await database.save_signal({"symbol": symbol, "action": "LLM_PLAN_UPDATED", "price": pos.get("entry_price"), "reason": reason, "strategy": "LLM_PAPER", "timestamp": time.time()})
+                return {"ok": True, "paper_only": True, "symbol": symbol, "plan_revision": revision, "position": self.llm_position_context(symbol)}
+            except (TypeError, ValueError) as exc:
+                return {"ok": False, "paper_only": True, "symbol": symbol, "error": str(exc)}
 
     def _flow_filter(self, symbol):
         if not self.market:
@@ -984,9 +1060,9 @@ class ScalpAnalyzer:
                          "expected_net_pnl_try": expected_net if self.market else None,
                          "commission_pct": config.COMMISSION_PCT,
                          "estimated_slippage_pct": config.ESTIMATED_SLIPPAGE_PCT,
-                         "profit_target_pct": float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT,
-                         "stop_loss_pct": float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None else config.HARD_STOP_LOSS_PCT,
-                         "max_hold_sec": int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None else config.MAX_POSITION_HOLD_SEC,
+                         "profit_target_pct": float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else (None if strat_name == "LLM_PAPER" else config.SPOT_PROFIT_TARGET_PCT),
+                         "stop_loss_pct": float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None else (None if strat_name == "LLM_PAPER" else config.HARD_STOP_LOSS_PCT),
+                         "max_hold_sec": int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None else (None if strat_name == "LLM_PAPER" else config.MAX_POSITION_HOLD_SEC),
                          "order_value_try": order_value,
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
         if self.market:
@@ -1021,9 +1097,12 @@ class ScalpAnalyzer:
                 "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
             }
             if strat_name == "LLM_PAPER":
-                pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(requested_stop_pct or config.HARD_STOP_LOSS_PCT)))
-                pos["llm_take_profit_price"] = entry_price * (1 + max(0.0001, float(requested_tp_pct or config.SPOT_PROFIT_TARGET_PCT)))
-                pos["llm_max_hold_sec"] = max(60, int(requested_hold_sec or config.MAX_POSITION_HOLD_SEC))
+                if requested_stop_pct is not None:
+                    pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(requested_stop_pct)))
+                if requested_tp_pct is not None:
+                    pos["llm_take_profit_price"] = entry_price * (1 + max(0.0001, float(requested_tp_pct)))
+                if requested_hold_sec is not None:
+                    pos["llm_max_hold_sec"] = max(60, int(requested_hold_sec))
         self.positions[symbol] = pos
         sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time()}
         try:
