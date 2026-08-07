@@ -4,33 +4,148 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { API_BASE, WS_BASE } from "../lib/api";
 
-const STRATEGY_LABEL: Record<string, string> = { EMA_VWAP_PULLBACK: "EMA + VWAP Pullback", BB_SQUEEZE_ORDERFLOW: "BB Squeeze + Order-Flow", ORDERFLOW: "Order-Flow Imbalance", MOMENTUM: "MTF Momentum Ranking", VWAP_MEAN_REVERSION: "VWAP Mean Reversion", KELTNER_BREAKOUT: "Keltner Breakout", CHOP_TREND_FILTER: "CHOP Trend Filter", DONCHIAN_BREAKOUT: "Donchian Breakout" };
-type Position = { symbol: string; entry: number; current: number; pnl_pct: number; pnl_try?: number; value: number; strategy?: string; llm_managed?: boolean; llm_stop_price?: number; llm_take_profit_price?: number; llm_max_hold_sec?: number; plan_revision?: number; last_plan_reason?: string; last_plan_updated_at?: number };
-type Portfolio = { try: number; total_value: number; realized_pnl?: number; unrealized_pnl?: number; reconciliation_delta?: number; positions: Position[] };
-type Trade = { id: number; symbol: string; strategy: string; entry_price: number; exit_price: number; pnl: number; pnl_pct: number; commission?: number; reason?: string; entry_time?: number; exit_time?: number; hold_seconds?: number };
-const money = (v?: number) => (v ?? 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const when = (v?: number) => v ? new Date(v * 1000).toLocaleString("tr-TR", { hour12: false }) : "—";
-const duration = (t: Trade) => { const s = Math.max(0, t.hold_seconds ?? ((t.exit_time && t.entry_time) ? t.exit_time - t.entry_time : 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = Math.floor(s % 60); return h ? `${h}s ${m}dk` : m ? `${m}dk ${sec}sn` : `${sec}sn`; };
+const STRATEGY_LABEL: Record<string, string> = {
+  EMA_VWAP_PULLBACK: "EMA + VWAP Pullback",
+  BB_SQUEEZE_ORDERFLOW: "BB Squeeze + Order-Flow",
+  ORDERFLOW: "Order-Flow Imbalance",
+  MOMENTUM: "MTF Momentum Ranking",
+  VWAP_MEAN_REVERSION: "VWAP Mean Reversion",
+  KELTNER_BREAKOUT: "Keltner Breakout",
+  CHOP_TREND_FILTER: "CHOP Trend Filter",
+  DONCHIAN_BREAKOUT: "Donchian Breakout",
+  LLM_PAPER: "LLM Paper",
+};
+
+type Position = {
+  symbol: string;
+  entry: number;
+  current: number;
+  pnl_pct: number;
+  pnl_try?: number;
+  value: number;
+  strategy?: string;
+  llm_managed?: boolean;
+  llm_stop_price?: number;
+  llm_take_profit_price?: number;
+  llm_max_hold_sec?: number;
+  plan_revision?: number;
+  last_plan_reason?: string;
+  last_plan_updated_at?: number;
+};
+
+type Portfolio = {
+  try: number;
+  total_value: number;
+  realized_pnl?: number;
+  unrealized_pnl?: number;
+  reconciliation_delta?: number;
+  positions: Position[];
+};
+
+type Trade = {
+  id: number;
+  symbol: string;
+  strategy: string;
+  entry_price: number;
+  exit_price: number;
+  pnl: number;
+  pnl_pct: number;
+  commission?: number;
+  reason?: string;
+  entry_time?: number;
+  exit_time?: number;
+  hold_seconds?: number;
+};
+
+const money = (value?: number) => (value ?? 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const when = (value?: number) => value ? new Date(value * 1000).toLocaleString("tr-TR", { hour12: false }) : "—";
+const duration = (trade: Trade) => {
+  const seconds = Math.max(0, trade.hold_seconds ?? (trade.exit_time && trade.entry_time ? trade.exit_time - trade.entry_time : 0));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = Math.floor(seconds % 60);
+  return hours ? `${hours}s ${minutes}dk` : minutes ? `${minutes}dk ${rest}sn` : `${rest}sn`;
+};
 const planMinutes = (seconds?: number) => seconds == null ? "—" : `${Math.round(seconds / 60)} dk`;
 
 function ExportActions({ trades }: { trades: Trade[] }) {
-  const exportCsv = async () => { const source = trades.length ? trades : ((await fetch(`${API_BASE}/api/trades`, { cache: "no-store" }).then((r) => r.json()).catch(() => ({ trades: [] }))).trades || []); const head = ["ID", "Sembol", "Strateji", "Giriş", "Çıkış", "Komisyon", "PnL", "PnL %", "Neden", "Giriş zamanı", "Çıkış zamanı", "Aktif süre"]; const body = source.map((t: Trade) => [t.id, t.symbol, t.strategy, t.entry_price, t.exit_price, t.commission ?? 0, t.pnl, t.pnl_pct, t.reason || "", when(t.entry_time), when(t.exit_time), duration(t)]); const csv = [head, ...body].map((r) => r.map((v: unknown) => `"${String(v).replaceAll('"', '""')}"`).join(",")).join("\n"); const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" })); a.download = "islem-gecmisi.csv"; a.click(); };
-  return <div className="flex gap-2"><button onClick={exportCsv} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded font-mono text-xs">CSV</button><button onClick={() => window.print()} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded font-mono text-xs">PDF / YAZDIR</button></div>;
+  const exportCsv = async () => {
+    const source = trades.length ? trades : ((await fetch(`${API_BASE}/api/trades`, { cache: "no-store" }).then((r) => r.json()).catch(() => ({ trades: [] }))).trades || []);
+    const head = ["ID", "Sembol", "Strateji", "Giriş", "Çıkış", "Komisyon", "PnL", "PnL %", "Neden", "Giriş zamanı", "Çıkış zamanı", "Aktif süre"];
+    const body = source.map((trade: Trade) => [trade.id, trade.symbol, trade.strategy, trade.entry_price, trade.exit_price, trade.commission ?? 0, trade.pnl, trade.pnl_pct, trade.reason || "", when(trade.entry_time), when(trade.exit_time), duration(trade)]);
+    const csv = [head, ...body].map((row) => row.map((value: unknown) => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
+    const anchor = document.createElement("a");
+    anchor.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
+    anchor.download = "islem-gecmisi.csv";
+    anchor.click();
+    URL.revokeObjectURL(anchor.href);
+  };
+
+  return <div className="portfolio-actions"><button onClick={exportCsv} className="ui-button ui-button-primary">CSV DIŞA AKTAR</button><button onClick={() => window.print()} className="ui-button ui-button-secondary">PDF / YAZDIR</button></div>;
 }
 
-function LlmPlanPanel({ positions, trades = [] }: { positions: Position[]; trades?: Trade[] }) {
-  const managed = positions.filter((p) => p.llm_managed || p.strategy === "LLM_PAPER");
-  return <div className="card space-y-3"><div className="flex items-center justify-between"><div><p className="eyebrow">LLM POZİSYON PLANLARI</p><p className="text-xs text-bunker-muted mt-1">Sembol bazlı karar · SL / TP / max-hold · yalnızca paper</p></div><div className="flex items-center gap-3"><ExportActions trades={trades} /><span className="font-mono text-xs text-sky-300">{managed.length} aktif</span></div></div>{managed.length === 0 ? <p className="text-sm text-bunker-muted">Aktif LLM_PAPER pozisyonu yok.</p> : <div className="grid gap-2 md:grid-cols-2">{managed.map((p) => <div key={p.symbol} className="rounded-lg border border-sky-400/20 bg-sky-400/5 p-3 font-mono text-xs"><div className="flex justify-between"><Link href={`/symbol-analysis?symbol=${p.symbol}`} className="text-white hover:text-neon-green">{p.symbol}</Link><span className="text-sky-300">REV {p.plan_revision ?? 0}</span></div><div className="grid grid-cols-3 gap-2 mt-3"><div><span className="text-bunker-muted block">SL</span><span className="text-neon-red">₺{money(p.llm_stop_price)}</span></div><div><span className="text-bunker-muted block">TP</span><span className="text-neon-green">₺{money(p.llm_take_profit_price)}</span></div><div><span className="text-bunker-muted block">MAX</span><span className="text-sky-300">{planMinutes(p.llm_max_hold_sec)}</span></div></div><p className="text-bunker-muted mt-2 truncate" title={p.last_plan_reason || "LLM planı"}>{p.last_plan_reason || "LLM tarafından henüz güncellenmedi"}</p></div>)}</div>}</div>;
+function LlmPlanPanel({ positions, trades }: { positions: Position[]; trades: Trade[] }) {
+  const managed = positions.filter((position) => position.llm_managed || position.strategy === "LLM_PAPER");
+  return <section className="ui-card portfolio-plan-panel">
+    <div className="ui-section-header">
+      <div><p className="eyebrow">LLM POZİSYON PLANLARI</p><p className="ui-section-description">Sembol bazlı karar · SL / TP / max-hold · yalnızca paper</p></div>
+      <div className="ui-section-actions"><ExportActions trades={trades} /><span className="ui-badge ui-badge-info">{managed.length} aktif</span></div>
+    </div>
+    {managed.length === 0 ? <p className="text-sm text-bunker-muted">Aktif LLM_PAPER pozisyonu yok.</p> : <div className="portfolio-plan-grid">{managed.map((position) => <div key={position.symbol} className="portfolio-plan-card">
+      <div className="portfolio-plan-heading"><Link href={`/symbol-analysis?symbol=${position.symbol}`} className="portfolio-symbol">{position.symbol}</Link><span className="ui-badge ui-badge-info">REV {position.plan_revision ?? 0}</span></div>
+      <div className="portfolio-plan-values"><div><span>SL</span><strong className="ui-tone-negative">₺{money(position.llm_stop_price)}</strong></div><div><span>TP</span><strong className="ui-tone-positive">₺{money(position.llm_take_profit_price)}</strong></div><div><span>MAX</span><strong>{planMinutes(position.llm_max_hold_sec)}</strong></div></div>
+      <p className="portfolio-plan-reason" title={position.last_plan_reason || "LLM planı"}>{position.last_plan_reason || "LLM tarafından henüz güncellenmedi"}</p>
+    </div>)}</div>}
+  </section>;
+}
+
+function MetricCard({ label, value, tone = "" }: { label: string; value: string | number; tone?: string }) {
+  return <div className="ui-card ui-stat-card"><p className="eyebrow">{label}</p><p className={`ui-stat-value ${tone}`}>{value}</p></div>;
+}
+
+function PositionTable({ positions, closePosition, closing }: { positions: Position[]; closePosition: (symbol: string) => void; closing: string | null }) {
+  return <section className="ui-card portfolio-table-card"><div className="ui-section-header"><div><p className="eyebrow">AÇIK POZİSYONLAR</p><p className="ui-section-description">Anlık değerler ve paper pozisyon yönetimi</p></div><span className="ui-badge ui-badge-neutral">{positions.length} açık</span></div>
+    {positions.length === 0 ? <p className="empty-state">Açık pozisyon yok.</p> : <div className="table-scroll portfolio-table-scroll"><table className="data-table portfolio-table"><thead><tr><th>SEMBOL</th><th>STRATEJİ</th><th>GİRİŞ</th><th>ANLIK</th><th>PnL</th><th>DEĞER</th><th /></tr></thead><tbody>{positions.map((position) => <tr key={position.symbol}><td><Link href={`/symbol-analysis?symbol=${position.symbol}`} className="portfolio-symbol">{position.symbol}</Link></td><td><span className="portfolio-strategy">{STRATEGY_LABEL[position.strategy || ""] || position.strategy || "—"}</span></td><td>₺{money(position.entry)}</td><td>₺{money(position.current)}</td><td className={position.pnl_pct >= 0 ? "ui-tone-positive" : "ui-tone-negative"}>₺{money(position.pnl_try)}<small className="table-subvalue">{position.pnl_pct.toFixed(2)}%</small></td><td>₺{money(position.value)}</td><td><button onClick={() => closePosition(position.symbol)} disabled={closing === position.symbol} className="ui-button ui-button-danger ui-button-compact">{closing === position.symbol ? "KAPANIYOR" : "KAPAT"}</button></td></tr>)}</tbody></table></div>}
+  </section>;
+}
+
+function TradeCard({ trade }: { trade: Trade }) {
+  return <article className="portfolio-trade-card"><div className="portfolio-trade-top"><Link href={`/symbol-analysis?symbol=${trade.symbol}`} className="portfolio-symbol">{trade.symbol}</Link><span className={trade.pnl >= 0 ? "ui-badge ui-badge-positive" : "ui-badge ui-badge-negative"}>{trade.pnl >= 0 ? "KÂR" : "ZARAR"}</span></div><div className="portfolio-trade-meta"><span>{STRATEGY_LABEL[trade.strategy] || trade.strategy || "—"}</span><span>{when(trade.exit_time)}</span></div><div className="portfolio-trade-values"><div><span>GİRİŞ</span><strong>₺{money(trade.entry_price)}</strong></div><div><span>ÇIKIŞ</span><strong>₺{money(trade.exit_price)}</strong></div><div><span>NET PnL</span><strong className={trade.pnl >= 0 ? "ui-tone-positive" : "ui-tone-negative"}>₺{money(trade.pnl)}<small>{trade.pnl_pct.toFixed(2)}%</small></strong></div></div><div className="portfolio-trade-footer"><span>{trade.reason || "Kapanış nedeni yok"}</span><span>{duration(trade)}</span></div></article>;
 }
 
 export default function PortfolioPage() {
-  const [tab, setTab] = useState<"portfolio" | "history">("portfolio"); const [portfolio, setPortfolio] = useState<Portfolio | null>(null); const [trades, setTrades] = useState<Trade[]>([]); const [closing, setClosing] = useState<string | null>(null); const [msg, setMsg] = useState<string | null>(null); const [query, setQuery] = useState(""); const [strategy, setStrategy] = useState("all"); const [reason, setReason] = useState("all"); const [page, setPage] = useState(1); const [pageSize, setPageSize] = useState(10); const [sortState, setSortState] = useState<{ key: keyof Trade; dir: "asc" | "desc" }>({ key: "exit_time", dir: "desc" });
+  const [tab, setTab] = useState<"portfolio" | "history">("portfolio");
+  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [closing, setClosing] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [strategy, setStrategy] = useState("all");
+  const [reason, setReason] = useState("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [sortState, setSortState] = useState<{ key: keyof Trade; dir: "asc" | "desc" }>({ key: "exit_time", dir: "desc" });
+
   useEffect(() => { if (new URLSearchParams(window.location.search).get("tab") === "history") setTab("history"); }, []);
-  useEffect(() => { let closed = false; let retry: ReturnType<typeof setTimeout> | null = null; let ws: WebSocket | null = null; const loadTrades = () => fetch(`${API_BASE}/api/trades`, { cache: "no-store" }).then((r) => r.json()).then((d) => { if (!closed) setTrades(d.trades || []); }).catch(() => undefined); const connect = () => { ws = new WebSocket(`${WS_BASE}/ws`); ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.type === "portfolio") setPortfolio(m.data); if (["signal", "trade_updated", "reset"].includes(m.type)) loadTrades(); }; ws.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); }; }; loadTrades(); connect(); return () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); }; }, []);
+  useEffect(() => {
+    let closed = false; let retry: ReturnType<typeof setTimeout> | null = null; let ws: WebSocket | null = null;
+    const loadTrades = () => fetch(`${API_BASE}/api/trades`, { cache: "no-store" }).then((response) => response.json()).then((data) => { if (!closed) setTrades(data.trades || []); }).catch(() => undefined);
+    const connect = () => { ws = new WebSocket(`${WS_BASE}/ws`); ws.onmessage = (event) => { const message = JSON.parse(event.data); if (message.type === "portfolio") setPortfolio(message.data); if (["signal", "trade_updated", "reset"].includes(message.type)) loadTrades(); }; ws.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); }; };
+    loadTrades(); connect(); return () => { closed = true; if (retry) clearTimeout(retry); ws?.close(); };
+  }, []);
+
   const formatTab = (next: "portfolio" | "history") => { setTab(next); setPage(1); window.history.replaceState({}, "", `/portfolio${next === "history" ? "?tab=history" : ""}`); };
-  const closePosition = async (symbol: string) => { setClosing(symbol); setMsg(null); try { const r = await fetch(`${API_BASE}/api/positions/${symbol}/close`, { method: "POST" }); const d = await r.json(); setMsg(d.message || (d.ok ? "Kapatıldı" : "Hata")); } catch { setMsg("Kapatılamadı"); } finally { setClosing(null); } };
-  const sortedFiltered = useMemo(() => { const q = query.trim().toUpperCase(); const filtered = trades.filter((t) => (!q || `${t.symbol} ${t.strategy} ${t.reason || ""}`.toUpperCase().includes(q)) && (strategy === "all" || t.strategy === strategy) && (reason === "all" || t.reason === reason)); return [...filtered].sort((a, b) => { const av = a[sortState.key] ?? "", bv = b[sortState.key] ?? ""; const c = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv), "tr"); return sortState.dir === "asc" ? c : -c; }); }, [trades, query, strategy, reason, sortState]);
-  const rows = sortedFiltered.slice((page - 1) * pageSize, page * pageSize); const pages = Math.max(1, Math.ceil(sortedFiltered.length / pageSize)); const winners = trades.filter((t) => t.pnl > 0); const losers = trades.filter((t) => t.pnl <= 0); const netClosed = trades.reduce((s, t) => s + t.pnl, 0); const winRate = trades.length ? winners.length / trades.length * 100 : 0;
-  const formatKey = (key: keyof Trade) => <button onClick={() => { setSortState((p) => ({ key, dir: p.key === key && p.dir === "asc" ? "desc" : "asc" })); setPage(1); }} className="hover:text-white whitespace-nowrap">{key}{sortState.key === key ? (sortState.dir === "asc" ? " ▲" : " ▼") : " ↕"}</button>;
-  return <div className="max-w-7xl mx-auto space-y-6 print:text-black"><header><h1 className="font-mono text-xl font-bold"><span className="text-neon-green">PORTFÖY</span> YÖNETİMİ</h1><p className="eyebrow mt-1">Sanal cüzdan · açık pozisyonlar · işlem geçmişi</p></header><div className="flex gap-2 border-b border-bunker-800 pb-2 print:hidden"><button onClick={() => formatTab("portfolio")} className={`px-4 py-2 rounded-lg border font-mono text-sm ${tab === "portfolio" ? "border-neon-green/50 bg-neon-green/10 text-neon-green" : "border-bunker-700 text-bunker-muted"}`}>📊 Portföy</button><button onClick={() => formatTab("history")} className={`px-4 py-2 rounded-lg border font-mono text-sm ${tab === "history" ? "border-neon-green/50 bg-neon-green/10 text-neon-green" : "border-bunker-700 text-bunker-muted"}`}>📜 İşlem Geçmişi</button></div>{msg && <div className="card text-neon-green">{msg}</div>}{tab === "portfolio" ? <><div className="grid md:grid-cols-4 gap-4"><div className="card"><p className="eyebrow">TOPLAM DEĞER</p><p className="font-mono text-2xl text-white">₺{money(portfolio?.total_value)}</p></div><div className="card"><p className="eyebrow">MEVCUT TL</p><p className="font-mono text-2xl text-neon-green">₺{money(portfolio?.try)}</p></div><div className="card"><p className="eyebrow">AÇIK POZİSYON</p><p className="font-mono text-2xl text-white">{portfolio?.positions.length ?? 0}</p></div><div className="card"><p className="eyebrow">GERÇEKLEŞMİŞ + AÇIK PnL</p><p className={`font-mono text-2xl ${((portfolio?.realized_pnl ?? 0) + (portfolio?.unrealized_pnl ?? 0)) >= 0 ? "text-neon-green" : "text-neon-red"}`}>₺{money((portfolio?.realized_pnl ?? 0) + (portfolio?.unrealized_pnl ?? 0))}</p></div></div><LlmPlanPanel positions={portfolio?.positions || []} /><div className="card overflow-x-auto"><p className="eyebrow mb-4">AÇIK POZİSYONLAR</p><table className="w-full font-mono text-sm"><thead><tr className="text-left text-bunker-muted"><th className="p-3">SEMBOL</th><th className="p-3">STRATEJİ</th><th className="p-3">GİRİŞ</th><th className="p-3">ANLIK</th><th className="p-3">PnL</th><th className="p-3">DEĞER</th><th /></tr></thead><tbody>{portfolio?.positions.map((p) => <tr key={p.symbol} className="border-t border-bunker-800"><td className="p-3"><Link href={`/symbol-analysis?symbol=${p.symbol}`} className="text-white hover:text-neon-green">{p.symbol}</Link></td><td className="p-3 text-neon-yellow">{STRATEGY_LABEL[p.strategy || ""] || p.strategy}</td><td className="p-3">₺{money(p.entry)}</td><td className="p-3">₺{money(p.current)}</td><td className={`p-3 ${p.pnl_pct >= 0 ? "text-neon-green" : "text-neon-red"}`}>₺{money(p.pnl_try)}</td><td className="p-3">₺{money(p.value)}</td><td className="p-3"><button onClick={() => closePosition(p.symbol)} disabled={closing === p.symbol} className="px-2 py-1 border border-neon-red/40 text-neon-red rounded">{closing === p.symbol ? "..." : "KAPAT"}</button></td></tr>)}</tbody></table></div></> : <><div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-4"><div className="card"><p className="eyebrow">TOPLAM İŞLEM</p><p className="font-mono text-2xl text-white">{trades.length}</p></div><div className="card"><p className="eyebrow">KARLI İŞLEM</p><p className="font-mono text-2xl text-neon-green">{winners.length}</p></div><div className="card"><p className="eyebrow">ZARARLI İŞLEM</p><p className="font-mono text-2xl text-neon-red">{losers.length}</p></div><div className="card"><p className="eyebrow">KAPANAN NET SONUÇ</p><p className={`font-mono text-2xl ${netClosed >= 0 ? "text-neon-green" : "text-neon-red"}`}>₺{money(netClosed)}</p></div><div className="card"><p className="eyebrow">BAŞARI ORANI</p><p className="font-mono text-2xl text-white">%{winRate.toFixed(1)}</p></div></div><div className="card space-y-3 print:hidden"><div className="flex flex-wrap gap-2"><input value={query} onChange={(e) => { setQuery(e.target.value); setPage(1); }} placeholder="Sembol, strateji veya neden ara" className="flex-1 min-w-52 bg-bunker-900 border border-bunker-700 rounded px-3 py-2 font-mono text-xs" /><select value={strategy} onChange={(e) => { setStrategy(e.target.value); setPage(1); }} className="bg-bunker-900 border border-bunker-700 rounded px-3 py-2 font-mono text-xs"><option value="all">Tüm stratejiler</option>{Array.from(new Set(trades.map((t) => t.strategy))).map((s) => <option key={s}>{s}</option>)}</select><select value={reason} onChange={(e) => { setReason(e.target.value); setPage(1); }} className="bg-bunker-900 border border-bunker-700 rounded px-3 py-2 font-mono text-xs"><option value="all">Tüm kapanış nedenleri</option>{Array.from(new Set(trades.map((t) => t.reason).filter(Boolean))).map((s) => <option key={s}>{s}</option>)}</select><select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }} className="bg-bunker-900 border border-bunker-700 rounded px-3 py-2 font-mono text-xs"><option value={10}>10 / sayfa</option><option value={25}>25 / sayfa</option><option value={50}>50 / sayfa</option><option value={100}>100 / sayfa</option></select></div></div><div className="card overflow-x-auto"><table className="w-full font-mono text-xs"><thead><tr className="text-left text-bunker-muted border-b border-bunker-800"><th className="p-3">{formatKey("symbol")}</th><th className="p-3">{formatKey("strategy")}</th><th className="p-3">{formatKey("entry_price")}</th><th className="p-3">{formatKey("exit_price")}</th><th className="p-3">{formatKey("commission")}</th><th className="p-3">{formatKey("pnl")}</th><th className="p-3">{formatKey("pnl_pct")}</th><th className="p-3">{formatKey("entry_time")}</th><th className="p-3">{formatKey("exit_time")}</th><th className="p-3">AKTİF SÜRE</th><th className="p-3">NEDEN</th></tr></thead><tbody>{rows.map((t) => <tr key={t.id} className="border-b border-bunker-800/50"><td className="p-3"><Link href={`/symbol-analysis?symbol=${t.symbol}`} className="text-white hover:text-neon-green">{t.symbol}</Link></td><td className="p-3 text-neon-yellow">{STRATEGY_LABEL[t.strategy] || t.strategy}</td><td className="p-3">₺{money(t.entry_price)}</td><td className="p-3">₺{money(t.exit_price)}</td><td className="p-3 text-neon-yellow">₺{money(t.commission)}</td><td className={`p-3 ${t.pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>₺{money(t.pnl)}</td><td className="p-3">{t.pnl_pct.toFixed(2)}%</td><td className="p-3 whitespace-nowrap">{when(t.entry_time)}</td><td className="p-3 whitespace-nowrap">{when(t.exit_time)}</td><td className="p-3 whitespace-nowrap">{duration(t)}</td><td className="p-3 text-bunker-muted">{t.reason || "—"}</td></tr>)}</tbody></table><div className="p-3 flex justify-between items-center font-mono text-xs text-bunker-muted print:hidden"><span>Sayfa {page} / {pages} · {sortedFiltered.length} kayıt</span><div className="flex gap-2"><button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="px-2 py-1 border border-bunker-700 rounded disabled:opacity-40">ÖNCEKİ</button><button disabled={page >= pages} onClick={() => setPage((p) => Math.min(pages, p + 1))} className="px-2 py-1 border border-bunker-700 rounded disabled:opacity-40">SONRAKİ</button></div></div></div></> }</div>;
+  const closePosition = async (symbol: string) => { setClosing(symbol); setMsg(null); try { const response = await fetch(`${API_BASE}/api/positions/${symbol}/close`, { method: "POST" }); const data = await response.json(); setMsg(data.message || (data.ok ? "Pozisyon kapatıldı." : "Pozisyon kapatılamadı.")); } catch { setMsg("Pozisyon kapatılamadı."); } finally { setClosing(null); } };
+  const sortedFiltered = useMemo(() => { const normalized = query.trim().toUpperCase(); const filtered = trades.filter((trade) => (!normalized || `${trade.symbol} ${trade.strategy} ${trade.reason || ""}`.toUpperCase().includes(normalized)) && (strategy === "all" || trade.strategy === strategy) && (reason === "all" || trade.reason === reason)); return [...filtered].sort((a, b) => { const av = a[sortState.key] ?? ""; const bv = b[sortState.key] ?? ""; const comparison = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv), "tr"); return sortState.dir === "asc" ? comparison : -comparison; }); }, [trades, query, strategy, reason, sortState]);
+  const rows = sortedFiltered.slice((page - 1) * pageSize, page * pageSize);
+  const pages = Math.max(1, Math.ceil(sortedFiltered.length / pageSize));
+  const winners = trades.filter((trade) => trade.pnl > 0); const losers = trades.filter((trade) => trade.pnl <= 0); const netClosed = trades.reduce((sum, trade) => sum + trade.pnl, 0); const winRate = trades.length ? winners.length / trades.length * 100 : 0;
+  const formatKey = (key: keyof Trade) => <button onClick={() => { setSortState((previous) => ({ key, dir: previous.key === key && previous.dir === "asc" ? "desc" : "asc" })); setPage(1); }} className="table-sort">{key}{sortState.key === key ? (sortState.dir === "asc" ? " ▲" : " ▼") : " ↕"}</button>;
+
+  return <main className="page-shell portfolio-page">
+    <header className="page-heading portfolio-heading"><div><p className="eyebrow">PAPER PORTFÖY</p><h1><span className="text-neon-green">PORTFÖY</span> YÖNETİMİ</h1><p>Sanal cüzdan, açık pozisyonlar ve tamamlanan işlemleri tek bir taşmasız çalışma alanında izleyin.</p></div><span className="ui-badge ui-badge-info">CANLI / PAPER</span></header>
+    <nav className="ui-tabs portfolio-tabs" aria-label="Portföy sekmeleri"><button className={tab === "portfolio" ? "active" : ""} onClick={() => formatTab("portfolio")}>📊 PORTFÖY <small>{portfolio?.positions.length ?? 0}</small></button><button className={tab === "history" ? "active" : ""} onClick={() => formatTab("history")}>📜 TAMAMLANAN İŞLEMLER <small>{trades.length}</small></button></nav>
+    {msg && <div className="portfolio-alert" role="status">{msg}</div>}
+    {tab === "portfolio" ? <div className="portfolio-content"><div className="portfolio-metrics"><MetricCard label="TOPLAM DEĞER" value={`₺${money(portfolio?.total_value)}`} /><MetricCard label="MEVCUT TL" value={`₺${money(portfolio?.try)}`} tone="ui-tone-positive" /><MetricCard label="AÇIK POZİSYON" value={portfolio?.positions.length ?? 0} /><MetricCard label="GERÇEKLEŞMİŞ + AÇIK PnL" value={`₺${money((portfolio?.realized_pnl ?? 0) + (portfolio?.unrealized_pnl ?? 0))}`} tone={(portfolio?.realized_pnl ?? 0) + (portfolio?.unrealized_pnl ?? 0) >= 0 ? "ui-tone-positive" : "ui-tone-negative"} /></div><LlmPlanPanel positions={portfolio?.positions || []} trades={trades} /><PositionTable positions={portfolio?.positions || []} closePosition={closePosition} closing={closing} /></div> : <div className="portfolio-content"><div className="portfolio-metrics portfolio-history-metrics"><MetricCard label="TOPLAM İŞLEM" value={trades.length} /><MetricCard label="KÂRLI İŞLEM" value={winners.length} tone="ui-tone-positive" /><MetricCard label="ZARARLI İŞLEM" value={losers.length} tone="ui-tone-negative" /><MetricCard label="KAPANAN NET SONUÇ" value={`₺${money(netClosed)}`} tone={netClosed >= 0 ? "ui-tone-positive" : "ui-tone-negative"} /><MetricCard label="BAŞARI ORANI" value={`%${winRate.toFixed(1)}`} /></div><section className="ui-card portfolio-filters print:hidden"><div className="portfolio-filter-grid"><label className="portfolio-filter portfolio-filter-search"><span>ARAMA</span><input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Sembol, strateji veya neden" /></label><label className="portfolio-filter"><span>STRATEJİ</span><select value={strategy} onChange={(event) => { setStrategy(event.target.value); setPage(1); }}><option value="all">Tüm stratejiler</option>{Array.from(new Set(trades.map((trade) => trade.strategy))).filter(Boolean).map((value) => <option key={value} value={value}>{STRATEGY_LABEL[value] || value}</option>)}</select></label><label className="portfolio-filter"><span>KAPANIŞ NEDENİ</span><select value={reason} onChange={(event) => { setReason(event.target.value); setPage(1); }}><option value="all">Tüm nedenler</option>{Array.from(new Set(trades.map((trade) => trade.reason).filter(Boolean))).map((value) => <option key={value} value={value}>{value}</option>)}</select></label><label className="portfolio-filter portfolio-filter-page"><span>SAYFA</span><select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}><option value={10}>10 kayıt</option><option value={25}>25 kayıt</option><option value={50}>50 kayıt</option><option value={100}>100 kayıt</option></select></label></div></section><section className="ui-card portfolio-history-card"><div className="ui-section-header"><div><p className="eyebrow">TAMAMLANAN İŞLEMLER</p><p className="ui-section-description">Komisyon sonrası gerçekleşmiş sonuçlar · {sortedFiltered.length} kayıt</p></div><div className="ui-section-actions"><ExportActions trades={sortedFiltered} /></div></div>{rows.length === 0 ? <p className="empty-state">Filtrelere uyan tamamlanan işlem yok.</p> : <><div className="table-scroll portfolio-history-table-scroll"><table className="data-table portfolio-history-table"><thead><tr><th>{formatKey("symbol")}</th><th>{formatKey("strategy")}</th><th>{formatKey("entry_price")}</th><th>{formatKey("exit_price")}</th><th>{formatKey("commission")}</th><th>{formatKey("pnl")}</th><th>{formatKey("pnl_pct")}</th><th>{formatKey("entry_time")}</th><th>{formatKey("exit_time")}</th><th>AKTİF SÜRE</th><th>NEDEN</th></tr></thead><tbody>{rows.map((trade) => <tr key={trade.id}><td><Link href={`/symbol-analysis?symbol=${trade.symbol}`} className="portfolio-symbol">{trade.symbol}</Link></td><td><span className="portfolio-strategy">{STRATEGY_LABEL[trade.strategy] || trade.strategy || "—"}</span></td><td>₺{money(trade.entry_price)}</td><td>₺{money(trade.exit_price)}</td><td className="ui-tone-warning">₺{money(trade.commission)}</td><td className={trade.pnl >= 0 ? "ui-tone-positive" : "ui-tone-negative"}>₺{money(trade.pnl)}</td><td>{trade.pnl_pct.toFixed(2)}%</td><td>{when(trade.entry_time)}</td><td>{when(trade.exit_time)}</td><td>{duration(trade)}</td><td><span className="portfolio-reason" title={trade.reason || "—"}>{trade.reason || "—"}</span></td></tr>)}</tbody></table></div><div className="portfolio-mobile-trades">{rows.map((trade) => <TradeCard key={trade.id} trade={trade} />)}</div><div className="portfolio-pagination"><span>Sayfa {page} / {pages} · {sortedFiltered.length} kayıt</span><div><button disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))} className="ui-button ui-button-secondary ui-button-compact">ÖNCEKİ</button><button disabled={page >= pages} onClick={() => setPage((value) => Math.min(pages, value + 1))} className="ui-button ui-button-secondary ui-button-compact">SONRAKİ</button></div></div></>}</section></div>}
+  </main>;
 }

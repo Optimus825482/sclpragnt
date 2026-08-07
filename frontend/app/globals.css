@@ -95,6 +95,54 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .data-table tbody tr:hover { background: rgb(30 41 59 / .35); }
 .data-table tbody tr:last-child td { border-bottom: 0; }
 .table-scroll { border-radius: .75rem; }
+.portfolio-page { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
+.portfolio-heading { flex-direction: row; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 0; }
+.portfolio-heading h1 { margin-top: .35rem; }
+.portfolio-tabs { width: 100%; }
+.portfolio-tabs button { display: inline-flex; align-items: center; gap: .45rem; }
+.portfolio-tabs small { display: inline-grid; place-items: center; min-width: 1.35rem; height: 1.35rem; padding: 0 .3rem; border-radius: 999px; color: #cbd5e1; background: rgb(51 65 85 / .65); font-size: .58rem; }
+.portfolio-tabs button.active small { color: #06110c; background: #79f2b4; }
+.portfolio-content { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.portfolio-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1rem; }
+.portfolio-history-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.portfolio-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.portfolio-plan-panel, .portfolio-table-card, .portfolio-filters, .portfolio-history-card { min-width: 0; }
+.portfolio-plan-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.portfolio-plan-card { min-width: 0; padding: .8rem; border: 1px solid rgb(96 165 250 / .2); border-radius: .7rem; background: rgb(59 130 246 / .06); font: .72rem/1.4 ui-monospace, monospace; }
+.portfolio-plan-heading, .portfolio-trade-top, .portfolio-trade-meta, .portfolio-pagination { display: flex; align-items: center; justify-content: space-between; gap: .75rem; min-width: 0; }
+.portfolio-symbol { color: white; font-weight: 700; text-decoration: none; }
+.portfolio-symbol:hover { color: #79f2b4; }
+.portfolio-plan-values, .portfolio-trade-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; margin-top: .8rem; }
+.portfolio-plan-values div, .portfolio-trade-values div { min-width: 0; }
+.portfolio-plan-values span, .portfolio-trade-values span { display: block; margin-bottom: .2rem; color: #64748b; font-size: .62rem; }
+.portfolio-plan-values strong, .portfolio-trade-values strong { display: block; overflow-wrap: anywhere; font-size: .76rem; }
+.portfolio-plan-reason, .portfolio-reason { display: block; min-width: 0; margin-top: .7rem; overflow: hidden; color: #94a3b8; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-table-card, .portfolio-history-card { overflow: hidden; }
+.portfolio-table-scroll, .portfolio-history-table-scroll { margin: 0 -.1rem; max-width: 100%; overflow-x: auto; }
+.portfolio-table, .portfolio-history-table { min-width: 760px; }
+.portfolio-history-table { min-width: 1160px; }
+.portfolio-table th, .portfolio-table td, .portfolio-history-table th, .portfolio-history-table td { vertical-align: middle; }
+.portfolio-strategy { display: block; max-width: 13rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #fde047; }
+.table-subvalue { display: block; margin-top: .15rem; color: #94a3b8; font-size: .65rem; }
+.table-sort { color: inherit; font: inherit; white-space: nowrap; }
+.portfolio-alert { padding: .8rem 1rem; border: 1px solid rgb(52 211 153 / .3); border-radius: .7rem; color: #79f2b4; background: rgb(16 185 129 / .08); font: .75rem/1.4 ui-monospace, monospace; }
+.empty-state { padding: 1.5rem .25rem; color: #64748b; font-size: .85rem; }
+.portfolio-filter-grid { display: grid; grid-template-columns: minmax(14rem, 1.5fr) repeat(3, minmax(10rem, 1fr)); gap: .75rem; }
+.portfolio-filter { display: flex; min-width: 0; flex-direction: column; gap: .35rem; }
+.portfolio-filter > span { color: #64748b; font: 600 .61rem/1 ui-monospace, monospace; letter-spacing: .1em; text-transform: uppercase; }
+.portfolio-filter input, .portfolio-filter select { width: 100%; min-width: 0; min-height: 2.65rem; padding: .65rem .75rem; border: 1px solid rgb(51 65 85 / .9); border-radius: .6rem; outline: none; color: white; background: #05080d; font: .72rem/1.2 ui-monospace, monospace; }
+.portfolio-filter input:focus, .portfolio-filter select:focus { border-color: rgb(52 211 153 / .7); box-shadow: 0 0 0 3px rgb(16 185 129 / .12); }
+.portfolio-mobile-trades { display: none; }
+.portfolio-pagination { margin-top: 1rem; color: #64748b; font: .68rem/1.3 ui-monospace, monospace; }
+.portfolio-pagination > div { display: flex; gap: .5rem; }
+.ui-button-compact { min-height: 2rem; padding: .45rem .65rem; font-size: .63rem; }
+.portfolio-trade-card { padding: .85rem; border: 1px solid rgb(51 65 85 / .8); border-radius: .75rem; background: rgb(5 8 13 / .5); font-family: ui-monospace, monospace; }
+.portfolio-trade-meta { margin-top: .45rem; color: #94a3b8; font-size: .65rem; }
+.portfolio-trade-meta span:first-child { max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-trade-values { margin-top: .75rem; }
+.portfolio-trade-values strong small { display: block; margin-top: .15rem; color: #94a3b8; font-size: .62rem; }
+.portfolio-trade-footer { display: flex; justify-content: space-between; gap: .75rem; margin-top: .75rem; padding-top: .65rem; border-top: 1px solid rgb(51 65 85 / .6); color: #64748b; font-size: .64rem; }
+.portfolio-trade-footer span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-dot { width: .45rem; height: .45rem; border-radius: 999px; display: inline-block; background: #79f2b4; box-shadow: 0 0 0 .2rem rgb(16 185 129 / .12); }
 .skeleton { position: relative; overflow: hidden; background: rgb(30 41 59 / .65); border-radius: .5rem; }
 .skeleton::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgb(148 163 184 / .12), transparent); animation: skeleton-shimmer 1.4s infinite; }
@@ -177,6 +225,23 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   h1 { font-size: 1rem; }
   table { min-width: 680px; }
   .table-scroll { position: relative; }
+  .portfolio-heading { flex-direction: column; }
+  .portfolio-heading > .ui-badge { align-self: flex-start; }
+  .portfolio-metrics, .portfolio-history-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+  .portfolio-metrics .ui-card { min-height: 6rem; padding: .85rem; }
+  .portfolio-metrics .ui-stat-value { font-size: 1.15rem; }
+  .portfolio-plan-grid { grid-template-columns: 1fr; }
+  .portfolio-plan-panel .ui-section-header, .portfolio-history-card .ui-section-header { flex-direction: column; }
+  .portfolio-actions, .portfolio-history-card .ui-section-actions { width: 100%; }
+  .portfolio-actions .ui-button { flex: 1 1 0; }
+  .portfolio-filter-grid { grid-template-columns: 1fr 1fr; }
+  .portfolio-filter-search, .portfolio-filter-page { grid-column: 1 / -1; }
+  .portfolio-history-table-scroll { display: none; }
+  .portfolio-mobile-trades { display: grid; gap: .65rem; }
+  .portfolio-pagination { align-items: flex-start; flex-direction: column; }
+  .portfolio-pagination > div { width: 100%; }
+  .portfolio-pagination .ui-button { flex: 1 1 0; }
+  .portfolio-tabs button { min-width: 0; padding-inline: .65rem; font-size: .64rem; }
   .mobile-menu-button { top: calc(12px + env(safe-area-inset-top)); }
   .app-sidebar { position: fixed; height: 100dvh; max-height: 100dvh; }
 }
