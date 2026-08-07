@@ -1620,12 +1620,14 @@ async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
     context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data.", "self_learning": build_learning_context(await database.get_trades(), limit=200)}
     last_text = str((body.get("messages") or [{}])[-1].get("content", ""))
-    trade_intent = bool(re.search(r"(işlem|islem|pozisyon|paper|trade).*(aç|ac|açar|acar|giriş|giris)|\b(aç|ac)\b.*(işlem|islem|pozisyon|paper|trade)", last_text.lower()))
+    trade_intent = bool(re.search(r"(işlem|islem|pozisyon|paper|trade|coin|sembol).*(aç|ac|açar|acar|aktif|ekle|giriş|giris)|\b(aç|ac|aktif|ekle)\b.*(işlem|islem|pozisyon|paper|trade|coin|sembol)", last_text.lower()))
     requested_symbols = [token.upper() for token in re.findall(r"\b[A-Za-z]{2,12}TRY\b", last_text.upper())]
+    if requested_symbols:
+        trade_intent = True
     if requested_symbols:
         requested = requested_symbols[0].replace("_", "")
         if requested not in config.SYMBOLS:
-            context["symbol_data"] = {"symbol": requested, "data_ready": False, "error": f"{requested} etkin paper-trading sembol listesinde yok", "supported_symbols": config.SYMBOLS}
+            context["symbol_data"] = {"symbol": requested, "data_ready": False, "error": f"{requested} etkin paper-trading sembol listesinde yok", "activation_required": True, "instruction": "Önce activate_coin tool'u ile Binance TR public TRY piyasasında doğrula; başarılı olursa deep_analyze_symbol ile güncel snapshot al.", "supported_symbols": config.SYMBOLS}
         else:
             try:
                 context["symbol_data"] = await deep_analyze_symbol({"symbol": requested, "timeframe": "5m"})
@@ -1639,6 +1641,16 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
             if name == "open_llm_paper_trade":
                 return await llm_open_paper_trade({"symbol": args.get("symbol"), "plan": args.get("plan") or {}})
+            if name == "activate_coin":
+                symbol = str(args.get("symbol") or "").replace("_", "").upper()
+                known_try = set(await trading_symbols("TRY"))
+                if symbol not in known_try:
+                    return {"ok": False, "symbol": symbol, "error": "Bu sembol Binance TR public TRY piyasasında aktif değil"}
+                if symbol not in config.SYMBOLS: config.SYMBOLS.append(symbol)
+                config.UT_SYMBOLS = list(dict.fromkeys(config.SYMBOLS))
+                if symbol.lower() not in market.symbols:
+                    market.symbols.append(symbol.lower()); market.reconnect_requested = True
+                return {"ok": True, "symbol": symbol, "active": True, "paper_only": True, "message": f"{symbol} analiz evrenine eklendi"}
             if name == "query_database": return await llm_query_database(args)
             if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
             if name == "get_strategy_config": return await get_config()
@@ -1707,6 +1719,7 @@ async def strategies_llm_chat(payload: dict = None):
     tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, {"type":"function","function":{"name":"open_llm_paper_trade","description":"LLM planına göre yalnızca sanal paper pozisyon açar. Tutar, stop, take-profit ve maksimum elde tutma süresini model belirler; gerçek emir göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"plan":{"type":"object","properties":{"order_value_try":{"type":"number","description":"TRY cinsinden paper pozisyon tutarı"},"stop_loss_pct":{"type":"number","description":"Ondalık stop oranı; örn. 0.012"},"take_profit_pct":{"type":"number","description":"Ondalık kar hedefi; örn. 0.02"},"max_hold_seconds":{"type":"integer","description":"Pozisyonun maksimum elde tutulma süresi"}},"required":["order_value_try","stop_loss_pct","take_profit_pct","max_hold_seconds"]}},"required":["symbol","plan"]}}}])
     if body.get("stream") is True:
         async def events():
+            tools.append({"type":"function","function":{"name":"activate_coin","description":"Binance TR public TRY piyasasında aktif olan bir coini paper-trading analiz evrenine ekler; gerçek emir açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}})
             if not trade_intent:
                 tools[:] = [tool for tool in tools if tool.get("function", {}).get("name") != "open_llm_paper_trade"]
             if any(tool.get("function", {}).get("name") == "open_llm_paper_trade" for tool in tools):
