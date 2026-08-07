@@ -1444,6 +1444,16 @@ async def reconcile_portfolio():
             "db_open_positions": sorted(db_positions), "live_open_positions": sorted(live),
             "wallet_try": await database.get_wallet_balance("TRY"), "repair_required": bool(differences)}
 
+async def safe_read_only_sql(args: dict):
+    """Return structured SQL validation/runtime errors to the model instead of aborting the turn."""
+    try:
+        rows = await database.read_only_query(args.get("sql", ""), args.get("limit", 500))
+        return {"ok": True, "count": len(rows), "rows": rows, "read_only": True}
+    except Exception as exc:
+        return {"ok": False, "count": 0, "rows": [], "read_only": True,
+                "error_code": type(exc).__name__, "error": str(exc),
+                "retryable": False, "hint": "query_database aracını veya izinli tablo/sütunları kullan"}
+
 @app.post("/api/market-snapshot-scan")
 async def market_snapshot_scan(payload: dict = None):
     """Tüm etkin sembolleri salt-okunur biçimde tarar; canlı portföyü değiştirmez."""
@@ -1535,7 +1545,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         if name == "get_data_quality": return await get_data_quality(args)
         if name == "validate_trade_plan": return await validate_trade_plan(args)
         if name == "query_database": return await llm_query_database(args, symbol.upper())
-        if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
+        if name == "read_only_sql": return await safe_read_only_sql(args)
         if name == "get_symbol_analysis": return await symbol_analysis(symbol, str(args.get("timeframe") or body.get("timeframe") or "5m"))
         if name == "get_historical_klines":
             interval = str(args.get("interval") or "5m"); limit = max(1, min(int(args.get("limit", 300)), 1000))
@@ -1928,7 +1938,7 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "place_paper_order":
                 return await analyzer.place_paper_order(args)
             if name == "query_database": return await llm_query_database(args)
-            if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
+            if name == "read_only_sql": return await safe_read_only_sql(args)
             if name == "get_strategy_config": return await get_config()
             if name == "get_strategy_stats": return (await get_strategy_stats()).get("stats", {})
             if name == "run_backtest":

@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   description: "Binance TR public-data paper scalping terminal",
   manifest: "/manifest.webmanifest",
   icons: { icon: "/icon.svg", apple: "/icon.svg" },
-  appleWebApp: { capable: true, title: "Scalper Agent", statusBarStyle: "black-translucent" }
+  // Next's appleWebApp metadata emits the deprecated apple-mobile-web-app-capable tag.
 };
 
 export const viewport = {
@@ -25,6 +25,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="tr" className="dark">
+      <head><meta name="mobile-web-app-capable" content="yes" /></head>
       <body>
         <div className="flex min-h-screen">
           <Sidebar />

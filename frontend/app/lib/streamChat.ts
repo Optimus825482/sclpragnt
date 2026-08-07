@@ -42,6 +42,7 @@ export async function streamChat(
   const decoder = new TextDecoder();
   let buffer = "";
   let result: { model?: string } = {};
+  let terminalEvent = false;
   try {
     while (true) {
       const chunk = await reader.read();
@@ -56,15 +57,17 @@ export async function streamChat(
         try { data = JSON.parse(dataLine); } catch { continue; }
         if (eventName === "delta") onDelta(String(data.text || ""));
         else if (eventName === "error") {
+          terminalEvent = true;
           const detail = typeof data.error === "string" ? data.error : data.error?.message || "LLM streaming hatası";
           throw new Error(detail);
         }
-        else if (eventName === "done") result = data;
+        else if (eventName === "done") { terminalEvent = true; result = data; }
       }
       if (chunk.done) break;
     }
   } finally {
     reader.releaseLock();
   }
+  if (!terminalEvent) throw new Error("LLM bağlantısı beklenmedik şekilde kapandı; backend/SSE proxy loglarını kontrol edin.");
   return result;
 }
