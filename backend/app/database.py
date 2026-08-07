@@ -6,6 +6,7 @@ import threading
 import time
 import tempfile
 import re
+from datetime import datetime, timezone
 
 from app.config import config
 
@@ -59,6 +60,25 @@ def _hybrid_row_factory(cursor):
     return lambda values: _HybridRow(zip(names, values))
 
 def _postgres_enabled(): return os.getenv("DB_BACKEND", "sqlite").lower() == "postgres"
+
+def _db_timestamp():
+    return datetime.now(timezone.utc) if _postgres_enabled() else time.time()
+
+def _epoch_value(value):
+    if isinstance(value, datetime):
+        return value.timestamp()
+    return value
+
+def _db_datetime_value(value):
+    """Convert Unix expiry values to PostgreSQL timestamps when needed."""
+    if value in (None, "") or not _postgres_enabled():
+        return value
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return value
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -1038,16 +1058,17 @@ async def remove_llm_symbol_guard(symbol, reason="llm_guard_removed"):
     return await _run_db(op)
 
 async def create_alert_rule(rule):
-    now = time.time()
+    now = _db_timestamp()
     def op(conn):
         cur = conn.execute("""INSERT INTO alert_rules
             (name,symbol,timeframe,rule_type,operator,threshold,cooldown_seconds,enabled,rearm_threshold,expires_at,notify_channels,created_by,reason,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""", (
             rule.get("name") or f"{rule['symbol']} alarm", str(rule["symbol"]).upper(), rule.get("timeframe", "5m"),
             rule.get("rule_type", "price"), rule.get("operator", "lte"), float(rule["threshold"]),
-            max(0, int(rule.get("cooldown_seconds", 1800))), 1, rule.get("rearm_threshold"), rule.get("expires_at"),
+            max(0, int(rule.get("cooldown_seconds", 1800))), True, rule.get("rearm_threshold"), _db_datetime_value(rule.get("expires_at")),
             json.dumps(rule.get("notify_channels") or ["websocket"]), rule.get("created_by", "user"), rule.get("reason"), now, now))
-        conn.commit(); return cur.lastrowid
+        row = cur.fetchone()
+        conn.commit(); return row[0] if row else None
     return await _run_db(op)
 
 async def list_alert_rules(active_only=False):
@@ -1056,7 +1077,10 @@ async def list_alert_rules(active_only=False):
         rows = conn.execute(sql).fetchall()
         result = []
         for row in rows:
-            item = dict(row); item["notify_channels"] = _json_value(item.get("notify_channels"), ["websocket"]); result.append(item)
+            item = dict(row)
+            for key in ("last_triggered_at", "expires_at", "created_at", "updated_at"):
+                item[key] = _epoch_value(item.get(key))
+            item["notify_channels"] = _json_value(item.get("notify_channels"), ["websocket"]); result.append(item)
         return result
     return await _run_db(op)
 
@@ -1064,11 +1088,17 @@ async def update_alert_rule(rule_id, changes):
     allowed = {"name", "enabled", "threshold", "operator", "cooldown_seconds", "rearm_threshold", "expires_at", "notify_channels", "reason"}
     fields = [key for key in changes if key in allowed]
     if not fields: return None
-    values = [json.dumps(changes[key]) if key == "notify_channels" else changes[key] for key in fields]
-    values.extend([time.time(), rule_id])
+    values = [json.dumps(changes[key]) if key == "notify_channels" else bool(changes[key]) if key == "enabled" else _db_datetime_value(changes[key]) if key == "expires_at" else changes[key] for key in fields]
+    values.extend([_db_timestamp(), rule_id])
     def op(conn):
         conn.execute(f"UPDATE alert_rules SET {', '.join(f'{key}=?' for key in fields)}, updated_at=? WHERE id=?", values); conn.commit()
-        row = conn.execute("SELECT * FROM alert_rules WHERE id=?", (rule_id,)).fetchone(); return dict(row) if row else None
+        row = conn.execute("SELECT * FROM alert_rules WHERE id=?", (rule_id,)).fetchone()
+        if not row: return None
+        item = dict(row)
+        for key in ("last_triggered_at", "expires_at", "created_at", "updated_at"):
+            item[key] = _epoch_value(item.get(key))
+        item["notify_channels"] = _json_value(item.get("notify_channels"), ["websocket"])
+        return item
     return await _run_db(op)
 
 async def delete_alert_rule(rule_id):
@@ -1077,7 +1107,7 @@ async def delete_alert_rule(rule_id):
     return await _run_db(op)
 
 async def record_alert_trigger(rule_id, event_key, value, message, severity="info"):
-    now = time.time()
+    now = _db_timestamp()
     def op(conn):
         inserted = conn.execute("INSERT INTO alert_events(rule_id,symbol,event_key,value,message,severity,triggered_at) SELECT id,symbol,?,?,?,?,? FROM alert_rules WHERE id=? ON CONFLICT(event_key) DO NOTHING", (event_key, value, message, severity, now, rule_id))
         if inserted.rowcount == 0: conn.rollback(); return None

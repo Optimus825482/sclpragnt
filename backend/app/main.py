@@ -1731,7 +1731,7 @@ async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
     return await deep_analyze_symbol({"symbol": symbol, "timeframe": timeframe})
 
 LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Tüm etkin paper-trading sembollerini güncel public market verisiyle tarar, bullish adayları deterministik olarak sıralar. Salt-okunur; pozisyon açmaz.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","30m","1h","4h","1d"]}},"limit":{"type":"integer"}},"required":[]}}}
-LLM_CREATE_ALERT_TOOL = {"type":"function","function":{"name":"create_market_alert","description":"Paper-only canlı market alarmı oluşturur. Backend WebSocket dinleyicisi koşulu sürekli değerlendirir; gerçek emir göndermez.","parameters":{"type":"object","properties":{"name":{"type":"string"},"symbol":{"type":"string"},"rule_type":{"type":"string","enum":["price","percent"]},"operator":{"type":"string","enum":["lt","lte","gt","gte","eq"]},"threshold":{"type":"number"},"rearm_threshold":{"type":"number"},"cooldown_seconds":{"type":"integer"},"timeframe":{"type":"string"},"notify_channels":{"type":"array","items":{"type":"string","enum":["websocket","telegram","web_push"]}},"expires_at":{"type":"number"},"reason":{"type":"string"}},"required":["symbol","operator","threshold","reason"]}}}
+LLM_CREATE_ALERT_TOOL = {"type":"function","function":{"name":"create_market_alert","description":"Paper-only canlı market alarmı oluşturur. Backend alarm worker koşulu sürekli değerlendirir; gerçek emir göndermez. Kullanıcı 'izlemeye al/takibe al' dediğinde bu aracı kullan.","parameters":{"type":"object","properties":{"name":{"type":"string"},"symbol":{"type":"string"},"rule_type":{"type":"string","enum":["price","percent"]},"operator":{"type":"string","enum":["lt","lte","gt","gte","eq"]},"threshold":{"type":"number"},"rearm_threshold":{"type":"number"},"cooldown_seconds":{"type":"integer"},"timeframe":{"type":"string"},"notify_channels":{"type":"array","items":{"type":"string","enum":["websocket","web_push"]}},"expires_at":{"type":"number"},"reason":{"type":"string"}},"required":["symbol","operator","threshold","reason"]}}}
 LLM_UPDATE_ALERT_TOOL = {"type":"function","function":{"name":"update_market_alert","description":"Daha önce oluşturulmuş paper market alarmını günceller veya duraklatır.","parameters":{"type":"object","properties":{"alert_id":{"type":"integer"},"changes":{"type":"object"},"reason":{"type":"string"}},"required":["alert_id","changes","reason"]}}}
 LLM_REMOVE_ALERT_TOOL = {"type":"function","function":{"name":"remove_market_alert","description":"Paper market alarmını kaldırır.","parameters":{"type":"object","properties":{"alert_id":{"type":"integer"},"reason":{"type":"string"}},"required":["alert_id","reason"]}}}
 LLM_LIST_ALERTS_TOOL = {"type":"function","function":{"name":"list_market_alerts","description":"Aktif ve geçmiş paper market alarm kurallarını ve son tetiklemeleri getirir.","parameters":{"type":"object","properties":{"active_only":{"type":"boolean"}},"required":[]}}}
@@ -1764,6 +1764,7 @@ LLM_READONLY_SQL_TOOL = {"type":"function","function":{"name":"read_only_sql","d
 async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     body = payload or {}
     last_message = str((body.get("messages") or [{}])[-1].get("content", "")).lower().replace("ı", "i").replace("ş", "s")
+    alert_intent = any(token in last_message for token in ("izlemeye al", "izlemeye al", "takibe al", "alarm kur", "alarm olustur", "alarm oluştur", "beni uyar", "bildir"))
     broad_scan = any(token in last_message for token in ("tum sembol", "tüm sembol", "en uygun", "en guclu", "en güçlü", "gainer", "piyasa tar"))
     is_trade_command = ("islem" in last_message or "pozisyon" in last_message) and ("ac" in last_message or "aç" in last_message)
     if body.get("stream") is True and is_trade_command:
@@ -1816,17 +1817,24 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         snapshot["market_scan"] = {"error": str(exc), "paper_only": True}
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL,
                   LLM_ECONOMICS_TOOL, LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL,
-                  LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_VALIDATE_PLAN_TOOL])
+                  LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
+                  LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL])
     for tool in tools:
         if tool.get("function", {}).get("name") == "run_custom_backtest":
             tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını backtest eder. Her koşul {indicator, op, value} biçimindedir; desteklenen identifier şeması sonuçta ve açıklamada verilir. Kategoriler: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda veri yoksa null/0 üretir; bu değerleri zorunlu gate olarak kullanmadan önce veri kaynağını dikkate al. Python çalıştırmaz, paper-only'dir."
-    if body.get("stream") is True:
-        async def events():
-            async for event in llm_analysis.stream_chat(snapshot, body.get("messages", [])):
-                yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
-            await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
-        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
     tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Seçili sembol üzerinde public historical candles ile paper-only mevcut strateji backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy":{"type":"string"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"Seçili sembol üzerinde güvenli deklaratif gösterge koşullarıyla paper-only backtest çalıştırır; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Seçili sembol ve stratejiyi farklı tarih pencerelerinde ve deterministik Monte Carlo özetiyle test eder; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"windows":{"type":"array","items":{"type":"integer"}}},"required":["strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}}}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
+    # The symbol-chat route builds a second base list below; append alert and
+    # research tools after that list so they are not lost when the list is
+    # reassigned.
+    tools.extend([LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL,
+                  LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
+                  LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL,
+                  LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL,
+                  LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL])
+    for tool in tools:
+        if tool.get("function", {}).get("name") == "run_custom_backtest":
+            tool["function"]["description"] = "Deklaratif paper-only backtest. Her koşul {indicator, op, value}; identifier şeması: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + "."
+
     async def execute_tool(name, args):
         if name == "scan_market_snapshots": return await scan_market_snapshots(args)
         if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
@@ -1844,6 +1852,42 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         if name == "run_holdout_test": return await run_holdout_test(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("train_days", 60), args.get("holdout_days", 14), args.get("order_size", 500.0))
         if name == "run_statistical_validation": return await run_statistical_validation(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 60), args.get("order_size", 500.0), args.get("trials", 3))
         if name == "get_backtest_data_quality": return await get_backtest_data_quality(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), args.get("days_back", 30))
+        if name == "create_market_alert":
+            alert_id = await database.create_alert_rule({**args, "symbol": str(args.get("symbol") or symbol).replace("_", "").upper(), "created_by": "symbol-llm"})
+            return {"ok": True, "alert_id": alert_id, "paper_only": True, "message": "Alarm oluşturuldu; canlı backend alarm worker'ı tarafından izleniyor."}
+        if name == "update_market_alert": return {"ok": True, "alert": await database.update_alert_rule(int(args.get("alert_id")), args.get("changes") or {}), "paper_only": True}
+        if name == "remove_market_alert": return {"ok": True, "deleted": await database.delete_alert_rule(int(args.get("alert_id"))), "paper_only": True}
+        if name == "list_market_alerts": return {"ok": True, "alerts": await database.list_alert_rules(bool(args.get("active_only"))), "events": await database.get_alert_events(50), "paper_only": True}
+        if name == "get_llm_open_position":
+            target = str(args.get("symbol") or symbol).replace("_", "").upper()
+            return analyzer.llm_position_context(target) or {"ok": False, "error": "pozisyon yok", "paper_only": True}
+        if name == "update_llm_position_plan":
+            target = str(args.get("symbol") or symbol).replace("_", "").upper()
+            return await analyzer.update_llm_position_plan(target, args.get("changes") or {}, args.get("reason", "llm_plan_update"), args.get("evidence"))
+        if name == "close_llm_position":
+            target = str(args.get("symbol") or symbol).replace("_", "").upper()
+            price, _ = await _fresh_public_price(target)
+            if price is None: return {"ok": False, "error": "güncel public fiyat yok", "retryable": True, "paper_only": True}
+            signal = await analyzer.close_position(target, price, "llm_decision:" + str(args.get("reason") or "close"))
+            return {"ok": bool(signal), "signal": signal, "paper_only": True}
+        if name == "set_llm_symbol_guard":
+            target = str(args.get("symbol") or symbol).replace("_", "").upper()
+            guard = await database.upsert_llm_symbol_guard(target, args.get("guard_type", "cooldown"), "active", args.get("blocked_until"), args.get("reason", "llm_guard"), args.get("evidence"))
+            return {"ok": True, "paper_only": True, "guard": guard}
+        if name == "remove_llm_symbol_guard":
+            target = str(args.get("symbol") or symbol).replace("_", "").upper()
+            return {"ok": await database.remove_llm_symbol_guard(target, args.get("reason", "llm_guard_removed")), "symbol": target, "paper_only": True}
+        if name == "list_llm_symbol_guards":
+            return {"ok": True, "guards": await database.get_llm_symbol_guards(bool(args.get("active_only"))), "paper_only": True}
+        if name == "request_codex_research":
+            question = str(args.get("question") or "").strip()
+            if not question: return {"ok": False, "error": "question gerekli", "paper_only": True}
+            event = await publish_a2a_event("research_request", {"question": question, "symbols": args.get("symbols") or [symbol.upper()], "scope": args.get("scope") or "symbol", "evidence_needed": args.get("evidence_needed") or [], "requested_by": "symbol-llm"}, correlation_id=str(body.get("correlation_id") or "symbol-chat"), requires_user_approval=False)
+            return {"ok": True, "a2a": event, "paper_only": True}
+        if name == "get_a2a_messages":
+            rows = await database.get_a2a_messages(max(1, min(int(args.get("limit", 20)), 100)), args.get("status"))
+            if args.get("correlation_id"): rows = [row for row in rows if row.get("correlation_id") == args["correlation_id"] or row.get("payload", {}).get("correlation_id") == args["correlation_id"]]
+            return {"count": len(rows), "messages": rows, "paper_only": True}
         if name == "validate_trade_plan": return await validate_trade_plan(args)
         if name == "query_database": return await llm_query_database(args, symbol.upper())
         if name == "read_only_sql": return await safe_read_only_sql(args)
@@ -1901,7 +1945,16 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                 rows = await memory_service.retrieve(conn, embedded["vector"], limit=max(1, min(int(args.get("limit", 6)), 20)), symbol=symbol.upper(), model_id=embedded.get("model_id"))
             return {"count": len(rows), "results": rows}
         return {"error": "Bilinmeyen araç"}
-    tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL])
+    tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL])
+    if body.get("stream") is True:
+        async def events():
+            try:
+                async for event in llm_analysis.stream_chat(snapshot, body.get("messages", []), tools, execute_tool):
+                    yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+                await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
+            except Exception as exc:
+                yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
+        return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
     result = await llm_analysis.chat(snapshot, body.get("messages", []), tools, execute_tool)
     await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
     return result
@@ -2333,6 +2386,17 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "modify_paper_order": return await analyzer.modify_paper_order(args.get("order_id"), args.get("changes"))
             if name == "reconcile_portfolio": return await reconcile_portfolio()
             if name == "deactivate_coin": return await deactivate_coin(args)
+            if name == "get_llm_open_position":
+                target = str(args.get("symbol") or "").replace("_", "").upper()
+                return analyzer.llm_position_context(target) or {"ok": False, "error": "pozisyon yok", "paper_only": True}
+            if name == "update_llm_position_plan":
+                target = str(args.get("symbol") or "").replace("_", "").upper()
+                return await analyzer.update_llm_position_plan(target, args.get("changes") or {}, args.get("reason", "llm_plan_update"), args.get("evidence"))
+            if name == "close_llm_position":
+                target = str(args.get("symbol") or "").replace("_", "").upper(); price, _ = await _fresh_public_price(target)
+                if price is None: return {"ok": False, "error": "güncel public fiyat yok", "retryable": True, "paper_only": True}
+                signal = await analyzer.close_position(target, price, "llm_decision:" + str(args.get("reason") or "close"))
+                return {"ok": bool(signal), "signal": signal, "paper_only": True}
             if name == "open_llm_paper_trade":
                 return await llm_open_paper_trade({"symbol": args.get("symbol"), "plan": args.get("plan") or {}})
             if name == "activate_coin":
@@ -2484,12 +2548,12 @@ async def strategies_llm_chat(payload: dict = None):
                 # Observability must never turn a valid LLM/tool response into
                 # a failed chat request.
                 print(f"[LLM] tool log kaydedilemedi: {log_error}")
-    tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL, LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL, LLM_DEACTIVATE_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL])
+    tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL, LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL, LLM_DEACTIVATE_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL, LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL])
+    tools.append({"type":"function","function":{"name":"activate_coin","description":"Binance TR public TRY piyasasındaki coini paper analiz evrenine ekler; gerçek emir açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}})
+    tools.append({"type":"function","function":{"name":"place_paper_order","description":"Yalnızca sanal paper emir oluşturur; gerçek borsa emri göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"side":{"type":"string","enum":["BUY","SELL","LONG"]},"order_type":{"type":"string","enum":["MARKET","LIMIT","STOP_LIMIT","STOP_MARKET","OCO"]},"order_value_try":{"type":"number"},"price":{"type":"number"},"limit_price":{"type":"number"},"stop_price":{"type":"number"},"take_profit_pct":{"type":"number"},"stop_loss_pct":{"type":"number"},"max_hold_seconds":{"type":"integer"},"oco_group":{"type":"string"}},"required":["symbol","side","order_type"]}}})
     tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, {"type":"function","function":{"name":"open_llm_paper_trade","description":"LLM planına göre yalnızca sanal paper pozisyon açar. Tutar, stop, take-profit ve maksimum elde tutma süresini model belirler; gerçek emir göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"plan":{"type":"object","properties":{"order_value_try":{"type":"number","description":"TRY cinsinden paper pozisyon tutarı"},"stop_loss_pct":{"type":"number","description":"Ondalık stop oranı; örn. 0.012"},"take_profit_pct":{"type":"number","description":"Ondalık kar hedefi; örn. 0.02"},"max_hold_seconds":{"type":"integer","description":"Pozisyonun maksimum elde tutulma süresi"}},"required":["order_value_try","stop_loss_pct","take_profit_pct","max_hold_seconds"]}},"required":["symbol","plan"]}}}])
     if body.get("stream") is True:
         async def events():
-            tools.append({"type":"function","function":{"name":"activate_coin","description":"Binance TR public TRY piyasasında aktif olan bir coini paper-trading analiz evrenine ekler; gerçek emir açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}})
-            tools.append({"type":"function","function":{"name":"place_paper_order","description":"MARKET, LIMIT, STOP_LIMIT, STOP_MARKET veya OCO türünde yalnızca sanal paper emir oluşturur/çalıştırır.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"side":{"type":"string","enum":["BUY","SELL","LONG"]},"order_type":{"type":"string","enum":["MARKET","LIMIT","STOP_LIMIT","STOP_MARKET","OCO"]},"order_value_try":{"type":"number"},"price":{"type":"number"},"limit_price":{"type":"number"},"stop_price":{"type":"number"},"take_profit_pct":{"type":"number"},"stop_loss_pct":{"type":"number"},"max_hold_seconds":{"type":"integer"},"oco_group":{"type":"string"}},"required":["symbol","side","order_type"]}}})
             if not trade_intent or research_only_intent:
                 tools[:] = [tool for tool in tools if tool.get("function", {}).get("name") not in {"open_llm_paper_trade", "place_paper_order"}]
             requested_tools = {str(value) for value in (body.get("active_tools") or [])}
