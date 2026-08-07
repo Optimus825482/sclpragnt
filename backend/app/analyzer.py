@@ -928,6 +928,14 @@ class ScalpAnalyzer:
     async def _close_position_unlocked(self, symbol, price, reason):
         pos = self.positions.get(symbol)
         if not pos: return None
+        if pos.get("strategy") == "LLM_PAPER" and (
+            str(reason).startswith("time_decay_")
+            or str(reason).startswith("early_failure")
+            or str(reason).startswith("stale_position")
+            or str(reason).startswith("max_hold_")
+        ):
+            await database.save_signal({"symbol": symbol, "action": "CLOSE_BLOCKED", "price": price, "reason": f"llm_legacy_exit_blocked:{reason}", "strategy": "LLM_PAPER", "timestamp": time.time()})
+            return None
         sell_value = pos["quantity"] * price
         commission = sell_value * config.COMMISSION_PCT
         try_balance = await database.get_wallet_balance("TRY")
