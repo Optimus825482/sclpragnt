@@ -1620,6 +1620,7 @@ async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
     context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data.", "self_learning": build_learning_context(await database.get_trades(), limit=200)}
     last_text = str((body.get("messages") or [{}])[-1].get("content", ""))
+    trade_intent = bool(re.search(r"(işlem|islem|pozisyon|paper|trade).*(aç|ac|açar|acar|giriş|giris)|\b(aç|ac)\b.*(işlem|islem|pozisyon|paper|trade)", last_text.lower()))
     requested_symbols = [token.upper() for token in re.findall(r"\b[A-Za-z]{2,12}TRY\b", last_text.upper())]
     if requested_symbols:
         requested = requested_symbols[0].replace("_", "")
@@ -1706,6 +1707,8 @@ async def strategies_llm_chat(payload: dict = None):
     tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, {"type":"function","function":{"name":"open_llm_paper_trade","description":"LLM planına göre yalnızca sanal paper pozisyon açar. Tutar, stop, take-profit ve maksimum elde tutma süresini model belirler; gerçek emir göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"plan":{"type":"object","properties":{"order_value_try":{"type":"number","description":"TRY cinsinden paper pozisyon tutarı"},"stop_loss_pct":{"type":"number","description":"Ondalık stop oranı; örn. 0.012"},"take_profit_pct":{"type":"number","description":"Ondalık kar hedefi; örn. 0.02"},"max_hold_seconds":{"type":"integer","description":"Pozisyonun maksimum elde tutulma süresi"}},"required":["order_value_try","stop_loss_pct","take_profit_pct","max_hold_seconds"]}},"required":["symbol","plan"]}}}])
     if body.get("stream") is True:
         async def events():
+            if not trade_intent:
+                tools[:] = [tool for tool in tools if tool.get("function", {}).get("name") != "open_llm_paper_trade"]
             if any(tool.get("function", {}).get("name") == "open_llm_paper_trade" for tool in tools):
                 result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"))
                 yield f"event: delta\ndata: {json.dumps({'text': result.get('text') or 'Paper işlem planı oluşturulamadı.'}, ensure_ascii=False)}\n\n"
