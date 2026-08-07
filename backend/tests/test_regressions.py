@@ -114,6 +114,8 @@ class RegressionContracts(unittest.TestCase):
         source = (ROOT.parent / "docker-compose.yaml").read_text()
         self.assertIn("DB_BACKEND: postgres", source)
         self.assertNotIn("DB_BACKEND: ${DB_BACKEND:-postgres}", source)
+        self.assertIn("@postgres:5432/${POSTGRES_DB:-scalper}", source)
+        self.assertNotIn("DATABASE_URL:-postgresql://", source)
 
     def test_hourly_top_gainer_activation_is_public_and_bounded(self):
         source = (ROOT / "app" / "main.py").read_text()

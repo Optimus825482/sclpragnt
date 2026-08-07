@@ -22,7 +22,9 @@ services:
         condition: service_healthy
     environment:
       SCALPER_DB_PATH: /data/scalper_db_v4.sqlite
-      DATABASE_URL: ${DATABASE_URL:-postgresql://scalper:local-dev-change-me@postgres:5432/scalper}
+      # Use the database service in this Compose stack. A stale Coolify
+      # DATABASE_URL must not redirect the backend to an unreachable host.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-scalper}:${POSTGRES_PASSWORD:-local-dev-change-me}@postgres:5432/${POSTGRES_DB:-scalper}
       # This application is PostgreSQL-only. Do not allow a stale Coolify
       # variable to silently switch the backend to the retired SQLite path.
       DB_BACKEND: postgres
