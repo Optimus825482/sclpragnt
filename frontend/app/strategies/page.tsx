@@ -1,7 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
 import { API_BASE } from "../lib/api";
-import StrategyLlm from "./StrategyLlm";
 
 type Config = {
     ut_enabled: boolean;
@@ -146,7 +145,6 @@ export default function StrategiesPage() {
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [pageTab, setPageTab] = useState<"strategies" | "llm">("strategies");
 
     useEffect(() => {
     fetch(`${API_BASE}/api/config`)
@@ -214,12 +212,7 @@ export default function StrategiesPage() {
 
             {cfg && (
                 <>
-                    <div className="flex gap-2 border-b border-bunker-800 pb-2">
-                        <button onClick={() => setPageTab("strategies")} className={`min-h-11 px-4 rounded-lg border font-mono text-sm ${pageTab === "strategies" ? "border-neon-green/50 text-neon-green" : "border-bunker-700 text-bunker-muted"}`}>STRATEJİ AYARLARI</button>
-                        <button onClick={() => setPageTab("llm")} className={`min-h-11 px-4 rounded-lg border font-mono text-sm ${pageTab === "llm" ? "border-yellow-400/50 text-yellow-300" : "border-bunker-700 text-bunker-muted"}`}>LLM ANALİZİ</button>
-                    </div>
-                    {pageTab === "llm" && <StrategyLlm />}
-                    {pageTab === "strategies" && <>
+                    <>
                     <div className="flex gap-2 flex-wrap">
                         {STRATEGIES.filter(st => st.key === "GAINER_RADAR").map((st, i) => {
                             const enabled = !!draft[st.enabledKey];
@@ -325,7 +318,7 @@ export default function StrategiesPage() {
                             )}
                         </div>
                     </div>
-                    </>}
+                    </>
                 </>
             )}
         </div>

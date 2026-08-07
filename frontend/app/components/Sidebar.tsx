@@ -8,7 +8,6 @@ const MENU = [
     { href: "/chat", label: "Chat", icon: "✦", desc: "LLM sohbet merkezi" },
     { href: "/", label: "Scalping", icon: "⚡", desc: "Canlı terminal" },
     { href: "/portfolio", label: "Portföy", icon: "📊", desc: "Varlıklar & PnL", children: [{ href: "/portfolio?tab=history", label: "İşlem Geçmişi" }] },
-    { href: "/strategies", label: "Stratejiler", icon: "🧠", desc: "Aktif/pasif & ayarlar" },
     { href: "/gainer-radar", label: "Gainer Radar", icon: "🎯", desc: "Fırsat tarayıcı" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
     { href: "/backtest", label: "Backtest", icon: "🧪", desc: "Strateji test lab" },

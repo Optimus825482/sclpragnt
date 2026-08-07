@@ -215,6 +215,16 @@ ws_manager = ConnectionManager()
 async def startup():
     global _pg_pool
     await database.init_db()
+    saved_config = await database.get_llm_setting("runtime_config")
+    if saved_config:
+        try:
+            persisted = json.loads(saved_config)
+            for key, attr in CONFIG_FIELDS.items():
+                if key in persisted: setattr(config, attr, persisted[key])
+            if persisted.get("symbols"):
+                config.SYMBOLS = list(persisted["symbols"]); config.UT_SYMBOLS = list(config.SYMBOLS)
+        except Exception as exc:
+            print(f"[Config] Kalıcı ayarlar yüklenemedi: {exc}")
     await analyzer.load_state()
     if os.getenv("DB_BACKEND", "sqlite").lower() == "postgres" and asyncpg and os.getenv("DATABASE_URL"):
         try:
@@ -811,6 +821,11 @@ async def update_config(payload: dict):
     market.reconnect_requested = True
     await market.fetch_historical_data()
     analyzer._last_signal_lengths.clear()
+    existing = await database.get_llm_setting("runtime_config", "{}")
+    try: persisted = json.loads(existing or "{}")
+    except json.JSONDecodeError: persisted = {}
+    persisted.update({key: value for key, value in payload.items() if key in CONFIG_FIELDS or key in {"symbols", "ut_symbols"}})
+    await database.set_llm_setting("runtime_config", json.dumps(persisted, ensure_ascii=False))
     return await get_config()
 
 @app.post("/api/portfolio/reconcile")
@@ -1730,8 +1745,11 @@ async def strategies_llm_chat(payload: dict = None):
                 yield f"event: delta\ndata: {json.dumps({'text': result.get('text') or 'Paper işlem planı oluşturulamadı.'}, ensure_ascii=False)}\n\n"
                 yield f"event: done\ndata: {json.dumps({'status': result.get('status', 'ok'), 'model': result.get('model')}, ensure_ascii=False)}\n\n"
                 return
-            async for event in llm_analysis.stream_chat(context, body.get("messages", [])):
-                yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+            try:
+                async for event in llm_analysis.stream_chat(context, body.get("messages", [])):
+                    yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+            except Exception as exc:
+                yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
     active_tools = {str(value) for value in (body.get("active_tools") or [])}
     if active_tools:
