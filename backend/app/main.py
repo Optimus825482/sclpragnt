@@ -191,7 +191,31 @@ def _chat_memory_document(messages, *, layer="session", symbol=None, strategy=No
 
 async def _persist_chat_memory(messages, **kwargs):
     if _pg_pool and messages:
+        session_id = str(kwargs.get("session_id") or "default")
+        symbol, strategy = kwargs.get("symbol"), kwargs.get("strategy")
+        async with _pg_pool.acquire() as conn:
+            for index, message in enumerate(messages):
+                if not isinstance(message, dict) or not message.get("content"): continue
+                await conn.execute("""INSERT INTO chat_messages(session_id,sequence_no,role,content,symbol,strategy)
+                    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(session_id,sequence_no) DO UPDATE SET content=EXCLUDED.content,role=EXCLUDED.role""",
+                    session_id, index, str(message.get("role", "user")), str(message.get("content")), symbol, strategy)
         embedding_worker.enqueue_nowait(_chat_memory_document(messages, **kwargs))
+        if len(messages) >= 8 and len(messages) % 8 == 0:
+            summary = {"session_id": session_id, "message_count": len(messages), "recent_messages": messages[-12:]}
+            embedding_worker.enqueue_nowait(build_document(layer="session", scope=session_id, symbol=symbol, strategy=strategy,
+                source_type="chat_summary", source_id=f"{session_id}:summary:{len(messages)}",
+                content=json.dumps(summary, ensure_ascii=False, default=str), metadata={"summary": True, "message_count": len(messages)}))
+
+async def _chat_memory_context(query: str, *, symbol=None, strategy=None, limit=6):
+    if not _pg_pool or not query.strip(): return {"enabled": False, "results": []}
+    try:
+        embedded = await llm_analysis.embedding(query)
+        if embedded.get("status") != "ok": return {"enabled": False, "results": [], "error": embedded.get("error")}
+        async with _pg_pool.acquire() as conn:
+            rows = await memory_service.retrieve(conn, embedded["vector"], limit=limit, symbol=symbol, strategy=strategy, model_id=embedded.get("model_id"), query_text=query)
+        return {"enabled": True, "results": rows, "model_id": embedded.get("model_id")}
+    except Exception as exc:
+        return {"enabled": False, "results": [], "error": str(exc)}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WELL_KNOWN_DIR = os.path.join(BASE_DIR, "..", ".well-known")
@@ -523,7 +547,7 @@ async def memory_retrieve(payload: dict = None):
     if embedded.get("status") != "ok": raise HTTPException(status_code=502, detail=embedded.get("error", "Embedding üretilemedi"))
     requested_symbol = str(body.get("symbol")).strip().upper() if body.get("symbol") else None
     async with _pg_pool.acquire() as conn:
-        rows = await memory_service.retrieve(conn, embedded["vector"], limit=body.get("limit", 8), layer=body.get("layer"), symbol=requested_symbol, strategy=body.get("strategy"), timeframe=body.get("timeframe"), model_id=embedded.get("model_id"))
+        rows = await memory_service.retrieve(conn, embedded["vector"], limit=body.get("limit", 8), layer=body.get("layer"), symbol=requested_symbol, strategy=body.get("strategy"), timeframe=body.get("timeframe"), model_id=embedded.get("model_id"), query_text=text)
         await conn.execute("INSERT INTO memory_retrieval_logs(query_scope,query_text_hash,filters,model_id,result_ids,latency_ms) VALUES($1,$2,$3::jsonb,$4,$5::jsonb,$6)", body.get("scope", "memory"), memory_service.content_hash(text), json.dumps({k: body.get(k) for k in ("layer", "symbol", "strategy", "timeframe") if body.get(k) is not None}), embedded.get("model_id"), json.dumps([r.get("id") for r in rows]), None)
     return {"query": text, "results": rows, "count": len(rows)}
 
@@ -1414,6 +1438,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         async def events():
             async for event in llm_analysis.stream_chat(snapshot, body.get("messages", [])):
                 yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+            await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
     tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Seçili sembol üzerinde public historical candles ile paper-only mevcut strateji backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy":{"type":"string"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"Seçili sembol üzerinde güvenli deklaratif gösterge koşullarıyla paper-only backtest çalıştırır; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Seçili sembol ve stratejiyi farklı tarih pencerelerinde ve deterministik Monte Carlo özetiyle test eder; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"windows":{"type":"array","items":{"type":"integer"}}},"required":["strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}}}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     async def execute_tool(name, args):
@@ -1647,6 +1672,7 @@ async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
     context = {"type": "strategy_research_tool_mode", "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "note": "Use a tool only when the question requires its data.", "self_learning": build_learning_context(await database.get_trades(), limit=200)}
     last_text = str((body.get("messages") or [{}])[-1].get("content", ""))
+    context["memory_context"] = await _chat_memory_context(last_text, strategy=str(body.get("strategy") or "") or None)
     trade_intent = bool(re.search(r"(işlem|islem|pozisyon|paper|trade|coin|sembol|emir|market|limit|stop|oco).*(aç|ac|açar|acar|aktif|ekle|giriş|giris|kur|kullan)|\b(aç|ac|aktif|ekle|kur|kullan)\b.*(işlem|islem|pozisyon|paper|trade|coin|sembol|emir|market|limit|stop|oco)", last_text.lower()))
     requested_symbols = [token.upper() for token in re.findall(r"\b[A-Za-z]{2,12}TRY\b", last_text.upper())]
     if requested_symbols:
@@ -1760,6 +1786,7 @@ async def strategies_llm_chat(payload: dict = None):
             try:
                 async for event in llm_analysis.stream_chat(context, body.get("messages", [])):
                     yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+                await _persist_chat_memory(body.get("messages", []), layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=str(body.get("session_id") or "strategy:default"))
             except Exception as exc:
                 yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})

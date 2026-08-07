@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS memory_documents (
 CREATE UNIQUE INDEX IF NOT EXISTS memory_documents_hash_idx ON memory_documents(content_hash, embedding_model_id);
 CREATE INDEX IF NOT EXISTS memory_documents_scope_idx ON memory_documents(layer, symbol, strategy, timeframe, observed_at DESC);
 CREATE INDEX IF NOT EXISTS memory_documents_metadata_idx ON memory_documents USING GIN(metadata);
+ALTER TABLE memory_documents ADD COLUMN IF NOT EXISTS search_vector tsvector GENERATED ALWAYS AS (to_tsvector('simple', coalesce(content,'') || ' ' || coalesce(symbol,'') || ' ' || coalesce(strategy,''))) STORED;
+CREATE INDEX IF NOT EXISTS memory_documents_search_idx ON memory_documents USING GIN(search_vector);
+CREATE INDEX IF NOT EXISTS memory_documents_filter_idx ON memory_documents(layer, symbol, strategy, timeframe, observed_at DESC);
 
 -- Embeddings are dimension-specific by design. The first active embedding model
 -- creates the vector(D) table for its declared dimension; another dimension must
@@ -75,6 +78,7 @@ END $$;
 -- HNSW index is intentionally created after the first embedding model is
 -- configured. Creating it during the base migration can block on an existing
 -- PostgreSQL relation and is unnecessary while the table has no embeddings.
+CREATE INDEX IF NOT EXISTS memory_embeddings_hnsw_idx ON memory_embeddings USING hnsw (embedding halfvec_cosine_ops);
 
 CREATE TABLE IF NOT EXISTS memory_retrieval_logs (
   id BIGSERIAL PRIMARY KEY,
@@ -82,3 +86,19 @@ CREATE TABLE IF NOT EXISTS memory_retrieval_logs (
   model_id BIGINT, result_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
   latency_ms DOUBLE PRECISION, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id BIGSERIAL PRIMARY KEY, session_id TEXT NOT NULL, sequence_no INTEGER NOT NULL,
+  role TEXT NOT NULL, content TEXT NOT NULL, symbol TEXT, strategy TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), embedded_at TIMESTAMPTZ,
+  UNIQUE(session_id, sequence_no)
+);
+CREATE INDEX IF NOT EXISTS chat_messages_session_idx ON chat_messages(session_id, sequence_no);
+
+CREATE TABLE IF NOT EXISTS embedding_jobs (
+  id BIGSERIAL PRIMARY KEY, document JSONB NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0, available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_error TEXT, locked_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS embedding_jobs_ready_idx ON embedding_jobs(status, available_at);

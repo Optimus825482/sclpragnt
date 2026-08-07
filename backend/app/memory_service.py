@@ -49,13 +49,20 @@ async def save_embedding(conn, document_id: int, model_id: int, vector: list[flo
 
 async def retrieve(conn, query_vector: list[float], *, limit: int = 8, layer: str | None = None,
                    symbol: str | None = None, strategy: str | None = None,
-                   timeframe: str | None = None, model_id: int | None = None):
+                   timeframe: str | None = None, model_id: int | None = None, query_text: str | None = None):
     if not query_vector: return []
     clauses, args = ["d.embedding_status='ready'"], ["[" + ",".join(str(float(x)) for x in query_vector) + "]"]
     for field, value in (("d.layer", layer), ("d.symbol", symbol), ("d.strategy", strategy), ("d.timeframe", timeframe), ("e.model_id", model_id)):
         if value is not None: args.append(value); clauses.append(f"{field}=${len(args)}")
+    text_param = None
+    if query_text:
+        args.append(query_text); text_param = len(args)
     args.append(max(1, min(int(limit), 50)))
     rows = await conn.fetch(f"""SELECT d.id,d.layer,d.scope,d.symbol,d.strategy,d.timeframe,d.content,d.metadata,d.observed_at,
-      1-(e.embedding <=> $1::halfvec) AS similarity FROM memory_documents d JOIN memory_embeddings e ON e.memory_document_id=d.id
-      WHERE {' AND '.join(clauses)} ORDER BY e.embedding <=> $1::halfvec LIMIT ${len(args)}""", *args)
+      1-(e.embedding <=> $1::halfvec) AS similarity,
+      {f"ts_rank_cd(d.search_vector, plainto_tsquery('simple', ${text_param}))" if text_param else "0"} AS lexical_score
+      FROM memory_documents d JOIN memory_embeddings e ON e.memory_document_id=d.id
+      WHERE {' AND '.join(clauses)}
+      ORDER BY ((1-(e.embedding <=> $1::halfvec)) * 0.8 + {f"ts_rank_cd(d.search_vector, plainto_tsquery('simple', ${text_param}))" if text_param else "0"} * 0.2) DESC
+      LIMIT ${len(args)}""", *args)
     return [dict(row) for row in rows]

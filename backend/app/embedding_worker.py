@@ -32,13 +32,21 @@ class EmbeddingWorker:
         while True:
             document = await self.queue.get()
             try:
-                vector_result = await self.embedder(document["content"])
-                if vector_result.get("status") != "ok": raise RuntimeError(vector_result.get("error", "embedding failed"))
-                vector = vector_result.get("vector")
-                if not vector: raise RuntimeError("embedding provider vector döndürmedi")
-                async with self.pool.acquire() as conn:
-                    document_id = await upsert_document(conn, document, vector_result.get("model_id"))
-                    await save_embedding(conn, document_id, int(vector_result.get("model_id") or 0), vector, int(vector_result["dimensions"]))
+                last_error = None
+                for attempt in range(3):
+                    try:
+                        vector_result = await self.embedder(document["content"])
+                        if vector_result.get("status") != "ok": raise RuntimeError(vector_result.get("error", "embedding failed"))
+                        vector = vector_result.get("vector")
+                        if not vector: raise RuntimeError("embedding provider vector döndürmedi")
+                        async with self.pool.acquire() as conn:
+                            document_id = await upsert_document(conn, document, vector_result.get("model_id"))
+                            await save_embedding(conn, document_id, int(vector_result.get("model_id") or 0), vector, int(vector_result["dimensions"]))
+                        last_error = None; break
+                    except Exception as exc:
+                        last_error = exc
+                        if attempt < 2: await asyncio.sleep(0.5 * (2 ** attempt))
+                if last_error: raise last_error
                 self.stats["processed"] += 1; self.stats["last_processed_at"] = time.time()
             except Exception as exc:
                 self.stats["failed"] += 1; self.stats["last_error"] = str(exc)
