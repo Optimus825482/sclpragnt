@@ -1004,6 +1004,18 @@ async def llm_config():
     auto_enabled = (await database.get_llm_setting("llm_auto_paper_enabled", "0")) == "1"
     return {**data, "encryption_configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "paper_trade_enabled": paper_enabled, "auto_paper_enabled": auto_enabled, "auto_paper_interval_minutes": 15}
 
+@app.get("/api/llm/chat-settings")
+async def get_llm_chat_settings():
+    raw = await database.get_llm_setting("chat_settings", "{}")
+    try: return json.loads(raw or "{}")
+    except json.JSONDecodeError: return {}
+
+@app.put("/api/llm/chat-settings")
+async def save_llm_chat_settings(payload: dict):
+    settings = {"active_tools": [str(value) for value in (payload.get("active_tools") or [])], "active_skills": [str(value) for value in (payload.get("active_skills") or [])]}
+    await database.set_llm_setting("chat_settings", json.dumps(settings, ensure_ascii=False))
+    return {"ok": True, **settings}
+
 @app.get("/api/llm/learning")
 async def llm_learning():
     """Expose the descriptive closed-trade learning summary for audit/UI."""
