@@ -183,6 +183,14 @@ async def init_db():
                 message_type TEXT NOT NULL, sender TEXT, recipient TEXT, status TEXT NOT NULL DEFAULT 'queued',
                 payload TEXT NOT NULL, created_at REAL NOT NULL, delivered_at REAL, acknowledged_at REAL,
                 last_error TEXT, attempts INTEGER NOT NULL DEFAULT 0
+        )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS llm_symbol_guards (
+                symbol TEXT PRIMARY KEY, guard_type TEXT NOT NULL DEFAULT 'cooldown',
+                status TEXT NOT NULL DEFAULT 'active', blocked_until REAL,
+                reason TEXT, evidence TEXT, revision INTEGER NOT NULL DEFAULT 1,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL
             )
         """)
         conn.execute("""
@@ -949,6 +957,51 @@ async def update_a2a_message_status(message_id, status, payload=None):
             cur = conn.execute("UPDATE a2a_messages SET status=?, payload=?, acknowledged_at=? WHERE message_id=?", (status, json.dumps(payload, ensure_ascii=False, default=str), time.time() if status == "acknowledged" else None, str(message_id)))
         conn.commit()
         return cur.rowcount > 0
+    return await _run_db(op)
+
+
+async def upsert_llm_symbol_guard(symbol, guard_type="cooldown", status="active", blocked_until=None, reason=None, evidence=None):
+    symbol = str(symbol).replace("_", "").upper()
+    now = time.time()
+    def op(conn):
+        row = conn.execute("SELECT revision FROM llm_symbol_guards WHERE symbol=?", (symbol,)).fetchone()
+        revision = int((row[0] if row else 0) or 0) + 1
+        conn.execute("""INSERT INTO llm_symbol_guards
+            (symbol,guard_type,status,blocked_until,reason,evidence,revision,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(symbol) DO UPDATE SET guard_type=excluded.guard_type,status=excluded.status,
+            blocked_until=excluded.blocked_until,reason=excluded.reason,evidence=excluded.evidence,
+            revision=excluded.revision,updated_at=excluded.updated_at""",
+            (symbol, str(guard_type), str(status), blocked_until, reason, json.dumps(evidence or {}, ensure_ascii=False, default=str), revision, now, now))
+        conn.commit()
+        return {"symbol": symbol, "guard_type": guard_type, "status": status, "blocked_until": blocked_until, "reason": reason, "evidence": evidence or {}, "revision": revision, "updated_at": now}
+    return await _run_db(op)
+
+
+async def get_llm_symbol_guard(symbol):
+    symbol = str(symbol).replace("_", "").upper()
+    def op(conn):
+        row = conn.execute("SELECT * FROM llm_symbol_guards WHERE symbol=?", (symbol,)).fetchone()
+        if not row: return None
+        result = dict(row); result["evidence"] = _json_value(result.get("evidence"), {}); return result
+    return await _run_db(op)
+
+
+async def get_llm_symbol_guards(active_only=False):
+    def op(conn):
+        where = " WHERE status='active'" if active_only else ""
+        rows = conn.execute(f"SELECT * FROM llm_symbol_guards{where} ORDER BY updated_at DESC").fetchall()
+        result = [dict(row) for row in rows]
+        for item in result: item["evidence"] = _json_value(item.get("evidence"), {})
+        return result
+    return await _run_db(op)
+
+
+async def remove_llm_symbol_guard(symbol, reason="llm_guard_removed"):
+    symbol = str(symbol).replace("_", "").upper()
+    def op(conn):
+        cur = conn.execute("UPDATE llm_symbol_guards SET status='removed',reason=?,updated_at=? WHERE symbol=?", (reason, time.time(), symbol))
+        conn.commit(); return cur.rowcount > 0
     return await _run_db(op)
 
 

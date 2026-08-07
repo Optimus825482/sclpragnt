@@ -980,6 +980,14 @@ class ScalpAnalyzer:
             return await self._open_position_unlocked(symbol, entry_price, side, strat_name, order_value, stop_loss_pct, take_profit_pct, max_hold_sec)
 
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None):
+        llm_guard = await database.get_llm_symbol_guard(symbol) if strat_name == "LLM_PAPER" else None
+        if llm_guard and llm_guard.get("status") == "active":
+            blocked_until = llm_guard.get("blocked_until")
+            if blocked_until is None or float(blocked_until) > time.time():
+                reason = f"llm_guard:{llm_guard.get('guard_type', 'symbol_block')}"
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price, "reason": reason, "strategy": strat_name, "timestamp": time.time(), "guard_revision": llm_guard.get("revision")})
+                return None
+            await database.upsert_llm_symbol_guard(symbol, llm_guard.get("guard_type", "cooldown"), "expired", blocked_until, "cooldown_expired", llm_guard.get("evidence"))
         # The in-memory portfolio can lag after a restart or another worker's
         # write. Reconcile this symbol before attempting the unique DB insert.
         db_positions = await database.load_positions()

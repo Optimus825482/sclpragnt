@@ -127,6 +127,9 @@ async def a2a_inbox_loop():
 LLM_POSITION_CONTEXT_TOOL = {"type": "function", "function": {"name": "get_llm_open_position", "description": "Açık LLM paper pozisyonunun güncel state ve planını getirir.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}}
 LLM_UPDATE_POSITION_TOOL = {"type": "function", "function": {"name": "update_llm_position_plan", "description": "LLM paper pozisyonunun TP, SL veya maksimum bekleme planını günceller; gerçek emir göndermez.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}, "changes": {"type": "object", "properties": {"stop_loss_pct": {"type": "number"}, "take_profit_pct": {"type": "number"}, "max_hold_seconds": {"type": "integer"}}}, "reason": {"type": "string"}, "evidence": {"type": "object"}}, "required": ["symbol", "changes", "reason"]}}}
 LLM_CLOSE_POSITION_TOOL = {"type": "function", "function": {"name": "close_llm_position", "description": "Güncel fiyatla LLM paper pozisyonunu kapatır; gerçek emir göndermez.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}, "reason": {"type": "string"}}, "required": ["symbol", "reason"]}}}
+LLM_SET_SYMBOL_GUARD_TOOL = {"type":"function","function":{"name":"set_llm_symbol_guard","description":"LLM’nin kendi oluşturduğu sembol bazlı BUY guard’ını oluşturur veya günceller. Paper execution guard’ıdır; strateji parametresi değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"guard_type":{"type":"string","enum":["cooldown","symbol_block","min_movement"]},"blocked_until":{"type":"number","description":"Unix timestamp; boşsa süresiz blok"},"reason":{"type":"string"},"evidence":{"type":"object"}},"required":["symbol","guard_type","reason"]}}}
+LLM_REMOVE_SYMBOL_GUARD_TOOL = {"type":"function","function":{"name":"remove_llm_symbol_guard","description":"LLM’nin daha önce oluşturduğu sembol BUY guard’ını kaldırır.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"reason":{"type":"string"}},"required":["symbol","reason"]}}}
+LLM_LIST_SYMBOL_GUARDS_TOOL = {"type":"function","function":{"name":"list_llm_symbol_guards","description":"Aktif ve geçmiş LLM sembol guard’larını getirir.","parameters":{"type":"object","properties":{"active_only":{"type":"boolean"}},"required":[]}}}
 
 
 async def manage_llm_position(symbol):
@@ -1613,7 +1616,7 @@ async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
 LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Tüm etkin paper-trading sembollerini güncel public market verisiyle tarar, bullish adayları deterministik olarak sıralar. Salt-okunur; pozisyon açmaz.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","30m","1h","4h","1d"]}},"limit":{"type":"integer"}},"required":[]}}}
 LLM_A2A_MESSAGES_TOOL = {"type":"function","function":{"name":"get_a2a_messages","description":"Codex/relay tarafından gönderilmiş A2A araştırma ve capability cevaplarını getirir; salt-okunur.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"status":{"type":"string"},"correlation_id":{"type":"string"}},"required":[]}}}
 LLM_REQUEST_CODEX_RESEARCH_TOOL = {"type":"function","function":{"name":"request_codex_research","description":"Codex agentinden paper-only, dış araştırma veya tool/capability incelemesi ister. Gerçek emir veya strateji parametresi mutasyonu yapmaz.","parameters":{"type":"object","properties":{"question":{"type":"string","description":"Codex'e yöneltilecek açık araştırma sorusu"},"symbols":{"type":"array","items":{"type":"string"}},"scope":{"type":"string","description":"Araştırma kapsamı: backtest, tool, capability, architecture veya market"},"evidence_needed":{"type":"array","items":{"type":"string"}}},"required":["question"]}}}
-A2A_SYSTEM_TOOL_NAMES = {"get_a2a_messages", "request_codex_research"}
+A2A_SYSTEM_TOOL_NAMES = {"get_a2a_messages", "request_codex_research", "set_llm_symbol_guard", "remove_llm_symbol_guard", "list_llm_symbol_guards"}
 LLM_DEEP_SYMBOL_TOOL = {"type":"function","function":{"name":"deep_analyze_symbol","description":"Bir sembolün seçili timeframe ve çoklu timeframe teknik snapshot'ını getirir; trend fazı ve aday değerlendirmesi için kullanılır. Salt-okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframe":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]}},"required":["symbol"]}}}
 
 LLM_DATABASE_TOOL = {"type":"function","function":{"name":"query_database","description":"Sistemin PostgreSQL/SQLite veri katmanında güvenli, salt-okunur sorgu yapar. Açık pozisyon sorgusunda hem veritabanı hem canlı portföy belleğini karşılaştırır; böylece stale/mutabakat farkını gizlemez. Ham SQL çalıştırmaz.","parameters":{"type":"object","properties":{"resource":{"type":"string","enum":["positions","trades","signals","decisions","wallet"]},"symbol":{"type":"string"},"strategy":{"type":"string"},"action":{"type":"string"},"limit":{"type":"integer"}},"required":["resource"]}}}
@@ -2243,6 +2246,20 @@ async def strategies_llm_chat(payload: dict = None):
                     return {"count": len(rows), "results": rows, "retryable": False}
                 except Exception as exc:
                     return {"count": 0, "results": [], "error": f"Memory kullanılamıyor: {type(exc).__name__}: {exc}", "retryable": False}
+            if name == "set_llm_symbol_guard":
+                symbol = str(args.get("symbol") or "").replace("_", "").upper()
+                if not symbol or not args.get("reason"):
+                    return {"ok": False, "paper_only": True, "error": "symbol ve reason gerekli"}
+                guard = await database.upsert_llm_symbol_guard(symbol, args.get("guard_type", "cooldown"), "active", args.get("blocked_until"), args.get("reason"), args.get("evidence"))
+                await database.save_signal({"symbol": symbol, "action": "LLM_GUARD_UPDATED", "reason": args.get("reason"), "strategy": "LLM_PAPER", "timestamp": time.time(), "guard_revision": guard.get("revision")})
+                return {"ok": True, "paper_only": True, "guard": guard}
+            if name == "remove_llm_symbol_guard":
+                symbol = str(args.get("symbol") or "").replace("_", "").upper()
+                removed = await database.remove_llm_symbol_guard(symbol, args.get("reason", "llm_guard_removed"))
+                await database.save_signal({"symbol": symbol, "action": "LLM_GUARD_REMOVED", "reason": args.get("reason"), "strategy": "LLM_PAPER", "timestamp": time.time()})
+                return {"ok": removed, "paper_only": True, "symbol": symbol}
+            if name == "list_llm_symbol_guards":
+                return {"ok": True, "paper_only": True, "guards": await database.get_llm_symbol_guards(bool(args.get("active_only")))}
             if name == "request_codex_research":
                 question = str(args.get("question") or "").strip()
                 if not question:
@@ -2288,7 +2305,7 @@ async def strategies_llm_chat(payload: dict = None):
                 # Observability must never turn a valid LLM/tool response into
                 # a failed chat request.
                 print(f"[LLM] tool log kaydedilemedi: {log_error}")
-    tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL, LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL, LLM_DEACTIVATE_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL])
+    tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL, LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL, LLM_DEACTIVATE_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL])
     tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, {"type":"function","function":{"name":"open_llm_paper_trade","description":"LLM planına göre yalnızca sanal paper pozisyon açar. Tutar, stop, take-profit ve maksimum elde tutma süresini model belirler; gerçek emir göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"plan":{"type":"object","properties":{"order_value_try":{"type":"number","description":"TRY cinsinden paper pozisyon tutarı"},"stop_loss_pct":{"type":"number","description":"Ondalık stop oranı; örn. 0.012"},"take_profit_pct":{"type":"number","description":"Ondalık kar hedefi; örn. 0.02"},"max_hold_seconds":{"type":"integer","description":"Pozisyonun maksimum elde tutulma süresi"}},"required":["order_value_try","stop_loss_pct","take_profit_pct","max_hold_seconds"]}},"required":["symbol","plan"]}}}])
     if body.get("stream") is True:
         async def events():
