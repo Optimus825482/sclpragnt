@@ -8,8 +8,19 @@ function inline(text: string) {
   });
 }
 
+function repairSpacing(text: string) {
+  return text
+    // Keep provider output readable when it omits spaces around punctuation.
+    .replace(/([.!?;:])(?=[\p{L}\d])/gu, "$1 ")
+    .replace(/([,])(?=[\p{L}\d])/gu, "$1 ")
+    // Also repair common token-boundary loss such as "MerhabaErkan".
+    .replace(/([\p{Ll}\d])([\p{Lu}ÇĞİÖŞÜ])/gu, "$1 $2")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export default function MarkdownMessage({ content }: { content: string }) {
-  const normalized = String(content || "")
+  const normalized = repairSpacing(String(content || ""))
     .replace(/\s*(#{2,4})\s*/g, "\n$1 ")
     .replace(/\s*---\s*/g, "\n---\n")
     .replace(/\|/g, " | ");
