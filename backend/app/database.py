@@ -175,6 +175,17 @@ async def init_db():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS paper_orders (
+                order_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT NOT NULL,
+                order_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
+                order_value_try REAL, price REAL, limit_price REAL, stop_price REAL,
+                take_profit_price REAL, stop_loss_pct REAL, take_profit_pct REAL,
+                max_hold_seconds INTEGER, oco_group TEXT, reference_price REAL,
+                client_request_id TEXT UNIQUE, trace_id TEXT, payload TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL, updated_at REAL NOT NULL, filled_at REAL, cancelled_at REAL
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS virtual_wallet (
                 asset TEXT PRIMARY KEY,
                 amount REAL
@@ -643,6 +654,29 @@ async def save_position(symbol, pos):
         conn.commit()
 
     await _run_db(op)
+
+async def save_paper_order(order):
+    now = float(order.get("updated_at") or time.time())
+    def op(conn):
+        conn.execute("""INSERT INTO paper_orders
+            (order_id,symbol,side,order_type,status,order_value_try,price,limit_price,stop_price,
+             take_profit_price,stop_loss_pct,take_profit_pct,max_hold_seconds,oco_group,reference_price,
+             client_request_id,trace_id,payload,created_at,updated_at,filled_at,cancelled_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(order_id) DO UPDATE SET status=excluded.status,payload=excluded.payload,updated_at=excluded.updated_at,
+              filled_at=excluded.filled_at,cancelled_at=excluded.cancelled_at""",
+            (order.get("order_id"),order.get("symbol"),order.get("side"),order.get("order_type"),order.get("status","OPEN"),
+             order.get("order_value_try"),order.get("price"),order.get("limit_price"),order.get("stop_price"),order.get("take_profit_price"),
+             order.get("stop_loss_pct"),order.get("take_profit_pct"),order.get("max_hold_seconds"),order.get("oco_group"),order.get("reference_price"),
+             order.get("client_request_id"),order.get("trace_id"),json.dumps(order, ensure_ascii=False, default=str),order.get("created_at",now),now,order.get("filled_at"),order.get("cancelled_at")))
+        conn.commit()
+    await _run_db(op)
+
+async def load_paper_orders():
+    def op(conn):
+        rows = conn.execute("SELECT payload FROM paper_orders WHERE status IN ('OPEN','PENDING') ORDER BY created_at").fetchall()
+        return [_json_value(row[0], {}) for row in rows]
+    return await _run_db(op)
 
 async def save_trade(trade):
     def op(conn: sqlite3.Connection):

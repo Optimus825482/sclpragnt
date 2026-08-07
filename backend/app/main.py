@@ -193,9 +193,14 @@ def _chat_memory_document(messages, *, layer="session", symbol=None, strategy=No
                           source_type="chat_message", source_id=f"{session_id}:{len(messages or [])}",
                           content=content, metadata={"session_id": session_id, "message_count": len(messages or [])})
 
+def _safe_session_id(value):
+    """Keep session scopes bounded and free of control characters/path-like data."""
+    normalized = re.sub(r"[^A-Za-z0-9:_-]", "_", str(value or "default"))[:160]
+    return normalized or "default"
+
 async def _persist_chat_memory(messages, **kwargs):
     if _pg_pool and messages:
-        session_id = str(kwargs.get("session_id") or "default")
+        session_id = _safe_session_id(kwargs.get("session_id"))
         symbol, strategy = kwargs.get("symbol"), kwargs.get("strategy")
         async with _pg_pool.acquire() as conn:
             for index, message in enumerate(messages):
@@ -458,7 +463,7 @@ async def system_health():
     except Exception as exc:
         llm_active = False
         llm_error = f"{type(exc).__name__}: {exc}"
-    return {"status": "degraded" if db_status.startswith("postgres_error") or llm_error else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions()}, "database": {"backend": os.getenv("DB_BACKEND", "sqlite"), "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}}
+    return {"status": "degraded" if db_status.startswith("postgres_error") or llm_error else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions(), "pending_paper_orders": len(analyzer.pending_orders)}, "database": {"backend": os.getenv("DB_BACKEND", "sqlite"), "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}, "safety": {"paper_only": True, "memory_content_untrusted": True, "tool_audit_enabled": True}}
 
 @app.get("/api/memory/status")
 async def memory_status():
@@ -1386,6 +1391,59 @@ async def deep_analyze_symbol(args: dict):
         "paper_candidate": "candidate" if score >= 2.5 and not risks else "watch"}
     return context
 
+async def get_data_quality(args: dict):
+    """Return freshness/completeness diagnostics before any market decision."""
+    symbol = str(args.get("symbol") or "").replace("_", "").upper()
+    timeframe = str(args.get("timeframe") or "5m")
+    snapshot = await symbol_analysis(symbol, timeframe)
+    now = time.time()
+    timestamp = snapshot.get("generated_at") or snapshot.get("timestamp")
+    age = max(0.0, now - float(timestamp)) if timestamp else None
+    missing = [key for key in ("trend", "momentum", "volume", "liquidity") if not snapshot.get(key)]
+    return {"symbol": symbol, "timeframe": timeframe, "data_ready": bool(snapshot.get("data_ready")),
+            "age_seconds": age, "fresh": age is not None and age <= config.MAX_TICKER_AGE_SEC,
+            "missing_sections": missing, "source": snapshot.get("source", "binance_tr_public"),
+            "snapshot_error": snapshot.get("error"), "paper_only": True}
+
+async def validate_trade_plan(args: dict):
+    """Deterministic preflight; validation never opens or modifies a position."""
+    symbol = str(args.get("symbol") or "").replace("_", "").upper()
+    try: amount = float(args.get("order_value_try", 0))
+    except (TypeError, ValueError): amount = 0
+    try: stop = float(args.get("stop_loss_pct", 0))
+    except (TypeError, ValueError): stop = 0
+    try: target = float(args.get("take_profit_pct", 0))
+    except (TypeError, ValueError): target = 0
+    balance = await database.get_wallet_balance("TRY")
+    checks = {"symbol_present": bool(symbol), "amount_positive": amount > 0,
+              "amount_within_balance": amount <= float(balance), "stop_valid": 0 < stop <= 0.25,
+              "target_valid": 0 < target <= 0.25, "risk_reward_present": target > stop,
+              "no_open_position": symbol not in analyzer.positions}
+    return {"ok": all(checks.values()), "checks": checks, "symbol": symbol,
+            "balance_try": balance, "order_value_try": amount, "stop_loss_pct": stop,
+            "take_profit_pct": target, "paper_only": True}
+
+async def deactivate_coin(args: dict):
+    symbol = str(args.get("symbol") or "").replace("_", "").upper()
+    if symbol in analyzer.positions:
+        return {"ok": False, "symbol": symbol, "error": "Açık pozisyon varken coin pasifleştirilemez", "new_entries_blocked": True}
+    config.SYMBOLS = [item for item in config.SYMBOLS if item != symbol]
+    config.UT_SYMBOLS = list(config.SYMBOLS)
+    market.symbols = [item for item in market.symbols if item.upper() != symbol]
+    await database.set_llm_setting("active_symbols", json.dumps(config.SYMBOLS, ensure_ascii=False))
+    return {"ok": True, "symbol": symbol, "active": False, "paper_only": True}
+
+async def reconcile_portfolio():
+    db_positions = await database.load_positions()
+    live = {str(key).upper(): value for key, value in analyzer.positions.items()}
+    differences = []
+    for symbol in sorted(set(db_positions) | set(live)):
+        if symbol not in db_positions or symbol not in live:
+            differences.append({"symbol": symbol, "kind": "missing_in_db" if symbol in live else "missing_in_memory"})
+    return {"consistent": not differences, "differences": differences,
+            "db_open_positions": sorted(db_positions), "live_open_positions": sorted(live),
+            "wallet_try": await database.get_wallet_balance("TRY"), "repair_required": bool(differences)}
+
 @app.post("/api/market-snapshot-scan")
 async def market_snapshot_scan(payload: dict = None):
     """Tüm etkin sembolleri salt-okunur biçimde tarar; canlı portföyü değiştirmez."""
@@ -1400,6 +1458,13 @@ LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapsh
 LLM_DEEP_SYMBOL_TOOL = {"type":"function","function":{"name":"deep_analyze_symbol","description":"Bir sembolün seçili timeframe ve çoklu timeframe teknik snapshot'ını getirir; trend fazı ve aday değerlendirmesi için kullanılır. Salt-okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframe":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]}},"required":["symbol"]}}}
 
 LLM_DATABASE_TOOL = {"type":"function","function":{"name":"query_database","description":"Sistemin PostgreSQL/SQLite veri katmanında güvenli, salt-okunur sorgu yapar. Açık pozisyon sorgusunda hem veritabanı hem canlı portföy belleğini karşılaştırır; böylece stale/mutabakat farkını gizlemez. Ham SQL çalıştırmaz.","parameters":{"type":"object","properties":{"resource":{"type":"string","enum":["positions","trades","signals","decisions","wallet"]},"symbol":{"type":"string"},"strategy":{"type":"string"},"action":{"type":"string"},"limit":{"type":"integer"}},"required":["resource"]}}}
+LLM_DATA_QUALITY_TOOL = {"type":"function","function":{"name":"get_data_quality","description":"Sembol snapshot verisinin güncelliğini, eksik bölümlerini ve veri kaynağını denetler; salt-okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframe":{"type":"string","enum":["1m","5m","15m","30m","1h","4h","1d"]}},"required":["symbol"]}}}
+LLM_VALIDATE_PLAN_TOOL = {"type":"function","function":{"name":"validate_trade_plan","description":"Paper işlem planını bakiye, stop/TP, risk/ödül ve açık pozisyon kurallarıyla doğrular; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"order_value_try":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","order_value_try","stop_loss_pct","take_profit_pct"]}}}
+LLM_ORDER_STATUS_TOOL = {"type":"function","function":{"name":"get_order_status","description":"Paper emirlerinin durumunu salt-okunur getirir.","parameters":{"type":"object","properties":{"order_id":{"type":"string"},"symbol":{"type":"string"},"status":{"type":"string"}},"required":[]}}}
+LLM_CANCEL_ORDER_TOOL = {"type":"function","function":{"name":"cancel_paper_order","description":"Açık paper emrini iptal eder; gerçek borsa emri göndermez.","parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"]}}}
+LLM_MODIFY_ORDER_TOOL = {"type":"function","function":{"name":"modify_paper_order","description":"Açık paper emrinin fiyat/risk alanlarını günceller.","parameters":{"type":"object","properties":{"order_id":{"type":"string"},"changes":{"type":"object"}},"required":["order_id","changes"]}}}
+LLM_RECONCILE_TOOL = {"type":"function","function":{"name":"reconcile_portfolio","description":"DB pozisyonları, canlı bellekteki pozisyonlar ve wallet tutarlılığını karşılaştırır; salt-okunur.","parameters":{"type":"object","properties":{},"required":[]}}}
+LLM_DEACTIVATE_TOOL = {"type":"function","function":{"name":"deactivate_coin","description":"Açık pozisyon yoksa coin'i yeni analiz/giriş evreninden çıkarır; gerçek işlem yapmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
 LLM_READONLY_SQL_TOOL = {"type":"function","function":{"name":"read_only_sql","description":"İleri seviye salt-okunur veritabanı incelemesi. Yalnızca tek SELECT veya WITH...SELECT sorgusu çalıştırır; yazma/DDL komutları ve izin verilmeyen tablolar reddedilir. Sadece gerektiğinde kullan.","parameters":{"type":"object","properties":{"sql":{"type":"string","description":"Tek bir SELECT veya WITH...SELECT sorgusu"},"limit":{"type":"integer"}},"required":["sql"]}}}
 
 @app.post("/api/symbol-analysis/{symbol}/llm/chat")
@@ -1456,6 +1521,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     except Exception as exc:
         snapshot = dict(snapshot)
         snapshot["market_scan"] = {"error": str(exc), "paper_only": True}
+    tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL])
     if body.get("stream") is True:
         async def events():
             async for event in llm_analysis.stream_chat(snapshot, body.get("messages", [])):
@@ -1466,6 +1532,8 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     async def execute_tool(name, args):
         if name == "scan_market_snapshots": return await scan_market_snapshots(args)
         if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
+        if name == "get_data_quality": return await get_data_quality(args)
+        if name == "validate_trade_plan": return await validate_trade_plan(args)
         if name == "query_database": return await llm_query_database(args, symbol.upper())
         if name == "read_only_sql": return {"rows": await database.read_only_query(args.get("sql", ""), args.get("limit", 500))}
         if name == "get_symbol_analysis": return await symbol_analysis(symbol, str(args.get("timeframe") or body.get("timeframe") or "5m"))
@@ -1522,7 +1590,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                 rows = await memory_service.retrieve(conn, embedded["vector"], limit=max(1, min(int(args.get("limit", 6)), 20)), symbol=symbol.upper(), model_id=embedded.get("model_id"))
             return {"count": len(rows), "results": rows}
         return {"error": "Bilinmeyen araç"}
-    tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL])
+    tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL])
     result = await llm_analysis.chat(snapshot, body.get("messages", []), tools, execute_tool)
     await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
     return result
@@ -1835,6 +1903,16 @@ async def strategies_llm_chat(payload: dict = None):
         try:
             if name == "scan_market_snapshots": return await scan_market_snapshots(args)
             if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
+            if name == "get_data_quality": return await get_data_quality(args)
+            if name == "validate_trade_plan": return await validate_trade_plan(args)
+            if name == "get_order_status":
+                rows = analyzer.list_paper_orders(args.get("symbol"), args.get("status"))
+                if args.get("order_id"): rows = [row for row in rows if row.get("order_id") == str(args["order_id"])]
+                return {"count": len(rows), "orders": rows, "paper_only": True}
+            if name == "cancel_paper_order": return await analyzer.cancel_paper_order(args.get("order_id"))
+            if name == "modify_paper_order": return await analyzer.modify_paper_order(args.get("order_id"), args.get("changes"))
+            if name == "reconcile_portfolio": return await reconcile_portfolio()
+            if name == "deactivate_coin": return await deactivate_coin(args)
             if name == "open_llm_paper_trade":
                 return await llm_open_paper_trade({"symbol": args.get("symbol"), "plan": args.get("plan") or {}})
             if name == "activate_coin":
@@ -1920,6 +1998,7 @@ async def strategies_llm_chat(payload: dict = None):
                 # Observability must never turn a valid LLM/tool response into
                 # a failed chat request.
                 print(f"[LLM] tool log kaydedilemedi: {log_error}")
+    tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL, LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL, LLM_DEACTIVATE_TOOL])
     tools.extend([LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, {"type":"function","function":{"name":"open_llm_paper_trade","description":"LLM planına göre yalnızca sanal paper pozisyon açar. Tutar, stop, take-profit ve maksimum elde tutma süresini model belirler; gerçek emir göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"plan":{"type":"object","properties":{"order_value_try":{"type":"number","description":"TRY cinsinden paper pozisyon tutarı"},"stop_loss_pct":{"type":"number","description":"Ondalık stop oranı; örn. 0.012"},"take_profit_pct":{"type":"number","description":"Ondalık kar hedefi; örn. 0.02"},"max_hold_seconds":{"type":"integer","description":"Pozisyonun maksimum elde tutulma süresi"}},"required":["order_value_try","stop_loss_pct","take_profit_pct","max_hold_seconds"]}},"required":["symbol","plan"]}}}])
     if body.get("stream") is True:
         async def events():
@@ -1936,7 +2015,7 @@ async def strategies_llm_chat(payload: dict = None):
                 yield f"event: done\ndata: {json.dumps({'status': result.get('status', 'ok'), 'model': result.get('model')}, ensure_ascii=False)}\n\n"
                 return
             try:
-                async for event in llm_analysis.stream_chat(context, body.get("messages", [])):
+                async for event in llm_analysis.stream_chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills")):
                     yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 await _persist_chat_memory(messages, layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=session_id)
                 await finish_trace(_pg_pool, trace_id)

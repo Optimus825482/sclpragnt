@@ -25,9 +25,15 @@ class ScalpAnalyzer:
 
     async def load_state(self):
         self.positions = await database.load_positions()
+        self.pending_orders = await database.load_paper_orders()
 
     async def place_paper_order(self, order):
         """Execute or queue an exchange-like order entirely in paper trading."""
+        client_request_id = str(order.get("client_request_id") or "").strip() or None
+        if client_request_id:
+            duplicate = next((item for item in self.pending_orders if item.get("client_request_id") == client_request_id), None)
+            if duplicate:
+                return {"ok": True, "paper_only": True, "idempotent_replay": True, "status": duplicate.get("status"), "order": duplicate}
         order_type = str(order.get("order_type", "MARKET")).upper()
         if order_type not in {"MARKET", "LIMIT", "STOP_LIMIT", "STOP_MARKET", "OCO"}:
             return {"ok": False, "error": "Desteklenmeyen paper emir türü"}
@@ -37,9 +43,43 @@ class ScalpAnalyzer:
         if not symbol or price <= 0: return {"ok": False, "error": "Geçerli sembol ve fiyat gerekli"}
         if order_type == "MARKET":
             return await self.open_position(symbol, price, str(order.get("side", "LONG")).upper(), "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
-        pending = {**order, "symbol": symbol, "status": "OPEN", "created_at": time.time(), "reference_price": price, "order_id": uuid.uuid4().hex}
-        self.pending_orders.append(pending)
+        async with self._open_position_lock:
+            if client_request_id:
+                duplicate = next((item for item in self.pending_orders if item.get("client_request_id") == client_request_id), None)
+                if duplicate:
+                    return {"ok": True, "paper_only": True, "idempotent_replay": True, "status": duplicate.get("status"), "order": duplicate}
+            pending = {**order, "symbol": symbol, "status": "OPEN", "created_at": time.time(), "reference_price": price, "order_id": uuid.uuid4().hex, "client_request_id": client_request_id}
+            self.pending_orders.append(pending)
+            await database.save_paper_order(pending)
         return {"ok": True, "paper_only": True, "status": "PENDING", "order": pending}
+
+    def get_paper_order(self, order_id):
+        return next((order for order in self.pending_orders if order.get("order_id") == str(order_id)), None)
+
+    def list_paper_orders(self, symbol=None, status=None):
+        rows = self.pending_orders
+        if symbol: rows = [row for row in rows if row.get("symbol") == str(symbol).replace("_", "").upper()]
+        if status: rows = [row for row in rows if row.get("status") == str(status).upper()]
+        return rows
+
+    async def cancel_paper_order(self, order_id):
+        order = self.get_paper_order(order_id)
+        if not order: return {"ok": False, "error": "Paper emir bulunamadı"}
+        if order.get("status") != "OPEN": return {"ok": False, "error": "Sadece açık emir iptal edilebilir", "order": order}
+        order["status"] = "CANCELLED"; order["cancelled_at"] = time.time()
+        await database.save_paper_order(order)
+        return {"ok": True, "paper_only": True, "order": order}
+
+    async def modify_paper_order(self, order_id, changes):
+        order = self.get_paper_order(order_id)
+        if not order: return {"ok": False, "error": "Paper emir bulunamadı"}
+        if order.get("status") != "OPEN": return {"ok": False, "error": "Sadece açık emir güncellenebilir", "order": order}
+        allowed = {"price", "limit_price", "stop_price", "take_profit_price", "order_value_try", "stop_loss_pct", "take_profit_pct", "max_hold_seconds"}
+        for key, value in (changes or {}).items():
+            if key in allowed: order[key] = value
+        order["updated_at"] = time.time()
+        await database.save_paper_order(order)
+        return {"ok": True, "paper_only": True, "order": order}
 
     async def _evaluate_pending_orders(self, symbol, price):
         for order in list(self.pending_orders):
@@ -53,8 +93,10 @@ class ScalpAnalyzer:
                 execution_price = price
                 result = await self.close_position(symbol, execution_price, "paper_oco_take_profit" if price == take_profit_price else "paper_oco_stop") if side in {"SELL", "SHORT"} and symbol in self.positions else await self.open_position(symbol, execution_price, "LONG", "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
                 order["status"] = "FILLED" if result else "REJECTED"
+                await database.save_paper_order(order)
                 for other in self.pending_orders:
-                    if other.get("oco_group") == order.get("oco_group") and other is not order: other["status"] = "CANCELLED"
+                    if other.get("oco_group") == order.get("oco_group") and other is not order:
+                        other["status"] = "CANCELLED"; other["cancelled_at"] = time.time(); await database.save_paper_order(other)
                 continue
             triggered = (price <= limit if side in {"BUY", "LONG"} else price >= limit) if order_type == "LIMIT" else (price <= stop if side in {"SELL", "SHORT"} else price >= stop)
             if order_type == "STOP_LIMIT" and triggered: triggered = price <= limit if side in {"SELL", "SHORT"} else price >= limit
@@ -66,6 +108,7 @@ class ScalpAnalyzer:
             else:
                 result = await self.close_position(symbol, execution_price, f"paper_{order_type.lower()}") if symbol in self.positions else None
             order["status"] = "FILLED" if result else "REJECTED"
+            await database.save_paper_order(order)
             if order_type == "OCO":
                 for other in self.pending_orders:
                     if other.get("oco_group") == order.get("oco_group") and other is not order: other["status"] = "CANCELLED"

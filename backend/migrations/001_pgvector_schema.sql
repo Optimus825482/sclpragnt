@@ -175,3 +175,17 @@ CREATE TABLE IF NOT EXISTS agent_eval_runs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS agent_eval_runs_case_idx ON agent_eval_runs(case_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS paper_orders (
+  order_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT NOT NULL,
+  order_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
+  order_value_try DOUBLE PRECISION, price DOUBLE PRECISION, limit_price DOUBLE PRECISION,
+  stop_price DOUBLE PRECISION, take_profit_price DOUBLE PRECISION,
+  stop_loss_pct DOUBLE PRECISION, take_profit_pct DOUBLE PRECISION,
+  max_hold_seconds INTEGER, oco_group TEXT, reference_price DOUBLE PRECISION,
+  client_request_id TEXT UNIQUE, trace_id TEXT, payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  filled_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS paper_orders_symbol_status_idx ON paper_orders(symbol, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS paper_orders_oco_idx ON paper_orders(oco_group) WHERE oco_group IS NOT NULL;

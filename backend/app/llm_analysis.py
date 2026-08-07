@@ -206,8 +206,9 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
     try:
         result = None
         result = await call_with_retry()
-        max_tool_rounds = 6
-        for tool_round in range(max_tool_rounds):
+        tool_round = 0
+        while True:
+            tool_round += 1
             data = response_data(result)
             choices = data.get("choices", []) if isinstance(data, dict) else []
             first = choices[0] if choices else {}
@@ -241,7 +242,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
             # incorrectly treated as the final assistant answer.
             result = await call_with_retry()
         else:
-            raise RuntimeError(f"LLM araç döngüsü {max_tool_rounds} turda tamamlanamadı")
+            raise RuntimeError("LLM araç döngüsü provider tarafından sonlandırılmadan tamamlanamadı")
         data = response_data(result)
         if isinstance(data, str): return {"enabled": True, "status": "ok", "text": data}
         choices = data.get("choices", []) if isinstance(data, dict) else []
@@ -251,13 +252,19 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}
 
-async def stream_chat(snapshot, messages):
-    """Stream provider deltas without buffering or simulating token output.
+async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None):
+    """SSE-compatible chat path with the same tool loop as buffered chat.
 
-    The endpoint deliberately has no tool loop: tool calls require a complete
-    assistant message and continue through ``chat``. This keeps streamed text
-    strictly provider-owned while preserving the existing tool-capable path.
+    Providers differ in streaming tool-call support. When tools are supplied,
+    execute the canonical tool loop first and expose its lifecycle as SSE;
+    this prevents streaming mode from silently losing agent capabilities.
     """
+    if tools and tool_executor:
+        result = await chat(snapshot, messages, tools, tool_executor, active_skills)
+        if result.get("text"):
+            yield {"event": "delta", "data": {"text": result["text"]}}
+        yield {"event": "done", "data": {**result, "provider_stream": False, "tool_loop": True}}
+        return
     cfg = await database.get_active_llm_config()
     if not cfg:
         yield {"event": "error", "data": {"status": "disabled", "error": "Aktif LLM yapılandırması yok"}}
