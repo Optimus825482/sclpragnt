@@ -94,6 +94,14 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('llm_guard = await database.get_llm_symbol_guard(symbol)', source)
         self.assertIn('"reason": "llm_guard:cooldown"', source)
 
+    def test_llm_reentry_cooldown_is_shorter_after_profit(self):
+        source = (ROOT / "app" / "analyzer.py").read_text()
+        config_source = (ROOT / "app" / "config.py").read_text()
+        self.assertIn('LLM_PROFIT_REENTRY_COOLDOWN_SEC', source)
+        self.assertIn('float(trade.get("pnl") or 0.0) > 0', source)
+        self.assertIn('str(5 * 60)', config_source)
+        self.assertIn('str(30 * 60)', config_source)
+
     def test_health_defaults_to_postgres(self):
         source = (ROOT / "app" / "main.py").read_text()
         self.assertIn('os.getenv("DB_BACKEND", "postgres")', source)

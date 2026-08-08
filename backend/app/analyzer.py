@@ -948,12 +948,18 @@ class ScalpAnalyzer:
                 atr_pct = 0.0
             rearm_pct = max(config.LLM_REENTRY_MIN_MOVE_PCT, min(0.02, atr_pct * 0.75 or 0))
             guard_reason = "llm_exit_reentry_lock:" + str(reason)
+            cooldown_seconds = (config.LLM_PROFIT_REENTRY_COOLDOWN_SEC
+                                if float(trade.get("pnl") or 0.0) > 0
+                                else config.LLM_REENTRY_COOLDOWN_SEC)
             await database.upsert_llm_symbol_guard(
                 symbol, "cooldown", "active",
-                time.time() + config.LLM_REENTRY_COOLDOWN_SEC,
+                time.time() + cooldown_seconds,
                 guard_reason,
                 {"exit_reason": reason, "exit_price": price, "requires_fresh_setup": True,
-                 "atr_pct_at_exit": atr_pct, "rearm_required_pct": rearm_pct},
+                 "atr_pct_at_exit": atr_pct, "rearm_required_pct": rearm_pct,
+                 "realized_pnl": float(trade.get("pnl") or 0.0),
+                 "cooldown_seconds": cooldown_seconds,
+                 "cooldown_kind": "profit" if float(trade.get("pnl") or 0.0) > 0 else "loss"},
             )
             await database.save_signal({
                 "symbol": symbol, "action": "LLM_REENTRY_BLOCKED", "price": price,

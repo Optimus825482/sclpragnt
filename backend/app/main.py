@@ -1373,6 +1373,8 @@ async def llm_entry_policy():
         "paper_only": True,
         "policy_version": "scalper-trade-manager-v2",
         "cooldown_seconds": config.LLM_REENTRY_COOLDOWN_SEC,
+        "profit_cooldown_seconds": config.LLM_PROFIT_REENTRY_COOLDOWN_SEC,
+        "cooldown_policy": "Kârla kapanan LLM_PAPER işlemi: 5 dakika; zararla kapanan işlem: 30 dakika",
         "minimum_rearm_move_pct": config.LLM_REENTRY_MIN_MOVE_PCT,
         "hard_gates": {
             "max_rsi": 72,
