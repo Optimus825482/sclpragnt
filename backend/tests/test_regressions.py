@@ -133,6 +133,14 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('source": "binance_tr_public_24h_ticker"', source)
         self.assertIn('open_symbols = set(analyzer.positions)', source)
 
+    def test_llm_market_scan_uses_fast_hot_cache_defaults(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        config_source = (ROOT / "app" / "config.py").read_text()
+        self.assertIn('["5m", "15m", "1h"]', source)
+        self.assertIn('LLM_MARKET_SCAN_CACHE_SEC', config_source)
+        self.assertIn('"scan_mode": "fast_hot_cache"', source)
+        self.assertIn('"fresh"', source)
+
     def test_main_has_one_reconcile_function(self):
         tree = ast.parse((ROOT / "app" / "main.py").read_text())
         names = [node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]

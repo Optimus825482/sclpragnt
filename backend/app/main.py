@@ -61,6 +61,7 @@ _llm_last_idle_attempt_at = time.time()
 _radar_lock = asyncio.Lock()
 _top_gainers_lock = asyncio.Lock()
 _ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
+_llm_market_scan_cache = {}
 
 
 async def publish_a2a_event(message_type, payload, *, correlation_id=None, requires_user_approval=False):
@@ -1742,14 +1743,23 @@ def _llm_entry_quality_gate(snapshot: dict, outcome_profile: dict | None = None)
     return not reasons, reasons
 
 async def scan_market_snapshots(args: dict | None = None):
+    global _llm_market_scan_cache
     args = args or {}
     requested = args.get("symbols") or config.SYMBOLS
     requested_symbols = list(dict.fromkeys(str(s).replace("_", "").upper() for s in requested if str(s).strip()))[:100]
     db_positions = await database.load_positions()
     open_symbols = set(db_positions) | set(analyzer.positions)
     symbols = [symbol for symbol in requested_symbols if symbol not in open_symbols]
-    timeframes = [str(tf) for tf in (args.get("timeframes") or ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]) if str(tf) in {"1m","5m","15m","30m","1h","4h","1d"}]
+    # Fast scan uses the hot market cache and only the decision timeframes.
+    # deep_analyze_symbol remains the multi-timeframe path for finalists.
+    timeframes = [str(tf) for tf in (args.get("timeframes") or ["5m", "15m", "1h"]) if str(tf) in {"1m","5m","15m","30m","1h","4h","1d"}]
     if not timeframes: timeframes = ["5m", "15m", "1h"]
+    cache_key = (tuple(symbols), tuple(timeframes), max(1, min(int(args.get("limit", 10)), 30)))
+    now = time.time()
+    if not args.get("fresh") and config.LLM_MARKET_SCAN_CACHE_SEC > 0:
+        cached = _llm_market_scan_cache.get(cache_key)
+        if cached and now - cached["generated_at"] <= config.LLM_MARKET_SCAN_CACHE_SEC:
+            return {**cached["result"], "cache": {"hit": True, "age_sec": round(now - cached["generated_at"], 3)}}
     historical_trades = await database.get_trades()
     # Public REST fallback'leri seri birikmesin; tek sembol hatası tüm taramayı
     # düşürmeden sınırlı paralellikte ilerle.
@@ -1779,14 +1789,18 @@ async def scan_market_snapshots(args: dict | None = None):
             row["score"] = round(float(row["score"]) - 0.75, 3)
             row.setdefault("risks", []).append("genel piyasa rejimi risk-off")
         results.sort(key=lambda row: row["score"], reverse=True)
-    limit = max(1, min(int(args.get("limit", 10)), 30))
+    limit = cache_key[2]
     bullish = [row for row in results if row["score"] >= 2 and str(row.get("trend_direction", "")).lower() not in {"bearish", "mixed"}]
-    return {"generated_at": time.time(), "symbols_scanned": len(symbols), "symbols_skipped_open": sorted(open_symbols & set(requested_symbols)), "timeframes": timeframes,
+    result = {"generated_at": time.time(), "symbols_scanned": len(symbols), "symbols_skipped_open": sorted(open_symbols & set(requested_symbols)), "timeframes": timeframes,
             "bullish_candidates": bullish[:limit], "ranked": results[:limit],
             "market_regime": regime,
             "learning_context": learning,
             "paper_only": True, "live_portfolio_changed": False,
-            "data_policy": "Binance TR public market data; missing values remain unknown. Contract/wallet safety is not inferred."}
+            "data_policy": "Binance TR public market data; missing values remain unknown. Contract/wallet safety is not inferred.",
+            "scan_mode": "fast_hot_cache",
+            "cache": {"hit": False, "ttl_sec": config.LLM_MARKET_SCAN_CACHE_SEC}}
+    _llm_market_scan_cache[cache_key] = {"generated_at": result["generated_at"], "result": result}
+    return result
 
 async def deep_analyze_symbol(args: dict):
     symbol = str(args.get("symbol", "")).replace("_", "").upper()
@@ -1945,7 +1959,7 @@ async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
     """Tek sembol için LLM'e sunulacak güncel derin snapshot'ı döndürür."""
     return await deep_analyze_symbol({"symbol": symbol, "timeframe": timeframe})
 
-LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Tüm etkin paper-trading sembollerini güncel public market verisiyle tarar, bullish adayları deterministik olarak sıralar. Salt-okunur; pozisyon açmaz.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","30m","1h","4h","1d"]}},"limit":{"type":"integer"}},"required":[]}}}
+LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Aktif paper-trading sembollerini hızlı sıcak public market cache snapshot'larıyla tarar; varsayılan 5m/15m/1h kullanır, bullish adayları deterministik sıralar. Salt-okunur; pozisyon açmaz. Gerekirse fresh=true ile cache atlanır.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","30m","1h","4h","1d"]}},"limit":{"type":"integer"},"fresh":{"type":"boolean"}},"required":[]}}}
 LLM_CREATE_ALERT_TOOL = {"type":"function","function":{"name":"create_market_alert","description":"Paper-only canlı market alarmı oluşturur. Backend alarm worker koşulu sürekli değerlendirir; gerçek emir göndermez. Kullanıcı 'izlemeye al/takibe al' dediğinde bu aracı kullan.","parameters":{"type":"object","properties":{"name":{"type":"string"},"symbol":{"type":"string"},"rule_type":{"type":"string","enum":["price","percent"]},"operator":{"type":"string","enum":["lt","lte","gt","gte","eq"]},"threshold":{"type":"number"},"rearm_threshold":{"type":"number"},"cooldown_seconds":{"type":"integer"},"timeframe":{"type":"string"},"notify_channels":{"type":"array","items":{"type":"string","enum":["websocket","web_push"]}},"expires_at":{"type":"number"},"reason":{"type":"string"}},"required":["symbol","operator","threshold","reason"]}}}
 LLM_UPDATE_ALERT_TOOL = {"type":"function","function":{"name":"update_market_alert","description":"Daha önce oluşturulmuş paper market alarmını günceller veya duraklatır.","parameters":{"type":"object","properties":{"alert_id":{"type":"integer"},"changes":{"type":"object"},"reason":{"type":"string"}},"required":["alert_id","changes","reason"]}}}
 LLM_REMOVE_ALERT_TOOL = {"type":"function","function":{"name":"remove_market_alert","description":"Paper market alarmını kaldırır.","parameters":{"type":"object","properties":{"alert_id":{"type":"integer"},"reason":{"type":"string"}},"required":["alert_id","reason"]}}}
