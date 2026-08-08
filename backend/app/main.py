@@ -514,11 +514,27 @@ async def alert_loop():
     await asyncio.sleep(8)
     while True:
         try:
-            for event in await alerting.evaluate_rules(market):
+            for event in await alerting.evaluate_rules(market, on_paper_trigger=auto_open_from_alert):
                 await ws_manager.broadcast(event)
         except Exception as exc:
             print(f"[Alerts] değerlendirme hatası: {exc}")
         await asyncio.sleep(1.0)
+
+async def auto_open_from_alert(rule, event):
+    """Alarm sonrası mevcut LLM giriş kapılarını yeniden doğrulayıp paper açar."""
+    if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
+        return {"status": "blocked", "reason": "llm_paper_trading_disabled", "paper_only": True}
+    result = await llm_open_paper_trade({
+        "symbol": str(rule.get("symbol") or "").upper(),
+        "source": "market_alert", "alert_id": rule.get("id"),
+        "plan": {"order_value_try": config.DEFAULT_ORDER_USDT,
+                 "stop_loss_pct": config.HARD_STOP_LOSS_PCT,
+                 "take_profit_pct": config.SPOT_PROFIT_TARGET_PCT,
+                 "max_hold_seconds": config.MAX_POSITION_HOLD_SEC},
+    })
+    signal = result.get("signal") or {}
+    return {"status": "opened" if signal.get("action") == "BUY_SIGNAL" else "blocked",
+            "symbol": rule.get("symbol"), "signal": signal, "details": result, "paper_only": True}
 
 async def strategy_loop():
     await asyncio.sleep(5)
@@ -1962,7 +1978,7 @@ async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
     return await deep_analyze_symbol({"symbol": symbol, "timeframe": timeframe})
 
 LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Aktif paper-trading sembollerini hızlı sıcak public market cache snapshot'larıyla tarar; varsayılan 5m/15m/1h kullanır, bullish adayları deterministik sıralar. Salt-okunur; pozisyon açmaz. Gerekirse fresh=true ile cache atlanır.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","30m","1h","4h","1d"]}},"limit":{"type":"integer"},"fresh":{"type":"boolean"}},"required":[]}}}
-LLM_CREATE_ALERT_TOOL = {"type":"function","function":{"name":"create_market_alert","description":"Paper-only canlı market alarmı oluşturur. Backend alarm worker koşulu sürekli değerlendirir; gerçek emir göndermez. Kullanıcı 'izlemeye al/takibe al' dediğinde bu aracı kullan.","parameters":{"type":"object","properties":{"name":{"type":"string"},"symbol":{"type":"string"},"rule_type":{"type":"string","enum":["price","percent"]},"operator":{"type":"string","enum":["lt","lte","gt","gte","eq"]},"threshold":{"type":"number"},"rearm_threshold":{"type":"number"},"cooldown_seconds":{"type":"integer"},"timeframe":{"type":"string"},"notify_channels":{"type":"array","items":{"type":"string","enum":["websocket","web_push"]}},"expires_at":{"type":"number"},"reason":{"type":"string"}},"required":["symbol","operator","threshold","reason"]}}}
+LLM_CREATE_ALERT_TOOL = {"type":"function","function":{"name":"create_market_alert","description":"Paper-only canlı market alarmı oluşturur. auto_paper_trade seçilirse alarm tetiklenince güncel LLM giriş kapıları tekrar kontrol edilir ve uygunsa otomatik paper pozisyon açılır; gerçek emir gönderilmez.","parameters":{"type":"object","properties":{"name":{"type":"string"},"symbol":{"type":"string"},"rule_type":{"type":"string","enum":["price","percent"]},"operator":{"type":"string","enum":["lt","lte","gt","gte","eq"]},"threshold":{"type":"number"},"rearm_threshold":{"type":"number"},"cooldown_seconds":{"type":"integer"},"timeframe":{"type":"string"},"notify_channels":{"type":"array","items":{"type":"string","enum":["websocket","web_push","auto_paper_trade"]}},"expires_at":{"type":"number"},"reason":{"type":"string"}},"required":["symbol","operator","threshold","reason"]}}}
 LLM_UPDATE_ALERT_TOOL = {"type":"function","function":{"name":"update_market_alert","description":"Daha önce oluşturulmuş paper market alarmını günceller veya duraklatır.","parameters":{"type":"object","properties":{"alert_id":{"type":"integer"},"changes":{"type":"object"},"reason":{"type":"string"}},"required":["alert_id","changes","reason"]}}}
 LLM_REMOVE_ALERT_TOOL = {"type":"function","function":{"name":"remove_market_alert","description":"Paper market alarmını kaldırır.","parameters":{"type":"object","properties":{"alert_id":{"type":"integer"},"reason":{"type":"string"}},"required":["alert_id","reason"]}}}
 LLM_LIST_ALERTS_TOOL = {"type":"function","function":{"name":"list_market_alerts","description":"Aktif ve geçmiş paper market alarm kurallarını ve son tetiklemeleri getirir.","parameters":{"type":"object","properties":{"active_only":{"type":"boolean"}},"required":[]}}}

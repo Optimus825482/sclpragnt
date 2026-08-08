@@ -102,6 +102,15 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('str(5 * 60)', config_source)
         self.assertIn('str(30 * 60)', config_source)
 
+    def test_alert_can_trigger_gated_paper_entry(self):
+        source = (ROOT / "app" / "alerting.py").read_text()
+        main_source = (ROOT / "app" / "main.py").read_text()
+        self.assertIn('on_paper_trigger=None', source)
+        self.assertIn('"auto_paper_trade" in channels', source)
+        self.assertIn('on_paper_trigger=auto_open_from_alert', main_source)
+        self.assertIn('"source": "market_alert"', main_source)
+        self.assertIn('"auto_paper_trade"', main_source)
+
     def test_health_defaults_to_postgres(self):
         source = (ROOT / "app" / "main.py").read_text()
         self.assertIn('os.getenv("DB_BACKEND", "postgres")', source)

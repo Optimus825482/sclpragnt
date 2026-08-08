@@ -34,7 +34,7 @@ async def deliver_web_push(message):
     except Exception as exc: return {"ok": False, "error": str(exc)}
 
 
-async def evaluate_rules(market):
+async def evaluate_rules(market, on_paper_trigger=None):
     events = []
     rules = await database.list_alert_rules(active_only=True)
     now = time.time()
@@ -53,5 +53,15 @@ async def evaluate_rules(market):
         if not event: continue
         channels = rule.get("notify_channels") or ["websocket"]
         if "web_push" in channels: await deliver_web_push(message)
-        events.append({"type": "alert", "data": {**event, "rule_id": rule["id"], "symbol": rule["symbol"], "message": message, "channels": channels, "paper_only": True}})
+        auto_result = None
+        if "auto_paper_trade" in channels and on_paper_trigger:
+            try:
+                auto_result = await on_paper_trigger(rule, event)
+                message += f" | otomatik paper sonuç: {auto_result.get('status', 'unknown')}"
+            except Exception as exc:
+                auto_result = {"status": "error", "error": str(exc), "paper_only": True}
+                message += f" | otomatik paper hata: {type(exc).__name__}"
+        payload = {**event, "rule_id": rule["id"], "symbol": rule["symbol"], "message": message, "channels": channels, "paper_only": True}
+        if auto_result is not None: payload["auto_paper_trade"] = auto_result
+        events.append({"type": "alert", "data": payload})
     return events
