@@ -1480,21 +1480,6 @@ async def llm_open_paper_trade(payload: dict):
             entry_snapshot = await symbol_analysis(symbol, "5m")
             outcome_profile = symbol_outcome_profile(historical_trades, symbol, "LLM_PAPER", 100)
             gate_ok, gate_reasons = _llm_entry_quality_gate(entry_snapshot, outcome_profile)
-            # Short-term entry confirmation: all requested micro timeframes must
-            # agree before a BUY_SIGNAL can be emitted.
-            micro_snapshots = {}
-            for micro_tf in ("1m", "3m", "5m", "15m"):
-                micro = await symbol_analysis(symbol, micro_tf)
-                micro_snapshots[micro_tf] = micro
-                if not micro.get("data_ready"):
-                    gate_reasons.append(f"{micro_tf}_data_not_ready")
-                    continue
-                mm = (micro.get("momentum") or {}).get("macd") or {}
-                mcmo, mcrsi = (micro.get("momentum") or {}).get("cmo_9"), (micro.get("momentum") or {}).get("crsi")
-                if mm.get("histogram") is None or float(mm["histogram"]) <= 0: gate_reasons.append(f"{micro_tf}_macd_not_positive")
-                if micro_tf == "5m":
-                    if mcmo is None or float(mcmo) >= 50: gate_reasons.append("5m_cmo_not_below_50")
-                    if mcrsi is None or float(mcrsi) >= 40: gate_reasons.append("5m_crsi_not_below_40")
             if gate_reasons:
                 gate_ok = False
         except Exception as exc:
@@ -1748,12 +1733,7 @@ def _llm_entry_quality_gate(snapshot: dict, outcome_profile: dict | None = None)
     if cmo is not None and float(cmo) >= 50: reasons.append("entry_cmo_not_below_50")
     if crsi is not None and float(crsi) >= 40: reasons.append("entry_crsi_not_below_40")
     rsi = momentum.get("rsi_14")
-    stoch = momentum.get("stochastic", {}).get("k") if isinstance(momentum.get("stochastic"), dict) else oscillators.get("stochastic_k")
-    mfi = momentum.get("mfi_14")
-    cci = oscillators.get("cci_20")
     if rsi is not None and float(rsi) >= 90: reasons.append("overbought_rsi")
-    if mfi is not None and float(mfi) >= 80: reasons.append("overbought_mfi")
-    if cci is not None and float(cci) >= 220: reasons.append("overextended_cci")
     spread = liquidity.get("spread_pct")
     if spread is not None and float(spread) > 0.15: reasons.append("spread_above_entry_limit")
     imbalance = liquidity.get("orderflow_imbalance")
