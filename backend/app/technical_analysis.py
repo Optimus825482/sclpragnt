@@ -62,6 +62,24 @@ def _stoch_rsi(closes, rsi_period=14, stoch_period=14, k_period=3, d_period=3):
     k_values = [float(np.mean(raw[i-k_period+1:i+1])) for i in range(k_period - 1, len(raw))]
     return {"k": k_values[-1], "d": float(np.mean(k_values[-d_period:]))}
 
+def _cmo(closes, period=9):
+    if len(closes) < period + 1: return None
+    changes = np.diff(np.asarray(closes[-period - 1:], dtype=float))
+    gains, losses = float(np.sum(np.maximum(changes, 0))), float(np.sum(np.maximum(-changes, 0)))
+    return float(100 * (gains - losses) / (gains + losses)) if gains + losses else 0.0
+
+def _crsi(closes, rsi_period=3, streak_period=2, rank_period=100):
+    if len(closes) < rank_period + rsi_period + 2: return None
+    streaks = [0]
+    for current, previous in zip(closes[1:], closes[:-1]):
+        streaks.append(max(1, streaks[-1] + 1) if current > previous and streaks[-1] > 0 else 1 if current > previous else min(-1, streaks[-1] - 1) if current < previous and streaks[-1] < 0 else -1 if current < previous else 0)
+    recent = np.asarray(streaks[-streak_period:], dtype=float)
+    up, down = float(np.sum(np.maximum(recent, 0))), float(np.sum(np.maximum(-recent, 0)))
+    streak_rsi = 100.0 if down == 0 and up else 50.0 if down == 0 else 100 - 100 / (1 + up / down)
+    changes = np.diff(np.asarray(closes[-rank_period - 1:-1], dtype=float))
+    rank = 100 * float(np.sum(changes < closes[-1] - closes[-2])) / len(changes) if len(changes) else None
+    return float((_rsi(closes, rsi_period) + streak_rsi + rank) / 3) if rank is not None else None
+
 def _obv(closes, volumes):
     if len(closes) < 2: return None
     obv = 0.0
@@ -272,7 +290,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     def ret(n): return float(closes[-1] / closes[-n-1] - 1) if len(closes) > n else None
     ema9, ema21, ema50, ema20 = _ema(closes, 9), _ema(closes, 21), _ema(closes, 50), _ema(closes, 20)
     atr = _atr(highs, lows, closes)
-    macd = _macd(closes); bollinger = _bollinger(closes); stochastic = _stochastic(highs, lows, closes); stoch_rsi = _stoch_rsi(closes)
+    macd = _macd(closes); bollinger = _bollinger(closes); stochastic = _stochastic(highs, lows, closes); stoch_rsi = _stoch_rsi(closes); cmo = _cmo(closes); crsi = _crsi(closes)
     adx = _adx(highs, lows, closes); obv = _obv(closes, volumes); mfi = _mfi(highs, lows, closes, volumes)
     cci = _cci(highs, lows, closes); ao = _awesome_oscillator(highs, lows); williams = _williams_r(highs, lows, closes)
     bull_bear = _bull_bear_power(highs, lows, closes); ultimate = _ultimate_oscillator(highs, lows, closes)
@@ -283,7 +301,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     moving_averages["ichimoku_base"] = (max(highs[-26:]) + min(lows[-26:])) / 2 if len(closes) >= 26 else None
     moving_averages["vwma_20"] = float(np.sum(np.asarray(closes[-20:]) * np.asarray(volumes[-20:])) / np.sum(volumes[-20:])) if len(closes) >= 20 and np.sum(volumes[-20:]) else None
     moving_averages["hma_9"] = _sma(closes[-9:], 9)
-    oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate}
+    oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "stochastic_d": stochastic.get("d") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "cmo_9": cmo, "crsi": crsi, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate}
     oscillator_signals = {"rsi_14": _signal(oscillator_values["rsi_14"], 50, 70, 30, 20), "stochastic_k": _signal(oscillator_values["stochastic_k"], 50, 80, 20, 10), "cci_20": _signal(cci, 0, 100, -100, -200), "adx_14": "neutral" if adx is None else ("buy" if adx["plus_di"] > adx["minus_di"] else "sell"), "awesome": "buy" if (ao or 0) > 0 else "sell", "momentum_10": "buy" if (ret(10) or 0) > 0 else "sell", "macd": "buy" if macd and macd["histogram"] > 0 else "sell", "williams_r": _signal(None if williams is None else williams, -80, -20, -20, -5), "ultimate": _signal(ultimate, 50, 70, 30, 20)}
     daily = klines.get("1d", {}); dclose, dhigh, dlow = daily.get("closes", []), daily.get("highs", []), daily.get("lows", [])
     adr = None
@@ -297,6 +315,10 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     methodologies = _methodology_analysis(opens, highs, lows, closes, volumes, adx, alignment)
     result.update({"timeframe": primary_timeframe, "data_ready": True, "trend": {"ema_9": ema9, "ema_21": ema21, "ema_50": ema50, "alignment": alignment, "adx": adx}, "momentum": {"return_5m": ret(1), "return_15m": ret(3), "return_1h": ret(12), "rsi_14": _rsi(closes), "roc_21": ret(21), "macd": macd, "stochastic": stochastic, "mfi_14": mfi}, "oscillators": {"values": oscillator_values, "signals": oscillator_signals}, "moving_averages": moving_averages, "candlestick_patterns": _candlestick_patterns(opens, highs, lows, closes), "channels": {"bollinger": bollinger, "donchian": {"upper": max(highs[-20:]), "middle": _sma(closes, 20), "lower": min(lows[-20:])} if len(closes) >= 20 else None, "keltner": {"middle": ema20, "upper": ema20 + 2*atr if ema20 and atr else None, "lower": ema20 - 2*atr if ema20 and atr else None}}, "volatility": {"atr_14": atr, "atr_pct": atr / price if atr and price else None, "adr_14_pct": adr, "adr_basis": "1d", "bollinger": bollinger, "day_range_used_pct": None, "adr_utilization": None, "remaining_capacity_pct": None}, "volume": {"volume_ratio_20": volumes[-1] / vavg if vavg else None, "volume_quality": "insufficient_history" if len(volumes) < 21 else "low_volume" if vavg and volumes[-1] / vavg < 0.2 else "valid", "volume_timeframe": primary_timeframe, "vwap": float(np.sum(((np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3) * np.array(volumes[-20:])) / np.sum(volumes[-20:])) if len(volumes) >= 20 and np.sum(volumes[-20:]) else None, "obv": obv}, "pivots": _pivots(dhigh[-1], dlow[-1], dclose[-1]) if len(dclose) else None, "liquidity": {"quote_volume_24h": ticker_24h, "spread_pct": spread, "orderbook_depth_try": depth, "depth_multiplier": depth / order_value if order_value else None, "orderflow_imbalance": ((flow.get("bid_qty", 0) - flow.get("ask_qty", 0)) / (flow.get("bid_qty", 0) + flow.get("ask_qty", 0))) if (flow.get("bid_qty", 0) + flow.get("ask_qty", 0)) else None, "scope": "realtime_market", "timeframe_independent": True, "source": flow.get("source", "binance_tr_public_websocket"), "updated_at": flow.get("updated_at")}, "methodologies": methodologies})
     result["candlestick_patterns"] = candle_patterns
+    result["momentum"]["cmo_9"] = cmo
+    result["momentum"]["crsi"] = crsi
+    result["oscillators"]["values"]["cmo_9"] = cmo
+    result["oscillators"]["values"]["crsi"] = crsi
     result["price_action"] = _price_action_setup(opens, highs, lows, closes)
     result["candlestick_pattern_details"] = [CANDLESTICK_PATTERN_INFO.get(name, {"direction": "neutral", "strength": "info", "tr": name}) for name in candle_patterns]
     result["candlestick_pattern_status"] = "calculated_no_pattern" if candle_patterns == ["none"] else "detected"

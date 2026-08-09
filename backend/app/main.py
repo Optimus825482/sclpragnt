@@ -1298,7 +1298,7 @@ async def get_positions():
 @app.get("/api/symbol-analysis/{symbol}")
 async def symbol_analysis(symbol: str, timeframe: str = ""):
     sym = symbol.upper()
-    requested_timeframe = timeframe if timeframe in {"1m", "5m", "15m", "1h", "4h", "1d"} else config.MOMENTUM_TIMEFRAME
+    requested_timeframe = timeframe if timeframe in {"1m", "3m", "5m", "15m", "1h", "4h", "1d"} else config.MOMENTUM_TIMEFRAME
     ticker = market.get_ticker(sym)
     # The analysis page can request a valid market that was not warm when the
     # process started (or whose websocket stream briefly missed an event).
@@ -1425,7 +1425,7 @@ async def llm_open_paper_trade(payload: dict):
     symbol = str(payload.get("symbol", "")).replace("_", "").upper()
     candidates = []
     if not symbol:
-        scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "timeframes": ["5m", "15m", "1h"], "limit": 5})
+        scan = await scan_market_snapshots({"symbols": config.SYMBOLS, "timeframes": ["1m", "3m", "5m", "15m"], "limit": 5, "fresh": True})
         # scan_market_snapshots zaten bullish adayları deterministik eşik ve
         # trend filtresinden geçiriyor; burada ikinci, daha sert eşik adayları
         # gereksiz yere silip "aday yok" üretiyordu.
@@ -1480,15 +1480,21 @@ async def llm_open_paper_trade(payload: dict):
             entry_snapshot = await symbol_analysis(symbol, "5m")
             outcome_profile = symbol_outcome_profile(historical_trades, symbol, "LLM_PAPER", 100)
             gate_ok, gate_reasons = _llm_entry_quality_gate(entry_snapshot, outcome_profile)
-            # A scalp entry still needs higher-timeframe direction; otherwise a
-            # short 5m bounce repeatedly buys into a larger bearish structure.
-            for higher_tf in ("15m", "1h"):
-                higher = await symbol_analysis(symbol, higher_tf)
-                higher_timeframes.append(higher)
-                if not higher.get("data_ready"):
-                    gate_reasons.append(f"{higher_tf}_data_not_ready")
-                elif str((higher.get("trend") or {}).get("alignment") or "").lower() == "bearish":
-                    gate_reasons.append(f"{higher_tf}_bearish_trend")
+            # Short-term entry confirmation: all requested micro timeframes must
+            # agree before a BUY_SIGNAL can be emitted.
+            micro_snapshots = {}
+            for micro_tf in ("1m", "3m", "5m", "15m"):
+                micro = await symbol_analysis(symbol, micro_tf)
+                micro_snapshots[micro_tf] = micro
+                if not micro.get("data_ready"):
+                    gate_reasons.append(f"{micro_tf}_data_not_ready")
+                    continue
+                mm = (micro.get("momentum") or {}).get("macd") or {}
+                mcmo, mcrsi = (micro.get("momentum") or {}).get("cmo_9"), (micro.get("momentum") or {}).get("crsi")
+                if mm.get("histogram") is None or float(mm["histogram"]) <= 0: gate_reasons.append(f"{micro_tf}_macd_not_positive")
+                if micro_tf == "5m":
+                    if mcmo is None or float(mcmo) >= 50: gate_reasons.append("5m_cmo_not_below_50")
+                    if mcrsi is None or float(mcrsi) >= 40: gate_reasons.append("5m_crsi_not_below_40")
             if gate_reasons:
                 gate_ok = False
         except Exception as exc:
@@ -1615,7 +1621,7 @@ async def test_embedding(payload: dict = None):
 
 async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
     """Build a fresh, read-only multi-timeframe tool context for the LLM."""
-    supported = ("1m", "5m", "15m", "1h", "4h", "1d")
+    supported = ("1m", "3m", "5m", "15m", "1h", "4h", "1d")
     preferred = preferred_timeframe if preferred_timeframe in supported else config.MOMENTUM_TIMEFRAME
     snapshots = {}
     results = await asyncio.gather(*(symbol_analysis(symbol, tf) for tf in supported), return_exceptions=True)
@@ -1735,21 +1741,23 @@ def _llm_entry_quality_gate(snapshot: dict, outcome_profile: dict | None = None)
     price = float(snapshot.get("price") or 0)
     alignment = str(trend.get("alignment") or "").lower()
     if alignment == "bearish": reasons.append("bearish_trend_alignment")
+    macd = (snapshot.get("momentum") or {}).get("macd") or {}
+    cmo = (snapshot.get("momentum") or {}).get("cmo_9")
+    crsi = (snapshot.get("momentum") or {}).get("crsi")
+    if macd.get("histogram") is not None and float(macd["histogram"]) <= 0: reasons.append("entry_macd_not_positive")
+    if cmo is not None and float(cmo) >= 50: reasons.append("entry_cmo_not_below_50")
+    if crsi is not None and float(crsi) >= 40: reasons.append("entry_crsi_not_below_40")
     rsi = momentum.get("rsi_14")
     stoch = momentum.get("stochastic", {}).get("k") if isinstance(momentum.get("stochastic"), dict) else oscillators.get("stochastic_k")
     mfi = momentum.get("mfi_14")
     cci = oscillators.get("cci_20")
-    if rsi is not None and float(rsi) >= 72: reasons.append("overbought_rsi")
-    if stoch is not None and float(stoch) >= 92: reasons.append("overbought_stochastic")
+    if rsi is not None and float(rsi) >= 90: reasons.append("overbought_rsi")
     if mfi is not None and float(mfi) >= 80: reasons.append("overbought_mfi")
     if cci is not None and float(cci) >= 220: reasons.append("overextended_cci")
     spread = liquidity.get("spread_pct")
     if spread is not None and float(spread) > 0.15: reasons.append("spread_above_entry_limit")
     imbalance = liquidity.get("orderflow_imbalance")
     if imbalance is not None and float(imbalance) < -0.10: reasons.append("negative_orderflow")
-    upper = ((channels.get("bollinger") or {}).get("upper"))
-    if price and upper and price >= float(upper) * 0.999:
-        reasons.append("at_or_above_bollinger_upper_without_pullback")
     profile = outcome_profile or {}
     sample = int(profile.get("trades") or 0)
     loss_streak = int(profile.get("current_loss_streak") or 0)
@@ -1770,7 +1778,7 @@ async def scan_market_snapshots(args: dict | None = None):
     symbols = [symbol for symbol in requested_symbols if symbol not in open_symbols]
     # Fast scan uses the hot market cache and only the decision timeframes.
     # deep_analyze_symbol remains the multi-timeframe path for finalists.
-    timeframes = [str(tf) for tf in (args.get("timeframes") or ["5m", "15m", "1h"]) if str(tf) in {"1m","5m","15m","30m","1h","4h","1d"}]
+    timeframes = [str(tf) for tf in (args.get("timeframes") or ["5m", "15m", "1h"]) if str(tf) in {"1m","3m","5m","15m","30m","1h","4h","1d"}]
     if not timeframes: timeframes = ["5m", "15m", "1h"]
     cache_key = (tuple(symbols), tuple(timeframes), max(1, min(int(args.get("limit", 10)), 30)))
     now = time.time()

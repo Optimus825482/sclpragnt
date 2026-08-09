@@ -12,6 +12,7 @@ class MarketData:
         self.symbols = [s.lower() for s in symbols]
         # Tüm strateji timeframe'lerini topla (aktif olmasa da veri hazır olsun)
         self.timeframes = sorted(set([
+            "1m", "3m", "5m", "15m",
             config.UT_TIMEFRAME,
             config.BB_SQUEEZE_TIMEFRAME,
             config.EMA_PULLBACK_TIMEFRAME,
@@ -41,6 +42,7 @@ class MarketData:
     def _all_timeframes(self):
         """Config'deki tüm strateji timeframe'lerini topla (dinamik)."""
         return sorted(set([
+            "1m", "3m", "5m", "15m",
             config.UT_TIMEFRAME,
             config.BB_SQUEEZE_TIMEFRAME,
             config.EMA_PULLBACK_TIMEFRAME,
