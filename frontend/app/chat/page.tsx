@@ -453,7 +453,7 @@ export default function ChatPage() {
           </div>
           <div className="chat-log-panel">
             <p className="eyebrow mb-2">TRACE / EVALUATION / INSTINCT</p>
-            <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
+            <div className="chat-trace-grid grid grid-cols-3 gap-2 text-[10px] font-mono">
               <span className="rounded border border-bunker-700 p-2">
                 Trace: {traces.length}
               </span>

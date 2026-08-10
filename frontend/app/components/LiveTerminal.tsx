@@ -55,9 +55,9 @@ export default function LiveTerminal() {
     v == null ? "0,00" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
-    <div className="grid lg:grid-cols-3 gap-6">
+    <div className="live-terminal grid lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 space-y-6">
-        <div className="card !p-4 flex justify-between items-center bg-bunker-900 border-neon-green/20">
+        <div className="portfolio-summary card !p-4 flex justify-between items-center bg-bunker-900 border-neon-green/20">
           <div>
             <p className="eyebrow text-bunker-muted">SANAL PORTFÖY (PAPER)</p>
             <p className="font-mono text-3xl font-bold text-white mt-1">
@@ -80,7 +80,7 @@ export default function LiveTerminal() {
           <div className="p-4 font-mono text-sm h-64 overflow-y-auto">
             {signals.length === 0 && <p className="text-bunker-muted">$ Bot çalışıyor, strateji sinyali bekleniyor...</p>}
             {signals.map((s, i) => (
-              <div key={s.id ?? `${s.timestamp}-${s.symbol}-${s.action}-${i}`} className={`py-1 ${s.action === "BUY_BLOCKED" ? "text-sky-400" : s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
+              <div key={s.id ?? `${s.timestamp}-${s.symbol}-${s.action}-${i}`} className={`trade-log-row py-1 ${s.action === "BUY_BLOCKED" ? "text-sky-400" : s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
                 <span className="text-bunker-muted">[{s.timestamp ? new Date(s.timestamp * 1000).toLocaleTimeString("tr-TR") : "--"}]</span>{" "}
                 <span className="font-bold">{s.action}</span>{" "}
                 <SymbolLink symbol={s.symbol} className="font-bold text-current hover:text-white" /> {s.price && `@ ₺${s.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{" "}
@@ -113,7 +113,7 @@ export default function LiveTerminal() {
                     {p.pnl_pct > 0 ? "+" : ""}{p.pnl_pct.toFixed(2)}%
                   </span>
                 </div>
-                <div className="flex justify-between text-xs text-bunker-muted font-mono">
+                <div className="position-values flex justify-between text-xs text-bunker-muted font-mono">
                   <span>Giriş: ₺{p.entry.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   <span>Anlık: ₺{p.current.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
@@ -131,10 +131,10 @@ export default function LiveTerminal() {
         <div className="card">
           <p className="eyebrow mb-3">RİSK YÖNETİMİ</p>
           <div className="space-y-2 font-mono text-xs">
-            <div className="flex justify-between"><span className="text-bunker-muted">İşlem Başına</span><span className="text-white">1.000,00 TL</span></div>
-            <div className="flex justify-between"><span className="text-bunker-muted">Maksimum Bekleme</span><span className="text-neon-yellow">4 saat</span></div>
-            <div className="flex justify-between"><span className="text-bunker-muted">Take Profit</span><span className="text-neon-green">1% → 0,75% → 0,5% → başa baş</span></div>
-            <div className="flex justify-between"><span className="text-bunker-muted">Katman</span><span className="text-white">3</span></div>
+            <div className="risk-row flex justify-between"><span className="text-bunker-muted">İşlem Başına</span><span className="text-white">1.000,00 TL</span></div>
+            <div className="risk-row flex justify-between"><span className="text-bunker-muted">Maksimum Bekleme</span><span className="text-neon-yellow">4 saat</span></div>
+            <div className="risk-row flex justify-between"><span className="text-bunker-muted">Take Profit</span><span className="text-neon-green">1% → 0,75% → 0,5% → başa baş</span></div>
+            <div className="risk-row flex justify-between"><span className="text-bunker-muted">Katman</span><span className="text-white">3</span></div>
           </div>
         </div>
       </div>

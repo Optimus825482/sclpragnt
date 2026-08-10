@@ -171,8 +171,8 @@ export default function StrategiesPage() {
     const s = STRATEGIES[active];
 
     return (
-        <div className="max-w-5xl mx-auto space-y-6">
-            <header className="flex items-center justify-between">
+        <div className="strategies-page max-w-5xl mx-auto space-y-6">
+            <header className="strategies-header flex items-center justify-between">
                 <div>
                     <h1 className="font-mono text-xl font-bold tracking-tight">
                         <span className="text-neon-green">STRATEJİLER</span>

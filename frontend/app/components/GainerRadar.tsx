@@ -32,8 +32,8 @@ export default function GainerRadar() {
     const refresh = setInterval(load, 30000);
     return () => { active = false; clearInterval(countdown); clearInterval(refresh); };
   }, []);
-  return <div className="card bg-bunker-950 overflow-hidden">
-    <div className="p-4 border-b border-bunker-800 flex justify-between items-center"><div><p className="eyebrow text-neon-green">GAINER RADAR</p><p className="text-xs text-bunker-muted mt-1">%0,5 hedef için devam potansiyeli · public veri · paper</p></div><div className="text-right"><span className="text-xs font-mono text-bunker-muted">YENİLEME <span className="text-neon-green font-bold">00:{String(secondsLeft).padStart(2, "0")}</span></span><p className="text-[10px] text-bunker-muted mt-1">{loading ? "TARANIYOR..." : "CANLI"}</p></div></div>
+  return <div className="gainer-radar card bg-bunker-950 overflow-hidden">
+    <div className="gainer-radar-header p-4 border-b border-bunker-800 flex justify-between items-center"><div><p className="eyebrow text-neon-green">GAINER RADAR</p><p className="text-xs text-bunker-muted mt-1">%0,5 hedef için devam potansiyeli · public veri · paper</p></div><div className="text-right"><span className="text-xs font-mono text-bunker-muted">YENİLEME <span className="text-neon-green font-bold">00:{String(secondsLeft).padStart(2, "0")}</span></span><p className="text-[10px] text-bunker-muted mt-1">{loading ? "TARANIYOR..." : "CANLI"}</p></div></div>
     <div className="px-4 py-3 border-b border-bunker-800 grid sm:grid-cols-3 gap-3 text-xs font-mono">
       <div><span className="text-bunker-muted">PİYASA REJİMİ</span><p className={`mt-1 font-bold ${regime.zone === "RISK_ON" ? "text-neon-green" : regime.zone === "RISK_OFF" ? "text-neon-red" : "text-yellow-300"}`}>{regime.zone || "UNKNOWN"}</p></div>
       <div><span className="text-bunker-muted">REJİM SKORU</span><p className="mt-1">{regime.score == null ? "—" : `${regime.score}/100`} · %{regime.confidence == null ? "—" : Math.round(regime.confidence * 100)}</p></div>
