@@ -671,7 +671,8 @@ async def strategy_loop():
         for sym in config.SYMBOLS:
             if sym in config.PASSIVE_SYMBOLS and sym not in analyzer.positions:
                 scan_passive += 1
-                _record_strategy_scan_log("automatic", sym, "PASSIVE")
+                if entry_scan_due:
+                    _record_strategy_scan_log("automatic", sym, "PASSIVE")
                 continue
             scan_checked += 1
             if migration_monitor.state["status"] == "running":
@@ -680,7 +681,8 @@ async def strategy_loop():
             ticker = market.get_ticker(sym)
             if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
                 scan_stale += 1
-                _record_strategy_scan_log("automatic", sym, "STALE_TICKER")
+                if entry_scan_due:
+                    _record_strategy_scan_log("automatic", sym, "STALE_TICKER")
                 continue
             scan_fresh += 1
             try:
