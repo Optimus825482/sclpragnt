@@ -168,6 +168,16 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('"MIGRATION_BLOCKED"', source)
         self.assertIn('item.get("scan_id") == scan_id', source)
 
+    def test_manual_scan_evaluates_passive_configured_symbols(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        start = source.index('async def manual_strategy_scan():')
+        end = source.index('\n@app.get("/api/strategy/scan-logs")', start)
+        manual_source = source[start:end]
+        self.assertIn('passive_overridden += 1', manual_source)
+        self.assertNotIn('_record_strategy_scan_log("manual", symbol, "PASSIVE"', manual_source)
+        self.assertIn('ticker.get("last_price")', manual_source)
+        self.assertIn('activity_status=activity_status', manual_source)
+
     def test_llm_market_scan_uses_fast_hot_cache_defaults(self):
         source = (ROOT / "app" / "main.py").read_text()
         config_source = (ROOT / "app" / "config.py").read_text()

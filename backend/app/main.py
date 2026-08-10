@@ -2328,47 +2328,50 @@ async def market_snapshot_scan(payload: dict = None):
 
 @app.post("/api/strategy/manual-scan")
 async def manual_strategy_scan():
-    """Kullanıcının açık talebiyle aktif stratejiyi tüm sembollerde çalıştırır."""
+    """Kullanıcının açık talebiyle aktif stratejiyi ayarlı tüm sembollerde çalıştırır.
+
+    Manuel kontrol, otomatik giriş döngüsündeki aktivite ön elemesini aşar;
+    gerçek emir kapısı yine analyzer içindeki liquidity/paper kontrolleridir.
+    """
     scan_id = f"manual-{uuid.uuid4().hex[:12]}"
     if migration_monitor.state["status"] == "running":
         logs = [_record_strategy_scan_log("manual", symbol, "MIGRATION_BLOCKED", scan_id=scan_id) for symbol in list(config.SYMBOLS)]
         return {"ok": False, "status": "blocked", "reason": "migration_running", "signals": [], "scan_id": scan_id, "scan_logs": logs}
     signals = []
     checked = 0
-    skipped_passive = 0
+    passive_overridden = 0
     fresh_ticker = 0
     stale_ticker = 0
     evaluated = 0
     errors = 0
     started = time.time()
     for symbol in list(config.SYMBOLS):
-        if symbol in config.PASSIVE_SYMBOLS and symbol not in analyzer.positions:
-            skipped_passive += 1
-            _record_strategy_scan_log("manual", symbol, "PASSIVE", scan_id=scan_id)
-            continue
+        activity_status = "PASSIVE" if symbol in config.PASSIVE_SYMBOLS and symbol not in analyzer.positions else None
+        if activity_status:
+            passive_overridden += 1
         checked += 1
         ticker = market.get_ticker(symbol)
         if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
             stale_ticker += 1
-            _record_strategy_scan_log("manual", symbol, "STALE_TICKER", scan_id=scan_id)
+            _record_strategy_scan_log("manual", symbol, "STALE_TICKER", scan_id=scan_id, activity_status=activity_status)
             continue
         fresh_ticker += 1
         try:
             evaluated += 1
             symbol_signals = await analyzer.evaluate(symbol, ticker, allow_entry=True)
             if not symbol_signals:
-                _record_strategy_scan_log("manual", symbol, "NO_SIGNAL", price=ticker.get("price"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id)
+                _record_strategy_scan_log("manual", symbol, "NO_SIGNAL", price=ticker.get("last_price"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id, activity_status=activity_status)
             for signal in symbol_signals:
                 signals.append(signal)
-                _record_strategy_scan_log("manual", symbol, str(signal.get("action", "SIGNAL")), price=signal.get("price", ticker.get("price")), reason=signal.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id)
+                _record_strategy_scan_log("manual", symbol, str(signal.get("action", "SIGNAL")), price=signal.get("price", ticker.get("last_price")), reason=signal.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id, activity_status=activity_status)
                 await ws_manager.broadcast({"type": "signal", "data": signal})
         except Exception as exc:
             errors += 1
             print(f"[Strategy manual] {symbol} değerlendirme hatası: {exc}")
-            _record_strategy_scan_log("manual", symbol, "ERROR", error=str(exc), scan_id=scan_id)
+            _record_strategy_scan_log("manual", symbol, "ERROR", error=str(exc), scan_id=scan_id, activity_status=activity_status)
     return {"ok": True, "status": "completed", "strategy": config.ACTIVE_STRATEGY,
             "symbols_checked": checked, "active_symbols": checked,
-            "universe_size": len(config.SYMBOLS), "passive_skipped": skipped_passive,
+            "universe_size": len(config.SYMBOLS), "passive_overridden": passive_overridden,
             "fresh_ticker": fresh_ticker, "stale_ticker": stale_ticker,
             "evaluated": evaluated, "errors": errors,
             "signals": signals,

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { API_BASE, WS_BASE } from "../lib/api";
-import Link from "next/link";
+import SymbolLink from "./SymbolLink";
 
 type Ticker = { symbol: string; last_price: number; volume: number; avg_volume?: number };
 type Signal = { id?: number; symbol: string; action: string; price?: number; reason?: string; timestamp?: number };
@@ -83,7 +83,7 @@ export default function LiveTerminal() {
               <div key={s.id ?? `${s.timestamp}-${s.symbol}-${s.action}-${i}`} className={`py-1 ${s.action === "BUY_BLOCKED" ? "text-sky-400" : s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
                 <span className="text-bunker-muted">[{s.timestamp ? new Date(s.timestamp * 1000).toLocaleTimeString("tr-TR") : "--"}]</span>{" "}
                 <span className="font-bold">{s.action}</span>{" "}
-                {s.symbol} {s.price && `@ ₺${s.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{" "}
+                <SymbolLink symbol={s.symbol} className="font-bold text-current hover:text-white" /> {s.price && `@ ₺${s.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{" "}
                 <span className="text-bunker-700 text-xs">// {s.reason}</span>
               </div>
             ))}
@@ -108,7 +108,7 @@ export default function LiveTerminal() {
             {portfolio?.positions.map((p) => (
               <div key={p.symbol} className="bg-bunker-950 p-4 rounded-lg border border-bunker-800">
                 <div className="flex justify-between mb-2">
-                  <Link href={`/charts?symbol=${encodeURIComponent(p.symbol)}&timeframe=5m`} className="font-bold font-mono text-white hover:text-neon-green">{p.symbol}</Link>
+                  <SymbolLink symbol={p.symbol} className="font-bold text-white hover:text-neon-green" />
                   <span className={`font-mono ${pnlColor(p.pnl_pct)}`}>
                     {p.pnl_pct > 0 ? "+" : ""}{p.pnl_pct.toFixed(2)}%
                   </span>

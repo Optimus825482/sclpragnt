@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { API_BASE } from "../lib/api";
+import SymbolLink from "../components/SymbolLink";
 
 type BacktestResult = {
     id: number;
@@ -201,7 +202,7 @@ export default function BacktestPage() {
                 <div className="card bg-bunker-900 border-neon-green/20">
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="font-mono font-bold">
-                            <span className="text-neon-green">{result.symbol}</span> · {result.interval} · {result.strategy} · {result.days_back} gün
+                            <span className="text-neon-green"><SymbolLink symbol={result.symbol} className="text-neon-green hover:text-white" /></span> · {result.interval} · {result.strategy} · {result.days_back} gün
                         </h2>
                         <span className={`eyebrow ${result.validation_status === "PASS" ? "text-neon-green" : "text-yellow-300"}`}>OOS {result.validation_status || "—"} · {fmtTime(result.timestamp)}</span>
                     </div>
@@ -301,7 +302,7 @@ export default function BacktestPage() {
                             {history.map((h) => (
                                 <tr key={h.id} className="border-b border-bunker-800/50 hover:bg-bunker-800/30">
                                     <td className="p-3 text-bunker-muted">{fmtTime(h.timestamp)}</td>
-                                    <td className="p-3 font-bold text-white">{h.symbol}</td>
+                                    <td className="p-3 font-bold text-white"><SymbolLink symbol={h.symbol} className="text-white hover:text-neon-green" /></td>
                                     <td className="p-3 text-neon-yellow">{h.interval}</td>
                                     <td className="p-3">{STRATEGIES.find((s) => s.key === h.strategy)?.name ?? h.strategy}</td>
                                     <td className="p-3 text-bunker-muted">{h.days_back}</td>

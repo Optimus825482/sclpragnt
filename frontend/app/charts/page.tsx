@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE } from "../lib/api";
+import SymbolLink from "../components/SymbolLink";
 import {
     createChart, createSeriesMarkers, CandlestickSeries, LineSeries, HistogramSeries,
     IChartApi, ISeriesApi, IPriceLine, UTCTimestamp, Time
@@ -1243,7 +1244,7 @@ export default function ChartsPage() {
             {analysisOpen && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 sm:p-6" onClick={() => setAnalysisOpen(false)}>
                 <section className="w-full max-w-7xl h-[92vh] overflow-hidden rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="symbol-analysis-modal-title">
                     <div className="flex items-center justify-between border-b border-bunker-800 px-4 py-3">
-                        <h2 id="symbol-analysis-modal-title" className="font-mono text-sm font-bold text-white"><span className="text-neon-green">{symbol}</span> · SEMBOL ANALİZİ</h2>
+                        <h2 id="symbol-analysis-modal-title" className="font-mono text-sm font-bold text-white"><SymbolLink symbol={symbol} className="text-neon-green hover:text-white" /> · SEMBOL ANALİZİ</h2>
                         <button type="button" onClick={() => setAnalysisOpen(false)} className="px-3 py-1 text-bunker-muted hover:text-white" aria-label="Sembol analizini kapat">✕</button>
                     </div>
                     <iframe title={`${symbol} sembol analizi`} src={`/symbol-analysis?symbol=${encodeURIComponent(symbol)}&embedded=1`} className="h-[calc(92vh-52px)] w-full border-0" />
@@ -1311,7 +1312,7 @@ export default function ChartsPage() {
                                         : "-";
                                     return (
                                         <tr key={p.symbol} className="border-b border-bunker-800/50 hover:bg-bunker-900/50">
-                                            <td className="px-4 py-2 text-white font-bold">{p.symbol}</td>
+                                            <td className="px-4 py-2 text-white font-bold"><SymbolLink symbol={p.symbol} className="text-white hover:text-neon-green" /></td>
                                             <td className="px-4 py-2 text-bunker-muted">{time}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{p.entry?.toFixed?.(4) ?? p.entry}</td>
                                             <td className="px-4 py-2 text-white">{p.current?.toFixed?.(4) ?? p.current}</td>
@@ -1330,7 +1331,7 @@ export default function ChartsPage() {
             </div>
 
             <p className="text-xs text-bunker-muted font-mono">
-                {symbol} · {interval} periyodu · mumlar UTC — bot 1m kline kullanır, analiz zaman dilimiyle birebir uyumlu
+                <SymbolLink symbol={symbol} className="text-bunker-muted hover:text-neon-green" /> · {interval} periyodu · mumlar UTC — bot 1m kline kullanır, analiz zaman dilimiyle birebir uyumlu
             </p>
 
             {picking && <IndicatorPicker onSelect={(e) => { setPicking(false); setEditTarget({ entry: e }); }} onClose={() => setPicking(false)} />}

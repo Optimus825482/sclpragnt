@@ -261,6 +261,7 @@ function SymbolBadge({
   positive: boolean;
   href?: string;
 }) {
+  const chartHref = href || `/charts?symbol=${encodeURIComponent(symbol)}&timeframe=5m`;
   const content = (
     <span
       className={`portfolio-symbol-badge ${positive ? "positive" : "negative"}`}
@@ -268,7 +269,7 @@ function SymbolBadge({
       {symbol}
     </span>
   );
-  return href ? <Link href={href}>{content}</Link> : content;
+  return <Link href={chartHref} title={`${symbol} M5 grafiğini aç`}>{content}</Link>;
 }
 
 function PositionTable({
