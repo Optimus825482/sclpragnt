@@ -129,33 +129,26 @@ class MarketData:
         self.running = True
         if self._rest_refresh_task is None or self._rest_refresh_task.done():
             self._rest_refresh_task = asyncio.create_task(self._rest_refresh_loop())
-        last_rest_refresh = 0.0
-        while self.running:
-            try:
-                if time.time() - last_rest_refresh >= 10:
-                    await self.refresh_24h_tickers()
-                    last_rest_refresh = time.time()
-                streams = "/".join([f"{s}@kline_{tf}" for tf in self.timeframes for s in self.symbols] + [f"{s}@depth5@100ms" for s in self.symbols] + [f"{s}@aggTrade" for s in self.symbols])
-                url = self.WS_URL.format(streams)
-                self.reconnect_requested = False
-                print(f"[MarketData] Canlı WebSocket ({len(self.symbols)} sembol, {self.timeframes}) bağlantısı kuruldu.")
-                async with websockets.connect(url, ping_interval=20) as ws:
-                    async for msg in ws:
-                        if not self.running: break
-                        if self.reconnect_requested: break
-                        data = json.loads(msg)
-                        self._process_kline(data.get("data", data))
-            except Exception as e:
-                self.last_error = str(e)
-                print(f"[MarketData] WS Hata: {e}")
-                # Keep positions and manual/LLM closes supplied with a fresh
-                # public price while the websocket reconnects.
+        async def connect_group(group_id, group):
+            streams = "/".join([f"{s}@kline_{tf}" for tf in self.timeframes for s in group] + [f"{s}@depth5@100ms" for s in group] + [f"{s}@aggTrade" for s in group])
+            url = self.WS_URL.format(streams)
+            while self.running:
                 try:
-                    await self.refresh_24h_tickers()
-                    last_rest_refresh = time.time()
-                except Exception as refresh_error:
-                    print(f"[MarketData] REST ticker fallback hatası: {refresh_error}")
-                await asyncio.sleep(2)
+                    self.reconnect_requested = False
+                    print(f"[MarketData] WebSocket grup={group_id} symbols={len(group)} timeframe={self.timeframes}", flush=True)
+                    async with websockets.connect(url, ping_interval=20) as ws:
+                        async for msg in ws:
+                            if not self.running or self.reconnect_requested: break
+                            data = json.loads(msg)
+                            self._process_kline(data.get("data", data))
+                except Exception as e:
+                    self.last_error = str(e)
+                    print(f"[MarketData] WS Hata grup={group_id}: {e}", flush=True)
+                    await asyncio.sleep(2)
+
+        groups = [self.symbols[i:i + 40] for i in range(0, len(self.symbols), 40)]
+        print(f"[MarketData] WebSocket grupları başlatılıyor | groups={len(groups)} group_size=40", flush=True)
+        await asyncio.gather(*(connect_group(i + 1, group) for i, group in enumerate(groups)))
 
     def _process_kline(self, kline_data):
         event = kline_data.get("e")
