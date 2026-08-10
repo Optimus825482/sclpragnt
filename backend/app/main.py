@@ -64,6 +64,33 @@ _top_gainers_lock = asyncio.Lock()
 _ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
 _llm_market_scan_cache = {}
 _strategy_replay_jobs = {}
+_symbol_history_backfills = set()
+
+
+async def backfill_symbol_history(symbol: str, days: int = 7):
+    """Persist missing 5m history for one newly activated symbol in background."""
+    symbol = str(symbol).upper()
+    if symbol in _symbol_history_backfills:
+        return
+    _symbol_history_backfills.add(symbol)
+    try:
+        print(f"[History] arka plan backfill başladı | symbol={symbol} timeframe=5m days={days}", flush=True)
+        raw = await historical_klines(symbol, "5m", days)
+        now_ms = int(time.time() * 1000)
+        rows = []
+        for item in raw:
+            if len(item) < 6:
+                continue
+            rows.append({"symbol": symbol, "timeframe": "5m", "open_time": int(item[0]), "close_time": int(item[6]) if len(item) > 6 else int(item[0]),
+                         "open": float(item[1]), "high": float(item[2]), "low": float(item[3]), "close": float(item[4]), "volume": float(item[5]),
+                         "quote_volume": float(item[7]) if len(item) > 7 else None, "trade_count": int(item[8]) if len(item) > 8 else None,
+                         "source": "binance_tr_public_background", "fetched_at": now_ms})
+        count = await database.upsert_market_candles(rows)
+        print(f"[History] arka plan backfill tamamlandı | symbol={symbol} timeframe=5m rows={count}", flush=True)
+    except Exception as exc:
+        print(f"[History] arka plan backfill hatası | symbol={symbol} error={exc}", flush=True)
+    finally:
+        _symbol_history_backfills.discard(symbol)
 
 
 async def _run_strategy_replay(job_id: str, minutes: int = 30):
@@ -1349,6 +1376,7 @@ async def execute_gainers_radar():
 
 @app.put("/api/config")
 async def update_config(payload: dict):
+    previous_symbols = set(config.SYMBOLS)
     for key, attr in CONFIG_FIELDS.items():
         if key in payload:
             val = payload[key]
@@ -1414,6 +1442,8 @@ async def update_config(payload: dict):
         config.SYMBOLS = symbols
         config.UT_SYMBOLS = symbols
         market.symbols = [s.lower() for s in symbols]
+        for symbol in sorted(set(symbols) - previous_symbols):
+            asyncio.create_task(backfill_symbol_history(symbol), name=f"history-backfill-{symbol}")
     # timeframe değiştiyse market veri setini güncelle
     market.timeframes = market._all_timeframes()
     # Apply symbol/timeframe changes immediately. Settings are runtime-only,
@@ -2979,6 +3009,7 @@ async def strategies_llm_chat(payload: dict = None):
                 config.UT_SYMBOLS = list(dict.fromkeys(config.SYMBOLS))
                 if symbol.lower() not in market.symbols:
                     market.symbols.append(symbol.lower()); market.reconnect_requested = True
+                asyncio.create_task(backfill_symbol_history(symbol), name=f"history-backfill-{symbol}")
                 return {"ok": True, "symbol": symbol, "active": True, "paper_only": True, "message": f"{symbol} analiz evrenine eklendi"}
             if name == "place_paper_order":
                 return await analyzer.place_paper_order(args)
