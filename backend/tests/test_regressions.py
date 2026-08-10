@@ -184,6 +184,15 @@ class RegressionContracts(unittest.TestCase):
         manager = ConnectionManager()
         self.assertEqual(manager.active_connections, [])
 
+    def test_live_strategy_reads_ram_market_klines_not_historical_database(self):
+        source = (ROOT / "app" / "analyzer.py").read_text()
+        main_source = (ROOT / "app" / "main.py").read_text()
+        # Live evaluation receives the in-memory MarketData cache. Historical
+        # PostgreSQL reads belong to replay/backtest paths only.
+        self.assertGreaterEqual(source.count("self.market.get_ut_kline(symbol, tf)"), 1)
+        self.assertIn("trigger=5m_candle_close", main_source)
+        self.assertIn("await database.get_market_candles(symbol, \"5m\")", main_source)
+
     def test_sqlite_list_contract_supports_filter_and_offset(self):
         from app import database
 

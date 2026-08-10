@@ -93,6 +93,22 @@ async def backfill_symbol_history(symbol: str, days: int = 7):
         _symbol_history_backfills.discard(symbol)
 
 
+async def backfill_missing_active_history():
+    """At startup, queue only active symbols whose persisted 5m history is missing."""
+    semaphore = asyncio.Semaphore(8)
+    async def inspect(symbol):
+        try:
+            rows = await database.get_market_candles(symbol, "5m")
+            if len(rows) < 2016:  # seven days of 5m candles, with a small tolerance
+                async with semaphore:
+                    await backfill_symbol_history(symbol, 7)
+        except Exception as exc:
+            print(f"[History] eksik veri kontrolü başarısız | symbol={symbol} error={exc}", flush=True)
+    print(f"[History] başlangıç historical kontrolü | symbols={len(config.SYMBOLS)} timeframe=5m", flush=True)
+    await asyncio.gather(*(inspect(symbol) for symbol in list(config.SYMBOLS)))
+    print("[History] başlangıç historical kontrolü tamamlandı", flush=True)
+
+
 async def _run_strategy_replay(job_id: str, minutes: int = 30):
     """Replay the active strategy over recent persisted 5m candles, paper-only."""
     job = _strategy_replay_jobs[job_id]
@@ -515,6 +531,7 @@ async def startup():
     priority_tf = config.ACTIVE_STRATEGY_TIMEFRAME
     await market.fetch_historical_data([priority_tf])
     print(f"[MarketData] öncelikli strateji verisi hazır | timeframe={priority_tf} tickers={len(market.tickers)}", flush=True)
+    asyncio.create_task(backfill_missing_active_history(), name="historical-backfill-active")
     asyncio.create_task(market.connect(skip_history=True))
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
