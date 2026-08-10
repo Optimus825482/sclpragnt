@@ -10,12 +10,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import database
 from app.backtest import run_backtest
+from app.binance_tr_public import historical_klines
+from scripts.build_market_cache import normalize
+
+
+async def ensure_symbol_data(symbol, interval, days, semaphore):
+    """Fetch the requested window when the historical table is missing/short."""
+    if interval != "5m":
+        return
+    async with semaphore:
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - int(days * 86400 * 1000)
+        existing = await database.get_market_candles(symbol, interval, start_ms, now_ms)
+        expected = max(1, int(days * 288 * 0.90))
+        if len(existing) >= expected:
+            print(f"[DATA] {symbol} | mevcut={len(existing)}/{days * 288} yeterli", flush=True)
+            return
+        print(f"[DATA] {symbol} | mevcut={len(existing)}/{days * 288} eksik, Binance TR'den cekiliyor", flush=True)
+        raw = await historical_klines(symbol, interval, days)
+        candles = normalize(symbol, raw, interval)
+        if candles:
+            await database.upsert_market_candles(candles)
+        print(f"[DATA] {symbol} | cekildi={len(candles)} DB'ye yazildi", flush=True)
 
 
 async def main(args):
     print("[START] Historical backtest basladi | source=historical_candles | timeframe=" + args.interval, flush=True)
     print("[DB] Mevcut historical tablolar okunuyor (migration tekrar calistirilmiyor)...", flush=True)
     results = []
+    data_semaphore = asyncio.Semaphore(8)
+    for days in args.days:
+        print(f"[DATA] {days} gunluk pencere icin eksik mumlar tamamlanıyor | workers=8", flush=True)
+        await asyncio.gather(*(ensure_symbol_data(symbol, args.interval, days, data_semaphore) for symbol in args.symbols))
     for days in args.days:
         for symbol in args.symbols:
             candles = await database.get_market_candles(symbol, args.interval)
@@ -77,6 +103,6 @@ if __name__ == "__main__":
                         help="Maximum pyramid layers; 1 disables pyramiding")
     parser.add_argument("--order-pct", type=float, choices=(0.1, 0.2, 0.25), default=None,
                         help="Dynamic order size as portfolio cash percentage")
-    parser.add_argument("--days", nargs="+", type=int, choices=(3, 7, 30), default=(3, 7),
+    parser.add_argument("--days", nargs="+", type=int, choices=(1, 3, 7, 30), default=(3, 7),
                         help="Test periods in days; default: 3 7")
     asyncio.run(main(parser.parse_args()))
