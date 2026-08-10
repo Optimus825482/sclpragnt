@@ -64,6 +64,8 @@ export default function SettingsPage() {
   const [repairingMemory, setRepairingMemory] = useState(false);
   const [scanLogs, setScanLogs] = useState<any[]>([]);
   const [scanLogFilter, setScanLogFilter] = useState<"all" | "automatic" | "manual">("all");
+  const [activity, setActivity] = useState<Record<string, any>>({});
+  const [activityFilter, setActivityFilter] = useState<"all" | "ACTIVE" | "PASSIVE" | "WARMING">("all");
 
   useEffect(() => {
     fetch(`${API_BASE}/api/config`)
@@ -86,6 +88,13 @@ export default function SettingsPage() {
     const timer = window.setInterval(load, 5000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [activeTab, scanLogFilter]);
+
+  useEffect(() => {
+    const load = () => fetch(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()).then((d) => setActivity(d.statuses || {})).catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const save = async () => {
     setSaving(true);
@@ -113,6 +122,8 @@ export default function SettingsPage() {
   const num = (v: any) => (typeof v === "number" ? v : parseFloat(v));
   const selectedSymbols = draft.symbols || [];
   const filteredSymbols = marketSymbols.filter((s) => s.includes(symbolQuery.trim().toUpperCase()));
+  const visibleActivity = Object.values(activity).filter((item: any) => activityFilter === "all" || item.status === activityFilter).filter((item: any) => !symbolQuery.trim() || item.symbol.includes(symbolQuery.trim().toUpperCase()));
+  const activityCounts = { ACTIVE: Object.values(activity).filter((x: any) => x.status === "ACTIVE").length, PASSIVE: Object.values(activity).filter((x: any) => x.status === "PASSIVE").length, WARMING: Object.values(activity).filter((x: any) => x.status === "WARMING").length };
   const toggleSymbol = (symbol: string) => setDraft((d) => ({
     ...d,
     symbols: (d.symbols || []).includes(symbol)
@@ -321,6 +332,17 @@ export default function SettingsPage() {
               <p className="eyebrow mb-2">SEÇİLEN SEMBOLLER</p>
               <div className="flex flex-wrap gap-2">
                 {selectedSymbols.map((symbol) => <button key={symbol} onClick={() => toggleSymbol(symbol)} className="px-3 py-1.5 rounded-lg border border-neon-green/60 bg-neon-green/15 font-mono text-xs text-neon-green">AKTİF · {symbol}</button>)}
+              </div>
+            </div>
+            <div className="mt-5 border-t border-bunker-800 pt-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <div><p className="eyebrow text-neon-green">GERÇEK AKTİVİTE DURUMU</p><p className="text-xs text-bunker-muted mt-1">30 saniyede bir yenilenir. Aktiflik; 30m hareket, ATR, mum hacmi ve spread kontrolleriyle hesaplanır.</p></div>
+                <div className="flex flex-wrap gap-2 text-[11px] font-mono"><span className="rounded border border-neon-green/40 px-2 py-1 text-neon-green">AKTİF {activityCounts.ACTIVE}</span><span className="rounded border border-yellow-400/40 px-2 py-1 text-yellow-300">PASİF {activityCounts.PASSIVE}</span><span className="rounded border border-sky-400/40 px-2 py-1 text-sky-300">ISINIYOR {activityCounts.WARMING}</span></div>
+              </div>
+              <div className="flex flex-wrap gap-2 mb-3">{([ ["all", "TÜMÜ"], ["ACTIVE", "AKTİF"], ["PASSIVE", "PASİF"], ["WARMING", "ISINIYOR"] ] as const).map(([key, label]) => <button key={key} onClick={() => setActivityFilter(key)} className={`rounded-lg border px-3 py-1.5 font-mono text-xs ${activityFilter === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 text-bunker-muted"}`}>{label}</button>)}</div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 max-h-[32rem] overflow-y-auto pr-1">
+                {visibleActivity.map((item: any) => <div key={item.symbol} className={`rounded-lg border px-3 py-2 ${item.status === "ACTIVE" ? "border-neon-green/30 bg-neon-green/5" : item.status === "WARMING" ? "border-sky-400/30 bg-sky-400/5" : "border-bunker-800 bg-bunker-900/60"}`}><div className="flex items-center justify-between gap-2"><span className="font-mono text-sm text-white">{item.symbol}</span><span className={`font-mono text-[10px] ${item.status === "ACTIVE" ? "text-neon-green" : item.status === "WARMING" ? "text-sky-300" : "text-yellow-300"}`}>{item.status}</span></div><div className="mt-2 grid grid-cols-3 gap-2 text-[10px] font-mono text-bunker-muted"><span>30m {item.range_30m_pct == null ? "—" : `${item.range_30m_pct}%`}</span><span>ATR {item.atr_pct == null ? "—" : `${item.atr_pct}%`}</span><span>VOL {item.volume_ratio == null ? "—" : `${item.volume_ratio}x`}</span></div><p className="mt-2 truncate text-[10px] text-bunker-muted" title={item.reason || ""}>{item.reason || "—"}{item.spread_pct != null ? ` · spread ${item.spread_pct}%` : ""}</p></div>)}
+                {!visibleActivity.length && <p className="col-span-full py-6 text-center font-mono text-xs text-bunker-muted">Aktivite verisi henüz hazır değil.</p>}
               </div>
             </div>
           </div>
