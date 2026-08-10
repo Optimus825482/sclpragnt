@@ -454,6 +454,12 @@ class ScalpAnalyzer:
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
             if price <= system_stop:
                 return await self.close_position(symbol, price, "system_stop_loss")
+            # BB-MFI live çıkışı backtest ile birebir: yalnızca sabit stop/TP.
+            if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
+                system_target = pos.get("system_take_profit_price") or pos.get("take_profit")
+                if system_target and price >= float(system_target):
+                    return await self.close_position(symbol, price, "bb_mfi_take_profit")
+                return None
         if pos:
             elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
             entry = pos.get("entry_price", price)
@@ -918,23 +924,6 @@ class ScalpAnalyzer:
                 # Yalnızca seçili BB-MFI stratejisinde ayarlanmış katman sınırına kadar ekleme yapılır.
             return signals
 
-        # Açık pozisyon yok: kapanış sonrası sembol cooldown'ını uygula.
-        blocked_until = self._timeout_block_until.get(symbol)
-        if blocked_until and time.time() < blocked_until:
-            return signals
-        if blocked_until:
-            self._timeout_block_until.pop(symbol, None)
-        hard_stop_block_until = self._hard_stop_block_until.get(symbol)
-        if hard_stop_block_until and time.time() < hard_stop_block_until:
-            return signals
-        if hard_stop_block_until:
-            self._hard_stop_block_until.pop(symbol, None)
-        if symbol in self._cooldown_until:
-            bar = self._current_bar(symbol, config.MOMENTUM_TIMEFRAME)
-            if bar is not None and bar < self._cooldown_until[symbol]:
-                return signals
-            self._cooldown_until.pop(symbol, None)
-
         if not allow_entry:
             return signals
 
@@ -1111,10 +1100,6 @@ class ScalpAnalyzer:
             max_layers = int(config.SYMBOL_PYRAMIDING_LAYERS.get(symbol, config.PYRAMIDING_LAYERS))
             if strat_name != existing.get("strategy") or existing.get("layers", 1) >= max_layers:
                 return None
-        if symbol not in self.positions and len(self.positions) >= self.max_open_positions():
-            await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                        "reason": "position_limit_reached", "strategy": strat_name, "timestamp": time.time()})
-            return None
         try_balance = await database.get_wallet_balance("TRY")
         requested_order_value = float(requested_order_value or 0)
         if strat_name == "LLM_PAPER" and requested_order_value > 0:
@@ -1168,12 +1153,6 @@ class ScalpAnalyzer:
             expected_fees = (order_value + target_value) * config.COMMISSION_PCT
             expected_slippage = order_value * config.ESTIMATED_SLIPPAGE_PCT * 2
             expected_net = expected_gross - expected_fees - expected_slippage
-            minimum_net = min(config.MIN_EXPECTED_NET_PNL_TRY, order_value * config.MIN_EXPECTED_NET_PNL_TRY / config.DEFAULT_ORDER_USDT)
-            if expected_net < minimum_net:
-                blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                           "reason": "net_profit_filter:expected_net_below_minimum", "strategy": strat_name, "timestamp": time.time()}
-                await database.save_signal(blocked)
-                return blocked
         entry_context = {"strategy_revision": config.STRATEGY_REVISION,
                          "liquidity": details if self.market else {},
                          "expected_gross_pnl_try": expected_gross if self.market else None,
