@@ -32,6 +32,11 @@ type BbMfiBacktestSettings = {
     bbPeriod: number;
     bbStdDev: number;
     mfiPeriod: number;
+    rsiPeriod: number;
+    v1RsiLowerLevel: number;
+    v1RsiUpperLevel: number;
+    v2RsiLowerLevel: number;
+    v2RsiUpperLevel: number;
     mfiEntryMax: number;
     rsiExitMin: number;
     mfiExitMin: number;
@@ -45,6 +50,11 @@ const DEFAULT_BB_MFI_SETTINGS: BbMfiBacktestSettings = {
     bbPeriod: 20,
     bbStdDev: 1,
     mfiPeriod: 14,
+    rsiPeriod: 14,
+    v1RsiLowerLevel: 42,
+    v1RsiUpperLevel: 70,
+    v2RsiLowerLevel: 42,
+    v2RsiUpperLevel: 76,
     mfiEntryMax: 60,
     rsiExitMin: 65,
     mfiExitMin: 64,
@@ -139,6 +149,11 @@ export default function BacktestPage() {
                 bbPeriod: numberOr(configData.bb_mfi_bb_period, DEFAULT_BB_MFI_SETTINGS.bbPeriod),
                 bbStdDev: numberOr(configData.bb_mfi_bb_std_dev, DEFAULT_BB_MFI_SETTINGS.bbStdDev),
                 mfiPeriod: numberOr(configData.bb_mfi_mfi_period, DEFAULT_BB_MFI_SETTINGS.mfiPeriod),
+                rsiPeriod: numberOr(configData.bb_mfi_rsi_period, DEFAULT_BB_MFI_SETTINGS.rsiPeriod),
+                v1RsiLowerLevel: numberOr(configData.bb_mfi_v1_rsi_lower_level, DEFAULT_BB_MFI_SETTINGS.v1RsiLowerLevel),
+                v1RsiUpperLevel: numberOr(configData.bb_mfi_v1_rsi_upper_level, DEFAULT_BB_MFI_SETTINGS.v1RsiUpperLevel),
+                v2RsiLowerLevel: numberOr(configData.bb_mfi_v2_rsi_lower_level, DEFAULT_BB_MFI_SETTINGS.v2RsiLowerLevel),
+                v2RsiUpperLevel: numberOr(configData.bb_mfi_v2_rsi_upper_level, DEFAULT_BB_MFI_SETTINGS.v2RsiUpperLevel),
                 mfiEntryMax: numberOr(configData.bb_mfi_entry_mfi_max, DEFAULT_BB_MFI_SETTINGS.mfiEntryMax),
                 rsiExitMin: numberOr(configData.bb_mfi_exit_rsi_min, DEFAULT_BB_MFI_SETTINGS.rsiExitMin),
                 mfiExitMin: numberOr(configData.bb_mfi_exit_mfi_min, DEFAULT_BB_MFI_SETTINGS.mfiExitMin),
@@ -160,6 +175,11 @@ export default function BacktestPage() {
                     bb_mfi_bb_period: bbMfiSettings.bbPeriod,
                     bb_mfi_bb_std_dev: bbMfiSettings.bbStdDev,
                     bb_mfi_mfi_period: bbMfiSettings.mfiPeriod,
+                    bb_mfi_rsi_period: bbMfiSettings.rsiPeriod,
+                    bb_mfi_v1_rsi_lower_level: bbMfiSettings.v1RsiLowerLevel,
+                    bb_mfi_v1_rsi_upper_level: bbMfiSettings.v1RsiUpperLevel,
+                    bb_mfi_v2_rsi_lower_level: bbMfiSettings.v2RsiLowerLevel,
+                    bb_mfi_v2_rsi_upper_level: bbMfiSettings.v2RsiUpperLevel,
                     bb_mfi_entry_mfi_max: bbMfiSettings.mfiEntryMax,
                     bb_mfi_exit_rsi_min: bbMfiSettings.rsiExitMin,
                     bb_mfi_exit_mfi_min: bbMfiSettings.mfiExitMin,
@@ -302,14 +322,24 @@ export default function BacktestPage() {
                                 <BbMfiInput label="BB periyodu" value={bbMfiSettings.bbPeriod} min={5} step={1} onChange={(value) => updateBbMfiSetting("bbPeriod", value)} />
                                 <BbMfiInput label="BB std. sapma" value={bbMfiSettings.bbStdDev} min={0.1} step={0.1} onChange={(value) => updateBbMfiSetting("bbStdDev", value)} />
                                 <BbMfiInput label="MFI periyodu" value={bbMfiSettings.mfiPeriod} min={2} step={1} onChange={(value) => updateBbMfiSetting("mfiPeriod", value)} />
-                                <BbMfiInput label="MFI giriş eşiği" value={bbMfiSettings.mfiEntryMax} min={0} max={100} step={1} suffix="<" onChange={(value) => updateBbMfiSetting("mfiEntryMax", value)} />
+                                <BbMfiInput label="RSI periyodu" value={bbMfiSettings.rsiPeriod} min={2} step={1} onChange={(value) => updateBbMfiSetting("rsiPeriod", value)} />
+                                <BbMfiInput label="v3 MFI alt seviye (giriş)" value={bbMfiSettings.mfiEntryMax} min={0} max={100} step={1} suffix="<" onChange={(value) => updateBbMfiSetting("mfiEntryMax", value)} />
+                            </div>
+                        </section>
+                        <section>
+                            <p className="eyebrow text-sky-300">PINE v1 / v2 RSI SEVİYELERİ</p>
+                            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                                <BbMfiInput label="v1 RSI alt seviye" value={bbMfiSettings.v1RsiLowerLevel} min={0} max={100} step={1} onChange={(value) => updateBbMfiSetting("v1RsiLowerLevel", value)} />
+                                <BbMfiInput label="v1 RSI üst seviye" value={bbMfiSettings.v1RsiUpperLevel} min={0} max={100} step={1} onChange={(value) => updateBbMfiSetting("v1RsiUpperLevel", value)} />
+                                <BbMfiInput label="v2 RSI alt seviye" value={bbMfiSettings.v2RsiLowerLevel} min={0} max={100} step={1} onChange={(value) => updateBbMfiSetting("v2RsiLowerLevel", value)} />
+                                <BbMfiInput label="v2 RSI üst seviye" value={bbMfiSettings.v2RsiUpperLevel} min={0} max={100} step={1} onChange={(value) => updateBbMfiSetting("v2RsiUpperLevel", value)} />
                             </div>
                         </section>
                         <section>
                             <p className="eyebrow text-yellow-300">SİNYAL ÇIKIŞI VE RİSK</p>
                             <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                                <BbMfiInput label="RSI çıkış eşiği" value={bbMfiSettings.rsiExitMin} min={0} max={100} step={1} suffix=">" onChange={(value) => updateBbMfiSetting("rsiExitMin", value)} />
-                                <BbMfiInput label="MFI çıkış eşiği" value={bbMfiSettings.mfiExitMin} min={0} max={100} step={1} suffix=">" onChange={(value) => updateBbMfiSetting("mfiExitMin", value)} />
+                                <BbMfiInput label="v3 RSI üst seviye (çıkış)" value={bbMfiSettings.rsiExitMin} min={0} max={100} step={1} suffix=">" onChange={(value) => updateBbMfiSetting("rsiExitMin", value)} />
+                                <BbMfiInput label="v3 MFI üst seviye (çıkış)" value={bbMfiSettings.mfiExitMin} min={0} max={100} step={1} suffix=">" onChange={(value) => updateBbMfiSetting("mfiExitMin", value)} />
                                 <BbMfiInput label="Stop-loss" value={bbMfiSettings.stopLossPct} min={0.1} max={99} step={0.001} suffix="%" onChange={(value) => updateBbMfiSetting("stopLossPct", value)} />
                                 <BbMfiInput label="Take-profit" value={bbMfiSettings.takeProfitPct} min={0.1} max={99} step={0.001} suffix="%" onChange={(value) => updateBbMfiSetting("takeProfitPct", value)} />
                             </div>

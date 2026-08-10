@@ -35,6 +35,8 @@ class RegressionContracts(unittest.TestCase):
         from app.backtest import PARAM_FIELDS
         self.assertEqual(PARAM_FIELDS["bb_mfi_bb_period"], "BB_MFI_BB_PERIOD")
         self.assertEqual(PARAM_FIELDS["bb_mfi_exit_mfi_min"], "BB_MFI_EXIT_MFI_MIN")
+        self.assertEqual(PARAM_FIELDS["bb_mfi_rsi_period"], "BB_MFI_RSI_PERIOD")
+        self.assertEqual(PARAM_FIELDS["bb_mfi_v2_rsi_upper_level"], "BB_MFI_V2_RSI_UPPER_LEVEL")
 
     def test_bb_mfi_v3_signal_exit_fills_at_next_bar_open(self):
         from app import backtest

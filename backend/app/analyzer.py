@@ -873,12 +873,12 @@ class ScalpAnalyzer:
         """Deterministic signal contract of Pine Flawless Victory v3."""
         closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
         volumes = kline.get("volumes", [])
-        min_history = max(config.BB_MFI_BB_PERIOD, config.BB_MFI_MFI_PERIOD + 1, 15)
+        min_history = max(config.BB_MFI_BB_PERIOD, config.BB_MFI_MFI_PERIOD + 1, config.BB_MFI_RSI_PERIOD + 1)
         if len(closes) < min_history or len(highs) < min_history or len(lows) < min_history or len(volumes) < min_history:
             return None
         bb = self.calculate_bollinger_bands(closes, period=config.BB_MFI_BB_PERIOD, std_dev=config.BB_MFI_BB_STD_DEV)
         mfi = _mfi(highs, lows, closes, volumes, period=config.BB_MFI_MFI_PERIOD)
-        rsi = self.calculate_rsi(closes, period=14)
+        rsi = self.calculate_rsi(closes, period=config.BB_MFI_RSI_PERIOD)
         # Pine v3: BB(20,1.0) lower breach + MFI<60 enters; RSI>65 and
         # MFI>64 invokes strategy.close("Long").
         if bb and mfi is not None and closes[-1] < bb["lower"] and mfi < config.BB_MFI_ENTRY_MFI_MAX:

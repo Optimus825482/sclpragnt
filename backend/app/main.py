@@ -1166,6 +1166,11 @@ CONFIG_FIELDS = {
     "bb_mfi_bb_period": "BB_MFI_BB_PERIOD",
     "bb_mfi_bb_std_dev": "BB_MFI_BB_STD_DEV",
     "bb_mfi_mfi_period": "BB_MFI_MFI_PERIOD",
+    "bb_mfi_rsi_period": "BB_MFI_RSI_PERIOD",
+    "bb_mfi_v1_rsi_lower_level": "BB_MFI_V1_RSI_LOWER_LEVEL",
+    "bb_mfi_v1_rsi_upper_level": "BB_MFI_V1_RSI_UPPER_LEVEL",
+    "bb_mfi_v2_rsi_lower_level": "BB_MFI_V2_RSI_LOWER_LEVEL",
+    "bb_mfi_v2_rsi_upper_level": "BB_MFI_V2_RSI_UPPER_LEVEL",
     "bb_mfi_entry_mfi_max": "BB_MFI_ENTRY_MFI_MAX",
     "bb_mfi_exit_rsi_min": "BB_MFI_EXIT_RSI_MIN",
     "bb_mfi_exit_mfi_min": "BB_MFI_EXIT_MFI_MIN",
@@ -1239,7 +1244,7 @@ CONFIG_FIELDS = {
 
 BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period"}
+INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
@@ -1266,6 +1271,11 @@ async def get_config():
         "bb_mfi_bb_period": config.BB_MFI_BB_PERIOD,
         "bb_mfi_bb_std_dev": config.BB_MFI_BB_STD_DEV,
         "bb_mfi_mfi_period": config.BB_MFI_MFI_PERIOD,
+        "bb_mfi_rsi_period": config.BB_MFI_RSI_PERIOD,
+        "bb_mfi_v1_rsi_lower_level": config.BB_MFI_V1_RSI_LOWER_LEVEL,
+        "bb_mfi_v1_rsi_upper_level": config.BB_MFI_V1_RSI_UPPER_LEVEL,
+        "bb_mfi_v2_rsi_lower_level": config.BB_MFI_V2_RSI_LOWER_LEVEL,
+        "bb_mfi_v2_rsi_upper_level": config.BB_MFI_V2_RSI_UPPER_LEVEL,
         "bb_mfi_entry_mfi_max": config.BB_MFI_ENTRY_MFI_MAX,
         "bb_mfi_exit_rsi_min": config.BB_MFI_EXIT_RSI_MIN,
         "bb_mfi_exit_mfi_min": config.BB_MFI_EXIT_MFI_MIN,
