@@ -40,7 +40,6 @@ const STRATEGIES = [
 ];
 
 const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"];
-const SYMBOLS = ["BTCTRY", "ETHTRY", "SOLTRY", "XRPTRY", "ADATRY", "AVAXTRY", "LINKTRY", "NEARTRY", "APTTRY", "ARBTRY", "OPTRY", "SUITRY", "DOGETRY", "INJTRY", "WLDTRY"];
 
 const fmtTL = (v: number) =>
     v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -50,6 +49,7 @@ const fmtTradeTime = (ts?: number) => ts ? fmtTime(ts) : "—";
 
 export default function BacktestPage() {
     const [symbol, setSymbol] = useState("BTCTRY");
+    const [symbols, setSymbols] = useState<string[]>(["BTCTRY"]);
     const [interval, setInterval] = useState("5m");
     const [daysBack, setDaysBack] = useState(30);
     const [strategy, setStrategy] = useState("EMA_VWAP_PULLBACK");
@@ -68,7 +68,14 @@ export default function BacktestPage() {
             .catch(() => { });
     };
 
-    useEffect(() => { loadHistory(); }, []);
+    useEffect(() => {
+        loadHistory();
+        fetch(`${API_BASE}/api/config`, { cache: "no-store" }).then((r) => r.json()).then((d) => {
+            const list = Array.isArray(d.symbols) && d.symbols.length ? [...d.symbols].sort() : ["BTCTRY"];
+            setSymbols(list);
+            setSymbol((current) => list.includes(current) ? current : list[0]);
+        }).catch(() => undefined);
+    }, []);
 
     const run = async () => {
         setRunning(true);
@@ -124,7 +131,7 @@ export default function BacktestPage() {
                         <label className="eyebrow block mb-1.5">SEMBOL</label>
                         <select value={symbol} onChange={(e) => setSymbol(e.target.value)}
                             className="w-full bg-bunker-950 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm">
-                            {SYMBOLS.map((s) => <option key={s} value={s}>{s}</option>)}
+                            {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
                         </select>
                     </div>
                     <div>

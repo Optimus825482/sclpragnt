@@ -3132,7 +3132,11 @@ async def backtest_run(payload: dict):
         # Arayüz backtest'i historical tabloyu önceden doldurmayı kullanıcıya
         # bırakmamalı. İstenen pencere için public mumları çekip idempotent
         # şekilde tabloya yazarız; mevcut kayıtlar tekrar işlem görmez.
-        collection = await ensure_backtest_candles(symbol, interval, days_back)
+        # OOS doğrulaması da aynı isteğin parçasıdır: 3 fold için gereken
+        # eğitim + test penceresi ana backtest gün sayısından uzun olabilir.
+        oos_test_days = max(1, min(days_back // 3, 30))
+        required_history_days = max(days_back, 7 + oos_test_days * 3)
+        collection = await ensure_backtest_candles(symbol, interval, required_history_days)
         run_id, result = await run_backtest(
             symbol, interval, days_back, strategy, params,
             order_size, stop_pct, tp_pct, trail_pct
