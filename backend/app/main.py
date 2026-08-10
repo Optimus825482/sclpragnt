@@ -3176,6 +3176,11 @@ async def backtest_run(payload: dict):
     stop_pct = float(payload.get("stop_loss_pct", 0.005))
     tp_pct = float(payload.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
     trail_pct = float(payload.get("trailing_stop_pct", 0.003))
+    if strategy.upper() == "BB_MFI_MEAN_REVERSION":
+        # BB-MFI canlı stratejisinin TradingView değerleri backtestte de aynı
+        # kalmalı; genel sistem varsayılanları bu stratejiyi ezmemeli.
+        stop_pct = config.BB_MFI_STOP_LOSS_PCT
+        tp_pct = config.BB_MFI_TAKE_PROFIT_PCT
     try:
         # Arayüz backtest'i historical tabloyu önceden doldurmayı kullanıcıya
         # bırakmamalı. İstenen pencere için public mumları çekip idempotent

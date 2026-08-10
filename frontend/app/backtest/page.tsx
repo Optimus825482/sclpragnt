@@ -178,6 +178,7 @@ export default function BacktestPage() {
                 <p className="text-[11px] text-bunker-muted mt-3 font-mono">
                     {strat?.icon} {strat?.name} · komisyon + spread + slippage dahil · kronolojik OOS doğrulaması zorunlu · Başlangıç 10.000 ₺
                 </p>
+                {strategy === "BB_MFI_MEAN_REVERSION" && <p className="mt-2 text-[11px] font-mono text-neon-yellow">BB-MFI TradingView çıkışları: stop %8,882 · hedef %2,317 · canlı stratejiyle aynı değerler kullanılır.</p>}
                 <button onClick={runRobustness} disabled={robustnessRunning}
                     className="mt-3 px-4 py-2 rounded-lg border border-yellow-400/40 bg-yellow-400/10 text-yellow-300 font-mono text-xs disabled:opacity-50">
                     {robustnessRunning ? "DAYANIKLILIK TESTİ..." : "↗ 14/30/60 GÜN DAYANIKLILIK TESTİ"}
