@@ -438,8 +438,6 @@ async def startup():
     await market.fetch_historical_data([priority_tf])
     print(f"[MarketData] öncelikli strateji verisi hazır | timeframe={priority_tf} tickers={len(market.tickers)}", flush=True)
     asyncio.create_task(market.connect(skip_history=True))
-    background_timeframes = [tf for tf in market._all_timeframes() if tf != priority_tf]
-    asyncio.create_task(market.fetch_historical_data(background_timeframes), name="market-history-background")
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
     asyncio.create_task(symbol_activity_loop(), name="symbol-activity")
