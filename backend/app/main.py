@@ -666,10 +666,18 @@ async def refresh_symbol_activity():
         closes = bars.get("closes", [])
         highs = bars.get("highs", [])
         lows = bars.get("lows", [])
+        # Websocket/REST geçmişi henüz ısınmadıysa bu sembolü düşük hareketli
+        # sanma; aktivasyon kararı sonraki kontrolde verilecek.
+        if not ticker or len(closes) < 7 or len(highs) < 7 or len(lows) < 7:
+            statuses[symbol] = {
+                "symbol": symbol, "status": "WARMING",
+                "quote_volume": quote_volume, "range_30m_pct": None,
+                "reason": "market_data_warming", "checked_at": time.time(),
+            }
+            continue
         range_pct = 0.0
-        if len(closes) >= 7 and len(highs) >= 7 and len(lows) >= 7:
-            low, high = min(lows[-7:]), max(highs[-7:])
-            range_pct = ((high - low) / low * 100) if low else 0.0
+        low, high = min(lows[-7:]), max(highs[-7:])
+        range_pct = ((high - low) / low * 100) if low else 0.0
         volume_ok = quote_volume >= config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY
         movement_ok = range_pct >= config.SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT
         active = bool(ticker and volume_ok and movement_ok)
@@ -683,8 +691,11 @@ async def refresh_symbol_activity():
         }
     config.PASSIVE_SYMBOLS = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
     await database.set_llm_setting("symbol_activity_status", json.dumps(statuses, ensure_ascii=False))
-    print(f"[Activity] universe={len(universe)} ACTIVE={len(statuses) - len(config.PASSIVE_SYMBOLS)} PASSIVE={len(config.PASSIVE_SYMBOLS)}", flush=True)
-    return {"ok": True, "statuses": statuses, "active_count": len(statuses) - len(config.PASSIVE_SYMBOLS), "passive_count": len(config.PASSIVE_SYMBOLS)}
+    active_count = sum(1 for item in statuses.values() if item["status"] == "ACTIVE")
+    warming_count = sum(1 for item in statuses.values() if item["status"] == "WARMING")
+    print(f"[Activity] universe={len(universe)} ACTIVE={active_count} PASSIVE={len(config.PASSIVE_SYMBOLS)} WARMING={warming_count}", flush=True)
+    return {"ok": True, "statuses": statuses, "active_count": active_count,
+            "passive_count": len(config.PASSIVE_SYMBOLS), "warming_count": warming_count}
 
 async def symbol_activity_loop():
     await asyncio.sleep(20)
@@ -1216,6 +1227,7 @@ async def symbol_activity_status():
     return {"ok": True, "statuses": statuses,
             "active_count": sum(1 for item in statuses.values() if item.get("status") == "ACTIVE"),
             "passive_count": sum(1 for item in statuses.values() if item.get("status") == "PASSIVE"),
+            "warming_count": sum(1 for item in statuses.values() if item.get("status") == "WARMING"),
             "refresh_seconds": config.SYMBOL_ACTIVITY_REFRESH_SEC,
             "thresholds": {"min_quote_volume_try": config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY,
                            "min_range_30m_pct": config.SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT}}
