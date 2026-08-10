@@ -153,6 +153,21 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('source": "binance_tr_public_24h_ticker"', source)
         self.assertIn('known_try = set(await trading_symbols("TRY"))', source)
 
+    def test_symbol_activity_does_not_overwrite_configured_scan_symbols(self):
+        tree = ast.parse((ROOT / "app" / "main.py").read_text())
+        refresh = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "refresh_symbol_activity")
+        refresh_source = ast.get_source_segment((ROOT / "app" / "main.py").read_text(), refresh)
+        self.assertIsNotNone(refresh_source)
+        self.assertNotIn("config.SYMBOLS = universe", refresh_source)
+        self.assertIn("configured paper-trading scan universe", refresh_source)
+
+    def test_scan_logs_have_one_auditable_scan_id_path_for_each_symbol(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        self.assertIn('scan_id = f"automatic-{int(time.time() * 1000)}"', source)
+        self.assertIn('scan_id = f"manual-{uuid.uuid4().hex[:12]}"', source)
+        self.assertIn('"MIGRATION_BLOCKED"', source)
+        self.assertIn('item.get("scan_id") == scan_id', source)
+
     def test_llm_market_scan_uses_fast_hot_cache_defaults(self):
         source = (ROOT / "app" / "main.py").read_text()
         config_source = (ROOT / "app" / "config.py").read_text()
