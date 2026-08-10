@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 import { Card, SectionHeader } from "../components/ui";
 import SymbolLink from "../components/SymbolLink";
 
@@ -18,7 +18,7 @@ export default function SignalReplayPage() {
   const start = async () => {
     setStarting(true);
     try {
-      const response = await fetch(`${API_BASE}/api/strategy/replay`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: 30 }) });
+      const response = await apiRequest(`${API_BASE}/api/strategy/replay`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: 30 }) });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.detail || data.error || "Replay başlatılamadı");
       setJob({ ...data, logs: [], completed: 0, total: 0 });
@@ -30,7 +30,7 @@ export default function SignalReplayPage() {
   useEffect(() => {
     if (!job?.job_id || job.status === "completed" || job.status === "error" || job.job_id === "error") return;
     const timer = window.setInterval(async () => {
-      const response = await fetch(`${API_BASE}/api/strategy/replay/${job.job_id}`, { cache: "no-store" });
+      const response = await apiRequest(`${API_BASE}/api/strategy/replay/${job.job_id}`, { cache: "no-store" });
       if (response.ok) setJob(await response.json());
     }, 1000);
     return () => window.clearInterval(timer);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 import SymbolLink from "../components/SymbolLink";
 
 const value = (v: any) => v == null ? "—" : Number(v).toLocaleString("tr-TR", { maximumFractionDigits: 4 });
@@ -18,7 +18,7 @@ export default function SymbolAnalysisPage() {
   const [commentaryLoading, setCommentaryLoading] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/config`).then(r => r.json()).then(d => {
+    apiRequest(`${API_BASE}/api/config`).then(r => r.json()).then(d => {
       const list = d.symbols || [];
       setSymbols(list);
       setSymbol(new URLSearchParams(location.search).get("symbol") || list[0] || "BTCTRY");
@@ -26,7 +26,7 @@ export default function SymbolAnalysisPage() {
   }, []);
   useEffect(() => {
     setData(null);
-    const load = () => fetch(`${API_BASE}/api/symbol-analysis/${symbol}?timeframe=${timeframe}`, { cache: "no-store" })
+    const load = () => apiRequest(`${API_BASE}/api/symbol-analysis/${symbol}?timeframe=${timeframe}`, { cache: "no-store" })
       .then(r => r.json()).then(setData).catch(() => setError("Sembol analizi alınamadı"));
     load();
     const id = setInterval(load, 5000);
@@ -36,7 +36,7 @@ export default function SymbolAnalysisPage() {
   const askCommentary = async () => {
     setCommentaryLoading(true); setCommentary(null);
     try {
-      const response = await fetch(`${API_BASE}/api/symbol-analysis/${symbol}/llm/commentary`, {
+      const response = await apiRequest(`${API_BASE}/api/symbol-analysis/${symbol}/llm/commentary`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({})
       });
       const result = await response.json();

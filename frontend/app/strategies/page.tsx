@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 
 type Config = {
     ut_enabled: boolean;
@@ -140,7 +140,7 @@ export default function StrategiesPage() {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-    fetch(`${API_BASE}/api/config`)
+    apiRequest(`${API_BASE}/api/config`)
             .then((r) => r.json())
             .then((d) => { setCfg(d); setDraft(d); })
             .catch(() => setError("Backend'e bağlanılamadı (http://localhost:8004)"));
@@ -150,7 +150,7 @@ export default function StrategiesPage() {
         setSaving(true);
         setError(null);
         try {
-      const res = await fetch(`${API_BASE}/api/config`, {
+      const res = await apiRequest(`${API_BASE}/api/config`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(draft)

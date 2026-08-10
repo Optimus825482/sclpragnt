@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 
 type StrategyStat = { trades: number; wins: number; pnl: number; commission: number; win_rate: number };
 type Stats = Record<string, StrategyStat>;
@@ -23,11 +23,11 @@ export default function StrategyCards() {
     const [enabled, setEnabled] = useState<Record<string, boolean>>({});
 
     useEffect(() => {
-    fetch(`${API_BASE}/api/strategies/stats`)
+    apiRequest(`${API_BASE}/api/strategies/stats`)
             .then((r) => r.json())
             .then((d) => setStats(d.stats))
             .catch(() => { });
-        fetch(`${API_BASE}/api/config`)
+        apiRequest(`${API_BASE}/api/config`)
             .then((r) => r.json())
             .then((d) => setEnabled({
                 EMA_VWAP_PULLBACK: d.ema_vwap_enabled,
@@ -43,7 +43,7 @@ export default function StrategyCards() {
             }))
             .catch(() => { });
         const timer = setInterval(() => {
-            fetch(`${API_BASE}/api/strategies/stats`).then((r) => r.json()).then((d) => setStats(d.stats || {})).catch(() => undefined);
+            apiRequest(`${API_BASE}/api/strategies/stats`).then((r) => r.json()).then((d) => setStats(d.stats || {})).catch(() => undefined);
         }, 3000);
         return () => clearInterval(timer);
     }, []);

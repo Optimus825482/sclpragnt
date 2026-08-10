@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 import SymbolLink from "../components/SymbolLink";
 import {
     createChart, createSeriesMarkers, CandlestickSeries, LineSeries, HistogramSeries,
@@ -385,7 +385,7 @@ export default function ChartsPage() {
         const savedInterval = querySymbol ? "5m" : loadPersisted(LS_INTERVAL, "5m");
         setSymbol(savedSymbol);
         setTf(savedInterval);
-        fetch(`${API_BASE}/api/config`).then((r) => r.json()).then((d) => {
+        apiRequest(`${API_BASE}/api/config`).then((r) => r.json()).then((d) => {
             const active = Array.isArray(d.symbols) && d.symbols.length ? d.symbols : FALLBACK_SYMBOLS;
             setSymbols([...active].sort((a, b) => a.localeCompare(b)));
             setSymbol((current) => active.includes(current) ? current : active[0]);
@@ -491,7 +491,7 @@ export default function ChartsPage() {
         setLoading(true);
         const load = async () => {
             try {
-                const res = await fetch(`${API_BASE}/api/market-klines/${symbol}?interval=${interval}&limit=200`);
+                const res = await apiRequest(`${API_BASE}/api/market-klines/${symbol}?interval=${interval}&limit=200`);
                 const payload = await res.json();
                 const data = payload.candles || [];
                 if (cancelled || !candleRef.current) return;
@@ -561,7 +561,7 @@ export default function ChartsPage() {
         let cancelled = false;
         const fetchPositions = async () => {
             try {
-                const res = await fetch(`${API_BASE}/api/positions`);
+                const res = await apiRequest(`${API_BASE}/api/positions`);
                 const data = await res.json();
                 if (!cancelled) setPositions(data.positions || []);
             } catch { /* backend yoksa sessiz geç */ }
@@ -1145,7 +1145,7 @@ export default function ChartsPage() {
             volumeVisible
         };
         try {
-            await fetch(`${API}/${symbol}`, {
+            await apiRequest(`${API}/${symbol}`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload)
@@ -1160,7 +1160,7 @@ export default function ChartsPage() {
     // veritabanından sembol ayarlarını yükle — varsa localStorage'ı ezer (DB daha güncel)
     const loadFromDb = async (s: string, strategy = activeStrategy) => {
         try {
-            const res = await fetch(`${API}/${s}`);
+            const res = await apiRequest(`${API}/${s}`);
             const data = await res.json();
             const st = data?.settings;
             if (!st) return;

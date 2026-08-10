@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 import SymbolLink from "../components/SymbolLink";
 
 type BacktestResult = {
@@ -63,7 +63,7 @@ export default function BacktestPage() {
     const [robustnessRunning, setRobustnessRunning] = useState(false);
 
     const loadHistory = () => {
-        fetch(`${API_BASE}/api/backtests?limit=50`)
+        apiRequest(`${API_BASE}/api/backtests?limit=50`)
             .then((r) => r.json())
             .then((d) => setHistory(d.backtests))
             .catch(() => { });
@@ -72,8 +72,8 @@ export default function BacktestPage() {
     useEffect(() => {
         loadHistory();
         Promise.all([
-            fetch(`${API_BASE}/api/config`, { cache: "no-store" }).then((r) => r.json()),
-            fetch(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()),
+            apiRequest(`${API_BASE}/api/config`, { cache: "no-store" }).then((r) => r.json()),
+            apiRequest(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()),
         ]).then(([configData, activityData]) => {
             const configured = Array.isArray(configData.symbols) ? configData.symbols : [];
             const active = Object.values(activityData.statuses || {})
@@ -91,7 +91,7 @@ export default function BacktestPage() {
         setError(null);
         setResult(null);
         try {
-            const res = await fetch(`${API_BASE}/api/backtest/run`, {
+            const res = await apiRequest(`${API_BASE}/api/backtest/run`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ symbol, interval, days_back: daysBack, strategy, order_size: orderSize })
@@ -108,14 +108,14 @@ export default function BacktestPage() {
     };
 
     const remove = async (id: number) => {
-        await fetch(`${API_BASE}/api/backtests/${id}`, { method: "DELETE" });
+        await apiRequest(`${API_BASE}/api/backtests/${id}`, { method: "DELETE" });
         loadHistory();
     };
 
     const runRobustness = async () => {
         setRobustnessRunning(true);
         try {
-            const res = await fetch(`${API_BASE}/api/backtest/robustness`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol, interval, strategy, windows: [14, 30, 60] }) });
+            const res = await apiRequest(`${API_BASE}/api/backtest/robustness`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbol, interval, strategy, windows: [14, 30, 60] }) });
             setRobustness(await res.json());
         } catch { setRobustness({ ok: false, error: "Robustness testi çalıştırılamadı" }); }
         finally { setRobustnessRunning(false); }

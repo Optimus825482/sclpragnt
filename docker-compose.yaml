@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-scalper}
       POSTGRES_USER: ${POSTGRES_USER:-scalper}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-change-me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
     volumes:
       - scalper_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,7 +24,7 @@ services:
       SCALPER_DB_PATH: /data/scalper_db_v4.sqlite
       # Use the database service in this Compose stack. A stale Coolify
       # DATABASE_URL must not redirect the backend to an unreachable host.
-      DATABASE_URL: postgresql://${POSTGRES_USER:-scalper}:${POSTGRES_PASSWORD:-local-dev-change-me}@postgres:5432/${POSTGRES_DB:-scalper}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-scalper}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-scalper}
       # This application is PostgreSQL-only. Do not allow a stale Coolify
       # variable to silently switch the backend to the retired SQLite path.
       DB_BACKEND: postgres
@@ -32,7 +32,15 @@ services:
       USE_TESTNET: "false"
       CORS_ORIGINS: https://scalper.erkanerdem.online
       A2A_RELAY_URL: ${A2A_RELAY_URL:-}
-      A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:-}
+      A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:?A2A_SHARED_SECRET must be set}
+      SCALPER_ADMIN_PASSWORD: ${SCALPER_ADMIN_PASSWORD:?SCALPER_ADMIN_PASSWORD must be set}
+      SCALPER_SESSION_SECRET: ${SCALPER_SESSION_SECRET:?SCALPER_SESSION_SECRET must be set}
+      SCALPER_COOKIE_SECURE: "1"
+      LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY:?LLM_ENCRYPTION_KEY must be set}
+      LLM_ALLOW_PRIVATE_PROVIDER: ${LLM_ALLOW_PRIVATE_PROVIDER:-0}
+      TOP_GAINERS_AUTO_ACTIVATE: ${TOP_GAINERS_AUTO_ACTIVATE:-true}
+      TOP_GAINERS_LIMIT: ${TOP_GAINERS_LIMIT:-70}
+      TOP_GAINERS_REFRESH_SEC: ${TOP_GAINERS_REFRESH_SEC:-21600}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:alerts@example.com}
     volumes:
@@ -51,7 +59,7 @@ services:
     restart: unless-stopped
     environment:
       PORT: "8010"
-      A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:-}
+      A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:?A2A_SHARED_SECRET must be set}
       A2A_PEER_URL: ${A2A_PEER_URL:-}
       SCALPER_A2A_URL: ${SCALPER_A2A_URL:-}
       A2A_BACKEND_URL: http://backend:8004/api/a2a/messages
@@ -71,6 +79,8 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     restart: unless-stopped
     depends_on:
       backend:

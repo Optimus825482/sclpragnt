@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { API_BASE, WS_BASE } from "../lib/api";
+import { API_BASE, apiRequest, fetchAllPages } from "../lib/api";
+import { useLiveMessages } from "../lib/liveSocket";
 
 const STRATEGY_LABEL: Record<string, string> = {
   EMA_VWAP_PULLBACK: "EMA + VWAP Pullback",
@@ -97,10 +98,10 @@ function ExportActions({ trades }: { trades: Trade[] }) {
     const source = trades.length
       ? trades
       : (
-          await fetch(`${API_BASE}/api/trades`, { cache: "no-store" })
-            .then((r) => r.json())
+          await fetchAllPages<Trade>("/api/trades", "trades")
+            .then((result) => ({ trades: result.rows }))
             .catch(() => ({ trades: [] }))
-        ).trades || [];
+        ).trades;
     const head = [
       "ID",
       "Sembol",
@@ -507,42 +508,27 @@ export default function PortfolioPage() {
     dir: "asc" | "desc";
   }>({ key: "exit_time", dir: "desc" });
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
+  const loadVersion = useRef(0);
+  const loadTrades = useCallback(() => {
+    const version = ++loadVersion.current;
+    return (
+    fetchAllPages<Trade>("/api/trades", "trades")
+      .then((result) => { if (version === loadVersion.current) setTrades(result.rows); })
+      .catch(() => undefined));
+  }, []);
+  const onLiveMessage = useCallback((message: any) => {
+    if (message.type === "portfolio") setPortfolio(message.data);
+    if (["signal", "trade_updated", "reset"].includes(message.type)) loadTrades();
+  }, [loadTrades]);
+  useLiveMessages(onLiveMessage);
 
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get("tab") === "history")
       setTab("history");
   }, []);
   useEffect(() => {
-    let closed = false;
-    let retry: ReturnType<typeof setTimeout> | null = null;
-    let ws: WebSocket | null = null;
-    const loadTrades = () =>
-      fetch(`${API_BASE}/api/trades`, { cache: "no-store" })
-        .then((response) => response.json())
-        .then((data) => {
-          if (!closed) setTrades(data.trades || []);
-        })
-        .catch(() => undefined);
-    const connect = () => {
-      ws = new WebSocket(`${WS_BASE}/ws`);
-      ws.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        if (message.type === "portfolio") setPortfolio(message.data);
-        if (["signal", "trade_updated", "reset"].includes(message.type))
-          loadTrades();
-      };
-      ws.onclose = () => {
-        if (!closed) retry = setTimeout(connect, 2000);
-      };
-    };
     loadTrades();
-    connect();
-    return () => {
-      closed = true;
-      if (retry) clearTimeout(retry);
-      ws?.close();
-    };
-  }, []);
+  }, [loadTrades]);
 
   const formatTab = (next: "portfolio" | "history") => {
     setTab(next);
@@ -557,7 +543,7 @@ export default function PortfolioPage() {
     setClosing(symbol);
     setMsg(null);
     try {
-      const response = await fetch(
+      const response = await apiRequest(
         `${API_BASE}/api/positions/${symbol}/close`,
         { method: "POST" },
       );

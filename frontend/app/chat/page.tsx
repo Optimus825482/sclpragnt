@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 import MarkdownMessage from "../components/MarkdownMessage";
 import { streamChat } from "../lib/streamChat";
 import { Badge, Button, Card, SectionHeader } from "../components/ui";
@@ -164,8 +164,8 @@ export default function ChatPage() {
   }, [messages, hydrated]);
   useEffect(() => {
     Promise.all([
-      fetch(`${API_BASE}/api/llm/config`).then((r) => r.json()),
-      fetch(`${API_BASE}/api/llm/chat-settings`).then((r) => r.json()),
+      apiRequest(`${API_BASE}/api/llm/config`).then((r) => r.json()),
+      apiRequest(`${API_BASE}/api/llm/chat-settings`).then((r) => r.json()),
     ])
       .then(([data, settings]) => {
         setSkills(data.skills || []);
@@ -180,7 +180,7 @@ export default function ChatPage() {
   useEffect(() => {
     if (!chatSettingsReady.current) return;
     const timer = window.setTimeout(() => {
-      fetch(`${API_BASE}/api/llm/chat-settings`, {
+      apiRequest(`${API_BASE}/api/llm/chat-settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -193,7 +193,7 @@ export default function ChatPage() {
   }, [activeTools, activeSkills]);
   useEffect(() => {
     const load = () =>
-      fetch(`${API_BASE}/api/llm/tool-logs?limit=24`)
+      apiRequest(`${API_BASE}/api/llm/tool-logs?limit=24`)
         .then((r) => r.json())
         .then((data) => setLogs(data.logs || []))
         .catch(() => undefined);
@@ -204,11 +204,11 @@ export default function ChatPage() {
   useEffect(() => {
     const load = () =>
       Promise.all([
-        fetch(`${API_BASE}/api/llm/evaluations?limit=8`).then((r) => r.json()),
-        fetch(`${API_BASE}/api/llm/instincts?status=active&limit=6`).then((r) =>
+        apiRequest(`${API_BASE}/api/llm/evaluations?limit=8`).then((r) => r.json()),
+        apiRequest(`${API_BASE}/api/llm/instincts?status=active&limit=6`).then((r) =>
           r.json(),
         ),
-        fetch(`${API_BASE}/api/llm/agent-traces?limit=8`).then((r) => r.json()),
+        apiRequest(`${API_BASE}/api/llm/agent-traces?limit=8`).then((r) => r.json()),
       ])
         .then(([evaluationData, instinctData, traceData]) => {
           setEvaluations(evaluationData.evaluations || []);
@@ -290,7 +290,7 @@ export default function ChatPage() {
         : [...current, value],
     );
   const saveChatSettings = async () => {
-    await fetch(`${API_BASE}/api/llm/chat-settings`, {
+    await apiRequest(`${API_BASE}/api/llm/chat-settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

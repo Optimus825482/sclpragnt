@@ -560,6 +560,9 @@ async def run_walk_forward(symbol: str, interval: str, strategy: str,
     LLM_PAPER cannot be replayed here because historical LLM decisions/plans
     are not reconstructed candle-by-candle. Its exact exit model belongs to
     run_custom_backtest with explicit TP/SL and exit conditions.
+
+    ``train_days`` supplies pre-fold indicator/warm-up context. This function
+    does not fit or select parameters, so the result must not imply training.
     """
     if str(strategy).upper() == "LLM_PAPER":
         raise ValueError("LLM_PAPER walk-forward için explicit plan/exit koşulları gerekir; run_custom_backtest kullanın")
@@ -576,15 +579,38 @@ async def run_walk_forward(symbol: str, interval: str, strategy: str,
         results.append(result)
     pnl = [float(row.get("net_pnl") or 0) for row in results]
     positive_folds = sum(value > 0 for value in pnl)
+    total_pnl = sum(pnl)
+    total_trades = sum(max(0, int(row.get("total_trades") or 0)) for row in results)
+    minimum_folds = 3
+    minimum_trades = 30
+    majority_required = len(results) // 2 + 1
+    validation_reasons = []
+    if len(results) < minimum_folds:
+        validation_reasons.append("insufficient_folds")
+    if total_trades < minimum_trades:
+        validation_reasons.append("insufficient_trades")
+    if positive_folds < majority_required:
+        validation_reasons.append("insufficient_positive_fold_majority")
+    if total_pnl <= 0:
+        validation_reasons.append("non_positive_total_net_pnl")
+    oos_consistent = not validation_reasons
     return {"symbol": symbol, "interval": interval, "strategy": strategy,
-            "method": "chronological_oos_folds", "train_days": train_days,
+            "method": "chronological_oos_folds_without_parameter_training", "train_days": train_days,
+            "warmup_context_days": train_days, "training_performed": False,
+            "parameter_selection": "none",
             "test_days": test_days, "folds": len(results),
             "positive_oos_folds": positive_folds,
-            "oos_consistent": bool(results) and positive_folds >= max(1, len(results) // 2 + 1),
-            "net_pnl": round(sum(pnl), 2),
+            "minimum_required_folds": minimum_folds,
+            "minimum_required_trades": minimum_trades,
+            "total_oos_trades": total_trades,
+            "data_sufficient": len(results) >= minimum_folds and total_trades >= minimum_trades,
+            "oos_consistent": oos_consistent,
+            "validation_status": "PASS" if oos_consistent else "FAIL",
+            "validation_reasons": validation_reasons,
+            "net_pnl": round(total_pnl, 2),
             "average_fold_pnl": round(sum(pnl) / len(pnl), 2) if pnl else 0.0,
             "fold_results": results, "paper_only": True,
-            "warning": "OOS sonucu kârlılık garantisi değildir; maliyet varsayımları ve örneklem büyüklüğü ayrıca incelenmelidir."}
+            "warning": "Bu değerlendirme parametre eğitimi/optimizasyonu yapmaz; train_days yalnız gösterge geçmişi sağlar. OOS sonucu kârlılık garantisi değildir; maliyet varsayımları ve örneklem büyüklüğü ayrıca incelenmelidir."}
 
 
 async def run_execution_stress(symbol: str, interval: str, strategy: str, days_back: int = 30,

@@ -1,4 +1,5 @@
 import math
+import time
 import numpy as np
 
 
@@ -280,8 +281,11 @@ CANDLESTICK_PATTERN_INFO = {
 
 def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, order_value=500, primary_timeframe="5m"):
     """Calculate explainable, public-OHLCV technical context for one symbol."""
-    flow = orderflow or {}; result = {"symbol": symbol, "price": price, "timeframes": {}, "data_ready": False}
+    flow = orderflow or {}; result = {"symbol": symbol, "price": price, "timeframes": {}, "data_ready": False,
+                                     "generated_at": time.time()}
     primary = klines.get(primary_timeframe, {})
+    observed_ms = primary.get("last_closed_at_ms") or ((primary.get("timestamps") or [None])[-1])
+    result["observation_timestamp"] = float(observed_ms) / 1000 if observed_ms else None
     opens = primary.get("opens", []); closes = primary.get("closes", []); highs = primary.get("highs", []); lows = primary.get("lows", []); volumes = primary.get("volumes", [])
     result["timeframes"] = {primary_timeframe: {"candles": len(closes), "required": 55}}
     if len(closes) < 55:

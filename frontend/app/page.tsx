@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { API_BASE } from "./lib/api";
+import { API_BASE, apiRequest } from "./lib/api";
 import LiveTerminal from "./components/LiveTerminal";
 import StrategyCards from "./components/StrategyCards";
 import AlertPanel from "./components/AlertPanel";
@@ -13,7 +13,7 @@ export default function Home() {
   const runManualScan = async () => {
     setManualState("running"); setManualMessage("Aktif semboller taranıyor…");
     try {
-      const response = await fetch(`${API_BASE}/api/strategy/manual-scan`, { method: "POST" });
+      const response = await apiRequest(`${API_BASE}/api/strategy/manual-scan`, { method: "POST" });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.reason || "Tarama çalıştırılamadı");
       setManualState("done");

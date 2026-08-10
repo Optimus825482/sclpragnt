@@ -1,8 +1,9 @@
 import asyncio, base64, json, os, time
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from cryptography.fernet import Fernet
 from app import database
+from app.security import safe_provider_open, validate_provider_url
 
 PERSONA = """Persona adın Scalper. Kullanıcının adı Erkan'dır; ona Türkçe, doğrudan ve teknik bir çalışma arkadaşı gibi hitap edersin. Erkan'ın talimatlarını mevcut sistem kapsamı içinde uygularsın; kimlik, yetki veya kişisel bilgi uydurmazsın. Paper-trading güvenlik kurallarını aşmayı önermezsin."""
 TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
@@ -137,11 +138,11 @@ async def analyze(snapshot):
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
     system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Yanıtını piyasa rejimi, kanıtlar, riskler, veri eksikleri ve güven seviyesi başlıklarıyla açıkla. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False)}]}
-    base_url = cfg["provider"]["base_url"].rstrip("/")
+    base_url = validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with urlopen(req, timeout=90) as response: return _decode_provider_response(response.read())
+        with safe_provider_open(req, timeout=90) as response: return _decode_provider_response(response.read())
     try:
         result = await asyncio.to_thread(call)
         # Some compatible gateways wrap the upstream response in {success, data}.
@@ -175,11 +176,11 @@ async def embedding(text, model_id=None):
     if model.get("model_type", "chat") != "embedding":
         return {"status": "error", "error": "Aktif model embedding modeli değil"}
     payload = {"model": model["name"], "input": text}
-    base_url = cfg["provider"]["base_url"].rstrip("/")
+    base_url = validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/embeddings") else base_url + "/embeddings"
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with urlopen(req, timeout=30) as response: return _decode_provider_response(response.read())
+        with safe_provider_open(req, timeout=30) as response: return _decode_provider_response(response.read())
     try:
         result = await asyncio.to_thread(call); data = result.get("data", result) if isinstance(result, dict) else result
         vector = data[0].get("embedding") if isinstance(data, list) and data else None
@@ -211,10 +212,10 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         conversation.append(message)
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation}
     if tools: payload["tools"] = tools; payload["tool_choice"] = "auto"
-    base_url = cfg["provider"]["base_url"].rstrip("/"); url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
+    base_url = validate_provider_url(cfg["provider"]["base_url"]); url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with urlopen(req, timeout=45) as response: return _decode_provider_response(response.read())
+        with safe_provider_open(req, timeout=45) as response: return _decode_provider_response(response.read())
     async def call_with_retry():
         last_error = None
         for attempt in range(2):
@@ -309,7 +310,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         if isinstance(item, dict):
             conversation.append({k: item[k] for k in ("role", "content") if k in item})
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation, "stream": True}
-    base_url = cfg["provider"]["base_url"].rstrip("/")
+    base_url = validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     try:
         headers = {"Content-Type": "application/json", "Authorization": "Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}
@@ -318,7 +319,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         def read_stream():
             try:
                 request = Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
-                with urlopen(request, timeout=120) as response:
+                with safe_provider_open(request, timeout=120) as response:
                     if response.status >= 400:
                         lines.put(("error", f"Provider HTTP {response.status}: {response.read(1000).decode(errors='replace')}"))
                     else:

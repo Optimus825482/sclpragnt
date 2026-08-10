@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS positions (symbol TEXT PRIMARY KEY, side TEXT, entry_
 CREATE TABLE IF NOT EXISTS trades (id BIGINT PRIMARY KEY, symbol TEXT, strategy TEXT, side TEXT, entry_price DOUBLE PRECISION, exit_price DOUBLE PRECISION, quantity DOUBLE PRECISION, pnl DOUBLE PRECISION, pnl_pct DOUBLE PRECISION, entry_time DOUBLE PRECISION, exit_time DOUBLE PRECISION, commission DOUBLE PRECISION, reason TEXT, entry_context JSONB, max_favorable_pct DOUBLE PRECISION, max_adverse_pct DOUBLE PRECISION, hold_seconds DOUBLE PRECISION, trade_id TEXT);
 ALTER TABLE positions ADD COLUMN IF NOT EXISTS trade_id TEXT;
 ALTER TABLE trades ADD COLUMN IF NOT EXISTS trade_id TEXT;
-CREATE TABLE IF NOT EXISTS signals (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION, symbol TEXT, action TEXT, price DOUBLE PRECISION, reason TEXT);
+CREATE TABLE IF NOT EXISTS signals (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION, symbol TEXT, action TEXT, price DOUBLE PRECISION, reason TEXT, strategy TEXT, trade_id TEXT);
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS strategy TEXT;
+ALTER TABLE signals ADD COLUMN IF NOT EXISTS trade_id TEXT;
 CREATE TABLE IF NOT EXISTS decision_logs (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION NOT NULL, symbol TEXT, strategy TEXT, decision TEXT, reason TEXT, price DOUBLE PRECISION, metadata JSONB);
 CREATE INDEX IF NOT EXISTS idx_trades_exit_symbol_strategy ON trades(exit_time DESC, symbol, strategy);
 CREATE INDEX IF NOT EXISTS idx_signals_time_symbol_action ON signals(timestamp DESC, symbol, action);
@@ -216,11 +218,13 @@ CREATE TABLE IF NOT EXISTS alert_rules (
   timeframe TEXT NOT NULL DEFAULT '5m', rule_type TEXT NOT NULL DEFAULT 'price',
   operator TEXT NOT NULL, threshold DOUBLE PRECISION NOT NULL,
   cooldown_seconds INTEGER NOT NULL DEFAULT 1800, enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  armed BOOLEAN NOT NULL DEFAULT TRUE,
   last_triggered_at TIMESTAMPTZ, last_value DOUBLE PRECISION, rearm_threshold DOUBLE PRECISION,
   expires_at TIMESTAMPTZ, notify_channels JSONB NOT NULL DEFAULT '["websocket"]'::jsonb,
   created_by TEXT NOT NULL DEFAULT 'user', reason TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS armed BOOLEAN NOT NULL DEFAULT TRUE;
 CREATE INDEX IF NOT EXISTS alert_rules_active_idx ON alert_rules(enabled, symbol);
 CREATE TABLE IF NOT EXISTS alert_events (
   id BIGSERIAL PRIMARY KEY, rule_id BIGINT NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,

@@ -60,6 +60,7 @@ async def deliver(message: dict) -> dict:
 
     try:
         status = await asyncio.to_thread(send)
-        return {"delivered": 200 <= status < 300, "status_code": status, "queued": False}
+        delivered = 200 <= status < 300
+        return {"delivered": delivered, "status_code": status, "queued": not delivered}
     except Exception as exc:
         return {"delivered": False, "queued": True, "error": f"{type(exc).__name__}: {exc}"}

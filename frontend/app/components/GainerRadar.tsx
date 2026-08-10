@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 import SymbolLink from "./SymbolLink";
 
 type Candidate = { symbol: string; score: number; eligible: boolean; ret_5m: number; ret_1h: number; ret_24h: number; volume_ratio: number; imbalance: number; spread: number; trend: boolean; crsi?: number | null };
@@ -16,15 +16,15 @@ export default function GainerRadar() {
     let active = true;
     const load = () => {
       setLoading(true);
-      fetch(`${API_BASE}/api/radar/gainers`).then((r) => r.json()).then((d) => {
+      apiRequest(`${API_BASE}/api/radar/gainers`).then((r) => r.json()).then((d) => {
         if (!active) return;
         setItems(d.items || []);
         setAdded(d.auto_added || []);
-        fetch(`${API_BASE}/api/market-snapshot-scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeframes: ["5m", "15m", "1h"], limit: 5 }) })
+        apiRequest(`${API_BASE}/api/market-snapshot-scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeframes: ["5m", "15m", "1h"], limit: 5 }) })
           .then((r) => r.json()).then((scan) => { if (active) setRegime(scan.market_regime || {}); }).catch(() => { if (active) setRegime({}); });
         setSecondsLeft(30);
-        const persist = d.auto_added?.length ? fetch(`${API_BASE}/api/config`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbols: d.symbols }) }) : Promise.resolve();
-        return persist.then(() => d.auto_trade ? fetch(`${API_BASE}/api/radar/execute`, { method: "POST" }) : undefined);
+        const persist = d.auto_added?.length ? apiRequest(`${API_BASE}/api/config`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbols: d.symbols }) }) : Promise.resolve();
+        return persist.then(() => d.auto_trade ? apiRequest(`${API_BASE}/api/radar/execute`, { method: "POST" }) : undefined);
       }).catch(() => { if (active) setItems([]); }).finally(() => { if (active) setLoading(false); });
     };
     load();

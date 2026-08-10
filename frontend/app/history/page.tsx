@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { API_BASE } from "../lib/api";
+import { fetchAllPages } from "../lib/api";
 
 type Trade = {
     id: number;
@@ -32,12 +32,12 @@ export default function HistoryPage() {
     const [trades, setTrades] = useState<Trade[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [complete, setComplete] = useState(true);
 
     useEffect(() => {
-        fetch(`${API_BASE}/api/trades`)
-            .then((r) => r.json())
-            .then((d) => setTrades(d.trades))
-            .catch(() => setError("Backend'e bağlanılamadı (http://localhost:8004)"))
+        fetchAllPages<Trade>("/api/trades", "trades")
+            .then((result) => { setTrades(result.rows); setComplete(result.complete); })
+            .catch(() => setError("İşlem geçmişi backend'den alınamadı."))
             .finally(() => setLoading(false));
     }, []);
 
@@ -56,6 +56,9 @@ export default function HistoryPage() {
                     <span className="text-neon-green">İŞLEM</span> GEÇMİŞİ
                 </h1>
                 <p className="eyebrow mt-1">Kapanan pozisyonlar · detaylı tablo</p>
+                <p className={`mt-2 font-mono text-xs ${complete ? "text-neon-green" : "text-yellow-300"}`}>
+                    {complete ? "Mevcut offset sayfaları yüklendi · canlı insert sırasında snapshot garantisi yok" : "10.000 kayıt sınırına ulaşıldı; backend keyset/aggregate endpoint'i gerekli"}
+                </p>
             </header>
 
             <div className="grid md:grid-cols-4 gap-4">

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 import LlmManagement from "./LlmManagement";
 import SymbolLink from "../components/SymbolLink";
 
@@ -69,21 +69,21 @@ export default function SettingsPage() {
   const [activityFilter, setActivityFilter] = useState<"all" | "ACTIVE" | "PASSIVE" | "WARMING">("all");
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/config`)
+    apiRequest(`${API_BASE}/api/config`)
       .then((r) => r.json())
       .then((d) => { setCfg(d); setDraft(d); })
       .catch(() => setError("Backend'e bağlanılamadı (http://localhost:8004)"));
-    fetch(`${API_BASE}/api/market-symbols`)
+    apiRequest(`${API_BASE}/api/market-symbols`)
       .then((r) => r.json())
       .then((d) => setMarketSymbols(d.symbols || []))
       .catch(() => setError("Binance TR sembolleri alınamadı"));
-    fetch(`${API_BASE}/api/llm/config`).then((r) => r.json()).then(setLlm).catch(() => undefined);
+    apiRequest(`${API_BASE}/api/llm/config`).then((r) => r.json()).then(setLlm).catch(() => undefined);
   }, []);
 
   useEffect(() => {
     if (activeTab !== "scan-logs") return;
     let cancelled = false;
-    const load = () => fetch(`${API_BASE}/api/strategy/scan-logs?limit=1000${scanLogFilter === "all" ? "" : `&scan_type=${scanLogFilter}`}`)
+    const load = () => apiRequest(`${API_BASE}/api/strategy/scan-logs?limit=1000${scanLogFilter === "all" ? "" : `&scan_type=${scanLogFilter}`}`)
       .then((r) => r.json()).then((d) => { if (!cancelled) setScanLogs(d.logs || []); }).catch(() => undefined);
     load();
     const timer = window.setInterval(load, 5000);
@@ -91,7 +91,7 @@ export default function SettingsPage() {
   }, [activeTab, scanLogFilter]);
 
   useEffect(() => {
-    const load = () => fetch(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()).then((d) => setActivity(d.statuses || {})).catch(() => undefined);
+    const load = () => apiRequest(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()).then((d) => setActivity(d.statuses || {})).catch(() => undefined);
     load();
     const timer = window.setInterval(load, 30000);
     return () => window.clearInterval(timer);
@@ -101,7 +101,7 @@ export default function SettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/config`, {
+      const res = await apiRequest(`${API_BASE}/api/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(draft)
@@ -137,7 +137,7 @@ export default function SettingsPage() {
     setError(null);
     setResetDone(false);
     try {
-      const res = await fetch(`${API_BASE}/api/reset`, { method: "POST" });
+      const res = await apiRequest(`${API_BASE}/api/reset`, { method: "POST" });
       if (!res.ok) throw new Error("reset failed");
       setResetDone(true);
       setTimeout(() => setResetDone(false), 3000);
@@ -151,13 +151,13 @@ export default function SettingsPage() {
   const reconcilePortfolio = async () => {
     setReconciling(true); setError(null);
     try {
-      const previewResponse = await fetch(`${API_BASE}/api/portfolio/reconcile`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: false }) });
+      const previewResponse = await apiRequest(`${API_BASE}/api/portfolio/reconcile`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: false }) });
       const preview = await previewResponse.json();
       if (!previewResponse.ok) throw new Error(preview.detail || "Mutabakat önizlemesi alınamadı");
       const targets = preview.would_remove || [];
       const detail = targets.length ? `\nSilinecek açık pozisyonlar ve ilişkili açılış kayıtları:\n- ${targets.map((item:any) => `${item.symbol} · ₺${Number(item.cost).toFixed(2)}`).join("\n- ")}` : "\nSilinecek pozisyon yok; yalnızca bakiye yeniden hesaplanacak.";
       if (!window.confirm(`Portföy mutabakatı önizlemesi hazır.${detail}\n\nDevam edilsin mi?`)) return;
-      const response = await fetch(`${API_BASE}/api/portfolio/reconcile`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }) });
+      const response = await apiRequest(`${API_BASE}/api/portfolio/reconcile`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || "Portföy mutabakatı başarısız");
       setReconcileDone(true);
@@ -172,7 +172,7 @@ export default function SettingsPage() {
     if (!window.confirm("Mevcut işlem ve sinyal kayıtları embedding modeline gönderilecek. Kayıtlar silinmeyecek. Devam edilsin mi?")) return;
     setBackfilling(true); setLlmMessage(null);
     try {
-      const response = await fetch(`${API_BASE}/api/memory/backfill`, { method: "POST" });
+      const response = await apiRequest(`${API_BASE}/api/memory/backfill`, { method: "POST" });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || "Embedding backfill başlatılamadı");
       setBackfillDone(true);
@@ -186,7 +186,7 @@ export default function SettingsPage() {
     if (!window.confirm("Eksik tarihsel likidite alanları tahmin edilmeden işaretlenecek ve ilgili embedding kayıtları yeniden üretilecek. Devam edilsin mi?")) return;
     setRepairingMemory(true); setLlmMessage(null);
     try {
-      const response = await fetch(`${API_BASE}/api/memory/repair-historical`, { method: "POST" });
+      const response = await apiRequest(`${API_BASE}/api/memory/repair-historical`, { method: "POST" });
       const body = await response.json();
       if (!response.ok) throw new Error(body.detail || "Tarihsel memory onarımı başlatılamadı");
       setLlmMessage(`${body.queued || 0} tarihsel snapshot yeniden embedding kuyruğuna alındı.`);
@@ -194,11 +194,11 @@ export default function SettingsPage() {
     finally { setRepairingMemory(false); }
   };
 
-  const reloadLlm = async () => setLlm(await (await fetch(`${API_BASE}/api/llm/config`, { cache: "no-store" })).json());
+  const reloadLlm = async () => setLlm(await (await apiRequest(`${API_BASE}/api/llm/config`, { cache: "no-store" })).json());
   const llmRequest = async (url: string, options: RequestInit, success: string) => {
     setLlmMessage(null);
     try {
-      const response = await fetch(url, options);
+      const response = await apiRequest(url, options);
       const body = await response.json().catch(() => ({}));
       if (!response.ok || body.ok === false) throw new Error(body.detail || body.error || "İşlem başarısız");
       await reloadLlm();
@@ -214,7 +214,7 @@ export default function SettingsPage() {
     setError(null);
     setBackupDone(false);
     try {
-      const res = await fetch(`${API_BASE}/api/backup`);
+      const res = await apiRequest(`${API_BASE}/api/backup`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `Yedekleme başarısız (HTTP ${res.status})`);
@@ -401,8 +401,8 @@ export default function SettingsPage() {
           </div>
           <div className={`space-y-4 ${activeTab !== "llm" ? "hidden" : ""}`}>
             <div className="card bg-bunker-950"><p className="eyebrow mb-3">LLM PROVIDER EKLE</p><p className="text-xs text-bunker-muted mb-3">Yalnızca teknik yorum üretir; emir veya pozisyon kararı vermez.</p><div className="grid md:grid-cols-2 gap-3"><input placeholder="Provider adı" value={llmForm.name} onChange={e => setLlmForm({...llmForm,name:e.target.value})} className="input" /><input placeholder="Base URL (https://.../v1)" value={llmForm.base_url} onChange={e => setLlmForm({...llmForm,base_url:e.target.value})} className="input" /><input type="password" placeholder="API key" value={llmForm.api_key} onChange={e => setLlmForm({...llmForm,api_key:e.target.value})} className="input" /><button onClick={() => llmRequest(`${API_BASE}/api/llm/providers`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(llmForm)}, "Provider kaydedildi")} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded-lg font-mono text-xs">PROVIDER KAYDET</button></div><p className="text-xs text-bunker-muted mt-3">Şifreleme anahtarı: {llm.encryption_configured ? "hazır" : "sunucuda LLM_ENCRYPTION_KEY eksik"}</p></div>
-            <div className="card bg-bunker-950"><p className="eyebrow mb-3">MODEL / UZMANLIK</p><div className="grid md:grid-cols-2 gap-3"><select value={llmForm.provider_id} onChange={e => setLlmForm({...llmForm,provider_id:e.target.value})} className="input"><option value="">Provider seç</option>{llm.providers.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}</select><input placeholder="Model adı" value={llmForm.model} onChange={e => setLlmForm({...llmForm,model:e.target.value})} className="input" /><select value={llmForm.model_type} onChange={e => setLlmForm({...llmForm,model_type:e.target.value})} className="input"><option value="chat">Chat modeli</option><option value="embedding">Embedding modeli</option></select>{llmForm.model_type === "embedding" && <input type="number" min="1" placeholder="Embedding dimension" value={llmForm.dimensions} onChange={e => setLlmForm({...llmForm,dimensions:e.target.value})} className="input" />}<button onClick={() => llmRequest(`${API_BASE}/api/llm/models`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider_id:Number(llmForm.provider_id),name:llmForm.model,model_type:llmForm.model_type,dimensions:llmForm.dimensions ? Number(llmForm.dimensions) : undefined})}, "Model kaydedildi")} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">MODEL EKLE</button>{llmForm.model_type === "embedding" && <button onClick={async () => { const r=await fetch(`${API_BASE}/api/llm/embedding/test`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:"embedding bağlantı testi"})}); const b=await r.json(); const m=b.status === "ok" ? `Embedding başarılı · ${b.dimensions} dimension` : (b.error || "Embedding testi başarısız"); setLlmMessage(m); window.alert(m); }} className="px-3 py-2 border border-yellow-400/40 text-yellow-300 rounded-lg font-mono text-xs">EMBEDDING TEST ET</button>}<input placeholder="Uzmanlık adı" value={llmForm.skill} onChange={e => setLlmForm({...llmForm,skill:e.target.value})} className="input" /><textarea placeholder="Uzmanlık talimatları" value={llmForm.instructions} onChange={e => setLlmForm({...llmForm,instructions:e.target.value})} className="input min-h-24" /><button onClick={() => llmRequest(`${API_BASE}/api/llm/skills`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:llmForm.skill,instructions:llmForm.instructions})}, "Uzmanlık kaydedildi")} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">UZMANLIK EKLE</button></div>{llmMessage && <p className="text-xs text-neon-green mt-3">{llmMessage}</p>}</div>
-            <div className="card bg-bunker-950 flex flex-wrap gap-3"><select value={llm.active_model_id || ""} onChange={async e => { const id=Number(e.target.value); await llmRequest(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:id})}, "LLM aktif edildi"); }} className="input"><option value="">Aktif model seç</option>{llm.models.map((m:any)=><option key={m.id} value={m.id}>{m.name}</option>)}</select><button onClick={() => llmRequest(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:llm.active_model_id})}, "LLM aktif edildi")} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded-lg font-mono text-xs">LLM AKTİF</button><button onClick={async () => { setLlmMessage("TEST EDİLİYOR..."); try { const r=await fetch(`${API_BASE}/api/llm/test`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})}); const body=await r.json(); const message=body.status === "ok" ? "Bağlantı başarılı" : (body.error || body.status || "Test başarısız"); setLlmMessage(message); window.alert(message); } catch { setLlmMessage("LLM test bağlantısı kurulamadı"); window.alert("LLM test bağlantısı kurulamadı"); } }} className="px-3 py-2 border border-yellow-400/40 text-yellow-300 rounded-lg font-mono text-xs">TEST ET</button></div>
+            <div className="card bg-bunker-950"><p className="eyebrow mb-3">MODEL / UZMANLIK</p><div className="grid md:grid-cols-2 gap-3"><select value={llmForm.provider_id} onChange={e => setLlmForm({...llmForm,provider_id:e.target.value})} className="input"><option value="">Provider seç</option>{llm.providers.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}</select><input placeholder="Model adı" value={llmForm.model} onChange={e => setLlmForm({...llmForm,model:e.target.value})} className="input" /><select value={llmForm.model_type} onChange={e => setLlmForm({...llmForm,model_type:e.target.value})} className="input"><option value="chat">Chat modeli</option><option value="embedding">Embedding modeli</option></select>{llmForm.model_type === "embedding" && <input type="number" min="1" placeholder="Embedding dimension" value={llmForm.dimensions} onChange={e => setLlmForm({...llmForm,dimensions:e.target.value})} className="input" />}<button onClick={() => llmRequest(`${API_BASE}/api/llm/models`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider_id:Number(llmForm.provider_id),name:llmForm.model,model_type:llmForm.model_type,dimensions:llmForm.dimensions ? Number(llmForm.dimensions) : undefined})}, "Model kaydedildi")} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">MODEL EKLE</button>{llmForm.model_type === "embedding" && <button onClick={async () => { const r=await apiRequest(`${API_BASE}/api/llm/embedding/test`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:"embedding bağlantı testi"})}); const b=await r.json(); const m=b.status === "ok" ? `Embedding başarılı · ${b.dimensions} dimension` : (b.error || "Embedding testi başarısız"); setLlmMessage(m); window.alert(m); }} className="px-3 py-2 border border-yellow-400/40 text-yellow-300 rounded-lg font-mono text-xs">EMBEDDING TEST ET</button>}<input placeholder="Uzmanlık adı" value={llmForm.skill} onChange={e => setLlmForm({...llmForm,skill:e.target.value})} className="input" /><textarea placeholder="Uzmanlık talimatları" value={llmForm.instructions} onChange={e => setLlmForm({...llmForm,instructions:e.target.value})} className="input min-h-24" /><button onClick={() => llmRequest(`${API_BASE}/api/llm/skills`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:llmForm.skill,instructions:llmForm.instructions})}, "Uzmanlık kaydedildi")} className="px-3 py-2 border border-sky-400/40 text-sky-300 rounded-lg font-mono text-xs">UZMANLIK EKLE</button></div>{llmMessage && <p className="text-xs text-neon-green mt-3">{llmMessage}</p>}</div>
+            <div className="card bg-bunker-950 flex flex-wrap gap-3"><select value={llm.active_model_id || ""} onChange={async e => { const id=Number(e.target.value); await llmRequest(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:id})}, "LLM aktif edildi"); }} className="input"><option value="">Aktif model seç</option>{llm.models.map((m:any)=><option key={m.id} value={m.id}>{m.name}</option>)}</select><button onClick={() => llmRequest(`${API_BASE}/api/llm/active`, {method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:true,model_id:llm.active_model_id})}, "LLM aktif edildi")} className="px-3 py-2 border border-neon-green/40 text-neon-green rounded-lg font-mono text-xs">LLM AKTİF</button><button onClick={async () => { setLlmMessage("TEST EDİLİYOR..."); try { const r=await apiRequest(`${API_BASE}/api/llm/test`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})}); const body=await r.json(); const message=body.status === "ok" ? "Bağlantı başarılı" : (body.error || body.status || "Test başarısız"); setLlmMessage(message); window.alert(message); } catch { setLlmMessage("LLM test bağlantısı kurulamadı"); window.alert("LLM test bağlantısı kurulamadı"); } }} className="px-3 py-2 border border-yellow-400/40 text-yellow-300 rounded-lg font-mono text-xs">TEST ET</button></div>
             <div className="card border-purple-400/30 bg-purple-400/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4"><div><p className="eyebrow text-purple-300">MEVCUT KAYITLARI VECTORLEŞTİR</p><p className="text-xs text-bunker-muted mt-2">Kapanmış işlemler ve sinyaller aktif embedding modeliyle pgvector memory tablosuna aktarılır.</p></div><div className="flex flex-wrap gap-2"><button onClick={backfillEmbeddings} disabled={backfilling} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs ${backfillDone ? "border-neon-green/60 text-neon-green" : "border-purple-400/50 text-purple-300"}`}>{backfilling ? "KUYRUĞA ALINIYOR..." : backfillDone ? "✓ KUYRUĞA ALINDI" : "EMBEDDING BACKFILL BAŞLAT"}</button><button onClick={repairHistoricalMemory} disabled={repairingMemory} className="shrink-0 px-4 py-2 rounded-lg border border-yellow-400/50 text-yellow-300 font-mono text-xs">{repairingMemory ? "ONARILIYOR..." : "TARİHSEL SNAPSHOT ONAR"}</button></div></div>
             <div className="card border-yellow-400/30 bg-yellow-400/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"><div><p className="eyebrow text-yellow-300">LLM PAPER İŞLEM YETKİSİ</p><p className="text-xs text-bunker-muted mt-2">Açıkken LLM yalnızca sanal portföyde kontrollü LONG pozisyonu açabilir. Gerçek emir API'si kullanılmaz.</p></div><div className="flex gap-2"><button onClick={async()=>{const enabled=!llm.paper_trade_enabled;await llmRequest(`${API_BASE}/api/llm/paper-trading`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled})},enabled?"Paper işlem yetkisi açıldı":"Paper işlem yetkisi kapatıldı");await reloadLlm()}} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs ${llm.paper_trade_enabled?"border-neon-green/60 text-neon-green":"border-bunker-700 text-bunker-muted"}`}>{llm.paper_trade_enabled?"AÇIK · KAPAT":"KAPALI · AÇ"}</button><button disabled={!llm.paper_trade_enabled} onClick={async()=>{const enabled=!llm.auto_paper_enabled;await llmRequest(`${API_BASE}/api/llm/auto-paper-trading`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled})},enabled?"Kapanış sonrası otomatik yenileme açıldı":"Otomatik yenileme kapatıldı");await reloadLlm()}} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs ${llm.auto_paper_enabled?"border-yellow-300/60 text-yellow-300":"border-bunker-700 text-bunker-muted"}`}>{llm.auto_paper_enabled?"KAPANIŞ SONRASI · KAPAT":"KAPANIŞ SONRASI · AÇ"}</button></div></div>
             <LlmManagement llm={llm} reload={reloadLlm} />

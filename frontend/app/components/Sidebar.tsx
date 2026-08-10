@@ -1,9 +1,10 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "./ui";
-import { API_BASE, WS_BASE } from "../lib/api";
+import { apiFetch } from "../lib/api";
+import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "./SymbolLink";
 
 const MENU = [
@@ -11,10 +12,14 @@ const MENU = [
     { href: "/", label: "Scalping", icon: "⚡", desc: "Canlı terminal" },
     { href: "/portfolio", label: "Portföy", icon: "📊", desc: "Varlıklar & PnL", children: [{ href: "/portfolio?tab=history", label: "İşlem Geçmişi" }] },
     { href: "/gainer-radar", label: "Gainer Radar", icon: "🎯", desc: "Fırsat tarayıcı" },
+    { href: "/alerts", label: "Alarmlar", icon: "🔔", desc: "Fiyat alarmı yönetimi" },
+    { href: "/strategies", label: "Stratejiler", icon: "🧭", desc: "Sinyal motorları" },
+    { href: "/symbol-analysis", label: "Sembol Analizi", icon: "🔎", desc: "Çoklu zaman analizi" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
     { href: "/backtest", label: "Backtest", icon: "🧪", desc: "Strateji test lab" },
     { href: "/signal-replay", label: "Sinyal Denetimi", icon: "🕒", desc: "Son 30 dk replay" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
+    { href: "/system-health", label: "Sistem Sağlığı", icon: "🩺", desc: "Gerçek servis durumu" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" }
 ];
 const formatNotificationDate = (value: unknown) => {
@@ -30,6 +35,15 @@ export default function Sidebar() {
     const [notifications, setNotifications] = useState<any[]>([]);
     const [unread, setUnread] = useState(0);
     const [notificationsOpen, setNotificationsOpen] = useState(false);
+    const [health, setHealth] = useState<any>(null);
+    const liveStatus = useLiveStatus();
+    const onLiveMessage = useCallback((message: any) => {
+        if (message.type !== "alert") return;
+        const item = { ...(message.data || {}), id: message.data?.id || `${Date.now()}`, triggered_at: message.data?.triggered_at || Date.now() / 1000 };
+        setNotifications((current) => [item, ...current.filter((entry) => entry.id !== item.id)].slice(0, 30));
+        setUnread((count) => count + 1);
+    }, []);
+    useLiveMessages(onLiveMessage);
     useEffect(() => {
         if ("serviceWorker" in navigator) {
             if (process.env.NODE_ENV === "production") navigator.serviceWorker.register("/sw.js").catch(() => undefined);
@@ -41,25 +55,16 @@ export default function Sidebar() {
     }, []);
     useEffect(() => setOpen(false), [pathname]);
     useEffect(() => {
-        let ws: WebSocket | null = null;
-        const load = () => fetch(`${API_BASE}/api/alerts`, { cache: "no-store" })
-            .then((response) => response.json())
+        const load = () => apiFetch("/api/alerts")
             .then((data) => setNotifications((data.events || []).slice(0, 30)))
             .catch(() => undefined);
         load();
-        try {
-            ws = new WebSocket(`${WS_BASE}/ws`);
-            ws.onmessage = (event) => {
-                try {
-                    const message = JSON.parse(event.data);
-                    if (message.type !== "alert") return;
-                    const item = { ...(message.data || {}), id: message.data?.id || `${Date.now()}`, triggered_at: message.data?.triggered_at || Date.now() / 1000 };
-                    setNotifications((current) => [item, ...current.filter((entry) => entry.id !== item.id)].slice(0, 30));
-                    setUnread((count) => count + 1);
-                } catch { /* malformed websocket event */ }
-            };
-        } catch { /* websocket is optional */ }
-        return () => ws?.close();
+    }, []);
+    useEffect(() => {
+        const load = () => apiFetch("/api/system/health").then(setHealth).catch(() => setHealth(null));
+        load();
+        const timer = window.setInterval(load, 10_000);
+        return () => window.clearInterval(timer);
     }, []);
     const install = async () => {
         if (!installEvent) return;
@@ -91,7 +96,7 @@ export default function Sidebar() {
                 </button>
             </div>
 
-            <nav className="flex-1 p-3 space-y-1">
+            <nav className="flex-1 overflow-y-auto p-3 space-y-1">
                 {MENU.map((m) => {
                     const active = pathname === m.href;
                     return (
@@ -120,10 +125,11 @@ export default function Sidebar() {
             <div className="p-4 border-t border-bunker-800">
                 <Button variant={installEvent ? "primary" : "secondary"} onClick={install} disabled={!installEvent} className="w-full mb-4">⬇ {installEvent ? "UYGULAMA OLARAK YÜKLE" : "YÜKLEME İÇİN TARAYICI MENÜSÜ"}</Button>
                 <p className="eyebrow">SİSTEM DURUMU</p>
-                <p className="font-mono text-xs text-neon-green mt-2 flex items-center gap-1.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" /> Çalışıyor
+                <p className={`font-mono text-xs mt-2 flex items-center gap-1.5 ${health?.status === "ok" && liveStatus === "open" ? "text-neon-green" : "text-yellow-300"}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${health?.status === "ok" && liveStatus === "open" ? "bg-neon-green animate-pulse" : "bg-yellow-300"}`} />
+                    {health ? `${String(health.status || "bilinmiyor").toUpperCase()} · WS ${liveStatus === "open" ? "BAĞLI" : "KAPALI"}` : "BAĞLANTI BEKLENİYOR"}
                 </p>
-                <p className="font-mono text-[11px] text-bunker-muted mt-1">ws://localhost:8004</p>
+                <p className="font-mono text-[11px] text-bunker-muted mt-1">Paylaşılan güvenli canlı kanal</p>
             </div>
         </aside>
         {notificationsOpen && <div className="fixed inset-0 z-[100] grid place-items-center bg-black/75 p-4" onClick={() => setNotificationsOpen(false)}>

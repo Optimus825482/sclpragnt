@@ -92,7 +92,7 @@ class RegressionContracts(unittest.TestCase):
         source = (ROOT / "app" / "main.py").read_text()
         self.assertGreaterEqual(source.count('if str(sig.get("strategy", "")).upper() != "LLM_PAPER":'), 2)
         self.assertIn('llm_guard = await database.get_llm_symbol_guard(symbol)', source)
-        self.assertIn('"reason": "llm_guard:cooldown"', source)
+        self.assertIn('guard_reason = _llm_guard_block_reason(llm_guard)', source)
 
     def test_llm_reentry_cooldown_is_shorter_after_profit(self):
         source = (ROOT / "app" / "analyzer.py").read_text()
@@ -136,6 +136,18 @@ class RegressionContracts(unittest.TestCase):
     def test_compose_forces_postgres_backend(self):
         source = (ROOT.parent / "docker-compose.yaml").read_text()
         self.assertIn("DB_BACKEND: postgres", source)
+
+    def test_compose_passes_runtime_strategy_and_llm_configuration(self):
+        source = (ROOT.parent / "docker-compose.yaml").read_text(encoding="utf-8")
+        self.assertIn("LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY:?", source)
+        self.assertIn("TOP_GAINERS_AUTO_ACTIVATE: ${TOP_GAINERS_AUTO_ACTIVATE:-true}", source)
+        self.assertIn("TOP_GAINERS_LIMIT: ${TOP_GAINERS_LIMIT:-70}", source)
+        self.assertIn("TOP_GAINERS_REFRESH_SEC: ${TOP_GAINERS_REFRESH_SEC:-21600}", source)
+        self.assertIn("NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}", source)
+
+        dockerfile = (ROOT.parent / "frontend" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("ARG NEXT_PUBLIC_VAPID_PUBLIC_KEY", dockerfile)
+        self.assertIn("ENV NEXT_PUBLIC_VAPID_PUBLIC_KEY=${NEXT_PUBLIC_VAPID_PUBLIC_KEY}", dockerfile)
         self.assertNotIn("DB_BACKEND: ${DB_BACKEND:-postgres}", source)
         self.assertIn("@postgres:5432/${POSTGRES_DB:-scalper}", source)
         self.assertNotIn("DATABASE_URL:-postgresql://", source)
@@ -145,7 +157,7 @@ class RegressionContracts(unittest.TestCase):
         config_source = (ROOT / "app" / "config.py").read_text()
         self.assertIn('async def refresh_top_gainer_symbols()', source)
         self.assertIn('async def refresh_symbol_activity()', source)
-        self.assertIn('asyncio.create_task(symbol_activity_loop()', source)
+        self.assertIn('_start_background(symbol_activity_loop(), "symbol-activity")', source)
         self.assertNotIn('asyncio.create_task(top_gainers_refresh_loop()', source)
         self.assertIn('@app.get("/api/market/top-gainers")', source)
         self.assertIn('SYMBOL_ACTIVITY_REFRESH_SEC', config_source)

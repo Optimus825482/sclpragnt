@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import { API_BASE, WS_BASE } from "../lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { API_BASE, apiRequest } from "../lib/api";
+import { useLiveMessages } from "../lib/liveSocket";
 import SymbolLink from "./SymbolLink";
 
 type Ticker = { symbol: string; last_price: number; volume: number; avg_volume?: number };
@@ -12,36 +13,18 @@ export default function LiveTerminal() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const logEndRef = useRef<HTMLDivElement | null>(null);
+  const onLiveMessage = useCallback((msg: any) => {
+    if (msg.type === "signal") setSignals((current) => [...current, msg.data].slice(-100));
+    else if (msg.type === "portfolio") setPortfolio(msg.data);
+  }, []);
+  useLiveMessages(onLiveMessage);
 
   useEffect(() => {
-    let ws: WebSocket | null = null;
-    let retry: ReturnType<typeof setTimeout> | null = null;
-    let closed = false;
-
-    fetch(`${API_BASE}/api/signals?limit=100`)
+    apiRequest(`${API_BASE}/api/signals?limit=100`)
       .then((response) => response.json())
       .then((data) => setSignals((data.signals || []).slice(0, 100).reverse()))
       .catch(() => undefined);
 
-    const connect = () => {
-      ws = new WebSocket(`${WS_BASE}/ws`);
-      ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "tickers") return;
-        else if (msg.type === "signal") setSignals((p) => [...p, msg.data].slice(-100));
-        else if (msg.type === "portfolio") setPortfolio(msg.data);
-      };
-      ws.onclose = () => {
-        if (!closed) retry = setTimeout(connect, 2000);
-      };
-    };
-
-    connect();
-    return () => {
-      closed = true;
-      if (retry) clearTimeout(retry);
-      ws?.close();
-    };
   }, []);
 
   useEffect(() => {

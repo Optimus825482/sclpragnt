@@ -21,6 +21,18 @@ def _rearmed(rule, value):
     return value >= float(rearm) if op in {"lt", "lte"} else value <= float(rearm)
 
 
+def _rule_value(rule, market, ticker):
+    """Return the configured observation instead of always treating alerts as prices."""
+    last_price = float(ticker["last_price"])
+    if str(rule.get("rule_type", "price")).lower() != "percent":
+        return last_price
+    kline = market.get_ut_kline(rule["symbol"], rule.get("timeframe", "5m")) or {}
+    closes = [float(value) for value in (kline.get("closes") or [])]
+    if len(closes) < 2 or closes[-2] == 0:
+        return None
+    return (last_price / closes[-2] - 1.0) * 100.0
+
+
 async def deliver_web_push(message):
     vapid_private, subject = os.getenv("VAPID_PRIVATE_KEY", "").strip(), os.getenv("VAPID_SUBJECT", "mailto:alerts@example.com").strip()
     if not vapid_private: return {"ok": False, "skipped": True, "reason": "vapid_not_configured"}
@@ -43,12 +55,18 @@ async def evaluate_rules(market, on_paper_trigger=None):
             await database.update_alert_rule(rule["id"], {"enabled": 0}); continue
         ticker = market.get_ticker(rule["symbol"])
         if not ticker or not ticker.get("last_price"): continue
-        value = float(ticker["last_price"])
+        value = _rule_value(rule, market, ticker)
+        if value is None: continue
+        armed = bool(rule.get("armed", True))
+        if not armed:
+            if _rearmed(rule, value):
+                await database.update_alert_rule(rule["id"], {"armed": True, "last_value": value})
+            continue
         if rule.get("last_triggered_at") and now - float(rule["last_triggered_at"]) < int(rule.get("cooldown_seconds") or 0): continue
-        if not _rearmed(rule, value) and rule.get("last_value") is not None: continue
         if not _matches(rule, value): continue
-        event_key = f"{rule['id']}:{int(value * 1000000)}"
-        message = f"{rule['symbol']} alarmı: fiyat {value:g} TRY ({rule['operator']} {rule['threshold']:g})"
+        event_key = f"{rule['id']}:{time.time_ns()}"
+        unit = "%" if str(rule.get("rule_type", "price")).lower() == "percent" else "TRY"
+        message = f"{rule['symbol']} alarmı: değer {value:g} {unit} ({rule['operator']} {rule['threshold']:g})"
         event = await database.record_alert_trigger(rule["id"], event_key, value, message, "warning")
         if not event: continue
         channels = rule.get("notify_channels") or ["websocket"]

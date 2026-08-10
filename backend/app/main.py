@@ -10,13 +10,11 @@ import hmac
 import hashlib
 import uuid
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import config
@@ -39,6 +37,7 @@ from app import memory_service
 from app import migration_monitor
 from app import a2a
 from app import alerting
+from app import security
 from app.agent_learning import (new_trace_id, start_trace, append_event, finish_trace,
                                  evaluate_output, save_evaluation, save_experience, upsert_instinct, set_runtime_pool,
                                  promote_validated_instincts)
@@ -51,6 +50,53 @@ except ImportError:
 app = FastAPI(title="Scalper Agent V4 - Paper Trading")
 cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3004,http://localhost:3000").split(",") if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def require_admin_session(request: Request, call_next):
+    public_paths = {"/health", "/api/auth/status", "/api/auth/login", "/.well-known/a2a-agent-card.json"}
+    if request.method == "OPTIONS" or request.url.path in public_paths:
+        return await call_next(request)
+    # Relay-to-agent delivery has its own HMAC verification at the route.
+    if (request.method == "POST" and request.url.path == "/api/a2a/messages"
+            and os.getenv("A2A_SHARED_SECRET", "").strip()
+            and request.headers.get("X-A2A-Signature")):
+        return await call_next(request)
+    if not security.auth_configured():
+        return JSONResponse({"detail": "Yönetici kimlik doğrulaması yapılandırılmamış"}, status_code=503)
+    if not security.request_authenticated(request.headers, request.cookies):
+        return JSONResponse({"detail": "Kimlik doğrulama gerekli"}, status_code=401)
+    return await call_next(request)
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    return {"configured": security.auth_configured(),
+            "authenticated": security.request_authenticated(request.headers, request.cookies)}
+
+
+@app.post("/api/auth/login")
+async def auth_login(payload: dict, response: Response, request: Request):
+    if not security.auth_configured():
+        raise HTTPException(status_code=503, detail="SCALPER_ADMIN_PASSWORD ve SCALPER_SESSION_SECRET gerekli")
+    trusted_edge_ip = request.headers.get("X-Real-IP", "").strip()
+    client_key = trusted_edge_ip or (request.client.host if request.client else "unknown")
+    if not security.login_allowed(client_key):
+        raise HTTPException(status_code=429, detail="Çok fazla başarısız giriş; 5 dakika sonra tekrar deneyin")
+    matched = security.password_matches(payload.get("password"))
+    security.record_login_result(client_key, matched)
+    if not matched:
+        raise HTTPException(status_code=401, detail="Geçersiz parola")
+    response.set_cookie(security.SESSION_COOKIE, security.create_session_token(), httponly=True,
+                        secure=os.getenv("SCALPER_COOKIE_SECURE", "1") == "1", samesite="strict",
+                        max_age=43200, path="/")
+    return {"ok": True, "authenticated": True}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(response: Response):
+    response.delete_cookie(security.SESSION_COOKIE, path="/")
+    return {"ok": True}
 
 market = MarketData(config.SYMBOLS)
 analyzer = ScalpAnalyzer(market)
@@ -67,6 +113,14 @@ _llm_market_scan_cache = {}
 _strategy_replay_jobs = {}
 _symbol_history_backfills = set()
 _strategy_scan_logs = deque(maxlen=5000)
+_background_tasks = set()
+
+
+def _start_background(coro, name):
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 def _record_strategy_scan_log(scan_type: str, symbol: str, status: str, **details):
@@ -314,13 +368,16 @@ async def manage_llm_position(symbol):
         if name == "get_llm_open_position":
             return analyzer.llm_position_context(target) or {"ok": False, "error": "pozisyon yok"}
         if name == "update_llm_position_plan":
-            decision_action["value"] = "UPDATE_PLAN"
-            return await analyzer.update_llm_position_plan(target, args.get("changes"), args.get("reason", "llm_plan_update"), args.get("evidence"))
+            update_result = await analyzer.update_llm_position_plan(target, args.get("changes"), args.get("reason", "llm_plan_update"), args.get("evidence"))
+            if update_result and update_result.get("ok", True):
+                decision_action["value"] = "UPDATE_PLAN"
+            return update_result
         if name == "close_llm_position":
-            decision_action["value"] = "CLOSE"
             price, ticker = await _fresh_public_price(target)
             if price is None: return {"ok": False, "error": "güncel public fiyat yok", "retryable": True}
             result = await analyzer.close_position(target, price, "llm_decision:" + str(args.get("reason") or "close"))
+            if result:
+                decision_action["value"] = "CLOSE"
             return {"ok": bool(result), "paper_only": True, "signal": result, "reason": args.get("reason")}
         return {"ok": False, "error": f"Bilinmeyen yönetim aracı: {name}"}
 
@@ -352,135 +409,13 @@ async def llm_position_manager_loop():
             print(f"[LLM position manager] döngü hatası: {exc}")
         await asyncio.sleep(60)
 
-async def _public_json(url, timeout=10):
-    def read():
-        request = Request(url, headers={"User-Agent": "ScalperAgent/4.0"})
-        with urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    return await asyncio.to_thread(read)
-
 @app.get("/api/btc-5min-scan")
 async def btc_5min_scan():
     raise HTTPException(status_code=410, detail="BTC_5M_ODDS_SCALPER sistemden kaldırıldı")
-    """Return a read-only BTC 5-minute Up/Down signal summary (S1-S6)."""
-    try:
-        candles = await _public_json("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=60")
-        ticker = await _public_json("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT")
-        now = int(time.time()); window = now // 300 * 300
-        markets = await _public_json("https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100")
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Public market data unavailable: {exc}") from exc
-    parsed = [{"open": float(k[1]), "high": float(k[2]), "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])} for k in candles if len(k) >= 6]
-    if len(parsed) < 25: raise HTTPException(status_code=502, detail="Insufficient 1m candles")
-    price = parsed[-1]["close"]; changes = [x["close"] - x["open"] for x in parsed]
-    ema9 = sum(x["close"] for x in parsed[-9:]) / 9; ema21 = sum(x["close"] for x in parsed[-21:]) / 21
-    ema_dir = "UP" if ema9 > ema21 else "DOWN" if ema9 < ema21 else "FLAT"
-    mom5 = sum(changes[-5:]); range5 = max(x["high"] for x in parsed[-5:]) - min(x["low"] for x in parsed[-5:])
-    gains = sum(max(x, 0) for x in changes[-14:]); losses = sum(max(-x, 0) for x in changes[-14:]); rsi = 100 if not losses and gains else 50 if not losses else 100 - 100 / (1 + gains / losses)
-    s1 = "UP" if all(x > 0 for x in changes[-2:]) else "DOWN" if all(x < 0 for x in changes[-2:]) else "NONE"
-    s2 = ema_dir if ema_dir in {"UP", "DOWN"} else "NONE"
-    s3 = "UP" if rsi < 30 else "DOWN" if rsi > 70 else "NONE"
-    avg_volume = sum(x["volume"] for x in parsed[-26:-1]) / 25; volume_ratio = parsed[-1]["volume"] / avg_volume if avg_volume else 0
-    utc_hour = datetime.now(timezone.utc).hour
-    s4 = "DOWN" if utc_hour >= 15 and mom5 > 200 else "UP" if utc_hour >= 15 and mom5 < -200 else "NONE"
-    if isinstance(markets, dict):
-        markets = markets.get("data") or markets.get("markets") or []
-    candidates = []
-    for item in markets if isinstance(markets, list) else []:
-        question = str(item.get("question", "")).lower()
-        slug = str(item.get("slug", "")).lower()
-        is_btc = "bitcoin" in question or slug.startswith("btc-")
-        is_binary = ("up" in question and "down" in question) or "updown" in slug
-        is_5m = any(marker in slug for marker in ("5m", "5-min", "5_min")) or any(marker in question for marker in ("5 minute", "5 minutes", "5-minute"))
-        if is_btc and is_binary and is_5m and item.get("active") is not False and item.get("closed") is not True:
-            candidates.append(item)
-    market = sorted(candidates, key=lambda item: str(item.get("endDate") or item.get("endDateIso") or ""))[-1] if candidates else None
-    if market is None:
-        # Gamma's paginated active list can omit the short-lived market. Try
-        # the documented event-by-slug shape for the current and next window.
-        for slug in (
-            f"btc-updown-5m-{window}",
-            f"btc-updown-5m-{window + 300}",
-            f"btc-up-or-down-5m-{window}",
-            f"btc-up-or-down-5m-{window + 300}",
-            f"bitcoin-up-or-down-5m-{window}",
-            f"bitcoin-up-or-down-5m-{window + 300}",
-        ):
-            try:
-                direct = await _public_json(f"https://gamma-api.polymarket.com/events/slug/{slug}")
-                direct_markets = direct.get("markets") if isinstance(direct, dict) else None
-                if isinstance(direct_markets, list) and direct_markets:
-                    market = direct_markets[0]
-                    break
-                if isinstance(direct, dict) and direct.get("clobTokenIds"):
-                    market = direct
-                    break
-            except Exception:
-                continue
-    prices = market.get("outcomePrices") if market else None
-    if isinstance(prices, str):
-        try: prices = json.loads(prices)
-        except json.JSONDecodeError: prices = None
-    up_price = float(prices[0]) if isinstance(prices, list) and len(prices) >= 2 else None; down_price = float(prices[1]) if isinstance(prices, list) and len(prices) >= 2 else None
-    odds_source = "polymarket_gamma"
-    if market and (up_price is None or down_price is None):
-        token_ids = market.get("clobTokenIds") or []
-        if isinstance(token_ids, str):
-            try: token_ids = json.loads(token_ids)
-            except json.JSONDecodeError: token_ids = []
-        if isinstance(token_ids, list) and len(token_ids) >= 2:
-            try:
-                up_quote = await _public_json("https://clob.polymarket.com/price?" + urlencode({"token_id": token_ids[0], "side": "BUY"}))
-                down_quote = await _public_json("https://clob.polymarket.com/price?" + urlencode({"token_id": token_ids[1], "side": "BUY"}))
-                up_price = float(up_quote.get("price")); down_price = float(down_quote.get("price"))
-                odds_source = "polymarket_clob"
-            except Exception:
-                up_price = down_price = None
-    s5 = "UP" if up_price is not None and up_price < 0.45 else "DOWN" if down_price is not None and down_price < 0.45 else "UNKNOWN"
-    support, resistance = float(ticker.get("lowPrice", 0)), float(ticker.get("highPrice", 0))
-    s6 = "UP" if support and (price - support) / price < 0.003 else "DOWN" if resistance and (resistance - price) / price < 0.003 else "NONE"
-    session = "ASIAN_MOMENTUM" if 3 <= datetime.now(timezone.utc).hour < 7 else "US_REVERSION" if 15 <= datetime.now(timezone.utc).hour < 18 else "DANGER" if 13 <= datetime.now(timezone.utc).hour < 14 else "NEUTRAL"
-    active = [s1, s2, s3, s4, s5, s6]; up = sum(x == "UP" for x in active); down = sum(x == "DOWN" for x in active)
-    verdict = "SKIP - danger zone" if session == "DANGER" else "ENTER UP" if up >= 2 and up > down else "ENTER DOWN" if down >= 2 and down > up else "SKIP - one signal only" if up or down else "SKIP - no signal"
-    matched_count = len(candidates) if candidates else (1 if market else 0)
-    return {"symbol": "BTCUSDT", "window_start": window, "price": price, "session": session, "ema": {"ema9": ema9, "ema21": ema21, "direction": ema_dir}, "rsi": rsi, "momentum_5m": mom5, "range_5m": range5, "volume_ratio": volume_ratio, "signals": {"S1_momentum": s1, "S2_ema": s2, "S3_rsi": s3, "S4_mean_reversion": s4, "S5_odds_bias": s5, "S6_support_resistance": s6}, "odds": {"available": up_price is not None and down_price is not None, "up": up_price, "down": down_price, "market_slug": market.get("slug") if market else None, "source": odds_source if market else "unavailable"}, "levels": {"support_24h": support, "resistance_24h": resistance}, "up_signals": up, "down_signals": down, "verdict": verdict, "paper_only": True, "odds_diagnostics": {"gamma_market_count": len(markets) if isinstance(markets, list) else 0, "matched_market_count": matched_count}}
 
 @app.get("/api/btc-5min-backtest")
-async def btc_5min_backtest(days_back: int = 7, order_size: float = 500.0, take_profit_pct: float = 0.01, stop_loss_pct: float = 0.02):
+async def btc_5min_backtest():
     raise HTTPException(status_code=410, detail="BTC_5M_ODDS_SCALPER sistemden kaldırıldı")
-    """Replay recorded BTC odds signals against real BTCTRY 5m candles.
-
-    Historical Polymarket odds are not reconstructed or invented. Only
-    recorded BUY_SIGNAL entries are evaluated; missing odds remain reported.
-    """
-    days_back = max(1, min(int(days_back), 90)); order_size = max(100.0, min(float(order_size), 10000.0))
-    candles = await historical_klines("BTCTRY", "5m", days_back)
-    rows = []
-    for row in candles:
-        if len(row) >= 7:
-            rows.append({"time": float(row[0]) / 1000, "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
-    if not rows: raise HTTPException(status_code=502, detail="BTCTRY 5m geçmiş verisi alınamadı")
-    signals = await database.get_decision_logs(5000, "BTCTRY", "BTC_5M_ODDS_SCALPER")
-    candidates = [s for s in signals if s.get("decision") == "BUY_SIGNAL"]
-    commission_pct = config.COMMISSION_PCT
-    trades = []; missing_candle = 0; incomplete_forward_window = 0
-    for signal in sorted(candidates, key=lambda item: float(item.get("timestamp") or 0)):
-        entry_time = float(signal.get("timestamp") or 0)
-        index = min(range(len(rows)), key=lambda i: abs(rows[i]["time"] - entry_time))
-        if abs(rows[index]["time"] - entry_time) > 600: missing_candle += 1; continue
-        if len(rows) - index < 49:
-            incomplete_forward_window += 1
-            continue
-        entry = rows[index]["close"]; exit_price = None; reason = "max_hold_4h"
-        end = min(len(rows), index + 48 + 1)
-        for candle in rows[index + 1:end]:
-            if candle["low"] <= entry * (1 - stop_loss_pct): exit_price = entry * (1 - stop_loss_pct); reason = "hard_stop_loss"; break
-            if candle["high"] >= entry * (1 + take_profit_pct): exit_price = entry * (1 + take_profit_pct); reason = "profit_target"; break
-        if exit_price is None: exit_price = rows[end - 1]["close"]
-        gross = order_size * ((exit_price / entry) - 1); commission = (order_size + order_size * (exit_price / entry)) * commission_pct; net = gross - commission
-        trades.append({"signal_id": signal.get("id"), "entry": entry, "exit": exit_price, "gross_pnl": gross, "commission": commission, "net_pnl": net, "reason": reason, "hold_minutes": round((rows[min(end - 1, len(rows) - 1)]["time"] - rows[index]["time"]) / 60, 2)})
-    wins = sum(1 for trade in trades if trade["net_pnl"] > 0); net = sum(trade["net_pnl"] for trade in trades); commission = sum(trade["commission"] for trade in trades)
-    return {"strategy": "BTC_5M_ODDS_SCALPER", "symbol": "BTCTRY", "days_back": days_back, "source": "recorded_signals_plus_binance_tr_public_5m", "odds_policy": "historical_odds_not_invented", "total_signals": len(candidates), "evaluated_trades": len(trades), "missing_candle_matches": missing_candle, "incomplete_forward_window": incomplete_forward_window, "wins": wins, "losses": len(trades) - wins, "win_rate": round(wins / len(trades) * 100, 2) if trades else 0, "net_pnl": round(net, 4), "commission": round(commission, 4), "trades": trades, "paper_only": True}
 
 def _repair_log(level, message):
     _trade_repair["logs"].append({"time": time.time(), "level": level, "message": message})
@@ -530,10 +465,6 @@ async def _chat_memory_context(query: str, *, symbol=None, strategy=None, limit=
     except Exception as exc:
         return {"enabled": False, "results": [], "error": str(exc)}
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-WELL_KNOWN_DIR = os.path.join(BASE_DIR, "..", ".well-known")
-app.mount("/.well-known", StaticFiles(directory=WELL_KNOWN_DIR), name="wellknown")
-
 async def learning_promotion_loop():
     """Promote only evidence-backed instincts; never changes system prompts directly."""
     while True:
@@ -546,8 +477,7 @@ async def learning_promotion_loop():
             print(f"[Learning] promotion loop: {exc}")
         await asyncio.sleep(15 * 60)
 
-@app.on_event("startup")
-async def startup():
+async def startup_services():
     global _pg_pool
     await database.init_db()
     await database.ensure_default_scalper_skill()
@@ -572,36 +502,64 @@ async def startup():
             print(f"[Memory] PostgreSQL/embedding worker başlatılamadı: {exc}")
     # Strategy loop yalnızca tüm timeframe geçmişi ve REST ticker'ları hazır
     # olduktan sonra başlasın; aksi halde ilk tarama tüm sembolleri stale sayar.
-    priority_tf = config.ACTIVE_STRATEGY_TIMEFRAME
-    await market.fetch_historical_data([priority_tf])
-    print(f"[MarketData] öncelikli strateji verisi hazır | timeframe={priority_tf} tickers={len(market.tickers)}", flush=True)
-    asyncio.create_task(backfill_missing_active_history(), name="historical-backfill-active")
-    asyncio.create_task(market.connect(skip_history=True))
-    asyncio.create_task(strategy_loop())
-    asyncio.create_task(radar_loop())
-    asyncio.create_task(symbol_activity_loop(), name="symbol-activity")
-    asyncio.create_task(llm_idle_trigger_loop())
-    asyncio.create_task(a2a_inbox_loop(), name="a2a-inbox")
-    asyncio.create_task(llm_position_manager_loop(), name="llm-position-manager")
-    asyncio.create_task(learning_promotion_loop(), name="learning-promotion")
-    asyncio.create_task(ws_broadcast_loop())
-    asyncio.create_task(alert_loop(), name="alert-engine")
+    priority_timeframes = list(dict.fromkeys([
+        config.ACTIVE_STRATEGY_TIMEFRAME, config.MOMENTUM_TIMEFRAME,
+        config.ORDERFLOW_TIMEFRAME, "15m", "1h",
+    ]))
+    await market.fetch_historical_data(priority_timeframes)
+    print(f"[MarketData] öncelikli strateji verisi hazır | timeframes={priority_timeframes} tickers={len(market.tickers)}", flush=True)
+    _start_background(backfill_missing_active_history(), "historical-backfill-active")
+    _start_background(market.connect(skip_history=True), "market-connect")
+    _start_background(strategy_loop(), "strategy-loop")
+    _start_background(radar_loop(), "radar-loop")
+    _start_background(symbol_activity_loop(), "symbol-activity")
+    _start_background(llm_idle_trigger_loop(), "llm-idle-trigger")
+    _start_background(a2a_inbox_loop(), "a2a-inbox")
+    _start_background(llm_position_manager_loop(), "llm-position-manager")
+    _start_background(learning_promotion_loop(), "learning-promotion")
+    _start_background(ws_broadcast_loop(), "ws-broadcast")
+    _start_background(alert_loop(), "alert-engine")
 
-@app.on_event("shutdown")
-async def shutdown():
+async def shutdown_services():
     global _pg_pool
     market.stop()
+    tasks = list(_background_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _background_tasks.clear()
     await embedding_worker.stop()
     if _pg_pool:
         await _pg_pool.close()
     await database.close_db()
 
+
+@asynccontextmanager
+async def app_lifespan(_app):
+    await startup_services()
+    try:
+        yield
+    finally:
+        await shutdown_services()
+
+
+app.router.lifespan_context = app_lifespan
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    if not security.auth_configured() or not security.request_authenticated(
+        websocket.headers, websocket.cookies, websocket.query_params.get("token")
+    ):
+        await websocket.close(code=4401)
+        return
     await ws_manager.connect(websocket)
     try:
         while True: await websocket.receive_text()
-    except WebSocketDisconnect: ws_manager.disconnect(websocket)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        ws_manager.disconnect(websocket)
 
 async def ws_broadcast_loop():
     global _ws_snapshot_cache
@@ -716,12 +674,19 @@ async def strategy_loop():
                 if entry_scan_due:
                     _record_strategy_scan_log("automatic", sym, "STALE_TICKER", scan_id=scan_id)
                 continue
+            kline_freshness = market.kline_freshness(sym, config.ACTIVE_STRATEGY_TIMEFRAME)
+            allow_entry = entry_scan_due and bool(kline_freshness.get("fresh"))
+            if entry_scan_due and not allow_entry:
+                scan_stale += 1
+                _record_strategy_scan_log("automatic", sym, "STALE_KLINE", scan_id=scan_id,
+                                          timeframe=config.ACTIVE_STRATEGY_TIMEFRAME,
+                                          age_sec=kline_freshness.get("age_sec"))
             scan_fresh += 1
             try:
-                if entry_scan_due:
+                if allow_entry:
                     scan_evaluated += 1
-                signals = await analyzer.evaluate(sym, ticker, allow_entry=entry_scan_due)
-                if entry_scan_due and not signals:
+                signals = await analyzer.evaluate(sym, ticker, allow_entry=allow_entry)
+                if allow_entry and not signals:
                     scan_no_signal += 1
                     _record_strategy_scan_log("automatic", sym, "NO_SIGNAL", price=ticker.get("price"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id)
             except Exception as exc:
@@ -834,8 +799,6 @@ async def refresh_symbol_activity():
     # replace the user's configured paper-trading scan universe; otherwise a
     # background refresh silently activates every Binance TR symbol in
     # Settings and makes the strategy loop scan symbols the user did not pick.
-    market.symbols = [symbol.lower() for symbol in universe]
-    market.reconnect_requested = True
     all_tickers = await ticker_24h()
     market.ticker_24h = {
         str(row.get("symbol", "")).upper(): float(row.get("quoteVolume", 0) or 0)
@@ -899,9 +862,10 @@ async def bootstrap_symbol_activity():
     universe = list(dict.fromkeys(sorted(known_try | open_symbols)))
     if not universe:
         raise RuntimeError("Binance TR TRY sembol evreni boş döndü")
-    # Warm the observation universe without changing the configured active
-    # paper-trading symbols restored from Settings.
-    market.symbols = [symbol.lower() for symbol in universe]
+    # Keep expensive candle/depth WebSocket streams limited to the configured
+    # paper universe and open positions. Full-universe discovery uses 24h REST.
+    hot_symbols = list(dict.fromkeys([*config.SYMBOLS, *sorted(open_symbols)]))
+    market.symbols = [symbol.lower() for symbol in hot_symbols]
     all_tickers = await ticker_24h()
     market.ticker_24h = {str(row.get("symbol", "")).upper(): float(row.get("quoteVolume", 0) or 0) for row in all_tickers or [] if row.get("symbol")}
     semaphore = asyncio.Semaphore(8)
@@ -917,7 +881,7 @@ async def bootstrap_symbol_activity():
                 market.tickers[symbol] = {"symbol": symbol, "last_price": float(rows[-1][4]), "timestamp": int(time.time() * 1000), "source": "binance_tr_public_rest"}
             except Exception as exc:
                 print(f"[Activity warmup] {symbol}: {exc}", flush=True)
-    await asyncio.gather(*(warm(symbol) for symbol in universe))
+    await asyncio.gather(*(warm(symbol) for symbol in hot_symbols))
     result = await refresh_symbol_activity()
     print(f"[Activity] ilk kontrol tamamlandı | universe={len(universe)} active={result['active_count']} passive={result['passive_count']} warming={result['warming_count']}", flush=True)
 
@@ -1010,11 +974,19 @@ async def save_alert_push_subscription(payload: dict):
 
 @app.get("/health")
 async def health():
-    age = time.time() - market.last_event_at if market.last_event_at else None
+    snapshots = {symbol: market.data_freshness(symbol, config.ACTIVE_STRATEGY_TIMEFRAME)
+                 for symbol in market.symbols}
+    ready = [value for value in snapshots.values()
+             if value["ticker"]["fresh"] and value["kline"]["fresh"]]
+    market_healthy = market.running and bool(ready)
     return {
-        "status": "alive" if market.running and (age is None or age <= config.MAX_TICKER_AGE_SEC * 2) else "degraded",
+        "status": "alive" if market_healthy else "degraded",
         "mode": "paper", "market_data": "binance_tr_public",
-        "history_loaded": market.history_loaded, "ticker_age_sec": age,
+        "history_loaded": market.history_loaded,
+        "fresh_symbols": len(ready), "tracked_symbols": len(snapshots),
+        "rest": {"last_event_at": market.rest_last_event_at, "last_error": market.rest_last_error},
+        "ws": {"last_event_at": market.ws_last_event_at, "last_error": market.ws_last_error,
+               "generation": market.connection_generation},
         "market_error": market.last_error, "open_positions": list(analyzer.positions.keys())
     }
 
@@ -1039,7 +1011,13 @@ async def system_health():
     except Exception as exc:
         llm_active = False
         llm_error = f"{type(exc).__name__}: {exc}"
-    return {"status": "degraded" if db_status.startswith("postgres_") and db_status != "postgres_healthy" or llm_error else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions(), "pending_paper_orders": len(analyzer.pending_orders)}, "database": {"backend": "postgres", "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}, "a2a": {"enabled": bool(os.getenv("A2A_RELAY_URL", "").strip() and os.getenv("A2A_SHARED_SECRET", "").strip()), "relay_configured": bool(os.getenv("A2A_RELAY_URL", "").strip()), "outbox_paper_only": True}, "safety": {"paper_only": True, "memory_content_untrusted": True, "tool_audit_enabled": True}}
+    freshness = {symbol: market.data_freshness(symbol, config.ACTIVE_STRATEGY_TIMEFRAME)
+                 for symbol in market.symbols}
+    fresh_count = sum(1 for value in freshness.values()
+                      if value["ticker"]["fresh"] and value["kline"]["fresh"])
+    market_degraded = market.running and bool(market.symbols) and fresh_count == 0
+    overall_degraded = (db_status.startswith("postgres_") and db_status != "postgres_healthy") or llm_error or market_degraded
+    return {"status": "degraded" if overall_degraded else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "fresh_symbols": fresh_count, "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes, "rest_last_event_at": market.rest_last_event_at, "rest_error": market.rest_last_error, "ws_last_event_at": market.ws_last_event_at, "ws_error": market.ws_last_error, "ws_generation": market.connection_generation}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions(), "pending_paper_orders": len(analyzer.pending_orders)}, "database": {"backend": "postgres", "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}, "a2a": {"enabled": bool(os.getenv("A2A_RELAY_URL", "").strip() and os.getenv("A2A_SHARED_SECRET", "").strip()), "relay_configured": bool(os.getenv("A2A_RELAY_URL", "").strip()), "outbox_paper_only": True}, "safety": {"paper_only": True, "memory_content_untrusted": True, "tool_audit_enabled": True}}
 
 @app.get("/api/memory/status")
 async def memory_status():
@@ -1783,6 +1761,15 @@ async def set_llm_auto_paper_trading(payload: dict):
     await database.set_llm_setting("llm_auto_paper_enabled", "1" if enabled else "0")
     return {"ok": True, "auto_paper_enabled": enabled, "trigger": "after_each_closed_position_or_10m_idle_with_balance_over_100_try", "paper_only": True}
 
+
+def _llm_guard_block_reason(guard):
+    if not guard or guard.get("status") != "active":
+        return None
+    blocked_until = guard.get("blocked_until")
+    if blocked_until is not None and float(blocked_until) <= time.time():
+        return None
+    return "llm_guard:cooldown"
+
 @app.post("/api/llm/paper-trade")
 async def llm_open_paper_trade(payload: dict):
     if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
@@ -1819,14 +1806,20 @@ async def llm_open_paper_trade(payload: dict):
         # Enforce re-entry policy at the orchestration boundary too; callers
         # cannot bypass the portfolio writer's guard by hitting this endpoint.
         llm_guard = await database.get_llm_symbol_guard(symbol)
-        if llm_guard and llm_guard.get("status") == "active":
-            blocked.append({"symbol": symbol, "reason": "llm_guard:cooldown"})
+        guard_reason = _llm_guard_block_reason(llm_guard)
+        if guard_reason:
+            blocked.append({"symbol": symbol, "reason": guard_reason})
             await database.save_signal({
                 "symbol": symbol, "action": "BUY_BLOCKED", "price": None,
-                "reason": "llm_guard:cooldown", "strategy": "LLM_PAPER", "timestamp": time.time(),
+                "reason": guard_reason, "strategy": "LLM_PAPER", "timestamp": time.time(),
                 "guard_revision": llm_guard.get("revision"),
             })
             continue
+        if llm_guard and llm_guard.get("status") == "active":
+            await database.upsert_llm_symbol_guard(
+                symbol, llm_guard.get("guard_type") or "cooldown", "expired",
+                llm_guard.get("blocked_until"), "cooldown_elapsed", llm_guard.get("evidence") or {},
+            )
         ticker = market.get_ticker(symbol)
         if not ticker or not ticker.get("last_price"):
             try:
@@ -1887,7 +1880,8 @@ async def add_llm_provider(payload: dict):
     base_url = str(payload.get("base_url", "")).strip()
     key = str(payload.get("api_key", "")).strip()
     if not name: raise HTTPException(status_code=400, detail="Provider adı gerekli")
-    if not base_url.startswith(("http://", "https://")): raise HTTPException(status_code=400, detail="Base URL http:// veya https:// ile başlamalı")
+    try: base_url = security.validate_provider_url(base_url)
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not key: raise HTTPException(status_code=400, detail="API key gerekli")
     try:
         provider_id = await database.save_llm_provider(name, base_url, llm_analysis.encrypt_key(key))
@@ -1922,7 +1916,9 @@ async def add_llm_skill(payload: dict):
 @app.put("/api/llm/providers/{provider_id}")
 async def update_llm_provider(provider_id: int, payload: dict):
     name, base_url, key = str(payload.get("name", "")).strip(), str(payload.get("base_url", "")).strip(), str(payload.get("api_key", "")).strip()
-    if not name or not base_url.startswith(("http://", "https://")): raise HTTPException(status_code=400, detail="Provider adı ve geçerli Base URL gerekli")
+    if not name: raise HTTPException(status_code=400, detail="Provider adı gerekli")
+    try: base_url = security.validate_provider_url(base_url)
+    except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
     try: await database.update_llm_provider(provider_id, name, base_url, llm_analysis.encrypt_key(key) if key else None); return {"ok": True}
     except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
 
@@ -2700,7 +2696,8 @@ async def close_position_manual(symbol: str):
 @app.get("/api/trades")
 async def get_trades(limit: int = 100, offset: int = 0, symbol: str = "", strategy: str = ""):
     """Kapanan pozisyonların işlem geçmişi."""
-    return {"trades": await database.get_trades(limit, offset, symbol or None, strategy or None), "limit": limit, "offset": offset}
+    return {"trades": await database.get_trades(limit, offset, symbol or None, strategy or None),
+            "total": await database.get_trade_count(symbol or None, strategy or None), "limit": limit, "offset": offset}
 
 @app.get("/api/backup")
 async def download_backup():
@@ -2801,18 +2798,30 @@ async def a2a_messages(limit: int = 100, status: str | None = None):
 
 
 @app.post("/api/a2a/messages")
-async def receive_a2a_message(payload: dict, x_a2a_signature: str | None = None):
+async def receive_a2a_message(
+    payload: dict,
+    x_a2a_signature: str | None = Header(default=None, alias="X-A2A-Signature"),
+):
     secret = os.getenv("A2A_SHARED_SECRET", "").strip()
-    if secret:
-        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
-        expected = a2a.signature(raw, secret)
-        if not x_a2a_signature or not hmac.compare_digest(x_a2a_signature, expected):
-            raise HTTPException(status_code=401, detail="Geçersiz A2A imzası")
+    if not secret:
+        raise HTTPException(status_code=503, detail="A2A_SHARED_SECRET yapılandırılmamış")
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    expected = a2a.signature(raw, secret)
+    if not x_a2a_signature or not hmac.compare_digest(x_a2a_signature, expected):
+        raise HTTPException(status_code=401, detail="Geçersiz A2A imzası")
     if payload.get("protocol") != "a2a" or not payload.get("message_id") or not payload.get("type"):
         raise HTTPException(status_code=400, detail="Geçersiz A2A mesajı: protocol, message_id ve type gerekli")
     if payload.get("paper_only") is not True:
         raise HTTPException(status_code=400, detail="A2A kanalı paper_only=true gerektirir")
-    await database.save_a2a_message(payload, direction="inbound", status="received")
+    try:
+        created_at = float(payload.get("created_at"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="A2A created_at gerekli")
+    if abs(time.time() - created_at) > 300:
+        raise HTTPException(status_code=400, detail="A2A mesaj zaman penceresi geçersiz")
+    inserted = await database.save_a2a_message(payload, direction="inbound", status="received", insert_only=True)
+    if not inserted:
+        return {"ok": True, "message_id": payload["message_id"], "status": "duplicate_ignored", "paper_only": True}
     return {"ok": True, "message_id": payload["message_id"], "status": "received", "paper_only": True}
 
 
@@ -2951,7 +2960,7 @@ async def promote_agent_instincts(payload: dict = None):
 @app.get("/api/strategies/stats")
 async def get_strategy_stats():
     """Her stratejinin başarı istatistikleri (işlem sayısı, kazanma oranı, PnL)."""
-    trades = await database.get_trades()
+    trades = await database.get_trades(limit=None)
     stats = {}
     for t in trades:
         s = stats.setdefault(t["strategy"], {"trades": 0, "wins": 0, "pnl": 0.0, "commission": 0.0})
@@ -2966,7 +2975,7 @@ async def get_strategy_stats():
 
 @app.get("/api/strategies/comparison")
 async def strategy_comparison():
-    trades = await database.get_trades()
+    trades = await database.get_trades(limit=None)
     grouped = {}
     for trade in trades:
         name = trade.get("strategy") or "Bilinmeyen"
@@ -2990,7 +2999,7 @@ async def strategy_comparison():
 
 @app.get("/api/risk/summary")
 async def risk_summary():
-    trades = await database.get_trades()
+    trades = await database.get_trades(limit=None)
     positions = analyzer.positions
     realized = sum(float(t.get("pnl") or 0.0) for t in trades)
     commission = sum(float(t.get("commission") or 0.0) for t in trades)

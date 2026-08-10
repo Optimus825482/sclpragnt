@@ -2,21 +2,72 @@
 
 import asyncio
 import json
+import random
 import time
+from email.message import Message
 from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 REST_BASE = "https://api.binance.me"
 WS_BASE = "wss://stream-cloud.binance.tr"
 
 
+REST_TIMEOUT_SEC = 15
+REST_MAX_ATTEMPTS = 4
+REST_BACKOFF_BASE_SEC = 0.35
+REST_BACKOFF_MAX_SEC = 4.0
+
+
+def _retry_delay(attempt: int, headers: Message | dict | None = None) -> float:
+    retry_after = headers.get("Retry-After") if headers else None
+    if retry_after is not None:
+        try:
+            return min(REST_BACKOFF_MAX_SEC, max(0.0, float(retry_after)))
+        except (TypeError, ValueError):
+            pass
+    exponential = min(REST_BACKOFF_MAX_SEC, REST_BACKOFF_BASE_SEC * (2 ** (attempt - 1)))
+    return exponential + random.uniform(0.0, exponential * 0.25)
+
+
+def _decode_payload(raw: bytes):
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Binance TR public API geçersiz JSON döndürdü") from exc
+    if not isinstance(payload, (dict, list)):
+        raise RuntimeError("Binance TR public API beklenmeyen yanıt şeması döndürdü")
+    if isinstance(payload, dict) and payload.get("code") not in (None, 0):
+        raise RuntimeError(str(payload.get("msg") or "Binance TR public API hatası"))
+    data = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if data is None:
+        raise RuntimeError("Binance TR public API boş veri döndürdü")
+    return data
+
+
 def _get_json(path: str, params: dict):
     url = f"{REST_BASE}{path}?{urlencode(params)}"
-    with urlopen(Request(url, headers={"User-Agent": "scalperagent-v4"}), timeout=15) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    if isinstance(payload, dict) and payload.get("code") not in (None, 0):
-        raise RuntimeError(payload.get("msg", "Binance TR public API hatası"))
-    return payload.get("data", payload) if isinstance(payload, dict) else payload
+    request = Request(url, headers={"User-Agent": "scalperagent-v4", "Accept": "application/json"})
+    last_error = None
+    for attempt in range(1, REST_MAX_ATTEMPTS + 1):
+        try:
+            with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
+                return _decode_payload(response.read())
+        except HTTPError as exc:
+            last_error = exc
+            if exc.code != 429 and not 500 <= exc.code < 600:
+                raise RuntimeError(f"Binance TR public API HTTP {exc.code}") from exc
+            if attempt == REST_MAX_ATTEMPTS:
+                break
+            time.sleep(_retry_delay(attempt, exc.headers))
+        except (URLError, TimeoutError, ConnectionError) as exc:
+            last_error = exc
+            if attempt == REST_MAX_ATTEMPTS:
+                break
+            time.sleep(_retry_delay(attempt))
+    raise RuntimeError(
+        f"Binance TR public API {REST_MAX_ATTEMPTS} denemede yanıt vermedi: {last_error}"
+    ) from last_error
 
 
 async def klines(symbol: str, interval: str, limit: int = 500, start_time_ms: int | None = None):
@@ -58,6 +109,17 @@ async def ticker_24h():
 
 async def orderbook(symbol: str, limit: int = 5):
     """Read-only best bid/ask depth from Binance TR public API."""
-    return await asyncio.to_thread(_get_json, "/api/v3/depth", {
-        "symbol": symbol.replace("_", "").upper(), "limit": limit
+    normalized = symbol.replace("_", "").upper()
+    # Liquidity is evaluated against the same top-five levels whether the
+    # snapshot came from REST or the depth5 WebSocket stream.
+    payload = await asyncio.to_thread(_get_json, "/api/v3/depth", {
+        "symbol": normalized, "limit": min(5, max(1, int(limit)))
     })
+    if not isinstance(payload, dict):
+        raise RuntimeError("Binance TR order-book yanıtı nesne değil")
+    bids = payload.get("bids")
+    asks = payload.get("asks")
+    if not isinstance(bids, list) or not isinstance(asks, list):
+        raise RuntimeError("Binance TR order-book bid/ask alanları eksik")
+    return {**payload, "symbol": normalized, "bids": bids[:5], "asks": asks[:5],
+            "source": "binance_tr_public_rest", "received_at": time.time()}

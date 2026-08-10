@@ -187,9 +187,14 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp REAL, symbol TEXT, action TEXT,
-                price REAL, reason TEXT
+                price REAL, reason TEXT, strategy TEXT, trade_id TEXT
             )
         """)
+        for col in ("strategy TEXT", "trade_id TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE signals ADD COLUMN {col}")
+            except sqlite3.OperationalError:
+                pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS decision_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -231,7 +236,7 @@ async def init_db():
                 symbol TEXT NOT NULL, timeframe TEXT NOT NULL DEFAULT '5m',
                 rule_type TEXT NOT NULL DEFAULT 'price', operator TEXT NOT NULL,
                 threshold REAL NOT NULL, cooldown_seconds INTEGER NOT NULL DEFAULT 1800,
-                enabled INTEGER NOT NULL DEFAULT 1, last_triggered_at REAL,
+                enabled INTEGER NOT NULL DEFAULT 1, armed INTEGER NOT NULL DEFAULT 1, last_triggered_at REAL,
                 last_value REAL, rearm_threshold REAL, expires_at REAL,
             notify_channels TEXT NOT NULL DEFAULT '["websocket"]',
                 created_by TEXT NOT NULL DEFAULT 'user', reason TEXT,
@@ -247,6 +252,10 @@ async def init_db():
                 FOREIGN KEY(rule_id) REFERENCES alert_rules(id) ON DELETE CASCADE
             )
         """)
+        try:
+            conn.execute("ALTER TABLE alert_rules ADD COLUMN armed INTEGER NOT NULL DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS notification_channels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, channel_type TEXT NOT NULL,
@@ -534,9 +543,14 @@ async def reconcile_portfolio():
             for candidate in candidates:
                 symbol, entry_time, entry_price, quantity = candidate["symbol"], candidate["entry_time"], candidate["entry_price"], candidate["quantity"]
                 position_cost = float(entry_price or 0) * float(quantity or 0)
+                trade_id_row = conn.execute("SELECT trade_id FROM positions WHERE symbol=?", (symbol,)).fetchone()
+                trade_id = trade_id_row[0] if trade_id_row else None
                 conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
                 # Remove only the opening signal/log tied to this position.
-                conn.execute("DELETE FROM signals WHERE symbol=? AND action='BUY_SIGNAL' AND ABS(timestamp-?) <= 10", (symbol, entry_time))
+                if trade_id:
+                    conn.execute("DELETE FROM signals WHERE trade_id=? AND action='BUY_SIGNAL'", (trade_id,))
+                else:
+                    conn.execute("DELETE FROM signals WHERE symbol=? AND action='BUY_SIGNAL' AND ABS(timestamp-?) <= 10", (symbol, entry_time))
                 conn.execute("DELETE FROM decision_logs WHERE symbol=? AND decision='BUY_SIGNAL' AND ABS(timestamp-?) <= 10", (symbol, entry_time))
                 removed.append({"symbol": symbol, "entry_time": entry_time, "cost": position_cost})
                 open_cost -= position_cost
@@ -756,6 +770,7 @@ async def load_positions():
         for row in rows:
             values = dict(row)
             context = _json_value(values.get("entry_context"), {})
+            runtime = context.get("_runtime") if isinstance(context.get("_runtime"), dict) else {}
             symbol = values.get("symbol")
             positions[symbol] = {
                 "side": values.get("side"), "entry_price": values.get("entry_price"), "stop_price": values.get("stop_price"),
@@ -764,15 +779,41 @@ async def load_positions():
                 "strategy": values.get("strategy"),
                 "entry_context": context,
                 "trade_id": values.get("trade_id") or f"legacy-{symbol}-{values.get('entry_time')}",
+                "max_price": runtime.get("max_price", values.get("peak_price")),
+                "min_price": runtime.get("min_price", values.get("entry_price")),
+                "layers": max(1, int(runtime.get("layers") or 1)),
             }
             if positions[symbol].get("strategy") == "LLM_PAPER":
                 entry = float(values.get("entry_price") or 0)
-                positions[symbol]["llm_stop_price"] = entry * (1 - float(context.get("stop_loss_pct") or 0.005))
-                positions[symbol]["llm_take_profit_price"] = entry * (1 + float(context.get("profit_target_pct") or 0.01))
-                positions[symbol]["llm_max_hold_sec"] = int(context.get("max_hold_sec") or 7200)
+                stop_pct = runtime.get("llm_stop_loss_pct", context.get("stop_loss_pct"))
+                target_pct = runtime.get("llm_profit_target_pct", context.get("profit_target_pct"))
+                max_hold = runtime.get("llm_max_hold_sec", context.get("max_hold_sec"))
+                if stop_pct is not None:
+                    positions[symbol]["llm_stop_price"] = entry * (1 - float(stop_pct))
+                if target_pct is not None:
+                    positions[symbol]["llm_take_profit_price"] = entry * (1 + float(target_pct))
+                if max_hold is not None:
+                    positions[symbol]["llm_max_hold_sec"] = int(max_hold)
         return positions
 
     return await _run_db(op)
+
+
+def _position_entry_context(pos):
+    context = dict(pos.get("entry_context") or {})
+    runtime = dict(context.get("_runtime") or {})
+    for key in ("max_price", "min_price", "layers"):
+        if key in pos:
+            runtime[key] = pos[key]
+    entry = float(pos.get("entry_price") or 0)
+    if pos.get("llm_stop_price") is not None and entry:
+        runtime["llm_stop_loss_pct"] = max(0.0, 1 - float(pos["llm_stop_price"]) / entry)
+    if pos.get("llm_take_profit_price") is not None and entry:
+        runtime["llm_profit_target_pct"] = max(0.0, float(pos["llm_take_profit_price"]) / entry - 1)
+    if pos.get("llm_max_hold_sec") is not None:
+        runtime["llm_max_hold_sec"] = int(pos["llm_max_hold_sec"])
+    context["_runtime"] = runtime
+    return context
 
 async def get_llm_setting(key, default=None):
     def op(conn):
@@ -787,7 +828,7 @@ async def save_position(symbol, pos):
             "INSERT OR REPLACE INTO positions (symbol, side, entry_price, stop_price, take_profit, peak_price, breakeven_hit, quantity, entry_time, strategy, entry_context, trade_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (symbol, pos["side"], pos["entry_price"], pos.get("stop_price"),
              pos.get("take_profit"), pos.get("peak_price", pos["entry_price"]), bool(pos.get("breakeven_hit", False)), pos["quantity"],
-             pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {})), pos.get("trade_id"))
+             pos.get("entry_time"), pos.get("strategy"), json.dumps(_position_entry_context(pos)), pos.get("trade_id"))
         )
         conn.commit()
 
@@ -816,6 +857,13 @@ async def load_paper_orders():
         return [_json_value(row[0], {}) for row in rows]
     return await _run_db(op)
 
+
+async def get_paper_order_by_client_request_id(client_request_id):
+    def op(conn):
+        row = conn.execute("SELECT payload FROM paper_orders WHERE client_request_id=?", (client_request_id,)).fetchone()
+        return _json_value(row[0], {}) if row else None
+    return await _run_db(op)
+
 async def save_trade(trade):
     def op(conn: sqlite3.Connection):
         conn.execute(
@@ -830,16 +878,29 @@ async def save_trade(trade):
 
     await _run_db(op)
 
-async def get_trades(limit: int = 100, offset: int = 0, symbol: str | None = None, strategy: str | None = None):
+async def get_trades(limit: int | None = 100, offset: int = 0, symbol: str | None = None, strategy: str | None = None):
     def op(conn: sqlite3.Connection):
         clauses, values = [], []
         if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
         if strategy: clauses.append("strategy=?"); values.append(strategy)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        values.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
-        rows = conn.execute(f"SELECT * FROM trades{where} ORDER BY exit_time DESC LIMIT ? OFFSET ?", values).fetchall()
+        if limit is None:
+            rows = conn.execute(f"SELECT * FROM trades{where} ORDER BY exit_time DESC", values).fetchall()
+        else:
+            values.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+            rows = conn.execute(f"SELECT * FROM trades{where} ORDER BY exit_time DESC LIMIT ? OFFSET ?", values).fetchall()
         return [dict(r) for r in rows]
 
+    return await _run_db(op)
+
+
+async def get_trade_count(symbol: str | None = None, strategy: str | None = None):
+    def op(conn):
+        clauses, values = [], []
+        if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
+        if strategy: clauses.append("strategy=?"); values.append(strategy)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        return int(conn.execute(f"SELECT COUNT(*) FROM trades{where}", values).fetchone()[0] or 0)
     return await _run_db(op)
 
 async def get_realized_pnl():
@@ -876,8 +937,8 @@ async def delete_position(symbol):
 async def save_signal(sig):
     def op(conn: sqlite3.Connection):
         conn.execute(
-            "INSERT INTO signals (timestamp, symbol, action, price, reason) VALUES (?, ?, ?, ?, ?)",
-            (sig.get("timestamp"), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason"))
+            "INSERT INTO signals (timestamp, symbol, action, price, reason, strategy, trade_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sig.get("timestamp"), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason"), sig.get("strategy"), sig.get("trade_id"))
         )
         conn.execute(
             "INSERT INTO decision_logs (timestamp, symbol, strategy, decision, reason, price, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -907,14 +968,27 @@ async def save_decision_log(decision):
 async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, sig):
     """Atomically persist wallet balances, position and opening decision."""
     def op(conn):
-        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", cash_amount))
-        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, asset_amount))
+        if _postgres_enabled():
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
+        existing = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + (" FOR UPDATE" if _postgres_enabled() else ""), (symbol,)).fetchone()
+        if not existing:
+            open_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] or 0)
+            if open_count >= max(1, int(config.MAX_OPEN_POSITIONS)):
+                raise RuntimeError("max_open_positions_reached")
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + (" FOR UPDATE" if _postgres_enabled() else ""), ("TRY",)).fetchone()
+        current_cash = float(cash_row[0] if cash_row else config.INITIAL_BALANCE_TRY)
+        debit = float(asset_amount or 0) * float(sig.get("price") or pos.get("entry_price") or 0) * (1 + config.COMMISSION_PCT)
+        if debit <= 0 or current_cash + 1e-9 < debit:
+            raise RuntimeError("insufficient_paper_balance")
+        next_cash = current_cash - debit
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", next_cash))
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=virtual_wallet.amount+excluded.amount", (asset, asset_amount))
         conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), json.dumps(pos.get("entry_context", {})), pos.get("trade_id")))
+                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), json.dumps(_position_entry_context(pos)), pos.get("trade_id")))
         persisted = conn.execute("SELECT quantity,entry_time FROM positions WHERE symbol=?", (symbol,)).fetchone()
         if not persisted or float(persisted[0] or 0) != float(pos.get("quantity") or 0) or float(persisted[1] or 0) != float(pos.get("entry_time") or 0):
             raise RuntimeError("Açılan pozisyon kaydı doğrulanamadı; transaction geri alınacak")
-        conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason) VALUES(?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason")))
+        conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason,strategy,trade_id) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason"), sig.get("strategy"), sig.get("trade_id")))
         conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
         technical = (pos.get("entry_context") or {}).get("technical") or {}
         methods = technical.get("methodologies") or {}
@@ -931,7 +1005,16 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
 async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     """Atomically persist close proceeds, trade, position deletion and signal."""
     def op(conn):
-        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", cash_amount))
+        if _postgres_enabled():
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
+        position_row = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + (" FOR UPDATE" if _postgres_enabled() else ""), (symbol,)).fetchone()
+        if not position_row:
+            raise RuntimeError("paper_position_not_found")
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + (" FOR UPDATE" if _postgres_enabled() else ""), ("TRY",)).fetchone()
+        current_cash = float(cash_row[0] if cash_row else 0.0)
+        exit_notional = float(trade.get("exit_price") or 0) * float(trade.get("quantity") or 0)
+        next_cash = current_cash + exit_notional * (1 - config.COMMISSION_PCT)
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", next_cash))
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, 0.0))
         conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id")))
@@ -944,7 +1027,7 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
         conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
         if int(conn.execute("SELECT COUNT(*) FROM positions WHERE symbol=?", (symbol,)).fetchone()[0] or 0) != 0:
             raise RuntimeError("Kapanan pozisyon silinemedi; transaction geri alınacak")
-        conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason) VALUES(?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason")))
+        conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason,strategy,trade_id) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason"), trade.get("strategy"), trade.get("trade_id")))
         conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), trade.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
         conn.commit()
     await _run_db(op)
@@ -961,7 +1044,7 @@ async def get_signals(limit: int = 100, offset: int = 0, symbol: str | None = No
         if action: clauses.append("action=?"); values.append(action)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         values.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
-        rows = conn.execute(f"SELECT id, timestamp, symbol, action, price, reason FROM signals{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?", values).fetchall()
+        rows = conn.execute(f"SELECT id, timestamp, symbol, action, price, reason, strategy, trade_id FROM signals{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?", values).fetchall()
         return [dict(r) for r in rows]
 
     return await _run_db(op)
@@ -1041,8 +1124,18 @@ async def get_llm_tool_logs(limit=500):
     return await _run_db(op)
 
 
-async def save_a2a_message(message, direction="outbound", status="queued", error=None):
+async def save_a2a_message(message, direction="outbound", status="queued", error=None, insert_only=False):
     def op(conn: sqlite3.Connection):
+        if insert_only:
+            cursor = conn.execute("""INSERT INTO a2a_messages
+                (message_id,correlation_id,direction,message_type,sender,recipient,status,payload,created_at,delivered_at,acknowledged_at,last_error,attempts)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(message_id) DO NOTHING""",
+                (message.get("message_id"), message.get("correlation_id"), direction, message.get("type"),
+                 message.get("from"), message.get("to"), status, json.dumps(message, ensure_ascii=False, default=str),
+                 message.get("created_at") or time.time(), time.time() if status == "delivered" else None,
+                 time.time() if status == "acknowledged" else None, error))
+            conn.commit()
+            return cursor.rowcount > 0
         conn.execute("""INSERT OR REPLACE INTO a2a_messages
             (message_id,correlation_id,direction,message_type,sender,recipient,status,payload,created_at,delivered_at,acknowledged_at,last_error,attempts)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,COALESCE((SELECT attempts FROM a2a_messages WHERE message_id=?),0))""",
@@ -1051,7 +1144,8 @@ async def save_a2a_message(message, direction="outbound", status="queued", error
              message.get("created_at") or time.time(), time.time() if status == "delivered" else None,
              time.time() if status == "acknowledged" else None, error, message.get("message_id")))
         conn.commit()
-    await _run_db(op)
+        return True
+    return await _run_db(op)
 
 
 async def get_a2a_messages(limit=100, status=None):
@@ -1136,11 +1230,11 @@ async def create_alert_rule(rule):
     now = _db_timestamp()
     def op(conn):
         cur = conn.execute("""INSERT INTO alert_rules
-            (name,symbol,timeframe,rule_type,operator,threshold,cooldown_seconds,enabled,rearm_threshold,expires_at,notify_channels,created_by,reason,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""", (
+            (name,symbol,timeframe,rule_type,operator,threshold,cooldown_seconds,enabled,armed,rearm_threshold,expires_at,notify_channels,created_by,reason,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""", (
             rule.get("name") or f"{rule['symbol']} alarm", str(rule["symbol"]).upper(), rule.get("timeframe", "5m"),
             rule.get("rule_type", "price"), rule.get("operator", "lte"), float(rule["threshold"]),
-            max(0, int(rule.get("cooldown_seconds", 1800))), True, rule.get("rearm_threshold"), _db_datetime_value(rule.get("expires_at")),
+            max(0, int(rule.get("cooldown_seconds", 1800))), True, True, rule.get("rearm_threshold"), _db_datetime_value(rule.get("expires_at")),
             json.dumps(rule.get("notify_channels") or ["websocket"]), rule.get("created_by", "user"), rule.get("reason"), now, now))
         row = cur.fetchone()
         conn.commit(); return row[0] if row else None
@@ -1160,10 +1254,10 @@ async def list_alert_rules(active_only=False):
     return await _run_db(op)
 
 async def update_alert_rule(rule_id, changes):
-    allowed = {"name", "enabled", "threshold", "operator", "cooldown_seconds", "rearm_threshold", "expires_at", "notify_channels", "reason"}
+    allowed = {"name", "enabled", "armed", "last_value", "threshold", "operator", "rule_type", "timeframe", "cooldown_seconds", "rearm_threshold", "expires_at", "notify_channels", "reason"}
     fields = [key for key in changes if key in allowed]
     if not fields: return None
-    values = [json.dumps(changes[key]) if key == "notify_channels" else bool(changes[key]) if key == "enabled" else _db_datetime_value(changes[key]) if key == "expires_at" else changes[key] for key in fields]
+    values = [json.dumps(changes[key]) if key == "notify_channels" else bool(changes[key]) if key in {"enabled", "armed"} else _db_datetime_value(changes[key]) if key == "expires_at" else changes[key] for key in fields]
     values.extend([_db_timestamp(), rule_id])
     def op(conn):
         conn.execute(f"UPDATE alert_rules SET {', '.join(f'{key}=?' for key in fields)}, updated_at=? WHERE id=?", values); conn.commit()
@@ -1186,7 +1280,7 @@ async def record_alert_trigger(rule_id, event_key, value, message, severity="inf
     def op(conn):
         inserted = conn.execute("INSERT INTO alert_events(rule_id,symbol,event_key,value,message,severity,triggered_at) SELECT id,symbol,?,?,?,?,? FROM alert_rules WHERE id=? ON CONFLICT(event_key) DO NOTHING", (event_key, value, message, severity, now, rule_id))
         if inserted.rowcount == 0: conn.rollback(); return None
-        conn.execute("UPDATE alert_rules SET last_triggered_at=?, last_value=?, updated_at=? WHERE id=?", (now, value, now, rule_id)); conn.commit()
+        conn.execute("UPDATE alert_rules SET last_triggered_at=?, last_value=?, armed=CASE WHEN rearm_threshold IS NULL THEN armed ELSE 0 END, updated_at=? WHERE id=?", (now, value, now, rule_id)); conn.commit()
         row = conn.execute("SELECT * FROM alert_events WHERE event_key=?", (event_key,)).fetchone(); return dict(row) if row else None
     return await _run_db(op)
 

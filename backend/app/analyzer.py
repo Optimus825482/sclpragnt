@@ -27,13 +27,35 @@ class ScalpAnalyzer:
         self.positions = await database.load_positions()
         self.pending_orders = await database.load_paper_orders()
 
+    async def _idempotent_order_replay(self, duplicate):
+        status = str(duplicate.get("status") or "UNKNOWN").upper()
+        if status == "PROCESSING":
+            symbol = str(duplicate.get("symbol") or "").upper()
+            position = self.positions.get(symbol)
+            created_at = float(duplicate.get("created_at") or 0)
+            if position and float(position.get("entry_time") or 0) >= created_at - 1:
+                duplicate.update(status="FILLED", filled_at=position.get("entry_time") or time.time(),
+                                 updated_at=time.time(), recovered=True,
+                                 result={"action": "BUY_SIGNAL", "trade_id": position.get("trade_id")})
+                await database.save_paper_order(duplicate)
+                status = "FILLED"
+            elif created_at and time.time() - created_at > 30:
+                duplicate.update(status="FAILED", updated_at=time.time(),
+                                 error="interrupted_before_terminal_persist")
+                await database.save_paper_order(duplicate)
+                status = "FAILED"
+        return {"ok": status in {"OPEN", "PENDING", "FILLED"}, "paper_only": True,
+                "idempotent_replay": True, "status": status, "order": duplicate}
+
     async def place_paper_order(self, order):
         """Execute or queue an exchange-like order entirely in paper trading."""
         client_request_id = str(order.get("client_request_id") or "").strip() or None
         if client_request_id:
             duplicate = next((item for item in self.pending_orders if item.get("client_request_id") == client_request_id), None)
+            if not duplicate:
+                duplicate = await database.get_paper_order_by_client_request_id(client_request_id)
             if duplicate:
-                return {"ok": True, "paper_only": True, "idempotent_replay": True, "status": duplicate.get("status"), "order": duplicate}
+                return await self._idempotent_order_replay(duplicate)
         order_type = str(order.get("order_type", "MARKET")).upper()
         if order_type not in {"MARKET", "LIMIT", "STOP_LIMIT", "STOP_MARKET", "OCO"}:
             return {"ok": False, "error": "Desteklenmeyen paper emir türü"}
@@ -42,7 +64,31 @@ class ScalpAnalyzer:
         price = float(order.get("price") or (ticker or {}).get("last_price") or 0)
         if not symbol or price <= 0: return {"ok": False, "error": "Geçerli sembol ve fiyat gerekli"}
         if order_type == "MARKET":
-            return await self.open_position(symbol, price, str(order.get("side", "LONG")).upper(), "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
+            async with self._open_position_lock:
+                if client_request_id:
+                    duplicate = await database.get_paper_order_by_client_request_id(client_request_id)
+                    if duplicate:
+                        return await self._idempotent_order_replay(duplicate)
+                reservation = {**order, "symbol": symbol, "order_type": order_type, "status": "PROCESSING",
+                               "created_at": time.time(), "updated_at": time.time(), "reference_price": price,
+                               "order_id": uuid.uuid4().hex, "client_request_id": client_request_id}
+                await database.save_paper_order(reservation)
+            try:
+                result = await self.open_position(symbol, price, str(order.get("side", "LONG")).upper(), "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
+            except asyncio.CancelledError:
+                reservation.update(status="FAILED", updated_at=time.time(), error="execution_cancelled")
+                await asyncio.shield(database.save_paper_order(reservation))
+                raise
+            except Exception as exc:
+                reservation.update(status="FAILED", updated_at=time.time(), error=f"{type(exc).__name__}: {exc}")
+                await database.save_paper_order(reservation)
+                return {"ok": False, "paper_only": True, "status": "FAILED", "order": reservation,
+                        "error": reservation["error"]}
+            succeeded = self._paper_order_succeeded(result, order.get("side", "BUY"))
+            reservation.update({"status": "FILLED" if succeeded else "REJECTED", "updated_at": time.time(), "result": result})
+            if succeeded: reservation["filled_at"] = time.time()
+            await database.save_paper_order(reservation)
+            return {"ok": succeeded, "paper_only": True, "status": reservation["status"], "order": reservation, "result": result}
         async with self._open_position_lock:
             if client_request_id:
                 duplicate = next((item for item in self.pending_orders if item.get("client_request_id") == client_request_id), None)
@@ -88,15 +134,21 @@ class ScalpAnalyzer:
             stop = float(order.get("stop_price") or 0); limit = float(order.get("limit_price") or order.get("price") or 0)
             if order_type == "OCO":
                 take_profit_price = float(order.get("take_profit_price") or order.get("limit_price") or 0)
-                triggered = (price >= take_profit_price if side in {"SELL", "SHORT"} else price <= take_profit_price) or (price <= stop if side in {"SELL", "SHORT"} else price >= stop)
+                take_profit_hit = price >= take_profit_price if side in {"SELL", "SHORT"} else price <= take_profit_price
+                stop_hit = price <= stop if side in {"SELL", "SHORT"} else price >= stop
+                triggered = take_profit_hit or stop_hit
                 if not triggered: continue
                 execution_price = price
-                result = await self.close_position(symbol, execution_price, "paper_oco_take_profit" if price == take_profit_price else "paper_oco_stop") if side in {"SELL", "SHORT"} and symbol in self.positions else await self.open_position(symbol, execution_price, "LONG", "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
-                order["status"] = "FILLED" if result else "REJECTED"
+                reason = "paper_oco_stop" if stop_hit else "paper_oco_take_profit"
+                result = await self.close_position(symbol, execution_price, reason) if side in {"SELL", "SHORT"} and symbol in self.positions else await self.open_position(symbol, execution_price, "LONG", "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
+                succeeded = self._paper_order_succeeded(result, side)
+                order["status"] = "FILLED" if succeeded else "REJECTED"
+                if succeeded: order["filled_at"] = time.time()
                 await database.save_paper_order(order)
-                for other in self.pending_orders:
-                    if other.get("oco_group") == order.get("oco_group") and other is not order:
-                        other["status"] = "CANCELLED"; other["cancelled_at"] = time.time(); await database.save_paper_order(other)
+                if succeeded:
+                    for other in self.pending_orders:
+                        if other.get("oco_group") == order.get("oco_group") and other is not order:
+                            other["status"] = "CANCELLED"; other["cancelled_at"] = time.time(); await database.save_paper_order(other)
                 continue
             triggered = (price <= limit if side in {"BUY", "LONG"} else price >= limit) if order_type == "LIMIT" else (price <= stop if side in {"SELL", "SHORT"} else price >= stop)
             if order_type == "STOP_LIMIT" and triggered: triggered = price <= limit if side in {"SELL", "SHORT"} else price >= limit
@@ -107,11 +159,18 @@ class ScalpAnalyzer:
                 result = await self.open_position(symbol, execution_price, "LONG", "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
             else:
                 result = await self.close_position(symbol, execution_price, f"paper_{order_type.lower()}") if symbol in self.positions else None
-            order["status"] = "FILLED" if result else "REJECTED"
+            succeeded = self._paper_order_succeeded(result, side)
+            order["status"] = "FILLED" if succeeded else "REJECTED"
+            if succeeded: order["filled_at"] = time.time()
             await database.save_paper_order(order)
             if order_type == "OCO":
                 for other in self.pending_orders:
                     if other.get("oco_group") == order.get("oco_group") and other is not order: other["status"] = "CANCELLED"
+
+    @staticmethod
+    def _paper_order_succeeded(result, side):
+        action = str((result or {}).get("action", "")).upper()
+        return action.startswith("CLOSE") if str(side).upper() in {"SELL", "SHORT"} else action == "BUY_SIGNAL"
 
     def _current_bar(self, symbol, timeframe):
         if not self.market:
@@ -119,6 +178,24 @@ class ScalpAnalyzer:
         kline = self.market.get_ut_kline(symbol, timeframe)
         times = kline.get("times", [])
         return len(times) - 1 if times else len(kline.get("closes", [])) - 1
+
+    def _reentry_block_reason(self, symbol, timeframe):
+        now = time.time()
+        for store, reason in (
+            (self._timeout_block_until, "timeout_reentry_block"),
+            (self._hard_stop_block_until, "hard_stop_reentry_block"),
+        ):
+            blocked_until = float(store.get(symbol, 0) or 0)
+            if blocked_until > now:
+                return reason
+            store.pop(symbol, None)
+        current_bar = self._current_bar(symbol, timeframe)
+        cooldown_bar = self._cooldown_until.get(symbol)
+        if cooldown_bar is not None and current_bar is not None:
+            if current_bar < cooldown_bar:
+                return "bar_cooldown"
+            self._cooldown_until.pop(symbol, None)
+        return None
 
     def calculate_atr(self, kline, period=11):
         highs = kline.get("highs", [])
@@ -229,9 +306,9 @@ class ScalpAnalyzer:
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
-    def calculate_crsi(self, prices, rsi_period=3, streak_rsi_period=2, rank_period=100):
+    def calculate_crsi(self, prices, rsi_period=3, streak_period=2, rank_period=100):
         """Connors RSI: kısa RSI + streak RSI + ROC percentile rank (0-100)."""
-        if len(prices) < rank_period + rsi_period + streak_rsi_period + 2:
+        if len(prices) < rank_period + rsi_period + streak_period + 2:
             return None
         price_rsi = self.calculate_rsi(prices, rsi_period)
         streaks = []
@@ -241,7 +318,7 @@ class ScalpAnalyzer:
             elif prices[i] < prices[i - 1]: streak = min(streak, 0) - 1
             else: streak = 0
             streaks.append(streak)
-        streak_rsi = self.calculate_rsi(streaks, streak_rsi_period)
+        streak_rsi = self.calculate_rsi(streaks, streak_period)
         roc = np.diff(prices) / np.array(prices[:-1]) * 100
         current = roc[-1]
         sample = roc[-rank_period:]
@@ -271,41 +348,6 @@ class ScalpAnalyzer:
         macd_line = macd_line[-len(signal_line):]
         hist = macd_line - signal_line
         return macd_line[-1], signal_line[-1], hist[-1]
-
-    # --- YARDIMCI: Connors RSI (CRSI) Hesaplama ---
-    def calculate_crsi(self, prices, rsi_period=3, streak_period=2, rank_period=100):
-        if len(prices) < rank_period + 2: return None
-
-        # 1. Standart RSI (Kısa periyotlu, genelde 3)
-        rsi = self.calculate_rsi(prices, rsi_period)
-        if rsi is None: return None
-
-        # 2. Streak RSI (Üst üste düşüş/yükseliş serisi)
-        streaks = [0]
-        for i in range(1, len(prices)):
-            if prices[i] > prices[i-1]:
-                streaks.append(max(1, streaks[-1] + 1) if streaks[-1] > 0 else 1)
-            elif prices[i] < prices[i-1]:
-                streaks.append(min(-1, streaks[-1] - 1) if streaks[-1] < 0 else -1)
-            else:
-                streaks.append(0)
-
-        up_streaks = np.where(np.array(streaks) > 0, np.array(streaks), 0)
-        down_streaks = np.where(np.array(streaks) < 0, abs(np.array(streaks)), 0)
-        avg_up = np.mean(up_streaks[-streak_period:])
-        avg_down = np.mean(down_streaks[-streak_period:])
-        if avg_down == 0: streak_rsi = 100
-        else: streak_rsi = 100 - (100 / (1 + (avg_up / avg_down)))
-
-        # 3. Percent Rank (Yüzdelik Sıralama - Genelde 50 periyot)
-        current_change = prices[-1] - prices[-2]
-        rank_lookback = prices[-rank_period-1:-1]
-        changes = np.diff(rank_lookback)
-        if len(changes) == 0: return None
-        percent_rank = (np.sum(changes < current_change) / len(changes)) * 100
-
-        # CRSI = Üçünün ortalaması
-        return (rsi + streak_rsi + percent_rank) / 3
 
     # --- YARDIMCI: Chande Momentum (CMO) Hesaplama ---
     def calculate_cmo(self, prices, period=9):
@@ -989,7 +1031,7 @@ class ScalpAnalyzer:
         try_balance = await database.get_wallet_balance("TRY")
         trade = await self._record_trade(symbol, pos, price, reason, commission)
         sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price,
-               "strategy": pos.get("strategy", "UT"), "timestamp": time.time()}
+               "strategy": pos.get("strategy", "UT"), "trade_id": pos.get("trade_id"), "timestamp": time.time()}
         await database.commit_close_position(symbol, symbol.replace("TRY", ""), try_balance + sell_value - commission, trade, sig)
         try:
             await agent_learning.record_paper_trade_outcome(trade)
@@ -1031,7 +1073,7 @@ class ScalpAnalyzer:
             self._cooldown_until[symbol] = current_bar + config.COOLDOWN_BARS
         if reason.startswith("max_hold_") or reason in {"early_failure_no_progress", "stale_position_no_progress"}:
             self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
-        elif reason == "hard_stop_loss":
+        elif reason in {"hard_stop_loss", "system_stop_loss", "llm_stop_loss"}:
             self._hard_stop_block_until[symbol] = time.time() + config.HARD_STOP_REENTRY_BLOCK_SEC
         return sig
 
@@ -1100,6 +1142,19 @@ class ScalpAnalyzer:
             max_layers = int(config.SYMBOL_PYRAMIDING_LAYERS.get(symbol, config.PYRAMIDING_LAYERS))
             if strat_name != existing.get("strategy") or existing.get("layers", 1) >= max_layers:
                 return None
+        else:
+            if len(self.positions) >= self.max_open_positions():
+                blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                           "reason": "max_open_positions_reached", "strategy": strat_name, "timestamp": time.time()}
+                await database.save_signal(blocked)
+                return blocked
+            if strat_name != "LLM_PAPER":
+                block_reason = self._reentry_block_reason(symbol, self._strategy_tf(strat_name))
+                if block_reason:
+                    blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                               "reason": block_reason, "strategy": strat_name, "timestamp": time.time()}
+                    await database.save_signal(blocked)
+                    return blocked
         try_balance = await database.get_wallet_balance("TRY")
         requested_order_value = float(requested_order_value or 0)
         if strat_name == "LLM_PAPER" and requested_order_value > 0:
@@ -1233,15 +1288,18 @@ class ScalpAnalyzer:
                 if requested_hold_sec is not None:
                     pos["llm_max_hold_sec"] = max(60, int(requested_hold_sec))
         self.positions[symbol] = pos
-        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time()}
+        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "trade_id": pos.get("trade_id"), "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time()}
         try:
             await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
         except Exception as exc:
-            if "duplicate key" in str(exc).lower() or "unique constraint" in str(exc).lower():
+            error_text = str(exc).lower()
+            if any(token in error_text for token in ("duplicate key", "unique constraint", "max_open_positions_reached", "insufficient_paper_balance")):
                 self.positions = await database.load_positions()
+                reason = "max_open_positions_reached" if "max_open_positions" in error_text else "insufficient_paper_balance" if "insufficient" in error_text else "position_already_open"
                 await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                            "reason": "position_already_open", "strategy": strat_name, "timestamp": time.time()})
-                return None
+                                            "reason": reason, "strategy": strat_name, "timestamp": time.time()})
+                return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                        "reason": reason, "strategy": strat_name, "timestamp": time.time()}
             raise
         return sig
 

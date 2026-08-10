@@ -20,6 +20,27 @@ def inspect_source(path):
     digest = hashlib.sha256(p.read_bytes()).hexdigest()
     conn.close(); return {"path":str(p.resolve()), "sha256":digest, "counts":counts, "size_bytes":p.stat().st_size}
 
+
+def compare_counts(source_counts, target_counts):
+    """Return deterministic lower-bound violations for migrated tables."""
+    errors = []
+    for table in TABLES:
+        source_count = source_counts.get(table)
+        if source_count is None:
+            continue
+        target_count = int(target_counts.get(table) or 0)
+        if target_count < int(source_count):
+            errors.append(f"{table}: hedef satır sayısı eksik ({target_count}/{source_count})")
+    return errors
+
+
+async def fetch_target_counts(pool):
+    counts = {}
+    async with pool.acquire() as pg:
+        for table in TABLES:
+            counts[table] = int(await pg.fetchval(f'SELECT COUNT(*) FROM "{table}"') or 0)
+    return counts
+
 async def _set(**kwargs):
     state.update(kwargs)
 
@@ -45,6 +66,11 @@ async def run(source, database_url, publish=None):
                 await asyncio.to_thread(_copy_rows, source, database_url)
                 _log("Tüm SQLite kayıtları PostgreSQL'e aktarıldı")
                 await _set(phase="verify", progress=90, message="Kayıt sayıları doğrulanıyor")
+                target_counts = await fetch_target_counts(pool)
+                count_errors = compare_counts(info["counts"], target_counts)
+                if count_errors:
+                    raise RuntimeError("Migration kayıt doğrulaması başarısız: " + "; ".join(count_errors))
+                state["counts"] = {"source": info["counts"], "target": target_counts}
                 _log("Kayıt sayıları doğrulandı", "success")
                 await _set(phase="complete", progress=100, status="completed", message="Migration başarıyla tamamlandı", finished_at=time.time())
             finally: await pool.close()

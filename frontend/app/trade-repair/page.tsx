@@ -1,22 +1,22 @@
 "use client";
 import { useEffect, useState } from "react";
-import { API_BASE } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 import SymbolLink from "../components/SymbolLink";
 
 export default function TradeRepairPage() {
   const [data, setData] = useState<any>(null); const [legacy, setLegacy] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
-  const load = () => fetch(`${API_BASE}/api/trade-repair/status`, { cache: "no-store" }).then(r => r.json()).then(setData).catch(() => undefined);
-  useEffect(() => { load(); fetch(`${API_BASE}/api/trade-repair/legacy-cleanup`, { cache: "no-store" }).then(r => r.json()).then(x => setLegacy(x.records || [])).catch(() => undefined); const id = setInterval(load, 1500); return () => clearInterval(id); }, []);
-  const preview = async () => { setBusy(true); try { await fetch(`${API_BASE}/api/trade-repair/preview`, { method: "POST" }); await load(); } finally { setBusy(false); } };
+  const load = () => apiRequest(`${API_BASE}/api/trade-repair/status`, { cache: "no-store" }).then(r => r.json()).then(setData).catch(() => undefined);
+  useEffect(() => { load(); apiRequest(`${API_BASE}/api/trade-repair/legacy-cleanup`, { cache: "no-store" }).then(r => r.json()).then(x => setLegacy(x.records || [])).catch(() => undefined); const id = setInterval(load, 1500); return () => clearInterval(id); }, []);
+  const preview = async () => { setBusy(true); try { await apiRequest(`${API_BASE}/api/trade-repair/preview`, { method: "POST" }); await load(); } finally { setBusy(false); } };
   const apply = async () => {
     const count = data?.preview?.actions?.assign_trade_ids ?? 0;
     if (!window.confirm(`Onaylı geçmiş veri onarımı başlatılacak. ${count} bağlantı kimliği düzeltilecek. Hiçbir kayıt silinmeyecek. Devam edilsin mi?`)) return;
-    setBusy(true); try { await fetch(`${API_BASE}/api/trade-repair/apply`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }) }); await load(); } finally { setBusy(false); }
+    setBusy(true); try { await apiRequest(`${API_BASE}/api/trade-repair/apply`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true }) }); await load(); } finally { setBusy(false); }
   };
   const purgeLegacy = async () => {
     if (!legacy.length || !window.confirm(`Şu kayıtlar kalıcı olarak silinecek: ${legacy.map(x => `${x.trade_id} (${x.symbol})`).join(", ")}. İlgili kapanış sinyal/karar ve embedding kayıtları da temizlenecek. Devam edilsin mi?`)) return;
-    setBusy(true); try { await fetch(`${API_BASE}/api/trade-repair/legacy-cleanup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true, trade_ids: legacy.map(x => x.trade_id) }) }); setLegacy([]); await load(); } finally { setBusy(false); }
+    setBusy(true); try { await apiRequest(`${API_BASE}/api/trade-repair/legacy-cleanup`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true, trade_ids: legacy.map(x => x.trade_id) }) }); setLegacy([]); await load(); } finally { setBusy(false); }
   };
   const p = data?.preview;
   return <main className="page-shell space-y-5">

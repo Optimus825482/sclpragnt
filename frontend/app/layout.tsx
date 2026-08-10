@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
+import AuthGate from "./components/AuthGate";
 
 export const metadata: Metadata = {
   title: "Scalper Agent V4 — Paper Trading",
@@ -27,10 +28,12 @@ export default function RootLayout({
     <html lang="tr" className="dark">
       <head><meta name="mobile-web-app-capable" content="yes" /></head>
       <body>
+        <AuthGate>
         <div className="flex min-h-screen">
           <Sidebar />
           <main className="flex-1 min-w-0 min-h-screen overflow-y-auto"><TopBar /><div className="content-shell">{children}</div></main>
         </div>
+        </AuthGate>
       </body>
     </html>
   );
