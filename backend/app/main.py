@@ -424,6 +424,7 @@ async def startup():
         except Exception as exc:
             print(f"[Config] Kalıcı ayarlar yüklenemedi: {exc}")
     await analyzer.load_state()
+    await bootstrap_symbol_activity()
     if os.getenv("DB_BACKEND", "postgres").lower() == "postgres" and asyncpg and os.getenv("DATABASE_URL"):
         try:
             _pg_pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=4)
@@ -696,6 +697,35 @@ async def refresh_symbol_activity():
     print(f"[Activity] universe={len(universe)} ACTIVE={active_count} PASSIVE={len(config.PASSIVE_SYMBOLS)} WARMING={warming_count}", flush=True)
     return {"ok": True, "statuses": statuses, "active_count": active_count,
             "passive_count": len(config.PASSIVE_SYMBOLS), "warming_count": warming_count}
+
+async def bootstrap_symbol_activity():
+    """Warm all symbols enough for the first activity decision before trading starts."""
+    known_try = set(await trading_symbols("TRY"))
+    open_symbols = set(analyzer.positions) | set((await database.load_positions()).keys())
+    universe = list(dict.fromkeys(sorted(known_try | open_symbols)))
+    if not universe:
+        raise RuntimeError("Binance TR TRY sembol evreni boş döndü")
+    config.SYMBOLS = universe
+    config.UT_SYMBOLS = list(universe)
+    market.symbols = [symbol.lower() for symbol in universe]
+    all_tickers = await ticker_24h()
+    market.ticker_24h = {str(row.get("symbol", "")).upper(): float(row.get("quoteVolume", 0) or 0) for row in all_tickers or [] if row.get("symbol")}
+    semaphore = asyncio.Semaphore(8)
+    async def warm(symbol):
+        async with semaphore:
+            try:
+                rows = await fetch_klines(symbol, "5m", limit=80)
+                if not rows:
+                    return
+                hist = market.klines["5m"][symbol]
+                for key, index in (("opens", 1), ("highs", 2), ("lows", 3), ("closes", 4), ("volumes", 5)):
+                    hist[key] = [float(row[index]) for row in rows]
+                market.tickers[symbol] = {"symbol": symbol, "last_price": float(rows[-1][4]), "timestamp": int(time.time() * 1000), "source": "binance_tr_public_rest"}
+            except Exception as exc:
+                print(f"[Activity warmup] {symbol}: {exc}", flush=True)
+    await asyncio.gather(*(warm(symbol) for symbol in universe))
+    result = await refresh_symbol_activity()
+    print(f"[Activity] ilk kontrol tamamlandı | universe={len(universe)} active={result['active_count']} passive={result['passive_count']} warming={result['warming_count']}", flush=True)
 
 async def symbol_activity_loop():
     await asyncio.sleep(20)

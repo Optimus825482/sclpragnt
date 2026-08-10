@@ -70,10 +70,18 @@ export default function BacktestPage() {
 
     useEffect(() => {
         loadHistory();
-        fetch(`${API_BASE}/api/config`, { cache: "no-store" }).then((r) => r.json()).then((d) => {
-            const list = Array.isArray(d.symbols) && d.symbols.length ? [...d.symbols].sort() : ["BTCTRY"];
+        Promise.all([
+            fetch(`${API_BASE}/api/config`, { cache: "no-store" }).then((r) => r.json()),
+            fetch(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()),
+        ]).then(([configData, activityData]) => {
+            const configured = Array.isArray(configData.symbols) ? configData.symbols : [];
+            const active = Object.values(activityData.statuses || {})
+                .filter((item: any) => item.status === "ACTIVE")
+                .map((item: any) => item.symbol);
+            const list = (active.length ? active : configured).length ? [...(active.length ? active : configured)].sort() : ["BTCTRY"];
             setSymbols(list);
             setSymbol((current) => list.includes(current) ? current : list[0]);
+            if (configData.active_strategy) setStrategy(configData.active_strategy);
         }).catch(() => undefined);
     }, []);
 
@@ -151,7 +159,7 @@ export default function BacktestPage() {
                         <label className="eyebrow block mb-1.5">STRATEJİ</label>
                         <select value={strategy} onChange={(e) => setStrategy(e.target.value)}
                             className="w-full bg-bunker-950 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm">
-                            {STRATEGIES.map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}
+                            {STRATEGIES.filter((s) => s.key === strategy).map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}
                         </select>
                     </div>
                     <div>
