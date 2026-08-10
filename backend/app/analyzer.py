@@ -871,7 +871,7 @@ class ScalpAnalyzer:
         if closes[-1] > upper and volumes[-1] >= avg_vol * config.DONCHIAN_VOLUME_MULTIPLIER and flow_ok: return "buy"
         return None
 
-    async def evaluate(self, symbol, ticker):
+    async def evaluate(self, symbol, ticker, allow_entry=True):
         signals = []
         price = ticker["last_price"]
         await self._evaluate_pending_orders(symbol, price)
@@ -883,6 +883,10 @@ class ScalpAnalyzer:
             sig = await self._manage_open_position(symbol, price, strat or "EMA_VWAP_PULLBACK")
             if sig: signals.append(sig)
             if sig: return signals
+            # Pozisyon yönetimi her çağrıda devam eder; yeni katman yalnızca
+            # periyodik giriş taraması sırasında değerlendirilebilir.
+            if not allow_entry:
+                return signals
             # Pozisyon yalnızca kendisini açan stratejinin sinyaliyle yönetilir.
             strategy_specs = [
                 (config.EMA_VWAP_ENABLED, "EMA_VWAP_PULLBACK", self.strategy_ema_vwap, config.EMA_VWAP_TIMEFRAME),
@@ -930,6 +934,9 @@ class ScalpAnalyzer:
             if bar is not None and bar < self._cooldown_until[symbol]:
                 return signals
             self._cooldown_until.pop(symbol, None)
+
+        if not allow_entry:
+            return signals
 
         # Açık pozisyon yok: aktif stratejileri sırayla değerlendir
         eval_order = [

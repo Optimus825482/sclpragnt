@@ -41,6 +41,9 @@ class Config:
     MAX_POSITION_LAYERS = 1
     ACTIVE_STRATEGY = os.getenv("ACTIVE_STRATEGY", "BB_MFI_MEAN_REVERSION")
     ACTIVE_STRATEGY_TIMEFRAME = os.getenv("ACTIVE_STRATEGY_TIMEFRAME", "5m")
+    # Yeni giriş/piramitleme sinyalleri tüm aktif sembollerde 5 dakikada bir
+    # değerlendirilir; açık pozisyonların stop/TP yönetimi ayrı hızlı döngüdedir.
+    STRATEGY_ENTRY_SCAN_INTERVAL_SEC = max(60, int(os.getenv("STRATEGY_ENTRY_SCAN_INTERVAL_SEC", "300")))
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     SYMBOL_ORDER_PCT = {}
@@ -55,10 +58,12 @@ class Config:
     LIQUIDITY_FILTER_ENABLED = True
     # Radar yalnızca gözlem/ranking yüzeyidir; otomatik pozisyon açmaz.
     GAINER_RADAR_AUTO_TRADE = False
+    # LLM yalnızca kullanıcının açık "işlem aç" talebiyle çalışabilir.
+    LLM_AUTO_OPEN_ENABLED = False
     GAINER_RADAR_MIN_SCORE = 65
     GAINER_RADAR_INTERVAL_SEC = max(15, int(os.getenv("GAINER_RADAR_INTERVAL_SEC", "60")))
     TOP_GAINERS_LIMIT = max(1, min(70, int(os.getenv("TOP_GAINERS_LIMIT", "70"))))
-    TOP_GAINERS_REFRESH_SEC = max(300, int(os.getenv("TOP_GAINERS_REFRESH_SEC", str(60 * 60))))
+    TOP_GAINERS_REFRESH_SEC = max(300, int(os.getenv("TOP_GAINERS_REFRESH_SEC", str(6 * 60 * 60))))
     TOP_GAINERS_AUTO_ACTIVATE = os.getenv("TOP_GAINERS_AUTO_ACTIVATE", "true").lower() == "true"
     LLM_REENTRY_COOLDOWN_SEC = max(60, int(os.getenv("LLM_REENTRY_COOLDOWN_SEC", str(30 * 60))))
     LLM_PROFIT_REENTRY_COOLDOWN_SEC = max(60, int(os.getenv("LLM_PROFIT_REENTRY_COOLDOWN_SEC", str(5 * 60))))

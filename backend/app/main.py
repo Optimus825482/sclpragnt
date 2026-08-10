@@ -522,6 +522,8 @@ async def alert_loop():
 
 async def auto_open_from_alert(rule, event):
     """Alarm sonrası mevcut LLM giriş kapılarını yeniden doğrulayıp paper açar."""
+    if not config.LLM_AUTO_OPEN_ENABLED:
+        return {"status": "blocked", "reason": "llm_automatic_open_disabled", "paper_only": True}
     if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
         return {"status": "blocked", "reason": "llm_paper_trading_disabled", "paper_only": True}
     result = await llm_open_paper_trade({
@@ -538,7 +540,11 @@ async def auto_open_from_alert(rule, event):
 
 async def strategy_loop():
     await asyncio.sleep(5)
+    last_entry_scan = 0.0
     while True:
+        entry_scan_due = (time.time() - last_entry_scan) >= config.STRATEGY_ENTRY_SCAN_INTERVAL_SEC
+        if entry_scan_due:
+            print(f"[Strategy] giriş taraması başladı | symbols={len(config.SYMBOLS)} interval={config.STRATEGY_ENTRY_SCAN_INTERVAL_SEC}s", flush=True)
         for sym in config.SYMBOLS:
             if migration_monitor.state["status"] == "running":
                 await asyncio.sleep(0.1)
@@ -547,7 +553,7 @@ async def strategy_loop():
             if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
                 continue
             try:
-                signals = await analyzer.evaluate(sym, ticker)
+                signals = await analyzer.evaluate(sym, ticker, allow_entry=entry_scan_due)
             except Exception as exc:
                 # Tek bir sembolün DB/strateji hatası bütün strategy loop'u düşürmemeli.
                 print(f"[Strategy] {sym} değerlendirme hatası: {exc}")
@@ -561,7 +567,10 @@ async def strategy_loop():
                     # immediately buy again. Let the symbol guard settle and
                     # wait for a later idle research cycle.
                     if str(sig.get("strategy", "")).upper() != "LLM_PAPER":
-                        asyncio.create_task(llm_replenish_after_close())
+                        pass
+        if entry_scan_due:
+            last_entry_scan = time.time()
+            print("[Strategy] giriş taraması tamamlandı", flush=True)
         await asyncio.sleep(2)
 
 async def radar_loop():
@@ -628,11 +637,14 @@ async def top_gainers_refresh_loop():
             if result.get("ok"):
                 print(f"[Top Gainers] {len(result.get('selected', []))} TRY sembolü aktive edildi")
         except Exception as exc:
-            print(f"[Top Gainers] saatlik yenileme hatası: {exc}")
+            print(f"[Top Gainers] 6 saatlik yenileme hatası: {exc}")
         await asyncio.sleep(config.TOP_GAINERS_REFRESH_SEC)
 
 async def llm_replenish_after_close():
     """Replace each closed paper position with one fresh eligible candidate."""
+    if not config.LLM_AUTO_OPEN_ENABLED:
+        print("[LLM replenish] atlandı: otomatik LLM pozisyon açma kapalı")
+        return
     if (await database.get_llm_setting("llm_auto_paper_enabled", "0")) != "1":
         print("[LLM replenish] tetikleme atlandı: otomatik paper yenileme ayarı kapalı")
         return
@@ -658,6 +670,9 @@ async def llm_idle_trigger_loop():
     await asyncio.sleep(15)
     while True:
         try:
+            if not config.LLM_AUTO_OPEN_ENABLED:
+                await asyncio.sleep(30)
+                continue
             enabled = (await database.get_llm_setting("llm_auto_paper_enabled", "0")) == "1"
             paper_enabled = (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
             balance = float(await database.get_wallet_balance("TRY") or 0)
@@ -1998,6 +2013,27 @@ async def safe_read_only_sql(args: dict):
 async def market_snapshot_scan(payload: dict = None):
     """Tüm etkin sembolleri salt-okunur biçimde tarar; canlı portföyü değiştirmez."""
     return await scan_market_snapshots(payload or {})
+
+@app.post("/api/strategy/manual-scan")
+async def manual_strategy_scan():
+    """Kullanıcının açık talebiyle aktif stratejiyi tüm sembollerde çalıştırır."""
+    if migration_monitor.state["status"] == "running":
+        return {"ok": False, "status": "blocked", "reason": "migration_running", "signals": []}
+    signals = []
+    started = time.time()
+    for symbol in list(config.SYMBOLS):
+        ticker = market.get_ticker(symbol)
+        if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
+            continue
+        try:
+            for signal in await analyzer.evaluate(symbol, ticker, allow_entry=True):
+                signals.append(signal)
+                await ws_manager.broadcast({"type": "signal", "data": signal})
+        except Exception as exc:
+            print(f"[Strategy manual] {symbol} değerlendirme hatası: {exc}")
+    return {"ok": True, "status": "completed", "strategy": config.ACTIVE_STRATEGY,
+            "symbols_checked": len(config.SYMBOLS), "signals": signals,
+            "elapsed_seconds": round(time.time() - started, 2), "paper_only": True}
 
 @app.get("/api/market-snapshot/{symbol}/deep")
 async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
