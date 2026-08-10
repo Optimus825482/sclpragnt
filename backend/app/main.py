@@ -2155,10 +2155,14 @@ async def manual_strategy_scan():
     if migration_monitor.state["status"] == "running":
         return {"ok": False, "status": "blocked", "reason": "migration_running", "signals": []}
     signals = []
+    checked = 0
+    skipped_passive = 0
     started = time.time()
     for symbol in list(config.SYMBOLS):
         if symbol in config.PASSIVE_SYMBOLS and symbol not in analyzer.positions:
+            skipped_passive += 1
             continue
+        checked += 1
         ticker = market.get_ticker(symbol)
         if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
             continue
@@ -2169,7 +2173,9 @@ async def manual_strategy_scan():
         except Exception as exc:
             print(f"[Strategy manual] {symbol} değerlendirme hatası: {exc}")
     return {"ok": True, "status": "completed", "strategy": config.ACTIVE_STRATEGY,
-            "symbols_checked": len(config.SYMBOLS), "signals": signals,
+            "symbols_checked": checked, "active_symbols": checked,
+            "universe_size": len(config.SYMBOLS), "passive_skipped": skipped_passive,
+            "signals": signals,
             "elapsed_seconds": round(time.time() - started, 2), "paper_only": True}
 
 @app.get("/api/market-snapshot/{symbol}/deep")
