@@ -63,7 +63,10 @@ class Config:
     # yeni strateji girişlerinden çıkarılır, açık pozisyonlar korunur.
     SYMBOL_ACTIVITY_REFRESH_SEC = max(300, int(os.getenv("SYMBOL_ACTIVITY_REFRESH_SEC", str(30 * 60))))
     SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY = float(os.getenv("SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY", "1000000"))
-    SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT = float(os.getenv("SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT", "0.10"))
+    SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT = float(os.getenv("SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT", "0.30"))
+    SYMBOL_ACTIVITY_MIN_ATR_PCT = float(os.getenv("SYMBOL_ACTIVITY_MIN_ATR_PCT", "0.0015"))
+    SYMBOL_ACTIVITY_MIN_VOLUME_RATIO = float(os.getenv("SYMBOL_ACTIVITY_MIN_VOLUME_RATIO", "0.50"))
+    SYMBOL_ACTIVITY_MAX_SPREAD_PCT = float(os.getenv("SYMBOL_ACTIVITY_MAX_SPREAD_PCT", "0.30"))
     PASSIVE_SYMBOLS = set()
     # Radar yalnızca gözlem/ranking yüzeyidir; otomatik pozisyon açmaz.
     GAINER_RADAR_AUTO_TRADE = False

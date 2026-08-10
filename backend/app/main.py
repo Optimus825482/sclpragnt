@@ -826,13 +826,25 @@ async def refresh_symbol_activity():
         range_pct = ((high - low) / low * 100) if low else 0.0
         volume_ok = quote_volume >= config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY
         movement_ok = range_pct >= config.SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT
-        active = bool(ticker and volume_ok and movement_ok)
+        atr = analyzer.calculate_atr(bars, 14) if len(closes) >= 15 else None
+        atr_pct = (atr / closes[-1]) if atr and closes[-1] else 0.0
+        avg_volume = sum(bars.get("volumes", [])[-21:-1]) / max(1, len(bars.get("volumes", [])[-21:-1])) if len(bars.get("volumes", [])) >= 21 else 0.0
+        volume_ratio = (bars.get("volumes", [])[-1] / avg_volume) if avg_volume else 0.0
+        flow = market.get_orderflow(symbol) or {}
+        spread_pct = float(flow.get("spread_pct") or 0.0)
+        atr_ok = atr_pct >= config.SYMBOL_ACTIVITY_MIN_ATR_PCT
+        volume_ratio_ok = volume_ratio >= config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO
+        spread_ok = spread_pct <= config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT if spread_pct else False
+        active = bool(ticker and volume_ok and movement_ok and atr_ok and volume_ratio_ok and spread_ok)
         if symbol in analyzer.positions:
             active = True
         statuses[symbol] = {
             "symbol": symbol, "status": "ACTIVE" if active else "PASSIVE",
             "quote_volume": quote_volume, "range_30m_pct": round(range_pct, 4),
-            "reason": "open_position" if symbol in analyzer.positions else ("active" if active else "low_volume_or_flat_move"),
+            "atr_pct": round(atr_pct * 100, 4), "volume_ratio": round(volume_ratio, 4),
+            "spread_pct": round(spread_pct, 4),
+            "checks": {"quote_volume": volume_ok, "range_30m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok},
+            "reason": "open_position" if symbol in analyzer.positions else ("active" if active else "movement_or_liquidity_below_threshold"),
             "checked_at": time.time(),
         }
     config.PASSIVE_SYMBOLS = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
@@ -1405,7 +1417,10 @@ async def symbol_activity_status():
             "warming_count": sum(1 for item in statuses.values() if item.get("status") == "WARMING"),
             "refresh_seconds": config.SYMBOL_ACTIVITY_REFRESH_SEC,
             "thresholds": {"min_quote_volume_try": config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY,
-                           "min_range_30m_pct": config.SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT}}
+                           "min_range_30m_pct": config.SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT,
+                           "min_atr_pct": config.SYMBOL_ACTIVITY_MIN_ATR_PCT * 100,
+                           "min_volume_ratio": config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO,
+                           "max_spread_pct": config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT}}
 
 @app.post("/api/radar/execute")
 async def execute_gainers_radar():
