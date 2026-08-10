@@ -270,7 +270,7 @@ def _candlestick_patterns(opens, highs, lows, closes):
     previous_mid = (po + pc) / 2
     if previous_material and current_material and prior_downtrend and direction(previous) < 0 and direction(current) > 0 and o <= pc and previous_mid < c < po:
         patterns.append("piercing_line")
-    if previous_material and current_material and prior_uptrend and direction(previous) > 0 and direction(current) < 0 and o >= pc and po > c > previous_mid:
+    if previous_material and current_material and prior_uptrend and direction(previous) > 0 and direction(current) < 0 and o >= pc and po < c < previous_mid:
         patterns.append("dark_cloud_cover")
 
     # The final candle confirms these three-candle formations. A short market

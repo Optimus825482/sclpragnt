@@ -80,7 +80,7 @@ const chartPriceFormat = (value: number) => {
 type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 
 type PatternMarker = { time: number; type: "buy" | "sell"; text: string };
-type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean };
+type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showStrategySignals: boolean };
 type ClosedTrade = { id: number; pnl: number };
 type LivePortfolio = { total_value?: number; unrealized_pnl?: number };
 const patternDescriptions: Record<string, string> = {
@@ -478,6 +478,7 @@ export default function ChartsPage() {
     const [showPositions, setShowPositions] = useState(false);
     const [showStopTakeProfit, setShowStopTakeProfit] = useState(false);
     const [showPatterns, setShowPatterns] = useState(false);
+    const [showStrategySignals, setShowStrategySignals] = useState(false);
     const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
@@ -488,6 +489,8 @@ export default function ChartsPage() {
     const positionMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const utBotMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const patternMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
+    const activeStrategyMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
+    const [visibleRange, setVisibleRange] = useState<{ from: number; to: number } | null>(null);
 
     // localStorage yükleme: hydration uyumluluğu için client tarafında yap
     useEffect(() => {
@@ -517,18 +520,19 @@ export default function ChartsPage() {
 
     useEffect(() => {
         const settings = loadPersisted<DisplaySettings>(LS_DISPLAY_SETTINGS, {
-            showPositions: false, showStopTakeProfit: false, showPatterns: false
+            showPositions: false, showStopTakeProfit: false, showPatterns: false, showStrategySignals: false
         });
         setShowPositions(settings.showPositions);
         setShowStopTakeProfit(settings.showStopTakeProfit);
         setShowPatterns(settings.showPatterns);
+        setShowStrategySignals(!!settings.showStrategySignals);
     }, []);
 
     useEffect(() => {
         try {
-            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns }));
+            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showStrategySignals } satisfies DisplaySettings));
         } catch { /* görüntü ayarı yalnızca yerelde saklanır */ }
-    }, [showPositions, showStopTakeProfit, showPatterns]);
+    }, [showPositions, showStopTakeProfit, showPatterns, showStrategySignals]);
 
     // Sembol rozeti /charts?symbol=...&timeframe=5m ile istemci içi
     // yönlendirme yapar. Sayfa unmount olmadığı için URL değişimini ayrıca
@@ -598,6 +602,8 @@ export default function ChartsPage() {
         });
         chartRef.current = chart;
         candleRef.current = series;
+        const onVisibleRangeChange = (range: { from: number; to: number } | null) => setVisibleRange(range);
+        chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
 
         // pane yüksekliklerini izle: kullanıcı sürükleyince localStorage'a yaz (key bazlı)
         const saveTimer = setInterval(() => {
@@ -634,6 +640,7 @@ export default function ChartsPage() {
         return () => {
             clearInterval(saveTimer);
             ro.disconnect();
+            chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange);
             chart.remove();
             chartRef.current = null;
             candleRef.current = null;
@@ -1251,6 +1258,38 @@ export default function ChartsPage() {
         } catch { /* marker hatası sessiz geç */ }
     }, [instances, bars, symbol]);
 
+    // Aktif stratejinin geçmiş M5 girişleri yalnız görünür mumlarda ve
+    // salt-okunur hesaplanır; bu, portföyü veya canlı strateji durumunu
+    // değiştirmez. Görünen pencere kaydıkça marker kümesi yenilenir.
+    useEffect(() => {
+        activeStrategyMarkersRef.current?.setMarkers([]);
+        activeStrategyMarkersRef.current = null;
+        if (!showStrategySignals || interval !== "5m" || !bars.length || !candleRef.current) return;
+        const strategyKey = activeStrategy.toLowerCase();
+        const signalFn = strategySignalFns[strategyKey];
+        if (!signalFn) return;
+        const range = visibleRange || { from: 0, to: bars.length - 1 };
+        const firstVisibleIndex = Math.max(0, Math.floor(range.from));
+        const lastVisibleIndex = Math.min(bars.length - 1, Math.ceil(range.to));
+        // İşaretin tam olarak görüntülenen muma ait olması için sinyalleri
+        // indeks aralığı üzerinden daraltıyoruz; strateji ise gerekli ısınma
+        // geçmişini koruyarak tüm M5 serisinde değerlendirilir.
+        const visibleTimes = new Set(bars.slice(firstVisibleIndex, lastVisibleIndex + 1).map((bar) => bar.time));
+        const signals = signalFn(bars.slice(0, -1), {}).filter((signal) => signal.type === "buy" && visibleTimes.has(signal.time));
+        try {
+            const markers = createSeriesMarkers(candleRef.current, []);
+            activeStrategyMarkersRef.current = markers;
+            markers.setMarkers(signals.map((signal) => ({
+                time: signal.time as UTCTimestamp,
+                position: "belowBar" as const,
+                color: "#2563eb",
+                shape: "circle" as const,
+                text: "S",
+                size: 1,
+            })));
+        } catch { /* görünür zaman aralığı değişirken marker dışarıda kalabilir */ }
+    }, [showStrategySignals, interval, activeStrategy, bars, visibleRange]);
+
     // Güçlü mum formasyonlarını seçili timeframe üzerinde marker olarak göster.
     useEffect(() => {
         patternMarkersRef.current?.setMarkers([]);
@@ -1326,7 +1365,8 @@ export default function ChartsPage() {
             interval,
             indicators: instances,
             paneHeights: paneHeightsRef.current,
-            volumeVisible
+            volumeVisible,
+            display: { showPositions, showStopTakeProfit, showPatterns, showStrategySignals } satisfies DisplaySettings
         };
         try {
             await apiRequest(`${API}/${symbol}`, {
@@ -1361,6 +1401,10 @@ export default function ChartsPage() {
                 try { localStorage.setItem(LS_PANE_HEIGHTS, JSON.stringify(st.paneHeights)); } catch { }
             }
             if (typeof st.volumeVisible === "boolean") setVolumeVisible(st.volumeVisible);
+            if (typeof st.display?.showPositions === "boolean") setShowPositions(st.display.showPositions);
+            if (typeof st.display?.showStopTakeProfit === "boolean") setShowStopTakeProfit(st.display.showStopTakeProfit);
+            if (typeof st.display?.showPatterns === "boolean") setShowPatterns(st.display.showPatterns);
+            if (typeof st.display?.showStrategySignals === "boolean") setShowStrategySignals(st.display.showStrategySignals);
         } catch { /* backend yoksa localStorage kullan */ }
     };
 
@@ -1482,7 +1526,8 @@ export default function ChartsPage() {
                         {[
                             { checked: showPositions, setChecked: setShowPositions, title: "Pozisyonları göster", description: "Seçili sembolde açık pozisyon varsa giriş çizgisi ve işaretini gösterir." },
                             { checked: showStopTakeProfit, setChecked: setShowStopTakeProfit, title: "SL / TP göster", description: "Açık pozisyonun kayıtlı zarar-durdur ve kâr-al seviyelerini çizer." },
-                            { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonları göster", description: "Yalnız tamamlanmış mumlarla doğrulanan çekiç ve üç mum formasyonlarını gösterir." },
+                            { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonları göster", description: "Yalnız tamamlanmış mumlarla doğrulanan dönüş ve yutan formasyonlarını gösterir." },
+                            { checked: showStrategySignals, setChecked: setShowStrategySignals, title: "M5 strateji sinyallerini göster", description: interval === "5m" ? "Ekranda görünen M5 mumlarında aktif stratejinin geçmiş BUY sinyallerini mavi rozetle gösterir." : "Yalnız M5 grafikte çalışır; M5 seçildiğinde mavi sinyal rozetleri gösterilir." },
                         ].map((setting) => (
                             <button
                                 key={setting.title}

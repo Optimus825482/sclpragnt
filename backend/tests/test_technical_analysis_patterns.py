@@ -32,7 +32,7 @@ class CandlestickPatternBehaviorTests(unittest.TestCase):
 
     def test_piercing_and_dark_cloud_require_midpoint_reversal(self):
         self.assert_pattern("piercing_line", [11, 10.5, 9.7], [11.1, 10.6, 10.4], [10.5, 9.7, 9.6], [10.6, 9.8, 10.25])
-        self.assert_pattern("dark_cloud_cover", [9, 9.5, 10.3], [9.1, 10.6, 10.4], [8.9, 9.4, 9.5], [9.4, 10.5, 9.75])
+        self.assert_pattern("dark_cloud_cover", [9, 9.5, 10.6], [9.1, 10.6, 10.7], [8.9, 9.4, 9.5], [9.4, 10.5, 9.75])
 
     def test_three_candle_reversals_are_confirmed_by_the_latest_closed_candle(self):
         self.assert_pattern("three_inside_up", [12, 11.5, 10.5, 10.15, 10.3], [12.1, 11.6, 10.6, 10.35, 10.8], [11.9, 11.4, 9.9, 10.1, 10.2], [11.8, 11, 10, 10.3, 10.7])
@@ -43,7 +43,7 @@ class CandlestickPatternBehaviorTests(unittest.TestCase):
     def test_no_reversal_label_without_required_trend_or_confirmation(self):
         # The newest bullish body engulfs the previous body, but price was not
         # declining beforehand; it is continuation, not a bullish reversal.
-        patterns = _candlestick_patterns([9, 9.5, 9.3], [9.1, 9.6, 10.4], [8.9, 9.2, 9.2], [9.4, 9.3, 10.3])
+        patterns = _candlestick_patterns([9.5, 10.1, 9.9], [9.9, 10.2, 10.3], [9.4, 9.9, 9.8], [9.8, 10.0, 10.2])
         self.assertNotIn("bullish_engulfing", patterns)
         # A three-inside-like sequence without a third-candle breakout fails closed.
         patterns = _candlestick_patterns([12, 11.5, 10.5, 10.15, 10.25], [12.1, 11.6, 10.6, 10.35, 10.45], [11.9, 11.4, 9.9, 10.1, 10.1], [11.8, 11, 10, 10.3, 10.35])
