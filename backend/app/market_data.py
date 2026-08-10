@@ -65,6 +65,7 @@ class MarketData:
         print(f"[MarketData] Timeframes: {self.timeframes} - Geçmiş mum verileri çekiliyor...")
         for tf in self.timeframes:
             for s in self.symbols:
+                print(f"[MarketData] geçmiş çekiliyor | symbol={s.upper()} timeframe={tf}", flush=True)
                 try:
                     klines = await fetch_klines(s, tf, limit=300)
                     hist = self.klines[tf][s.upper()]
@@ -82,9 +83,10 @@ class MarketData:
                     last_close = float(klines[-1][4])
                     if s.upper() not in self.tickers:
                         self.tickers[s.upper()] = {"symbol": s.upper(), "last_price": last_close, "timestamp": int(time.time() * 1000)}
+                    print(f"[MarketData] geçmiş hazır | symbol={s.upper()} timeframe={tf} candles={len(klines)}", flush=True)
                 except Exception as e:
-                    print(f"[MarketData] {s.upper()} {tf} geçmiş veri hatası: {e}")
-        print(f"[MarketData] Geçmiş veri yüklendi ({len(self.timeframes)} timeframe).")
+                    print(f"[MarketData] geçmiş veri hatası | symbol={s.upper()} timeframe={tf} error={e}", flush=True)
+        print(f"[MarketData] Geçmiş veri yüklendi | timeframes={len(self.timeframes)} symbols={len(self.symbols)} tickers={len(self.tickers)}", flush=True)
         self.history_loaded = bool(self.tickers)
         await self.refresh_24h_tickers()
 
