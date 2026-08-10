@@ -2157,6 +2157,10 @@ async def manual_strategy_scan():
     signals = []
     checked = 0
     skipped_passive = 0
+    fresh_ticker = 0
+    stale_ticker = 0
+    evaluated = 0
+    errors = 0
     started = time.time()
     for symbol in list(config.SYMBOLS):
         if symbol in config.PASSIVE_SYMBOLS and symbol not in analyzer.positions:
@@ -2165,18 +2169,26 @@ async def manual_strategy_scan():
         checked += 1
         ticker = market.get_ticker(symbol)
         if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
+            stale_ticker += 1
             continue
+        fresh_ticker += 1
         try:
+            evaluated += 1
             for signal in await analyzer.evaluate(symbol, ticker, allow_entry=True):
                 signals.append(signal)
                 await ws_manager.broadcast({"type": "signal", "data": signal})
         except Exception as exc:
+            errors += 1
             print(f"[Strategy manual] {symbol} değerlendirme hatası: {exc}")
     return {"ok": True, "status": "completed", "strategy": config.ACTIVE_STRATEGY,
             "symbols_checked": checked, "active_symbols": checked,
             "universe_size": len(config.SYMBOLS), "passive_skipped": skipped_passive,
+            "fresh_ticker": fresh_ticker, "stale_ticker": stale_ticker,
+            "evaluated": evaluated, "errors": errors,
             "signals": signals,
-            "elapsed_seconds": round(time.time() - started, 2), "paper_only": True}
+            "elapsed_seconds": round(time.time() - started, 2),
+            "warning": "Ticker verisi hazır değil; teknik değerlendirme yapılmadı" if evaluated == 0 else None,
+            "paper_only": True}
 
 @app.get("/api/market-snapshot/{symbol}/deep")
 async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
