@@ -45,6 +45,7 @@ PARAM_FIELDS = {
     "bb_mfi_rsi_period": "BB_MFI_RSI_PERIOD",
     "bb_mfi_v1_rsi_lower_level": "BB_MFI_V1_RSI_LOWER_LEVEL", "bb_mfi_v1_rsi_upper_level": "BB_MFI_V1_RSI_UPPER_LEVEL",
     "bb_mfi_v2_rsi_lower_level": "BB_MFI_V2_RSI_LOWER_LEVEL", "bb_mfi_v2_rsi_upper_level": "BB_MFI_V2_RSI_UPPER_LEVEL",
+    "bb_mfi_stop_loss_pct": "BB_MFI_STOP_LOSS_PCT", "bb_mfi_take_profit_pct": "BB_MFI_TAKE_PROFIT_PCT",
 }
 
 # Analyzer stratejileri mevcut global config'i okuduğu için backtest config değişimini serileştir.
