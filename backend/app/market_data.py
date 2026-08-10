@@ -59,33 +59,38 @@ class MarketData:
             config.DONCHIAN_TIMEFRAME,
         ]))
 
-    async def fetch_historical_data(self):
+    async def fetch_historical_data(self, timeframes=None):
         """Bot başlarken her timeframe için son 60 mumu REST API'den çeker (Warm-Up bypass)"""
-        self.timeframes = self._all_timeframes()
+        requested_timeframes = list(timeframes or self._all_timeframes())
+        if not self.history_loaded:
+            self.timeframes = sorted(set(requested_timeframes))
+        else:
+            self.timeframes = sorted(set(self.timeframes).union(requested_timeframes))
         print(f"[MarketData] Timeframes: {self.timeframes} - Geçmiş mum verileri çekiliyor...")
-        for tf in self.timeframes:
-            for s in self.symbols:
-                print(f"[MarketData] geçmiş çekiliyor | symbol={s.upper()} timeframe={tf}", flush=True)
+        semaphore = asyncio.Semaphore(8)
+
+        async def fetch_one(tf, s):
+            async with semaphore:
+                symbol = s.upper()
+                print(f"[MarketData] geçmiş çekiliyor | symbol={symbol} timeframe={tf}", flush=True)
                 try:
                     klines = await fetch_klines(s, tf, limit=300)
-                    hist = self.klines[tf][s.upper()]
+                    hist = self.klines[tf][symbol]
                     for key in ("opens", "highs", "lows", "closes", "volumes"):
                         hist[key] = []
                     for k in klines:
-                        # Binance kline formatı: [OpenTime, Open, High, Low, Close, Volume...]
-                        hist["opens"].append(float(k[1]))
-                        hist["highs"].append(float(k[2]))
-                        hist["lows"].append(float(k[3]))
-                        hist["closes"].append(float(k[4]))
+                        hist["opens"].append(float(k[1])); hist["highs"].append(float(k[2]))
+                        hist["lows"].append(float(k[3])); hist["closes"].append(float(k[4]))
                         hist["volumes"].append(float(k[5]))
-
-                    # İlk canlı fiyatı set et (en küçük timeframe'den)
-                    last_close = float(klines[-1][4])
-                    if s.upper() not in self.tickers:
-                        self.tickers[s.upper()] = {"symbol": s.upper(), "last_price": last_close, "timestamp": int(time.time() * 1000)}
-                    print(f"[MarketData] geçmiş hazır | symbol={s.upper()} timeframe={tf} candles={len(klines)}", flush=True)
+                    if klines:
+                        last_close = float(klines[-1][4])
+                        if symbol not in self.tickers:
+                            self.tickers[symbol] = {"symbol": symbol, "last_price": last_close, "timestamp": int(time.time() * 1000)}
+                    print(f"[MarketData] geçmiş hazır | symbol={symbol} timeframe={tf} candles={len(klines)}", flush=True)
                 except Exception as e:
-                    print(f"[MarketData] geçmiş veri hatası | symbol={s.upper()} timeframe={tf} error={e}", flush=True)
+                    print(f"[MarketData] geçmiş veri hatası | symbol={symbol} timeframe={tf} error={e}", flush=True)
+
+        await asyncio.gather(*(fetch_one(tf, s) for tf in self.timeframes for s in self.symbols))
         print(f"[MarketData] Geçmiş veri yüklendi | timeframes={len(self.timeframes)} symbols={len(self.symbols)} tickers={len(self.tickers)}", flush=True)
         self.history_loaded = bool(self.tickers)
         await self.refresh_24h_tickers()
