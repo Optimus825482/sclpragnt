@@ -415,6 +415,7 @@ class ScalpAnalyzer:
             "KELTNER_BREAKOUT": config.KELTNER_TIMEFRAME,
             "CHOP_TREND_FILTER": config.CHOP_TIMEFRAME,
             "DONCHIAN_BREAKOUT": config.DONCHIAN_TIMEFRAME,
+            "BB_MFI_MEAN_REVERSION": config.ACTIVE_STRATEGY_TIMEFRAME,
         }.get(strat_name, config.UT_TIMEFRAME)
 
     async def _manage_open_position(self, symbol, price, strat_name):
@@ -449,7 +450,8 @@ class ScalpAnalyzer:
             return None
         if pos and pos.get("strategy") != "LLM_PAPER":
             entry = float(pos.get("entry_price") or price)
-            system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - config.HARD_STOP_LOSS_PCT))
+            fallback_stop_pct = config.BB_MFI_STOP_LOSS_PCT if pos.get("strategy") == "BB_MFI_MEAN_REVERSION" else config.HARD_STOP_LOSS_PCT
+            system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
             if price <= system_stop:
                 return await self.close_position(symbol, price, "system_stop_loss")
         if pos:
@@ -478,6 +480,8 @@ class ScalpAnalyzer:
             system_target = pos.get("system_take_profit_price") or pos.get("take_profit")
             if system_target and price >= float(system_target):
                 pos["system_target_reached"] = True
+                if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
+                    return await self.close_position(symbol, price, "bb_mfi_take_profit")
         return None
 
     def llm_position_context(self, symbol, price=None):
@@ -815,9 +819,8 @@ class ScalpAnalyzer:
             return None
         bb = self.calculate_bollinger_bands(closes, period=20, std_dev=1.0)
         mfi = _mfi(highs, lows, closes, volumes, period=14)
-        flow_ok, imbalance = self._optional_flow_filter(symbol) if symbol else (True, 0)
-        if (bb and mfi is not None and closes[-1] < bb["lower"] and
-                mfi < 60 and imbalance >= 0 and flow_ok):
+        # TradingView giriş kuralı: yalnızca BB alt bandı + MFI<60.
+        if bb and mfi is not None and closes[-1] < bb["lower"] and mfi < 60:
             return "buy"
         return None
 
@@ -1152,8 +1155,9 @@ class ScalpAnalyzer:
                 print(f"[Likidite] {symbol} işlem engellendi: {reason}")
                 await database.save_signal(blocked)
                 return blocked
-            target_value = order_value * (1 + config.SPOT_PROFIT_TARGET_PCT)
-            expected_gross = order_value * config.SPOT_PROFIT_TARGET_PCT
+            target_pct = config.BB_MFI_TAKE_PROFIT_PCT if strat_name == "BB_MFI_MEAN_REVERSION" else config.SPOT_PROFIT_TARGET_PCT
+            target_value = order_value * (1 + target_pct)
+            expected_gross = order_value * target_pct
             expected_fees = (order_value + target_value) * config.COMMISSION_PCT
             expected_slippage = order_value * config.ESTIMATED_SLIPPAGE_PCT * 2
             expected_net = expected_gross - expected_fees - expected_slippage
@@ -1196,6 +1200,9 @@ class ScalpAnalyzer:
             total_qty = existing["quantity"] + quantity
             entry_price = ((existing["entry_price"] * existing["quantity"]) + (entry_price * quantity)) / total_qty
             pos = {**existing, "entry_price": entry_price, "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)), "quantity": total_qty, "layers": existing.get("layers", 1) + 1}
+            if strat_name == "BB_MFI_MEAN_REVERSION":
+                pos["system_stop_price"] = entry_price * (1 - config.BB_MFI_STOP_LOSS_PCT)
+                pos["system_take_profit_price"] = entry_price * (1 + config.BB_MFI_TAKE_PROFIT_PCT)
         else:
             pos = {
             "side": "LONG",  # Binance TR Spot olduğu için her zaman LONG
@@ -1209,14 +1216,15 @@ class ScalpAnalyzer:
                 technical_tf = self._strategy_tf(strat_name)
                 system_kline = self.market.get_ut_kline(symbol, technical_tf) if self.market else None
                 atr = self.calculate_atr(system_kline, config.SYSTEM_ATR_PERIOD) if system_kline else None
-                stop_distance = max(
-                    entry_price * config.HARD_STOP_LOSS_PCT,
+                strategy_stop_pct = config.BB_MFI_STOP_LOSS_PCT if strat_name == "BB_MFI_MEAN_REVERSION" else config.HARD_STOP_LOSS_PCT
+                stop_distance = entry_price * strategy_stop_pct if strat_name == "BB_MFI_MEAN_REVERSION" else max(
+                    entry_price * strategy_stop_pct,
                     float(atr or 0) * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER,
                 )
                 if stop_distance <= 0:
-                    stop_distance = entry_price * config.HARD_STOP_LOSS_PCT
+                    stop_distance = entry_price * strategy_stop_pct
                 pos["system_stop_price"] = entry_price - stop_distance
-                pos["system_take_profit_price"] = entry_price + stop_distance * config.SYSTEM_RISK_REWARD
+                pos["system_take_profit_price"] = entry_price * (1 + config.BB_MFI_TAKE_PROFIT_PCT) if strat_name == "BB_MFI_MEAN_REVERSION" else entry_price + stop_distance * config.SYSTEM_RISK_REWARD
                 pos["stop_price"] = pos["system_stop_price"]
                 pos["take_profit"] = pos["system_take_profit_price"]
                 pos["system_atr"] = float(atr or 0)

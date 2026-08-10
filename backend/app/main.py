@@ -863,6 +863,8 @@ CONFIG_FIELDS = {
     "active_strategy_timeframe": "ACTIVE_STRATEGY_TIMEFRAME",
     "order_pct": "ORDER_PCT",
     "pyramiding_layers": "PYRAMIDING_LAYERS",
+    "bb_mfi_stop_loss_pct": "BB_MFI_STOP_LOSS_PCT",
+    "bb_mfi_take_profit_pct": "BB_MFI_TAKE_PROFIT_PCT",
     "symbol_order_pct": "SYMBOL_ORDER_PCT",
     "symbol_pyramiding_layers": "SYMBOL_PYRAMIDING_LAYERS",
     "max_open_positions": "MAX_OPEN_POSITIONS",
@@ -932,7 +934,7 @@ CONFIG_FIELDS = {
 }
 
 BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment"}
-DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
+DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
 INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
@@ -955,6 +957,8 @@ async def get_config():
         "pyramiding_layers": config.PYRAMIDING_LAYERS,
         "symbol_order_pct": config.SYMBOL_ORDER_PCT,
         "symbol_pyramiding_layers": config.SYMBOL_PYRAMIDING_LAYERS,
+        "bb_mfi_stop_loss_pct": config.BB_MFI_STOP_LOSS_PCT,
+        "bb_mfi_take_profit_pct": config.BB_MFI_TAKE_PROFIT_PCT,
         "max_open_positions": max(1, int(config.MAX_OPEN_POSITIONS)),
         "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
         "cooldown_bars": config.COOLDOWN_BARS,
@@ -2915,6 +2919,7 @@ async def strategies_llm_chat(payload: dict = None):
 async def reset_all():
     """Eski paper-trading/strateji geçmişini sil, ayarları koru ve cüzdanı sıfırla."""
     analyzer.positions.clear()
+    analyzer.pending_orders.clear()
     # Reset sonrası mevcut mum uzunlukları eski sinyal durumuyla karşılaştırılmasın;
     # aksi halde yeni mum kapanana kadar tüm stratejiler sessiz kalabiliyordu.
     analyzer._last_signal_lengths.clear()

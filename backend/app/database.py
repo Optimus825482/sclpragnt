@@ -454,6 +454,7 @@ async def reset_trading_data():
         # Bağımlı kayıtları önce temizle (özellikle alert/paper order tabloları).
         tables = (
             "alert_events",
+            "alert_rules",
             "paper_orders",
             "a2a_messages",
             "llm_tool_logs",

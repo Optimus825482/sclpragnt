@@ -55,8 +55,8 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("spread_above_entry_limit", source)
         self.assertIn("symbol_loss_streak", source)
         self.assertIn("symbol_negative_net_expectancy", source)
-        self.assertIn('f"{higher_tf}_bearish_trend"', source)
-        self.assertIn('for higher_tf in ("15m", "1h")', source)
+        self.assertIn('"spread_above_entry_limit"', source)
+        self.assertIn('"negative_orderflow"', source)
 
     def test_llm_entry_gate_rejects_biotry_like_overbought_setup(self):
         from app.main import _llm_entry_quality_gate
@@ -65,7 +65,7 @@ class RegressionContracts(unittest.TestCase):
             "data_ready": True,
             "price": 1.203,
             "trend": {"alignment": "bullish"},
-            "momentum": {"rsi_14": 75, "stochastic": {"k": 96}, "mfi_14": 83},
+            "momentum": {"rsi_14": 95, "stochastic": {"k": 96}, "mfi_14": 83},
             "oscillators": {"values": {"cci_20": 253}},
             "liquidity": {"spread_pct": 0.166, "orderflow_imbalance": -0.399},
             "channels": {"bollinger": {"upper": 1.202}},

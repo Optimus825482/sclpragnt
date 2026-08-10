@@ -33,6 +33,7 @@ const STRATEGIES = [
     { key: "ORDERFLOW", name: "Order-Flow Imbalance", icon: "🌊" },
     { key: "MOMENTUM", name: "Multi-Timeframe Momentum Ranking", icon: "⚡" },
     { key: "VWAP_MEAN_REVERSION", name: "VWAP Mean Reversion", icon: "↩️" },
+    { key: "BB_MFI_MEAN_REVERSION", name: "BB + MFI Mean Reversion", icon: "🎯" },
     { key: "KELTNER_BREAKOUT", name: "Keltner Breakout", icon: "🔔" },
     { key: "CHOP_TREND_FILTER", name: "CHOP Trend Filter", icon: "📐" },
     { key: "DONCHIAN_BREAKOUT", name: "Donchian Breakout", icon: "🏹" },

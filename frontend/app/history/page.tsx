@@ -25,6 +25,7 @@ const STRATEGY_LABEL: Record<string, string> = {
     ORDERFLOW: "Order-Flow Imbalance",
     MOMENTUM: "MTF Momentum Ranking",
     VWAP_MEAN_REVERSION: "VWAP Mean Reversion",
+    BB_MFI_MEAN_REVERSION: "BB + MFI Mean Reversion",
 };
 
 export default function HistoryPage() {

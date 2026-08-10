@@ -45,6 +45,8 @@ class Config:
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     SYMBOL_ORDER_PCT = {}
     SYMBOL_PYRAMIDING_LAYERS = {}
+    BB_MFI_STOP_LOSS_PCT = float(os.getenv("BB_MFI_STOP_LOSS_PCT", "0.08882"))
+    BB_MFI_TAKE_PROFIT_PCT = float(os.getenv("BB_MFI_TAKE_PROFIT_PCT", "0.02317"))
     MIN_24H_QUOTE_VOLUME_TRY = 1_000_000.0
     HIGH_LIQUIDITY_BYPASS_VOLUME_TRY = 3_000_000.0
     MIN_VOLUME_RATIO = 0.3
@@ -105,8 +107,8 @@ class Config:
                 + cls.ESTIMATED_SLIPPAGE_PCT * 2
                 + cls.MIN_EXPECTED_NET_PNL_TRY / value)
 
-    # Live giriş evreni: yalnızca Gainer Radar ve LLM_PAPER. Klasik stratejiler
-    # araştırma/backtest için kodda tutulabilir, canlı strategy_loop'a alınmaz.
+    # Live giriş evreni: BB-MFI stratejisi ve açıkça etkinleştirilen LLM paper akışı.
+    # Gainer Radar yalnızca tarama/sıralama yüzeyidir ve pozisyon açmaz.
     UT_ENABLED = False
     UT_SYMBOLS = os.getenv("UT_SYMBOLS", "").split(",") if os.getenv("UT_SYMBOLS") else SYMBOLS
     UT_KEY_VALUE = 1.0

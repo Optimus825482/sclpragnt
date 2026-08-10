@@ -4,7 +4,7 @@ import { API_BASE, WS_BASE } from "../lib/api";
 import MemoryTab from "../memory/MemoryTab";
 
 const money=(v:number)=>`₺${v.toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-const label=(s:string)=>({MOMENTUM:"MTF Momentum Ranking",EMA_VWAP_PULLBACK:"EMA + VWAP Pullback",VWAP_MEAN_REVERSION:"VWAP Mean Reversion",CHOP_TREND_FILTER:"CHOP Trend Filter",KELTNER_BREAKOUT:"Keltner Breakout",DONCHIAN_BREAKOUT:"Donchian Breakout",GAINER_RADAR:"Gainer Radar"}[s]||s||"Bilinmiyor");
+const label=(s:string)=>({MOMENTUM:"MTF Momentum Ranking",EMA_VWAP_PULLBACK:"EMA + VWAP Pullback",VWAP_MEAN_REVERSION:"VWAP Mean Reversion",BB_MFI_MEAN_REVERSION:"BB + MFI Mean Reversion",CHOP_TREND_FILTER:"CHOP Trend Filter",KELTNER_BREAKOUT:"Keltner Breakout",DONCHIAN_BREAKOUT:"Donchian Breakout",GAINER_RADAR:"Gainer Radar"}[s]||s||"Bilinmiyor");
 type Trade={id:number;symbol:string;strategy:string;pnl:number;pnl_pct:number;reason?:string;entry_time:number;exit_time?:number;commission?:number;hold_seconds?:number;entry_context?:any;strategy_revision?:string};
 type Decision={id:number;timestamp:number;symbol:string;strategy?:string;decision:string;reason?:string;price?:number;metadata?:any};
 
@@ -15,7 +15,7 @@ function DecisionTab({decisions:signals,trades}:{decisions:any[];trades:Trade[]}
  const [signalRows,setSignalRows]=useState<any[]>([]);
  useEffect(()=>{fetch(`${API_BASE}/api/signals?limit=200`,{cache:"no-store"}).then(r=>r.json()).then(x=>setSignalRows(x.signals||[])).catch(()=>setSignalRows([]))},[]);
  const source=signalRows.length?signalRows:signals;
- const knownStrategies=["MOMENTUM","ORDERFLOW","EMA_VWAP_PULLBACK","VWAP_MEAN_REVERSION","CHOP_TREND_FILTER","KELTNER_BREAKOUT","DONCHIAN_BREAKOUT","BB_SQUEEZE_ORDERFLOW","GAINER_RADAR"];
+ const knownStrategies=["MOMENTUM","ORDERFLOW","EMA_VWAP_PULLBACK","VWAP_MEAN_REVERSION","BB_MFI_MEAN_REVERSION","CHOP_TREND_FILTER","KELTNER_BREAKOUT","DONCHIAN_BREAKOUT","BB_SQUEEZE_ORDERFLOW","GAINER_RADAR"];
  const strategies=Array.from(new Set(source.map(d=>d.strategy||d.reason).filter(Boolean))) as string[];
  const rows=useMemo(()=>source.filter(d=>["BUY_SIGNAL","BUY_BLOCKED","LLM_REENTRY_BLOCKED","CLOSE_LONG"].includes(d.action)).map(d=>{
    const decision=d.action;

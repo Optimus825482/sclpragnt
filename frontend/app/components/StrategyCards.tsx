@@ -14,6 +14,8 @@ const STRATEGY_META: Record<string, { name: string; icon: string }> = {
     KELTNER_BREAKOUT: { name: "Keltner Breakout", icon: "🔔" },
     CHOP_TREND_FILTER: { name: "CHOP Trend Filter", icon: "📐" },
     DONCHIAN_BREAKOUT: { name: "Donchian Breakout", icon: "🏹" },
+    BB_MFI_MEAN_REVERSION: { name: "BB + MFI Mean Reversion", icon: "🎯" },
+    GAINER_RADAR: { name: "Gainer Radar (yalnızca tarama)", icon: "🔎" },
 };
 
 export default function StrategyCards() {
@@ -36,6 +38,8 @@ export default function StrategyCards() {
                 KELTNER_BREAKOUT: d.keltner_enabled,
                 CHOP_TREND_FILTER: d.chop_enabled,
                 DONCHIAN_BREAKOUT: d.donchian_enabled,
+                BB_MFI_MEAN_REVERSION: d.active_strategy === "BB_MFI_MEAN_REVERSION",
+                GAINER_RADAR: false,
             }))
             .catch(() => { });
         const timer = setInterval(() => {
@@ -49,7 +53,7 @@ export default function StrategyCards() {
 
     return (
         <div className="grid md:grid-cols-2 xl:grid-cols-5 gap-4">
-            {Object.entries(STRATEGY_META).filter(([key]) => key === "GAINER_RADAR").map(([key, meta]) => {
+            {Object.entries(STRATEGY_META).filter(([key]) => ["BB_MFI_MEAN_REVERSION", "GAINER_RADAR"].includes(key)).map(([key, meta]) => {
                 const s = stats[key];
                 const isOn = enabled[key];
                 return (

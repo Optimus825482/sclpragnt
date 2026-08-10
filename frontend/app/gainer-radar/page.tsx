@@ -13,7 +13,7 @@ export default function GainerRadarPage() {
       <div className="card bg-bunker-950">
         <p className="eyebrow mb-3">RADAR MODELİ</p>
         <p className="text-sm text-bunker-muted leading-relaxed">
-          Radar adayları public Binance TR verisiyle skorlar. Uygun adaylar paper işlem için kullanılabilir; gerçek Binance emri gönderilmez.
+          Radar adayları public Binance TR verisiyle skorlar. Bu yüzey şu anda yalnızca gözlem ve sıralama amaçlıdır; otomatik paper işlem açmaz.
           Canlıda gerçek order-book, backtestte candle order-flow proxy kullanılır.
         </p>
       </div>

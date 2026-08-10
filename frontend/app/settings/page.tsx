@@ -11,6 +11,8 @@ type Config = {
   active_strategy_timeframe: string;
   order_pct: number;
   pyramiding_layers: number;
+  bb_mfi_stop_loss_pct: number;
+  bb_mfi_take_profit_pct: number;
   symbol_order_pct: Record<string, number>;
   symbol_pyramiding_layers: Record<string, number>;
   min_24h_quote_volume_try: number;
@@ -302,6 +304,8 @@ export default function SettingsPage() {
                 <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Timeframe</span><select value={draft.active_strategy_timeframe || "5m"} onChange={e => setDraft(d => ({ ...d, active_strategy_timeframe: e.target.value }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white"><option>5m</option><option>1m</option><option>15m</option></select></label>
                 <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Global işlem yüzdesi</span><input type="number" min={0.1} max={100} step={0.5} value={num(draft.order_pct) * 100} onChange={e => setDraft(d => ({ ...d, order_pct: Number(e.target.value) / 100 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
                 <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Global piramitleme</span><input type="number" min={1} max={10} step={1} value={num(draft.pyramiding_layers)} onChange={e => setDraft(d => ({ ...d, pyramiding_layers: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
+                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">BB-MFI stop (%)</span><input type="number" min={0.1} max={99} step={0.1} value={num(draft.bb_mfi_stop_loss_pct) * 100} onChange={e => setDraft(d => ({ ...d, bb_mfi_stop_loss_pct: Number(e.target.value) / 100 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
+                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">BB-MFI hedef (%)</span><input type="number" min={0.1} max={99} step={0.1} value={num(draft.bb_mfi_take_profit_pct) * 100} onChange={e => setDraft(d => ({ ...d, bb_mfi_take_profit_pct: Number(e.target.value) / 100 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
               </div>
               <p className="eyebrow mt-4">SEMBOL BAZLI OVERRIDE · BOŞSA GLOBAL DEĞER KULLANILIR</p>
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-2">{(draft.symbols || []).map(symbol => <div key={symbol} className="flex items-center gap-2 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-white flex-1">{symbol}</span><input aria-label={`${symbol} işlem yüzdesi`} type="number" min={0.1} max={100} step={0.5} placeholder={`${num(draft.order_pct) * 100}%`} value={draft.symbol_order_pct?.[symbol] == null ? "" : Number(draft.symbol_order_pct[symbol] * 100)} onChange={e => setDraft(d => ({ ...d, symbol_order_pct: { ...(d.symbol_order_pct || {}), [symbol]: e.target.value === "" ? undefined as any : Number(e.target.value) / 100 } }))} className="w-20 bg-bunker-950 border border-bunker-700 rounded px-2 py-1 font-mono text-[11px] text-white" /><input aria-label={`${symbol} piramitleme`} type="number" min={1} max={10} step={1} placeholder={String(draft.pyramiding_layers || 2)} value={draft.symbol_pyramiding_layers?.[symbol] ?? ""} onChange={e => setDraft(d => ({ ...d, symbol_pyramiding_layers: { ...(d.symbol_pyramiding_layers || {}), [symbol]: e.target.value === "" ? undefined as any : Number(e.target.value) } }))} className="w-14 bg-bunker-950 border border-bunker-700 rounded px-2 py-1 font-mono text-[11px] text-white" /></div>)}</div>
@@ -309,7 +313,7 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="eyebrow">GAINER RADAR MİNİMUM SKOR</p>
-                <p className="text-xs text-bunker-muted mt-1">Bu skorun altındaki adaylar otomatik paper işlem için kullanılmaz. Önerilen başlangıç: 50.</p>
+                <p className="text-xs text-bunker-muted mt-1">Radar şu anda yalnızca gözlem ve sıralama yapar; otomatik paper işlem açmaz. Önerilen başlangıç: 50.</p>
               </div>
               <input type="number" min={0} max={100} step={1} value={num(draft.gainer_radar_min_score)} onChange={(e) => setDraft((d) => ({ ...d, gainer_radar_min_score: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none" />
             </div>
