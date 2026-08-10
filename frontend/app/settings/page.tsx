@@ -7,6 +7,12 @@ type Config = {
   symbols: string[];
   min_notional: number;
   default_order_usdt: number;
+  active_strategy: string;
+  active_strategy_timeframe: string;
+  order_pct: number;
+  pyramiding_layers: number;
+  symbol_order_pct: Record<string, number>;
+  symbol_pyramiding_layers: Record<string, number>;
   min_24h_quote_volume_try: number;
   high_liquidity_bypass_volume_try: number;
   min_volume_ratio: number;
@@ -101,7 +107,7 @@ export default function SettingsPage() {
   }));
 
   const resetTradingData = async () => {
-    if (!window.confirm("Eski işlemler, sinyaller, açık pozisyonlar ve sanal cüzdan silinecek. Cüzdan 10.000 TL ile başlayacak. Devam edilsin mi?")) return;
+    if (!window.confirm("Tüm eski işlemler, sinyaller, karar logları, backtestler, snapshotlar, açık emirler ve sanal cüzdan silinecek. Strateji/LLM ayarları ve piyasa verileri korunacak. Cüzdan 10.000 TL ile başlayacak. Devam edilsin mi?")) return;
     setResetting(true);
     setError(null);
     setResetDone(false);
@@ -288,6 +294,18 @@ export default function SettingsPage() {
           </div>
 
           <div className={`card bg-bunker-950 ${activeTab !== "app" ? "hidden" : ""}`}>
+            <div className="border-b border-bunker-800 pb-5 mb-5">
+              <p className="eyebrow text-neon-green">CANLI STRATEJİ / POZİSYON BOYUTU</p>
+              <p className="text-xs text-bunker-muted mt-1">Yeni strateji paper canlı akışında kullanılır. Varsayılan başlangıç: bakiye %10 ve en fazla 2 katman.</p>
+              <div className="grid sm:grid-cols-3 gap-3 mt-3">
+                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Strateji</span><select value={draft.active_strategy || "BB_MFI_MEAN_REVERSION"} onChange={e => setDraft(d => ({ ...d, active_strategy: e.target.value }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white"><option value="BB_MFI_MEAN_REVERSION">BB + MFI Mean Reversion</option></select></label>
+                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Timeframe</span><select value={draft.active_strategy_timeframe || "5m"} onChange={e => setDraft(d => ({ ...d, active_strategy_timeframe: e.target.value }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white"><option>5m</option><option>1m</option><option>15m</option></select></label>
+                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Global işlem yüzdesi</span><input type="number" min={0.1} max={100} step={0.5} value={num(draft.order_pct) * 100} onChange={e => setDraft(d => ({ ...d, order_pct: Number(e.target.value) / 100 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
+                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Global piramitleme</span><input type="number" min={1} max={10} step={1} value={num(draft.pyramiding_layers)} onChange={e => setDraft(d => ({ ...d, pyramiding_layers: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
+              </div>
+              <p className="eyebrow mt-4">SEMBOL BAZLI OVERRIDE · BOŞSA GLOBAL DEĞER KULLANILIR</p>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-2">{(draft.symbols || []).map(symbol => <div key={symbol} className="flex items-center gap-2 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-white flex-1">{symbol}</span><input aria-label={`${symbol} işlem yüzdesi`} type="number" min={0.1} max={100} step={0.5} placeholder={`${num(draft.order_pct) * 100}%`} value={draft.symbol_order_pct?.[symbol] == null ? "" : Number(draft.symbol_order_pct[symbol] * 100)} onChange={e => setDraft(d => ({ ...d, symbol_order_pct: { ...(d.symbol_order_pct || {}), [symbol]: e.target.value === "" ? undefined as any : Number(e.target.value) / 100 } }))} className="w-20 bg-bunker-950 border border-bunker-700 rounded px-2 py-1 font-mono text-[11px] text-white" /><input aria-label={`${symbol} piramitleme`} type="number" min={1} max={10} step={1} placeholder={String(draft.pyramiding_layers || 2)} value={draft.symbol_pyramiding_layers?.[symbol] ?? ""} onChange={e => setDraft(d => ({ ...d, symbol_pyramiding_layers: { ...(d.symbol_pyramiding_layers || {}), [symbol]: e.target.value === "" ? undefined as any : Number(e.target.value) } }))} className="w-14 bg-bunker-950 border border-bunker-700 rounded px-2 py-1 font-mono text-[11px] text-white" /></div>)}</div>
+            </div>
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="eyebrow">GAINER RADAR MİNİMUM SKOR</p>
@@ -337,8 +355,8 @@ export default function SettingsPage() {
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
               <div>
                 <p className="eyebrow text-neon-red">PAPER TRADING KAYITLARI</p>
-                <p className="font-mono text-sm text-white mt-2">Eski işlem, sinyal, açık pozisyon ve sanal cüzdan kayıtlarını temizle</p>
-                <p className="text-xs text-bunker-muted mt-1">Bu işlem geri alınamaz. Yeni bakiye 10.000 TL olur; strateji ayarları değişmez.</p>
+                <p className="font-mono text-sm text-white mt-2">Tüm eski paper-trading ve strateji geçmişini temizle</p>
+                <p className="text-xs text-bunker-muted mt-1">İşlemler, sinyaller, karar logları, backtestler ve snapshotlar silinir. Ayarlar ve piyasa cache&apos;i korunur; yeni bakiye 10.000 TL olur.</p>
               </div>
               <button
                 onClick={resetTradingData}
@@ -348,7 +366,7 @@ export default function SettingsPage() {
                   : "border-neon-red/50 bg-neon-red/10 text-neon-red hover:bg-neon-red/20"
                   }`}
               >
-                {resetting ? "TEMİZLENİYOR..." : resetDone ? "✓ TEMİZLENDİ" : "ESKİ KAYITLARI RESETLE"}
+                {resetting ? "TEMİZLENİYOR..." : resetDone ? "✓ TEMİZLENDİ" : "ESKİ KAYITLARI TEMİZLE"}
               </button>
             </div>
           </div>

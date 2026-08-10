@@ -355,6 +355,7 @@ const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time: numbe
 export default function ChartsPage() {
     const [symbol, setSymbol] = useState<string>("BTCTRY");
     const [symbols, setSymbols] = useState<string[]>(FALLBACK_SYMBOLS);
+    const [analysisOpen, setAnalysisOpen] = useState(false);
     const [interval, setTf] = useState<string>("5m");
     const [loading, setLoading] = useState(true);
     const [bars, setBars] = useState<Bar[]>([]);
@@ -1131,6 +1132,13 @@ export default function ChartsPage() {
                     >
                         {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
+                    <button
+                        type="button"
+                        onClick={() => setAnalysisOpen(true)}
+                        className="px-3 py-2 rounded-lg border border-yellow-400/50 bg-yellow-400/10 font-mono text-xs text-yellow-300 hover:bg-yellow-400/20"
+                    >
+                        🔬 ANALİZ
+                    </button>
                     <div className="max-w-full overflow-x-auto flex rounded-lg border border-bunker-700">
                         {INTERVALS.map((i) => (
                             <button
@@ -1206,6 +1214,16 @@ export default function ChartsPage() {
                     ))}
                 </div>
             )}
+
+            {analysisOpen && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 sm:p-6" onClick={() => setAnalysisOpen(false)}>
+                <section className="w-full max-w-7xl h-[92vh] overflow-hidden rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="symbol-analysis-modal-title">
+                    <div className="flex items-center justify-between border-b border-bunker-800 px-4 py-3">
+                        <h2 id="symbol-analysis-modal-title" className="font-mono text-sm font-bold text-white"><span className="text-neon-green">{symbol}</span> · SEMBOL ANALİZİ</h2>
+                        <button type="button" onClick={() => setAnalysisOpen(false)} className="px-3 py-1 text-bunker-muted hover:text-white" aria-label="Sembol analizini kapat">✕</button>
+                    </div>
+                    <iframe title={`${symbol} sembol analizi`} src={`/symbol-analysis?symbol=${encodeURIComponent(symbol)}&embedded=1`} className="h-[calc(92vh-52px)] w-full border-0" />
+                </section>
+            </div>}
 
             <div className="card bg-bunker-950 p-0 overflow-hidden relative">
                 {loading && (

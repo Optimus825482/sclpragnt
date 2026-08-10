@@ -859,6 +859,12 @@ CONFIG_FIELDS = {
     "min_orderbook_depth_multiplier": "MIN_ORDERBOOK_DEPTH_MULTIPLIER",
     "liquidity_filter_enabled": "LIQUIDITY_FILTER_ENABLED",
     "default_order_usdt": "DEFAULT_ORDER_USDT",
+    "active_strategy": "ACTIVE_STRATEGY",
+    "active_strategy_timeframe": "ACTIVE_STRATEGY_TIMEFRAME",
+    "order_pct": "ORDER_PCT",
+    "pyramiding_layers": "PYRAMIDING_LAYERS",
+    "symbol_order_pct": "SYMBOL_ORDER_PCT",
+    "symbol_pyramiding_layers": "SYMBOL_PYRAMIDING_LAYERS",
     "max_open_positions": "MAX_OPEN_POSITIONS",
     "take_profit_pct": "SPOT_PROFIT_TARGET_PCT",
     "hard_stop_loss_pct": "HARD_STOP_LOSS_PCT",
@@ -927,8 +933,8 @@ CONFIG_FIELDS = {
 
 BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period"}
-STR_FIELDS = {"ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
+INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers"}
+STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
 async def get_config():
@@ -943,6 +949,12 @@ async def get_config():
         "min_orderbook_depth_multiplier": config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
         "liquidity_filter_enabled": config.LIQUIDITY_FILTER_ENABLED,
         "default_order_usdt": config.DEFAULT_ORDER_USDT,
+        "active_strategy": config.ACTIVE_STRATEGY,
+        "active_strategy_timeframe": config.ACTIVE_STRATEGY_TIMEFRAME,
+        "order_pct": config.ORDER_PCT,
+        "pyramiding_layers": config.PYRAMIDING_LAYERS,
+        "symbol_order_pct": config.SYMBOL_ORDER_PCT,
+        "symbol_pyramiding_layers": config.SYMBOL_PYRAMIDING_LAYERS,
         "max_open_positions": max(1, int(config.MAX_OPEN_POSITIONS)),
         "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
         "cooldown_bars": config.COOLDOWN_BARS,
@@ -1100,7 +1112,7 @@ async def gainers_radar(execute: bool = False):
                         radar_trades.append(signal)
                         await ws_manager.broadcast({"type": "signal", "data": signal})
     return {"items": rows[:20], "auto_added": auto_added, "symbols": config.SYMBOLS, "paper_trades": radar_trades,
-            "auto_trade": config.GAINER_RADAR_AUTO_TRADE, "generated_at": time.time(), "model": "public_data_continuation_2pct"}
+            "auto_trade": False, "generated_at": time.time(), "model": "public_data_continuation_2pct"}
 
 @app.get("/api/market/top-gainers")
 async def top_gainers_status(refresh: bool = False):
@@ -1129,6 +1141,21 @@ async def update_config(payload: dict):
     for key, attr in CONFIG_FIELDS.items():
         if key in payload:
             val = payload[key]
+            if key in {"symbol_order_pct", "symbol_pyramiding_layers"}:
+                if not isinstance(val, dict):
+                    raise ValueError(f"{key} nesne olmalıdır")
+                cleaned = {}
+                for symbol, raw in val.items():
+                    name = str(symbol).replace("_", "").upper()
+                    if key == "symbol_order_pct":
+                        number = float(raw)
+                        if not 0 < number <= 1: raise ValueError(f"{name} işlem yüzdesi 0 ile 1 arasında olmalıdır")
+                    else:
+                        number = int(raw)
+                        if not 1 <= number <= 10: raise ValueError(f"{name} piramitleme 1 ile 10 arasında olmalıdır")
+                    cleaned[name] = number
+                setattr(config, attr, cleaned)
+                continue
             if key in BOOL_FIELDS:
                 if key in DISABLED_LIVE_STRATEGY_FIELDS:
                     # Gainer Radar and LLM_PAPER are the only live entry sources.
@@ -1145,15 +1172,23 @@ async def update_config(payload: dict):
                     raise ValueError("max_open_positions 1 ile 36 arasında olmalıdır")
                 if key == "gainer_radar_min_score" and not 0 <= number <= 100:
                     raise ValueError("gainer_radar_min_score 0 ile 100 arasında olmalıdır")
+                if key == "pyramiding_layers" and not 1 <= number <= 10:
+                    raise ValueError("pyramiding_layers 1 ile 10 arasında olmalıdır")
                 setattr(config, attr, number)
             elif key in STR_FIELDS:
                 setattr(config, attr, str(val))
+                if key == "active_strategy":
+                    if str(val).upper() != "BB_MFI_MEAN_REVERSION":
+                        raise ValueError("Bu canlı akışta yalnızca BB_MFI_MEAN_REVERSION aktif edilebilir")
+                    config.MEAN_REVERSION_ENABLED = True
             else:
                 number = float(val)
                 if key in {"min_notional", "default_order_usdt", "min_24h_quote_volume_try", "high_liquidity_bypass_volume_try", "min_volume_ratio", "max_spread_pct", "min_orderbook_depth_multiplier"} and number <= 0:
                     raise ValueError(f"{key} pozitif olmalıdır")
                 if key in {"hard_stop_loss_pct", "take_profit_pct", "trailing_stop_pct", "adr_min_pct", "adr_max_utilization_pct", "adr_min_remaining_pct"} and not 0 < number < 1:
                     raise ValueError(f"{key} 0 ile 1 arasında olmalıdır")
+                if key == "order_pct" and not 0 < number <= 1:
+                    raise ValueError("order_pct 0 ile 1 arasında olmalıdır")
                 setattr(config, attr, number)
     if "ut_symbols" in payload:
         config.UT_SYMBOLS = payload["ut_symbols"]
@@ -2878,7 +2913,7 @@ async def strategies_llm_chat(payload: dict = None):
 
 @app.post("/api/reset")
 async def reset_all():
-    """Paper trading geçmişini ve açık pozisyonları sil, cüzdanı 10.000 TRY'ye sıfırla."""
+    """Eski paper-trading/strateji geçmişini sil, ayarları koru ve cüzdanı sıfırla."""
     analyzer.positions.clear()
     # Reset sonrası mevcut mum uzunlukları eski sinyal durumuyla karşılaştırılmasın;
     # aksi halde yeni mum kapanana kadar tüm stratejiler sessiz kalabiliyordu.
@@ -2886,9 +2921,13 @@ async def reset_all():
     analyzer._cooldown_until.clear()
     analyzer._timeout_block_until.clear()
     analyzer._hard_stop_block_until.clear()
-    await database.reset_trading_data()
+    deleted = await database.reset_trading_data()
     await ws_manager.broadcast({"type": "reset", "data": {"ok": True}})
-    return {"ok": True, "message": "Paper trading kayıtları silindi, cüzdan 10.000 TRY'ye sıfırlandı"}
+    return {
+        "ok": True,
+        "message": "Eski paper-trading kayıtları silindi, cüzdan 10.000 TRY'ye sıfırlandı",
+        "deleted": deleted,
+    }
 
 @app.post("/api/backtest/run")
 async def backtest_run(payload: dict):

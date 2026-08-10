@@ -334,6 +334,19 @@ async def init_db():
             pass
         conn.execute("CREATE TABLE IF NOT EXISTS analysis_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, captured_at REAL NOT NULL, source TEXT NOT NULL DEFAULT 'entry', methodology_version TEXT, regime TEXT, regime_confidence REAL, confluence_score REAL, payload TEXT NOT NULL DEFAULT '{}', trade_id TEXT)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_symbol_time ON analysis_snapshots(symbol, captured_at DESC)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS historical_candles (
+            symbol TEXT NOT NULL, timeframe TEXT NOT NULL, open_time INTEGER NOT NULL,
+            close_time INTEGER NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL,
+            close REAL NOT NULL, volume REAL NOT NULL, quote_volume REAL, trade_count INTEGER,
+            source TEXT NOT NULL DEFAULT 'binance_tr_public', fetched_at REAL NOT NULL,
+            PRIMARY KEY(symbol, timeframe, open_time))""")
+        conn.execute("CREATE INDEX IF NOT EXISTS historical_candles_lookup_idx ON historical_candles(symbol, timeframe, open_time)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS historical_feature_snapshots (
+            symbol TEXT NOT NULL, timeframe TEXT NOT NULL, open_time INTEGER NOT NULL,
+            captured_at INTEGER NOT NULL, feature_version TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}',
+            regime TEXT, regime_confidence REAL, confluence_score REAL, data_ready INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(symbol, timeframe, open_time, feature_version))""")
+        conn.execute("CREATE INDEX IF NOT EXISTS historical_features_lookup_idx ON historical_feature_snapshots(symbol, timeframe, open_time)")
         conn.commit()
         conn.execute("INSERT OR IGNORE INTO virtual_wallet (asset, amount) VALUES ('TRY', ?)", (config.INITIAL_BALANCE_TRY,))
         conn.commit()
@@ -432,16 +445,37 @@ def _migrate_old_trades(conn: sqlite3.Connection):
 
 
 async def reset_trading_data():
-    """Tüm eski trade kayıtlarını sil, cüzdanı sıfırla (uygulama reseti)."""
+    """Eski paper-trading/strateji geçmişini temizle ve cüzdanı sıfırla.
+
+    Strateji, sembol ve LLM ayarları korunur. Tarihsel piyasa cache'i de
+    silinmez; böylece yeni strateji hemen aynı veriyle çalışabilir.
+    """
     def op(conn: sqlite3.Connection):
-        conn.execute("DELETE FROM positions")
-        conn.execute("DELETE FROM signals")
-        conn.execute("DELETE FROM trades")
+        # Bağımlı kayıtları önce temizle (özellikle alert/paper order tabloları).
+        tables = (
+            "alert_events",
+            "paper_orders",
+            "a2a_messages",
+            "llm_tool_logs",
+            "llm_symbol_guards",
+            "decision_logs",
+            "signals",
+            "trades",
+            "positions",
+            "backtests",
+            "analysis_snapshots",
+        )
+        deleted = {}
+        for table in tables:
+            cursor = conn.execute(f"DELETE FROM {table}")
+            deleted[table] = cursor.rowcount
         conn.execute("DELETE FROM virtual_wallet")
         conn.execute("INSERT INTO virtual_wallet (asset, amount) VALUES ('TRY', ?)", (config.INITIAL_BALANCE_TRY,))
         conn.commit()
+        deleted["virtual_wallet"] = 1
+        return deleted
 
-    await _run_db(op)
+    return await _run_db(op)
 
 async def get_wallet_balance(asset="USDT"):
     def op(conn: sqlite3.Connection):
@@ -1215,6 +1249,57 @@ async def save_backtest(result):
         conn.commit()
         return cur.lastrowid
 
+    return await _run_db(op)
+
+async def upsert_market_candles(rows):
+    """Persist normalized public 5m candles; duplicate timestamps are idempotent."""
+    if not rows: return 0
+    def op(conn):
+        sql = """INSERT INTO historical_candles
+            (symbol,timeframe,open_time,close_time,open,high,low,close,volume,quote_volume,trade_count,source,fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(symbol,timeframe,open_time) DO UPDATE SET
+            close_time=excluded.close_time,open=excluded.open,high=excluded.high,low=excluded.low,
+            close=excluded.close,volume=excluded.volume,quote_volume=excluded.quote_volume,
+            trade_count=excluded.trade_count,source=excluded.source,fetched_at=excluded.fetched_at"""
+        conn.executemany(sql, [tuple(r.get(k) for k in ("symbol","timeframe","open_time","close_time","open","high","low","close","volume","quote_volume","trade_count","source","fetched_at")) for r in rows])
+        conn.commit(); return len(rows)
+    return await _run_db(op)
+
+async def get_market_candles(symbol, timeframe="5m", start_ms=None, end_ms=None):
+    def op(conn):
+        q = "SELECT * FROM historical_candles WHERE symbol=? AND timeframe=?"; args=[symbol.upper(), timeframe]
+        if start_ms is not None: q += " AND open_time>=?"; args.append(int(start_ms))
+        if end_ms is not None: q += " AND open_time<=?"; args.append(int(end_ms))
+        q += " ORDER BY open_time"
+        return [dict(r) for r in conn.execute(q,args).fetchall()]
+    return await _run_db(op)
+
+async def upsert_market_feature_snapshots(rows):
+    if not rows: return 0
+    def op(conn):
+        sql = """INSERT INTO historical_feature_snapshots
+            (symbol,timeframe,open_time,captured_at,feature_version,payload,regime,regime_confidence,confluence_score,data_ready)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(symbol,timeframe,open_time,feature_version) DO UPDATE SET
+            captured_at=excluded.captured_at,payload=excluded.payload,regime=excluded.regime,
+            regime_confidence=excluded.regime_confidence,confluence_score=excluded.confluence_score,data_ready=excluded.data_ready"""
+        values=[]
+        for r in rows:
+            values.append((r["symbol"].upper(),r["timeframe"],int(r["open_time"]),int(r["captured_at"]),r["feature_version"],json.dumps(r.get("payload",{}),default=str),r.get("regime"),r.get("regime_confidence"),r.get("confluence_score"),bool(r.get("data_ready",False))))
+        conn.executemany(sql, values); conn.commit(); return len(values)
+    return await _run_db(op)
+
+async def get_market_feature_snapshots(symbol, timeframe="5m", start_ms=None, end_ms=None, feature_version=None):
+    def op(conn):
+        q="SELECT * FROM historical_feature_snapshots WHERE symbol=? AND timeframe=?"; args=[symbol.upper(),timeframe]
+        if start_ms is not None: q+=" AND open_time>=?"; args.append(int(start_ms))
+        if end_ms is not None: q+=" AND open_time<=?"; args.append(int(end_ms))
+        if feature_version: q+=" AND feature_version=?"; args.append(feature_version)
+        q+=" ORDER BY open_time"; out=[]
+        for row in conn.execute(q,args).fetchall():
+            item=dict(row); item["payload"]=_json_value(item.get("payload"),{}); out.append(item)
+        return out
     return await _run_db(op)
 
 async def get_backtests(limit=50):

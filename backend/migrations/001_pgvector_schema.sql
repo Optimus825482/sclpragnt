@@ -30,6 +30,22 @@ CREATE TABLE IF NOT EXISTS backtests (id BIGINT PRIMARY KEY, timestamp DOUBLE PR
 CREATE TABLE IF NOT EXISTS analysis_snapshots (id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, captured_at DOUBLE PRECISION NOT NULL, source TEXT NOT NULL DEFAULT 'entry', methodology_version TEXT, regime TEXT, regime_confidence DOUBLE PRECISION, confluence_score DOUBLE PRECISION, payload JSONB NOT NULL DEFAULT '{}'::jsonb, trade_id TEXT);
 CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_symbol_time ON analysis_snapshots(symbol, captured_at DESC);
 
+CREATE TABLE IF NOT EXISTS historical_candles (
+  symbol TEXT NOT NULL, timeframe TEXT NOT NULL, open_time BIGINT NOT NULL,
+  close_time BIGINT NOT NULL, open DOUBLE PRECISION NOT NULL, high DOUBLE PRECISION NOT NULL,
+  low DOUBLE PRECISION NOT NULL, close DOUBLE PRECISION NOT NULL, volume DOUBLE PRECISION NOT NULL,
+  quote_volume DOUBLE PRECISION, trade_count INTEGER, source TEXT NOT NULL DEFAULT 'binance_tr_public',
+  fetched_at DOUBLE PRECISION NOT NULL, PRIMARY KEY(symbol, timeframe, open_time)
+);
+CREATE INDEX IF NOT EXISTS historical_candles_lookup_idx ON historical_candles(symbol, timeframe, open_time);
+CREATE TABLE IF NOT EXISTS historical_feature_snapshots (
+  symbol TEXT NOT NULL, timeframe TEXT NOT NULL, open_time BIGINT NOT NULL,
+  captured_at BIGINT NOT NULL, feature_version TEXT NOT NULL, payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  regime TEXT, regime_confidence DOUBLE PRECISION, confluence_score DOUBLE PRECISION,
+  data_ready BOOLEAN NOT NULL DEFAULT FALSE, PRIMARY KEY(symbol, timeframe, open_time, feature_version)
+);
+CREATE INDEX IF NOT EXISTS historical_features_lookup_idx ON historical_feature_snapshots(symbol, timeframe, open_time);
+
 DO $$
 DECLARE table_name TEXT; seq_name TEXT;
 BEGIN

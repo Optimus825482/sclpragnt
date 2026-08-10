@@ -19,11 +19,14 @@ STRATEGIES = {
     "BB_SQUEEZE_ORDERFLOW": ("BB_SQUEEZE_ENABLED", "BB_SQUEEZE_TIMEFRAME", "strategy_bb_squeeze_orderflow"),
     "ORDERFLOW": ("ORDERFLOW_ENABLED", "ORDERFLOW_TIMEFRAME", "strategy_orderflow"),
     "MOMENTUM": ("MOMENTUM_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum"),
+    "MOMENTUM_SCORED": ("MOMENTUM_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum_scored"),
+    "MOMENTUM_SCORED_V2": ("MOMENTUM_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum_scored_v2"),
     "MOMENTUM_COST_AWARE": ("MOMENTUM_COST_AWARE_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum_cost_aware"),
     "OVERSOLD_TREND_REENTRY": ("OVERSOLD_TREND_REENTRY_ENABLED", "OVERSOLD_TREND_REENTRY_TIMEFRAME", "strategy_oversold_trend_reentry"),
     "ADAPTIVE_VOLATILITY_TREND": ("ADAPTIVE_VOLATILITY_TREND_ENABLED", "ADAPTIVE_VOLATILITY_TREND_TIMEFRAME", "strategy_adaptive_volatility_trend"),
     "REGIME_GATE_LOW_TURNOVER": ("REGIME_GATE_LOW_TURNOVER_ENABLED", "REGIME_GATE_LOW_TURNOVER_TIMEFRAME", "strategy_regime_gate_low_turnover"),
     "VWAP_MEAN_REVERSION": ("MEAN_REVERSION_ENABLED", "MEAN_REVERSION_TIMEFRAME", "strategy_mean_reversion"),
+    "BB_MFI_MEAN_REVERSION": ("MEAN_REVERSION_ENABLED", "MEAN_REVERSION_TIMEFRAME", "strategy_bb_mfi_mean_reversion"),
     "KELTNER_BREAKOUT": ("KELTNER_ENABLED", "KELTNER_TIMEFRAME", "strategy_keltner_breakout"),
     "CHOP_TREND_FILTER": ("CHOP_ENABLED", "CHOP_TIMEFRAME", "strategy_chop_trend"),
     "DONCHIAN_BREAKOUT": ("DONCHIAN_ENABLED", "DONCHIAN_TIMEFRAME", "strategy_donchian_breakout"),
@@ -48,7 +51,13 @@ def _fetch_klines(symbol: str, interval: str, days_back: int) -> dict[str, list[
     cached = _KLINE_CACHE.get(cache_key)
     if cached:
         return {key: list(values) for key, values in cached.items()}
-    rows = asyncio.run(historical_klines(symbol, interval, days_back))
+    # Backtests are reproducible: they read only the persisted historical table.
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - int(days_back) * 86400 * 1000
+    cached_rows = asyncio.run(database.get_market_candles(symbol, interval, start_ms, end_ms))
+    rows = [[r["open_time"], r["open"], r["high"], r["low"], r["close"], r["volume"], r["close_time"]] for r in cached_rows]
+    if not rows:
+        raise ValueError(f"{symbol} {interval} için historical_candles tablosunda veri yok; önce veri toplama çalıştırılmalı")
     if not rows:
         raise ValueError(f"{symbol} için tarihsel veri bulunamadı")
     result = {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": [], "times": []}
@@ -109,6 +118,13 @@ def _close_trade(balance, entry, exit_price, quantity, order_size, reason,
         "pnl": round(pnl, 8), "commission": round(entry_fee + exit_fee, 8), "reason": reason,
         "spread_pct": round(float(spread_pct), 8), "slippage_pct": round(slip, 8),
     }
+
+def _close_partial(balance, exit_price, quantity, spread_pct=0.0, slippage_pct=None):
+    """Sell part of a position; entry cost was already booked at entry."""
+    slip = float(config.ESTIMATED_SLIPPAGE_PCT if slippage_pct is None else slippage_pct)
+    fill = exit_price * max(0.0, 1 - max(0.0, float(spread_pct)) / 2 - slip)
+    fee = fill * quantity * config.COMMISSION_PCT
+    return balance + fill * quantity - fee, fill * quantity - fee
 
 
 def _data_quality(data: dict[str, list[float]], interval: str) -> dict:
@@ -320,7 +336,8 @@ async def run_custom_backtest(symbol, interval, days_back, definition, order_siz
 
 
 def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct,
-                start_ts=None, end_ts=None, spread_pct=0.0, slippage_pct=None):
+                start_ts=None, end_ts=None, spread_pct=0.0, slippage_pct=None, exit_profile=None,
+                pyramiding_layers=3, order_pct=None):
     _validate(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct)
     # Historical candles have no bid/ask; use an explicit conservative spread
     # assumption unless a stress scenario supplies its own value.
@@ -330,6 +347,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
         saved = {attr: getattr(config, attr) for attr in PARAM_FIELDS.values() if attr in {PARAM_FIELDS[k] for k in params}}
         saved_flags = {flag: getattr(config, flag) for flag, _, _ in STRATEGIES.values()}
         saved_tfs = {tf: getattr(config, tf) for _, tf, _ in STRATEGIES.values()}
+        saved_position_layers = config.MAX_POSITION_LAYERS
         try:
             for key, attr in PARAM_FIELDS.items():
                 if key in params:
@@ -339,6 +357,20 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                 setattr(config, tf, interval)
 
             data = _fetch_klines(symbol, interval, days_back)
+            profiles = {
+                "conservative_v2": {"stages": [(0.0045, 0.25, 0.0008), (0.009, 0.25, 0.0035)], "trail_pct": 0.0055, "atr_mult": 0.8},
+                "balanced_v2": {"stages": [(0.0055, 0.25, 0.0012), (0.011, 0.25, 0.0045)], "trail_pct": 0.0080, "atr_mult": 1.2},
+                "runner_v2": {"stages": [(0.007, 0.15, 0.0015), (0.014, 0.15, 0.0050)], "trail_pct": 0.0100, "atr_mult": 1.4},
+                "runner_a": {"stages": [(0.007, 0.20, 0.0015), (0.012, 0.20, 0.0045)], "trail_pct": 0.0140, "atr_mult": 1.4},
+                "runner_b": {"stages": [(0.0085, 0.20, 0.0020), (0.016, 0.20, 0.0060)], "trail_pct": 0.0160, "atr_mult": 1.6},
+                "runner_c": {"stages": [(0.007, 0.15, 0.0015), (0.014, 0.15, 0.0050)], "trail_pct": 0.0120, "atr_mult": 1.2},
+                "runner_d": {"stages": [(0.010, 0.20, 0.0025), (0.020, 0.20, 0.0070)], "trail_pct": 0.0150, "atr_mult": 1.5},
+                "state_based": {"stages": [(0.006, 0.20, 0.0010), (0.012, 0.20, 0.0040)], "trail_pct": 0.0090, "atr_mult": 1.0},
+            }
+            profile = profiles.get(str(exit_profile or "").lower())
+            fixed_tv_exit = strategy == "BB_MFI_MEAN_REVERSION"
+            if fixed_tv_exit:
+                config.MAX_POSITION_LAYERS = max(1, int(pyramiding_layers))
             analyzer = ScalpAnalyzer(None)
             fn = getattr(analyzer, STRATEGIES[strategy][2])
             balance = config.INITIAL_BALANCE_TRY
@@ -365,18 +397,39 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     elapsed = max(0, data["times"][i] - position["entry_time"])
                     atr = analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD)
                     position["max_price"] = max(position.get("max_price", position["entry"]), high)
-                    if atr:
+                    if profile:
+                        peak_pct = position["max_price"] / position["entry"] - 1
+                        for stage_index, (trigger, fraction, lock_pct) in enumerate(profile["stages"]):
+                            if stage_index in position["stages_done"] or peak_pct < trigger or position["quantity"] <= 0:
+                                continue
+                            sell_qty = position["quantity"] * fraction
+                            balance, partial_pnl = _close_partial(balance, position["entry"] * (1 + trigger), sell_qty, spread_pct, slippage_pct)
+                            partial_pnl -= position["entry"] * sell_qty * config.COMMISSION_PCT
+                            position["realized_pnl"] = position.get("realized_pnl", 0.0) + partial_pnl
+                            position["quantity"] -= sell_qty
+                            position["remaining_order_size"] = position.get("invested_cost", order_size) + order_size
+                            position["invested_cost"] = position["remaining_order_size"]
+                            position["stop_price"] = max(position.get("stop_price", 0), position["entry"] * (1 + lock_pct))
+                            position["stages_done"].add(stage_index)
+                        if atr:
+                            candidate = max(position["max_price"] - atr * profile["atr_mult"], position["max_price"] * (1 - profile["trail_pct"]))
+                            if peak_pct >= profile["stages"][0][0]:
+                                position["trailing_stop"] = max(position.get("trailing_stop", 0), candidate)
+                    if atr and not fixed_tv_exit:
                         activation = atr * config.SYSTEM_ATR_TRAILING_ACTIVATION_ATR
                         if position["max_price"] - position["entry"] >= activation:
                             candidate = position["max_price"] - atr * config.SYSTEM_ATR_TRAILING_MULTIPLIER
                             position["trailing_stop"] = max(position.get("trailing_stop", 0), candidate)
                     if high >= position["target_price"]:
                         position["target_reached"] = True
-                    stop_price = max(position.get("stop_price", 0), position.get("trailing_stop", 0))
+                    stop_price = position.get("stop_price", 0) if fixed_tv_exit else max(position.get("stop_price", 0), position.get("trailing_stop", 0))
                     # RR hedefi bir minimum kâr eşiğidir; kapanışı ATR trailing belirler.
                     exit_price = stop_price if stop_price > 0 and low <= stop_price else None
-                    reason = "atr_trailing_stop" if position.get("trailing_stop", 0) and exit_price == stop_price else "system_stop_loss"
-                    if exit_price is None and (config.STALE_POSITION_EXIT_BELOW_COST and
+                    reason = "fixed_stop_loss" if fixed_tv_exit else ("atr_trailing_stop" if position.get("trailing_stop", 0) and exit_price == stop_price else "system_stop_loss")
+                    if fixed_tv_exit and exit_price is None and high >= position["target_price"]:
+                        exit_price = position["target_price"]
+                        reason = "fixed_take_profit"
+                    if exit_price is None and (not fixed_tv_exit and config.STALE_POSITION_EXIT_BELOW_COST and
                           elapsed >= config.STALE_POSITION_SEC and
                           close < position["entry"] * (1 + config.min_net_exit_pct(order_size * position.get("layers", 1)))):
                         exit_price = close
@@ -385,43 +438,58 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                         exit_price = close
                         reason = "opposite_signal"
                     if exit_price is not None:
-                        balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size * position.get("layers", 1), reason, spread_pct, slippage_pct)
+                        remaining_order_size = position.get("invested_cost", position.get("remaining_order_size", order_size * position.get("layers", 1)))
+                        balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], remaining_order_size, reason, spread_pct, slippage_pct)
+                        pnl += position.get("realized_pnl", 0.0)
+                        trade["pnl"] = round(pnl, 8)
                         trade.update({"entry_time": position["entry_time"], "exit_time": data["times"][i],
                                       "entry_bar": position["entry_bar"], "exit_bar": i,
                                       "bars_held": i - position["entry_bar"] + 1})
                         trades.append(trade); wins += pnl > 0; losses += pnl <= 0; position = None
-                    elif position.get("layers", 1) < config.MAX_POSITION_LAYERS and balance >= order_size:
+                    elif position.get("layers", 1) < config.MAX_POSITION_LAYERS and balance >= (balance * float(order_pct) if order_pct else order_size):
                         result = fn(window, symbol)
                         if result == "buy":
                             if i + 1 >= len(data["opens"]):
                                 continue
-                            fee = order_size * config.COMMISSION_PCT
-                            balance -= order_size + fee
+                            layer_order_size = balance * float(order_pct) if order_pct else order_size
+                            fee = layer_order_size * config.COMMISSION_PCT
+                            balance -= layer_order_size + fee
                             entry_price = data["opens"][i + 1]
-                            quantity = order_size / entry_price
+                            quantity = layer_order_size / entry_price
                             total_quantity = position["quantity"] + quantity
                             position["entry"] = ((position["entry"] * position["quantity"]) + (entry_price * quantity)) / total_quantity
                             position["quantity"] = total_quantity
                             position["layers"] = position.get("layers", 1) + 1
+                            position["invested_cost"] = position.get("invested_cost", layer_order_size) + layer_order_size
+                            position["remaining_order_size"] = position["invested_cost"]
                             atr_now = analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD) or position["entry"] * config.HARD_STOP_LOSS_PCT
-                            stop_distance = max(position["entry"] * config.HARD_STOP_LOSS_PCT, atr_now * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER)
+                            stop_distance = (position["entry"] * float(stop_pct) if fixed_tv_exit else
+                                             max(position["entry"] * config.HARD_STOP_LOSS_PCT, atr_now * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER))
                             position["stop_price"] = position["entry"] - stop_distance
-                            position["target_price"] = position["entry"] + stop_distance * config.SYSTEM_RISK_REWARD
+                            position["target_price"] = (position["entry"] * (1 + float(tp_pct)) if fixed_tv_exit else
+                                                         position["entry"] + stop_distance * config.SYSTEM_RISK_REWARD)
                 else:
                     window = {key: values[:i + 1] for key, values in data.items()}
                     result = fn(window, symbol)
-                    if balance >= order_size and result == "buy":
+                    entry_order_size = balance * float(order_pct) if order_pct else order_size
+                    if balance >= entry_order_size and result == "buy":
                         if i + 1 >= len(data["opens"]):
                             continue
-                        entry_fee = order_size * config.COMMISSION_PCT
-                        balance -= order_size + entry_fee
+                        entry_fee = entry_order_size * config.COMMISSION_PCT
+                        balance -= entry_order_size + entry_fee
                         atr = analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD) or close * config.HARD_STOP_LOSS_PCT
                         entry_price = data["opens"][i + 1]
-                        stop_distance = max(entry_price * config.HARD_STOP_LOSS_PCT, atr * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER)
-                        position = {"entry": entry_price, "quantity": order_size / entry_price,
+                        stop_distance = (entry_price * float(stop_pct) if fixed_tv_exit else
+                                         max(entry_price * config.HARD_STOP_LOSS_PCT, atr * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER))
+                        position = {"entry": entry_price, "quantity": entry_order_size / entry_price,
                                     "entry_time": data["times"][i + 1], "entry_bar": i + 1, "layers": 1}
+                        position["remaining_order_size"] = entry_order_size
+                        position["invested_cost"] = entry_order_size
+                        position["stages_done"] = set()
+                        position["realized_pnl"] = 0.0
                         position["stop_price"] = entry_price - stop_distance
-                        position["target_price"] = entry_price + stop_distance * config.SYSTEM_RISK_REWARD
+                        position["target_price"] = (entry_price * (1 + float(tp_pct)) if fixed_tv_exit else
+                                                     entry_price + stop_distance * config.SYSTEM_RISK_REWARD)
                         position["max_price"] = entry_price
                 marked = balance + (position["quantity"] * close if position else 0)
                 equity_peak = max(equity_peak, marked)
@@ -432,14 +500,12 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
 
             if position:
                 open_at_end = True
-                final_i = last_eval_i if last_eval_i is not None else len(data["closes"]) - 1
-                final_price = data["closes"][final_i]
-                unrealized_pnl = (final_price - position["entry"]) * position["quantity"]
-                balance, pnl, _, trade = _close_trade(balance, position["entry"], final_price, position["quantity"], order_size * position.get("layers", 1), "open_at_end_mark_to_market", spread_pct, slippage_pct)
-                trade.update({"entry_time": position["entry_time"], "exit_time": data["times"][final_i],
-                              "entry_bar": position["entry_bar"], "exit_bar": final_i,
-                              "bars_held": final_i - position["entry_bar"] + 1})
-                trades.append(trade)
+                # Do not mark open positions to market: incomplete trades are
+                # excluded from final PnL/win-rate statistics by request.
+                # Restore their committed principal so it is not reported as
+                # a fictitious loss merely because the position is unfinished.
+                balance += float(position.get("invested_cost", position.get("remaining_order_size", order_size * position.get("layers", 1))))
+                unrealized_pnl = 0.0
 
             total = len(trades)
             net = balance - config.INITIAL_BALANCE_TRY
@@ -469,18 +535,19 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     "data_quality": _data_quality(data, interval),
                     "open_position_at_end": open_at_end, "unrealized_pnl": round(unrealized_pnl, 8),
                     "trades": trades, "timestamp": time.time(),
-                    "evaluation_start": start_ts, "evaluation_end": end_ts}
+                    "evaluation_start": start_ts, "evaluation_end": end_ts, "exit_profile": exit_profile or "default"}
         finally:
-            for attr, value in {**saved, **saved_flags, **saved_tfs}.items():
+            for attr, value in {**saved, **saved_flags, **saved_tfs, "MAX_POSITION_LAYERS": saved_position_layers}.items():
                 setattr(config, attr, value)
 
 
 async def run_backtest(symbol: str, interval: str, days_back: int, strategy: str, params: dict | None = None,
                        order_size: float = 500.0, stop_pct: float = 0.005, tp_pct: float = 0.015,
-                       trail_pct: float = 0.003) -> tuple[int, dict[str, Any]]:
+                       trail_pct: float = 0.003, exit_profile: str | None = None,
+                       pyramiding_layers: int = 3, order_pct: float | None = None) -> tuple[int, dict[str, Any]]:
     params = params or {}
     result = await asyncio.to_thread(_run_single, symbol, interval, days_back, strategy, params,
-                                     order_size, stop_pct, tp_pct, trail_pct)
+                                     order_size, stop_pct, tp_pct, trail_pct, None, None, 0.0, None, exit_profile, pyramiding_layers, order_pct)
     return await database.save_backtest(result), result
 
 

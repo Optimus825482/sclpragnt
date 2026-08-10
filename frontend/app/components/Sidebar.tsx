@@ -12,10 +12,8 @@ const MENU = [
     { href: "/gainer-radar", label: "Gainer Radar", icon: "🎯", desc: "Fırsat tarayıcı" },
     { href: "/alerts", label: "Alarmlar", icon: "🔔", desc: "Fiyat ve paper giriş alarmları" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
-    { href: "/a2a", label: "A2A Monitör", icon: "🔗", desc: "Agent iletişim trafiği" },
     { href: "/backtest", label: "Backtest", icon: "🧪", desc: "Strateji test lab" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
-    { href: "/symbol-analysis", label: "Sembol Analizi", icon: "🔬", desc: "Teknik göstergeler" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" }
 ];
 const formatNotificationDate = (value: unknown) => {

@@ -3,7 +3,7 @@ import asyncio
 import numpy as np
 import uuid
 from app.config import config
-from app.technical_analysis import calculate_snapshot, _adx, _stochastic
+from app.technical_analysis import calculate_snapshot, _adx, _stochastic, _macd, _mfi
 from app.binance_tr_public import orderbook
 from app import database
 from app import agent_learning
@@ -675,6 +675,46 @@ class ScalpAnalyzer:
             return "buy"
         return None
 
+    def strategy_momentum_scored(self, kline, symbol=None):
+        """Quality-gated momentum entry; score is explainable and no-lookahead."""
+        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", []); volumes = kline.get("volumes", [])
+        if len(closes) < 55: return None
+        short, long = config.MOMENTUM_SHORT_LOOKBACK, config.MOMENTUM_LONG_LOOKBACK
+        r1 = closes[-1] / closes[-short - 1] - 1; r2 = closes[-1] / closes[-long] - 1
+        volume_ratio = self._volume_ratio(kline) or 0
+        adx = (_adx(highs, lows, closes) or {}).get("adx") or 0
+        ema9 = self.calculate_ema(closes, 9); ema21 = self.calculate_ema(closes, 21); ema50 = self.calculate_ema(closes, 50)
+        rsi = self.calculate_rsi(closes, 14) or 0; cmo = self.calculate_cmo(closes, 9) or 0
+        macd = _macd(closes) or {}; hist = macd.get("histogram") or 0
+        typical = [(h + l + c) / 3 for h, l, c in zip(highs[-20:], lows[-20:], closes[-20:])]
+        vv = sum(volumes[-20:]); vwap = sum(p * v for p, v in zip(typical, volumes[-20:])) / vv if vv else closes[-1]
+        score = 0
+        score += 2 if ema9 and ema21 and ema50 and ema9 > ema21 > ema50 else 0
+        score += 1 if r1 >= config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 else 0
+        score += 2 if volume_ratio >= 1.2 else 1 if volume_ratio >= 1.0 else 0
+        score += 1 if adx >= max(20, config.MOMENTUM_MIN_ADX) else 0
+        score += 1 if hist > 0 else 0
+        score += 1 if 48 <= rsi <= 72 else 0
+        score += 1 if cmo > 0 else 0
+        score += 1 if closes[-1] > vwap else 0
+        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
+        return "buy" if score >= 7 and flow_ok else None
+
+    def strategy_momentum_scored_v2(self, kline, symbol=None):
+        """Experimental scored entry with candle-quality and extension gates."""
+        if self.strategy_momentum_scored(kline, symbol) != "buy":
+            return None
+        opens = kline.get("opens", []); highs = kline.get("highs", []); lows = kline.get("lows", []); closes = kline.get("closes", [])
+        if len(closes) < 55:
+            return None
+        candle_range = max(highs[-1] - lows[-1], 1e-12)
+        close_location = (closes[-1] - lows[-1]) / candle_range
+        ema21 = self.calculate_ema(closes, 21)
+        atr = self.calculate_atr(kline, 14) or closes[-1] * 0.01
+        extension = (closes[-1] - ema21) / closes[-1] if ema21 else 1
+        # Experimental extra component: strong close, but avoid a late chase.
+        return "buy" if closes[-1] > opens[-1] and close_location >= 0.65 and extension <= 2 * atr / closes[-1] else None
+
     def strategy_oversold_trend_reentry(self, kline, symbol=None):
         """Long re-entry candidate: oversold oscillators with bullish EMA structure."""
         closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
@@ -767,6 +807,20 @@ class ScalpAnalyzer:
         if bb and crsi is not None and closes[-1] < bb["lower"] and crsi < 30 and imbalance >= 0 and flow_ok: return "buy"
         return None
 
+    def strategy_bb_mfi_mean_reversion(self, kline, symbol=None):
+        """TradingView v3-inspired dip entry: BB(20, 1.0) lower-band breach + MFI<60."""
+        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
+        volumes = kline.get("volumes", [])
+        if len(closes) < 21 or len(highs) < 21 or len(lows) < 21 or len(volumes) < 21:
+            return None
+        bb = self.calculate_bollinger_bands(closes, period=20, std_dev=1.0)
+        mfi = _mfi(highs, lows, closes, volumes, period=14)
+        flow_ok, imbalance = self._optional_flow_filter(symbol) if symbol else (True, 0)
+        if (bb and mfi is not None and closes[-1] < bb["lower"] and
+                mfi < 60 and imbalance >= 0 and flow_ok):
+            return "buy"
+        return None
+
     def strategy_bb_squeeze_orderflow(self, kline, symbol=None):
         if symbol:
             flow_ok, _ = self._flow_filter(symbol)
@@ -839,6 +893,7 @@ class ScalpAnalyzer:
                 (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
                 (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),
                 (config.DONCHIAN_ENABLED, "DONCHIAN_BREAKOUT", self.strategy_donchian_breakout, config.DONCHIAN_TIMEFRAME),
+                (config.MEAN_REVERSION_ENABLED, "BB_MFI_MEAN_REVERSION", self.strategy_bb_mfi_mean_reversion, config.ACTIVE_STRATEGY_TIMEFRAME),
             ]
             selected = next((item for item in strategy_specs if item[1] == strat and item[0]), None)
             if selected:
@@ -847,8 +902,13 @@ class ScalpAnalyzer:
                 result = fn(strategy_kline, symbol)
                 if result == "sell" and config.EXIT_ON_OPPOSITE_SIGNAL:
                     return [await self.close_position(symbol, price, "opposite_signal")]
+                if result == "buy" and strat == "BB_MFI_MEAN_REVERSION":
+                    max_layers = int(config.SYMBOL_PYRAMIDING_LAYERS.get(symbol, config.PYRAMIDING_LAYERS))
+                    if self.positions[symbol].get("layers", 1) < max_layers:
+                        added = await self.open_position(symbol, price, "LONG", strat)
+                        if added: signals.append(added)
                 # Spotta aynı sembole tekrar katman ekleme yok: tek sembol = tek pozisyon.
-                # Pozisyon açıkken yeni BUY sinyali işlem sinyaline dönüştürülmez.
+                # Yalnızca seçili BB-MFI stratejisinde ayarlanmış katman sınırına kadar ekleme yapılır.
             return signals
 
         # Açık pozisyon yok: kapanış sonrası sembol cooldown'ını uygula.
@@ -880,7 +940,8 @@ class ScalpAnalyzer:
             (config.REGIME_GATE_LOW_TURNOVER_ENABLED, "REGIME_GATE_LOW_TURNOVER", self.strategy_regime_gate_low_turnover, config.REGIME_GATE_LOW_TURNOVER_TIMEFRAME),
             (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
             (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),
-            (config.DONCHIAN_ENABLED, "DONCHIAN_BREAKOUT", self.strategy_donchian_breakout, config.DONCHIAN_TIMEFRAME),
+                (config.DONCHIAN_ENABLED, "DONCHIAN_BREAKOUT", self.strategy_donchian_breakout, config.DONCHIAN_TIMEFRAME),
+                (config.MEAN_REVERSION_ENABLED, "BB_MFI_MEAN_REVERSION", self.strategy_bb_mfi_mean_reversion, config.ACTIVE_STRATEGY_TIMEFRAME),
         ]
         for enabled, name, fn, tf in eval_order:
             if not enabled: continue
@@ -1036,7 +1097,10 @@ class ScalpAnalyzer:
         if symbol in self.positions:
             await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                         "reason": "position_already_open", "strategy": strat_name, "timestamp": time.time()})
-            return None
+            existing = self.positions[symbol]
+            max_layers = int(config.SYMBOL_PYRAMIDING_LAYERS.get(symbol, config.PYRAMIDING_LAYERS))
+            if strat_name != existing.get("strategy") or existing.get("layers", 1) >= max_layers:
+                return None
         if symbol not in self.positions and len(self.positions) >= self.max_open_positions():
             await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                         "reason": "position_limit_reached", "strategy": strat_name, "timestamp": time.time()})
@@ -1048,13 +1112,10 @@ class ScalpAnalyzer:
             if order_value < config.MIN_PARTIAL_ORDER_TRY:
                 await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price, "reason": "llm_order_below_minimum_or_balance", "strategy": strat_name, "timestamp": time.time()})
                 return None
-        elif try_balance >= config.DEFAULT_ORDER_USDT * (1 + config.COMMISSION_PCT):
-            order_value = config.DEFAULT_ORDER_USDT
         else:
-            # Use the remaining cash when it is still economically meaningful;
-            # reserve the entry commission before sizing the paper order.
-            order_value = try_balance / (1 + config.COMMISSION_PCT)
-            if order_value <= config.MIN_PARTIAL_ORDER_TRY:
+            order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
+            order_value = try_balance * max(0.001, min(order_pct, 1.0)) / (1 + config.COMMISSION_PCT)
+            if order_value < config.MIN_PARTIAL_ORDER_TRY:
                 await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                             "reason": "insufficient_balance_for_minimum_order", "strategy": strat_name, "timestamp": time.time()})
                 return None
