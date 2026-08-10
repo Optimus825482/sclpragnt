@@ -8,6 +8,7 @@ import random
 import re
 import hmac
 import hashlib
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -62,6 +63,52 @@ _radar_lock = asyncio.Lock()
 _top_gainers_lock = asyncio.Lock()
 _ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
 _llm_market_scan_cache = {}
+_strategy_replay_jobs = {}
+
+
+async def _run_strategy_replay(job_id: str, minutes: int = 30):
+    """Replay the active strategy over recent persisted 5m candles, paper-only."""
+    job = _strategy_replay_jobs[job_id]
+    symbols = [s.upper() for s in config.SYMBOLS if s not in config.PASSIVE_SYMBOLS]
+    job.update(status="running", total=len(symbols) * (minutes // 5 + 1), completed=0)
+    job["logs"].append({"level": "info", "message": f"Replay başladı | strategy={config.ACTIVE_STRATEGY} timeframe=5m window={minutes}m symbols={len(symbols)}"})
+    strategy_fn = analyzer.strategy_bb_mfi_mean_reversion if config.ACTIVE_STRATEGY == "BB_MFI_MEAN_REVERSION" else analyzer.strategy_mean_reversion
+    try:
+        datasets = {}
+        async def load(symbol):
+            rows = await database.get_market_candles(symbol, "5m")
+            return symbol, rows[-400:]
+        loaded = await asyncio.gather(*(load(symbol) for symbol in symbols), return_exceptions=True)
+        usable = [(symbol, rows) for item in loaded if not isinstance(item, Exception) for symbol, rows in [item] if rows]
+        if not usable:
+            raise ValueError("historical_candles içinde kullanılabilir 5m veri yok")
+        latest_ms = max(int(rows[-1]["open_time"]) for _, rows in usable)
+        step_count = minutes // 5 + 1
+        checkpoints = [latest_ms - (step_count - 1 - i) * 5 * 60 * 1000 for i in range(step_count)]
+        job["checkpoints"] = [int(ts / 1000) for ts in checkpoints]
+        for checkpoint in checkpoints:
+            label = datetime.fromtimestamp(checkpoint / 1000, tz=timezone.utc).astimezone().strftime("%d.%m %H:%M")
+            signals = 0
+            evaluated = 0
+            for symbol, rows in usable:
+                prefix = [row for row in rows if int(row["open_time"]) <= checkpoint]
+                fields = {"opens": "open", "highs": "high", "lows": "low", "closes": "close", "volumes": "volume"}
+                kline = {key: [float(row[db_key]) for row in prefix] for key, db_key in fields.items()}
+                if len(kline["closes"]) < 21:
+                    result = "warmup"
+                else:
+                    evaluated += 1
+                    result = strategy_fn(kline, symbol)
+                if result == "buy":
+                    signals += 1
+                    job["logs"].append({"level": "signal", "timestamp": checkpoint / 1000, "symbol": symbol, "message": f"{label} BUY_SIGNAL | price={kline['closes'][-1]:g} | strategy={config.ACTIVE_STRATEGY}"})
+                job["completed"] += 1
+            job["logs"].append({"level": "summary", "timestamp": checkpoint / 1000, "message": f"{label} tamamlandı | evaluated={evaluated} signals={signals} no_signal={evaluated - signals}"})
+        job.update(status="completed", finished_at=time.time())
+        job["logs"].append({"level": "success", "message": "Replay tamamlandı; canlı portföy değiştirilmedi."})
+    except Exception as exc:
+        job.update(status="error", error=str(exc), finished_at=time.time())
+        job["logs"].append({"level": "error", "message": f"Replay hatası: {exc}"})
 
 
 async def publish_a2a_event(message_type, payload, *, correlation_id=None, requires_user_approval=False):
@@ -2210,6 +2257,25 @@ async def manual_strategy_scan():
             "elapsed_seconds": round(time.time() - started, 2),
             "warning": "Ticker verisi hazır değil; teknik değerlendirme yapılmadı" if evaluated == 0 else None,
             "paper_only": True}
+
+@app.post("/api/strategy/replay")
+async def start_strategy_replay(payload: dict = None):
+    """Start a read-only recent 5m strategy replay and return a pollable job id."""
+    payload = payload or {}
+    minutes = max(5, min(int(payload.get("minutes", 30)), 60))
+    job_id = uuid.uuid4().hex[:12]
+    _strategy_replay_jobs[job_id] = {"job_id": job_id, "status": "queued", "strategy": config.ACTIVE_STRATEGY,
+                                     "timeframe": "5m", "minutes": minutes, "completed": 0, "total": 0,
+                                     "logs": [], "started_at": time.time()}
+    asyncio.create_task(_run_strategy_replay(job_id, minutes), name=f"strategy-replay-{job_id}")
+    return {"ok": True, "job_id": job_id, "status": "queued", "paper_only": True}
+
+@app.get("/api/strategy/replay/{job_id}")
+async def strategy_replay_status(job_id: str):
+    job = _strategy_replay_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Replay işi bulunamadı")
+    return {"ok": True, **job}
 
 @app.get("/api/market-snapshot/{symbol}/deep")
 async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
