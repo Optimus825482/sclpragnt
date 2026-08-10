@@ -1,6 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE, apiRequest } from "../lib/api";
+import { useSearchParams } from "next/navigation";
+import { API_BASE, apiRequest, fetchAllPages } from "../lib/api";
+import { useLiveMessages } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
 import {
     createChart, createSeriesMarkers, CandlestickSeries, LineSeries, HistogramSeries,
@@ -20,11 +22,10 @@ const INTERVAL_MS: Record<string, number> = {
     "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000
 };
 const PALETTE = ["#10b981", "#3b82f6", "#f59e0b", "#a855f7", "#ec4899", "#06b6d4", "#84cc16", "#f97316"];
-const PANE_H = 160;
+const PANE_H = 180;
 // sabit canvas yüksekliği: pane aç/kapa toplam yüksekliği değiştirmez, paneller kalanı paylaşır
 const TOTAL_HEIGHT = 600;
-const MAIN_MIN = 240;
-const PANE_MIN = 56;
+const MAIN_MIN = 300;
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 
@@ -32,11 +33,55 @@ const LS_SYMBOL = "scalper_chart_symbol";
 const LS_INTERVAL = "scalper_chart_interval";
 const LS_INDICATORS = "scalper_chart_indicators";
 const LS_PANE_HEIGHTS = "scalper_chart_pane_heights";
+const LS_DISPLAY_SETTINGS = "scalper_chart_display_settings";
 const API = `${API_BASE}/api/chart`;
+
+const paneMinimumHeight = (key: string, compact: boolean) => {
+    if (key === "volume") return compact ? 76 : 104;
+    return compact ? 108 : 136;
+};
+
+const preferredChartHeight = (minimumRequired: number, compact: boolean) => {
+    const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
+    const viewportPreference = Math.round(viewportHeight * (compact ? 0.72 : 0.78));
+    return Math.max(compact ? 420 : TOTAL_HEIGHT, viewportPreference, minimumRequired);
+};
+
+const macdHistogramColor = (value: number, previous?: number) => {
+    const rising = previous == null || value >= previous;
+    if (value >= 0) return rising ? "rgba(52, 211, 153, 0.94)" : "rgba(5, 150, 105, 0.84)";
+    return rising ? "rgba(248, 113, 113, 0.84)" : "rgba(239, 68, 68, 0.94)";
+};
+
+// Grafik fiyatları, sembolün mevcut değer aralığına göre aynı okunabilirlikte
+// kalır. Bu kural sağ eksen, fiyat çizgileri ve açık pozisyon tablosunda ortak
+// kullanılır; böylece aynı fiyat farklı yerlerde farklı yuvarlanmaz.
+const pricePrecision = (value: number) => {
+    const absolute = Math.abs(Number(value) || 0);
+    if (absolute >= 1 && absolute < 100) return 3;
+    if (absolute >= 100 && absolute < 1000) return 2;
+    return 1;
+};
+const formatPrice = (value: number | null | undefined) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric)
+        ? numeric.toLocaleString("tr-TR", {
+            minimumFractionDigits: pricePrecision(numeric),
+            maximumFractionDigits: pricePrecision(numeric)
+        })
+        : "—";
+};
+const chartPriceFormat = (value: number) => {
+    const precision = pricePrecision(value);
+    return { type: "price" as const, precision, minMove: Number(`1e-${precision}`) };
+};
 
 type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 
 type PatternMarker = { time: number; type: "buy" | "sell"; text: string };
+type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean };
+type ClosedTrade = { id: number; pnl: number };
+type LivePortfolio = { total_value?: number; unrealized_pnl?: number };
 const patternDescriptions: Record<string, string> = {
     "ÇEKİÇ": "Uzun alt fitil ve küçük gövde, aşağı yönlü baskının reddedildiğini gösterir.",
     "ÜÇ BEYAZ ASKER": "Ardışık güçlü boğa mumları kısa vadeli alım baskısını gösterir.",
@@ -44,15 +89,55 @@ const patternDescriptions: Record<string, string> = {
 };
 const strongCandlestickPatterns = (bars: Bar[]): PatternMarker[] => {
     const out: PatternMarker[] = [];
-    for (let i = 1; i < bars.length; i++) {
-        const p = bars[i - 1], c = bars[i];
-        const pBull = p.close > p.open, cBull = c.close > c.open;
-        const cBody = Math.abs(c.close - c.open);
-        const pRange = Math.max(p.high - p.low, Number.EPSILON);
-        const cTop = c.high - Math.max(c.open, c.close), cBottom = Math.min(c.open, c.close) - c.low;
-        if (cBottom >= cBody * 2 && cTop <= cBody * .6 && c.close >= c.open) out.push({ time: c.time, type: "buy", text: "ÇEKİÇ" });
-        else if (i >= 2 && cBull && bars[i - 2].close > bars[i - 2].open && pBull && c.close > p.close) out.push({ time: c.time, type: "buy", text: "ÜÇ BEYAZ ASKER" });
-        else if (i >= 2 && !cBull && bars[i - 2].close < bars[i - 2].open && !pBull && c.close < p.close) out.push({ time: c.time, type: "sell", text: "ÜÇ SİYAH KARGA" });
+    // Son mum WebSocket ile hâlâ değişebilir; yalnız tamamlanmış mumlar üzerinde
+    // formasyon üretmek repaint ve yanlış pozitifleri engeller.
+    const closedBars = bars.slice(0, -1);
+    const metrics = (bar: Bar) => {
+        const range = bar.high - bar.low;
+        const body = Math.abs(bar.close - bar.open);
+        return { range, body, upper: bar.high - Math.max(bar.open, bar.close), lower: Math.min(bar.open, bar.close) - bar.low };
+    };
+    const bullish = (bar: Bar) => bar.close > bar.open;
+    const bearish = (bar: Bar) => bar.close < bar.open;
+    for (let i = 0; i < closedBars.length; i++) {
+        const current = closedBars[i];
+        const currentMetrics = metrics(current);
+        if (currentMetrics.range <= Number.EPSILON || currentMetrics.body <= Number.EPSILON) continue;
+
+        // Çekiç: küçük gövde üst bölgede, alt fitil gövdenin en az iki katı.
+        // Önceki üç kapanışın zayıf olması, yükseliş mumlarını yanlışlıkla çekiç diye etiketlemeyi azaltır.
+        const precedingDowntrend = i >= 3 && closedBars[i - 3].close > closedBars[i - 2].close && closedBars[i - 2].close > closedBars[i - 1].close;
+        if (precedingDowntrend
+            && currentMetrics.body / currentMetrics.range <= 0.38
+            && currentMetrics.lower >= currentMetrics.body * 2
+            && currentMetrics.upper <= currentMetrics.range * 0.2) {
+            out.push({ time: current.time, type: "buy", text: "ÇEKİÇ" });
+            continue;
+        }
+
+        if (i < 2) continue;
+        const first = closedBars[i - 2], second = closedBars[i - 1];
+        const firstMetrics = metrics(first), secondMetrics = metrics(second);
+        const strongBodies = [firstMetrics, secondMetrics, currentMetrics].every((item) => item.range > Number.EPSILON && item.body / item.range >= 0.5);
+        const opensInsidePriorBody = (later: Bar, prior: Bar) => {
+            const low = Math.min(prior.open, prior.close);
+            const high = Math.max(prior.open, prior.close);
+            return later.open >= low && later.open <= high;
+        };
+        if (strongBodies && bullish(first) && bullish(second) && bullish(current)
+            && opensInsidePriorBody(second, first) && opensInsidePriorBody(current, second)
+            && second.close > first.close && current.close > second.close) {
+            // Dördüncü devam mumunda aynı paterni tekrar çizme.
+            if (!(i >= 3 && bullish(closedBars[i - 3]) && bullish(first) && bullish(second))) {
+                out.push({ time: current.time, type: "buy", text: "ÜÇ BEYAZ ASKER" });
+            }
+        } else if (strongBodies && bearish(first) && bearish(second) && bearish(current)
+            && opensInsidePriorBody(second, first) && opensInsidePriorBody(current, second)
+            && second.close < first.close && current.close < second.close) {
+            if (!(i >= 3 && bearish(closedBars[i - 3]) && bearish(first) && bearish(second))) {
+                out.push({ time: current.time, type: "sell", text: "ÜÇ SİYAH KARGA" });
+            }
+        }
     }
     return out.slice(-80);
 };
@@ -354,6 +439,7 @@ const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time: numbe
 };
 
 export default function ChartsPage() {
+    const searchParams = useSearchParams();
     const [symbol, setSymbol] = useState<string>("BTCTRY");
     const [symbols, setSymbols] = useState<string[]>(FALLBACK_SYMBOLS);
     const [analysisOpen, setAnalysisOpen] = useState(false);
@@ -368,9 +454,13 @@ export default function ChartsPage() {
     const [countdown, setCountdown] = useState<number>(0);
     const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
     const [showPositions, setShowPositions] = useState(false);
+    const [showStopTakeProfit, setShowStopTakeProfit] = useState(false);
     const [showPatterns, setShowPatterns] = useState(false);
+    const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
+    const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([]);
+    const [livePortfolio, setLivePortfolio] = useState<LivePortfolio | null>(null);
     const chartHeightRef = useRef(TOTAL_HEIGHT);
     const positionLinesRef = useRef<Map<string, IPriceLine[]>>(new Map());
     const positionMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
@@ -379,16 +469,16 @@ export default function ChartsPage() {
 
     // localStorage yükleme: hydration uyumluluğu için client tarafında yap
     useEffect(() => {
-        const query = new URLSearchParams(window.location.search);
-        const querySymbol = query.get("symbol")?.toUpperCase() || "";
+        const querySymbol = searchParams.get("symbol")?.replace(/_/g, "").toUpperCase() || "";
         const savedSymbol = querySymbol || loadPersisted(LS_SYMBOL, "BTCTRY");
         const savedInterval = querySymbol ? "5m" : loadPersisted(LS_INTERVAL, "5m");
         setSymbol(savedSymbol);
         setTf(savedInterval);
         apiRequest(`${API_BASE}/api/config`).then((r) => r.json()).then((d) => {
             const active = Array.isArray(d.symbols) && d.symbols.length ? d.symbols : FALLBACK_SYMBOLS;
-            setSymbols([...active].sort((a, b) => a.localeCompare(b)));
-            setSymbol((current) => active.includes(current) ? current : active[0]);
+            const available = [...new Set([...active, ...(querySymbol ? [querySymbol] : [])])].sort((a, b) => a.localeCompare(b));
+            setSymbols(available);
+            setSymbol((current) => available.includes(current) ? current : active[0]);
             const configuredStrategy = String(d.active_strategy || "BB_MFI_MEAN_REVERSION").toUpperCase();
             setActiveStrategy(configuredStrategy);
             setInstances(filterIndicatorInstances(loadIndicators(), configuredStrategy));
@@ -398,7 +488,45 @@ export default function ChartsPage() {
             setInstances(filterIndicatorInstances(loadIndicators(), "BB_MFI_MEAN_REVERSION"));
             loadFromDb(savedSymbol, "BB_MFI_MEAN_REVERSION");
         });
+    // İlk yüklemede query değeri kullanılır; sonraki Link yönlendirmeleri
+    // aşağıdaki effect tarafından state'e aktarılır.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        const settings = loadPersisted<DisplaySettings>(LS_DISPLAY_SETTINGS, {
+            showPositions: false, showStopTakeProfit: false, showPatterns: false
+        });
+        setShowPositions(settings.showPositions);
+        setShowStopTakeProfit(settings.showStopTakeProfit);
+        setShowPatterns(settings.showPatterns);
+    }, []);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns }));
+        } catch { /* görüntü ayarı yalnızca yerelde saklanır */ }
+    }, [showPositions, showStopTakeProfit, showPatterns]);
+
+    // Sembol rozeti /charts?symbol=...&timeframe=5m ile istemci içi
+    // yönlendirme yapar. Sayfa unmount olmadığı için URL değişimini ayrıca
+    // dinlemek gerekir; aksi halde yalnız tam sayfa yenilemesinde çalışırdı.
+    useEffect(() => {
+        const requestedSymbol = searchParams.get("symbol")?.replace(/_/g, "").toUpperCase();
+        if (!requestedSymbol) return;
+        const requestedTimeframe = searchParams.get("timeframe");
+        const targetTimeframe = requestedTimeframe && INTERVAL_MS[requestedTimeframe] ? requestedTimeframe : "5m";
+        setSymbols((current) => current.includes(requestedSymbol)
+            ? current
+            : [...current, requestedSymbol].sort((left, right) => left.localeCompare(right)));
+        setSymbol(requestedSymbol);
+        setTf(targetTimeframe);
+        localStorage.setItem(LS_SYMBOL, JSON.stringify(requestedSymbol));
+        localStorage.setItem(LS_INTERVAL, JSON.stringify(targetTimeframe));
+        loadFromDb(requestedSymbol, activeStrategy, targetTimeframe);
+        // loadFromDb is intentionally invoked only when the route query changes.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [searchParams]);
 
     // mum kapanış geri sayımı: seçili TF'ye göre kalan süre
     useEffect(() => {
@@ -470,8 +598,13 @@ export default function ChartsPage() {
         // pencere boyutu değişince grafiği yeniden boyutlandır (autoSize yerine manuel — pane yükseklikleri sabit)
         const ro = new ResizeObserver(() => {
             if (!chartRef.current || !containerRef.current) return;
-            const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 900;
-            chartHeightRef.current = clamp(Math.round(viewportHeight * (window.innerWidth < 768 ? 0.58 : 0.62)), window.innerWidth < 768 ? 360 : 420, 600);
+            const compact = window.innerWidth < 768;
+            const paneKeys = [...paneKeyByIndexRef.current.entries()]
+                .sort(([left], [right]) => left - right)
+                .map(([, key]) => key);
+            const nonMainMinimum = paneKeys.slice(1)
+                .reduce((total, key) => total + paneMinimumHeight(key, compact), 0);
+            chartHeightRef.current = preferredChartHeight((compact ? 210 : MAIN_MIN) + nonMainMinimum, compact);
             chartRef.current.applyOptions({ width: containerRef.current.clientWidth, height: chartHeightRef.current });
         });
         ro.observe(containerRef.current);
@@ -501,14 +634,7 @@ export default function ChartsPage() {
                 setBars(candles);
                 candleRef.current.setData(candles.map((c) => ({ ...c, time: c.time as UTCTimestamp })));
                 const last = candles[candles.length - 1]?.close ?? 0;
-                const priceFormat = last < 0.001
-                    ? { type: "price" as const, precision: 8, minMove: 0.00000001 }
-                    : last < 0.1
-                        ? { type: "price" as const, precision: 6, minMove: 0.000001 }
-                        : last < 1
-                            ? { type: "price" as const, precision: 4, minMove: 0.0001 }
-                            : { type: "price" as const, precision: 2, minMove: 0.01 };
-                candleRef.current.applyOptions({ priceFormat });
+                candleRef.current.applyOptions({ priceFormat: chartPriceFormat(last) });
                 // fiyat ölçeğini sıfırla: önceki sembolün zoom/scale'i yeni sembole taşınmasın
                 chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
                 chartRef.current?.timeScale().fitContent();
@@ -534,6 +660,9 @@ export default function ChartsPage() {
                     time: Math.floor(k.t / 1000),
                     open: +k.o, high: +k.h, low: +k.l, close: +k.c, volume: +k.v
                 };
+                // Fiyat, eşik aralıklarından birini geçerse sağ ölçeğin
+                // hassasiyeti de canlı olarak aynı kurala geçsin.
+                candleRef.current?.applyOptions({ priceFormat: chartPriceFormat(bar.close) });
                 setBars((prev) => {
                     if (!prev.length) return prev;
                     const last = prev[prev.length - 1];
@@ -570,6 +699,24 @@ export default function ChartsPage() {
         const t = setInterval(fetchPositions, 5000);
         return () => { cancelled = true; clearInterval(t); };
     }, []);
+
+    const loadClosedTrades = useCallback(async () => {
+        try {
+            const result = await fetchAllPages<ClosedTrade>("/api/trades", "trades");
+            setClosedTrades(result.rows);
+        } catch { /* özet için işlem geçmişi geçici olarak kullanılamıyor */ }
+    }, []);
+
+    useEffect(() => {
+        loadClosedTrades();
+        const timer = setInterval(loadClosedTrades, 15_000);
+        return () => clearInterval(timer);
+    }, [loadClosedTrades]);
+
+    useLiveMessages(useCallback((message: any) => {
+        if (message.type === "portfolio") setLivePortfolio(message.data as LivePortfolio);
+        if (["trade_updated", "signal", "reset"].includes(message.type)) loadClosedTrades();
+    }, [loadClosedTrades]));
 
     // mum serisi ilk yüklemede load() içinde setData ile kurulur,
     // canlı güncelleme WebSocket handler'ında update() ile yapılır (görünüm sıfırlanmaz)
@@ -674,16 +821,23 @@ export default function ChartsPage() {
                     ...(style.maxValue != null ? [{ value: style.maxValue, color: style.colors[2] || PALETTE[2] }] : [])
                 ];
                 plots.forEach((plot, pi) => {
-                    const data = plot
-                        .filter((p) => p.value != null && !Number.isNaN(p.value))
-                        .map((p) => ({
-                            time: p.time as UTCTimestamp, value: p.value as number,
-                            ...(p.color ? { color: p.color } : {})
-                        }));
+                    const numericPoints = plot.filter((p) => p.value != null && !Number.isNaN(p.value));
+                    const data = numericPoints.map((p, index) => {
+                        const value = p.value as number;
+                        const color = isMacd && isHisto && pi === 0
+                            ? macdHistogramColor(value, numericPoints[index - 1]?.value as number | undefined)
+                            : p.color;
+                        return {
+                            time: p.time as UTCTimestamp,
+                            value,
+                            ...(color ? { color } : {})
+                        };
+                    });
                     if (!data.length) return;
                     if (isHisto && pi === 0) {
                         const s = chart.addSeries(HistogramSeries, {
-                            color: style.colors[0] || PALETTE[0], priceLineVisible: false, lastValueVisible: false
+                            color: style.colors[0] || PALETTE[0], base: 0,
+                            priceLineVisible: false, lastValueVisible: false
                         }, paneIdx);
                         s.setData(data);
                         arr.push(s);
@@ -716,7 +870,7 @@ export default function ChartsPage() {
                     // uygula.
                     chart.priceScale("right", paneIdx).applyOptions({
                         autoScale: true,
-                        scaleMargins: { top: 0.12, bottom: 0.12 }
+                        scaleMargins: { top: 0.08, bottom: 0.08 }
                     });
                     arr[0].createPriceLine({
                         price: 0,
@@ -771,30 +925,32 @@ export default function ChartsPage() {
             if (!inst.overlay) paneKeys.push(inst.uid);
         }
         const paneCount = chart.panes().length;
-        // sabit toplam yükseklik: canvas (TOTAL_HEIGHT) asla değişmez.
-        // Kaydedilmiş pane yükseklikleri birebir korunur; main pane kalanı (slack) emer,
-        // böylece pane aç/kapa sadece main'i büyütür/küçültür, diğer paneller sabit kalır.
-        // skipHeight: bars canlı güncellenirken yükseklikleri EZME — kullanıcı sürüklemesi korunur
+        // Kaydedilmiş yükseklikleri koru, ancak eski 44/56px kayıtları okunabilir
+        // minimumun altına inemesin. Gerekirse canvas büyür; panel sıkışmaz.
+        // skipHeight: bars canlı güncellenirken kullanıcı sürüklemesi korunur.
         if (!skipHeight) {
             const compact = typeof window !== "undefined" && window.innerWidth < 768;
-            const mainMin = compact ? 180 : MAIN_MIN;
-            const paneMin = compact ? 44 : PANE_MIN;
-            const defaultPaneHeight = compact ? 92 : PANE_H;
+            const mainMin = compact ? 210 : MAIN_MIN;
+            const defaultPaneHeight = compact ? 124 : PANE_H;
             const alloc = paneKeys.map((key, i) => ({
                 key,
                 h: i === 0
                     ? mainMin
-                    : clamp(paneHeightsRef.current[key] || (key === "volume" ? (compact ? 68 : 90) : defaultPaneHeight), paneMin, chartHeightRef.current)
+                    : Math.max(
+                        paneMinimumHeight(key, compact),
+                        paneHeightsRef.current[key] || (key === "volume" ? paneMinimumHeight(key, compact) : defaultPaneHeight)
+                    )
             }));
             const nonMain = alloc.reduce((s, x, i) => (i === 0 ? s : s + x.h), 0);
-            const mainH = clamp(chartHeightRef.current - nonMain, mainMin, chartHeightRef.current);
+            chartHeightRef.current = preferredChartHeight(mainMin + nonMain, compact);
+            const mainH = Math.max(mainMin, chartHeightRef.current - nonMain);
             const targetH = alloc.map((x, i) => (i === 0 ? mainH : x.h));
 
             chart.applyOptions({ height: chartHeightRef.current });
             chart.panes().forEach((p, i) => {
                 const key = paneKeys[i] || `pane${i}`;
                 paneKeyByIndexRef.current.set(i, key);
-                p.setHeight(targetH[i] ?? paneMin);
+                p.setHeight(targetH[i] ?? paneMinimumHeight(key, compact));
             });
         }
 
@@ -896,8 +1052,6 @@ export default function ChartsPage() {
         positionMarkersRef.current?.setMarkers([]);
         positionMarkersRef.current = null;
 
-        if (!showPositions) return;
-
         const pos = positions.find((p) => p.symbol === symbol);
         if (!pos) return;
 
@@ -912,11 +1066,17 @@ export default function ChartsPage() {
                 lines.push(pl);
             } catch { }
         };
-        addLine(pos.entry, "#10b981", `GİRİŞ ${pos.entry}`);
-        addLine(pos.entry * 1.02, "#3b82f6", "SATIŞ HEDEFİ +2%");
-        positionLinesRef.current.set(symbol, lines);
+        if (showPositions) addLine(pos.entry, "#10b981", `GİRİŞ ${formatPrice(pos.entry)}`);
+        if (showStopTakeProfit) {
+            const stop = pos.llm_stop_price ?? pos.stop;
+            const takeProfit = pos.llm_take_profit_price ?? pos.take_profit;
+            addLine(stop, "#ef4444", `SL ${formatPrice(stop)}`);
+            addLine(takeProfit, "#3b82f6", `TP ${formatPrice(takeProfit)}`);
+        }
+        if (lines.length) positionLinesRef.current.set(symbol, lines);
 
         // giriş noktasına marker ekle (v5 createSeriesMarkers)
+        if (!showPositions) return;
         try {
             const markers = createSeriesMarkers(series, []);
             positionMarkersRef.current = markers;
@@ -935,7 +1095,7 @@ export default function ChartsPage() {
                 size: 1
             }]);
         } catch { /* marker zamanı veri aralığında değilse sessiz geç */ }
-    }, [showPositions, positions, symbol, bars]);
+    }, [showPositions, showStopTakeProfit, positions, symbol, bars, interval]);
 
     // BB-MFI stratejisinin backend ile aynı dip koşulunu marker olarak göster.
     const bbMfiSignals = (bars: Bar[], params: Record<string, any>) => {
@@ -1158,14 +1318,15 @@ export default function ChartsPage() {
     };
 
     // veritabanından sembol ayarlarını yükle — varsa localStorage'ı ezer (DB daha güncel)
-    const loadFromDb = async (s: string, strategy = activeStrategy) => {
+    const loadFromDb = async (s: string, strategy = activeStrategy, forcedInterval?: string) => {
         try {
             const res = await apiRequest(`${API}/${s}`);
             const data = await res.json();
             const st = data?.settings;
             if (!st) return;
-            setTf(st.interval || "5m");
-            localStorage.setItem(LS_INTERVAL, JSON.stringify(st.interval || "5m"));
+            const resolvedInterval = forcedInterval || st.interval || "5m";
+            setTf(resolvedInterval);
+            localStorage.setItem(LS_INTERVAL, JSON.stringify(resolvedInterval));
             if (st.indicators?.length) {
                 const filteredIndicators = filterIndicatorInstances(st.indicators as IndicatorInstance[], strategy);
                 setInstances(filteredIndicators);
@@ -1178,6 +1339,13 @@ export default function ChartsPage() {
             if (typeof st.volumeVisible === "boolean") setVolumeVisible(st.volumeVisible);
         } catch { /* backend yoksa localStorage kullan */ }
     };
+
+    const openPnl = livePortfolio?.unrealized_pnl ?? positions.reduce((total, position) => total + Number(position.pnl_try || 0), 0);
+    const netPnl = closedTrades.reduce((total, trade) => total + Number(trade.pnl || 0), 0);
+    const winningTrades = closedTrades.filter((trade) => Number(trade.pnl || 0) > 0).length;
+    const winRate = closedTrades.length ? (winningTrades / closedTrades.length) * 100 : 0;
+    const money = (value: number) => `₺${value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const pnlClass = (value: number) => value >= 0 ? "text-neon-green" : "text-red-400";
 
     return (
         <div className="max-w-7xl mx-auto space-y-5">
@@ -1230,28 +1398,16 @@ export default function ChartsPage() {
                     >
                         {saveState === "saving" ? "KAYDEDİLİYOR..." : saveState === "saved" ? "✓ KAYDEDİLDİ" : "KAYDET"}
                     </button>
-                    <button
-                        onClick={() => setShowPositions(!showPositions)}
-                        className={`px-4 py-2 rounded-lg border font-mono text-sm transition-colors ${showPositions
-                            ? "border-neon-green bg-neon-green/20 text-neon-green"
-                            : "border-bunker-600 bg-bunker-900 text-bunker-muted hover:text-white"
-                            }`}
-                    >
-                        POZİSYONLAR {showPositions ? "GİZLE" : "GÖSTER"}
-                    </button>
-                    <button
-                        onClick={() => setShowPatterns(!showPatterns)}
-                        aria-label={showPatterns ? "Mum formasyonlarını gizle" : "Mum formasyonlarını göster"}
-                        title={showPatterns ? "Mum formasyonlarını gizle" : "Mum formasyonlarını göster"}
-                        className={`px-4 py-2 rounded-lg border font-mono text-sm transition-colors ${showPatterns
-                            ? "border-neon-green bg-neon-green/20 text-neon-green"
-                            : "border-bunker-600 bg-bunker-900 text-bunker-muted hover:text-white"
-                            }`}
-                    >
-                        {showPatterns ? "◉ FORMASYONLARI GİZLE" : "◌ FORMASYONLARI GÖSTER"}
-                    </button>
                 </div>
             </header>
+
+            <section aria-label="Portföy özeti" className="grid grid-cols-2 gap-2 rounded-xl border border-bunker-800 bg-bunker-950/80 p-3 sm:grid-cols-5">
+                <div className="min-w-0"><p className="eyebrow">TOPLAM PORTFÖY</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.total_value == null ? "—" : money(livePortfolio.total_value)}</p></div>
+                <div className="min-w-0"><p className="eyebrow">AÇIK PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(openPnl)}`}>{openPnl >= 0 ? "+" : ""}{money(openPnl)}</p></div>
+                <div className="min-w-0"><p className="eyebrow">KAPANAN İŞLEM</p><p className="mt-1 font-mono text-sm font-bold text-white">{closedTrades.length}</p></div>
+                <div className="min-w-0"><p className="eyebrow">BAŞARI</p><p className="mt-1 font-mono text-sm font-bold text-white">%{winRate.toFixed(1)}</p></div>
+                <div className="min-w-0 col-span-2 sm:col-span-1"><p className="eyebrow">NET PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(netPnl)}`}>{netPnl >= 0 ? "+" : ""}{money(netPnl)}</p></div>
+            </section>
 
             <button
                 onClick={() => setPicking(true)}
@@ -1289,6 +1445,39 @@ export default function ChartsPage() {
                 </section>
             </div>}
 
+            {chartSettingsOpen && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 sm:p-6" onClick={() => setChartSettingsOpen(false)}>
+                <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="chart-settings-modal-title">
+                    <div className="flex items-center justify-between border-b border-bunker-800 px-4 py-3">
+                        <div>
+                            <h2 id="chart-settings-modal-title" className="font-mono text-sm font-bold text-white">GRAFİK AYARLARI</h2>
+                            <p className="mt-1 text-xs text-bunker-muted"><SymbolLink symbol={symbol} className="text-neon-green" /> · görünüm tercihleri</p>
+                        </div>
+                        <button type="button" onClick={() => setChartSettingsOpen(false)} className="min-h-10 min-w-10 rounded-lg text-bunker-muted hover:bg-bunker-900 hover:text-white" aria-label="Grafik ayarlarını kapat">✕</button>
+                    </div>
+                    <div className="space-y-3 p-4">
+                        {[
+                            { checked: showPositions, setChecked: setShowPositions, title: "Pozisyonları göster", description: "Seçili sembolde açık pozisyon varsa giriş çizgisi ve işaretini gösterir." },
+                            { checked: showStopTakeProfit, setChecked: setShowStopTakeProfit, title: "SL / TP göster", description: "Açık pozisyonun kayıtlı zarar-durdur ve kâr-al seviyelerini çizer." },
+                            { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonları göster", description: "Yalnız tamamlanmış mumlarla doğrulanan çekiç ve üç mum formasyonlarını gösterir." },
+                        ].map((setting) => (
+                            <button
+                                key={setting.title}
+                                type="button"
+                                role="switch"
+                                aria-checked={setting.checked}
+                                onClick={() => setting.setChecked(!setting.checked)}
+                                className="flex w-full items-center gap-3 rounded-xl border border-bunker-800 bg-bunker-900/50 p-3 text-left transition-colors hover:border-bunker-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-green/70"
+                            >
+                                <span className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${setting.checked ? "bg-neon-green" : "bg-bunker-700"}`} aria-hidden="true">
+                                    <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-transform ${setting.checked ? "translate-x-6" : "translate-x-1"}`} />
+                                </span>
+                                <span className="min-w-0"><span className="block font-mono text-sm font-bold text-white">{setting.title}</span><span className="mt-1 block text-xs leading-5 text-bunker-muted">{setting.description}</span></span>
+                            </button>
+                        ))}
+                    </div>
+                </section>
+            </div>}
+
             <div className="chart-card card bg-bunker-950 p-0 overflow-hidden relative">
                 {loading && (
                     <div className="absolute inset-0 flex items-center justify-center z-10 bg-bunker-950/70">
@@ -1309,12 +1498,17 @@ export default function ChartsPage() {
                         <p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">{patternTooltip.pattern.type === "buy" ? "Boğa yönlü" : "Ayı yönlü"} · {interval}</p>
                     </div>
                 )}
-                {/* mum kapanış geri sayımı: grafiğin üzerinde sağ üst köşe */}
-                <div className="absolute top-3 right-3 z-20 flex items-center gap-2 px-3 py-1.5 rounded-lg border border-bunker-700 bg-bunker-900/90 backdrop-blur font-mono text-xs text-bunker-muted pointer-events-none">
-                    <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" />
-                    MUM KAPANIŞ: <span className="text-neon-green font-bold tabular-nums">
-                        {String(Math.floor(countdown / 60000)).padStart(2, "0")}:{String(Math.floor((countdown % 60000) / 1000)).padStart(2, "0")}
-                    </span>
+                {/* mum kapanış geri sayımı ve görünüm ayarları: grafiğin sağ üst köşesi */}
+                <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-bunker-700 bg-bunker-900/90 backdrop-blur font-mono text-xs text-bunker-muted pointer-events-none">
+                        <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" />
+                        MUM KAPANIŞ: <span className="text-neon-green font-bold tabular-nums">
+                            {String(Math.floor(countdown / 60000)).padStart(2, "0")}:{String(Math.floor((countdown % 60000) / 1000)).padStart(2, "0")}
+                        </span>
+                    </div>
+                    <button type="button" onClick={() => setChartSettingsOpen(true)} aria-label="Grafik ayarlarını aç" title="Grafik ayarları" className="grid h-8 w-8 place-items-center rounded-lg border border-bunker-700 bg-bunker-900/90 text-bunker-muted backdrop-blur transition-colors hover:border-neon-green/50 hover:text-neon-green focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-green/70">
+                        <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current" strokeWidth="2"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" /><path d="m19.4 15 .1.1 1.4 1.1-2 3.4-1.7-.7a7.5 7.5 0 0 1-2.3 1.3L14.6 22h-4l-.3-1.8a7.5 7.5 0 0 1-2.3-1.3l-1.7.7-2-3.4 1.4-1.1.1-.1a7.4 7.4 0 0 1 0-2l-.1-.1-1.4-1.1 2-3.4 1.7.7a7.5 7.5 0 0 1 2.3-1.3l.3-1.8h4l.3 1.8a7.5 7.5 0 0 1 2.3 1.3l1.7-.7 2 3.4-1.4 1.1-.1.1a7.4 7.4 0 0 1 0 2Z" /></svg>
+                    </button>
                 </div>
             </div>
 
@@ -1352,8 +1546,8 @@ export default function ChartsPage() {
                                         <tr key={p.symbol} className="border-b border-bunker-800/50 hover:bg-bunker-900/50">
                                             <td className="px-4 py-2 text-white font-bold"><SymbolLink symbol={p.symbol} className="text-white hover:text-neon-green" /></td>
                                             <td className="px-4 py-2 text-bunker-muted">{time}</td>
-                                            <td className="px-4 py-2 text-bunker-muted">{p.entry?.toFixed?.(4) ?? p.entry}</td>
-                                            <td className="px-4 py-2 text-white">{p.current?.toFixed?.(4) ?? p.current}</td>
+                                            <td className="px-4 py-2 text-bunker-muted">{formatPrice(p.entry)}</td>
+                                            <td className="px-4 py-2 text-white">{formatPrice(p.current)}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{p.quantity?.toFixed?.(4) ?? p.quantity}</td>
                                             <td className={`px-4 py-2 text-right font-bold ${pnl >= 0 ? "text-neon-green" : "text-red-400"}`}>
                                                 <div>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}%</div>

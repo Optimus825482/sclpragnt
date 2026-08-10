@@ -3,7 +3,8 @@ import os
 import sqlite3
 import time
 import unittest
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 
 os.environ.setdefault("DB_BACKEND", "sqlite")
@@ -35,6 +36,84 @@ class _Market:
 
 
 class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
+    async def test_automatic_scan_records_entry_ineligible_before_strategy_evaluation(self):
+        """A failed liquidity preflight is an audit result, never a signal."""
+        from app import main
+
+        class _Clock:
+            def __init__(self):
+                self.calls = 0
+
+            def time(self):
+                self.calls += 1
+                # The first value initializes the loop; the second starts an
+                # entry scan.  Keep every later read on that same scan tick.
+                return 0.0 if self.calls == 1 else 61.0
+
+        ticker = {"symbol": "BTCTRY", "last_price": 100.0, "timestamp": 61_000}
+        market = SimpleNamespace(
+            get_ticker=Mock(return_value=ticker),
+            kline_freshness=Mock(return_value={"fresh": True, "age_sec": 0.0}),
+        )
+        analyzer = SimpleNamespace(
+            positions={},
+            entry_liquidity_preflight=AsyncMock(
+                return_value=(False, {"reason": "entry_ineligible:spread", "checks": {"spread": False}})
+            ),
+            evaluate=AsyncMock(return_value=[]),
+        )
+        scan_log = Mock()
+        ws_manager = SimpleNamespace(broadcast=AsyncMock())
+
+        sleep_calls = 0
+
+        async def stop_after_first_cycle(_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls > 1:
+                raise asyncio.CancelledError()
+
+        with patch.object(main, "time", _Clock()), \
+             patch.object(main, "market", market), \
+             patch.object(main, "analyzer", analyzer), \
+             patch.object(main, "ws_manager", ws_manager), \
+             patch.object(main, "_record_strategy_scan_log", scan_log), \
+             patch.object(main, "migration_monitor", SimpleNamespace(state={"status": "idle"})), \
+             patch.object(main.asyncio, "sleep", new=stop_after_first_cycle), \
+             patch.object(main.config, "SYMBOLS", ["BTCTRY"]), \
+             patch.object(main.config, "PASSIVE_SYMBOLS", set()), \
+             patch.object(main.config, "STRATEGY_ENTRY_SCAN_INTERVAL_SEC", 60):
+            with self.assertRaises(asyncio.CancelledError):
+                await main.strategy_loop()
+
+        analyzer.entry_liquidity_preflight.assert_awaited_once_with("BTCTRY", main.config.ACTIVE_STRATEGY)
+        analyzer.evaluate.assert_awaited_once_with("BTCTRY", ticker, allow_entry=False)
+        ws_manager.broadcast.assert_not_awaited()
+        statuses = [call.args[2] for call in scan_log.call_args_list]
+        self.assertIn("ENTRY_INELIGIBLE", statuses)
+        self.assertNotIn("BUY_BLOCKED", statuses)
+
+    async def test_opening_liquidity_race_is_entry_ineligible_not_buy_blocked(self):
+        """The final writer-side liquidity recheck remains a non-signal guard."""
+        from app.analyzer import ScalpAnalyzer
+
+        market = _Market()
+        market.liquidity_status = Mock(return_value=(False, {"checks": {"spread": False}}))
+        analyzer = ScalpAnalyzer(market)
+        saved = AsyncMock()
+        commit = AsyncMock()
+
+        with patch("app.analyzer.database.load_positions", new=AsyncMock(return_value={})), \
+             patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=10_000.0)), \
+             patch("app.analyzer.database.save_signal", new=saved), \
+             patch("app.analyzer.database.commit_open_position", new=commit):
+            result = await analyzer.open_position("BTCTRY", 100.0, "LONG", "EMA_VWAP_PULLBACK")
+
+        self.assertEqual(result["action"], "ENTRY_INELIGIBLE")
+        self.assertTrue(str(result["reason"]).startswith("entry_recheck_failed:"))
+        commit.assert_not_awaited()
+        saved.assert_not_awaited()
+
     async def test_market_order_client_request_id_is_durable(self):
         from app.analyzer import ScalpAnalyzer
 

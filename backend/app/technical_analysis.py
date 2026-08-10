@@ -201,38 +201,89 @@ def _methodology_analysis(opens, highs, lows, closes, volumes, adx=None, alignme
     return {"regime": {"name": regime_name, "confidence": round(regime_confidence, 3), "method": "deterministic_v1", "atr_pct": atr_pct, "volatility_change": vol_change}, "elliott": elliott, "wyckoff": wyckoff, "fibonacci": fib, "turtle": turtle, "confluence": {"score": score, "label": "high" if score >= 0.7 else "moderate" if score >= 0.4 else "low", "components": {"trend": trend_score, "turtle": turtle_score, "wyckoff": wyckoff_score, "elliott": elliott["confidence"]}}, "methodology_version": "methodology-v1"}
 
 def _candlestick_patterns(opens, highs, lows, closes):
-    if len(closes) < 3: return []
-    o, h, l, c = opens[-1], highs[-1], lows[-1], closes[-1]
-    po, pc = opens[-2], closes[-2]
-    body, rng = abs(c-o), max(h-l, 1e-12)
+    """Detect high-confidence formations on the *last confirmed* candle.
+
+    Callers pass closed OHLCV history only.  This deliberately reports fewer
+    labels than a permissive pattern scanner: a chart marker should be a
+    reproducible observation, not a prediction or a trade instruction.
+    """
+    size = min(len(opens), len(highs), len(lows), len(closes))
+    if size < 3:
+        return ["none"]
+    opens, highs, lows, closes = (list(values)[-size:] for values in (opens, highs, lows, closes))
+    o, h, l, c = map(float, (opens[-1], highs[-1], lows[-1], closes[-1]))
+    po, ph, pl, pc = map(float, (opens[-2], highs[-2], lows[-2], closes[-2]))
+    body, previous_body = abs(c - o), abs(pc - po)
+    rng, previous_range = max(h - l, 1e-12), max(ph - pl, 1e-12)
+    upper, lower = h - max(o, c), min(o, c) - l
+    avg_body = float(np.mean([abs(float(closes[i]) - float(opens[i])) for i in range(max(0, size - 20), size)])) or 1e-12
+    avg_range = float(np.mean([max(float(highs[i]) - float(lows[i]), 0.0) for i in range(max(0, size - 20), size)])) or 1e-12
     patterns = []
-    if body / rng <= 0.1: patterns.append("doji")
-    if min(o,c)-l > body*2 and h-max(o,c) < body: patterns.append("hammer")
-    if max(o,c)-l < body and h-min(o,c) > body*2: patterns.append("shooting_star")
-    if pc < po and c > o and c >= po and o <= pc: patterns.append("bullish_engulfing")
-    if pc > po and c < o and c <= po and o >= pc: patterns.append("bearish_engulfing")
-    # Strong, common multi-candle confirmations. These are deliberately
-    # conservative and require body/range relationships rather than names
-    # inferred from a single candle.
-    avg_body = float(np.mean([abs(closes[i]-opens[i]) for i in range(max(0, len(closes)-20), len(closes))])) or 1e-12
-    if len(closes) >= 3:
-        a,b = len(closes)-3, len(closes)-2
-        if closes[a] < opens[a] and abs(closes[b]-opens[b]) <= avg_body*.6 and closes[-1] > opens[-1] and closes[-1] > (opens[a]+closes[a])/2: patterns.append("morning_star")
-        if closes[a] > opens[a] and abs(closes[b]-opens[b]) <= avg_body*.6 and closes[-1] < opens[-1] and closes[-1] < (opens[a]+closes[a])/2: patterns.append("evening_star")
-    if len(closes) >= 4:
-        last4 = range(len(closes)-4, len(closes)-1)
-        if all(closes[i] > opens[i] and closes[i] > closes[i-1] for i in last4): patterns.append("three_white_soldiers")
-        if all(closes[i] < opens[i] and closes[i] < closes[i-1] for i in last4): patterns.append("three_black_crows")
-    if len(closes) >= 2:
-        prev_mid = (opens[-2]+closes[-2])/2
-        if closes[-2] < opens[-2] and opens[-1] <= closes[-2] and closes[-1] > prev_mid: patterns.append("piercing_line")
-        if closes[-2] > opens[-2] and opens[-1] >= closes[-2] and closes[-1] < prev_mid: patterns.append("dark_cloud_cover")
-        if closes[-2] < opens[-2] and abs(closes[-1]-opens[-1]) < abs(closes[-2]-opens[-2])*.6 and min(opens[-1],closes[-1]) > min(opens[-2],closes[-2]) and max(opens[-1],closes[-1]) < max(opens[-2],closes[-2]): patterns.append("bullish_harami")
-        if closes[-2] > opens[-2] and abs(closes[-1]-opens[-1]) < abs(closes[-2]-opens[-2])*.6 and min(opens[-1],closes[-1]) > min(opens[-2],closes[-2]) and max(opens[-1],closes[-1]) < max(opens[-2],closes[-2]): patterns.append("bearish_harami")
-        if abs(highs[-1]-highs[-2]) <= max(highs[-1], highs[-2])*.001: patterns.append("tweezer_top")
-        if abs(lows[-1]-lows[-2]) <= max(lows[-1], lows[-2])*.001: patterns.append("tweezer_bottom")
-    if not patterns: patterns.append("none")
-    return patterns
+
+    # A doji is context only.  It never also becomes a pin bar because a
+    # nearly zero body makes wick/body ratios artificially large.
+    is_doji = body / rng <= 0.10
+    if is_doji:
+        patterns.append("doji")
+
+    prior_downtrend = closes[-2] < closes[-3]
+    prior_uptrend = closes[-2] > closes[-3]
+    meaningful_body = body >= max(rng * 0.05, avg_body * 0.20)
+    if not is_doji and meaningful_body and prior_downtrend and lower >= max(body * 2, rng * 0.45) and upper <= max(body * 0.75, rng * 0.10) and c >= l + rng * 0.60:
+        patterns.append("hammer")
+    if not is_doji and meaningful_body and prior_uptrend and upper >= max(body * 2, rng * 0.45) and lower <= max(body * 0.75, rng * 0.10) and c <= l + rng * 0.40:
+        patterns.append("shooting_star")
+
+    previous_meaningful = previous_body >= max(previous_range * 0.10, avg_body * 0.20)
+    current_meaningful = body >= max(rng * 0.10, avg_body * 0.20)
+    if previous_meaningful and current_meaningful and pc < po and c > o and o <= pc and c >= po and body > previous_body:
+        patterns.append("bullish_engulfing")
+    if previous_meaningful and current_meaningful and pc > po and c < o and o >= pc and c <= po and body > previous_body:
+        patterns.append("bearish_engulfing")
+
+    a, b = size - 3, size - 2
+    first_body, middle_body = abs(closes[a] - opens[a]), abs(closes[b] - opens[b])
+    if (closes[a] < opens[a] and first_body >= avg_body and middle_body <= first_body * 0.45
+            and c > o and body >= first_body * 0.60 and c > (opens[a] + closes[a]) / 2):
+        patterns.append("morning_star")
+    if (closes[a] > opens[a] and first_body >= avg_body and middle_body <= first_body * 0.45
+            and c < o and body >= first_body * 0.60 and c < (opens[a] + closes[a]) / 2):
+        patterns.append("evening_star")
+
+    if size >= 4:
+        last3 = range(size - 3, size)
+        bodies = [abs(closes[i] - opens[i]) for i in last3]
+        bullish_soldiers = (all(closes[i] > opens[i] and bodies[offset] >= avg_body * 0.60 for offset, i in enumerate(last3))
+                            and closes[-3] < closes[-2] < closes[-1]
+                            and opens[-2] >= opens[-3] and opens[-2] <= closes[-3]
+                            and opens[-1] >= opens[-2] and opens[-1] <= closes[-2])
+        bearish_crows = (all(closes[i] < opens[i] and bodies[offset] >= avg_body * 0.60 for offset, i in enumerate(last3))
+                         and closes[-3] > closes[-2] > closes[-1]
+                         and opens[-2] <= opens[-3] and opens[-2] >= closes[-3]
+                         and opens[-1] <= opens[-2] and opens[-1] >= closes[-2])
+        if bullish_soldiers:
+            patterns.append("three_white_soldiers")
+        if bearish_crows:
+            patterns.append("three_black_crows")
+
+    prev_mid = (po + pc) / 2
+    if previous_meaningful and current_meaningful and pc < po and c > o and o <= pc and prev_mid < c < po:
+        patterns.append("piercing_line")
+    if previous_meaningful and current_meaningful and pc > po and c < o and o >= pc and po > c > prev_mid:
+        patterns.append("dark_cloud_cover")
+    if previous_meaningful and current_meaningful and pc < po and body <= previous_body * 0.60 and pc < o < c < po:
+        patterns.append("bullish_harami")
+    if previous_meaningful and current_meaningful and pc > po and body <= previous_body * 0.60 and po < c < o < pc:
+        patterns.append("bearish_harami")
+
+    # Tweezer tolerance is based on recent candle range, not a fixed percent
+    # of price.  Require opposing, material bodies and local trend context.
+    tweezer_tolerance = avg_range * 0.10
+    if previous_meaningful and current_meaningful and prior_uptrend and pc > po and c < o and abs(h - ph) <= tweezer_tolerance:
+        patterns.append("tweezer_top")
+    if previous_meaningful and current_meaningful and prior_downtrend and pc < po and c > o and abs(l - pl) <= tweezer_tolerance:
+        patterns.append("tweezer_bottom")
+    return patterns or ["none"]
 
 def _price_action_setup(opens, highs, lows, closes):
     """Conservative, non-repainting price-action labels from closed candles."""

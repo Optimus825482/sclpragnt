@@ -12,14 +12,11 @@ const MENU = [
     { href: "/", label: "Scalping", icon: "⚡", desc: "Canlı terminal" },
     { href: "/portfolio", label: "Portföy", icon: "📊", desc: "Varlıklar & PnL", children: [{ href: "/portfolio?tab=history", label: "İşlem Geçmişi" }] },
     { href: "/gainer-radar", label: "Gainer Radar", icon: "🎯", desc: "Fırsat tarayıcı" },
-    { href: "/alerts", label: "Alarmlar", icon: "🔔", desc: "Fiyat alarmı yönetimi" },
     { href: "/strategies", label: "Stratejiler", icon: "🧭", desc: "Sinyal motorları" },
-    { href: "/symbol-analysis", label: "Sembol Analizi", icon: "🔎", desc: "Çoklu zaman analizi" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
     { href: "/backtest", label: "Backtest", icon: "🧪", desc: "Strateji test lab" },
-    { href: "/signal-replay", label: "Sinyal Denetimi", icon: "🕒", desc: "Son 30 dk replay" },
+    { href: "/signal-replay", label: "Sinyal Denetimi", icon: "🕒", desc: "Seçili kapanmış M5 mum denetimi" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
-    { href: "/system-health", label: "Sistem Sağlığı", icon: "🩺", desc: "Gerçek servis durumu" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" }
 ];
 const formatNotificationDate = (value: unknown) => {

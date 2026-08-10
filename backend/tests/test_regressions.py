@@ -4,6 +4,7 @@ import os
 import sqlite3
 import pathlib
 import unittest
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -198,8 +199,69 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('symbols = [s.upper() for s in config.SYMBOLS]', replay_source)
         self.assertNotIn('config.SYMBOLS if s not in config.PASSIVE_SYMBOLS', replay_source)
         self.assertIn('fetch_klines(symbol, "5m", limit=400)', replay_source)
-        self.assertIn('await database.upsert_market_candles(hydrated)', replay_source)
+        self.assertIn('int(row.get("close_time") or 0) <= now_ms', replay_source)
+        self.assertNotIn('await database.upsert_market_candles', replay_source)
+        self.assertIn('"BUY_SIGNAL" if strategy_fn(kline, symbol) == "buy" else "NO_SIGNAL"', replay_source)
         self.assertIn('Aktif tarama sembol listesi boş', replay_source)
+
+
+class StrategyReplayBehavior(unittest.IsolatedAsyncioTestCase):
+    async def test_replay_checks_only_latest_closed_candles_without_mutating_state(self):
+        from app import main
+
+        now_ms = int(__import__("time").time() * 1000)
+        closed_rows = [{
+            "symbol": "BTC_TRY", "timeframe": "5m", "open_time": now_ms - (23 - index) * 300_000,
+            "close_time": now_ms - (22 - index) * 300_000, "open": 100 + index,
+            "high": 101 + index, "low": 99 + index, "close": 100 + index,
+            "volume": 10 + index,
+        } for index in range(22)]
+        incomplete_row = {**closed_rows[-1], "open_time": now_ms - 60_000, "close_time": now_ms + 240_000, "close": 999999}
+        strategy_lengths = []
+
+        def fake_strategy(kline, _symbol):
+            strategy_lengths.append(len(kline["closes"]))
+            return "buy" if len(kline["closes"]) == 22 else None
+
+        async def no_mutation(*_args, **_kwargs):
+            self.fail("Signal replay must not persist candles or mutate strategy state")
+
+        previous_symbols = main.config.SYMBOLS
+        previous_strategy = main.config.ACTIVE_STRATEGY
+        previous_positions = dict(main.analyzer.positions)
+        main.config.SYMBOLS = ["BTC_TRY"]
+        main.config.ACTIVE_STRATEGY = "BB_MFI_MEAN_REVERSION"
+        main._strategy_replay_jobs["closed-candle-test"] = {
+            "job_id": "closed-candle-test", "status": "queued", "strategy": main.config.ACTIVE_STRATEGY,
+            "timeframe": "5m", "candle_count": 2, "completed": 0, "total": 0, "results": [], "logs": [],
+        }
+        try:
+            with patch.object(main.database, "get_market_candles", AsyncMock(return_value=closed_rows + [incomplete_row])), \
+                 patch.object(main.database, "upsert_market_candles", no_mutation), \
+                 patch.object(main, "fetch_klines", AsyncMock()) , \
+                 patch.object(main.analyzer, "strategy_bb_mfi_mean_reversion", fake_strategy):
+                await main._run_strategy_replay("closed-candle-test", 2)
+        finally:
+            main.config.SYMBOLS = previous_symbols
+            main.config.ACTIVE_STRATEGY = previous_strategy
+
+        job = main._strategy_replay_jobs.pop("closed-candle-test")
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["completed"], 2)
+        self.assertEqual(job["total"], 2)
+        self.assertEqual(strategy_lengths, [21, 22])
+        self.assertEqual([result["close"] for result in job["results"]], [120.0, 121.0])
+        self.assertEqual([result["action"] for result in job["results"]], ["NO_SIGNAL", "BUY_SIGNAL"])
+        self.assertEqual(main.analyzer.positions, previous_positions)
+
+    async def test_replay_endpoint_rejects_candle_counts_outside_one_to_twenty(self):
+        from app.main import start_strategy_replay
+        from fastapi import HTTPException
+
+        for candle_count in (0, 21, "not-a-number"):
+            with self.assertRaises(HTTPException) as raised:
+                await start_strategy_replay({"candle_count": candle_count})
+            self.assertEqual(raised.exception.status_code, 422)
 
     def test_llm_market_scan_uses_fast_hot_cache_defaults(self):
         source = (ROOT / "app" / "main.py").read_text()

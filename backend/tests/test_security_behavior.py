@@ -3,7 +3,7 @@ import sqlite3
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
 
@@ -80,6 +80,29 @@ class A2AReplayBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first)
         self.assertFalse(second)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM a2a_messages").fetchone()[0], 1)
+
+
+class ConfigApiBehavior(unittest.IsolatedAsyncioTestCase):
+    async def test_config_validation_failure_is_a_json_response(self):
+        from app.main import update_config
+
+        response = await update_config({"max_open_positions": 0})
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.media_type, "application/json")
+        self.assertIn(b'"code":"invalid_configuration"', response.body)
+        self.assertIn(b'"detail":"max_open_positions 1 ile 36 aras', response.body)
+
+    async def test_config_runtime_failure_is_a_safe_json_response(self):
+        from app.main import update_config
+
+        with patch("app.main._apply_config_update", new=AsyncMock(side_effect=RuntimeError("exchangeInfo unavailable"))):
+            response = await update_config({"symbols": ["BTCTRY"]})
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.media_type, "application/json")
+        self.assertIn(b'"code":"settings_service_unavailable"', response.body)
+        self.assertNotIn(b"exchangeInfo unavailable", response.body)
 
 
 if __name__ == "__main__":

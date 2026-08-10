@@ -178,34 +178,36 @@ async def backfill_missing_active_history():
     print("[History] başlangıç historical kontrolü tamamlandı", flush=True)
 
 
-async def _run_strategy_replay(job_id: str, minutes: int = 30):
-    """Replay the active strategy over recent persisted 5m candles, paper-only."""
+async def _run_strategy_replay(job_id: str, candle_count: int = 6):
+    """Evaluate the latest closed 5m candles without mutating strategy state."""
     job = _strategy_replay_jobs[job_id]
     # Replay salt-okunur bir tarihsel denetimdir; otomatik giriş döngüsündeki
     # PASSIVE ön elemesi burada kullanılmaz. Aksi halde aktivite filtresi tüm
     # ayarlı sembolleri dışarıda bırakıp replay'i symbols=0 ile başlatabilir.
     symbols = [s.upper() for s in config.SYMBOLS]
-    job.update(status="running", total=0, completed=0)
-    job["logs"].append({"level": "info", "message": f"Replay başladı | strategy={config.ACTIVE_STRATEGY} timeframe=5m window={minutes}m symbols={len(symbols)}"})
+    job.update(status="running", total=0, completed=0, results=[])
+    job["logs"].append({"level": "info", "message": f"Denetim başladı | strategy={config.ACTIVE_STRATEGY} timeframe=5m closed_candles={candle_count} symbols={len(symbols)}"})
     strategy_fn = analyzer.strategy_bb_mfi_mean_reversion if config.ACTIVE_STRATEGY == "BB_MFI_MEAN_REVERSION" else analyzer.strategy_mean_reversion
     try:
-        datasets = {}
         async def load(symbol):
             rows = await database.get_market_candles(symbol, "5m")
-            # PostgreSQL historical_candles henüz backfill edilmemiş olabilir.
-            # Replay'i çalıştırabilmek için yalnızca public Binance TR 5m
-            # mumlarıyla eksik geçmişi doldur; gerçek emir veya portföy etkisi yok.
-            if len(rows) < 21:
+            now_ms = int(time.time() * 1000)
+            # Only completed candles may be evaluated.  The live in-progress
+            # 5m candle would otherwise make a historical replay non-repeatable.
+            rows = [row for row in rows if int(row.get("close_time") or 0) <= now_ms]
+            # The cache is preferred.  If it cannot provide the warm-up window,
+            # use the public endpoint for this read-only job; do not persist or
+            # otherwise mutate market/strategy state from the replay path.
+            if len(rows) < 20 + candle_count:
                 raw = await fetch_klines(symbol, "5m", limit=400)
-                now_ms = int(time.time() * 1000)
-                hydrated = []
+                public_rows = []
                 for item in raw or []:
                     if len(item) < 6:
                         continue
                     close_time = int(item[6]) if len(item) > 6 else int(item[0])
                     if close_time > now_ms:
                         continue
-                    hydrated.append({
+                    public_rows.append({
                         "symbol": symbol, "timeframe": "5m", "open_time": int(item[0]),
                         "close_time": close_time, "open": float(item[1]), "high": float(item[2]),
                         "low": float(item[3]), "close": float(item[4]), "volume": float(item[5]),
@@ -213,44 +215,45 @@ async def _run_strategy_replay(job_id: str, minutes: int = 30):
                         "trade_count": int(item[8]) if len(item) > 8 else None,
                         "source": "binance_tr_public_replay", "fetched_at": now_ms,
                     })
-                if hydrated:
-                    await database.upsert_market_candles(hydrated)
-                    rows = hydrated
+                rows = public_rows
             return symbol, rows[-400:]
         loaded = await asyncio.gather(*(load(symbol) for symbol in symbols), return_exceptions=True)
-        usable = [(symbol, rows) for item in loaded if not isinstance(item, Exception) for symbol, rows in [item] if rows]
+        usable = [(symbol, rows) for item in loaded if not isinstance(item, Exception) for symbol, rows in [item] if len(rows) >= candle_count]
         missing = sorted(set(symbols) - {symbol for symbol, _ in usable})
         if not symbols:
             raise ValueError("Aktif tarama sembol listesi boş; Ayarlar > Semboller bölümünden en az bir sembol seçilmeli")
         if not usable:
             raise ValueError("historical_candles içinde kullanılabilir 5m veri yok")
-        latest_ms = max(int(rows[-1]["open_time"]) for _, rows in usable)
-        step_count = minutes // 5 + 1
-        job["total"] = len(usable) * step_count
+        job["total"] = len(usable) * candle_count
         if missing:
             job["logs"].append({"level": "warning", "message": f"Verisi bulunamayan semboller atlandı | missing={len(missing)} | örnek={', '.join(missing[:12])}"})
-        checkpoints = [latest_ms - (step_count - 1 - i) * 5 * 60 * 1000 for i in range(step_count)]
-        job["checkpoints"] = [int(ts / 1000) for ts in checkpoints]
-        for checkpoint in checkpoints:
-            label = datetime.fromtimestamp(checkpoint / 1000, tz=timezone.utc).astimezone().strftime("%d.%m %H:%M")
+        job["results"] = []
+        for candle_index in range(candle_count):
             signals = 0
             evaluated = 0
             for symbol, rows in usable:
-                prefix = [row for row in rows if int(row["open_time"]) <= checkpoint]
+                prefix = rows[:len(rows) - candle_count + candle_index + 1]
                 fields = {"opens": "open", "highs": "high", "lows": "low", "closes": "close", "volumes": "volume"}
                 kline = {key: [float(row[db_key]) for row in prefix] for key, db_key in fields.items()}
+                candle = prefix[-1]
+                close_time = int(candle["close_time"])
+                label = datetime.fromtimestamp(close_time / 1000, tz=timezone.utc).astimezone().strftime("%d.%m %H:%M")
                 if len(kline["closes"]) < 21:
-                    result = "warmup"
+                    action = "WARMUP"
                 else:
                     evaluated += 1
-                    result = strategy_fn(kline, symbol)
-                if result == "buy":
+                    action = "BUY_SIGNAL" if strategy_fn(kline, symbol) == "buy" else "NO_SIGNAL"
+                if action == "BUY_SIGNAL":
                     signals += 1
-                    job["logs"].append({"level": "signal", "timestamp": checkpoint / 1000, "symbol": symbol, "message": f"{label} BUY_SIGNAL | price={kline['closes'][-1]:g} | strategy={config.ACTIVE_STRATEGY}"})
+                job["results"].append({
+                    "symbol": symbol, "candle_number": candle_index + 1,
+                    "timestamp": close_time / 1000, "close": kline["closes"][-1],
+                    "action": action,
+                })
                 job["completed"] += 1
-            job["logs"].append({"level": "summary", "timestamp": checkpoint / 1000, "message": f"{label} tamamlandı | evaluated={evaluated} signals={signals} no_signal={evaluated - signals}"})
+            job["logs"].append({"level": "summary", "message": f"Mum {candle_index + 1}/{candle_count} tamamlandı | evaluated={evaluated} signals={signals} no_signal={evaluated - signals}"})
         job.update(status="completed", finished_at=time.time())
-        job["logs"].append({"level": "success", "message": "Replay tamamlandı; canlı portföy değiştirilmedi."})
+        job["logs"].append({"level": "success", "message": "Denetim tamamlandı; canlı portföy ve strateji durumu değiştirilmedi."})
     except Exception as exc:
         job.update(status="error", error=str(exc), finished_at=time.time())
         job["logs"].append({"level": "error", "message": f"Replay hatası: {exc}"})
@@ -651,7 +654,7 @@ async def strategy_loop():
     while True:
         current_candle = int(time.time() // scan_interval)
         entry_scan_due = current_candle != last_entry_candle
-        scan_checked = scan_fresh = scan_stale = scan_evaluated = scan_no_signal = scan_errors = scan_passive = 0
+        scan_checked = scan_fresh = scan_stale = scan_evaluated = scan_no_signal = scan_errors = scan_passive = scan_ineligible = 0
         scan_buy = scan_blocked = 0
         scan_id = f"automatic-{int(time.time() * 1000)}" if entry_scan_due else None
         if entry_scan_due:
@@ -681,6 +684,17 @@ async def strategy_loop():
                 _record_strategy_scan_log("automatic", sym, "STALE_KLINE", scan_id=scan_id,
                                           timeframe=config.ACTIVE_STRATEGY_TIMEFRAME,
                                           age_sec=kline_freshness.get("age_sec"))
+            if allow_entry and sym not in analyzer.positions:
+                eligible, eligibility = await analyzer.entry_liquidity_preflight(sym, config.ACTIVE_STRATEGY)
+                if not eligible:
+                    scan_ineligible += 1
+                    allow_entry = False
+                    _record_strategy_scan_log(
+                        "automatic", sym, "ENTRY_INELIGIBLE", price=ticker.get("last_price"),
+                        reason=eligibility.get("reason", "entry_ineligible"),
+                        timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id,
+                        liquidity=eligibility,
+                    )
             scan_fresh += 1
             try:
                 if allow_entry:
@@ -702,7 +716,8 @@ async def strategy_loop():
                 elif action == "BUY_BLOCKED": scan_blocked += 1
                 print(f"[Sinyal] {sig}")
                 _record_strategy_scan_log("automatic", sym, str(sig.get("action", "SIGNAL")), price=sig.get("price", ticker.get("price")), reason=sig.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id)
-                await ws_manager.broadcast({"type": "signal", "data": sig})
+                if action != "ENTRY_INELIGIBLE":
+                    await ws_manager.broadcast({"type": "signal", "data": sig})
                 if str(sig.get("action", "")).startswith("CLOSE"):
                     await ws_manager.broadcast({"type": "trade_updated", "data": {"symbol": sig.get("symbol"), "reason": sig.get("reason")}})
                     # An LLM close is a risk decision, not an instruction to
@@ -716,7 +731,7 @@ async def strategy_loop():
             print(
                 f"[Strategy] scan summary | checked={scan_checked} passive={scan_passive} "
                 f"fresh={scan_fresh} stale={scan_stale} evaluated={scan_evaluated} "
-                f"no_signal={scan_no_signal} buy={scan_buy} blocked={scan_blocked} errors={scan_errors}",
+                f"no_signal={scan_no_signal} ineligible={scan_ineligible} buy={scan_buy} blocked={scan_blocked} errors={scan_errors}",
                 flush=True,
             )
         await asyncio.sleep(2)
@@ -1394,8 +1409,11 @@ async def gainers_radar(execute: bool = False):
                 macd, macd_signal, hist = radar_analyzer.calculate_macd(closes, config.MACD_FAST, config.MACD_SLOW, config.MACD_SIGNAL) if len(closes) >= 35 else (None, None, None)
                 rsi = radar_analyzer.calculate_rsi(closes, 14) if closes else None
                 if macd is not None and hist is not None and macd > macd_signal and hist > 0 and rsi is not None and rsi < 70:
+                    eligible, _ = await analyzer.entry_liquidity_preflight(symbol, "GAINER_RADAR")
+                    if not eligible:
+                        continue
                     signal = await analyzer.open_position(symbol, ticker["last_price"], "LONG", "GAINER_RADAR")
-                    if signal:
+                    if signal and signal.get("action") == "BUY_SIGNAL":
                         radar_trades.append(signal)
                         await ws_manager.broadcast({"type": "signal", "data": signal})
     return {"items": rows[:20], "auto_added": auto_added, "symbols": config.SYMBOLS, "paper_trades": radar_trades,
@@ -1443,6 +1461,40 @@ async def execute_gainers_radar():
 
 @app.put("/api/config")
 async def update_config(payload: dict):
+    """Persist runtime settings while always preserving the JSON API contract."""
+    try:
+        return await _apply_config_update(payload)
+    except (TypeError, ValueError) as exc:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": str(exc), "code": "invalid_configuration"},
+        )
+    except RuntimeError as exc:
+        # Symbol validation and persistence can depend on temporarily unavailable
+        # services. Return a JSON response so clients never try to parse a plain
+        # Starlette "Internal Server Error" page as JSON.
+        print(f"[Config] ayarlar kaydedilemedi: {exc}", flush=True)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Ayarlar şu anda kaydedilemedi; lütfen tekrar deneyin.",
+                "code": "settings_service_unavailable",
+            },
+        )
+    except Exception as exc:
+        # Do not expose database/provider internals, but keep the frontend API
+        # response parseable and log the cause for server-side diagnosis.
+        print(f"[Config] beklenmeyen ayar kaydetme hatası: {exc}", flush=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Ayarlar kaydedilirken beklenmeyen bir hata oluştu.",
+                "code": "settings_save_failed",
+            },
+        )
+
+
+async def _apply_config_update(payload: dict):
     previous_symbols = set(config.SYMBOLS)
     for key, attr in CONFIG_FIELDS.items():
         if key in payload:
@@ -1867,6 +1919,10 @@ async def llm_open_paper_trade(payload: dict):
         stop_loss_pct = _pct(llm_plan.get("stop_loss_pct"), config.HARD_STOP_LOSS_PCT)
         take_profit_pct = _pct(llm_plan.get("take_profit_pct"), config.SPOT_PROFIT_TARGET_PCT)
         hold_seconds = max(60, min(int(llm_plan.get("max_hold_seconds", config.MAX_POSITION_HOLD_SEC)), 7 * 24 * 3600))
+        eligible, eligibility = await analyzer.entry_liquidity_preflight(symbol, "LLM_PAPER", order_value)
+        if not eligible:
+            blocked.append({"symbol": symbol, "reason": eligibility.get("reason", "entry_ineligible"), "eligibility": eligibility})
+            continue
         signal = await analyzer.open_position(symbol, float(ticker["last_price"]), "LONG", "LLM_PAPER", order_value, stop_loss_pct, take_profit_pct, hold_seconds)
         if signal and str(signal.get("action", "")).upper() == "BUY_SIGNAL":
             await ws_manager.broadcast({"type": "signal", "data": signal})
@@ -2356,7 +2412,7 @@ async def manual_strategy_scan():
     """Kullanıcının açık talebiyle aktif stratejiyi ayarlı tüm sembollerde çalıştırır.
 
     Manuel kontrol, otomatik giriş döngüsündeki aktivite ön elemesini aşar;
-    gerçek emir kapısı yine analyzer içindeki liquidity/paper kontrolleridir.
+    ancak likidite ön-koşulunu strateji değerlendirmesinden önce uygular.
     """
     scan_id = f"manual-{uuid.uuid4().hex[:12]}"
     if migration_monitor.state["status"] == "running":
@@ -2382,6 +2438,16 @@ async def manual_strategy_scan():
             continue
         fresh_ticker += 1
         try:
+            if symbol not in analyzer.positions:
+                eligible, eligibility = await analyzer.entry_liquidity_preflight(symbol, config.ACTIVE_STRATEGY)
+                if not eligible:
+                    _record_strategy_scan_log(
+                        "manual", symbol, "ENTRY_INELIGIBLE", price=ticker.get("last_price"),
+                        reason=eligibility.get("reason", "entry_ineligible"),
+                        timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id,
+                        activity_status=activity_status, liquidity=eligibility,
+                    )
+                    continue
             evaluated += 1
             symbol_signals = await analyzer.evaluate(symbol, ticker, allow_entry=True)
             if not symbol_signals:
@@ -2389,7 +2455,8 @@ async def manual_strategy_scan():
             for signal in symbol_signals:
                 signals.append(signal)
                 _record_strategy_scan_log("manual", symbol, str(signal.get("action", "SIGNAL")), price=signal.get("price", ticker.get("last_price")), reason=signal.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id, activity_status=activity_status)
-                await ws_manager.broadcast({"type": "signal", "data": signal})
+                if str(signal.get("action", "")) != "ENTRY_INELIGIBLE":
+                    await ws_manager.broadcast({"type": "signal", "data": signal})
         except Exception as exc:
             errors += 1
             print(f"[Strategy manual] {symbol} değerlendirme hatası: {exc}")
@@ -2417,14 +2484,19 @@ async def strategy_scan_logs(limit: int = 250, scan_type: str = ""):
 
 @app.post("/api/strategy/replay")
 async def start_strategy_replay(payload: dict = None):
-    """Start a read-only recent 5m strategy replay and return a pollable job id."""
+    """Start a read-only closed-5m candle strategy check and return a pollable job."""
     payload = payload or {}
-    minutes = max(5, min(int(payload.get("minutes", 30)), 60))
+    try:
+        candle_count = int(payload.get("candle_count", 6))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="candle_count 1 ile 20 arasında bir tam sayı olmalı")
+    if not 1 <= candle_count <= 20:
+        raise HTTPException(status_code=422, detail="candle_count 1 ile 20 arasında olmalı")
     job_id = uuid.uuid4().hex[:12]
     _strategy_replay_jobs[job_id] = {"job_id": job_id, "status": "queued", "strategy": config.ACTIVE_STRATEGY,
-                                     "timeframe": "5m", "minutes": minutes, "completed": 0, "total": 0,
-                                     "logs": [], "started_at": time.time()}
-    asyncio.create_task(_run_strategy_replay(job_id, minutes), name=f"strategy-replay-{job_id}")
+                                     "timeframe": "5m", "candle_count": candle_count, "completed": 0, "total": 0,
+                                     "results": [], "logs": [], "started_at": time.time()}
+    asyncio.create_task(_run_strategy_replay(job_id, candle_count), name=f"strategy-replay-{job_id}")
     return {"ok": True, "job_id": job_id, "status": "queued", "paper_only": True}
 
 @app.get("/api/strategy/replay/{job_id}")

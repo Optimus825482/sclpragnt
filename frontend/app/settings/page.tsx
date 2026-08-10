@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import LlmManagement from "./LlmManagement";
+import SystemHealthTab from "./SystemHealthTab";
 import SymbolLink from "../components/SymbolLink";
 
 type Config = {
@@ -43,7 +44,7 @@ type Config = {
 };
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "scan-logs">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "scan-logs" | "system-health">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -106,8 +107,20 @@ export default function SettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(draft)
       });
-      if (!res.ok) throw new Error((await res.json()).detail || "Ayarlar kaydedilemedi");
-      const updated = await res.json();
+      const rawBody = await res.text();
+      let body: any = null;
+      try {
+        body = rawBody ? JSON.parse(rawBody) : null;
+      } catch {
+        // Reverse proxies may return an HTML/plain-text error page; never surface a JSON parser error to the user.
+      }
+      if (!res.ok) {
+        const detail = body?.detail || body?.error || body?.message;
+        const textDetail = rawBody && !/<[^>]+>/.test(rawBody) ? rawBody.trim().slice(0, 240) : "";
+        throw new Error(detail || textDetail || `Ayarlar kaydedilemedi (HTTP ${res.status}${res.statusText ? `: ${res.statusText}` : ""})`);
+      }
+      if (!body || typeof body !== "object") throw new Error("Ayarlar kaydedildi ancak sunucudan geçerli yanıt alınamadı.");
+      const updated = body;
       setCfg(updated);
       setDraft(updated);
       setSaved(true);
@@ -280,6 +293,7 @@ export default function SettingsPage() {
             ["strategies", "Strateji Ayarları", "📈"],
             ["llm", "LLM / Provider", "🤖"],
             ["scan-logs", "Tarama Logları", "🧾"],
+            ["system-health", "Sistem Sağlığı", "🩺"],
           ] as const).map(([key, label, icon]) => (
             <button key={key} onClick={() => setActiveTab(key)} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${activeTab === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>
               {icon} {label}
@@ -290,6 +304,9 @@ export default function SettingsPage() {
 
       {cfg && (
         <>
+          <div className={`${activeTab !== "system-health" ? "hidden" : ""}`}>
+            <SystemHealthTab />
+          </div>
           <div className={`card bg-bunker-950 ${activeTab !== "scan-logs" ? "hidden" : ""}`}>
             <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
               <div>

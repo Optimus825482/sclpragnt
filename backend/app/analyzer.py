@@ -1107,6 +1107,83 @@ class ScalpAnalyzer:
         async with self._open_position_lock:
             return await self._open_position_unlocked(symbol, entry_price, side, strat_name, order_value, stop_loss_pct, take_profit_pct, max_hold_sec)
 
+    @staticmethod
+    def _liquidity_reason(details, prefix="entry_ineligible"):
+        failed = [key for key, ok in (details or {}).get("checks", {}).items() if not ok]
+        return prefix + ":" + ",".join(failed or ["unknown"])
+
+    async def _refresh_liquidity_snapshot(self, symbol):
+        """Refresh the top-of-book only when the local snapshot cannot gate an entry."""
+        if not self.market:
+            return {}
+        flow = self.market.get_orderflow(symbol)
+        try:
+            freshness = self.market.data_freshness(symbol, config.MOMENTUM_TIMEFRAME)
+            orderbook_stale = not freshness.get("orderbook", {}).get("fresh", False)
+        except Exception:
+            orderbook_stale = False
+        needs_snapshot = (
+            not flow.get("bid_qty")
+            or not flow.get("ask_qty")
+            or flow.get("spread_pct") is None
+            or orderbook_stale
+        )
+        if not needs_snapshot:
+            return flow
+        try:
+            book = await orderbook(symbol, 5)
+            bids = book.get("bids") or []
+            asks = book.get("asks") or []
+            if bids and asks:
+                bid_price, bid_qty = float(bids[0][0]), float(bids[0][1])
+                ask_price, ask_qty = float(asks[0][0]), float(asks[0][1])
+                mid = (bid_price + ask_price) / 2
+                flow.update({"bid_qty": bid_qty, "ask_qty": ask_qty,
+                             "spread_pct": ((ask_price - bid_price) / mid * 100) if mid else None,
+                             "source": "binance_tr_public_rest",
+                             "updated_at": time.time()})
+                self.market.orderflow[symbol.upper()] = flow
+        except Exception as exc:
+            print(f"[Likidite] {symbol} REST order-book snapshot alınamadı: {exc}")
+        return flow
+
+    async def _entry_order_value(self, symbol, strat_name, requested_order_value=None):
+        """Mirror the paper order-size calculation without opening or recording a signal."""
+        try_balance = await database.get_wallet_balance("TRY")
+        requested = float(requested_order_value or 0)
+        if strat_name == "LLM_PAPER" and requested > 0:
+            return min(requested, try_balance / (1 + config.COMMISSION_PCT))
+        available_value = try_balance / (1 + config.COMMISSION_PCT)
+        order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
+        order_value = available_value * max(0.001, min(order_pct, 1.0))
+        if order_value < config.MIN_PARTIAL_ORDER_TRY:
+            if available_value >= config.FALLBACK_ORDER_TRY:
+                order_value = config.FALLBACK_ORDER_TRY
+            elif available_value >= config.MIN_PARTIAL_ORDER_TRY:
+                order_value = available_value
+        return order_value
+
+    async def entry_liquidity_preflight(self, symbol, strat_name="UT", requested_order_value=None):
+        """Gate a *new* entry before strategy/LLM signal production.
+
+        This creates no signal, order, or position.  A false result is an
+        eligibility observation for the caller's scan log, not BUY_BLOCKED.
+        """
+        symbol = str(symbol).replace("_", "").upper()
+        if not self.market or not config.LIQUIDITY_FILTER_ENABLED:
+            return True, {"disabled": not config.LIQUIDITY_FILTER_ENABLED}
+        order_value = await self._entry_order_value(symbol, strat_name, requested_order_value)
+        # Balance/position policy is deliberately left to open_position; this
+        # gate owns only current market liquidity eligibility.
+        if order_value < config.MIN_PARTIAL_ORDER_TRY:
+            return True, {"skipped": "order_value_below_minimum", "order_value_try": order_value}
+        await self._refresh_liquidity_snapshot(symbol)
+        liquid, details = self.market.liquidity_status(symbol, order_value)
+        details = {**details, "order_value_try": order_value}
+        if not liquid:
+            details["reason"] = self._liquidity_reason(details)
+        return liquid, details
+
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None):
         llm_guard = await database.get_llm_symbol_guard(symbol) if strat_name == "LLM_PAPER" else None
         if llm_guard and llm_guard.get("status") == "active":
@@ -1182,35 +1259,18 @@ class ScalpAnalyzer:
         expected_gross = None
         expected_net = None
         if self.market:
-            # WebSocket depth can still be warming up when a signal arrives.
-            # Capture a read-only REST snapshot so the opening context does
-            # not silently persist null spread/depth/order-flow values.
-            flow = self.market.get_orderflow(symbol)
-            if not flow.get("bid_qty") or not flow.get("ask_qty") or flow.get("spread_pct") is None:
-                try:
-                    book = await orderbook(symbol, 5)
-                    bids = book.get("bids") or []
-                    asks = book.get("asks") or []
-                    if bids and asks:
-                        bid_price, bid_qty = float(bids[0][0]), float(bids[0][1])
-                        ask_price, ask_qty = float(asks[0][0]), float(asks[0][1])
-                        mid = (bid_price + ask_price) / 2
-                        flow.update({"bid_qty": bid_qty, "ask_qty": ask_qty,
-                                     "spread_pct": ((ask_price - bid_price) / mid * 100) if mid else None,
-                                     "source": "binance_tr_public_rest",
-                                     "updated_at": time.time()})
-                        self.market.orderflow[symbol.upper()] = flow
-                except Exception as exc:
-                    print(f"[Likidite] {symbol} REST order-book snapshot alınamadı: {exc}")
+            # The final recheck covers the small race between a preflight and
+            # the atomic portfolio write.  It is an eligibility outcome, never
+            # a BUY_BLOCKED signal or notification.
+            flow = await self._refresh_liquidity_snapshot(symbol)
             liquid, details = self.market.liquidity_status(symbol, order_value)
             if not liquid:
-                failed = [key for key, ok in details.get("checks", {}).items() if not ok]
-                reason = "liquidity_filter:" + ",".join(failed or ["unknown"])
-                blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                           "reason": reason, "strategy": strat_name, "timestamp": time.time()}
-                print(f"[Likidite] {symbol} işlem engellendi: {reason}")
-                await database.save_signal(blocked)
-                return blocked
+                reason = self._liquidity_reason(details, "entry_recheck_failed")
+                ineligible = {"symbol": symbol, "action": "ENTRY_INELIGIBLE", "price": entry_price,
+                              "reason": reason, "strategy": strat_name, "timestamp": time.time(),
+                              "liquidity": details}
+                print(f"[Likidite] {symbol} giriş ön-koşulu sağlanmadı: {reason}")
+                return ineligible
             target_pct = config.BB_MFI_TAKE_PROFIT_PCT if strat_name == "BB_MFI_MEAN_REVERSION" else config.SPOT_PROFIT_TARGET_PCT
             target_value = order_value * (1 + target_pct)
             expected_gross = order_value * target_pct
