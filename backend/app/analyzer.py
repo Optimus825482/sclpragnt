@@ -1109,11 +1109,20 @@ class ScalpAnalyzer:
                 return None
         else:
             order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
-            order_value = try_balance * max(0.001, min(order_pct, 1.0)) / (1 + config.COMMISSION_PCT)
+            available_value = try_balance / (1 + config.COMMISSION_PCT)
+            order_value = available_value * max(0.001, min(order_pct, 1.0))
             if order_value < config.MIN_PARTIAL_ORDER_TRY:
-                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                            "reason": "insufficient_balance_for_minimum_order", "strategy": strat_name, "timestamp": time.time()})
-                return None
+                # Küçük yüzde tutarı yüzünden kullanılabilir bakiye boşta
+                # kalmasın: önce 250 TL kademeli tutarı, son aşamada ise
+                # minimumun üzerindeki tüm kalan bakiyeyi kullan.
+                if available_value >= config.FALLBACK_ORDER_TRY:
+                    order_value = config.FALLBACK_ORDER_TRY
+                elif available_value >= config.MIN_PARTIAL_ORDER_TRY:
+                    order_value = available_value
+                else:
+                    await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                                "reason": "insufficient_balance_for_minimum_order", "strategy": strat_name, "timestamp": time.time()})
+                    return None
         details = {}
         expected_gross = None
         expected_net = None

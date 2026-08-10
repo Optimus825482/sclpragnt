@@ -21,6 +21,9 @@ class Config:
     # Varsayılan paper işlem büyüklüğü (TRY). Arayüzden ayrıca değiştirilebilir.
     DEFAULT_ORDER_USDT = float(os.getenv("DEFAULT_ORDER_USDT", "1000.0"))
     MIN_PARTIAL_ORDER_TRY = 100.0
+    # Normal yüzde tutarı minimumun altına düştüğünde boş bakiyeyi eritmek
+    # için kullanılacak kademeli paper işlem tutarı.
+    FALLBACK_ORDER_TRY = float(os.getenv("FALLBACK_ORDER_TRY", "250.0"))
     MAX_OPEN_POSITIONS = 36
     MAX_TICKER_AGE_SEC = 15
     MAX_POSITION_HOLD_SEC = 4 * 60 * 60
