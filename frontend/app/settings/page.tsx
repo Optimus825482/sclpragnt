@@ -82,7 +82,7 @@ export default function SettingsPage() {
   useEffect(() => {
     if (activeTab !== "scan-logs") return;
     let cancelled = false;
-    const load = () => fetch(`${API_BASE}/api/strategy/scan-logs?limit=300${scanLogFilter === "all" ? "" : `&scan_type=${scanLogFilter}`}`)
+    const load = () => fetch(`${API_BASE}/api/strategy/scan-logs?limit=1000${scanLogFilter === "all" ? "" : `&scan_type=${scanLogFilter}`}`)
       .then((r) => r.json()).then((d) => { if (!cancelled) setScanLogs(d.logs || []); }).catch(() => undefined);
     load();
     const timer = window.setInterval(load, 5000);
@@ -120,16 +120,15 @@ export default function SettingsPage() {
   };
 
   const num = (v: any) => (typeof v === "number" ? v : parseFloat(v));
-  const selectedSymbols = draft.symbols || [];
+  const selectedSymbols = Array.from(new Set((draft.symbols || []).map((symbol) => String(symbol).replace(/_/g, "").toUpperCase()))).sort();
   const filteredSymbols = marketSymbols.filter((s) => s.includes(symbolQuery.trim().toUpperCase()));
   const visibleActivity = Object.values(activity).filter((item: any) => activityFilter === "all" || item.status === activityFilter).filter((item: any) => !symbolQuery.trim() || item.symbol.includes(symbolQuery.trim().toUpperCase()));
   const activityCounts = { ACTIVE: Object.values(activity).filter((x: any) => x.status === "ACTIVE").length, PASSIVE: Object.values(activity).filter((x: any) => x.status === "PASSIVE").length, WARMING: Object.values(activity).filter((x: any) => x.status === "WARMING").length };
-  const toggleSymbol = (symbol: string) => setDraft((d) => ({
-    ...d,
-    symbols: (d.symbols || []).includes(symbol)
-      ? (d.symbols || []).filter((s) => s !== symbol)
-      : [...(d.symbols || []), symbol],
-  }));
+  const toggleSymbol = (symbol: string) => setDraft((d) => {
+    const normalized = String(symbol).replace(/_/g, "").toUpperCase();
+    const current = Array.from(new Set((d.symbols || []).map((item) => String(item).replace(/_/g, "").toUpperCase())));
+    return { ...d, symbols: current.includes(normalized) ? current.filter((item) => item !== normalized) : [...current, normalized] };
+  });
 
   const resetTradingData = async () => {
     if (!window.confirm("Tüm eski işlemler, sinyaller, karar logları, backtestler, snapshotlar, açık emirler ve sanal cüzdan silinecek. Strateji/LLM ayarları ve piyasa verileri korunacak. Cüzdan 10.000 TL ile başlayacak. Devam edilsin mi?")) return;
@@ -329,9 +328,10 @@ export default function SettingsPage() {
               {!filteredSymbols.length && <span className="text-xs text-bunker-muted font-mono">Sembol bulunamadı</span>}
             </div>
             <div className="mt-4 pt-3 border-t border-bunker-800/60">
-              <p className="eyebrow mb-2">SEÇİLEN SEMBOLLER</p>
-              <div className="flex flex-wrap gap-2">
-                {selectedSymbols.map((symbol) => <button key={symbol} onClick={() => toggleSymbol(symbol)} className="px-3 py-1.5 rounded-lg border border-neon-green/60 bg-neon-green/15 font-mono text-xs text-neon-green">AKTİF · {symbol}</button>)}
+              <p className="eyebrow mb-2">AKTİF TARAMA SEMBOLLERİ · {selectedSymbols.length}</p>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {selectedSymbols.map((symbol) => <button key={symbol} onClick={() => toggleSymbol(symbol)} className="flex min-h-10 items-center justify-between gap-2 rounded-lg border border-neon-green/60 bg-neon-green/15 px-3 py-2 text-left font-mono text-xs text-neon-green"><span>AKTİF · {symbol}</span><span aria-hidden="true">×</span></button>)}
+                {!selectedSymbols.length && <p className="col-span-full rounded-lg border border-yellow-400/40 bg-yellow-400/5 px-3 py-3 font-mono text-xs text-yellow-300">Aktif tarama sembolü seçilmedi.</p>}
               </div>
             </div>
             <div className="mt-5 border-t border-bunker-800 pt-4">
