@@ -434,7 +434,7 @@ async def startup():
     asyncio.create_task(market.connect())
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
-    asyncio.create_task(top_gainers_refresh_loop(), name="top-gainers-refresh")
+    asyncio.create_task(symbol_activity_loop(), name="symbol-activity")
     asyncio.create_task(llm_idle_trigger_loop())
     asyncio.create_task(a2a_inbox_loop(), name="a2a-inbox")
     asyncio.create_task(llm_position_manager_loop(), name="llm-position-manager")
@@ -546,6 +546,8 @@ async def strategy_loop():
         if entry_scan_due:
             print(f"[Strategy] giriş taraması başladı | symbols={len(config.SYMBOLS)} interval={config.STRATEGY_ENTRY_SCAN_INTERVAL_SEC}s", flush=True)
         for sym in config.SYMBOLS:
+            if sym in config.PASSIVE_SYMBOLS and sym not in analyzer.positions:
+                continue
             if migration_monitor.state["status"] == "running":
                 await asyncio.sleep(0.1)
                 continue
@@ -639,6 +641,59 @@ async def top_gainers_refresh_loop():
         except Exception as exc:
             print(f"[Top Gainers] 6 saatlik yenileme hatası: {exc}")
         await asyncio.sleep(config.TOP_GAINERS_REFRESH_SEC)
+
+async def refresh_symbol_activity():
+    """Refresh the full Binance TR TRY universe and mark inactive symbols."""
+    known_try = set(await trading_symbols("TRY"))
+    open_symbols = set(analyzer.positions) | set((await database.load_positions()).keys())
+    universe = list(dict.fromkeys(sorted(known_try | open_symbols)))
+    if not universe:
+        raise RuntimeError("Binance TR TRY sembol evreni boş döndü")
+    config.SYMBOLS = universe
+    config.UT_SYMBOLS = list(universe)
+    market.symbols = [symbol.lower() for symbol in universe]
+    market.reconnect_requested = True
+    all_tickers = await ticker_24h()
+    market.ticker_24h = {
+        str(row.get("symbol", "")).upper(): float(row.get("quoteVolume", 0) or 0)
+        for row in all_tickers or [] if row.get("symbol")
+    }
+    statuses = {}
+    for symbol in universe:
+        ticker = market.get_ticker(symbol) or {}
+        quote_volume = float(market.ticker_24h.get(symbol, 0) or 0)
+        bars = market.get_ut_kline(symbol, "5m")
+        closes = bars.get("closes", [])
+        highs = bars.get("highs", [])
+        lows = bars.get("lows", [])
+        range_pct = 0.0
+        if len(closes) >= 7 and len(highs) >= 7 and len(lows) >= 7:
+            low, high = min(lows[-7:]), max(highs[-7:])
+            range_pct = ((high - low) / low * 100) if low else 0.0
+        volume_ok = quote_volume >= config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY
+        movement_ok = range_pct >= config.SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT
+        active = bool(ticker and volume_ok and movement_ok)
+        if symbol in analyzer.positions:
+            active = True
+        statuses[symbol] = {
+            "symbol": symbol, "status": "ACTIVE" if active else "PASSIVE",
+            "quote_volume": quote_volume, "range_30m_pct": round(range_pct, 4),
+            "reason": "open_position" if symbol in analyzer.positions else ("active" if active else "low_volume_or_flat_move"),
+            "checked_at": time.time(),
+        }
+    config.PASSIVE_SYMBOLS = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
+    await database.set_llm_setting("symbol_activity_status", json.dumps(statuses, ensure_ascii=False))
+    print(f"[Activity] universe={len(universe)} ACTIVE={len(statuses) - len(config.PASSIVE_SYMBOLS)} PASSIVE={len(config.PASSIVE_SYMBOLS)}", flush=True)
+    return {"ok": True, "statuses": statuses, "active_count": len(statuses) - len(config.PASSIVE_SYMBOLS), "passive_count": len(config.PASSIVE_SYMBOLS)}
+
+async def symbol_activity_loop():
+    await asyncio.sleep(20)
+    while True:
+        try:
+            await refresh_symbol_activity()
+        except Exception as exc:
+            print(f"[Activity] sembol aktivite kontrolü başarısız: {exc}", flush=True)
+        await asyncio.sleep(config.SYMBOL_ACTIVITY_REFRESH_SEC)
 
 async def llm_replenish_after_close():
     """Replace each closed paper position with one fresh eligible candidate."""
@@ -1151,6 +1206,20 @@ async def top_gainers_status(refresh: bool = False):
             "symbols": config.SYMBOLS, "refreshed_at": runtime.get("top_gainers_refreshed_at"),
             "source": "binance_tr_public_24h_ticker"}
 
+@app.get("/api/symbol-activity")
+async def symbol_activity_status():
+    raw = await database.get_llm_setting("symbol_activity_status", "{}")
+    try:
+        statuses = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        statuses = {}
+    return {"ok": True, "statuses": statuses,
+            "active_count": sum(1 for item in statuses.values() if item.get("status") == "ACTIVE"),
+            "passive_count": sum(1 for item in statuses.values() if item.get("status") == "PASSIVE"),
+            "refresh_seconds": config.SYMBOL_ACTIVITY_REFRESH_SEC,
+            "thresholds": {"min_quote_volume_try": config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY,
+                           "min_range_30m_pct": config.SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT}}
+
 @app.post("/api/radar/execute")
 async def execute_gainers_radar():
     return await gainers_radar(execute=True)
@@ -1352,7 +1421,7 @@ async def get_positions():
 @app.get("/api/symbol-analysis/{symbol}")
 async def symbol_analysis(symbol: str, timeframe: str = ""):
     sym = symbol.upper()
-    requested_timeframe = timeframe if timeframe in {"1m", "3m", "5m", "15m", "1h", "4h", "1d"} else config.MOMENTUM_TIMEFRAME
+    requested_timeframe = timeframe if timeframe in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"} else config.MOMENTUM_TIMEFRAME
     ticker = market.get_ticker(sym)
     # The analysis page can request a valid market that was not warm when the
     # process started (or whose websocket stream briefly missed an event).
@@ -1660,7 +1729,7 @@ async def test_embedding(payload: dict = None):
 
 async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
     """Build a fresh, read-only multi-timeframe tool context for the LLM."""
-    supported = ("1m", "3m", "5m", "15m", "1h", "4h", "1d")
+    supported = ("1m", "5m", "15m", "30m", "1h", "4h", "1d")
     preferred = preferred_timeframe if preferred_timeframe in supported else config.MOMENTUM_TIMEFRAME
     snapshots = {}
     results = await asyncio.gather(*(symbol_analysis(symbol, tf) for tf in supported), return_exceptions=True)
@@ -1686,6 +1755,30 @@ async def symbol_analysis_llm(symbol: str, payload: dict = None):
     snapshot = await symbol_llm_context(symbol, str((payload or {}).get("timeframe", "")))
     if not snapshot.get("data_ready"): return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
     return await llm_analysis.analyze(snapshot)
+
+@app.post("/api/symbol-analysis/{symbol}/llm/commentary")
+async def symbol_analysis_llm_commentary(symbol: str, payload: dict = None):
+    """Explain multi-timeframe market context in plain Turkish; read-only."""
+    snapshot = await symbol_llm_context(symbol, "5m")
+    if not snapshot.get("data_ready"):
+        return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
+    context = snapshot.get("llm_context") or {}
+    prompt = (
+        "Aşağıdaki sembolün M1, M5, M15, M30, H1, H4 ve D1 snapshot verilerini "
+        "sadece verilen bilgilerle değerlendir. Teknik terimleri mümkün olduğunca kullanma; "
+        "çok sade Türkçe yaz. Yanıtı tam olarak üç kısa başlıkla ver: 'Ne olmuş?', "
+        "'Ne oluyor?', 'Ne olabilir?'. Kesin konuşma; geleceğin garanti olmadığını belirt. "
+        "Al/sat emri verme ve pozisyon açma önerisi üretme."
+    )
+    result = await llm_analysis.chat(
+        {"type": "plain_language_symbol_commentary", "symbol": symbol.upper(), "paper_only": True,
+         "timeframes": context.get("timeframes", {}), "data_policy": context.get("data_policy")},
+        [{"role": "user", "content": prompt}], tools=None, tool_executor=None,
+    )
+    return {"enabled": True, "status": result.get("status", "ok"), "symbol": symbol.upper(),
+            "timeframes": list(context.get("timeframes", {}).keys()),
+            "commentary": result.get("text") or result.get("content") or "Yorum üretilemedi.",
+            "model": result.get("model"), "paper_only": True}
 
 async def llm_query_database(args: dict, default_symbol: str | None = None):
     """Read-only structured DB query exposed to LLMs; never executes raw SQL."""
@@ -2022,6 +2115,8 @@ async def manual_strategy_scan():
     signals = []
     started = time.time()
     for symbol in list(config.SYMBOLS):
+        if symbol in config.PASSIVE_SYMBOLS and symbol not in analyzer.positions:
+            continue
         ticker = market.get_ticker(symbol)
         if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
             continue
@@ -2970,6 +3065,57 @@ async def reset_all():
         "deleted": deleted,
     }
 
+async def ensure_backtest_candles(symbol: str, interval: str, days_back: int):
+    """Ensure the requested historical window exists before a UI backtest."""
+    if not 1 <= days_back <= 365:
+        raise ValueError("days_back 1 ile 365 arasında olmalıdır")
+    symbol = symbol.upper()
+    interval = interval.lower()
+    existing = await database.get_market_candles(symbol, interval)
+    now_ms = int(time.time() * 1000)
+    requested_start = now_ms - days_back * 86400 * 1000
+    expected = max(1, int(days_back * 86400 * 1000 / {
+        "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
+        "30m": 1_800_000, "1h": 3_600_000, "2h": 7_200_000,
+        "4h": 14_400_000, "6h": 21_600_000, "8h": 28_800_000,
+        "12h": 43_200_000, "1d": 86_400_000,
+    }.get(interval, 300_000)))
+    in_window = [row for row in existing if requested_start <= int(row.get("open_time", 0)) <= now_ms]
+    latest = max((int(row.get("open_time", 0)) for row in in_window), default=0)
+    # Tam pencere ve güncel son mum zaten varsa API çağrısı yapma.
+    if len(in_window) >= int(expected * 0.98) and latest >= requested_start + int((days_back - 1) * 86400 * 1000):
+        return {"status": "ready", "symbol": symbol, "interval": interval,
+                "existing": len(in_window), "fetched": 0, "expected": expected}
+
+    print(f"[Backtest data] {symbol} {interval} {days_back}d eksik; public mumlar çekiliyor", flush=True)
+    raw = await historical_klines(symbol, interval, days_back)
+    rows = []
+    for item in raw:
+        if len(item) < 6:
+            continue
+        try:
+            values = [float(item[i]) for i in range(1, 6)]
+            if not all(value == value and abs(value) != float("inf") for value in values):
+                continue
+            rows.append({
+                "symbol": symbol, "timeframe": interval,
+                "open_time": int(item[0]), "close_time": int(item[6]) if len(item) > 6 else int(item[0]),
+                "open": values[0], "high": values[1], "low": values[2], "close": values[3],
+                "volume": values[4], "quote_volume": float(item[7]) if len(item) > 7 else None,
+                "trade_count": int(item[8]) if len(item) > 8 else None,
+                "source": "binance_tr_public", "fetched_at": time.time(),
+            })
+        except (TypeError, ValueError, IndexError):
+            continue
+    written = await database.upsert_market_candles(rows)
+    final_count = len(await database.get_market_candles(symbol, interval, requested_start, now_ms))
+    print(f"[Backtest data] {symbol} {interval} hazır | fetched={len(rows)} written={written} candles={final_count}", flush=True)
+    if not final_count:
+        raise ValueError(f"{symbol} {interval} için public historical veri alınamadı")
+    return {"status": "collected", "symbol": symbol, "interval": interval,
+            "existing": len(in_window), "fetched": len(rows), "written": written,
+            "candles": final_count, "expected": expected}
+
 @app.post("/api/backtest/run")
 async def backtest_run(payload: dict):
     """Backtest çalıştır ve sonucu DB'ye kaydet."""
@@ -2983,6 +3129,10 @@ async def backtest_run(payload: dict):
     tp_pct = float(payload.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
     trail_pct = float(payload.get("trailing_stop_pct", 0.003))
     try:
+        # Arayüz backtest'i historical tabloyu önceden doldurmayı kullanıcıya
+        # bırakmamalı. İstenen pencere için public mumları çekip idempotent
+        # şekilde tabloya yazarız; mevcut kayıtlar tekrar işlem görmez.
+        collection = await ensure_backtest_candles(symbol, interval, days_back)
         run_id, result = await run_backtest(
             symbol, interval, days_back, strategy, params,
             order_size, stop_pct, tp_pct, trail_pct
@@ -2996,7 +3146,8 @@ async def backtest_run(payload: dict):
                                      stop_pct=stop_pct, tp_pct=tp_pct)
         result["oos_validation"] = oos
         result["validation_status"] = "PASS" if oos.get("oos_consistent") else "FAIL"
-        return {"ok": True, "run_id": run_id, "result": result}
+        result["data_collection"] = collection
+        return {"ok": True, "run_id": run_id, "result": result, "data_collection": collection}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

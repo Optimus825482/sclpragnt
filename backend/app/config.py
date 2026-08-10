@@ -56,6 +56,12 @@ class Config:
     MAX_SPREAD_PCT = 0.30
     MIN_ORDERBOOK_DEPTH_MULTIPLIER = 5.0
     LIQUIDITY_FILTER_ENABLED = True
+    # 30 dakikalık sembol aktivitesi: düşük hacim veya tamamen yatay piyasa
+    # yeni strateji girişlerinden çıkarılır, açık pozisyonlar korunur.
+    SYMBOL_ACTIVITY_REFRESH_SEC = max(300, int(os.getenv("SYMBOL_ACTIVITY_REFRESH_SEC", str(30 * 60))))
+    SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY = float(os.getenv("SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY", "1000000"))
+    SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT = float(os.getenv("SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT", "0.10"))
+    PASSIVE_SYMBOLS = set()
     # Radar yalnızca gözlem/ranking yüzeyidir; otomatik pozisyon açmaz.
     GAINER_RADAR_AUTO_TRADE = False
     # LLM yalnızca kullanıcının açık "işlem aç" talebiyle çalışabilir.

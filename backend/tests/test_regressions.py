@@ -140,15 +140,18 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("@postgres:5432/${POSTGRES_DB:-scalper}", source)
         self.assertNotIn("DATABASE_URL:-postgresql://", source)
 
-    def test_hourly_top_gainer_activation_is_public_and_bounded(self):
+    def test_symbol_activity_replaces_scheduled_top_gainer_universe(self):
         source = (ROOT / "app" / "main.py").read_text()
         config_source = (ROOT / "app" / "config.py").read_text()
         self.assertIn('async def refresh_top_gainer_symbols()', source)
-        self.assertIn('asyncio.create_task(top_gainers_refresh_loop()', source)
+        self.assertIn('async def refresh_symbol_activity()', source)
+        self.assertIn('asyncio.create_task(symbol_activity_loop()', source)
+        self.assertNotIn('asyncio.create_task(top_gainers_refresh_loop()', source)
         self.assertIn('@app.get("/api/market/top-gainers")', source)
+        self.assertIn('SYMBOL_ACTIVITY_REFRESH_SEC', config_source)
         self.assertIn('TOP_GAINERS_LIMIT = max(1, min(70', config_source)
         self.assertIn('source": "binance_tr_public_24h_ticker"', source)
-        self.assertIn('open_symbols = set(analyzer.positions)', source)
+        self.assertIn('known_try = set(await trading_symbols("TRY"))', source)
 
     def test_llm_market_scan_uses_fast_hot_cache_defaults(self):
         source = (ROOT / "app" / "main.py").read_text()

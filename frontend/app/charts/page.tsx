@@ -461,7 +461,7 @@ export default function ChartsPage() {
         const ro = new ResizeObserver(() => {
             if (!chartRef.current || !containerRef.current) return;
             const viewportHeight = typeof window !== "undefined" ? window.innerHeight : 900;
-            chartHeightRef.current = clamp(Math.round(viewportHeight * (window.innerWidth < 768 ? 0.52 : 0.62)), 420, 600);
+            chartHeightRef.current = clamp(Math.round(viewportHeight * (window.innerWidth < 768 ? 0.58 : 0.62)), window.innerWidth < 768 ? 360 : 420, 600);
             chartRef.current.applyOptions({ width: containerRef.current.clientWidth, height: chartHeightRef.current });
         });
         ro.observe(containerRef.current);
@@ -655,6 +655,7 @@ export default function ChartsPage() {
                 overlaySeries.current.set(inst.uid, arr);
             } else {
                 instPanes.set(inst.uid, paneIdx);
+                const isMacd = inst.registryId === "macd";
                 // min/max bantları: 3+ plotlu indikatörlerde son plotlar banttır (RSI 30/70 gibi)
                 const boundStart = isHisto ? 3 : Math.min(plots.length, 2);
                 const arr: (ISeriesApi<"Line"> | ISeriesApi<"Histogram">)[] = [];
@@ -698,6 +699,24 @@ export default function ChartsPage() {
                     }
                 });
                 paneSeries.current.set(inst.uid, arr);
+                if (isMacd && arr.length) {
+                    // MACD histogram sıfır merkezli olmalı. Varsayılan fiyat
+                    // ölçeği küçük histogram değerlerini düzleştirebildiği
+                    // için pane'e belirgin bir sıfır çizgisi ve dengeli marj
+                    // uygula.
+                    chart.priceScale("right", paneIdx).applyOptions({
+                        autoScale: true,
+                        scaleMargins: { top: 0.12, bottom: 0.12 }
+                    });
+                    arr[0].createPriceLine({
+                        price: 0,
+                        color: "rgba(148,163,184,0.65)",
+                        lineWidth: 1,
+                        lineStyle: 2,
+                        axisLabelVisible: false,
+                        title: "0"
+                    });
+                }
                 paneIdx++;
             }
         }
@@ -747,21 +766,25 @@ export default function ChartsPage() {
         // böylece pane aç/kapa sadece main'i büyütür/küçültür, diğer paneller sabit kalır.
         // skipHeight: bars canlı güncellenirken yükseklikleri EZME — kullanıcı sürüklemesi korunur
         if (!skipHeight) {
+            const compact = typeof window !== "undefined" && window.innerWidth < 768;
+            const mainMin = compact ? 180 : MAIN_MIN;
+            const paneMin = compact ? 44 : PANE_MIN;
+            const defaultPaneHeight = compact ? 92 : PANE_H;
             const alloc = paneKeys.map((key, i) => ({
                 key,
                 h: i === 0
-                    ? MAIN_MIN
-                    : clamp(paneHeightsRef.current[key] || (key === "volume" ? 90 : PANE_H), PANE_MIN, chartHeightRef.current)
+                    ? mainMin
+                    : clamp(paneHeightsRef.current[key] || (key === "volume" ? (compact ? 68 : 90) : defaultPaneHeight), paneMin, chartHeightRef.current)
             }));
             const nonMain = alloc.reduce((s, x, i) => (i === 0 ? s : s + x.h), 0);
-            const mainH = clamp(chartHeightRef.current - nonMain, MAIN_MIN, chartHeightRef.current);
+            const mainH = clamp(chartHeightRef.current - nonMain, mainMin, chartHeightRef.current);
             const targetH = alloc.map((x, i) => (i === 0 ? mainH : x.h));
 
             chart.applyOptions({ height: chartHeightRef.current });
             chart.panes().forEach((p, i) => {
                 const key = paneKeys[i] || `pane${i}`;
                 paneKeyByIndexRef.current.set(i, key);
-                p.setHeight(targetH[i] ?? PANE_MIN);
+                p.setHeight(targetH[i] ?? paneMin);
             });
         }
 
@@ -1117,18 +1140,18 @@ export default function ChartsPage() {
 
     return (
         <div className="max-w-7xl mx-auto space-y-5">
-            <header className="flex flex-wrap items-center justify-between gap-4">
+            <header className="chart-page-header flex flex-wrap items-center justify-between gap-4">
                 <div>
                     <h1 className="font-mono text-xl font-bold tracking-tight">
                         <span className="text-neon-green">GRAFİK</span> TERMİNALİ
                     </h1>
                     <p className="eyebrow mt-1">Binance public API · son 200 mum</p>
                 </div>
-                <div className="w-full lg:w-auto flex flex-wrap items-center gap-2 sm:gap-3">
+                <div className="chart-toolbar w-full lg:w-auto flex flex-wrap items-center gap-2 sm:gap-3">
                     <select
                         value={symbol}
                         onChange={(e) => changeSymbol(e.target.value)}
-                        className="bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+                        className="chart-symbol-select bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
                     >
                         {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
@@ -1139,12 +1162,12 @@ export default function ChartsPage() {
                     >
                         🔬 ANALİZ
                     </button>
-                    <div className="max-w-full overflow-x-auto flex rounded-lg border border-bunker-700">
+                    <div className="chart-intervals max-w-full overflow-x-auto flex rounded-lg border border-bunker-700">
                         {INTERVALS.map((i) => (
                             <button
                                 key={i.v}
                                 onClick={() => changeInterval(i.v)}
-                                className={`px-3 py-2 font-mono text-xs transition-colors ${interval === i.v ? "bg-neon-green/15 text-neon-green" : "bg-bunker-900 text-bunker-muted hover:text-white"}`}
+                                className={`chart-interval-button px-3 py-2 font-mono text-xs transition-colors ${interval === i.v ? "bg-neon-green/15 text-neon-green" : "bg-bunker-900 text-bunker-muted hover:text-white"}`}
                             >
                                 {i.l}
                             </button>
@@ -1225,7 +1248,7 @@ export default function ChartsPage() {
                 </section>
             </div>}
 
-            <div className="card bg-bunker-950 p-0 overflow-hidden relative">
+            <div className="chart-card card bg-bunker-950 p-0 overflow-hidden relative">
                 {loading && (
                     <div className="absolute inset-0 flex items-center justify-center z-10 bg-bunker-950/70">
                         <p className="font-mono text-sm text-neon-green animate-pulse">YÜKLENİYOR...</p>

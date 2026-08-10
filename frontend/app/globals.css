@@ -289,6 +289,17 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .portfolio-detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mobile-menu-button { top: calc(12px + env(safe-area-inset-top)); }
   .app-sidebar { position: fixed; height: 100dvh; max-height: 100dvh; }
+  .chart-page-header { align-items: stretch; gap: .75rem; }
+  .chart-page-header > div:first-child { padding-inline: .15rem; }
+  .chart-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; }
+  .chart-toolbar .chart-symbol-select { min-width: 0; width: 100%; }
+  .chart-toolbar > button { min-height: 2.25rem; padding: .55rem .65rem; font-size: .65rem; }
+  .chart-toolbar .chart-intervals { grid-column: 1 / -1; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .chart-toolbar .chart-intervals::-webkit-scrollbar { display: none; }
+  .chart-interval-button { flex: 1 0 2.55rem; min-height: 2.25rem; padding-inline: .55rem; }
+  .chart-card { border-radius: .75rem; }
+  .chart-card > div:first-of-type { min-height: 22rem; }
+  .chart-card .absolute.top-3.right-3 { top: .5rem; right: .5rem; padding: .35rem .5rem; font-size: .58rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
