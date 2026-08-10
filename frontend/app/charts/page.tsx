@@ -382,8 +382,10 @@ export default function ChartsPage() {
             setSymbols([...active].sort((a, b) => a.localeCompare(b)));
             setSymbol((current) => active.includes(current) ? current : active[0]);
         }).catch(() => setSymbols(FALLBACK_SYMBOLS));
-        const savedSymbol = loadPersisted(LS_SYMBOL, "BTCTRY");
-        const savedInterval = loadPersisted(LS_INTERVAL, "5m");
+        const query = new URLSearchParams(window.location.search);
+        const querySymbol = query.get("symbol")?.toUpperCase() || "";
+        const savedSymbol = querySymbol || loadPersisted(LS_SYMBOL, "BTCTRY");
+        const savedInterval = querySymbol ? "5m" : loadPersisted(LS_INTERVAL, "5m");
         setSymbol(savedSymbol);
         setTf(savedInterval);
         setInstances(loadIndicators());

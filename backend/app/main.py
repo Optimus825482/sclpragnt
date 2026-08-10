@@ -70,7 +70,7 @@ async def _run_strategy_replay(job_id: str, minutes: int = 30):
     """Replay the active strategy over recent persisted 5m candles, paper-only."""
     job = _strategy_replay_jobs[job_id]
     symbols = [s.upper() for s in config.SYMBOLS if s not in config.PASSIVE_SYMBOLS]
-    job.update(status="running", total=len(symbols) * (minutes // 5 + 1), completed=0)
+    job.update(status="running", total=0, completed=0)
     job["logs"].append({"level": "info", "message": f"Replay başladı | strategy={config.ACTIVE_STRATEGY} timeframe=5m window={minutes}m symbols={len(symbols)}"})
     strategy_fn = analyzer.strategy_bb_mfi_mean_reversion if config.ACTIVE_STRATEGY == "BB_MFI_MEAN_REVERSION" else analyzer.strategy_mean_reversion
     try:
@@ -80,10 +80,14 @@ async def _run_strategy_replay(job_id: str, minutes: int = 30):
             return symbol, rows[-400:]
         loaded = await asyncio.gather(*(load(symbol) for symbol in symbols), return_exceptions=True)
         usable = [(symbol, rows) for item in loaded if not isinstance(item, Exception) for symbol, rows in [item] if rows]
+        missing = sorted(set(symbols) - {symbol for symbol, _ in usable})
         if not usable:
             raise ValueError("historical_candles içinde kullanılabilir 5m veri yok")
         latest_ms = max(int(rows[-1]["open_time"]) for _, rows in usable)
         step_count = minutes // 5 + 1
+        job["total"] = len(usable) * step_count
+        if missing:
+            job["logs"].append({"level": "warning", "message": f"Verisi bulunamayan semboller atlandı | missing={len(missing)} | örnek={', '.join(missing[:12])}"})
         checkpoints = [latest_ms - (step_count - 1 - i) * 5 * 60 * 1000 for i in range(step_count)]
         job["checkpoints"] = [int(ts / 1000) for ts in checkpoints]
         for checkpoint in checkpoints:
@@ -593,13 +597,18 @@ async def auto_open_from_alert(rule, event):
 
 async def strategy_loop():
     await asyncio.sleep(5)
-    last_entry_scan = 0.0
+    # Entry checks are aligned to the exchange 5m candle boundary, not to
+    # the process start time or a drifting sleep interval. Position
+    # management continues every loop between candle closes.
+    scan_interval = max(60, int(config.STRATEGY_ENTRY_SCAN_INTERVAL_SEC))
+    last_entry_candle = int(time.time() // scan_interval)
     while True:
-        entry_scan_due = (time.time() - last_entry_scan) >= config.STRATEGY_ENTRY_SCAN_INTERVAL_SEC
+        current_candle = int(time.time() // scan_interval)
+        entry_scan_due = current_candle != last_entry_candle
         scan_checked = scan_fresh = scan_stale = scan_evaluated = scan_no_signal = scan_errors = scan_passive = 0
         scan_buy = scan_blocked = 0
         if entry_scan_due:
-            print(f"[Strategy] giriş taraması başladı | symbols={len(config.SYMBOLS)} interval={config.STRATEGY_ENTRY_SCAN_INTERVAL_SEC}s", flush=True)
+            print(f"[Strategy] giriş taraması başladı | symbols={len(config.SYMBOLS)} trigger=5m_candle_close", flush=True)
         for sym in config.SYMBOLS:
             if sym in config.PASSIVE_SYMBOLS and sym not in analyzer.positions:
                 scan_passive += 1
@@ -638,7 +647,7 @@ async def strategy_loop():
                     if str(sig.get("strategy", "")).upper() != "LLM_PAPER":
                         pass
         if entry_scan_due:
-            last_entry_scan = time.time()
+            last_entry_candle = current_candle
             print("[Strategy] giriş taraması tamamlandı", flush=True)
             print(
                 f"[Strategy] scan summary | checked={scan_checked} passive={scan_passive} "

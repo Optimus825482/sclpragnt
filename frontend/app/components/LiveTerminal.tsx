@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { API_BASE, WS_BASE } from "../lib/api";
+import Link from "next/link";
 
 type Ticker = { symbol: string; last_price: number; volume: number; avg_volume?: number };
 type Signal = { id?: number; symbol: string; action: string; price?: number; reason?: string; timestamp?: number };
@@ -107,7 +108,7 @@ export default function LiveTerminal() {
             {portfolio?.positions.map((p) => (
               <div key={p.symbol} className="bg-bunker-950 p-4 rounded-lg border border-bunker-800">
                 <div className="flex justify-between mb-2">
-                  <span className="font-bold font-mono">{p.symbol}</span>
+                  <Link href={`/charts?symbol=${encodeURIComponent(p.symbol)}&timeframe=5m`} className="font-bold font-mono text-white hover:text-neon-green">{p.symbol}</Link>
                   <span className={`font-mono ${pnlColor(p.pnl_pct)}`}>
                     {p.pnl_pct > 0 ? "+" : ""}{p.pnl_pct.toFixed(2)}%
                   </span>

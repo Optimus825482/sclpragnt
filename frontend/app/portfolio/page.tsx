@@ -196,7 +196,7 @@ function LlmPlanPanel({
                 <SymbolBadge
                   symbol={position.symbol}
                   positive={position.pnl_pct > 0}
-                  href={`/symbol-analysis?symbol=${position.symbol}`}
+                  href={`/charts?symbol=${encodeURIComponent(position.symbol)}&timeframe=5m`}
                 />
                 <span className="ui-badge ui-badge-info">
                   REV {position.plan_revision ?? 0}
@@ -316,7 +316,7 @@ function PositionTable({
                     <SymbolBadge
                       symbol={position.symbol}
                       positive={position.pnl_pct > 0}
-                      href={`/symbol-analysis?symbol=${position.symbol}`}
+                      href={`/charts?symbol=${encodeURIComponent(position.symbol)}&timeframe=5m`}
                     />
                   </td>
                   <td>
@@ -370,7 +370,7 @@ function TradeCard({ trade, onClick }: { trade: Trade; onClick: () => void }) {
         <SymbolBadge
           symbol={trade.symbol}
           positive={trade.pnl > 0}
-          href={`/symbol-analysis?symbol=${trade.symbol}`}
+                      href={`/charts?symbol=${encodeURIComponent(trade.symbol)}&timeframe=5m`}
         />
         <span
           className={
@@ -825,7 +825,7 @@ export default function PortfolioPage() {
                             <SymbolBadge
                               symbol={trade.symbol}
                               positive={trade.pnl > 0}
-                              href={`/symbol-analysis?symbol=${trade.symbol}`}
+                            href={`/charts?symbol=${encodeURIComponent(trade.symbol)}&timeframe=5m`}
                             />
                           </td>
                           <td>

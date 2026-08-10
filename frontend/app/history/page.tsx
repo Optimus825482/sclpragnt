@@ -110,7 +110,7 @@ export default function HistoryPage() {
                             )}
                             {trades.map((t) => (
                                 <tr key={t.id} className="border-b border-bunker-800/50 hover:bg-bunker-800/30">
-                                <td className="p-3 font-bold"><Link href={`/symbol-analysis?symbol=${t.symbol}`} className="text-white hover:text-neon-green">{t.symbol}</Link></td>
+                                <td className="p-3 font-bold"><Link href={`/charts?symbol=${encodeURIComponent(t.symbol)}&timeframe=5m`} className="text-white hover:text-neon-green">{t.symbol}</Link></td>
                                     <td className="p-3 text-neon-yellow">{STRATEGY_LABEL[t.strategy] ?? t.strategy}</td>
                                     <td className="p-3">
                                         <span className={`px-2 py-0.5 rounded text-xs font-bold ${t.side === "LONG" ? "bg-neon-green/15 text-neon-green" : "bg-neon-red/15 text-neon-red"}`}>
