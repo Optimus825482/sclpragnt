@@ -529,7 +529,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     "cost_model": "round_trip_commission_spread_slippage",
                     "trailing_stop_pct": 0.0, "atr_trailing_multiplier": config.SYSTEM_ATR_TRAILING_MULTIPLIER,
                     "risk_reward": config.SYSTEM_RISK_REWARD,
-                    "exit_model": "atr_trailing_after_rr_target",
+                    "exit_model": "fixed_tv_stop_take_profit" if fixed_tv_exit else "atr_trailing_after_rr_target",
                     "fill_model": "next_bar_open_entry_executable_exit",
                     "spread_pct": spread_pct, "slippage_pct": config.ESTIMATED_SLIPPAGE_PCT if slippage_pct is None else slippage_pct,
                     "data_quality": _data_quality(data, interval),

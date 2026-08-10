@@ -3205,7 +3205,7 @@ async def backtest_run(payload: dict):
         collection = await ensure_backtest_candles(symbol, interval, required_history_days)
         run_id, result = await run_backtest(
             symbol, interval, days_back, strategy, params,
-            order_size, stop_pct, tp_pct, trail_pct
+            order_size, stop_pct, tp_pct, 0.0 if strategy.upper() == "BB_MFI_MEAN_REVERSION" else trail_pct
         )
         # A headline backtest is not accepted without a chronological OOS check.
         # Keep the base result for inspection, but expose the validation beside it.
