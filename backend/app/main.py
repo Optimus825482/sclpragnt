@@ -549,24 +549,38 @@ async def strategy_loop():
     last_entry_scan = 0.0
     while True:
         entry_scan_due = (time.time() - last_entry_scan) >= config.STRATEGY_ENTRY_SCAN_INTERVAL_SEC
+        scan_checked = scan_fresh = scan_stale = scan_evaluated = scan_no_signal = scan_errors = scan_passive = 0
+        scan_buy = scan_blocked = 0
         if entry_scan_due:
             print(f"[Strategy] giriş taraması başladı | symbols={len(config.SYMBOLS)} interval={config.STRATEGY_ENTRY_SCAN_INTERVAL_SEC}s", flush=True)
         for sym in config.SYMBOLS:
             if sym in config.PASSIVE_SYMBOLS and sym not in analyzer.positions:
+                scan_passive += 1
                 continue
+            scan_checked += 1
             if migration_monitor.state["status"] == "running":
                 await asyncio.sleep(0.1)
                 continue
             ticker = market.get_ticker(sym)
             if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
+                scan_stale += 1
                 continue
+            scan_fresh += 1
             try:
+                if entry_scan_due:
+                    scan_evaluated += 1
                 signals = await analyzer.evaluate(sym, ticker, allow_entry=entry_scan_due)
+                if entry_scan_due and not signals:
+                    scan_no_signal += 1
             except Exception as exc:
+                scan_errors += 1
                 # Tek bir sembolün DB/strateji hatası bütün strategy loop'u düşürmemeli.
                 print(f"[Strategy] {sym} değerlendirme hatası: {exc}")
                 continue
             for sig in signals:
+                action = str(sig.get("action", ""))
+                if action == "BUY_SIGNAL": scan_buy += 1
+                elif action == "BUY_BLOCKED": scan_blocked += 1
                 print(f"[Sinyal] {sig}")
                 await ws_manager.broadcast({"type": "signal", "data": sig})
                 if str(sig.get("action", "")).startswith("CLOSE"):
@@ -579,6 +593,12 @@ async def strategy_loop():
         if entry_scan_due:
             last_entry_scan = time.time()
             print("[Strategy] giriş taraması tamamlandı", flush=True)
+            print(
+                f"[Strategy] scan summary | checked={scan_checked} passive={scan_passive} "
+                f"fresh={scan_fresh} stale={scan_stale} evaluated={scan_evaluated} "
+                f"no_signal={scan_no_signal} buy={scan_buy} blocked={scan_blocked} errors={scan_errors}",
+                flush=True,
+            )
         await asyncio.sleep(2)
 
 async def radar_loop():
