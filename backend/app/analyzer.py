@@ -1200,6 +1200,24 @@ class ScalpAnalyzer:
         return liquid, details
 
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None):
+        symbol = str(symbol).replace("_", "").upper()
+        # Every entry path (strategy, LLM, alert, radar and pending orders)
+        # converges here. A passive symbol must therefore be rejected at this
+        # final writer boundary, not only skipped by the strategy scan loop.
+        if config.SYMBOL_ACTIVITY_FILTER_ENABLED and symbol in config.PASSIVE_SYMBOLS:
+            activity = dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {})
+            failed = [key for key, ok in activity.get("checks", {}).items() if not ok]
+            reason = "symbol_activity:passive"
+            if failed:
+                reason += ":" + ",".join(failed)
+            blocked = {
+                "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                "reason": reason, "strategy": strat_name, "timestamp": time.time(),
+                "activity": activity,
+            }
+            await database.save_signal(blocked)
+            print(f"[Aktivite] {symbol} yeni giriş engellendi: {reason}", flush=True)
+            return blocked
         llm_guard = await database.get_llm_symbol_guard(symbol) if strat_name == "LLM_PAPER" else None
         if llm_guard and llm_guard.get("status") == "active":
             blocked_until = llm_guard.get("blocked_until")

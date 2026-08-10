@@ -36,6 +36,32 @@ class _Market:
 
 
 class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
+    async def test_passive_symbol_is_blocked_at_central_opening_boundary(self):
+        """Direct/LLM/radar entry paths cannot bypass symbol activity."""
+        from app.analyzer import ScalpAnalyzer
+        from app.config import config
+
+        analyzer = ScalpAnalyzer(_Market())
+        save_signal = AsyncMock()
+        activity = {
+            "status": "PASSIVE",
+            "checks": {"range_15m": False, "atr": False, "volume_ratio": True},
+            "range_15m_pct": 0.08,
+            "atr_pct": 0.07,
+        }
+        with patch.object(config, "SYMBOL_ACTIVITY_FILTER_ENABLED", True), \
+             patch.object(config, "PASSIVE_SYMBOLS", {"BTCTRY"}), \
+             patch.object(config, "SYMBOL_ACTIVITY_STATUS", {"BTCTRY": activity}), \
+             patch("app.analyzer.database.save_signal", new=save_signal), \
+             patch("app.analyzer.database.commit_open_position", new=AsyncMock()) as commit:
+            result = await analyzer.open_position("btc_try", 100.0, "LONG", "LLM_PAPER", 1000.0)
+
+        self.assertEqual(result["action"], "BUY_BLOCKED")
+        self.assertEqual(result["reason"], "symbol_activity:passive:range_15m,atr")
+        self.assertEqual(result["activity"]["range_15m_pct"], 0.08)
+        save_signal.assert_awaited_once()
+        commit.assert_not_awaited()
+
     async def test_automatic_scan_records_entry_ineligible_before_strategy_evaluation(self):
         """A failed liquidity preflight is an audit result, never a signal."""
         from app import main

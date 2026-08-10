@@ -832,15 +832,15 @@ async def refresh_symbol_activity():
         if not ticker or len(closes) < 7 or len(highs) < 7 or len(lows) < 7:
             statuses[symbol] = {
                 "symbol": symbol, "status": "WARMING",
-                "quote_volume": quote_volume, "range_30m_pct": None,
+                "quote_volume": quote_volume, "range_15m_pct": None,
                 "reason": "market_data_warming", "checked_at": time.time(),
             }
             continue
         range_pct = 0.0
-        low, high = min(lows[-7:]), max(highs[-7:])
+        low, high = min(lows[-3:]), max(highs[-3:])
         range_pct = ((high - low) / low * 100) if low else 0.0
         volume_ok = quote_volume >= config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY
-        movement_ok = range_pct >= config.SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT
+        movement_ok = range_pct >= config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT
         atr = analyzer.calculate_atr(bars, 14) if len(closes) >= 15 else None
         atr_pct = (atr / closes[-1]) if atr and closes[-1] else 0.0
         avg_volume = sum(bars.get("volumes", [])[-21:-1]) / max(1, len(bars.get("volumes", [])[-21:-1])) if len(bars.get("volumes", [])) >= 21 else 0.0
@@ -851,18 +851,18 @@ async def refresh_symbol_activity():
         volume_ratio_ok = volume_ratio >= config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO
         spread_ok = spread_pct <= config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT if spread_pct else False
         active = bool(ticker and volume_ok and movement_ok and atr_ok and volume_ratio_ok and spread_ok)
-        if symbol in analyzer.positions:
-            active = True
         statuses[symbol] = {
             "symbol": symbol, "status": "ACTIVE" if active else "PASSIVE",
-            "quote_volume": quote_volume, "range_30m_pct": round(range_pct, 4),
+            "quote_volume": quote_volume, "range_15m_pct": round(range_pct, 4),
             "atr_pct": round(atr_pct * 100, 4), "volume_ratio": round(volume_ratio, 4),
             "spread_pct": round(spread_pct, 4),
-            "checks": {"quote_volume": volume_ok, "range_30m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok},
-            "reason": "open_position" if symbol in analyzer.positions else ("active" if active else "movement_or_liquidity_below_threshold"),
+            "checks": {"quote_volume": volume_ok, "range_15m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok},
+            "has_open_position": symbol in analyzer.positions,
+            "reason": "active" if active else "movement_or_liquidity_below_threshold",
             "checked_at": time.time(),
         }
     config.PASSIVE_SYMBOLS = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
+    config.SYMBOL_ACTIVITY_STATUS = statuses
     await database.set_llm_setting("symbol_activity_status", json.dumps(statuses, ensure_ascii=False))
     active_count = sum(1 for item in statuses.values() if item["status"] == "ACTIVE")
     warming_count = sum(1 for item in statuses.values() if item["status"] == "WARMING")
@@ -1472,7 +1472,7 @@ async def symbol_activity_status():
             "warming_count": sum(1 for item in statuses.values() if item.get("status") == "WARMING"),
             "refresh_seconds": config.SYMBOL_ACTIVITY_REFRESH_SEC,
             "thresholds": {"min_quote_volume_try": config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY,
-                           "min_range_30m_pct": config.SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT,
+                           "min_range_15m_pct": config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT,
                            "min_atr_pct": config.SYMBOL_ACTIVITY_MIN_ATR_PCT * 100,
                            "min_volume_ratio": config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO,
                            "max_spread_pct": config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT}}

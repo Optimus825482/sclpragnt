@@ -205,9 +205,25 @@ class RegressionContracts(unittest.TestCase):
         self.assertNotIn('asyncio.create_task(top_gainers_refresh_loop()', source)
         self.assertIn('@app.get("/api/market/top-gainers")', source)
         self.assertIn('SYMBOL_ACTIVITY_REFRESH_SEC', config_source)
+        self.assertIn('SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT', config_source)
+        self.assertIn('SYMBOL_ACTIVITY_FILTER_ENABLED', config_source)
+        self.assertIn('SYMBOL_ACTIVITY_STATUS', config_source)
         self.assertIn('TOP_GAINERS_LIMIT = max(1, min(70', config_source)
         self.assertIn('source": "binance_tr_public_24h_ticker"', source)
         self.assertIn('known_try = set(await trading_symbols("TRY"))', source)
+
+    def test_symbol_activity_is_enforced_at_the_writer_boundary(self):
+        source = (ROOT / "app" / "analyzer.py").read_text()
+        tree = ast.parse(source)
+        opening = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "_open_position_unlocked"
+        )
+        opening_source = ast.get_source_segment(source, opening)
+        self.assertIsNotNone(opening_source)
+        self.assertIn("symbol in config.PASSIVE_SYMBOLS", opening_source)
+        self.assertIn('"action": "BUY_BLOCKED"', opening_source)
+        self.assertIn('"symbol_activity:passive"', opening_source)
 
     def test_symbol_activity_does_not_overwrite_configured_scan_symbols(self):
         tree = ast.parse((ROOT / "app" / "main.py").read_text())
