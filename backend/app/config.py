@@ -49,6 +49,14 @@ class Config:
     STRATEGY_ENTRY_SCAN_INTERVAL_SEC = max(60, int(os.getenv("STRATEGY_ENTRY_SCAN_INTERVAL_SEC", "300")))
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
+    # BB+MFI (Flawless Victory v3) metrics.  They are separately configurable
+    # in live Settings and may be overridden per backtest without persistence.
+    BB_MFI_BB_PERIOD = max(5, int(os.getenv("BB_MFI_BB_PERIOD", "20")))
+    BB_MFI_BB_STD_DEV = max(0.1, float(os.getenv("BB_MFI_BB_STD_DEV", "1.0")))
+    BB_MFI_MFI_PERIOD = max(2, int(os.getenv("BB_MFI_MFI_PERIOD", "14")))
+    BB_MFI_ENTRY_MFI_MAX = float(os.getenv("BB_MFI_ENTRY_MFI_MAX", "60"))
+    BB_MFI_EXIT_RSI_MIN = float(os.getenv("BB_MFI_EXIT_RSI_MIN", "65"))
+    BB_MFI_EXIT_MFI_MIN = float(os.getenv("BB_MFI_EXIT_MFI_MIN", "64"))
     SYMBOL_ORDER_PCT = {}
     SYMBOL_PYRAMIDING_LAYERS = {}
     BB_MFI_STOP_LOSS_PCT = float(os.getenv("BB_MFI_STOP_LOSS_PCT", "0.08882"))

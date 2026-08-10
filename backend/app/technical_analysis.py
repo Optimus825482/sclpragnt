@@ -91,11 +91,12 @@ def _obv(closes, volumes):
     return {"value": float(obv), "slope": float(obv - values[-min(5, len(values))]) if values else 0.0}
 
 def _mfi(highs, lows, closes, volumes, period=14):
+    """Pine-compatible MFI: sum exactly ``period`` typical-price changes."""
     if len(closes) < period + 1: return None
     typical = (np.asarray(highs) + np.asarray(lows) + np.asarray(closes)) / 3
     flow = typical * np.asarray(volumes)
     pos = neg = 0.0
-    for i in range(-period + 1, 0):
+    for i in range(len(typical) - period, len(typical)):
         if typical[i] > typical[i-1]: pos += flow[i]
         elif typical[i] < typical[i-1]: neg += flow[i]
     return float(100 - (100 / (1 + pos / neg))) if neg else 100.0

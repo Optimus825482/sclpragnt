@@ -501,6 +501,16 @@ class ScalpAnalyzer:
                 system_target = pos.get("system_take_profit_price") or pos.get("take_profit")
                 if system_target and price >= float(system_target):
                     return await self.close_position(symbol, price, "bb_mfi_take_profit")
+                # MarketData retains closed candles only.  Evaluate the Pine
+                # close signal once for each newly-confirmed strategy candle;
+                # live paper closes at the next available ticker price.
+                closed_at = int(kline.get("last_closed_at_ms") or 0)
+                if (closed_at and pos.get("bb_mfi_exit_evaluated_at") != closed_at and
+                        self.strategy_bb_mfi_mean_reversion(kline, symbol) == "sell"):
+                    pos["bb_mfi_exit_evaluated_at"] = closed_at
+                    return await self.close_position(symbol, price, "bb_mfi_v3_signal_exit")
+                if closed_at:
+                    pos["bb_mfi_exit_evaluated_at"] = closed_at
                 return None
         if pos:
             elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
@@ -860,16 +870,21 @@ class ScalpAnalyzer:
         return None
 
     def strategy_bb_mfi_mean_reversion(self, kline, symbol=None):
-        """TradingView v3-inspired dip entry: BB(20, 1.0) lower-band breach + MFI<60."""
+        """Deterministic signal contract of Pine Flawless Victory v3."""
         closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
         volumes = kline.get("volumes", [])
-        if len(closes) < 21 or len(highs) < 21 or len(lows) < 21 or len(volumes) < 21:
+        min_history = max(config.BB_MFI_BB_PERIOD, config.BB_MFI_MFI_PERIOD + 1, 15)
+        if len(closes) < min_history or len(highs) < min_history or len(lows) < min_history or len(volumes) < min_history:
             return None
-        bb = self.calculate_bollinger_bands(closes, period=20, std_dev=1.0)
-        mfi = _mfi(highs, lows, closes, volumes, period=14)
-        # TradingView giriş kuralı: yalnızca BB alt bandı + MFI<60.
-        if bb and mfi is not None and closes[-1] < bb["lower"] and mfi < 60:
+        bb = self.calculate_bollinger_bands(closes, period=config.BB_MFI_BB_PERIOD, std_dev=config.BB_MFI_BB_STD_DEV)
+        mfi = _mfi(highs, lows, closes, volumes, period=config.BB_MFI_MFI_PERIOD)
+        rsi = self.calculate_rsi(closes, period=14)
+        # Pine v3: BB(20,1.0) lower breach + MFI<60 enters; RSI>65 and
+        # MFI>64 invokes strategy.close("Long").
+        if bb and mfi is not None and closes[-1] < bb["lower"] and mfi < config.BB_MFI_ENTRY_MFI_MAX:
             return "buy"
+        if rsi is not None and mfi is not None and rsi > config.BB_MFI_EXIT_RSI_MIN and mfi > config.BB_MFI_EXIT_MFI_MIN:
+            return "sell"
         return None
 
     def strategy_bb_squeeze_orderflow(self, kline, symbol=None):
@@ -1242,7 +1257,17 @@ class ScalpAnalyzer:
         else:
             order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
             available_value = try_balance / (1 + config.COMMISSION_PCT)
-            order_value = available_value * max(0.001, min(order_pct, 1.0))
+            if strat_name == "BB_MFI_MEAN_REVERSION":
+                # Pine's strategy.percent_of_equity includes marked open
+                # paper positions; cash is only an affordability constraint.
+                marked_positions = 0.0
+                for held_symbol, held in self.positions.items():
+                    held_ticker = self.market.get_ticker(held_symbol) if self.market else None
+                    held_price = float((held_ticker or {}).get("last_price") or held.get("entry_price") or 0)
+                    marked_positions += float(held.get("quantity") or 0) * held_price
+                order_value = min((try_balance + marked_positions) * 0.10, available_value)
+            else:
+                order_value = available_value * max(0.001, min(order_pct, 1.0))
             if order_value < config.MIN_PARTIAL_ORDER_TRY:
                 # Küçük yüzde tutarı yüzünden kullanılabilir bakiye boşta
                 # kalmasın: önce 250 TL kademeli tutarı, son aşamada ise

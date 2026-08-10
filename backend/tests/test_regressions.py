@@ -11,6 +11,46 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class RegressionContracts(unittest.TestCase):
+    def test_bb_mfi_v3_signal_contract(self):
+        from app.analyzer import ScalpAnalyzer
+
+        analyzer = ScalpAnalyzer(None)
+        rising = [float(100 + index) for index in range(30)]
+        up_kline = {"closes": rising, "highs": [value + 1 for value in rising],
+                    "lows": [value - 1 for value in rising], "volumes": [100.0] * len(rising)}
+        self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(up_kline), "sell")
+
+        falling = [float(130 - index) for index in range(30)]
+        down_kline = {"closes": falling, "highs": [value + 1 for value in falling],
+                      "lows": [value - 1 for value in falling], "volumes": [100.0] * len(falling)}
+        self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(down_kline), "buy")
+
+    def test_bb_mfi_v3_backtest_has_signal_exit_and_pine_sizing(self):
+        source = (ROOT / "app" / "backtest.py").read_text()
+        self.assertIn('"bb_mfi_v3_signal_exit"', source)
+        self.assertIn('config.MAX_POSITION_LAYERS = max(1, int(pyramiding_layers))', source)
+        self.assertIn('order_pct if order_pct is not None else config.ORDER_PCT', source)
+
+    def test_bb_mfi_metric_overrides_are_isolated_backtest_params(self):
+        from app.backtest import PARAM_FIELDS
+        self.assertEqual(PARAM_FIELDS["bb_mfi_bb_period"], "BB_MFI_BB_PERIOD")
+        self.assertEqual(PARAM_FIELDS["bb_mfi_exit_mfi_min"], "BB_MFI_EXIT_MFI_MIN")
+
+    def test_bb_mfi_v3_signal_exit_fills_at_next_bar_open(self):
+        from app import backtest
+
+        data = {key: [100.0] * 24 for key in ("opens", "highs", "lows", "closes", "volumes")}
+        data["opens"][22] = 101.0
+        data["times"] = list(range(24))
+
+        def signal(_self, kline, _symbol=None):
+            return "buy" if len(kline["closes"]) == 21 else "sell" if len(kline["closes"]) == 22 else None
+
+        with patch.object(backtest, "_fetch_klines", return_value=data), \
+             patch.object(backtest.ScalpAnalyzer, "strategy_bb_mfi_mean_reversion", signal):
+            result = backtest._run_single("BTCTRY", "5m", 1, "BB_MFI_MEAN_REVERSION", {}, 500.0, 0.01, 0.01, 0.0)
+        self.assertEqual(result["trades"][0]["reason"], "bb_mfi_v3_signal_exit")
+        self.assertEqual(result["trades"][0]["exit_time"], 22)
     def test_backtest_fill_model_charges_round_trip_costs(self):
         from app.backtest import _close_trade
 

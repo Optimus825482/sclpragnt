@@ -28,6 +28,37 @@ type BacktestResult = {
     oos_validation?: { positive_oos_folds?: number; folds?: number; net_pnl?: number };
 };
 
+type BbMfiBacktestSettings = {
+    bbPeriod: number;
+    bbStdDev: number;
+    mfiPeriod: number;
+    mfiEntryMax: number;
+    rsiExitMin: number;
+    mfiExitMin: number;
+    stopLossPct: number;
+    takeProfitPct: number;
+    orderPct: number;
+    pyramidingLayers: number;
+};
+
+const DEFAULT_BB_MFI_SETTINGS: BbMfiBacktestSettings = {
+    bbPeriod: 20,
+    bbStdDev: 1,
+    mfiPeriod: 14,
+    mfiEntryMax: 60,
+    rsiExitMin: 65,
+    mfiExitMin: 64,
+    stopLossPct: 8.882,
+    takeProfitPct: 2.317,
+    orderPct: 10,
+    pyramidingLayers: 2,
+};
+
+const numberOr = (value: unknown, fallback: number) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+};
+
 const STRATEGIES = [
     { key: "EMA_VWAP_PULLBACK", name: "EMA + VWAP Pullback", icon: "📈" },
     { key: "BB_SQUEEZE_ORDERFLOW", name: "BB Squeeze + Order-Flow Confirmation", icon: "📦" },
@@ -48,6 +79,25 @@ const fmtTime = (ts: number) =>
     new Date(ts * 1000).toLocaleString("tr-TR", { hour12: false });
 const fmtTradeTime = (ts?: number) => ts ? fmtTime(ts) : "—";
 
+function BbMfiInput({ label, value, onChange, suffix, ...inputProps }: {
+    label: string;
+    value: number;
+    onChange: (value: string) => void;
+    suffix?: string;
+    min?: number;
+    max?: number;
+    step?: number;
+}) {
+    return <label className="rounded-xl border border-bunker-800 bg-bunker-900 p-3">
+        <span className="font-mono text-xs text-bunker-muted">{label}</span>
+        <div className="mt-1 flex items-center gap-2">
+            <input type="number" value={value} onChange={(event) => onChange(event.target.value)}
+                className="min-w-0 flex-1 bg-transparent font-mono text-sm text-white outline-none focus:text-neon-green" {...inputProps} />
+            {suffix && <span className="font-mono text-xs text-bunker-muted">{suffix}</span>}
+        </div>
+    </label>;
+}
+
 export default function BacktestPage() {
     const [symbol, setSymbol] = useState("BTCTRY");
     const [symbols, setSymbols] = useState<string[]>(["BTCTRY"]);
@@ -61,6 +111,8 @@ export default function BacktestPage() {
     const [history, setHistory] = useState<BacktestResult[]>([]);
     const [robustness, setRobustness] = useState<any>(null);
     const [robustnessRunning, setRobustnessRunning] = useState(false);
+    const [bbMfiSettingsOpen, setBbMfiSettingsOpen] = useState(false);
+    const [bbMfiSettings, setBbMfiSettings] = useState<BbMfiBacktestSettings>(DEFAULT_BB_MFI_SETTINGS);
 
     const loadHistory = () => {
         apiRequest(`${API_BASE}/api/backtests?limit=50`)
@@ -83,6 +135,18 @@ export default function BacktestPage() {
             setSymbols(list);
             setSymbol((current) => list.includes(current) ? current : list[0]);
             if (configData.active_strategy) setStrategy(configData.active_strategy);
+            setBbMfiSettings({
+                bbPeriod: numberOr(configData.bb_mfi_bb_period, DEFAULT_BB_MFI_SETTINGS.bbPeriod),
+                bbStdDev: numberOr(configData.bb_mfi_bb_std_dev, DEFAULT_BB_MFI_SETTINGS.bbStdDev),
+                mfiPeriod: numberOr(configData.bb_mfi_mfi_period, DEFAULT_BB_MFI_SETTINGS.mfiPeriod),
+                mfiEntryMax: numberOr(configData.bb_mfi_entry_mfi_max, DEFAULT_BB_MFI_SETTINGS.mfiEntryMax),
+                rsiExitMin: numberOr(configData.bb_mfi_exit_rsi_min, DEFAULT_BB_MFI_SETTINGS.rsiExitMin),
+                mfiExitMin: numberOr(configData.bb_mfi_exit_mfi_min, DEFAULT_BB_MFI_SETTINGS.mfiExitMin),
+                stopLossPct: numberOr(configData.bb_mfi_stop_loss_pct, DEFAULT_BB_MFI_SETTINGS.stopLossPct / 100) * 100,
+                takeProfitPct: numberOr(configData.bb_mfi_take_profit_pct, DEFAULT_BB_MFI_SETTINGS.takeProfitPct / 100) * 100,
+                orderPct: numberOr(configData.order_pct, DEFAULT_BB_MFI_SETTINGS.orderPct / 100) * 100,
+                pyramidingLayers: numberOr(configData.pyramiding_layers, DEFAULT_BB_MFI_SETTINGS.pyramidingLayers),
+            });
         }).catch(() => undefined);
     }, []);
 
@@ -91,10 +155,26 @@ export default function BacktestPage() {
         setError(null);
         setResult(null);
         try {
+            const bbMfiPayload = strategy === "BB_MFI_MEAN_REVERSION" ? {
+                params: {
+                    bb_mfi_bb_period: bbMfiSettings.bbPeriod,
+                    bb_mfi_bb_std_dev: bbMfiSettings.bbStdDev,
+                    bb_mfi_mfi_period: bbMfiSettings.mfiPeriod,
+                    bb_mfi_entry_mfi_max: bbMfiSettings.mfiEntryMax,
+                    bb_mfi_exit_rsi_min: bbMfiSettings.rsiExitMin,
+                    bb_mfi_exit_mfi_min: bbMfiSettings.mfiExitMin,
+                    bb_mfi_stop_loss_pct: bbMfiSettings.stopLossPct / 100,
+                    bb_mfi_take_profit_pct: bbMfiSettings.takeProfitPct / 100,
+                },
+                order_pct: bbMfiSettings.orderPct / 100,
+                pyramiding_layers: bbMfiSettings.pyramidingLayers,
+                stop_loss_pct: bbMfiSettings.stopLossPct / 100,
+                take_profit_pct: bbMfiSettings.takeProfitPct / 100,
+            } : {};
             const res = await apiRequest(`${API_BASE}/api/backtest/run`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ symbol, interval, days_back: daysBack, strategy, order_size: orderSize })
+                body: JSON.stringify({ symbol, interval, days_back: daysBack, strategy, order_size: orderSize, ...bbMfiPayload })
             });
             const d = await res.json();
             if (!d.ok) { setError(d.error || "Backtest başarısız"); return; }
@@ -110,6 +190,19 @@ export default function BacktestPage() {
     const remove = async (id: number) => {
         await apiRequest(`${API_BASE}/api/backtests/${id}`, { method: "DELETE" });
         loadHistory();
+    };
+
+    const startTest = () => {
+        if (strategy === "BB_MFI_MEAN_REVERSION") {
+            setBbMfiSettingsOpen(true);
+            return;
+        }
+        void run();
+    };
+
+    const updateBbMfiSetting = (key: keyof BbMfiBacktestSettings, value: string) => {
+        const nextValue = Number(value);
+        setBbMfiSettings((current) => ({ ...current, [key]: Number.isFinite(nextValue) ? nextValue : current[key] }));
     };
 
     const runRobustness = async () => {
@@ -160,17 +253,18 @@ export default function BacktestPage() {
                         <label className="eyebrow block mb-1.5">STRATEJİ</label>
                         <select value={strategy} onChange={(e) => setStrategy(e.target.value)}
                             className="w-full bg-bunker-950 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm">
-                            {STRATEGIES.filter((s) => s.key === strategy).map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}
+                            {STRATEGIES.map((s) => <option key={s.key} value={s.key}>{s.name}</option>)}
                         </select>
                     </div>
                     <div>
                         <label className="eyebrow block mb-1.5">İŞLEM (₺)</label>
-                        <input type="number" min={100} step={100} value={orderSize}
+                        <input type="number" min={100} step={100} value={strategy === "BB_MFI_MEAN_REVERSION" ? 1000 : orderSize}
                             onChange={(e) => setOrderSize(parseInt(e.target.value) || 500)}
+                            disabled={strategy === "BB_MFI_MEAN_REVERSION"}
                             className="w-full bg-bunker-950 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm" />
                     </div>
                     <div className="flex items-end">
-                        <button onClick={run} disabled={running}
+                        <button onClick={startTest} disabled={running}
                             className="w-full px-4 py-2 rounded-lg border border-neon-green/40 bg-neon-green/10 text-neon-green font-mono text-sm hover:bg-neon-green/20 disabled:opacity-50">
                             {running ? "ÇALIŞIYOR..." : "▶ TEST ET"}
                         </button>
@@ -179,12 +273,64 @@ export default function BacktestPage() {
                 <p className="text-[11px] text-bunker-muted mt-3 font-mono">
                     {strat?.icon} {strat?.name} · komisyon + spread + slippage dahil · kronolojik OOS doğrulaması zorunlu · Başlangıç 10.000 ₺
                 </p>
-                {strategy === "BB_MFI_MEAN_REVERSION" && <p className="mt-2 text-[11px] font-mono text-neon-yellow">BB-MFI: yalnızca stop %8,882 ve hedef %2,317 kullanılır. Cooldown, net-kâr, maksimum pozisyon, trailing/stale/early-failure kapıları yoktur. Tarihsel mumlarda orderbook/likidite kapıları ölçülemediği için sonuçlara uygulanmaz.</p>}
+                {strategy === "BB_MFI_MEAN_REVERSION" && <p className="mt-2 text-[11px] font-mono text-neon-yellow">Pine v3 Flawless Victory: giriş BB(20, 1,0) altı + MFI(14)&lt;60; sinyal çıkışı RSI(14)&gt;65 + MFI(14)&gt;64; SL %8,882 / TP %2,317. Başlangıç 10.000 ₺, her giriş özsermayenin %10&apos;u ve en çok 2 katmandır. Komisyon, spread ve slippage sonucu korumacı yapar; TradingView&apos;deki maliyetsiz sonuçla birebir kıyaslanmamalıdır.</p>}
+                {strategy === "BB_MFI_MEAN_REVERSION" && <button onClick={() => setBbMfiSettingsOpen(true)}
+                    className="mt-3 px-4 py-2 rounded-lg border border-neon-green/35 bg-bunker-900 text-neon-green font-mono text-xs hover:bg-neon-green/10">
+                    ⚙ AYARLAR
+                </button>}
                 <button onClick={runRobustness} disabled={robustnessRunning}
                     className="mt-3 px-4 py-2 rounded-lg border border-yellow-400/40 bg-yellow-400/10 text-yellow-300 font-mono text-xs disabled:opacity-50">
                     {robustnessRunning ? "DAYANIKLILIK TESTİ..." : "↗ 14/30/60 GÜN DAYANIKLILIK TESTİ"}
                 </button>
             </div>
+
+            {bbMfiSettingsOpen && <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="bb-mfi-settings-title">
+                <button aria-label="Ayarlar penceresini kapat" className="absolute inset-0 bg-black/75 backdrop-blur-sm" onClick={() => setBbMfiSettingsOpen(false)} />
+                <div className="relative w-full max-w-2xl max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-neon-green/30 bg-bunker-950 shadow-2xl shadow-black/60">
+                    <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-bunker-800 bg-bunker-950/95 px-5 py-4 backdrop-blur">
+                        <div>
+                            <p className="eyebrow text-neon-green">BB + MFI MEAN REVERSION</p>
+                            <h2 id="bb-mfi-settings-title" className="mt-1 font-mono text-lg font-bold">BACKTEST AYARLARI</h2>
+                            <p className="mt-1 text-xs text-bunker-muted">Canlı yapılandırmadan başlatıldı; burada yaptığınız değişiklikler yalnızca bu backtest isteğini etkiler.</p>
+                        </div>
+                        <button aria-label="Kapat" onClick={() => setBbMfiSettingsOpen(false)} className="rounded-lg border border-bunker-700 px-2.5 py-1.5 font-mono text-sm text-bunker-muted hover:border-neon-green/40 hover:text-white">×</button>
+                    </div>
+                    <div className="space-y-5 p-5">
+                        <section>
+                            <p className="eyebrow text-neon-green">GİRİŞ</p>
+                            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                                <BbMfiInput label="BB periyodu" value={bbMfiSettings.bbPeriod} min={5} step={1} onChange={(value) => updateBbMfiSetting("bbPeriod", value)} />
+                                <BbMfiInput label="BB std. sapma" value={bbMfiSettings.bbStdDev} min={0.1} step={0.1} onChange={(value) => updateBbMfiSetting("bbStdDev", value)} />
+                                <BbMfiInput label="MFI periyodu" value={bbMfiSettings.mfiPeriod} min={2} step={1} onChange={(value) => updateBbMfiSetting("mfiPeriod", value)} />
+                                <BbMfiInput label="MFI giriş eşiği" value={bbMfiSettings.mfiEntryMax} min={0} max={100} step={1} suffix="<" onChange={(value) => updateBbMfiSetting("mfiEntryMax", value)} />
+                            </div>
+                        </section>
+                        <section>
+                            <p className="eyebrow text-yellow-300">SİNYAL ÇIKIŞI VE RİSK</p>
+                            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                                <BbMfiInput label="RSI çıkış eşiği" value={bbMfiSettings.rsiExitMin} min={0} max={100} step={1} suffix=">" onChange={(value) => updateBbMfiSetting("rsiExitMin", value)} />
+                                <BbMfiInput label="MFI çıkış eşiği" value={bbMfiSettings.mfiExitMin} min={0} max={100} step={1} suffix=">" onChange={(value) => updateBbMfiSetting("mfiExitMin", value)} />
+                                <BbMfiInput label="Stop-loss" value={bbMfiSettings.stopLossPct} min={0.1} max={99} step={0.001} suffix="%" onChange={(value) => updateBbMfiSetting("stopLossPct", value)} />
+                                <BbMfiInput label="Take-profit" value={bbMfiSettings.takeProfitPct} min={0.1} max={99} step={0.001} suffix="%" onChange={(value) => updateBbMfiSetting("takeProfitPct", value)} />
+                            </div>
+                        </section>
+                        <section>
+                            <p className="eyebrow text-neon-green">POZİSYON BOYUTU</p>
+                            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                                <BbMfiInput label="Özsermayeden işlem" value={bbMfiSettings.orderPct} min={0.1} max={100} step={0.5} suffix="%" onChange={(value) => updateBbMfiSetting("orderPct", value)} />
+                                <BbMfiInput label="Piramitleme katmanı" value={bbMfiSettings.pyramidingLayers} min={1} max={10} step={1} onChange={(value) => updateBbMfiSetting("pyramidingLayers", value)} />
+                            </div>
+                        </section>
+                    </div>
+                    <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-bunker-800 bg-bunker-950/95 px-5 py-4 backdrop-blur">
+                        <p className="max-w-sm text-[11px] font-mono text-bunker-muted">Canlı ayarlar kaydedilmez ve paper canlı akışına gönderilmez.</p>
+                        <div className="flex gap-2">
+                            <button onClick={() => setBbMfiSettingsOpen(false)} className="rounded-lg border border-bunker-700 px-3 py-2 font-mono text-xs text-bunker-muted hover:text-white">VAZGEÇ</button>
+                            <button onClick={() => { setBbMfiSettingsOpen(false); void run(); }} disabled={running} className="rounded-lg border border-neon-green/40 bg-neon-green/10 px-3 py-2 font-mono text-xs text-neon-green hover:bg-neon-green/20 disabled:opacity-50">▶ AYARLARLA TEST ET</button>
+                        </div>
+                    </div>
+                </div>
+            </div>}
 
             {robustness && <div className="card border-yellow-400/20 bg-yellow-400/5">
                 <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="eyebrow text-yellow-300">DAYANIKLILIK / MALİYET SONRASI</p><p className="text-xs text-bunker-muted mt-1">Bu test komisyon, spread ve slippage varsayımlarıyla kronolojik OOS fold sonuçlarını karşılaştırır.</p></div><span className={`font-mono font-bold ${robustness.walk_forward_assessment?.status === "STABLE" ? "text-neon-green" : "text-yellow-300"}`}>{robustness.walk_forward_assessment?.status || "—"}</span></div>

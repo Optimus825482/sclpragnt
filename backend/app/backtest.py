@@ -39,6 +39,9 @@ PARAM_FIELDS = {
     "ema_mid": "EMA_MID", "ema_trend": "EMA_TREND", "rsi_period": "RSI_PERIOD",
     "vwap_period": "VWAP_PERIOD", "macd_fast": "MACD_FAST", "macd_slow": "MACD_SLOW",
     "macd_signal": "MACD_SIGNAL",
+    "bb_mfi_bb_period": "BB_MFI_BB_PERIOD", "bb_mfi_bb_std_dev": "BB_MFI_BB_STD_DEV",
+    "bb_mfi_mfi_period": "BB_MFI_MFI_PERIOD", "bb_mfi_entry_mfi_max": "BB_MFI_ENTRY_MFI_MAX",
+    "bb_mfi_exit_rsi_min": "BB_MFI_EXIT_RSI_MIN", "bb_mfi_exit_mfi_min": "BB_MFI_EXIT_MFI_MIN",
 }
 
 # Analyzer stratejileri mevcut global config'i okuduğu için backtest config değişimini serileştir.
@@ -370,7 +373,14 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
             profile = profiles.get(str(exit_profile or "").lower())
             fixed_tv_exit = strategy == "BB_MFI_MEAN_REVERSION"
             if fixed_tv_exit:
+                # Defaults mirror Pine v3, while this isolated run may use
+                # an explicit user experiment without touching live config.
                 config.MAX_POSITION_LAYERS = max(1, int(pyramiding_layers))
+                order_pct = float(order_pct if order_pct is not None else config.ORDER_PCT)
+                # UI/API defaults come from live configuration, but params are
+                # applied only inside this lock and never mutate live settings.
+                stop_pct = float(params.get("bb_mfi_stop_loss_pct", stop_pct if stop_pct is not None else config.BB_MFI_STOP_LOSS_PCT))
+                tp_pct = float(params.get("bb_mfi_take_profit_pct", tp_pct if tp_pct is not None else config.BB_MFI_TAKE_PROFIT_PCT))
             analyzer = ScalpAnalyzer(None)
             fn = getattr(analyzer, STRATEGIES[strategy][2])
             balance = config.INITIAL_BALANCE_TRY
@@ -429,6 +439,14 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     if fixed_tv_exit and exit_price is None and high >= position["target_price"]:
                         exit_price = position["target_price"]
                         reason = "fixed_take_profit"
+                    elif fixed_tv_exit and exit_price is None and fn(window, symbol) == "sell" and i + 1 < len(data["opens"]):
+                        # Pine's default broker model processes strategy.close
+                        # from a confirmed bar at the next bar open.
+                        exit_price = data["opens"][i + 1]
+                        reason = "bb_mfi_v3_signal_exit"
+                        exit_time_index = i + 1
+                    else:
+                        exit_time_index = i
                     if exit_price is None and (not fixed_tv_exit and config.STALE_POSITION_EXIT_BELOW_COST and
                           elapsed >= config.STALE_POSITION_SEC and
                           close < position["entry"] * (1 + config.min_net_exit_pct(order_size * position.get("layers", 1)))):
@@ -442,17 +460,23 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                         balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], remaining_order_size, reason, spread_pct, slippage_pct)
                         pnl += position.get("realized_pnl", 0.0)
                         trade["pnl"] = round(pnl, 8)
-                        trade.update({"entry_time": position["entry_time"], "exit_time": data["times"][i],
-                                      "entry_bar": position["entry_bar"], "exit_bar": i,
-                                      "bars_held": i - position["entry_bar"] + 1})
+                        trade.update({"entry_time": position["entry_time"], "exit_time": data["times"][exit_time_index],
+                                      "entry_bar": position["entry_bar"], "exit_bar": exit_time_index,
+                                      "bars_held": exit_time_index - position["entry_bar"] + 1})
                         trades.append(trade); wins += pnl > 0; losses += pnl <= 0; position = None
-                    elif position.get("layers", 1) < config.MAX_POSITION_LAYERS and balance >= (balance * float(order_pct) if order_pct else order_size):
+                    elif position.get("layers", 1) < config.MAX_POSITION_LAYERS:
                         result = fn(window, symbol)
                         if result == "buy":
                             if i + 1 >= len(data["opens"]):
                                 continue
-                            layer_order_size = balance * float(order_pct) if order_pct else order_size
+                            # Pine percent_of_equity includes the marked value
+                            # of an open layer, not just remaining cash.
+                            equity_at_signal = balance + position["quantity"] * close
+                            layer_order_size = (equity_at_signal * float(order_pct) if fixed_tv_exit else
+                                                (balance * float(order_pct) if order_pct else order_size))
                             fee = layer_order_size * config.COMMISSION_PCT
+                            if balance < layer_order_size + fee:
+                                continue
                             balance -= layer_order_size + fee
                             entry_price = data["opens"][i + 1]
                             quantity = layer_order_size / entry_price
@@ -472,7 +496,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     window = {key: values[:i + 1] for key, values in data.items()}
                     result = fn(window, symbol)
                     entry_order_size = balance * float(order_pct) if order_pct else order_size
-                    if balance >= entry_order_size and result == "buy":
+                    if balance >= entry_order_size * (1 + config.COMMISSION_PCT) and result == "buy":
                         if i + 1 >= len(data["opens"]):
                             continue
                         entry_fee = entry_order_size * config.COMMISSION_PCT
@@ -529,8 +553,9 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     "cost_model": "round_trip_commission_spread_slippage",
                     "trailing_stop_pct": 0.0, "atr_trailing_multiplier": config.SYSTEM_ATR_TRAILING_MULTIPLIER,
                     "risk_reward": config.SYSTEM_RISK_REWARD,
-                    "exit_model": "fixed_tv_stop_take_profit" if fixed_tv_exit else "atr_trailing_after_rr_target",
+                    "exit_model": "pine_v3_signal_or_fixed_stop_take_profit" if fixed_tv_exit else "atr_trailing_after_rr_target",
                     "fill_model": "next_bar_open_entry_executable_exit",
+                    "strategy_contract": ({"source": "Flawless Victory Strategy v3", "entry": "close < BB(20,1.0) lower and MFI(14) < 60", "signal_exit": "RSI(14) > 65 and MFI(14) > 64", "stop_loss_pct": 0.08882, "take_profit_pct": 0.02317, "order_pct_of_equity": 0.10, "pyramiding": 2} if fixed_tv_exit else None),
                     "spread_pct": spread_pct, "slippage_pct": config.ESTIMATED_SLIPPAGE_PCT if slippage_pct is None else slippage_pct,
                     "data_quality": _data_quality(data, interval),
                     "open_position_at_end": open_at_end, "unrealized_pnl": round(unrealized_pnl, 8),
@@ -554,7 +579,9 @@ async def run_backtest(symbol: str, interval: str, days_back: int, strategy: str
 async def run_walk_forward(symbol: str, interval: str, strategy: str,
                            train_days: int = 30, test_days: int = 7,
                            folds: int = 3, order_size: float = 500.0,
-                           stop_pct: float = 0.005, tp_pct: float = 0.015):
+                           stop_pct: float = 0.005, tp_pct: float = 0.015,
+                           params: dict | None = None, pyramiding_layers: int = 3,
+                           order_pct: float | None = None):
     """Chronological OOS folds for classic system strategies only.
 
     LLM_PAPER cannot be replayed here because historical LLM decisions/plans
@@ -573,8 +600,9 @@ async def run_walk_forward(symbol: str, interval: str, strategy: str,
         end_ts = now - (folds - fold - 1) * test_days * 86400
         start_ts = end_ts - test_days * 86400
         result = await asyncio.to_thread(
-            _run_single, symbol, interval, train_days + test_days, strategy, {},
-            order_size, stop_pct, tp_pct, 0.0, start_ts, end_ts)
+            _run_single, symbol, interval, train_days + test_days, strategy, params or {},
+            order_size, stop_pct, tp_pct, 0.0, start_ts, end_ts, 0.0, None, None,
+            pyramiding_layers, order_pct)
         result["fold"] = fold + 1
         results.append(result)
     pnl = [float(row.get("net_pnl") or 0) for row in results]

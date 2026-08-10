@@ -182,9 +182,8 @@ const DEFAULT_STYLE: IndicatorStyle = {
     maxValue: null
 };
 
-const DEFAULT_INSTANCES: IndicatorInstance[] = [
-    { uid: uid(), registryId: "bb", name: "BB", overlay: true, params: { length: 20, mult: 2, src: "close" }, style: DEFAULT_STYLE }
-];
+// Grafik yalnızca kullanıcının ekleyip kaydettiği göstergelerle açılır.
+const DEFAULT_INSTANCES: IndicatorInstance[] = [];
 
 type EditTarget = { entry: RegistryEntry; editUid?: string };
 
@@ -472,7 +471,7 @@ export default function ChartsPage() {
     const [instances, setInstances] = useState<IndicatorInstance[]>(DEFAULT_INSTANCES);
     const [picking, setPicking] = useState(false);
     const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
-    const [volumeVisible, setVolumeVisible] = useState(true);
+    const [volumeVisible, setVolumeVisible] = useState(false);
     const [countdown, setCountdown] = useState<number>(0);
     const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
     const [showPositions, setShowPositions] = useState(false);
@@ -1301,9 +1300,8 @@ export default function ChartsPage() {
             markers.setMarkers(strongCandlestickPatterns(bars).map((p) => ({
                 time: p.time as UTCTimestamp,
                 position: p.type === "buy" ? "belowBar" : "aboveBar",
-                // Kullanıcının istediği görsel sözleşme: bullish kırmızı,
-                // bearish yeşil. Ok yönü açıklama kartıyla da aynıdır.
-                color: p.type === "buy" ? "#ef4444" : "#10b981",
+                // Boğa/yükseliş yeşil, ayı/düşüş kırmızı.
+                color: p.type === "buy" ? "#10b981" : "#ef4444",
                 shape: p.type === "buy" ? "arrowUp" : "arrowDown",
                 text: p.type === "buy" ? "↑" : "↓",
                 size: 1
@@ -1524,6 +1522,7 @@ export default function ChartsPage() {
                     </div>
                     <div className="space-y-3 p-4">
                         {[
+                            { checked: volumeVisible, setChecked: setVolumeVisible, title: "Hacim panelini göster", description: "Varsayılan olarak kapalıdır; bu sembol için kaydederseniz sonraki açılışta tercih korunur." },
                             { checked: showPositions, setChecked: setShowPositions, title: "Pozisyonları göster", description: "Seçili sembolde açık pozisyon varsa giriş çizgisi ve işaretini gösterir." },
                             { checked: showStopTakeProfit, setChecked: setShowStopTakeProfit, title: "SL / TP göster", description: "Açık pozisyonun kayıtlı zarar-durdur ve kâr-al seviyelerini çizer." },
                             { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonları göster", description: "Yalnız tamamlanmış mumlarla doğrulanan dönüş ve yutan formasyonlarını gösterir." },
@@ -1556,11 +1555,11 @@ export default function ChartsPage() {
                 <div ref={containerRef} className="w-full" />
                 {patternTooltip && (
                     <div
-                        className={`absolute z-30 w-64 rounded-xl border p-3 shadow-[0_12px_35px_rgba(0,0,0,0.45)] backdrop-blur pointer-events-none ${patternTooltip.pattern.type === "buy" ? "border-red-300/60 bg-red-950/95" : "border-emerald-300/60 bg-emerald-950/95"}`}
+                        className={`absolute z-30 w-64 rounded-xl border p-3 shadow-[0_12px_35px_rgba(0,0,0,0.45)] backdrop-blur pointer-events-none ${patternTooltip.pattern.type === "buy" ? "border-emerald-300/60 bg-emerald-950/95" : "border-red-300/60 bg-red-950/95"}`}
                         style={{ left: Math.min(Math.max(patternTooltip.x + 16, 12), 360), top: Math.max(patternTooltip.y - 24, 12) }}
                     >
                         <div className="flex items-center gap-2">
-                            <span className={`flex h-6 w-6 items-center justify-center rounded-full border font-mono text-xs font-bold ${patternTooltip.pattern.type === "buy" ? "border-red-200 bg-red-500/30 text-red-50" : "border-emerald-200 bg-emerald-500/30 text-emerald-50"}`}>{patternTooltip.pattern.type === "buy" ? "↑" : "↓"}</span>
+                            <span className={`flex h-6 w-6 items-center justify-center rounded-full border font-mono text-xs font-bold ${patternTooltip.pattern.type === "buy" ? "border-emerald-200 bg-emerald-500/30 text-emerald-50" : "border-red-200 bg-red-500/30 text-red-50"}`}>{patternTooltip.pattern.type === "buy" ? "↑" : "↓"}</span>
                             <span className="font-mono text-xs font-bold text-white">{patternTooltip.pattern.text}</span>
                         </div>
                         <p className="mt-2 text-xs leading-5 text-white/85">{patternDescriptions[patternTooltip.pattern.text]}</p>

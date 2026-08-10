@@ -1163,6 +1163,12 @@ CONFIG_FIELDS = {
     "pyramiding_layers": "PYRAMIDING_LAYERS",
     "bb_mfi_stop_loss_pct": "BB_MFI_STOP_LOSS_PCT",
     "bb_mfi_take_profit_pct": "BB_MFI_TAKE_PROFIT_PCT",
+    "bb_mfi_bb_period": "BB_MFI_BB_PERIOD",
+    "bb_mfi_bb_std_dev": "BB_MFI_BB_STD_DEV",
+    "bb_mfi_mfi_period": "BB_MFI_MFI_PERIOD",
+    "bb_mfi_entry_mfi_max": "BB_MFI_ENTRY_MFI_MAX",
+    "bb_mfi_exit_rsi_min": "BB_MFI_EXIT_RSI_MIN",
+    "bb_mfi_exit_mfi_min": "BB_MFI_EXIT_MFI_MIN",
     "symbol_order_pct": "SYMBOL_ORDER_PCT",
     "symbol_pyramiding_layers": "SYMBOL_PYRAMIDING_LAYERS",
     "max_open_positions": "MAX_OPEN_POSITIONS",
@@ -1233,7 +1239,7 @@ CONFIG_FIELDS = {
 
 BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers"}
+INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
@@ -1257,6 +1263,12 @@ async def get_config():
         "symbol_pyramiding_layers": config.SYMBOL_PYRAMIDING_LAYERS,
         "bb_mfi_stop_loss_pct": config.BB_MFI_STOP_LOSS_PCT,
         "bb_mfi_take_profit_pct": config.BB_MFI_TAKE_PROFIT_PCT,
+        "bb_mfi_bb_period": config.BB_MFI_BB_PERIOD,
+        "bb_mfi_bb_std_dev": config.BB_MFI_BB_STD_DEV,
+        "bb_mfi_mfi_period": config.BB_MFI_MFI_PERIOD,
+        "bb_mfi_entry_mfi_max": config.BB_MFI_ENTRY_MFI_MAX,
+        "bb_mfi_exit_rsi_min": config.BB_MFI_EXIT_RSI_MIN,
+        "bb_mfi_exit_mfi_min": config.BB_MFI_EXIT_MFI_MIN,
         "max_open_positions": max(1, int(config.MAX_OPEN_POSITIONS)),
         "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
         "cooldown_bars": config.COOLDOWN_BARS,
@@ -3515,16 +3527,19 @@ async def backtest_run(payload: dict):
     interval = str(payload.get("interval", "5m"))
     days_back = int(payload.get("days_back", 30))
     strategy = str(payload.get("strategy", "EMA_VWAP_PULLBACK"))
+    is_pine_v3 = strategy.upper() == "BB_MFI_MEAN_REVERSION"
     params = payload.get("params") or {}
     order_size = float(payload.get("order_size", 500.0))
-    stop_pct = float(payload.get("stop_loss_pct", 0.005))
-    tp_pct = float(payload.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
+    stop_pct = float(payload.get("stop_loss_pct", config.BB_MFI_STOP_LOSS_PCT if is_pine_v3 else 0.005))
+    tp_pct = float(payload.get("take_profit_pct", config.BB_MFI_TAKE_PROFIT_PCT if is_pine_v3 else config.TIME_DECAY_TP_1_PCT))
     trail_pct = float(payload.get("trailing_stop_pct", 0.003))
-    if strategy.upper() == "BB_MFI_MEAN_REVERSION":
-        # BB-MFI canlı stratejisinin TradingView değerleri backtestte de aynı
-        # kalmalı; genel sistem varsayılanları bu stratejiyi ezmemeli.
-        stop_pct = config.BB_MFI_STOP_LOSS_PCT
-        tp_pct = config.BB_MFI_TAKE_PROFIT_PCT
+    backtest_order_pct = float(payload.get("order_pct", config.ORDER_PCT)) if is_pine_v3 else None
+    backtest_pyramiding = int(payload.get("pyramiding_layers", config.PYRAMIDING_LAYERS)) if is_pine_v3 else 3
+    if is_pine_v3:
+        if not 0.001 <= backtest_order_pct <= 1:
+            raise ValueError("Backtest işlem yüzdesi %0,1 ile %100 arasında olmalıdır")
+        if not 1 <= backtest_pyramiding <= 10:
+            raise ValueError("Backtest piramitleme 1 ile 10 arasında olmalıdır")
     try:
         # Arayüz backtest'i historical tabloyu önceden doldurmayı kullanıcıya
         # bırakmamalı. İstenen pencere için public mumları çekip idempotent
@@ -3536,7 +3551,9 @@ async def backtest_run(payload: dict):
         collection = await ensure_backtest_candles(symbol, interval, required_history_days)
         run_id, result = await run_backtest(
             symbol, interval, days_back, strategy, params,
-            order_size, stop_pct, tp_pct, 0.0 if strategy.upper() == "BB_MFI_MEAN_REVERSION" else trail_pct
+            order_size, stop_pct, tp_pct, 0.0 if strategy.upper() == "BB_MFI_MEAN_REVERSION" else trail_pct,
+            pyramiding_layers=backtest_pyramiding,
+            order_pct=backtest_order_pct,
         )
         # A headline backtest is not accepted without a chronological OOS check.
         # Keep the base result for inspection, but expose the validation beside it.
@@ -3544,7 +3561,9 @@ async def backtest_run(payload: dict):
                                      train_days=max(7, min(days_back, 90)),
                                      test_days=max(1, min(days_back // 3, 30)),
                                      folds=3, order_size=order_size,
-                                     stop_pct=stop_pct, tp_pct=tp_pct)
+                                     stop_pct=stop_pct, tp_pct=tp_pct, params=params,
+                                     pyramiding_layers=backtest_pyramiding,
+                                     order_pct=backtest_order_pct)
         result["oos_validation"] = oos
         result["validation_status"] = "PASS" if oos.get("oos_consistent") else "FAIL"
         result["data_collection"] = collection
@@ -3563,13 +3582,16 @@ async def backtest_robustness(payload: dict):
     target = str(payload.get("symbol", "BTCTRY")).upper()
     interval = str(payload.get("interval", "5m"))
     strategy = str(payload.get("strategy", "EMA_VWAP_PULLBACK"))
+    is_pine_v3 = strategy.upper() == "BB_MFI_MEAN_REVERSION"
     windows = [max(7, min(int(x), 90)) for x in (payload.get("windows") or [14, 30, 60])][:3]
     runs = []
     try:
         for days in windows:
             _, result = await run_backtest(target, interval, days, strategy, {}, 500.0,
-                                           config.HARD_STOP_LOSS_PCT,
-                                           config.TIME_DECAY_TP_1_PCT, 0.0)
+                                           config.BB_MFI_STOP_LOSS_PCT if is_pine_v3 else config.HARD_STOP_LOSS_PCT,
+                                           config.BB_MFI_TAKE_PROFIT_PCT if is_pine_v3 else config.TIME_DECAY_TP_1_PCT,
+                                           0.0, pyramiding_layers=2 if is_pine_v3 else 3,
+                                           order_pct=0.10 if is_pine_v3 else None)
             runs.append({"days_back": days, "net_pnl": result.get("net_pnl"),
                          "win_rate": result.get("win_rate"),
                          "profit_factor": result.get("profit_factor"),
