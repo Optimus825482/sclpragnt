@@ -58,7 +58,8 @@ const macdHistogramColor = (value: number, previous?: number) => {
 // kullanılır; böylece aynı fiyat farklı yerlerde farklı yuvarlanmaz.
 const pricePrecision = (value: number) => {
     const absolute = Math.abs(Number(value) || 0);
-    if (absolute >= 1 && absolute < 100) return 3;
+    // Alt-1 fiyatlar da (örn. 0,335) üç basamakla okunur olmalı.
+    if (absolute < 100) return 3;
     if (absolute >= 100 && absolute < 1000) return 2;
     return 1;
 };
@@ -83,9 +84,20 @@ type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; sh
 type ClosedTrade = { id: number; pnl: number };
 type LivePortfolio = { total_value?: number; unrealized_pnl?: number };
 const patternDescriptions: Record<string, string> = {
-    "ÇEKİÇ": "Uzun alt fitil ve küçük gövde, aşağı yönlü baskının reddedildiğini gösterir.",
-    "ÜÇ BEYAZ ASKER": "Ardışık güçlü boğa mumları kısa vadeli alım baskısını gösterir.",
-    "ÜÇ SİYAH KARGA": "Ardışık güçlü ayı mumları kısa vadeli satış baskısını gösterir."
+    "BOĞA YUTAN": "Önceki ayı gövdesini tamamen saran güçlü boğa mumu; alıcı baskısı artıyor.",
+    "AYI YUTAN": "Önceki boğa gövdesini tamamen saran güçlü ayı mumu; satıcı baskısı artıyor.",
+    "BOĞA HARAMİ": "Büyük ayı gövdesi içinde küçük boğa gövdesi; düşüş momentumu zayıflıyor.",
+    "AYI HARAMİ": "Büyük boğa gövdesi içinde küçük ayı gövdesi; yükseliş momentumu zayıflıyor.",
+    "ÇEKİÇ": "Düşüş sonrası uzun alt fitil; aşağı fiyatlar reddedildi.",
+    "ASILI ADAM": "Yükseliş sonrası uzun alt fitil; satış riski uyarısı.",
+    "KAYAN YILDIZ": "Yükseliş sonrası uzun üst fitil; yukarı fiyatlar reddedildi.",
+    "TERS ÇEKİÇ": "Düşüş sonrası uzun üst fitil; boğa dönüşü için teyit gerektirir.",
+    "DELİCİ ÇİZGİ": "Ayı mumunun orta noktasını aşan boğa toparlanması.",
+    "KARA BULUT": "Boğa mumunun orta noktasının altına inen ayı baskısı.",
+    "ÜÇ İÇTE YUKARI": "Boğa haramisi ardından teyit kapanışı; yukarı dönüş yapısı.",
+    "ÜÇ İÇTE AŞAĞI": "Ayı haramisi ardından teyit kapanışı; aşağı dönüş yapısı.",
+    "SABAH YILDIZI": "Düşüşten sonra üç mumlu boğa dönüşü.",
+    "AKŞAM YILDIZI": "Yükselişten sonra üç mumlu ayı dönüşü."
 };
 const strongCandlestickPatterns = (bars: Bar[]): PatternMarker[] => {
     const out: PatternMarker[] = [];
@@ -99,45 +111,55 @@ const strongCandlestickPatterns = (bars: Bar[]): PatternMarker[] => {
     };
     const bullish = (bar: Bar) => bar.close > bar.open;
     const bearish = (bar: Bar) => bar.close < bar.open;
+    const add = (bar: Bar, type: PatternMarker["type"], text: string) => out.push({ time: bar.time, type, text });
+    const inBody = (value: number, bar: Bar) => value > Math.min(bar.open, bar.close) && value < Math.max(bar.open, bar.close);
+    const trends = (index: number) => ({
+        down: index >= 3 && closedBars[index - 3].close > closedBars[index - 2].close && closedBars[index - 2].close > closedBars[index - 1].close,
+        up: index >= 3 && closedBars[index - 3].close < closedBars[index - 2].close && closedBars[index - 2].close < closedBars[index - 1].close
+    });
     for (let i = 0; i < closedBars.length; i++) {
         const current = closedBars[i];
         const currentMetrics = metrics(current);
         if (currentMetrics.range <= Number.EPSILON || currentMetrics.body <= Number.EPSILON) continue;
+        const { down, up } = trends(i);
+        const material = currentMetrics.body / currentMetrics.range >= 0.10;
+        if (!material) continue;
 
-        // Çekiç: küçük gövde üst bölgede, alt fitil gövdenin en az iki katı.
-        // Önceki üç kapanışın zayıf olması, yükseliş mumlarını yanlışlıkla çekiç diye etiketlemeyi azaltır.
-        const precedingDowntrend = i >= 3 && closedBars[i - 3].close > closedBars[i - 2].close && closedBars[i - 2].close > closedBars[i - 1].close;
-        if (precedingDowntrend
-            && currentMetrics.body / currentMetrics.range <= 0.38
+        // Aynı geometri, bağlama göre çekiç veya asılı adamdır.
+        const lowerPin = currentMetrics.body / currentMetrics.range <= 0.38
             && currentMetrics.lower >= currentMetrics.body * 2
-            && currentMetrics.upper <= currentMetrics.range * 0.2) {
-            out.push({ time: current.time, type: "buy", text: "ÇEKİÇ" });
-            continue;
-        }
+            && currentMetrics.upper <= currentMetrics.range * 0.20;
+        const upperPin = currentMetrics.body / currentMetrics.range <= 0.40
+            && currentMetrics.upper >= currentMetrics.body * 2
+            && currentMetrics.lower <= currentMetrics.range * 0.20;
+        if (lowerPin && down) add(current, "buy", "ÇEKİÇ");
+        else if (lowerPin && up) add(current, "sell", "ASILI ADAM");
+        else if (upperPin && up) add(current, "sell", "KAYAN YILDIZ");
+        else if (upperPin && down) add(current, "buy", "TERS ÇEKİÇ");
+
+        if (i < 1) continue;
+        const previous = closedBars[i - 1];
+        const previousMetrics = metrics(previous);
+        const previousMaterial = previousMetrics.range > Number.EPSILON && previousMetrics.body / previousMetrics.range >= 0.15;
+        if (!previousMaterial) continue;
+        const previousMid = (previous.open + previous.close) / 2;
+        if (down && bearish(previous) && bullish(current) && current.open <= previous.close && current.close >= previous.open) add(current, "buy", "BOĞA YUTAN");
+        if (up && bullish(previous) && bearish(current) && current.open >= previous.close && current.close <= previous.open) add(current, "sell", "AYI YUTAN");
+        if (down && bearish(previous) && bullish(current) && inBody(current.open, previous) && inBody(current.close, previous) && currentMetrics.body <= previousMetrics.body * .65) add(current, "buy", "BOĞA HARAMİ");
+        if (up && bullish(previous) && bearish(current) && inBody(current.open, previous) && inBody(current.close, previous) && currentMetrics.body <= previousMetrics.body * .65) add(current, "sell", "AYI HARAMİ");
+        if (down && bearish(previous) && bullish(current) && current.open <= previous.close && current.close > previousMid && current.close < previous.open) add(current, "buy", "DELİCİ ÇİZGİ");
+        if (up && bullish(previous) && bearish(current) && current.open >= previous.close && current.close < previousMid && current.close > previous.open) add(current, "sell", "KARA BULUT");
 
         if (i < 2) continue;
-        const first = closedBars[i - 2], second = closedBars[i - 1];
-        const firstMetrics = metrics(first), secondMetrics = metrics(second);
-        const strongBodies = [firstMetrics, secondMetrics, currentMetrics].every((item) => item.range > Number.EPSILON && item.body / item.range >= 0.5);
-        const opensInsidePriorBody = (later: Bar, prior: Bar) => {
-            const low = Math.min(prior.open, prior.close);
-            const high = Math.max(prior.open, prior.close);
-            return later.open >= low && later.open <= high;
-        };
-        if (strongBodies && bullish(first) && bullish(second) && bullish(current)
-            && opensInsidePriorBody(second, first) && opensInsidePriorBody(current, second)
-            && second.close > first.close && current.close > second.close) {
-            // Dördüncü devam mumunda aynı paterni tekrar çizme.
-            if (!(i >= 3 && bullish(closedBars[i - 3]) && bullish(first) && bullish(second))) {
-                out.push({ time: current.time, type: "buy", text: "ÜÇ BEYAZ ASKER" });
-            }
-        } else if (strongBodies && bearish(first) && bearish(second) && bearish(current)
-            && opensInsidePriorBody(second, first) && opensInsidePriorBody(current, second)
-            && second.close < first.close && current.close < second.close) {
-            if (!(i >= 3 && bearish(closedBars[i - 3]) && bearish(first) && bearish(second))) {
-                out.push({ time: current.time, type: "sell", text: "ÜÇ SİYAH KARGA" });
-            }
-        }
+        const first = closedBars[i - 2], middle = previous;
+        const firstMetrics = metrics(first), middleMetrics = metrics(middle);
+        const smallMiddle = middleMetrics.body <= firstMetrics.body * .45;
+        const bullishHarami = bearish(first) && bullish(middle) && inBody(middle.open, first) && inBody(middle.close, first);
+        const bearishHarami = bullish(first) && bearish(middle) && inBody(middle.open, first) && inBody(middle.close, first);
+        if (down && bullishHarami && bullish(current) && current.close > first.open) add(current, "buy", "ÜÇ İÇTE YUKARI");
+        if (up && bearishHarami && bearish(current) && current.close < first.open) add(current, "sell", "ÜÇ İÇTE AŞAĞI");
+        if (down && bearish(first) && firstMetrics.body >= firstMetrics.range * .45 && smallMiddle && bullish(current) && current.close > (first.open + first.close) / 2) add(current, "buy", "SABAH YILDIZI");
+        if (up && bullish(first) && firstMetrics.body >= firstMetrics.range * .45 && smallMiddle && bearish(current) && current.close < (first.open + first.close) / 2) add(current, "sell", "AKŞAM YILDIZI");
     }
     return out.slice(-80);
 };
@@ -1240,9 +1262,11 @@ export default function ChartsPage() {
             markers.setMarkers(strongCandlestickPatterns(bars).map((p) => ({
                 time: p.time as UTCTimestamp,
                 position: p.type === "buy" ? "belowBar" : "aboveBar",
-                color: "#60a5fa",
-                shape: "circle",
-                text: "P",
+                // Kullanıcının istediği görsel sözleşme: bullish kırmızı,
+                // bearish yeşil. Ok yönü açıklama kartıyla da aynıdır.
+                color: p.type === "buy" ? "#ef4444" : "#10b981",
+                shape: p.type === "buy" ? "arrowUp" : "arrowDown",
+                text: p.type === "buy" ? "↑" : "↓",
                 size: 1
             })));
         } catch { /* marker zamanı veri aralığı dışındaysa sessiz geç */ }
@@ -1487,15 +1511,15 @@ export default function ChartsPage() {
                 <div ref={containerRef} className="w-full" />
                 {patternTooltip && (
                     <div
-                        className="absolute z-30 w-64 rounded-xl border border-blue-400/40 bg-bunker-950/95 p-3 shadow-[0_12px_35px_rgba(0,0,0,0.45)] backdrop-blur pointer-events-none"
+                        className={`absolute z-30 w-64 rounded-xl border p-3 shadow-[0_12px_35px_rgba(0,0,0,0.45)] backdrop-blur pointer-events-none ${patternTooltip.pattern.type === "buy" ? "border-red-300/60 bg-red-950/95" : "border-emerald-300/60 bg-emerald-950/95"}`}
                         style={{ left: Math.min(Math.max(patternTooltip.x + 16, 12), 360), top: Math.max(patternTooltip.y - 24, 12) }}
                     >
                         <div className="flex items-center gap-2">
-                            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-blue-300 bg-blue-500/25 font-mono text-xs font-bold text-blue-200">P</span>
-                            <span className="font-mono text-xs font-bold text-blue-200">{patternTooltip.pattern.text}</span>
+                            <span className={`flex h-6 w-6 items-center justify-center rounded-full border font-mono text-xs font-bold ${patternTooltip.pattern.type === "buy" ? "border-red-200 bg-red-500/30 text-red-50" : "border-emerald-200 bg-emerald-500/30 text-emerald-50"}`}>{patternTooltip.pattern.type === "buy" ? "↑" : "↓"}</span>
+                            <span className="font-mono text-xs font-bold text-white">{patternTooltip.pattern.text}</span>
                         </div>
-                        <p className="mt-2 text-xs leading-5 text-slate-300">{patternDescriptions[patternTooltip.pattern.text]}</p>
-                        <p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-slate-500">{patternTooltip.pattern.type === "buy" ? "Boğa yönlü" : "Ayı yönlü"} · {interval}</p>
+                        <p className="mt-2 text-xs leading-5 text-white/85">{patternDescriptions[patternTooltip.pattern.text]}</p>
+                        <p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-white/70">{patternTooltip.pattern.type === "buy" ? "↑ Boğa / bullish" : "↓ Ayı / bearish"} · {interval}</p>
                     </div>
                 )}
                 {/* mum kapanış geri sayımı ve görünüm ayarları: grafiğin sağ üst köşesi */}

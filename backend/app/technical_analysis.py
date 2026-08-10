@@ -210,79 +210,85 @@ def _candlestick_patterns(opens, highs, lows, closes):
     size = min(len(opens), len(highs), len(lows), len(closes))
     if size < 3:
         return ["none"]
-    opens, highs, lows, closes = (list(values)[-size:] for values in (opens, highs, lows, closes))
-    o, h, l, c = map(float, (opens[-1], highs[-1], lows[-1], closes[-1]))
-    po, ph, pl, pc = map(float, (opens[-2], highs[-2], lows[-2], closes[-2]))
-    body, previous_body = abs(c - o), abs(pc - po)
-    rng, previous_range = max(h - l, 1e-12), max(ph - pl, 1e-12)
-    upper, lower = h - max(o, c), min(o, c) - l
-    avg_body = float(np.mean([abs(float(closes[i]) - float(opens[i])) for i in range(max(0, size - 20), size)])) or 1e-12
-    avg_range = float(np.mean([max(float(highs[i]) - float(lows[i]), 0.0) for i in range(max(0, size - 20), size)])) or 1e-12
+    opens, highs, lows, closes = ([float(value) for value in list(values)[-size:]] for values in (opens, highs, lows, closes))
+    bodies = [abs(close - open_) for open_, close in zip(opens, closes)]
+    ranges = [max(high - low, 1e-12) for high, low in zip(highs, lows)]
+    avg_body = float(np.mean(bodies[-min(size, 20):])) or 1e-12
     patterns = []
 
-    # A doji is context only.  It never also becomes a pin bar because a
-    # nearly zero body makes wick/body ratios artificially large.
+    def direction(index):
+        return 1 if closes[index] > opens[index] else -1 if closes[index] < opens[index] else 0
+
+    def material(index, ratio=0.20):
+        return bodies[index] >= max(ranges[index] * 0.10, avg_body * ratio)
+
+    def downtrend(before_index):
+        """Require a real decline before a bullish reversal pattern."""
+        start = max(0, before_index - 3)
+        return before_index - start >= 1 and closes[before_index] < closes[start]
+
+    def uptrend(before_index):
+        """Require a real advance before a bearish reversal pattern."""
+        start = max(0, before_index - 3)
+        return before_index - start >= 1 and closes[before_index] > closes[start]
+
+    current, previous = size - 1, size - 2
+    o, h, l, c = opens[current], highs[current], lows[current], closes[current]
+    po, pc = opens[previous], closes[previous]
+    body, previous_body, rng = bodies[current], bodies[previous], ranges[current]
+    upper, lower = h - max(o, c), min(o, c) - l
+    current_material, previous_material = material(current), material(previous)
+    prior_downtrend, prior_uptrend = downtrend(previous), uptrend(previous)
+
+    # Single-candle reversals share a shape; trend gives each one its meaning.
     is_doji = body / rng <= 0.10
-    if is_doji:
-        patterns.append("doji")
-
-    prior_downtrend = closes[-2] < closes[-3]
-    prior_uptrend = closes[-2] > closes[-3]
-    meaningful_body = body >= max(rng * 0.05, avg_body * 0.20)
-    if not is_doji and meaningful_body and prior_downtrend and lower >= max(body * 2, rng * 0.45) and upper <= max(body * 0.75, rng * 0.10) and c >= l + rng * 0.60:
+    lower_pin = not is_doji and current_material and lower >= max(body * 2, rng * 0.45) and upper <= max(body * .75, rng * .10)
+    upper_pin = not is_doji and current_material and upper >= max(body * 2, rng * 0.45) and lower <= max(body * .75, rng * .10)
+    if lower_pin and prior_downtrend:
         patterns.append("hammer")
-    if not is_doji and meaningful_body and prior_uptrend and upper >= max(body * 2, rng * 0.45) and lower <= max(body * 0.75, rng * 0.10) and c <= l + rng * 0.40:
+    if lower_pin and prior_uptrend:
+        patterns.append("hanging_man")
+    if upper_pin and prior_uptrend:
         patterns.append("shooting_star")
+    if upper_pin and prior_downtrend:
+        patterns.append("inverted_hammer")
 
-    previous_meaningful = previous_body >= max(previous_range * 0.10, avg_body * 0.20)
-    current_meaningful = body >= max(rng * 0.10, avg_body * 0.20)
-    if previous_meaningful and current_meaningful and pc < po and c > o and o <= pc and c >= po and body > previous_body:
+    if previous_material and current_material and prior_downtrend and direction(previous) < 0 and direction(current) > 0 and o <= pc and c >= po and body > previous_body:
         patterns.append("bullish_engulfing")
-    if previous_meaningful and current_meaningful and pc > po and c < o and o >= pc and c <= po and body > previous_body:
+    if previous_material and current_material and prior_uptrend and direction(previous) > 0 and direction(current) < 0 and o >= pc and c <= po and body > previous_body:
         patterns.append("bearish_engulfing")
 
-    a, b = size - 3, size - 2
-    first_body, middle_body = abs(closes[a] - opens[a]), abs(closes[b] - opens[b])
-    if (closes[a] < opens[a] and first_body >= avg_body and middle_body <= first_body * 0.45
-            and c > o and body >= first_body * 0.60 and c > (opens[a] + closes[a]) / 2):
-        patterns.append("morning_star")
-    if (closes[a] > opens[a] and first_body >= avg_body and middle_body <= first_body * 0.45
-            and c < o and body >= first_body * 0.60 and c < (opens[a] + closes[a]) / 2):
-        patterns.append("evening_star")
+    # Harami uses real bodies, not candle shadows. Strict containment avoids
+    # calling an overlap a harami on volatile five-minute data.
+    inside_previous_body = max(o, c) < max(po, pc) and min(o, c) > min(po, pc)
+    if previous_material and current_material and body <= previous_body * .60 and inside_previous_body:
+        if prior_downtrend and direction(previous) < 0 and direction(current) > 0:
+            patterns.append("bullish_harami")
+        if prior_uptrend and direction(previous) > 0 and direction(current) < 0:
+            patterns.append("bearish_harami")
 
-    if size >= 4:
-        last3 = range(size - 3, size)
-        bodies = [abs(closes[i] - opens[i]) for i in last3]
-        bullish_soldiers = (all(closes[i] > opens[i] and bodies[offset] >= avg_body * 0.60 for offset, i in enumerate(last3))
-                            and closes[-3] < closes[-2] < closes[-1]
-                            and opens[-2] >= opens[-3] and opens[-2] <= closes[-3]
-                            and opens[-1] >= opens[-2] and opens[-1] <= closes[-2])
-        bearish_crows = (all(closes[i] < opens[i] and bodies[offset] >= avg_body * 0.60 for offset, i in enumerate(last3))
-                         and closes[-3] > closes[-2] > closes[-1]
-                         and opens[-2] <= opens[-3] and opens[-2] >= closes[-3]
-                         and opens[-1] <= opens[-2] and opens[-1] >= closes[-2])
-        if bullish_soldiers:
-            patterns.append("three_white_soldiers")
-        if bearish_crows:
-            patterns.append("three_black_crows")
-
-    prev_mid = (po + pc) / 2
-    if previous_meaningful and current_meaningful and pc < po and c > o and o <= pc and prev_mid < c < po:
+    previous_mid = (po + pc) / 2
+    if previous_material and current_material and prior_downtrend and direction(previous) < 0 and direction(current) > 0 and o <= pc and previous_mid < c < po:
         patterns.append("piercing_line")
-    if previous_meaningful and current_meaningful and pc > po and c < o and o >= pc and po > c > prev_mid:
+    if previous_material and current_material and prior_uptrend and direction(previous) > 0 and direction(current) < 0 and o >= pc and po > c > previous_mid:
         patterns.append("dark_cloud_cover")
-    if previous_meaningful and current_meaningful and pc < po and body <= previous_body * 0.60 and pc < o < c < po:
-        patterns.append("bullish_harami")
-    if previous_meaningful and current_meaningful and pc > po and body <= previous_body * 0.60 and po < c < o < pc:
-        patterns.append("bearish_harami")
 
-    # Tweezer tolerance is based on recent candle range, not a fixed percent
-    # of price.  Require opposing, material bodies and local trend context.
-    tweezer_tolerance = avg_range * 0.10
-    if previous_meaningful and current_meaningful and prior_uptrend and pc > po and c < o and abs(h - ph) <= tweezer_tolerance:
-        patterns.append("tweezer_top")
-    if previous_meaningful and current_meaningful and prior_downtrend and pc < po and c > o and abs(l - pl) <= tweezer_tolerance:
-        patterns.append("tweezer_bottom")
+    # The final candle confirms these three-candle formations. A short market
+    # history is deliberately insufficient because the preceding trend matters.
+    first = size - 3
+    if first >= 2:
+        first_body, middle_body = bodies[first], bodies[first + 1]
+        middle_inside_first = (max(opens[first + 1], closes[first + 1]) < max(opens[first], closes[first])
+                               and min(opens[first + 1], closes[first + 1]) > min(opens[first], closes[first]))
+        if downtrend(first) and direction(first) < 0 and direction(first + 1) > 0 and direction(current) > 0 and first_body >= avg_body and middle_body <= first_body * .60 and middle_inside_first and c > opens[first]:
+            patterns.append("three_inside_up")
+        if uptrend(first) and direction(first) > 0 and direction(first + 1) < 0 and direction(current) < 0 and first_body >= avg_body and middle_body <= first_body * .60 and middle_inside_first and c < opens[first]:
+            patterns.append("three_inside_down")
+        middle_small = middle_body <= first_body * .45
+        if downtrend(first) and direction(first) < 0 and direction(current) > 0 and first_body >= avg_body and middle_small and body >= first_body * .60 and c > (opens[first] + closes[first]) / 2:
+            patterns.append("morning_star")
+        if uptrend(first) and direction(first) > 0 and direction(current) < 0 and first_body >= avg_body and middle_small and body >= first_body * .60 and c < (opens[first] + closes[first]) / 2:
+            patterns.append("evening_star")
     return patterns or ["none"]
 
 def _price_action_setup(opens, highs, lows, closes):
@@ -317,16 +323,18 @@ def _price_action_setup(opens, highs, lows, closes):
 CANDLESTICK_PATTERN_INFO = {
     "bullish_engulfing": {"direction": "bullish", "strength": "strong", "tr": "Güçlü boğa yutan formasyonu; alıcı baskısında artış."},
     "bearish_engulfing": {"direction": "bearish", "strength": "strong", "tr": "Güçlü ayı yutan formasyonu; satıcı baskısında artış."},
-    "morning_star": {"direction": "bullish", "strength": "strong", "tr": "Üç mumlu boğa dönüşü; düşüş momentumunun zayıfladığına işaret eder."},
-    "evening_star": {"direction": "bearish", "strength": "strong", "tr": "Üç mumlu ayı dönüşü; yükseliş momentumunun zayıfladığına işaret eder."},
-    "three_white_soldiers": {"direction": "bullish", "strength": "strong", "tr": "Üç beyaz asker; ardışık güçlü alıcı devamlılığı."},
-    "three_black_crows": {"direction": "bearish", "strength": "strong", "tr": "Üç siyah karga; ardışık güçlü satıcı devamlılığı."},
-    "piercing_line": {"direction": "bullish", "strength": "medium", "tr": "Delici çizgi; düşüş sonrası boğa toparlanması."},
-    "dark_cloud_cover": {"direction": "bearish", "strength": "medium", "tr": "Kara bulut örtüsü; yükseliş sonrası satıcı baskısı."},
     "bullish_harami": {"direction": "bullish", "strength": "medium", "tr": "Boğa haramisi; düşüş momentumunda yavaşlama."},
     "bearish_harami": {"direction": "bearish", "strength": "medium", "tr": "Ayı haramisi; yükseliş momentumunda yavaşlama."},
-    "tweezer_top": {"direction": "bearish", "strength": "medium", "tr": "Cımbız tepe; dirençte başarısızlık işareti."},
-    "tweezer_bottom": {"direction": "bullish", "strength": "medium", "tr": "Cımbız dip; destekte tepki işareti."},
+    "hammer": {"direction": "bullish", "strength": "medium", "tr": "Çekiç; düşüş sonrası alt fiyatların reddedildiğini gösterir."},
+    "hanging_man": {"direction": "bearish", "strength": "medium", "tr": "Asılı adam; yükseliş sonrası alt fiyat baskısı uyarısı."},
+    "shooting_star": {"direction": "bearish", "strength": "medium", "tr": "Kayan yıldız; yükseliş sonrası üst fiyatların reddedildiğini gösterir."},
+    "inverted_hammer": {"direction": "bullish", "strength": "medium", "tr": "Ters çekiç; düşüş sonrası üst fiyat denemesini gösterir."},
+    "piercing_line": {"direction": "bullish", "strength": "medium", "tr": "Delici çizgi; düşüş sonrası boğa toparlanması."},
+    "dark_cloud_cover": {"direction": "bearish", "strength": "medium", "tr": "Kara bulut örtüsü; yükseliş sonrası satıcı baskısı."},
+    "three_inside_up": {"direction": "bullish", "strength": "strong", "tr": "Üç içeride yukarı; harami sonrası boğa teyidi."},
+    "three_inside_down": {"direction": "bearish", "strength": "strong", "tr": "Üç içeride aşağı; harami sonrası ayı teyidi."},
+    "morning_star": {"direction": "bullish", "strength": "strong", "tr": "Üç mumlu boğa dönüşü; düşüş momentumunun zayıfladığına işaret eder."},
+    "evening_star": {"direction": "bearish", "strength": "strong", "tr": "Üç mumlu ayı dönüşü; yükseliş momentumunun zayıfladığına işaret eder."},
 }
 
 
