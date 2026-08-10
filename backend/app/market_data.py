@@ -113,9 +113,10 @@ class MarketData:
                 print(f"[MarketData] REST ticker yenileme döngüsü hatası: {exc}")
             await asyncio.sleep(10)
 
-    async def connect(self):
+    async def connect(self, skip_history: bool = False):
         # 1) Önce geçmiş veriyi yükle
-        await self.fetch_historical_data()
+        if not skip_history:
+            await self.fetch_historical_data()
 
         # 2) Canlı WebSocket ile tüm timeframe'leri dinle
         self.running = True

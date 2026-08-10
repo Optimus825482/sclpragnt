@@ -432,7 +432,11 @@ async def startup():
             await embedding_worker.start(_pg_pool, llm_analysis.embedding)
         except Exception as exc:
             print(f"[Memory] PostgreSQL/embedding worker başlatılamadı: {exc}")
-    asyncio.create_task(market.connect())
+    # Strategy loop yalnızca tüm timeframe geçmişi ve REST ticker'ları hazır
+    # olduktan sonra başlasın; aksi halde ilk tarama tüm sembolleri stale sayar.
+    await market.fetch_historical_data()
+    print(f"[MarketData] ilk veri hazırlığı tamamlandı | tickers={len(market.tickers)}", flush=True)
+    asyncio.create_task(market.connect(skip_history=True))
     asyncio.create_task(strategy_loop())
     asyncio.create_task(radar_loop())
     asyncio.create_task(symbol_activity_loop(), name="symbol-activity")
