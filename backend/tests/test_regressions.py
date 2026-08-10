@@ -178,6 +178,17 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('ticker.get("last_price")', manual_source)
         self.assertIn('activity_status=activity_status', manual_source)
 
+    def test_strategy_replay_uses_configured_symbols_and_public_history_fallback(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        start = source.index('async def _run_strategy_replay(')
+        end = source.index('\n@app.post("/api/strategy/manual-scan")', start)
+        replay_source = source[start:end]
+        self.assertIn('symbols = [s.upper() for s in config.SYMBOLS]', replay_source)
+        self.assertNotIn('config.SYMBOLS if s not in config.PASSIVE_SYMBOLS', replay_source)
+        self.assertIn('fetch_klines(symbol, "5m", limit=400)', replay_source)
+        self.assertIn('await database.upsert_market_candles(hydrated)', replay_source)
+        self.assertIn('Aktif tarama sembol listesi boş', replay_source)
+
     def test_llm_market_scan_uses_fast_hot_cache_defaults(self):
         source = (ROOT / "app" / "main.py").read_text()
         config_source = (ROOT / "app" / "config.py").read_text()

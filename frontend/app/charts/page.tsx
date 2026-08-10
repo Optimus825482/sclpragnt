@@ -6,7 +6,7 @@ import {
     createChart, createSeriesMarkers, CandlestickSeries, LineSeries, HistogramSeries,
     IChartApi, ISeriesApi, IPriceLine, UTCTimestamp, Time
 } from "lightweight-charts";
-import IndicatorPicker, { findIndicatorEntry } from "./IndicatorPicker";
+import IndicatorPicker, { filterIndicatorInstances, findIndicatorEntry } from "./IndicatorPicker";
 import IndicatorSettings from "./IndicatorSettings";
 import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "./types";
 
@@ -358,6 +358,7 @@ export default function ChartsPage() {
     const [symbols, setSymbols] = useState<string[]>(FALLBACK_SYMBOLS);
     const [analysisOpen, setAnalysisOpen] = useState(false);
     const [interval, setTf] = useState<string>("5m");
+    const [activeStrategy, setActiveStrategy] = useState<string>("BB_MFI_MEAN_REVERSION");
     const [loading, setLoading] = useState(true);
     const [bars, setBars] = useState<Bar[]>([]);
     const [instances, setInstances] = useState<IndicatorInstance[]>(DEFAULT_INSTANCES);
@@ -378,19 +379,25 @@ export default function ChartsPage() {
 
     // localStorage yükleme: hydration uyumluluğu için client tarafında yap
     useEffect(() => {
-        fetch(`${API_BASE}/api/config`).then((r) => r.json()).then((d) => {
-            const active = Array.isArray(d.symbols) && d.symbols.length ? d.symbols : FALLBACK_SYMBOLS;
-            setSymbols([...active].sort((a, b) => a.localeCompare(b)));
-            setSymbol((current) => active.includes(current) ? current : active[0]);
-        }).catch(() => setSymbols(FALLBACK_SYMBOLS));
         const query = new URLSearchParams(window.location.search);
         const querySymbol = query.get("symbol")?.toUpperCase() || "";
         const savedSymbol = querySymbol || loadPersisted(LS_SYMBOL, "BTCTRY");
         const savedInterval = querySymbol ? "5m" : loadPersisted(LS_INTERVAL, "5m");
         setSymbol(savedSymbol);
         setTf(savedInterval);
-        setInstances(loadIndicators());
-        loadFromDb(savedSymbol);
+        fetch(`${API_BASE}/api/config`).then((r) => r.json()).then((d) => {
+            const active = Array.isArray(d.symbols) && d.symbols.length ? d.symbols : FALLBACK_SYMBOLS;
+            setSymbols([...active].sort((a, b) => a.localeCompare(b)));
+            setSymbol((current) => active.includes(current) ? current : active[0]);
+            const configuredStrategy = String(d.active_strategy || "BB_MFI_MEAN_REVERSION").toUpperCase();
+            setActiveStrategy(configuredStrategy);
+            setInstances(filterIndicatorInstances(loadIndicators(), configuredStrategy));
+            loadFromDb(savedSymbol, configuredStrategy);
+        }).catch(() => {
+            setSymbols(FALLBACK_SYMBOLS);
+            setInstances(filterIndicatorInstances(loadIndicators(), "BB_MFI_MEAN_REVERSION"));
+            loadFromDb(savedSymbol, "BB_MFI_MEAN_REVERSION");
+        });
     }, []);
 
     // mum kapanış geri sayımı: seçili TF'ye göre kalan süre
@@ -930,6 +937,33 @@ export default function ChartsPage() {
         } catch { /* marker zamanı veri aralığında değilse sessiz geç */ }
     }, [showPositions, positions, symbol, bars]);
 
+    // BB-MFI stratejisinin backend ile aynı dip koşulunu marker olarak göster.
+    const bbMfiSignals = (bars: Bar[], params: Record<string, any>) => {
+        const bbPeriod = Math.max(5, Math.round(params.bbPeriod ?? 20));
+        const bbStdDev = Number(params.bbStdDev ?? 1);
+        const mfiPeriod = Math.max(2, Math.round(params.mfiPeriod ?? 14));
+        const mfiThreshold = Number(params.mfiThreshold ?? 60);
+        const signals: { time: number; type: "buy" | "sell" }[] = [];
+        for (let i = Math.max(bbPeriod - 1, mfiPeriod); i < bars.length; i++) {
+            const closeWindow = bars.slice(i - bbPeriod + 1, i + 1).map((bar) => bar.close);
+            const mean = closeWindow.reduce((sum, value) => sum + value, 0) / closeWindow.length;
+            const variance = closeWindow.reduce((sum, value) => sum + (value - mean) ** 2, 0) / closeWindow.length;
+            const lower = mean - Math.sqrt(variance) * bbStdDev;
+            let positive = 0;
+            let negative = 0;
+            for (let j = i - mfiPeriod + 1; j <= i; j++) {
+                const current = (bars[j].high + bars[j].low + bars[j].close) / 3;
+                const previous = (bars[j - 1].high + bars[j - 1].low + bars[j - 1].close) / 3;
+                const flow = current * bars[j].volume;
+                if (current > previous) positive += flow;
+                else if (current < previous) negative += flow;
+            }
+            const mfi = negative ? 100 - 100 / (1 + positive / negative) : 100;
+            if (bars[i].close < lower && mfi < mfiThreshold) signals.push({ time: bars[i].time, type: "buy" });
+        }
+        return signals;
+    };
+
     // Strateji buy/sell marker'ları: instances'ta strateji indikatörü varsa seçili TF'ye göre hesapla ve çiz
     const extendedStrategySignals = (bars: Bar[], kind: string) => {
         const out: { time: number; type: "buy" | "sell" }[] = [];
@@ -954,6 +988,7 @@ export default function ChartsPage() {
         ema_pullback: emaPullbackSignals,
         vwap_macd: vwapMacdSignals,
         cmo_crsi: cmoCrsiSignals,
+        bb_mfi_mean_reversion: bbMfiSignals,
         ema_vwap_pullback: (bars) => extendedStrategySignals(bars, "ema_vwap"),
         bb_squeeze_orderflow: (bars) => extendedStrategySignals(bars, "breakout"),
         orderflow: (bars) => extendedStrategySignals(bars, "orderflow"),
@@ -965,11 +1000,13 @@ export default function ChartsPage() {
     };
     const strategyColors: Record<string, { buy: string; sell: string }> = {
         ut_bot: { buy: "#22c55e", sell: "#ef4444" }, bb_squeeze: { buy: "#f97316", sell: "#ef4444" }, ema_pullback: { buy: "#38bdf8", sell: "#ef4444" }, vwap_macd: { buy: "#c084fc", sell: "#ef4444" }, cmo_crsi: { buy: "#eab308", sell: "#ef4444" },
+        bb_mfi_mean_reversion: { buy: "#10b981", sell: "#ef4444" },
         ema_vwap_pullback: { buy: "#22c55e", sell: "#ef4444" }, bb_squeeze_orderflow: { buy: "#f97316", sell: "#ef4444" }, orderflow: { buy: "#38bdf8", sell: "#ef4444" }, momentum: { buy: "#eab308", sell: "#ef4444" }, vwap_mean_reversion: { buy: "#c084fc", sell: "#ef4444" },
         keltner_breakout: { buy: "#fb7185", sell: "#ef4444" }, chop_trend_filter: { buy: "#a3e635", sell: "#ef4444" }, donchian_breakout: { buy: "#60a5fa", sell: "#ef4444" },
     };
     const strategyLabels: Record<string, string> = {
         ut_bot: "UT", bb_squeeze: "BB SQ", ema_pullback: "EMA PB", vwap_macd: "VWAP MACD", cmo_crsi: "CMO CRSI",
+        bb_mfi_mean_reversion: "BB+MFI",
         ema_vwap_pullback: "EMA+VWAP", bb_squeeze_orderflow: "BB+FLOW", orderflow: "FLOW", momentum: "MTF MOM", vwap_mean_reversion: "VWAP MR",
         keltner_breakout: "KELT", chop_trend_filter: "CHOP", donchian_breakout: "DONCH",
     };
@@ -1121,7 +1158,7 @@ export default function ChartsPage() {
     };
 
     // veritabanından sembol ayarlarını yükle — varsa localStorage'ı ezer (DB daha güncel)
-    const loadFromDb = async (s: string) => {
+    const loadFromDb = async (s: string, strategy = activeStrategy) => {
         try {
             const res = await fetch(`${API}/${s}`);
             const data = await res.json();
@@ -1130,8 +1167,9 @@ export default function ChartsPage() {
             setTf(st.interval || "5m");
             localStorage.setItem(LS_INTERVAL, JSON.stringify(st.interval || "5m"));
             if (st.indicators?.length) {
-                setInstances(st.indicators);
-                localStorage.setItem(LS_INDICATORS, JSON.stringify(st.indicators));
+                const filteredIndicators = filterIndicatorInstances(st.indicators as IndicatorInstance[], strategy);
+                setInstances(filteredIndicators);
+                localStorage.setItem(LS_INDICATORS, JSON.stringify(filteredIndicators));
             }
             if (st.paneHeights) {
                 paneHeightsRef.current = st.paneHeights;
@@ -1334,7 +1372,7 @@ export default function ChartsPage() {
                 <SymbolLink symbol={symbol} className="text-bunker-muted hover:text-neon-green" /> · {interval} periyodu · mumlar UTC — bot 1m kline kullanır, analiz zaman dilimiyle birebir uyumlu
             </p>
 
-            {picking && <IndicatorPicker onSelect={(e) => { setPicking(false); setEditTarget({ entry: e }); }} onClose={() => setPicking(false)} />}
+            {picking && <IndicatorPicker activeStrategy={activeStrategy} onSelect={(e) => { setPicking(false); setEditTarget({ entry: e }); }} onClose={() => setPicking(false)} />}
             {editTarget && (
                 <IndicatorSettings
                     entry={editTarget.entry}

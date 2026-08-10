@@ -127,7 +127,10 @@ async def backfill_missing_active_history():
 async def _run_strategy_replay(job_id: str, minutes: int = 30):
     """Replay the active strategy over recent persisted 5m candles, paper-only."""
     job = _strategy_replay_jobs[job_id]
-    symbols = [s.upper() for s in config.SYMBOLS if s not in config.PASSIVE_SYMBOLS]
+    # Replay salt-okunur bir tarihsel denetimdir; otomatik giriş döngüsündeki
+    # PASSIVE ön elemesi burada kullanılmaz. Aksi halde aktivite filtresi tüm
+    # ayarlı sembolleri dışarıda bırakıp replay'i symbols=0 ile başlatabilir.
+    symbols = [s.upper() for s in config.SYMBOLS]
     job.update(status="running", total=0, completed=0)
     job["logs"].append({"level": "info", "message": f"Replay başladı | strategy={config.ACTIVE_STRATEGY} timeframe=5m window={minutes}m symbols={len(symbols)}"})
     strategy_fn = analyzer.strategy_bb_mfi_mean_reversion if config.ACTIVE_STRATEGY == "BB_MFI_MEAN_REVERSION" else analyzer.strategy_mean_reversion
@@ -135,10 +138,36 @@ async def _run_strategy_replay(job_id: str, minutes: int = 30):
         datasets = {}
         async def load(symbol):
             rows = await database.get_market_candles(symbol, "5m")
+            # PostgreSQL historical_candles henüz backfill edilmemiş olabilir.
+            # Replay'i çalıştırabilmek için yalnızca public Binance TR 5m
+            # mumlarıyla eksik geçmişi doldur; gerçek emir veya portföy etkisi yok.
+            if len(rows) < 21:
+                raw = await fetch_klines(symbol, "5m", limit=400)
+                now_ms = int(time.time() * 1000)
+                hydrated = []
+                for item in raw or []:
+                    if len(item) < 6:
+                        continue
+                    close_time = int(item[6]) if len(item) > 6 else int(item[0])
+                    if close_time > now_ms:
+                        continue
+                    hydrated.append({
+                        "symbol": symbol, "timeframe": "5m", "open_time": int(item[0]),
+                        "close_time": close_time, "open": float(item[1]), "high": float(item[2]),
+                        "low": float(item[3]), "close": float(item[4]), "volume": float(item[5]),
+                        "quote_volume": float(item[7]) if len(item) > 7 else None,
+                        "trade_count": int(item[8]) if len(item) > 8 else None,
+                        "source": "binance_tr_public_replay", "fetched_at": now_ms,
+                    })
+                if hydrated:
+                    await database.upsert_market_candles(hydrated)
+                    rows = hydrated
             return symbol, rows[-400:]
         loaded = await asyncio.gather(*(load(symbol) for symbol in symbols), return_exceptions=True)
         usable = [(symbol, rows) for item in loaded if not isinstance(item, Exception) for symbol, rows in [item] if rows]
         missing = sorted(set(symbols) - {symbol for symbol, _ in usable})
+        if not symbols:
+            raise ValueError("Aktif tarama sembol listesi boş; Ayarlar > Semboller bölümünden en az bir sembol seçilmeli")
         if not usable:
             raise ValueError("historical_candles içinde kullanılabilir 5m veri yok")
         latest_ms = max(int(rows[-1]["open_time"]) for _, rows in usable)

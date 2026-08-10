@@ -6,6 +6,44 @@ import type { RegistryEntry } from "./types";
 type Props = {
     onSelect: (entry: RegistryEntry) => void;
     onClose: () => void;
+    activeStrategy?: string;
+};
+
+export const STRATEGY_INDICATOR_IDS = new Set([
+    "ut_bot",
+    "bb_squeeze",
+    "ema_pullback",
+    "vwap_macd",
+    "cmo_crsi",
+    "bb_mfi_mean_reversion",
+    "ema_vwap_pullback",
+    "bb_squeeze_orderflow",
+    "orderflow",
+    "momentum",
+    "vwap_mean_reversion",
+    "keltner_breakout",
+    "chop_trend_filter",
+    "donchian_breakout",
+]);
+
+const STRATEGY_TO_INDICATOR: Record<string, string> = {
+    BB_MFI_MEAN_REVERSION: "bb_mfi_mean_reversion",
+    EMA_VWAP_PULLBACK: "ema_vwap_pullback",
+    BB_SQUEEZE_ORDERFLOW: "bb_squeeze_orderflow",
+    ORDERFLOW: "orderflow",
+    MOMENTUM: "momentum",
+    VWAP_MEAN_REVERSION: "vwap_mean_reversion",
+    KELTNER_BREAKOUT: "keltner_breakout",
+    CHOP_TREND_FILTER: "chop_trend_filter",
+    DONCHIAN_BREAKOUT: "donchian_breakout",
+};
+
+export const activeStrategyIndicatorId = (strategy?: string) =>
+    STRATEGY_TO_INDICATOR[String(strategy || "BB_MFI_MEAN_REVERSION").toUpperCase()] || "bb_mfi_mean_reversion";
+
+export const filterIndicatorInstances = <T extends { registryId: string }>(instances: T[], activeStrategy?: string) => {
+    const activeId = activeStrategyIndicatorId(activeStrategy);
+    return instances.filter((instance) => !STRATEGY_INDICATOR_IDS.has(instance.registryId) || instance.registryId === activeId);
 };
 
 // UT Bot özel indikatörü: buy/sell sinyallerini grafikte marker olarak gösterir
@@ -107,6 +145,67 @@ export const CMO_CRSI_ENTRY: RegistryEntry = {
     }
 };
 
+const bbMfiValues = (bars: any[], params: any) => {
+    const bbPeriod = Math.max(5, Math.round(params.bbPeriod ?? 20));
+    const bbStdDev = Number(params.bbStdDev ?? 1);
+    const mfiPeriod = Math.max(2, Math.round(params.mfiPeriod ?? 14));
+    const threshold = Number(params.mfiThreshold ?? 60);
+    const closes = bars.map((bar) => Number(bar.close));
+    const highs = bars.map((bar) => Number(bar.high));
+    const lows = bars.map((bar) => Number(bar.low));
+    const volumes = bars.map((bar) => Number(bar.volume));
+    const mfi: (number | null)[] = Array(bars.length).fill(null);
+    const lower: (number | null)[] = Array(bars.length).fill(null);
+    const thresholdLine: (number | null)[] = Array(bars.length).fill(null);
+
+    for (let i = 0; i < bars.length; i++) {
+        if (i >= bbPeriod - 1) {
+            const window = closes.slice(i - bbPeriod + 1, i + 1);
+            const mean = window.reduce((sum, value) => sum + value, 0) / window.length;
+            const variance = window.reduce((sum, value) => sum + (value - mean) ** 2, 0) / window.length;
+            lower[i] = mean - Math.sqrt(variance) * bbStdDev;
+        }
+        if (i < mfiPeriod) continue;
+        const typical = highs.map((high, index) => (high + lows[index] + closes[index]) / 3);
+        let positive = 0;
+        let negative = 0;
+        for (let j = i - mfiPeriod + 1; j <= i; j++) {
+            const flow = typical[j] * volumes[j];
+            if (typical[j] > typical[j - 1]) positive += flow;
+            else if (typical[j] < typical[j - 1]) negative += flow;
+        }
+        mfi[i] = negative ? 100 - 100 / (1 + positive / negative) : 100;
+        thresholdLine[i] = threshold;
+    }
+    return { mfi, lower, thresholdLine, threshold };
+};
+
+// BB-MFI aktif stratejisinin MFI pane'i: MFI çizgisi ve giriş eşiği.
+export const BB_MFI_ENTRY: RegistryEntry = {
+    id: "bb_mfi_mean_reversion",
+    name: "BB + MFI Mean Reversion",
+    shortName: "BB + MFI",
+    category: "Strateji",
+    group: "custom",
+    overlay: false,
+    inputConfig: [
+        { id: "bbPeriod", type: "number", title: "BB Periyodu", defval: 20, min: 5, step: 1 },
+        { id: "bbStdDev", type: "number", title: "BB Std Dev", defval: 1, min: 0.1, step: 0.1 },
+        { id: "mfiPeriod", type: "number", title: "MFI Periyodu", defval: 14, min: 2, step: 1 },
+        { id: "mfiThreshold", type: "number", title: "MFI AL Eşiği", defval: 60, min: 1, max: 99, step: 1 },
+    ],
+    calculate: (bars: any[], params: any) => {
+        const values = bbMfiValues(bars, params);
+        return {
+            metadata: { overlay: false },
+            plots: {
+                mfi: bars.map((bar, index) => ({ time: bar.time, value: values.mfi[index], color: values.mfi[index] != null && values.mfi[index] < values.threshold ? "#10b981" : "#f59e0b" })),
+                threshold: bars.map((bar, index) => ({ time: bar.time, value: values.thresholdLine[index] })),
+            },
+        };
+    },
+};
+
 const SIMPLE_STRATEGY_ENTRY = (id: string, name: string, shortName: string): RegistryEntry => ({
     id, name, shortName, category: "Strateji", group: "custom", overlay: true,
     inputConfig: [], calculate: () => ({ metadata: { overlay: true }, plots: {} })
@@ -137,6 +236,7 @@ export const CUSTOM_INDICATOR_ENTRIES: RegistryEntry[] = [
     EMA_PULLBACK_ENTRY,
     VWAP_MACD_ENTRY,
     CMO_CRSI_ENTRY,
+    BB_MFI_ENTRY,
     ...STRATEGY_ENTRIES,
 ];
 
@@ -144,13 +244,16 @@ export const findIndicatorEntry = (id: string): RegistryEntry | undefined =>
     CUSTOM_INDICATOR_ENTRIES.find((entry) => entry.id === id) ||
     (indicatorRegistry.find((entry: any) => entry.id === id) as RegistryEntry | undefined);
 
-export default function IndicatorPicker({ onSelect, onClose }: Props) {
+export default function IndicatorPicker({ onSelect, onClose, activeStrategy }: Props) {
     const [q, setQ] = useState("");
     const [cat, setCat] = useState("Tümü");
 
     const indicators = useMemo(
-        () => [...CUSTOM_INDICATOR_ENTRIES, ...indicatorRegistry.filter((i: any) => i.group !== "candlestick-port")] as RegistryEntry[],
-        []
+        () => [
+            ...CUSTOM_INDICATOR_ENTRIES.filter((entry) => !STRATEGY_INDICATOR_IDS.has(entry.id) || entry.id === activeStrategyIndicatorId(activeStrategy)),
+            ...indicatorRegistry.filter((i: any) => i.group !== "candlestick-port"),
+        ] as RegistryEntry[],
+        [activeStrategy]
     );
     const cats = useMemo(
         () => ["Tümü", ...Array.from(new Set(indicators.map((i) => i.category)))],
