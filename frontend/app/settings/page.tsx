@@ -42,7 +42,7 @@ type Config = {
 };
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "scan-logs">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -62,6 +62,8 @@ export default function SettingsPage() {
   const [backfilling, setBackfilling] = useState(false);
   const [backfillDone, setBackfillDone] = useState(false);
   const [repairingMemory, setRepairingMemory] = useState(false);
+  const [scanLogs, setScanLogs] = useState<any[]>([]);
+  const [scanLogFilter, setScanLogFilter] = useState<"all" | "automatic" | "manual">("all");
 
   useEffect(() => {
     fetch(`${API_BASE}/api/config`)
@@ -74,6 +76,16 @@ export default function SettingsPage() {
       .catch(() => setError("Binance TR sembolleri alınamadı"));
     fetch(`${API_BASE}/api/llm/config`).then((r) => r.json()).then(setLlm).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "scan-logs") return;
+    let cancelled = false;
+    const load = () => fetch(`${API_BASE}/api/strategy/scan-logs?limit=300${scanLogFilter === "all" ? "" : `&scan_type=${scanLogFilter}`}`)
+      .then((r) => r.json()).then((d) => { if (!cancelled) setScanLogs(d.logs || []); }).catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [activeTab, scanLogFilter]);
 
   const save = async () => {
     setSaving(true);
@@ -256,6 +268,7 @@ export default function SettingsPage() {
             ["app", "Uygulama Ayarları", "⚙️"],
             ["strategies", "Strateji Ayarları", "📈"],
             ["llm", "LLM / Provider", "🤖"],
+            ["scan-logs", "Tarama Logları", "🧾"],
           ] as const).map(([key, label, icon]) => (
             <button key={key} onClick={() => setActiveTab(key)} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${activeTab === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>
               {icon} {label}
@@ -266,6 +279,23 @@ export default function SettingsPage() {
 
       {cfg && (
         <>
+          <div className={`card bg-bunker-950 ${activeTab !== "scan-logs" ? "hidden" : ""}`}>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div>
+                <p className="eyebrow text-neon-green">SEMBOL BAZLI TARAMA KANITI</p>
+                <p className="text-xs text-bunker-muted mt-1">Otomatik 5m kapanış taraması ve manuel kontrolün her sembol için sonucu. Son kayıtlar RAM&apos;de sınırlı tutulur.</p>
+              </div>
+              <select value={scanLogFilter} onChange={(e) => setScanLogFilter(e.target.value as typeof scanLogFilter)} className="input w-auto">
+                <option value="all">Tümü</option><option value="automatic">Otomatik tarama</option><option value="manual">Manuel tarama</option>
+              </select>
+            </div>
+            <div className="max-h-[65vh] overflow-auto rounded-lg border border-bunker-800">
+              <table className="w-full text-left font-mono text-[11px]"><thead className="sticky top-0 bg-bunker-900 text-bunker-muted"><tr><th className="px-3 py-2">ZAMAN</th><th className="px-3 py-2">TÜR</th><th className="px-3 py-2">SEMBOL</th><th className="px-3 py-2">SONUÇ</th><th className="px-3 py-2">FİYAT</th><th className="px-3 py-2">NEDEN</th></tr></thead><tbody>
+                {scanLogs.map((log, index) => <tr key={`${log.timestamp}-${log.symbol}-${index}`} className="border-t border-bunker-800/70"><td className="px-3 py-2 text-bunker-muted">{new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR")}</td><td className="px-3 py-2 text-sky-300">{log.scan_type === "manual" ? "MANUEL" : "OTOMATİK"}</td><td className="px-3 py-2 text-white">{log.symbol}</td><td className={`px-3 py-2 ${String(log.status).includes("SIGNAL") ? "text-neon-green" : String(log.status).includes("ERROR") ? "text-red-300" : "text-yellow-300"}`}>{log.status}</td><td className="px-3 py-2 text-bunker-muted">{log.price ?? "—"}</td><td className="px-3 py-2 text-bunker-muted">{log.reason || log.error || "—"}</td></tr>)}
+                {!scanLogs.length && <tr><td colSpan={6} className="px-3 py-8 text-center text-bunker-muted">Henüz tarama kaydı yok. Otomatik veya manuel tarama çalıştığında burada görünecek.</td></tr>}
+              </tbody></table>
+            </div>
+          </div>
           <div className={`card bg-bunker-950 ${activeTab !== "symbols" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
               <div>

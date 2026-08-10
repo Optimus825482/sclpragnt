@@ -9,6 +9,7 @@ import re
 import hmac
 import hashlib
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -65,6 +66,20 @@ _ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
 _llm_market_scan_cache = {}
 _strategy_replay_jobs = {}
 _symbol_history_backfills = set()
+_strategy_scan_logs = deque(maxlen=5000)
+
+
+def _record_strategy_scan_log(scan_type: str, symbol: str, status: str, **details):
+    """Keep a bounded, UI-readable audit trail for automatic and manual scans."""
+    entry = {
+        "timestamp": time.time(),
+        "scan_type": scan_type,
+        "symbol": symbol,
+        "status": status,
+        **details,
+    }
+    _strategy_scan_logs.appendleft(entry)
+    return entry
 
 
 async def backfill_symbol_history(symbol: str, days: int = 7):
@@ -656,6 +671,7 @@ async def strategy_loop():
         for sym in config.SYMBOLS:
             if sym in config.PASSIVE_SYMBOLS and sym not in analyzer.positions:
                 scan_passive += 1
+                _record_strategy_scan_log("automatic", sym, "PASSIVE")
                 continue
             scan_checked += 1
             if migration_monitor.state["status"] == "running":
@@ -664,6 +680,7 @@ async def strategy_loop():
             ticker = market.get_ticker(sym)
             if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
                 scan_stale += 1
+                _record_strategy_scan_log("automatic", sym, "STALE_TICKER")
                 continue
             scan_fresh += 1
             try:
@@ -672,16 +689,19 @@ async def strategy_loop():
                 signals = await analyzer.evaluate(sym, ticker, allow_entry=entry_scan_due)
                 if entry_scan_due and not signals:
                     scan_no_signal += 1
+                    _record_strategy_scan_log("automatic", sym, "NO_SIGNAL", price=ticker.get("price"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME)
             except Exception as exc:
                 scan_errors += 1
                 # Tek bir sembolün DB/strateji hatası bütün strategy loop'u düşürmemeli.
                 print(f"[Strategy] {sym} değerlendirme hatası: {exc}")
+                _record_strategy_scan_log("automatic", sym, "ERROR", error=str(exc))
                 continue
             for sig in signals:
                 action = str(sig.get("action", ""))
                 if action == "BUY_SIGNAL": scan_buy += 1
                 elif action == "BUY_BLOCKED": scan_blocked += 1
                 print(f"[Sinyal] {sig}")
+                _record_strategy_scan_log("automatic", sym, str(sig.get("action", "SIGNAL")), price=sig.get("price", ticker.get("price")), reason=sig.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME)
                 await ws_manager.broadcast({"type": "signal", "data": sig})
                 if str(sig.get("action", "")).startswith("CLOSE"):
                     await ws_manager.broadcast({"type": "trade_updated", "data": {"symbol": sig.get("symbol"), "reason": sig.get("reason")}})
@@ -2110,13 +2130,23 @@ async def scan_market_snapshots(args: dict | None = None):
         results.sort(key=lambda row: row["score"], reverse=True)
     limit = cache_key[2]
     bullish = [row for row in results if row["score"] >= 2 and str(row.get("trend_direction", "")).lower() not in {"bearish", "mixed"}]
+    strategy_contract = {
+        "strategy": config.ACTIVE_STRATEGY,
+        "timeframe": config.ACTIVE_STRATEGY_TIMEFRAME,
+        "entry_basis": ["BB(20, 1.0) alt bandın altında kapanış", "MFI(14) < 60"],
+        "allowed_execution_filters": ["likidite", "spread", "orderbook_depth", "volume_ratio", "negative_orderflow"],
+        "ignored_for_signal_decision": ["RSI aşırı alım yorumu", "MTF uyumu", "genel momentum sıralaması", "CMO", "CRSI", "LLM entry quality gate"],
+        "instruction": "Bu sözleşme dışındaki indikatörleri BUY/NO_SIGNAL kararına filtre olarak katma. Veri eksikse unknown de; değer uydurma."
+    } if config.ACTIVE_STRATEGY == "BB_MFI_MEAN_REVERSION" else {"strategy": config.ACTIVE_STRATEGY, "timeframe": config.ACTIVE_STRATEGY_TIMEFRAME}
     result = {"generated_at": time.time(), "symbols_scanned": len(symbols), "symbols_skipped_open": sorted(open_symbols & set(requested_symbols)), "timeframes": timeframes,
             "bullish_candidates": bullish[:limit], "ranked": results[:limit],
+            "strategy_contract": strategy_contract,
             "market_regime": regime,
             "learning_context": learning,
             "paper_only": True, "live_portfolio_changed": False,
             "data_policy": "Binance TR public market data; missing values remain unknown. Contract/wallet safety is not inferred.",
             "scan_mode": "fast_hot_cache",
+            "strategy_constrained": config.ACTIVE_STRATEGY == "BB_MFI_MEAN_REVERSION",
             "cache": {"hit": False, "ttl_sec": config.LLM_MARKET_SCAN_CACHE_SEC}}
     _llm_market_scan_cache[cache_key] = {"generated_at": result["generated_at"], "result": result}
     return result
@@ -2289,30 +2319,47 @@ async def manual_strategy_scan():
     for symbol in list(config.SYMBOLS):
         if symbol in config.PASSIVE_SYMBOLS and symbol not in analyzer.positions:
             skipped_passive += 1
+            _record_strategy_scan_log("manual", symbol, "PASSIVE")
             continue
         checked += 1
         ticker = market.get_ticker(symbol)
         if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
             stale_ticker += 1
+            _record_strategy_scan_log("manual", symbol, "STALE_TICKER")
             continue
         fresh_ticker += 1
         try:
             evaluated += 1
-            for signal in await analyzer.evaluate(symbol, ticker, allow_entry=True):
+            symbol_signals = await analyzer.evaluate(symbol, ticker, allow_entry=True)
+            if not symbol_signals:
+                _record_strategy_scan_log("manual", symbol, "NO_SIGNAL", price=ticker.get("price"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME)
+            for signal in symbol_signals:
                 signals.append(signal)
+                _record_strategy_scan_log("manual", symbol, str(signal.get("action", "SIGNAL")), price=signal.get("price", ticker.get("price")), reason=signal.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME)
                 await ws_manager.broadcast({"type": "signal", "data": signal})
         except Exception as exc:
             errors += 1
             print(f"[Strategy manual] {symbol} değerlendirme hatası: {exc}")
+            _record_strategy_scan_log("manual", symbol, "ERROR", error=str(exc))
     return {"ok": True, "status": "completed", "strategy": config.ACTIVE_STRATEGY,
             "symbols_checked": checked, "active_symbols": checked,
             "universe_size": len(config.SYMBOLS), "passive_skipped": skipped_passive,
             "fresh_ticker": fresh_ticker, "stale_ticker": stale_ticker,
             "evaluated": evaluated, "errors": errors,
             "signals": signals,
+            "scan_logs": [item for item in _strategy_scan_logs if item["scan_type"] == "manual" and item["timestamp"] >= started],
             "elapsed_seconds": round(time.time() - started, 2),
             "warning": "Ticker verisi hazır değil; teknik değerlendirme yapılmadı" if evaluated == 0 else None,
             "paper_only": True}
+
+@app.get("/api/strategy/scan-logs")
+async def strategy_scan_logs(limit: int = 250, scan_type: str = ""):
+    """Return recent per-symbol scan evidence for the Settings audit panel."""
+    safe_limit = max(1, min(int(limit), 1000))
+    logs = list(_strategy_scan_logs)
+    if scan_type in {"automatic", "manual"}:
+        logs = [item for item in logs if item["scan_type"] == scan_type]
+    return {"ok": True, "logs": logs[:safe_limit], "total": len(logs), "paper_only": True}
 
 @app.post("/api/strategy/replay")
 async def start_strategy_replay(payload: dict = None):
@@ -2416,6 +2463,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             "bullish_candidates": market_scan["bullish_candidates"][:5],
             "ranked": market_scan["ranked"],
             "market_regime": market_scan.get("market_regime"),
+            "strategy_contract": market_scan.get("strategy_contract"),
             "learning_context": market_scan.get("learning_context"),
             "paper_only": True,
             "data_policy": market_scan["data_policy"],
@@ -2948,6 +2996,7 @@ async def strategies_llm_chat(payload: dict = None):
                 "symbols_scanned": market_scan.get("symbols_scanned"),
                 "timeframes": market_scan.get("timeframes"),
                 "market_regime": market_scan.get("market_regime"),
+                "strategy_contract": market_scan.get("strategy_contract"),
                 "bullish_candidates": market_scan.get("bullish_candidates", [])[:10],
                 "ranked": market_scan.get("ranked", [])[:10],
                 "data_policy": market_scan.get("data_policy"),
