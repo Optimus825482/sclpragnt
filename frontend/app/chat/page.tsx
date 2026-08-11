@@ -34,6 +34,16 @@ type AgentTrace = {
   status: string;
   started_at?: string;
 };
+type LivePriceWatch = {
+  symbol: string;
+  price?: number;
+  startPrice?: number;
+  changePct?: number;
+  high?: number;
+  low?: number;
+  samples?: number;
+  status: "connecting" | "live" | "completed" | "stopped" | "error";
+};
 const TOOL_GROUPS = [
   [
     "Veri",
@@ -135,7 +145,9 @@ export default function ChatPage() {
   );
   const [hydrated, setHydrated] = useState(false);
   const [sessionId, setSessionId] = useState("chat:main");
+  const [livePriceWatch, setLivePriceWatch] = useState<LivePriceWatch | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
   const chatSettingsReady = useRef(false);
   useEffect(() => {
     try {
@@ -251,6 +263,8 @@ export default function ChatPage() {
     setInput("");
     setBusy(true);
     setError("");
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
     try {
       setMessages([...next, { role: "assistant", content: "" }]);
       await streamChat(
@@ -269,15 +283,45 @@ export default function ChatPage() {
           active_skills: activeSkills,
           session_id: sessionId,
         },
+        {
+          signal: controller.signal,
+          onEvent: ({ event, data }) => {
+            if (event === "watch_started") {
+              setLivePriceWatch({ symbol: String(data.symbol || ""), status: "connecting" });
+            } else if (event === "price") {
+              setLivePriceWatch({
+                symbol: String(data.symbol || ""),
+                price: Number(data.price),
+                startPrice: Number(data.start_price),
+                changePct: Number(data.change_pct),
+                high: Number(data.high),
+                low: Number(data.low),
+                samples: Number(data.samples),
+                status: "live",
+              });
+            } else if (event === "done" && data.watch_completed) {
+              setLivePriceWatch((current) => current ? { ...current, status: "completed" } : current);
+            }
+          },
+        },
       );
     } catch (e) {
+      if (controller.signal.aborted) {
+        setLivePriceWatch((current) => current ? { ...current, status: "stopped" } : current);
+        return;
+      }
       const message =
         e instanceof Error ? e.message : "LLM bağlantısı kurulamadı.";
       setError(message);
       setMessages([...next, { role: "assistant", content: message }]);
     } finally {
+      if (streamAbortRef.current === controller) streamAbortRef.current = null;
       setBusy(false);
     }
+  };
+  const stopLiveWatch = () => {
+    streamAbortRef.current?.abort();
+    setLivePriceWatch((current) => current ? { ...current, status: "stopped" } : current);
   };
   const toggle = (
     value: string,
@@ -376,6 +420,25 @@ export default function ChatPage() {
               <div className="chat-thinking">
                 <span className="status-dot" /> Araçlar ve model yanıtı
                 hazırlanıyor…
+              </div>
+            )}
+            {livePriceWatch && (
+              <div className="chat-price-watch" role="status" aria-live="polite">
+                <div>
+                  <p className="eyebrow">CANLI FİYAT · {livePriceWatch.symbol}</p>
+                  <strong>{Number.isFinite(livePriceWatch.price) ? livePriceWatch.price?.toLocaleString("tr-TR", { maximumFractionDigits: 8 }) : "Bağlanıyor…"}</strong>
+                  <span className={(livePriceWatch.changePct || 0) >= 0 ? "text-neon-green" : "text-neon-red"}>
+                    {Number.isFinite(livePriceWatch.changePct) ? `%${(livePriceWatch.changePct || 0) >= 0 ? "+" : ""}${livePriceWatch.changePct?.toFixed(3)}` : ""}
+                  </span>
+                </div>
+                <div className="chat-price-watch-range">
+                  <span>Düşük {livePriceWatch.low ?? "—"}</span>
+                  <span>Yüksek {livePriceWatch.high ?? "—"}</span>
+                  <span>Örnek {livePriceWatch.samples ?? 0}</span>
+                </div>
+                {busy && livePriceWatch.status !== "completed" && (
+                  <Button variant="secondary" onClick={stopLiveWatch}>İZLEMEYİ DURDUR</Button>
+                )}
               </div>
             )}
             <div ref={endRef} />

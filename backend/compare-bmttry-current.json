@@ -1,0 +1,371 @@
+{
+  "paper_only": true,
+  "source": "Binance TR public API",
+  "retrieved_at": "2026-08-11T01:17:27+00:00",
+  "window": {
+    "start": "2026-08-10T01:17:27+00:00",
+    "end": "2026-08-11T01:17:27+00:00",
+    "hours": 24.0
+  },
+  "strategy": "BB_MFI_MEAN_REVERSION",
+  "pine_version": "current",
+  "pine_profile": null,
+  "selection_mode": "all_requested_scan_symbols",
+  "initial_balance_try": 10000.0,
+  "final_balance_try": 9764.584784,
+  "net_pnl_try": -235.415216,
+  "net_pnl_pct": -2.354152,
+  "closed_trades": 25,
+  "wins": 20,
+  "losses": 5,
+  "win_rate_pct": 80.0,
+  "profit_factor": 0.717573,
+  "fees_closed_trades_try": 119.540133,
+  "max_drawdown_pct": 3.787879,
+  "active_symbols": [
+    "BMTTRY"
+  ],
+  "activity": {
+    "BMTTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 1361894605.36,
+      "range_15m_pct": 2.5169,
+      "atr_pct": 1.8607,
+      "volume_ratio": 0.4197,
+      "spread_pct": 0.0953,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    }
+  },
+  "skipped_symbols": {},
+  "data_quality": {
+    "BMTTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    }
+  },
+  "prepared_features": [
+    "bb_lower",
+    "bb_upper",
+    "mfi",
+    "rsi",
+    "atr",
+    "close"
+  ],
+  "open_positions_excluded": [
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786410299,
+      "layers": 2,
+      "restored_try": 1956.752799
+    }
+  ],
+  "signal_counts": {
+    "none": 186,
+    "buy": 95,
+    "sell": 7
+  },
+  "exit_reasons": {
+    "fixed_take_profit": 20,
+    "fixed_stop_loss": 5
+  },
+  "trades": [
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786325099,
+      "exit_time": 1786325099,
+      "entry": 1.5341497499999999,
+      "exit": 1.5685187277077193,
+      "layers": 1,
+      "pnl": 19.369019,
+      "commission": 3.033604,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786325699,
+      "exit_time": 1786325699,
+      "entry": 1.5431565,
+      "exit": 1.5777272525279211,
+      "layers": 1,
+      "pnl": 19.406534,
+      "commission": 3.03948,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786338599,
+      "exit_time": 1786338599,
+      "entry": 1.77833275,
+      "exit": 1.8181720672776367,
+      "layers": 1,
+      "pnl": 19.444123,
+      "commission": 3.045367,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786339199,
+      "exit_time": 1786340999,
+      "entry": 1.8283692696378389,
+      "exit": 1.869329536176136,
+      "layers": 2,
+      "pnl": 38.887952,
+      "commission": 6.090688,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786345199,
+      "exit_time": 1786345199,
+      "entry": 1.78033425,
+      "exit": 1.8202184061265705,
+      "layers": 1,
+      "pnl": 19.557107,
+      "commission": 3.063063,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786345799,
+      "exit_time": 1786347299,
+      "entry": 1.7602661007392768,
+      "exit": 1.6027163262223605,
+      "layers": 2,
+      "pnl": -186.622367,
+      "commission": 5.789944,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786347599,
+      "exit_time": 1786348799,
+      "entry": 1.628717892121553,
+      "exit": 1.6652054442177477,
+      "layers": 2,
+      "pnl": 38.414396,
+      "commission": 6.016519,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786349699,
+      "exit_time": 1786349699,
+      "entry": 1.5611700000000002,
+      "exit": 1.5961443021683253,
+      "layers": 1,
+      "pnl": 19.307922,
+      "commission": 3.024035,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786349999,
+      "exit_time": 1786350299,
+      "entry": 1.587664159830802,
+      "exit": 1.623232000660271,
+      "layers": 2,
+      "pnl": 38.685075,
+      "commission": 6.058913,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786350599,
+      "exit_time": 1786350599,
+      "entry": 1.5951955000000002,
+      "exit": 1.630932062600199,
+      "layers": 1,
+      "pnl": 19.420249,
+      "commission": 3.041628,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786352099,
+      "exit_time": 1786352399,
+      "entry": 1.542113284478484,
+      "exit": 1.5766606662428904,
+      "layers": 2,
+      "pnl": 38.959579,
+      "commission": 6.101906,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786352999,
+      "exit_time": 1786353599,
+      "entry": 1.5521356906670627,
+      "exit": 1.5869076006138538,
+      "layers": 2,
+      "pnl": 39.09485,
+      "commission": 6.123092,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786354199,
+      "exit_time": 1786354199,
+      "entry": 1.51613625,
+      "exit": 1.3804369235037937,
+      "layers": 1,
+      "pnl": -93.513809,
+      "commission": 2.901259,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786354499,
+      "exit_time": 1786357199,
+      "entry": 1.3850303163095838,
+      "exit": 1.4160586276369231,
+      "layers": 2,
+      "pnl": 38.871067,
+      "commission": 6.088043,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786360199,
+      "exit_time": 1786360199,
+      "entry": 1.3600192500000001,
+      "exit": 1.390487247850483,
+      "layers": 1,
+      "pnl": 19.50321,
+      "commission": 3.054621,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786368299,
+      "exit_time": 1786369499,
+      "entry": 1.3452834568558578,
+      "exit": 1.224876033682757,
+      "layers": 2,
+      "pnl": -185.824994,
+      "commission": 5.765206,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786369799,
+      "exit_time": 1786370099,
+      "entry": 1.2423954563741673,
+      "exit": 1.2702283727790329,
+      "layers": 2,
+      "pnl": 38.37163,
+      "commission": 6.009821,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786370399,
+      "exit_time": 1786371299,
+      "entry": 1.2554380618890821,
+      "exit": 1.283563166861715,
+      "layers": 2,
+      "pnl": 38.477352,
+      "commission": 6.026379,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786374599,
+      "exit_time": 1786376699,
+      "entry": 1.2218285411187062,
+      "exit": 1.1124707507989704,
+      "layers": 2,
+      "pnl": -184.165075,
+      "commission": 5.713707,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786376999,
+      "exit_time": 1786377599,
+      "entry": 1.1203214289741477,
+      "exit": 1.145419567026116,
+      "layers": 2,
+      "pnl": 37.947194,
+      "commission": 5.943345,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786377899,
+      "exit_time": 1786377899,
+      "entry": 1.14185575,
+      "exit": 1.1674363133167043,
+      "layers": 1,
+      "pnl": 19.046701,
+      "commission": 2.983122,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786385699,
+      "exit_time": 1786389599,
+      "entry": 1.1773802922604046,
+      "exit": 1.2037566984868542,
+      "layers": 2,
+      "pnl": 38.162892,
+      "commission": 5.977128,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786390799,
+      "exit_time": 1786392899,
+      "entry": 1.1693762758183688,
+      "exit": 1.1955733710859835,
+      "layers": 2,
+      "pnl": 38.323823,
+      "commission": 6.002333,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786394399,
+      "exit_time": 1786408799,
+      "entry": 1.1693761957847832,
+      "exit": 1.0647130679236225,
+      "layers": 2,
+      "pnl": -183.416126,
+      "commission": 5.690471,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786409099,
+      "exit_time": 1786409399,
+      "entry": 1.0587935000000002,
+      "exit": 1.0825132510859539,
+      "layers": 1,
+      "pnl": 18.876481,
+      "commission": 2.956462,
+      "reason": "fixed_take_profit"
+    }
+  ],
+  "cost_model": {
+    "commission_pct_each_side": 0.0015,
+    "assumed_full_spread_pct": 0.001,
+    "slippage_pct_each_side": 0.00025
+  },
+  "limitations": [
+    "Historical order-book depth and spread are unavailable; current spread selects the active universe and configured spread models fills."
+  ],
+  "reconciliation": {
+    "expected": 9764.584785,
+    "actual": 9764.584784,
+    "difference": -7.3e-07
+  }
+}

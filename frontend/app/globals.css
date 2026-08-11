@@ -55,6 +55,9 @@ button, a { touch-action: manipulation; }
 .chat-bubble { min-width:0; max-width:100%; overflow-wrap:anywhere; word-break:break-word; padding:.85rem 1rem; border:1px solid rgb(51 65 85 / .75); border-radius:.85rem; background:rgb(15 23 42 / .72); font-size:.88rem; line-height:1.55; }
 .chat-message.user .chat-bubble { border-color:rgb(52 211 153 / .3); background:rgb(16 185 129 / .09); }
 .chat-thinking { display:flex; align-items:center; gap:.5rem; color:#fde68a; font:600 .68rem/1.4 ui-monospace,monospace; padding:.5rem 0; }
+.chat-price-watch { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:1rem; padding:.8rem 1rem; border:1px solid rgb(52 211 153 / .4); border-radius:.75rem; background:linear-gradient(135deg,rgb(6 78 59 / .22),rgb(5 8 13 / .82)); }
+.chat-price-watch strong { display:inline-block; margin:.2rem .7rem 0 0; color:white; font:700 1.15rem/1 ui-monospace,monospace; }
+.chat-price-watch-range { display:flex; flex-wrap:wrap; gap:.65rem; color:rgb(148 163 184); font:600 .68rem/1.4 ui-monospace,monospace; }
 .chat-composer { flex:0 0 auto; position:relative; z-index:20; display:flex; gap:.65rem; align-items:end; padding-top:1rem; border-top:1px solid rgb(31 41 55 / .8); background:rgb(15 23 42 / .96); }
 .chat-composer textarea { flex:1; min-width:0; resize:none; border:1px solid rgb(71 85 105 / .8); border-radius:.7rem; background:rgb(5 8 13 / .7); padding:.75rem .85rem; color:white; outline:none; font-size:.85rem; }
 .chat-composer textarea:focus { border-color:rgb(52 211 153 / .7); box-shadow:0 0 0 3px rgb(16 185 129 / .12); }
@@ -300,6 +303,7 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .chat-bubble pre, .chat-bubble code { max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; }
   .chat-footer { margin-top:.65rem; padding-bottom:calc(.45rem + env(safe-area-inset-bottom)); }
   .chat-composer { position:relative; bottom:auto; padding-bottom:env(safe-area-inset-bottom); }
+  .chat-price-watch { grid-template-columns:1fr; align-items:stretch; }
   .card { padding: 1rem; border-radius: .75rem; }
   .page-heading h1 { font-size: 1.15rem; }
   .ui-stat-value { font-size: 1.35rem; }

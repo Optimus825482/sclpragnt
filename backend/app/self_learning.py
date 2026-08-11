@@ -33,7 +33,7 @@ def build_learning_context(trades: list[dict], limit: int = 200) -> dict:
     if losing_reasons:
         lessons.append("Son kayıplarda tekrar eden çıkış nedenlerini yeni adaylarda özellikle kontrol et.")
     if by_strategy and by_strategy[0]["net_pnl"] > 0:
-        lessons.append(f"Geçmişte en iyi net sonuç: {by_strategy[0]['strategy']}; bu geçmiş başarı geleceği garanti etmez.")
+        lessons.append(f"Geçmişte en iyi net sonuç: {by_strategy[0]['strategy']}; güncel kararda rejim ve maliyet verisiyle yeniden değerlendir.")
     return {"enabled": bool(recent), "sample_size": len(recent), "by_strategy": by_strategy[:12],
             "repeated_loss_reasons": losing_reasons, "lessons": lessons,
             "policy": "descriptive_only_no_parameter_mutation_no_trade_authorization",

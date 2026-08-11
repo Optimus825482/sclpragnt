@@ -11,6 +11,52 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class RegressionContracts(unittest.TestCase):
+    def test_price_watch_intent_resolves_explicit_and_conversation_symbol(self):
+        from app.main import _price_watch_symbol
+
+        self.assertEqual(
+            _price_watch_symbol([{"role": "user", "content": "DODOTRY fiyatı izle"}]),
+            "DODOTRY",
+        )
+        self.assertEqual(
+            _price_watch_symbol([
+                {"role": "user", "content": "DODOTRY ne durumda?"},
+                {"role": "user", "content": "fiyatı canlı izle"},
+            ]),
+            "DODOTRY",
+        )
+        self.assertIsNone(
+            _price_watch_symbol([{"role": "user", "content": "DODOTRY analiz et"}])
+        )
+
+    def test_strategy_chat_has_live_analysis_and_price_sse_contract(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        self.assertIn('"live_analysis_contract"', source)
+        self.assertIn("event: price", source)
+        self.assertIn("watch_completed", source)
+        self.assertIn("failed_breakout", source)
+
+    def test_market_analysis_avoids_repetitive_disclaimer_language(self):
+        llm_source = (ROOT / "app" / "llm_analysis.py").read_text()
+        main_source = (ROOT / "app" / "main.py").read_text()
+        self.assertIn("tekrarlayan sorumluluk uyarıları ekleme", llm_source)
+        self.assertIn("kullanıcı istemedikçe sorumluluk veya garanti uyarısı yazma", main_source)
+        self.assertNotIn("Bu kısa akış tek başına al/sat kararı değildir", main_source)
+
+    def test_portfolio_replay_has_exact_flawless_victory_profiles(self):
+        from scripts.run_portfolio_backtest import pine_profile
+
+        self.assertEqual(pine_profile("v1")["bb_period"], 21)
+        self.assertIsNone(pine_profile("v1")["stop_pct"])
+        self.assertEqual(pine_profile("v2")["stop_pct"], 0.06604)
+        self.assertEqual(pine_profile("v2")["tp_pct"], 0.02328)
+        self.assertEqual(pine_profile("v3")["mfi_period"], 16)
+        self.assertEqual(pine_profile("v3")["buy_mfi_max"], 59.0)
+        self.assertEqual(pine_profile("v3")["sell_rsi_min"], 69.0)
+        self.assertEqual(pine_profile("v3")["sell_mfi_min"], 69.0)
+        self.assertEqual(pine_profile("v3")["stop_pct"], 0.08882)
+        self.assertEqual(pine_profile("v3")["tp_pct"], 0.02317)
+
     def test_bb_mfi_v3_signal_contract(self):
         from app.analyzer import ScalpAnalyzer
 
