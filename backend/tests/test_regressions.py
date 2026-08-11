@@ -11,6 +11,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class RegressionContracts(unittest.TestCase):
+    def test_open_position_payloads_are_sorted_newest_first(self):
+        source = (ROOT / "app" / "main.py").read_text()
+
+        self.assertIn('"entry_time": pos.get("entry_time")', source)
+        self.assertEqual(
+            source.count(
+                'sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)'
+            ),
+            2,
+        )
+
     def test_price_watch_intent_resolves_explicit_and_conversation_symbol(self):
         from app.main import _price_watch_symbol
 

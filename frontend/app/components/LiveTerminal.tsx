@@ -6,7 +6,7 @@ import SymbolLink from "./SymbolLink";
 
 type Ticker = { symbol: string; last_price: number; volume: number; avg_volume?: number };
 type Signal = { id?: number; symbol: string; action: string; price?: number; reason?: string; timestamp?: number };
-type Position = { symbol: string; entry: number; current: number; pnl_pct: number; pnl_try?: number; value: number };
+type Position = { symbol: string; entry: number; current: number; pnl_pct: number; pnl_try?: number; value: number; entry_time?: number };
 type Portfolio = { try: number; total_value: number; positions: Position[] };
 
 export default function LiveTerminal() {
