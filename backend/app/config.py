@@ -49,13 +49,13 @@ class Config:
     STRATEGY_ENTRY_SCAN_INTERVAL_SEC = max(60, int(os.getenv("STRATEGY_ENTRY_SCAN_INTERVAL_SEC", "300")))
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
-    # BB+MFI (Flawless Victory v3) metrics.  They are separately configurable
+    # Flawless Victory Pine v1 metrics. They are separately configurable
     # in live Settings and may be overridden per backtest without persistence.
-    BB_MFI_BB_PERIOD = max(5, int(os.getenv("BB_MFI_BB_PERIOD", "20")))
-    BB_MFI_BB_STD_DEV = max(0.1, float(os.getenv("BB_MFI_BB_STD_DEV", "1.0")))
+    BB_MFI_BB_PERIOD = max(5, int(os.getenv("BB_MFI_BB_PERIOD", "21")))
+    BB_MFI_BB_STD_DEV = max(0.1, float(os.getenv("BB_MFI_BB_STD_DEV", "2.0")))
     BB_MFI_MFI_PERIOD = max(2, int(os.getenv("BB_MFI_MFI_PERIOD", "14")))
-    BB_MFI_RSI_PERIOD = max(2, int(os.getenv("BB_MFI_RSI_PERIOD", "14")))
-    BB_MFI_V1_RSI_LOWER_LEVEL = float(os.getenv("BB_MFI_V1_RSI_LOWER_LEVEL", "42"))
+    BB_MFI_RSI_PERIOD = max(2, int(os.getenv("BB_MFI_RSI_PERIOD", "13")))
+    BB_MFI_V1_RSI_LOWER_LEVEL = float(os.getenv("BB_MFI_V1_RSI_LOWER_LEVEL", "30"))
     BB_MFI_V1_RSI_UPPER_LEVEL = float(os.getenv("BB_MFI_V1_RSI_UPPER_LEVEL", "70"))
     BB_MFI_V2_RSI_LOWER_LEVEL = float(os.getenv("BB_MFI_V2_RSI_LOWER_LEVEL", "42"))
     BB_MFI_V2_RSI_UPPER_LEVEL = float(os.getenv("BB_MFI_V2_RSI_UPPER_LEVEL", "76"))
@@ -64,8 +64,8 @@ class Config:
     BB_MFI_EXIT_MFI_MIN = float(os.getenv("BB_MFI_EXIT_MFI_MIN", "64")) # MFIUpperLevel3
     SYMBOL_ORDER_PCT = {}
     SYMBOL_PYRAMIDING_LAYERS = {}
-    BB_MFI_STOP_LOSS_PCT = float(os.getenv("BB_MFI_STOP_LOSS_PCT", "0.08882"))
-    BB_MFI_TAKE_PROFIT_PCT = float(os.getenv("BB_MFI_TAKE_PROFIT_PCT", "0.02317"))
+    BB_MFI_STOP_LOSS_PCT = float(os.getenv("BB_MFI_STOP_LOSS_PCT", "0"))
+    BB_MFI_TAKE_PROFIT_PCT = float(os.getenv("BB_MFI_TAKE_PROFIT_PCT", "0"))
     MIN_24H_QUOTE_VOLUME_TRY = 1_000_000.0
     HIGH_LIQUIDITY_BYPASS_VOLUME_TRY = 3_000_000.0
     MIN_VOLUME_RATIO = 0.3

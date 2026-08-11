@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.analyzer import ScalpAnalyzer
+from app import database
 from app.binance_tr_public import historical_klines, orderbook, ticker_24h, trading_symbols
 from app.config import config
 from app.technical_analysis import _mfi
@@ -28,10 +29,14 @@ def rows_to_series(rows):
     seen = set()
     now_ms = int(time.time() * 1000)
     for row in rows:
-        close_ms = int(row[6])
+        if isinstance(row, dict):
+            close_ms = int(row["close_time"])
+            values = [float(row[key]) for key in ("open", "high", "low", "close", "volume")]
+        else:
+            close_ms = int(row[6])
+            values = [float(row[index]) for index in range(1, 6)]
         if close_ms > now_ms or close_ms in seen:
             continue
-        values = [float(row[index]) for index in range(1, 6)]
         if not all(math.isfinite(value) for value in values):
             continue
         seen.add(close_ms)
@@ -41,8 +46,10 @@ def rows_to_series(rows):
     return result
 
 
-def window_at(data, index):
-    return {key: values[:index + 1] for key, values in data.items()}
+def window_at(data, index, lookback=250):
+    """Bound replay indicator input; BB/MFI/RSI need far less than full history."""
+    start = max(0, index - lookback + 1)
+    return {key: values[start:index + 1] for key, values in data.items()}
 
 
 def data_quality(data):
@@ -54,6 +61,22 @@ def data_quality(data):
         "duplicate_timestamps": len(times) != len(set(times)),
         "missing_gap_count": len(gaps), "max_gap_seconds": max(gaps) if gaps else 0,
     }
+
+
+def arm_profit_lock(position, candle_high, trigger_pct, lock_pct):
+    """Raise a long position's exit floor after a confirmed profitable move.
+
+    The caller invokes this after intrabar exits, so an OHLC bar that merely
+    touched the trigger cannot also claim a same-bar stop fill.
+    """
+    if trigger_pct <= 0 or candle_high < position["entry"] * (1 + trigger_pct):
+        return False
+    candidate = position["entry"] * (1 + lock_pct)
+    previous = float(position.get("profit_lock_stop") or 0)
+    if candidate <= previous:
+        return False
+    position["profit_lock_stop"] = candidate
+    return True
 
 
 def activity_metrics(analyzer, data, quote_volume, spread_pct):
@@ -94,7 +117,23 @@ async def current_spread(symbol):
         return None
 
 
-async def load_market(symbols, days):
+async def load_market(symbols, days, data_source, start_ts, end_ts):
+    if data_source == "historical-db":
+        warmup_ms = max(int(days * 86400 * 1000), 250 * 5 * 60 * 1000)
+        start_ms = int(start_ts * 1000) - warmup_ms
+        end_ms = int(end_ts * 1000)
+
+        async def load_cached(symbol):
+            try:
+                rows = await database.get_market_candles(symbol, "5m", start_ms, end_ms)
+                data = rows_to_series(rows)
+                print(f"[DATA] {symbol} source=historical_candles interval=5m candles={len(data['times'])}", flush=True)
+                return symbol, data, 0.0, None, None
+            except Exception as exc:
+                return symbol, None, 0.0, None, str(exc)
+
+        return await asyncio.gather(*(load_cached(symbol) for symbol in symbols))
+
     ticker_rows = await ticker_24h()
     quote_volumes = {str(row.get("symbol", "")).upper(): float(row.get("quoteVolume", 0) or 0) for row in ticker_rows}
     semaphore = asyncio.Semaphore(6)
@@ -186,16 +225,23 @@ async def run(args):
     start_ts = int(datetime.fromisoformat(args.start_date).replace(tzinfo=local_tz).timestamp()) if args.start_date else now - int(args.start_hours_ago * 3600)
     if start_ts >= end_ts:
         raise SystemExit("start-hours-ago, end-hours-ago değerinden büyük olmalıdır")
+    if args.profit_lock_trigger_pct < 0 or args.profit_lock_pct < 0 or args.profit_lock_pct > args.profit_lock_trigger_pct:
+        raise SystemExit("profit-lock yüzdeleri 0 <= lock <= trigger olmalıdır")
 
     discovered_symbols = args.symbols or await trading_symbols("TRY")
     requested_symbols = [symbol.replace("_", "").upper() for symbol in discovered_symbols]
     profile = pine_profile(args.pine_version)
-    stop_pct = profile["stop_pct"] if profile else args.stop_pct
+    base_stop_pct = profile["stop_pct"] if profile else args.stop_pct
+    stop_pct = args.risk_stop_pct if args.risk_stop_pct is not None else base_stop_pct
     tp_pct = profile["tp_pct"] if profile else args.tp_pct
+    stop_pct = stop_pct if stop_pct and stop_pct > 0 else None
+    tp_pct = tp_pct if tp_pct and tp_pct > 0 else None
     print(f"[START] strategy={config.ACTIVE_STRATEGY} pine_version={args.pine_version} initial={config.INITIAL_BALANCE_TRY:.2f} TRY window={iso(start_ts)}..{iso(end_ts)}", flush=True)
     print(f"[CONFIG] universe={len(requested_symbols)} source={'cli' if args.symbols else 'BinanceTR-exchangeInfo'} order_pct={args.order_pct:.4f} pyramiding={args.pyramiding} max_positions={args.max_positions} commission={config.COMMISSION_PCT:.6f} spread={args.spread_pct:.6f} slippage={args.slippage_pct:.6f}", flush=True)
 
-    loaded = await load_market(requested_symbols, args.fetch_days)
+    if args.data_source == "historical-db":
+        await database.init_db()
+    loaded = await load_market(requested_symbols, args.fetch_days, args.data_source, start_ts, end_ts)
     analyzer = ScalpAnalyzer(None)
     series, activity, quality, skipped = {}, {}, {}, {}
     for symbol, data, quote_volume, live_spread, error in loaded:
@@ -207,7 +253,7 @@ async def run(args):
         activity[symbol] = status
         quality[symbol] = data_quality(data)
         print(f"[ACTIVITY] {symbol} status={status['status']} metrics={json.dumps(status, ensure_ascii=False)}", flush=True)
-        if args.use_all_requested or status["status"] == "ACTIVE":
+        if args.use_all_requested or args.data_source == "historical-db" or status["status"] == "ACTIVE":
             series[symbol] = data
     if not series:
         raise SystemExit("Aktif ve kullanılabilir sembol bulunamadı")
@@ -288,6 +334,7 @@ async def run(args):
                 position["invested"] += order_value
                 position["entry_fees"] += entry_fee
                 position["layers"] += 1
+                position.pop("profit_lock_stop", None)
             else:
                 position = {"entry": entry_fill, "quantity": quantity, "invested": order_value,
                             "entry_fees": entry_fee, "layers": 1, "entry_time": ts}
@@ -305,11 +352,17 @@ async def run(args):
                 continue
             data = series[symbol]
             high, low = data["highs"][index], data["lows"][index]
-            if position["stop"] is not None and low <= position["stop"]:
-                exit_quote, reason = position["stop"], "fixed_stop_loss"
+            fixed_stop = position["stop"]
+            profit_lock_stop = position.get("profit_lock_stop")
+            active_stop = max(value for value in (fixed_stop, profit_lock_stop) if value is not None) if any(value is not None for value in (fixed_stop, profit_lock_stop)) else None
+            if active_stop is not None and low <= active_stop:
+                exit_quote = active_stop
+                reason = "profit_lock_stop" if profit_lock_stop is not None and active_stop == profit_lock_stop else "fixed_stop_loss"
             elif position["target"] is not None and high >= position["target"]:
                 exit_quote, reason = position["target"], "fixed_take_profit"
             else:
+                if arm_profit_lock(position, high, args.profit_lock_trigger_pct, args.profit_lock_pct):
+                    print(f"[PROFIT-LOCK-ARMED] {symbol} floor={position['profit_lock_stop']:.8f}", flush=True)
                 continue
             exit_fill = exit_quote * (1 - args.spread_pct / 2 - args.slippage_pct)
             proceeds = position["quantity"] * exit_fill
@@ -333,14 +386,35 @@ async def run(args):
         max_drawdown = max(max_drawdown, (peak_equity - marked) / peak_equity if peak_equity else 0.0)
         print(f"[SCAN] {iso(ts)} symbols={len(series)} signals={signals} entries={entries} exits={exits} blocked={blocked} open={len(positions)} cash={cash:.2f} equity={marked:.2f}", flush=True)
 
-    # User contract: unfinished trades are treated exactly as if never opened.
     excluded_open = []
-    for symbol, position in positions.items():
-        restored = position["invested"] + position["entry_fees"]
-        cash += restored
-        fees_paid -= position["entry_fees"]
-        excluded_open.append({"symbol": symbol, "entry_time": position["entry_time"], "layers": position["layers"], "restored_try": round(restored, 6)})
-        print(f"[OPEN-EXCLUDED] {symbol} restored={restored:.2f} reason=treated_as_never_opened", flush=True)
+    marked_open = []
+    if args.open_position_policy == "exclude":
+        # Compatibility mode for prior research reports: unfinished trades are
+        # treated as if never opened.
+        for symbol, position in positions.items():
+            restored = position["invested"] + position["entry_fees"]
+            cash += restored
+            fees_paid -= position["entry_fees"]
+            excluded_open.append({"symbol": symbol, "entry_time": position["entry_time"], "layers": position["layers"], "restored_try": round(restored, 6)})
+            print(f"[OPEN-EXCLUDED] {symbol} restored={restored:.2f} reason=treated_as_never_opened", flush=True)
+    else:
+        # Portfolio-parity mode: retain open paper positions at their last
+        # available close instead of erasing their capital and PnL.
+        for symbol, position in positions.items():
+            data = series[symbol]
+            closing_index = max((index for index, ts in enumerate(data["times"]) if ts <= end_ts), default=None)
+            mark_price = data["closes"][closing_index] if closing_index is not None else position["entry"]
+            liquidation_fill = mark_price * (1 - args.spread_pct / 2 - args.slippage_pct)
+            marked_value = position["quantity"] * liquidation_fill
+            exit_fee = marked_value * config.COMMISSION_PCT
+            unrealized_pnl = marked_value - exit_fee - position["invested"] - position["entry_fees"]
+            cash += marked_value - exit_fee
+            fees_paid += exit_fee
+            marked_open.append({"symbol": symbol, "entry_time": position["entry_time"], "layers": position["layers"],
+                                "mark_price": round(mark_price, 8), "liquidation_fill": round(liquidation_fill, 8),
+                                "marked_value_try": round(marked_value - exit_fee, 6),
+                                "unrealized_pnl_try": round(unrealized_pnl, 6)})
+            print(f"[OPEN-MARKED] {symbol} value={marked_value:.2f} unrealized={unrealized_pnl:+.2f}", flush=True)
 
     wins = [trade for trade in trades if trade["pnl"] > 0]
     losses = [trade for trade in trades if trade["pnl"] <= 0]
@@ -351,29 +425,36 @@ async def run(args):
         "window": {"start": iso(start_ts), "end": iso(end_ts), "hours": round((end_ts - start_ts) / 3600, 2)},
         "strategy": config.ACTIVE_STRATEGY, "pine_version": args.pine_version,
         "pine_profile": profile,
-        "selection_mode": "all_requested_scan_symbols" if args.use_all_requested else "current_activity_active_only",
+        "risk_stop_pct": stop_pct,
+        "selection_mode": ("all_requested_scan_symbols" if args.use_all_requested else
+                           "historical_cached_requested_symbols" if args.data_source == "historical-db" else
+                           "current_activity_active_only"),
         "initial_balance_try": initial, "final_balance_try": round(cash, 6),
         "net_pnl_try": round(cash - initial, 6), "net_pnl_pct": round((cash / initial - 1) * 100, 6),
         "closed_trades": len(trades), "wins": len(wins), "losses": len(losses),
         "win_rate_pct": round(len(wins) / len(trades) * 100, 4) if trades else 0.0,
         "profit_factor": round(gross_profit / gross_loss, 6) if gross_loss else None,
-        "fees_closed_trades_try": round(fees_paid, 6), "max_drawdown_pct": round(max_drawdown * 100, 6),
+        "fees_total_including_open_liquidation_try": round(fees_paid, 6), "max_drawdown_pct": round(max_drawdown * 100, 6),
         "active_symbols": sorted(series), "activity": activity, "skipped_symbols": skipped,
         "data_quality": quality,
         "prepared_features": ["bb_lower", "bb_upper", "mfi", "rsi", "atr", "close"],
-        "open_positions_excluded": excluded_open, "signal_counts": dict(signal_counts),
+        "open_position_policy": args.open_position_policy,
+        "open_positions_excluded": excluded_open, "open_positions_marked": marked_open,
+        "signal_counts": dict(signal_counts),
         "exit_reasons": dict(Counter(trade["reason"] for trade in trades)), "trades": trades,
         "cost_model": {"commission_pct_each_side": config.COMMISSION_PCT,
                        "assumed_full_spread_pct": args.spread_pct, "slippage_pct_each_side": args.slippage_pct},
+        "profit_lock": {"trigger_pct": args.profit_lock_trigger_pct, "lock_pct": args.profit_lock_pct,
+                        "same_bar_fill": False},
         "limitations": ["Historical order-book depth and spread are unavailable; current spread selects the active universe and configured spread models fills."],
-        "reconciliation": {"expected": round(initial + sum(trade["pnl"] for trade in trades), 6),
+        "reconciliation": {"expected": round(initial + sum(trade["pnl"] for trade in trades) + sum(item["unrealized_pnl_try"] for item in marked_open), 6),
                            "actual": round(cash, 6),
-                           "difference": round(cash - initial - sum(trade["pnl"] for trade in trades), 8)},
+                           "difference": round(cash - (initial + sum(trade["pnl"] for trade in trades) + sum(item["unrealized_pnl_try"] for item in marked_open)), 8)},
     }
     output = Path(args.output)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[COMPLETE] result={output.resolve()}", flush=True)
-    print("RESULT_JSON=" + json.dumps({key: result[key] for key in ("initial_balance_try", "final_balance_try", "net_pnl_try", "net_pnl_pct", "closed_trades", "wins", "losses", "win_rate_pct", "profit_factor", "fees_closed_trades_try", "max_drawdown_pct", "active_symbols", "open_positions_excluded", "reconciliation")}, ensure_ascii=False), flush=True)
+    print("RESULT_JSON=" + json.dumps({key: result[key] for key in ("initial_balance_try", "final_balance_try", "net_pnl_try", "net_pnl_pct", "closed_trades", "wins", "losses", "win_rate_pct", "profit_factor", "fees_total_including_open_liquidation_try", "max_drawdown_pct", "active_symbols", "open_positions_excluded", "open_positions_marked", "reconciliation")}, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":
@@ -381,6 +462,7 @@ if __name__ == "__main__":
     parser.add_argument("--symbols", nargs="*")
     parser.add_argument("--use-all-requested", action="store_true", help="Verilen tarama evrenini güncel ACTIVE filtresi uygulamadan replay et")
     parser.add_argument("--interval", default="5m")
+    parser.add_argument("--data-source", choices=("public", "historical-db"), default="public")
     parser.add_argument("--pine-version", choices=("current", "v1", "v2", "v3"), default="current")
     parser.add_argument("--fetch-days", type=int, default=2, help="Feature warmup dahil public candle window")
     parser.add_argument("--start-hours-ago", type=float, default=24)
@@ -392,8 +474,15 @@ if __name__ == "__main__":
     parser.add_argument("--pyramiding", type=int, default=config.PYRAMIDING_LAYERS)
     parser.add_argument("--max-positions", type=int, default=config.MAX_OPEN_POSITIONS)
     parser.add_argument("--stop-pct", type=float, default=config.BB_MFI_STOP_LOSS_PCT)
+    parser.add_argument("--risk-stop-pct", type=float,
+                        help="Araştırma için strateji sinyalini değiştirmeden eklenen koruyucu stop")
     parser.add_argument("--tp-pct", type=float, default=config.BB_MFI_TAKE_PROFIT_PCT)
     parser.add_argument("--spread-pct", type=float, default=config.BACKTEST_ASSUMED_SPREAD_PCT)
     parser.add_argument("--slippage-pct", type=float, default=config.ESTIMATED_SLIPPAGE_PCT)
+    parser.add_argument("--profit-lock-trigger-pct", type=float, default=0.0,
+                        help="Pozisyon bu brüt yükselişi gördükten sonraki mumlarda maliyet-kilit stopu etkinleşir")
+    parser.add_argument("--profit-lock-pct", type=float, default=0.0,
+                        help="Kilitli stopun giriş fiyatının üzerindeki seviyesi; 0 gerçek brüt break-even'dır")
+    parser.add_argument("--open-position-policy", choices=("exclude", "mark-to-market"), default="exclude")
     parser.add_argument("--output", default="portfolio-replay-latest.json")
     asyncio.run(run(parser.parse_args()))

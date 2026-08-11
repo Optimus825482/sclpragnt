@@ -5,7 +5,8 @@ COPY requirements.txt .
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    && python -c "import edge_tts; print('edge-tts hazır')"
 COPY app ./app
 COPY migrations ./migrations
 COPY scripts ./scripts

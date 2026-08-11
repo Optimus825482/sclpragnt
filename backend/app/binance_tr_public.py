@@ -70,26 +70,30 @@ def _get_json(path: str, params: dict):
     ) from last_error
 
 
-async def klines(symbol: str, interval: str, limit: int = 500, start_time_ms: int | None = None):
+async def klines(symbol: str, interval: str, limit: int = 500, start_time_ms: int | None = None,
+                 end_time_ms: int | None = None):
     params = {"symbol": symbol.replace("_", "").upper(), "interval": interval, "limit": limit}
     if start_time_ms is not None:
         params["startTime"] = start_time_ms
+    if end_time_ms is not None:
+        params["endTime"] = end_time_ms
     return await asyncio.to_thread(_get_json, "/api/v1/klines", params)
 
 
-async def historical_klines(symbol: str, interval: str, days_back: int):
-    start = int((time.time() - days_back * 86400) * 1000)
+async def historical_klines(symbol: str, interval: str, days_back: int, end_time_ms: int | None = None):
+    end = min(int(end_time_ms), int(time.time() * 1000)) if end_time_ms is not None else int(time.time() * 1000)
+    start = end - days_back * 86400 * 1000
     rows = []
     cursor = start
     while True:
-        batch = await klines(symbol, interval, 1000, cursor)
+        batch = await klines(symbol, interval, 1000, cursor, end)
         if not batch:
             break
         rows.extend(batch)
         if len(batch) < 1000:
             break
         cursor = int(batch[-1][0]) + 1
-        if cursor >= int(time.time() * 1000):
+        if cursor >= end:
             break
     return rows
 
