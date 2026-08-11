@@ -1,0 +1,510 @@
+[START] strategy=BB_MFI_MEAN_REVERSION pine_version=current initial=10000.00 TRY window=2026-08-10T01:17:27+00:00..2026-08-11T01:17:27+00:00
+[CONFIG] universe=1 source=cli order_pct=0.1000 pyramiding=2 max_positions=36 commission=0.001500 spread=0.001000 slippage=0.000250
+[DATA] BMTTRY source=BinanceTR-public interval=5m candles=575
+[ACTIVITY] BMTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1361894605.36, "range_15m_pct": 2.5169, "atr_pct": 1.8607, "volume_ratio": 0.4197, "spread_pct": 0.0953, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[SCAN] 2026-08-10T01:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SIGNAL] 2026-08-10T01:19:59+00:00 BMTTRY BUY fill_at=2026-08-10T01:24:59+00:00 features={"close": 1.532, "bb_lower": 1.546979837327501, "mfi": 54.155337031538934, "rsi": 42.27051573956594, "atr": 0.0657857142857143}
+[ENTRY] 2026-08-10T01:24:59+00:00 BMTTRY layer=1 value=1000.00 entry=1.53414975 cash=8998.50
+[EXIT] 2026-08-10T01:24:59+00:00 BMTTRY reason=fixed_take_profit pnl=+19.37 cash=10019.37
+[SCAN] 2026-08-10T01:24:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10019.37 equity=10019.37
+[SCAN] 2026-08-10T01:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.37 equity=10019.37
+[SIGNAL] 2026-08-10T01:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T01:34:59+00:00 features={"close": 1.547, "bb_lower": 1.557281459648006, "mfi": 53.814067247818215, "rsi": 44.643175468779255, "atr": 0.06557142857142857}
+[ENTRY] 2026-08-10T01:34:59+00:00 BMTTRY layer=1 value=1001.94 entry=1.54315650 cash=9015.93
+[EXIT] 2026-08-10T01:34:59+00:00 BMTTRY reason=fixed_take_profit pnl=+19.41 cash=10038.78
+[SCAN] 2026-08-10T01:34:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T01:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T01:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T01:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T01:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T01:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T02:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T03:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T04:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SCAN] 2026-08-10T05:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.78 equity=10038.78
+[SIGNAL] 2026-08-10T05:04:59+00:00 BMTTRY BUY fill_at=2026-08-10T05:09:59+00:00 features={"close": 1.78, "bb_lower": 1.8270383469322793, "mfi": 52.981259571603054, "rsi": 42.76988480757646, "atr": 0.09971428571428571}
+[ENTRY] 2026-08-10T05:09:59+00:00 BMTTRY layer=1 value=1003.88 entry=1.77833275 cash=9033.39
+[EXIT] 2026-08-10T05:09:59+00:00 BMTTRY reason=fixed_take_profit pnl=+19.44 cash=10058.22
+[SCAN] 2026-08-10T05:09:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10058.22 equity=10058.22
+[SCAN] 2026-08-10T05:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10058.22 equity=10058.22
+[SIGNAL] 2026-08-10T05:14:59+00:00 BMTTRY BUY fill_at=2026-08-10T05:19:59+00:00 features={"close": 1.83, "bb_lower": 1.8307984076612567, "mfi": 53.851460128220815, "rsi": 47.50454032786058, "atr": 0.10171428571428569}
+[ENTRY] 2026-08-10T05:19:59+00:00 BMTTRY layer=1 value=1005.82 entry=1.83237325 cash=9050.89
+[SCAN] 2026-08-10T05:19:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9050.89 equity=10051.57
+[SIGNAL] 2026-08-10T05:19:59+00:00 BMTTRY BUY fill_at=2026-08-10T05:24:59+00:00 features={"close": 1.823, "bb_lower": 1.8294924968884763, "mfi": 50.35710573403453, "rsi": 46.949689798919024, "atr": 0.10149999999999999}
+[ENTRY] 2026-08-10T05:24:59+00:00 BMTTRY layer=2 value=1001.92 entry=1.82436725 cash=8047.47
+[SCAN] 2026-08-10T05:24:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8047.47 equity=9984.52
+[SIGNAL] 2026-08-10T05:24:59+00:00 BMTTRY BUY fill_at=2026-08-10T05:29:59+00:00 features={"close": 1.764, "bb_lower": 1.8197848351596373, "mfi": 40.57850426032633, "rsi": 42.449300555102596, "atr": 0.09914285714285713}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T05:29:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8047.47 equity=10053.70
+[SCAN] 2026-08-10T05:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8047.47 equity=9972.44
+[SIGNAL] 2026-08-10T05:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T05:39:59+00:00 features={"close": 1.753, "bb_lower": 1.8048251679607537, "mfi": 26.053457192090505, "rsi": 42.78925975863612, "atr": 0.09914285714285712}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T05:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8047.47 equity=9990.01
+[SIGNAL] 2026-08-10T05:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T05:44:59+00:00 features={"close": 1.769, "bb_lower": 1.7978564402838628, "mfi": 27.488333218599465, "rsi": 44.23798373789104, "atr": 0.09657142857142856}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T05:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8047.47 equity=10040.53
+[EXIT] 2026-08-10T05:49:59+00:00 BMTTRY reason=fixed_take_profit pnl=+38.89 cash=10097.11
+[SCAN] 2026-08-10T05:49:59+00:00 symbols=1 signals=0 entries=0 exits=1 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T05:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T05:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SCAN] 2026-08-10T06:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.11 equity=10097.11
+[SIGNAL] 2026-08-10T06:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T06:59:59+00:00 features={"close": 1.778, "bb_lower": 1.7896935787531658, "mfi": 32.14910065638455, "rsi": 42.090126741458334, "atr": 0.06614285714285714}
+[ENTRY] 2026-08-10T06:59:59+00:00 BMTTRY layer=1 value=1009.71 entry=1.78033425 cash=9085.88
+[EXIT] 2026-08-10T06:59:59+00:00 BMTTRY reason=fixed_take_profit pnl=+19.56 cash=10116.66
+[SCAN] 2026-08-10T06:59:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10116.66 equity=10116.66
+[SCAN] 2026-08-10T07:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10116.66 equity=10116.66
+[SIGNAL] 2026-08-10T07:04:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:09:59+00:00 features={"close": 1.789, "bb_lower": 1.7944345488895312, "mfi": 31.236817899050493, "rsi": 44.538578915571634, "atr": 0.06385714285714285}
+[ENTRY] 2026-08-10T07:09:59+00:00 BMTTRY layer=1 value=1011.67 entry=1.79334400 cash=9103.48
+[SCAN] 2026-08-10T07:09:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9103.48 equity=10078.29
+[SIGNAL] 2026-08-10T07:09:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:14:59+00:00 features={"close": 1.728, "bb_lower": 1.7835468002496981, "mfi": 28.405807621441383, "rsi": 39.87203002144105, "atr": 0.06957142857142859}
+[ENTRY] 2026-08-10T07:14:59+00:00 BMTTRY layer=2 value=1008.73 entry=1.72829525 cash=8093.24
+[SCAN] 2026-08-10T07:14:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8093.24 equity=10094.96
+[SIGNAL] 2026-08-10T07:14:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:19:59+00:00 features={"close": 1.744, "bb_lower": 1.7823921229554927, "mfi": 27.73942811387225, "rsi": 41.60042881227773, "atr": 0.06871428571428574}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T07:19:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8093.24 equity=10077.75
+[SIGNAL] 2026-08-10T07:19:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:24:59+00:00 features={"close": 1.729, "bb_lower": 1.777407276676654, "mfi": 27.172491515003443, "rsi": 40.4271624183267, "atr": 0.06928571428571431}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T07:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8093.24 equity=10129.40
+[SCAN] 2026-08-10T07:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8093.24 equity=10085.78
+[SIGNAL] 2026-08-10T07:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:34:59+00:00 features={"close": 1.736, "bb_lower": 1.7635833848372673, "mfi": 35.66785602800837, "rsi": 42.19742099326968, "atr": 0.06785714285714288}
+[BLOCKED] BMTTRY reason=max_layers
+[EXIT] 2026-08-10T07:34:59+00:00 BMTTRY reason=fixed_stop_loss pnl=-186.62 cash=9930.04
+[SCAN] 2026-08-10T07:34:59+00:00 symbols=1 signals=1 entries=0 exits=1 blocked=1 open=0 cash=9930.04 equity=9930.04
+[SIGNAL] 2026-08-10T07:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:39:59+00:00 features={"close": 1.631, "bb_lower": 1.7397018170632936, "mfi": 33.93414218483518, "rsi": 34.87291887624575, "atr": 0.0753571428571429}
+[ENTRY] 2026-08-10T07:39:59+00:00 BMTTRY layer=1 value=993.00 entry=1.63222325 cash=8935.55
+[SCAN] 2026-08-10T07:39:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8935.55 equity=9924.16
+[SIGNAL] 2026-08-10T07:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:44:59+00:00 features={"close": 1.625, "bb_lower": 1.7178428353972603, "mfi": 33.78126793074992, "rsi": 34.50435501558343, "atr": 0.07414285714285718}
+[ENTRY] 2026-08-10T07:44:59+00:00 BMTTRY layer=2 value=990.29 entry=1.62521800 cash=7943.78
+[SCAN] 2026-08-10T07:44:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=7943.78 equity=9879.92
+[SIGNAL] 2026-08-10T07:44:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:49:59+00:00 features={"close": 1.59, "bb_lower": 1.693583799083951, "mfi": 32.90437717988492, "rsi": 32.35611734428112, "atr": 0.07485714285714289}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T07:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7943.78 equity=9888.44
+[SIGNAL] 2026-08-10T07:49:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:54:59+00:00 features={"close": 1.597, "bb_lower": 1.6745375389779895, "mfi": 33.034362115075226, "rsi": 33.251206943485826, "atr": 0.07378571428571432}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T07:54:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7943.78 equity=9922.54
+[SIGNAL] 2026-08-10T07:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:59:59+00:00 features={"close": 1.625, "bb_lower": 1.6610381212053036, "mfi": 34.09877414360058, "rsi": 36.85077730426014, "atr": 0.07385714285714286}
+[BLOCKED] BMTTRY reason=max_layers
+[EXIT] 2026-08-10T07:59:59+00:00 BMTTRY reason=fixed_take_profit pnl=+38.41 cash=9968.46
+[SCAN] 2026-08-10T07:59:59+00:00 symbols=1 signals=1 entries=0 exits=1 blocked=1 open=0 cash=9968.46 equity=9968.46
+[SCAN] 2026-08-10T08:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9968.46 equity=9968.46
+[SCAN] 2026-08-10T08:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9968.46 equity=9968.46
+[SIGNAL] 2026-08-10T08:09:59+00:00 BMTTRY BUY fill_at=2026-08-10T08:14:59+00:00 features={"close": 1.56, "bb_lower": 1.6276878223770908, "mfi": 39.266231154949594, "rsi": 33.59131197452783, "atr": 0.07428571428571429}
+[ENTRY] 2026-08-10T08:14:59+00:00 BMTTRY layer=1 value=996.85 entry=1.56117000 cash=8970.12
+[EXIT] 2026-08-10T08:14:59+00:00 BMTTRY reason=fixed_take_profit pnl=+19.31 cash=9987.76
+[SCAN] 2026-08-10T08:14:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=9987.76 equity=9987.76
+[SIGNAL] 2026-08-10T08:14:59+00:00 BMTTRY BUY fill_at=2026-08-10T08:19:59+00:00 features={"close": 1.595, "bb_lower": 1.6165792857171415, "mfi": 38.42489896503199, "rsi": 37.880470670649174, "atr": 0.07571428571428572}
+[ENTRY] 2026-08-10T08:19:59+00:00 BMTTRY layer=1 value=998.78 entry=1.59419475 cash=8987.49
+[SCAN] 2026-08-10T08:19:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8987.49 equity=9976.12
+[SIGNAL] 2026-08-10T08:19:59+00:00 BMTTRY BUY fill_at=2026-08-10T08:24:59+00:00 features={"close": 1.578, "bb_lower": 1.6040797707233938, "mfi": 46.546860193776325, "rsi": 36.642534422672334, "atr": 0.07057142857142858}
+[ENTRY] 2026-08-10T08:24:59+00:00 BMTTRY layer=2 value=998.49 entry=1.58118500 cash=7987.50
+[EXIT] 2026-08-10T08:24:59+00:00 BMTTRY reason=fixed_take_profit pnl=+38.69 cash=10026.45
+[SCAN] 2026-08-10T08:24:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10026.45 equity=10026.45
+[SIGNAL] 2026-08-10T08:24:59+00:00 BMTTRY BUY fill_at=2026-08-10T08:29:59+00:00 features={"close": 1.592, "bb_lower": 1.594856342035149, "mfi": 46.512657627519545, "rsi": 38.42711520680869, "atr": 0.0737142857142857}
+[ENTRY] 2026-08-10T08:29:59+00:00 BMTTRY layer=1 value=1002.64 entry=1.59519550 cash=9022.30
+[EXIT] 2026-08-10T08:29:59+00:00 BMTTRY reason=fixed_take_profit pnl=+19.42 cash=10045.87
+[SCAN] 2026-08-10T08:29:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10045.87 equity=10045.87
+[SCAN] 2026-08-10T08:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10045.87 equity=10045.87
+[SCAN] 2026-08-10T08:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10045.87 equity=10045.87
+[SCAN] 2026-08-10T08:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10045.87 equity=10045.87
+[SCAN] 2026-08-10T08:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10045.87 equity=10045.87
+[SIGNAL] 2026-08-10T08:49:59+00:00 BMTTRY BUY fill_at=2026-08-10T08:54:59+00:00 features={"close": 1.533, "bb_lower": 1.5732672826499603, "mfi": 46.984353814396535, "rsi": 35.11547023777125, "atr": 0.06671428571428566}
+[ENTRY] 2026-08-10T08:54:59+00:00 BMTTRY layer=1 value=1004.59 entry=1.53314900 cash=9039.78
+[SCAN] 2026-08-10T08:54:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9039.78 equity=10053.44
+[SIGNAL] 2026-08-10T08:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T08:59:59+00:00 features={"close": 1.547, "bb_lower": 1.565644766234748, "mfi": 48.50926645223144, "rsi": 37.04490177306508, "atr": 0.06585714285714282}
+[ENTRY] 2026-08-10T08:59:59+00:00 BMTTRY layer=2 value=1006.85 entry=1.55116250 cash=8031.41
+[EXIT] 2026-08-10T08:59:59+00:00 BMTTRY reason=fixed_take_profit pnl=+38.96 cash=10084.83
+[SCAN] 2026-08-10T08:59:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10084.83 equity=10084.83
+[SCAN] 2026-08-10T09:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10084.83 equity=10084.83
+[SIGNAL] 2026-08-10T09:04:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:09:59+00:00 features={"close": 1.557, "bb_lower": 1.5614262749770704, "mfi": 48.065496400423946, "rsi": 39.00480894736075, "atr": 0.06514285714285713}
+[ENTRY] 2026-08-10T09:09:59+00:00 BMTTRY layer=1 value=1008.48 entry=1.55816775 cash=9074.83
+[SCAN] 2026-08-10T09:09:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9074.83 equity=10087.09
+[SCAN] 2026-08-10T09:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=9074.83 equity=10074.79
+[SIGNAL] 2026-08-10T09:14:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:19:59+00:00 features={"close": 1.545, "bb_lower": 1.5571322654444888, "mfi": 38.0380115263705, "rsi": 38.15420581627896, "atr": 0.06357142857142857}
+[ENTRY] 2026-08-10T09:19:59+00:00 BMTTRY layer=2 value=1009.94 entry=1.54615875 cash=8063.38
+[EXIT] 2026-08-10T09:19:59+00:00 BMTTRY reason=fixed_take_profit pnl=+39.09 cash=10123.92
+[SCAN] 2026-08-10T09:19:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10123.92 equity=10123.92
+[SCAN] 2026-08-10T09:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10123.92 equity=10123.92
+[SIGNAL] 2026-08-10T09:24:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:29:59+00:00 features={"close": 1.515, "bb_lower": 1.548163741601366, "mfi": 46.30725501156007, "rsi": 37.2434895309125, "atr": 0.06035714285714284}
+[ENTRY] 2026-08-10T09:29:59+00:00 BMTTRY layer=1 value=1012.39 entry=1.51613625 cash=9110.01
+[EXIT] 2026-08-10T09:29:59+00:00 BMTTRY reason=fixed_stop_loss pnl=-93.51 cash=10030.41
+[SCAN] 2026-08-10T09:29:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10030.41 equity=10030.41
+[SIGNAL] 2026-08-10T09:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:34:59+00:00 features={"close": 1.391, "bb_lower": 1.5193829704047817, "mfi": 34.829238796177506, "rsi": 28.75876044966583, "atr": 0.0687142857142857}
+[ENTRY] 2026-08-10T09:34:59+00:00 BMTTRY layer=1 value=1003.04 entry=1.38804025 cash=9025.87
+[SCAN] 2026-08-10T09:34:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9025.87 equity=10023.10
+[SIGNAL] 2026-08-10T09:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:39:59+00:00 features={"close": 1.38, "bb_lower": 1.4940942987733516, "mfi": 26.650124272181756, "rsi": 28.14618051613637, "atr": 0.06749999999999999}
+[ENTRY] 2026-08-10T09:39:59+00:00 BMTTRY layer=2 value=1003.83 entry=1.38203575 cash=8020.53
+[SCAN] 2026-08-10T09:39:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8020.53 equity=10050.54
+[SIGNAL] 2026-08-10T09:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:44:59+00:00 features={"close": 1.401, "bb_lower": 1.4760484022114457, "mfi": 32.03107187169181, "rsi": 31.16084794116135, "atr": 0.06642857142857142}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T09:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8020.53 equity=10031.70
+[SIGNAL] 2026-08-10T09:44:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:49:59+00:00 features={"close": 1.388, "bb_lower": 1.458560034423415, "mfi": 26.909279163871417, "rsi": 30.312982451582997, "atr": 0.06764285714285714}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T09:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8020.53 equity=10004.17
+[SIGNAL] 2026-08-10T09:49:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:54:59+00:00 features={"close": 1.369, "bb_lower": 1.4411024370080616, "mfi": 26.74999719572685, "rsi": 29.06809745958151, "atr": 0.06557142857142859}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T09:54:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8020.53 equity=10007.07
+[SIGNAL] 2026-08-10T09:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:59:59+00:00 features={"close": 1.371, "bb_lower": 1.4248084529488731, "mfi": 26.93044315796665, "rsi": 29.396787167525346, "atr": 0.06471428571428571}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T09:59:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8020.53 equity=9980.99
+[SIGNAL] 2026-08-10T09:59:59+00:00 BMTTRY BUY fill_at=2026-08-10T10:04:59+00:00 features={"close": 1.353, "bb_lower": 1.4079955956926822, "mfi": 26.989043977506796, "rsi": 28.133240049525583, "atr": 0.062428571428571424}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T10:04:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8020.53 equity=10023.01
+[SIGNAL] 2026-08-10T10:04:59+00:00 BMTTRY BUY fill_at=2026-08-10T10:09:59+00:00 features={"close": 1.382, "bb_lower": 1.3958640950205299, "mfi": 30.867063227040106, "rsi": 33.12085012472765, "atr": 0.06285714285714283}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T10:09:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8020.53 equity=10014.32
+[SIGNAL] 2026-08-10T10:09:59+00:00 BMTTRY BUY fill_at=2026-08-10T10:14:59+00:00 features={"close": 1.376, "bb_lower": 1.3851391723264364, "mfi": 31.3137487347266, "rsi": 32.61649132276115, "atr": 0.06364285714285711}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T10:14:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8020.53 equity=9985.34
+[SIGNAL] 2026-08-10T10:14:59+00:00 BMTTRY BUY fill_at=2026-08-10T10:19:59+00:00 features={"close": 1.356, "bb_lower": 1.3740449399874675, "mfi": 31.456968957614606, "rsi": 30.925954369460143, "atr": 0.061357142857142825}
+[BLOCKED] BMTTRY reason=max_layers
+[EXIT] 2026-08-10T10:19:59+00:00 BMTTRY reason=fixed_take_profit pnl=+38.87 cash=10069.28
+[SCAN] 2026-08-10T10:19:59+00:00 symbols=1 signals=1 entries=0 exits=1 blocked=1 open=0 cash=10069.28 equity=10069.28
+[SCAN] 2026-08-10T10:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10069.28 equity=10069.28
+[SCAN] 2026-08-10T10:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10069.28 equity=10069.28
+[SCAN] 2026-08-10T10:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10069.28 equity=10069.28
+[SCAN] 2026-08-10T10:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10069.28 equity=10069.28
+[SCAN] 2026-08-10T10:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10069.28 equity=10069.28
+[SCAN] 2026-08-10T10:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10069.28 equity=10069.28
+[SCAN] 2026-08-10T10:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10069.28 equity=10069.28
+[SCAN] 2026-08-10T10:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10069.28 equity=10069.28
+[SCAN] 2026-08-10T11:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10069.28 equity=10069.28
+[SIGNAL] 2026-08-10T11:04:59+00:00 BMTTRY BUY fill_at=2026-08-10T11:09:59+00:00 features={"close": 1.361, "bb_lower": 1.3647715446110493, "mfi": 54.792694772315016, "rsi": 36.026394487382404, "atr": 0.04028571428571421}
+[ENTRY] 2026-08-10T11:09:59+00:00 BMTTRY layer=1 value=1006.93 entry=1.36001925 cash=9060.84
+[EXIT] 2026-08-10T11:09:59+00:00 BMTTRY reason=fixed_take_profit pnl=+19.50 cash=10088.78
+[SCAN] 2026-08-10T11:09:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T11:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T12:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T13:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T13:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T13:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SCAN] 2026-08-10T13:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10088.78 equity=10088.78
+[SIGNAL] 2026-08-10T13:19:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:24:59+00:00 features={"close": 1.365, "bb_lower": 1.3890326202212242, "mfi": 44.77480299802616, "rsi": 41.97437277640218, "atr": 0.04550000000000002}
+[ENTRY] 2026-08-10T13:24:59+00:00 BMTTRY layer=1 value=1008.88 entry=1.36502300 cash=9078.39
+[SCAN] 2026-08-10T13:24:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9078.39 equity=10057.69
+[SIGNAL] 2026-08-10T13:24:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:29:59+00:00 features={"close": 1.325, "bb_lower": 1.3797414928391571, "mfi": 43.4098962135442, "rsi": 37.68513604793237, "atr": 0.04835714285714286}
+[ENTRY] 2026-08-10T13:29:59+00:00 BMTTRY layer=2 value=1002.89 entry=1.32599375 cash=8074.00
+[SCAN] 2026-08-10T13:29:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8074.00 equity=9997.11
+[SIGNAL] 2026-08-10T13:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:34:59+00:00 features={"close": 1.286, "bb_lower": 1.3652987209492555, "mfi": 42.06209031822513, "rsi": 34.033467890478406, "atr": 0.046785714285714285}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T13:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8074.00 equity=9944.77
+[SIGNAL] 2026-08-10T13:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:39:59+00:00 features={"close": 1.251, "bb_lower": 1.3445924108334448, "mfi": 32.961238108377486, "rsi": 31.119149132764903, "atr": 0.04907142857142856}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T13:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8074.00 equity=9938.79
+[SIGNAL] 2026-08-10T13:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:44:59+00:00 features={"close": 1.247, "bb_lower": 1.3265501001603368, "mfi": 28.70504094366609, "rsi": 30.794598822828164, "atr": 0.050214285714285704}
+[BLOCKED] BMTTRY reason=max_layers
+[EXIT] 2026-08-10T13:44:59+00:00 BMTTRY reason=fixed_stop_loss pnl=-185.82 cash=9902.96
+[SCAN] 2026-08-10T13:44:59+00:00 symbols=1 signals=1 entries=0 exits=1 blocked=1 open=0 cash=9902.96 equity=9902.96
+[SIGNAL] 2026-08-10T13:44:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:49:59+00:00 features={"close": 1.247, "bb_lower": 1.310889370329838, "mfi": 25.002974430268907, "rsi": 30.794598822828164, "atr": 0.050642857142857135}
+[ENTRY] 2026-08-10T13:49:59+00:00 BMTTRY layer=1 value=990.30 entry=1.24893600 cash=8911.18
+[SCAN] 2026-08-10T13:49:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8911.18 equity=9889.63
+[SIGNAL] 2026-08-10T13:49:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:54:59+00:00 features={"close": 1.234, "bb_lower": 1.2953539538372432, "mfi": 24.166904062805415, "rsi": 29.629839123879236, "atr": 0.05035714285714284}
+[ENTRY] 2026-08-10T13:54:59+00:00 BMTTRY layer=2 value=990.79 entry=1.23592625 cash=7918.91
+[EXIT] 2026-08-10T13:54:59+00:00 BMTTRY reason=fixed_take_profit pnl=+38.37 cash=9941.33
+[SCAN] 2026-08-10T13:54:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=9941.33 equity=9941.33
+[SIGNAL] 2026-08-10T13:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:59:59+00:00 features={"close": 1.257, "bb_lower": 1.2843970353683483, "mfi": 25.734060902219753, "rsi": 34.36023989777679, "atr": 0.05014285714285712}
+[ENTRY] 2026-08-10T13:59:59+00:00 BMTTRY layer=1 value=994.13 entry=1.25794275 cash=8945.71
+[SCAN] 2026-08-10T13:59:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8945.71 equity=9935.93
+[SIGNAL] 2026-08-10T13:59:59+00:00 BMTTRY BUY fill_at=2026-08-10T14:04:59+00:00 features={"close": 1.253, "bb_lower": 1.2748907530963343, "mfi": 22.209775948587932, "rsi": 33.93302264907251, "atr": 0.0489285714285714}
+[ENTRY] 2026-08-10T14:04:59+00:00 BMTTRY layer=2 value=992.41 entry=1.25293900 cash=7951.81
+[SCAN] 2026-08-10T14:04:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=7951.81 equity=9910.76
+[SIGNAL] 2026-08-10T14:04:59+00:00 BMTTRY BUY fill_at=2026-08-10T14:09:59+00:00 features={"close": 1.238, "bb_lower": 1.2637777773994112, "mfi": 22.041536994747105, "rsi": 32.31063711864168, "atr": 0.04735714285714283}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T14:09:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7951.81 equity=9958.23
+[EXIT] 2026-08-10T14:14:59+00:00 BMTTRY reason=fixed_take_profit pnl=+38.48 cash=9979.81
+[SCAN] 2026-08-10T14:14:59+00:00 symbols=1 signals=0 entries=0 exits=1 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T14:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T14:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T14:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T14:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T14:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T14:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T14:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T14:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T14:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SCAN] 2026-08-10T15:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9979.81 equity=9979.81
+[SIGNAL] 2026-08-10T15:04:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:09:59+00:00 features={"close": 1.233, "bb_lower": 1.2458643193943286, "mfi": 45.646450786551654, "rsi": 36.86195936448647, "atr": 0.030357142857142843}
+[ENTRY] 2026-08-10T15:09:59+00:00 BMTTRY layer=1 value=997.98 entry=1.23292400 cash=8980.33
+[SCAN] 2026-08-10T15:09:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8980.33 equity=9958.95
+[SIGNAL] 2026-08-10T15:09:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:14:59+00:00 features={"close": 1.209, "bb_lower": 1.239110872270166, "mfi": 43.74461637969861, "rsi": 33.709852834092516, "atr": 0.0322142857142857}
+[ENTRY] 2026-08-10T15:14:59+00:00 BMTTRY layer=2 value=995.81 entry=1.21090750 cash=7983.02
+[SCAN] 2026-08-10T15:14:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=7983.02 equity=9954.25
+[SIGNAL] 2026-08-10T15:14:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:19:59+00:00 features={"close": 1.208, "bb_lower": 1.2341512677810804, "mfi": 44.01269118698919, "rsi": 33.581001311725146, "atr": 0.031428571428571424}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T15:19:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7983.02 equity=9947.73
+[SIGNAL] 2026-08-10T15:19:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:24:59+00:00 features={"close": 1.204, "bb_lower": 1.2293346654788926, "mfi": 43.99576622218073, "rsi": 33.03702707499586, "atr": 0.03100000000000001}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T15:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7983.02 equity=9980.36
+[SIGNAL] 2026-08-10T15:24:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:29:59+00:00 features={"close": 1.224, "bb_lower": 1.2273317554682583, "mfi": 44.82513664842869, "rsi": 38.409259605920326, "atr": 0.03050000000000002}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T15:29:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7983.02 equity=9942.83
+[SIGNAL] 2026-08-10T15:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:34:59+00:00 features={"close": 1.201, "bb_lower": 1.22358240181316, "mfi": 36.0629535180593, "rsi": 34.937901516789736, "atr": 0.030357142857142878}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T15:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7983.02 equity=9843.29
+[SIGNAL] 2026-08-10T15:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:39:59+00:00 features={"close": 1.14, "bb_lower": 1.2088911774659477, "mfi": 35.111098242634625, "rsi": 27.769553792922892, "atr": 0.03378571428571431}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T15:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7983.02 equity=9804.13
+[SIGNAL] 2026-08-10T15:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:44:59+00:00 features={"close": 1.116, "bb_lower": 1.1926471392596272, "mfi": 25.580752507498204, "rsi": 25.54852508909795, "atr": 0.03371428571428573}
+[BLOCKED] BMTTRY reason=max_layers
+[EXIT] 2026-08-10T15:44:59+00:00 BMTTRY reason=fixed_stop_loss pnl=-184.17 cash=9795.64
+[SCAN] 2026-08-10T15:44:59+00:00 symbols=1 signals=1 entries=0 exits=1 blocked=1 open=0 cash=9795.64 equity=9795.64
+[SIGNAL] 2026-08-10T15:44:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:49:59+00:00 features={"close": 1.125, "bb_lower": 1.1807766046375046, "mfi": 30.870322149534317, "rsi": 27.878056871278787, "atr": 0.0332857142857143}
+[ENTRY] 2026-08-10T15:49:59+00:00 BMTTRY layer=1 value=979.56 entry=1.12484300 cash=8814.61
+[SCAN] 2026-08-10T15:49:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8814.61 equity=9784.73
+[SIGNAL] 2026-08-10T15:49:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:54:59+00:00 features={"close": 1.114, "bb_lower": 1.1676280796384226, "mfi": 25.507779092065434, "rsi": 26.77533715050825, "atr": 0.03171428571428571}
+[ENTRY] 2026-08-10T15:54:59+00:00 BMTTRY layer=2 value=979.61 entry=1.11583625 cash=7833.54
+[SCAN] 2026-08-10T15:54:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=7833.54 equity=9804.38
+[SIGNAL] 2026-08-10T15:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:59:59+00:00 features={"close": 1.127, "bb_lower": 1.157438785118568, "mfi": 25.906002935140805, "rsi": 30.284990962281384, "atr": 0.03221428571428569}
+[BLOCKED] BMTTRY reason=max_layers
+[EXIT] 2026-08-10T15:59:59+00:00 BMTTRY reason=fixed_take_profit pnl=+37.95 cash=9833.59
+[SCAN] 2026-08-10T15:59:59+00:00 symbols=1 signals=1 entries=0 exits=1 blocked=1 open=0 cash=9833.59 equity=9833.59
+[SIGNAL] 2026-08-10T15:59:59+00:00 BMTTRY BUY fill_at=2026-08-10T16:04:59+00:00 features={"close": 1.138, "bb_lower": 1.1495208103882297, "mfi": 30.508580663958398, "rsi": 33.202428646055594, "atr": 0.031071428571428545}
+[ENTRY] 2026-08-10T16:04:59+00:00 BMTTRY layer=1 value=983.36 entry=1.14185575 cash=8848.76
+[EXIT] 2026-08-10T16:04:59+00:00 BMTTRY reason=fixed_take_profit pnl=+19.05 cash=9852.64
+[SCAN] 2026-08-10T16:04:59+00:00 symbols=1 signals=1 entries=1 exits=1 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T16:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T17:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T18:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SCAN] 2026-08-10T18:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9852.64 equity=9852.64
+[SIGNAL] 2026-08-10T18:09:59+00:00 BMTTRY BUY fill_at=2026-08-10T18:14:59+00:00 features={"close": 1.174, "bb_lower": 1.1748188791327565, "mfi": 55.641315402290424, "rsi": 42.43076882932739, "atr": 0.023500000000000045}
+[ENTRY] 2026-08-10T18:14:59+00:00 BMTTRY layer=1 value=985.26 entry=1.17588125 cash=8865.90
+[SCAN] 2026-08-10T18:14:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8865.90 equity=9854.61
+[SCAN] 2026-08-10T18:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8865.90 equity=9854.61
+[SCAN] 2026-08-10T18:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8865.90 equity=9857.96
+[SCAN] 2026-08-10T18:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8865.90 equity=9850.42
+[SIGNAL] 2026-08-10T18:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T18:34:59+00:00 features={"close": 1.175, "bb_lower": 1.1777444940669686, "mfi": 38.54722637778004, "rsi": 43.19295771238825, "atr": 0.021571428571428623}
+[ENTRY] 2026-08-10T18:34:59+00:00 BMTTRY layer=2 value=985.04 entry=1.17888350 cash=7879.38
+[SCAN] 2026-08-10T18:34:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=7879.38 equity=9845.70
+[SIGNAL] 2026-08-10T18:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T18:39:59+00:00 features={"close": 1.175, "bb_lower": 1.1777444940669686, "mfi": 40.00718604775693, "rsi": 43.19295771238825, "atr": 0.021142857142857192}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T18:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7879.38 equity=9830.64
+[SIGNAL] 2026-08-10T18:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T18:44:59+00:00 features={"close": 1.166, "bb_lower": 1.1770908191934426, "mfi": 43.62788966529485, "rsi": 40.242512091488734, "atr": 0.020714285714285765}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T18:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7879.38 equity=9837.33
+[SIGNAL] 2026-08-10T18:44:59+00:00 BMTTRY BUY fill_at=2026-08-10T18:49:59+00:00 features={"close": 1.17, "bb_lower": 1.1757933239273597, "mfi": 33.571662881279025, "rsi": 42.13440799313451, "atr": 0.019214285714285757}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T18:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7879.38 equity=9833.98
+[SIGNAL] 2026-08-10T18:49:59+00:00 BMTTRY BUY fill_at=2026-08-10T18:54:59+00:00 features={"close": 1.168, "bb_lower": 1.1746331593607249, "mfi": 22.611251482731376, "rsi": 41.42816318193226, "atr": 0.018785714285714326}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T18:54:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7879.38 equity=9862.43
+[SCAN] 2026-08-10T18:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7879.38 equity=9855.74
+[SCAN] 2026-08-10T19:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7879.38 equity=9850.72
+[SCAN] 2026-08-10T19:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7879.38 equity=9864.11
+[SCAN] 2026-08-10T19:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7879.38 equity=9889.21
+[EXIT] 2026-08-10T19:19:59+00:00 BMTTRY reason=fixed_take_profit pnl=+38.16 cash=9890.80
+[SCAN] 2026-08-10T19:19:59+00:00 symbols=1 signals=0 entries=0 exits=1 blocked=0 open=0 cash=9890.80 equity=9890.80
+[SCAN] 2026-08-10T19:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9890.80 equity=9890.80
+[SCAN] 2026-08-10T19:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9890.80 equity=9890.80
+[SCAN] 2026-08-10T19:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9890.80 equity=9890.80
+[SIGNAL] 2026-08-10T19:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T19:39:59+00:00 features={"close": 1.167, "bb_lower": 1.1709262374356062, "mfi": 43.27727553467822, "rsi": 41.986609597856024, "atr": 0.017642857142857182}
+[ENTRY] 2026-08-10T19:39:59+00:00 BMTTRY layer=1 value=989.08 entry=1.16887600 cash=8900.24
+[SCAN] 2026-08-10T19:39:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8900.24 equity=9908.04
+[SCAN] 2026-08-10T19:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8900.24 equity=9900.42
+[SCAN] 2026-08-10T19:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8900.24 equity=9894.50
+[SCAN] 2026-08-10T19:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8900.24 equity=9890.27
+[SIGNAL] 2026-08-10T19:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T19:59:59+00:00 features={"close": 1.17, "bb_lower": 1.170155045984841, "mfi": 50.57794439745879, "rsi": 44.169066082777555, "atr": 0.018071428571428596}
+[ENTRY] 2026-08-10T19:59:59+00:00 BMTTRY layer=2 value=989.53 entry=1.16987675 cash=7909.22
+[SCAN] 2026-08-10T19:59:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=7909.22 equity=9899.04
+[SCAN] 2026-08-10T20:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7909.22 equity=9909.19
+[SCAN] 2026-08-10T20:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7909.22 equity=9909.19
+[EXIT] 2026-08-10T20:14:59+00:00 BMTTRY reason=fixed_take_profit pnl=+38.32 cash=9929.12
+[SCAN] 2026-08-10T20:14:59+00:00 symbols=1 signals=0 entries=0 exits=1 blocked=0 open=0 cash=9929.12 equity=9929.12
+[SCAN] 2026-08-10T20:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9929.12 equity=9929.12
+[SCAN] 2026-08-10T20:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9929.12 equity=9929.12
+[SCAN] 2026-08-10T20:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9929.12 equity=9929.12
+[SCAN] 2026-08-10T20:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9929.12 equity=9929.12
+[SIGNAL] 2026-08-10T20:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T20:39:59+00:00 features={"close": 1.169, "bb_lower": 1.1727689534273467, "mfi": 40.495461184262375, "rsi": 43.814480294160674, "atr": 0.016357142857142848}
+[ENTRY] 2026-08-10T20:39:59+00:00 BMTTRY layer=1 value=992.91 entry=1.16987675 cash=8934.72
+[SCAN] 2026-08-10T20:39:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8934.72 equity=9935.38
+[SCAN] 2026-08-10T20:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8934.72 equity=9932.83
+[SCAN] 2026-08-10T20:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8934.72 equity=9931.13
+[SCAN] 2026-08-10T20:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8934.72 equity=9926.04
+[SIGNAL] 2026-08-10T20:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T20:59:59+00:00 features={"close": 1.168, "bb_lower": 1.1706357796010125, "mfi": 50.04410171083321, "rsi": 43.74102231615372, "atr": 0.012999999999999996}
+[ENTRY] 2026-08-10T20:59:59+00:00 BMTTRY layer=2 value=992.77 entry=1.16887600 cash=7940.46
+[SCAN] 2026-08-10T20:59:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=7940.46 equity=9927.21
+[SCAN] 2026-08-10T21:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9913.62
+[SCAN] 2026-08-10T21:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9935.70
+[SCAN] 2026-08-10T21:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9928.90
+[SCAN] 2026-08-10T21:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9917.02
+[SIGNAL] 2026-08-10T21:19:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:24:59+00:00 features={"close": 1.164, "bb_lower": 1.168596875762567, "mfi": 55.00794926081875, "rsi": 43.40409316635943, "atr": 0.012928571428571432}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T21:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9901.73
+[SIGNAL] 2026-08-10T21:24:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:29:59+00:00 features={"close": 1.155, "bb_lower": 1.1661182339388427, "mfi": 47.22290469104353, "rsi": 39.65640500580368, "atr": 0.012642857142857147}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T21:29:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9889.85
+[SIGNAL] 2026-08-10T21:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:34:59+00:00 features={"close": 1.148, "bb_lower": 1.1629346382878183, "mfi": 46.69694271114432, "rsi": 36.98179215405135, "atr": 0.012571428571428567}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T21:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9879.66
+[SIGNAL] 2026-08-10T21:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:39:59+00:00 features={"close": 1.142, "bb_lower": 1.1594374522901756, "mfi": 39.30436343667907, "rsi": 34.8143675946163, "atr": 0.012142857142857138}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T21:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9857.58
+[SIGNAL] 2026-08-10T21:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:44:59+00:00 features={"close": 1.129, "bb_lower": 1.153977851908521, "mfi": 34.08666607343679, "rsi": 30.626184016283958, "atr": 0.013428571428571425}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T21:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9876.26
+[SIGNAL] 2026-08-10T21:44:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:49:59+00:00 features={"close": 1.14, "bb_lower": 1.1509694476842718, "mfi": 42.776080264664124, "rsi": 37.47982570127059, "atr": 0.013857142857142854}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T21:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9881.36
+[SIGNAL] 2026-08-10T21:49:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:54:59+00:00 features={"close": 1.143, "bb_lower": 1.1486491325158528, "mfi": 44.63578457802272, "rsi": 39.24276384268481, "atr": 0.013928571428571433}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T21:54:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9864.38
+[SIGNAL] 2026-08-10T21:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:59:59+00:00 features={"close": 1.133, "bb_lower": 1.1453416687510425, "mfi": 41.88556610092031, "rsi": 35.635611096084375, "atr": 0.014571428571428584}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T21:59:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9877.96
+[SIGNAL] 2026-08-10T21:59:59+00:00 BMTTRY BUY fill_at=2026-08-10T22:04:59+00:00 features={"close": 1.141, "bb_lower": 1.1433232511946487, "mfi": 44.53651067346271, "rsi": 40.358706019275395, "atr": 0.014928571428571449}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T22:04:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9894.94
+[SCAN] 2026-08-10T22:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9898.34
+[SCAN] 2026-08-10T22:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9915.32
+[SCAN] 2026-08-10T22:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9910.22
+[SCAN] 2026-08-10T22:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9910.22
+[SCAN] 2026-08-10T22:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9894.94
+[SCAN] 2026-08-10T22:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9869.47
+[SIGNAL] 2026-08-10T22:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T22:39:59+00:00 features={"close": 1.136, "bb_lower": 1.1394570755838713, "mfi": 54.76051249940792, "rsi": 39.11662115432831, "atr": 0.0155714285714286}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T22:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9893.24
+[SCAN] 2026-08-10T22:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9876.26
+[SCAN] 2026-08-10T22:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9891.55
+[SCAN] 2026-08-10T22:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9903.43
+[SCAN] 2026-08-10T22:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9889.85
+[SCAN] 2026-08-10T23:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9860.98
+[SCAN] 2026-08-10T23:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9872.87
+[SCAN] 2026-08-10T23:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9874.56
+[SCAN] 2026-08-10T23:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9849.09
+[SIGNAL] 2026-08-10T23:19:59+00:00 BMTTRY BUY fill_at=2026-08-10T23:24:59+00:00 features={"close": 1.124, "bb_lower": 1.135062324482579, "mfi": 52.22401322076067, "rsi": 38.750114591974395, "atr": 0.015357142857142831}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T23:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9791.36
+[SIGNAL] 2026-08-10T23:24:59+00:00 BMTTRY BUY fill_at=2026-08-10T23:29:59+00:00 features={"close": 1.09, "bb_lower": 1.12698671444639, "mfi": 39.56139993513235, "rsi": 29.699934758350437, "atr": 0.017071428571428546}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T23:29:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9776.08
+[SIGNAL] 2026-08-10T23:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T23:34:59+00:00 features={"close": 1.081, "bb_lower": 1.1189295883526589, "mfi": 30.75760222087804, "rsi": 27.84599653551706, "atr": 0.017285714285714255}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T23:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9777.77
+[SIGNAL] 2026-08-10T23:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T23:39:59+00:00 features={"close": 1.082, "bb_lower": 1.1128780511701264, "mfi": 30.444080722380377, "rsi": 28.380943261519235, "atr": 0.017928571428571405}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T23:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9782.87
+[SIGNAL] 2026-08-10T23:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T23:44:59+00:00 features={"close": 1.085, "bb_lower": 1.1075819686939812, "mfi": 35.07966382103656, "rsi": 30.056289997139245, "atr": 0.017999999999999985}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T23:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9781.17
+[SIGNAL] 2026-08-10T23:44:59+00:00 BMTTRY BUY fill_at=2026-08-10T23:49:59+00:00 features={"close": 1.084, "bb_lower": 1.102395804503535, "mfi": 35.604497334373534, "rsi": 29.806000148943866, "atr": 0.0177142857142857}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T23:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9777.77
+[SIGNAL] 2026-08-10T23:49:59+00:00 BMTTRY BUY fill_at=2026-08-10T23:54:59+00:00 features={"close": 1.082, "bb_lower": 1.0974258846924678, "mfi": 30.87257854354209, "rsi": 29.280823000319486, "atr": 0.017071428571428564}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T23:54:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9782.87
+[SIGNAL] 2026-08-10T23:54:59+00:00 BMTTRY BUY fill_at=2026-08-10T23:59:59+00:00 features={"close": 1.085, "bb_lower": 1.0933316694703366, "mfi": 33.985165830366654, "rsi": 31.23798449134327, "atr": 0.01664285714285715}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-10T23:59:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9776.08
+[SIGNAL] 2026-08-10T23:59:59+00:00 BMTTRY BUY fill_at=2026-08-11T00:04:59+00:00 features={"close": 1.081, "bb_lower": 1.0892414756616862, "mfi": 29.24066569319568, "rsi": 30.044074162395376, "atr": 0.016000000000000014}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-11T00:04:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7940.46 equity=9808.34
+[SCAN] 2026-08-11T00:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9820.23
+[SCAN] 2026-08-11T00:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9789.66
+[SCAN] 2026-08-11T00:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9803.25
+[SCAN] 2026-08-11T00:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9787.96
+[SCAN] 2026-08-11T00:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9777.77
+[SCAN] 2026-08-11T00:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=7940.46 equity=9754.00
+[SIGNAL] 2026-08-11T00:34:59+00:00 BMTTRY BUY fill_at=2026-08-11T00:39:59+00:00 features={"close": 1.068, "bb_lower": 1.0759903490919749, "mfi": 30.402305249526393, "rsi": 33.326462908498456, "atr": 0.015357142857142878}
+[BLOCKED] BMTTRY reason=max_layers
+[EXIT] 2026-08-11T00:39:59+00:00 BMTTRY reason=fixed_stop_loss pnl=-183.42 cash=9745.71
+[SCAN] 2026-08-11T00:39:59+00:00 symbols=1 signals=1 entries=0 exits=1 blocked=1 open=0 cash=9745.71 equity=9745.71
+[SIGNAL] 2026-08-11T00:39:59+00:00 BMTTRY BUY fill_at=2026-08-11T00:44:59+00:00 features={"close": 1.058, "bb_lower": 1.0727337789706834, "mfi": 32.308480661237894, "rsi": 30.71056367083567, "atr": 0.015500000000000022}
+[ENTRY] 2026-08-11T00:44:59+00:00 BMTTRY layer=1 value=974.57 entry=1.05879350 cash=8769.68
+[SCAN] 2026-08-11T00:44:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8769.68 equity=9758.24
+[EXIT] 2026-08-11T00:49:59+00:00 BMTTRY reason=fixed_take_profit pnl=+18.88 cash=9764.58
+[SCAN] 2026-08-11T00:49:59+00:00 symbols=1 signals=0 entries=0 exits=1 blocked=0 open=0 cash=9764.58 equity=9764.58
+[SCAN] 2026-08-11T00:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9764.58 equity=9764.58
+[SCAN] 2026-08-11T00:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=9764.58 equity=9764.58
+[SIGNAL] 2026-08-11T00:59:59+00:00 BMTTRY BUY fill_at=2026-08-11T01:04:59+00:00 features={"close": 1.041, "bb_lower": 1.0681199066765512, "mfi": 39.69689161604705, "rsi": 32.14768943024826, "atr": 0.019142857142857177}
+[ENTRY] 2026-08-11T01:04:59+00:00 BMTTRY layer=1 value=976.46 entry=1.04178075 cash=8786.66
+[SCAN] 2026-08-11T01:04:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8786.66 equity=9769.89
+[SIGNAL] 2026-08-11T01:04:59+00:00 BMTTRY BUY fill_at=2026-08-11T01:09:59+00:00 features={"close": 1.049, "bb_lower": 1.0644661659594292, "mfi": 34.32924040555433, "rsi": 35.56359231777961, "atr": 0.02021428571428574}
+[ENTRY] 2026-08-11T01:09:59+00:00 BMTTRY layer=2 value=977.36 entry=1.04878600 cash=7807.83
+[SCAN] 2026-08-11T01:09:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=7807.83 equity=9776.10
+[SIGNAL] 2026-08-11T01:09:59+00:00 BMTTRY BUY fill_at=2026-08-11T01:14:59+00:00 features={"close": 1.053, "bb_lower": 1.061994579198346, "mfi": 37.163403272325624, "rsi": 37.26422617536438, "atr": 0.020571428571428605}
+[BLOCKED] BMTTRY reason=max_layers
+[SCAN] 2026-08-11T01:14:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7807.83 equity=9766.75
+[OPEN-EXCLUDED] BMTTRY restored=1956.75 reason=treated_as_never_opened
+[COMPLETE] result=/mnt/d/scalperagent_v4/backend/compare-bmttry-current.json
+RESULT_JSON={"initial_balance_try": 10000.0, "final_balance_try": 9764.584784, "net_pnl_try": -235.415216, "net_pnl_pct": -2.354152, "closed_trades": 25, "wins": 20, "losses": 5, "win_rate_pct": 80.0, "profit_factor": 0.717573, "fees_closed_trades_try": 119.540133, "max_drawdown_pct": 3.787879, "active_symbols": ["BMTTRY"], "open_positions_excluded": [{"symbol": "BMTTRY", "entry_time": 1786410299, "layers": 2, "restored_try": 1956.752799}], "reconciliation": {"expected": 9764.584785, "actual": 9764.584784, "difference": -7.3e-07}}

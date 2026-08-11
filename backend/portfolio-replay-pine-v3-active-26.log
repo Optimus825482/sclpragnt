@@ -1,0 +1,902 @@
+[START] strategy=BB_MFI_MEAN_REVERSION pine_version=v3 initial=10000.00 TRY window=2026-08-10T00:44:46+00:00..2026-08-10T21:44:46+00:00
+[CONFIG] universe=26 source=cli order_pct=0.1000 pyramiding=2 max_positions=36 commission=0.001500 spread=0.001000 slippage=0.000250
+[DATA] ALLOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ACTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] 0GTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AVNTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BABYTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BMTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BOMETRY source=BinanceTR-public interval=5m candles=575
+[DATA] CHIPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CETUSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] EDENTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ICPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] FETTRY source=BinanceTR-public interval=5m candles=575
+[DATA] METRY source=BinanceTR-public interval=5m candles=575
+[DATA] JTOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NEIROTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PUMPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PEOPLETRY source=BinanceTR-public interval=5m candles=575
+[DATA] MUBARAKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PYTHTRY source=BinanceTR-public interval=5m candles=575
+[DATA] RETRY source=BinanceTR-public interval=5m candles=575
+[DATA] RADTRY source=BinanceTR-public interval=5m candles=575
+[DATA] RENDERTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TURBOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TSTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] THETRY source=BinanceTR-public interval=5m candles=575
+[DATA] WLDTRY source=BinanceTR-public interval=5m candles=575
+[ACTIVITY] 0GTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 16880239.88, "range_15m_pct": 1.1019, "atr_pct": 0.2919, "volume_ratio": 1.1258, "spread_pct": 0.1352, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] ACTTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 427289243.33, "range_15m_pct": 3.0205, "atr_pct": 0.7477, "volume_ratio": 1.5529, "spread_pct": 0.1349, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] ALLOTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 86475475.49, "range_15m_pct": 1.2146, "atr_pct": 0.3802, "volume_ratio": 2.9019, "spread_pct": 0.0675, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] AVNTTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 16429664.9, "range_15m_pct": 0.4577, "atr_pct": 0.2609, "volume_ratio": 26.686, "spread_pct": 0.2275, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] BABYTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 7861511.59, "range_15m_pct": 0.6431, "atr_pct": 0.2396, "volume_ratio": 0.0984, "spread_pct": 0.1601, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BMTTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 1400114993.65, "range_15m_pct": 4.2735, "atr_pct": 1.465, "volume_ratio": 0.8927, "spread_pct": 0.0931, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] BOMETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 178219509.73, "range_15m_pct": 2.8963, "atr_pct": 0.7231, "volume_ratio": 1.6892, "spread_pct": 0.0526, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] CETUSTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 9976728.17, "range_15m_pct": 0.224, "atr_pct": 0.1596, "volume_ratio": 0.5184, "spread_pct": 0.1115, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] CHIPTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 29922662.97, "range_15m_pct": 0.2884, "atr_pct": 0.2173, "volume_ratio": 1.2261, "spread_pct": 0.0373, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] EDENTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 69541365.4, "range_15m_pct": 0.8617, "atr_pct": 0.3239, "volume_ratio": 0.2635, "spread_pct": 0.0955, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] FETTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 41690562.8, "range_15m_pct": 0.3145, "atr_pct": 0.1909, "volume_ratio": 4.9741, "spread_pct": 0.1569, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] ICPTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 24962875.43, "range_15m_pct": 0.9901, "atr_pct": 0.3581, "volume_ratio": 2.7326, "spread_pct": 0.1778, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] JTOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 39916881.9, "range_15m_pct": 0.538, "atr_pct": 0.2439, "volume_ratio": 0.3354, "spread_pct": 0.0384, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] METRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 72888288.85, "range_15m_pct": 4.2949, "atr_pct": 1.0918, "volume_ratio": 0.4034, "spread_pct": 0.3455, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MUBARAKTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 492931771.18, "range_15m_pct": 5.2738, "atr_pct": 2.3665, "volume_ratio": 0.3974, "spread_pct": 0.201, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] NEIROTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 37532561.98, "range_15m_pct": 0.2849, "atr_pct": 0.2035, "volume_ratio": 0.0, "spread_pct": 0.2837, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PEOPLETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 46366274.77, "range_15m_pct": 1.2225, "atr_pct": 0.3997, "volume_ratio": 1.3042, "spread_pct": 0.2442, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] PUMPTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 98252778.87, "range_15m_pct": 0.8468, "atr_pct": 0.5169, "volume_ratio": 1.5491, "spread_pct": 0.0767, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] PYTHTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 9338275.34, "range_15m_pct": 0.444, "atr_pct": 0.3556, "volume_ratio": 5.5728, "spread_pct": 0.0984, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] RADTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 108816831.69, "range_15m_pct": 5.0749, "atr_pct": 2.6297, "volume_ratio": 0.7612, "spread_pct": 0.3381, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] RENDERTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 19514859.72, "range_15m_pct": 0.335, "atr_pct": 0.2027, "volume_ratio": 0.0, "spread_pct": 0.1674, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] RETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 134863446.69, "range_15m_pct": 0.7161, "atr_pct": 0.499, "volume_ratio": 0.3454, "spread_pct": 0.0509, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] THETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 164352410.6, "range_15m_pct": 1.5199, "atr_pct": 0.8014, "volume_ratio": 1.0511, "spread_pct": 0.1268, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] TSTTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 1012906837.92, "range_15m_pct": 4.6535, "atr_pct": 1.7241, "volume_ratio": 1.9614, "spread_pct": 0.0991, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] TURBOTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 7785121.55, "range_15m_pct": 0.2506, "atr_pct": 0.179, "volume_ratio": 0.5056, "spread_pct": 0.2497, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] WLDTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 190536867.22, "range_15m_pct": 0.7398, "atr_pct": 0.4964, "volume_ratio": 1.5209, "spread_pct": 0.1229, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[SIGNAL] 2026-08-10T00:39:59+00:00 ACTTRY BUY fill_at=2026-08-10T00:44:59+00:00 features={"close": 0.5277, "bb_lower": 0.527876920573061, "bb_upper": 0.5388087937126532, "rsi": 45.97177241947742, "mfi": 47.869273013878015, "atr": 0.005107142857142866}
+[ENTRY] 2026-08-10T00:44:59+00:00 ACTTRY layer=1 value=1000.00 entry=0.52779555 cash=8998.50
+[SIGNAL] 2026-08-10T00:39:59+00:00 TSTTRY BUY fill_at=2026-08-10T00:44:59+00:00 features={"close": 0.893, "bb_lower": 0.9503582004801545, "bb_upper": 1.1009751328531794, "rsi": 28.33758281847345, "mfi": 39.050497529943485, "atr": 0.04214285714285718}
+[ENTRY] 2026-08-10T00:44:59+00:00 TSTTRY layer=1 value=1000.40 entry=0.89667200 cash=7996.60
+[EXIT] 2026-08-10T00:44:59+00:00 TSTTRY reason=fixed_take_profit pnl=+19.38 cash=9017.88
+[SCAN] 2026-08-10T00:44:59+00:00 symbols=26 signals=2 entries=2 exits=1 blocked=0 open=1 cash=9017.88 equity=10023.38
+[SIGNAL] 2026-08-10T00:44:59+00:00 TSTTRY BUY fill_at=2026-08-10T00:49:59+00:00 features={"close": 0.907, "bb_lower": 0.9290387960229183, "bb_upper": 1.1097231087389867, "rsi": 31.693159558835802, "mfi": 36.65991292885926, "atr": 0.043214285714285754}
+[ENTRY] 2026-08-10T00:49:59+00:00 TSTTRY layer=1 value=1002.70 entry=0.91168325 cash=8013.67
+[SCAN] 2026-08-10T00:49:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=2 cash=8013.67 equity=10030.22
+[SCAN] 2026-08-10T00:54:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=2 cash=8013.67 equity=10018.96
+[SCAN] 2026-08-10T00:59:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=2 cash=8013.67 equity=10007.78
+[SIGNAL] 2026-08-10T00:59:59+00:00 ACTTRY BUY fill_at=2026-08-10T01:04:59+00:00 features={"close": 0.5254, "bb_lower": 0.5266163795395453, "bb_upper": 0.5389169537937877, "rsi": 43.18884942426914, "mfi": 48.1251808243199, "atr": 0.004921428571428569}
+[ENTRY] 2026-08-10T01:04:59+00:00 ACTTRY layer=2 value=1002.57 entry=0.52499345 cash=7009.60
+[SCAN] 2026-08-10T01:04:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=2 cash=7009.60 equity=10029.76
+[SCAN] 2026-08-10T01:09:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=2 cash=7009.60 equity=10022.62
+[SIGNAL] 2026-08-10T01:09:59+00:00 NEIROTRY BUY fill_at=2026-08-10T01:14:59+00:00 features={"close": 0.00356, "bb_lower": 0.003561622331780051, "bb_upper": 0.003683139572981854, "rsi": 36.194155767403956, "mfi": 34.74189795593466, "atr": 3.2142857142857225e-05}
+[ENTRY] 2026-08-10T01:14:59+00:00 NEIROTRY layer=1 value=1004.16 entry=0.00356267 cash=6003.94
+[SCAN] 2026-08-10T01:14:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=3 cash=6003.94 equity=10033.67
+[SIGNAL] 2026-08-10T01:14:59+00:00 NEIROTRY BUY fill_at=2026-08-10T01:19:59+00:00 features={"close": 0.00354, "bb_lower": 0.0035480968578094746, "bb_upper": 0.003688093618381002, "rsi": 33.122266304508756, "mfi": 24.78172806904594, "atr": 3.285714285714291e-05}
+[ENTRY] 2026-08-10T01:19:59+00:00 NEIROTRY layer=2 value=1004.55 entry=0.00356267 cash=4997.88
+[SIGNAL] 2026-08-10T01:14:59+00:00 RETRY BUY fill_at=2026-08-10T01:19:59+00:00 features={"close": 19.14, "bb_lower": 19.180054203481095, "bb_upper": 19.552326748899855, "rsi": 35.14694406895828, "mfi": 47.19061201963144, "atr": 0.10071428571428573}
+[ENTRY] 2026-08-10T01:19:59+00:00 RETRY layer=1 value=1004.32 entry=19.15435500 cash=3992.05
+[EXIT] 2026-08-10T01:19:59+00:00 TSTTRY reason=fixed_take_profit pnl=+19.42 cash=5015.68
+[SCAN] 2026-08-10T01:19:59+00:00 symbols=26 signals=2 entries=2 exits=1 blocked=0 open=3 cash=5015.68 equity=10046.09
+[SCAN] 2026-08-10T01:24:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=3 cash=5015.68 equity=10044.24
+[SCAN] 2026-08-10T01:29:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=3 cash=5015.68 equity=10063.43
+[EXIT] 2026-08-10T01:34:59+00:00 ACTTRY reason=fixed_take_profit pnl=+38.79 cash=7060.04
+[SCAN] 2026-08-10T01:34:59+00:00 symbols=26 signals=0 entries=0 exits=1 blocked=0 open=2 cash=7060.04 equity=10112.90
+[EXIT] 2026-08-10T01:39:59+00:00 NEIROTRY reason=fixed_take_profit pnl=+38.91 cash=9110.66
+[SCAN] 2026-08-10T01:39:59+00:00 symbols=26 signals=0 entries=0 exits=1 blocked=0 open=1 cash=9110.66 equity=10121.05
+[SCAN] 2026-08-10T01:44:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=1 cash=9110.66 equity=10116.86
+[SCAN] 2026-08-10T01:49:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=1 cash=9110.66 equity=10126.29
+[SCAN] 2026-08-10T01:54:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=1 cash=9110.66 equity=10133.63
+[SIGNAL] 2026-08-10T01:54:59+00:00 BOMETRY BUY fill_at=2026-08-10T01:59:59+00:00 features={"close": 0.03891, "bb_lower": 0.03917259344054688, "bb_upper": 0.041632168464215025, "rsi": 35.1632281877489, "mfi": 44.64063047193286, "atr": 0.0007599999999999993}
+[ENTRY] 2026-08-10T01:59:59+00:00 BOMETRY layer=1 value=1012.68 entry=0.03893918 cash=8096.46
+[SIGNAL] 2026-08-10T01:54:59+00:00 PUMPTRY BUY fill_at=2026-08-10T01:59:59+00:00 features={"close": 0.1287, "bb_lower": 0.1287255257575074, "bb_upper": 0.13349352186154023, "rsi": 41.95553267272219, "mfi": 28.28320110803361, "atr": 0.001285714285714289}
+[ENTRY] 2026-08-10T01:59:59+00:00 PUMPTRY layer=1 value=1007.38 entry=0.12869645 cash=7087.57
+[SCAN] 2026-08-10T01:59:59+00:00 symbols=26 signals=2 entries=2 exits=0 blocked=0 open=3 cash=7087.57 equity=10073.13
+[SIGNAL] 2026-08-10T01:59:59+00:00 BOMETRY BUY fill_at=2026-08-10T02:04:59+00:00 features={"close": 0.03696, "bb_lower": 0.03832871020679632, "bb_upper": 0.04208176598367988, "rsi": 25.531098296497134, "mfi": 32.241977982397756, "atr": 0.000894999999999999}
+[ENTRY] 2026-08-10T02:04:59+00:00 BOMETRY layer=2 value=1007.11 entry=0.03692768 cash=6078.95
+[SCAN] 2026-08-10T02:04:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=3 cash=6078.95 equity=10062.54
+[SIGNAL] 2026-08-10T02:04:59+00:00 BOMETRY BUY fill_at=2026-08-10T02:09:59+00:00 features={"close": 0.03667, "bb_lower": 0.03762427204378485, "bb_upper": 0.042401442241929446, "rsi": 24.451970337898274, "mfi": 28.278221420205696, "atr": 0.0008771428571428566}
+[BLOCKED] BOMETRY reason=max_layers
+[SCAN] 2026-08-10T02:09:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=3 cash=6078.95 equity=10068.34
+[SIGNAL] 2026-08-10T02:09:59+00:00 BOMETRY BUY fill_at=2026-08-10T02:14:59+00:00 features={"close": 0.03669, "bb_lower": 0.037142851588541484, "bb_upper": 0.04265429126860139, "rsi": 24.68979199346427, "mfi": 22.40011725985842, "atr": 0.0008157142857142852}
+[BLOCKED] BOMETRY reason=max_layers
+[SIGNAL] 2026-08-10T02:09:59+00:00 MUBARAKTRY BUY fill_at=2026-08-10T02:14:59+00:00 features={"close": 1.132, "bb_lower": 1.14689588886074, "bb_upper": 1.4648183968535453, "rsi": 29.29171225284051, "mfi": 41.33135868122712, "atr": 0.0682142857142857}
+[ENTRY] 2026-08-10T02:14:59+00:00 MUBARAKTRY layer=1 value=1006.93 entry=1.13685200 cash=5070.51
+[SIGNAL] 2026-08-10T02:09:59+00:00 NEIROTRY BUY fill_at=2026-08-10T02:14:59+00:00 features={"close": 0.0035, "bb_lower": 0.0035044158262597797, "bb_upper": 0.003659393697549745, "rsi": 34.37123796217561, "mfi": 49.06055924563346, "atr": 3.285714285714279e-05}
+[ENTRY] 2026-08-10T02:14:59+00:00 NEIROTRY layer=1 value=1006.53 entry=0.00351263 cash=4062.47
+[SIGNAL] 2026-08-10T02:09:59+00:00 TURBOTRY BUY fill_at=2026-08-10T02:14:59+00:00 features={"close": 0.0416, "bb_lower": 0.041729671960090975, "bb_upper": 0.04247032803990902, "rsi": 35.56908884636317, "mfi": 54.22054351552198, "atr": 0.00013571428571428662}
+[ENTRY] 2026-08-10T02:14:59+00:00 TURBOTRY layer=1 value=1006.30 entry=0.04163120 cash=3054.66
+[SCAN] 2026-08-10T02:14:59+00:00 symbols=26 signals=4 entries=3 exits=0 blocked=1 open=6 cash=3054.66 equity=10060.77
+[SIGNAL] 2026-08-10T02:14:59+00:00 TURBOTRY BUY fill_at=2026-08-10T02:19:59+00:00 features={"close": 0.0416, "bb_lower": 0.04166580175838002, "bb_upper": 0.04250562681304854, "rsi": 35.56908884636317, "mfi": 53.67859036780259, "atr": 0.00012142857142857243}
+[ENTRY] 2026-08-10T02:19:59+00:00 TURBOTRY layer=2 value=1001.43 entry=0.04163120 cash=2051.72
+[SCAN] 2026-08-10T02:19:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=6 cash=2051.72 equity=10007.25
+[SIGNAL] 2026-08-10T02:19:59+00:00 METRY BUY fill_at=2026-08-10T02:24:59+00:00 features={"close": 2.964, "bb_lower": 2.965541623369878, "bb_upper": 2.9843631385348846, "rsi": 34.47569660666869, "mfi": 58.503859899105514, "atr": 0.0034999999999999636}
+[ENTRY] 2026-08-10T02:24:59+00:00 METRY layer=1 value=1004.37 entry=2.96622300 cash=1045.85
+[SIGNAL] 2026-08-10T02:19:59+00:00 NEIROTRY BUY fill_at=2026-08-10T02:24:59+00:00 features={"close": 0.00347, "bb_lower": 0.0034791328722460603, "bb_upper": 0.00365991474680156, "rsi": 31.880056009664983, "mfi": 43.752614912776615, "atr": 3.285714285714279e-05}
+[ENTRY] 2026-08-10T02:24:59+00:00 NEIROTRY layer=2 value=1004.14 entry=0.00348261 cash=40.19
+[SIGNAL] 2026-08-10T02:19:59+00:00 RENDERTRY BUY fill_at=2026-08-10T02:24:59+00:00 features={"close": 61.4, "bb_lower": 61.46095427813312, "bb_upper": 61.93904572186688, "rsi": 30.119677360107843, "mfi": 43.36559804924458, "atr": 0.0857142857142844}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=40.13 cash=40.19
+[SIGNAL] 2026-08-10T02:19:59+00:00 TURBOTRY BUY fill_at=2026-08-10T02:24:59+00:00 features={"close": 0.0414, "bb_lower": 0.04154110226546782, "bb_upper": 0.04256365963929407, "rsi": 31.187998361341513, "mfi": 12.935679586419809, "atr": 0.00012142857142857243}
+[BLOCKED] TURBOTRY reason=max_layers
+[SCAN] 2026-08-10T02:24:59+00:00 symbols=26 signals=4 entries=2 exits=0 blocked=2 open=7 cash=40.19 equity=10039.19
+[SIGNAL] 2026-08-10T02:24:59+00:00 RENDERTRY BUY fill_at=2026-08-10T02:29:59+00:00 features={"close": 61.3, "bb_lower": 61.39434174208042, "bb_upper": 61.97708682934816, "rsi": 27.385740052736594, "mfi": 37.228957570702384, "atr": 0.0857142857142844}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=40.13 cash=40.19
+[SIGNAL] 2026-08-10T02:24:59+00:00 TURBOTRY BUY fill_at=2026-08-10T02:29:59+00:00 features={"close": 0.0413, "bb_lower": 0.04141179654651676, "bb_upper": 0.04261677488205465, "rsi": 29.237347419694984, "mfi": 9.216778909102302, "atr": 0.00012857142857142928}
+[BLOCKED] TURBOTRY reason=max_layers
+[EXIT] 2026-08-10T02:29:59+00:00 MUBARAKTRY reason=fixed_take_profit pnl=+19.50 cash=1068.14
+[SCAN] 2026-08-10T02:29:59+00:00 symbols=26 signals=2 entries=0 exits=1 blocked=2 open=6 cash=1068.14 equity=9989.88
+[SIGNAL] 2026-08-10T02:29:59+00:00 BABYTRY BUY fill_at=2026-08-10T02:34:59+00:00 features={"close": 0.618, "bb_lower": 0.6227669720521462, "bb_upper": 0.6406615993764252, "rsi": 27.782380244713465, "mfi": 39.28145307886788, "atr": 0.0022142857142857164}
+[ENTRY] 2026-08-10T02:34:59+00:00 BABYTRY layer=1 value=999.84 entry=0.61646200 cash=66.80
+[SIGNAL] 2026-08-10T02:29:59+00:00 RENDERTRY BUY fill_at=2026-08-10T02:34:59+00:00 features={"close": 61.3, "bb_lower": 61.33823132029455, "bb_upper": 62.00462582256258, "rsi": 27.385740052736594, "mfi": 34.29830504233682, "atr": 0.09285714285714164}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=66.70 cash=66.80
+[EXIT] 2026-08-10T02:34:59+00:00 RETRY reason=fixed_take_profit pnl=+19.45 cash=1092.08
+[SCAN] 2026-08-10T02:34:59+00:00 symbols=26 signals=2 entries=1 exits=1 blocked=1 open=6 cash=1092.08 equity=9992.12
+[SIGNAL] 2026-08-10T02:34:59+00:00 BABYTRY BUY fill_at=2026-08-10T02:39:59+00:00 features={"close": 0.615, "bb_lower": 0.6194547919836529, "bb_upper": 0.6422594937306328, "rsi": 24.867368080350175, "mfi": 39.27568917497337, "atr": 0.0022142857142857164}
+[ENTRY] 2026-08-10T02:39:59+00:00 BABYTRY layer=2 value=998.40 entry=0.61646200 cash=92.18
+[SCAN] 2026-08-10T02:39:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=6 cash=92.18 equity=9981.76
+[SIGNAL] 2026-08-10T02:39:59+00:00 BABYTRY BUY fill_at=2026-08-10T02:44:59+00:00 features={"close": 0.616, "bb_lower": 0.6170679431164993, "bb_upper": 0.6429320568835005, "rsi": 27.61013886897844, "mfi": 41.586276898846656, "atr": 0.0021428571428571447}
+[BLOCKED] BABYTRY reason=max_layers
+[SIGNAL] 2026-08-10T02:39:59+00:00 TSTTRY BUY fill_at=2026-08-10T02:44:59+00:00 features={"close": 0.876, "bb_lower": 0.8896968463822673, "bb_upper": 0.9474460107605901, "rsi": 32.490522930818884, "mfi": 33.533522420593485, "atr": 0.018428571428571405}
+[BLOCKED] TSTTRY reason=insufficient_cash order=92.05 cash=92.18
+[SIGNAL] 2026-08-10T02:39:59+00:00 TURBOTRY BUY fill_at=2026-08-10T02:44:59+00:00 features={"close": 0.0411, "bb_lower": 0.041119279941641176, "bb_upper": 0.04268072005835882, "rsi": 27.568359742691598, "mfi": 15.061254464174425, "atr": 0.00015000000000000034}
+[BLOCKED] TURBOTRY reason=max_layers
+[SCAN] 2026-08-10T02:44:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=6 cash=92.18 equity=9977.82
+[SIGNAL] 2026-08-10T02:44:59+00:00 TSTTRY BUY fill_at=2026-08-10T02:49:59+00:00 features={"close": 0.881, "bb_lower": 0.8845027753016121, "bb_upper": 0.9500686532698166, "rsi": 34.60670704358624, "mfi": 36.37385955613011, "atr": 0.01849999999999998}
+[BLOCKED] TSTTRY reason=insufficient_cash order=92.05 cash=92.18
+[SCAN] 2026-08-10T02:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=92.18 equity=9978.53
+[SIGNAL] 2026-08-10T02:49:59+00:00 TSTTRY BUY fill_at=2026-08-10T02:54:59+00:00 features={"close": 0.873, "bb_lower": 0.8772739764834931, "bb_upper": 0.9528212616117453, "rsi": 32.82329003244088, "mfi": 31.787329460940285, "atr": 0.017499999999999984}
+[BLOCKED] TSTTRY reason=insufficient_cash order=92.05 cash=92.18
+[SCAN] 2026-08-10T02:54:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=92.18 equity=9982.76
+[SCAN] 2026-08-10T02:59:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=92.18 equity=10000.97
+[SCAN] 2026-08-10T03:04:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=92.18 equity=9980.42
+[SCAN] 2026-08-10T03:09:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=92.18 equity=9982.56
+[SCAN] 2026-08-10T03:14:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=92.18 equity=9973.80
+[SCAN] 2026-08-10T03:19:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=92.18 equity=9995.20
+[SCAN] 2026-08-10T03:24:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=92.18 equity=10031.57
+[SIGNAL] 2026-08-10T03:24:59+00:00 RENDERTRY BUY fill_at=2026-08-10T03:29:59+00:00 features={"close": 60.7, "bb_lower": 61.01690482000511, "bb_upper": 61.99261898951869, "rsi": 21.318463634562576, "mfi": 3.6750082067634793, "atr": 0.17142857142857235}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=92.05 cash=92.18
+[SCAN] 2026-08-10T03:29:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=92.18 equity=10038.58
+[SCAN] 2026-08-10T03:34:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=92.18 equity=10082.03
+[SIGNAL] 2026-08-10T03:34:59+00:00 RENDERTRY BUY fill_at=2026-08-10T03:39:59+00:00 features={"close": 60.9, "bb_lower": 60.90276392842828, "bb_upper": 61.98295035728602, "rsi": 35.65263830287563, "mfi": 20.998556903064923, "atr": 0.20714285714285804}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=92.05 cash=92.18
+[EXIT] 2026-08-10T03:39:59+00:00 BOMETRY reason=fixed_take_profit pnl=+39.12 cash=2154.12
+[SCAN] 2026-08-10T03:39:59+00:00 symbols=26 signals=1 entries=0 exits=1 blocked=1 open=5 cash=2154.12 equity=10176.21
+[SCAN] 2026-08-10T03:44:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=2154.12 equity=10177.67
+[SCAN] 2026-08-10T03:49:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=2154.12 equity=10175.21
+[SCAN] 2026-08-10T03:54:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=2154.12 equity=10182.48
+[SCAN] 2026-08-10T03:59:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=2154.12 equity=10174.99
+[SIGNAL] 2026-08-10T03:59:59+00:00 AVNTTRY BUY fill_at=2026-08-10T04:04:59+00:00 features={"close": 4.51, "bb_lower": 4.515954212562599, "bb_upper": 4.5469029302945465, "rsi": 39.02601058992714, "mfi": 24.84716564949575, "atr": 0.005000000000000083}
+[ENTRY] 2026-08-10T04:04:59+00:00 AVNTTRY layer=1 value=1019.15 entry=4.52339000 cash=1133.45
+[SIGNAL] 2026-08-10T03:59:59+00:00 CHIPTRY BUY fill_at=2026-08-10T04:04:59+00:00 features={"close": 1.0503, "bb_lower": 1.0508568745437636, "bb_upper": 1.0575336016467127, "rsi": 36.964266549976465, "mfi": 29.124451308955415, "atr": 0.002250000000000006}
+[ENTRY] 2026-08-10T04:04:59+00:00 CHIPTRY layer=1 value=1019.14 entry=1.04788532 cash=112.78
+[SCAN] 2026-08-10T04:04:59+00:00 symbols=26 signals=2 entries=2 exits=0 blocked=0 open=7 cash=112.78 equity=10188.63
+[SIGNAL] 2026-08-10T04:04:59+00:00 CHIPTRY BUY fill_at=2026-08-10T04:09:59+00:00 features={"close": 1.0466, "bb_lower": 1.0491725456962457, "bb_upper": 1.0584274543037544, "rsi": 30.598554024079064, "mfi": 28.971818528919712, "atr": 0.0022571428571428625}
+[ENTRY] 2026-08-10T04:09:59+00:00 CHIPTRY layer=2 value=112.61 entry=1.04698465 cash=0.00
+[SIGNAL] 2026-08-10T04:04:59+00:00 RETRY BUY fill_at=2026-08-10T04:09:59+00:00 features={"close": 19.2, "bb_lower": 19.236975613122148, "bb_upper": 19.660167244020712, "rsi": 38.41645989663074, "mfi": 17.348408492529288, "atr": 0.08785714285714263}
+[BLOCKED] RETRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T04:09:59+00:00 symbols=26 signals=2 entries=1 exits=0 blocked=1 open=7 cash=0.00 equity=10178.12
+[SIGNAL] 2026-08-10T04:09:59+00:00 CHIPTRY BUY fill_at=2026-08-10T04:14:59+00:00 features={"close": 1.0459, "bb_lower": 1.0476849725298396, "bb_upper": 1.0590578846130176, "rsi": 29.55537272799944, "mfi": 19.85355933234098, "atr": 0.0024285714285714305}
+[BLOCKED] CHIPTRY reason=max_layers
+[SCAN] 2026-08-10T04:14:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=0.00 equity=10174.15
+[EXIT] 2026-08-10T04:19:59+00:00 METRY reason=bb_mfi_v3_signal_exit pnl=+2.24 cash=1008.12
+[EXIT] 2026-08-10T04:19:59+00:00 PUMPTRY reason=fixed_take_profit pnl=+19.51 cash=2036.52
+[SCAN] 2026-08-10T04:19:59+00:00 symbols=26 signals=0 entries=0 exits=2 blocked=0 open=5 cash=2036.52 equity=10190.34
+[SCAN] 2026-08-10T04:24:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=2036.52 equity=10168.27
+[SCAN] 2026-08-10T04:29:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=2036.52 equity=10147.87
+[SCAN] 2026-08-10T04:34:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=2036.52 equity=10138.91
+[SIGNAL] 2026-08-10T04:34:59+00:00 AVNTTRY BUY fill_at=2026-08-10T04:39:59+00:00 features={"close": 4.51, "bb_lower": 4.51026584080163, "bb_upper": 4.544972254436466, "rsi": 39.94685853205442, "mfi": 27.207219929915084, "atr": 0.005714285714285783}
+[ENTRY] 2026-08-10T04:39:59+00:00 AVNTTRY layer=2 value=1013.10 entry=4.51338250 cash=1021.90
+[SCAN] 2026-08-10T04:39:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=5 cash=1021.90 equity=10128.73
+[SCAN] 2026-08-10T04:44:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=1021.90 equity=10130.91
+[SCAN] 2026-08-10T04:49:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=1021.90 equity=10134.73
+[SCAN] 2026-08-10T04:54:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=1021.90 equity=10087.54
+[SIGNAL] 2026-08-10T04:54:59+00:00 AVNTTRY BUY fill_at=2026-08-10T04:59:59+00:00 features={"close": 4.49, "bb_lower": 4.497302080257145, "bb_upper": 4.548412205457141, "rsi": 30.402368885077507, "mfi": 8.43962082579148, "atr": 0.006428571428571482}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T04:54:59+00:00 BABYTRY BUY fill_at=2026-08-10T04:59:59+00:00 features={"close": 0.609, "bb_lower": 0.6099242399922181, "bb_upper": 0.6234090933411155, "rsi": 34.300777942042515, "mfi": 43.19483601830116, "atr": 0.0023571428571428593}
+[BLOCKED] BABYTRY reason=max_layers
+[SIGNAL] 2026-08-10T04:54:59+00:00 THETRY BUY fill_at=2026-08-10T04:59:59+00:00 features={"close": 3.304, "bb_lower": 3.321542446413025, "bb_upper": 3.66074326787269, "rsi": 35.17576008759836, "mfi": 33.479949856511865, "atr": 0.07300000000000005}
+[ENTRY] 2026-08-10T04:59:59+00:00 THETRY layer=1 value=1008.97 entry=3.30147425 cash=11.42
+[SIGNAL] 2026-08-10T04:54:59+00:00 TSTTRY BUY fill_at=2026-08-10T04:59:59+00:00 features={"close": 0.875, "bb_lower": 0.8764089685278614, "bb_upper": 0.927210079091186, "rsi": 37.11796477208244, "mfi": 33.655790289437675, "atr": 0.013071428571428583}
+[BLOCKED] TSTTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T04:54:59+00:00 TURBOTRY BUY fill_at=2026-08-10T04:59:59+00:00 features={"close": 0.0406, "bb_lower": 0.040662641729508536, "bb_upper": 0.04118497731811052, "rsi": 26.49715990951229, "mfi": 6.1095942851940634, "atr": 6.428571428571365e-05}
+[BLOCKED] TURBOTRY reason=max_layers
+[SCAN] 2026-08-10T04:59:59+00:00 symbols=26 signals=5 entries=1 exits=0 blocked=4 open=6 cash=11.42 equity=10077.96
+[SIGNAL] 2026-08-10T04:59:59+00:00 AVNTTRY BUY fill_at=2026-08-10T05:04:59+00:00 features={"close": 4.47, "bb_lower": 4.486193829810859, "bb_upper": 4.553806170189142, "rsi": 24.1510894516652, "mfi": 5.679399940286913, "atr": 0.008571428571428643}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T04:59:59+00:00 THETRY BUY fill_at=2026-08-10T05:04:59+00:00 features={"close": 3.268, "bb_lower": 3.286035183897909, "bb_upper": 3.674821958959234, "rsi": 33.07074707982049, "mfi": 32.096022198666205, "atr": 0.0733571428571429}
+[BLOCKED] THETRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T04:59:59+00:00 TSTTRY BUY fill_at=2026-08-10T05:04:59+00:00 features={"close": 0.872, "bb_lower": 0.8754003615128793, "bb_upper": 0.927837733725216, "rsi": 36.11289115760407, "mfi": 34.607328456067066, "atr": 0.013642857142857154}
+[BLOCKED] TSTTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T04:59:59+00:00 TURBOTRY BUY fill_at=2026-08-10T05:04:59+00:00 features={"close": 0.0406, "bb_lower": 0.04062291317065184, "bb_upper": 0.04120565825791959, "rsi": 26.49715990951229, "mfi": 5.269220456371954, "atr": 5.7142857142856796e-05}
+[BLOCKED] TURBOTRY reason=max_layers
+[SCAN] 2026-08-10T05:04:59+00:00 symbols=26 signals=4 entries=0 exits=0 blocked=4 open=6 cash=11.42 equity=10078.42
+[SIGNAL] 2026-08-10T05:04:59+00:00 AVNTTRY BUY fill_at=2026-08-10T05:09:59+00:00 features={"close": 4.47, "bb_lower": 4.477664424831612, "bb_upper": 4.557573670406482, "rsi": 24.1510894516652, "mfi": 5.478065113113814, "atr": 0.008571428571428643}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T05:04:59+00:00 BABYTRY BUY fill_at=2026-08-10T05:09:59+00:00 features={"close": 0.608, "bb_lower": 0.6081595864274196, "bb_upper": 0.6234594611916278, "rsi": 33.991865276404695, "mfi": 43.75431721268506, "atr": 0.0024285714285714305}
+[BLOCKED] BABYTRY reason=max_layers
+[SCAN] 2026-08-10T05:09:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=6 cash=11.42 equity=10069.23
+[SIGNAL] 2026-08-10T05:09:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T05:14:59+00:00 features={"close": 0.426, "bb_lower": 0.42669768217636495, "bb_upper": 0.4418737463950637, "rsi": 37.82991495049991, "mfi": 36.3971386138981, "atr": 0.0032857142857142885}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T05:14:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=11.42 equity=10049.72
+[SIGNAL] 2026-08-10T05:14:59+00:00 BABYTRY BUY fill_at=2026-08-10T05:19:59+00:00 features={"close": 0.603, "bb_lower": 0.6049096686548938, "bb_upper": 0.6238522361070109, "rsi": 27.76355439158405, "mfi": 33.659696771672444, "atr": 0.002714285714285717}
+[BLOCKED] BABYTRY reason=max_layers
+[SIGNAL] 2026-08-10T05:14:59+00:00 TURBOTRY BUY fill_at=2026-08-10T05:19:59+00:00 features={"close": 0.0405, "bb_lower": 0.040535010425913856, "bb_upper": 0.041236418145514694, "rsi": 27.502086039723096, "mfi": 6.953462341060444, "atr": 7.142857142857149e-05}
+[BLOCKED] TURBOTRY reason=max_layers
+[SCAN] 2026-08-10T05:19:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=6 cash=11.42 equity=10058.06
+[SCAN] 2026-08-10T05:24:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=11.42 equity=10068.90
+[SCAN] 2026-08-10T05:29:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=11.42 equity=10079.75
+[SCAN] 2026-08-10T05:34:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=11.42 equity=10054.06
+[SIGNAL] 2026-08-10T05:34:59+00:00 ACTTRY BUY fill_at=2026-08-10T05:39:59+00:00 features={"close": 0.543, "bb_lower": 0.5442653928878698, "bb_upper": 0.5933822261597492, "rsi": 35.758436265744535, "mfi": 52.7256205866706, "atr": 0.01097857142857144}
+[BLOCKED] ACTTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T05:34:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T05:39:59+00:00 features={"close": 0.421, "bb_lower": 0.42431213399178536, "bb_upper": 0.44016405648440493, "rsi": 35.57004444709695, "mfi": 30.17982055843339, "atr": 0.004142857142857147}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T05:39:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=6 cash=11.42 equity=10086.06
+[SIGNAL] 2026-08-10T05:39:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T05:44:59+00:00 features={"close": 0.421, "bb_lower": 0.4227074856609314, "bb_upper": 0.4400544191009733, "rsi": 35.57004444709695, "mfi": 28.583812960808515, "atr": 0.004285714285714289}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T05:44:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=11.42 equity=10075.94
+[SIGNAL] 2026-08-10T05:44:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T05:49:59+00:00 features={"close": 0.413, "bb_lower": 0.4190796497497396, "bb_upper": 0.4412060645359746, "rsi": 29.1554187395229, "mfi": 24.648224836639315, "atr": 0.00478571428571429}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T05:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=11.42 equity=10128.63
+[SIGNAL] 2026-08-10T05:49:59+00:00 0GTRY BUY fill_at=2026-08-10T05:54:59+00:00 features={"close": 7.29, "bb_lower": 7.298724903052752, "bb_upper": 7.394608430280585, "rsi": 40.88716316105625, "mfi": 27.57309117455975, "atr": 0.018571428571428555}
+[BLOCKED] 0GTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T05:49:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T05:54:59+00:00 features={"close": 0.414, "bb_lower": 0.4163074411920325, "bb_upper": 0.4421687492841579, "rsi": 30.844254055101473, "mfi": 20.223912107806925, "atr": 0.00478571428571429}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T05:54:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=6 cash=11.42 equity=10104.24
+[SIGNAL] 2026-08-10T05:54:59+00:00 0GTRY BUY fill_at=2026-08-10T05:59:59+00:00 features={"close": 7.28, "bb_lower": 7.291565703605312, "bb_upper": 7.398910486870878, "rsi": 38.677938727631606, "mfi": 26.159441048386412, "atr": 0.017142857142857095}
+[BLOCKED] 0GTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T05:54:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T05:59:59+00:00 features={"close": 0.408, "bb_lower": 0.41249973066379303, "bb_upper": 0.4440716979076355, "rsi": 26.706117842217154, "mfi": 21.336001372826857, "atr": 0.005071428571428576}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T05:59:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=6 cash=11.42 equity=10119.15
+[SIGNAL] 2026-08-10T05:59:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T06:04:59+00:00 features={"close": 0.409, "bb_lower": 0.40952387335642776, "bb_upper": 0.4450475552150009, "rsi": 28.439579539562686, "mfi": 21.269193302944714, "atr": 0.005142857142857148}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T06:04:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=11.42 equity=10103.61
+[SCAN] 2026-08-10T06:09:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=11.42 equity=10116.98
+[SCAN] 2026-08-10T06:14:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=11.42 equity=10108.82
+[SCAN] 2026-08-10T06:19:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=11.42 equity=10116.56
+[SIGNAL] 2026-08-10T06:19:59+00:00 CETUSTRY BUY fill_at=2026-08-10T06:24:59+00:00 features={"close": 0.934, "bb_lower": 0.9359152438634897, "bb_upper": 0.9549418989936531, "rsi": 36.63391629827625, "mfi": 45.38443473431559, "atr": 0.004499999999999996}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T06:19:59+00:00 MUBARAKTRY BUY fill_at=2026-08-10T06:24:59+00:00 features={"close": 1.015, "bb_lower": 1.0486603710534474, "bb_upper": 1.1509586765655997, "rsi": 30.22695792984446, "mfi": 25.614400646075595, "atr": 0.0332857142857143}
+[BLOCKED] MUBARAKTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T06:19:59+00:00 TSTTRY BUY fill_at=2026-08-10T06:24:59+00:00 features={"close": 0.867, "bb_lower": 0.8680971240905605, "bb_upper": 0.9065695425761066, "rsi": 38.84132917441741, "mfi": 50.689075169197906, "atr": 0.01592857142857144}
+[BLOCKED] TSTTRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T06:24:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=6 cash=11.42 equity=10131.73
+[SIGNAL] 2026-08-10T06:24:59+00:00 CETUSTRY BUY fill_at=2026-08-10T06:29:59+00:00 features={"close": 0.93, "bb_lower": 0.9331158916783322, "bb_upper": 0.9559317273692869, "rsi": 33.580553288957304, "mfi": 47.79687806916215, "atr": 0.004071428571428567}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T06:24:59+00:00 MUBARAKTRY BUY fill_at=2026-08-10T06:29:59+00:00 features={"close": 1.02, "bb_lower": 1.0344032095323872, "bb_upper": 1.15673964761047, "rsi": 31.727775146235004, "mfi": 20.47207226102094, "atr": 0.032142857142857154}
+[BLOCKED] MUBARAKTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T06:24:59+00:00 TSTTRY BUY fill_at=2026-08-10T06:29:59+00:00 features={"close": 0.854, "bb_lower": 0.8617747213827313, "bb_upper": 0.90917765956965, "rsi": 34.6222105310205, "mfi": 44.71843791006038, "atr": 0.016642857142857157}
+[BLOCKED] TSTTRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T06:29:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=6 cash=11.42 equity=10105.85
+[SIGNAL] 2026-08-10T06:29:59+00:00 CETUSTRY BUY fill_at=2026-08-10T06:34:59+00:00 features={"close": 0.927, "bb_lower": 0.9303695554394377, "bb_upper": 0.9574399683700862, "rsi": 31.45070418940314, "mfi": 36.16160543056932, "atr": 0.0039285714285714245}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T06:29:59+00:00 MUBARAKTRY BUY fill_at=2026-08-10T06:34:59+00:00 features={"close": 0.988, "bb_lower": 1.0138034637153521, "bb_upper": 1.1661012981894099, "rsi": 27.61011548358772, "mfi": 18.759302143130512, "atr": 0.03342857142857144}
+[BLOCKED] MUBARAKTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T06:29:59+00:00 TSTTRY BUY fill_at=2026-08-10T06:34:59+00:00 features={"close": 0.847, "bb_lower": 0.854745401591603, "bb_upper": 0.9119212650750639, "rsi": 32.55912526552643, "mfi": 37.795242209055026, "atr": 0.01721428571428573}
+[BLOCKED] TSTTRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T06:34:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=6 cash=11.42 equity=10067.84
+[SIGNAL] 2026-08-10T06:34:59+00:00 CETUSTRY BUY fill_at=2026-08-10T06:39:59+00:00 features={"close": 0.922, "bb_lower": 0.9266539362866554, "bb_upper": 0.9594413018085827, "rsi": 28.219121103608828, "mfi": 22.0258627531352, "atr": 0.003999999999999996}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T06:34:59+00:00 MUBARAKTRY BUY fill_at=2026-08-10T06:39:59+00:00 features={"close": 0.997, "bb_lower": 0.9993945645992879, "bb_upper": 1.1701292449245213, "rsi": 30.363716730068447, "mfi": 17.82448435048353, "atr": 0.03185714285714288}
+[BLOCKED] MUBARAKTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T06:34:59+00:00 RETRY BUY fill_at=2026-08-10T06:39:59+00:00 features={"close": 19.38, "bb_lower": 19.399841356201556, "bb_upper": 19.691587215227017, "rsi": 39.87797807935132, "mfi": 54.752424985451235, "atr": 0.09785714285714267}
+[BLOCKED] RETRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T06:39:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=6 cash=11.42 equity=10066.30
+[SIGNAL] 2026-08-10T06:39:59+00:00 CETUSTRY BUY fill_at=2026-08-10T06:44:59+00:00 features={"close": 0.917, "bb_lower": 0.9220554044602896, "bb_upper": 0.9616588812539961, "rsi": 25.392588299863377, "mfi": 19.120555268687696, "atr": 0.004285714285714282}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T06:44:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=11.42 equity=10050.23
+[SIGNAL] 2026-08-10T06:44:59+00:00 CETUSTRY BUY fill_at=2026-08-10T06:49:59+00:00 features={"close": 0.91, "bb_lower": 0.9163692394417088, "bb_upper": 0.9643926653201961, "rsi": 22.043803633943313, "mfi": 16.978726072440622, "atr": 0.004357142857142853}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T06:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=11.42 equity=10073.07
+[SIGNAL] 2026-08-10T06:49:59+00:00 CETUSTRY BUY fill_at=2026-08-10T06:54:59+00:00 features={"close": 0.912, "bb_lower": 0.9121617849976523, "bb_upper": 0.9659334530975859, "rsi": 25.101182600421268, "mfi": 13.385188918197656, "atr": 0.004357142857142853}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=11.40 cash=11.42
+[SCAN] 2026-08-10T06:54:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=11.42 equity=10077.98
+[SIGNAL] 2026-08-10T06:54:59+00:00 CHIPTRY BUY fill_at=2026-08-10T06:59:59+00:00 features={"close": 1.0505, "bb_lower": 1.0511430637735484, "bb_upper": 1.058275983845499, "rsi": 38.8436855617029, "mfi": 30.019142848943545, "atr": 0.0013357142857142814}
+[BLOCKED] CHIPTRY reason=max_layers
+[SCAN] 2026-08-10T06:59:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=11.42 equity=10096.02
+[SCAN] 2026-08-10T07:04:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=11.42 equity=10057.94
+[SCAN] 2026-08-10T07:09:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=11.42 equity=10062.06
+[SIGNAL] 2026-08-10T07:09:59+00:00 0GTRY BUY fill_at=2026-08-10T07:14:59+00:00 features={"close": 7.27, "bb_lower": 7.271725243704019, "bb_upper": 7.35779856581979, "rsi": 36.34136581249232, "mfi": 32.93175305575686, "atr": 0.018571428571428492}
+[BLOCKED] 0GTRY reason=insufficient_cash order=11.40 cash=11.42
+[SIGNAL] 2026-08-10T07:09:59+00:00 PUMPTRY BUY fill_at=2026-08-10T07:14:59+00:00 features={"close": 0.1339, "bb_lower": 0.1340544929902136, "bb_upper": 0.13706931653359594, "rsi": 44.973483237521044, "mfi": 52.868476389753575, "atr": 0.0010142857142857156}
+[BLOCKED] PUMPTRY reason=insufficient_cash order=11.40 cash=11.42
+[EXIT] 2026-08-10T07:14:59+00:00 THETRY reason=fixed_stop_loss pnl=-93.20 cash=928.71
+[SCAN] 2026-08-10T07:14:59+00:00 symbols=26 signals=2 entries=0 exits=1 blocked=2 open=5 cash=928.71 equity=10032.18
+[SIGNAL] 2026-08-10T07:14:59+00:00 PUMPTRY BUY fill_at=2026-08-10T07:19:59+00:00 features={"close": 0.1322, "bb_lower": 0.13334818705891374, "bb_upper": 0.13749943198870532, "rsi": 36.16803104955225, "mfi": 43.01084242453804, "atr": 0.0010285714285714284}
+[ENTRY] 2026-08-10T07:19:59+00:00 PUMPTRY layer=1 value=927.31 entry=0.13229915 cash=0.00
+[SIGNAL] 2026-08-10T07:14:59+00:00 THETRY BUY fill_at=2026-08-10T07:19:59+00:00 features={"close": 3.029, "bb_lower": 3.072947769634567, "bb_upper": 3.3320998494130523, "rsi": 26.23855374902817, "mfi": 49.77840281628268, "atr": 0.05550000000000001}
+[BLOCKED] THETRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T07:19:59+00:00 symbols=26 signals=2 entries=1 exits=0 blocked=1 open=6 cash=0.00 equity=10008.87
+[SIGNAL] 2026-08-10T07:19:59+00:00 PUMPTRY BUY fill_at=2026-08-10T07:24:59+00:00 features={"close": 0.1324, "bb_lower": 0.1328531654466747, "bb_upper": 0.13773731074380158, "rsi": 37.7221069640946, "mfi": 43.44224259897625, "atr": 0.0009642857142857132}
+[BLOCKED] PUMPTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T07:19:59+00:00 THETRY BUY fill_at=2026-08-10T07:24:59+00:00 features={"close": 2.978, "bb_lower": 3.035293854805445, "bb_upper": 3.3542299547183654, "rsi": 23.353976944670308, "mfi": 44.40999471948786, "atr": 0.05685714285714284}
+[BLOCKED] THETRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T07:24:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=6 cash=0.00 equity=10011.71
+[SIGNAL] 2026-08-10T07:24:59+00:00 PUMPTRY BUY fill_at=2026-08-10T07:29:59+00:00 features={"close": 0.1324, "bb_lower": 0.13241305158242486, "bb_upper": 0.1378345674651942, "rsi": 37.7221069640946, "mfi": 37.35714047800912, "atr": 0.000942857142857144}
+[BLOCKED] PUMPTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T07:24:59+00:00 THETRY BUY fill_at=2026-08-10T07:29:59+00:00 features={"close": 2.985, "bb_lower": 3.002991786581243, "bb_upper": 3.3685320229425675, "rsi": 24.586740805145567, "mfi": 35.966069021119665, "atr": 0.0557142857142857}
+[BLOCKED] THETRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T07:29:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=6 cash=0.00 equity=10027.21
+[SCAN] 2026-08-10T07:34:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=0.00 equity=10049.68
+[SIGNAL] 2026-08-10T07:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:39:59+00:00 features={"close": 1.631, "bb_lower": 1.664726321123932, "bb_upper": 1.978226059828449, "rsi": 33.98758191746025, "mfi": 29.186761693933022, "atr": 0.0753571428571429}
+[BLOCKED] BMTTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T07:34:59+00:00 PUMPTRY BUY fill_at=2026-08-10T07:39:59+00:00 features={"close": 0.1314, "bb_lower": 0.13142498295625682, "bb_upper": 0.13799406466279085, "rsi": 32.80157357405268, "mfi": 39.7967325212263, "atr": 0.0009357142857142878}
+[BLOCKED] PUMPTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T07:39:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=6 cash=0.00 equity=10058.00
+[SIGNAL] 2026-08-10T07:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:44:59+00:00 features={"close": 1.625, "bb_lower": 1.633827422024758, "bb_upper": 1.986648768451432, "rsi": 33.60100718326372, "mfi": 30.350127449285836, "atr": 0.07414285714285718}
+[BLOCKED] BMTTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T07:44:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=0.00 equity=10063.45
+[SIGNAL] 2026-08-10T07:44:59+00:00 BMTTRY BUY fill_at=2026-08-10T07:49:59+00:00 features={"close": 1.59, "bb_lower": 1.5996282770464536, "bb_upper": 1.99370505628688, "rsi": 31.34780949171943, "mfi": 29.828026364253517, "atr": 0.07485714285714289}
+[BLOCKED] BMTTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T07:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=0.00 equity=10067.77
+[SCAN] 2026-08-10T07:54:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=0.00 equity=10094.81
+[EXIT] 2026-08-10T07:59:59+00:00 TURBOTRY reason=bb_mfi_v3_signal_exit pnl=-33.09 cash=1977.66
+[SCAN] 2026-08-10T07:59:59+00:00 symbols=26 signals=0 entries=0 exits=1 blocked=0 open=5 cash=1977.66 equity=10088.66
+[SCAN] 2026-08-10T08:04:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=1977.66 equity=10068.63
+[SCAN] 2026-08-10T08:09:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=1977.66 equity=10070.28
+[SCAN] 2026-08-10T08:14:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=1977.66 equity=10074.03
+[SIGNAL] 2026-08-10T08:14:59+00:00 ALLOTRY BUY fill_at=2026-08-10T08:19:59+00:00 features={"close": 14.54, "bb_lower": 14.540242452822799, "bb_upper": 14.865471832891487, "rsi": 38.423139787272255, "mfi": 16.65414125378831, "atr": 0.06214285714285734}
+[ENTRY] 2026-08-10T08:19:59+00:00 ALLOTRY layer=1 value=1006.58 entry=14.54089750 cash=969.57
+[SCAN] 2026-08-10T08:19:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=6 cash=969.57 equity=10062.13
+[SIGNAL] 2026-08-10T08:19:59+00:00 ALLOTRY BUY fill_at=2026-08-10T08:24:59+00:00 features={"close": 14.51, "bb_lower": 14.513070914755504, "bb_upper": 14.865024323339737, "rsi": 36.66973533907067, "mfi": 15.861278542389272, "atr": 0.06285714285714304}
+[ENTRY] 2026-08-10T08:24:59+00:00 ALLOTRY layer=2 value=968.12 entry=14.50086750 cash=0.00
+[SIGNAL] 2026-08-10T08:19:59+00:00 RETRY BUY fill_at=2026-08-10T08:24:59+00:00 features={"close": 19.21, "bb_lower": 19.255913406637482, "bb_upper": 19.6850389743149, "rsi": 32.82782095147493, "mfi": 22.324275988282423, "atr": 0.09857142857142824}
+[BLOCKED] RETRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T08:24:59+00:00 symbols=26 signals=2 entries=1 exits=0 blocked=1 open=6 cash=0.00 equity=10069.83
+[SIGNAL] 2026-08-10T08:24:59+00:00 RETRY BUY fill_at=2026-08-10T08:29:59+00:00 features={"close": 19.18, "bb_lower": 19.21799853108417, "bb_upper": 19.705810992725347, "rsi": 31.539248723120423, "mfi": 19.723926021829158, "atr": 0.0985714285714285}
+[BLOCKED] RETRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T08:29:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=0.00 equity=10074.18
+[SIGNAL] 2026-08-10T08:29:59+00:00 PYTHTRY BUY fill_at=2026-08-10T08:34:59+00:00 features={"close": 2.007, "bb_lower": 2.0108362943568006, "bb_upper": 2.0569732294527228, "rsi": 25.561579754529816, "mfi": 2.7659425378107017, "atr": 0.0035714285714285587}
+[BLOCKED] PYTHTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T08:29:59+00:00 RETRY BUY fill_at=2026-08-10T08:34:59+00:00 features={"close": 19.05, "bb_lower": 19.14888487631208, "bb_upper": 19.745400837973634, "rsi": 26.631841361401072, "mfi": 13.461409923211306, "atr": 0.10785714285714297}
+[BLOCKED] RETRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T08:34:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=6 cash=0.00 equity=10102.74
+[SIGNAL] 2026-08-10T08:34:59+00:00 PYTHTRY BUY fill_at=2026-08-10T08:39:59+00:00 features={"close": 2.005, "bb_lower": 2.0063437873273973, "bb_upper": 2.0586085936249843, "rsi": 24.419880155943588, "mfi": 1.9702628056206635, "atr": 0.004071428571428567}
+[BLOCKED] PYTHTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T08:39:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=0.00 equity=10089.27
+[SCAN] 2026-08-10T08:44:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=0.00 equity=10073.09
+[SIGNAL] 2026-08-10T08:44:59+00:00 FETTRY BUY fill_at=2026-08-10T08:49:59+00:00 features={"close": 6.57, "bb_lower": 6.5743997839282455, "bb_upper": 6.639885930357468, "rsi": 44.730365356708425, "mfi": 53.57215432818872, "atr": 0.022142857142857242}
+[BLOCKED] FETTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T08:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=0.00 equity=10099.51
+[SIGNAL] 2026-08-10T08:49:59+00:00 MUBARAKTRY BUY fill_at=2026-08-10T08:54:59+00:00 features={"close": 0.928, "bb_lower": 0.9359349345748595, "bb_upper": 0.9794936368537117, "rsi": 31.347418240675836, "mfi": 44.43898680487238, "atr": 0.016428571428571435}
+[BLOCKED] MUBARAKTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T08:54:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=0.00 equity=10097.66
+[SIGNAL] 2026-08-10T08:54:59+00:00 MUBARAKTRY BUY fill_at=2026-08-10T08:59:59+00:00 features={"close": 0.93, "bb_lower": 0.9320157664858051, "bb_upper": 0.9793175668475282, "rsi": 32.46335810837364, "mfi": 35.13086448332896, "atr": 0.016500000000000008}
+[BLOCKED] MUBARAKTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T08:59:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=0.00 equity=10096.19
+[EXIT] 2026-08-10T09:04:59+00:00 PUMPTRY reason=fixed_take_profit pnl=+17.96 cash=946.67
+[SCAN] 2026-08-10T09:04:59+00:00 symbols=26 signals=0 entries=0 exits=1 blocked=0 open=5 cash=946.67 equity=10120.83
+[SCAN] 2026-08-10T09:09:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=946.67 equity=10128.16
+[SCAN] 2026-08-10T09:14:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=946.67 equity=10114.33
+[EXIT] 2026-08-10T09:19:59+00:00 CHIPTRY reason=fixed_take_profit pnl=+21.92 cash=2102.04
+[SCAN] 2026-08-10T09:19:59+00:00 symbols=26 signals=0 entries=0 exits=1 blocked=0 open=4 cash=2102.04 equity=10128.20
+[SCAN] 2026-08-10T09:24:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=4 cash=2102.04 equity=10126.42
+[SCAN] 2026-08-10T09:29:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=4 cash=2102.04 equity=10118.89
+[SIGNAL] 2026-08-10T09:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:34:59+00:00 features={"close": 1.391, "bb_lower": 1.4635343713894413, "bb_upper": 1.695608485753416, "rsi": 27.961246748654148, "mfi": 35.492371376886155, "atr": 0.0687142857142857}
+[ENTRY] 2026-08-10T09:34:59+00:00 BMTTRY layer=1 value=1008.22 entry=1.38804025 cash=1092.31
+[SIGNAL] 2026-08-10T09:29:59+00:00 CETUSTRY BUY fill_at=2026-08-10T09:34:59+00:00 features={"close": 0.887, "bb_lower": 0.8889184568569111, "bb_upper": 0.9054624955240413, "rsi": 26.09624096987399, "mfi": 9.149022342404876, "atr": 0.0028571428571428597}
+[ENTRY] 2026-08-10T09:34:59+00:00 CETUSTRY layer=1 value=1007.48 entry=0.88666450 cash=83.31
+[SIGNAL] 2026-08-10T09:29:59+00:00 WLDTRY BUY fill_at=2026-08-10T09:34:59+00:00 features={"close": 16.41, "bb_lower": 16.436717209161998, "bb_upper": 16.87185421940943, "rsi": 40.033849556240654, "mfi": 32.734360994925495, "atr": 0.10857142857142854}
+[BLOCKED] WLDTRY reason=insufficient_cash order=83.19 cash=83.31
+[SCAN] 2026-08-10T09:34:59+00:00 symbols=26 signals=3 entries=2 exits=0 blocked=1 open=6 cash=83.31 equity=10072.57
+[SIGNAL] 2026-08-10T09:34:59+00:00 AVNTTRY BUY fill_at=2026-08-10T09:39:59+00:00 features={"close": 4.51, "bb_lower": 4.5275349128822855, "bb_upper": 4.589607944260572, "rsi": 36.471391488963164, "mfi": 31.028349782472006, "atr": 0.009285714285714342}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T09:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T09:39:59+00:00 features={"close": 1.38, "bb_lower": 1.4258293822638965, "bb_upper": 1.712646808212294, "rsi": 27.32235791155685, "mfi": 34.29023885373975, "atr": 0.06749999999999999}
+[BLOCKED] BMTTRY reason=insufficient_cash order=83.19 cash=83.31
+[SIGNAL] 2026-08-10T09:34:59+00:00 CETUSTRY BUY fill_at=2026-08-10T09:39:59+00:00 features={"close": 0.886, "bb_lower": 0.8874886832466624, "bb_upper": 0.9050827453247661, "rsi": 25.1645974389817, "mfi": 6.1197160420574335, "atr": 0.0030714285714285743}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=83.19 cash=83.31
+[SCAN] 2026-08-10T09:39:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=6 cash=83.31 equity=10104.84
+[SIGNAL] 2026-08-10T09:39:59+00:00 AVNTTRY BUY fill_at=2026-08-10T09:44:59+00:00 features={"close": 4.51, "bb_lower": 4.5189025750665, "bb_upper": 4.592525996362072, "rsi": 36.471391488963164, "mfi": 31.296135766892306, "atr": 0.008571428571428643}
+[BLOCKED] AVNTTRY reason=max_layers
+[SCAN] 2026-08-10T09:44:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=83.31 equity=10112.60
+[SCAN] 2026-08-10T09:49:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=83.31 equity=10107.30
+[SCAN] 2026-08-10T09:54:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=83.31 equity=10134.88
+[SCAN] 2026-08-10T09:59:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=83.31 equity=10121.27
+[SCAN] 2026-08-10T10:04:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=83.31 equity=10157.61
+[EXIT] 2026-08-10T10:09:59+00:00 BABYTRY reason=bb_mfi_v3_signal_exit pnl=+10.42 cash=2094.97
+[SIGNAL] 2026-08-10T10:04:59+00:00 PUMPTRY BUY fill_at=2026-08-10T10:09:59+00:00 features={"close": 0.1301, "bb_lower": 0.13031857331638974, "bb_upper": 0.13524333144551504, "rsi": 30.56545807716242, "mfi": 45.00012882724385, "atr": 0.0010071428571428573}
+[ENTRY] 2026-08-10T10:09:59+00:00 PUMPTRY layer=1 value=1015.63 entry=0.13009750 cash=1077.82
+[SCAN] 2026-08-10T10:09:59+00:00 symbols=26 signals=1 entries=1 exits=1 blocked=0 open=6 cash=1077.82 equity=10150.84
+[SIGNAL] 2026-08-10T10:09:59+00:00 PUMPTRY BUY fill_at=2026-08-10T10:14:59+00:00 features={"close": 0.1296, "bb_lower": 0.12990101127323836, "bb_upper": 0.13546089348866638, "rsi": 28.4943713508153, "mfi": 40.74749954820399, "atr": 0.0009785714285714298}
+[ENTRY] 2026-08-10T10:14:59+00:00 PUMPTRY layer=2 value=1011.56 entry=0.12959713 cash=64.74
+[SIGNAL] 2026-08-10T10:09:59+00:00 WLDTRY BUY fill_at=2026-08-10T10:14:59+00:00 features={"close": 16.18, "bb_lower": 16.209141917680952, "bb_upper": 16.827048558509517, "rsi": 29.355338124074393, "mfi": 42.25465839626295, "atr": 0.08285714285714262}
+[BLOCKED] WLDTRY reason=insufficient_cash order=64.65 cash=64.74
+[SCAN] 2026-08-10T10:14:59+00:00 symbols=26 signals=2 entries=1 exits=0 blocked=1 open=6 cash=64.74 equity=10114.10
+[SIGNAL] 2026-08-10T10:14:59+00:00 BOMETRY BUY fill_at=2026-08-10T10:19:59+00:00 features={"close": 0.03792, "bb_lower": 0.03799946259849493, "bb_upper": 0.03924053740150507, "rsi": 42.434416138677435, "mfi": 57.841598272747156, "atr": 0.0005464285714285722}
+[BLOCKED] BOMETRY reason=insufficient_cash order=64.65 cash=64.74
+[EXIT] 2026-08-10T10:19:59+00:00 BMTTRY reason=fixed_take_profit pnl=+19.53 cash=1094.00
+[SCAN] 2026-08-10T10:19:59+00:00 symbols=26 signals=1 entries=0 exits=1 blocked=1 open=5 cash=1094.00 equity=10180.49
+[SIGNAL] 2026-08-10T10:19:59+00:00 BOMETRY BUY fill_at=2026-08-10T10:24:59+00:00 features={"close": 0.03754, "bb_lower": 0.03779405831379493, "bb_upper": 0.039325941686205075, "rsi": 38.07308910303706, "mfi": 52.39642318732171, "atr": 0.000537857142857144}
+[ENTRY] 2026-08-10T10:24:59+00:00 BOMETRY layer=1 value=1018.03 entry=0.03761819 cash=74.45
+[SCAN] 2026-08-10T10:24:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=6 cash=74.45 equity=10182.58
+[SCAN] 2026-08-10T10:29:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=74.45 equity=10174.23
+[SCAN] 2026-08-10T10:34:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=74.45 equity=10172.42
+[SIGNAL] 2026-08-10T10:34:59+00:00 NEIROTRY BUY fill_at=2026-08-10T10:39:59+00:00 features={"close": 0.00342, "bb_lower": 0.003420538890569023, "bb_upper": 0.003510889680859548, "rsi": 38.585612183493836, "mfi": 47.73681776965663, "atr": 2.1428571428571486e-05}
+[BLOCKED] NEIROTRY reason=max_layers
+[SCAN] 2026-08-10T10:39:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=74.45 equity=10171.50
+[SCAN] 2026-08-10T10:44:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=74.45 equity=10189.93
+[SIGNAL] 2026-08-10T10:44:59+00:00 RENDERTRY BUY fill_at=2026-08-10T10:49:59+00:00 features={"close": 61.6, "bb_lower": 61.633938028622836, "bb_upper": 62.27082387613905, "rsi": 20.428033048613045, "mfi": 0.0, "atr": 0.0499999999999997}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=74.34 cash=74.45
+[SCAN] 2026-08-10T10:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=6 cash=74.45 equity=10196.61
+[SCAN] 2026-08-10T10:54:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=74.45 equity=10196.37
+[SCAN] 2026-08-10T10:59:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=74.45 equity=10207.60
+[SCAN] 2026-08-10T11:04:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=6 cash=74.45 equity=10205.81
+[SIGNAL] 2026-08-10T11:04:59+00:00 RENDERTRY BUY fill_at=2026-08-10T11:09:59+00:00 features={"close": 61.5, "bb_lower": 61.521504567872256, "bb_upper": 62.19278114641344, "rsi": 28.48436273418504, "mfi": 0.002303179309137704, "atr": 0.0857142857142849}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=74.34 cash=74.45
+[EXIT] 2026-08-10T11:09:59+00:00 ALLOTRY reason=fixed_take_profit pnl=+38.25 cash=2090.36
+[SCAN] 2026-08-10T11:09:59+00:00 symbols=26 signals=1 entries=0 exits=1 blocked=1 open=5 cash=2090.36 equity=10195.74
+[SCAN] 2026-08-10T11:14:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=2090.36 equity=10212.95
+[SCAN] 2026-08-10T11:19:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=5 cash=2090.36 equity=10221.21
+[SIGNAL] 2026-08-10T11:19:59+00:00 ICPTRY BUY fill_at=2026-08-10T11:24:59+00:00 features={"close": 105.3, "bb_lower": 105.3120406787275, "bb_upper": 106.35462598793922, "rsi": 35.62724698140684, "mfi": 1.7352048173611365, "atr": 0.07142857142857244}
+[ENTRY] 2026-08-10T11:24:59+00:00 ICPTRY layer=1 value=1023.98 entry=105.57912500 cash=1064.84
+[SIGNAL] 2026-08-10T11:19:59+00:00 PYTHTRY BUY fill_at=2026-08-10T11:24:59+00:00 features={"close": 2.017, "bb_lower": 2.0199781435722026, "bb_upper": 2.0411647135706548, "rsi": 31.419207619084588, "mfi": 26.649229498668078, "atr": 0.0022857142857143193}
+[ENTRY] 2026-08-10T11:24:59+00:00 PYTHTRY layer=1 value=1023.65 entry=2.01551050 cash=39.66
+[SCAN] 2026-08-10T11:24:59+00:00 symbols=26 signals=2 entries=2 exits=0 blocked=0 open=7 cash=39.66 equity=10235.71
+[SIGNAL] 2026-08-10T11:24:59+00:00 PYTHTRY BUY fill_at=2026-08-10T11:29:59+00:00 features={"close": 2.017, "bb_lower": 2.017936675022043, "bb_upper": 2.0420633249779576, "rsi": 31.419207619084588, "mfi": 25.80921838932531, "atr": 0.0024285714285714466}
+[BLOCKED] PYTHTRY reason=insufficient_cash order=39.60 cash=39.66
+[SCAN] 2026-08-10T11:29:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=39.66 equity=10255.70
+[SCAN] 2026-08-10T11:34:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=39.66 equity=10257.76
+[SCAN] 2026-08-10T11:39:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=39.66 equity=10262.35
+[SCAN] 2026-08-10T11:44:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=39.66 equity=10227.12
+[SIGNAL] 2026-08-10T11:44:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T11:49:59+00:00 features={"close": 0.418, "bb_lower": 0.41956825514316276, "bb_upper": 0.4281460305711229, "rsi": 35.385141559639266, "mfi": 34.258421513570326, "atr": 0.0020000000000000018}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=39.60 cash=39.66
+[SCAN] 2026-08-10T11:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=39.66 equity=10206.27
+[SIGNAL] 2026-08-10T11:49:59+00:00 BOMETRY BUY fill_at=2026-08-10T11:54:59+00:00 features={"close": 0.03715, "bb_lower": 0.03718958359987431, "bb_upper": 0.03847898782869711, "rsi": 32.80989549450899, "mfi": 33.49710590206345, "atr": 0.0002942857142857142}
+[BLOCKED] BOMETRY reason=insufficient_cash order=39.60 cash=39.66
+[SIGNAL] 2026-08-10T11:49:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T11:54:59+00:00 features={"close": 0.416, "bb_lower": 0.41805442611272015, "bb_upper": 0.42870747864918457, "rsi": 31.800735826738375, "mfi": 33.083154569134734, "atr": 0.0020714285714285735}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=39.60 cash=39.66
+[SCAN] 2026-08-10T11:54:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=39.66 equity=10175.87
+[SIGNAL] 2026-08-10T11:54:59+00:00 BOMETRY BUY fill_at=2026-08-10T11:59:59+00:00 features={"close": 0.03656, "bb_lower": 0.03703179618851156, "bb_upper": 0.038418680001964634, "rsi": 25.774778820975854, "mfi": 28.209602812323723, "atr": 0.00033428571428571405}
+[BLOCKED] BOMETRY reason=insufficient_cash order=39.60 cash=39.66
+[SIGNAL] 2026-08-10T11:54:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T11:59:59+00:00 features={"close": 0.417, "bb_lower": 0.4170798970407923, "bb_upper": 0.42892010295920757, "rsi": 35.34812983857741, "mfi": 39.46896402893831, "atr": 0.0019285714285714303}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=39.60 cash=39.66
+[SCAN] 2026-08-10T11:59:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=39.66 equity=10177.92
+[SIGNAL] 2026-08-10T11:59:59+00:00 BOMETRY BUY fill_at=2026-08-10T12:04:59+00:00 features={"close": 0.03643, "bb_lower": 0.03677505290089892, "bb_upper": 0.03853351852767251, "rsi": 24.51979881533154, "mfi": 23.0361812911664, "atr": 0.0003457142857142855}
+[BLOCKED] BOMETRY reason=insufficient_cash order=39.60 cash=39.66
+[SIGNAL] 2026-08-10T11:59:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T12:04:59+00:00 features={"close": 0.415, "bb_lower": 0.4157733161346021, "bb_upper": 0.4292743029130168, "rsi": 31.76790414309508, "mfi": 39.051321487874205, "atr": 0.0020000000000000018}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=39.60 cash=39.66
+[SCAN] 2026-08-10T12:04:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=39.66 equity=10211.72
+[SIGNAL] 2026-08-10T12:04:59+00:00 BOMETRY BUY fill_at=2026-08-10T12:09:59+00:00 features={"close": 0.0365, "bb_lower": 0.03659751919891553, "bb_upper": 0.03861200461060828, "rsi": 26.60442659670491, "mfi": 28.06261576774135, "atr": 0.0003435714285714287}
+[BLOCKED] BOMETRY reason=insufficient_cash order=39.60 cash=39.66
+[SCAN] 2026-08-10T12:09:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=39.66 equity=10178.27
+[SCAN] 2026-08-10T12:14:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=39.66 equity=10183.56
+[SIGNAL] 2026-08-10T12:14:59+00:00 AVNTTRY BUY fill_at=2026-08-10T12:19:59+00:00 features={"close": 4.51, "bb_lower": 4.5104796413130295, "bb_upper": 4.57618702535364, "rsi": 32.1891284617178, "mfi": 17.983951531439615, "atr": 0.006428571428571355}
+[BLOCKED] AVNTTRY reason=max_layers
+[SCAN] 2026-08-10T12:19:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=39.66 equity=10181.18
+[SCAN] 2026-08-10T12:24:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=39.66 equity=10168.55
+[SIGNAL] 2026-08-10T12:24:59+00:00 AVNTTRY BUY fill_at=2026-08-10T12:29:59+00:00 features={"close": 4.5, "bb_lower": 4.501153924344616, "bb_upper": 4.574084170893479, "rsi": 28.456571302157812, "mfi": 12.64826424658429, "atr": 0.004999999999999957}
+[BLOCKED] AVNTTRY reason=max_layers
+[SCAN] 2026-08-10T12:29:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=39.66 equity=10138.36
+[SIGNAL] 2026-08-10T12:29:59+00:00 AVNTTRY BUY fill_at=2026-08-10T12:34:59+00:00 features={"close": 4.48, "bb_lower": 4.4922372399802075, "bb_upper": 4.574429426686461, "rsi": 22.742690332982946, "mfi": 5.9824116060710395, "atr": 0.006428571428571355}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T12:29:59+00:00 WLDTRY BUY fill_at=2026-08-10T12:34:59+00:00 features={"close": 16.15, "bb_lower": 16.15230508175554, "bb_upper": 16.283885394434936, "rsi": 40.694615553712325, "mfi": 57.62501109845664, "atr": 0.05999999999999999}
+[BLOCKED] WLDTRY reason=insufficient_cash order=39.60 cash=39.66
+[SCAN] 2026-08-10T12:34:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=39.66 equity=10139.78
+[SIGNAL] 2026-08-10T12:34:59+00:00 NEIROTRY BUY fill_at=2026-08-10T12:39:59+00:00 features={"close": 0.00345, "bb_lower": 0.0034524563745820433, "bb_upper": 0.003527543625417956, "rsi": 39.42643103862803, "mfi": 41.13087892817305, "atr": 2.0000000000000052e-05}
+[BLOCKED] NEIROTRY reason=max_layers
+[SCAN] 2026-08-10T12:39:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=39.66 equity=10143.52
+[SIGNAL] 2026-08-10T12:39:59+00:00 NEIROTRY BUY fill_at=2026-08-10T12:44:59+00:00 features={"close": 0.00344, "bb_lower": 0.0034476875223797927, "bb_upper": 0.0035304077157154445, "rsi": 36.992341626085675, "mfi": 42.94800030803537, "atr": 1.857142857142862e-05}
+[BLOCKED] NEIROTRY reason=max_layers
+[SCAN] 2026-08-10T12:44:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=39.66 equity=10175.10
+[SCAN] 2026-08-10T12:49:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=39.66 equity=10169.77
+[SCAN] 2026-08-10T12:54:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=39.66 equity=10159.42
+[SIGNAL] 2026-08-10T12:54:59+00:00 EDENTRY BUY fill_at=2026-08-10T12:59:59+00:00 features={"close": 2.147, "bb_lower": 2.1666524228103996, "bb_upper": 2.2582047200467428, "rsi": 31.912136810657813, "mfi": 55.9324304907128, "atr": 0.02535714285714292}
+[BLOCKED] EDENTRY reason=insufficient_cash order=39.60 cash=39.66
+[SIGNAL] 2026-08-10T12:54:59+00:00 RADTRY BUY fill_at=2026-08-10T12:59:59+00:00 features={"close": 9.92, "bb_lower": 9.949268327685242, "bb_upper": 10.07644595802904, "rsi": 27.919242012186032, "mfi": 16.697958145427904, "atr": 0.01642857142857146}
+[BLOCKED] RADTRY reason=insufficient_cash order=39.60 cash=39.66
+[SCAN] 2026-08-10T12:59:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=39.66 equity=10161.70
+[SIGNAL] 2026-08-10T12:59:59+00:00 RADTRY BUY fill_at=2026-08-10T13:04:59+00:00 features={"close": 9.92, "bb_lower": 9.935079534301472, "bb_upper": 10.083968084746143, "rsi": 27.919242012186032, "mfi": 16.697958145427904, "atr": 0.01642857142857146}
+[BLOCKED] RADTRY reason=insufficient_cash order=39.60 cash=39.66
+[EXIT] 2026-08-10T13:04:59+00:00 BOMETRY reason=fixed_take_profit pnl=+19.72 cash=1078.93
+[SCAN] 2026-08-10T13:04:59+00:00 symbols=26 signals=1 entries=0 exits=1 blocked=1 open=6 cash=1078.93 equity=10187.12
+[SIGNAL] 2026-08-10T13:04:59+00:00 RADTRY BUY fill_at=2026-08-10T13:09:59+00:00 features={"close": 9.92, "bb_lower": 9.922814976654324, "bb_upper": 10.089565975726623, "rsi": 27.919242012186018, "mfi": 11.808246154886561, "atr": 0.01642857142857146}
+[ENTRY] 2026-08-10T13:09:59+00:00 RADTRY layer=1 value=1021.24 entry=10.03752250 cash=56.16
+[SIGNAL] 2026-08-10T13:04:59+00:00 TSTTRY BUY fill_at=2026-08-10T13:09:59+00:00 features={"close": 1.057, "bb_lower": 1.072288566202123, "bb_upper": 1.1748542909407338, "rsi": 37.317014257188916, "mfi": 48.821276441114996, "atr": 0.03778571428571425}
+[BLOCKED] TSTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:09:59+00:00 symbols=26 signals=2 entries=1 exits=0 blocked=1 open=7 cash=56.16 equity=10212.16
+[SIGNAL] 2026-08-10T13:09:59+00:00 CHIPTRY BUY fill_at=2026-08-10T13:14:59+00:00 features={"close": 1.0995, "bb_lower": 1.1009254896307779, "bb_upper": 1.1218840341787457, "rsi": 33.645725631452606, "mfi": 29.758768998395254, "atr": 0.004357142857142837}
+[BLOCKED] CHIPTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:09:59+00:00 TSTTRY BUY fill_at=2026-08-10T13:14:59+00:00 features={"close": 1.016, "bb_lower": 1.0519432317657627, "bb_upper": 1.1877710539485227, "rsi": 32.0261321533132, "mfi": 45.59337164440888, "atr": 0.03971428571428569}
+[BLOCKED] TSTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:14:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=56.16 equity=10202.39
+[SIGNAL] 2026-08-10T13:14:59+00:00 ALLOTRY BUY fill_at=2026-08-10T13:19:59+00:00 features={"close": 14.56, "bb_lower": 14.638138536272699, "bb_upper": 14.868528130393972, "rsi": 32.048252376013735, "mfi": 16.222802225769698, "atr": 0.0842857142857144}
+[BLOCKED] ALLOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:14:59+00:00 CHIPTRY BUY fill_at=2026-08-10T13:19:59+00:00 features={"close": 1.0986, "bb_lower": 1.1003439154012207, "bb_upper": 1.1198846560273505, "rsi": 32.90223673294557, "mfi": 29.691723729371063, "atr": 0.004235714285714264}
+[BLOCKED] CHIPTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:14:59+00:00 THETRY BUY fill_at=2026-08-10T13:19:59+00:00 features={"close": 3.088, "bb_lower": 3.096016907065154, "bb_upper": 3.1905545215062734, "rsi": 39.86982472516012, "mfi": 46.47869531148137, "atr": 0.03035714285714291}
+[BLOCKED] THETRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:14:59+00:00 TSTTRY BUY fill_at=2026-08-10T13:19:59+00:00 features={"close": 1.019, "bb_lower": 1.0351731043143066, "bb_upper": 1.195874514733312, "rsi": 32.781587762097956, "mfi": 40.67169520079997, "atr": 0.038428571428571416}
+[BLOCKED] TSTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:19:59+00:00 symbols=26 signals=4 entries=0 exits=0 blocked=4 open=7 cash=56.16 equity=10223.41
+[SIGNAL] 2026-08-10T13:19:59+00:00 ALLOTRY BUY fill_at=2026-08-10T13:24:59+00:00 features={"close": 14.54, "bb_lower": 14.599228435072483, "bb_upper": 14.891247755403711, "rsi": 30.822023990925118, "mfi": 14.456051294825826, "atr": 0.08500000000000009}
+[BLOCKED] ALLOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:19:59+00:00 CHIPTRY BUY fill_at=2026-08-10T13:24:59+00:00 features={"close": 1.098, "bb_lower": 1.0984496057634991, "bb_upper": 1.1204075370936433, "rsi": 32.38538672910943, "mfi": 26.789237712689626, "atr": 0.00404285714285711}
+[BLOCKED] CHIPTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:19:59+00:00 TSTTRY BUY fill_at=2026-08-10T13:24:59+00:00 features={"close": 1.004, "bb_lower": 1.0167292726980828, "bb_upper": 1.203270727301917, "rsi": 30.92018173612979, "mfi": 36.52445218657627, "atr": 0.037857142857142846}
+[BLOCKED] TSTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:24:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=56.16 equity=10209.84
+[SIGNAL] 2026-08-10T13:24:59+00:00 ALLOTRY BUY fill_at=2026-08-10T13:29:59+00:00 features={"close": 14.47, "bb_lower": 14.546089328194808, "bb_upper": 14.920577338471867, "rsi": 26.91699912156561, "mfi": 13.15641269299968, "atr": 0.0942857142857143}
+[BLOCKED] ALLOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:24:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:29:59+00:00 features={"close": 1.325, "bb_lower": 1.3460390867070113, "bb_upper": 1.4778656751977504, "rsi": 36.981656963794926, "mfi": 45.18684300932333, "atr": 0.04835714285714286}
+[BLOCKED] BMTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:24:59+00:00 TSTTRY BUY fill_at=2026-08-10T13:29:59+00:00 features={"close": 0.998, "bb_lower": 0.9995366007275885, "bb_upper": 1.2081776849866968, "rsi": 30.177643950204384, "mfi": 32.37756463766145, "atr": 0.03628571428571426}
+[BLOCKED] TSTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:29:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=56.16 equity=10223.68
+[SIGNAL] 2026-08-10T13:29:59+00:00 0GTRY BUY fill_at=2026-08-10T13:34:59+00:00 features={"close": 7.36, "bb_lower": 7.363813427272423, "bb_upper": 7.42190085844186, "rsi": 43.57210107842567, "mfi": 27.504742249896154, "atr": 0.020714285714285845}
+[BLOCKED] 0GTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:29:59+00:00 ALLOTRY BUY fill_at=2026-08-10T13:34:59+00:00 features={"close": 14.5, "bb_lower": 14.51036974316204, "bb_upper": 14.934392161599872, "rsi": 30.97713839718905, "mfi": 11.656075296756185, "atr": 0.09071428571428568}
+[BLOCKED] ALLOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:34:59+00:00 features={"close": 1.286, "bb_lower": 1.3223735072104141, "bb_upper": 1.491721730884824, "rsi": 33.14231636611518, "mfi": 34.64491272761471, "atr": 0.046785714285714285}
+[BLOCKED] BMTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:34:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=56.16 equity=10199.32
+[SIGNAL] 2026-08-10T13:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:39:59+00:00 features={"close": 1.251, "bb_lower": 1.2934186151801812, "bb_upper": 1.5082004324388667, "rsi": 30.103828222062447, "mfi": 32.194038136165645, "atr": 0.04907142857142856}
+[BLOCKED] BMTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:34:59+00:00 FETTRY BUY fill_at=2026-08-10T13:39:59+00:00 features={"close": 6.55, "bb_lower": 6.55810009768778, "bb_upper": 6.604757045169364, "rsi": 35.8767447571245, "mfi": 53.72562624039978, "atr": 0.01285714285714271}
+[BLOCKED] FETTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:39:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=56.16 equity=10205.30
+[SIGNAL] 2026-08-10T13:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T13:44:59+00:00 features={"close": 1.247, "bb_lower": 1.2674378766482843, "bb_upper": 1.5159906947802875, "rsi": 29.765959009178843, "mfi": 33.12245921781255, "atr": 0.050214285714285704}
+[BLOCKED] BMTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:39:59+00:00 FETTRY BUY fill_at=2026-08-10T13:44:59+00:00 features={"close": 6.55, "bb_lower": 6.5529935461386986, "bb_upper": 6.606054072908923, "rsi": 35.8767447571245, "mfi": 43.80669686058959, "atr": 0.01357142857142841}
+[BLOCKED] FETTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:44:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=56.16 equity=10185.62
+[SIGNAL] 2026-08-10T13:44:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:49:59+00:00 features={"close": 0.53, "bb_lower": 0.5359391930966123, "bb_upper": 0.5632227116652927, "rsi": 28.19419040606681, "mfi": 42.86730433345801, "atr": 0.006914285714285738}
+[BLOCKED] ACTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:44:59+00:00 FETTRY BUY fill_at=2026-08-10T13:49:59+00:00 features={"close": 6.52, "bb_lower": 6.5404890628401775, "bb_upper": 6.610939508588394, "rsi": 26.445106952758934, "mfi": 17.692859262235274, "atr": 0.01428571428571417}
+[BLOCKED] FETTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:49:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=56.16 equity=10178.88
+[SIGNAL] 2026-08-10T13:49:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:54:59+00:00 features={"close": 0.5124, "bb_lower": 0.5273045847157469, "bb_upper": 0.567104939093777, "rsi": 20.428352347745516, "mfi": 30.209922486265583, "atr": 0.008378571428571457}
+[BLOCKED] ACTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:49:59+00:00 FETTRY BUY fill_at=2026-08-10T13:54:59+00:00 features={"close": 6.51, "bb_lower": 6.528097854605418, "bb_upper": 6.614759288251722, "rsi": 24.152271360614634, "mfi": 14.455355569069269, "atr": 0.015714285714285632}
+[BLOCKED] FETTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:49:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T13:54:59+00:00 features={"close": 0.411, "bb_lower": 0.41159643579391564, "bb_upper": 0.4196416594441796, "rsi": 36.21728160275502, "mfi": 44.995834981043764, "atr": 0.0020000000000000018}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:54:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=56.16 equity=10168.67
+[SIGNAL] 2026-08-10T13:54:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:59:59+00:00 features={"close": 0.5182, "bb_lower": 0.5223383147110324, "bb_upper": 0.5687283519556344, "rsi": 27.55244959659197, "mfi": 28.986912825693082, "atr": 0.008742857142857172}
+[BLOCKED] ACTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:54:59+00:00 FETTRY BUY fill_at=2026-08-10T13:59:59+00:00 features={"close": 6.51, "bb_lower": 6.517717976550711, "bb_upper": 6.618472499639764, "rsi": 24.152271360614634, "mfi": 9.224864487059435, "atr": 0.014999999999999934}
+[BLOCKED] FETTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T13:59:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=56.16 equity=10168.34
+[SIGNAL] 2026-08-10T13:59:59+00:00 ACTTRY BUY fill_at=2026-08-10T14:04:59+00:00 features={"close": 0.518, "bb_lower": 0.518192869646235, "bb_upper": 0.5694261779728127, "rsi": 27.460606667853938, "mfi": 30.906980233717505, "atr": 0.00844285714285718}
+[BLOCKED] ACTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:59:59+00:00 ICPTRY BUY fill_at=2026-08-10T14:04:59+00:00 features={"close": 105.0, "bb_lower": 105.18129273420745, "bb_upper": 105.71394536103067, "rsi": 29.2469489837777, "mfi": 33.50706382493925, "atr": 0.1285714285714243}
+[BLOCKED] ICPTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T13:59:59+00:00 NEIROTRY BUY fill_at=2026-08-10T14:04:59+00:00 features={"close": 0.00343, "bb_lower": 0.0034312146828652623, "bb_upper": 0.0034897376980871186, "rsi": 37.63226289394683, "mfi": 28.446526400608832, "atr": 1.500000000000004e-05}
+[BLOCKED] NEIROTRY reason=max_layers
+[SCAN] 2026-08-10T14:04:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=56.16 equity=10187.80
+[SIGNAL] 2026-08-10T14:04:59+00:00 ACTTRY BUY fill_at=2026-08-10T14:09:59+00:00 features={"close": 0.5136, "bb_lower": 0.5136960752241317, "bb_upper": 0.5700372581092017, "rsi": 25.43954470219002, "mfi": 27.684513662366356, "atr": 0.008357142857142896}
+[BLOCKED] ACTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T14:04:59+00:00 ICPTRY BUY fill_at=2026-08-10T14:09:59+00:00 features={"close": 105.0, "bb_lower": 105.1106462029315, "bb_upper": 105.7560204637352, "rsi": 29.2469489837777, "mfi": 33.3175676772145, "atr": 0.11428571428570981}
+[BLOCKED] ICPTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T14:09:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=56.16 equity=10188.92
+[SCAN] 2026-08-10T14:14:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=56.16 equity=10192.44
+[SCAN] 2026-08-10T14:19:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=56.16 equity=10170.87
+[SCAN] 2026-08-10T14:24:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=56.16 equity=10185.69
+[SCAN] 2026-08-10T14:29:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=56.16 equity=10215.03
+[SCAN] 2026-08-10T14:34:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=56.16 equity=10223.89
+[SCAN] 2026-08-10T14:39:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=56.16 equity=10203.39
+[SCAN] 2026-08-10T14:44:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=56.16 equity=10216.83
+[SIGNAL] 2026-08-10T14:44:59+00:00 EDENTRY BUY fill_at=2026-08-10T14:49:59+00:00 features={"close": 2.144, "bb_lower": 2.1524802929638085, "bb_upper": 2.206091135607621, "rsi": 34.55438415157846, "mfi": 32.374540854775034, "atr": 0.016214285714285768}
+[BLOCKED] EDENTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T14:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=56.16 equity=10197.88
+[SIGNAL] 2026-08-10T14:49:59+00:00 EDENTRY BUY fill_at=2026-08-10T14:54:59+00:00 features={"close": 2.144, "bb_lower": 2.1480728639314264, "bb_upper": 2.2084985646400024, "rsi": 34.55438415157846, "mfi": 35.19819287087792, "atr": 0.014928571428571466}
+[BLOCKED] EDENTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T14:54:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=56.16 equity=10178.54
+[SCAN] 2026-08-10T14:59:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=56.16 equity=10161.98
+[SCAN] 2026-08-10T15:04:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=56.16 equity=10173.30
+[SIGNAL] 2026-08-10T15:04:59+00:00 JTOTRY BUY fill_at=2026-08-10T15:09:59+00:00 features={"close": 26.41, "bb_lower": 26.442521709696006, "bb_upper": 26.90795448078018, "rsi": 34.61000451770708, "mfi": 14.598898766808432, "atr": 0.09928571428571382}
+[BLOCKED] JTOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:04:59+00:00 TURBOTRY BUY fill_at=2026-08-10T15:09:59+00:00 features={"close": 0.0407, "bb_lower": 0.040704796413130274, "bb_upper": 0.04136187025353639, "rsi": 31.53181193198961, "mfi": 28.714145567172636, "atr": 6.428571428571414e-05}
+[BLOCKED] TURBOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:09:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=56.16 equity=10205.50
+[SIGNAL] 2026-08-10T15:09:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:14:59+00:00 features={"close": 1.209, "bb_lower": 1.2182022664526526, "bb_upper": 1.3060834478330614, "rsi": 33.06370369336315, "mfi": 47.410986969238785, "atr": 0.0322142857142857}
+[BLOCKED] BMTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:09:59+00:00 JTOTRY BUY fill_at=2026-08-10T15:14:59+00:00 features={"close": 26.35, "bb_lower": 26.393144416991227, "bb_upper": 26.9106651068183, "rsi": 32.16260858193458, "mfi": 20.619322063859627, "atr": 0.09999999999999964}
+[BLOCKED] JTOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:09:59+00:00 RENDERTRY BUY fill_at=2026-08-10T15:14:59+00:00 features={"close": 61.5, "bb_lower": 61.52706994274404, "bb_upper": 61.996739581065476, "rsi": 32.5593852192827, "mfi": 54.39786439607569, "atr": 0.0499999999999997}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:14:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=56.16 equity=10157.16
+[SIGNAL] 2026-08-10T15:14:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:19:59+00:00 features={"close": 1.208, "bb_lower": 1.2102046041466463, "bb_upper": 1.3066525387104961, "rsi": 32.92546911072817, "mfi": 38.079053046769744, "atr": 0.031428571428571424}
+[BLOCKED] BMTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:14:59+00:00 CETUSTRY BUY fill_at=2026-08-10T15:19:59+00:00 features={"close": 0.889, "bb_lower": 0.8902069523192867, "bb_upper": 0.9006501905378564, "rsi": 32.09878268225465, "mfi": 29.221420515564063, "atr": 0.0018571428571428589}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:14:59+00:00 FETTRY BUY fill_at=2026-08-10T15:19:59+00:00 features={"close": 6.46, "bb_lower": 6.475028223266715, "bb_upper": 6.557352729114237, "rsi": 29.692043667264855, "mfi": 22.89345195228161, "atr": 0.016428571428571587}
+[BLOCKED] FETTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:14:59+00:00 JTOTRY BUY fill_at=2026-08-10T15:19:59+00:00 features={"close": 26.35, "bb_lower": 26.353027967441868, "bb_upper": 26.905067270653376, "rsi": 32.16260858193458, "mfi": 23.873876217898513, "atr": 0.10499999999999941}
+[BLOCKED] JTOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:14:59+00:00 PYTHTRY BUY fill_at=2026-08-10T15:19:59+00:00 features={"close": 2.01, "bb_lower": 2.0183088016242663, "bb_upper": 2.042643579328114, "rsi": 24.649291383381822, "mfi": 11.507188076085058, "atr": 0.0028571428571428597}
+[BLOCKED] PYTHTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:14:59+00:00 RENDERTRY BUY fill_at=2026-08-10T15:19:59+00:00 features={"close": 61.3, "bb_lower": 61.43273867539273, "bb_upper": 62.043451800797726, "rsi": 25.560478094620308, "mfi": 26.000677755254557, "atr": 0.07142857142857093}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:14:59+00:00 TURBOTRY BUY fill_at=2026-08-10T15:19:59+00:00 features={"close": 0.0404, "bb_lower": 0.04057957330603996, "bb_upper": 0.04135376002729336, "rsi": 26.64095321560461, "mfi": 28.43480921053927, "atr": 9.285714285714303e-05}
+[BLOCKED] TURBOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:19:59+00:00 symbols=26 signals=7 entries=0 exits=0 blocked=7 open=7 cash=56.16 equity=10168.18
+[SIGNAL] 2026-08-10T15:19:59+00:00 FETTRY BUY fill_at=2026-08-10T15:24:59+00:00 features={"close": 6.46, "bb_lower": 6.4671327265769785, "bb_upper": 6.556676797232545, "rsi": 29.692043667264855, "mfi": 21.517109747136743, "atr": 0.015714285714285885}
+[BLOCKED] FETTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:19:59+00:00 JTOTRY BUY fill_at=2026-08-10T15:24:59+00:00 features={"close": 26.25, "bb_lower": 26.295017059969574, "bb_upper": 26.909744844792343, "rsi": 28.25452730958102, "mfi": 27.110493705717502, "atr": 0.10285714285714244}
+[BLOCKED] JTOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:19:59+00:00 PYTHTRY BUY fill_at=2026-08-10T15:24:59+00:00 features={"close": 2.01, "bb_lower": 2.0145093772546896, "bb_upper": 2.0440620513167382, "rsi": 24.649291383381822, "mfi": 12.789737744297184, "atr": 0.0029999999999999866}
+[BLOCKED] PYTHTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:24:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=56.16 equity=10160.67
+[SIGNAL] 2026-08-10T15:24:59+00:00 FETTRY BUY fill_at=2026-08-10T15:29:59+00:00 features={"close": 6.46, "bb_lower": 6.461059403574932, "bb_upper": 6.554178691663163, "rsi": 29.692043667264855, "mfi": 18.414195994470404, "atr": 0.014285714285714488}
+[BLOCKED] FETTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:24:59+00:00 JTOTRY BUY fill_at=2026-08-10T15:29:59+00:00 features={"close": 26.23, "bb_lower": 26.25014655350721, "bb_upper": 26.893662970302312, "rsi": 27.529746581640694, "mfi": 10.417624860623448, "atr": 0.08785714285714238}
+[BLOCKED] JTOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:24:59+00:00 THETRY BUY fill_at=2026-08-10T15:29:59+00:00 features={"close": 3.047, "bb_lower": 3.0553599209106457, "bb_upper": 3.1518781743274493, "rsi": 36.1910236090816, "mfi": 51.16816219075012, "atr": 0.025357142857142856}
+[BLOCKED] THETRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:29:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=56.16 equity=10190.92
+[SIGNAL] 2026-08-10T15:29:59+00:00 JTOTRY BUY fill_at=2026-08-10T15:34:59+00:00 features={"close": 26.18, "bb_lower": 26.195095137166053, "bb_upper": 26.891571529500613, "rsi": 25.741395456486472, "mfi": 7.294300930457524, "atr": 0.08785714285714238}
+[BLOCKED] JTOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:34:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=56.16 equity=10178.54
+[SIGNAL] 2026-08-10T15:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:39:59+00:00 features={"close": 1.14, "bb_lower": 1.17199977748141, "bb_upper": 1.324857365375733, "rsi": 26.88348414511158, "mfi": 38.824401003512385, "atr": 0.03378571428571431}
+[BLOCKED] BMTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:34:59+00:00 JTOTRY BUY fill_at=2026-08-10T15:39:59+00:00 features={"close": 25.96, "bb_lower": 26.08872215164573, "bb_upper": 26.94461118168761, "rsi": 19.655232816203153, "mfi": 6.076217516079268, "atr": 0.10285714285714244}
+[BLOCKED] JTOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:34:59+00:00 METRY BUY fill_at=2026-08-10T15:39:59+00:00 features={"close": 3.175, "bb_lower": 3.1860619619427055, "bb_upper": 3.253080895200152, "rsi": 41.43722965365116, "mfi": 56.33420754465138, "atr": 0.022571428571428624}
+[BLOCKED] METRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:39:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=56.16 equity=10194.80
+[SIGNAL] 2026-08-10T15:39:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:44:59+00:00 features={"close": 1.116, "bb_lower": 1.1469119492810667, "bb_upper": 1.3365166221475049, "rsi": 24.569570777475533, "mfi": 29.097001562831963, "atr": 0.03371428571428573}
+[BLOCKED] BMTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:39:59+00:00 JTOTRY BUY fill_at=2026-08-10T15:44:59+00:00 features={"close": 26.01, "bb_lower": 26.013526543865957, "bb_upper": 26.97218774184833, "rsi": 24.07506063212368, "mfi": 7.146567227155188, "atr": 0.10357142857142801}
+[BLOCKED] JTOTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:39:59+00:00 METRY BUY fill_at=2026-08-10T15:44:59+00:00 features={"close": 3.163, "bb_lower": 3.176163148405595, "bb_upper": 3.2585035182610707, "rsi": 39.05121122835615, "mfi": 55.03930396735387, "atr": 0.02214285714285721}
+[BLOCKED] METRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:39:59+00:00 WLDTRY BUY fill_at=2026-08-10T15:44:59+00:00 features={"close": 16.15, "bb_lower": 16.23704140345529, "bb_upper": 16.585815739401855, "rsi": 38.05710347870022, "mfi": 51.199049976970144, "atr": 0.11571428571428578}
+[BLOCKED] WLDTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:44:59+00:00 symbols=26 signals=4 entries=0 exits=0 blocked=4 open=7 cash=56.16 equity=10183.76
+[SIGNAL] 2026-08-10T15:44:59+00:00 BMTTRY BUY fill_at=2026-08-10T15:49:59+00:00 features={"close": 1.125, "bb_lower": 1.1288046091613253, "bb_upper": 1.34243348607677, "rsi": 27.118014861108406, "mfi": 34.392779704196414, "atr": 0.0332857142857143}
+[BLOCKED] BMTTRY reason=insufficient_cash order=56.07 cash=56.16
+[SIGNAL] 2026-08-10T15:44:59+00:00 NEIROTRY BUY fill_at=2026-08-10T15:49:59+00:00 features={"close": 0.00341, "bb_lower": 0.0034188349729596143, "bb_upper": 0.0034744983603737186, "rsi": 37.62989313350482, "mfi": 29.59861155939909, "atr": 1.5714285714285756e-05}
+[BLOCKED] NEIROTRY reason=max_layers
+[SCAN] 2026-08-10T15:49:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=56.16 equity=10188.57
+[SIGNAL] 2026-08-10T15:49:59+00:00 WLDTRY BUY fill_at=2026-08-10T15:54:59+00:00 features={"close": 16.18, "bb_lower": 16.1922490927099, "bb_upper": 16.598227097766298, "rsi": 41.652958357267174, "mfi": 51.744268790007325, "atr": 0.12499999999999975}
+[BLOCKED] WLDTRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:54:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=56.16 equity=10196.67
+[SIGNAL] 2026-08-10T15:54:59+00:00 BOMETRY BUY fill_at=2026-08-10T15:59:59+00:00 features={"close": 0.03822, "bb_lower": 0.038306112379345274, "bb_upper": 0.039026268573035684, "rsi": 42.43501720358123, "mfi": 37.566660969644936, "atr": 0.00035285714285714434}
+[BLOCKED] BOMETRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T15:59:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=56.16 equity=10219.89
+[SIGNAL] 2026-08-10T15:59:59+00:00 BOMETRY BUY fill_at=2026-08-10T16:04:59+00:00 features={"close": 0.03811, "bb_lower": 0.03821428808733451, "bb_upper": 0.039074283341236936, "rsi": 40.56649401619822, "mfi": 33.57314416726469, "atr": 0.0003435714285714292}
+[BLOCKED] BOMETRY reason=insufficient_cash order=56.07 cash=56.16
+[SCAN] 2026-08-10T16:04:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=56.16 equity=10228.71
+[EXIT] 2026-08-10T16:09:59+00:00 ICPTRY reason=bb_mfi_v3_signal_exit pnl=+10.88 cash=1092.55
+[SCAN] 2026-08-10T16:09:59+00:00 symbols=26 signals=0 entries=0 exits=1 blocked=0 open=6 cash=1092.55 equity=10222.23
+[SIGNAL] 2026-08-10T16:09:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T16:14:59+00:00 features={"close": 0.41, "bb_lower": 0.41085960664394583, "bb_upper": 0.41914039335605413, "rsi": 35.68031646742412, "mfi": 52.46157645268869, "atr": 0.0015000000000000013}
+[ENTRY] 2026-08-10T16:14:59+00:00 PEOPLETRY layer=1 value=1022.87 entry=0.41030750 cash=68.15
+[SCAN] 2026-08-10T16:14:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=7 cash=68.15 equity=10226.38
+[SCAN] 2026-08-10T16:19:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=68.15 equity=10220.75
+[SCAN] 2026-08-10T16:24:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=68.15 equity=10244.78
+[SIGNAL] 2026-08-10T16:24:59+00:00 BABYTRY BUY fill_at=2026-08-10T16:29:59+00:00 features={"close": 0.626, "bb_lower": 0.6264017758593576, "bb_upper": 0.6398839384263568, "rsi": 34.391174377858036, "mfi": 44.6934729770854, "atr": 0.0017142857142857157}
+[BLOCKED] BABYTRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T16:29:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=68.15 equity=10231.01
+[SIGNAL] 2026-08-10T16:29:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T16:34:59+00:00 features={"close": 0.408, "bb_lower": 0.4088097549753966, "bb_upper": 0.41861881645317467, "rsi": 35.25502278704171, "mfi": 44.40503357484607, "atr": 0.0017857142857142874}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T16:34:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=68.15 equity=10218.03
+[SIGNAL] 2026-08-10T16:34:59+00:00 EDENTRY BUY fill_at=2026-08-10T16:39:59+00:00 features={"close": 2.128, "bb_lower": 2.132465418194254, "bb_upper": 2.1676298199009842, "rsi": 33.74564473750914, "mfi": 23.87481180805493, "atr": 0.014928571428571498}
+[BLOCKED] EDENTRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T16:39:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=68.15 equity=10257.29
+[SIGNAL] 2026-08-10T16:39:59+00:00 EDENTRY BUY fill_at=2026-08-10T16:44:59+00:00 features={"close": 2.109, "bb_lower": 2.1237279145753702, "bb_upper": 2.173129228281773, "rsi": 27.33474548312914, "mfi": 21.52321459024293, "atr": 0.01678571428571434}
+[BLOCKED] EDENTRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T16:44:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=68.15 equity=10219.31
+[SIGNAL] 2026-08-10T16:44:59+00:00 EDENTRY BUY fill_at=2026-08-10T16:49:59+00:00 features={"close": 2.096, "bb_lower": 2.1128402863038094, "bb_upper": 2.1794454279819053, "rsi": 23.960688773485316, "mfi": 19.349506499634458, "atr": 0.01342857142857144}
+[BLOCKED] EDENTRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T16:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=68.15 equity=10197.15
+[SIGNAL] 2026-08-10T16:49:59+00:00 CETUSTRY BUY fill_at=2026-08-10T16:54:59+00:00 features={"close": 0.888, "bb_lower": 0.8882187675221459, "bb_upper": 0.8934002800969022, "rsi": 38.508237796643414, "mfi": 48.0601434616788, "atr": 0.0019285714285714303}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=68.04 cash=68.15
+[SIGNAL] 2026-08-10T16:49:59+00:00 EDENTRY BUY fill_at=2026-08-10T16:54:59+00:00 features={"close": 2.073, "bb_lower": 2.0969456646589695, "bb_upper": 2.187435287721983, "rsi": 19.376527548542086, "mfi": 18.360106691707117, "atr": 0.014785714285714275}
+[BLOCKED] EDENTRY reason=insufficient_cash order=68.04 cash=68.15
+[SIGNAL] 2026-08-10T16:49:59+00:00 RENDERTRY BUY fill_at=2026-08-10T16:54:59+00:00 features={"close": 61.2, "bb_lower": 61.219842652512355, "bb_upper": 61.675395442725744, "rsi": 33.090485206982876, "mfi": 3.6207858905640506, "atr": 0.07857142857142918}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T16:54:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=68.15 equity=10196.96
+[SIGNAL] 2026-08-10T16:54:59+00:00 EDENTRY BUY fill_at=2026-08-10T16:59:59+00:00 features={"close": 2.069, "bb_lower": 2.0836361464626676, "bb_upper": 2.192363853537333, "rsi": 18.702384848281184, "mfi": 7.322585379253212, "atr": 0.01521428571428572}
+[BLOCKED] EDENTRY reason=insufficient_cash order=68.04 cash=68.15
+[SIGNAL] 2026-08-10T16:54:59+00:00 RENDERTRY BUY fill_at=2026-08-10T16:59:59+00:00 features={"close": 61.1, "bb_lower": 61.158524821357, "bb_upper": 61.69861803578586, "rsi": 29.574341982693795, "mfi": 3.6196807287579986, "atr": 0.07857142857142918}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T16:59:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=68.15 equity=10183.08
+[SIGNAL] 2026-08-10T16:59:59+00:00 CETUSTRY BUY fill_at=2026-08-10T17:04:59+00:00 features={"close": 0.885, "bb_lower": 0.8868635837499775, "bb_upper": 0.8938983210119277, "rsi": 31.779441303773723, "mfi": 34.49736603139776, "atr": 0.0019285714285714303}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=68.04 cash=68.15
+[SIGNAL] 2026-08-10T16:59:59+00:00 EDENTRY BUY fill_at=2026-08-10T17:04:59+00:00 features={"close": 2.072, "bb_lower": 2.0734569814368573, "bb_upper": 2.1948287328488574, "rsi": 20.93734933301573, "mfi": 6.427791279316708, "atr": 0.016428571428571428}
+[BLOCKED] EDENTRY reason=insufficient_cash order=68.04 cash=68.15
+[SIGNAL] 2026-08-10T16:59:59+00:00 RENDERTRY BUY fill_at=2026-08-10T17:04:59+00:00 features={"close": 61.1, "bb_lower": 61.119085414323344, "bb_upper": 61.71900982377186, "rsi": 29.574341982693795, "mfi": 3.6196807287579986, "atr": 0.07857142857142918}
+[BLOCKED] RENDERTRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T17:04:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=7 cash=68.15 equity=10202.70
+[SIGNAL] 2026-08-10T17:04:59+00:00 CETUSTRY BUY fill_at=2026-08-10T17:09:59+00:00 features={"close": 0.881, "bb_lower": 0.8846095324518266, "bb_upper": 0.8951047532624596, "rsi": 25.374889401846303, "mfi": 22.13210294992912, "atr": 0.0022142857142857164}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T17:09:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=68.15 equity=10223.49
+[SIGNAL] 2026-08-10T17:09:59+00:00 CETUSTRY BUY fill_at=2026-08-10T17:14:59+00:00 features={"close": 0.883, "bb_lower": 0.8835200314238192, "bb_upper": 0.8955275876237998, "rsi": 32.71942433667199, "mfi": 28.353830149530467, "atr": 0.0024285714285714305}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T17:14:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=68.15 equity=10268.51
+[SIGNAL] 2026-08-10T17:14:59+00:00 RETRY BUY fill_at=2026-08-10T17:19:59+00:00 features={"close": 20.88, "bb_lower": 20.980137140892417, "bb_upper": 21.563672382917105, "rsi": 41.06037481134782, "mfi": 39.63096928703078, "atr": 0.21428571428571427}
+[BLOCKED] RETRY reason=insufficient_cash order=68.04 cash=68.15
+[SCAN] 2026-08-10T17:19:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=68.15 equity=10261.38
+[SIGNAL] 2026-08-10T17:19:59+00:00 RADTRY BUY fill_at=2026-08-10T17:24:59+00:00 features={"close": 9.96, "bb_lower": 9.981058529695241, "bb_upper": 10.015131946495236, "rsi": 11.9615937014226, "mfi": 0.0, "atr": 0.0028571428571427964}
+[BLOCKED] RADTRY reason=insufficient_cash order=68.04 cash=68.15
+[EXIT] 2026-08-10T17:24:59+00:00 PUMPTRY reason=fixed_take_profit pnl=+39.26 cash=2137.64
+[SCAN] 2026-08-10T17:24:59+00:00 symbols=26 signals=1 entries=0 exits=1 blocked=1 open=6 cash=2137.64 equity=10280.24
+[SIGNAL] 2026-08-10T17:24:59+00:00 RADTRY BUY fill_at=2026-08-10T17:29:59+00:00 features={"close": 9.96, "bb_lower": 9.972706994274406, "bb_upper": 10.01967395810655, "rsi": 11.9615937014226, "mfi": 0.0, "atr": 0.0028571428571427964}
+[ENTRY] 2026-08-10T17:29:59+00:00 RADTRY layer=2 value=1027.10 entry=9.96747000 cash=1109.00
+[SIGNAL] 2026-08-10T17:24:59+00:00 RETRY BUY fill_at=2026-08-10T17:29:59+00:00 features={"close": 20.83, "bb_lower": 20.877272523730742, "bb_upper": 21.604632238174023, "rsi": 40.584089689760695, "mfi": 35.627460068886876, "atr": 0.21357142857142872}
+[ENTRY] 2026-08-10T17:29:59+00:00 RETRY layer=1 value=1026.87 entry=20.84562250 cash=80.59
+[SCAN] 2026-08-10T17:29:59+00:00 symbols=26 signals=2 entries=2 exits=0 blocked=0 open=7 cash=80.59 equity=10261.93
+[SIGNAL] 2026-08-10T17:29:59+00:00 RADTRY BUY fill_at=2026-08-10T17:34:59+00:00 features={"close": 9.96, "bb_lower": 9.966291545796764, "bb_upper": 10.022279882774665, "rsi": 11.9615937014226, "mfi": 0.0, "atr": 0.0028571428571427964}
+[BLOCKED] RADTRY reason=max_layers
+[SIGNAL] 2026-08-10T17:29:59+00:00 RETRY BUY fill_at=2026-08-10T17:34:59+00:00 features={"close": 20.74, "bb_lower": 20.795271172933447, "bb_upper": 21.624728827066555, "rsi": 38.486244790289724, "mfi": 35.54812884450989, "atr": 0.2164285714285715}
+[BLOCKED] RETRY reason=insufficient_cash order=80.47 cash=80.59
+[SCAN] 2026-08-10T17:34:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=80.59 equity=10250.10
+[SIGNAL] 2026-08-10T17:34:59+00:00 RADTRY BUY fill_at=2026-08-10T17:39:59+00:00 features={"close": 9.96, "bb_lower": 9.96096681428101, "bb_upper": 10.023795090480897, "rsi": 11.9615937014226, "mfi": 0.0, "atr": 0.0028571428571427964}
+[BLOCKED] RADTRY reason=max_layers
+[SIGNAL] 2026-08-10T17:34:59+00:00 RETRY BUY fill_at=2026-08-10T17:39:59+00:00 features={"close": 20.49, "bb_lower": 20.658659758250167, "bb_upper": 21.688006908416504, "rsi": 33.30549038288147, "mfi": 25.54186369118098, "atr": 0.22571428571428598}
+[BLOCKED] RETRY reason=insufficient_cash order=80.47 cash=80.59
+[SCAN] 2026-08-10T17:39:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=80.59 equity=10236.68
+[SIGNAL] 2026-08-10T17:39:59+00:00 ACTTRY BUY fill_at=2026-08-10T17:44:59+00:00 features={"close": 0.5114, "bb_lower": 0.5115125163502393, "bb_upper": 0.5304303407926177, "rsi": 37.28680215632894, "mfi": 55.20878148965327, "atr": 0.0048499999999999975}
+[BLOCKED] ACTTRY reason=insufficient_cash order=80.47 cash=80.59
+[SIGNAL] 2026-08-10T17:39:59+00:00 RETRY BUY fill_at=2026-08-10T17:44:59+00:00 features={"close": 20.36, "bb_lower": 20.512322990464412, "bb_upper": 21.748629390487977, "rsi": 30.957889506192004, "mfi": 21.12740738245722, "atr": 0.21928571428571456}
+[BLOCKED] RETRY reason=insufficient_cash order=80.47 cash=80.59
+[SCAN] 2026-08-10T17:44:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=7 cash=80.59 equity=10246.32
+[SIGNAL] 2026-08-10T17:44:59+00:00 RETRY BUY fill_at=2026-08-10T17:49:59+00:00 features={"close": 20.39, "bb_lower": 20.403494761724055, "bb_upper": 21.757457619228326, "rsi": 32.153462585020065, "mfi": 18.08278066606357, "atr": 0.1985714285714289}
+[BLOCKED] RETRY reason=insufficient_cash order=80.47 cash=80.59
+[SCAN] 2026-08-10T17:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=80.59 equity=10259.67
+[SCAN] 2026-08-10T17:54:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=80.59 equity=10245.75
+[SIGNAL] 2026-08-10T17:54:59+00:00 THETRY BUY fill_at=2026-08-10T17:59:59+00:00 features={"close": 3.025, "bb_lower": 3.026816053129836, "bb_upper": 3.0740410897273085, "rsi": 39.15768985241189, "mfi": 36.12799293705211, "atr": 0.017000000000000126}
+[BLOCKED] THETRY reason=insufficient_cash order=80.47 cash=80.59
+[SCAN] 2026-08-10T17:59:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=80.59 equity=10247.41
+[SCAN] 2026-08-10T18:04:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=80.59 equity=10244.97
+[SIGNAL] 2026-08-10T18:04:59+00:00 ALLOTRY BUY fill_at=2026-08-10T18:09:59+00:00 features={"close": 15.2, "bb_lower": 15.232842699151991, "bb_upper": 15.71953825322895, "rsi": 38.43332691582591, "mfi": 36.66293317336289, "atr": 0.13071428571428534}
+[BLOCKED] ALLOTRY reason=insufficient_cash order=80.47 cash=80.59
+[SCAN] 2026-08-10T18:09:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=80.59 equity=10245.97
+[SIGNAL] 2026-08-10T18:09:59+00:00 BABYTRY BUY fill_at=2026-08-10T18:14:59+00:00 features={"close": 0.613, "bb_lower": 0.6140852504396221, "bb_upper": 0.6295337971794253, "rsi": 20.1223935169629, "mfi": 20.932578409059175, "atr": 0.0014285714285714299}
+[BLOCKED] BABYTRY reason=insufficient_cash order=80.47 cash=80.59
+[SCAN] 2026-08-10T18:14:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=7 cash=80.59 equity=10232.70
+[SCAN] 2026-08-10T18:19:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=80.59 equity=10223.90
+[SCAN] 2026-08-10T18:24:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=80.59 equity=10231.48
+[SCAN] 2026-08-10T18:29:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=7 cash=80.59 equity=10230.78
+[EXIT] 2026-08-10T18:34:59+00:00 RADTRY reason=bb_mfi_v3_signal_exit pnl=-4.06 cash=2127.95
+[SCAN] 2026-08-10T18:34:59+00:00 symbols=26 signals=0 entries=0 exits=1 blocked=0 open=6 cash=2127.95 equity=10212.13
+[SIGNAL] 2026-08-10T18:34:59+00:00 WLDTRY BUY fill_at=2026-08-10T18:39:59+00:00 features={"close": 15.9, "bb_lower": 16.02705454217617, "bb_upper": 16.414850219728596, "rsi": 28.00646460909128, "mfi": 31.77914882740889, "atr": 0.07357142857142904}
+[ENTRY] 2026-08-10T18:39:59+00:00 WLDTRY layer=1 value=1019.39 entry=15.92193250 cash=1107.02
+[SCAN] 2026-08-10T18:39:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=7 cash=1107.02 equity=10191.64
+[SIGNAL] 2026-08-10T18:39:59+00:00 JTOTRY BUY fill_at=2026-08-10T18:44:59+00:00 features={"close": 26.05, "bb_lower": 26.057017416151943, "bb_upper": 26.214411155276622, "rsi": 40.890363087073275, "mfi": 20.348887555163415, "atr": 0.06071428571428582}
+[ENTRY] 2026-08-10T18:44:59+00:00 JTOTRY layer=1 value=1018.56 entry=26.06953750 cash=86.94
+[SIGNAL] 2026-08-10T18:39:59+00:00 WLDTRY BUY fill_at=2026-08-10T18:44:59+00:00 features={"close": 15.91, "bb_lower": 15.974250873670712, "bb_upper": 16.442891983472144, "rsi": 28.9820052059289, "mfi": 18.931821794748217, "atr": 0.07214285714285738}
+[BLOCKED] WLDTRY reason=insufficient_cash order=86.81 cash=86.94
+[SCAN] 2026-08-10T18:44:59+00:00 symbols=26 signals=2 entries=1 exits=0 blocked=1 open=8 cash=86.94 equity=10185.24
+[SIGNAL] 2026-08-10T18:44:59+00:00 WLDTRY BUY fill_at=2026-08-10T18:49:59+00:00 features={"close": 15.92, "bb_lower": 15.93224756690748, "bb_upper": 16.46108576642586, "rsi": 30.009438022225964, "mfi": 10.036800970374642, "atr": 0.06285714285714304}
+[BLOCKED] WLDTRY reason=insufficient_cash order=86.81 cash=86.94
+[SCAN] 2026-08-10T18:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=8 cash=86.94 equity=10183.12
+[SIGNAL] 2026-08-10T18:49:59+00:00 0GTRY BUY fill_at=2026-08-10T18:54:59+00:00 features={"close": 7.36, "bb_lower": 7.3604782255153935, "bb_upper": 7.471902726865562, "rsi": 37.7000160948706, "mfi": 23.5472282567643, "atr": 0.015714285714285698}
+[BLOCKED] 0GTRY reason=insufficient_cash order=86.81 cash=86.94
+[SCAN] 2026-08-10T18:54:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=8 cash=86.94 equity=10166.96
+[SIGNAL] 2026-08-10T18:54:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T18:59:59+00:00 features={"close": 0.402, "bb_lower": 0.40560081981587803, "bb_upper": 0.4154467992317409, "rsi": 22.50375444085759, "mfi": 26.962525807050127, "atr": 0.0012142857142857114}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=86.81 cash=86.94
+[SCAN] 2026-08-10T18:59:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=8 cash=86.94 equity=10173.21
+[SIGNAL] 2026-08-10T18:59:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T19:04:59+00:00 features={"close": 0.402, "bb_lower": 0.40402385584601563, "bb_upper": 0.41626185843969865, "rsi": 22.50375444085759, "mfi": 24.509314916816436, "atr": 0.0012142857142857114}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=86.81 cash=86.94
+[SCAN] 2026-08-10T19:04:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=8 cash=86.94 equity=10172.49
+[SCAN] 2026-08-10T19:09:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=8 cash=86.94 equity=10138.11
+[SIGNAL] 2026-08-10T19:09:59+00:00 AVNTTRY BUY fill_at=2026-08-10T19:14:59+00:00 features={"close": 4.46, "bb_lower": 4.468278660015162, "bb_upper": 4.5917213399848364, "rsi": 27.22941913340182, "mfi": 38.28988541204483, "atr": 0.01071428571428574}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T19:09:59+00:00 EDENTRY BUY fill_at=2026-08-10T19:14:59+00:00 features={"close": 2.057, "bb_lower": 2.0602244293707566, "bb_upper": 2.0839660468197208, "rsi": 36.095293277601066, "mfi": 26.48898507008238, "atr": 0.007285714285714244}
+[BLOCKED] EDENTRY reason=insufficient_cash order=86.81 cash=86.94
+[SIGNAL] 2026-08-10T19:09:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T19:14:59+00:00 features={"close": 0.399, "bb_lower": 0.40109097275298333, "bb_upper": 0.4175756939136833, "rsi": 21.464655681900368, "mfi": 19.078282155975828, "atr": 0.0016428571428571404}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=86.81 cash=86.94
+[SCAN] 2026-08-10T19:14:59+00:00 symbols=26 signals=3 entries=0 exits=0 blocked=3 open=8 cash=86.94 equity=10111.84
+[SIGNAL] 2026-08-10T19:14:59+00:00 AVNTTRY BUY fill_at=2026-08-10T19:19:59+00:00 features={"close": 4.43, "bb_lower": 4.451906359877373, "bb_upper": 4.593807925836911, "rsi": 22.479454719193484, "mfi": 15.544179222995709, "atr": 0.0128571428571429}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T19:14:59+00:00 EDENTRY BUY fill_at=2026-08-10T19:19:59+00:00 features={"close": 2.055, "bb_lower": 2.0574038054866417, "bb_upper": 2.0852628611800244, "rsi": 35.16627143702249, "mfi": 9.906012338371383, "atr": 0.006357142857142823}
+[BLOCKED] EDENTRY reason=insufficient_cash order=86.81 cash=86.94
+[SIGNAL] 2026-08-10T19:14:59+00:00 NEIROTRY BUY fill_at=2026-08-10T19:19:59+00:00 features={"close": 0.00345, "bb_lower": 0.003455575404581953, "bb_upper": 0.0035063293573228075, "rsi": 37.7107526280272, "mfi": 42.06614297325849, "atr": 1.0000000000000026e-05}
+[BLOCKED] NEIROTRY reason=max_layers
+[SIGNAL] 2026-08-10T19:14:59+00:00 PEOPLETRY BUY fill_at=2026-08-10T19:19:59+00:00 features={"close": 0.398, "bb_lower": 0.3993095534972555, "bb_upper": 0.4184047322170301, "rsi": 20.23223143009612, "mfi": 14.071271484822006, "atr": 0.0017142857142857118}
+[BLOCKED] PEOPLETRY reason=insufficient_cash order=86.81 cash=86.94
+[SCAN] 2026-08-10T19:19:59+00:00 symbols=26 signals=4 entries=0 exits=0 blocked=4 open=8 cash=86.94 equity=10134.48
+[EXIT] 2026-08-10T19:24:59+00:00 PYTHTRY reason=bb_mfi_v3_signal_exit pnl=+21.24 cash=1133.36
+[SIGNAL] 2026-08-10T19:19:59+00:00 AVNTTRY BUY fill_at=2026-08-10T19:24:59+00:00 features={"close": 4.44, "bb_lower": 4.440738546940972, "bb_upper": 4.592594786392361, "rsi": 27.073330133081413, "mfi": 11.54494104778469, "atr": 0.012142857142857264}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T19:19:59+00:00 EDENTRY BUY fill_at=2026-08-10T19:24:59+00:00 features={"close": 2.046, "bb_lower": 2.0525804666946486, "bb_upper": 2.086943342829161, "rsi": 31.24577334111936, "mfi": 6.191712470387927, "atr": 0.007785714285714285}
+[ENTRY] 2026-08-10T19:24:59+00:00 EDENTRY layer=1 value=1013.42 entry=2.05554050 cash=118.42
+[SCAN] 2026-08-10T19:24:59+00:00 symbols=26 signals=2 entries=1 exits=1 blocked=1 open=8 cash=118.42 equity=10133.44
+[SCAN] 2026-08-10T19:29:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=8 cash=118.42 equity=10132.40
+[SIGNAL] 2026-08-10T19:29:59+00:00 ALLOTRY BUY fill_at=2026-08-10T19:34:59+00:00 features={"close": 14.97, "bb_lower": 14.976125653102486, "bb_upper": 15.381969584992756, "rsi": 35.915251682168034, "mfi": 33.867745466225784, "atr": 0.09428571428571379}
+[ENTRY] 2026-08-10T19:34:59+00:00 ALLOTRY layer=1 value=118.24 entry=14.97122000 cash=0.00
+[SCAN] 2026-08-10T19:34:59+00:00 symbols=26 signals=1 entries=1 exits=0 blocked=0 open=9 cash=0.00 equity=10139.53
+[SIGNAL] 2026-08-10T19:34:59+00:00 ALLOTRY BUY fill_at=2026-08-10T19:39:59+00:00 features={"close": 14.95, "bb_lower": 14.957532898372826, "bb_upper": 15.357705196865268, "rsi": 35.00385368868034, "mfi": 27.579222120036263, "atr": 0.09428571428571393}
+[BLOCKED] ALLOTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T19:39:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=9 cash=0.00 equity=10125.99
+[SCAN] 2026-08-10T19:44:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10137.16
+[SIGNAL] 2026-08-10T19:44:59+00:00 ALLOTRY BUY fill_at=2026-08-10T19:49:59+00:00 features={"close": 14.92, "bb_lower": 14.925885419067278, "bb_upper": 15.31792410474225, "rsi": 35.25396469184908, "mfi": 38.989019620452936, "atr": 0.09142857142857112}
+[BLOCKED] ALLOTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T19:49:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=9 cash=0.00 equity=10142.50
+[SIGNAL] 2026-08-10T19:49:59+00:00 ALLOTRY BUY fill_at=2026-08-10T19:54:59+00:00 features={"close": 14.88, "bb_lower": 14.888769064386686, "bb_upper": 15.324564268946649, "rsi": 33.43754481947846, "mfi": 40.501975665274884, "atr": 0.09357142857142835}
+[BLOCKED] ALLOTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T19:49:59+00:00 METRY BUY fill_at=2026-08-10T19:54:59+00:00 features={"close": 3.136, "bb_lower": 3.1369712581667453, "bb_upper": 3.2812192180237303, "rsi": 35.64566583022959, "mfi": 22.940443599146434, "atr": 0.031428571428571424}
+[BLOCKED] METRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T19:54:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=9 cash=0.00 equity=10122.12
+[SCAN] 2026-08-10T19:59:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10121.50
+[SCAN] 2026-08-10T20:04:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10089.72
+[SCAN] 2026-08-10T20:09:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10088.40
+[SCAN] 2026-08-10T20:14:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10087.95
+[SIGNAL] 2026-08-10T20:14:59+00:00 NEIROTRY BUY fill_at=2026-08-10T20:19:59+00:00 features={"close": 0.00344, "bb_lower": 0.0034407958865405727, "bb_upper": 0.0034858707801260934, "rsi": 35.987951855799395, "mfi": 39.46349691793232, "atr": 9.28571428571431e-06}
+[BLOCKED] NEIROTRY reason=max_layers
+[SIGNAL] 2026-08-10T20:14:59+00:00 RETRY BUY fill_at=2026-08-10T20:19:59+00:00 features={"close": 19.33, "bb_lower": 19.35447211578146, "bb_upper": 19.87981359850426, "rsi": 25.020592755056413, "mfi": 32.13789886231872, "atr": 0.11285714285714274}
+[BLOCKED] RETRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T20:19:59+00:00 symbols=26 signals=2 entries=0 exits=0 blocked=2 open=9 cash=0.00 equity=10101.85
+[SIGNAL] 2026-08-10T20:19:59+00:00 RETRY BUY fill_at=2026-08-10T20:24:59+00:00 features={"close": 19.32, "bb_lower": 19.327920404675005, "bb_upper": 19.852079595325, "rsi": 24.728717260085403, "mfi": 32.1070255560345, "atr": 0.11214285714285717}
+[BLOCKED] RETRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T20:24:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=9 cash=0.00 equity=10107.17
+[SCAN] 2026-08-10T20:29:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10100.33
+[SCAN] 2026-08-10T20:34:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10096.14
+[SCAN] 2026-08-10T20:39:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10104.38
+[SCAN] 2026-08-10T20:44:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10102.75
+[SCAN] 2026-08-10T20:49:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10091.91
+[SIGNAL] 2026-08-10T20:49:59+00:00 AVNTTRY BUY fill_at=2026-08-10T20:54:59+00:00 features={"close": 4.39, "bb_lower": 4.390299786503317, "bb_upper": 4.457319261115733, "rsi": 31.933376416611537, "mfi": 18.152884967189763, "atr": 0.01285714285714271}
+[BLOCKED] AVNTTRY reason=max_layers
+[SCAN] 2026-08-10T20:54:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=9 cash=0.00 equity=10104.96
+[SCAN] 2026-08-10T20:59:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10105.68
+[SIGNAL] 2026-08-10T20:59:59+00:00 FETTRY BUY fill_at=2026-08-10T21:04:59+00:00 features={"close": 6.46, "bb_lower": 6.466619115452587, "bb_upper": 6.50004755121408, "rsi": 40.488382854233464, "mfi": 48.276551999770106, "atr": 0.010714285714285867}
+[BLOCKED] FETTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T21:04:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=9 cash=0.00 equity=10130.49
+[SIGNAL] 2026-08-10T21:04:59+00:00 FETTRY BUY fill_at=2026-08-10T21:09:59+00:00 features={"close": 6.46, "bb_lower": 6.462956116138695, "bb_upper": 6.501805788623212, "rsi": 40.488382854233464, "mfi": 37.08297457462923, "atr": 0.010714285714285867}
+[BLOCKED] FETTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T21:09:59+00:00 symbols=26 signals=1 entries=0 exits=0 blocked=1 open=9 cash=0.00 equity=10154.31
+[SCAN] 2026-08-10T21:14:59+00:00 symbols=26 signals=0 entries=0 exits=0 blocked=0 open=9 cash=0.00 equity=10111.55
+[SIGNAL] 2026-08-10T21:14:59+00:00 ALLOTRY BUY fill_at=2026-08-10T21:19:59+00:00 features={"close": 14.78, "bb_lower": 14.792980557630157, "bb_upper": 15.029876585226985, "rsi": 35.59402360263718, "mfi": 55.348786212460915, "atr": 0.08142857142857148}
+[BLOCKED] ALLOTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:14:59+00:00 CETUSTRY BUY fill_at=2026-08-10T21:19:59+00:00 features={"close": 0.886, "bb_lower": 0.886607426321711, "bb_upper": 0.8911068593925748, "rsi": 38.4382401891117, "mfi": 34.92856558444389, "atr": 0.0008571428571428579}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:14:59+00:00 FETTRY BUY fill_at=2026-08-10T21:19:59+00:00 features={"close": 6.45, "bb_lower": 6.454470578213398, "bb_upper": 6.504577040834221, "rsi": 36.37627513528514, "mfi": 31.363353987216513, "atr": 0.010000000000000104}
+[BLOCKED] FETTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:14:59+00:00 JTOTRY BUY fill_at=2026-08-10T21:19:59+00:00 features={"close": 25.86, "bb_lower": 25.96216470506139, "bb_upper": 26.193073390176693, "rsi": 29.161072182840428, "mfi": 38.591664412226784, "atr": 0.04857142857142855}
+[BLOCKED] JTOTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T21:19:59+00:00 symbols=26 signals=4 entries=0 exits=0 blocked=4 open=9 cash=0.00 equity=10104.07
+[SIGNAL] 2026-08-10T21:19:59+00:00 0GTRY BUY fill_at=2026-08-10T21:24:59+00:00 features={"close": 7.32, "bb_lower": 7.328870515204276, "bb_upper": 7.389224722890962, "rsi": 32.272353928065854, "mfi": 46.76985679755795, "atr": 0.010000000000000167}
+[BLOCKED] 0GTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:19:59+00:00 AVNTTRY BUY fill_at=2026-08-10T21:24:59+00:00 features={"close": 4.38, "bb_lower": 4.382065236403612, "bb_upper": 4.439839525501148, "rsi": 32.52733115156924, "mfi": 26.297537085378238, "atr": 0.010714285714285676}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T21:19:59+00:00 CETUSTRY BUY fill_at=2026-08-10T21:24:59+00:00 features={"close": 0.886, "bb_lower": 0.8861722284088173, "bb_upper": 0.891161104924516, "rsi": 38.438240189111696, "mfi": 32.59323637301395, "atr": 0.0008571428571428579}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:19:59+00:00 FETTRY BUY fill_at=2026-08-10T21:24:59+00:00 features={"close": 6.44, "bb_lower": 6.447450557584532, "bb_upper": 6.50683515670118, "rsi": 32.77064520545548, "mfi": 18.446306429482476, "atr": 0.011428571428571501}
+[BLOCKED] FETTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:19:59+00:00 JTOTRY BUY fill_at=2026-08-10T21:24:59+00:00 features={"close": 25.83, "bb_lower": 25.909744691821857, "bb_upper": 26.222636260559092, "rsi": 27.592370270172566, "mfi": 37.24094559127078, "atr": 0.04642857142857158}
+[BLOCKED] JTOTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T21:24:59+00:00 symbols=26 signals=5 entries=0 exits=0 blocked=5 open=9 cash=0.00 equity=10081.84
+[SIGNAL] 2026-08-10T21:24:59+00:00 0GTRY BUY fill_at=2026-08-10T21:29:59+00:00 features={"close": 7.32, "bb_lower": 7.323254063874684, "bb_upper": 7.389126888506267, "rsi": 32.272353928065854, "mfi": 50.50739803859913, "atr": 0.008571428571428705}
+[BLOCKED] 0GTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:24:59+00:00 AVNTTRY BUY fill_at=2026-08-10T21:29:59+00:00 features={"close": 4.37, "bb_lower": 4.3752951521015815, "bb_upper": 4.442800085993656, "rsi": 30.09145622826766, "mfi": 37.69378610492091, "atr": 0.009999999999999978}
+[BLOCKED] AVNTTRY reason=max_layers
+[SIGNAL] 2026-08-10T21:24:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:29:59+00:00 features={"close": 1.155, "bb_lower": 1.1589230418810625, "bb_upper": 1.1891721962141755, "rsi": 39.04262243859353, "mfi": 54.20764182101777, "atr": 0.012642857142857147}
+[BLOCKED] BMTTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:24:59+00:00 CETUSTRY BUY fill_at=2026-08-10T21:29:59+00:00 features={"close": 0.883, "bb_lower": 0.8849181601975813, "bb_upper": 0.8918437445643232, "rsi": 29.461763612961477, "mfi": 40.10489497592376, "atr": 0.0010714285714285723}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:24:59+00:00 ICPTRY BUY fill_at=2026-08-10T21:29:59+00:00 features={"close": 109.2, "bb_lower": 109.31918768264308, "bb_upper": 111.90938374592835, "rsi": 36.747239623447406, "mfi": 43.185514183598244, "atr": 0.3999999999999976}
+[BLOCKED] ICPTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:24:59+00:00 WLDTRY BUY fill_at=2026-08-10T21:29:59+00:00 features={"close": 15.92, "bb_lower": 15.926252788123438, "bb_upper": 16.191842449971798, "rsi": 34.393049634465, "mfi": 15.767834098659478, "atr": 0.04571428571428588}
+[BLOCKED] WLDTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T21:29:59+00:00 symbols=26 signals=6 entries=0 exits=0 blocked=6 open=9 cash=0.00 equity=10089.53
+[SIGNAL] 2026-08-10T21:29:59+00:00 0GTRY BUY fill_at=2026-08-10T21:34:59+00:00 features={"close": 7.29, "bb_lower": 7.310217012136686, "bb_upper": 7.393592511672836, "rsi": 25.555838467457306, "mfi": 45.910225880234485, "atr": 0.010000000000000104}
+[BLOCKED] 0GTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:29:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:34:59+00:00 features={"close": 1.148, "bb_lower": 1.1541131194190544, "bb_upper": 1.1907440234380888, "rsi": 36.17781713747774, "mfi": 48.24449620793117, "atr": 0.012571428571428567}
+[BLOCKED] BMTTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:29:59+00:00 CETUSTRY BUY fill_at=2026-08-10T21:34:59+00:00 features={"close": 0.883, "bb_lower": 0.8840479059197623, "bb_upper": 0.8919520940802372, "rsi": 29.461763612961477, "mfi": 37.055128443558374, "atr": 0.0010000000000000009}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:29:59+00:00 ICPTRY BUY fill_at=2026-08-10T21:34:59+00:00 features={"close": 109.1, "bb_lower": 109.1021896028902, "bb_upper": 111.91685801615739, "rsi": 35.86337949123339, "mfi": 36.08241665732025, "atr": 0.3357142857142839}
+[BLOCKED] ICPTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:29:59+00:00 JTOTRY BUY fill_at=2026-08-10T21:34:59+00:00 features={"close": 25.69, "bb_lower": 25.794319730301762, "bb_upper": 26.27425169826967, "rsi": 21.313039936608888, "mfi": 53.31599661705367, "atr": 0.0571428571428572}
+[BLOCKED] JTOTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T21:34:59+00:00 symbols=26 signals=5 entries=0 exits=0 blocked=5 open=9 cash=0.00 equity=10118.42
+[SIGNAL] 2026-08-10T21:34:59+00:00 0GTRY BUY fill_at=2026-08-10T21:39:59+00:00 features={"close": 7.29, "bb_lower": 7.3002482662268715, "bb_upper": 7.394989829011221, "rsi": 25.555838467457306, "mfi": 45.578179542860525, "atr": 0.009285714285714342}
+[BLOCKED] 0GTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:34:59+00:00 BMTTRY BUY fill_at=2026-08-10T21:39:59+00:00 features={"close": 1.142, "bb_lower": 1.1484812569057699, "bb_upper": 1.1932330288085158, "rsi": 33.87007337987754, "mfi": 42.06384145684072, "atr": 0.012142857142857138}
+[BLOCKED] BMTTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:34:59+00:00 CETUSTRY BUY fill_at=2026-08-10T21:39:59+00:00 features={"close": 0.883, "bb_lower": 0.8833662640834731, "bb_upper": 0.891871831154622, "rsi": 29.46176361296149, "mfi": 33.99058780024765, "atr": 0.0010000000000000009}
+[BLOCKED] CETUSTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:34:59+00:00 JTOTRY BUY fill_at=2026-08-10T21:39:59+00:00 features={"close": 25.74, "bb_lower": 25.748816341600584, "bb_upper": 26.28927889649466, "rsi": 27.680736912156092, "mfi": 56.759535796135715, "atr": 0.05571428571428554}
+[BLOCKED] JTOTRY reason=insufficient_cash order=0.00 cash=0.00
+[SIGNAL] 2026-08-10T21:34:59+00:00 TURBOTRY BUY fill_at=2026-08-10T21:39:59+00:00 features={"close": 0.0404, "bb_lower": 0.04044835601522281, "bb_upper": 0.04097069160382479, "rsi": 29.32171534285405, "mfi": 46.20644395897649, "atr": 6.428571428571464e-05}
+[BLOCKED] TURBOTRY reason=insufficient_cash order=0.00 cash=0.00
+[SCAN] 2026-08-10T21:39:59+00:00 symbols=26 signals=5 entries=0 exits=0 blocked=5 open=9 cash=0.00 equity=10125.52
+[OPEN-EXCLUDED] NEIROTRY restored=2013.69 reason=treated_as_never_opened
+[OPEN-EXCLUDED] AVNTTRY restored=2035.29 reason=treated_as_never_opened
+[OPEN-EXCLUDED] CETUSTRY restored=1009.00 reason=treated_as_never_opened
+[OPEN-EXCLUDED] PEOPLETRY restored=1024.40 reason=treated_as_never_opened
+[OPEN-EXCLUDED] RETRY restored=1028.41 reason=treated_as_never_opened
+[OPEN-EXCLUDED] WLDTRY restored=1020.92 reason=treated_as_never_opened
+[OPEN-EXCLUDED] JTOTRY restored=1020.09 reason=treated_as_never_opened
+[OPEN-EXCLUDED] EDENTRY restored=1014.94 reason=treated_as_never_opened
+[OPEN-EXCLUDED] ALLOTRY restored=118.42 reason=treated_as_never_opened
+[COMPLETE] result=/mnt/d/scalperagent_v4/backend/portfolio-replay-pine-v3-active-26.json
+RESULT_JSON={"initial_balance_try": 10000.0, "final_balance_try": 10285.160889, "net_pnl_try": 285.160889, "net_pnl_pct": 2.851609, "closed_trades": 21, "wins": 18, "losses": 3, "win_rate_pct": 85.7143, "profit_factor": 3.187794, "fees_closed_trades_try": 88.326061, "max_drawdown_pct": 1.929998, "active_symbols": ["0GTRY", "ACTTRY", "ALLOTRY", "AVNTTRY", "BABYTRY", "BMTTRY", "BOMETRY", "CETUSTRY", "CHIPTRY", "EDENTRY", "FETTRY", "ICPTRY", "JTOTRY", "METRY", "MUBARAKTRY", "NEIROTRY", "PEOPLETRY", "PUMPTRY", "PYTHTRY", "RADTRY", "RENDERTRY", "RETRY", "THETRY", "TSTTRY", "TURBOTRY", "WLDTRY"], "open_positions_excluded": [{"symbol": "NEIROTRY", "entry_time": 1786328099, "layers": 2, "restored_try": 2013.690418}, {"symbol": "AVNTTRY", "entry_time": 1786334699, "layers": 2, "restored_try": 2035.294178}, {"symbol": "CETUSTRY", "entry_time": 1786354499, "layers": 1, "restored_try": 1008.995246}, {"symbol": "PEOPLETRY", "entry_time": 1786378499, "layers": 1, "restored_try": 1024.402221}, {"symbol": "RETRY", "entry_time": 1786382999, "layers": 1, "restored_try": 1028.407364}, {"symbol": "WLDTRY", "entry_time": 1786387199, "layers": 1, "restored_try": 1020.922321}, {"symbol": "JTOTRY", "entry_time": 1786387499, "layers": 1, "restored_try": 1020.085825}, {"symbol": "EDENTRY", "entry_time": 1786389899, "layers": 1, "restored_try": 1014.944528}, {"symbol": "ALLOTRY", "entry_time": 1786390499, "layers": 1, "restored_try": 118.418787}], "reconciliation": {"expected": 10285.16089, "actual": 10285.160889, "difference": -7.9e-07}}

@@ -1,17 +1,20 @@
 import { apiRequest } from "./api";
 
 export type ChatMessage = { role: string; content: string; [key: string]: unknown };
+export type StreamEvent = { event: string; data: any };
 
 export async function streamChat(
   url: string,
   messages: ChatMessage[],
   onDelta: (text: string) => void,
   options: Record<string, unknown> = {},
-): Promise<{ model?: string }> {
+  controls: { signal?: AbortSignal; onEvent?: (event: StreamEvent) => void } = {},
+): Promise<{ model?: string; status?: string }> {
   const response = await apiRequest(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({ messages, stream: true, ...options }),
+    signal: controls.signal,
   });
   if (!response.ok) {
     const raw = await response.text();
@@ -37,6 +40,7 @@ export async function streamChat(
         if (!dataLine) continue;
         let data: any;
         try { data = JSON.parse(dataLine); } catch { continue; }
+        controls.onEvent?.({ event: eventName || "message", data });
         if (eventName === "delta") onDelta(String(data.text || ""));
         else if (eventName === "error") {
           terminalEvent = true;
@@ -50,6 +54,7 @@ export async function streamChat(
   } finally {
     reader.releaseLock();
   }
+  if (controls.signal?.aborted) return { status: "cancelled" };
   if (!terminalEvent) throw new Error("LLM bağlantısı beklenmedik şekilde kapandı; backend/SSE proxy loglarını kontrol edin.");
   return result;
 }

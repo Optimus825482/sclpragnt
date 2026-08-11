@@ -1,0 +1,161 @@
+{
+  "paper_only": true,
+  "source": "Binance TR public API",
+  "retrieved_at": "2026-08-11T01:17:27+00:00",
+  "window": {
+    "start": "2026-08-10T01:17:27+00:00",
+    "end": "2026-08-11T01:17:27+00:00",
+    "hours": 24.0
+  },
+  "strategy": "BB_MFI_MEAN_REVERSION",
+  "pine_version": "v3",
+  "pine_profile": {
+    "bb_period": 21,
+    "bb_std": 2.0,
+    "rsi_period": 13,
+    "mfi_period": 16,
+    "buy_mfi_max": 59.0,
+    "sell_rsi_min": 69.0,
+    "sell_mfi_min": 69.0,
+    "stop_pct": 0.08882,
+    "tp_pct": 0.02317
+  },
+  "selection_mode": "all_requested_scan_symbols",
+  "initial_balance_try": 10000.0,
+  "final_balance_try": 9746.928954,
+  "net_pnl_try": -253.071046,
+  "net_pnl_pct": -2.53071,
+  "closed_trades": 5,
+  "wins": 3,
+  "losses": 2,
+  "win_rate_pct": 60.0,
+  "profit_factor": 0.314076,
+  "fees_closed_trades_try": 29.595626,
+  "max_drawdown_pct": 3.281134,
+  "active_symbols": [
+    "BMTTRY"
+  ],
+  "activity": {
+    "BMTTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 1361894605.36,
+      "range_15m_pct": 2.5169,
+      "atr_pct": 1.8607,
+      "volume_ratio": 0.4197,
+      "spread_pct": 0.0953,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    }
+  },
+  "skipped_symbols": {},
+  "data_quality": {
+    "BMTTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    }
+  },
+  "prepared_features": [
+    "bb_lower",
+    "bb_upper",
+    "mfi",
+    "rsi",
+    "atr",
+    "close"
+  ],
+  "open_positions_excluded": [
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786410299,
+      "layers": 2,
+      "restored_try": 1953.214697
+    }
+  ],
+  "signal_counts": {
+    "none": 263,
+    "sell": 2,
+    "buy": 23
+  },
+  "exit_reasons": {
+    "fixed_take_profit": 3,
+    "fixed_stop_loss": 2
+  },
+  "trades": [
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786347599,
+      "exit_time": 1786348799,
+      "entry": 1.6287178921215526,
+      "exit": 1.6652054442177473,
+      "layers": 2,
+      "pnl": 38.685027,
+      "commission": 6.058905,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786354499,
+      "exit_time": 1786357199,
+      "entry": 1.385030316309584,
+      "exit": 1.4160586276369234,
+      "layers": 2,
+      "pnl": 38.903133,
+      "commission": 6.093065,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786368599,
+      "exit_time": 1786376099,
+      "entry": 1.3062444412248868,
+      "exit": 1.189331142097826,
+      "layers": 2,
+      "pnl": -185.631185,
+      "commission": 5.759193,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786376399,
+      "exit_time": 1786377899,
+      "entry": 1.1297479758774893,
+      "exit": 1.1550572933012118,
+      "layers": 2,
+      "pnl": 38.289998,
+      "commission": 5.997035,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786397399,
+      "exit_time": 1786409999,
+      "entry": 1.1533562530720225,
+      "exit": 1.05012696431116,
+      "layers": 2,
+      "pnl": -183.318019,
+      "commission": 5.687427,
+      "reason": "fixed_stop_loss"
+    }
+  ],
+  "cost_model": {
+    "commission_pct_each_side": 0.0015,
+    "assumed_full_spread_pct": 0.001,
+    "slippage_pct_each_side": 0.00025
+  },
+  "limitations": [
+    "Historical order-book depth and spread are unavailable; current spread selects the active universe and configured spread models fills."
+  ],
+  "reconciliation": {
+    "expected": 9746.928954,
+    "actual": 9746.928954,
+    "difference": -1.2e-07
+  }
+}

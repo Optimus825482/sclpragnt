@@ -1,0 +1,440 @@
+[START] strategy=BB_MFI_MEAN_REVERSION pine_version=current initial=10000.00 TRY window=2026-08-10T01:17:27+00:00..2026-08-11T01:17:27+00:00
+[CONFIG] universe=1 source=cli order_pct=0.1000 pyramiding=2 max_positions=36 commission=0.001500 spread=0.001000 slippage=0.000250
+[DATA] ACTTRY source=BinanceTR-public interval=5m candles=575
+[ACTIVITY] ACTTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 426949606.04, "range_15m_pct": 1.2911, "atr_pct": 0.8846, "volume_ratio": 1.3752, "spread_pct": 0.0951, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[SCAN] 2026-08-10T01:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T01:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T01:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T01:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T01:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T01:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T01:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T01:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T01:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T02:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SCAN] 2026-08-10T03:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10000.00 equity=10000.00
+[SIGNAL] 2026-08-10T03:04:59+00:00 ACTTRY BUY fill_at=2026-08-10T03:09:59+00:00 features={"close": 0.5322, "bb_lower": 0.5416248577856421, "mfi": 46.77262819401317, "rsi": 39.733300744749585, "atr": 0.008571428571428579}
+[ENTRY] 2026-08-10T03:09:59+00:00 ACTTRY layer=1 value=1000.00 entry=0.53319960 cash=8998.50
+[SCAN] 2026-08-10T03:09:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8998.50 equity=9994.94
+[SIGNAL] 2026-08-10T03:09:59+00:00 ACTTRY BUY fill_at=2026-08-10T03:14:59+00:00 features={"close": 0.5313, "bb_lower": 0.5410236236074589, "mfi": 54.512888209675, "rsi": 39.13882634395014, "atr": 0.007392857142857161}
+[ENTRY] 2026-08-10T03:14:59+00:00 ACTTRY layer=2 value=1000.30 entry=0.53169848 cash=7996.70
+[SCAN] 2026-08-10T03:14:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=7996.70 equity=10008.84
+[SIGNAL] 2026-08-10T03:14:59+00:00 ACTTRY BUY fill_at=2026-08-10T03:19:59+00:00 features={"close": 0.5356, "bb_lower": 0.5405413491313106, "mfi": 50.982614844852925, "rsi": 43.489144546831106, "atr": 0.007335714285714302}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T03:19:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7996.70 equity=9986.30
+[SIGNAL] 2026-08-10T03:19:59+00:00 ACTTRY BUY fill_at=2026-08-10T03:24:59+00:00 features={"close": 0.5296, "bb_lower": 0.5384123848236638, "mfi": 47.14078893265562, "rsi": 39.271011560829166, "atr": 0.007128571428571444}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T03:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=7996.70 equity=10026.87
+[EXIT] 2026-08-10T03:29:59+00:00 ACTTRY reason=fixed_take_profit pnl=+38.74 cash=10038.74
+[SCAN] 2026-08-10T03:29:59+00:00 symbols=1 signals=0 entries=0 exits=1 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T03:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T03:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T03:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T03:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T03:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T03:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T04:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T05:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T05:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T05:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SCAN] 2026-08-10T05:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10038.74 equity=10038.74
+[SIGNAL] 2026-08-10T05:19:59+00:00 ACTTRY BUY fill_at=2026-08-10T05:24:59+00:00 features={"close": 0.5561, "bb_lower": 0.5605152049001931, "mfi": 56.007237485369636, "rsi": 44.09579758030652, "atr": 0.010214285714285723}
+[ENTRY] 2026-08-10T05:24:59+00:00 ACTTRY layer=1 value=1003.87 entry=0.55601670 cash=9033.36
+[SCAN] 2026-08-10T05:24:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9033.36 equity=10036.12
+[SIGNAL] 2026-08-10T05:24:59+00:00 ACTTRY BUY fill_at=2026-08-10T05:29:59+00:00 features={"close": 0.5554, "bb_lower": 0.5598182398454189, "mfi": 54.14138969632654, "rsi": 43.704732186297306, "atr": 0.01029285714285716}
+[ENTRY] 2026-08-10T05:29:59+00:00 ACTTRY layer=2 value=1003.45 entry=0.55481580 cash=8028.41
+[SCAN] 2026-08-10T05:29:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8028.41 equity=10032.42
+[SIGNAL] 2026-08-10T05:29:59+00:00 ACTTRY BUY fill_at=2026-08-10T05:34:59+00:00 features={"close": 0.5545, "bb_lower": 0.5590106191077575, "mfi": 54.09242881408666, "rsi": 43.17456926547068, "atr": 0.010300000000000016}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T05:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8028.41 equity=9990.86
+[SIGNAL] 2026-08-10T05:34:59+00:00 ACTTRY BUY fill_at=2026-08-10T05:39:59+00:00 features={"close": 0.543, "bb_lower": 0.5570584091936146, "mfi": 52.207863980644554, "rsi": 36.99858700756801, "atr": 0.01097857142857144}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T05:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8028.41 equity=10009.65
+[SIGNAL] 2026-08-10T05:39:59+00:00 ACTTRY BUY fill_at=2026-08-10T05:44:59+00:00 features={"close": 0.5482, "bb_lower": 0.5554615372328793, "mfi": 54.09037253583785, "rsi": 41.10132459966795, "atr": 0.011335714285714291}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T05:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8028.41 equity=10022.67
+[SIGNAL] 2026-08-10T05:44:59+00:00 ACTTRY BUY fill_at=2026-08-10T05:49:59+00:00 features={"close": 0.5518, "bb_lower": 0.5543210286942768, "mfi": 51.30070807318291, "rsi": 43.82856133733997, "atr": 0.011035714285714284}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T05:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8028.41 equity=10032.78
+[SCAN] 2026-08-10T05:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8028.41 equity=10007.12
+[SIGNAL] 2026-08-10T05:54:59+00:00 ACTTRY BUY fill_at=2026-08-10T05:59:59+00:00 features={"close": 0.5475, "bb_lower": 0.5517924323106269, "mfi": 43.622751638541985, "rsi": 41.67657951782695, "atr": 0.010628571428571423}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T05:59:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8028.41 equity=10004.96
+[SIGNAL] 2026-08-10T05:59:59+00:00 ACTTRY BUY fill_at=2026-08-10T06:04:59+00:00 features={"close": 0.5469, "bb_lower": 0.5499580803757895, "mfi": 35.64525057659972, "rsi": 41.328578518577004, "atr": 0.010278571428571423}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T06:04:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8028.41 equity=9988.69
+[SIGNAL] 2026-08-10T06:04:59+00:00 ACTTRY BUY fill_at=2026-08-10T06:09:59+00:00 features={"close": 0.5424, "bb_lower": 0.5478144024620323, "mfi": 23.99235835409803, "rsi": 38.717377523196284, "atr": 0.009721428571428556}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T06:09:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8028.41 equity=10041.10
+[SCAN] 2026-08-10T06:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8028.41 equity=10070.37
+[SCAN] 2026-08-10T06:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8028.41 equity=10052.30
+[SCAN] 2026-08-10T06:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8028.41 equity=10073.99
+[SCAN] 2026-08-10T06:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8028.41 equity=10056.28
+[EXIT] 2026-08-10T06:34:59+00:00 ACTTRY reason=fixed_take_profit pnl=+38.88 cash=10077.62
+[SCAN] 2026-08-10T06:34:59+00:00 symbols=1 signals=0 entries=0 exits=1 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T06:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T06:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T06:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T06:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T06:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T07:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T08:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T08:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T08:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SCAN] 2026-08-10T08:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10077.62 equity=10077.62
+[SIGNAL] 2026-08-10T08:19:59+00:00 ACTTRY BUY fill_at=2026-08-10T08:24:59+00:00 features={"close": 0.5835, "bb_lower": 0.5937467086144336, "mfi": 41.137041889890874, "rsi": 43.10113018671079, "atr": 0.025064285714285754}
+[ENTRY] 2026-08-10T08:24:59+00:00 ACTTRY layer=1 value=1007.76 entry=0.58373748 cash=9068.35
+[SCAN] 2026-08-10T08:24:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9068.35 equity=10057.23
+[SIGNAL] 2026-08-10T08:24:59+00:00 ACTTRY BUY fill_at=2026-08-10T08:29:59+00:00 features={"close": 0.5728, "bb_lower": 0.5935313387065775, "mfi": 34.568777461923816, "rsi": 40.28347797009122, "atr": 0.025400000000000027}
+[ENTRY] 2026-08-10T08:29:59+00:00 ACTTRY layer=2 value=1006.31 entry=0.57232892 cash=8060.53
+[SCAN] 2026-08-10T08:29:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8060.53 equity=10068.40
+[SIGNAL] 2026-08-10T08:29:59+00:00 ACTTRY BUY fill_at=2026-08-10T08:34:59+00:00 features={"close": 0.5762, "bb_lower": 0.5927645257572045, "mfi": 24.547118032549506, "rsi": 41.59014425421303, "atr": 0.02368571428571431}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T08:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8060.53 equity=10067.00
+[SIGNAL] 2026-08-10T08:34:59+00:00 ACTTRY BUY fill_at=2026-08-10T08:39:59+00:00 features={"close": 0.5758, "bb_lower": 0.5915613780727907, "mfi": 32.45063214245755, "rsi": 41.47516379290662, "atr": 0.020800000000000023}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T08:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8060.53 equity=10094.88
+[SIGNAL] 2026-08-10T08:39:59+00:00 ACTTRY BUY fill_at=2026-08-10T08:44:59+00:00 features={"close": 0.5838, "bb_lower": 0.5894700732964613, "mfi": 36.689669992626946, "rsi": 44.76420209483627, "atr": 0.020692857142857162}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T08:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8060.53 equity=10060.03
+[SIGNAL] 2026-08-10T08:44:59+00:00 ACTTRY BUY fill_at=2026-08-10T08:49:59+00:00 features={"close": 0.5738, "bb_lower": 0.5859778596298315, "mfi": 38.125282825734985, "rsi": 41.6158574512227, "atr": 0.019992857142857163}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T08:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8060.53 equity=10091.05
+[SIGNAL] 2026-08-10T08:49:59+00:00 ACTTRY BUY fill_at=2026-08-10T08:54:59+00:00 features={"close": 0.5827, "bb_lower": 0.5831163378182621, "mfi": 35.968294738150476, "rsi": 45.302997524306186, "atr": 0.01902857142857145}
+[BLOCKED] ACTTRY reason=max_layers
+[EXIT] 2026-08-10T08:54:59+00:00 ACTTRY reason=fixed_take_profit pnl=+39.01 cash=10116.63
+[SCAN] 2026-08-10T08:54:59+00:00 symbols=1 signals=1 entries=0 exits=1 blocked=1 open=0 cash=10116.63 equity=10116.63
+[SCAN] 2026-08-10T08:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10116.63 equity=10116.63
+[SCAN] 2026-08-10T09:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10116.63 equity=10116.63
+[SCAN] 2026-08-10T09:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10116.63 equity=10116.63
+[SCAN] 2026-08-10T09:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10116.63 equity=10116.63
+[SCAN] 2026-08-10T09:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10116.63 equity=10116.63
+[SCAN] 2026-08-10T09:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10116.63 equity=10116.63
+[SIGNAL] 2026-08-10T09:24:59+00:00 ACTTRY BUY fill_at=2026-08-10T09:29:59+00:00 features={"close": 0.5499, "bb_lower": 0.569149869619557, "mfi": 45.52650901240733, "rsi": 35.946273541003805, "atr": 0.017535714285714297}
+[ENTRY] 2026-08-10T09:29:59+00:00 ACTTRY layer=1 value=1011.66 entry=0.54991212 cash=9103.45
+[SCAN] 2026-08-10T09:29:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9103.45 equity=10121.90
+[SIGNAL] 2026-08-10T09:29:59+00:00 ACTTRY BUY fill_at=2026-08-10T09:34:59+00:00 features={"close": 0.5536, "bb_lower": 0.565576452968358, "mfi": 50.51261824978953, "rsi": 37.591671796207635, "atr": 0.01630714285714287}
+[ENTRY] 2026-08-10T09:34:59+00:00 ACTTRY layer=2 value=1010.52 entry=0.55401520 cash=8091.42
+[SCAN] 2026-08-10T09:34:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8091.42 equity=10086.29
+[SIGNAL] 2026-08-10T09:34:59+00:00 ACTTRY BUY fill_at=2026-08-10T09:39:59+00:00 features={"close": 0.5445, "bb_lower": 0.5631344378095665, "mfi": 51.08569223452471, "rsi": 35.19694510868992, "atr": 0.016050000000000016}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T09:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8091.42 equity=10093.25
+[SIGNAL] 2026-08-10T09:39:59+00:00 ACTTRY BUY fill_at=2026-08-10T09:44:59+00:00 features={"close": 0.5464, "bb_lower": 0.5608392440759024, "mfi": 52.325455667354, "rsi": 36.11206928235808, "atr": 0.01587857142857144}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T09:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8091.42 equity=10093.25
+[SIGNAL] 2026-08-10T09:44:59+00:00 ACTTRY BUY fill_at=2026-08-10T09:49:59+00:00 features={"close": 0.5464, "bb_lower": 0.5577501548078209, "mfi": 50.582892841266535, "rsi": 36.11206928235808, "atr": 0.015550000000000008}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T09:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8091.42 equity=10067.97
+[SIGNAL] 2026-08-10T09:49:59+00:00 ACTTRY BUY fill_at=2026-08-10T09:54:59+00:00 features={"close": 0.5395, "bb_lower": 0.5540970290276374, "mfi": 44.15055447349833, "rsi": 34.08480566220884, "atr": 0.015221428571428577}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T09:54:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8091.42 equity=10058.45
+[SIGNAL] 2026-08-10T09:54:59+00:00 ACTTRY BUY fill_at=2026-08-10T09:59:59+00:00 features={"close": 0.5369, "bb_lower": 0.5506508654812299, "mfi": 45.03379219513174, "rsi": 33.32562507112419, "atr": 0.014685714285714286}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T09:59:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8091.42 equity=10096.18
+[SIGNAL] 2026-08-10T09:59:59+00:00 ACTTRY BUY fill_at=2026-08-10T10:04:59+00:00 features={"close": 0.5472, "bb_lower": 0.5485297305094878, "mfi": 42.410543728121034, "rsi": 39.111488664860325, "atr": 0.014442857142857137}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T10:04:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8091.42 equity=10114.13
+[SCAN] 2026-08-10T10:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8091.42 equity=10134.28
+[EXIT] 2026-08-10T10:14:59+00:00 ACTTRY reason=fixed_take_profit pnl=+39.17 cash=10155.80
+[SCAN] 2026-08-10T10:14:59+00:00 symbols=1 signals=0 entries=0 exits=1 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T10:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T10:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T10:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T10:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T10:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T10:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T10:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T10:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T10:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T11:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T12:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SCAN] 2026-08-10T12:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10155.80 equity=10155.80
+[SIGNAL] 2026-08-10T12:09:59+00:00 ACTTRY BUY fill_at=2026-08-10T12:14:59+00:00 features={"close": 0.5533, "bb_lower": 0.5553681320305237, "mfi": 51.82420066737029, "rsi": 42.549930436591886, "atr": 0.00955714285714286}
+[ENTRY] 2026-08-10T12:14:59+00:00 ACTTRY layer=1 value=1015.58 entry=0.55331467 cash=9138.70
+[SCAN] 2026-08-10T12:14:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9138.70 equity=10155.90
+[SIGNAL] 2026-08-10T12:14:59+00:00 ACTTRY BUY fill_at=2026-08-10T12:19:59+00:00 features={"close": 0.5542, "bb_lower": 0.555514926167957, "mfi": 46.105296723105745, "rsi": 43.27054482113895, "atr": 0.0098}
+[ENTRY] 2026-08-10T12:19:59+00:00 ACTTRY layer=2 value=1015.63 entry=0.55441550 cash=8121.55
+[SCAN] 2026-08-10T12:19:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8121.55 equity=10154.72
+[SIGNAL] 2026-08-10T12:19:59+00:00 ACTTRY BUY fill_at=2026-08-10T12:24:59+00:00 features={"close": 0.5544, "bb_lower": 0.555305495954365, "mfi": 43.372700480527556, "rsi": 43.44032673689498, "atr": 0.009128571428571422}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T12:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10141.15
+[SIGNAL] 2026-08-10T12:24:59+00:00 ACTTRY BUY fill_at=2026-08-10T12:29:59+00:00 features={"close": 0.5507, "bb_lower": 0.5550358234379091, "mfi": 47.23396580938661, "rsi": 40.99588603775755, "atr": 0.008535714285714282}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T12:29:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10137.48
+[SIGNAL] 2026-08-10T12:29:59+00:00 ACTTRY BUY fill_at=2026-08-10T12:34:59+00:00 features={"close": 0.5497, "bb_lower": 0.5546198202844863, "mfi": 44.643871947532865, "rsi": 40.33526216114385, "atr": 0.008028571428571425}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T12:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10138.58
+[SIGNAL] 2026-08-10T12:34:59+00:00 ACTTRY BUY fill_at=2026-08-10T12:39:59+00:00 features={"close": 0.55, "bb_lower": 0.5535169787092353, "mfi": 49.39283116822362, "rsi": 40.6442792592818, "atr": 0.007628571428571421}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T12:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10141.52
+[SIGNAL] 2026-08-10T12:39:59+00:00 ACTTRY BUY fill_at=2026-08-10T12:44:59+00:00 features={"close": 0.5508, "bb_lower": 0.5528284659470086, "mfi": 44.57393482415144, "rsi": 41.51417816746884, "atr": 0.0074357142857142755}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T12:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10154.35
+[SCAN] 2026-08-10T12:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10160.59
+[SCAN] 2026-08-10T12:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10145.92
+[SCAN] 2026-08-10T12:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10169.39
+[SCAN] 2026-08-10T13:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10149.58
+[SCAN] 2026-08-10T13:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10134.55
+[SIGNAL] 2026-08-10T13:09:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:14:59+00:00 features={"close": 0.5489, "bb_lower": 0.549883871238921, "mfi": 34.586911988446886, "rsi": 41.98591558673229, "atr": 0.00637142857142856}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:14:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10113.28
+[SIGNAL] 2026-08-10T13:14:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:19:59+00:00 features={"close": 0.5431, "bb_lower": 0.5490162460354014, "mfi": 32.73252925633025, "rsi": 37.806901069807246, "atr": 0.006764285714285707}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:19:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10118.41
+[SIGNAL] 2026-08-10T13:19:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:24:59+00:00 features={"close": 0.5445, "bb_lower": 0.5486085709309502, "mfi": 42.83927792408048, "rsi": 39.37546913150898, "atr": 0.006285714285714283}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10123.55
+[SIGNAL] 2026-08-10T13:24:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:29:59+00:00 features={"close": 0.5459, "bb_lower": 0.5478617546860549, "mfi": 49.63366890793553, "rsi": 40.978551069685, "atr": 0.005978571428571436}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:29:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10119.15
+[SIGNAL] 2026-08-10T13:29:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:34:59+00:00 features={"close": 0.5447, "bb_lower": 0.5470514163782397, "mfi": 49.718264782875714, "rsi": 40.00214931680734, "atr": 0.00604285714285716}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10117.31
+[SIGNAL] 2026-08-10T13:34:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:39:59+00:00 features={"close": 0.5442, "bb_lower": 0.546256749580834, "mfi": 51.89326068943617, "rsi": 39.57898402883467, "atr": 0.0058357142857143095}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10104.84
+[SIGNAL] 2026-08-10T13:39:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:44:59+00:00 features={"close": 0.5408, "bb_lower": 0.5452007649799623, "mfi": 46.9297484469476, "rsi": 36.73333907669099, "atr": 0.006171428571428598}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10065.24
+[SIGNAL] 2026-08-10T13:44:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:49:59+00:00 features={"close": 0.53, "bb_lower": 0.5425922466599119, "mfi": 41.37835744648896, "rsi": 29.482210108544677, "atr": 0.006914285714285738}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10000.69
+[SIGNAL] 2026-08-10T13:49:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:54:59+00:00 features={"close": 0.5124, "bb_lower": 0.5368002970340708, "mfi": 28.854475754665714, "rsi": 21.89653532283492, "atr": 0.008378571428571457}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:54:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10021.96
+[SIGNAL] 2026-08-10T13:54:59+00:00 ACTTRY BUY fill_at=2026-08-10T13:59:59+00:00 features={"close": 0.5182, "bb_lower": 0.5333831744913564, "mfi": 25.084931911880716, "rsi": 28.431677351466604, "atr": 0.008742857142857172}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T13:59:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10021.23
+[SIGNAL] 2026-08-10T13:59:59+00:00 ACTTRY BUY fill_at=2026-08-10T14:04:59+00:00 features={"close": 0.518, "bb_lower": 0.5303816435155482, "mfi": 26.104999618714913, "rsi": 28.343607646001317, "atr": 0.00844285714285718}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T14:04:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10005.09
+[SIGNAL] 2026-08-10T14:04:59+00:00 ACTTRY BUY fill_at=2026-08-10T14:09:59+00:00 features={"close": 0.5136, "bb_lower": 0.5271344830394419, "mfi": 25.364463310519483, "rsi": 26.405716483982715, "atr": 0.008357142857142896}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T14:09:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10005.09
+[SIGNAL] 2026-08-10T14:09:59+00:00 ACTTRY BUY fill_at=2026-08-10T14:14:59+00:00 features={"close": 0.5136, "bb_lower": 0.5242496193931315, "mfi": 17.34019691706625, "rsi": 26.405716483982715, "atr": 0.00818571428571432}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T14:14:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10014.63
+[SIGNAL] 2026-08-10T14:14:59+00:00 ACTTRY BUY fill_at=2026-08-10T14:19:59+00:00 features={"close": 0.5162, "bb_lower": 0.5219478192977304, "mfi": 20.202144673682284, "rsi": 29.699700359327778, "atr": 0.007864285714285752}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T14:19:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10004.72
+[SIGNAL] 2026-08-10T14:19:59+00:00 ACTTRY BUY fill_at=2026-08-10T14:24:59+00:00 features={"close": 0.5135, "bb_lower": 0.5195268237099734, "mfi": 20.19366869717625, "rsi": 28.283931785178055, "atr": 0.007900000000000042}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T14:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10010.59
+[SIGNAL] 2026-08-10T14:24:59+00:00 ACTTRY BUY fill_at=2026-08-10T14:29:59+00:00 features={"close": 0.5151, "bb_lower": 0.5175212587152356, "mfi": 21.154063922362724, "rsi": 30.40123300605964, "atr": 0.0072928571428571886}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T14:29:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10016.83
+[SCAN] 2026-08-10T14:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10034.80
+[SCAN] 2026-08-10T14:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10030.76
+[SCAN] 2026-08-10T14:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10035.16
+[SCAN] 2026-08-10T14:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10024.90
+[SCAN] 2026-08-10T14:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10028.56
+[SCAN] 2026-08-10T14:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10028.56
+[SCAN] 2026-08-10T15:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10008.76
+[SCAN] 2026-08-10T15:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10001.42
+[SCAN] 2026-08-10T15:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10000.69
+[SCAN] 2026-08-10T15:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=9987.12
+[SIGNAL] 2026-08-10T15:19:59+00:00 ACTTRY BUY fill_at=2026-08-10T15:24:59+00:00 features={"close": 0.5087, "bb_lower": 0.512316970690121, "mfi": 35.49825101183427, "rsi": 29.28412646922915, "atr": 0.004885714285714311}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T15:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=9984.55
+[SIGNAL] 2026-08-10T15:24:59+00:00 ACTTRY BUY fill_at=2026-08-10T15:29:59+00:00 features={"close": 0.508, "bb_lower": 0.5118864699318203, "mfi": 29.586785110297313, "rsi": 28.756055334653837, "atr": 0.004878571428571454}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T15:29:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10001.06
+[SCAN] 2026-08-10T15:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=9999.96
+[SCAN] 2026-08-10T15:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10013.16
+[SCAN] 2026-08-10T15:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10019.76
+[SCAN] 2026-08-10T15:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10018.29
+[SCAN] 2026-08-10T15:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10026.00
+[SCAN] 2026-08-10T15:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10033.70
+[SCAN] 2026-08-10T16:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10021.96
+[SCAN] 2026-08-10T16:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10030.03
+[SCAN] 2026-08-10T16:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10028.56
+[SCAN] 2026-08-10T16:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10031.13
+[SCAN] 2026-08-10T16:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10026.73
+[SCAN] 2026-08-10T16:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10006.56
+[SCAN] 2026-08-10T16:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10022.33
+[SCAN] 2026-08-10T16:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10014.26
+[SCAN] 2026-08-10T16:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10012.06
+[SCAN] 2026-08-10T16:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10046.90
+[SCAN] 2026-08-10T16:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10048.00
+[SCAN] 2026-08-10T16:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10063.40
+[SCAN] 2026-08-10T17:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10057.90
+[SCAN] 2026-08-10T17:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10047.27
+[SCAN] 2026-08-10T17:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10050.57
+[SCAN] 2026-08-10T17:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10039.56
+[SCAN] 2026-08-10T17:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10049.83
+[SCAN] 2026-08-10T17:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10034.80
+[SCAN] 2026-08-10T17:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10012.06
+[SCAN] 2026-08-10T17:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=9997.02
+[SCAN] 2026-08-10T17:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=9995.19
+[SIGNAL] 2026-08-10T17:44:59+00:00 ACTTRY BUY fill_at=2026-08-10T17:49:59+00:00 features={"close": 0.5109, "bb_lower": 0.5152920542228356, "mfi": 56.229585259647315, "rsi": 37.511455663261444, "atr": 0.00475}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T17:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10010.96
+[SCAN] 2026-08-10T17:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10011.69
+[SCAN] 2026-08-10T17:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10026.00
+[SCAN] 2026-08-10T18:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10043.60
+[SCAN] 2026-08-10T18:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10043.97
+[SCAN] 2026-08-10T18:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10028.20
+[SCAN] 2026-08-10T18:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10028.56
+[SCAN] 2026-08-10T18:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10027.83
+[SCAN] 2026-08-10T18:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10028.56
+[SCAN] 2026-08-10T18:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10005.83
+[SIGNAL] 2026-08-10T18:34:59+00:00 ACTTRY BUY fill_at=2026-08-10T18:39:59+00:00 features={"close": 0.5138, "bb_lower": 0.5151729000389949, "mfi": 28.57161878901033, "rsi": 41.42009951883256, "atr": 0.004421428571428584}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T18:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10005.09
+[SIGNAL] 2026-08-10T18:39:59+00:00 ACTTRY BUY fill_at=2026-08-10T18:44:59+00:00 features={"close": 0.5136, "bb_lower": 0.5146126225749154, "mfi": 27.022373870074148, "rsi": 41.17957211012547, "atr": 0.004371428571428582}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T18:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8121.55 equity=10026.00
+[SCAN] 2026-08-10T18:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10026.00
+[SCAN] 2026-08-10T18:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10035.53
+[SCAN] 2026-08-10T18:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10048.73
+[SCAN] 2026-08-10T19:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10064.50
+[SCAN] 2026-08-10T19:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10057.90
+[SCAN] 2026-08-10T19:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10057.53
+[SCAN] 2026-08-10T19:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10045.07
+[SCAN] 2026-08-10T19:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10045.07
+[SCAN] 2026-08-10T19:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10038.46
+[SCAN] 2026-08-10T19:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10049.47
+[SCAN] 2026-08-10T19:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10057.17
+[SCAN] 2026-08-10T19:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10053.13
+[SCAN] 2026-08-10T19:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10047.63
+[SCAN] 2026-08-10T19:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10052.40
+[SCAN] 2026-08-10T19:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10059.00
+[SCAN] 2026-08-10T20:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10072.20
+[SCAN] 2026-08-10T20:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8121.55 equity=10101.91
+[EXIT] 2026-08-10T20:14:59+00:00 ACTTRY reason=bb_mfi_v3_signal_exit pnl=-58.71 cash=10097.09
+[SCAN] 2026-08-10T20:14:59+00:00 symbols=1 signals=0 entries=0 exits=1 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T20:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T20:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T20:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T20:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T20:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T20:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T20:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T20:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T20:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T21:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:34:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:39:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:44:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:49:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T22:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SCAN] 2026-08-10T23:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10097.09 equity=10097.09
+[SIGNAL] 2026-08-10T23:04:59+00:00 ACTTRY BUY fill_at=2026-08-10T23:09:59+00:00 features={"close": 0.5329, "bb_lower": 0.5344909864447809, "mfi": 44.54791840388532, "rsi": 44.792798429037305, "atr": 0.0029142857142857503}
+[ENTRY] 2026-08-10T23:09:59+00:00 ACTTRY layer=1 value=1009.71 entry=0.53410028 cash=9085.87
+[SCAN] 2026-08-10T23:09:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9085.87 equity=10094.06
+[SIGNAL] 2026-08-10T23:09:59+00:00 ACTTRY BUY fill_at=2026-08-10T23:14:59+00:00 features={"close": 0.5333, "bb_lower": 0.5342963809132539, "mfi": 44.41726284826922, "rsi": 45.631567949871084, "atr": 0.0030714285714285978}
+[ENTRY] 2026-08-10T23:14:59+00:00 ACTTRY layer=2 value=1008.97 entry=0.53269922 cash=8075.38
+[SCAN] 2026-08-10T23:14:59+00:00 symbols=1 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8075.38 equity=10084.98
+[SIGNAL] 2026-08-10T23:14:59+00:00 ACTTRY BUY fill_at=2026-08-10T23:19:59+00:00 features={"close": 0.531, "bb_lower": 0.5336204673237369, "mfi": 33.43918623580862, "rsi": 41.70768932483405, "atr": 0.002928571428571447}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T23:19:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10081.95
+[SIGNAL] 2026-08-10T23:19:59+00:00 ACTTRY BUY fill_at=2026-08-10T23:24:59+00:00 features={"close": 0.5302, "bb_lower": 0.5329228201711226, "mfi": 52.20925577174318, "rsi": 40.40618720657662, "atr": 0.00266428571428573}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T23:24:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10083.85
+[SIGNAL] 2026-08-10T23:24:59+00:00 ACTTRY BUY fill_at=2026-08-10T23:29:59+00:00 features={"close": 0.5307, "bb_lower": 0.532363873372361, "mfi": 46.651245357940525, "rsi": 41.63212195488873, "atr": 0.00250000000000001}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T23:29:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10064.92
+[SIGNAL] 2026-08-10T23:29:59+00:00 ACTTRY BUY fill_at=2026-08-10T23:34:59+00:00 features={"close": 0.5257, "bb_lower": 0.5311551436807975, "mfi": 35.305393750428834, "rsi": 34.081687297269355, "atr": 0.002700000000000012}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T23:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10073.63
+[SIGNAL] 2026-08-10T23:34:59+00:00 ACTTRY BUY fill_at=2026-08-10T23:39:59+00:00 features={"close": 0.528, "bb_lower": 0.5304442844924493, "mfi": 21.287663308986126, "rsi": 39.515791054622966, "atr": 0.002642857142857153}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T23:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10072.87
+[SIGNAL] 2026-08-10T23:39:59+00:00 ACTTRY BUY fill_at=2026-08-10T23:44:59+00:00 features={"close": 0.5278, "bb_lower": 0.529759034589887, "mfi": 16.342442775378302, "rsi": 39.21307214141863, "atr": 0.00266428571428573}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T23:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10077.79
+[SIGNAL] 2026-08-10T23:44:59+00:00 ACTTRY BUY fill_at=2026-08-10T23:49:59+00:00 features={"close": 0.5291, "bb_lower": 0.5292925597921864, "mfi": 15.444870974997443, "rsi": 42.30686379235434, "atr": 0.002642857142857153}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-10T23:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10087.63
+[SCAN] 2026-08-10T23:54:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10089.15
+[SCAN] 2026-08-10T23:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10091.79
+[SCAN] 2026-08-11T00:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10084.23
+[SCAN] 2026-08-11T00:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10085.74
+[SCAN] 2026-08-11T00:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10109.96
+[SCAN] 2026-08-11T00:19:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10117.53
+[SCAN] 2026-08-11T00:24:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10110.34
+[SCAN] 2026-08-11T00:29:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10070.60
+[SIGNAL] 2026-08-11T00:29:59+00:00 ACTTRY BUY fill_at=2026-08-11T00:34:59+00:00 features={"close": 0.5272, "bb_lower": 0.5283371593957895, "mfi": 36.59027993567979, "rsi": 41.12824665900854, "atr": 0.0038785714285714218}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-11T00:34:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10067.19
+[SIGNAL] 2026-08-11T00:34:59+00:00 ACTTRY BUY fill_at=2026-08-11T00:39:59+00:00 features={"close": 0.5263, "bb_lower": 0.5278147670674879, "mfi": 35.465240107029416, "rsi": 40.050706135767335, "atr": 0.004057142857142855}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-11T00:39:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10060.38
+[SIGNAL] 2026-08-11T00:39:59+00:00 ACTTRY BUY fill_at=2026-08-11T00:44:59+00:00 features={"close": 0.5245, "bb_lower": 0.5270935092238076, "mfi": 35.308546027988825, "rsi": 37.91137677460073, "atr": 0.003921428571428568}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-11T00:44:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10035.78
+[SIGNAL] 2026-08-11T00:44:59+00:00 ACTTRY BUY fill_at=2026-08-11T00:49:59+00:00 features={"close": 0.518, "bb_lower": 0.5254620555905778, "mfi": 14.696875186196692, "rsi": 31.390683386363534, "atr": 0.004092857142857136}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-11T00:49:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10052.44
+[SIGNAL] 2026-08-11T00:49:59+00:00 ACTTRY BUY fill_at=2026-08-11T00:54:59+00:00 features={"close": 0.5224, "bb_lower": 0.524679801591207, "mfi": 15.875747547549722, "rsi": 39.034845756039275, "atr": 0.004371428571428558}
+[BLOCKED] ACTTRY reason=max_layers
+[SCAN] 2026-08-11T00:54:59+00:00 symbols=1 signals=1 entries=0 exits=0 blocked=1 open=1 cash=8075.38 equity=10076.28
+[SCAN] 2026-08-11T00:59:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10088.77
+[SCAN] 2026-08-11T01:04:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10091.42
+[SCAN] 2026-08-11T01:09:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10082.71
+[SCAN] 2026-08-11T01:14:59+00:00 symbols=1 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8075.38 equity=10074.01
+[OPEN-EXCLUDED] ACTTRY restored=2021.71 reason=treated_as_never_opened
+[COMPLETE] result=/mnt/d/scalperagent_v4/backend/compare-acttry-current.json
+RESULT_JSON={"initial_balance_try": 10000.0, "final_balance_try": 10097.089714, "net_pnl_try": 97.089714, "net_pnl_pct": 0.970897, "closed_trades": 5, "wins": 4, "losses": 1, "win_rate_pct": 80.0, "profit_factor": 2.653653, "fees_closed_trades_try": 30.41651, "max_drawdown_pct": 1.81755, "active_symbols": ["ACTTRY"], "open_positions_excluded": [{"symbol": "ACTTRY", "entry_time": 1786403399, "layers": 2, "restored_try": 2021.708404}], "reconciliation": {"expected": 10097.089714, "actual": 10097.089714, "difference": -3.2e-07}}
