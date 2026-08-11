@@ -2,6 +2,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg17-bookworm
     restart: unless-stopped
+    stop_grace_period: 10s
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-scalper}
       POSTGRES_USER: ${POSTGRES_USER:-scalper}
@@ -10,13 +11,15 @@ services:
       - scalper_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scalper} -d ${POSTGRES_DB:-scalper}"]
+      start_period: 30s
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 12
   backend:
     build:
       context: ./backend
     restart: unless-stopped
+    stop_grace_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -57,6 +60,7 @@ services:
     build:
       context: ./a2a-relay
     restart: unless-stopped
+    stop_grace_period: 5s
     environment:
       PORT: "8010"
       A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:?A2A_SHARED_SECRET must be set}
@@ -82,6 +86,7 @@ services:
       args:
         NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     restart: unless-stopped
+    stop_grace_period: 5s
     depends_on:
       backend:
         condition: service_healthy
@@ -95,6 +100,7 @@ services:
       context: ./nginx
     image: scalperagent-gateway:latest
     restart: unless-stopped
+    stop_grace_period: 5s
     depends_on:
       - frontend
       - backend

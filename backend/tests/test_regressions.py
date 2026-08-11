@@ -212,6 +212,13 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('source": "binance_tr_public_24h_ticker"', source)
         self.assertIn('known_try = set(await trading_symbols("TRY"))', source)
 
+    def test_compose_has_bounded_shutdown_and_postgres_startup_grace(self):
+        source = (ROOT.parent / "docker-compose.yaml").read_text()
+        self.assertGreaterEqual(source.count("stop_grace_period:"), 5)
+        postgres = source[source.index("  postgres:"):source.index("  backend:")]
+        self.assertIn("start_period: 30s", postgres)
+        self.assertIn("retries: 12", postgres)
+
     def test_symbol_activity_is_enforced_at_the_writer_boundary(self):
         source = (ROOT / "app" / "analyzer.py").read_text()
         tree = ast.parse(source)
