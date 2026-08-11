@@ -61,15 +61,22 @@ _TTS_EMOJI = re.compile("[\\U00010000-\\U0010ffff]")
 def _speech_text(value: object) -> str:
     text = str(value or "")
     text = re.sub(r"```.*?```", " ", text, flags=re.S)
-    text = re.sub(r"`([^`]*)`", r"\\1", text)
-    text = re.sub(r"!?\\[([^]]*)\\]\\([^)]*\\)", r"\\1", text)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"!?\[([^]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"[#>*_~|]", " ", text)
     text = _TTS_EMOJI.sub(" ", text)
-    text = re.sub(r"\\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     return text[:1200]
 
 @app.post("/api/tts/edge")
 async def edge_tts_audio(payload: dict):
+    global edge_tts
+    if edge_tts is None:
+        try:
+            import edge_tts as runtime_edge_tts
+            edge_tts = runtime_edge_tts
+        except ImportError:
+            pass
     if edge_tts is None:
         raise HTTPException(503, "Edge TTS bağımlılığı sunucuda kurulu değil")
     text = _speech_text(payload.get("text"))
