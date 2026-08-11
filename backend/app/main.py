@@ -404,7 +404,11 @@ def _price_watch_stream(symbol: str, body: dict, trace_id: str):
         last_market_timestamp = 0.0
         samples = 0
         yield f"event: watch_started\ndata: {json.dumps({'symbol': symbol, 'duration_seconds': duration, 'interval_seconds': interval, 'paper_only': True}, ensure_ascii=False)}\n\n"
-        yield f"event: delta\ndata: {json.dumps({'text': f'### {symbol} canlı fiyat izlemesi\n\nPublic Binance TR fiyat akışı bağlandı. İzleme süresi **{duration} saniye**.\n\n'}, ensure_ascii=False)}\n\n"
+        intro_text = (
+            f"### {symbol} canlı fiyat izlemesi\n\n"
+            f"Public Binance TR fiyat akışı bağlandı. İzleme süresi **{duration} saniye**.\n\n"
+        )
+        yield f"event: delta\ndata: {json.dumps({'text': intro_text}, ensure_ascii=False)}\n\n"
         try:
             while time.time() - started_at < duration:
                 ticker = market.get_ticker(symbol) or {}
