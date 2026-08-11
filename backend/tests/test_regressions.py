@@ -136,6 +136,11 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("args.risk_stop_pct is not None", source)
         self.assertIn('"risk_stop_pct": stop_pct', source)
 
+    def test_alert_trigger_uses_a_boolean_false_for_postgres(self):
+        source = (ROOT / "app" / "database.py").read_text()
+        self.assertIn('armed_false = "FALSE" if _postgres_enabled() else "0"', source)
+        self.assertIn("ELSE {armed_false} END", source)
+
     def test_bb_mfi_v3_backtest_has_signal_exit_and_pine_sizing(self):
         source = (ROOT / "app" / "backtest.py").read_text()
         self.assertIn('"bb_mfi_v3_signal_exit"', source)
