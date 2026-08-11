@@ -65,6 +65,17 @@ def _speech_text(value: object) -> str:
     text = re.sub(r"!?\[([^]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"[#>*_~|]", " ", text)
     text = _TTS_EMOJI.sub(" ", text)
+    # Give the Turkish neural voice unambiguous financial/market notation.
+    def decimal(value):
+        number = str(value).replace(",", ".")
+        return number.replace("-", "eksi ").replace(".", " virgül ")
+    text = re.sub(r"%\s*(-?\d+(?:[.,]\d+)?)", lambda m: "yüzde " + decimal(m.group(1)), text)
+    text = re.sub(r"(-?\d+(?:[.,]\d+)?)\s*%", lambda m: "yüzde " + decimal(m.group(1)), text)
+    text = re.sub(r"(?<![\w%])-\s*(\d+(?:[.,]\d+)?)", lambda m: "eksi " + decimal(m.group(1)), text)
+    text = re.sub(r"\b(\d+(?:[.,]\d+)?)\s*[xX]\b", r"\1 kat", text)
+    text = re.sub(r"\b(\d+)m\b", r"\1 dakika", text, flags=re.I)
+    text = re.sub(r"\b(\d+)h\b", r"\1 saat", text, flags=re.I)
+    text = re.sub(r"(?<![\w-])(\d+)[.,](\d+)", lambda m: f"{m.group(1)} virgül {m.group(2)}", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:1200]
 

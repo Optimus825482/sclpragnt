@@ -141,6 +141,17 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('armed_false = "FALSE" if _postgres_enabled() else "0"', source)
         self.assertIn("ELSE {armed_false} END", source)
 
+    def test_tts_normalizes_turkish_market_numbers(self):
+        from app.main import _speech_text
+        spoken = _speech_text("-0.719 · %0.147 · 1283x · 5m · 1h · 12.18 😀")
+        self.assertIn("eksi 0 virgül 719", spoken)
+        self.assertIn("yüzde 0 virgül 147", spoken)
+        self.assertIn("1283 kat", spoken)
+        self.assertIn("5 dakika", spoken)
+        self.assertIn("1 saat", spoken)
+        self.assertIn("12 virgül 18", spoken)
+        self.assertNotIn("😀", spoken)
+
     def test_bb_mfi_v3_backtest_has_signal_exit_and_pine_sizing(self):
         source = (ROOT / "app" / "backtest.py").read_text()
         self.assertIn('"bb_mfi_v3_signal_exit"', source)
