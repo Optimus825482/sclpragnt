@@ -704,6 +704,7 @@ async def ws_broadcast_loop():
                 open_positions.append({
                     "symbol": sym, "entry": pos["entry_price"], "current": current_price,
                     "pnl_pct": pnl_pct, "pnl_try": pnl_try, "value": current_value,
+                    "entry_time": pos.get("entry_time"),
                     "strategy": pos.get("strategy", "UT"), "price_stale": ticker_age > config.MAX_TICKER_AGE_SEC,
                     "price_age_seconds": round(ticker_age, 2) if ticker_age != float("inf") else None,
                     "llm_managed": pos.get("strategy") == "LLM_PAPER",
@@ -713,6 +714,7 @@ async def ws_broadcast_loop():
                     "plan_revision": (pos.get("entry_context") or {}).get("plan_revision", 0),
                     "last_plan_reason": (pos.get("entry_context") or {}).get("last_plan_reason"),
                 })
+            open_positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
             realized_pnl = await database.get_realized_pnl()
             unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
             open_entry_commission = sum(pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT for pos in analyzer.positions.values())
@@ -1818,6 +1820,7 @@ async def get_positions():
             "last_plan_reason": (pos.get("entry_context") or {}).get("last_plan_reason"),
             "last_plan_updated_at": (pos.get("entry_context") or {}).get("plan_updated_at"),
         })
+    positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
     return {"positions": positions}
 
 @app.get("/api/symbol-analysis/{symbol}")

@@ -24,6 +24,7 @@ type Position = {
   pnl_pct: number;
   pnl_try?: number;
   value: number;
+  entry_time?: number;
   strategy?: string;
   llm_managed?: boolean;
   llm_stop_price?: number;
@@ -47,8 +48,10 @@ type Trade = {
   id: number;
   symbol: string;
   strategy: string;
+  side?: string;
   entry_price: number;
   exit_price: number;
+  quantity?: number;
   pnl: number;
   pnl_pct: number;
   commission?: number;
@@ -56,6 +59,10 @@ type Trade = {
   entry_time?: number;
   exit_time?: number;
   hold_seconds?: number;
+  max_favorable_pct?: number;
+  max_adverse_pct?: number;
+  trade_id?: string;
+  entry_context?: Record<string, unknown> | string | null;
 };
 
 const money = (value?: number) =>
@@ -92,44 +99,105 @@ const duration = (trade: Trade) => {
 };
 const planMinutes = (seconds?: number) =>
   seconds == null ? "—" : `${Math.round(seconds / 60)} dk`;
+const asNumber = (value: unknown) =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+const normalizedEntryContext = (
+  value: Trade["entry_context"],
+): Record<string, unknown> => {
+  if (value && typeof value === "object" && !Array.isArray(value))
+    return value as Record<string, unknown>;
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+};
+const csvNumber = (value: number | null | undefined) => value ?? "";
 
 function ExportActions({ trades }: { trades: Trade[] }) {
-  const exportCsv = async () => {
-    const source = trades.length
-      ? trades
-      : (
-          await fetchAllPages<Trade>("/api/trades", "trades")
-            .then((result) => ({ trades: result.rows }))
-            .catch(() => ({ trades: [] }))
-        ).trades;
+  const exportCsv = () => {
+    if (!trades.length) return;
     const head = [
       "ID",
       "Sembol",
       "Strateji",
       "Giriş",
       "Çıkış",
+      "Yön",
+      "Miktar",
+      "Giriş tutarı (TL)",
+      "Çıkış tutarı (TL)",
+      "Brüt PnL (TL)",
       "Komisyon",
+      "Maliyet oranı %",
       "PnL",
       "PnL %",
+      "Fiyat hareketi %",
+      "MFE %",
+      "MAE %",
       "Neden",
       "Giriş zamanı",
       "Çıkış zamanı",
       "Aktif süre",
+      "İşlem kimliği",
+      "Strateji sürümü",
+      "Planlanan TP %",
+      "Planlanan SL %",
+      "Planlanan azami süre sn",
+      "Beklenen net PnL (TL)",
+      "Giriş bağlamı (JSON)",
     ];
-    const body = source.map((trade: Trade) => [
-      trade.id,
-      trade.symbol,
-      trade.strategy,
-      trade.entry_price,
-      trade.exit_price,
-      trade.commission ?? 0,
-      trade.pnl,
-      trade.pnl_pct,
-      trade.reason || "",
-      when(trade.entry_time),
-      when(trade.exit_time),
-      duration(trade),
-    ]);
+    const body = trades.map((trade: Trade) => {
+      const context = normalizedEntryContext(trade.entry_context);
+      const quantity = asNumber(trade.quantity);
+      const entryNotional = quantity == null ? null : trade.entry_price * quantity;
+      const exitNotional = quantity == null ? null : trade.exit_price * quantity;
+      const grossPnl = trade.pnl + (trade.commission ?? 0);
+      const priceMovePct =
+        trade.entry_price > 0
+          ? ((trade.exit_price - trade.entry_price) / trade.entry_price) * 100
+          : null;
+      const costPct =
+        entryNotional && entryNotional > 0
+          ? ((trade.commission ?? 0) / entryNotional) * 100
+          : null;
+      const plannedTakeProfitPct = asNumber(context.profit_target_pct);
+      const plannedStopLossPct = asNumber(context.stop_loss_pct);
+      return [
+        trade.id,
+        trade.symbol,
+        trade.strategy,
+        trade.entry_price,
+        trade.exit_price,
+        trade.side ?? "LONG",
+        csvNumber(quantity),
+        csvNumber(entryNotional),
+        csvNumber(exitNotional),
+        grossPnl,
+        trade.commission ?? 0,
+        csvNumber(costPct),
+        trade.pnl,
+        trade.pnl_pct,
+        csvNumber(priceMovePct),
+        csvNumber(trade.max_favorable_pct == null ? null : trade.max_favorable_pct * 100),
+        csvNumber(trade.max_adverse_pct == null ? null : trade.max_adverse_pct * 100),
+        trade.reason || "",
+        when(trade.entry_time),
+        when(trade.exit_time),
+        duration(trade),
+        trade.trade_id ?? "",
+        String(context.strategy_revision ?? ""),
+        csvNumber(plannedTakeProfitPct == null ? null : plannedTakeProfitPct * 100),
+        csvNumber(plannedStopLossPct == null ? null : plannedStopLossPct * 100),
+        csvNumber(asNumber(context.max_hold_sec)),
+        csvNumber(asNumber(context.expected_net_pnl_try)),
+        JSON.stringify(context),
+      ];
+    });
     const csv = [head, ...body]
       .map((row) =>
         row
@@ -148,8 +216,13 @@ function ExportActions({ trades }: { trades: Trade[] }) {
 
   return (
     <div className="portfolio-actions">
-      <button onClick={exportCsv} className="ui-button ui-button-primary">
-        CSV DIŞA AKTAR
+      <button
+        onClick={exportCsv}
+        className="ui-button ui-button-primary"
+        disabled={!trades.length}
+        title={!trades.length ? "Dışa aktarılacak işlem bulunmuyor." : undefined}
+      >
+        CSV DIŞA AKTAR ({trades.length})
       </button>
       <button
         onClick={() => window.print()}
