@@ -5,6 +5,7 @@ Usage: python -m scripts.build_market_cache --symbols BMTTRY MUBARAKTRY --days 7
 import argparse
 import asyncio
 import time
+from datetime import datetime
 from pathlib import Path
 import sys
 
@@ -37,10 +38,10 @@ def normalize(symbol, raw, timeframe):
     return sorted({r["open_time"]: r for r in out}.values(), key=lambda r: r["open_time"])
 
 
-async def build_symbol(symbol, days, feature_version):
+async def build_symbol(symbol, days, feature_version, end_time_ms=None):
     started = time.monotonic()
     print(f"[START] {symbol}: {days} gunluk 5m veri cekiliyor...", flush=True)
-    raw = await historical_klines(symbol, "5m", days)
+    raw = await historical_klines(symbol, "5m", days, end_time_ms)
     candles = normalize(symbol, raw, "5m")
     print(f"[{symbol}] API tamamlandi | raw={len(raw)} candles={len(candles)}", flush=True)
     batch_size = 300
@@ -78,13 +79,14 @@ async def build_symbol(symbol, days, feature_version):
 
 
 async def main(args):
+    await database.init_db()
     print(f"[START] Market cache | symbols={len(args.symbols)} days={args.days} timeframe=5m workers=8", flush=True)
     print("[DB] Mevcut historical tablolar kullaniliyor (migration tekrar calistirilmiyor)...", flush=True)
     semaphore = asyncio.Semaphore(8)
     async def one(symbol):
         async with semaphore:
             try:
-                result = await build_symbol(symbol, args.days, args.feature_version)
+                result = await build_symbol(symbol, args.days, args.feature_version, args.end_time_ms)
                 print(f"{result[0]}: {result[1]} candles, {result[2]} feature snapshots", flush=True)
             except Exception as exc:
                 print(f"{symbol}: ERROR {exc}", flush=True)
@@ -96,4 +98,7 @@ if __name__ == "__main__":
     parser.add_argument("--symbols", nargs="+", required=True)
     parser.add_argument("--days", type=int, choices=(3, 7, 30), default=7)
     parser.add_argument("--feature-version", default="snapshot-v1-5m")
-    asyncio.run(main(parser.parse_args()))
+    parser.add_argument("--end-date", help="ISO UTC bitiş zamanı; ör. 2026-08-04T07:00:00+00:00")
+    args = parser.parse_args()
+    args.end_time_ms = int(datetime.fromisoformat(args.end_date).timestamp() * 1000) if args.end_date else None
+    asyncio.run(main(args))

@@ -148,6 +148,11 @@ export default function ChatPage() {
   const [livePriceWatch, setLivePriceWatch] = useState<LivePriceWatch | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
+  const ttsUrlsRef = useRef<string[]>([]);
+  const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
+  const [ttsRate, setTtsRate] = useState(0);
+  const [ttsPitch, setTtsPitch] = useState(0);
   const chatSettingsReady = useRef(false);
   useEffect(() => {
     try {
@@ -174,6 +179,40 @@ export default function ChatPage() {
     if (hydrated)
       localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
   }, [messages, hydrated]);
+  useEffect(() => () => {
+    ttsAudioRef.current?.pause();
+    ttsUrlsRef.current.forEach(URL.revokeObjectURL);
+  }, []);
+
+  const stopSpeaking = () => {
+    ttsAudioRef.current?.pause();
+    ttsUrlsRef.current.forEach(URL.revokeObjectURL);
+    ttsUrlsRef.current = [];
+    setSpeakingIndex(null);
+  };
+  const speak = async (content: string, index: number) => {
+    stopSpeaking();
+    const clean = content.replace(/```[\s\S]*?```/g, " ").replace(/`([^`]*)`/g, "$1")
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[#>*_~|]/g, " ")
+      .replace(/\p{Extended_Pictographic}/gu, " ").replace(/[.!?…]+/g, ",").replace(/\s+/g, " ").trim();
+    const chunks = clean.match(/.{1,360}(?:\s|$)/g)?.map((part) => part.trim()).filter(Boolean) || [];
+    if (!chunks.length) return;
+    setSpeakingIndex(index);
+    try {
+      const requests = chunks.map(async (text) => {
+        const response = await apiRequest(`${API_BASE}/api/tts/edge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, rate: ttsRate, pitch: ttsPitch }) });
+        if (!response.ok) throw new Error("Ses üretilemedi");
+        return URL.createObjectURL(await response.blob());
+      });
+      const play = async (chunkIndex: number) => {
+        const url = await requests[chunkIndex]; ttsUrlsRef.current.push(url);
+        const audio = new Audio(url); ttsAudioRef.current = audio;
+        audio.onended = () => { URL.revokeObjectURL(url); if (chunkIndex + 1 < requests.length) void play(chunkIndex + 1); else setSpeakingIndex(null); };
+        audio.onerror = stopSpeaking; await audio.play();
+      };
+      await play(0);
+    } catch { stopSpeaking(); setError("Sesli yanıt üretilemedi. Edge TTS servisini kontrol edin."); }
+  };
   useEffect(() => {
     Promise.all([
       apiRequest(`${API_BASE}/api/llm/config`).then((r) => r.json()),
@@ -185,6 +224,8 @@ export default function ChatPage() {
           setActiveTools(Array.from(new Set([...ALL_TOOLS, ...settings.active_tools])));
         if (Array.isArray(settings.active_skills))
           setActiveSkills(settings.active_skills);
+        if (Number.isFinite(settings.tts_rate)) setTtsRate(settings.tts_rate);
+        if (Number.isFinite(settings.tts_pitch)) setTtsPitch(settings.tts_pitch);
         chatSettingsReady.current = true;
       })
       .catch(() => undefined);
@@ -198,11 +239,13 @@ export default function ChatPage() {
         body: JSON.stringify({
           active_tools: activeTools,
           active_skills: activeSkills,
+          tts_rate: ttsRate,
+          tts_pitch: ttsPitch,
         }),
       }).catch(() => undefined);
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [activeTools, activeSkills]);
+  }, [activeTools, activeSkills, ttsRate, ttsPitch]);
   useEffect(() => {
     const load = () =>
       apiRequest(`${API_BASE}/api/llm/tool-logs?limit=24`)
@@ -412,6 +455,7 @@ export default function ChatPage() {
                   <p className="eyebrow mb-2">
                     {message.role === "user" ? "KULLANICI" : "SCALPER"}
                   </p>
+                  {message.role === "assistant" && message.content && <button type="button" onClick={() => speakingIndex === index ? stopSpeaking() : void speak(message.content, index)} className="chat-tts-button" aria-label="Yanıtı seslendir">{speakingIndex === index ? "■ DURDUR" : "▶ SESLENDİR"}</button>}
                   <MarkdownMessage content={message.content} />
                 </div>
               </div>
@@ -607,6 +651,12 @@ export default function ChatPage() {
                       Paper-only çalışma, Türkçe yanıt, veri uydurmama ve risk
                       kurallarına uyum.
                     </p>
+                  </div>
+                  <div className="chat-setting-card">
+                    <Badge tone="positive">EDGE TTS · Emel</Badge>
+                    <h3>Sesli yanıt</h3>
+                    <label className="chat-tts-setting">Hız: {ttsRate > 0 ? "+" : ""}{ttsRate}%<input type="range" min="-30" max="50" value={ttsRate} onChange={(event) => setTtsRate(Number(event.target.value))} /></label>
+                    <label className="chat-tts-setting">Perde: {ttsPitch > 0 ? "+" : ""}{ttsPitch}Hz<input type="range" min="-20" max="20" value={ttsPitch} onChange={(event) => setTtsPitch(Number(event.target.value))} /></label>
                   </div>
                   <div className="chat-setting-card">
                     <Badge tone="positive">AKTİF</Badge>

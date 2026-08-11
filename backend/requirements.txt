@@ -8,3 +8,4 @@ cryptography==47.0.0
 pywebpush==2.4.0
 asyncpg==0.31.0
 psycopg[binary]==3.3.4
+edge-tts==7.2.7

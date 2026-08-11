@@ -68,19 +68,73 @@ class RegressionContracts(unittest.TestCase):
         self.assertEqual(pine_profile("v3")["stop_pct"], 0.08882)
         self.assertEqual(pine_profile("v3")["tp_pct"], 0.02317)
 
-    def test_bb_mfi_v3_signal_contract(self):
+    def test_bb_mfi_v1_signal_contract(self):
         from app.analyzer import ScalpAnalyzer
 
         analyzer = ScalpAnalyzer(None)
-        rising = [float(100 + index) for index in range(30)]
-        up_kline = {"closes": rising, "highs": [value + 1 for value in rising],
-                    "lows": [value - 1 for value in rising], "volumes": [100.0] * len(rising)}
-        self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(up_kline), "sell")
+        def kline(last):
+            closes = [100.0] * 20 + [last]
+            return {"closes": closes, "highs": closes, "lows": closes, "volumes": [100.0] * len(closes)}
 
-        falling = [float(130 - index) for index in range(30)]
-        down_kline = {"closes": falling, "highs": [value + 1 for value in falling],
-                      "lows": [value - 1 for value in falling], "volumes": [100.0] * len(falling)}
-        self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(down_kline), "buy")
+        with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
+             patch.object(analyzer, "calculate_rsi", return_value=80.0):
+            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline(120.0)), "sell")
+            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline(80.0)), "buy")
+
+    def test_portfolio_replay_reads_normalized_historical_candles(self):
+        from scripts.run_portfolio_backtest import rows_to_series
+
+        series = rows_to_series([
+            {"open_time": 1_000_000, "close_time": 1_299_999, "open": 100.0, "high": 103.0,
+             "low": 99.0, "close": 102.0, "volume": 12.0},
+            {"open_time": 1_300_000, "close_time": 1_599_999, "open": 102.0, "high": 104.0,
+             "low": 101.0, "close": 103.0, "volume": 15.0},
+        ])
+
+        self.assertEqual(series["opens"], [100.0, 102.0])
+        self.assertEqual(series["closes"], [102.0, 103.0])
+        self.assertEqual(series["times"], [1299, 1599])
+
+    def test_portfolio_replay_historical_db_uses_requested_window_and_warmup(self):
+        from scripts.run_portfolio_backtest import load_market
+
+        start_ts, end_ts, days = 2_000_000, 2_100_000, 1
+        cached_rows = [{"open_time": 1_000_000, "close_time": 1_299_999,
+                        "open": 100.0, "high": 103.0, "low": 99.0,
+                        "close": 102.0, "volume": 12.0}]
+
+        async def exercise():
+            with patch("scripts.run_portfolio_backtest.database.get_market_candles",
+                       new=AsyncMock(return_value=cached_rows)) as get_candles:
+                loaded = await load_market(["BTCTRY"], days, "historical-db", start_ts, end_ts)
+            return loaded, get_candles.await_args.args
+
+        loaded, call_args = asyncio.run(exercise())
+        self.assertEqual(call_args, ("BTCTRY", "5m", start_ts * 1000 - days * 86400 * 1000, end_ts * 1000))
+        self.assertEqual(loaded[0][0], "BTCTRY")
+        self.assertEqual(loaded[0][1]["closes"], [102.0])
+
+    def test_portfolio_replay_historical_cache_and_mtm_cost_contracts(self):
+        source = (ROOT / "scripts" / "run_portfolio_backtest.py").read_text()
+        self.assertIn('args.data_source == "historical-db"', source)
+        self.assertIn('"historical_cached_requested_symbols"', source)
+        self.assertIn("liquidation_fill = mark_price", source)
+        self.assertIn("exit_fee = marked_value * config.COMMISSION_PCT", source)
+
+    def test_portfolio_profit_lock_arms_only_after_the_trigger(self):
+        from scripts.run_portfolio_backtest import arm_profit_lock
+
+        position = {"entry": 100.0}
+        self.assertFalse(arm_profit_lock(position, 100.49, 0.005, 0.0035))
+        self.assertNotIn("profit_lock_stop", position)
+        self.assertTrue(arm_profit_lock(position, 100.50, 0.005, 0.0035))
+        self.assertAlmostEqual(position["profit_lock_stop"], 100.35)
+        self.assertFalse(arm_profit_lock(position, 101.0, 0.005, 0.0035))
+
+    def test_portfolio_replay_supports_an_experimental_risk_stop(self):
+        source = (ROOT / "scripts" / "run_portfolio_backtest.py").read_text()
+        self.assertIn("args.risk_stop_pct is not None", source)
+        self.assertIn('"risk_stop_pct": stop_pct', source)
 
     def test_bb_mfi_v3_backtest_has_signal_exit_and_pine_sizing(self):
         source = (ROOT / "app" / "backtest.py").read_text()

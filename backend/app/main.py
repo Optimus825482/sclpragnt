@@ -46,10 +46,46 @@ try:
     import asyncpg
 except ImportError:
     asyncpg = None
+try:
+    import edge_tts
+except ImportError:
+    edge_tts = None
 
 app = FastAPI(title="Scalper Agent V4 - Paper Trading")
 cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3004,http://localhost:3000").split(",") if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+_TTS_VOICE = "tr-TR-EmelNeural"
+_TTS_EMOJI = re.compile("[\\U00010000-\\U0010ffff]")
+
+def _speech_text(value: object) -> str:
+    text = str(value or "")
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)
+    text = re.sub(r"`([^`]*)`", r"\\1", text)
+    text = re.sub(r"!?\\[([^]]*)\\]\\([^)]*\\)", r"\\1", text)
+    text = re.sub(r"[#>*_~|]", " ", text)
+    text = _TTS_EMOJI.sub(" ", text)
+    text = re.sub(r"\\s+", " ", text).strip()
+    return text[:1200]
+
+@app.post("/api/tts/edge")
+async def edge_tts_audio(payload: dict):
+    if edge_tts is None:
+        raise HTTPException(503, "Edge TTS bağımlılığı sunucuda kurulu değil")
+    text = _speech_text(payload.get("text"))
+    if not text:
+        raise HTTPException(400, "Seslendirilecek metin bulunamadı")
+    try:
+        rate = max(-50, min(100, int(payload.get("rate", 0))))
+        pitch = max(-50, min(50, int(payload.get("pitch", 0))))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Ses hızı ve perde sayısal olmalı")
+    async def audio():
+        communicate = edge_tts.Communicate(text, _TTS_VOICE, rate=f"{rate:+d}%", pitch=f"{pitch:+d}Hz")
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                yield chunk["data"]
+    return StreamingResponse(audio(), media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.middleware("http")

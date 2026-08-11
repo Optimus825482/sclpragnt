@@ -1,0 +1,1154 @@
+{
+  "paper_only": true,
+  "source": "Binance TR public API",
+  "retrieved_at": "2026-08-11T06:20:19+00:00",
+  "window": {
+    "start": "2026-08-09T03:17:33+00:00",
+    "end": "2026-08-10T03:17:33+00:00",
+    "hours": 24.0
+  },
+  "strategy": "BB_MFI_MEAN_REVERSION",
+  "pine_version": "current",
+  "pine_profile": null,
+  "selection_mode": "all_requested_scan_symbols",
+  "initial_balance_try": 10000.0,
+  "final_balance_try": 9935.611071,
+  "net_pnl_try": -64.388929,
+  "net_pnl_pct": -0.643889,
+  "closed_trades": 39,
+  "wins": 31,
+  "losses": 8,
+  "win_rate_pct": 79.4872,
+  "profit_factor": 1.763952,
+  "fees_closed_trades_try": 171.401159,
+  "max_drawdown_pct": 3.623945,
+  "active_symbols": [
+    "ACETRY",
+    "ACTTRY",
+    "ADATRY",
+    "AEVOTRY",
+    "ALLOTRY",
+    "ARPATRY",
+    "BABYTRY",
+    "BBTRY",
+    "BMTTRY",
+    "BOMETRY",
+    "CATITRY",
+    "CRVTRY",
+    "DODOTRY",
+    "EIGENTRY",
+    "ETHFITRY",
+    "HOMETRY",
+    "ICPTRY",
+    "NILTRY",
+    "PEOPLETRY",
+    "PUMPTRY",
+    "SCRTRY",
+    "SHIBTRY",
+    "THETRY",
+    "TLMTRY",
+    "TSTTRY"
+  ],
+  "activity": {
+    "ACETRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 4.4988,
+      "atr_pct": 1.4624,
+      "volume_ratio": 0.1918,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "ACTTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 1.4893,
+      "atr_pct": 1.0358,
+      "volume_ratio": 4.262,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "ADATRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.4484,
+      "atr_pct": 0.2232,
+      "volume_ratio": 0.3984,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "AEVOTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.3992,
+      "atr_pct": 0.3124,
+      "volume_ratio": 0.1299,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "ALLOTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.885,
+      "atr_pct": 0.4386,
+      "volume_ratio": 0.8268,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "ARPATRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.5613,
+      "atr_pct": 0.3213,
+      "volume_ratio": 0.9203,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "BABYTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 1.2719,
+      "atr_pct": 0.3975,
+      "volume_ratio": 2.3277,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "BBTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 2.9609,
+      "atr_pct": 0.3958,
+      "volume_ratio": 2.0991,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "BMTTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 3.0494,
+      "atr_pct": 1.7427,
+      "volume_ratio": 1.8151,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "BOMETRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.4641,
+      "atr_pct": 0.5305,
+      "volume_ratio": 0.0795,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "CATITRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 1.2243,
+      "atr_pct": 0.4442,
+      "volume_ratio": 0.0,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "CRVTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.9585,
+      "atr_pct": 0.5385,
+      "volume_ratio": 0.0156,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "DODOTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 1.0944,
+      "atr_pct": 1.1877,
+      "volume_ratio": 0.2844,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "EIGENTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.6873,
+      "atr_pct": 0.2512,
+      "volume_ratio": 0.2622,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "ETHFITRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.3226,
+      "atr_pct": 0.134,
+      "volume_ratio": 0.0299,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": false,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "HOMETRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 1.6241,
+      "atr_pct": 0.7771,
+      "volume_ratio": 1.3969,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "ICPTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.7156,
+      "atr_pct": 0.3192,
+      "volume_ratio": 0.6422,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "NILTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 1.4714,
+      "atr_pct": 0.9021,
+      "volume_ratio": 0.0046,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "PEOPLETRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.2398,
+      "atr_pct": 0.2912,
+      "volume_ratio": 0.2676,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "PUMPTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 1.4604,
+      "atr_pct": 0.4329,
+      "volume_ratio": 0.0353,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "SCRTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.4012,
+      "atr_pct": 0.6071,
+      "volume_ratio": 0.0,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "SHIBTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.1855,
+      "atr_pct": 0.1723,
+      "volume_ratio": 0.0054,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "THETRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 1.1996,
+      "atr_pct": 0.642,
+      "volume_ratio": 0.0,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "TLMTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 0.1319,
+      "atr_pct": 0.3015,
+      "volume_ratio": 0.0,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": false,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "TSTTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 0.0,
+      "range_15m_pct": 3.6122,
+      "atr_pct": 4.0923,
+      "volume_ratio": 0.2415,
+      "spread_pct": null,
+      "checks": {
+        "quote_volume": false,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    }
+  },
+  "skipped_symbols": {},
+  "data_quality": {
+    "ACETRY": {
+      "candle_count": 861,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ACTTRY": {
+      "candle_count": 861,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ADATRY": {
+      "candle_count": 861,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "AEVOTRY": {
+      "candle_count": 861,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ALLOTRY": {
+      "candle_count": 861,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ARPATRY": {
+      "candle_count": 861,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "BABYTRY": {
+      "candle_count": 861,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "BBTRY": {
+      "candle_count": 861,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "BMTTRY": {
+      "candle_count": 861,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "BOMETRY": {
+      "candle_count": 862,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "CATITRY": {
+      "candle_count": 862,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "CRVTRY": {
+      "candle_count": 862,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "DODOTRY": {
+      "candle_count": 862,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "EIGENTRY": {
+      "candle_count": 862,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ETHFITRY": {
+      "candle_count": 862,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "HOMETRY": {
+      "candle_count": 862,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ICPTRY": {
+      "candle_count": 862,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "NILTRY": {
+      "candle_count": 863,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "PEOPLETRY": {
+      "candle_count": 863,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "PUMPTRY": {
+      "candle_count": 636,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "SCRTRY": {
+      "candle_count": 863,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "SHIBTRY": {
+      "candle_count": 863,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "THETRY": {
+      "candle_count": 863,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "TLMTRY": {
+      "candle_count": 863,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "TSTTRY": {
+      "candle_count": 636,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    }
+  },
+  "prepared_features": [
+    "bb_lower",
+    "bb_upper",
+    "mfi",
+    "rsi",
+    "atr",
+    "close"
+  ],
+  "open_position_policy": "mark-to-market",
+  "open_positions_excluded": [],
+  "open_positions_marked": [
+    {
+      "symbol": "DODOTRY",
+      "entry_time": 1786294499,
+      "layers": 2,
+      "mark_price": 0.9621,
+      "marked_value_try": 1996.465932,
+      "unrealized_pnl_try": -23.420313
+    },
+    {
+      "symbol": "ACETRY",
+      "entry_time": 1786309199,
+      "layers": 2,
+      "mark_price": 5.672,
+      "marked_value_try": 1879.07532,
+      "unrealized_pnl_try": -118.299019
+    },
+    {
+      "symbol": "BABYTRY",
+      "entry_time": 1786311299,
+      "layers": 1,
+      "mark_price": 0.614,
+      "marked_value_try": 990.363222,
+      "unrealized_pnl_try": -18.395436
+    },
+    {
+      "symbol": "ADATRY",
+      "entry_time": 1786316099,
+      "layers": 2,
+      "mark_price": 9.34,
+      "marked_value_try": 1985.25484,
+      "unrealized_pnl_try": -15.116391
+    },
+    {
+      "symbol": "BBTRY",
+      "entry_time": 1786321499,
+      "layers": 2,
+      "mark_price": 0.6793,
+      "marked_value_try": 1898.32552,
+      "unrealized_pnl_try": -100.482979
+    },
+    {
+      "symbol": "SCRTRY",
+      "entry_time": 1786325999,
+      "layers": 1,
+      "mark_price": 1.026,
+      "marked_value_try": 174.375354,
+      "unrealized_pnl_try": -1.755253
+    },
+    {
+      "symbol": "PUMPTRY",
+      "entry_time": 1786326599,
+      "layers": 1,
+      "mark_price": 0.1288,
+      "marked_value_try": 995.983428,
+      "unrealized_pnl_try": 0.082976
+    }
+  ],
+  "signal_counts": {
+    "buy": 1474,
+    "none": 4999,
+    "sell": 727
+  },
+  "exit_reasons": {
+    "fixed_take_profit": 19,
+    "bb_mfi_v3_signal_exit": 19,
+    "fixed_stop_loss": 1
+  },
+  "trades": [
+    {
+      "symbol": "DODOTRY",
+      "entry_time": 1786245599,
+      "exit_time": 1786248299,
+      "entry": 1.048285625,
+      "exit": 1.0717699721290517,
+      "layers": 1,
+      "pnl": 19.392129,
+      "commission": 3.037224,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "PUMPTRY",
+      "entry_time": 1786245599,
+      "exit_time": 1786248299,
+      "entry": 0.11608700000000001,
+      "exit": 0.11868765323815751,
+      "layers": 1,
+      "pnl": 19.372775,
+      "commission": 3.034192,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "THETRY",
+      "entry_time": 1786248599,
+      "exit_time": 1786249199,
+      "entry": 2.85714125,
+      "exit": 2.9211487068529283,
+      "layers": 1,
+      "pnl": 19.43638,
+      "commission": 3.044154,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "SHIBTRY",
+      "entry_time": 1786245599,
+      "exit_time": 1786250099,
+      "entry": 0.00021876395000000002,
+      "exit": 0.000220334625,
+      "layers": 1,
+      "pnl": 4.171386,
+      "commission": 3.012492,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "PEOPLETRY",
+      "entry_time": 1786245599,
+      "exit_time": 1786250399,
+      "entry": 0.35926925,
+      "exit": 0.36472625000000003,
+      "layers": 1,
+      "pnl": 12.171479,
+      "commission": 3.02405,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "ALLOTRY",
+      "entry_time": 1786249499,
+      "exit_time": 1786255499,
+      "entry": 14.65098,
+      "exit": 14.97920037419505,
+      "layers": 1,
+      "pnl": 19.45657,
+      "commission": 3.047316,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "ICPTRY",
+      "entry_time": 1786245599,
+      "exit_time": 1786257299,
+      "entry": 103.12718684252411,
+      "exit": 103.62222500000001,
+      "layers": 2,
+      "pnl": 3.593931,
+      "commission": 6.027475,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "EIGENTRY",
+      "entry_time": 1786245599,
+      "exit_time": 1786257899,
+      "entry": 8.317233250000001,
+      "exit": 8.361724,
+      "layers": 1,
+      "pnl": 2.344138,
+      "commission": 3.011797,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "DODOTRY",
+      "entry_time": 1786257899,
+      "exit_time": 1786257899,
+      "entry": 0.998047975,
+      "exit": 1.0204068670208144,
+      "layers": 1,
+      "pnl": 19.488663,
+      "commission": 3.052343,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BOMETRY",
+      "entry_time": 1786245599,
+      "exit_time": 1786258199,
+      "entry": 0.03005243666613882,
+      "exit": 0.030357215000000003,
+      "layers": 2,
+      "pnl": 14.295214,
+      "commission": 6.048422,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "AEVOTRY",
+      "entry_time": 1786255799,
+      "exit_time": 1786258499,
+      "entry": 0.9937441362547346,
+      "exit": 1.003247,
+      "layers": 2,
+      "pnl": 13.157344,
+      "commission": 6.056611,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "DODOTRY",
+      "entry_time": 1786258199,
+      "exit_time": 1786262699,
+      "entry": 1.016076644307973,
+      "exit": 1.0388394258014713,
+      "layers": 2,
+      "pnl": 38.847738,
+      "commission": 6.084389,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "ACETRY",
+      "entry_time": 1786245599,
+      "exit_time": 1786263299,
+      "entry": 6.217157097656373,
+      "exit": 6.356437721138365,
+      "layers": 2,
+      "pnl": 38.849569,
+      "commission": 6.084676,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "ALLOTRY",
+      "entry_time": 1786262999,
+      "exit_time": 1786272899,
+      "entry": 14.821116136189776,
+      "exit": 15.153148006017494,
+      "layers": 2,
+      "pnl": 39.297574,
+      "commission": 6.154843,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "SCRTRY",
+      "entry_time": 1786262999,
+      "exit_time": 1786273499,
+      "entry": 1.0027515,
+      "exit": 1.0252157633158088,
+      "layers": 1,
+      "pnl": 19.67193,
+      "commission": 3.081046,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "ACTTRY",
+      "entry_time": 1786257299,
+      "exit_time": 1786274399,
+      "entry": 0.47345463432429513,
+      "exit": 0.471146375,
+      "layers": 2,
+      "pnl": -15.819021,
+      "commission": 6.01692,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "ICPTRY",
+      "entry_time": 1786273199,
+      "exit_time": 1786278299,
+      "entry": 103.62761319324694,
+      "exit": 103.82207500000001,
+      "layers": 2,
+      "pnl": -2.288198,
+      "commission": 6.100696,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "ACETRY",
+      "entry_time": 1786278299,
+      "exit_time": 1786280699,
+      "entry": 5.7843350000000004,
+      "exit": 5.913919273418538,
+      "layers": 1,
+      "pnl": 19.703517,
+      "commission": 3.085994,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "ADATRY",
+      "entry_time": 1786245599,
+      "exit_time": 1786282199,
+      "entry": 9.451886652442067,
+      "exit": 9.382957500000002,
+      "layers": 2,
+      "pnl": -20.353921,
+      "commission": 5.917226,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "DODOTRY",
+      "entry_time": 1786274399,
+      "exit_time": 1786284899,
+      "entry": 0.9740299750000001,
+      "exit": 0.9958508008336096,
+      "layers": 1,
+      "pnl": 19.722822,
+      "commission": 3.089017,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786285199,
+      "exit_time": 1786285199,
+      "entry": 1.08581375,
+      "exit": 1.1101388255465594,
+      "layers": 1,
+      "pnl": 19.788367,
+      "commission": 3.099283,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "ARPATRY",
+      "entry_time": 1786263599,
+      "exit_time": 1786290599,
+      "entry": 0.4171126,
+      "exit": 0.42008470000000003,
+      "layers": 1,
+      "pnl": 4.167364,
+      "commission": 3.049203,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "BBTRY",
+      "entry_time": 1786273499,
+      "exit_time": 1786294499,
+      "entry": 0.6431820250000001,
+      "exit": 0.6514110750000001,
+      "layers": 1,
+      "pnl": 9.932383,
+      "commission": 3.067775,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "AEVOTRY",
+      "entry_time": 1786278299,
+      "exit_time": 1786302899,
+      "entry": 0.9782317679773018,
+      "exit": 0.9832620000000001,
+      "layers": 2,
+      "pnl": 4.348973,
+      "commission": 6.128246,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "PUMPTRY",
+      "entry_time": 1786290599,
+      "exit_time": 1786304099,
+      "entry": 0.12709525,
+      "exit": 0.12930295,
+      "layers": 1,
+      "pnl": 14.558452,
+      "commission": 3.071215,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "ACETRY",
+      "entry_time": 1786302899,
+      "exit_time": 1786304099,
+      "entry": 5.996494,
+      "exit": 6.130831191405516,
+      "layers": 1,
+      "pnl": 19.497625,
+      "commission": 3.053746,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "PEOPLETRY",
+      "entry_time": 1786304099,
+      "exit_time": 1786305599,
+      "entry": 0.43932925,
+      "exit": 0.44917137734095813,
+      "layers": 1,
+      "pnl": 1.997619,
+      "commission": 0.31287,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "HOMETRY",
+      "entry_time": 1786258499,
+      "exit_time": 1786307999,
+      "entry": 0.4533397500000001,
+      "exit": 0.4127643078199464,
+      "layers": 2,
+      "pnl": -104.430454,
+      "commission": 3.239947,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "CATITRY",
+      "entry_time": 1786285499,
+      "exit_time": 1786309199,
+      "entry": 2.301725,
+      "exit": 2.1753672500000003,
+      "layers": 1,
+      "pnl": -59.156852,
+      "commission": 2.98539,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "ADATRY",
+      "entry_time": 1786302899,
+      "exit_time": 1786311299,
+      "entry": 9.412058754227864,
+      "exit": 9.462897500000002,
+      "layers": 2,
+      "pnl": 4.813874,
+      "commission": 6.050369,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "ALLOTRY",
+      "entry_time": 1786281299,
+      "exit_time": 1786316099,
+      "entry": 14.96132927894668,
+      "exit": 14.4991175,
+      "layers": 2,
+      "pnl": -68.251879,
+      "commission": 5.955927,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "TLMTRY",
+      "entry_time": 1786258499,
+      "exit_time": 1786316699,
+      "entry": 0.07733211671330265,
+      "exit": 0.077242025,
+      "layers": 2,
+      "pnl": -8.400271,
+      "commission": 6.049633,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "CRVTRY",
+      "entry_time": 1786305899,
+      "exit_time": 1786321499,
+      "entry": 11.3384975,
+      "exit": 11.371465000000002,
+      "layers": 2,
+      "pnl": -0.109466,
+      "commission": 3.397862,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "PEOPLETRY",
+      "entry_time": 1786321499,
+      "exit_time": 1786323599,
+      "entry": 0.42131575,
+      "exit": 0.43075432770055433,
+      "layers": 1,
+      "pnl": 2.814268,
+      "commission": 0.440775,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "AEVOTRY",
+      "entry_time": 1786316099,
+      "exit_time": 1786324199,
+      "entry": 0.9842251045680532,
+      "exit": 0.991256,
+      "layers": 2,
+      "pnl": 8.047907,
+      "commission": 5.862744,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "TSTTRY",
+      "entry_time": 1786324199,
+      "exit_time": 1786324799,
+      "entry": 0.91568625,
+      "exit": 0.9362000233871907,
+      "layers": 1,
+      "pnl": 18.572428,
+      "commission": 2.908841,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786325099,
+      "exit_time": 1786325099,
+      "entry": 1.5341497499999999,
+      "exit": 1.5685187277077193,
+      "layers": 1,
+      "pnl": 18.931619,
+      "commission": 2.965098,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "ACTTRY",
+      "entry_time": 1786323899,
+      "exit_time": 1786325699,
+      "entry": 0.5254290223333673,
+      "exit": 0.5372000103712458,
+      "layers": 2,
+      "pnl": 22.169065,
+      "commission": 3.472151,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "NILTRY",
+      "entry_time": 1786325999,
+      "exit_time": 1786326299,
+      "entry": 2.0015,
+      "exit": 2.0463388489337504,
+      "layers": 1,
+      "pnl": 19.194445,
+      "commission": 3.006262,
+      "reason": "fixed_take_profit"
+    }
+  ],
+  "cost_model": {
+    "commission_pct_each_side": 0.0015,
+    "assumed_full_spread_pct": 0.001,
+    "slippage_pct_each_side": 0.00025
+  },
+  "limitations": [
+    "Historical order-book depth and spread are unavailable; current spread selects the active universe and configured spread models fills."
+  ],
+  "reconciliation": {
+    "expected": 9935.611071,
+    "actual": 9935.611071,
+    "difference": 2.4e-07
+  }
+}
