@@ -117,17 +117,18 @@ async def current_spread(symbol):
         return None
 
 
-async def load_market(symbols, days, data_source, start_ts, end_ts):
+async def load_market(symbols, days, data_source, start_ts, end_ts, interval="5m"):
     if data_source == "historical-db":
-        warmup_ms = max(int(days * 86400 * 1000), 250 * 5 * 60 * 1000)
+        interval_ms = {"1m": 60 * 1000, "3m": 3 * 60 * 1000, "5m": 5 * 60 * 1000, "15m": 15 * 60 * 1000}[interval]
+        warmup_ms = max(int(days * 86400 * 1000), 250 * interval_ms)
         start_ms = int(start_ts * 1000) - warmup_ms
         end_ms = int(end_ts * 1000)
 
         async def load_cached(symbol):
             try:
-                rows = await database.get_market_candles(symbol, "5m", start_ms, end_ms)
+                rows = await database.get_market_candles(symbol, interval, start_ms, end_ms)
                 data = rows_to_series(rows)
-                print(f"[DATA] {symbol} source=historical_candles interval=5m candles={len(data['times'])}", flush=True)
+                print(f"[DATA] {symbol} source=historical_candles interval={interval} candles={len(data['times'])}", flush=True)
                 return symbol, data, 0.0, None, None
             except Exception as exc:
                 return symbol, None, 0.0, None, str(exc)
@@ -141,9 +142,9 @@ async def load_market(symbols, days, data_source, start_ts, end_ts):
     async def fetch(symbol):
         async with semaphore:
             try:
-                rows, spread = await asyncio.gather(historical_klines(symbol, "5m", days), current_spread(symbol))
+                rows, spread = await asyncio.gather(historical_klines(symbol, interval, days), current_spread(symbol))
                 data = rows_to_series(rows)
-                print(f"[DATA] {symbol} source=BinanceTR-public interval=5m candles={len(data['times'])}", flush=True)
+                print(f"[DATA] {symbol} source=BinanceTR-public interval={interval} candles={len(data['times'])}", flush=True)
                 return symbol, data, quote_volumes.get(symbol, 0.0), spread, None
             except Exception as exc:
                 return symbol, None, 0.0, None, str(exc)
@@ -217,8 +218,8 @@ def replay_features(analyzer, window, version):
 
 
 async def run(args):
-    if args.interval != "5m":
-        raise SystemExit("Bu replay canlı strateji sözleşmesi gereği yalnızca 5m çalışır")
+    if args.interval not in {"1m", "3m", "5m", "15m"}:
+        raise SystemExit("Bu replay yalnızca 1m, 3m, 5m veya 15m ile çalışır")
     now = int(time.time())
     local_tz = ZoneInfo(args.timezone)
     end_ts = min(now, int(datetime.fromisoformat(args.end_date).replace(tzinfo=local_tz).timestamp())) if args.end_date else now - int(args.end_hours_ago * 3600)
@@ -241,7 +242,7 @@ async def run(args):
 
     if args.data_source == "historical-db":
         await database.init_db()
-    loaded = await load_market(requested_symbols, args.fetch_days, args.data_source, start_ts, end_ts)
+    loaded = await load_market(requested_symbols, args.fetch_days, args.data_source, start_ts, end_ts, args.interval)
     analyzer = ScalpAnalyzer(None)
     series, activity, quality, skipped = {}, {}, {}, {}
     for symbol, data, quote_volume, live_spread, error in loaded:
@@ -461,7 +462,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbols", nargs="*")
     parser.add_argument("--use-all-requested", action="store_true", help="Verilen tarama evrenini güncel ACTIVE filtresi uygulamadan replay et")
-    parser.add_argument("--interval", default="5m")
+    parser.add_argument("--interval", choices=("1m", "3m", "5m", "15m"), default="5m")
     parser.add_argument("--data-source", choices=("public", "historical-db"), default="public")
     parser.add_argument("--pine-version", choices=("current", "v1", "v2", "v3"), default="current")
     parser.add_argument("--fetch-days", type=int, default=2, help="Feature warmup dahil public candle window")
