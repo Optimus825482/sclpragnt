@@ -150,6 +150,7 @@ export default function ChatPage() {
   const streamAbortRef = useRef<AbortController | null>(null);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
   const ttsUrlsRef = useRef<string[]>([]);
+  const ttsSessionRef = useRef(0);
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const [ttsRate, setTtsRate] = useState(0);
   const [ttsPitch, setTtsPitch] = useState(0);
@@ -185,6 +186,7 @@ export default function ChatPage() {
   }, []);
 
   const stopSpeaking = () => {
+    ttsSessionRef.current += 1;
     ttsAudioRef.current?.pause();
     ttsUrlsRef.current.forEach(URL.revokeObjectURL);
     ttsUrlsRef.current = [];
@@ -192,6 +194,7 @@ export default function ChatPage() {
   };
   const speak = async (content: string, index: number) => {
     stopSpeaking();
+    const session = ttsSessionRef.current;
     const clean = content.replace(/```[\s\S]*?```/g, " ").replace(/`([^`]*)`/g, "$1")
       .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[#>*_~|]/g, " ")
       .replace(/\p{Extended_Pictographic}/gu, " ").replace(/[.!?…]+/g, ",").replace(/\s+/g, " ").trim();
@@ -201,17 +204,23 @@ export default function ChatPage() {
     try {
       const requests = chunks.map(async (text) => {
         const response = await apiRequest(`${API_BASE}/api/tts/edge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, rate: ttsRate, pitch: ttsPitch }) });
-        if (!response.ok) throw new Error("Ses üretilemedi");
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}));
+          throw new Error(detail.detail || `Ses servisi HTTP ${response.status}`);
+        }
         return URL.createObjectURL(await response.blob());
       });
       const play = async (chunkIndex: number) => {
+        if (session !== ttsSessionRef.current) return;
         const url = await requests[chunkIndex]; ttsUrlsRef.current.push(url);
+        if (session !== ttsSessionRef.current) { URL.revokeObjectURL(url); return; }
         const audio = new Audio(url); ttsAudioRef.current = audio;
-        audio.onended = () => { URL.revokeObjectURL(url); if (chunkIndex + 1 < requests.length) void play(chunkIndex + 1); else setSpeakingIndex(null); };
-        audio.onerror = stopSpeaking; await audio.play();
+        audio.onended = () => { URL.revokeObjectURL(url); if (session !== ttsSessionRef.current) return; if (chunkIndex + 1 < requests.length) void play(chunkIndex + 1); else setSpeakingIndex(null); };
+        audio.onerror = () => { if (session === ttsSessionRef.current) { stopSpeaking(); setError("Tarayıcı ses parçasını oynatamadı."); } };
+        await audio.play();
       };
       await play(0);
-    } catch { stopSpeaking(); setError("Sesli yanıt üretilemedi. Edge TTS servisini kontrol edin."); }
+    } catch (cause) { if (session === ttsSessionRef.current) { stopSpeaking(); setError(cause instanceof Error ? cause.message : "Sesli yanıt üretilemedi."); } }
   };
   useEffect(() => {
     Promise.all([
