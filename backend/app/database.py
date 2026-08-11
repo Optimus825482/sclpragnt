@@ -1280,7 +1280,8 @@ async def record_alert_trigger(rule_id, event_key, value, message, severity="inf
     def op(conn):
         inserted = conn.execute("INSERT INTO alert_events(rule_id,symbol,event_key,value,message,severity,triggered_at) SELECT id,symbol,?,?,?,?,? FROM alert_rules WHERE id=? ON CONFLICT(event_key) DO NOTHING", (event_key, value, message, severity, now, rule_id))
         if inserted.rowcount == 0: conn.rollback(); return None
-        conn.execute("UPDATE alert_rules SET last_triggered_at=?, last_value=?, armed=CASE WHEN rearm_threshold IS NULL THEN armed ELSE 0 END, updated_at=? WHERE id=?", (now, value, now, rule_id)); conn.commit()
+        armed_false = "FALSE" if _postgres_enabled() else "0"
+        conn.execute(f"UPDATE alert_rules SET last_triggered_at=?, last_value=?, armed=CASE WHEN rearm_threshold IS NULL THEN armed ELSE {armed_false} END, updated_at=? WHERE id=?", (now, value, now, rule_id)); conn.commit()
         row = conn.execute("SELECT * FROM alert_events WHERE event_key=?", (event_key,)).fetchone(); return dict(row) if row else None
     return await _run_db(op)
 
