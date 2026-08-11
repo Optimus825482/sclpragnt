@@ -496,7 +496,8 @@ class ScalpAnalyzer:
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
             if price <= system_stop:
                 return await self.close_position(symbol, price, "system_stop_loss")
-            # BB-MFI live çıkışı backtest ile birebir: yalnızca sabit stop/TP.
+            # BB-MFI canlıda backtest ile aynı karar kurallarını kullanır;
+            # gerçekleşen fill, teyit sonrası mevcut canlı ticker fiyatıdır.
             if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
                 system_target = pos.get("system_take_profit_price") or pos.get("take_profit")
                 if system_target and price >= float(system_target):
@@ -1095,6 +1096,16 @@ class ScalpAnalyzer:
     async def _record_trade(self, symbol, pos, exit_price, reason, commission=0.0):
         """Kapanan pozisyonu işlem geçmişine kaydet (komisyon dahil)."""
         entry = pos["entry_price"]
+        entry_context = dict(pos.get("entry_context") or {})
+        # Positions opened before the context correction may still carry the
+        # generic spot plan.  Normalize their closed-trade audit record to the
+        # BB-MFI plan that the position manager actually enforced.
+        if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
+            entry_context.update({
+                "profit_target_pct": config.BB_MFI_TAKE_PROFIT_PCT,
+                "stop_loss_pct": config.BB_MFI_STOP_LOSS_PCT,
+                "max_hold_sec": None,
+            })
         buy_commission = (pos["quantity"] * entry) * config.COMMISSION_PCT
         total_commission = buy_commission + commission
         pnl = (exit_price - entry) * pos["quantity"] - total_commission
@@ -1109,8 +1120,8 @@ class ScalpAnalyzer:
             "quantity": pos.get("quantity", 0.0), "pnl": pnl, "pnl_pct": pnl_pct,
             "entry_time": pos.get("entry_time"), "exit_time": time.time(),
             "commission": total_commission, "reason": reason,
-            "entry_context": pos.get("entry_context", {}),
-            "strategy_revision": pos.get("entry_context", {}).get("strategy_revision", config.STRATEGY_REVISION),
+            "entry_context": entry_context,
+            "strategy_revision": entry_context.get("strategy_revision", config.STRATEGY_REVISION),
             "max_favorable_pct": max_favorable_pct,
             "max_adverse_pct": max_adverse_pct,
             "hold_seconds": hold_seconds,
@@ -1169,8 +1180,19 @@ class ScalpAnalyzer:
         if strat_name == "LLM_PAPER" and requested > 0:
             return min(requested, try_balance / (1 + config.COMMISSION_PCT))
         available_value = try_balance / (1 + config.COMMISSION_PCT)
-        order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
-        order_value = available_value * max(0.001, min(order_pct, 1.0))
+        if strat_name == "BB_MFI_MEAN_REVERSION":
+            # BB-MFI follows Pine's percent-of-equity sizing.  Preflight must
+            # use the same marked-equity basis as the writer-side open path so
+            # eligibility logs cannot reject a size that would never be sent.
+            marked_positions = 0.0
+            for held_symbol, held in self.positions.items():
+                held_ticker = self.market.get_ticker(held_symbol) if self.market else None
+                held_price = float((held_ticker or {}).get("last_price") or held.get("entry_price") or 0)
+                marked_positions += float(held.get("quantity") or 0) * held_price
+            order_value = min((try_balance + marked_positions) * 0.10, available_value)
+        else:
+            order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
+            order_value = available_value * max(0.001, min(order_pct, 1.0))
         if order_value < config.MIN_PARTIAL_ORDER_TRY:
             if available_value >= config.FALLBACK_ORDER_TRY:
                 order_value = config.FALLBACK_ORDER_TRY
@@ -1320,15 +1342,33 @@ class ScalpAnalyzer:
             expected_fees = (order_value + target_value) * config.COMMISSION_PCT
             expected_slippage = order_value * config.ESTIMATED_SLIPPAGE_PCT * 2
             expected_net = expected_gross - expected_fees - expected_slippage
+        is_bb_mfi = strat_name == "BB_MFI_MEAN_REVERSION"
+        planned_take_profit_pct = (
+            float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
+            else (None if strat_name == "LLM_PAPER" else
+                  (config.BB_MFI_TAKE_PROFIT_PCT if is_bb_mfi else config.SPOT_PROFIT_TARGET_PCT))
+        )
+        planned_stop_loss_pct = (
+            float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None
+            else (None if strat_name == "LLM_PAPER" else
+                  (config.BB_MFI_STOP_LOSS_PCT if is_bb_mfi else config.HARD_STOP_LOSS_PCT))
+        )
+        # BB-MFI exits through its fixed stop/target or a confirmed sell signal;
+        # the generic max-hold setting is not an active exit for this strategy.
+        planned_max_hold_sec = (
+            int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None
+            else (None if strat_name in {"LLM_PAPER", "BB_MFI_MEAN_REVERSION"}
+                  else config.MAX_POSITION_HOLD_SEC)
+        )
         entry_context = {"strategy_revision": config.STRATEGY_REVISION,
                          "liquidity": details if self.market else {},
                          "expected_gross_pnl_try": expected_gross if self.market else None,
                          "expected_net_pnl_try": expected_net if self.market else None,
                          "commission_pct": config.COMMISSION_PCT,
                          "estimated_slippage_pct": config.ESTIMATED_SLIPPAGE_PCT,
-                         "profit_target_pct": float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else (None if strat_name == "LLM_PAPER" else config.SPOT_PROFIT_TARGET_PCT),
-                         "stop_loss_pct": float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None else (None if strat_name == "LLM_PAPER" else config.HARD_STOP_LOSS_PCT),
-                         "max_hold_sec": int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None else (None if strat_name == "LLM_PAPER" else config.MAX_POSITION_HOLD_SEC),
+                         "profit_target_pct": planned_take_profit_pct,
+                         "stop_loss_pct": planned_stop_loss_pct,
+                         "max_hold_sec": planned_max_hold_sec,
                          "order_value_try": order_value,
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
         if self.market:

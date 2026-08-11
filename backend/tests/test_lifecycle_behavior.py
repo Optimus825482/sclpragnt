@@ -140,6 +140,77 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         commit.assert_not_awaited()
         saved.assert_not_awaited()
 
+    async def test_bb_mfi_trade_context_uses_its_actual_exit_plan(self):
+        """CSV/exported context must not report generic spot TP/SL for BB-MFI."""
+        from app.analyzer import ScalpAnalyzer
+        from app.config import config
+
+        analyzer = ScalpAnalyzer(None)
+        commit = AsyncMock()
+        with patch("app.analyzer.database.load_positions", new=AsyncMock(return_value={})), \
+             patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=10_000.0)), \
+             patch("app.analyzer.database.commit_open_position", new=commit):
+            result = await analyzer.open_position("BTCTRY", 100.0, "LONG", "BB_MFI_MEAN_REVERSION")
+
+        self.assertEqual(result["action"], "BUY_SIGNAL")
+        persisted_position = commit.await_args.args[4]
+        context = persisted_position["entry_context"]
+        self.assertEqual(context["profit_target_pct"], config.BB_MFI_TAKE_PROFIT_PCT)
+        self.assertEqual(context["stop_loss_pct"], config.BB_MFI_STOP_LOSS_PCT)
+        self.assertIsNone(context["max_hold_sec"])
+
+    async def test_bb_mfi_close_normalizes_a_legacy_context_plan(self):
+        from app.analyzer import ScalpAnalyzer
+        from app.config import config
+
+        trade = await ScalpAnalyzer(None)._record_trade(
+            "BTCTRY",
+            {
+                "entry_price": 100.0,
+                "quantity": 1.0,
+                "entry_time": time.time(),
+                "strategy": "BB_MFI_MEAN_REVERSION",
+                "entry_context": {"profit_target_pct": 0.01, "stop_loss_pct": 0.012, "max_hold_sec": 14_400},
+            },
+            101.0,
+            "bb_mfi_v3_signal_exit",
+            0.3,
+        )
+
+        self.assertEqual(trade["entry_context"]["profit_target_pct"], config.BB_MFI_TAKE_PROFIT_PCT)
+        self.assertEqual(trade["entry_context"]["stop_loss_pct"], config.BB_MFI_STOP_LOSS_PCT)
+        self.assertIsNone(trade["entry_context"]["max_hold_sec"])
+
+    async def test_bb_mfi_preflight_uses_the_same_equity_sizing_as_opening(self):
+        from app.analyzer import ScalpAnalyzer
+        from app.config import config
+
+        market = _Market()
+        market.tickers["ETHTRY"] = {"symbol": "ETHTRY", "last_price": 100.0, "timestamp": time.time() * 1000}
+        market.liquidity_status = Mock(return_value=(True, {"checks": {"spread": True}}))
+        analyzer = ScalpAnalyzer(market)
+        analyzer.positions = {"ETHTRY": {"entry_price": 50.0, "quantity": 1.0}}
+        with patch.object(config, "ORDER_PCT", 0.90), \
+             patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=1_000.0)):
+            eligible, details = await analyzer.entry_liquidity_preflight("BTCTRY", "BB_MFI_MEAN_REVERSION")
+
+        self.assertTrue(eligible)
+        self.assertAlmostEqual(details["order_value_try"], 110.0, places=6)
+        market.liquidity_status.assert_called_once_with("BTCTRY", 110.0)
+
+    async def test_bb_mfi_preflight_applies_the_minimum_order_fallback(self):
+        from app.analyzer import ScalpAnalyzer
+
+        market = _Market()
+        market.liquidity_status = Mock(return_value=(True, {"checks": {"spread": True}}))
+        analyzer = ScalpAnalyzer(market)
+        with patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=500.0)):
+            eligible, details = await analyzer.entry_liquidity_preflight("BTCTRY", "BB_MFI_MEAN_REVERSION")
+
+        self.assertTrue(eligible)
+        self.assertEqual(details["order_value_try"], 250.0)
+        market.liquidity_status.assert_called_once_with("BTCTRY", 250.0)
+
     async def test_market_order_client_request_id_is_durable(self):
         from app.analyzer import ScalpAnalyzer
 
