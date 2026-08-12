@@ -235,6 +235,23 @@ def strategy_decision(analyzer, window, symbol, version):
     return None
 
 
+def entry_filter_passes(analyzer, window, args):
+    """Optional, causal filters evaluated only on the already-closed signal candle."""
+    if not args.entry_ema200_filter and not args.entry_momentum_slowdown_filter:
+        return True
+    closes = window["closes"]
+    if args.entry_ema200_filter:
+        ema200 = analyzer.calculate_ema(closes, 200)
+        if ema200 is None or closes[-1] < ema200:
+            return False
+    if args.entry_momentum_slowdown_filter:
+        # Mean-reversion entry is allowed only after the latest closed candle
+        # stops extending the immediate selloff.
+        if len(closes) < 2 or closes[-1] < closes[-2]:
+            return False
+    return True
+
+
 def replay_features(analyzer, window, version):
     profile = pine_profile(version)
     if not profile:
@@ -263,9 +280,9 @@ async def run(args):
     discovered_symbols = args.symbols or await trading_symbols("TRY")
     requested_symbols = [symbol.replace("_", "").upper() for symbol in discovered_symbols]
     profile = pine_profile(args.pine_version)
-    base_stop_pct = profile["stop_pct"] if profile else args.stop_pct
+    base_stop_pct = args.stop_pct if args.stop_pct is not None else (profile["stop_pct"] if profile else config.BB_MFI_STOP_LOSS_PCT)
     stop_pct = args.risk_stop_pct if args.risk_stop_pct is not None else base_stop_pct
-    tp_pct = profile["tp_pct"] if profile else args.tp_pct
+    tp_pct = args.tp_pct if args.tp_pct is not None else (profile["tp_pct"] if profile else config.BB_MFI_TAKE_PROFIT_PCT)
     stop_pct = stop_pct if stop_pct and stop_pct > 0 else None
     tp_pct = tp_pct if tp_pct and tp_pct > 0 else None
     print(f"[START] strategy={config.ACTIVE_STRATEGY} pine_version={args.pine_version} initial={config.INITIAL_BALANCE_TRY:.2f} TRY window={iso(start_ts)}..{iso(end_ts)}", flush=True)
@@ -315,22 +332,35 @@ async def run(args):
     fees_paid = 0.0
     peak_equity, max_drawdown = cash, 0.0
     signal_counts = Counter()
+    daily_stop_counts = Counter()
     activity_status = {symbol: False for symbol in series}
-    last_activity_hour = None
+    last_activity_bucket = None
 
     for ts in timeline:
         exits = entries = blocked = signals = 0
-        activity_hour = ts // 3600
-        if args.historical_activity and activity_hour != last_activity_hour:
-            last_activity_hour = activity_hour
+        activity_bucket = ts // (args.activity_refresh_minutes * 60)
+        day_key = datetime.fromtimestamp(ts, tz=local_tz).date().isoformat()
+        if args.historical_activity and activity_bucket != last_activity_bucket:
+            last_activity_bucket = activity_bucket
             for symbol, data in series.items():
                 index = indices[symbol].get(ts)
                 if index is None: continue
                 active, state = historical_activity(analyzer, window_at(data, index), args.spread_pct)
                 activity_status[symbol] = active
                 position = positions.get(symbol)
-                if not active and position:
-                    price = data["opens"][index]
+                price = data["opens"][index]
+                if args.passive_direct_exit and not active and position:
+                    exit_fill = price * (1 - args.spread_pct / 2 - args.slippage_pct)
+                    proceeds = position["quantity"] * exit_fill
+                    exit_fee = proceeds * config.COMMISSION_PCT
+                    pnl = proceeds - exit_fee - position["invested"] - position["entry_fees"]
+                    cash += proceeds - exit_fee; fees_paid += exit_fee
+                    trades.append({"symbol": symbol, "entry_time": position["entry_time"], "exit_time": ts,
+                                   "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
+                                   "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6),
+                                   "reason": "historical_activity_passive_direct_exit"})
+                    del positions[symbol]; exits += 1
+                elif not args.disable_passive_net_exit and not active and position:
                     exit_fill = price * (1 - args.spread_pct / 2 - args.slippage_pct)
                     proceeds = position["quantity"] * exit_fill
                     exit_fee = proceeds * config.COMMISSION_PCT
@@ -342,7 +372,7 @@ async def run(args):
                                        "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6),
                                        "reason": "historical_activity_passive_net_exit"})
                         del positions[symbol]; exits += 1
-                elif (args.passive_loss_exit_hours > 0 and not active and
+                if (args.passive_loss_exit_hours > 0 and not active and symbol in positions and position and
                       ts - position["entry_time"] >= args.passive_loss_exit_hours * 3600):
                     close = data["closes"][index]
                     ema9 = analyzer.calculate_ema(window_at(data, index)["closes"], 9)
@@ -397,6 +427,14 @@ async def run(args):
                 continue
             signals += 1
             print(f"[SIGNAL] {iso(data['times'][index - 1])} {symbol} BUY fill_at={iso(ts)} features={json.dumps(feature, ensure_ascii=False, default=str)}", flush=True)
+            if args.daily_stop_limit and daily_stop_counts[(symbol, day_key)] >= args.daily_stop_limit:
+                blocked += 1
+                print(f"[BLOCKED] {symbol} reason=daily_stop_limit", flush=True)
+                continue
+            if not entry_filter_passes(analyzer, window, args):
+                blocked += 1
+                print(f"[BLOCKED] {symbol} reason=entry_filter", flush=True)
+                continue
             position = positions.get(symbol)
             if position and position["layers"] >= args.pyramiding:
                 blocked += 1
@@ -408,7 +446,9 @@ async def run(args):
                 continue
             marked_positions = sum(pos["quantity"] * series[held]["closes"][indices[held].get(ts, 0)] for held, pos in positions.items())
             equity = cash + marked_positions
-            order_value = min(equity * args.order_pct, cash / (1 + config.COMMISSION_PCT))
+            available_cash = cash / (1 + config.COMMISSION_PCT)
+            order_base = available_cash if args.remaining_cash_sizing else equity
+            order_value = min(order_base * args.order_pct, available_cash)
             if order_value < config.MIN_PARTIAL_ORDER_TRY:
                 blocked += 1
                 print(f"[BLOCKED] {symbol} reason=insufficient_cash order={order_value:.2f} cash={cash:.2f}", flush=True)
@@ -465,6 +505,8 @@ async def run(args):
             trades.append({"symbol": symbol, "entry_time": position["entry_time"], "exit_time": ts,
                            "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
                            "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6), "reason": reason})
+            if reason == "fixed_stop_loss":
+                daily_stop_counts[(symbol, day_key)] += 1
             del positions[symbol]
             exits += 1
             print(f"[EXIT] {iso(ts)} {symbol} reason={reason} pnl={pnl:+.2f} cash={cash:.2f}", flush=True)
@@ -518,12 +560,20 @@ async def run(args):
         "strategy": config.ACTIVE_STRATEGY, "pine_version": args.pine_version,
         "pine_profile": profile,
         "risk_stop_pct": stop_pct,
+        "effective_tp_pct": tp_pct,
         "selection_mode": ("all_requested_scan_symbols" if args.use_all_requested else
                            "historical_cached_requested_symbols" if args.data_source == "historical-db" else
                            "current_activity_active_only"),
         "initial_active_only": args.initial_active_only,
         "initial_active_limit": args.initial_active_limit,
         "passive_loss_exit_hours": args.passive_loss_exit_hours,
+        "passive_net_exit_enabled": not args.disable_passive_net_exit,
+        "passive_direct_exit": args.passive_direct_exit,
+        "activity_refresh_minutes": args.activity_refresh_minutes,
+        "daily_stop_limit": args.daily_stop_limit,
+        "entry_ema200_filter": args.entry_ema200_filter,
+        "entry_momentum_slowdown_filter": args.entry_momentum_slowdown_filter,
+        "remaining_cash_sizing": args.remaining_cash_sizing,
         "historical_activity_gate": args.historical_activity,
         "initial_balance_try": initial, "final_balance_try": round(cash, 6),
         "net_pnl_try": round(cash - initial, 6), "net_pnl_pct": round((cash / initial - 1) * 100, 6),
@@ -569,10 +619,10 @@ if __name__ == "__main__":
     parser.add_argument("--order-pct", type=float, default=config.ORDER_PCT)
     parser.add_argument("--pyramiding", type=int, default=config.PYRAMIDING_LAYERS)
     parser.add_argument("--max-positions", type=int, default=config.MAX_OPEN_POSITIONS)
-    parser.add_argument("--stop-pct", type=float, default=config.BB_MFI_STOP_LOSS_PCT)
+    parser.add_argument("--stop-pct", type=float, help="Sabit stopu Pine profilinin üzerine yazar")
     parser.add_argument("--risk-stop-pct", type=float,
                         help="Araştırma için strateji sinyalini değiştirmeden eklenen koruyucu stop")
-    parser.add_argument("--tp-pct", type=float, default=config.BB_MFI_TAKE_PROFIT_PCT)
+    parser.add_argument("--tp-pct", type=float, help="Sabit kâr hedefini Pine profilinin üzerine yazar")
     parser.add_argument("--spread-pct", type=float, default=config.BACKTEST_ASSUMED_SPREAD_PCT)
     parser.add_argument("--slippage-pct", type=float, default=config.ESTIMATED_SLIPPAGE_PCT)
     parser.add_argument("--profit-lock-trigger-pct", type=float, default=0.0,
@@ -580,9 +630,19 @@ if __name__ == "__main__":
     parser.add_argument("--profit-lock-pct", type=float, default=0.0,
                         help="Kilitli stopun giriş fiyatının üzerindeki seviyesi; 0 gerçek brüt break-even'dır")
     parser.add_argument("--open-position-policy", choices=("exclude", "mark-to-market"), default="exclude")
-    parser.add_argument("--historical-activity", action="store_true", help="Aktiviteyi her saat geçmiş mumlardan yeniden hesapla; pasif kârlı pozisyonu kapat")
+    parser.add_argument("--historical-activity", action="store_true", help="Aktiviteyi her saat geçmiş mumlardan yeniden hesapla")
+    parser.add_argument("--activity-refresh-minutes", type=int, default=60, help="Tarihsel aktivite kontrol periyodu (dakika)")
     parser.add_argument("--initial-active-only", action="store_true", help="Yalnız replay başlangıcında tarihsel olarak ACTIVE olan sembollerle başla")
     parser.add_argument("--initial-active-limit", type=int, default=0, help="Başlangıç ACTIVE evreninden kalite puanıyla en iyi N sembol")
     parser.add_argument("--passive-loss-exit-hours", type=float, default=0.0, help="Pasif zarar pozisyonu için EMA/ATR kontrollü çıkış süresi")
+    parser.add_argument("--disable-passive-net-exit", action="store_true", help="Pasife dönen pozisyonun net kâr/başabaş otomatik kapanışını kapat")
+    parser.add_argument("--passive-direct-exit", action="store_true", help="Pasife dönen açık pozisyonu PnL'den bağımsız hemen kapat")
+    parser.add_argument("--daily-stop-limit", type=int, default=0, help="Sembol başına günlük stop sonrası yeni giriş limiti; 0 kapalı")
+    parser.add_argument("--entry-ema200-filter", action="store_true", help="Girişi yalnız kapanış EMA200 üzerinde ise kabul et")
+    parser.add_argument("--entry-momentum-slowdown-filter", action="store_true", help="Girişi son kapanış önceki kapanışın altına inmediğinde kabul et")
+    parser.add_argument("--remaining-cash-sizing", action="store_true", help="Her girişte toplam özsermaye yerine kalan kullanılabilir nakdin yüzdesini kullan")
     parser.add_argument("--output", default="portfolio-replay-latest.json")
-    asyncio.run(run(parser.parse_args()))
+    args = parser.parse_args()
+    if args.activity_refresh_minutes <= 0:
+        parser.error("--activity-refresh-minutes pozitif olmalıdır")
+    asyncio.run(run(args))
