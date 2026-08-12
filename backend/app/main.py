@@ -1027,12 +1027,29 @@ async def refresh_symbol_activity():
         }
     config.PASSIVE_SYMBOLS = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
     config.SYMBOL_ACTIVITY_STATUS = statuses
+    # Pasife düşen açık paper pozisyonlar yeni giriş üretmez. Yalnız maliyet
+    # sonrası net kâra/başabaşa ulaşmışsa kapatılır; zarardakiler normal
+    # v3 stop/TP/sinyal kuralları altında beklemeye devam eder.
+    passive_closes = []
+    for symbol, pos in list(analyzer.positions.items()):
+        if statuses.get(symbol, {}).get("status") != "PASSIVE":
+            continue
+        ticker = market.get_ticker(symbol) or {}
+        price = float(ticker.get("last_price") or 0)
+        entry = float(pos.get("entry_price") or 0)
+        quantity = float(pos.get("quantity") or 0)
+        net_after_exit = (price - entry) * quantity - ((entry + price) * quantity * config.COMMISSION_PCT)
+        if price > 0 and quantity > 0 and net_after_exit >= 0:
+            await analyzer.close_position(symbol, price, "symbol_activity_passive_net_exit")
+            passive_closes.append(symbol)
+            print(f"[Activity] {symbol} pasife düştü ve maliyet sonrası net başabaşta kapatıldı", flush=True)
     await database.set_llm_setting("symbol_activity_status", json.dumps(statuses, ensure_ascii=False))
     active_count = sum(1 for item in statuses.values() if item["status"] == "ACTIVE")
     warming_count = sum(1 for item in statuses.values() if item["status"] == "WARMING")
     print(f"[Activity] universe={len(universe)} ACTIVE={active_count} PASSIVE={len(config.PASSIVE_SYMBOLS)} WARMING={warming_count}", flush=True)
     return {"ok": True, "statuses": statuses, "active_count": active_count,
-            "passive_count": len(config.PASSIVE_SYMBOLS), "warming_count": warming_count}
+            "passive_count": len(config.PASSIVE_SYMBOLS), "warming_count": warming_count,
+            "passive_net_exits": passive_closes}
 
 async def bootstrap_symbol_activity():
     """Warm all symbols enough for the first activity decision before trading starts."""
@@ -1642,6 +1659,16 @@ async def symbol_activity_status():
                            "min_atr_pct": config.SYMBOL_ACTIVITY_MIN_ATR_PCT * 100,
                            "min_volume_ratio": config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO,
                            "max_spread_pct": config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT}}
+
+@app.post("/api/symbol-activity/refresh")
+async def refresh_symbol_activity_manual():
+    """User-triggered public-data activity refresh; paper positions only."""
+    try:
+        result = await refresh_symbol_activity()
+        await ws_manager.broadcast({"type": "symbol_activity", "data": result})
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Aktivasyon kontrolü başarısız: {exc}")
 
 @app.post("/api/radar/execute")
 async def execute_gainers_radar():

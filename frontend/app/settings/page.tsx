@@ -80,6 +80,7 @@ export default function SettingsPage() {
   const [scanLogFilter, setScanLogFilter] = useState<"all" | "automatic" | "manual">("all");
   const [activity, setActivity] = useState<Record<string, any>>({});
   const [activityFilter, setActivityFilter] = useState<"all" | "ACTIVE" | "PASSIVE" | "WARMING">("all");
+  const [refreshingActivity, setRefreshingActivity] = useState(false);
 
   useEffect(() => {
     apiRequest(`${API_BASE}/api/config`)
@@ -106,9 +107,20 @@ export default function SettingsPage() {
   useEffect(() => {
     const load = () => apiRequest(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()).then((d) => setActivity(d.statuses || {})).catch(() => undefined);
     load();
-    const timer = window.setInterval(load, 30000);
+    const timer = window.setInterval(load, 60000);
     return () => window.clearInterval(timer);
   }, []);
+
+  const refreshActivity = async () => {
+    setRefreshingActivity(true);
+    try {
+      const response = await apiRequest(`${API_BASE}/api/symbol-activity/refresh`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Aktivasyon kontrolü başarısız");
+      setActivity(data.statuses || {});
+    } catch (err) { setError(err instanceof Error ? err.message : "Aktivasyon kontrolü başarısız"); }
+    finally { setRefreshingActivity(false); }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -366,8 +378,8 @@ export default function SettingsPage() {
             </div>
             <div className="mt-5 border-t border-bunker-800 pt-4">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div><p className="eyebrow text-neon-green">GERÇEK AKTİVİTE DURUMU</p><p className="text-xs text-bunker-muted mt-1">30 saniyede bir yenilenir. Aktiflik; 30m hareket, ATR, mum hacmi ve spread kontrolleriyle hesaplanır.</p></div>
-                <div className="flex flex-wrap gap-2 text-[11px] font-mono"><span className="rounded border border-neon-green/40 px-2 py-1 text-neon-green">AKTİF {activityCounts.ACTIVE}</span><span className="rounded border border-yellow-400/40 px-2 py-1 text-yellow-300">PASİF {activityCounts.PASSIVE}</span><span className="rounded border border-sky-400/40 px-2 py-1 text-sky-300">ISINIYOR {activityCounts.WARMING}</span></div>
+                <div><p className="eyebrow text-neon-green">GERÇEK AKTİVİTE DURUMU</p><p className="text-xs text-bunker-muted mt-1">Arka planda saatte bir güncellenir; bu ekrandan manuel kontrol de yapılabilir. Aktiflik; 30m hareket, ATR, mum hacmi ve spread ile hesaplanır.</p></div>
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono"><span className="rounded border border-neon-green/40 px-2 py-1 text-neon-green">AKTİF {activityCounts.ACTIVE}</span><span className="rounded border border-yellow-400/40 px-2 py-1 text-yellow-300">PASİF {activityCounts.PASSIVE}</span><span className="rounded border border-sky-400/40 px-2 py-1 text-sky-300">ISINIYOR {activityCounts.WARMING}</span><button type="button" onClick={refreshActivity} disabled={refreshingActivity} className="rounded border border-neon-green/50 bg-neon-green/10 px-2 py-1 text-neon-green transition-colors hover:bg-neon-green/20 disabled:cursor-wait disabled:opacity-60">{refreshingActivity ? "KONTROL EDİLİYOR..." : "AKTİVASYON KONTROLÜ"}</button></div>
               </div>
               <div className="flex flex-wrap gap-2 mb-3">{([ ["all", "TÜMÜ"], ["ACTIVE", "AKTİF"], ["PASSIVE", "PASİF"], ["WARMING", "ISINIYOR"] ] as const).map(([key, label]) => <button key={key} onClick={() => setActivityFilter(key)} className={`rounded-lg border px-3 py-1.5 font-mono text-xs ${activityFilter === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 text-bunker-muted"}`}>{label}</button>)}</div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 max-h-[32rem] overflow-y-auto pr-1">
