@@ -181,7 +181,7 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trade["entry_context"]["stop_loss_pct"], config.BB_MFI_STOP_LOSS_PCT)
         self.assertIsNone(trade["entry_context"]["max_hold_sec"])
 
-    async def test_bb_mfi_preflight_uses_the_same_equity_sizing_as_opening(self):
+    async def test_bb_mfi_preflight_uses_remaining_cash_sizing_as_opening(self):
         from app.analyzer import ScalpAnalyzer
         from app.config import config
 
@@ -190,15 +190,15 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         market.liquidity_status = Mock(return_value=(True, {"checks": {"spread": True}}))
         analyzer = ScalpAnalyzer(market)
         analyzer.positions = {"ETHTRY": {"entry_price": 50.0, "quantity": 1.0}}
-        with patch.object(config, "ORDER_PCT", 0.90), \
-             patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=1_000.0)):
+        with patch.object(config, "ORDER_PCT", 0.10), \
+             patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=2_000.0)):
             eligible, details = await analyzer.entry_liquidity_preflight("BTCTRY", "BB_MFI_MEAN_REVERSION")
 
         self.assertTrue(eligible)
-        self.assertAlmostEqual(details["order_value_try"], 110.0, places=6)
-        market.liquidity_status.assert_called_once_with("BTCTRY", 110.0)
+        self.assertAlmostEqual(details["order_value_try"], 2000.0 / 1.0015 * 0.10, places=6)
+        market.liquidity_status.assert_called_once_with("BTCTRY", 2000.0 / 1.0015 * 0.10)
 
-    async def test_bb_mfi_preflight_applies_the_minimum_order_fallback(self):
+    async def test_bb_mfi_preflight_does_not_expand_remaining_cash_percentage(self):
         from app.analyzer import ScalpAnalyzer
 
         market = _Market()
@@ -208,8 +208,9 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
             eligible, details = await analyzer.entry_liquidity_preflight("BTCTRY", "BB_MFI_MEAN_REVERSION")
 
         self.assertTrue(eligible)
-        self.assertEqual(details["order_value_try"], 250.0)
-        market.liquidity_status.assert_called_once_with("BTCTRY", 250.0)
+        self.assertEqual(details["skipped"], "order_value_below_minimum")
+        self.assertAlmostEqual(details["order_value_try"], 500.0 / 1.0015 * 0.10, places=6)
+        market.liquidity_status.assert_not_called()
 
     async def test_market_order_client_request_id_is_durable(self):
         from app.analyzer import ScalpAnalyzer

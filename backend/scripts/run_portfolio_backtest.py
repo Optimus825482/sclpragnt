@@ -106,6 +106,37 @@ def activity_metrics(analyzer, data, quote_volume, spread_pct):
     }
 
 
+def historical_activity(analyzer, window, spread_pct):
+    """Time-correct counterpart of the live activity gate for replay."""
+    closes, highs, lows, volumes = (window[key] for key in ("closes", "highs", "lows", "volumes"))
+    if len(closes) < 21:
+        return False, "warming"
+    quote_volume = sum(close * volume for close, volume in zip(closes[-288:], volumes[-288:]))
+    range_pct = ((max(highs[-3:]) - min(lows[-3:])) / min(lows[-3:]) * 100) if min(lows[-3:]) else 0.0
+    atr = analyzer.calculate_atr(window, 14) or 0.0
+    atr_pct = atr / closes[-1] if closes[-1] else 0.0
+    avg_volume = sum(volumes[-21:-1]) / 20
+    volume_ratio = volumes[-1] / avg_volume if avg_volume else 0.0
+    active = (quote_volume >= config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY and
+              range_pct >= config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT and
+              atr_pct >= config.SYMBOL_ACTIVITY_MIN_ATR_PCT and
+              volume_ratio >= config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO and
+              spread_pct <= config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT)
+    return active, "active" if active else "passive"
+
+
+def historical_quality_score(analyzer, window, spread_pct):
+    """Rank an already-ACTIVE symbol without using future candles."""
+    closes, highs, lows, volumes = (window[key] for key in ("closes", "highs", "lows", "volumes"))
+    quote_volume = sum(close * volume for close, volume in zip(closes[-288:], volumes[-288:]))
+    atr = analyzer.calculate_atr(window, 14) or 0.0
+    atr_pct = atr / closes[-1] if closes[-1] else 0.0
+    avg_volume = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else 0.0
+    volume_ratio = volumes[-1] / avg_volume if avg_volume else 0.0
+    # Score favours liquid, tradable volatility and volume while penalizing spread.
+    return math.log10(max(quote_volume, 1)) + min(atr_pct * 100, 3) + min(volume_ratio, 3) - spread_pct * 2
+
+
 async def current_spread(symbol):
     try:
         book = await orderbook(symbol, 5)
@@ -254,21 +285,78 @@ async def run(args):
         activity[symbol] = status
         quality[symbol] = data_quality(data)
         print(f"[ACTIVITY] {symbol} status={status['status']} metrics={json.dumps(status, ensure_ascii=False)}", flush=True)
-        if args.use_all_requested or args.data_source == "historical-db" or status["status"] == "ACTIVE":
+        if args.use_all_requested or args.historical_activity or args.data_source == "historical-db" or status["status"] == "ACTIVE":
             series[symbol] = data
     if not series:
         raise SystemExit("Aktif ve kullanılabilir sembol bulunamadı")
 
     indices = {symbol: {ts: index for index, ts in enumerate(data["times"])} for symbol, data in series.items()}
+    if args.initial_active_only:
+        # Start from the symbols that were objectively ACTIVE at the beginning
+        # of this replay window, not from today's visible activity list.
+        initially_active = {}
+        for symbol, data in series.items():
+            index = next((i for i, candle_ts in enumerate(data["times"]) if candle_ts >= start_ts), None)
+            if index is None:
+                continue
+            active, _ = historical_activity(analyzer, window_at(data, index), args.spread_pct)
+            if active:
+                initially_active[symbol] = (data, historical_quality_score(analyzer, window_at(data, index), args.spread_pct))
+        if args.initial_active_limit:
+            initially_active = dict(sorted(initially_active.items(), key=lambda item: item[1][1], reverse=True)[:args.initial_active_limit])
+        initially_active = {symbol: item[0] for symbol, item in initially_active.items()}
+        series = initially_active
+        indices = {symbol: {ts: index for index, ts in enumerate(data["times"])} for symbol, data in series.items()}
+        if not series:
+            raise SystemExit("Pencere başlangıcında ACTIVE sembol bulunamadı")
     timeline = sorted({ts for data in series.values() for ts in data["times"] if start_ts <= ts <= end_ts})
     cash = initial = float(config.INITIAL_BALANCE_TRY)
     positions, trades = {}, []
     fees_paid = 0.0
     peak_equity, max_drawdown = cash, 0.0
     signal_counts = Counter()
+    activity_status = {symbol: False for symbol in series}
+    last_activity_hour = None
 
     for ts in timeline:
         exits = entries = blocked = signals = 0
+        activity_hour = ts // 3600
+        if args.historical_activity and activity_hour != last_activity_hour:
+            last_activity_hour = activity_hour
+            for symbol, data in series.items():
+                index = indices[symbol].get(ts)
+                if index is None: continue
+                active, state = historical_activity(analyzer, window_at(data, index), args.spread_pct)
+                activity_status[symbol] = active
+                position = positions.get(symbol)
+                if not active and position:
+                    price = data["opens"][index]
+                    exit_fill = price * (1 - args.spread_pct / 2 - args.slippage_pct)
+                    proceeds = position["quantity"] * exit_fill
+                    exit_fee = proceeds * config.COMMISSION_PCT
+                    pnl = proceeds - exit_fee - position["invested"] - position["entry_fees"]
+                    if pnl >= 0:
+                        cash += proceeds - exit_fee; fees_paid += exit_fee
+                        trades.append({"symbol": symbol, "entry_time": position["entry_time"], "exit_time": ts,
+                                       "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
+                                       "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6),
+                                       "reason": "historical_activity_passive_net_exit"})
+                        del positions[symbol]; exits += 1
+                elif (args.passive_loss_exit_hours > 0 and not active and
+                      ts - position["entry_time"] >= args.passive_loss_exit_hours * 3600):
+                    close = data["closes"][index]
+                    ema9 = analyzer.calculate_ema(window_at(data, index)["closes"], 9)
+                    ema21 = analyzer.calculate_ema(window_at(data, index)["closes"], 21)
+                    atr = analyzer.calculate_atr(window_at(data, index), 14) or 0.0
+                    if ema9 is not None and ema21 is not None and ema9 < ema21 and close < position["entry"] - atr:
+                        exit_fill = price * (1 - args.spread_pct / 2 - args.slippage_pct)
+                        proceeds = position["quantity"] * exit_fill; exit_fee = proceeds * config.COMMISSION_PCT
+                        cash += proceeds - exit_fee; fees_paid += exit_fee
+                        pnl = proceeds - exit_fee - position["invested"] - position["entry_fees"]
+                        trades.append({"symbol": symbol, "entry_time": position["entry_time"], "exit_time": ts,
+                                       "entry": position["entry"], "exit": exit_fill, "layers": position["layers"], "pnl": round(pnl, 6),
+                                       "commission": round(position["entry_fees"] + exit_fee, 6), "reason": "historical_passive_loss_ema_atr_exit"})
+                        del positions[symbol]; exits += 1
         # Confirmed sell signals from the previous candle execute at this open.
         for symbol, position in list(positions.items()):
             index = indices[symbol].get(ts)
@@ -303,6 +391,9 @@ async def run(args):
             decision = strategy_decision(analyzer, window, symbol, args.pine_version)
             signal_counts[decision or "none"] += 1
             if decision != "buy":
+                continue
+            if args.historical_activity and not activity_status.get(symbol, False):
+                blocked += 1
                 continue
             signals += 1
             print(f"[SIGNAL] {iso(data['times'][index - 1])} {symbol} BUY fill_at={iso(ts)} features={json.dumps(feature, ensure_ascii=False, default=str)}", flush=True)
@@ -430,6 +521,10 @@ async def run(args):
         "selection_mode": ("all_requested_scan_symbols" if args.use_all_requested else
                            "historical_cached_requested_symbols" if args.data_source == "historical-db" else
                            "current_activity_active_only"),
+        "initial_active_only": args.initial_active_only,
+        "initial_active_limit": args.initial_active_limit,
+        "passive_loss_exit_hours": args.passive_loss_exit_hours,
+        "historical_activity_gate": args.historical_activity,
         "initial_balance_try": initial, "final_balance_try": round(cash, 6),
         "net_pnl_try": round(cash - initial, 6), "net_pnl_pct": round((cash / initial - 1) * 100, 6),
         "closed_trades": len(trades), "wins": len(wins), "losses": len(losses),
@@ -485,5 +580,9 @@ if __name__ == "__main__":
     parser.add_argument("--profit-lock-pct", type=float, default=0.0,
                         help="Kilitli stopun giriş fiyatının üzerindeki seviyesi; 0 gerçek brüt break-even'dır")
     parser.add_argument("--open-position-policy", choices=("exclude", "mark-to-market"), default="exclude")
+    parser.add_argument("--historical-activity", action="store_true", help="Aktiviteyi her saat geçmiş mumlardan yeniden hesapla; pasif kârlı pozisyonu kapat")
+    parser.add_argument("--initial-active-only", action="store_true", help="Yalnız replay başlangıcında tarihsel olarak ACTIVE olan sembollerle başla")
+    parser.add_argument("--initial-active-limit", type=int, default=0, help="Başlangıç ACTIVE evreninden kalite puanıyla en iyi N sembol")
+    parser.add_argument("--passive-loss-exit-hours", type=float, default=0.0, help="Pasif zarar pozisyonu için EMA/ATR kontrollü çıkış süresi")
     parser.add_argument("--output", default="portfolio-replay-latest.json")
     asyncio.run(run(parser.parse_args()))

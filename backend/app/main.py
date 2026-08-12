@@ -1462,7 +1462,7 @@ async def get_config():
         "bb_mfi_entry_mfi_max": config.BB_MFI_ENTRY_MFI_MAX,
         "bb_mfi_exit_rsi_min": config.BB_MFI_EXIT_RSI_MIN,
         "bb_mfi_exit_mfi_min": config.BB_MFI_EXIT_MFI_MIN,
-        "max_open_positions": max(1, int(config.MAX_OPEN_POSITIONS)),
+        "max_open_positions": int(config.MAX_OPEN_POSITIONS),
         "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
         "cooldown_bars": config.COOLDOWN_BARS,
         "orderflow_min_imbalance": config.ORDERFLOW_MIN_IMBALANCE,
@@ -1741,8 +1741,8 @@ async def _apply_config_update(payload: dict):
                 number = int(val)
                 if key == "adr_period" and not 5 <= number <= 60:
                     raise ValueError("adr_period 5 ile 60 arasında olmalıdır")
-                if key == "max_open_positions" and not 1 <= number <= 36:
-                    raise ValueError("max_open_positions 1 ile 36 arasında olmalıdır")
+                if key == "max_open_positions" and not 0 <= number <= 500:
+                    raise ValueError("max_open_positions 0 (sınırsız) ile 500 arasında olmalıdır")
                 if key == "gainer_radar_min_score" and not 0 <= number <= 100:
                     raise ValueError("gainer_radar_min_score 0 ile 100 arasında olmalıdır")
                 if key == "pyramiding_layers" and not 1 <= number <= 10:

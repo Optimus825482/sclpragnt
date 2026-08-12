@@ -24,7 +24,8 @@ class Config:
     # Normal yüzde tutarı minimumun altına düştüğünde boş bakiyeyi eritmek
     # için kullanılacak kademeli paper işlem tutarı.
     FALLBACK_ORDER_TRY = float(os.getenv("FALLBACK_ORDER_TRY", "250.0"))
-    MAX_OPEN_POSITIONS = 36
+    # 0 means unlimited; cash, liquidity and per-symbol pyramid limits still apply.
+    MAX_OPEN_POSITIONS = 0
     MAX_TICKER_AGE_SEC = 15
     MAX_POSITION_HOLD_SEC = 4 * 60 * 60
     EARLY_FAILURE_SEC = int(os.getenv("EARLY_FAILURE_SEC", str(45 * 60)))
