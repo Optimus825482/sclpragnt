@@ -49,23 +49,24 @@ class Config:
     STRATEGY_ENTRY_SCAN_INTERVAL_SEC = max(60, int(os.getenv("STRATEGY_ENTRY_SCAN_INTERVAL_SEC", "300")))
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
-    # Flawless Victory Pine v1 metrics. They are separately configurable
-    # in live Settings and may be overridden per backtest without persistence.
+    # The live BB-MFI contract defaults to the supplied Flawless Victory v3.
+    # Earlier profiles remain selectable only for reproducible comparisons.
+    BB_MFI_PINE_VERSION = os.getenv("BB_MFI_PINE_VERSION", "v3").strip().lower()
     BB_MFI_BB_PERIOD = max(5, int(os.getenv("BB_MFI_BB_PERIOD", "21")))
     BB_MFI_BB_STD_DEV = max(0.1, float(os.getenv("BB_MFI_BB_STD_DEV", "2.0")))
-    BB_MFI_MFI_PERIOD = max(2, int(os.getenv("BB_MFI_MFI_PERIOD", "14")))
+    BB_MFI_MFI_PERIOD = max(2, int(os.getenv("BB_MFI_MFI_PERIOD", "16")))
     BB_MFI_RSI_PERIOD = max(2, int(os.getenv("BB_MFI_RSI_PERIOD", "13")))
     BB_MFI_V1_RSI_LOWER_LEVEL = float(os.getenv("BB_MFI_V1_RSI_LOWER_LEVEL", "30"))
     BB_MFI_V1_RSI_UPPER_LEVEL = float(os.getenv("BB_MFI_V1_RSI_UPPER_LEVEL", "70"))
     BB_MFI_V2_RSI_LOWER_LEVEL = float(os.getenv("BB_MFI_V2_RSI_LOWER_LEVEL", "42"))
     BB_MFI_V2_RSI_UPPER_LEVEL = float(os.getenv("BB_MFI_V2_RSI_UPPER_LEVEL", "76"))
-    BB_MFI_ENTRY_MFI_MAX = float(os.getenv("BB_MFI_ENTRY_MFI_MAX", "60")) # MFILowerLevel3
-    BB_MFI_EXIT_RSI_MIN = float(os.getenv("BB_MFI_EXIT_RSI_MIN", "65")) # RSIUpperLevel3
-    BB_MFI_EXIT_MFI_MIN = float(os.getenv("BB_MFI_EXIT_MFI_MIN", "64")) # MFIUpperLevel3
+    BB_MFI_ENTRY_MFI_MAX = float(os.getenv("BB_MFI_ENTRY_MFI_MAX", "59")) # MFILowerLevel3
+    BB_MFI_EXIT_RSI_MIN = float(os.getenv("BB_MFI_EXIT_RSI_MIN", "69")) # RSIUpperLevel3
+    BB_MFI_EXIT_MFI_MIN = float(os.getenv("BB_MFI_EXIT_MFI_MIN", "69")) # MFIUpperLevel3
     SYMBOL_ORDER_PCT = {}
     SYMBOL_PYRAMIDING_LAYERS = {}
-    BB_MFI_STOP_LOSS_PCT = float(os.getenv("BB_MFI_STOP_LOSS_PCT", "0"))
-    BB_MFI_TAKE_PROFIT_PCT = float(os.getenv("BB_MFI_TAKE_PROFIT_PCT", "0"))
+    BB_MFI_STOP_LOSS_PCT = float(os.getenv("BB_MFI_STOP_LOSS_PCT", "0.08882"))
+    BB_MFI_TAKE_PROFIT_PCT = float(os.getenv("BB_MFI_TAKE_PROFIT_PCT", "0.02317"))
     MIN_24H_QUOTE_VOLUME_TRY = 1_000_000.0
     HIGH_LIQUIDITY_BYPASS_VOLUME_TRY = 3_000_000.0
     MIN_VOLUME_RATIO = 0.3

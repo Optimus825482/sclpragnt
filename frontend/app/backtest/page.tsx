@@ -47,17 +47,17 @@ type BbMfiBacktestSettings = {
 };
 
 const DEFAULT_BB_MFI_SETTINGS: BbMfiBacktestSettings = {
-    bbPeriod: 20,
-    bbStdDev: 1,
-    mfiPeriod: 14,
-    rsiPeriod: 14,
+    bbPeriod: 21,
+    bbStdDev: 2,
+    mfiPeriod: 16,
+    rsiPeriod: 13,
     v1RsiLowerLevel: 42,
     v1RsiUpperLevel: 70,
     v2RsiLowerLevel: 42,
     v2RsiUpperLevel: 76,
-    mfiEntryMax: 60,
-    rsiExitMin: 65,
-    mfiExitMin: 64,
+    mfiEntryMax: 59,
+    rsiExitMin: 69,
+    mfiExitMin: 69,
     stopLossPct: 8.882,
     takeProfitPct: 2.317,
     orderPct: 10,
@@ -293,7 +293,7 @@ export default function BacktestPage() {
                 <p className="text-[11px] text-bunker-muted mt-3 font-mono">
                     {strat?.icon} {strat?.name} · komisyon + spread + slippage dahil · kronolojik OOS doğrulaması zorunlu · Başlangıç 10.000 ₺
                 </p>
-                {strategy === "BB_MFI_MEAN_REVERSION" && <p className="mt-2 text-[11px] font-mono text-neon-yellow">Pine v3 Flawless Victory: giriş BB(20, 1,0) altı + MFI(14)&lt;60; sinyal çıkışı RSI(14)&gt;65 + MFI(14)&gt;64; SL %8,882 / TP %2,317. Başlangıç 10.000 ₺, her giriş özsermayenin %10&apos;u ve en çok 2 katmandır. Komisyon, spread ve slippage sonucu korumacı yapar; TradingView&apos;deki maliyetsiz sonuçla birebir kıyaslanmamalıdır.</p>}
+                {strategy === "BB_MFI_MEAN_REVERSION" && <p className="mt-2 text-[11px] font-mono text-neon-yellow">Pine v3 Flawless Victory: giriş BB(21, 2,0) altı + MFI(16)&lt;59; sinyal çıkışı RSI(13)&gt;69 + MFI(16)&gt;69; SL %8,882 / TP %2,317. Başlangıç 10.000 ₺, her giriş özsermayenin %10&apos;u ve en çok 2 katmandır. Komisyon, spread ve slippage sonucu korumacı yapar; TradingView&apos;deki maliyetsiz sonuçla birebir kıyaslanmamalıdır.</p>}
                 {strategy === "BB_MFI_MEAN_REVERSION" && <button onClick={() => setBbMfiSettingsOpen(true)}
                     className="mt-3 px-4 py-2 rounded-lg border border-neon-green/35 bg-bunker-900 text-neon-green font-mono text-xs hover:bg-neon-green/10">
                     ⚙ AYARLAR

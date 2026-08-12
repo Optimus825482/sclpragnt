@@ -58,7 +58,7 @@ type StrategyMeta = {
 };
 
 const STRATEGIES: StrategyMeta[] = [
-    { key: "BB_MFI_MEAN_REVERSION", name: "BB + MFI Mean Reversion", icon: "🎯", desc: "TradingView uyumlu BB(20, 1.0) alt bant kırılımı ve MFI<60 girişini kullanır.", enabledKey: "mean_reversion_enabled", timeframeKey: "mean_reversion_timeframe", params: [{ key: "bb_period", label: "BB Periyodu", hint: "TradingView kuralında 20", step: 1, min: 5 }, { key: "bb_std_dev", label: "BB Std Dev", hint: "TradingView kuralında 1.0", step: 0.1, min: 0.5 }] },
+    { key: "BB_MFI_MEAN_REVERSION", name: "BB + MFI Mean Reversion", icon: "🎯", desc: "Pine v3 uyumlu BB(21, 2.0) alt bant + MFI(16)<59 girişi; sabit TP/SL ve teyitli sinyal çıkışı kullanır.", enabledKey: "mean_reversion_enabled", timeframeKey: "mean_reversion_timeframe", params: [{ key: "bb_period", label: "BB Periyodu", hint: "Pine v3 kuralında 21", step: 1, min: 5 }, { key: "bb_std_dev", label: "BB Std Dev", hint: "Pine v3 kuralında 2.0", step: 0.1, min: 0.5 }] },
 /* Legacy strategy definitions retained below only for migration compatibility. */
 /*
     {
