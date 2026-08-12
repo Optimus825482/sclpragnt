@@ -37,7 +37,6 @@ const LS_DISPLAY_SETTINGS = "scalper_chart_display_settings";
 const API = `${API_BASE}/api/chart`;
 
 const paneMinimumHeight = (key: string, compact: boolean) => {
-    if (key === "p99_momentum") return compact ? 88 : 112;
     if (key === "volume") return compact ? 76 : 104;
     return compact ? 108 : 136;
 };
@@ -81,7 +80,7 @@ const chartPriceFormat = (value: number) => {
 type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 
 type PatternMarker = { time: number; type: "buy" | "sell"; text: string };
-type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showStrategySignals: boolean; showPressure: boolean; showMomentumHistogram: boolean };
+type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showStrategySignals: boolean; showPressure: boolean };
 type ClosedTrade = { id: number; pnl: number };
 type LivePortfolio = { total_value?: number; unrealized_pnl?: number };
 const patternDescriptions: Record<string, string> = {
@@ -480,7 +479,6 @@ export default function ChartsPage() {
     const [showPatterns, setShowPatterns] = useState(false);
     const [showStrategySignals, setShowStrategySignals] = useState(false);
     const [showPressure, setShowPressure] = useState(true);
-    const [showMomentumHistogram, setShowMomentumHistogram] = useState(true);
     const [m5Bars, setM5Bars] = useState<Bar[]>([]);
     const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
@@ -524,21 +522,20 @@ export default function ChartsPage() {
     useEffect(() => {
         const settings = loadPersisted<DisplaySettings>(LS_DISPLAY_SETTINGS, {
             showPositions: false, showStopTakeProfit: false, showPatterns: false, showStrategySignals: false,
-            showPressure: true, showMomentumHistogram: true
+            showPressure: true
         });
         setShowPositions(settings.showPositions);
         setShowStopTakeProfit(settings.showStopTakeProfit);
         setShowPatterns(settings.showPatterns);
         setShowStrategySignals(!!settings.showStrategySignals);
         setShowPressure(settings.showPressure !== false);
-        setShowMomentumHistogram(settings.showMomentumHistogram !== false);
     }, []);
 
     useEffect(() => {
         try {
-            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure, showMomentumHistogram } satisfies DisplaySettings));
+            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure } satisfies DisplaySettings));
         } catch { /* görüntü ayarı yalnızca yerelde saklanır */ }
-    }, [showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure, showMomentumHistogram]);
+    }, [showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure]);
 
     // Sembol rozeti /charts?symbol=...&timeframe=5m ile istemci içi
     // yönlendirme yapar. Sayfa unmount olmadığı için URL değişimini ayrıca
@@ -577,7 +574,6 @@ export default function ChartsPage() {
     const chartRef = useRef<IChartApi | null>(null);
     const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
     const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-    const momentumRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const overlaySeries = useRef<Map<string, ISeriesApi<"Line">[]>>(new Map());
     const paneSeries = useRef<Map<string, (ISeriesApi<"Line"> | ISeriesApi<"Histogram">)[]>>(new Map());
     const volumePaneIndexRef = useRef<number | null>(null);
@@ -793,7 +789,6 @@ export default function ChartsPage() {
         }
         volumeRef.current = null;
         volumePaneIndexRef.current = null;
-        momentumRef.current = null;
 
         while (chart.panes().length > 1) chart.removePane(1);
         chart.chartElement().querySelectorAll(".pane-title").forEach((n) => n.remove());
@@ -801,29 +796,7 @@ export default function ChartsPage() {
         const instPanes = new Map<string, number>(); // uid -> pane index
         let paneIdx = 1;
 
-        // P99: standart, ana grafiğe bağlı hızlı momentum paneli. Manuel
-        // indikatörlerden önce kurulur ve kendi gerçek chart pane'idir.
-        if (showMomentumHistogram) {
-            const closes = bars.map((bar) => bar.close);
-            const calcEma = (values: number[], period: number) => values.reduce<number[]>((out, value) => {
-                const previous = out[out.length - 1] ?? value;
-                out.push(previous + (value - previous) * (2 / (period + 1))); return out;
-            }, []);
-            const fast = calcEma(closes, 8), slow = calcEma(closes, 21);
-            const macd = fast.map((value, index) => value - (slow[index] ?? value));
-            const signal = calcEma(macd, 5);
-            const momentum = chart.addSeries(HistogramSeries, { base: 0, priceLineVisible: false, lastValueVisible: false }, paneIdx);
-            momentum.setData(bars.map((bar, index) => {
-                const value = macd[index] - (signal[index] ?? macd[index]);
-                return { time: bar.time as UTCTimestamp, value, color: macdHistogramColor(value, index ? macd[index - 1] - (signal[index - 1] ?? macd[index - 1]) : undefined) };
-            }));
-            momentum.createPriceLine({ price: 0, color: "rgba(148,163,184,0.65)", lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: "0" });
-            chart.priceScale("right", paneIdx).applyOptions({ autoScale: true, scaleMargins: { top: 0.12, bottom: 0.12 } });
-            momentumRef.current = momentum;
-            paneIdx++;
-        }
-
-        // HACİM pane'i (P99 sonrası, isteğe bağlı)
+        // HACİM pane'i (isteğe bağlı)
         if (volumeVisible) {
             const volData = bars.map((b) => ({
                 time: b.time as UTCTimestamp,
@@ -993,7 +966,6 @@ export default function ChartsPage() {
         // paneKeyByIndexRef'e her pane'in anahtarını yaz (observer bunu kullanır)
         paneKeyByIndexRef.current.clear();
         const paneKeys: string[] = ["main"];
-        if (showMomentumHistogram) paneKeys.push("p99_momentum");
         if (volumeVisible) paneKeys.push("volume");
         // non-overlay indikatörler render sırasında paneIdx sırasıyla eklenir; burada uid sırasını kullan
         for (const inst of instances) {
@@ -1058,19 +1030,7 @@ export default function ChartsPage() {
                 td.style.position = "relative";
 
                 let bar: HTMLDivElement;
-                if (showMomentumHistogram && i === 1) {
-                    bar = document.createElement("div");
-                    bar.className = "pane-title";
-                    bar.style.cssText = `position:absolute;top:4px;left:8px;z-index:5;display:flex;align-items:center;gap:5px;background:rgba(11,15,20,0.9);border:1px solid #1f2937;border-radius:6px;padding:2px 7px;font-family:JetBrains Mono,monospace;font-size:11px;color:#34d399;cursor:default;pointer-events:auto;`;
-                    const name = document.createElement("span");
-                    name.innerText = "P99 · MOMENTUM";
-                    const close = document.createElement("button");
-                    close.innerText = "✕";
-                    close.style.cssText = "background:none;border:none;color:#9ca3af;cursor:pointer;font-size:11px;padding:0 2px;";
-                    close.title = "Kapat";
-                    close.onclick = () => setShowMomentumHistogram(false);
-                    bar.append(name, close);
-                } else if (volumeVisible && i === (showMomentumHistogram ? 2 : 1)) {
+                if (volumeVisible && i === 1) {
                     // HACİM başlığı (kapama butonu ile)
                     bar = document.createElement("div");
                     bar.className = "pane-title";
@@ -1110,19 +1070,19 @@ export default function ChartsPage() {
             }
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [bars, instances, volumeVisible, showMomentumHistogram]);
+    }, [bars, instances, volumeVisible]);
 
     // yapı değişince (indikatör/hacim) yeniden inşa et + yükseklik uygula
     useEffect(() => {
         buildLayout(false);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [instances, volumeVisible, showMomentumHistogram]);
+    }, [instances, volumeVisible]);
 
     // bars canlı güncellenince sadece veriyi yeniden çiz — yükseklikleri EZME
     useEffect(() => {
         buildLayout(true);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [bars, showMomentumHistogram]);
+    }, [bars]);
 
     // Spot pozisyon çizgileri: giriş ve sabit %2 satış hedefi.
     useEffect(() => {
@@ -1434,7 +1394,7 @@ export default function ChartsPage() {
             indicators: instances,
             paneHeights: paneHeightsRef.current,
             volumeVisible,
-            display: { showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure, showMomentumHistogram } satisfies DisplaySettings
+            display: { showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure } satisfies DisplaySettings
         };
         try {
             await apiRequest(`${API}/${symbol}`, {
@@ -1474,7 +1434,6 @@ export default function ChartsPage() {
             if (typeof st.display?.showPatterns === "boolean") setShowPatterns(st.display.showPatterns);
             if (typeof st.display?.showStrategySignals === "boolean") setShowStrategySignals(st.display.showStrategySignals);
             if (typeof st.display?.showPressure === "boolean") setShowPressure(st.display.showPressure);
-            if (typeof st.display?.showMomentumHistogram === "boolean") setShowMomentumHistogram(st.display.showMomentumHistogram);
         } catch { /* backend yoksa localStorage kullan */ }
     };
 
@@ -1609,7 +1568,6 @@ export default function ChartsPage() {
                             { checked: showStopTakeProfit, setChecked: setShowStopTakeProfit, title: "SL / TP", description: "Kayıtlı hedef ve stop seviyeleri." },
                             { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonlar", description: "Teyitli mum formasyonları." },
                             { checked: showPressure, setChecked: setShowPressure, title: "Alıcı / satıcı basıncı", description: "Merkez-sıfırlı canlı basınç bandı." },
-                            { checked: showMomentumHistogram, setChecked: setShowMomentumHistogram, title: "P99 momentum", description: "Hızlı sıfır-merkezli histogram." },
                             { checked: showStrategySignals, setChecked: setShowStrategySignals, title: "M5 strateji sinyalleri", description: "Tüm zaman dilimlerinde M5 kaynaklı işaretler." },
                         ].map((setting) => (
                             <button
@@ -1683,7 +1641,7 @@ export default function ChartsPage() {
                                 <th className="px-4 py-2">GİRİŞ ZAMANI</th>
                                 <th className="px-4 py-2">GİRİŞ</th>
                                 <th className="px-4 py-2">GÜNCEL</th>
-                                <th className="px-4 py-2">MİKTAR</th>
+                                <th className="px-4 py-2">TUTAR (TL)</th>
                                 <th className="px-4 py-2 text-right">PnL</th>
                             </tr>
                         </thead>
@@ -1699,13 +1657,14 @@ export default function ChartsPage() {
                                     const time = p.entry_time
                                         ? new Date(p.entry_time * 1000).toLocaleTimeString("tr-TR")
                                         : "-";
+                                    const entryValue = Number(p.entry || 0) * Number(p.quantity || 0);
                                     return (
                                         <tr key={p.symbol} className="border-b border-bunker-800/50 hover:bg-bunker-900/50">
                                             <td className="px-4 py-2 text-white font-bold"><SymbolLink symbol={p.symbol} className="text-white hover:text-neon-green" /></td>
                                             <td className="px-4 py-2 text-bunker-muted">{time}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{formatPrice(p.entry)}</td>
                                             <td className="px-4 py-2 text-white">{formatPrice(p.current)}</td>
-                                            <td className="px-4 py-2 text-bunker-muted">{p.quantity?.toFixed?.(4) ?? p.quantity}</td>
+                                            <td className="px-4 py-2 text-bunker-muted">{entryValue > 0 ? money(entryValue) : "—"}</td>
                                             <td className={`px-4 py-2 text-right font-bold ${pnl >= 0 ? "text-neon-green" : "text-red-400"}`}>
                                                 <div>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}%</div>
                                                 <div className="text-xs mt-1">{pnlTry >= 0 ? "+" : ""}₺{pnlTry.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
