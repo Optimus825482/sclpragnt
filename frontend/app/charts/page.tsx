@@ -80,7 +80,7 @@ const chartPriceFormat = (value: number) => {
 type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 
 type PatternMarker = { time: number; type: "buy" | "sell"; text: string };
-type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showStrategySignals: boolean };
+type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showStrategySignals: boolean; showPressure: boolean; showMomentumHistogram: boolean };
 type ClosedTrade = { id: number; pnl: number };
 type LivePortfolio = { total_value?: number; unrealized_pnl?: number };
 const patternDescriptions: Record<string, string> = {
@@ -478,6 +478,9 @@ export default function ChartsPage() {
     const [showStopTakeProfit, setShowStopTakeProfit] = useState(false);
     const [showPatterns, setShowPatterns] = useState(false);
     const [showStrategySignals, setShowStrategySignals] = useState(false);
+    const [showPressure, setShowPressure] = useState(true);
+    const [showMomentumHistogram, setShowMomentumHistogram] = useState(true);
+    const [m5Bars, setM5Bars] = useState<Bar[]>([]);
     const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
@@ -519,19 +522,22 @@ export default function ChartsPage() {
 
     useEffect(() => {
         const settings = loadPersisted<DisplaySettings>(LS_DISPLAY_SETTINGS, {
-            showPositions: false, showStopTakeProfit: false, showPatterns: false, showStrategySignals: false
+            showPositions: false, showStopTakeProfit: false, showPatterns: false, showStrategySignals: false,
+            showPressure: true, showMomentumHistogram: true
         });
         setShowPositions(settings.showPositions);
         setShowStopTakeProfit(settings.showStopTakeProfit);
         setShowPatterns(settings.showPatterns);
         setShowStrategySignals(!!settings.showStrategySignals);
+        setShowPressure(settings.showPressure !== false);
+        setShowMomentumHistogram(settings.showMomentumHistogram !== false);
     }, []);
 
     useEffect(() => {
         try {
-            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showStrategySignals } satisfies DisplaySettings));
+            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure, showMomentumHistogram } satisfies DisplaySettings));
         } catch { /* görüntü ayarı yalnızca yerelde saklanır */ }
-    }, [showPositions, showStopTakeProfit, showPatterns, showStrategySignals]);
+    }, [showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure, showMomentumHistogram]);
 
     // Sembol rozeti /charts?symbol=...&timeframe=5m ile istemci içi
     // yönlendirme yapar. Sayfa unmount olmadığı için URL değişimini ayrıca
@@ -675,6 +681,21 @@ export default function ChartsPage() {
         load();
         return () => { cancelled = true; };
     }, [symbol, interval]);
+
+    // Strateji işaretleri görüntülenen periyottan bağımsız olarak M5 kaynağından
+    // hesaplanır. Böylece 1s/4s görünümde de aynı M5 strateji ayarı korunur.
+    useEffect(() => {
+        let cancelled = false;
+        apiRequest(`${API_BASE}/api/market-klines/${symbol}?interval=5m&limit=500`)
+            .then((res) => res.json())
+            .then((payload) => {
+                if (cancelled) return;
+                setM5Bars((payload.candles || []).map((k: number[]) => ({
+                    time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5]
+                })));
+            }).catch(() => { if (!cancelled) setM5Bars([]); });
+        return () => { cancelled = true; };
+    }, [symbol]);
 
     // canlı mum güncelleme: Binance WebSocket'ten seçili sembolün kline'ını dinle
     useEffect(() => {
@@ -1127,16 +1148,17 @@ export default function ChartsPage() {
 
     // BB-MFI stratejisinin backend ile aynı dip koşulunu marker olarak göster.
     const bbMfiSignals = (bars: Bar[], params: Record<string, any>) => {
-        const bbPeriod = Math.max(5, Math.round(params.bbPeriod ?? 20));
-        const bbStdDev = Number(params.bbStdDev ?? 1);
-        const mfiPeriod = Math.max(2, Math.round(params.mfiPeriod ?? 14));
-        const mfiThreshold = Number(params.mfiThreshold ?? 60);
+        const bbPeriod = Math.max(5, Math.round(params.bbPeriod ?? 21));
+        const bbStdDev = Number(params.bbStdDev ?? 2);
+        const mfiPeriod = Math.max(2, Math.round(params.mfiPeriod ?? 16));
+        const mfiThreshold = Number(params.mfiThreshold ?? 59);
         const signals: { time: number; type: "buy" | "sell" }[] = [];
         for (let i = Math.max(bbPeriod - 1, mfiPeriod); i < bars.length; i++) {
             const closeWindow = bars.slice(i - bbPeriod + 1, i + 1).map((bar) => bar.close);
             const mean = closeWindow.reduce((sum, value) => sum + value, 0) / closeWindow.length;
             const variance = closeWindow.reduce((sum, value) => sum + (value - mean) ** 2, 0) / closeWindow.length;
             const lower = mean - Math.sqrt(variance) * bbStdDev;
+            const upper = mean + Math.sqrt(variance) * bbStdDev;
             let positive = 0;
             let negative = 0;
             for (let j = i - mfiPeriod + 1; j <= i; j++) {
@@ -1147,7 +1169,12 @@ export default function ChartsPage() {
                 else if (current < previous) negative += flow;
             }
             const mfi = negative ? 100 - 100 / (1 + positive / negative) : 100;
+            const rsiChanges = bars.slice(i - 13, i + 1).map((bar, index, window) => index ? bar.close - window[index - 1].close : 0).slice(1);
+            const gains = rsiChanges.reduce((sum, value) => sum + Math.max(value, 0), 0);
+            const losses = rsiChanges.reduce((sum, value) => sum + Math.max(-value, 0), 0);
+            const rsi = losses ? 100 - 100 / (1 + gains / losses) : 100;
             if (bars[i].close < lower && mfi < mfiThreshold) signals.push({ time: bars[i].time, type: "buy" });
+            else if (bars[i].close > upper && rsi > 69 && mfi > 69) signals.push({ time: bars[i].time, type: "sell" });
         }
         return signals;
     };
@@ -1257,13 +1284,12 @@ export default function ChartsPage() {
         } catch { /* marker hatası sessiz geç */ }
     }, [instances, bars, symbol]);
 
-    // Aktif stratejinin geçmiş M5 girişleri yalnız görünür mumlarda ve
-    // salt-okunur hesaplanır; bu, portföyü veya canlı strateji durumunu
-    // değiştirmez. Görünen pencere kaydıkça marker kümesi yenilenir.
+    // Aktif stratejinin M5 sinyalleri, seçili grafik periyoduna yuvarlanarak
+    // her görünümde gösterilir; hesap kaynağı daima M5 kalır.
     useEffect(() => {
         activeStrategyMarkersRef.current?.setMarkers([]);
         activeStrategyMarkersRef.current = null;
-        if (!showStrategySignals || interval !== "5m" || !bars.length || !candleRef.current) return;
+        if (!showStrategySignals || !bars.length || !m5Bars.length || !candleRef.current) return;
         const strategyKey = activeStrategy.toLowerCase();
         const signalFn = strategySignalFns[strategyKey];
         if (!signalFn) return;
@@ -1274,20 +1300,26 @@ export default function ChartsPage() {
         // indeks aralığı üzerinden daraltıyoruz; strateji ise gerekli ısınma
         // geçmişini koruyarak tüm M5 serisinde değerlendirilir.
         const visibleTimes = new Set(bars.slice(firstVisibleIndex, lastVisibleIndex + 1).map((bar) => bar.time));
-        const signals = signalFn(bars.slice(0, -1), {}).filter((signal) => signal.type === "buy" && visibleTimes.has(signal.time));
+        const targetSeconds = (INTERVAL_MS[interval] || 300_000) / 1000;
+        const mapped = new Map<number, { time: number; type: "buy" | "sell" }>();
+        signalFn(m5Bars.slice(0, -1), {}).forEach((signal) => {
+            const targetTime = Math.floor(signal.time / targetSeconds) * targetSeconds;
+            if (visibleTimes.has(targetTime)) mapped.set(targetTime, { ...signal, time: targetTime });
+        });
+        const signals = [...mapped.values()];
         try {
             const markers = createSeriesMarkers(candleRef.current, []);
             activeStrategyMarkersRef.current = markers;
             markers.setMarkers(signals.map((signal) => ({
                 time: signal.time as UTCTimestamp,
-                position: "belowBar" as const,
-                color: "#2563eb",
-                shape: "circle" as const,
-                text: "S",
+                position: signal.type === "buy" ? "belowBar" as const : "aboveBar" as const,
+                color: signal.type === "buy" ? "#2563eb" : "#f97316",
+                shape: signal.type === "buy" ? "circle" as const : "circle" as const,
+                text: signal.type === "buy" ? "M5 B" : "M5 S",
                 size: 1,
             })));
         } catch { /* görünür zaman aralığı değişirken marker dışarıda kalabilir */ }
-    }, [showStrategySignals, interval, activeStrategy, bars, visibleRange]);
+    }, [showStrategySignals, interval, activeStrategy, bars, m5Bars, visibleRange]);
 
     // Güçlü mum formasyonlarını seçili timeframe üzerinde marker olarak göster.
     useEffect(() => {
@@ -1364,7 +1396,7 @@ export default function ChartsPage() {
             indicators: instances,
             paneHeights: paneHeightsRef.current,
             volumeVisible,
-            display: { showPositions, showStopTakeProfit, showPatterns, showStrategySignals } satisfies DisplaySettings
+            display: { showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure, showMomentumHistogram } satisfies DisplaySettings
         };
         try {
             await apiRequest(`${API}/${symbol}`, {
@@ -1403,6 +1435,8 @@ export default function ChartsPage() {
             if (typeof st.display?.showStopTakeProfit === "boolean") setShowStopTakeProfit(st.display.showStopTakeProfit);
             if (typeof st.display?.showPatterns === "boolean") setShowPatterns(st.display.showPatterns);
             if (typeof st.display?.showStrategySignals === "boolean") setShowStrategySignals(st.display.showStrategySignals);
+            if (typeof st.display?.showPressure === "boolean") setShowPressure(st.display.showPressure);
+            if (typeof st.display?.showMomentumHistogram === "boolean") setShowMomentumHistogram(st.display.showMomentumHistogram);
         } catch { /* backend yoksa localStorage kullan */ }
     };
 
@@ -1412,6 +1446,28 @@ export default function ChartsPage() {
     const winRate = closedTrades.length ? (winningTrades / closedTrades.length) * 100 : 0;
     const money = (value: number) => `₺${value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const pnlClass = (value: number) => value >= 0 ? "text-neon-green" : "text-red-400";
+    const pressure = (() => {
+        const recent = bars.slice(-8);
+        if (recent.length < 2) return 0;
+        const weighted = recent.reduce((sum, bar) => {
+            const range = Math.max(bar.high - bar.low, Number.EPSILON);
+            return sum + (((bar.close - bar.low) / range) * 2 - 1) * bar.volume;
+        }, 0);
+        const volume = recent.reduce((sum, bar) => sum + bar.volume, 0);
+        return clamp(volume ? (weighted / volume) * 100 : 0, -100, 100);
+    })();
+    const momentumBars = (() => {
+        const closes = bars.map((bar) => bar.close);
+        const calcEma = (values: number[], period: number) => values.reduce<number[]>((out, value) => {
+            const previous = out[out.length - 1] ?? value;
+            out.push(previous + (value - previous) * (2 / (period + 1))); return out;
+        }, []);
+        const macd = calcEma(closes, 8).map((value, index) => value - (calcEma(closes, 21)[index] ?? value));
+        const signal = calcEma(macd, 5);
+        const values = macd.map((value, index) => value - (signal[index] ?? value)).slice(-56);
+        const max = Math.max(...values.map(Math.abs), 0.000001);
+        return values.map((value) => ({ value, height: Math.max(3, Math.abs(value) / max * 42) }));
+    })();
 
     return (
         <div className="max-w-7xl mx-auto space-y-5">
@@ -1526,7 +1582,9 @@ export default function ChartsPage() {
                             { checked: showPositions, setChecked: setShowPositions, title: "Pozisyonları göster", description: "Seçili sembolde açık pozisyon varsa giriş çizgisi ve işaretini gösterir." },
                             { checked: showStopTakeProfit, setChecked: setShowStopTakeProfit, title: "SL / TP göster", description: "Açık pozisyonun kayıtlı zarar-durdur ve kâr-al seviyelerini çizer." },
                             { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonları göster", description: "Yalnız tamamlanmış mumlarla doğrulanan dönüş ve yutan formasyonlarını gösterir." },
-                            { checked: showStrategySignals, setChecked: setShowStrategySignals, title: "M5 strateji sinyallerini göster", description: interval === "5m" ? "Ekranda görünen M5 mumlarında aktif stratejinin geçmiş BUY sinyallerini mavi rozetle gösterir." : "Yalnız M5 grafikte çalışır; M5 seçildiğinde mavi sinyal rozetleri gösterilir." },
+                            { checked: showPressure, setChecked: setShowPressure, title: "Alıcı / satıcı basıncını göster", description: "Grafik genişliği boyunca merkez-sıfırlı, son 8 mumun fiyat-konumu ve hacim ağırlıklı canlı basınç göstergesi." },
+                            { checked: showMomentumHistogram, setChecked: setShowMomentumHistogram, title: "Hızlı momentum histogramını göster", description: "Ana grafiğin içinde, 8/21/5 EMA tabanlı sıfır-merkezli kısa vadeli momentum görünümü." },
+                            { checked: showStrategySignals, setChecked: setShowStrategySignals, title: "M5 strateji sinyallerini göster", description: "Aktif stratejinin M5 kaynaklı BUY/SELL işaretlerini, seçilen tüm zaman dilimlerinde ilgili muma eşleyerek gösterir." },
                         ].map((setting) => (
                             <button
                                 key={setting.title}
@@ -1547,12 +1605,20 @@ export default function ChartsPage() {
             </div>}
 
             <div className="chart-card card bg-bunker-950 p-0 overflow-hidden relative">
+                {showPressure && <div className="border-b border-bunker-800 bg-bunker-950/95 px-3 py-2.5 sm:px-4" aria-label="Alıcı satıcı basıncı">
+                    <div className="mb-1.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider"><span className={pressure >= 0 ? "text-neon-green" : "text-bunker-muted"}>Alıcı %{Math.max(0, 50 + pressure / 2).toFixed(0)}</span><span className="text-bunker-muted">BASINÇ · 0</span><span className={pressure < 0 ? "text-red-400" : "text-bunker-muted"}>Satıcı %{Math.max(0, 50 - pressure / 2).toFixed(0)}</span></div>
+                    <div className="relative h-2 overflow-hidden rounded-full bg-bunker-800"><div className="absolute inset-y-0 left-1/2 w-px bg-white/60" /><div className={`absolute top-0 h-full transition-[width] duration-150 ease-out ${pressure >= 0 ? "left-1/2 bg-neon-green" : "right-1/2 bg-red-400"}`} style={{ width: `${Math.abs(pressure) / 2}%` }} /></div>
+                </div>}
                 {loading && (
                     <div className="absolute inset-0 flex items-center justify-center z-10 bg-bunker-950/70">
                         <p className="font-mono text-sm text-neon-green animate-pulse">YÜKLENİYOR...</p>
                     </div>
                 )}
                 <div ref={containerRef} className="w-full" />
+                {showMomentumHistogram && <div className="pointer-events-none absolute bottom-9 left-3 right-3 z-20 h-16 border-t border-bunker-700/70 bg-bunker-950/75 px-1 pt-3 backdrop-blur-[1px] sm:left-5 sm:right-5" aria-label="Hızlı momentum histogramı">
+                    <span className="absolute left-1 top-0.5 font-mono text-[9px] text-bunker-muted">MOMENTUM</span><div className="absolute left-0 right-0 top-1/2 border-t border-bunker-600/70" />
+                    <div className="flex h-full items-center gap-px">{momentumBars.map((bar, index) => <span key={index} className={`flex-1 rounded-[1px] ${bar.value >= 0 ? "bg-neon-green/80" : "bg-red-400/80"}`} style={{ height: `${bar.height}px`, transform: `translateY(${bar.value >= 0 ? -bar.height / 2 : bar.height / 2}px)` }} />)}</div>
+                </div>}
                 {patternTooltip && (
                     <div
                         className={`absolute z-30 w-64 rounded-xl border p-3 shadow-[0_12px_35px_rgba(0,0,0,0.45)] backdrop-blur pointer-events-none ${patternTooltip.pattern.type === "buy" ? "border-emerald-300/60 bg-emerald-950/95" : "border-red-300/60 bg-red-950/95"}`}
