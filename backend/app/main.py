@@ -1325,6 +1325,7 @@ CONFIG_FIELDS = {
     "active_strategy_timeframe": "ACTIVE_STRATEGY_TIMEFRAME",
     "order_pct": "ORDER_PCT",
     "pyramiding_layers": "PYRAMIDING_LAYERS",
+    "bb_mfi_pine_version": "BB_MFI_PINE_VERSION",
     "bb_mfi_stop_loss_pct": "BB_MFI_STOP_LOSS_PCT",
     "bb_mfi_take_profit_pct": "BB_MFI_TAKE_PROFIT_PCT",
     "bb_mfi_bb_period": "BB_MFI_BB_PERIOD",
@@ -1409,7 +1410,7 @@ CONFIG_FIELDS = {
 BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
 INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period"}
-STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
+STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "bb_mfi_pine_version", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
 async def get_config():
@@ -1428,6 +1429,7 @@ async def get_config():
         "active_strategy_timeframe": config.ACTIVE_STRATEGY_TIMEFRAME,
         "order_pct": config.ORDER_PCT,
         "pyramiding_layers": config.PYRAMIDING_LAYERS,
+        "bb_mfi_pine_version": config.BB_MFI_PINE_VERSION,
         "symbol_order_pct": config.SYMBOL_ORDER_PCT,
         "symbol_pyramiding_layers": config.SYMBOL_PYRAMIDING_LAYERS,
         "bb_mfi_stop_loss_pct": config.BB_MFI_STOP_LOSS_PCT,
@@ -1720,7 +1722,9 @@ async def _apply_config_update(payload: dict):
                     raise ValueError("pyramiding_layers 1 ile 10 arasında olmalıdır")
                 setattr(config, attr, number)
             elif key in STR_FIELDS:
-                setattr(config, attr, str(val))
+                if key == "bb_mfi_pine_version" and str(val).lower() not in {"v1", "v2", "v3"}:
+                    raise ValueError("bb_mfi_pine_version v1, v2 veya v3 olmalıdır")
+                setattr(config, attr, str(val).lower() if key == "bb_mfi_pine_version" else str(val))
                 if key == "active_strategy":
                     if str(val).upper() != "BB_MFI_MEAN_REVERSION":
                         raise ValueError("Bu canlı akışta yalnızca BB_MFI_MEAN_REVERSION aktif edilebilir")

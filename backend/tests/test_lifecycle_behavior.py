@@ -155,8 +155,8 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["action"], "BUY_SIGNAL")
         persisted_position = commit.await_args.args[4]
         context = persisted_position["entry_context"]
-        self.assertIsNone(context["profit_target_pct"])
-        self.assertIsNone(context["stop_loss_pct"])
+        self.assertEqual(context["profit_target_pct"], config.BB_MFI_TAKE_PROFIT_PCT)
+        self.assertEqual(context["stop_loss_pct"], config.BB_MFI_STOP_LOSS_PCT)
         self.assertIsNone(context["max_hold_sec"])
 
     async def test_bb_mfi_close_normalizes_a_legacy_context_plan(self):
@@ -177,8 +177,8 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
             0.3,
         )
 
-        self.assertIsNone(trade["entry_context"]["profit_target_pct"])
-        self.assertIsNone(trade["entry_context"]["stop_loss_pct"])
+        self.assertEqual(trade["entry_context"]["profit_target_pct"], config.BB_MFI_TAKE_PROFIT_PCT)
+        self.assertEqual(trade["entry_context"]["stop_loss_pct"], config.BB_MFI_STOP_LOSS_PCT)
         self.assertIsNone(trade["entry_context"]["max_hold_sec"])
 
     async def test_bb_mfi_preflight_uses_the_same_equity_sizing_as_opening(self):

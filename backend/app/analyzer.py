@@ -499,6 +499,15 @@ class ScalpAnalyzer:
             # BB-MFI canlıda backtest ile aynı karar kurallarını kullanır;
             # gerçekleşen fill, teyit sonrası mevcut canlı ticker fiyatıdır.
             if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
+                if price <= system_stop:
+                    return await self.close_position(symbol, price, "bb_mfi_stop_loss")
+                # Existing paper positions opened before the v3 repair may
+                # not have persisted target fields; apply the selected v3
+                # target immediately instead of leaving them unmanaged.
+                target = float(pos.get("system_take_profit_price") or pos.get("take_profit") or
+                               entry * (1 + config.BB_MFI_TAKE_PROFIT_PCT))
+                if target and price >= target:
+                    return await self.close_position(symbol, price, "bb_mfi_take_profit")
                 # MarketData retains closed candles only.  Evaluate the Pine
                 # close signal once for each newly-confirmed strategy candle;
                 # live paper closes at the next available ticker price.
@@ -506,7 +515,7 @@ class ScalpAnalyzer:
                 if (closed_at and pos.get("bb_mfi_exit_evaluated_at") != closed_at and
                         self.strategy_bb_mfi_mean_reversion(kline, symbol) == "sell"):
                     pos["bb_mfi_exit_evaluated_at"] = closed_at
-                    return await self.close_position(symbol, price, "bb_mfi_v1_signal_exit")
+                    return await self.close_position(symbol, price, f"bb_mfi_{config.BB_MFI_PINE_VERSION}_signal_exit")
                 if closed_at:
                     pos["bb_mfi_exit_evaluated_at"] = closed_at
                 return None
@@ -868,17 +877,35 @@ class ScalpAnalyzer:
         return None
 
     def strategy_bb_mfi_mean_reversion(self, kline, symbol=None):
-        """Deterministic signal contract of Pine Flawless Victory v1."""
+        """Deterministic Flawless Victory profile selected for live paper flow."""
         closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
         volumes = kline.get("volumes", [])
-        min_history = max(config.BB_MFI_BB_PERIOD, config.BB_MFI_RSI_PERIOD + 1)
+        version = config.BB_MFI_PINE_VERSION
+        if version not in {"v1", "v2", "v3"}:
+            raise ValueError("BB_MFI_PINE_VERSION v1, v2 veya v3 olmalıdır")
+        min_history = max(config.BB_MFI_BB_PERIOD, config.BB_MFI_RSI_PERIOD + 1,
+                          config.BB_MFI_MFI_PERIOD + 1 if version == "v3" else 0)
         if len(closes) < min_history or len(highs) < min_history or len(lows) < min_history or len(volumes) < min_history:
             return None
         bb = self.calculate_bollinger_bands(closes, period=config.BB_MFI_BB_PERIOD, std_dev=config.BB_MFI_BB_STD_DEV)
         rsi = self.calculate_rsi(closes, period=config.BB_MFI_RSI_PERIOD)
-        if bb and rsi is not None and closes[-1] < bb["lower"] and rsi > config.BB_MFI_V1_RSI_LOWER_LEVEL:
+        if not bb or rsi is None:
+            return None
+        if version == "v3":
+            mfi = _mfi(highs, lows, closes, volumes, config.BB_MFI_MFI_PERIOD)
+            if mfi is None:
+                return None
+            if closes[-1] < bb["lower"] and mfi < config.BB_MFI_ENTRY_MFI_MAX:
+                return "buy"
+            if (closes[-1] > bb["upper"] and rsi > config.BB_MFI_EXIT_RSI_MIN and
+                    mfi > config.BB_MFI_EXIT_MFI_MIN):
+                return "sell"
+            return None
+        lower = config.BB_MFI_V1_RSI_LOWER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_LOWER_LEVEL
+        upper = config.BB_MFI_V1_RSI_UPPER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_UPPER_LEVEL
+        if closes[-1] < bb["lower"] and rsi > lower:
             return "buy"
-        if bb and rsi is not None and closes[-1] > bb["upper"] and rsi > config.BB_MFI_V1_RSI_UPPER_LEVEL:
+        if closes[-1] > bb["upper"] and rsi > upper:
             return "sell"
         return None
 
@@ -1096,8 +1123,8 @@ class ScalpAnalyzer:
         # BB-MFI plan that the position manager actually enforced.
         if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
             entry_context.update({
-                "profit_target_pct": None,
-                "stop_loss_pct": None,
+                "profit_target_pct": config.BB_MFI_TAKE_PROFIT_PCT,
+                "stop_loss_pct": config.BB_MFI_STOP_LOSS_PCT,
                 "max_hold_sec": None,
             })
         buy_commission = (pos["quantity"] * entry) * config.COMMISSION_PCT
@@ -1340,12 +1367,12 @@ class ScalpAnalyzer:
         planned_take_profit_pct = (
             float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
             else (None if strat_name == "LLM_PAPER" else
-                  (None if is_bb_mfi else config.SPOT_PROFIT_TARGET_PCT))
+                  (config.BB_MFI_TAKE_PROFIT_PCT if is_bb_mfi else config.SPOT_PROFIT_TARGET_PCT))
         )
         planned_stop_loss_pct = (
             float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None
             else (None if strat_name == "LLM_PAPER" else
-                  (None if is_bb_mfi else config.HARD_STOP_LOSS_PCT))
+                  (config.BB_MFI_STOP_LOSS_PCT if is_bb_mfi else config.HARD_STOP_LOSS_PCT))
         )
         # BB-MFI exits through its fixed stop/target or a confirmed sell signal;
         # the generic max-hold setting is not an active exit for this strategy.
@@ -1387,6 +1414,11 @@ class ScalpAnalyzer:
             total_qty = existing["quantity"] + quantity
             entry_price = ((existing["entry_price"] * existing["quantity"]) + (entry_price * quantity)) / total_qty
             pos = {**existing, "entry_price": entry_price, "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)), "quantity": total_qty, "layers": existing.get("layers", 1) + 1}
+            if strat_name == "BB_MFI_MEAN_REVERSION":
+                pos["system_stop_price"] = entry_price * (1 - config.BB_MFI_STOP_LOSS_PCT)
+                pos["system_take_profit_price"] = entry_price * (1 + config.BB_MFI_TAKE_PROFIT_PCT)
+                pos["stop_price"] = pos["system_stop_price"]
+                pos["take_profit"] = pos["system_take_profit_price"]
         else:
             pos = {
             "side": "LONG",  # Binance TR Spot olduğu için her zaman LONG
@@ -1396,7 +1428,7 @@ class ScalpAnalyzer:
                 "trade_id": uuid.uuid4().hex,
                 "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
             }
-            if strat_name not in {"LLM_PAPER", "BB_MFI_MEAN_REVERSION"}:
+            if strat_name != "LLM_PAPER":
                 technical_tf = self._strategy_tf(strat_name)
                 system_kline = self.market.get_ut_kline(symbol, technical_tf) if self.market else None
                 atr = self.calculate_atr(system_kline, config.SYSTEM_ATR_PERIOD) if system_kline else None

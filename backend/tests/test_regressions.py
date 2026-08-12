@@ -76,10 +76,29 @@ class RegressionContracts(unittest.TestCase):
             closes = [100.0] * 20 + [last]
             return {"closes": closes, "highs": closes, "lows": closes, "volumes": [100.0] * len(closes)}
 
-        with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
+        with patch("app.analyzer.config.BB_MFI_PINE_VERSION", "v1"), \
+             patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
              patch.object(analyzer, "calculate_rsi", return_value=80.0):
             self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline(120.0)), "sell")
             self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline(80.0)), "buy")
+
+    def test_bb_mfi_v3_requires_mfi_for_entry_and_exit(self):
+        from app.analyzer import ScalpAnalyzer
+
+        analyzer = ScalpAnalyzer(None)
+        closes = [100.0] * 21
+        kline = {"closes": closes, "highs": closes, "lows": closes, "volumes": [100.0] * len(closes)}
+        with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
+             patch.object(analyzer, "calculate_rsi", return_value=70.0), \
+             patch("app.analyzer._mfi", return_value=58.0):
+            kline["closes"][-1] = 80.0
+            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline), "buy")
+            kline["closes"][-1] = 120.0
+            self.assertIsNone(analyzer.strategy_bb_mfi_mean_reversion(kline))
+        with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
+             patch.object(analyzer, "calculate_rsi", return_value=70.0), \
+             patch("app.analyzer._mfi", return_value=70.0):
+            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline), "sell")
 
     def test_portfolio_replay_reads_normalized_historical_candles(self):
         from scripts.run_portfolio_backtest import rows_to_series
