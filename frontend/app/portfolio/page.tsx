@@ -19,12 +19,17 @@ const STRATEGY_LABEL: Record<string, string> = {
 
 type Position = {
   symbol: string;
+  side?: string;
   entry: number;
   current: number;
   pnl_pct: number;
   pnl_try?: number;
   value: number;
+  quantity?: number;
   entry_time?: number;
+  stop?: number;
+  take_profit?: number;
+  entry_context?: Record<string, unknown> | string | null;
   strategy?: string;
   llm_managed?: boolean;
   llm_stop_price?: number;
@@ -117,6 +122,39 @@ const normalizedEntryContext = (
   }
 };
 const csvNumber = (value: number | null | undefined) => value ?? "";
+const positionDuration = (position: Position) =>
+  duration({
+    hold_seconds: position.entry_time
+      ? Math.max(0, Math.floor(Date.now() / 1000) - position.entry_time)
+      : 0,
+  } as Trade);
+
+function exportOpenPositionsCsv(positions: Position[]) {
+  if (!positions.length) return;
+  const head = [
+    "Sembol", "Strateji", "Yön", "Giriş", "Anlık", "Miktar", "Giriş tutarı (TL)",
+    "Anlık değer (TL)", "Gerçekleşmemiş PnL (TL)", "PnL %", "Giriş zamanı",
+    "Aktif süre", "Planlanan TP", "Planlanan SL", "Giriş bağlamı (JSON)",
+  ];
+  const body = positions.map((position) => {
+    const context = normalizedEntryContext(position.entry_context);
+    const entryNotional = position.quantity == null ? null : position.entry * position.quantity;
+    return [
+      position.symbol, position.strategy ?? "", position.side ?? "LONG", position.entry,
+      position.current, csvNumber(position.quantity), csvNumber(entryNotional), position.value,
+      position.pnl_try ?? "", position.pnl_pct, when(position.entry_time), positionDuration(position),
+      position.take_profit ?? "", position.stop ?? "", JSON.stringify(context),
+    ];
+  });
+  const csv = [head, ...body]
+    .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","))
+    .join("\n");
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
+  anchor.download = "acik-pozisyonlar.csv";
+  anchor.click();
+  URL.revokeObjectURL(anchor.href);
+}
 
 function ExportActions({ trades }: { trades: Trade[] }) {
   const exportCsv = () => {
@@ -364,9 +402,17 @@ function PositionTable({
             Anlık değerler ve paper pozisyon yönetimi
           </p>
         </div>
-        <span className="ui-badge ui-badge-neutral">
-          {positions.length} açık
-        </span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => exportOpenPositionsCsv(positions)}
+            className="ui-button ui-button-primary ui-button-compact"
+            disabled={!positions.length}
+            title={!positions.length ? "Dışa aktarılacak açık pozisyon bulunmuyor." : undefined}
+          >
+            CSV DIŞA AKTAR ({positions.length})
+          </button>
+          <span className="ui-badge ui-badge-neutral">{positions.length} açık</span>
+        </div>
       </div>
       {positions.length === 0 ? (
         <p className="empty-state">Açık pozisyon yok.</p>
