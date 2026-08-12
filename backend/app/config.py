@@ -86,6 +86,7 @@ class Config:
     SYMBOL_ACTIVITY_MIN_ATR_PCT = float(os.getenv("SYMBOL_ACTIVITY_MIN_ATR_PCT", "0.0015"))
     SYMBOL_ACTIVITY_MIN_VOLUME_RATIO = float(os.getenv("SYMBOL_ACTIVITY_MIN_VOLUME_RATIO", "0.50"))
     SYMBOL_ACTIVITY_MAX_SPREAD_PCT = float(os.getenv("SYMBOL_ACTIVITY_MAX_SPREAD_PCT", "0.30"))
+    SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED = os.getenv("SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED", "false").lower() == "true"
     PASSIVE_SYMBOLS = set()
     SYMBOL_ACTIVITY_STATUS = {}
     # Radar yalnızca gözlem/ranking yüzeyidir; otomatik pozisyon açmaz.

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import bisect
 import json
 import math
 import sys
@@ -106,7 +107,49 @@ def activity_metrics(analyzer, data, quote_volume, spread_pct):
     }
 
 
-def historical_activity(analyzer, window, spread_pct):
+def m1_activity_passes(analyzer, data, index, args):
+    """Causal M1 volatility confirmation for an M5 entry decision."""
+    if not args.activity_m1_filter:
+        return True
+    if index is None or index < 14:
+        return False
+    window = window_at(data, index, lookback=30)
+    closes, highs, lows = (window[key] for key in ("closes", "highs", "lows"))
+    sample = min(args.activity_m1_range_bars, len(highs))
+    low, high = min(lows[-sample:]), max(highs[-sample:])
+    range_pct = ((high - low) / low * 100) if low else 0.0
+    atr = analyzer.calculate_atr(window, 14) or 0.0
+    atr_pct = atr / closes[-1] * 100 if closes[-1] else 0.0
+    return range_pct >= args.activity_m1_min_range_pct and atr_pct >= args.activity_m1_min_atr_pct
+
+
+def m30_activity_passes(analyzer, data, index, args):
+    """Causal higher-timeframe movement and optional downtrend guard."""
+    if not args.activity_m30_filter:
+        return True
+    if index is None or index < 20:
+        return False
+    window = window_at(data, index, lookback=40)
+    closes, highs, lows = (window[key] for key in ("closes", "highs", "lows"))
+    low, high = min(lows[-2:]), max(highs[-2:])
+    range_pct = ((high - low) / low * 100) if low else 0.0
+    atr = analyzer.calculate_atr(window, 14) or 0.0
+    atr_pct = atr / closes[-1] * 100 if closes[-1] else 0.0
+    if range_pct < args.activity_m30_min_range_pct or atr_pct < args.activity_m30_min_atr_pct:
+        return False
+    if args.activity_m30_regime_filter:
+        ema_now = analyzer.calculate_ema(closes, 20)
+        ema_before = analyzer.calculate_ema(closes[:-3], 20)
+        if ema_now is None or ema_before is None or not ema_before:
+            return False
+        slope_pct = (ema_now - ema_before) / ema_before * 100
+        if slope_pct < -args.activity_m30_max_ema20_decline_pct:
+            return False
+    return True
+
+
+def historical_activity(analyzer, window, spread_pct, args=None, m1_data=None, m1_index=None,
+                        m30_data=None, m30_index=None):
     """Time-correct counterpart of the live activity gate for replay."""
     closes, highs, lows, volumes = (window[key] for key in ("closes", "highs", "lows", "volumes"))
     if len(closes) < 21:
@@ -117,11 +160,14 @@ def historical_activity(analyzer, window, spread_pct):
     atr_pct = atr / closes[-1] if closes[-1] else 0.0
     avg_volume = sum(volumes[-21:-1]) / 20
     volume_ratio = volumes[-1] / avg_volume if avg_volume else 0.0
+    m5_range_min = args.activity_m5_min_range_pct if args is not None else config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT
+    m5_atr_min = args.activity_m5_min_atr_pct / 100 if args is not None else config.SYMBOL_ACTIVITY_MIN_ATR_PCT
+    m5_volume_min = args.activity_m5_min_volume_ratio if args is not None else config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO
     active = (quote_volume >= config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY and
-              range_pct >= config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT and
-              atr_pct >= config.SYMBOL_ACTIVITY_MIN_ATR_PCT and
-              volume_ratio >= config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO and
-              spread_pct <= config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT)
+              range_pct >= m5_range_min and atr_pct >= m5_atr_min and volume_ratio >= m5_volume_min)
+    if args is not None:
+        active = active and m1_activity_passes(analyzer, m1_data, m1_index, args) if args.activity_m1_filter else active
+        active = active and m30_activity_passes(analyzer, m30_data, m30_index, args) if args.activity_m30_filter else active
     return active, "active" if active else "passive"
 
 
@@ -316,6 +362,8 @@ async def run(args):
             index = next((i for i, candle_ts in enumerate(data["times"]) if candle_ts >= start_ts), None)
             if index is None:
                 continue
+            # Universe selection stays on the existing M5 gate; M1 is then an
+            # execution-time confirmation on that same fixed universe.
             active, _ = historical_activity(analyzer, window_at(data, index), args.spread_pct)
             if active:
                 initially_active[symbol] = (data, historical_quality_score(analyzer, window_at(data, index), args.spread_pct))
@@ -326,6 +374,25 @@ async def run(args):
         indices = {symbol: {ts: index for index, ts in enumerate(data["times"])} for symbol, data in series.items()}
         if not series:
             raise SystemExit("Pencere başlangıcında ACTIVE sembol bulunamadı")
+    m1_series, m1_indices, m30_series, m30_indices = {}, {}, {}, {}
+    auxiliary = (("1m", m1_series, m1_indices, args.activity_m1_filter),
+                 ("30m", m30_series, m30_indices, args.activity_m30_filter))
+    required_auxiliary = set()
+    for interval, target_series, target_times, enabled in auxiliary:
+        if not enabled:
+            continue
+        loaded_auxiliary = await load_market(list(series), args.fetch_days, args.data_source, start_ts, end_ts, interval)
+        for symbol, data, _, _, error in loaded_auxiliary:
+            if error or not data or not data["times"]:
+                skipped[f"{symbol}:{interval}"] = error or "empty_candles"
+                continue
+            target_series[symbol] = data
+            target_times[symbol] = data["times"]
+        required_auxiliary.update(target_series)
+        series = {symbol: data for symbol, data in series.items() if symbol in target_series}
+        indices = {symbol: {ts: index for index, ts in enumerate(data["times"])} for symbol, data in series.items()}
+        if not series:
+            raise SystemExit(f"{interval} aktivite filtresi için kullanılabilir sembol bulunamadı")
     timeline = sorted({ts for data in series.values() for ts in data["times"] if start_ts <= ts <= end_ts})
     cash = initial = float(config.INITIAL_BALANCE_TRY)
     positions, trades = {}, []
@@ -345,7 +412,13 @@ async def run(args):
             for symbol, data in series.items():
                 index = indices[symbol].get(ts)
                 if index is None: continue
-                active, state = historical_activity(analyzer, window_at(data, index), args.spread_pct)
+                m1_index = bisect.bisect_right(m1_indices.get(symbol, []), ts) - 1
+                m30_index = bisect.bisect_right(m30_indices.get(symbol, []), ts) - 1
+                active, state = historical_activity(
+                    analyzer, window_at(data, index), args.spread_pct, args,
+                    m1_series.get(symbol), m1_index if m1_index >= 0 else None,
+                    m30_series.get(symbol), m30_index if m30_index >= 0 else None,
+                )
                 activity_status[symbol] = active
                 position = positions.get(symbol)
                 price = data["opens"][index]
@@ -570,6 +643,18 @@ async def run(args):
         "passive_net_exit_enabled": not args.disable_passive_net_exit,
         "passive_direct_exit": args.passive_direct_exit,
         "activity_refresh_minutes": args.activity_refresh_minutes,
+        "activity_m1_filter": args.activity_m1_filter,
+        "activity_m1_range_bars": args.activity_m1_range_bars,
+        "activity_m1_min_range_pct": args.activity_m1_min_range_pct,
+        "activity_m1_min_atr_pct": args.activity_m1_min_atr_pct,
+        "activity_m5_min_range_pct": args.activity_m5_min_range_pct,
+        "activity_m5_min_atr_pct": args.activity_m5_min_atr_pct,
+        "activity_m5_min_volume_ratio": args.activity_m5_min_volume_ratio,
+        "activity_m30_filter": args.activity_m30_filter,
+        "activity_m30_regime_filter": args.activity_m30_regime_filter,
+        "activity_m30_min_range_pct": args.activity_m30_min_range_pct,
+        "activity_m30_min_atr_pct": args.activity_m30_min_atr_pct,
+        "activity_m30_max_ema20_decline_pct": args.activity_m30_max_ema20_decline_pct,
         "daily_stop_limit": args.daily_stop_limit,
         "entry_ema200_filter": args.entry_ema200_filter,
         "entry_momentum_slowdown_filter": args.entry_momentum_slowdown_filter,
@@ -632,6 +717,18 @@ if __name__ == "__main__":
     parser.add_argument("--open-position-policy", choices=("exclude", "mark-to-market"), default="exclude")
     parser.add_argument("--historical-activity", action="store_true", help="Aktiviteyi her saat geçmiş mumlardan yeniden hesapla")
     parser.add_argument("--activity-refresh-minutes", type=int, default=60, help="Tarihsel aktivite kontrol periyodu (dakika)")
+    parser.add_argument("--activity-m5-min-range-pct", type=float, default=config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT, help="M5 son üç mum aralık alt sınırı (yüzde)")
+    parser.add_argument("--activity-m5-min-atr-pct", type=float, default=config.SYMBOL_ACTIVITY_MIN_ATR_PCT * 100, help="M5 ATR alt sınırı (yüzde)")
+    parser.add_argument("--activity-m5-min-volume-ratio", type=float, default=config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO, help="M5 hacim oranı alt sınırı")
+    parser.add_argument("--activity-m1-filter", action="store_true", help="M5 aktivitesine M1 range ve ATR doğrulaması ekle")
+    parser.add_argument("--activity-m1-range-bars", type=int, default=5, help="M1 hareket aralığı için son mum sayısı")
+    parser.add_argument("--activity-m1-min-range-pct", type=float, default=0.08, help="M1 kısa aralık alt sınırı (yüzde)")
+    parser.add_argument("--activity-m1-min-atr-pct", type=float, default=0.05, help="M1 ATR alt sınırı (yüzde)")
+    parser.add_argument("--activity-m30-filter", action="store_true", help="M5 aktivitesine M30 range ve ATR doğrulaması ekle")
+    parser.add_argument("--activity-m30-regime-filter", action="store_true", help="M30 EMA20 sert düşüş rejiminde yeni long girişi engelle")
+    parser.add_argument("--activity-m30-min-range-pct", type=float, default=0.45, help="Son iki M30 mumunun hareket alanı alt sınırı (yüzde)")
+    parser.add_argument("--activity-m30-min-atr-pct", type=float, default=0.20, help="M30 ATR alt sınırı (yüzde)")
+    parser.add_argument("--activity-m30-max-ema20-decline-pct", type=float, default=0.15, help="Üç M30 mumda izin verilen EMA20 düşüşü (yüzde)")
     parser.add_argument("--initial-active-only", action="store_true", help="Yalnız replay başlangıcında tarihsel olarak ACTIVE olan sembollerle başla")
     parser.add_argument("--initial-active-limit", type=int, default=0, help="Başlangıç ACTIVE evreninden kalite puanıyla en iyi N sembol")
     parser.add_argument("--passive-loss-exit-hours", type=float, default=0.0, help="Pasif zarar pozisyonu için EMA/ATR kontrollü çıkış süresi")
