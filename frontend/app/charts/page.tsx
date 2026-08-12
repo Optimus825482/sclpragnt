@@ -37,6 +37,7 @@ const LS_DISPLAY_SETTINGS = "scalper_chart_display_settings";
 const API = `${API_BASE}/api/chart`;
 
 const paneMinimumHeight = (key: string, compact: boolean) => {
+    if (key === "p99_momentum") return compact ? 88 : 112;
     if (key === "volume") return compact ? 76 : 104;
     return compact ? 108 : 136;
 };
@@ -576,6 +577,7 @@ export default function ChartsPage() {
     const chartRef = useRef<IChartApi | null>(null);
     const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
     const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+    const momentumRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const overlaySeries = useRef<Map<string, ISeriesApi<"Line">[]>>(new Map());
     const paneSeries = useRef<Map<string, (ISeriesApi<"Line"> | ISeriesApi<"Histogram">)[]>>(new Map());
     const volumePaneIndexRef = useRef<number | null>(null);
@@ -791,6 +793,7 @@ export default function ChartsPage() {
         }
         volumeRef.current = null;
         volumePaneIndexRef.current = null;
+        momentumRef.current = null;
 
         while (chart.panes().length > 1) chart.removePane(1);
         chart.chartElement().querySelectorAll(".pane-title").forEach((n) => n.remove());
@@ -798,7 +801,29 @@ export default function ChartsPage() {
         const instPanes = new Map<string, number>(); // uid -> pane index
         let paneIdx = 1;
 
-        // HACİM pane'i (pane 1, isteğe bağlı)
+        // P99: standart, ana grafiğe bağlı hızlı momentum paneli. Manuel
+        // indikatörlerden önce kurulur ve kendi gerçek chart pane'idir.
+        if (showMomentumHistogram) {
+            const closes = bars.map((bar) => bar.close);
+            const calcEma = (values: number[], period: number) => values.reduce<number[]>((out, value) => {
+                const previous = out[out.length - 1] ?? value;
+                out.push(previous + (value - previous) * (2 / (period + 1))); return out;
+            }, []);
+            const fast = calcEma(closes, 8), slow = calcEma(closes, 21);
+            const macd = fast.map((value, index) => value - (slow[index] ?? value));
+            const signal = calcEma(macd, 5);
+            const momentum = chart.addSeries(HistogramSeries, { base: 0, priceLineVisible: false, lastValueVisible: false }, paneIdx);
+            momentum.setData(bars.map((bar, index) => {
+                const value = macd[index] - (signal[index] ?? macd[index]);
+                return { time: bar.time as UTCTimestamp, value, color: macdHistogramColor(value, index ? macd[index - 1] - (signal[index - 1] ?? macd[index - 1]) : undefined) };
+            }));
+            momentum.createPriceLine({ price: 0, color: "rgba(148,163,184,0.65)", lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: "0" });
+            chart.priceScale("right", paneIdx).applyOptions({ autoScale: true, scaleMargins: { top: 0.12, bottom: 0.12 } });
+            momentumRef.current = momentum;
+            paneIdx++;
+        }
+
+        // HACİM pane'i (P99 sonrası, isteğe bağlı)
         if (volumeVisible) {
             const volData = bars.map((b) => ({
                 time: b.time as UTCTimestamp,
@@ -807,12 +832,12 @@ export default function ChartsPage() {
             }));
             const volumeSeries = chart.addSeries(HistogramSeries, {
                 priceLineVisible: false, lastValueVisible: false
-            }, 1);
+            }, paneIdx);
             volumeSeries.setData(volData);
             volumeRef.current = volumeSeries;
-            volumePaneIndexRef.current = 1;
-            chart.priceScale("right", 1).applyOptions({ scaleMargins: { top: 0.25, bottom: 0.02 } });
-            paneIdx = 2;
+            volumePaneIndexRef.current = paneIdx;
+            chart.priceScale("right", paneIdx).applyOptions({ scaleMargins: { top: 0.25, bottom: 0.02 } });
+            paneIdx++;
         }
         for (const inst of instances) {
             const entry = findIndicatorEntry(inst.registryId);
@@ -968,6 +993,7 @@ export default function ChartsPage() {
         // paneKeyByIndexRef'e her pane'in anahtarını yaz (observer bunu kullanır)
         paneKeyByIndexRef.current.clear();
         const paneKeys: string[] = ["main"];
+        if (showMomentumHistogram) paneKeys.push("p99_momentum");
         if (volumeVisible) paneKeys.push("volume");
         // non-overlay indikatörler render sırasında paneIdx sırasıyla eklenir; burada uid sırasını kullan
         for (const inst of instances) {
@@ -1032,7 +1058,19 @@ export default function ChartsPage() {
                 td.style.position = "relative";
 
                 let bar: HTMLDivElement;
-                if (volumeVisible && i === 1) {
+                if (showMomentumHistogram && i === 1) {
+                    bar = document.createElement("div");
+                    bar.className = "pane-title";
+                    bar.style.cssText = `position:absolute;top:4px;left:8px;z-index:5;display:flex;align-items:center;gap:5px;background:rgba(11,15,20,0.9);border:1px solid #1f2937;border-radius:6px;padding:2px 7px;font-family:JetBrains Mono,monospace;font-size:11px;color:#34d399;cursor:default;pointer-events:auto;`;
+                    const name = document.createElement("span");
+                    name.innerText = "P99 · MOMENTUM";
+                    const close = document.createElement("button");
+                    close.innerText = "✕";
+                    close.style.cssText = "background:none;border:none;color:#9ca3af;cursor:pointer;font-size:11px;padding:0 2px;";
+                    close.title = "Kapat";
+                    close.onclick = () => setShowMomentumHistogram(false);
+                    bar.append(name, close);
+                } else if (volumeVisible && i === (showMomentumHistogram ? 2 : 1)) {
                     // HACİM başlığı (kapama butonu ile)
                     bar = document.createElement("div");
                     bar.className = "pane-title";
@@ -1072,19 +1110,19 @@ export default function ChartsPage() {
             }
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [bars, instances, volumeVisible]);
+    }, [bars, instances, volumeVisible, showMomentumHistogram]);
 
     // yapı değişince (indikatör/hacim) yeniden inşa et + yükseklik uygula
     useEffect(() => {
         buildLayout(false);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [instances, volumeVisible]);
+    }, [instances, volumeVisible, showMomentumHistogram]);
 
     // bars canlı güncellenince sadece veriyi yeniden çiz — yükseklikleri EZME
     useEffect(() => {
         buildLayout(true);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [bars]);
+    }, [bars, showMomentumHistogram]);
 
     // Spot pozisyon çizgileri: giriş ve sabit %2 satış hedefi.
     useEffect(() => {
@@ -1456,18 +1494,6 @@ export default function ChartsPage() {
         const volume = recent.reduce((sum, bar) => sum + bar.volume, 0);
         return clamp(volume ? (weighted / volume) * 100 : 0, -100, 100);
     })();
-    const momentumBars = (() => {
-        const closes = bars.map((bar) => bar.close);
-        const calcEma = (values: number[], period: number) => values.reduce<number[]>((out, value) => {
-            const previous = out[out.length - 1] ?? value;
-            out.push(previous + (value - previous) * (2 / (period + 1))); return out;
-        }, []);
-        const macd = calcEma(closes, 8).map((value, index) => value - (calcEma(closes, 21)[index] ?? value));
-        const signal = calcEma(macd, 5);
-        const values = macd.map((value, index) => value - (signal[index] ?? value)).slice(-56);
-        const max = Math.max(...values.map(Math.abs), 0.000001);
-        return values.map((value) => ({ value, height: Math.max(3, Math.abs(value) / max * 42) }));
-    })();
 
     return (
         <div className="max-w-7xl mx-auto space-y-5">
@@ -1568,23 +1594,23 @@ export default function ChartsPage() {
             </div>}
 
             {chartSettingsOpen && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 sm:p-6" onClick={() => setChartSettingsOpen(false)}>
-                <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="chart-settings-modal-title">
-                    <div className="flex items-center justify-between border-b border-bunker-800 px-4 py-3">
+                <section className="flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="chart-settings-modal-title">
+                    <div className="flex shrink-0 items-center justify-between border-b border-bunker-800 px-4 py-2.5">
                         <div>
                             <h2 id="chart-settings-modal-title" className="font-mono text-sm font-bold text-white">GRAFİK AYARLARI</h2>
                             <p className="mt-1 text-xs text-bunker-muted"><SymbolLink symbol={symbol} className="text-neon-green" /> · görünüm tercihleri</p>
                         </div>
                         <button type="button" onClick={() => setChartSettingsOpen(false)} className="min-h-10 min-w-10 rounded-lg text-bunker-muted hover:bg-bunker-900 hover:text-white" aria-label="Grafik ayarlarını kapat">✕</button>
                     </div>
-                    <div className="space-y-3 p-4">
+                    <div className="grid grid-cols-1 gap-2 overflow-y-auto p-3 sm:grid-cols-2">
                         {[
-                            { checked: volumeVisible, setChecked: setVolumeVisible, title: "Hacim panelini göster", description: "Varsayılan olarak kapalıdır; bu sembol için kaydederseniz sonraki açılışta tercih korunur." },
-                            { checked: showPositions, setChecked: setShowPositions, title: "Pozisyonları göster", description: "Seçili sembolde açık pozisyon varsa giriş çizgisi ve işaretini gösterir." },
-                            { checked: showStopTakeProfit, setChecked: setShowStopTakeProfit, title: "SL / TP göster", description: "Açık pozisyonun kayıtlı zarar-durdur ve kâr-al seviyelerini çizer." },
-                            { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonları göster", description: "Yalnız tamamlanmış mumlarla doğrulanan dönüş ve yutan formasyonlarını gösterir." },
-                            { checked: showPressure, setChecked: setShowPressure, title: "Alıcı / satıcı basıncını göster", description: "Grafik genişliği boyunca merkez-sıfırlı, son 8 mumun fiyat-konumu ve hacim ağırlıklı canlı basınç göstergesi." },
-                            { checked: showMomentumHistogram, setChecked: setShowMomentumHistogram, title: "Hızlı momentum histogramını göster", description: "Ana grafiğin içinde, 8/21/5 EMA tabanlı sıfır-merkezli kısa vadeli momentum görünümü." },
-                            { checked: showStrategySignals, setChecked: setShowStrategySignals, title: "M5 strateji sinyallerini göster", description: "Aktif stratejinin M5 kaynaklı BUY/SELL işaretlerini, seçilen tüm zaman dilimlerinde ilgili muma eşleyerek gösterir." },
+                            { checked: volumeVisible, setChecked: setVolumeVisible, title: "Hacim paneli", description: "Hacim mumlarını göster." },
+                            { checked: showPositions, setChecked: setShowPositions, title: "Pozisyonlar", description: "Giriş çizgisi ve işareti." },
+                            { checked: showStopTakeProfit, setChecked: setShowStopTakeProfit, title: "SL / TP", description: "Kayıtlı hedef ve stop seviyeleri." },
+                            { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonlar", description: "Teyitli mum formasyonları." },
+                            { checked: showPressure, setChecked: setShowPressure, title: "Alıcı / satıcı basıncı", description: "Merkez-sıfırlı canlı basınç bandı." },
+                            { checked: showMomentumHistogram, setChecked: setShowMomentumHistogram, title: "P99 momentum", description: "Hızlı sıfır-merkezli histogram." },
+                            { checked: showStrategySignals, setChecked: setShowStrategySignals, title: "M5 strateji sinyalleri", description: "Tüm zaman dilimlerinde M5 kaynaklı işaretler." },
                         ].map((setting) => (
                             <button
                                 key={setting.title}
@@ -1592,33 +1618,30 @@ export default function ChartsPage() {
                                 role="switch"
                                 aria-checked={setting.checked}
                                 onClick={() => setting.setChecked(!setting.checked)}
-                                className="flex w-full items-center gap-3 rounded-xl border border-bunker-800 bg-bunker-900/50 p-3 text-left transition-colors hover:border-bunker-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-green/70"
+                                className="flex w-full items-center gap-2.5 rounded-lg border border-bunker-800 bg-bunker-900/50 p-2.5 text-left transition-colors hover:border-bunker-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-green/70"
                             >
                                 <span className={`relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors ${setting.checked ? "bg-neon-green" : "bg-bunker-700"}`} aria-hidden="true">
                                     <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-transform ${setting.checked ? "translate-x-6" : "translate-x-1"}`} />
                                 </span>
-                                <span className="min-w-0"><span className="block font-mono text-sm font-bold text-white">{setting.title}</span><span className="mt-1 block text-xs leading-5 text-bunker-muted">{setting.description}</span></span>
+                                <span className="min-w-0"><span className="block font-mono text-xs font-bold text-white">{setting.title}</span><span className="mt-0.5 block text-[11px] leading-4 text-bunker-muted">{setting.description}</span></span>
                             </button>
                         ))}
                     </div>
                 </section>
             </div>}
 
-            <div className="chart-card card bg-bunker-950 p-0 overflow-hidden relative">
-                {showPressure && <div className="border-b border-bunker-800 bg-bunker-950/95 px-3 py-2.5 sm:px-4" aria-label="Alıcı satıcı basıncı">
-                    <div className="mb-1.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider"><span className={pressure >= 0 ? "text-neon-green" : "text-bunker-muted"}>Alıcı %{Math.max(0, 50 + pressure / 2).toFixed(0)}</span><span className="text-bunker-muted">BASINÇ · 0</span><span className={pressure < 0 ? "text-red-400" : "text-bunker-muted"}>Satıcı %{Math.max(0, 50 - pressure / 2).toFixed(0)}</span></div>
+            {showPressure && <section className="rounded-xl border border-bunker-800 bg-bunker-950/95 px-3 py-2.5 sm:px-4" aria-label="Alıcı satıcı basıncı">
+                    <div className="mb-1.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider"><span className={pressure < 0 ? "text-red-400" : "text-bunker-muted"}>SATICI %{Math.max(0, 50 - pressure / 2).toFixed(0)}</span><span className="text-bunker-muted">BASINÇ · 0</span><span className={pressure >= 0 ? "text-neon-green" : "text-bunker-muted"}>ALICI %{Math.max(0, 50 + pressure / 2).toFixed(0)}</span></div>
                     <div className="relative h-2 overflow-hidden rounded-full bg-bunker-800"><div className="absolute inset-y-0 left-1/2 w-px bg-white/60" /><div className={`absolute top-0 h-full transition-[width] duration-150 ease-out ${pressure >= 0 ? "left-1/2 bg-neon-green" : "right-1/2 bg-red-400"}`} style={{ width: `${Math.abs(pressure) / 2}%` }} /></div>
-                </div>}
+                </section>}
+
+            <div className="chart-card card bg-bunker-950 p-0 overflow-hidden relative">
                 {loading && (
                     <div className="absolute inset-0 flex items-center justify-center z-10 bg-bunker-950/70">
                         <p className="font-mono text-sm text-neon-green animate-pulse">YÜKLENİYOR...</p>
                     </div>
                 )}
                 <div ref={containerRef} className="w-full" />
-                {showMomentumHistogram && <div className="pointer-events-none absolute bottom-9 left-3 right-3 z-20 h-16 border-t border-bunker-700/70 bg-bunker-950/75 px-1 pt-3 backdrop-blur-[1px] sm:left-5 sm:right-5" aria-label="Hızlı momentum histogramı">
-                    <span className="absolute left-1 top-0.5 font-mono text-[9px] text-bunker-muted">MOMENTUM</span><div className="absolute left-0 right-0 top-1/2 border-t border-bunker-600/70" />
-                    <div className="flex h-full items-center gap-px">{momentumBars.map((bar, index) => <span key={index} className={`flex-1 rounded-[1px] ${bar.value >= 0 ? "bg-neon-green/80" : "bg-red-400/80"}`} style={{ height: `${bar.height}px`, transform: `translateY(${bar.value >= 0 ? -bar.height / 2 : bar.height / 2}px)` }} />)}</div>
-                </div>}
                 {patternTooltip && (
                     <div
                         className={`absolute z-30 w-64 rounded-xl border p-3 shadow-[0_12px_35px_rgba(0,0,0,0.45)] backdrop-blur pointer-events-none ${patternTooltip.pattern.type === "buy" ? "border-emerald-300/60 bg-emerald-950/95" : "border-red-300/60 bg-red-950/95"}`}
