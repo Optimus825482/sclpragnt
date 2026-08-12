@@ -20,8 +20,9 @@ class ScalpAnalyzer:
         self.pending_orders = []
 
     def max_open_positions(self):
-        """Use the configured global paper-trading position limit."""
-        return max(1, int(config.MAX_OPEN_POSITIONS))
+        """0 removes the global cap; financial/liquidity guards remain active."""
+        configured = int(config.MAX_OPEN_POSITIONS)
+        return float("inf") if configured <= 0 else configured
 
     async def load_state(self):
         self.positions = await database.load_positions()
@@ -1202,19 +1203,14 @@ class ScalpAnalyzer:
             return min(requested, try_balance / (1 + config.COMMISSION_PCT))
         available_value = try_balance / (1 + config.COMMISSION_PCT)
         if strat_name == "BB_MFI_MEAN_REVERSION":
-            # BB-MFI follows Pine's percent-of-equity sizing.  Preflight must
-            # use the same marked-equity basis as the writer-side open path so
-            # eligibility logs cannot reject a size that would never be sent.
-            marked_positions = 0.0
-            for held_symbol, held in self.positions.items():
-                held_ticker = self.market.get_ticker(held_symbol) if self.market else None
-                held_price = float((held_ticker or {}).get("last_price") or held.get("entry_price") or 0)
-                marked_positions += float(held.get("quantity") or 0) * held_price
-            order_value = min((try_balance + marked_positions) * 0.10, available_value)
+            # User-selected cash budgeting: each new BB-MFI layer consumes a
+            # percentage of currently available TRY, never total equity.
+            order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
+            order_value = available_value * max(0.001, min(order_pct, 1.0))
         else:
             order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
             order_value = available_value * max(0.001, min(order_pct, 1.0))
-        if order_value < config.MIN_PARTIAL_ORDER_TRY:
+        if order_value < config.MIN_PARTIAL_ORDER_TRY and strat_name != "BB_MFI_MEAN_REVERSION":
             if available_value >= config.FALLBACK_ORDER_TRY:
                 order_value = config.FALLBACK_ORDER_TRY
             elif available_value >= config.MIN_PARTIAL_ORDER_TRY:
@@ -1319,17 +1315,10 @@ class ScalpAnalyzer:
             order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
             available_value = try_balance / (1 + config.COMMISSION_PCT)
             if strat_name == "BB_MFI_MEAN_REVERSION":
-                # Pine's strategy.percent_of_equity includes marked open
-                # paper positions; cash is only an affordability constraint.
-                marked_positions = 0.0
-                for held_symbol, held in self.positions.items():
-                    held_ticker = self.market.get_ticker(held_symbol) if self.market else None
-                    held_price = float((held_ticker or {}).get("last_price") or held.get("entry_price") or 0)
-                    marked_positions += float(held.get("quantity") or 0) * held_price
-                order_value = min((try_balance + marked_positions) * 0.10, available_value)
+                order_value = available_value * max(0.001, min(order_pct, 1.0))
             else:
                 order_value = available_value * max(0.001, min(order_pct, 1.0))
-            if order_value < config.MIN_PARTIAL_ORDER_TRY:
+            if order_value < config.MIN_PARTIAL_ORDER_TRY and strat_name != "BB_MFI_MEAN_REVERSION":
                 # Küçük yüzde tutarı yüzünden kullanılabilir bakiye boşta
                 # kalmasın: önce 250 TL kademeli tutarı, son aşamada ise
                 # minimumun üzerindeki tüm kalan bakiyeyi kullan.
@@ -1337,10 +1326,14 @@ class ScalpAnalyzer:
                     order_value = config.FALLBACK_ORDER_TRY
                 elif available_value >= config.MIN_PARTIAL_ORDER_TRY:
                     order_value = available_value
-                else:
+                elif strat_name != "BB_MFI_MEAN_REVERSION":
                     await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                                 "reason": "insufficient_balance_for_minimum_order", "strategy": strat_name, "timestamp": time.time()})
                     return None
+            if order_value < config.MIN_PARTIAL_ORDER_TRY:
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                            "reason": "remaining_cash_pct_below_minimum_order", "strategy": strat_name, "timestamp": time.time()})
+                return None
         details = {}
         expected_gross = None
         expected_net = None

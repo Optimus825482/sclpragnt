@@ -973,7 +973,7 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
         existing = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + (" FOR UPDATE" if _postgres_enabled() else ""), (symbol,)).fetchone()
         if not existing:
             open_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] or 0)
-            if open_count >= max(1, int(config.MAX_OPEN_POSITIONS)):
+            if int(config.MAX_OPEN_POSITIONS) > 0 and open_count >= int(config.MAX_OPEN_POSITIONS):
                 raise RuntimeError("max_open_positions_reached")
         cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + (" FOR UPDATE" if _postgres_enabled() else ""), ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else config.INITIAL_BALANCE_TRY)
