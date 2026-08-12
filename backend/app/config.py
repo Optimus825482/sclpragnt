@@ -76,7 +76,7 @@ class Config:
     # Sembol aktivitesi: son 15 dakikada düşük hacimli veya yatay kalan piyasa
     # yeni girişlerden çıkarılır; arka plan sınıflandırması 15 dakikada yenilenir.
     SYMBOL_ACTIVITY_FILTER_ENABLED = os.getenv("SYMBOL_ACTIVITY_FILTER_ENABLED", "true").lower() == "true"
-    SYMBOL_ACTIVITY_REFRESH_SEC = max(60, int(os.getenv("SYMBOL_ACTIVITY_REFRESH_SEC", "900")))
+    SYMBOL_ACTIVITY_REFRESH_SEC = max(60, int(os.getenv("SYMBOL_ACTIVITY_REFRESH_SEC", "3600")))
     SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY = float(os.getenv("SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY", "1000000"))
     SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT = float(os.getenv(
         "SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT",
