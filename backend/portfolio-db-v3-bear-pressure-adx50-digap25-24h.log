@@ -1,0 +1,35 @@
+[START] strategy=BB_MFI_MEAN_REVERSION pine_version=v3 initial=10000.00 TRY window=2026-08-12T01:10:00+00:00..2026-08-13T01:10:00+00:00
+[CONFIG] universe=312 source=BinanceTR-exchangeInfo order_pct=0.1000 pyramiding=2 max_positions=0 commission=0.001500 spread=0.001000 slippage=0.000250
+Traceback (most recent call last):
+  File "/mnt/d/scalperagent_v4/backend/app/database.py", line 99, in _get_connection
+    import psycopg
+ModuleNotFoundError: No module named 'psycopg'
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/usr/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/mnt/d/scalperagent_v4/backend/scripts/run_portfolio_backtest.py", line 927, in <module>
+    asyncio.run(run(args))
+  File "/usr/lib/python3.10/asyncio/runners.py", line 44, in run
+    return loop.run_until_complete(main)
+  File "/usr/lib/python3.10/asyncio/base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "/mnt/d/scalperagent_v4/backend/scripts/run_portfolio_backtest.py", line 393, in run
+    await database.init_db()
+  File "/mnt/d/scalperagent_v4/backend/app/database.py", line 145, in init_db
+    await _run_db(pg_op)
+  File "/mnt/d/scalperagent_v4/backend/app/database.py", line 114, in _run_db
+    return await loop.run_in_executor(None, lambda: _execute(operation))
+  File "/usr/lib/python3.10/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "/mnt/d/scalperagent_v4/backend/app/database.py", line 114, in <lambda>
+    return await loop.run_in_executor(None, lambda: _execute(operation))
+  File "/mnt/d/scalperagent_v4/backend/app/database.py", line 119, in _execute
+    conn = _get_connection()
+  File "/mnt/d/scalperagent_v4/backend/app/database.py", line 102, in _get_connection
+    raise RuntimeError(f"PostgreSQL bağlantısı kurulamadı: {exc}") from exc
+RuntimeError: PostgreSQL bağlantısı kurulamadı: No module named 'psycopg'

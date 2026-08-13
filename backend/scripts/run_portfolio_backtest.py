@@ -339,7 +339,8 @@ def high_downtrend_entry(analyzer, window, args):
         return True
     return_1h = closes[-1] / closes[-13] - 1 if closes[-13] else 0.0
     return_15m = closes[-1] / closes[-4] - 1 if closes[-4] else 0.0
-    return (adx >= args.high_downtrend_min_adx and minus_di > plus_di and
+    return (adx >= args.high_downtrend_min_adx and
+            minus_di - plus_di >= args.high_downtrend_min_di_gap and
             return_1h <= -args.high_downtrend_min_return_1h_pct / 100 and
             return_15m <= -args.high_downtrend_min_return_15m_pct / 100)
 
@@ -350,6 +351,18 @@ def low_volume_for_pyramid(window, threshold):
         return False
     average = sum(volumes[-21:-1]) / 20
     return bool(average and volumes[-1] / average < threshold)
+
+
+def all_position_layers_net_profitable(position, exit_fill, commission_pct):
+    """True only when every existing entry layer clears its own entry and exit costs."""
+    layers = position.get("entry_layers") or []
+    if not layers:
+        return False
+    for layer in layers:
+        proceeds = layer["quantity"] * exit_fill
+        if proceeds - proceeds * commission_pct - layer["invested"] - layer["entry_fees"] <= 0:
+            return False
+    return True
 
 
 def replay_features(analyzer, window, version):
@@ -458,13 +471,16 @@ async def run(args):
     peak_equity, max_drawdown = cash, 0.0
     signal_counts = Counter()
     daily_stop_counts = Counter()
+    daily_symbol_pnl = Counter()
     filter_counts = Counter()
     loss_cooldown_until = {}
     activity_status = {symbol: False for symbol in series}
     last_activity_bucket = None
 
     def arm_loss_cooldown(symbol, pnl, exit_ts):
-        """Block fresh entries after a realised net loss, without closing positions."""
+        """Record realised symbol PnL and optionally block fresh entries after a loss."""
+        exit_day = datetime.fromtimestamp(exit_ts, tz=local_tz).date().isoformat()
+        daily_symbol_pnl[(symbol, exit_day)] += pnl
         if args.symbol_loss_cooldown_hours <= 0 or pnl >= 0:
             return
         until = exit_ts + int(args.symbol_loss_cooldown_hours * 3600)
@@ -536,6 +552,57 @@ async def run(args):
             if index is None or index < 1:
                 continue
             data = series[symbol]
+            if (args.breakeven_exit_after_hours > 0 and
+                    ts - position["entry_time"] >= args.breakeven_exit_after_hours * 3600):
+                exit_quote = data["opens"][index]
+                exit_fill = exit_quote * (1 - args.spread_pct / 2 - args.slippage_pct)
+                proceeds = position["quantity"] * exit_fill
+                exit_fee = proceeds * config.COMMISSION_PCT
+                pnl = proceeds - exit_fee - position["invested"] - position["entry_fees"]
+                if pnl >= 0:
+                    cash += proceeds - exit_fee; fees_paid += exit_fee
+                    trades.append({"symbol": symbol, "entry_time": position["entry_time"], "exit_time": ts,
+                                   "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
+                                   "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6),
+                                   "reason": "cost_breakeven_exit"})
+                    arm_loss_cooldown(symbol, pnl, ts)
+                    del positions[symbol]; exits += 1
+                    print(f"[EXIT] {iso(ts)} {symbol} reason=cost_breakeven_exit pnl={pnl:+.2f} cash={cash:.2f}", flush=True)
+                    continue
+            if args.max_hold_hours > 0 and ts - position["entry_time"] >= args.max_hold_hours * 3600:
+                exit_quote, reason = data["opens"][index], "max_hold_exit"
+                exit_fill = exit_quote * (1 - args.spread_pct / 2 - args.slippage_pct)
+                proceeds = position["quantity"] * exit_fill
+                exit_fee = proceeds * config.COMMISSION_PCT
+                cash += proceeds - exit_fee; fees_paid += exit_fee
+                pnl = proceeds - exit_fee - position["invested"] - position["entry_fees"]
+                trades.append({"symbol": symbol, "entry_time": position["entry_time"], "exit_time": ts,
+                               "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
+                               "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6), "reason": reason})
+                arm_loss_cooldown(symbol, pnl, ts)
+                del positions[symbol]; exits += 1
+                print(f"[EXIT] {iso(ts)} {symbol} reason={reason} pnl={pnl:+.2f} cash={cash:.2f}", flush=True)
+                continue
+            if args.adverse_ema_atr_exit_hours > 0 and ts - position["entry_time"] >= args.adverse_ema_atr_exit_hours * 3600:
+                window = window_at(data, index - 1)
+                ema9 = analyzer.calculate_ema(window["closes"], 9)
+                ema21 = analyzer.calculate_ema(window["closes"], 21)
+                atr = analyzer.calculate_atr(window, 14) or 0.0
+                close = window["closes"][-1]
+                if ema9 is not None and ema21 is not None and ema9 < ema21 and close < position["entry"] - atr * args.adverse_ema_atr_multiplier:
+                    exit_quote, reason = data["opens"][index], "adverse_ema_atr_exit"
+                    exit_fill = exit_quote * (1 - args.spread_pct / 2 - args.slippage_pct)
+                    proceeds = position["quantity"] * exit_fill
+                    exit_fee = proceeds * config.COMMISSION_PCT
+                    cash += proceeds - exit_fee; fees_paid += exit_fee
+                    pnl = proceeds - exit_fee - position["invested"] - position["entry_fees"]
+                    trades.append({"symbol": symbol, "entry_time": position["entry_time"], "exit_time": ts,
+                                   "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
+                                   "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6), "reason": reason})
+                    arm_loss_cooldown(symbol, pnl, ts)
+                    del positions[symbol]; exits += 1
+                    print(f"[EXIT] {iso(ts)} {symbol} reason={reason} pnl={pnl:+.2f} cash={cash:.2f}", flush=True)
+                    continue
             previous_window = window_at(data, index - 1)
             if strategy_decision(analyzer, previous_window, symbol, args.pine_version) != "sell":
                 continue
@@ -575,6 +642,11 @@ async def run(args):
                 blocked += 1
                 print(f"[BLOCKED] {symbol} reason=daily_stop_limit", flush=True)
                 continue
+            if (args.daily_symbol_loss_limit_try > 0 and
+                    daily_symbol_pnl[(symbol, day_key)] <= -args.daily_symbol_loss_limit_try):
+                blocked += 1; filter_counts["daily_symbol_loss_limit"] += 1
+                print(f"[BLOCKED] {symbol} reason=daily_symbol_loss_limit pnl={daily_symbol_pnl[(symbol, day_key)]:+.2f}", flush=True)
+                continue
             if ts < loss_cooldown_until.get(symbol, 0):
                 blocked += 1; filter_counts["symbol_loss_cooldown"] += 1
                 print(f"[BLOCKED] {symbol} reason=symbol_loss_cooldown until={iso(loss_cooldown_until[symbol])}", flush=True)
@@ -595,9 +667,25 @@ async def run(args):
                 continue
             position = positions.get(symbol)
             if position and position["layers"] >= args.pyramiding:
-                blocked += 1
-                print(f"[BLOCKED] {symbol} reason=max_layers", flush=True)
-                continue
+                extension_allowed = False
+                if position["layers"] < args.pyramiding + args.pyramid_profit_extension_layers:
+                    exit_fill = data["opens"][index] * (1 - args.spread_pct / 2 - args.slippage_pct)
+                    extension_allowed = all_position_layers_net_profitable(position, exit_fill, config.COMMISSION_PCT)
+                if not extension_allowed:
+                    blocked += 1
+                    print(f"[BLOCKED] {symbol} reason=max_layers", flush=True)
+                    continue
+            if position and (args.pyramid_require_net_profit or args.pyramid_block_underwater_after_hours > 0):
+                exit_fill = data["opens"][index] * (1 - args.spread_pct / 2 - args.slippage_pct)
+                proceeds = position["quantity"] * exit_fill
+                exit_fee = proceeds * config.COMMISSION_PCT
+                unrealized_pnl = proceeds - exit_fee - position["invested"] - position["entry_fees"]
+                aged_underwater = (args.pyramid_block_underwater_after_hours > 0 and
+                                   ts - position["entry_time"] >= args.pyramid_block_underwater_after_hours * 3600)
+                if unrealized_pnl <= 0 and (args.pyramid_require_net_profit or aged_underwater):
+                    blocked += 1; filter_counts["pyramid_underwater"] += 1
+                    print(f"[BLOCKED] {symbol} reason=pyramid_underwater pnl={unrealized_pnl:+.2f}", flush=True)
+                    continue
             if (position and args.pyramid_low_volume_block and position.get("entry_high_downtrend_risk") and
                     ts - position["entry_time"] >= args.pyramid_low_volume_after_hours * 3600 and
                     low_volume_for_pyramid(window, args.pyramid_low_volume_ratio_max)):
@@ -631,10 +719,12 @@ async def run(args):
                 position["invested"] += order_value
                 position["entry_fees"] += entry_fee
                 position["layers"] += 1
+                position.setdefault("entry_layers", []).append({"quantity": quantity, "invested": order_value, "entry_fees": entry_fee})
                 position.pop("profit_lock_stop", None)
             else:
                 position = {"entry": entry_fill, "quantity": quantity, "invested": order_value,
                             "entry_fees": entry_fee, "layers": 1, "entry_time": ts,
+                            "entry_layers": [{"quantity": quantity, "invested": order_value, "entry_fees": entry_fee}],
                             "entry_high_downtrend_risk": downtrend_risk}
                 positions[symbol] = position
             position["stop"] = position["entry"] * (1 - stop_pct) if stop_pct is not None else None
@@ -750,7 +840,12 @@ async def run(args):
         "activity_m30_min_atr_pct": args.activity_m30_min_atr_pct,
         "activity_m30_max_ema20_decline_pct": args.activity_m30_max_ema20_decline_pct,
         "daily_stop_limit": args.daily_stop_limit,
+        "daily_symbol_loss_limit_try": args.daily_symbol_loss_limit_try,
         "symbol_loss_cooldown_hours": args.symbol_loss_cooldown_hours,
+        "max_hold_hours": args.max_hold_hours,
+        "breakeven_exit_after_hours": args.breakeven_exit_after_hours,
+        "adverse_ema_atr_exit_hours": args.adverse_ema_atr_exit_hours,
+        "adverse_ema_atr_multiplier": args.adverse_ema_atr_multiplier,
         "entry_ema200_filter": args.entry_ema200_filter,
         "entry_momentum_slowdown_filter": args.entry_momentum_slowdown_filter,
         "activity_volume_only": args.activity_volume_only,
@@ -762,6 +857,13 @@ async def run(args):
         "entry_mfi_reversal_min_delta": args.entry_mfi_reversal_min_delta,
         "entry_mfi_slowdown_max_drop": args.entry_mfi_slowdown_max_drop,
         "high_downtrend_entry_filter": args.high_downtrend_entry_filter,
+        "high_downtrend_min_adx": args.high_downtrend_min_adx,
+        "high_downtrend_min_di_gap": args.high_downtrend_min_di_gap,
+        "high_downtrend_min_return_1h_pct": args.high_downtrend_min_return_1h_pct,
+        "high_downtrend_min_return_15m_pct": args.high_downtrend_min_return_15m_pct,
+        "pyramid_require_net_profit": args.pyramid_require_net_profit,
+        "pyramid_block_underwater_after_hours": args.pyramid_block_underwater_after_hours,
+        "pyramid_profit_extension_layers": args.pyramid_profit_extension_layers,
         "pyramid_low_volume_block": args.pyramid_low_volume_block,
         "filter_counts": dict(filter_counts),
         "remaining_cash_sizing": args.remaining_cash_sizing,
@@ -843,8 +945,18 @@ if __name__ == "__main__":
     parser.add_argument("--disable-passive-net-exit", action="store_true", help="Pasife dönen pozisyonun net kâr/başabaş otomatik kapanışını kapat")
     parser.add_argument("--passive-direct-exit", action="store_true", help="Pasife dönen açık pozisyonu PnL'den bağımsız hemen kapat")
     parser.add_argument("--daily-stop-limit", type=int, default=0, help="Sembol başına günlük stop sonrası yeni giriş limiti; 0 kapalı")
+    parser.add_argument("--daily-symbol-loss-limit-try", type=float, default=0.0,
+                        help="Sembolün gün içi net gerçekleşmiş zararı bu TL eşiğine ulaşınca yeni girişleri durdur; 0 kapalı")
     parser.add_argument("--symbol-loss-cooldown-hours", type=float, default=0.0,
                         help="Net zarar kapanışından sonra aynı sembolde yeni giriş soğuma süresi; 0 kapalı")
+    parser.add_argument("--max-hold-hours", type=float, default=0.0,
+                        help="Pozisyon için maksimum elde tutma süresi; 0 kapalı")
+    parser.add_argument("--breakeven-exit-after-hours", type=float, default=0.0,
+                        help="Bu yaştan sonra net maliyet/başabaş üstüne gelen pozisyonu kapat; 0 kapalı")
+    parser.add_argument("--adverse-ema-atr-exit-hours", type=float, default=0.0,
+                        help="Bu yaştan sonra net zararda EMA9<EMA21 ve ATR bozulması varsa çık; 0 kapalı")
+    parser.add_argument("--adverse-ema-atr-multiplier", type=float, default=1.0,
+                        help="Aleyhe EMA/ATR çıkışında giriş altındaki minimum ATR katsayısı")
     parser.add_argument("--entry-ema200-filter", action="store_true", help="Girişi yalnız kapanış EMA200 üzerinde ise kabul et")
     parser.add_argument("--entry-momentum-slowdown-filter", action="store_true", help="Girişi son kapanış önceki kapanışın altına inmediğinde kabul et")
     parser.add_argument("--entry-min-volume-ratio", type=float, default=0.0, help="Sinyal mumunun önceki 20 M5 mumuna göre minimum hacim oranı; 0 kapalı")
@@ -856,9 +968,17 @@ if __name__ == "__main__":
                         help="MFI önceki muma göre bu puandan fazla düşüyorsa girişi engelle; verilmezse kapalı")
     parser.add_argument("--high-downtrend-entry-filter", action="store_true", help="Güçlü M5 düşüş trendindeki mean-reversion long girişini engelle")
     parser.add_argument("--high-downtrend-min-adx", type=float, default=50, help="Düşüş trendi giriş engeli için minimum ADX")
+    parser.add_argument("--high-downtrend-min-di-gap", type=float, default=0.0,
+                        help="Giriş engeli için minimum (-DI - +DI) farkı; 0 eski davranışı korur")
     parser.add_argument("--high-downtrend-min-return-1h-pct", type=float, default=2.0, help="Giriş engeli için minimum 1 saatlik düşüş (yüzde)")
     parser.add_argument("--high-downtrend-min-return-15m-pct", type=float, default=1.0, help="Giriş engeli için minimum 15 dakikalık düşüş (yüzde)")
     parser.add_argument("--pyramid-low-volume-block", action="store_true", help="Riskli girişten sonra düşük M5 hacminde ek katmanı engelle")
+    parser.add_argument("--pyramid-require-net-profit", action="store_true",
+                        help="Mevcut pozisyon net kârda değilse yeni piramit katmanını engelle")
+    parser.add_argument("--pyramid-block-underwater-after-hours", type=float, default=0.0,
+                        help="Pozisyon bu süre boyunca net zarardaysa yeni piramit katmanını engelle; 0 kapalı")
+    parser.add_argument("--pyramid-profit-extension-layers", type=int, default=0,
+                        help="Normal piramit sınırı sonrası, tüm katmanlar net kârda ise izin verilen ek katman; 0 kapalı")
     parser.add_argument("--pyramid-low-volume-after-hours", type=float, default=2.0, help="Ek katman engeli için minimum pozisyon yaşı")
     parser.add_argument("--pyramid-low-volume-ratio-max", type=float, default=0.70, help="Ek katman engeli için maksimum M5 hacim oranı")
     parser.add_argument("--remaining-cash-sizing", action="store_true", help="Her girişte toplam özsermaye yerine kalan kullanılabilir nakdin yüzdesini kullan")
@@ -868,8 +988,20 @@ if __name__ == "__main__":
         parser.error("--activity-refresh-minutes pozitif olmalıdır")
     if args.symbol_loss_cooldown_hours < 0:
         parser.error("--symbol-loss-cooldown-hours negatif olamaz")
+    if args.max_hold_hours < 0:
+        parser.error("--max-hold-hours negatif olamaz")
+    if args.pyramid_block_underwater_after_hours < 0:
+        parser.error("--pyramid-block-underwater-after-hours negatif olamaz")
+    if args.pyramid_profit_extension_layers < 0:
+        parser.error("--pyramid-profit-extension-layers negatif olamaz")
+    if args.breakeven_exit_after_hours < 0:
+        parser.error("--breakeven-exit-after-hours negatif olamaz")
+    if args.adverse_ema_atr_exit_hours < 0 or args.adverse_ema_atr_multiplier < 0:
+        parser.error("EMA/ATR çıkış parametreleri negatif olamaz")
     if args.activity_min_quote_volume_try < 0 or args.entry_min_volume_ratio < 0:
         parser.error("hacim eşikleri negatif olamaz")
+    if args.daily_symbol_loss_limit_try < 0:
+        parser.error("--daily-symbol-loss-limit-try negatif olamaz")
     if not 0 <= args.entry_dip_min_close_position <= 1:
         parser.error("--entry-dip-min-close-position 0 ile 1 arasında olmalıdır")
     if args.entry_mfi_slowdown_max_drop is not None and args.entry_mfi_slowdown_max_drop < 0:

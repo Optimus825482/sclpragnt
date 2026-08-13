@@ -70,6 +70,15 @@ class Config:
     BB_MFI_ENTRY_MFI_REVERSAL_ENABLED = os.getenv("BB_MFI_ENTRY_MFI_REVERSAL_ENABLED", "false").lower() == "true"
     BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA = float(os.getenv("BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA", "0.0"))
     BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP = float(os.getenv("BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP", "-1"))
+    # Do not buy a BB/MFI dip while a fast, directional selloff is still in force.
+    BB_MFI_BEAR_PRESSURE_FILTER_ENABLED = os.getenv("BB_MFI_BEAR_PRESSURE_FILTER_ENABLED", "true").lower() == "true"
+    BB_MFI_BEAR_PRESSURE_MIN_ADX = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_ADX", "50"))
+    BB_MFI_BEAR_PRESSURE_MIN_DI_GAP = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_DI_GAP", "25"))
+    BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT", "0.50"))
+    BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT", "0.50"))
+    # Preserve the first mean-reversion entry, but never average down after it
+    # has remained net underwater for this long.
+    BB_MFI_PYRAMID_BLOCK_UNDERWATER_AFTER_SEC = max(0, int(os.getenv("BB_MFI_PYRAMID_BLOCK_UNDERWATER_AFTER_SEC", "3600")))
     SYMBOL_ORDER_PCT = {}
     SYMBOL_PYRAMIDING_LAYERS = {}
     BB_MFI_STOP_LOSS_PCT = float(os.getenv("BB_MFI_STOP_LOSS_PCT", "0.08882"))
