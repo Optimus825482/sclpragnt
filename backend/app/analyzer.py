@@ -908,7 +908,8 @@ class ScalpAnalyzer:
                                (previous_mfi is not None and mfi >= previous_mfi + config.BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA))
             mfi_slowdown_ok = (config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP < 0 or
                                (previous_mfi is not None and mfi >= previous_mfi - config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP))
-            if closes[-1] < bb["lower"] and mfi < config.BB_MFI_ENTRY_MFI_MAX and entry_volume_ok and dip_confirmed and mfi_reversal_ok and mfi_slowdown_ok:
+            bear_pressure = self._bb_mfi_bear_pressure(kline)
+            if closes[-1] < bb["lower"] and mfi < config.BB_MFI_ENTRY_MFI_MAX and entry_volume_ok and dip_confirmed and mfi_reversal_ok and mfi_slowdown_ok and not bear_pressure:
                 return "buy"
             if (closes[-1] > bb["upper"] and rsi > config.BB_MFI_EXIT_RSI_MIN and
                     mfi > config.BB_MFI_EXIT_MFI_MIN):
@@ -921,6 +922,25 @@ class ScalpAnalyzer:
         if closes[-1] > bb["upper"] and rsi > upper:
             return "sell"
         return None
+
+    @staticmethod
+    def _bb_mfi_bear_pressure(kline):
+        """Causal M5 selloff gate for V3 long entries; disabled only by config."""
+        if not config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED:
+            return False
+        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
+        if len(closes) < 13:
+            return False
+        directional = _adx(highs, lows, closes) or {}
+        adx, plus_di, minus_di = directional.get("adx"), directional.get("plus_di"), directional.get("minus_di")
+        if not all(isinstance(value, (int, float)) for value in (adx, plus_di, minus_di)):
+            return False
+        return_1h = closes[-1] / closes[-13] - 1 if closes[-13] else 0.0
+        return_15m = closes[-1] / closes[-4] - 1 if closes[-4] else 0.0
+        return (adx >= config.BB_MFI_BEAR_PRESSURE_MIN_ADX and
+                minus_di - plus_di >= config.BB_MFI_BEAR_PRESSURE_MIN_DI_GAP and
+                return_1h <= -config.BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT / 100 and
+                return_15m <= -config.BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT / 100)
 
     def strategy_bb_squeeze_orderflow(self, kline, symbol=None):
         if symbol:
@@ -1303,6 +1323,18 @@ class ScalpAnalyzer:
             max_layers = int(config.SYMBOL_PYRAMIDING_LAYERS.get(symbol, config.PYRAMIDING_LAYERS))
             if strat_name != existing.get("strategy") or existing.get("layers", 1) >= max_layers:
                 return None
+            if (strat_name == "BB_MFI_MEAN_REVERSION" and
+                    time.time() - float(existing.get("entry_time") or time.time()) >= config.BB_MFI_PYRAMID_BLOCK_UNDERWATER_AFTER_SEC):
+                quantity = float(existing.get("quantity") or 0)
+                average_entry = float(existing.get("entry_price") or 0)
+                net_exit_value = quantity * float(entry_price) * (1 - config.COMMISSION_PCT)
+                cost_basis = quantity * average_entry * (1 + config.COMMISSION_PCT)
+                if quantity <= 0 or net_exit_value <= cost_basis:
+                    await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                                "reason": "bb_mfi_pyramid_underwater_after_1h", "strategy": strat_name,
+                                                "timestamp": time.time(), "layers": existing.get("layers", 1),
+                                                "net_unrealized_pnl_try": net_exit_value - cost_basis})
+                    return None
         else:
             if len(self.positions) >= self.max_open_positions():
                 blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
@@ -1395,6 +1427,8 @@ class ScalpAnalyzer:
                          "profit_target_pct": planned_take_profit_pct,
                          "stop_loss_pct": planned_stop_loss_pct,
                          "max_hold_sec": planned_max_hold_sec,
+                         "bear_pressure_filter_enabled": config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED,
+                         "pyramid_block_underwater_after_sec": config.BB_MFI_PYRAMID_BLOCK_UNDERWATER_AFTER_SEC,
                          "order_value_try": order_value,
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
         if self.market:

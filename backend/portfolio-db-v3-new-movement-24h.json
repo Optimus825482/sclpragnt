@@ -1,24 +1,34 @@
 {
   "paper_only": true,
   "source": "Binance TR public API",
-  "retrieved_at": "2026-08-13T04:56:28+00:00",
+  "retrieved_at": "2026-08-13T04:24:22+00:00",
   "window": {
-    "start": "2026-08-12T04:56:28+00:00",
-    "end": "2026-08-13T01:56:28+00:00",
-    "hours": 21.0
+    "start": "2026-08-12T01:10:00+00:00",
+    "end": "2026-08-13T01:10:00+00:00",
+    "hours": 24.0
   },
   "strategy": "BB_MFI_MEAN_REVERSION",
-  "pine_version": "current",
-  "pine_profile": null,
+  "pine_version": "v3",
+  "pine_profile": {
+    "bb_period": 21,
+    "bb_std": 2.0,
+    "rsi_period": 13,
+    "mfi_period": 16,
+    "buy_mfi_max": 59.0,
+    "sell_rsi_min": 69.0,
+    "sell_mfi_min": 69.0,
+    "stop_pct": 0.08882,
+    "tp_pct": 0.02317
+  },
   "risk_stop_pct": 0.08882,
   "effective_tp_pct": 0.02317,
   "selection_mode": "historical_cached_requested_symbols",
-  "initial_active_only": false,
-  "initial_active_limit": 0,
+  "initial_active_only": true,
+  "initial_active_limit": 20,
   "passive_loss_exit_hours": 0.0,
-  "passive_net_exit_enabled": true,
+  "passive_net_exit_enabled": false,
   "passive_direct_exit": false,
-  "activity_refresh_minutes": 60,
+  "activity_refresh_minutes": 15,
   "activity_m1_filter": false,
   "activity_m1_range_bars": 5,
   "activity_m1_min_range_pct": 0.08,
@@ -33,9 +43,6 @@
   "activity_m30_max_ema20_decline_pct": 0.15,
   "daily_stop_limit": 0,
   "symbol_loss_cooldown_hours": 0.0,
-  "max_hold_hours": 0.0,
-  "adverse_ema_atr_exit_hours": 0.0,
-  "adverse_ema_atr_multiplier": 1.0,
   "entry_ema200_filter": false,
   "entry_momentum_slowdown_filter": false,
   "activity_volume_only": false,
@@ -47,338 +54,42 @@
   "entry_mfi_reversal_min_delta": 0.0,
   "entry_mfi_slowdown_max_drop": null,
   "high_downtrend_entry_filter": false,
-  "high_downtrend_min_adx": 50,
-  "high_downtrend_min_di_gap": 0.0,
-  "high_downtrend_min_return_1h_pct": 2.0,
-  "high_downtrend_min_return_15m_pct": 1.0,
   "pyramid_low_volume_block": false,
   "filter_counts": {},
-  "remaining_cash_sizing": false,
-  "historical_activity_gate": false,
+  "remaining_cash_sizing": true,
+  "historical_activity_gate": true,
   "initial_balance_try": 10000.0,
-  "final_balance_try": 9893.476329,
-  "net_pnl_try": -106.523671,
-  "net_pnl_pct": -1.065237,
-  "closed_trades": 16,
-  "wins": 6,
-  "losses": 10,
-  "win_rate_pct": 37.5,
-  "profit_factor": 0.422816,
-  "fees_total_including_open_liquidation_try": 50.652285,
-  "max_drawdown_pct": 3.268702,
+  "final_balance_try": 9436.229196,
+  "net_pnl_try": -563.770804,
+  "net_pnl_pct": -5.637708,
+  "closed_trades": 49,
+  "wins": 34,
+  "losses": 15,
+  "win_rate_pct": 69.3878,
+  "profit_factor": 0.351428,
+  "fees_total_including_open_liquidation_try": 91.574639,
+  "max_drawdown_pct": 7.039561,
   "active_symbols": [
-    "0GTRY",
-    "1000CATTRY",
-    "1000SATSTRY",
-    "1MBABYDOGETRY",
-    "2ZTRY",
-    "AAVETRY",
-    "ACETRY",
-    "ACHTRY",
-    "ACMTRY",
-    "ACTTRY",
-    "ACXTRY",
-    "ADATRY",
-    "AEROTRY",
-    "AEVOTRY",
     "AIGENSYNTRY",
-    "AITRY",
-    "AIXBTTRY",
-    "ALGOTRY",
-    "ALICETRY",
-    "ALLOTRY",
-    "ALPINETRY",
-    "ALTTRY",
-    "AMPTRY",
-    "ANIMETRY",
-    "ANKRTRY",
-    "APETRY",
-    "API3TRY",
-    "APTTRY",
-    "ARBTRY",
-    "ARKMTRY",
-    "ARKTRY",
-    "ARPATRY",
-    "ARTRY",
-    "ASRTRY",
-    "ASTERTRY",
-    "ATMTRY",
-    "ATOMTRY",
-    "ATRY",
-    "ATTRY",
-    "AUCTIONTRY",
-    "AUDIOTRY",
-    "AVAXTRY",
-    "AVNTTRY",
-    "AXLTRY",
-    "AXSTRY",
-    "BABYTRY",
-    "BANANATRY",
-    "BANKTRY",
-    "BARDTRY",
-    "BARTRY",
     "BBTRY",
-    "BCHTRY",
-    "BEAMXTRY",
-    "BELTRY",
-    "BERATRY",
-    "BIOTRY",
-    "BLURTRY",
     "BMTTRY",
-    "BNBTRY",
-    "BOMETRY",
-    "BONKTRY",
-    "BREVTRY",
-    "BTCTRY",
-    "BTTCTRY",
-    "CAKETRY",
-    "CATITRY",
-    "CELOTRY",
-    "CETUSTRY",
-    "CFGTRY",
-    "CFXTRY",
     "CHIPTRY",
-    "CHZTRY",
-    "CITYTRY",
-    "CKBTRY",
-    "COMPTRY",
-    "COTITRY",
-    "COWTRY",
-    "CRVTRY",
     "CTRY",
-    "CYBERTRY",
-    "DASHTRY",
-    "DODOTRY",
-    "DOGETRY",
-    "DOGSTRY",
-    "DOLOTRY",
-    "DOTTRY",
-    "DYDXTRY",
-    "DYMTRY",
-    "EDENTRY",
-    "EDUTRY",
-    "EGLDTRY",
     "EIGENTRY",
-    "ENATRY",
-    "ENJTRY",
-    "ENSOTRY",
-    "ENSTRY",
-    "ERATRY",
-    "ESPTRY",
-    "ETCTRY",
-    "ETHFITRY",
-    "ETHTRY",
-    "EULTRY",
-    "FDUSDTRY",
-    "FETTRY",
-    "FFTRY",
-    "FIDATRY",
-    "FILTRY",
-    "FLOKITRY",
-    "FOGOTRY",
-    "FORMTRY",
-    "FTRY",
-    "GALATRY",
-    "GASTRY",
-    "GENIUSTRY",
-    "GIGGLETRY",
-    "GMTTRY",
-    "GPSTRY",
-    "GRAMTRY",
-    "GRTTRY",
-    "GTRY",
-    "GUNTRY",
-    "HAEDALTRY",
-    "HBARTRY",
-    "HEITRY",
-    "HEMITRY",
-    "HIVETRY",
-    "HMSTRTRY",
     "HOLOTRY",
     "HOMETRY",
-    "HOTTRY",
-    "HUMATRY",
-    "HYPERTRY",
-    "ICPTRY",
     "IDTRY",
-    "INITTRY",
-    "INJTRY",
-    "IOTATRY",
-    "IOTRY",
-    "JASMYTRY",
-    "JTOTRY",
-    "JUPTRY",
-    "JUVTRY",
-    "KAITOTRY",
-    "KATTRY",
-    "KERNELTRY",
-    "KITETRY",
-    "KSMTRY",
-    "LATRY",
-    "LAYERTRY",
-    "LAZIOTRY",
-    "LDOTRY",
-    "LINEATRY",
-    "LINKTRY",
-    "LISTATRY",
-    "LPTTRY",
-    "LTCTRY",
-    "LUMIATRY",
     "LUNATRY",
-    "LUNCTRY",
-    "MAGICTRY",
-    "MANATRY",
-    "MANTATRY",
-    "MANTRATRY",
-    "MASKTRY",
-    "MAVTRY",
-    "MEGATRY",
-    "MEMETRY",
-    "METISTRY",
-    "METRY",
-    "METTRY",
-    "MINATRY",
-    "MIRATRY",
     "MITOTRY",
     "MMTTRY",
-    "MORPHOTRY",
-    "MOVRTRY",
-    "MUBARAKTRY",
     "NEARTRY",
-    "NEIROTRY",
-    "NEOTRY",
-    "NEWTTRY",
-    "NIGHTTRY",
-    "NILTRY",
-    "NMRTRY",
-    "NOMTRY",
-    "NOTTRY",
-    "NXPCTRY",
-    "OGNTRY",
-    "OGTRY",
-    "ONDOTRY",
     "ONETRY",
-    "ONTTRY",
     "OPENTRY",
     "OPGTRY",
-    "OPNTRY",
-    "OPTRY",
-    "ORCATRY",
-    "ORDITRY",
-    "PARTITRY",
-    "PAXGTRY",
-    "PENDLETRY",
-    "PENGUTRY",
-    "PEOPLETRY",
-    "PEPETRY",
-    "PHATRY",
-    "PIXELTRY",
-    "PLUMETRY",
-    "PNUTTRY",
-    "POLTRY",
-    "POLYXTRY",
-    "PORTALTRY",
-    "PORTOTRY",
-    "PROVETRY",
-    "PSGTRY",
-    "PUMPTRY",
-    "PYTHTRY",
-    "QTUMTRY",
     "RADTRY",
-    "RARETRY",
-    "RAYTRY",
-    "REDTRY",
-    "RENDERTRY",
-    "RESOLVTRY",
-    "RETRY",
-    "REZTRY",
-    "ROBOTRY",
-    "RONINTRY",
-    "ROSETRY",
-    "RSRTRY",
-    "RVNTRY",
-    "SAGATRY",
-    "SAHARATRY",
-    "SANDTRY",
-    "SANTOSTRY",
-    "SAPIENTRY",
-    "SCRTRY",
-    "SEITRY",
-    "SENTTRY",
-    "SHELLTRY",
-    "SHIBTRY",
-    "SIGNTRY",
-    "SKLTRY",
-    "SKYTRY",
-    "SLPTRY",
-    "SNXTRY",
-    "SOLTRY",
-    "SOLVTRY",
-    "SOMITRY",
-    "SOPHTRY",
-    "SPELLTRY",
-    "SPKTRY",
-    "STOTRY",
-    "STRAXTRY",
-    "STRKTRY",
-    "STRY",
-    "STXTRY",
-    "SUITRY",
-    "SUNTRY",
-    "SUPERTRY",
-    "SUSHITRY",
-    "SXTTRY",
-    "SYRUPTRY",
-    "TAOTRY",
-    "THETATRY",
     "THETRY",
-    "TIATRY",
-    "TLMTRY",
-    "TNSRTRY",
-    "TOWNSTRY",
-    "TRBTRY",
-    "TREETRY",
-    "TRUMPTRY",
-    "TRXTRY",
     "TSTTRY",
-    "TURBOTRY",
-    "TURTLETRY",
-    "TWTTRY",
-    "UMATRY",
-    "UNITRY",
-    "USD1TRY",
-    "USDCTRY",
-    "USDTTRY",
-    "USTCTRY",
-    "USUALTRY",
-    "UTRY",
-    "VANATRY",
-    "VANRYTRY",
-    "VETTRY",
-    "VICTRY",
-    "VIRTUALTRY",
-    "WALTRY",
-    "WCTTRY",
-    "WIFTRY",
-    "WLDTRY",
-    "WLFITRY",
-    "WTRY",
-    "XAITRY",
-    "XAUTTRY",
-    "XECTRY",
-    "XLMTRY",
-    "XPLTRY",
-    "XRPTRY",
-    "XTZTRY",
-    "XVGTRY",
-    "YBTRY",
-    "ZAMATRY",
-    "ZBTTRY",
-    "ZILTRY",
-    "ZKCTRY",
-    "ZKPTRY",
-    "ZKTRY",
-    "ZROTRY"
+    "VICTRY"
   ],
   "activity": {
     "0GTRY": {
@@ -5377,2184 +5088,2184 @@
   "skipped_symbols": {},
   "data_quality": {
     "0GTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "1000CATTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "1000SATSTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "1MBABYDOGETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "2ZTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AAVETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ACETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ACHTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ACMTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ACTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ACXTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ADATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AEROTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AEVOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AIGENSYNTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AITRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AIXBTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ALGOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ALICETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ALLOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ALPINETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ALTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AMPTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ANIMETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ANKRTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "APETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "API3TRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "APTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ARBTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ARKMTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ARKTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ARPATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ARTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ASRTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ASTERTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ATMTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ATOMTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ATTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AUCTIONTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AUDIOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AVAXTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AVNTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AXLTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "AXSTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BABYTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BANANATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BANKTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BARDTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BARTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BBTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BCHTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BEAMXTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BELTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BERATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BIOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BLURTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BMTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BNBTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BOMETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BONKTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BREVTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BTCTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "BTTCTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CAKETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CATITRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CELOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CETUSTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CFGTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CFXTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CHIPTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CHZTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CITYTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CKBTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "COMPTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "COTITRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "COWTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CRVTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "CYBERTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "DASHTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "DODOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "DOGETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "DOGSTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "DOLOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "DOTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "DYDXTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "DYMTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "EDENTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "EDUTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "EGLDTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "EIGENTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ENATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ENJTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ENSOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ENSTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ERATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ESPTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ETCTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ETHFITRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ETHTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "EULTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "FDUSDTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "FETTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "FFTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "FIDATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "FILTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "FLOKITRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "FOGOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "FORMTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "FTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GALATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GASTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GENIUSTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GIGGLETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GMTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GPSTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GRAMTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GRTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "GUNTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HAEDALTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HBARTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HEITRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HEMITRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HIVETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HMSTRTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HOLOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HOMETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HOTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HUMATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "HYPERTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ICPTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "IDTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "INITTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "INJTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "IOTATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "IOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "JASMYTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "JTOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "JUPTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "JUVTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "KAITOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "KATTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "KERNELTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "KITETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "KSMTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LAYERTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LAZIOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LDOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LINEATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LINKTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LISTATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LPTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LTCTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LUMIATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LUNATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "LUNCTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MAGICTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MANATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MANTATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MANTRATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MASKTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MAVTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MEGATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MEMETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "METISTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "METRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "METTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MINATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MIRATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MITOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MMTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MORPHOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MOVRTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "MUBARAKTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NEARTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NEIROTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NEOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NEWTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NIGHTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NILTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NMRTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NOMTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NOTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "NXPCTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "OGNTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "OGTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ONDOTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ONETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ONTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "OPENTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "OPGTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "OPNTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "OPTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ORCATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ORDITRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PARTITRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PAXGTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PENDLETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PENGUTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PEOPLETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PEPETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PHATRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PIXELTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PLUMETRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PNUTTRY": {
-      "candle_count": 817,
+      "candle_count": 2303,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "POLTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "POLYXTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PORTALTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PORTOTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PROVETRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PSGTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PUMPTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "PYTHTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "QTUMTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "RADTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "RARETRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "RAYTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "REDTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "RENDERTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "RESOLVTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "RETRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "REZTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ROBOTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "RONINTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ROSETRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "RSRTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "RVNTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SAGATRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SAHARATRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SANDTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SANTOSTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SAPIENTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SCRTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SEITRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SENTTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SHELLTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SHIBTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SIGNTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SKLTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SKYTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SLPTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SNXTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SOLTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SOLVTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SOMITRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SOPHTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SPELLTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SPKTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "STOTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "STRAXTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "STRKTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "STRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "STXTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SUITRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SUNTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SUPERTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SUSHITRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SXTTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "SYRUPTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TAOTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "THETATRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "THETRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TIATRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TLMTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TNSRTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TOWNSTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TRBTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TREETRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TRUMPTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TRXTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TSTTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TURBOTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TURTLETRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "TWTTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "UMATRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "UNITRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "USD1TRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "USDCTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "USDTTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "USTCTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "USUALTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "UTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "VANATRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "VANRYTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "VETTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "VICTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "VIRTUALTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "WALTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "WCTTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "WIFTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "WLDTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "WLFITRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "WTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "XAITRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "XAUTTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "XECTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "XLMTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "XPLTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "XRPTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "XTZTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "XVGTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "YBTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ZAMATRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ZBTTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ZILTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ZKCTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ZKPTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ZKTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
       "max_gap_seconds": 0
     },
     "ZROTRY": {
-      "candle_count": 818,
+      "candle_count": 2304,
       "sorted": true,
       "duplicate_timestamps": false,
       "missing_gap_count": 0,
@@ -7572,143 +7283,414 @@
   "open_position_policy": "exclude",
   "open_positions_excluded": [
     {
-      "symbol": "BLURTRY",
-      "entry_time": 1786510799,
-      "layers": 1,
-      "restored_try": 999.133488
+      "symbol": "LUNATRY",
+      "entry_time": 1786540499,
+      "layers": 2,
+      "restored_try": 1108.495546
     },
     {
-      "symbol": "BNBTRY",
-      "entry_time": 1786538699,
-      "layers": 1,
-      "restored_try": 998.905805
+      "symbol": "HOLOTRY",
+      "entry_time": 1786546199,
+      "layers": 2,
+      "restored_try": 644.582374
     },
     {
-      "symbol": "AAVETRY",
-      "entry_time": 1786545299,
-      "layers": 1,
-      "restored_try": 994.770947
+      "symbol": "OPGTRY",
+      "entry_time": 1786550399,
+      "layers": 2,
+      "restored_try": 545.124785
     },
     {
-      "symbol": "ALPINETRY",
-      "entry_time": 1786552199,
-      "layers": 1,
-      "restored_try": 992.244385
+      "symbol": "EIGENTRY",
+      "entry_time": 1786559699,
+      "layers": 2,
+      "restored_try": 569.09744
     },
     {
-      "symbol": "ALLOTRY",
-      "entry_time": 1786557599,
-      "layers": 1,
-      "restored_try": 991.590815
+      "symbol": "AIGENSYNTRY",
+      "entry_time": 1786570499,
+      "layers": 2,
+      "restored_try": 564.352683
     },
     {
-      "symbol": "STRAXTRY",
-      "entry_time": 1786579199,
-      "layers": 1,
-      "restored_try": 977.568636
+      "symbol": "BMTTRY",
+      "entry_time": 1786571999,
+      "layers": 2,
+      "restored_try": 626.041491
     },
     {
-      "symbol": "MMTTRY",
-      "entry_time": 1786579499,
-      "layers": 1,
-      "restored_try": 977.292816
+      "symbol": "BBTRY",
+      "entry_time": 1786572299,
+      "layers": 2,
+      "restored_try": 506.935974
     },
     {
-      "symbol": "ENSOTRY",
-      "entry_time": 1786580699,
+      "symbol": "THETRY",
+      "entry_time": 1786572299,
       "layers": 1,
-      "restored_try": 979.864794
+      "restored_try": 223.148557
     },
     {
-      "symbol": "GUNTRY",
-      "entry_time": 1786580699,
+      "symbol": "MITOTRY",
+      "entry_time": 1786577099,
       "layers": 1,
-      "restored_try": 979.64438
+      "restored_try": 283.131663
+    },
+    {
+      "symbol": "VICTRY",
+      "entry_time": 1786577999,
+      "layers": 2,
+      "restored_try": 502.358969
     },
     {
       "symbol": "CHIPTRY",
+      "entry_time": 1786578299,
+      "layers": 2,
+      "restored_try": 540.70265
+    },
+    {
+      "symbol": "OPENTRY",
+      "entry_time": 1786580699,
+      "layers": 2,
+      "restored_try": 636.162734
+    },
+    {
+      "symbol": "MMTTRY",
       "entry_time": 1786580999,
-      "layers": 1,
-      "restored_try": 978.055977
+      "layers": 2,
+      "restored_try": 534.267114
     }
   ],
   "open_positions_marked": [],
   "signal_counts": {
-    "none": 69163,
-    "buy": 4720,
-    "sell": 1725
+    "none": 5323,
+    "buy": 334,
+    "sell": 87
   },
   "exit_reasons": {
-    "bb_mfi_v3_signal_exit": 12,
-    "fixed_take_profit": 3,
-    "fixed_stop_loss": 1
+    "fixed_stop_loss": 10,
+    "fixed_take_profit": 26,
+    "bb_mfi_v3_signal_exit": 13
   },
   "trades": [
     {
-      "symbol": "ALICETRY",
-      "entry_time": 1786510799,
+      "symbol": "ONETRY",
+      "entry_time": 1786497299,
+      "exit_time": 1786497299,
+      "entry": 0.04703525,
+      "exit": 0.04282543591067876,
+      "layers": 1,
+      "pnl": -92.230784,
+      "commission": 2.861453,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "ONETRY",
+      "entry_time": 1786497599,
+      "exit_time": 1786497599,
+      "entry": 0.03862895,
+      "exit": 0.03517152821600426,
+      "layers": 1,
+      "pnl": -75.608668,
+      "commission": 2.345753,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "ONETRY",
+      "entry_time": 1786497899,
+      "exit_time": 1786497899,
+      "entry": 0.036026999999999997,
+      "exit": 0.032802461548605,
+      "layers": 1,
+      "pnl": -61.982241,
+      "commission": 1.922994,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786497899,
+      "exit_time": 1786497899,
+      "entry": 0.980735,
+      "exit": 1.0027060359775375,
+      "layers": 1,
+      "pnl": 11.697432,
+      "commission": 1.832069,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "ONETRY",
+      "entry_time": 1786498199,
+      "exit_time": 1786498199,
+      "entry": 0.030522875,
+      "exit": 0.03120666744623969,
+      "layers": 1,
+      "pnl": 12.899896,
+      "commission": 2.020401,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786498199,
+      "exit_time": 1786502699,
+      "entry": 0.9821502068317852,
+      "exit": 0.8942444387418903,
+      "layers": 2,
+      "pnl": -111.46739,
+      "commission": 3.458267,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "AIGENSYNTRY",
+      "entry_time": 1786497299,
+      "exit_time": 1786504499,
+      "entry": 0.9867395,
+      "exit": 1.0012485,
+      "layers": 1,
+      "pnl": 9.448188,
+      "commission": 2.444199,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "TSTTRY",
+      "entry_time": 1786497299,
+      "exit_time": 1786505099,
+      "entry": 0.7652969870321548,
+      "exit": 0.6968003161624758,
+      "layers": 2,
+      "pnl": -144.250726,
+      "commission": 4.475367,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "HOLOTRY",
+      "entry_time": 1786507799,
+      "exit_time": 1786508699,
+      "entry": 4.32916125831793,
+      "exit": 4.426145823729651,
+      "layers": 2,
+      "pnl": 10.640173,
+      "commission": 1.666479,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "HOMETRY",
+      "entry_time": 1786509299,
+      "exit_time": 1786509599,
+      "entry": 0.44933675000000006,
+      "exit": 0.45940307158562693,
+      "layers": 2,
+      "pnl": 7.156897,
+      "commission": 1.120924,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "HOLOTRY",
+      "entry_time": 1786509899,
+      "exit_time": 1786514399,
+      "entry": 4.155114,
+      "exit": 4.248199450386465,
+      "layers": 1,
+      "pnl": 3.780629,
+      "commission": 0.592128,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786508999,
       "exit_time": 1786516199,
-      "entry": 5.6342225,
-      "exit": 5.655755000000001,
+      "entry": 0.8467674603759026,
+      "exit": 0.8657372721359876,
+      "layers": 2,
+      "pnl": 9.352382,
+      "commission": 1.464784,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "TSTTRY",
+      "entry_time": 1786505399,
+      "exit_time": 1786517399,
+      "entry": 0.6948600926248479,
+      "exit": 0.7104267809702374,
+      "layers": 2,
+      "pnl": 21.192202,
+      "commission": 3.319154,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "HOLOTRY",
+      "entry_time": 1786517699,
+      "exit_time": 1786519799,
+      "entry": 3.8358747500000003,
+      "exit": 3.921808403981532,
       "layers": 1,
-      "pnl": 0.815173,
-      "commission": 3.00268,
+      "pnl": 4.058048,
+      "commission": 0.635577,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "HOMETRY",
+      "entry_time": 1786513499,
+      "exit_time": 1786521599,
+      "entry": 0.44638493317006966,
+      "exit": 0.45638512631756645,
+      "layers": 2,
+      "pnl": 5.23655,
+      "commission": 0.820156,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "OPENTRY",
+      "entry_time": 1786504499,
+      "exit_time": 1786522199,
+      "entry": 10.02251125,
+      "exit": 10.247041786035753,
+      "layers": 1,
+      "pnl": 9.958406,
+      "commission": 1.5597,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "VICTRY",
+      "entry_time": 1786497599,
+      "exit_time": 1786523699,
+      "entry": 1.3023818638343194,
+      "exit": 1.1858142784585388,
+      "layers": 2,
+      "pnl": -118.538499,
+      "commission": 3.677648,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786521299,
+      "exit_time": 1786524599,
+      "entry": 0.829412823164919,
+      "exit": 0.847993845538942,
+      "layers": 2,
+      "pnl": 6.257414,
+      "commission": 0.980045,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "VICTRY",
+      "entry_time": 1786523999,
+      "exit_time": 1786524899,
+      "entry": 1.1708775,
+      "exit": 1.1971082266262436,
+      "layers": 1,
+      "pnl": 6.472915,
+      "commission": 1.013797,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "LUNATRY",
+      "entry_time": 1786498499,
+      "exit_time": 1786526999,
+      "entry": 2.2192727589919095,
+      "exit": 2.1753672500000003,
+      "layers": 2,
+      "pnl": -21.268632,
+      "commission": 2.776416,
       "reason": "bb_mfi_v3_signal_exit"
     },
     {
-      "symbol": "AAVETRY",
-      "entry_time": 1786516199,
-      "exit_time": 1786527899,
-      "entry": 4273.2025,
-      "exit": 4277.789250000001,
-      "layers": 1,
-      "pnl": -1.923375,
-      "commission": 2.994045,
+      "symbol": "CHIPTRY",
+      "entry_time": 1786505399,
+      "exit_time": 1786527599,
+      "entry": 1.0707985125427582,
+      "exit": 1.0707963000000003,
+      "layers": 2,
+      "pnl": -2.704823,
+      "commission": 2.702961,
       "reason": "bb_mfi_v3_signal_exit"
     },
     {
-      "symbol": "BANANATRY",
-      "entry_time": 1786510799,
-      "exit_time": 1786529699,
-      "entry": 178.1335,
-      "exit": 176.86725,
-      "layers": 1,
-      "pnl": -10.078443,
-      "commission": 2.983616,
+      "symbol": "EIGENTRY",
+      "entry_time": 1786516499,
+      "exit_time": 1786529399,
+      "entry": 8.290947383432854,
+      "exit": 8.351731500000001,
+      "layers": 2,
+      "pnl": 1.513469,
+      "commission": 1.054779,
       "reason": "bb_mfi_v3_signal_exit"
     },
     {
-      "symbol": "AUCTIONTRY",
-      "entry_time": 1786529699,
-      "exit_time": 1786535699,
-      "entry": 138.203575,
-      "exit": 138.09635,
-      "layers": 1,
-      "pnl": -3.748216,
-      "commission": 2.977808,
-      "reason": "bb_mfi_v3_signal_exit"
+      "symbol": "HOLOTRY",
+      "entry_time": 1786520999,
+      "exit_time": 1786529399,
+      "entry": 3.615341820767099,
+      "exit": 3.696334958786207,
+      "layers": 2,
+      "pnl": 7.725202,
+      "commission": 1.209932,
+      "reason": "fixed_take_profit"
     },
     {
-      "symbol": "BREVTRY",
-      "entry_time": 1786510799,
-      "exit_time": 1786535999,
-      "entry": 3.382535,
-      "exit": 3.3574800000000002,
-      "layers": 1,
-      "pnl": -10.367817,
-      "commission": 2.980771,
-      "reason": "bb_mfi_v3_signal_exit"
+      "symbol": "RADTRY",
+      "entry_time": 1786530299,
+      "exit_time": 1786531199,
+      "entry": 11.654504531956247,
+      "exit": 11.915595997410202,
+      "layers": 2,
+      "pnl": 21.639229,
+      "commission": 3.389168,
+      "reason": "fixed_take_profit"
     },
     {
-      "symbol": "ALTTRY",
-      "entry_time": 1786510799,
+      "symbol": "MITOTRY",
+      "entry_time": 1786526099,
+      "exit_time": 1786531499,
+      "entry": 1.15786775,
+      "exit": 1.1838070241081744,
+      "layers": 1,
+      "pnl": 7.123277,
+      "commission": 1.115658,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "ONETRY",
+      "entry_time": 1786531499,
+      "exit_time": 1786532099,
+      "entry": 0.03637397451352772,
+      "exit": 0.0371888469333789,
+      "layers": 2,
+      "pnl": 19.746315,
+      "commission": 3.092697,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "VICTRY",
+      "entry_time": 1786532099,
+      "exit_time": 1786535099,
+      "entry": 1.1555127648628083,
+      "exit": 1.181399281127961,
+      "layers": 2,
+      "pnl": 17.809649,
+      "commission": 2.789373,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "HOMETRY",
+      "entry_time": 1786536599,
+      "exit_time": 1786536899,
+      "entry": 0.43332475,
+      "exit": 0.44303236079415687,
+      "layers": 1,
+      "pnl": 7.077496,
+      "commission": 1.108488,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "RADTRY",
+      "entry_time": 1786537199,
       "exit_time": 1786537799,
-      "entry": 0.2822115,
-      "exit": 0.283787,
-      "layers": 1,
-      "pnl": 2.571126,
-      "commission": 3.004643,
-      "reason": "bb_mfi_v3_signal_exit"
+      "entry": 11.30151954505218,
+      "exit": 11.554703221096357,
+      "layers": 2,
+      "pnl": 13.473249,
+      "commission": 2.1102,
+      "reason": "fixed_take_profit"
     },
     {
       "symbol": "BMTTRY",
@@ -7717,108 +7699,218 @@
       "entry": 0.82161575,
       "exit": 0.8400220974873044,
       "layers": 1,
-      "pnl": 19.169823,
-      "commission": 3.002406,
+      "pnl": 8.737649,
+      "commission": 1.368503,
       "reason": "fixed_take_profit"
     },
     {
-      "symbol": "ACXTRY",
-      "entry_time": 1786537799,
-      "exit_time": 1786544999,
-      "entry": 1.9274445,
-      "exit": 1.9706243115232014,
-      "layers": 1,
-      "pnl": 19.300873,
-      "commission": 3.022931,
-      "reason": "fixed_take_profit"
-    },
-    {
-      "symbol": "AIXBTTRY",
-      "entry_time": 1786510799,
-      "exit_time": 1786550699,
-      "entry": 0.84563375,
-      "exit": 0.8645781636745093,
-      "layers": 1,
-      "pnl": 19.360574,
-      "commission": 3.032281,
-      "reason": "fixed_take_profit"
-    },
-    {
-      "symbol": "ARBTRY",
-      "entry_time": 1786510799,
-      "exit_time": 1786552199,
-      "entry": 3.7928425000000003,
-      "exit": 3.75718,
-      "layers": 1,
-      "pnl": -12.370328,
-      "commission": 2.981522,
+      "symbol": "IDTRY",
+      "entry_time": 1786506599,
+      "exit_time": 1786539899,
+      "entry": 1.3571193979892868,
+      "exit": 1.35997925,
+      "layers": 2,
+      "pnl": -0.750091,
+      "commission": 2.514488,
       "reason": "bb_mfi_v3_signal_exit"
     },
     {
-      "symbol": "EDUTRY",
-      "entry_time": 1786527899,
-      "exit_time": 1786557599,
-      "entry": 1.8613950000000001,
-      "exit": 1.8985750000000001,
+      "symbol": "TSTTRY",
+      "entry_time": 1786532999,
+      "exit_time": 1786539899,
+      "entry": 0.6746501839217373,
+      "exit": 0.6897641173116915,
+      "layers": 2,
+      "pnl": 16.237354,
+      "commission": 2.543118,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "AIGENSYNTRY",
+      "entry_time": 1786511099,
+      "exit_time": 1786544099,
+      "entry": 0.991334905940565,
+      "exit": 0.9972515000000001,
+      "layers": 2,
+      "pnl": 0.877857,
+      "commission": 0.892569,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "VICTRY",
+      "entry_time": 1786545299,
+      "exit_time": 1786545599,
+      "entry": 1.1608699999999998,
+      "exit": 1.1868765323815746,
       "layers": 1,
-      "pnl": 16.816246,
-      "commission": 3.007062,
+      "pnl": 8.801798,
+      "commission": 1.37855,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "BMTTRY",
+      "entry_time": 1786546199,
+      "exit_time": 1786547099,
+      "entry": 0.8286209999999999,
+      "exit": 0.8471842834585724,
+      "layers": 1,
+      "pnl": 6.501594,
+      "commission": 1.018289,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "CTRY",
+      "entry_time": 1786501199,
+      "exit_time": 1786548599,
+      "entry": 3.2220772283925823,
+      "exit": 2.933690409720028,
+      "layers": 2,
+      "pnl": -62.800654,
+      "commission": 1.948385,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "CHIPTRY",
+      "entry_time": 1786545299,
+      "exit_time": 1786553999,
+      "entry": 1.0951207250000001,
+      "exit": 1.1196543011941014,
+      "layers": 1,
+      "pnl": 7.921618,
+      "commission": 1.240695,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "NEARTRY",
+      "entry_time": 1786517099,
+      "exit_time": 1786556699,
+      "entry": 77.36532125002182,
+      "exit": 78.64097500000001,
+      "layers": 2,
+      "pnl": 7.045393,
+      "commission": 1.582775,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "THETRY",
+      "entry_time": 1786508699,
+      "exit_time": 1786566299,
+      "entry": 2.8216207610892168,
+      "exit": 2.8658490000000003,
+      "layers": 2,
+      "pnl": 6.000295,
+      "commission": 1.434006,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "MITOTRY",
+      "entry_time": 1786535999,
+      "exit_time": 1786567499,
+      "entry": 1.1612153059506933,
+      "exit": 1.155133,
+      "layers": 2,
+      "pnl": -7.224846,
+      "commission": 2.626697,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "RADTRY",
+      "entry_time": 1786559999,
+      "exit_time": 1786571999,
+      "entry": 11.30053345012016,
+      "exit": 11.39145,
+      "layers": 2,
+      "pnl": 2.574115,
+      "commission": 1.540434,
       "reason": "bb_mfi_v3_signal_exit"
     },
     {
       "symbol": "BBTRY",
-      "entry_time": 1786510799,
-      "exit_time": 1786570199,
-      "entry": 0.6077554749999999,
-      "exit": 0.5533593027352172,
-      "layers": 1,
-      "pnl": -92.171598,
-      "commission": 2.859617,
+      "entry_time": 1786516799,
+      "exit_time": 1786571999,
+      "entry": 0.6032521000000001,
+      "exit": 0.5492589950416417,
+      "layers": 2,
+      "pnl": -26.209746,
+      "commission": 0.813155,
       "reason": "fixed_stop_loss"
     },
     {
-      "symbol": "AEVOTRY",
-      "entry_time": 1786510799,
-      "exit_time": 1786579199,
-      "entry": 0.9406989082677429,
-      "exit": 0.9303017500000001,
+      "symbol": "HOMETRY",
+      "entry_time": 1786548299,
+      "exit_time": 1786574099,
+      "entry": 0.43990352155946816,
+      "exit": 0.43867075000000005,
       "layers": 2,
-      "pnl": -27.88859,
-      "commission": 5.927853,
+      "pnl": -3.705062,
+      "commission": 1.914332,
       "reason": "bb_mfi_v3_signal_exit"
     },
     {
-      "symbol": "ARPATRY",
-      "entry_time": 1786550999,
+      "symbol": "VICTRY",
+      "entry_time": 1786573499,
+      "exit_time": 1786574699,
+      "entry": 1.1661156845910527,
+      "exit": 1.1922397340642752,
+      "layers": 2,
+      "pnl": 5.977669,
+      "commission": 0.936231,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "OPENTRY",
+      "entry_time": 1786531199,
+      "exit_time": 1786574999,
+      "entry": 10.039514421083195,
+      "exit": 9.140943896639934,
+      "layers": 2,
+      "pnl": -89.096178,
+      "commission": 2.764202,
+      "reason": "fixed_stop_loss"
+    },
+    {
+      "symbol": "NEARTRY",
+      "entry_time": 1786563299,
+      "exit_time": 1786578299,
+      "entry": 77.6194476420406,
+      "exit": 78.34120000000001,
+      "layers": 2,
+      "pnl": 2.85042,
+      "commission": 1.366984,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "CTRY",
+      "entry_time": 1786572599,
+      "exit_time": 1786579799,
+      "entry": 2.9211892500000003,
+      "exit": 2.9866315500188088,
+      "layers": 1,
+      "pnl": 3.495713,
+      "commission": 0.547504,
+      "reason": "fixed_take_profit"
+    },
+    {
+      "symbol": "IDTRY",
+      "entry_time": 1786548899,
+      "exit_time": 1786580099,
+      "entry": 1.3495903323100127,
+      "exit": 1.382962,
+      "layers": 2,
+      "pnl": 14.198644,
+      "commission": 1.988116,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "MMTTRY",
+      "entry_time": 1786500899,
       "exit_time": 1786580699,
-      "entry": 0.412809375,
-      "exit": 0.41179092500000003,
-      "layers": 1,
-      "pnl": -5.415781,
-      "commission": 2.970174,
-      "reason": "bb_mfi_v3_signal_exit"
-    },
-    {
-      "symbol": "0GTRY",
-      "entry_time": 1786570499,
-      "exit_time": 1786580699,
-      "entry": 7.505625,
-      "exit": 7.494375000000001,
-      "layers": 1,
-      "pnl": -4.39467,
-      "commission": 2.92978,
-      "reason": "bb_mfi_v3_signal_exit"
-    },
-    {
-      "symbol": "ATOMTRY",
-      "entry_time": 1786510799,
-      "exit_time": 1786580999,
-      "entry": 68.051,
-      "exit": 67.1496,
-      "layers": 1,
-      "pnl": -16.198666,
-      "commission": 2.975096,
-      "reason": "bb_mfi_v3_signal_exit"
+      "entry": 9.56430652405827,
+      "exit": 8.708268714977471,
+      "layers": 2,
+      "pnl": -51.411603,
+      "commission": 1.595041,
+      "reason": "fixed_stop_loss"
     }
   ],
   "cost_model": {
@@ -7835,8 +7927,8 @@
     "Historical order-book depth and spread are unavailable; current spread selects the active universe and configured spread models fills."
   ],
   "reconciliation": {
-    "expected": 9893.476331,
-    "actual": 9893.476329,
-    "difference": -1.51e-06
+    "expected": 9436.229194,
+    "actual": 9436.229196,
+    "difference": 2.37e-06
   }
 }
