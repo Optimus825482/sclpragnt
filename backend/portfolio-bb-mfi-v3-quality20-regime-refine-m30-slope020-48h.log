@@ -1,0 +1,20 @@
+[START] strategy=BB_MFI_MEAN_REVERSION pine_version=v3 initial=10000.00 TRY window=2026-08-10T18:38:19+00:00..2026-08-12T18:38:19+00:00
+[CONFIG] universe=312 source=BinanceTR-exchangeInfo order_pct=0.1000 pyramiding=2 max_positions=500 commission=0.001500 spread=0.001000 slippage=0.000250
+[DATA] 0GTRY source=BinanceTR-public interval=5m candles=863
+[DATA] 1MBABYDOGETRY source=BinanceTR-public interval=5m candles=863
+[DATA] 2ZTRY source=BinanceTR-public interval=5m candles=863
+[DATA] AAVETRY source=BinanceTR-public interval=5m candles=863
+[DATA] 1000CATTRY source=BinanceTR-public interval=5m candles=863
+[DATA] 1000SATSTRY source=BinanceTR-public interval=5m candles=863
+[DATA] ACHTRY source=BinanceTR-public interval=5m candles=863
+[DATA] ACTTRY source=BinanceTR-public interval=5m candles=863
+[DATA] ACXTRY source=BinanceTR-public interval=5m candles=863
+[DATA] ACMTRY source=BinanceTR-public interval=5m candles=863
+[DATA] ACETRY source=BinanceTR-public interval=5m candles=863
+[DATA] AEROTRY source=BinanceTR-public interval=5m candles=863
+[DATA] ADATRY source=BinanceTR-public interval=5m candles=863
+[DATA] AIGENSYNTRY source=BinanceTR-public interval=5m candles=863
+[DATA] AEVOTRY source=BinanceTR-public interval=5m candles=863
+[DATA] AIXBTTRY source=BinanceTR-public interval=5m candles=863
+[DATA] AITRY source=BinanceTR-public interval=5m candles=863
+[DATA] ALICETRY source=BinanceTR-public interval=5m candles=863

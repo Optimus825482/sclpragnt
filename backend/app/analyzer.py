@@ -892,11 +892,23 @@ class ScalpAnalyzer:
         rsi = self.calculate_rsi(closes, period=config.BB_MFI_RSI_PERIOD)
         if not bb or rsi is None:
             return None
+        average_volume = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else 0.0
+        volume_ratio = volumes[-1] / average_volume if average_volume else 0.0
+        dip_range = highs[-1] - lows[-1]
+        close_position = (closes[-1] - lows[-1]) / dip_range if dip_range > 0 else 0.0
+        entry_volume_ok = volume_ratio >= config.BB_MFI_ENTRY_VOLUME_RATIO_MIN
+        dip_confirmed = (not config.BB_MFI_DIP_CONFIRMATION_ENABLED or
+                         close_position >= config.BB_MFI_DIP_MIN_CLOSE_POSITION)
         if version == "v3":
             mfi = _mfi(highs, lows, closes, volumes, config.BB_MFI_MFI_PERIOD)
             if mfi is None:
                 return None
-            if closes[-1] < bb["lower"] and mfi < config.BB_MFI_ENTRY_MFI_MAX:
+            previous_mfi = _mfi(highs[:-1], lows[:-1], closes[:-1], volumes[:-1], config.BB_MFI_MFI_PERIOD)
+            mfi_reversal_ok = (not config.BB_MFI_ENTRY_MFI_REVERSAL_ENABLED or
+                               (previous_mfi is not None and mfi >= previous_mfi + config.BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA))
+            mfi_slowdown_ok = (config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP < 0 or
+                               (previous_mfi is not None and mfi >= previous_mfi - config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP))
+            if closes[-1] < bb["lower"] and mfi < config.BB_MFI_ENTRY_MFI_MAX and entry_volume_ok and dip_confirmed and mfi_reversal_ok and mfi_slowdown_ok:
                 return "buy"
             if (closes[-1] > bb["upper"] and rsi > config.BB_MFI_EXIT_RSI_MIN and
                     mfi > config.BB_MFI_EXIT_MFI_MIN):
@@ -904,7 +916,7 @@ class ScalpAnalyzer:
             return None
         lower = config.BB_MFI_V1_RSI_LOWER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_LOWER_LEVEL
         upper = config.BB_MFI_V1_RSI_UPPER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_UPPER_LEVEL
-        if closes[-1] < bb["lower"] and rsi > lower:
+        if closes[-1] < bb["lower"] and rsi > lower and entry_volume_ok and dip_confirmed:
             return "buy"
         if closes[-1] > bb["upper"] and rsi > upper:
             return "sell"

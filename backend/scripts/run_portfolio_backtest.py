@@ -18,7 +18,7 @@ from app.analyzer import ScalpAnalyzer
 from app import database
 from app.binance_tr_public import historical_klines, orderbook, ticker_24h, trading_symbols
 from app.config import config
-from app.technical_analysis import _mfi
+from app.technical_analysis import _adx, _mfi
 
 
 def iso(ts):
@@ -149,7 +149,7 @@ def m30_activity_passes(analyzer, data, index, args):
 
 
 def historical_activity(analyzer, window, spread_pct, args=None, m1_data=None, m1_index=None,
-                        m30_data=None, m30_index=None):
+                        m30_data=None, m30_index=None, apply_auxiliary=True):
     """Time-correct counterpart of the live activity gate for replay."""
     closes, highs, lows, volumes = (window[key] for key in ("closes", "highs", "lows", "volumes"))
     if len(closes) < 21:
@@ -163,9 +163,11 @@ def historical_activity(analyzer, window, spread_pct, args=None, m1_data=None, m
     m5_range_min = args.activity_m5_min_range_pct if args is not None else config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT
     m5_atr_min = args.activity_m5_min_atr_pct / 100 if args is not None else config.SYMBOL_ACTIVITY_MIN_ATR_PCT
     m5_volume_min = args.activity_m5_min_volume_ratio if args is not None else config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO
-    active = (quote_volume >= config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY and
-              range_pct >= m5_range_min and atr_pct >= m5_atr_min and volume_ratio >= m5_volume_min)
-    if args is not None:
+    quote_volume_min = args.activity_min_quote_volume_try if args is not None else config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY
+    volume_only = args.activity_volume_only if args is not None else config.SYMBOL_ACTIVITY_VOLUME_ONLY
+    movement_gate = True if volume_only else (range_pct >= m5_range_min and atr_pct >= m5_atr_min)
+    active = (quote_volume >= quote_volume_min and movement_gate and volume_ratio >= m5_volume_min)
+    if args is not None and apply_auxiliary:
         active = active and m1_activity_passes(analyzer, m1_data, m1_index, args) if args.activity_m1_filter else active
         active = active and m30_activity_passes(analyzer, m30_data, m30_index, args) if args.activity_m30_filter else active
     return active, "active" if active else "passive"
@@ -196,7 +198,8 @@ async def current_spread(symbol):
 
 async def load_market(symbols, days, data_source, start_ts, end_ts, interval="5m"):
     if data_source == "historical-db":
-        interval_ms = {"1m": 60 * 1000, "3m": 3 * 60 * 1000, "5m": 5 * 60 * 1000, "15m": 15 * 60 * 1000}[interval]
+        interval_ms = {"1m": 60 * 1000, "3m": 3 * 60 * 1000, "5m": 5 * 60 * 1000,
+                       "15m": 15 * 60 * 1000, "30m": 30 * 60 * 1000}[interval]
         warmup_ms = max(int(days * 86400 * 1000), 250 * interval_ms)
         start_ms = int(start_ts * 1000) - warmup_ms
         end_ms = int(end_ts * 1000)
@@ -298,6 +301,57 @@ def entry_filter_passes(analyzer, window, args):
     return True
 
 
+def entry_volume_dip_passes(window, args):
+    """Causal entry confirmation: liquid signal candle plus rejection from its low."""
+    volumes, highs, lows, closes = (window[key] for key in ("volumes", "highs", "lows", "closes"))
+    if args.entry_min_volume_ratio > 0:
+        average = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else 0.0
+        if not average or volumes[-1] / average < args.entry_min_volume_ratio:
+            return False, "entry_volume_ratio"
+    if args.entry_dip_confirmation:
+        candle_range = highs[-1] - lows[-1]
+        close_position = (closes[-1] - lows[-1]) / candle_range if candle_range > 0 else 0.0
+        if close_position < args.entry_dip_min_close_position:
+            return False, "dip_not_rejected"
+    if args.entry_mfi_reversal:
+        profile = pine_profile(args.pine_version)
+        mfi_period = profile.get("mfi_period", config.BB_MFI_MFI_PERIOD) if profile else config.BB_MFI_MFI_PERIOD
+        previous_mfi = _mfi(highs[:-1], lows[:-1], closes[:-1], volumes[:-1], mfi_period)
+        current_mfi = _mfi(highs, lows, closes, volumes, mfi_period)
+        if previous_mfi is None or current_mfi is None or current_mfi < previous_mfi + args.entry_mfi_reversal_min_delta:
+            return False, "mfi_not_reversing"
+    if args.entry_mfi_slowdown_max_drop is not None:
+        profile = pine_profile(args.pine_version)
+        mfi_period = profile.get("mfi_period", config.BB_MFI_MFI_PERIOD) if profile else config.BB_MFI_MFI_PERIOD
+        previous_mfi = _mfi(highs[:-1], lows[:-1], closes[:-1], volumes[:-1], mfi_period)
+        current_mfi = _mfi(highs, lows, closes, volumes, mfi_period)
+        if previous_mfi is None or current_mfi is None or current_mfi < previous_mfi - args.entry_mfi_slowdown_max_drop:
+            return False, "mfi_still_falling"
+    return True, None
+
+
+def high_downtrend_entry(analyzer, window, args):
+    """Reject a mean-reversion long during a confirmed, fast M5 selloff."""
+    closes, highs, lows = (window[key] for key in ("closes", "highs", "lows"))
+    adx_data = _adx(highs, lows, closes) or {}
+    adx, plus_di, minus_di = adx_data.get("adx"), adx_data.get("plus_di"), adx_data.get("minus_di")
+    if len(closes) < 13 or not all(isinstance(value, (int, float)) for value in (adx, plus_di, minus_di)):
+        return True
+    return_1h = closes[-1] / closes[-13] - 1 if closes[-13] else 0.0
+    return_15m = closes[-1] / closes[-4] - 1 if closes[-4] else 0.0
+    return (adx >= args.high_downtrend_min_adx and minus_di > plus_di and
+            return_1h <= -args.high_downtrend_min_return_1h_pct / 100 and
+            return_15m <= -args.high_downtrend_min_return_15m_pct / 100)
+
+
+def low_volume_for_pyramid(window, threshold):
+    volumes = window["volumes"]
+    if len(volumes) < 21:
+        return False
+    average = sum(volumes[-21:-1]) / 20
+    return bool(average and volumes[-1] / average < threshold)
+
+
 def replay_features(analyzer, window, version):
     profile = pine_profile(version)
     if not profile:
@@ -364,7 +418,11 @@ async def run(args):
                 continue
             # Universe selection stays on the existing M5 gate; M1 is then an
             # execution-time confirmation on that same fixed universe.
-            active, _ = historical_activity(analyzer, window_at(data, index), args.spread_pct)
+            # The starting universe deliberately uses only the base M5/volume
+            # gate. M1/M30 series are loaded immediately afterwards and are
+            # applied to every actual entry decision.
+            active, _ = historical_activity(analyzer, window_at(data, index), args.spread_pct,
+                                            args, apply_auxiliary=False)
             if active:
                 initially_active[symbol] = (data, historical_quality_score(analyzer, window_at(data, index), args.spread_pct))
         if args.initial_active_limit:
@@ -400,8 +458,17 @@ async def run(args):
     peak_equity, max_drawdown = cash, 0.0
     signal_counts = Counter()
     daily_stop_counts = Counter()
+    filter_counts = Counter()
+    loss_cooldown_until = {}
     activity_status = {symbol: False for symbol in series}
     last_activity_bucket = None
+
+    def arm_loss_cooldown(symbol, pnl, exit_ts):
+        """Block fresh entries after a realised net loss, without closing positions."""
+        if args.symbol_loss_cooldown_hours <= 0 or pnl >= 0:
+            return
+        until = exit_ts + int(args.symbol_loss_cooldown_hours * 3600)
+        loss_cooldown_until[symbol] = max(loss_cooldown_until.get(symbol, 0), until)
 
     for ts in timeline:
         exits = entries = blocked = signals = 0
@@ -432,6 +499,7 @@ async def run(args):
                                    "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
                                    "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6),
                                    "reason": "historical_activity_passive_direct_exit"})
+                    arm_loss_cooldown(symbol, pnl, ts)
                     del positions[symbol]; exits += 1
                 elif not args.disable_passive_net_exit and not active and position:
                     exit_fill = price * (1 - args.spread_pct / 2 - args.slippage_pct)
@@ -444,6 +512,7 @@ async def run(args):
                                        "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
                                        "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6),
                                        "reason": "historical_activity_passive_net_exit"})
+                        arm_loss_cooldown(symbol, pnl, ts)
                         del positions[symbol]; exits += 1
                 if (args.passive_loss_exit_hours > 0 and not active and symbol in positions and position and
                       ts - position["entry_time"] >= args.passive_loss_exit_hours * 3600):
@@ -459,6 +528,7 @@ async def run(args):
                         trades.append({"symbol": symbol, "entry_time": position["entry_time"], "exit_time": ts,
                                        "entry": position["entry"], "exit": exit_fill, "layers": position["layers"], "pnl": round(pnl, 6),
                                        "commission": round(position["entry_fees"] + exit_fee, 6), "reason": "historical_passive_loss_ema_atr_exit"})
+                        arm_loss_cooldown(symbol, pnl, ts)
                         del positions[symbol]; exits += 1
         # Confirmed sell signals from the previous candle execute at this open.
         for symbol, position in list(positions.items()):
@@ -480,6 +550,7 @@ async def run(args):
                      "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
                      "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6), "reason": reason}
             trades.append(trade)
+            arm_loss_cooldown(symbol, pnl, ts)
             del positions[symbol]
             exits += 1
             print(f"[EXIT] {iso(ts)} {symbol} reason={reason} pnl={pnl:+.2f} cash={cash:.2f}", flush=True)
@@ -504,16 +575,37 @@ async def run(args):
                 blocked += 1
                 print(f"[BLOCKED] {symbol} reason=daily_stop_limit", flush=True)
                 continue
+            if ts < loss_cooldown_until.get(symbol, 0):
+                blocked += 1; filter_counts["symbol_loss_cooldown"] += 1
+                print(f"[BLOCKED] {symbol} reason=symbol_loss_cooldown until={iso(loss_cooldown_until[symbol])}", flush=True)
+                continue
+            downtrend_risk = high_downtrend_entry(analyzer, window, args)
+            if args.high_downtrend_entry_filter and downtrend_risk:
+                blocked += 1; filter_counts["high_downtrend_entry"] += 1
+                print(f"[BLOCKED] {symbol} reason=high_downtrend_entry", flush=True)
+                continue
             if not entry_filter_passes(analyzer, window, args):
                 blocked += 1
                 print(f"[BLOCKED] {symbol} reason=entry_filter", flush=True)
+                continue
+            entry_ok, entry_reason = entry_volume_dip_passes(window, args)
+            if not entry_ok:
+                blocked += 1; filter_counts[entry_reason] += 1
+                print(f"[BLOCKED] {symbol} reason={entry_reason}", flush=True)
                 continue
             position = positions.get(symbol)
             if position and position["layers"] >= args.pyramiding:
                 blocked += 1
                 print(f"[BLOCKED] {symbol} reason=max_layers", flush=True)
                 continue
-            if position is None and len(positions) >= args.max_positions:
+            if (position and args.pyramid_low_volume_block and position.get("entry_high_downtrend_risk") and
+                    ts - position["entry_time"] >= args.pyramid_low_volume_after_hours * 3600 and
+                    low_volume_for_pyramid(window, args.pyramid_low_volume_ratio_max)):
+                blocked += 1; filter_counts["pyramid_low_volume"] += 1
+                print(f"[BLOCKED] {symbol} reason=pyramid_low_volume", flush=True)
+                continue
+            # Live contract: zero means no global position cap.
+            if position is None and args.max_positions > 0 and len(positions) >= args.max_positions:
                 blocked += 1
                 print(f"[BLOCKED] {symbol} reason=max_open_positions", flush=True)
                 continue
@@ -542,7 +634,8 @@ async def run(args):
                 position.pop("profit_lock_stop", None)
             else:
                 position = {"entry": entry_fill, "quantity": quantity, "invested": order_value,
-                            "entry_fees": entry_fee, "layers": 1, "entry_time": ts}
+                            "entry_fees": entry_fee, "layers": 1, "entry_time": ts,
+                            "entry_high_downtrend_risk": downtrend_risk}
                 positions[symbol] = position
             position["stop"] = position["entry"] * (1 - stop_pct) if stop_pct is not None else None
             position["target"] = position["entry"] * (1 + tp_pct) if tp_pct is not None else None
@@ -578,6 +671,7 @@ async def run(args):
             trades.append({"symbol": symbol, "entry_time": position["entry_time"], "exit_time": ts,
                            "entry": position["entry"], "exit": exit_fill, "layers": position["layers"],
                            "pnl": round(pnl, 6), "commission": round(position["entry_fees"] + exit_fee, 6), "reason": reason})
+            arm_loss_cooldown(symbol, pnl, ts)
             if reason == "fixed_stop_loss":
                 daily_stop_counts[(symbol, day_key)] += 1
             del positions[symbol]
@@ -656,8 +750,20 @@ async def run(args):
         "activity_m30_min_atr_pct": args.activity_m30_min_atr_pct,
         "activity_m30_max_ema20_decline_pct": args.activity_m30_max_ema20_decline_pct,
         "daily_stop_limit": args.daily_stop_limit,
+        "symbol_loss_cooldown_hours": args.symbol_loss_cooldown_hours,
         "entry_ema200_filter": args.entry_ema200_filter,
         "entry_momentum_slowdown_filter": args.entry_momentum_slowdown_filter,
+        "activity_volume_only": args.activity_volume_only,
+        "activity_min_quote_volume_try": args.activity_min_quote_volume_try,
+        "entry_min_volume_ratio": args.entry_min_volume_ratio,
+        "entry_dip_confirmation": args.entry_dip_confirmation,
+        "entry_dip_min_close_position": args.entry_dip_min_close_position,
+        "entry_mfi_reversal": args.entry_mfi_reversal,
+        "entry_mfi_reversal_min_delta": args.entry_mfi_reversal_min_delta,
+        "entry_mfi_slowdown_max_drop": args.entry_mfi_slowdown_max_drop,
+        "high_downtrend_entry_filter": args.high_downtrend_entry_filter,
+        "pyramid_low_volume_block": args.pyramid_low_volume_block,
+        "filter_counts": dict(filter_counts),
         "remaining_cash_sizing": args.remaining_cash_sizing,
         "historical_activity_gate": args.historical_activity,
         "initial_balance_try": initial, "final_balance_try": round(cash, 6),
@@ -720,6 +826,8 @@ if __name__ == "__main__":
     parser.add_argument("--activity-m5-min-range-pct", type=float, default=config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT, help="M5 son üç mum aralık alt sınırı (yüzde)")
     parser.add_argument("--activity-m5-min-atr-pct", type=float, default=config.SYMBOL_ACTIVITY_MIN_ATR_PCT * 100, help="M5 ATR alt sınırı (yüzde)")
     parser.add_argument("--activity-m5-min-volume-ratio", type=float, default=config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO, help="M5 hacim oranı alt sınırı")
+    parser.add_argument("--activity-volume-only", action="store_true", help="Aktivitede M5 range/ATR yerine yalnız 24s TL hacmi ve M5 hacim oranını kullan")
+    parser.add_argument("--activity-min-quote-volume-try", type=float, default=config.SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY, help="Aktivite için geçmiş 24 saat minimum TL hacmi")
     parser.add_argument("--activity-m1-filter", action="store_true", help="M5 aktivitesine M1 range ve ATR doğrulaması ekle")
     parser.add_argument("--activity-m1-range-bars", type=int, default=5, help="M1 hareket aralığı için son mum sayısı")
     parser.add_argument("--activity-m1-min-range-pct", type=float, default=0.08, help="M1 kısa aralık alt sınırı (yüzde)")
@@ -735,11 +843,35 @@ if __name__ == "__main__":
     parser.add_argument("--disable-passive-net-exit", action="store_true", help="Pasife dönen pozisyonun net kâr/başabaş otomatik kapanışını kapat")
     parser.add_argument("--passive-direct-exit", action="store_true", help="Pasife dönen açık pozisyonu PnL'den bağımsız hemen kapat")
     parser.add_argument("--daily-stop-limit", type=int, default=0, help="Sembol başına günlük stop sonrası yeni giriş limiti; 0 kapalı")
+    parser.add_argument("--symbol-loss-cooldown-hours", type=float, default=0.0,
+                        help="Net zarar kapanışından sonra aynı sembolde yeni giriş soğuma süresi; 0 kapalı")
     parser.add_argument("--entry-ema200-filter", action="store_true", help="Girişi yalnız kapanış EMA200 üzerinde ise kabul et")
     parser.add_argument("--entry-momentum-slowdown-filter", action="store_true", help="Girişi son kapanış önceki kapanışın altına inmediğinde kabul et")
+    parser.add_argument("--entry-min-volume-ratio", type=float, default=0.0, help="Sinyal mumunun önceki 20 M5 mumuna göre minimum hacim oranı; 0 kapalı")
+    parser.add_argument("--entry-dip-confirmation", action="store_true", help="Alt BB sinyal mumunun kendi aralığında dipten dönüş kapanışı doğrulamasını iste")
+    parser.add_argument("--entry-dip-min-close-position", type=float, default=0.55, help="Dip doğrulamasında kapanışın mum aralığındaki minimum yeri (0-1)")
+    parser.add_argument("--entry-mfi-reversal", action="store_true", help="V3 girişinde MFI'ın önceki kapanmış muma göre yükselmesini iste")
+    parser.add_argument("--entry-mfi-reversal-min-delta", type=float, default=0.0, help="MFI dönüşü için minimum puan artışı")
+    parser.add_argument("--entry-mfi-slowdown-max-drop", type=float,
+                        help="MFI önceki muma göre bu puandan fazla düşüyorsa girişi engelle; verilmezse kapalı")
+    parser.add_argument("--high-downtrend-entry-filter", action="store_true", help="Güçlü M5 düşüş trendindeki mean-reversion long girişini engelle")
+    parser.add_argument("--high-downtrend-min-adx", type=float, default=50, help="Düşüş trendi giriş engeli için minimum ADX")
+    parser.add_argument("--high-downtrend-min-return-1h-pct", type=float, default=2.0, help="Giriş engeli için minimum 1 saatlik düşüş (yüzde)")
+    parser.add_argument("--high-downtrend-min-return-15m-pct", type=float, default=1.0, help="Giriş engeli için minimum 15 dakikalık düşüş (yüzde)")
+    parser.add_argument("--pyramid-low-volume-block", action="store_true", help="Riskli girişten sonra düşük M5 hacminde ek katmanı engelle")
+    parser.add_argument("--pyramid-low-volume-after-hours", type=float, default=2.0, help="Ek katman engeli için minimum pozisyon yaşı")
+    parser.add_argument("--pyramid-low-volume-ratio-max", type=float, default=0.70, help="Ek katman engeli için maksimum M5 hacim oranı")
     parser.add_argument("--remaining-cash-sizing", action="store_true", help="Her girişte toplam özsermaye yerine kalan kullanılabilir nakdin yüzdesini kullan")
     parser.add_argument("--output", default="portfolio-replay-latest.json")
     args = parser.parse_args()
     if args.activity_refresh_minutes <= 0:
         parser.error("--activity-refresh-minutes pozitif olmalıdır")
+    if args.symbol_loss_cooldown_hours < 0:
+        parser.error("--symbol-loss-cooldown-hours negatif olamaz")
+    if args.activity_min_quote_volume_try < 0 or args.entry_min_volume_ratio < 0:
+        parser.error("hacim eşikleri negatif olamaz")
+    if not 0 <= args.entry_dip_min_close_position <= 1:
+        parser.error("--entry-dip-min-close-position 0 ile 1 arasında olmalıdır")
+    if args.entry_mfi_slowdown_max_drop is not None and args.entry_mfi_slowdown_max_drop < 0:
+        parser.error("--entry-mfi-slowdown-max-drop negatif olamaz")
     asyncio.run(run(args))

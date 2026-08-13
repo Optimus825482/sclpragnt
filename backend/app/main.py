@@ -1018,16 +1018,17 @@ async def refresh_symbol_activity():
         spread_ok = (spread_pct <= config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT if spread_pct else False)
         spread_required = config.SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED
         spread_gate_ok = spread_ok if spread_required else True
-        active = bool(ticker and volume_ok and movement_ok and atr_ok and volume_ratio_ok and spread_gate_ok)
+        movement_gate_ok = True if config.SYMBOL_ACTIVITY_VOLUME_ONLY else (movement_ok and atr_ok)
+        active = bool(ticker and volume_ok and movement_gate_ok and volume_ratio_ok and spread_gate_ok)
         statuses[symbol] = {
             "symbol": symbol, "status": "ACTIVE" if active else "PASSIVE",
             "quote_volume": quote_volume, "range_15m_pct": round(range_pct, 4),
             "atr_pct": round(atr_pct * 100, 4), "volume_ratio": round(volume_ratio, 4),
             "spread_pct": round(spread_pct, 4),
             "checks": {"quote_volume": volume_ok, "range_15m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok},
-            "gates": {"spread_required": spread_required},
+            "gates": {"spread_required": spread_required, "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY},
             "has_open_position": symbol in analyzer.positions,
-            "reason": "active" if active else "movement_or_liquidity_below_threshold",
+            "reason": "active" if active else "volume_or_liquidity_below_threshold",
             "checked_at": time.time(),
         }
     config.PASSIVE_SYMBOLS = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
@@ -1646,6 +1647,7 @@ async def symbol_activity_status():
                            "min_range_15m_pct": config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT,
                            "min_atr_pct": config.SYMBOL_ACTIVITY_MIN_ATR_PCT * 100,
                            "min_volume_ratio": config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO,
+                           "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY,
                            "max_spread_pct": config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT,
                            "spread_filter_enabled": config.SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED}}
 

@@ -1,0 +1,1134 @@
+[START] strategy=BB_MFI_MEAN_REVERSION pine_version=v3 initial=10000.00 TRY window=2026-08-11T17:43:44+00:00..2026-08-12T17:43:44+00:00
+[CONFIG] universe=312 source=BinanceTR-exchangeInfo order_pct=0.1000 pyramiding=2 max_positions=500 commission=0.001500 spread=0.001000 slippage=0.000250
+[DATA] 1000CATTRY source=BinanceTR-public interval=5m candles=575
+[DATA] 0GTRY source=BinanceTR-public interval=5m candles=575
+[DATA] 1000SATSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] 1MBABYDOGETRY source=BinanceTR-public interval=5m candles=575
+[DATA] AAVETRY source=BinanceTR-public interval=5m candles=575
+[DATA] 2ZTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ACETRY source=BinanceTR-public interval=5m candles=575
+[DATA] ACMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ACHTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ADATRY source=BinanceTR-public interval=5m candles=575
+[DATA] ACXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ACTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AITRY source=BinanceTR-public interval=5m candles=575
+[DATA] AIGENSYNTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AEROTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AEVOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ALICETRY source=BinanceTR-public interval=5m candles=575
+[DATA] ALGOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AIXBTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ALLOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ALTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ALPINETRY source=BinanceTR-public interval=5m candles=575
+[DATA] AMPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ANIMETRY source=BinanceTR-public interval=5m candles=575
+[DATA] API3TRY source=BinanceTR-public interval=5m candles=575
+[DATA] ANKRTRY source=BinanceTR-public interval=5m candles=575
+[DATA] APTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] APETRY source=BinanceTR-public interval=5m candles=575
+[DATA] ARBTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ARKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ARKMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ARPATRY source=BinanceTR-public interval=5m candles=575
+[DATA] ARTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ASRTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ATMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ASTERTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ATOMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AUCTIONTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ATTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AUDIOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AVAXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AXSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AVNTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] AXLTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BABYTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BANANATRY source=BinanceTR-public interval=5m candles=575
+[DATA] BANKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BARDTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BARTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BBTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BCHTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BEAMXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BERATRY source=BinanceTR-public interval=5m candles=575
+[DATA] ATRY source=BinanceTR-public interval=5m candles=575
+[DATA] BMTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BELTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BIOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BOMETRY source=BinanceTR-public interval=5m candles=575
+[DATA] BLURTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BONKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BNBTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BREVTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CAKETRY source=BinanceTR-public interval=5m candles=575
+[DATA] BTCTRY source=BinanceTR-public interval=5m candles=575
+[DATA] BTTCTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CATITRY source=BinanceTR-public interval=5m candles=575
+[DATA] CFGTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CHIPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CETUSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CELOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CITYTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CFXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CHZTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CKBTRY source=BinanceTR-public interval=5m candles=575
+[DATA] COTITRY source=BinanceTR-public interval=5m candles=575
+[DATA] COWTRY source=BinanceTR-public interval=5m candles=575
+[DATA] COMPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CRVTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CTRY source=BinanceTR-public interval=5m candles=575
+[DATA] CYBERTRY source=BinanceTR-public interval=5m candles=575
+[DATA] DASHTRY source=BinanceTR-public interval=5m candles=575
+[DATA] DOGSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] DODOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] DOGETRY source=BinanceTR-public interval=5m candles=575
+[DATA] DOLOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] DOTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] DYMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] EDENTRY source=BinanceTR-public interval=5m candles=575
+[DATA] DYDXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] EDUTRY source=BinanceTR-public interval=5m candles=575
+[DATA] EGLDTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ENSOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] EIGENTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ENATRY source=BinanceTR-public interval=5m candles=575
+[DATA] ENJTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ERATRY source=BinanceTR-public interval=5m candles=575
+[DATA] ENSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ESPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ETCTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ETHFITRY source=BinanceTR-public interval=5m candles=575
+[DATA] ETHTRY source=BinanceTR-public interval=5m candles=575
+[DATA] EULTRY source=BinanceTR-public interval=5m candles=575
+[DATA] FDUSDTRY source=BinanceTR-public interval=5m candles=575
+[DATA] FETTRY source=BinanceTR-public interval=5m candles=575
+[DATA] FFTRY source=BinanceTR-public interval=5m candles=575
+[DATA] FIDATRY source=BinanceTR-public interval=5m candles=575
+[DATA] FILTRY source=BinanceTR-public interval=5m candles=575
+[DATA] FLOKITRY source=BinanceTR-public interval=5m candles=575
+[DATA] FTRY source=BinanceTR-public interval=5m candles=575
+[DATA] FOGOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] FORMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] GALATRY source=BinanceTR-public interval=5m candles=575
+[DATA] GASTRY source=BinanceTR-public interval=5m candles=575
+[DATA] GIGGLETRY source=BinanceTR-public interval=5m candles=575
+[DATA] GENIUSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] GPSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] GMTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] GRTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] GTRY source=BinanceTR-public interval=5m candles=575
+[DATA] GRAMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] GUNTRY source=BinanceTR-public interval=5m candles=575
+[DATA] HAEDALTRY source=BinanceTR-public interval=5m candles=575
+[DATA] HBARTRY source=BinanceTR-public interval=5m candles=575
+[DATA] HEMITRY source=BinanceTR-public interval=5m candles=575
+[DATA] HEITRY source=BinanceTR-public interval=5m candles=575
+[DATA] HMSTRTRY source=BinanceTR-public interval=5m candles=575
+[DATA] HOLOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] HIVETRY source=BinanceTR-public interval=5m candles=575
+[DATA] HUMATRY source=BinanceTR-public interval=5m candles=575
+[DATA] HOMETRY source=BinanceTR-public interval=5m candles=575
+[DATA] HOTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ICPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] IDTRY source=BinanceTR-public interval=5m candles=575
+[DATA] HYPERTRY source=BinanceTR-public interval=5m candles=575
+[DATA] INITTRY source=BinanceTR-public interval=5m candles=575
+[DATA] IOTATRY source=BinanceTR-public interval=5m candles=575
+[DATA] INJTRY source=BinanceTR-public interval=5m candles=575
+[DATA] IOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] JASMYTRY source=BinanceTR-public interval=5m candles=575
+[DATA] JUPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] KAITOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] JTOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] KATTRY source=BinanceTR-public interval=5m candles=575
+[DATA] JUVTRY source=BinanceTR-public interval=5m candles=575
+[DATA] KITETRY source=BinanceTR-public interval=5m candles=575
+[DATA] KSMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] KERNELTRY source=BinanceTR-public interval=5m candles=575
+[DATA] LAYERTRY source=BinanceTR-public interval=5m candles=575
+[DATA] LATRY source=BinanceTR-public interval=5m candles=575
+[DATA] LAZIOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] LDOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] LINEATRY source=BinanceTR-public interval=5m candles=575
+[DATA] LINKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] LPTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] LISTATRY source=BinanceTR-public interval=5m candles=575
+[DATA] LTCTRY source=BinanceTR-public interval=5m candles=575
+[DATA] LUNATRY source=BinanceTR-public interval=5m candles=575
+[DATA] MAGICTRY source=BinanceTR-public interval=5m candles=575
+[DATA] LUNCTRY source=BinanceTR-public interval=5m candles=575
+[DATA] LUMIATRY source=BinanceTR-public interval=5m candles=575
+[DATA] MANATRY source=BinanceTR-public interval=5m candles=575
+[DATA] MANTRATRY source=BinanceTR-public interval=5m candles=575
+[DATA] MANTATRY source=BinanceTR-public interval=5m candles=575
+[DATA] MEGATRY source=BinanceTR-public interval=5m candles=575
+[DATA] MAVTRY source=BinanceTR-public interval=5m candles=575
+[DATA] MASKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] MEMETRY source=BinanceTR-public interval=5m candles=575
+[DATA] METRY source=BinanceTR-public interval=5m candles=575
+[DATA] METISTRY source=BinanceTR-public interval=5m candles=575
+[DATA] METTRY source=BinanceTR-public interval=5m candles=575
+[DATA] MIRATRY source=BinanceTR-public interval=5m candles=575
+[DATA] MINATRY source=BinanceTR-public interval=5m candles=575
+[DATA] MMTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] MORPHOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] MOVRTRY source=BinanceTR-public interval=5m candles=575
+[DATA] MITOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] MUBARAKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NEIROTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NEARTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NEOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NILTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NEWTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NIGHTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NOMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NMRTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NOTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] NXPCTRY source=BinanceTR-public interval=5m candles=575
+[DATA] OGTRY source=BinanceTR-public interval=5m candles=575
+[DATA] OGNTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ONDOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] OPENTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ONETRY source=BinanceTR-public interval=5m candles=575
+[DATA] ONTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ORCATRY source=BinanceTR-public interval=5m candles=575
+[DATA] OPNTRY source=BinanceTR-public interval=5m candles=575
+[DATA] OPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] OPGTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PENDLETRY source=BinanceTR-public interval=5m candles=575
+[DATA] ORDITRY source=BinanceTR-public interval=5m candles=575
+[DATA] PARTITRY source=BinanceTR-public interval=5m candles=575
+[DATA] PAXGTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PENGUTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PEOPLETRY source=BinanceTR-public interval=5m candles=575
+[DATA] PIXELTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PEPETRY source=BinanceTR-public interval=5m candles=575
+[DATA] PHATRY source=BinanceTR-public interval=5m candles=575
+[DATA] PLUMETRY source=BinanceTR-public interval=5m candles=575
+[DATA] POLTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PNUTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PORTALTRY source=BinanceTR-public interval=5m candles=575
+[DATA] POLYXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PORTOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PSGTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PROVETRY source=BinanceTR-public interval=5m candles=575
+[DATA] PUMPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] QTUMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] PYTHTRY source=BinanceTR-public interval=5m candles=575
+[DATA] RAYTRY source=BinanceTR-public interval=5m candles=575
+[DATA] RARETRY source=BinanceTR-public interval=5m candles=575
+[DATA] RADTRY source=BinanceTR-public interval=5m candles=575
+[DATA] REDTRY source=BinanceTR-public interval=5m candles=575
+[DATA] RESOLVTRY source=BinanceTR-public interval=5m candles=575
+[DATA] RENDERTRY source=BinanceTR-public interval=5m candles=575
+[DATA] RETRY source=BinanceTR-public interval=5m candles=575
+[DATA] REZTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ROSETRY source=BinanceTR-public interval=5m candles=575
+[DATA] ROBOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] RONINTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SAGATRY source=BinanceTR-public interval=5m candles=575
+[DATA] RSRTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SANDTRY source=BinanceTR-public interval=5m candles=575
+[DATA] RVNTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SAHARATRY source=BinanceTR-public interval=5m candles=575
+[DATA] SAPIENTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SANTOSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SCRTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SEITRY source=BinanceTR-public interval=5m candles=575
+[DATA] SHELLTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SENTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SHIBTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SIGNTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SKLTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SLPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SKYTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SNXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SOLTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SPELLTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SOMITRY source=BinanceTR-public interval=5m candles=575
+[DATA] SOLVTRY source=BinanceTR-public interval=5m candles=575
+[DATA] STOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SOPHTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SPKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] STRKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] STRAXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] STRY source=BinanceTR-public interval=5m candles=575
+[DATA] STXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SUITRY source=BinanceTR-public interval=5m candles=575
+[DATA] SUNTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SUPERTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SXTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] SUSHITRY source=BinanceTR-public interval=5m candles=575
+[DATA] SYRUPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TAOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] THETRY source=BinanceTR-public interval=5m candles=575
+[DATA] TIATRY source=BinanceTR-public interval=5m candles=575
+[DATA] THETATRY source=BinanceTR-public interval=5m candles=575
+[DATA] TOWNSTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TLMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TNSRTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TREETRY source=BinanceTR-public interval=5m candles=575
+[DATA] TRBTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TRXTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TSTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TRUMPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] TWTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] UMATRY source=BinanceTR-public interval=5m candles=575
+[DATA] TURTLETRY source=BinanceTR-public interval=5m candles=575
+[DATA] USD1TRY source=BinanceTR-public interval=5m candles=575
+[DATA] UNITRY source=BinanceTR-public interval=5m candles=575
+[DATA] TURBOTRY source=BinanceTR-public interval=5m candles=575
+[DATA] USDTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] USDCTRY source=BinanceTR-public interval=5m candles=575
+[DATA] USTCTRY source=BinanceTR-public interval=5m candles=575
+[DATA] USUALTRY source=BinanceTR-public interval=5m candles=575
+[DATA] VANATRY source=BinanceTR-public interval=5m candles=575
+[DATA] UTRY source=BinanceTR-public interval=5m candles=575
+[DATA] VETTRY source=BinanceTR-public interval=5m candles=575
+[DATA] VANRYTRY source=BinanceTR-public interval=5m candles=575
+[DATA] VICTRY source=BinanceTR-public interval=5m candles=575
+[DATA] VIRTUALTRY source=BinanceTR-public interval=5m candles=575
+[DATA] WALTRY source=BinanceTR-public interval=5m candles=575
+[DATA] WLDTRY source=BinanceTR-public interval=5m candles=575
+[DATA] WIFTRY source=BinanceTR-public interval=5m candles=575
+[DATA] WCTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] WLFITRY source=BinanceTR-public interval=5m candles=575
+[DATA] XAITRY source=BinanceTR-public interval=5m candles=575
+[DATA] WTRY source=BinanceTR-public interval=5m candles=575
+[DATA] XECTRY source=BinanceTR-public interval=5m candles=575
+[DATA] XAUTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] XLMTRY source=BinanceTR-public interval=5m candles=575
+[DATA] XPLTRY source=BinanceTR-public interval=5m candles=575
+[DATA] XTZTRY source=BinanceTR-public interval=5m candles=575
+[DATA] XVGTRY source=BinanceTR-public interval=5m candles=575
+[DATA] XRPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ZILTRY source=BinanceTR-public interval=5m candles=575
+[DATA] YBTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ZKCTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ZAMATRY source=BinanceTR-public interval=5m candles=575
+[DATA] ZBTTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ZKPTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ZKTRY source=BinanceTR-public interval=5m candles=575
+[DATA] ZROTRY source=BinanceTR-public interval=5m candles=575
+[ACTIVITY] 0GTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 37717802.56, "range_15m_pct": 0.2632, "atr_pct": 0.0751, "volume_ratio": 0.1847, "spread_pct": 0.1315, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] 1000CATTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4711655.37, "range_15m_pct": 1.2658, "atr_pct": 0.4464, "volume_ratio": 0.0, "spread_pct": 1.2579, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] 1000SATSTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5100541.24, "range_15m_pct": 0.4141, "atr_pct": 0.1473, "volume_ratio": 0.0, "spread_pct": 0.206, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] 1MBABYDOGETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 15271576.77, "range_15m_pct": 0.31, "atr_pct": 0.159, "volume_ratio": 0.0013, "spread_pct": 0.0619, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] 2ZTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 83148348.12, "range_15m_pct": 2.7451, "atr_pct": 1.547, "volume_ratio": 0.3046, "spread_pct": 0.1963, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AAVETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6932009.73, "range_15m_pct": 0.2128, "atr_pct": 0.0843, "volume_ratio": 1.247, "spread_pct": 0.0236, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ACETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 187609031.22, "range_15m_pct": 0.8249, "atr_pct": 0.3621, "volume_ratio": 0.6936, "spread_pct": 0.1716, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] ACHTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 14712573.82, "range_15m_pct": 0.3998, "atr_pct": 0.196, "volume_ratio": 0.0698, "spread_pct": 0.1, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ACMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1668602.04, "range_15m_pct": 0.0, "atr_pct": 0.0338, "volume_ratio": 0.0, "spread_pct": 0.6284, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ACTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 22584284.37, "range_15m_pct": 0.2101, "atr_pct": 0.3448, "volume_ratio": 0.0, "spread_pct": 0.105, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ACXTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 30676318.56, "range_15m_pct": 1.5765, "atr_pct": 2.1886, "volume_ratio": 0.2191, "spread_pct": 0.5755, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ADATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 21323416.75, "range_15m_pct": 0.1143, "atr_pct": 0.0978, "volume_ratio": 0.0338, "spread_pct": 0.1144, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AEROTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1179747.22, "range_15m_pct": 0.1012, "atr_pct": 0.083, "volume_ratio": 0.0, "spread_pct": 0.1012, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AEVOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2864904.53, "range_15m_pct": 0.0, "atr_pct": 0.1006, "volume_ratio": 0.4379, "spread_pct": 0.1083, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AIGENSYNTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 31955018.82, "range_15m_pct": 0.498, "atr_pct": 0.3486, "volume_ratio": 0.1354, "spread_pct": 0.0997, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 7420408.28, "range_15m_pct": 0.0, "atr_pct": 0.2613, "volume_ratio": 0.0, "spread_pct": 1.227, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AIXBTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 26658731.67, "range_15m_pct": 1.0321, "atr_pct": 0.4833, "volume_ratio": 0.0111, "spread_pct": 0.1146, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ALGOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1315385.16, "range_15m_pct": 0.1581, "atr_pct": 0.0828, "volume_ratio": 0.313, "spread_pct": 0.079, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ALICETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 11911249.01, "range_15m_pct": 0.1783, "atr_pct": 0.1146, "volume_ratio": 0.8318, "spread_pct": 0.1778, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ALLOTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 83836517.46, "range_15m_pct": 1.7557, "atr_pct": 0.7657, "volume_ratio": 0.8659, "spread_pct": 0.0721, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] ALPINETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 7842364.31, "range_15m_pct": 0.0661, "atr_pct": 0.0755, "volume_ratio": 0.0, "spread_pct": 0.066, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ALTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4016429.73, "range_15m_pct": 0.0, "atr_pct": 0.128, "volume_ratio": 0.0, "spread_pct": 0.3578, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AMPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6888376.17, "range_15m_pct": 0.0, "atr_pct": 0.157, "volume_ratio": 0.0, "spread_pct": 0.5479, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ANIMETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 665202.78, "range_15m_pct": 0.0, "atr_pct": 0.1863, "volume_ratio": 0.0, "spread_pct": 0.8658, "checks": {"quote_volume": false, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ANKRTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1057992.28, "range_15m_pct": 0.5556, "atr_pct": 0.097, "volume_ratio": 0.0, "spread_pct": 0.1231, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] APETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3398160.95, "range_15m_pct": 0.0, "atr_pct": 0.0941, "volume_ratio": 0.0, "spread_pct": 0.1649, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] API3TRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4281736.09, "range_15m_pct": 0.4444, "atr_pct": 0.0711, "volume_ratio": 0.0, "spread_pct": 0.1108, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] APTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5126249.84, "range_15m_pct": 0.3717, "atr_pct": 0.1323, "volume_ratio": 0.0, "spread_pct": 0.3711, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ARBTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 24898550.96, "range_15m_pct": 0.8287, "atr_pct": 0.4501, "volume_ratio": 0.131, "spread_pct": 0.2736, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ARKMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5087240.33, "range_15m_pct": 0.2226, "atr_pct": 0.1127, "volume_ratio": 0.0, "spread_pct": 0.0889, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ARKTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5365610.92, "range_15m_pct": 0.0, "atr_pct": 0.0165, "volume_ratio": 0.0, "spread_pct": 0.2312, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ARPATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3085893.45, "range_15m_pct": 0.0241, "atr_pct": 0.0742, "volume_ratio": 0.0, "spread_pct": 0.1208, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ARTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 643866.62, "range_15m_pct": 0.0, "atr_pct": 0.0516, "volume_ratio": 0.0, "spread_pct": 0.1181, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ASRTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3386908.13, "range_15m_pct": 0.0, "atr_pct": 0.0664, "volume_ratio": 0.0, "spread_pct": 0.1224, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ASTERTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3695914.67, "range_15m_pct": 0.0347, "atr_pct": 0.0744, "volume_ratio": 0.0, "spread_pct": 0.0347, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ATMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 56417553.2, "range_15m_pct": 3.1052, "atr_pct": 1.2434, "volume_ratio": 0.2363, "spread_pct": 0.282, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ATOMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1770732.43, "range_15m_pct": 0.1499, "atr_pct": 0.0535, "volume_ratio": 0.0, "spread_pct": 0.1496, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 478040.01, "range_15m_pct": 0.0, "atr_pct": 0.0475, "volume_ratio": 0.0, "spread_pct": 0.3328, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ATTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 54435742.89, "range_15m_pct": 0.4084, "atr_pct": 0.4941, "volume_ratio": 0.0462, "spread_pct": 0.2687, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AUCTIONTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 786058.34, "range_15m_pct": 0.0, "atr_pct": 0.0732, "volume_ratio": 0.0, "spread_pct": 0.0732, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AUDIOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 16686449.53, "range_15m_pct": 0.1042, "atr_pct": 0.1514, "volume_ratio": 0.0, "spread_pct": 0.2086, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AVAXTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 96057042.69, "range_15m_pct": 0.4261, "atr_pct": 0.2404, "volume_ratio": 0.7646, "spread_pct": 0.0327, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] AVNTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5050043.06, "range_15m_pct": 0.0, "atr_pct": 0.1332, "volume_ratio": 0.0102, "spread_pct": 0.2334, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AXLTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 434927.42, "range_15m_pct": 0.0, "atr_pct": 0.084, "volume_ratio": 0.1103, "spread_pct": 0.5865, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] AXSTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1982673.86, "range_15m_pct": 0.0, "atr_pct": 0.0519, "volume_ratio": 0.0, "spread_pct": 0.2424, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BABYTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 31185818.17, "range_15m_pct": 1.2, "atr_pct": 0.5538, "volume_ratio": 3.9889, "spread_pct": 0.199, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] BANANATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 18023325.3, "range_15m_pct": 1.1299, "atr_pct": 0.1995, "volume_ratio": 1.9286, "spread_pct": 0.5602, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BANKTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 294663412.79, "range_15m_pct": 1.2222, "atr_pct": 1.098, "volume_ratio": 0.5609, "spread_pct": 0.1104, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] BARDTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6357629.4, "range_15m_pct": 0.3676, "atr_pct": 0.6815, "volume_ratio": 0.2439, "spread_pct": 0.1833, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BARTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5675559.98, "range_15m_pct": 0.0795, "atr_pct": 0.1135, "volume_ratio": 0.0009, "spread_pct": 0.0795, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BBTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 31823765.46, "range_15m_pct": 0.5854, "atr_pct": 0.3307, "volume_ratio": 0.1034, "spread_pct": 0.071, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BCHTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 627478.27, "range_15m_pct": 0.0, "atr_pct": 0.0098, "volume_ratio": 0.0, "spread_pct": 0.0784, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BEAMXTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1083044.92, "range_15m_pct": 0.3106, "atr_pct": 0.0774, "volume_ratio": 29.5482, "spread_pct": 0.1547, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BELTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 24118823.55, "range_15m_pct": 0.4049, "atr_pct": 0.1154, "volume_ratio": 0.2145, "spread_pct": 0.2022, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BERATRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 11897408.1, "range_15m_pct": 0.4371, "atr_pct": 0.281, "volume_ratio": 0.6043, "spread_pct": 0.1312, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] BIOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 13844133.81, "range_15m_pct": 0.2591, "atr_pct": 0.1234, "volume_ratio": 0.0817, "spread_pct": 0.0864, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BLURTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2886061.91, "range_15m_pct": 0.0, "atr_pct": 0.1123, "volume_ratio": 0.0, "spread_pct": 0.1571, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BMTTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 269886490.28, "range_15m_pct": 1.6298, "atr_pct": 0.9082, "volume_ratio": 0.9277, "spread_pct": 0.1144, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] BNBTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 19885090.52, "range_15m_pct": 0.0857, "atr_pct": 0.0774, "volume_ratio": 0.6511, "spread_pct": 0.0034, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BOMETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 23266187.32, "range_15m_pct": 0.7632, "atr_pct": 0.3115, "volume_ratio": 2.5392, "spread_pct": 0.0817, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] BONKTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 65898213.89, "range_15m_pct": 0.8326, "atr_pct": 0.2965, "volume_ratio": 0.2135, "spread_pct": 0.0922, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BREVTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 406253.8, "range_15m_pct": 0.0, "atr_pct": 0.0863, "volume_ratio": 0.0, "spread_pct": 0.3017, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BTCTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 142345106.28, "range_15m_pct": 0.1104, "atr_pct": 0.0792, "volume_ratio": 2.303, "spread_pct": 0.0, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] BTTCTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1275399.64, "range_15m_pct": 0.0801, "atr_pct": 0.0914, "volume_ratio": 0.6342, "spread_pct": 0.08, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CAKETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1298538.93, "range_15m_pct": 0.1596, "atr_pct": 0.0352, "volume_ratio": 0.0, "spread_pct": 0.0579, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CATITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1878006.39, "range_15m_pct": 0.1972, "atr_pct": 0.0809, "volume_ratio": 0.0, "spread_pct": 0.1473, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CELOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 195762.01, "range_15m_pct": 0.0, "atr_pct": 0.0122, "volume_ratio": 0.0, "spread_pct": 0.0682, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CETUSTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5119653.13, "range_15m_pct": 0.0, "atr_pct": 0.0773, "volume_ratio": 0.0, "spread_pct": 0.1079, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CFGTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3549894.43, "range_15m_pct": 0.2294, "atr_pct": 0.1482, "volume_ratio": 2.1757, "spread_pct": 0.0674, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CFXTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1973548.45, "range_15m_pct": 0.3041, "atr_pct": 0.134, "volume_ratio": 0.0878, "spread_pct": 0.0507, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CHIPTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 43080516.03, "range_15m_pct": 0.7866, "atr_pct": 0.3602, "volume_ratio": 0.5078, "spread_pct": 0.1172, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] CHZTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 29150404.68, "range_15m_pct": 0.1678, "atr_pct": 0.1316, "volume_ratio": 0.0, "spread_pct": 0.1676, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CITYTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2176538.35, "range_15m_pct": 0.0, "atr_pct": 0.0, "volume_ratio": 0.3142, "spread_pct": 0.5831, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CKBTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 485568.29, "range_15m_pct": 0.2538, "atr_pct": 0.0542, "volume_ratio": 0.0, "spread_pct": 0.2535, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] COMPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 135730.28, "range_15m_pct": 0.0, "atr_pct": 0.0741, "volume_ratio": 0.0, "spread_pct": 0.1293, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] COTITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 251178142.41, "range_15m_pct": 4.6667, "atr_pct": 2.9488, "volume_ratio": 0.376, "spread_pct": 0.0161, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] COWTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 503922.05, "range_15m_pct": 0.0, "atr_pct": 0.0437, "volume_ratio": 0.0, "spread_pct": 0.2043, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CRVTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 35274344.48, "range_15m_pct": 0.2366, "atr_pct": 0.2986, "volume_ratio": 1.4089, "spread_pct": 0.0788, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] CTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 8950908.28, "range_15m_pct": 0.5699, "atr_pct": 0.2274, "volume_ratio": 0.0, "spread_pct": 0.168, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] CYBERTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2492613.46, "range_15m_pct": 0.0, "atr_pct": 0.0985, "volume_ratio": 0.0, "spread_pct": 0.692, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] DASHTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5620972.77, "range_15m_pct": 0.1383, "atr_pct": 0.0395, "volume_ratio": 0.0734, "spread_pct": 0.0691, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] DODOTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 309977074.68, "range_15m_pct": 1.1089, "atr_pct": 0.8614, "volume_ratio": 0.509, "spread_pct": 0.164, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] DOGETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 67810927.35, "range_15m_pct": 0.2081, "atr_pct": 0.0869, "volume_ratio": 0.4096, "spread_pct": 0.0297, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] DOGSTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3419265.38, "range_15m_pct": 0.0, "atr_pct": 0.0901, "volume_ratio": 0.0, "spread_pct": 0.0601, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] DOLOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4685793.43, "range_15m_pct": 0.5571, "atr_pct": 0.0861, "volume_ratio": 0.0, "spread_pct": 0.0929, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] DOTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2627733.77, "range_15m_pct": 0.2688, "atr_pct": 0.0574, "volume_ratio": 0.0, "spread_pct": 0.2685, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] DYDXTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1840637.26, "range_15m_pct": 0.1724, "atr_pct": 0.1711, "volume_ratio": 0.0, "spread_pct": 0.0573, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] DYMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6384911.39, "range_15m_pct": 0.7979, "atr_pct": 0.112, "volume_ratio": 0.0, "spread_pct": 0.1464, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] EDENTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 23619102.47, "range_15m_pct": 0.42, "atr_pct": 0.259, "volume_ratio": 0.1892, "spread_pct": 0.0932, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] EDUTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 29542701.64, "range_15m_pct": 0.0, "atr_pct": 0.374, "volume_ratio": 0.0, "spread_pct": 0.5222, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] EGLDTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1410149.67, "range_15m_pct": 0.0, "atr_pct": 0.0396, "volume_ratio": 0.0, "spread_pct": 0.1584, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] EIGENTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 26746641.05, "range_15m_pct": 0.1217, "atr_pct": 0.2779, "volume_ratio": 0.5094, "spread_pct": 0.0729, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ENATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 56894507.67, "range_15m_pct": 0.1207, "atr_pct": 0.2617, "volume_ratio": 0.2125, "spread_pct": 0.0482, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ENJTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 12039055.19, "range_15m_pct": 0.5025, "atr_pct": 0.2273, "volume_ratio": 0.065, "spread_pct": 0.1676, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ENSOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 8952770.53, "range_15m_pct": 0.2242, "atr_pct": 0.1119, "volume_ratio": 0.3614, "spread_pct": 0.2235, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ENSTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2877563.15, "range_15m_pct": 0.153, "atr_pct": 0.0436, "volume_ratio": 0.0, "spread_pct": 0.0509, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ERATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5349991.85, "range_15m_pct": 0.3311, "atr_pct": 0.0707, "volume_ratio": 0.1165, "spread_pct": 0.3295, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ESPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 33516376.71, "range_15m_pct": 0.9357, "atr_pct": 0.3173, "volume_ratio": 0.1088, "spread_pct": 0.0587, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ETCTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 264990.15, "range_15m_pct": 0.3656, "atr_pct": 0.0307, "volume_ratio": 0.8759, "spread_pct": 0.1656, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ETHFITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 26130239.8, "range_15m_pct": 0.3313, "atr_pct": 0.1494, "volume_ratio": 2.9411, "spread_pct": 0.0551, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ETHTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 213728206.14, "range_15m_pct": 0.1925, "atr_pct": 0.1261, "volume_ratio": 0.1283, "spread_pct": 0.0011, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] EULTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 32393074.81, "range_15m_pct": 0.7055, "atr_pct": 0.8062, "volume_ratio": 0.2705, "spread_pct": 0.1765, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] FDUSDTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 7177350.18, "range_15m_pct": 0.042, "atr_pct": 0.0135, "volume_ratio": 0.0133, "spread_pct": 0.021, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] FETTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 24772638.83, "range_15m_pct": 0.4702, "atr_pct": 0.1674, "volume_ratio": 0.5919, "spread_pct": 0.1564, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] FFTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1916736.91, "range_15m_pct": 0.0326, "atr_pct": 0.0745, "volume_ratio": 0.7268, "spread_pct": 0.0651, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] FIDATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 7376577.05, "range_15m_pct": 0.1189, "atr_pct": 0.0849, "volume_ratio": 1.1025, "spread_pct": 0.1188, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] FILTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3478224.62, "range_15m_pct": 0.2124, "atr_pct": 0.1257, "volume_ratio": 0.0163, "spread_pct": 0.0911, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] FLOKITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 12283373.18, "range_15m_pct": 0.1021, "atr_pct": 0.1385, "volume_ratio": 1.0604, "spread_pct": 0.102, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] FOGOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3255987.32, "range_15m_pct": 0.2392, "atr_pct": 0.1193, "volume_ratio": 0.123, "spread_pct": 0.2384, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] FORMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 7861721.26, "range_15m_pct": 0.1934, "atr_pct": 0.1589, "volume_ratio": 0.0196, "spread_pct": 0.0967, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] FTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4085163.26, "range_15m_pct": 0.0, "atr_pct": 0.1347, "volume_ratio": 0.0, "spread_pct": 0.1509, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] GALATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 12175752.37, "range_15m_pct": 0.2497, "atr_pct": 0.1694, "volume_ratio": 0.0, "spread_pct": 0.1249, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] GASTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 388955.38, "range_15m_pct": 0.2273, "atr_pct": 0.0486, "volume_ratio": 1.9704, "spread_pct": 0.227, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] GENIUSTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 14773891.04, "range_15m_pct": 0.1633, "atr_pct": 0.3072, "volume_ratio": 1.0109, "spread_pct": 0.1086, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] GIGGLETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 92037968.07, "range_15m_pct": 0.3569, "atr_pct": 0.3268, "volume_ratio": 0.7013, "spread_pct": 0.1188, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] GMTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1014377.52, "range_15m_pct": 0.0, "atr_pct": 0.0455, "volume_ratio": 2.0212, "spread_pct": 0.319, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] GPSTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 8294058.52, "range_15m_pct": 0.0, "atr_pct": 0.5349, "volume_ratio": 0.0097, "spread_pct": 0.2205, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] GRAMTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 19221597.56, "range_15m_pct": 0.9491, "atr_pct": 0.207, "volume_ratio": 2.1464, "spread_pct": 0.0618, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] GRTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3819207.01, "range_15m_pct": 0.3082, "atr_pct": 0.1871, "volume_ratio": 0.0576, "spread_pct": 0.1544, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] GTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3017194.5, "range_15m_pct": 0.0, "atr_pct": 0.0, "volume_ratio": 0.0, "spread_pct": 0.5865, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] GUNTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 31311261.98, "range_15m_pct": 0.6711, "atr_pct": 0.4286, "volume_ratio": 0.005, "spread_pct": 0.6689, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] HAEDALTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4795835.29, "range_15m_pct": 0.0, "atr_pct": 0.0271, "volume_ratio": 0.0, "spread_pct": 0.1263, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] HBARTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2842032.36, "range_15m_pct": 0.1272, "atr_pct": 0.0545, "volume_ratio": 0.6648, "spread_pct": 0.0318, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] HEITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 239577932.41, "range_15m_pct": 0.6543, "atr_pct": 0.754, "volume_ratio": 0.3237, "spread_pct": 0.0319, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] HEMITRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 21624022.47, "range_15m_pct": 0.4869, "atr_pct": 0.1513, "volume_ratio": 2.6934, "spread_pct": 0.0883, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] HIVETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 644003.11, "range_15m_pct": 0.0, "atr_pct": 0.0752, "volume_ratio": 0.0, "spread_pct": 0.5249, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] HMSTRTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 31494552.16, "range_15m_pct": 0.2347, "atr_pct": 0.1338, "volume_ratio": 0.3136, "spread_pct": 0.1165, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] HOLOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 524219084.03, "range_15m_pct": 0.6469, "atr_pct": 0.3649, "volume_ratio": 0.4644, "spread_pct": 0.1465, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] HOMETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 119834145.12, "range_15m_pct": 0.4684, "atr_pct": 0.3346, "volume_ratio": 0.2841, "spread_pct": 0.2345, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] HOTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5428764.2, "range_15m_pct": 0.3195, "atr_pct": 0.0773, "volume_ratio": 0.273, "spread_pct": 0.0637, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] HUMATRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 2799435.37, "range_15m_pct": 0.9544, "atr_pct": 0.1951, "volume_ratio": 12.5708, "spread_pct": 0.2092, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] HYPERTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 17743615.65, "range_15m_pct": 0.0, "atr_pct": 0.071, "volume_ratio": 0.0, "spread_pct": 0.3306, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ICPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3393189.71, "range_15m_pct": 0.0962, "atr_pct": 0.0687, "volume_ratio": 0.0, "spread_pct": 0.0962, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] IDTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 13704576.62, "range_15m_pct": 0.2216, "atr_pct": 0.0897, "volume_ratio": 0.1559, "spread_pct": 0.1474, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] INITTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 691279.09, "range_15m_pct": 0.0, "atr_pct": 0.1157, "volume_ratio": 0.0, "spread_pct": 0.4057, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] INJTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 25921022.06, "range_15m_pct": 0.408, "atr_pct": 0.1999, "volume_ratio": 0.2482, "spread_pct": 0.0451, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] IOTATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3293212.03, "range_15m_pct": 0.1839, "atr_pct": 0.0657, "volume_ratio": 0.0, "spread_pct": 0.2446, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] IOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4531135.59, "range_15m_pct": 0.0, "atr_pct": 0.1468, "volume_ratio": 0.0, "spread_pct": 0.1284, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] JASMYTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2773563.99, "range_15m_pct": 0.5236, "atr_pct": 0.0372, "volume_ratio": 0.0, "spread_pct": 0.5195, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] JTOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 10282264.67, "range_15m_pct": 0.4156, "atr_pct": 0.1427, "volume_ratio": 0.1535, "spread_pct": 0.0755, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] JUPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1330780.24, "range_15m_pct": 0.123, "atr_pct": 0.123, "volume_ratio": 1.1666, "spread_pct": 0.1231, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] JUVTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6004786.09, "range_15m_pct": 0.069, "atr_pct": 0.0394, "volume_ratio": 1.9158, "spread_pct": 0.069, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] KAITOTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 115335188.3, "range_15m_pct": 1.0157, "atr_pct": 0.7182, "volume_ratio": 0.7969, "spread_pct": 0.1303, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] KATTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5392093.15, "range_15m_pct": 0.3303, "atr_pct": 0.0773, "volume_ratio": 0.9693, "spread_pct": 0.047, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] KERNELTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6881742.69, "range_15m_pct": 0.0, "atr_pct": 0.1239, "volume_ratio": 0.0, "spread_pct": 0.5764, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] KITETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 5537954.71, "range_15m_pct": 0.7438, "atr_pct": 0.1925, "volume_ratio": 14.5517, "spread_pct": 0.0822, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] KSMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 440727.03, "range_15m_pct": 0.0, "atr_pct": 0.0514, "volume_ratio": 0.0, "spread_pct": 0.7168, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 15335549.09, "range_15m_pct": 0.4274, "atr_pct": 0.2442, "volume_ratio": 0.0255, "spread_pct": 0.4264, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LAYERTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 10833766.03, "range_15m_pct": 0.3546, "atr_pct": 0.2019, "volume_ratio": 0.0, "spread_pct": 0.354, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LAZIOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2746526.59, "range_15m_pct": 0.8589, "atr_pct": 0.1052, "volume_ratio": 0.0, "spread_pct": 0.9138, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LDOTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 11615000.52, "range_15m_pct": 0.3647, "atr_pct": 0.1557, "volume_ratio": 1.1821, "spread_pct": 0.0726, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] LINEATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1570187.43, "range_15m_pct": 0.0, "atr_pct": 0.0625, "volume_ratio": 0.0, "spread_pct": 0.0969, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LINKTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 17162972.02, "range_15m_pct": 0.1917, "atr_pct": 0.082, "volume_ratio": 0.0605, "spread_pct": 0.0239, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LISTATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 8800834.69, "range_15m_pct": 0.3205, "atr_pct": 0.0916, "volume_ratio": 6.0355, "spread_pct": 0.321, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LPTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1849809.17, "range_15m_pct": 0.0, "atr_pct": 0.0248, "volume_ratio": 0.0, "spread_pct": 0.1729, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LTCTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2389859.47, "range_15m_pct": 0.0935, "atr_pct": 0.0367, "volume_ratio": 0.0985, "spread_pct": 0.0468, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LUMIATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2333676.74, "range_15m_pct": 0.0, "atr_pct": 0.0445, "volume_ratio": 0.0, "spread_pct": 0.3108, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] LUNATRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 161677989.34, "range_15m_pct": 0.2431, "atr_pct": 0.1905, "volume_ratio": 1.8922, "spread_pct": 0.0486, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] LUNCTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 62494283.61, "range_15m_pct": 0.4635, "atr_pct": 0.1534, "volume_ratio": 0.772, "spread_pct": 0.0421, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] MAGICTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2797307.78, "range_15m_pct": 0.0, "atr_pct": 0.2256, "volume_ratio": 0.0, "spread_pct": 0.5249, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MANATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 838219.58, "range_15m_pct": 0.0, "atr_pct": 0.0459, "volume_ratio": 0.7254, "spread_pct": 0.3221, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MANTATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 777779.18, "range_15m_pct": 0.548, "atr_pct": 0.1116, "volume_ratio": 0.5989, "spread_pct": 0.0364, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MANTRATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6583515.82, "range_15m_pct": 0.0405, "atr_pct": 0.0753, "volume_ratio": 0.0, "spread_pct": 0.081, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MASKTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 471520.36, "range_15m_pct": 0.3555, "atr_pct": 0.0843, "volume_ratio": 0.0, "spread_pct": 0.2365, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MAVTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 13717308.5, "range_15m_pct": 2.439, "atr_pct": 1.0453, "volume_ratio": 0.3954, "spread_pct": 2.4096, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MEGATRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 12864669.16, "range_15m_pct": 0.5057, "atr_pct": 0.2159, "volume_ratio": 2.3362, "spread_pct": 0.0629, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] MEMETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4368500.32, "range_15m_pct": 0.4255, "atr_pct": 0.152, "volume_ratio": 0.2209, "spread_pct": 0.4246, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] METISTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 625132.69, "range_15m_pct": 0.8621, "atr_pct": 0.3053, "volume_ratio": 0.0, "spread_pct": 0.8584, "checks": {"quote_volume": false, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] METRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 6935352.59, "range_15m_pct": 0.4706, "atr_pct": 0.1555, "volume_ratio": 1.2941, "spread_pct": 0.134, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] METTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3234166.34, "range_15m_pct": 0.0, "atr_pct": 0.0, "volume_ratio": 0.0, "spread_pct": 0.7926, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MINATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3021116.14, "range_15m_pct": 0.0, "atr_pct": 0.1171, "volume_ratio": 0.0099, "spread_pct": 0.5479, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MIRATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4289832.97, "range_15m_pct": 0.0, "atr_pct": 0.148, "volume_ratio": 0.9051, "spread_pct": 0.5195, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MITOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 42853352.13, "range_15m_pct": 0.5213, "atr_pct": 0.173, "volume_ratio": 0.0723, "spread_pct": 0.0865, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MMTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 38525679.82, "range_15m_pct": 0.7617, "atr_pct": 0.5972, "volume_ratio": 0.3706, "spread_pct": 0.1084, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MORPHOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 212097.87, "range_15m_pct": 0.3707, "atr_pct": 0.1612, "volume_ratio": 0.6642, "spread_pct": 0.3595, "checks": {"quote_volume": false, "range_15m": true, "atr": true, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MOVRTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 128895900.51, "range_15m_pct": 1.7327, "atr_pct": 0.7547, "volume_ratio": 0.2105, "spread_pct": 0.2466, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] MUBARAKTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 108561349.61, "range_15m_pct": 1.6148, "atr_pct": 0.6324, "volume_ratio": 0.7662, "spread_pct": 0.1136, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] NEARTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 26921732.75, "range_15m_pct": 0.5122, "atr_pct": 0.1829, "volume_ratio": 0.7458, "spread_pct": 0.1285, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] NEIROTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 20643602.72, "range_15m_pct": 0.0, "atr_pct": 0.1597, "volume_ratio": 0.0, "spread_pct": 0.32, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] NEOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 975724.86, "range_15m_pct": 0.0, "atr_pct": 0.0608, "volume_ratio": 0.0, "spread_pct": 0.2439, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] NEWTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1630168.72, "range_15m_pct": 0.0, "atr_pct": 0.0395, "volume_ratio": 0.0, "spread_pct": 0.554, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] NIGHTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3150000.13, "range_15m_pct": 0.1192, "atr_pct": 0.1701, "volume_ratio": 0.4524, "spread_pct": 0.1191, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] NILTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 189448455.77, "range_15m_pct": 0.9828, "atr_pct": 1.0119, "volume_ratio": 0.3075, "spread_pct": 0.1944, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] NMRTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 215287.53, "range_15m_pct": 0.4779, "atr_pct": 0.034, "volume_ratio": 0.2567, "spread_pct": 0.4745, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] NOMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 11145968.21, "range_15m_pct": 0.0, "atr_pct": 0.4699, "volume_ratio": 0.0007, "spread_pct": 1.3245, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] NOTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 8179851.77, "range_15m_pct": 0.0, "atr_pct": 0.2076, "volume_ratio": 0.0, "spread_pct": 0.5831, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] NXPCTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1414458.91, "range_15m_pct": 0.0, "atr_pct": 0.0308, "volume_ratio": 0.0, "spread_pct": 0.2167, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] OGNTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 929496.83, "range_15m_pct": 0.3886, "atr_pct": 0.129, "volume_ratio": 0.0, "spread_pct": 0.2577, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] OGTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6794802.02, "range_15m_pct": 0.0, "atr_pct": 0.1336, "volume_ratio": 0.0, "spread_pct": 0.1705, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ONDOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 17964681.07, "range_15m_pct": 0.1895, "atr_pct": 0.1082, "volume_ratio": 0.0286, "spread_pct": 0.0631, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ONETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 405735093.64, "range_15m_pct": 1.5385, "atr_pct": 1.2297, "volume_ratio": 0.1668, "spread_pct": 0.2541, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ONTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 886490.22, "range_15m_pct": 0.0, "atr_pct": 0.0667, "volume_ratio": 0.0, "spread_pct": 0.1168, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] OPENTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 103549829.4, "range_15m_pct": 0.2847, "atr_pct": 0.1263, "volume_ratio": 6.0854, "spread_pct": 0.2235, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] OPGTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 18422107.42, "range_15m_pct": 0.0, "atr_pct": 0.1913, "volume_ratio": 0.1096, "spread_pct": 0.2235, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] OPNTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 7565909.69, "range_15m_pct": 0.0, "atr_pct": 0.0928, "volume_ratio": 0.0, "spread_pct": 0.432, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] OPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3912033.09, "range_15m_pct": 0.0, "atr_pct": 0.1171, "volume_ratio": 0.0, "spread_pct": 0.2345, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ORCATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 606617.97, "range_15m_pct": 0.6122, "atr_pct": 0.1014, "volume_ratio": 0.0773, "spread_pct": 0.203, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ORDITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5721182.79, "range_15m_pct": 0.1821, "atr_pct": 0.0997, "volume_ratio": 0.1064, "spread_pct": 0.0607, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PARTITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 22453324.96, "range_15m_pct": 0.9259, "atr_pct": 0.3932, "volume_ratio": 0.0, "spread_pct": 0.9217, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PAXGTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 39430680.04, "range_15m_pct": 0.0252, "atr_pct": 0.0269, "volume_ratio": 0.0, "spread_pct": 0.0005, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PENDLETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1564285.26, "range_15m_pct": 0.0, "atr_pct": 0.1237, "volume_ratio": 0.0, "spread_pct": 0.1574, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PENGUTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 17404429.7, "range_15m_pct": 0.2303, "atr_pct": 0.1669, "volume_ratio": 0.1431, "spread_pct": 0.0329, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PEOPLETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 12408152.95, "range_15m_pct": 0.5222, "atr_pct": 0.1678, "volume_ratio": 2.4417, "spread_pct": 0.2614, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] PEPETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 73168620.8, "range_15m_pct": 0.2557, "atr_pct": 0.1352, "volume_ratio": 0.3772, "spread_pct": 0.0075, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PHATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4376771.85, "range_15m_pct": 0.0, "atr_pct": 0.1361, "volume_ratio": 0.0, "spread_pct": 0.9479, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PIXELTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 10485517.78, "range_15m_pct": 0.0, "atr_pct": 0.2415, "volume_ratio": 0.0, "spread_pct": 0.4819, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PLUMETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 13192644.49, "range_15m_pct": 0.3623, "atr_pct": 0.2583, "volume_ratio": 1.4539, "spread_pct": 0.1807, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] PNUTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 9828908.98, "range_15m_pct": 0.0, "atr_pct": 0.148, "volume_ratio": 0.0, "spread_pct": 0.5195, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] POLTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1126100.69, "range_15m_pct": 0.0, "atr_pct": 0.0803, "volume_ratio": 0.0, "spread_pct": 0.0281, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] POLYXTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 408361.98, "range_15m_pct": 0.0, "atr_pct": 0.0, "volume_ratio": 0.0, "spread_pct": 0.6969, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PORTALTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 12649897.13, "range_15m_pct": 0.1377, "atr_pct": 0.0815, "volume_ratio": 0.0, "spread_pct": 0.1376, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PORTOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1488513.8, "range_15m_pct": 0.0, "atr_pct": 0.0414, "volume_ratio": 0.0, "spread_pct": 0.4355, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PROVETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 255990.56, "range_15m_pct": 0.2825, "atr_pct": 0.0705, "volume_ratio": 17.7354, "spread_pct": 0.1409, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PSGTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 11962720.89, "range_15m_pct": 0.724, "atr_pct": 0.4746, "volume_ratio": 0.3534, "spread_pct": 0.2974, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PUMPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 38515450.7, "range_15m_pct": 0.2317, "atr_pct": 0.2592, "volume_ratio": 0.3618, "spread_pct": 0.0772, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] PYTHTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6936872.59, "range_15m_pct": 0.26, "atr_pct": 0.182, "volume_ratio": 0.0, "spread_pct": 0.0521, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] QTUMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4426856.11, "range_15m_pct": 0.0, "atr_pct": 0.8242, "volume_ratio": 0.0, "spread_pct": 0.32, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] RADTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 75924939.76, "range_15m_pct": 0.6239, "atr_pct": 0.2345, "volume_ratio": 0.0293, "spread_pct": 0.1776, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] RARETRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 352996863.4, "range_15m_pct": 0.6784, "atr_pct": 0.3667, "volume_ratio": 1.0932, "spread_pct": 0.033, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] RAYTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1581647.16, "range_15m_pct": 0.3308, "atr_pct": 0.0542, "volume_ratio": 0.0, "spread_pct": 0.0987, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] REDTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2889625.86, "range_15m_pct": 0.4926, "atr_pct": 0.0875, "volume_ratio": 0.0, "spread_pct": 0.2454, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] RENDERTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 14344550.2, "range_15m_pct": 0.3344, "atr_pct": 0.1669, "volume_ratio": 127.3713, "spread_pct": 0.1671, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] RESOLVTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3640420.87, "range_15m_pct": 0.0, "atr_pct": 0.1147, "volume_ratio": 0.0, "spread_pct": 0.1245, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] RETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 70297969.13, "range_15m_pct": 0.3966, "atr_pct": 0.2902, "volume_ratio": 0.0134, "spread_pct": 0.0991, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] REZTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6771749.03, "range_15m_pct": 1.1547, "atr_pct": 0.1798, "volume_ratio": 0.0798, "spread_pct": 0.0764, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ROBOTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 47514406.42, "range_15m_pct": 1.1236, "atr_pct": 0.4095, "volume_ratio": 0.7395, "spread_pct": 0.1594, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] RONINTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 389692.02, "range_15m_pct": 0.4255, "atr_pct": 0.1211, "volume_ratio": 0.5525, "spread_pct": 0.4246, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ROSETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 8635364.03, "range_15m_pct": 0.0, "atr_pct": 0.0698, "volume_ratio": 0.0, "spread_pct": 0.1563, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] RSRTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 286572.73, "range_15m_pct": 0.5263, "atr_pct": 0.0748, "volume_ratio": 5.3041, "spread_pct": 0.1744, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] RVNTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 36392627.64, "range_15m_pct": 0.394, "atr_pct": 0.3756, "volume_ratio": 0.0455, "spread_pct": 0.0785, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SAGATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 56008615.18, "range_15m_pct": 1.0189, "atr_pct": 0.5391, "volume_ratio": 0.2919, "spread_pct": 0.145, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SAHARATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 9767858.55, "range_15m_pct": 0.0809, "atr_pct": 0.1308, "volume_ratio": 0.055, "spread_pct": 0.0539, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SANDTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3131868.24, "range_15m_pct": 0.0, "atr_pct": 0.096, "volume_ratio": 0.0, "spread_pct": 0.3752, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SANTOSTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 9807211.49, "range_15m_pct": 0.2655, "atr_pct": 0.1797, "volume_ratio": 0.0, "spread_pct": 0.1326, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SAPIENTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2960535.12, "range_15m_pct": 0.3483, "atr_pct": 0.1053, "volume_ratio": 0.0451, "spread_pct": 0.0803, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SCRTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1166864.99, "range_15m_pct": 0.0, "atr_pct": 0.1026, "volume_ratio": 0.0, "spread_pct": 0.1025, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SEITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2360366.16, "range_15m_pct": 0.1041, "atr_pct": 0.1449, "volume_ratio": 5.4093, "spread_pct": 0.052, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SENTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3508142.15, "range_15m_pct": 0.6541, "atr_pct": 0.3396, "volume_ratio": 0.0119, "spread_pct": 0.0797, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SHELLTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 11273309.8, "range_15m_pct": 1.0526, "atr_pct": 0.5952, "volume_ratio": 0.0585, "spread_pct": 1.0471, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SHIBTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 23716701.71, "range_15m_pct": 0.1874, "atr_pct": 0.1002, "volume_ratio": 0.0139, "spread_pct": 0.0468, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SIGNTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1112903.02, "range_15m_pct": 0.0, "atr_pct": 0.0227, "volume_ratio": 0.0, "spread_pct": 0.316, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SKLTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4163720.71, "range_15m_pct": 0.5988, "atr_pct": 0.1701, "volume_ratio": 0.2308, "spread_pct": 0.597, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SKYTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 695505.74, "range_15m_pct": 0.2378, "atr_pct": 0.0424, "volume_ratio": 0.501, "spread_pct": 0.0395, "checks": {"quote_volume": false, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SLPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 804305.78, "range_15m_pct": 0.0, "atr_pct": 0.1067, "volume_ratio": 0.0, "spread_pct": 0.486, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SNXTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4196879.16, "range_15m_pct": 0.3151, "atr_pct": 0.1349, "volume_ratio": 0.8018, "spread_pct": 0.2099, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SOLTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 56213292.49, "range_15m_pct": 0.1492, "atr_pct": 0.0958, "volume_ratio": 0.436, "spread_pct": 0.011, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SOLVTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6018135.61, "range_15m_pct": 0.0, "atr_pct": 0.2551, "volume_ratio": 0.7329, "spread_pct": 0.8969, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SOMITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 16490182.85, "range_15m_pct": 0.4773, "atr_pct": 0.1018, "volume_ratio": 0.4086, "spread_pct": 0.2378, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SOPHTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 40339132.88, "range_15m_pct": 0.0, "atr_pct": 0.1261, "volume_ratio": 0.0, "spread_pct": 0.5865, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SPELLTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 7863797.94, "range_15m_pct": 0.2695, "atr_pct": 0.0768, "volume_ratio": 0.0, "spread_pct": 0.2692, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SPKTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3099104.64, "range_15m_pct": 0.1489, "atr_pct": 0.0935, "volume_ratio": 2.9956, "spread_pct": 0.1043, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] STOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 9485524.19, "range_15m_pct": 0.1088, "atr_pct": 0.0855, "volume_ratio": 0.2213, "spread_pct": 0.0544, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] STRAXTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 33649404.68, "range_15m_pct": 0.7463, "atr_pct": 0.0884, "volume_ratio": 1.8623, "spread_pct": 0.2472, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] STRKTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5866451.17, "range_15m_pct": 0.3636, "atr_pct": 0.1426, "volume_ratio": 0.2116, "spread_pct": 0.0908, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] STRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1937477.27, "range_15m_pct": 0.0, "atr_pct": 0.0397, "volume_ratio": 0.0, "spread_pct": 0.0927, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] STXTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2173336.32, "range_15m_pct": 0.0, "atr_pct": 0.1097, "volume_ratio": 0.0, "spread_pct": 0.1705, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SUITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 15765714.85, "range_15m_pct": 0.1831, "atr_pct": 0.0979, "volume_ratio": 0.0367, "spread_pct": 0.0305, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SUNTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1383104.97, "range_15m_pct": 0.0, "atr_pct": 0.0123, "volume_ratio": 0.0, "spread_pct": 0.1035, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SUPERTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2120729.14, "range_15m_pct": 0.0, "atr_pct": 0.0, "volume_ratio": 0.0, "spread_pct": 0.2454, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SUSHITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1220699.13, "range_15m_pct": 0.0, "atr_pct": 0.0557, "volume_ratio": 0.0, "spread_pct": 0.1294, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SXTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3341133.45, "range_15m_pct": 0.7131, "atr_pct": 0.1279, "volume_ratio": 0.0099, "spread_pct": 0.1707, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] SYRUPTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 2184007.21, "range_15m_pct": 0.9591, "atr_pct": 0.2077, "volume_ratio": 0.9107, "spread_pct": 0.1268, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] TAOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 22070195.02, "range_15m_pct": 0.5053, "atr_pct": 0.1878, "volume_ratio": 0.1802, "spread_pct": 0.021, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] THETATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2386381.42, "range_15m_pct": 0.0, "atr_pct": 0.0736, "volume_ratio": 0.0, "spread_pct": 0.1091, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] THETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 23470150.62, "range_15m_pct": 0.3499, "atr_pct": 0.1868, "volume_ratio": 0.1308, "spread_pct": 0.0349, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TIATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 21794834.03, "range_15m_pct": 0.274, "atr_pct": 0.1223, "volume_ratio": 0.0662, "spread_pct": 0.0684, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TLMTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 51622790.59, "range_15m_pct": 4.5333, "atr_pct": 0.8894, "volume_ratio": 8.1918, "spread_pct": 0.1283, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] TNSRTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 22090906.45, "range_15m_pct": 0.6579, "atr_pct": 0.2334, "volume_ratio": 0.0187, "spread_pct": 0.6557, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TOWNSTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 9993028.2, "range_15m_pct": 0.0, "atr_pct": 0.1348, "volume_ratio": 0.0, "spread_pct": 0.939, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TRBTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 14952931.41, "range_15m_pct": 0.0, "atr_pct": 0.0661, "volume_ratio": 0.0, "spread_pct": 0.1542, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TREETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1346379.89, "range_15m_pct": 0.0, "atr_pct": 0.0438, "volume_ratio": 0.0, "spread_pct": 0.6116, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TRUMPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 19708832.65, "range_15m_pct": 0.1456, "atr_pct": 0.1038, "volume_ratio": 0.0, "spread_pct": 0.1455, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TRXTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 34880601.92, "range_15m_pct": 0.0375, "atr_pct": 0.0326, "volume_ratio": 1.1802, "spread_pct": 0.0062, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TSTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 123140560.99, "range_15m_pct": 1.0309, "atr_pct": 0.4269, "volume_ratio": 0.1564, "spread_pct": 0.1467, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TURBOTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4739835.27, "range_15m_pct": 0.2625, "atr_pct": 0.0374, "volume_ratio": 0.0, "spread_pct": 0.2621, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TURTLETRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1647489.77, "range_15m_pct": 0.0, "atr_pct": 0.0687, "volume_ratio": 0.0, "spread_pct": 0.4773, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] TWTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4434072.4, "range_15m_pct": 0.4219, "atr_pct": 0.3939, "volume_ratio": 0.0611, "spread_pct": 0.0525, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] UMATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 3507084.97, "range_15m_pct": 0.0644, "atr_pct": 0.0368, "volume_ratio": 0.0, "spread_pct": 0.0642, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] UNITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 19989373.12, "range_15m_pct": 0.9473, "atr_pct": 0.1885, "volume_ratio": 0.4113, "spread_pct": 0.0586, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] USD1TRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 362528.01, "range_15m_pct": 0.0, "atr_pct": 0.003, "volume_ratio": 0.0, "spread_pct": 0.021, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] USDCTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 80493518.72, "range_15m_pct": 0.021, "atr_pct": 0.0209, "volume_ratio": 0.7215, "spread_pct": 0.0209, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] USDTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1067895863.36, "range_15m_pct": 0.021, "atr_pct": 0.021, "volume_ratio": 1.4717, "spread_pct": 0.021, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] USTCTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 8395035.76, "range_15m_pct": 0.2092, "atr_pct": 0.1014, "volume_ratio": 0.1569, "spread_pct": 0.0836, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] USUALTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4421881.65, "range_15m_pct": 0.0, "atr_pct": 0.0688, "volume_ratio": 0.0, "spread_pct": 0.2418, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] UTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 911711.86, "range_15m_pct": 0.0, "atr_pct": 0.0, "volume_ratio": 0.0, "spread_pct": 0.021, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] VANATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1431354.89, "range_15m_pct": 0.2494, "atr_pct": 0.1247, "volume_ratio": 0.1248, "spread_pct": 0.2491, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] VANRYTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 38564808.53, "range_15m_pct": 1.8993, "atr_pct": 1.2005, "volume_ratio": 0.1691, "spread_pct": 0.2821, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] VETTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 844425.54, "range_15m_pct": 0.0, "atr_pct": 0.0922, "volume_ratio": 0.0, "spread_pct": 0.0461, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] VICTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 70818813.3, "range_15m_pct": 2.5424, "atr_pct": 1.8007, "volume_ratio": 1.5093, "spread_pct": 0.8439, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] VIRTUALTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 44347993.59, "range_15m_pct": 0.4947, "atr_pct": 0.4463, "volume_ratio": 0.5058, "spread_pct": 0.0708, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] WALTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2624870.09, "range_15m_pct": 0.0, "atr_pct": 0.4161, "volume_ratio": 0.0, "spread_pct": 0.9756, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] WCTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 480769.57, "range_15m_pct": 0.0, "atr_pct": 0.055, "volume_ratio": 0.0, "spread_pct": 0.059, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] WIFTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 5557160.84, "range_15m_pct": 0.2688, "atr_pct": 0.1077, "volume_ratio": 1.3156, "spread_pct": 0.0746, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] WLDTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 30604675.03, "range_15m_pct": 0.1263, "atr_pct": 0.2121, "volume_ratio": 0.3087, "spread_pct": 0.1262, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] WLFITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6249049.67, "range_15m_pct": 0.0, "atr_pct": 0.0272, "volume_ratio": 0.5535, "spread_pct": 0.0381, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] WTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 4086843.06, "range_15m_pct": 0.0, "atr_pct": 0.0902, "volume_ratio": 0.0, "spread_pct": 0.2058, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] XAITRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 11041395.82, "range_15m_pct": 0.1945, "atr_pct": 0.1621, "volume_ratio": 0.3357, "spread_pct": 0.0972, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] XAUTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 23493076.48, "range_15m_pct": 0.0578, "atr_pct": 0.0391, "volume_ratio": 0.0, "spread_pct": 0.0005, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] XECTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 2034591.05, "range_15m_pct": 0.0645, "atr_pct": 0.0437, "volume_ratio": 0.0308, "spread_pct": 0.1932, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] XLMTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 11731137.89, "range_15m_pct": 0.3425, "atr_pct": 0.0928, "volume_ratio": 25.6496, "spread_pct": 0.0131, "checks": {"quote_volume": true, "range_15m": true, "atr": false, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] XPLTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6656348.62, "range_15m_pct": 0.2488, "atr_pct": 0.1754, "volume_ratio": 0.456, "spread_pct": 0.0552, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] XRPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 98608368.82, "range_15m_pct": 0.1038, "atr_pct": 0.0874, "volume_ratio": 0.3732, "spread_pct": 0.0207, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] XTZTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 256012.51, "range_15m_pct": 0.0, "atr_pct": 0.0, "volume_ratio": 0.0, "spread_pct": 0.7499, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] XVGTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 12156102.36, "range_15m_pct": 0.4878, "atr_pct": 0.1737, "volume_ratio": 30.8546, "spread_pct": 0.0972, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] YBTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 6324872.17, "range_15m_pct": 0.0, "atr_pct": 0.0191, "volume_ratio": 0.0, "spread_pct": 0.2663, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ZAMATRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 149979.98, "range_15m_pct": 0.0, "atr_pct": 0.0, "volume_ratio": 0.0, "spread_pct": 0.2664, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ZBTTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 42143170.0, "range_15m_pct": 0.0, "atr_pct": 0.1669, "volume_ratio": 0.5438, "spread_pct": 0.2339, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ZILTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 12601413.05, "range_15m_pct": 0.2683, "atr_pct": 0.1658, "volume_ratio": 0.112, "spread_pct": 0.1787, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ZKCTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 914020.84, "range_15m_pct": 0.0, "atr_pct": 0.0789, "volume_ratio": 0.4703, "spread_pct": 0.554, "checks": {"quote_volume": false, "range_15m": false, "atr": false, "volume_ratio": false, "spread": false}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ZKPTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 1683618.99, "range_15m_pct": 0.0, "atr_pct": 0.0817, "volume_ratio": 0.0, "spread_pct": 0.2477, "checks": {"quote_volume": true, "range_15m": false, "atr": false, "volume_ratio": false, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[ACTIVITY] ZKTRY status=ACTIVE metrics={"status": "ACTIVE", "quote_volume": 12375746.82, "range_15m_pct": 0.8523, "atr_pct": 0.2023, "volume_ratio": 110.4032, "spread_pct": 0.2821, "checks": {"quote_volume": true, "range_15m": true, "atr": true, "volume_ratio": true, "spread": true}, "reason": "active"}
+[ACTIVITY] ZROTRY status=PASSIVE metrics={"status": "PASSIVE", "quote_volume": 8183234.71, "range_15m_pct": 0.0, "atr_pct": 0.1813, "volume_ratio": 0.5058, "spread_pct": 0.2535, "checks": {"quote_volume": true, "range_15m": false, "atr": true, "volume_ratio": true, "spread": true}, "reason": "movement_or_liquidity_below_threshold"}
+[DATA] BMTTRY source=BinanceTR-public interval=30m candles=95
+[DATA] AUDIOTRY source=BinanceTR-public interval=30m candles=95
+[DATA] RADTRY source=BinanceTR-public interval=30m candles=95
+[DATA] ATMTRY source=BinanceTR-public interval=30m candles=95
+[DATA] LUNATRY source=BinanceTR-public interval=30m candles=95
+[DATA] MUBARAKTRY source=BinanceTR-public interval=30m candles=95
+[DATA] EDUTRY source=BinanceTR-public interval=30m candles=95
+[DATA] HOMETRY source=BinanceTR-public interval=30m candles=95
+[DATA] MITOTRY source=BinanceTR-public interval=30m candles=95
+[DATA] ADATRY source=BinanceTR-public interval=30m candles=95
+[DATA] VICTRY source=BinanceTR-public interval=30m candles=95
+[DATA] MOVRTRY source=BinanceTR-public interval=30m candles=95
+[DATA] CTRY source=BinanceTR-public interval=30m candles=95
+[DATA] HEITRY source=BinanceTR-public interval=30m candles=95
+[DATA] RETRY source=BinanceTR-public interval=30m candles=95
+[DATA] CITYTRY source=BinanceTR-public interval=30m candles=95
+[DATA] DASHTRY source=BinanceTR-public interval=30m candles=95
+[DATA] MIRATRY source=BinanceTR-public interval=30m candles=95
+[DATA] XRPTRY source=BinanceTR-public interval=30m candles=95
+[DATA] WLDTRY source=BinanceTR-public interval=30m candles=95
+[SIGNAL] 2026-08-11T17:39:59+00:00 EDUTRY BUY fill_at=2026-08-11T17:44:59+00:00 features={"close": 1.81, "bb_lower": 1.8168260317561908, "bb_upper": 1.8565073015771425, "rsi": 34.626077084898114, "mfi": 15.594307836295371, "atr": 0.0057142857142857195}
+[ENTRY] 2026-08-11T17:44:59+00:00 EDUTRY layer=1 value=998.50 entry=1.82136500 cash=9000.00
+[SCAN] 2026-08-11T17:44:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=1 open=1 cash=9000.00 equity=10003.24
+[SCAN] 2026-08-11T17:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=1 cash=9000.00 equity=10003.24
+[SCAN] 2026-08-11T17:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=1 cash=9000.00 equity=10003.24
+[SCAN] 2026-08-11T17:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=1 cash=9000.00 equity=10014.20
+[SCAN] 2026-08-11T18:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=1 cash=9000.00 equity=10014.20
+[EXIT] 2026-08-11T18:09:59+00:00 EDUTRY reason=fixed_take_profit pnl=+19.34 cash=10019.34
+[SCAN] 2026-08-11T18:09:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T18:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T19:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T19:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SCAN] 2026-08-11T19:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=0 cash=10019.34 equity=10019.34
+[SIGNAL] 2026-08-11T19:14:59+00:00 XRPTRY BUY fill_at=2026-08-11T19:19:59+00:00 features={"close": 48.16, "bb_lower": 48.16508641362682, "bb_upper": 48.52253263399222, "rsi": 39.815041546433186, "mfi": 34.19101334511292, "atr": 0.07357142857142865}
+[ENTRY] 2026-08-11T19:19:59+00:00 XRPTRY layer=1 value=1000.43 entry=48.19612000 cash=9017.41
+[SCAN] 2026-08-11T19:19:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=1 open=1 cash=9017.41 equity=10018.54
+[SCAN] 2026-08-11T19:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=1 cash=9017.41 equity=10018.54
+[SCAN] 2026-08-11T19:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=1 cash=9017.41 equity=10019.79
+[SCAN] 2026-08-11T19:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=1 cash=9017.41 equity=10019.58
+[SIGNAL] 2026-08-11T19:34:59+00:00 RADTRY BUY fill_at=2026-08-11T19:39:59+00:00 features={"close": 13.43, "bb_lower": 13.47603753489837, "bb_upper": 14.211581512720674, "rsi": 40.52183163071252, "mfi": 40.05174885385088, "atr": 0.24357142857142872}
+[ENTRY] 2026-08-11T19:39:59+00:00 RADTRY layer=1 value=900.39 entry=13.48010250 cash=8115.67
+[SCAN] 2026-08-11T19:39:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=2 cash=8115.67 equity=10017.26
+[SCAN] 2026-08-11T19:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=2 cash=8115.67 equity=10020.51
+[SCAN] 2026-08-11T19:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=2 cash=8115.67 equity=10012.79
+[SCAN] 2026-08-11T19:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=2 cash=8115.67 equity=10023.80
+[SCAN] 2026-08-11T19:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=2 cash=8115.67 equity=10025.97
+[SCAN] 2026-08-11T20:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=2 cash=8115.67 equity=10036.15
+[SIGNAL] 2026-08-11T20:04:59+00:00 ATMTRY BUY fill_at=2026-08-11T20:09:59+00:00 features={"close": 70.8, "bb_lower": 71.35564993715643, "bb_upper": 74.10435006284355, "rsi": 33.308399579308286, "mfi": 16.588962370559315, "atr": 0.5414285714285713}
+[ENTRY] 2026-08-11T20:09:59+00:00 ATMTRY layer=1 value=810.35 entry=70.85310000 cash=7304.10
+[SCAN] 2026-08-11T20:09:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=3 cash=7304.10 equity=10043.81
+[EXIT] 2026-08-11T20:14:59+00:00 XRPTRY reason=bb_mfi_v3_signal_exit pnl=+9.79 cash=8315.82
+[SIGNAL] 2026-08-11T20:09:59+00:00 ATMTRY BUY fill_at=2026-08-11T20:14:59+00:00 features={"close": 70.76, "bb_lower": 71.02524999652292, "bb_upper": 74.24522619395327, "rsi": 33.056682341886074, "mfi": 3.9920473491817745, "atr": 0.5457142857142857}
+[ENTRY] 2026-08-11T20:14:59+00:00 ATMTRY layer=2 value=830.34 entry=70.52285250 cash=7484.24
+[EXIT] 2026-08-11T20:14:59+00:00 RADTRY reason=fixed_take_profit pnl=+17.44 cash=8403.42
+[SCAN] 2026-08-11T20:14:59+00:00 symbols=20 signals=1 entries=1 exits=2 blocked=0 open=1 cash=8403.42 equity=10032.84
+[SCAN] 2026-08-11T20:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=1 cash=8403.42 equity=10048.86
+[SCAN] 2026-08-11T20:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8403.42 equity=10067.42
+[EXIT] 2026-08-11T20:29:59+00:00 ATMTRY reason=fixed_take_profit pnl=+31.78 cash=10078.35
+[SCAN] 2026-08-11T20:29:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=0 open=0 cash=10078.35 equity=10078.35
+[SIGNAL] 2026-08-11T20:29:59+00:00 MOVRTRY BUY fill_at=2026-08-11T20:34:59+00:00 features={"close": 44.2, "bb_lower": 44.2228023324016, "bb_upper": 45.28195957236029, "rsi": 35.777251952299025, "mfi": 39.20742376118763, "atr": 0.22142857142857153}
+[ENTRY] 2026-08-11T20:34:59+00:00 MOVRTRY layer=1 value=1006.33 entry=44.03300000 cash=9070.52
+[SCAN] 2026-08-11T20:34:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=1 cash=9070.52 equity=10078.37
+[SIGNAL] 2026-08-11T20:34:59+00:00 MOVRTRY BUY fill_at=2026-08-11T20:39:59+00:00 features={"close": 44.1, "bb_lower": 44.13289539919574, "bb_upper": 45.324247457947116, "rsi": 33.85339925912942, "mfi": 34.7950510649562, "atr": 0.2142857142857148}
+[ENTRY] 2026-08-11T20:39:59+00:00 MOVRTRY layer=2 value=905.69 entry=44.13307500 cash=8163.46
+[SCAN] 2026-08-11T20:39:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=1 cash=8163.46 equity=10098.02
+[SCAN] 2026-08-11T20:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8163.46 equity=10098.02
+[SCAN] 2026-08-11T20:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=1 cash=8163.46 equity=10089.35
+[SIGNAL] 2026-08-11T20:49:59+00:00 MITOTRY BUY fill_at=2026-08-11T20:54:59+00:00 features={"close": 1.176, "bb_lower": 1.1787381192881439, "bb_upper": 1.2023094997594752, "rsi": 37.83384394736665, "mfi": 41.607345471582114, "atr": 0.007285714285714308}
+[ENTRY] 2026-08-11T20:54:59+00:00 MITOTRY layer=1 value=815.12 entry=1.17688200 cash=7347.12
+[SCAN] 2026-08-11T20:54:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=2 cash=7347.12 equity=10097.57
+[SCAN] 2026-08-11T20:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=2 cash=7347.12 equity=10085.62
+[SIGNAL] 2026-08-11T20:59:59+00:00 MITOTRY BUY fill_at=2026-08-11T21:04:59+00:00 features={"close": 1.167, "bb_lower": 1.1726879691964158, "bb_upper": 1.2050263165178698, "rsi": 33.223666574797605, "mfi": 30.731851100606818, "atr": 0.008142857142857183}
+[ENTRY] 2026-08-11T21:04:59+00:00 MITOTRY layer=2 value=733.61 entry=1.16887600 cash=6612.41
+[SCAN] 2026-08-11T21:04:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=2 cash=6612.41 equity=10072.02
+[SIGNAL] 2026-08-11T21:04:59+00:00 MITOTRY BUY fill_at=2026-08-11T21:09:59+00:00 features={"close": 1.165, "bb_lower": 1.168619106994511, "bb_upper": 1.2068094644340603, "rsi": 32.15793250738113, "mfi": 26.583794768540756, "atr": 0.008357142857142888}
+[BLOCKED] MITOTRY reason=max_layers
+[SCAN] 2026-08-11T21:09:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=2 cash=6612.41 equity=10059.77
+[SIGNAL] 2026-08-11T21:09:59+00:00 MITOTRY BUY fill_at=2026-08-11T21:14:59+00:00 features={"close": 1.159, "bb_lower": 1.1639060587582575, "bb_upper": 1.2076177507655521, "rsi": 29.121913034045164, "mfi": 23.055550327783436, "atr": 0.008714285714285739}
+[BLOCKED] MITOTRY reason=max_layers
+[SCAN] 2026-08-11T21:14:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=2 cash=6612.41 equity=10058.82
+[SIGNAL] 2026-08-11T21:14:59+00:00 MITOTRY BUY fill_at=2026-08-11T21:19:59+00:00 features={"close": 1.155, "bb_lower": 1.1587307608172306, "bb_upper": 1.2093644772780079, "rsi": 27.262992586070396, "mfi": 23.526924627091972, "atr": 0.008214285714285745}
+[BLOCKED] MITOTRY reason=high_downtrend_entry
+[SCAN] 2026-08-11T21:19:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=2 cash=6612.41 equity=10034.30
+[SIGNAL] 2026-08-11T21:19:59+00:00 LUNATRY BUY fill_at=2026-08-11T21:24:59+00:00 features={"close": 2.252, "bb_lower": 2.2572731248035245, "bb_upper": 2.3017744942440954, "rsi": 37.08091069169742, "mfi": 49.48775303557646, "atr": 0.0142857142857143}
+[ENTRY] 2026-08-11T21:24:59+00:00 LUNATRY layer=1 value=660.25 entry=2.25268825 cash=5951.16
+[SIGNAL] 2026-08-11T21:19:59+00:00 MITOTRY BUY fill_at=2026-08-11T21:24:59+00:00 features={"close": 1.143, "bb_lower": 1.1512703427452364, "bb_upper": 1.2120629905880969, "rsi": 22.578885923745148, "mfi": 19.229251106212402, "atr": 0.00928571428571431}
+[BLOCKED] MITOTRY reason=high_downtrend_entry
+[SCAN] 2026-08-11T21:24:59+00:00 symbols=20 signals=2 entries=1 exits=0 blocked=1 open=3 cash=5951.16 equity=10027.81
+[SIGNAL] 2026-08-11T21:24:59+00:00 LUNATRY BUY fill_at=2026-08-11T21:29:59+00:00 features={"close": 2.25, "bb_lower": 2.2532547298766836, "bb_upper": 2.301221460599507, "rsi": 36.361618812908574, "mfi": 38.46717580051164, "atr": 0.014071428571428577}
+[ENTRY] 2026-08-11T21:29:59+00:00 LUNATRY layer=2 value=594.23 entry=2.25168750 cash=5356.05
+[SIGNAL] 2026-08-11T21:24:59+00:00 MITOTRY BUY fill_at=2026-08-11T21:29:59+00:00 features={"close": 1.146, "bb_lower": 1.1461039967785684, "bb_upper": 1.2123721936976224, "rsi": 26.021292078089616, "mfi": 11.924028092527934, "atr": 0.009214285714285746}
+[BLOCKED] MITOTRY reason=high_downtrend_entry
+[SCAN] 2026-08-11T21:29:59+00:00 symbols=20 signals=2 entries=1 exits=0 blocked=2 open=3 cash=5356.05 equity=10040.87
+[SCAN] 2026-08-11T21:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=3 cash=5356.05 equity=10047.99
+[SCAN] 2026-08-11T21:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=5356.05 equity=10052.97
+[SCAN] 2026-08-11T21:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=5356.05 equity=10038.54
+[SCAN] 2026-08-11T21:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=3 cash=5356.05 equity=10034.03
+[SCAN] 2026-08-11T21:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=3 cash=5356.05 equity=10030.34
+[SCAN] 2026-08-11T21:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=4 open=3 cash=5356.05 equity=10041.22
+[SIGNAL] 2026-08-11T21:59:59+00:00 MUBARAKTRY BUY fill_at=2026-08-11T22:04:59+00:00 features={"close": 0.849, "bb_lower": 0.8500255614215894, "bb_upper": 0.894355390959363, "rsi": 29.898233519225812, "mfi": 30.218614401683155, "atr": 0.005214285714285719}
+[ENTRY] 2026-08-11T22:04:59+00:00 MUBARAKTRY layer=1 value=534.80 entry=0.85063750 cash=4820.44
+[SCAN] 2026-08-11T22:04:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=1 open=4 cash=4820.44 equity=10057.58
+[EXIT] 2026-08-11T22:09:59+00:00 LUNATRY reason=fixed_take_profit pnl=+24.30 cash=6101.10
+[SCAN] 2026-08-11T22:09:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=1 open=3 cash=6101.10 equity=10058.28
+[SCAN] 2026-08-11T22:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=6101.10 equity=10077.64
+[SCAN] 2026-08-11T22:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=6101.10 equity=10068.65
+[SCAN] 2026-08-11T22:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=6101.10 equity=10077.39
+[SCAN] 2026-08-11T22:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=6101.10 equity=10074.94
+[SCAN] 2026-08-11T22:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=6101.10 equity=10066.96
+[SCAN] 2026-08-11T22:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=6101.10 equity=10064.44
+[SCAN] 2026-08-11T22:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=6101.10 equity=10039.55
+[SCAN] 2026-08-11T22:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=6101.10 equity=10041.87
+[SCAN] 2026-08-11T22:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=6101.10 equity=10053.44
+[SCAN] 2026-08-11T22:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=6101.10 equity=10057.15
+[SCAN] 2026-08-11T23:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=6101.10 equity=10057.97
+[SCAN] 2026-08-11T23:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=6101.10 equity=10057.65
+[SCAN] 2026-08-11T23:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=3 cash=6101.10 equity=10061.61
+[SCAN] 2026-08-11T23:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=3 cash=6101.10 equity=10048.03
+[SCAN] 2026-08-11T23:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=6101.10 equity=10047.40
+[SIGNAL] 2026-08-11T23:24:59+00:00 MUBARAKTRY BUY fill_at=2026-08-11T23:29:59+00:00 features={"close": 0.844, "bb_lower": 0.846878547381653, "bb_upper": 0.8655024049992993, "rsi": 30.73528682571734, "mfi": 53.62601872022445, "atr": 0.0053571428571428615}
+[ENTRY] 2026-08-11T23:29:59+00:00 MUBARAKTRY layer=2 value=609.20 entry=0.84563375 cash=5490.99
+[SCAN] 2026-08-11T23:29:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=2 open=3 cash=5490.99 equity=10038.05
+[SCAN] 2026-08-11T23:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=5490.99 equity=10021.80
+[SCAN] 2026-08-11T23:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=5490.99 equity=10023.47
+[SCAN] 2026-08-11T23:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=3 cash=5490.99 equity=10052.26
+[SCAN] 2026-08-11T23:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=5490.99 equity=10045.20
+[SCAN] 2026-08-11T23:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=5490.99 equity=10053.50
+[SCAN] 2026-08-11T23:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=3 cash=5490.99 equity=10053.35
+[SIGNAL] 2026-08-11T23:59:59+00:00 ATMTRY BUY fill_at=2026-08-12T00:04:59+00:00 features={"close": 71.18, "bb_lower": 71.27047689178802, "bb_upper": 72.5638088224977, "rsi": 30.585012825892775, "mfi": 33.950526837331964, "atr": 0.11714285714286023}
+[ENTRY] 2026-08-12T00:04:59+00:00 ATMTRY layer=1 value=548.28 entry=71.35347500 cash=4941.89
+[SCAN] 2026-08-12T00:04:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=4 cash=4941.89 equity=10038.73
+[SCAN] 2026-08-12T00:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=4941.89 equity=10077.65
+[SCAN] 2026-08-12T00:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=4 cash=4941.89 equity=10069.62
+[SCAN] 2026-08-12T00:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=4 cash=4941.89 equity=10038.69
+[SCAN] 2026-08-12T00:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=4941.89 equity=10058.48
+[SCAN] 2026-08-12T00:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=4 cash=4941.89 equity=10069.01
+[SCAN] 2026-08-12T00:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=4 cash=4941.89 equity=10086.16
+[SCAN] 2026-08-12T00:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=4941.89 equity=10089.64
+[SCAN] 2026-08-12T00:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=4941.89 equity=10094.36
+[SCAN] 2026-08-12T00:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=4941.89 equity=10087.68
+[SCAN] 2026-08-12T00:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=4941.89 equity=10072.00
+[SCAN] 2026-08-12T00:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=3 open=4 cash=4941.89 equity=10081.42
+[SCAN] 2026-08-12T01:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=4 cash=4941.89 equity=10084.15
+[SCAN] 2026-08-12T01:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=4941.89 equity=10097.57
+[EXIT] 2026-08-12T01:14:59+00:00 MITOTRY reason=bb_mfi_v3_signal_exit pnl=+17.80 cash=6510.75
+[SCAN] 2026-08-12T01:14:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=1 open=3 cash=6510.75 equity=10088.76
+[SIGNAL] 2026-08-12T01:14:59+00:00 VICTRY BUY fill_at=2026-08-12T01:19:59+00:00 features={"close": 1.31, "bb_lower": 1.3104988790824734, "bb_upper": 1.3504535018699078, "rsi": 39.736550813554025, "mfi": 9.282820313917071, "atr": 0.008571428571428579}
+[ENTRY] 2026-08-12T01:19:59+00:00 VICTRY layer=1 value=650.10 entry=1.31098250 cash=5859.68
+[SCAN] 2026-08-12T01:19:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=4 cash=5859.68 equity=10077.41
+[SIGNAL] 2026-08-12T01:19:59+00:00 BMTTRY BUY fill_at=2026-08-12T01:24:59+00:00 features={"close": 0.975, "bb_lower": 1.047840327870432, "bb_upper": 1.1912072911771872, "rsi": 24.66215424377279, "mfi": 34.01689897035851, "atr": 0.03314285714285709}
+[BLOCKED] BMTTRY reason=high_downtrend_entry
+[SIGNAL] 2026-08-12T01:19:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T01:24:59+00:00 features={"close": 0.846, "bb_lower": 0.8460219653252676, "bb_upper": 0.8629304156271131, "rsi": 38.97665782342808, "mfi": 27.11169921942364, "atr": 0.004071428571428575}
+[BLOCKED] MUBARAKTRY reason=max_layers
+[SCAN] 2026-08-12T01:24:59+00:00 symbols=20 signals=2 entries=0 exits=0 blocked=2 open=4 cash=5859.68 equity=10075.17
+[SIGNAL] 2026-08-12T01:24:59+00:00 BMTTRY BUY fill_at=2026-08-12T01:29:59+00:00 features={"close": 0.99, "bb_lower": 1.0227244401620699, "bb_upper": 1.2033707979331683, "rsi": 28.712991497989535, "mfi": 27.557150697161262, "atr": 0.03407142857142852}
+[BLOCKED] BMTTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T01:29:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=4 cash=5859.68 equity=10079.47
+[SIGNAL] 2026-08-12T01:29:59+00:00 BMTTRY BUY fill_at=2026-08-12T01:34:59+00:00 features={"close": 0.976, "bb_lower": 0.9986503592919332, "bb_upper": 1.2121115454699716, "rsi": 27.23246095089104, "mfi": 27.27277147620528, "atr": 0.03414285714285711}
+[BLOCKED] BMTTRY reason=high_downtrend_entry
+[SIGNAL] 2026-08-12T01:29:59+00:00 VICTRY BUY fill_at=2026-08-12T01:34:59+00:00 features={"close": 1.3, "bb_lower": 1.3047186593475726, "bb_upper": 1.3467099120809987, "rsi": 37.500951949510615, "mfi": 15.322166575051611, "atr": 0.012142857142857153}
+[ENTRY] 2026-08-12T01:34:59+00:00 VICTRY layer=2 value=585.09 entry=1.29096750 cash=5273.71
+[SCAN] 2026-08-12T01:34:59+00:00 symbols=20 signals=2 entries=1 exits=0 blocked=3 open=4 cash=5273.71 equity=10054.21
+[SIGNAL] 2026-08-12T01:34:59+00:00 BMTTRY BUY fill_at=2026-08-12T01:39:59+00:00 features={"close": 0.961, "bb_lower": 0.9749193784334882, "bb_upper": 1.219556812042702, "rsi": 25.694636587475173, "mfi": 27.895859641123934, "atr": 0.0351428571428571}
+[BLOCKED] BMTTRY reason=high_downtrend_entry
+[SIGNAL] 2026-08-12T01:34:59+00:00 VICTRY BUY fill_at=2026-08-12T01:39:59+00:00 features={"close": 1.27, "bb_lower": 1.2916604016222553, "bb_upper": 1.3550062650444112, "rsi": 29.074046284846318, "mfi": 10.321620641117775, "atr": 0.0142857142857143}
+[BLOCKED] VICTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T01:39:59+00:00 symbols=20 signals=2 entries=0 exits=0 blocked=4 open=4 cash=5273.71 equity=10016.34
+[SIGNAL] 2026-08-12T01:39:59+00:00 VICTRY BUY fill_at=2026-08-12T01:44:59+00:00 features={"close": 1.25, "bb_lower": 1.2754456261247253, "bb_upper": 1.3626496119705127, "rsi": 25.01441131420276, "mfi": 8.7618260009681, "atr": 0.01571428571428573}
+[BLOCKED] VICTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T01:44:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=4 open=4 cash=5273.71 equity=10020.43
+[SIGNAL] 2026-08-12T01:44:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T01:49:59+00:00 features={"close": 0.827, "bb_lower": 0.8344328119980593, "bb_upper": 0.8691862356209881, "rsi": 27.780296014556328, "mfi": 9.442289482476184, "atr": 0.005642857142857148}
+[BLOCKED] MUBARAKTRY reason=high_downtrend_entry
+[SIGNAL] 2026-08-12T01:44:59+00:00 VICTRY BUY fill_at=2026-08-12T01:49:59+00:00 features={"close": 1.26, "bb_lower": 1.2657346980441833, "bb_upper": 1.3656938733843884, "rsi": 30.28703936739518, "mfi": 6.6914200148165435, "atr": 0.017857142857142873}
+[BLOCKED] VICTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T01:49:59+00:00 symbols=20 signals=2 entries=0 exits=0 blocked=2 open=4 cash=5273.71 equity=10010.94
+[SIGNAL] 2026-08-12T01:49:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T01:54:59+00:00 features={"close": 0.827, "bb_lower": 0.8303729802624964, "bb_upper": 0.8710555911660751, "rsi": 27.780295928151432, "mfi": 8.394102539120354, "atr": 0.005500000000000005}
+[BLOCKED] MUBARAKTRY reason=high_downtrend_entry
+[SIGNAL] 2026-08-12T01:49:59+00:00 VICTRY BUY fill_at=2026-08-12T01:54:59+00:00 features={"close": 1.25, "bb_lower": 1.2551281578636615, "bb_upper": 1.3686813659458628, "rsi": 28.14323364341091, "mfi": 6.777411857470554, "atr": 0.01857142857142859}
+[BLOCKED] VICTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T01:54:59+00:00 symbols=20 signals=2 entries=0 exits=0 blocked=3 open=4 cash=5273.71 equity=10001.53
+[SIGNAL] 2026-08-12T01:54:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T01:59:59+00:00 features={"close": 0.819, "bb_lower": 0.8247728926564647, "bb_upper": 0.8728461549625829, "rsi": 23.764152246489857, "mfi": 6.028105898214662, "atr": 0.0057142857142857195}
+[BLOCKED] MUBARAKTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T01:59:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=3 open=4 cash=5273.71 equity=10020.71
+[SCAN] 2026-08-12T02:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=4 open=4 cash=5273.71 equity=10004.08
+[SCAN] 2026-08-12T02:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=4 cash=5273.71 equity=10019.65
+[SIGNAL] 2026-08-12T02:09:59+00:00 EDUTRY BUY fill_at=2026-08-12T02:14:59+00:00 features={"close": 1.87, "bb_lower": 1.8719991099437785, "bb_upper": 1.9127627948181265, "rsi": 34.44182093765619, "mfi": 16.5421801448786, "atr": 0.004285714285714274}
+[ENTRY] 2026-08-12T02:14:59+00:00 EDUTRY layer=1 value=526.58 entry=1.87140250 cash=4746.34
+[SCAN] 2026-08-12T02:14:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=2 open=5 cash=4746.34 equity=10028.20
+[SIGNAL] 2026-08-12T02:14:59+00:00 CTRY BUY fill_at=2026-08-12T02:19:59+00:00 features={"close": 3.232, "bb_lower": 3.237490124859584, "bb_upper": 3.304033684664226, "rsi": 37.82707030802626, "mfi": 38.928345006795375, "atr": 0.015357142857142816}
+[ENTRY] 2026-08-12T02:19:59+00:00 CTRY layer=1 value=473.92 entry=3.23442400 cash=4271.70
+[SCAN] 2026-08-12T02:19:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=1 open=6 cash=4271.70 equity=10013.30
+[SCAN] 2026-08-12T02:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4271.70 equity=10021.65
+[SCAN] 2026-08-12T02:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=6 cash=4271.70 equity=10046.15
+[SCAN] 2026-08-12T02:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4271.70 equity=10075.79
+[SIGNAL] 2026-08-12T02:34:59+00:00 AUDIOTRY BUY fill_at=2026-08-12T02:39:59+00:00 features={"close": 0.5852, "bb_lower": 0.5854974794587385, "bb_upper": 0.5991025205412616, "rsi": 19.590541451392866, "mfi": 1.7832765102179167, "atr": 0.0013357142857142814}
+[ENTRY] 2026-08-12T02:39:59+00:00 AUDIOTRY layer=1 value=426.53 entry=0.58603920 cash=3844.53
+[SCAN] 2026-08-12T02:39:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=7 cash=3844.53 equity=10061.42
+[SCAN] 2026-08-12T02:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=3844.53 equity=10068.66
+[SCAN] 2026-08-12T02:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=3844.53 equity=10051.50
+[SCAN] 2026-08-12T02:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=3844.53 equity=10045.94
+[SCAN] 2026-08-12T02:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=3844.53 equity=10050.39
+[EXIT] 2026-08-12T03:04:59+00:00 EDUTRY reason=fixed_take_profit pnl=+10.20 cash=4382.10
+[SCAN] 2026-08-12T03:04:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=0 open=6 cash=4382.10 equity=10049.11
+[SCAN] 2026-08-12T03:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4382.10 equity=10040.47
+[SCAN] 2026-08-12T03:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=6 cash=4382.10 equity=10046.60
+[SCAN] 2026-08-12T03:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4382.10 equity=10027.96
+[SCAN] 2026-08-12T03:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4382.10 equity=9987.58
+[SCAN] 2026-08-12T03:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=6 cash=4382.10 equity=9984.37
+[SIGNAL] 2026-08-12T03:29:59+00:00 ATMTRY BUY fill_at=2026-08-12T03:34:59+00:00 features={"close": 71.55, "bb_lower": 71.58420257951599, "bb_upper": 72.30436884905541, "rsi": 35.969595074887664, "mfi": 31.60895728100229, "atr": 0.12000000000000151}
+[ENTRY] 2026-08-12T03:34:59+00:00 ATMTRY layer=2 value=437.55 entry=71.55362500 cash=3943.89
+[SCAN] 2026-08-12T03:34:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=1 open=6 cash=3943.89 equity=9965.37
+[SIGNAL] 2026-08-12T03:34:59+00:00 ATMTRY BUY fill_at=2026-08-12T03:39:59+00:00 features={"close": 71.5, "bb_lower": 71.51741278789308, "bb_upper": 72.33115864067832, "rsi": 34.629876060280495, "mfi": 27.602840766636433, "atr": 0.12357142857142987}
+[BLOCKED] ATMTRY reason=max_layers
+[SCAN] 2026-08-12T03:39:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=6 cash=3943.89 equity=9994.59
+[SCAN] 2026-08-12T03:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3943.89 equity=9975.05
+[SCAN] 2026-08-12T03:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3943.89 equity=9976.23
+[SIGNAL] 2026-08-12T03:49:59+00:00 CTRY BUY fill_at=2026-08-12T03:54:59+00:00 features={"close": 3.214, "bb_lower": 3.2194701755904784, "bb_upper": 3.300529824409522, "rsi": 35.1998828995645, "mfi": 51.22684903273678, "atr": 0.017000000000000032}
+[ENTRY] 2026-08-12T03:54:59+00:00 CTRY layer=2 value=393.80 entry=3.20840450 cash=3549.50
+[SCAN] 2026-08-12T03:54:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=6 cash=3549.50 equity=9925.66
+[SIGNAL] 2026-08-12T03:54:59+00:00 CTRY BUY fill_at=2026-08-12T03:59:59+00:00 features={"close": 3.203, "bb_lower": 3.2099106304759046, "bb_upper": 3.304184607619334, "rsi": 32.69830923460485, "mfi": 49.10768814890527, "atr": 0.018857142857142874}
+[BLOCKED] CTRY reason=max_layers
+[SCAN] 2026-08-12T03:59:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=3 open=6 cash=3549.50 equity=9914.33
+[SIGNAL] 2026-08-12T03:59:59+00:00 ATMTRY BUY fill_at=2026-08-12T04:04:59+00:00 features={"close": 71.1, "bb_lower": 71.1615632569525, "bb_upper": 72.40224626685703, "rsi": 24.322224891490748, "mfi": 21.71064835219798, "atr": 0.13785714285714334}
+[BLOCKED] ATMTRY reason=max_layers
+[SCAN] 2026-08-12T04:04:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=3 open=6 cash=3549.50 equity=9935.05
+[SCAN] 2026-08-12T04:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3549.50 equity=10012.54
+[SCAN] 2026-08-12T04:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3549.50 equity=10046.95
+[SCAN] 2026-08-12T04:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3549.50 equity=10003.63
+[SCAN] 2026-08-12T04:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3549.50 equity=10014.76
+[SCAN] 2026-08-12T04:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=3549.50 equity=9978.24
+[SIGNAL] 2026-08-12T04:29:59+00:00 HOMETRY BUY fill_at=2026-08-12T04:34:59+00:00 features={"close": 0.45, "bb_lower": 0.45030406329638517, "bb_upper": 0.46017212717980505, "rsi": 39.99876829050173, "mfi": 33.73923515984586, "atr": 0.004071428571428575}
+[ENTRY] 2026-08-12T04:34:59+00:00 HOMETRY layer=1 value=354.42 entry=0.44933675 cash=3194.55
+[SIGNAL] 2026-08-12T04:29:59+00:00 CTRY BUY fill_at=2026-08-12T04:34:59+00:00 features={"close": 3.157, "bb_lower": 3.171498911347167, "bb_upper": 3.3001201362718806, "rsi": 24.660708826602615, "mfi": 41.85664833724039, "atr": 0.01585714285714292}
+[BLOCKED] CTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T04:34:59+00:00 symbols=20 signals=2 entries=1 exits=0 blocked=3 open=7 cash=3194.55 equity=9956.13
+[SIGNAL] 2026-08-12T04:34:59+00:00 HOMETRY BUY fill_at=2026-08-12T04:39:59+00:00 features={"close": 0.448, "bb_lower": 0.44930957671983796, "bb_upper": 0.46002375661349526, "rsi": 36.93114866767213, "mfi": 29.057260102002544, "atr": 0.0038571428571428606}
+[ENTRY] 2026-08-12T04:39:59+00:00 HOMETRY layer=2 value=318.98 entry=0.44933675 cash=2875.10
+[SIGNAL] 2026-08-12T04:34:59+00:00 CTRY BUY fill_at=2026-08-12T04:39:59+00:00 features={"close": 3.15, "bb_lower": 3.1602256969362483, "bb_upper": 3.297774303063752, "rsi": 23.535360516512668, "mfi": 38.41664065228255, "atr": 0.015357142857142911}
+[BLOCKED] CTRY reason=high_downtrend_entry
+[EXIT] 2026-08-12T04:39:59+00:00 HOMETRY reason=fixed_take_profit pnl=+13.04 cash=3562.55
+[SCAN] 2026-08-12T04:39:59+00:00 symbols=20 signals=2 entries=1 exits=1 blocked=3 open=6 cash=3562.55 equity=9979.66
+[SCAN] 2026-08-12T04:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=3562.55 equity=9966.11
+[SCAN] 2026-08-12T04:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3562.55 equity=9963.65
+[SCAN] 2026-08-12T04:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3562.55 equity=9971.86
+[SCAN] 2026-08-12T04:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=3562.55 equity=9986.12
+[SCAN] 2026-08-12T05:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=6 cash=3562.55 equity=9972.65
+[SCAN] 2026-08-12T05:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=3562.55 equity=9977.46
+[SCAN] 2026-08-12T05:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=3562.55 equity=9991.28
+[SCAN] 2026-08-12T05:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=3562.55 equity=9987.52
+[EXIT] 2026-08-12T05:24:59+00:00 ATMTRY reason=bb_mfi_v3_signal_exit pnl=+11.14 cash=4561.00
+[SCAN] 2026-08-12T05:24:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=1 open=5 cash=4561.00 equity=10004.08
+[SCAN] 2026-08-12T05:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=3 open=5 cash=4561.00 equity=10018.91
+[SCAN] 2026-08-12T05:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=4561.00 equity=10026.99
+[SCAN] 2026-08-12T05:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=5 cash=4561.00 equity=10028.62
+[SIGNAL] 2026-08-12T05:39:59+00:00 HOMETRY BUY fill_at=2026-08-12T05:44:59+00:00 features={"close": 0.447, "bb_lower": 0.4471335711421815, "bb_upper": 0.4627711907625806, "rsi": 37.82258589075623, "mfi": 49.966568318385754, "atr": 0.004285714285714289}
+[ENTRY] 2026-08-12T05:44:59+00:00 HOMETRY layer=1 value=455.42 entry=0.44733525 cash=4104.90
+[SCAN] 2026-08-12T05:44:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=1 open=6 cash=4104.90 equity=9987.25
+[SIGNAL] 2026-08-12T05:44:59+00:00 AUDIOTRY BUY fill_at=2026-08-12T05:49:59+00:00 features={"close": 0.5804, "bb_lower": 0.5804911244656367, "bb_upper": 0.5877660183915062, "rsi": 31.647384255671668, "mfi": 29.52013886918448, "atr": 0.0014214285714285655}
+[ENTRY] 2026-08-12T05:49:59+00:00 AUDIOTRY layer=2 value=409.88 entry=0.58303695 cash=3694.41
+[SIGNAL] 2026-08-12T05:44:59+00:00 HOMETRY BUY fill_at=2026-08-12T05:49:59+00:00 features={"close": 0.444, "bb_lower": 0.4455303281628147, "bb_upper": 0.46361252898004257, "rsi": 34.69134747338998, "mfi": 50.01319934648903, "atr": 0.004357142857142861}
+[ENTRY] 2026-08-12T05:49:59+00:00 HOMETRY layer=2 value=368.89 entry=0.44533375 cash=3324.97
+[SCAN] 2026-08-12T05:49:59+00:00 symbols=20 signals=2 entries=2 exits=0 blocked=0 open=6 cash=3324.97 equity=9986.96
+[EXIT] 2026-08-12T05:54:59+00:00 MUBARAKTRY reason=bb_mfi_v3_signal_exit pnl=+17.29 cash=4487.98
+[SIGNAL] 2026-08-12T05:49:59+00:00 HOMETRY BUY fill_at=2026-08-12T05:54:59+00:00 features={"close": 0.441, "bb_lower": 0.44318042799218343, "bb_upper": 0.4646290958173404, "rsi": 31.836081119851087, "mfi": 47.288948846854176, "atr": 0.0040000000000000036}
+[BLOCKED] HOMETRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T05:54:59+00:00 symbols=20 signals=1 entries=0 exits=1 blocked=1 open=5 cash=4487.98 equity=9989.94
+[SCAN] 2026-08-12T05:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=4487.98 equity=9999.14
+[SCAN] 2026-08-12T06:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=4487.98 equity=10006.29
+[SCAN] 2026-08-12T06:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=5 cash=4487.98 equity=9991.38
+[SCAN] 2026-08-12T06:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=5 cash=4487.98 equity=9982.52
+[SCAN] 2026-08-12T06:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=5 cash=4487.98 equity=9996.03
+[SIGNAL] 2026-08-12T06:19:59+00:00 RETRY BUY fill_at=2026-08-12T06:24:59+00:00 features={"close": 20.23, "bb_lower": 20.336304028252812, "bb_upper": 21.344648352699572, "rsi": 31.81978583427704, "mfi": 54.65396586091329, "atr": 0.20499999999999957}
+[ENTRY] 2026-08-12T06:24:59+00:00 RETRY layer=1 value=448.13 entry=20.26518750 cash=4039.18
+[EXIT] 2026-08-12T06:24:59+00:00 AUDIOTRY reason=fixed_take_profit pnl=+16.20 cash=4893.04
+[SCAN] 2026-08-12T06:24:59+00:00 symbols=20 signals=1 entries=1 exits=1 blocked=0 open=5 cash=4893.04 equity=10022.07
+[SIGNAL] 2026-08-12T06:24:59+00:00 RETRY BUY fill_at=2026-08-12T06:29:59+00:00 features={"close": 20.21, "bb_lower": 20.263623289794403, "bb_upper": 21.383995757824643, "rsi": 31.41719158963933, "mfi": 54.33354913866898, "atr": 0.2014285714285712}
+[ENTRY] 2026-08-12T06:29:59+00:00 RETRY layer=2 value=488.57 entry=20.23516500 cash=4403.74
+[SCAN] 2026-08-12T06:29:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=1 open=5 cash=4403.74 equity=10022.60
+[SCAN] 2026-08-12T06:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=4403.74 equity=10034.89
+[SIGNAL] 2026-08-12T06:34:59+00:00 RETRY BUY fill_at=2026-08-12T06:39:59+00:00 features={"close": 20.04, "bb_lower": 20.067060356982992, "bb_upper": 21.4634158334932, "rsi": 27.9103999409227, "mfi": 48.900208513840454, "atr": 0.20357142857142843}
+[BLOCKED] RETRY reason=max_layers
+[SCAN] 2026-08-12T06:39:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=5 cash=4403.74 equity=10012.54
+[SIGNAL] 2026-08-12T06:39:59+00:00 RETRY BUY fill_at=2026-08-12T06:44:59+00:00 features={"close": 19.88, "bb_lower": 19.93108165134041, "bb_upper": 21.518442158183394, "rsi": 25.04688715904001, "mfi": 47.34824825374677, "atr": 0.20928571428571427}
+[BLOCKED] RETRY reason=max_layers
+[SCAN] 2026-08-12T06:44:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=2 open=5 cash=4403.74 equity=10038.30
+[SCAN] 2026-08-12T06:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=5 cash=4403.74 equity=10046.73
+[SCAN] 2026-08-12T06:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=5 cash=4403.74 equity=10039.87
+[SIGNAL] 2026-08-12T06:54:59+00:00 ATMTRY BUY fill_at=2026-08-12T06:59:59+00:00 features={"close": 71.14, "bb_lower": 71.23996766672413, "bb_upper": 72.8600323332759, "rsi": 31.202473620362568, "mfi": 43.0604863117857, "atr": 0.17071428571428576}
+[ENTRY] 2026-08-12T06:59:59+00:00 ATMTRY layer=1 value=439.71 entry=71.27341500 cash=3963.36
+[SCAN] 2026-08-12T06:59:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=2 open=6 cash=3963.36 equity=10024.21
+[SCAN] 2026-08-12T07:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=6 cash=3963.36 equity=10009.85
+[SCAN] 2026-08-12T07:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=3963.36 equity=10039.61
+[SCAN] 2026-08-12T07:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3963.36 equity=10013.94
+[SCAN] 2026-08-12T07:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3963.36 equity=10004.72
+[SCAN] 2026-08-12T07:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=6 cash=3963.36 equity=10000.82
+[SCAN] 2026-08-12T07:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=3963.36 equity=9996.28
+[SIGNAL] 2026-08-12T07:29:59+00:00 WLDTRY BUY fill_at=2026-08-12T07:34:59+00:00 features={"close": 16.02, "bb_lower": 16.05766450220208, "bb_upper": 16.182335497797915, "rsi": 31.744465729756328, "mfi": 29.760847142738015, "atr": 0.043571428571428025}
+[ENTRY] 2026-08-12T07:34:59+00:00 WLDTRY layer=1 value=395.74 entry=16.06203750 cash=3567.03
+[SCAN] 2026-08-12T07:34:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=7 cash=3567.03 equity=10008.19
+[SCAN] 2026-08-12T07:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=3567.03 equity=9994.77
+[SIGNAL] 2026-08-12T07:39:59+00:00 WLDTRY BUY fill_at=2026-08-12T07:44:59+00:00 features={"close": 16.03, "bb_lower": 16.03614347852703, "bb_upper": 16.185761283377737, "rsi": 36.1158276764347, "mfi": 25.94707247387035, "atr": 0.03928571428571358}
+[ENTRY] 2026-08-12T07:44:59+00:00 WLDTRY layer=2 value=356.17 entry=16.05203000 cash=3210.32
+[SCAN] 2026-08-12T07:44:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=7 cash=3210.32 equity=9996.69
+[SCAN] 2026-08-12T07:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=3210.32 equity=10024.71
+[SCAN] 2026-08-12T07:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=3 open=7 cash=3210.32 equity=10034.48
+[EXIT] 2026-08-12T07:59:59+00:00 HOMETRY reason=fixed_take_profit pnl=+15.97 cash=4051.83
+[SCAN] 2026-08-12T07:59:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=3 open=6 cash=4051.83 equity=10027.42
+[SCAN] 2026-08-12T08:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=3 open=6 cash=4051.83 equity=10010.65
+[SCAN] 2026-08-12T08:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=3 open=6 cash=4051.83 equity=10018.09
+[SCAN] 2026-08-12T08:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4051.83 equity=10010.84
+[SCAN] 2026-08-12T08:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4051.83 equity=9999.81
+[SCAN] 2026-08-12T08:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4051.83 equity=10008.17
+[SCAN] 2026-08-12T08:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4051.83 equity=10008.68
+[EXIT] 2026-08-12T08:34:59+00:00 VICTRY reason=fixed_stop_loss pnl=-114.09 cash=5174.78
+[SCAN] 2026-08-12T08:34:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=1 open=5 cash=5174.78 equity=10000.02
+[SCAN] 2026-08-12T08:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=5 cash=5174.78 equity=9993.43
+[SCAN] 2026-08-12T08:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=5174.78 equity=9991.40
+[SCAN] 2026-08-12T08:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=5 cash=5174.78 equity=10005.96
+[SCAN] 2026-08-12T08:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=5174.78 equity=10005.59
+[SCAN] 2026-08-12T08:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=5 cash=5174.78 equity=10022.61
+[SCAN] 2026-08-12T09:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=5174.78 equity=10014.80
+[SCAN] 2026-08-12T09:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=5174.78 equity=10003.72
+[SIGNAL] 2026-08-12T09:09:59+00:00 MITOTRY BUY fill_at=2026-08-12T09:14:59+00:00 features={"close": 1.146, "bb_lower": 1.1474851317241062, "bb_upper": 1.1761339158949415, "rsi": 36.63153841924203, "mfi": 21.27944297964575, "atr": 0.008142857142857134}
+[ENTRY] 2026-08-12T09:14:59+00:00 MITOTRY layer=1 value=516.70 entry=1.15786775 cash=4657.30
+[SCAN] 2026-08-12T09:14:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=6 cash=4657.30 equity=10011.90
+[SCAN] 2026-08-12T09:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4657.30 equity=10006.63
+[SCAN] 2026-08-12T09:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4657.30 equity=9996.29
+[SCAN] 2026-08-12T09:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4657.30 equity=10005.53
+[SCAN] 2026-08-12T09:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4657.30 equity=9993.24
+[SCAN] 2026-08-12T09:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4657.30 equity=9993.84
+[SIGNAL] 2026-08-12T09:39:59+00:00 EDUTRY BUY fill_at=2026-08-12T09:44:59+00:00 features={"close": 1.86, "bb_lower": 1.8617429793840767, "bb_upper": 1.9277808301397326, "rsi": 35.101592466610555, "mfi": 25.02919730027743, "atr": 0.012857142857142853}
+[ENTRY] 2026-08-12T09:44:59+00:00 EDUTRY layer=1 value=465.03 entry=1.86139500 cash=4191.57
+[SCAN] 2026-08-12T09:44:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=1 open=7 cash=4191.57 equity=9984.98
+[SCAN] 2026-08-12T09:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4191.57 equity=9982.04
+[SCAN] 2026-08-12T09:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4191.57 equity=9962.93
+[SCAN] 2026-08-12T09:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4191.57 equity=9946.24
+[SIGNAL] 2026-08-12T09:59:59+00:00 RETRY BUY fill_at=2026-08-12T10:04:59+00:00 features={"close": 20.08, "bb_lower": 20.132642320477395, "bb_upper": 20.4273576795226, "rsi": 40.51719580168633, "mfi": 46.58361081792492, "atr": 0.10071428571428649}
+[BLOCKED] RETRY reason=max_layers
+[SCAN] 2026-08-12T10:04:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=2 open=7 cash=4191.57 equity=9953.66
+[SIGNAL] 2026-08-12T10:04:59+00:00 RETRY BUY fill_at=2026-08-12T10:09:59+00:00 features={"close": 20.08, "bb_lower": 20.107002500933664, "bb_upper": 20.441568927637764, "rsi": 40.51719578826014, "mfi": 44.79017595240255, "atr": 0.09571428571428646}
+[BLOCKED] RETRY reason=max_layers
+[SCAN] 2026-08-12T10:09:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=7 cash=4191.57 equity=9924.35
+[SCAN] 2026-08-12T10:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4191.57 equity=9921.70
+[EXIT] 2026-08-12T10:19:59+00:00 MOVRTRY reason=fixed_stop_loss pnl=-176.61 cash=5929.85
+[EXIT] 2026-08-12T10:19:59+00:00 ATMTRY reason=fixed_take_profit pnl=+8.52 cash=6378.74
+[SCAN] 2026-08-12T10:19:59+00:00 symbols=20 signals=0 entries=0 exits=2 blocked=1 open=5 cash=6378.74 equity=9888.98
+[SIGNAL] 2026-08-12T10:19:59+00:00 WLDTRY BUY fill_at=2026-08-12T10:24:59+00:00 features={"close": 15.93, "bb_lower": 15.950034926327547, "bb_upper": 16.164250787958167, "rsi": 34.65755459122805, "mfi": 11.588478813092209, "atr": 0.042142857142857384}
+[BLOCKED] WLDTRY reason=max_layers
+[SCAN] 2026-08-12T10:24:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=3 open=5 cash=6378.74 equity=9875.11
+[SIGNAL] 2026-08-12T10:24:59+00:00 WLDTRY BUY fill_at=2026-08-12T10:29:59+00:00 features={"close": 15.93, "bb_lower": 15.931416957602424, "bb_upper": 16.165725899540433, "rsi": 34.657554697421176, "mfi": 11.711019757259152, "atr": 0.03928571428571459}
+[BLOCKED] WLDTRY reason=max_layers
+[SCAN] 2026-08-12T10:29:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=3 open=5 cash=6378.74 equity=9884.13
+[SCAN] 2026-08-12T10:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=5 cash=6378.74 equity=9881.07
+[SCAN] 2026-08-12T10:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=5 cash=6378.74 equity=9884.76
+[EXIT] 2026-08-12T10:44:59+00:00 MITOTRY reason=fixed_take_profit pnl=+10.01 cash=6906.22
+[SCAN] 2026-08-12T10:44:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=1 open=4 cash=6906.22 equity=9892.88
+[SCAN] 2026-08-12T10:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=4 cash=6906.22 equity=9888.73
+[SCAN] 2026-08-12T10:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=6906.22 equity=9887.82
+[SCAN] 2026-08-12T10:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=6906.22 equity=9887.53
+[SCAN] 2026-08-12T11:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=4 cash=6906.22 equity=9882.91
+[SCAN] 2026-08-12T11:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=4 cash=6906.22 equity=9885.25
+[SCAN] 2026-08-12T11:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=4 cash=6906.22 equity=9879.04
+[SCAN] 2026-08-12T11:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=6906.22 equity=9883.41
+[SCAN] 2026-08-12T11:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=6906.22 equity=9884.34
+[SCAN] 2026-08-12T11:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=4 cash=6906.22 equity=9882.94
+[SIGNAL] 2026-08-12T11:29:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T11:34:59+00:00 features={"close": 0.848, "bb_lower": 0.8481635238447581, "bb_upper": 0.8710745713933371, "rsi": 38.389653374090436, "mfi": 39.56064931177267, "atr": 0.0050000000000000044}
+[ENTRY] 2026-08-12T11:34:59+00:00 MUBARAKTRY layer=1 value=689.59 entry=0.84863600 cash=6215.60
+[SCAN] 2026-08-12T11:34:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=5 cash=6215.60 equity=9879.53
+[SCAN] 2026-08-12T11:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=5 cash=6215.60 equity=9875.50
+[SCAN] 2026-08-12T11:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=5 cash=6215.60 equity=9875.49
+[SCAN] 2026-08-12T11:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=5 cash=6215.60 equity=9872.25
+[SIGNAL] 2026-08-12T11:49:59+00:00 RETRY BUY fill_at=2026-08-12T11:54:59+00:00 features={"close": 19.85, "bb_lower": 19.86724098126047, "bb_upper": 20.294663780644296, "rsi": 32.787100396637584, "mfi": 25.32707481675922, "atr": 0.072142857142857}
+[BLOCKED] RETRY reason=max_layers
+[SCAN] 2026-08-12T11:54:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=2 open=5 cash=6215.60 equity=9874.81
+[SIGNAL] 2026-08-12T11:54:59+00:00 MITOTRY BUY fill_at=2026-08-12T11:59:59+00:00 features={"close": 1.166, "bb_lower": 1.1665130953085459, "bb_upper": 1.186629761834311, "rsi": 41.819068933006605, "mfi": 18.01098450214414, "atr": 0.004928571428571441}
+[ENTRY] 2026-08-12T11:59:59+00:00 MITOTRY layer=1 value=620.63 entry=1.16987675 cash=5594.04
+[SCAN] 2026-08-12T11:59:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=6 cash=5594.04 equity=9861.67
+[SIGNAL] 2026-08-12T11:59:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T12:04:59+00:00 features={"close": 0.841, "bb_lower": 0.8429606290533393, "bb_upper": 0.867420323327613, "rsi": 35.15847697837039, "mfi": 30.571293999842112, "atr": 0.005785714285714291}
+[ENTRY] 2026-08-12T12:04:59+00:00 MUBARAKTRY layer=2 value=558.57 entry=0.84163075 cash=5034.64
+[SCAN] 2026-08-12T12:04:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=6 cash=5034.64 equity=9881.58
+[SCAN] 2026-08-12T12:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=5034.64 equity=9900.73
+[SCAN] 2026-08-12T12:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=5034.64 equity=9893.86
+[SIGNAL] 2026-08-12T12:14:59+00:00 RADTRY BUY fill_at=2026-08-12T12:19:59+00:00 features={"close": 11.26, "bb_lower": 11.347083741031048, "bb_upper": 11.77291625896895, "rsi": 31.169027147360467, "mfi": 31.659208038701394, "atr": 0.11999999999999998}
+[ENTRY] 2026-08-12T12:19:59+00:00 RADTRY layer=1 value=502.71 entry=11.26844500 cash=4531.17
+[SCAN] 2026-08-12T12:19:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=7 cash=4531.17 equity=9887.60
+[SIGNAL] 2026-08-12T12:19:59+00:00 RADTRY BUY fill_at=2026-08-12T12:24:59+00:00 features={"close": 11.29, "bb_lower": 11.30482190470377, "bb_upper": 11.78851142862956, "rsi": 33.42844145241766, "mfi": 28.480857512036337, "atr": 0.11714285714285706}
+[ENTRY] 2026-08-12T12:24:59+00:00 RADTRY layer=2 value=452.44 entry=11.33849750 cash=4078.06
+[SCAN] 2026-08-12T12:24:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=7 cash=4078.06 equity=9898.69
+[EXIT] 2026-08-12T12:29:59+00:00 MUBARAKTRY reason=fixed_take_profit pnl=+24.18 cash=5352.26
+[EXIT] 2026-08-12T12:29:59+00:00 RADTRY reason=fixed_take_profit pnl=+18.50 cash=6327.34
+[SCAN] 2026-08-12T12:29:59+00:00 symbols=20 signals=0 entries=0 exits=2 blocked=1 open=5 cash=6327.34 equity=9920.75
+[SCAN] 2026-08-12T12:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=6327.34 equity=9925.03
+[SCAN] 2026-08-12T12:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=6327.34 equity=9925.28
+[SCAN] 2026-08-12T12:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=5 cash=6327.34 equity=9925.41
+[SIGNAL] 2026-08-12T12:44:59+00:00 ADATRY BUY fill_at=2026-08-12T12:49:59+00:00 features={"close": 8.79, "bb_lower": 8.807178065148348, "bb_upper": 8.916631458661177, "rsi": 24.517609786477664, "mfi": 42.54414557685371, "atr": 0.022857142857142878}
+[ENTRY] 2026-08-12T12:49:59+00:00 ADATRY layer=1 value=631.79 entry=8.79659250 cash=5694.61
+[SIGNAL] 2026-08-12T12:44:59+00:00 XRPTRY BUY fill_at=2026-08-12T12:49:59+00:00 features={"close": 48.58, "bb_lower": 48.60534796232471, "bb_upper": 48.83846156148481, "rsi": 35.20903824722485, "mfi": 32.070820301476516, "atr": 0.07999999999999982}
+[ENTRY] 2026-08-12T12:49:59+00:00 XRPTRY layer=1 value=568.61 entry=48.59642000 cash=5125.15
+[SCAN] 2026-08-12T12:49:59+00:00 symbols=20 signals=2 entries=2 exits=0 blocked=0 open=7 cash=5125.15 equity=9920.56
+[SIGNAL] 2026-08-12T12:49:59+00:00 ADATRY BUY fill_at=2026-08-12T12:54:59+00:00 features={"close": 8.76, "bb_lower": 8.788971748422208, "bb_upper": 8.920552061101604, "rsi": 20.16237505513911, "mfi": 27.814230849088304, "atr": 0.02428571428571415}
+[ENTRY] 2026-08-12T12:54:59+00:00 ADATRY layer=2 value=511.75 entry=8.77657750 cash=4612.63
+[SIGNAL] 2026-08-12T12:49:59+00:00 XRPTRY BUY fill_at=2026-08-12T12:54:59+00:00 features={"close": 48.48, "bb_lower": 48.55654109665215, "bb_upper": 48.86726842715738, "rsi": 29.28920203972679, "mfi": 26.023080514674533, "atr": 0.08857142857142872}
+[ENTRY] 2026-08-12T12:54:59+00:00 XRPTRY layer=2 value=460.57 entry=48.53637500 cash=4151.37
+[SCAN] 2026-08-12T12:54:59+00:00 symbols=20 signals=2 entries=2 exits=0 blocked=1 open=7 cash=4151.37 equity=9930.05
+[SCAN] 2026-08-12T12:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9923.41
+[SCAN] 2026-08-12T13:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4151.37 equity=9925.28
+[SCAN] 2026-08-12T13:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4151.37 equity=9920.46
+[SCAN] 2026-08-12T13:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4151.37 equity=9916.19
+[SCAN] 2026-08-12T13:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9917.60
+[SCAN] 2026-08-12T13:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4151.37 equity=9915.43
+[SCAN] 2026-08-12T13:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9909.51
+[SCAN] 2026-08-12T13:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9906.21
+[SCAN] 2026-08-12T13:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4151.37 equity=9902.35
+[SCAN] 2026-08-12T13:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4151.37 equity=9909.78
+[SCAN] 2026-08-12T13:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9916.01
+[SCAN] 2026-08-12T13:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9909.19
+[SCAN] 2026-08-12T13:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4151.37 equity=9909.80
+[SCAN] 2026-08-12T14:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4151.37 equity=9894.85
+[SCAN] 2026-08-12T14:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4151.37 equity=9891.41
+[SCAN] 2026-08-12T14:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4151.37 equity=9881.98
+[SCAN] 2026-08-12T14:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4151.37 equity=9869.93
+[SCAN] 2026-08-12T14:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4151.37 equity=9876.29
+[SCAN] 2026-08-12T14:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4151.37 equity=9881.16
+[SCAN] 2026-08-12T14:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=3 open=7 cash=4151.37 equity=9886.26
+[SCAN] 2026-08-12T14:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4151.37 equity=9873.17
+[SCAN] 2026-08-12T14:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=2 open=7 cash=4151.37 equity=9862.43
+[SCAN] 2026-08-12T14:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=3 open=7 cash=4151.37 equity=9867.11
+[SCAN] 2026-08-12T14:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9865.61
+[SCAN] 2026-08-12T14:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4151.37 equity=9862.24
+[SIGNAL] 2026-08-12T14:59:59+00:00 XRPTRY BUY fill_at=2026-08-12T15:04:59+00:00 features={"close": 48.11, "bb_lower": 48.16619109142468, "bb_upper": 48.53476128952771, "rsi": 27.55581316603137, "mfi": 28.853260830420197, "atr": 0.08928571428571581}
+[BLOCKED] XRPTRY reason=max_layers
+[SCAN] 2026-08-12T15:04:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=2 open=7 cash=4151.37 equity=9874.56
+[SCAN] 2026-08-12T15:09:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9878.06
+[SCAN] 2026-08-12T15:14:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9881.07
+[SCAN] 2026-08-12T15:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=4151.37 equity=9879.51
+[SCAN] 2026-08-12T15:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=7 cash=4151.37 equity=9869.12
+[EXIT] 2026-08-12T15:29:59+00:00 CTRY reason=fixed_stop_loss pnl=-80.15 cash=4940.24
+[SCAN] 2026-08-12T15:29:59+00:00 symbols=20 signals=0 entries=0 exits=1 blocked=1 open=6 cash=4940.24 equity=9852.81
+[SCAN] 2026-08-12T15:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4940.24 equity=9849.06
+[SCAN] 2026-08-12T15:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4940.24 equity=9855.25
+[SCAN] 2026-08-12T15:44:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4940.24 equity=9857.51
+[SCAN] 2026-08-12T15:49:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4940.24 equity=9862.57
+[SCAN] 2026-08-12T15:54:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4940.24 equity=9860.24
+[SCAN] 2026-08-12T15:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4940.24 equity=9865.12
+[SCAN] 2026-08-12T16:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4940.24 equity=9868.80
+[SIGNAL] 2026-08-12T16:04:59+00:00 MOVRTRY BUY fill_at=2026-08-12T16:09:59+00:00 features={"close": 42.1, "bb_lower": 42.16288069424524, "bb_upper": 43.741881210516674, "rsi": 31.580505537148994, "mfi": 40.253942415400964, "atr": 0.28571428571428675}
+[BLOCKED] MOVRTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T16:09:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=6 cash=4940.24 equity=9867.66
+[SIGNAL] 2026-08-12T16:09:59+00:00 MOVRTRY BUY fill_at=2026-08-12T16:14:59+00:00 features={"close": 41.6, "bb_lower": 41.91840903581272, "bb_upper": 43.872067154663476, "rsi": 26.728602715807128, "mfi": 22.195147718030412, "atr": 0.30714285714285844}
+[BLOCKED] MOVRTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T16:14:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=6 cash=4940.24 equity=9870.90
+[SIGNAL] 2026-08-12T16:14:59+00:00 MOVRTRY BUY fill_at=2026-08-12T16:19:59+00:00 features={"close": 41.6, "bb_lower": 41.71141376767894, "bb_upper": 43.91715766089251, "rsi": 26.728602723717998, "mfi": 5.469436279144432, "atr": 0.28571428571428725}
+[BLOCKED] MOVRTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T16:19:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=6 cash=4940.24 equity=9874.28
+[SCAN] 2026-08-12T16:24:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4940.24 equity=9868.52
+[SCAN] 2026-08-12T16:29:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4940.24 equity=9866.73
+[SCAN] 2026-08-12T16:34:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4940.24 equity=9863.94
+[SIGNAL] 2026-08-12T16:34:59+00:00 MITOTRY BUY fill_at=2026-08-12T16:39:59+00:00 features={"close": 1.142, "bb_lower": 1.146748663824087, "bb_upper": 1.1712513361759131, "rsi": 34.16776668135192, "mfi": 39.845448089693065, "atr": 0.0044999999999999485}
+[ENTRY] 2026-08-12T16:39:59+00:00 MITOTRY layer=2 value=493.28 entry=1.14485800 cash=4446.22
+[SCAN] 2026-08-12T16:39:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=6 cash=4446.22 equity=9834.64
+[SIGNAL] 2026-08-12T16:39:59+00:00 MITOTRY BUY fill_at=2026-08-12T16:44:59+00:00 features={"close": 1.122, "bb_lower": 1.1373587463042074, "bb_upper": 1.1773079203624592, "rsi": 24.221222713333376, "mfi": 37.94936772158417, "atr": 0.005714285714285656}
+[BLOCKED] MITOTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T16:44:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=6 cash=4446.22 equity=9845.16
+[SIGNAL] 2026-08-12T16:44:59+00:00 MITOTRY BUY fill_at=2026-08-12T16:49:59+00:00 features={"close": 1.131, "bb_lower": 1.1332286426791274, "bb_upper": 1.1790570716065865, "rsi": 33.63890011462749, "mfi": 31.81553364264572, "atr": 0.006428571428571355}
+[BLOCKED] MITOTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T16:49:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=2 open=6 cash=4446.22 equity=9831.64
+[SIGNAL] 2026-08-12T16:49:59+00:00 MITOTRY BUY fill_at=2026-08-12T16:54:59+00:00 features={"close": 1.127, "bb_lower": 1.128603646035061, "bb_upper": 1.180443973012558, "rsi": 31.739667424892218, "mfi": 29.703376030219843, "atr": 0.006499999999999935}
+[BLOCKED] MITOTRY reason=high_downtrend_entry
+[SCAN] 2026-08-12T16:54:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=3 open=6 cash=4446.22 equity=9840.73
+[SCAN] 2026-08-12T16:59:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=1 open=6 cash=4446.22 equity=9847.73
+[SCAN] 2026-08-12T17:04:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=6 cash=4446.22 equity=9846.99
+[SIGNAL] 2026-08-12T17:04:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T17:09:59+00:00 features={"close": 0.873, "bb_lower": 0.8779506431466636, "bb_upper": 0.9040493568533362, "rsi": 38.70307759142107, "mfi": 52.32993411849635, "atr": 0.009285714285714295}
+[ENTRY] 2026-08-12T17:09:59+00:00 MUBARAKTRY layer=1 value=443.96 entry=0.87265400 cash=4001.59
+[SCAN] 2026-08-12T17:09:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=7 cash=4001.59 equity=9843.67
+[SIGNAL] 2026-08-12T17:09:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T17:14:59+00:00 features={"close": 0.874, "bb_lower": 0.8754389964954183, "bb_upper": 0.9052276701712483, "rsi": 39.49981095271814, "mfi": 38.25353249061771, "atr": 0.009285714285714295}
+[ENTRY] 2026-08-12T17:14:59+00:00 MUBARAKTRY layer=2 value=399.56 entry=0.87465550 cash=3601.44
+[SCAN] 2026-08-12T17:14:59+00:00 symbols=20 signals=1 entries=1 exits=0 blocked=0 open=7 cash=3601.44 equity=9842.47
+[SCAN] 2026-08-12T17:19:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=3601.44 equity=9830.98
+[SIGNAL] 2026-08-12T17:19:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T17:24:59+00:00 features={"close": 0.86, "bb_lower": 0.867897708440275, "bb_upper": 0.909054672512106, "rsi": 32.91331325927408, "mfi": 43.969854107223135, "atr": 0.010285714285714296}
+[BLOCKED] MUBARAKTRY reason=max_layers
+[SCAN] 2026-08-12T17:24:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=7 cash=3601.44 equity=9826.65
+[SIGNAL] 2026-08-12T17:24:59+00:00 MUBARAKTRY BUY fill_at=2026-08-12T17:29:59+00:00 features={"close": 0.859, "bb_lower": 0.8631437982491335, "bb_upper": 0.9113323922270569, "rsi": 32.48143626633845, "mfi": 40.12803960079421, "atr": 0.009785714285714295}
+[BLOCKED] MUBARAKTRY reason=max_layers
+[SIGNAL] 2026-08-12T17:24:59+00:00 WLDTRY BUY fill_at=2026-08-12T17:29:59+00:00 features={"close": 15.98, "bb_lower": 16.000770493882886, "bb_upper": 16.17922950611712, "rsi": 35.43410651394187, "mfi": 32.68563862669993, "atr": 0.03857142857142826}
+[BLOCKED] WLDTRY reason=max_layers
+[SCAN] 2026-08-12T17:29:59+00:00 symbols=20 signals=2 entries=0 exits=0 blocked=2 open=7 cash=3601.44 equity=9846.11
+[SIGNAL] 2026-08-12T17:29:59+00:00 WLDTRY BUY fill_at=2026-08-12T17:34:59+00:00 features={"close": 15.95, "bb_lower": 15.975671777177684, "bb_upper": 16.189090127584226, "rsi": 31.92005262500801, "mfi": 30.03061344254168, "atr": 0.03857142857142826}
+[BLOCKED] WLDTRY reason=max_layers
+[SCAN] 2026-08-12T17:34:59+00:00 symbols=20 signals=1 entries=0 exits=0 blocked=1 open=7 cash=3601.44 equity=9852.93
+[SCAN] 2026-08-12T17:39:59+00:00 symbols=20 signals=0 entries=0 exits=0 blocked=0 open=7 cash=3601.44 equity=9849.48
+[OPEN-MARKED] RETRY value=940.18 unrealized=+0.66
+[OPEN-MARKED] WLDTRY value=750.07 unrealized=-4.09
+[OPEN-MARKED] EDUTRY value=471.83 unrealized=+5.39
+[OPEN-MARKED] MITOTRY value=1097.07 unrealized=-20.16
+[OPEN-MARKED] ADATRY value=1132.58 unrealized=-14.37
+[OPEN-MARKED] XRPTRY value=1019.95 unrealized=-12.31
+[OPEN-MARKED] MUBARAKTRY value=831.69 unrealized=-14.34
+[COMPLETE] result=/mnt/d/scalperagent_v4/backend/portfolio-bb-mfi-v3-quality20-trend-volume-trend-gate-24h.json
+RESULT_JSON={"initial_balance_try": 10000.0, "final_balance_try": 9835.433088, "net_pnl_try": -164.566912, "net_pnl_pct": -1.645669, "closed_trades": 19, "wins": 16, "losses": 3, "win_rate_pct": 84.2105, "profit_factor": 0.715914, "fees_total_including_open_liquidation_try": 77.245544, "max_drawdown_pct": 2.687409, "active_symbols": ["ADATRY", "ATMTRY", "AUDIOTRY", "BMTTRY", "CITYTRY", "CTRY", "DASHTRY", "EDUTRY", "HEITRY", "HOMETRY", "LUNATRY", "MIRATRY", "MITOTRY", "MOVRTRY", "MUBARAKTRY", "RADTRY", "RETRY", "VICTRY", "WLDTRY", "XRPTRY"], "open_positions_excluded": [], "open_positions_marked": [{"symbol": "RETRY", "entry_time": 1786515899, "layers": 2, "mark_price": 20.34, "liquidation_fill": 20.324745, "marked_value_try": 938.766694, "unrealized_pnl_try": 0.664568}, {"symbol": "WLDTRY", "entry_time": 1786520099, "layers": 2, "mark_price": 16.03, "liquidation_fill": 16.0179775, "marked_value_try": 748.945074, "unrealized_pnl_try": -4.09411}, {"symbol": "EDUTRY", "entry_time": 1786527899, "layers": 1, "mark_price": 1.89, "liquidation_fill": 1.8885825, "marked_value_try": 471.117317, "unrealized_pnl_try": 5.386973}, {"symbol": "MITOTRY", "entry_time": 1786535999, "layers": 2, "mark_price": 1.142, "liquidation_fill": 1.1411435, "marked_value_try": 1095.424148, "unrealized_pnl_try": -20.160166}, {"symbol": "ADATRY", "entry_time": 1786538999, "layers": 2, "mark_price": 8.71, "liquidation_fill": 8.7034675, "marked_value_try": 1130.883147, "unrealized_pnl_try": -14.365487}, {"symbol": "XRPTRY", "entry_time": 1786538999, "layers": 2, "mark_price": 48.17, "liquidation_fill": 48.1338725, "marked_value_try": 1018.418556, "unrealized_pnl_try": -12.305215}, {"symbol": "MUBARAKTRY", "entry_time": 1786554599, "layers": 2, "mark_price": 0.862, "liquidation_fill": 0.8613535, "marked_value_try": 830.44269, "unrealized_pnl_try": -14.338468}], "reconciliation": {"expected": 9835.433087, "actual": 9835.433088, "difference": 8.2e-07}}

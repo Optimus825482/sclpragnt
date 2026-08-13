@@ -64,6 +64,12 @@ class Config:
     BB_MFI_ENTRY_MFI_MAX = float(os.getenv("BB_MFI_ENTRY_MFI_MAX", "59")) # MFILowerLevel3
     BB_MFI_EXIT_RSI_MIN = float(os.getenv("BB_MFI_EXIT_RSI_MIN", "69")) # RSIUpperLevel3
     BB_MFI_EXIT_MFI_MIN = float(os.getenv("BB_MFI_EXIT_MFI_MIN", "69")) # MFIUpperLevel3
+    BB_MFI_ENTRY_VOLUME_RATIO_MIN = float(os.getenv("BB_MFI_ENTRY_VOLUME_RATIO_MIN", "0.0"))
+    BB_MFI_DIP_CONFIRMATION_ENABLED = os.getenv("BB_MFI_DIP_CONFIRMATION_ENABLED", "false").lower() == "true"
+    BB_MFI_DIP_MIN_CLOSE_POSITION = float(os.getenv("BB_MFI_DIP_MIN_CLOSE_POSITION", "0.55"))
+    BB_MFI_ENTRY_MFI_REVERSAL_ENABLED = os.getenv("BB_MFI_ENTRY_MFI_REVERSAL_ENABLED", "false").lower() == "true"
+    BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA = float(os.getenv("BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA", "0.0"))
+    BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP = float(os.getenv("BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP", "-1"))
     SYMBOL_ORDER_PCT = {}
     SYMBOL_PYRAMIDING_LAYERS = {}
     BB_MFI_STOP_LOSS_PCT = float(os.getenv("BB_MFI_STOP_LOSS_PCT", "0.08882"))
@@ -74,16 +80,17 @@ class Config:
     MAX_SPREAD_PCT = 0.30
     MIN_ORDERBOOK_DEPTH_MULTIPLIER = 5.0
     LIQUIDITY_FILTER_ENABLED = True
-    # Sembol aktivitesi: son 15 dakikada düşük hacimli veya yatay kalan piyasa
-    # yeni girişlerden çıkarılır; arka plan sınıflandırması 15 dakikada yenilenir.
+    # Aktivite için hem likidite/hacim hem de fiyat hareketi gerekir. Hacim,
+    # tek başına mean-reversion için işlem yapılabilir menzil anlamına gelmez.
     SYMBOL_ACTIVITY_FILTER_ENABLED = os.getenv("SYMBOL_ACTIVITY_FILTER_ENABLED", "true").lower() == "true"
     SYMBOL_ACTIVITY_REFRESH_SEC = max(60, int(os.getenv("SYMBOL_ACTIVITY_REFRESH_SEC", "3600")))
     SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY = float(os.getenv("SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY", "1000000"))
+    SYMBOL_ACTIVITY_VOLUME_ONLY = os.getenv("SYMBOL_ACTIVITY_VOLUME_ONLY", "false").lower() == "true"
     SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT = float(os.getenv(
         "SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT",
-        os.getenv("SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT", "0.15"),
+        os.getenv("SYMBOL_ACTIVITY_MIN_RANGE_30M_PCT", "0.05"),
     ))
-    SYMBOL_ACTIVITY_MIN_ATR_PCT = float(os.getenv("SYMBOL_ACTIVITY_MIN_ATR_PCT", "0.0015"))
+    SYMBOL_ACTIVITY_MIN_ATR_PCT = float(os.getenv("SYMBOL_ACTIVITY_MIN_ATR_PCT", "0.0012"))
     SYMBOL_ACTIVITY_MIN_VOLUME_RATIO = float(os.getenv("SYMBOL_ACTIVITY_MIN_VOLUME_RATIO", "0.50"))
     SYMBOL_ACTIVITY_MAX_SPREAD_PCT = float(os.getenv("SYMBOL_ACTIVITY_MAX_SPREAD_PCT", "0.30"))
     SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED = os.getenv("SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED", "false").lower() == "true"
