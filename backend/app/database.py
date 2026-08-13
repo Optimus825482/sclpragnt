@@ -1371,6 +1371,16 @@ async def get_market_candles(symbol, timeframe="5m", start_ms=None, end_ms=None)
         return [dict(r) for r in conn.execute(q,args).fetchall()]
     return await _run_db(op)
 
+async def get_market_symbols(timeframe="5m"):
+    """Return the cached universe for a timeframe in deterministic order."""
+    def op(conn):
+        rows = conn.execute(
+            "SELECT DISTINCT symbol FROM historical_candles WHERE timeframe=? ORDER BY symbol",
+            (timeframe,),
+        ).fetchall()
+        return [str(row["symbol"]).upper() for row in rows]
+    return await _run_db(op)
+
 async def upsert_market_feature_snapshots(rows):
     if not rows: return 0
     def op(conn):
