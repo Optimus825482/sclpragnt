@@ -24,6 +24,23 @@ class ScalpAnalyzer:
         configured = int(config.MAX_OPEN_POSITIONS)
         return float("inf") if configured <= 0 else configured
 
+    @staticmethod
+    def _bb_mfi_layers_net_profitable(position, price):
+        """Every stored pyramid layer must clear round-trip fees at this price."""
+        layers = position.get("entry_layers") or []
+        if not layers:
+            return False
+        for layer in layers:
+            quantity = float(layer.get("quantity") or 0)
+            entry = float(layer.get("entry_price") or 0)
+            if quantity <= 0 or entry <= 0:
+                return False
+            proceeds = quantity * float(price) * (1 - config.COMMISSION_PCT)
+            cost = quantity * entry * (1 + config.COMMISSION_PCT)
+            if proceeds <= cost:
+                return False
+        return True
+
     async def load_state(self):
         self.positions = await database.load_positions()
         self.pending_orders = await database.load_paper_orders()
@@ -1321,20 +1338,29 @@ class ScalpAnalyzer:
                                         "reason": "position_already_open", "strategy": strat_name, "timestamp": time.time()})
             existing = self.positions[symbol]
             max_layers = int(config.SYMBOL_PYRAMIDING_LAYERS.get(symbol, config.PYRAMIDING_LAYERS))
-            if strat_name != existing.get("strategy") or existing.get("layers", 1) >= max_layers:
+            layers = int(existing.get("layers", 1))
+            if strat_name != existing.get("strategy"):
                 return None
-            if (strat_name == "BB_MFI_MEAN_REVERSION" and
-                    time.time() - float(existing.get("entry_time") or time.time()) >= config.BB_MFI_PYRAMID_BLOCK_UNDERWATER_AFTER_SEC):
+            if strat_name == "BB_MFI_MEAN_REVERSION":
                 quantity = float(existing.get("quantity") or 0)
                 average_entry = float(existing.get("entry_price") or 0)
                 net_exit_value = quantity * float(entry_price) * (1 - config.COMMISSION_PCT)
                 cost_basis = quantity * average_entry * (1 + config.COMMISSION_PCT)
-                if quantity <= 0 or net_exit_value <= cost_basis:
+                if config.BB_MFI_PYRAMID_REQUIRE_NET_PROFIT and (quantity <= 0 or net_exit_value <= cost_basis):
                     await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                                "reason": "bb_mfi_pyramid_underwater_after_1h", "strategy": strat_name,
-                                                "timestamp": time.time(), "layers": existing.get("layers", 1),
+                                                "reason": "bb_mfi_pyramid_underwater", "strategy": strat_name,
+                                                "timestamp": time.time(), "layers": layers,
                                                 "net_unrealized_pnl_try": net_exit_value - cost_basis})
                     return None
+                extension_allowed = (layers < max_layers + config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS and
+                                     self._bb_mfi_layers_net_profitable(existing, entry_price))
+                if layers >= max_layers and not extension_allowed:
+                    await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                                "reason": "bb_mfi_pyramid_profit_extension_not_eligible", "strategy": strat_name,
+                                                "timestamp": time.time(), "layers": layers})
+                    return None
+            elif layers >= max_layers:
+                return None
         else:
             if len(self.positions) >= self.max_open_positions():
                 blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
@@ -1428,7 +1454,8 @@ class ScalpAnalyzer:
                          "stop_loss_pct": planned_stop_loss_pct,
                          "max_hold_sec": planned_max_hold_sec,
                          "bear_pressure_filter_enabled": config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED,
-                         "pyramid_block_underwater_after_sec": config.BB_MFI_PYRAMID_BLOCK_UNDERWATER_AFTER_SEC,
+                         "pyramid_require_net_profit": config.BB_MFI_PYRAMID_REQUIRE_NET_PROFIT,
+                         "pyramid_profit_extension_layers": config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS,
                          "order_value_try": order_value,
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
         if self.market:
@@ -1450,9 +1477,11 @@ class ScalpAnalyzer:
 
         existing = self.positions.get(symbol)
         if existing:
+            layer_entry_price = float(entry_price)
             total_qty = existing["quantity"] + quantity
             entry_price = ((existing["entry_price"] * existing["quantity"]) + (entry_price * quantity)) / total_qty
             pos = {**existing, "entry_price": entry_price, "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)), "quantity": total_qty, "layers": existing.get("layers", 1) + 1}
+            pos.setdefault("entry_layers", []).append({"entry_price": layer_entry_price, "quantity": quantity})
             if strat_name == "BB_MFI_MEAN_REVERSION":
                 pos["system_stop_price"] = entry_price * (1 - config.BB_MFI_STOP_LOSS_PCT)
                 pos["system_take_profit_price"] = entry_price * (1 + config.BB_MFI_TAKE_PROFIT_PCT)
@@ -1465,7 +1494,8 @@ class ScalpAnalyzer:
                 "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)),
                 "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1,
                 "trade_id": uuid.uuid4().hex,
-                "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context
+                "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context,
+                "entry_layers": [{"entry_price": float(entry_price), "quantity": quantity}]
             }
             if strat_name != "LLM_PAPER":
                 technical_tf = self._strategy_tf(strat_name)
