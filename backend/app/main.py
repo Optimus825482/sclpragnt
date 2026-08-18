@@ -29,7 +29,7 @@ from app import database
 from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, run_execution_stress, run_parameter_sensitivity, run_holdout_test, run_statistical_validation, get_backtest_data_quality, CUSTOM_IDENTIFIER_SCHEMA, CUSTOM_INDICATORS
 CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
-from app.technical_analysis import calculate_snapshot
+from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _ema
 from app import llm_analysis
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
@@ -265,6 +265,46 @@ def _public_kline_pack(rows, cutoff_ms=None):
     }
 
 
+def _entry_derived_features(history, snapshot):
+    """Causal, compact entry features added to historical MTF snapshots."""
+    opens = history.get("opens", []); highs = history.get("highs", [])
+    lows = history.get("lows", []); closes = history.get("closes", [])
+    if not closes:
+        return {}
+    price = float(closes[-1]); result = {}
+    ema20 = _ema(closes, 20)
+    ema20_prev = _ema(closes[:-3], 20) if len(closes) >= 23 else None
+    result["ema20_slope_3_pct"] = ((ema20 / ema20_prev - 1) * 100) if ema20 and ema20_prev else None
+    adx = (snapshot.get("trend") or {}).get("adx") or {}
+    plus_di, minus_di = adx.get("plus_di"), adx.get("minus_di")
+    result["adx_di_gap"] = (plus_di - minus_di) if plus_di is not None and minus_di is not None else None
+    result["adx"] = adx.get("adx")
+    atr_now = _atr(highs, lows, closes, 14)
+    atr_prev = _atr(highs[:-5], lows[:-5], closes[:-5], 14) if len(closes) >= 20 else None
+    result["atr_expansion_ratio_5"] = (atr_now / atr_prev) if atr_now and atr_prev else None
+    bb = _bollinger(closes)
+    result["bb_width_pct"] = bb.get("width_pct") if bb else None
+    candle_range = highs[-1] - lows[-1] if highs and lows else 0.0
+    lower_wick = min(opens[-1], closes[-1]) - lows[-1] if candle_range > 0 else None
+    result["lower_wick_ratio"] = (lower_wick / candle_range) if lower_wick is not None and candle_range > 0 else None
+    result["close_position"] = ((closes[-1] - lows[-1]) / candle_range) if candle_range > 0 else None
+    result["price_vs_ema20_pct"] = ((price / ema20 - 1) * 100) if ema20 else None
+    return result
+
+
+def _aggregate_mtf_entry_features(snapshots):
+    alignments = [(item.get("trend") or {}).get("alignment") for item in snapshots.values()]
+    bullish = sum(value == "bullish" for value in alignments)
+    bearish = sum(value == "bearish" for value in alignments)
+    return {
+        "mtf_bullish_count": bullish,
+        "mtf_bearish_count": bearish,
+        "mtf_mixed_count": len(alignments) - bullish - bearish,
+        "mtf_alignment_score": bullish - bearish,
+        "mtf_all_ready": len(snapshots) == 5 and all(item.get("data_ready") for item in snapshots.values()),
+    }
+
+
 async def _historical_entry_mtf(symbol, entry_time, entry_price, order_value=500):
     """Build entry-time M1/M5/M15/H1/H4 snapshots from public OHLCV only."""
     entry_ms = int(float(entry_time) * 1000)
@@ -277,6 +317,7 @@ async def _historical_entry_mtf(symbol, entry_time, entry_price, order_value=500
         snapshot["data_policy"] = "Binance TR public historical OHLCV; entry-time reconstruction; liquidity and orderflow unavailable"
         snapshot["historical_backfill"] = True
         snapshot["entry_time"] = float(entry_time)
+        snapshot["derived_entry_features"] = _entry_derived_features(history, snapshot)
         snapshots[timeframe] = snapshot
     return snapshots
 
@@ -323,6 +364,7 @@ async def _run_historical_mtf_backfill(job_options=None):
                     technical = dict(context.get("technical") or {})
                     technical["mtf_snapshots"] = snapshots
                     technical["mtf_timeframes"] = list(snapshots)
+                    technical["derived_entry_features"] = _aggregate_mtf_entry_features(snapshots)
                     context["technical"] = technical
                     context["mtf_backfill"] = {"version": "public-entry-mtf-v1", "source": "binance_tr_public", "completed_at": time.time(), "entry_time": float(entry_time), "liquidity_fields": "unknown"}
                     await database.apply_historical_mtf_backfill(target_type, target_id, symbol, trade_id, context, snapshots)
@@ -1788,9 +1830,15 @@ async def gainers_radar(execute: bool = False):
             weighted_score += mtf_weights[tf] * tf_score
         row["mtf"] = states
         row["mtf_bullish_count"] = bullish_count
+        bearish_count = sum(state == "bearish" for state in states.values())
+        row["mtf_bearish_count"] = bearish_count
+        row["mtf_alignment_score"] = bullish_count - bearish_count
         row["mtf_score"] = round(weighted_score, 1)
         row["mtf_bullish_rank"] = ">".join(tf for tf in mtf_timeframes if states[tf] == "bullish") or "—"
-        row["priority_score"] = round(row["score"] * 0.70 + weighted_score * 0.30, 1)
+        mtf_bonus = (config.GAINER_RADAR_MTF_PRIORITY_MAX_BONUS if bullish_count >= 3
+                     else config.GAINER_RADAR_MTF_PRIORITY_MAX_BONUS / 2 if bullish_count >= 2 else 0.0)
+        row["mtf_priority_bonus"] = round(mtf_bonus, 1)
+        row["priority_score"] = round(row["score"] * 0.70 + weighted_score * 0.30 + mtf_bonus, 1)
     rows.sort(key=lambda row: (row["priority_score"], row["score"]), reverse=True)
     radar_trades = []
     if execute and config.GAINER_RADAR_AUTO_TRADE:
@@ -1812,7 +1860,7 @@ async def gainers_radar(execute: bool = False):
                         await ws_manager.broadcast({"type": "signal", "data": signal})
     return {"items": rows[:20], "auto_added": auto_added, "symbols": config.SYMBOLS, "paper_trades": radar_trades,
             "auto_trade": False, "generated_at": time.time(), "model": "public_data_continuation_2pct_mtf_priority",
-            "mtf_timeframes": mtf_timeframes, "mtf_policy": "M1/M5/M15/H1/H4 soft priority; unknown data is not treated as bullish"}
+            "mtf_timeframes": mtf_timeframes, "mtf_policy": "M1/M5/M15/H1/H4 weighted score plus bullish-count soft bonus; ranking only, never a BUY blocker; unknown data is not treated as bullish"}
 
 @app.get("/api/market/top-gainers")
 async def top_gainers_status(refresh: bool = False):

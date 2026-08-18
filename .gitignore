@@ -5,6 +5,7 @@ backend/__pycache__/
 backend/scalper_db_v4.sqlite*
 scalper_db_v4.sqlite*
 local_backups/
+docs/*.dump
 scalperagent-backup-*.sqlite*
 frontend/node_modules/
 frontend/.next/
