@@ -1,4 +1,5 @@
-const CACHE = "scalper-agent-v4-shell-3";
+// Bump this whenever app shell/CSS changes so installed PWAs discard stale assets.
+const CACHE = "scalper-agent-v4-shell-4";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", function (event) {
@@ -10,7 +11,11 @@ self.addEventListener("install", function (event) {
 });
 
 self.addEventListener("activate", function (event) {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(caches.keys().then(function (keys) {
+    return Promise.all(keys.filter(function (key) { return key !== CACHE; }).map(function (key) {
+      return caches.delete(key);
+    }));
+  }).then(function () { return self.clients.claim(); }));
 });
 
 self.addEventListener("push", function (event) {

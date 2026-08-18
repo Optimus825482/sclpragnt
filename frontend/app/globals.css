@@ -269,6 +269,8 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .ui-stat-detail { @apply font-mono text-xs text-bunker-muted mt-2; }
 .ui-tone-positive { color: #79f2b4; }
 .ui-tone-negative { color: #fb7185; }
+.data-table td.ui-tone-positive { color: #79f2b4; }
+.data-table td.ui-tone-negative { color: #fb7185; }
 .ui-tone-warning { color: #facc15; }
 .ui-tabs { display: flex; gap: .35rem; overflow-x: auto; padding: .35rem; border: 1px solid rgb(51 65 85 / .8); border-radius: .85rem; background: rgb(15 23 42 / .55); box-shadow: 0 8px 24px rgb(2 6 23 / .18), inset 0 1px rgb(255 255 255 / .04); scrollbar-width: none; }
 .ui-tabs::-webkit-scrollbar { display: none; }
