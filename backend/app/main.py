@@ -158,6 +158,8 @@ _pg_pool = None
 _embedding_backfill = {"status": "idle", "queued": 0, "message": None}
 _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
+_historical_mtf_backfill = {"status": "idle", "phase": "idle", "progress": 0, "completed": 0, "total": 0, "message": None, "logs": [], "result": None, "started_at": None, "finished_at": None}
+_historical_mtf_backfill_task = None
 _llm_replenish_lock = asyncio.Lock()
 _llm_last_idle_attempt_at = time.time()
 _radar_lock = asyncio.Lock()
@@ -214,6 +216,146 @@ async def backfill_symbol_history(symbol: str, days: int = 7):
         print(f"[History] arka plan backfill hatası | symbol={symbol} error={exc}", flush=True)
     finally:
         _symbol_history_backfills.discard(symbol)
+
+
+async def microstructure_snapshot_loop():
+    """Sample live bid/ask and depth so future entries have an audit trail."""
+    while True:
+        try:
+            captured_at = float(int(time.time()))
+            rows = []
+            now = time.time()
+            for symbol in list(config.SYMBOLS):
+                flow = market.get_orderflow(symbol) or {}
+                updated_at = float(flow.get("updated_at") or 0)
+                if not updated_at or now - updated_at > 10:
+                    continue
+                ticker = market.get_ticker(symbol) or {}
+                price = float(ticker.get("last_price") or 0)
+                bid_qty = float(flow.get("bid_qty") or 0)
+                ask_qty = float(flow.get("ask_qty") or 0)
+                imbalance = ((bid_qty - ask_qty) / (bid_qty + ask_qty)) if bid_qty + ask_qty else None
+                rows.append({
+                    "symbol": str(symbol).upper(), "captured_at": captured_at,
+                    "bid_price": flow.get("bid_price"), "ask_price": flow.get("ask_price"),
+                    "bid_qty": bid_qty, "ask_qty": ask_qty,
+                    "spread_pct": flow.get("spread_pct"),
+                    "depth_try": (bid_qty + ask_qty) * price if price else None,
+                    "orderflow_imbalance": imbalance, "source": flow.get("source") or "binance_tr_public_ws",
+                    "updated_at": updated_at,
+                })
+            if rows:
+                await database.upsert_microstructure_snapshots(rows)
+        except Exception as exc:
+            print(f"[Microstructure] snapshot yazma hatası: {exc}", flush=True)
+        await asyncio.sleep(1)
+
+
+def _public_kline_pack(rows, cutoff_ms=None):
+    """Convert Binance public kline rows to the analyzer's causal OHLCV shape."""
+    valid = [row for row in (rows or []) if isinstance(row, (list, tuple)) and len(row) >= 6 and (cutoff_ms is None or int(row[6] if len(row) > 6 else row[0]) <= int(cutoff_ms))]
+    return {
+        "opens": [float(row[1]) for row in valid],
+        "highs": [float(row[2]) for row in valid],
+        "lows": [float(row[3]) for row in valid],
+        "closes": [float(row[4]) for row in valid],
+        "volumes": [float(row[5]) for row in valid],
+        "timestamps": [int(row[6] if len(row) > 6 else row[0]) for row in valid],
+        "last_closed_at_ms": int(valid[-1][6] if len(valid[-1]) > 6 else valid[-1][0]) if valid else None,
+    }
+
+
+async def _historical_entry_mtf(symbol, entry_time, entry_price, order_value=500):
+    """Build entry-time M1/M5/M15/H1/H4 snapshots from public OHLCV only."""
+    entry_ms = int(float(entry_time) * 1000)
+    flow = {"source": "binance_tr_public_historical", "spread_pct": None, "bid_qty": 0, "ask_qty": 0}
+    snapshots = {}
+    for timeframe in ("1m", "5m", "15m", "1h", "4h"):
+        rows = await fetch_klines(symbol, timeframe, limit=300, end_time_ms=entry_ms)
+        history = _public_kline_pack(rows, entry_ms)
+        snapshot = calculate_snapshot(symbol, float(entry_price), {timeframe: history}, flow, 0, order_value, timeframe)
+        snapshot["data_policy"] = "Binance TR public historical OHLCV; entry-time reconstruction; liquidity and orderflow unavailable"
+        snapshot["historical_backfill"] = True
+        snapshot["entry_time"] = float(entry_time)
+        snapshots[timeframe] = snapshot
+    return snapshots
+
+
+def _historical_backfill_log(level, message):
+    _historical_mtf_backfill["logs"].append({"timestamp": time.time(), "level": level, "message": message})
+    _historical_mtf_backfill["logs"] = _historical_mtf_backfill["logs"][-500:]
+
+
+async def _run_historical_mtf_backfill(job_options=None):
+    """Backfill old closed/open entries without changing balances or PnL."""
+    options = job_options or {}
+    force = bool(options.get("force"))
+    trades = await database.get_trades(None)
+    positions = await database.load_positions()
+    targets = [("trade", row) for row in trades] + [("position", row) for row in positions.values()]
+    if not force:
+        filtered = []
+        for target_type, row in targets:
+            context = database._json_value(row.get("entry_context"), {}) if isinstance(row.get("entry_context"), str) else (row.get("entry_context") or {})
+            if not ((context.get("mtf_backfill") or {}).get("version") == "public-entry-mtf-v1"):
+                filtered.append((target_type, row))
+        targets = filtered
+    _historical_mtf_backfill.update({"status": "running", "phase": "fetch", "progress": 0, "completed": 0, "total": len(targets), "message": "Public history okunuyor", "logs": [], "result": None, "started_at": time.time(), "finished_at": None})
+    _historical_backfill_log("info", f"Backfill başladı | hedef={len(targets)} | force={force} | timeframe=M1,M5,M15,H1,H4")
+    updated = 0
+    failed = 0
+    skipped = 0
+    try:
+        for index, (target_type, row) in enumerate(targets, start=1):
+            symbol = str(row.get("symbol") or "").replace("_", "").upper()
+            entry_time = row.get("entry_time")
+            target_id = row.get("id") if target_type == "trade" else symbol
+            trade_id = row.get("trade_id") or f"legacy-{symbol}-{entry_time}"
+            if not symbol or entry_time is None:
+                skipped += 1
+                _historical_backfill_log("warning", f"Atlandı | {target_type}={target_id} | sembol veya giriş zamanı eksik")
+            else:
+                try:
+                    entry_price = float(row.get("entry_price") or 0)
+                    order_value = entry_price * float(row.get("quantity") or 1) if entry_price else 500
+                    snapshots = await _historical_entry_mtf(symbol, entry_time, entry_price or 500, order_value)
+                    context = database._json_value(row.get("entry_context"), {}) if isinstance(row.get("entry_context"), str) else dict(row.get("entry_context") or {})
+                    technical = dict(context.get("technical") or {})
+                    technical["mtf_snapshots"] = snapshots
+                    technical["mtf_timeframes"] = list(snapshots)
+                    context["technical"] = technical
+                    context["mtf_backfill"] = {"version": "public-entry-mtf-v1", "source": "binance_tr_public", "completed_at": time.time(), "entry_time": float(entry_time), "liquidity_fields": "unknown"}
+                    await database.apply_historical_mtf_backfill(target_type, target_id, symbol, trade_id, context, snapshots)
+                    updated += 1
+                    _historical_backfill_log("info", f"Tamamlandı | {target_type}={target_id} | {symbol} | hazır={sum(1 for item in snapshots.values() if item.get('data_ready'))}/5")
+                except Exception as exc:
+                    failed += 1
+                    _historical_backfill_log("error", f"Başarısız | {target_type}={target_id} | {symbol} | {type(exc).__name__}: {exc}")
+            _historical_mtf_backfill["completed"] = index
+            _historical_mtf_backfill["progress"] = round(index / max(1, len(targets)) * 100, 1)
+        result = {"updated": updated, "failed": failed, "skipped": skipped, "total": len(targets), "paper_only": True, "pnl_changed": False}
+        _historical_mtf_backfill.update({"status": "complete", "phase": "complete", "progress": 100, "message": "Backfill tamamlandı", "result": result, "finished_at": time.time()})
+        _historical_backfill_log("success", f"Backfill tamamlandı | güncellenen={updated} başarısız={failed} atlanan={skipped}")
+    except Exception as exc:
+        _historical_mtf_backfill.update({"status": "error", "phase": "error", "message": str(exc), "finished_at": time.time()})
+        _historical_backfill_log("error", f"Backfill durdu | {type(exc).__name__}: {exc}")
+
+
+@app.get("/api/historical-mtf-backfill/status")
+async def historical_mtf_backfill_status():
+    return {"ok": True, "paper_only": True, **_historical_mtf_backfill}
+
+
+@app.post("/api/historical-mtf-backfill/start")
+async def start_historical_mtf_backfill(payload: dict = None):
+    global _historical_mtf_backfill_task
+    if _historical_mtf_backfill.get("status") == "running":
+        return {"ok": True, "already_running": True, "paper_only": True, **_historical_mtf_backfill}
+    options = payload or {}
+    if options.get("force") is True and options.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="force backfill için confirm=true gerekli")
+    _historical_mtf_backfill_task = asyncio.create_task(_run_historical_mtf_backfill(options), name="historical-mtf-backfill")
+    return {"ok": True, "status": "queued", "paper_only": True}
 
 
 async def backfill_missing_active_history():
@@ -675,6 +817,7 @@ async def startup_services():
     print(f"[MarketData] öncelikli strateji verisi hazır | timeframes={priority_timeframes} tickers={len(market.tickers)}", flush=True)
     _start_background(backfill_missing_active_history(), "historical-backfill-active")
     _start_background(market.connect(skip_history=True), "market-connect")
+    _start_background(microstructure_snapshot_loop(), "microstructure-snapshot")
     _start_background(strategy_loop(), "strategy-loop")
     _start_background(radar_loop(), "radar-loop")
     _start_background(symbol_activity_loop(), "symbol-activity")
@@ -2011,7 +2154,7 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
                 bid_qty = sum(float(row[1]) for row in bids[:5])
                 ask_qty = sum(float(row[1]) for row in asks[:5])
                 bid, ask = float(bids[0][0]), float(asks[0][0])
-                flow.update({"bid_qty": bid_qty, "ask_qty": ask_qty,
+                flow.update({"bid_price": bid, "ask_price": ask, "bid_qty": bid_qty, "ask_qty": ask_qty,
                              "spread_pct": ((ask - bid) / bid * 100) if bid else None,
                              "source": "binance_tr_public_rest", "updated_at": time.time()})
                 market.orderflow[sym] = flow
@@ -2565,7 +2708,7 @@ async def get_microstructure_snapshot(args: dict):
             ask_qty = sum(float(row[1]) for row in asks[:5])
             bid, ask = float(bids[0][0]), float(asks[0][0])
             flow = market.get_orderflow(symbol)
-            flow.update({"bid_qty": bid_qty, "ask_qty": ask_qty,
+            flow.update({"bid_price": bid, "ask_price": ask, "bid_qty": bid_qty, "ask_qty": ask_qty,
                          "spread_pct": ((ask - bid) / bid * 100) if bid else None,
                          "source": "binance_tr_public_rest", "updated_at": time.time()})
             market.orderflow[symbol] = flow
@@ -3109,6 +3252,22 @@ async def get_analysis_snapshots(symbol: str, limit: int = 50):
             output.append(item)
         return output
     return {"symbol": symbol.upper(), "snapshots": await database._run_db(op)}
+
+@app.get("/api/microstructure-snapshots/{symbol}")
+async def get_microstructure_snapshots(symbol: str, limit: int = 500, start: float = 0, end: float = 0):
+    """Return archived live spread/depth samples; read-only and paper-only."""
+    safe_limit = max(1, min(int(limit), 5000))
+    def op(conn):
+        clauses = ["symbol=?"]
+        values = [symbol.upper()]
+        if start:
+            clauses.append("captured_at>=?"); values.append(float(start))
+        if end:
+            clauses.append("captured_at<=?"); values.append(float(end))
+        values.append(safe_limit)
+        rows = conn.execute(f"SELECT * FROM microstructure_snapshots WHERE {' AND '.join(clauses)} ORDER BY captured_at DESC LIMIT ?", values).fetchall()
+        return [dict(row) for row in rows]
+    return {"symbol": symbol.upper(), "snapshots": await database._run_db(op), "source": "binance_tr_public_archived", "paper_only": True}
 
 @app.get("/api/decisions")
 async def get_decisions(limit: int = 500, offset: int = 0, symbol: str = "", strategy: str = ""):

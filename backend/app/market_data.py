@@ -48,6 +48,8 @@ class MarketData:
         self.tickers = {}
         self.ticker_24h = {}
         self.orderflow = defaultdict(lambda: {
+            "bid_price": None,
+            "ask_price": None,
             "bid_qty": 0.0,
             "ask_qty": 0.0,
             "spread_pct": None,
@@ -492,6 +494,8 @@ class MarketData:
         received_at = float(data.get("received_at", 0) or time.time())
         flow = self.orderflow[symbol]
         flow.update({
+            "bid_price": bid,
+            "ask_price": ask,
             "bid_qty": bid_qty,
             "ask_qty": ask_qty,
             "spread_pct": ((ask - bid) / bid * 100) if bid else None,
