@@ -966,7 +966,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
-        ws_manager.disconnect(websocket)
+        await ws_manager.disconnect(websocket)
 
 async def ws_broadcast_loop():
     global _ws_snapshot_cache
