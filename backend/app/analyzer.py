@@ -941,6 +941,42 @@ class ScalpAnalyzer:
         return None
 
     @staticmethod
+    def _bb_mfi_entry_context_block_reason(technical, kline):
+        """Return a deterministic BB/MFI entry block reason, if any.
+
+        Bearish EMA alignment is not an absolute ban for a mean-reversion
+        strategy. It must, however, show both a candle recovery and an MFI
+        reversal. Every input uses the current or an already-closed prior bar.
+        """
+        if not isinstance(technical, dict) or not technical.get("data_ready"):
+            return "technical_data_not_ready" if config.BB_MFI_REQUIRE_DATA_READY else None
+
+        alignment = str((technical.get("trend") or {}).get("alignment") or "").lower()
+        if alignment != "bearish" or not config.BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION:
+            return None
+
+        closes = kline.get("closes", []) if isinstance(kline, dict) else []
+        highs = kline.get("highs", []) if isinstance(kline, dict) else []
+        lows = kline.get("lows", []) if isinstance(kline, dict) else []
+        volumes = kline.get("volumes", []) if isinstance(kline, dict) else []
+        if min(len(closes), len(highs), len(lows), len(volumes)) < config.BB_MFI_MFI_PERIOD + 2:
+            return "bearish_reversal_data_insufficient"
+
+        candle_range = highs[-1] - lows[-1]
+        close_position = (closes[-1] - lows[-1]) / candle_range if candle_range > 0 else 0.0
+        current_mfi = _mfi(highs, lows, closes, volumes, config.BB_MFI_MFI_PERIOD)
+        previous_mfi = _mfi(highs[:-1], lows[:-1], closes[:-1], volumes[:-1], config.BB_MFI_MFI_PERIOD)
+        mfi_reversal = (
+            current_mfi is not None and previous_mfi is not None and
+            current_mfi >= previous_mfi + config.BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA
+        )
+        if close_position < config.BB_MFI_BEARISH_MIN_CLOSE_POSITION:
+            return "bearish_reversal_candle_unconfirmed"
+        if not mfi_reversal:
+            return "bearish_reversal_mfi_unconfirmed"
+        return None
+
+    @staticmethod
     def _bb_mfi_bear_pressure(kline):
         """Causal M5 selloff gate for V3 long entries; disabled only by config."""
         if not config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED:
@@ -1470,6 +1506,18 @@ class ScalpAnalyzer:
                 self.market.ticker_24h.get(symbol, 0),
                 order_value, technical_tf
             )
+            if strat_name == "BB_MFI_MEAN_REVERSION":
+                block_reason = self._bb_mfi_entry_context_block_reason(
+                    entry_context["technical"], symbol_klines[technical_tf]
+                )
+                if block_reason:
+                    blocked = {
+                        "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                        "reason": block_reason, "strategy": strat_name, "timestamp": time.time(),
+                        "technical": entry_context["technical"],
+                    }
+                    await database.save_signal(blocked)
+                    return blocked
         quantity = order_value / entry_price
         commission = order_value * config.COMMISSION_PCT
 

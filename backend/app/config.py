@@ -76,6 +76,13 @@ class Config:
     BB_MFI_BEAR_PRESSURE_MIN_DI_GAP = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_DI_GAP", "25"))
     BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT", "0.50"))
     BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT", "0.50"))
+    # A usable technical snapshot is mandatory for BB/MFI paper entries. In a
+    # bearish EMA stack, require a confirmed intrabar recovery and MFI reversal
+    # before buying a dip; bullish and mixed stacks retain the base setup.
+    BB_MFI_REQUIRE_DATA_READY = os.getenv("BB_MFI_REQUIRE_DATA_READY", "true").lower() == "true"
+    BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION = os.getenv("BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION", "true").lower() == "true"
+    BB_MFI_BEARISH_MIN_CLOSE_POSITION = float(os.getenv("BB_MFI_BEARISH_MIN_CLOSE_POSITION", "0.60"))
+    BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA = float(os.getenv("BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA", "1.0"))
     # Pyramid only into a net winner. A third layer is allowed only when each
     # of the first two independently remains net profitable.
     BB_MFI_PYRAMID_REQUIRE_NET_PROFIT = os.getenv("BB_MFI_PYRAMID_REQUIRE_NET_PROFIT", "true").lower() == "true"

@@ -268,6 +268,24 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("negative_orderflow", reasons)
         self.assertIn("symbol_loss_streak", reasons)
 
+    def test_bb_mfi_entry_context_blocks_unready_and_unconfirmed_bearish_entries(self):
+        from app.analyzer import ScalpAnalyzer
+
+        unready = ScalpAnalyzer._bb_mfi_entry_context_block_reason({"data_ready": False}, {})
+        self.assertEqual(unready, "technical_data_not_ready")
+
+        kline = {
+            "closes": [100.0] * 18,
+            "highs": [101.0] * 18,
+            "lows": [99.0] * 18,
+            "volumes": [10.0] * 18,
+        }
+        bearish = {"data_ready": True, "trend": {"alignment": "bearish"}}
+        self.assertEqual(
+            ScalpAnalyzer._bb_mfi_entry_context_block_reason(bearish, kline),
+            "bearish_reversal_candle_unconfirmed",
+        )
+
     def test_llm_system_prompt_has_trade_manager_rules(self):
         source = (ROOT / "app" / "llm_analysis.py").read_text()
         self.assertIn("TRADE_MANAGER_RULES", source)
