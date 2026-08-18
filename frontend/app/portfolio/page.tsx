@@ -519,7 +519,7 @@ function TradeCard({ trade, onClick }: { trade: Trade; onClick: () => void }) {
         <div>
           <span>NET PnL</span>
           <strong
-            className={trade.pnl > 0 ? "ui-tone-positive" : "ui-tone-negative"}
+            className={pnlTone(trade.pnl)}
           >
             ₺{money(trade.pnl)}
             <small>{trade.pnl_pct.toFixed(2)}%</small>
@@ -581,9 +581,7 @@ function TradeDetail({
           <div>
             <span>NET PnL</span>
             <strong
-              className={
-                trade.pnl > 0 ? "ui-tone-positive" : "ui-tone-negative"
-              }
+              className={pnlTone(trade.pnl)}
             >
               ₺{money(trade.pnl)}
               <small>{trade.pnl_pct.toFixed(2)}%</small>
