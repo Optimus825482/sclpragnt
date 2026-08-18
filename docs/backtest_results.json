@@ -1,0 +1,3590 @@
+{
+  "A_LIVE": {
+    "stop": 0.08882,
+    "tp": 0.02317,
+    "trades": 114,
+    "wins": 53,
+    "pnl": -395.8,
+    "wr": 46.5,
+    "symbols": [
+      {
+        "symbol": "BTCTRY",
+        "candles": 900,
+        "trades": 9,
+        "wins": 4,
+        "losses": 5,
+        "pnl": -4.8116,
+        "win_rate": 44.4,
+        "profit_factor": 1.774,
+        "avg_win": 4.9745,
+        "avg_loss": -2.2433,
+        "reasons": {
+          "bb_mfi_sell": 8,
+          "open_at_end": 1
+        },
+        "balance": 9995.19,
+        "trades_list": [
+          {
+            "entry": 3018088.0,
+            "exit": 3019940.0,
+            "pnl": -2.3873,
+            "reason": "bb_mfi_sell",
+            "bars": 59
+          },
+          {
+            "entry": 3016478.0,
+            "exit": 3017410.0,
+            "pnl": -2.6904,
+            "reason": "bb_mfi_sell",
+            "bars": 37
+          },
+          {
+            "entry": 3013656.0,
+            "exit": 3016996.0,
+            "pnl": -1.8918,
+            "reason": "bb_mfi_sell",
+            "bars": 40
+          },
+          {
+            "entry": 3015532.0,
+            "exit": 3033556.0,
+            "pnl": 2.9647,
+            "reason": "bb_mfi_sell",
+            "bars": 73
+          },
+          {
+            "entry": 3033451.0,
+            "exit": 3043495.0,
+            "pnl": 0.3058,
+            "reason": "bb_mfi_sell",
+            "bars": 33
+          },
+          {
+            "entry": 3039441.0,
+            "exit": 3084547.0,
+            "pnl": 11.8047,
+            "reason": "bb_mfi_sell",
+            "bars": 70
+          },
+          {
+            "entry": 3071986.0,
+            "exit": 3080862.0,
+            "pnl": -0.115,
+            "reason": "bb_mfi_sell",
+            "bars": 13
+          },
+          {
+            "entry": 3071548.0,
+            "exit": 3095616.0,
+            "pnl": 4.8228,
+            "reason": "bb_mfi_sell",
+            "bars": 158
+          },
+          {
+            "entry": 3092185.0,
+            "exit": 3088680.0,
+            "pnl": -4.1321,
+            "reason": "open_at_end",
+            "bars": 29
+          }
+        ]
+      },
+      {
+        "symbol": "ETHTRY",
+        "candles": 900,
+        "trades": 7,
+        "wins": 4,
+        "losses": 3,
+        "pnl": -10.2807,
+        "win_rate": 57.1,
+        "profit_factor": 1.044,
+        "avg_win": 1.2748,
+        "avg_loss": -1.6283,
+        "reasons": {
+          "bb_mfi_sell": 6,
+          "open_at_end": 1
+        },
+        "balance": 9989.72,
+        "trades_list": [
+          {
+            "entry": 90086.0,
+            "exit": 90149.0,
+            "pnl": -2.3017,
+            "reason": "bb_mfi_sell",
+            "bars": 181
+          },
+          {
+            "entry": 90078.0,
+            "exit": 90425.0,
+            "pnl": 0.8461,
+            "reason": "bb_mfi_sell",
+            "bars": 51
+          },
+          {
+            "entry": 90853.0,
+            "exit": 91152.0,
+            "pnl": 0.286,
+            "reason": "bb_mfi_sell",
+            "bars": 61
+          },
+          {
+            "entry": 90927.0,
+            "exit": 91487.0,
+            "pnl": 3.1478,
+            "reason": "bb_mfi_sell",
+            "bars": 132
+          },
+          {
+            "entry": 90999.0,
+            "exit": 91132.0,
+            "pnl": -1.54,
+            "reason": "bb_mfi_sell",
+            "bars": 59
+          },
+          {
+            "entry": 90699.0,
+            "exit": 91046.0,
+            "pnl": 0.8195,
+            "reason": "bb_mfi_sell",
+            "bars": 40
+          },
+          {
+            "entry": 91380.0,
+            "exit": 91559.0,
+            "pnl": -1.0433,
+            "reason": "open_at_end",
+            "bars": 51
+          }
+        ]
+      },
+      {
+        "symbol": "SOLTRY",
+        "candles": 900,
+        "trades": 5,
+        "wins": 4,
+        "losses": 1,
+        "pnl": 9.1473,
+        "win_rate": 80.0,
+        "profit_factor": 5.286,
+        "avg_win": 5.1332,
+        "avg_loss": -3.8845,
+        "reasons": {
+          "bb_mfi_sell": 5
+        },
+        "balance": 10009.15,
+        "trades_list": [
+          {
+            "entry": 3612.3,
+            "exit": 3609.1,
+            "pnl": -3.8845,
+            "reason": "bb_mfi_sell",
+            "bars": 21
+          },
+          {
+            "entry": 3603.0,
+            "exit": 3631.0,
+            "pnl": 4.7571,
+            "reason": "bb_mfi_sell",
+            "bars": 342
+          },
+          {
+            "entry": 3608.3,
+            "exit": 3650.6,
+            "pnl": 8.7035,
+            "reason": "bb_mfi_sell",
+            "bars": 324
+          },
+          {
+            "entry": 3644.3,
+            "exit": 3679.6,
+            "pnl": 6.6752,
+            "reason": "bb_mfi_sell",
+            "bars": 17
+          },
+          {
+            "entry": 3674.5,
+            "exit": 3687.0,
+            "pnl": 0.3971,
+            "reason": "bb_mfi_sell",
+            "bars": 16
+          }
+        ]
+      },
+      {
+        "symbol": "XRPTRY",
+        "candles": 900,
+        "trades": 4,
+        "wins": 2,
+        "losses": 2,
+        "pnl": -7.3161,
+        "win_rate": 50.0,
+        "profit_factor": 0.865,
+        "avg_win": 4.214,
+        "avg_loss": -4.8728,
+        "reasons": {
+          "bb_mfi_sell": 3,
+          "open_at_end": 1
+        },
+        "balance": 9992.68,
+        "trades_list": [
+          {
+            "entry": 47.82,
+            "exit": 48.1,
+            "pnl": 2.8465,
+            "reason": "bb_mfi_sell",
+            "bars": 349
+          },
+          {
+            "entry": 47.95,
+            "exit": 47.7,
+            "pnl": -8.207,
+            "reason": "bb_mfi_sell",
+            "bars": 327
+          },
+          {
+            "entry": 47.68,
+            "exit": 48.09,
+            "pnl": 5.5814,
+            "reason": "bb_mfi_sell",
+            "bars": 15
+          },
+          {
+            "entry": 47.85,
+            "exit": 47.92,
+            "pnl": -1.5386,
+            "reason": "open_at_end",
+            "bars": 18
+          }
+        ]
+      },
+      {
+        "symbol": "ADATRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 2,
+        "losses": 4,
+        "pnl": -35.1783,
+        "win_rate": 33.3,
+        "profit_factor": 0.352,
+        "avg_win": 7.1258,
+        "avg_loss": -10.1094,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "open_at_end": 1
+        },
+        "balance": 9964.82,
+        "trades_list": [
+          {
+            "entry": 8.49,
+            "exit": 8.51,
+            "pnl": -0.6478,
+            "reason": "bb_mfi_sell",
+            "bars": 116
+          },
+          {
+            "entry": 8.48,
+            "exit": 8.47,
+            "pnl": -4.1766,
+            "reason": "bb_mfi_sell",
+            "bars": 78
+          },
+          {
+            "entry": 8.4,
+            "exit": 8.54,
+            "pnl": 13.631,
+            "reason": "bb_mfi_sell",
+            "bars": 10
+          },
+          {
+            "entry": 8.45,
+            "exit": 8.26,
+            "pnl": -25.4624,
+            "reason": "bb_mfi_sell",
+            "bars": 372
+          },
+          {
+            "entry": 8.27,
+            "exit": 8.3,
+            "pnl": 0.6207,
+            "reason": "bb_mfi_sell",
+            "bars": 26
+          },
+          {
+            "entry": 8.35,
+            "exit": 8.29,
+            "pnl": -10.1509,
+            "reason": "open_at_end",
+            "bars": 65
+          }
+        ]
+      },
+      {
+        "symbol": "AVAXTRY",
+        "candles": 900,
+        "trades": 5,
+        "wins": 2,
+        "losses": 3,
+        "pnl": -31.2751,
+        "win_rate": 40.0,
+        "profit_factor": 0.391,
+        "avg_win": 7.6275,
+        "avg_loss": -13.0157,
+        "reasons": {
+          "bb_mfi_sell": 4,
+          "open_at_end": 1
+        },
+        "balance": 9968.72,
+        "trades_list": [
+          {
+            "entry": 310.3,
+            "exit": 304.1,
+            "pnl": -22.9507,
+            "reason": "bb_mfi_sell",
+            "bars": 134
+          },
+          {
+            "entry": 306.2,
+            "exit": 303.9,
+            "pnl": -10.4745,
+            "reason": "bb_mfi_sell",
+            "bars": 371
+          },
+          {
+            "entry": 298.7,
+            "exit": 302.7,
+            "pnl": 10.3335,
+            "reason": "bb_mfi_sell",
+            "bars": 32
+          },
+          {
+            "entry": 302.0,
+            "exit": 304.4,
+            "pnl": 4.9215,
+            "reason": "bb_mfi_sell",
+            "bars": 78
+          },
+          {
+            "entry": 303.1,
+            "exit": 302.3,
+            "pnl": -5.6218,
+            "reason": "open_at_end",
+            "bars": 70
+          }
+        ]
+      },
+      {
+        "symbol": "LINKTRY",
+        "candles": 900,
+        "trades": 7,
+        "wins": 5,
+        "losses": 2,
+        "pnl": 8.3847,
+        "win_rate": 71.4,
+        "profit_factor": 1.933,
+        "avg_win": 7.8245,
+        "avg_loss": -10.1204,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "take_profit": 1,
+          "open_at_end": 1
+        },
+        "balance": 10008.38,
+        "trades_list": [
+          {
+            "entry": 455.7,
+            "exit": 448.8,
+            "pnl": -18.1188,
+            "reason": "bb_mfi_sell",
+            "bars": 110
+          },
+          {
+            "entry": 448.1,
+            "exit": 450.4,
+            "pnl": 2.1209,
+            "reason": "bb_mfi_sell",
+            "bars": 48
+          },
+          {
+            "entry": 450.2,
+            "exit": 456.4,
+            "pnl": 10.7306,
+            "reason": "bb_mfi_sell",
+            "bars": 47
+          },
+          {
+            "entry": 452.0,
+            "exit": 462.47283999999996,
+            "pnl": 20.1156,
+            "reason": "take_profit",
+            "bars": 69
+          },
+          {
+            "entry": 453.8,
+            "exit": 455.6,
+            "pnl": 0.9614,
+            "reason": "bb_mfi_sell",
+            "bars": 116
+          },
+          {
+            "entry": 451.1,
+            "exit": 454.8,
+            "pnl": 5.1942,
+            "reason": "bb_mfi_sell",
+            "bars": 150
+          },
+          {
+            "entry": 453.6,
+            "exit": 454.0,
+            "pnl": -2.122,
+            "reason": "open_at_end",
+            "bars": 22
+          }
+        ]
+      },
+      {
+        "symbol": "NEARTRY",
+        "candles": 900,
+        "trades": 8,
+        "wins": 4,
+        "losses": 4,
+        "pnl": -39.782,
+        "win_rate": 50.0,
+        "profit_factor": 0.475,
+        "avg_win": 6.2801,
+        "avg_loss": -13.2299,
+        "reasons": {
+          "bb_mfi_sell": 7,
+          "open_at_end": 1
+        },
+        "balance": 9960.22,
+        "trades_list": [
+          {
+            "entry": 77.8,
+            "exit": 77.1,
+            "pnl": -11.9839,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 77.0,
+            "exit": 77.4,
+            "pnl": 2.1841,
+            "reason": "bb_mfi_sell",
+            "bars": 30
+          },
+          {
+            "entry": 77.5,
+            "exit": 77.8,
+            "pnl": 0.8641,
+            "reason": "bb_mfi_sell",
+            "bars": 17
+          },
+          {
+            "entry": 77.6,
+            "exit": 77.3,
+            "pnl": -6.851,
+            "reason": "bb_mfi_sell",
+            "bars": 98
+          },
+          {
+            "entry": 78.1,
+            "exit": 78.8,
+            "pnl": 5.9365,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 78.1,
+            "exit": 77.8,
+            "pnl": -6.8236,
+            "reason": "bb_mfi_sell",
+            "bars": 81
+          },
+          {
+            "entry": 78.1,
+            "exit": 79.6,
+            "pnl": 16.1358,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 78.1,
+            "exit": 76.2,
+            "pnl": -27.2612,
+            "reason": "open_at_end",
+            "bars": 176
+          }
+        ]
+      },
+      {
+        "symbol": "APTTRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "pnl": -23.1757,
+        "win_rate": 50.0,
+        "profit_factor": 0.705,
+        "avg_win": 11.3257,
+        "avg_loss": -16.0597,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "take_profit": 1
+        },
+        "balance": 9976.82,
+        "trades_list": [
+          {
+            "entry": 25.7,
+            "exit": 25.2,
+            "pnl": -22.4261,
+            "reason": "bb_mfi_sell",
+            "bars": 306
+          },
+          {
+            "entry": 25.0,
+            "exit": 24.8,
+            "pnl": -10.9617,
+            "reason": "bb_mfi_sell",
+            "bars": 105
+          },
+          {
+            "entry": 24.8,
+            "exit": 25.0,
+            "pnl": 5.034,
+            "reason": "bb_mfi_sell",
+            "bars": 7
+          },
+          {
+            "entry": 25.3,
+            "exit": 25.0,
+            "pnl": -14.7912,
+            "reason": "bb_mfi_sell",
+            "bars": 62
+          },
+          {
+            "entry": 24.7,
+            "exit": 25.272298999999997,
+            "pnl": 20.0363,
+            "reason": "take_profit",
+            "bars": 38
+          },
+          {
+            "entry": 25.1,
+            "exit": 25.4,
+            "pnl": 8.9069,
+            "reason": "bb_mfi_sell",
+            "bars": 67
+          }
+        ]
+      },
+      {
+        "symbol": "ARBTRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "pnl": 6.7952,
+        "win_rate": 50.0,
+        "profit_factor": 3.538,
+        "avg_win": 7.3419,
+        "avg_loss": -2.075,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "open_at_end": 1
+        },
+        "balance": 10006.8,
+        "trades_list": [
+          {
+            "entry": 3.51,
+            "exit": 3.53,
+            "pnl": 2.6895,
+            "reason": "bb_mfi_sell",
+            "bars": 110
+          },
+          {
+            "entry": 3.52,
+            "exit": 3.56,
+            "pnl": 8.3476,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 3.57,
+            "exit": 3.57,
+            "pnl": -3.0024,
+            "reason": "bb_mfi_sell",
+            "bars": 91
+          },
+          {
+            "entry": 3.57,
+            "exit": 3.62,
+            "pnl": 10.9885,
+            "reason": "bb_mfi_sell",
+            "bars": 113
+          },
+          {
+            "entry": 3.6,
+            "exit": 3.6,
+            "pnl": -3.0039,
+            "reason": "bb_mfi_sell",
+            "bars": 136
+          },
+          {
+            "entry": 3.59,
+            "exit": 3.6,
+            "pnl": -0.2188,
+            "reason": "open_at_end",
+            "bars": 109
+          }
+        ]
+      },
+      {
+        "symbol": "OPTRY",
+        "candles": 900,
+        "trades": 9,
+        "wins": 5,
+        "losses": 4,
+        "pnl": -20.3071,
+        "win_rate": 55.6,
+        "profit_factor": 0.767,
+        "avg_win": 4.4894,
+        "avg_loss": -7.3168,
+        "reasons": {
+          "bb_mfi_sell": 8,
+          "open_at_end": 1
+        },
+        "balance": 9979.69,
+        "trades_list": [
+          {
+            "entry": 4.06,
+            "exit": 4.08,
+            "pnl": 1.9187,
+            "reason": "bb_mfi_sell",
+            "bars": 19
+          },
+          {
+            "entry": 4.05,
+            "exit": 4.08,
+            "pnl": 4.3965,
+            "reason": "bb_mfi_sell",
+            "bars": 75
+          },
+          {
+            "entry": 4.07,
+            "exit": 4.08,
+            "pnl": -0.5469,
+            "reason": "bb_mfi_sell",
+            "bars": 56
+          },
+          {
+            "entry": 4.07,
+            "exit": 4.02,
+            "pnl": -15.2685,
+            "reason": "bb_mfi_sell",
+            "bars": 100
+          },
+          {
+            "entry": 4.05,
+            "exit": 4.03,
+            "pnl": -7.9186,
+            "reason": "bb_mfi_sell",
+            "bars": 38
+          },
+          {
+            "entry": 4.0,
+            "exit": 4.03,
+            "pnl": 4.4776,
+            "reason": "bb_mfi_sell",
+            "bars": 62
+          },
+          {
+            "entry": 4.0,
+            "exit": 4.03,
+            "pnl": 4.4789,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 3.92,
+            "exit": 3.96,
+            "pnl": 7.1752,
+            "reason": "bb_mfi_sell",
+            "bars": 142
+          },
+          {
+            "entry": 3.93,
+            "exit": 3.92,
+            "pnl": -5.5334,
+            "reason": "open_at_end",
+            "bars": 60
+          }
+        ]
+      },
+      {
+        "symbol": "SUITRY",
+        "candles": 900,
+        "trades": 5,
+        "wins": 2,
+        "losses": 3,
+        "pnl": -47.1259,
+        "win_rate": 40.0,
+        "profit_factor": 0.183,
+        "avg_win": 4.4512,
+        "avg_loss": -16.1808,
+        "reasons": {
+          "bb_mfi_sell": 4,
+          "open_at_end": 1
+        },
+        "balance": 9952.87,
+        "trades_list": [
+          {
+            "entry": 32.34,
+            "exit": 32.44,
+            "pnl": 0.0875,
+            "reason": "bb_mfi_sell",
+            "bars": 95
+          },
+          {
+            "entry": 32.43,
+            "exit": 32.44,
+            "pnl": -2.6917,
+            "reason": "bb_mfi_sell",
+            "bars": 112
+          },
+          {
+            "entry": 32.38,
+            "exit": 31.19,
+            "pnl": -39.6737,
+            "reason": "bb_mfi_sell",
+            "bars": 357
+          },
+          {
+            "entry": 31.16,
+            "exit": 31.53,
+            "pnl": 8.815,
+            "reason": "bb_mfi_sell",
+            "bars": 5
+          },
+          {
+            "entry": 31.19,
+            "exit": 31.09,
+            "pnl": -6.1769,
+            "reason": "open_at_end",
+            "bars": 69
+          }
+        ]
+      },
+      {
+        "symbol": "DOGETRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "pnl": -7.9102,
+        "win_rate": 50.0,
+        "profit_factor": 1.399,
+        "avg_win": 1.2697,
+        "avg_loss": -0.9075,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "open_at_end": 1
+        },
+        "balance": 9992.09,
+        "trades_list": [
+          {
+            "entry": 3.334,
+            "exit": 3.342,
+            "pnl": -0.6041,
+            "reason": "bb_mfi_sell",
+            "bars": 40
+          },
+          {
+            "entry": 3.338,
+            "exit": 3.343,
+            "pnl": -1.504,
+            "reason": "bb_mfi_sell",
+            "bars": 83
+          },
+          {
+            "entry": 3.348,
+            "exit": 3.366,
+            "pnl": 2.3671,
+            "reason": "bb_mfi_sell",
+            "bars": 150
+          },
+          {
+            "entry": 3.354,
+            "exit": 3.366,
+            "pnl": 0.5722,
+            "reason": "bb_mfi_sell",
+            "bars": 27
+          },
+          {
+            "entry": 3.354,
+            "exit": 3.367,
+            "pnl": 0.8697,
+            "reason": "bb_mfi_sell",
+            "bars": 140
+          },
+          {
+            "entry": 3.349,
+            "exit": 3.357,
+            "pnl": -0.6145,
+            "reason": "open_at_end",
+            "bars": 245
+          }
+        ]
+      },
+      {
+        "symbol": "LTCTRY",
+        "candles": 900,
+        "trades": 9,
+        "wins": 2,
+        "losses": 7,
+        "pnl": -27.7336,
+        "win_rate": 22.2,
+        "profit_factor": 0.193,
+        "avg_win": 1.7066,
+        "avg_loss": -2.5237,
+        "reasons": {
+          "bb_mfi_sell": 8,
+          "open_at_end": 1
+        },
+        "balance": 9972.27,
+        "trades_list": [
+          {
+            "entry": 2110.0,
+            "exit": 2113.0,
+            "pnl": -1.5803,
+            "reason": "bb_mfi_sell",
+            "bars": 17
+          },
+          {
+            "entry": 2117.0,
+            "exit": 2119.0,
+            "pnl": -2.0561,
+            "reason": "bb_mfi_sell",
+            "bars": 34
+          },
+          {
+            "entry": 2122.0,
+            "exit": 2124.0,
+            "pnl": -2.0575,
+            "reason": "bb_mfi_sell",
+            "bars": 13
+          },
+          {
+            "entry": 2119.0,
+            "exit": 2123.0,
+            "pnl": -1.114,
+            "reason": "bb_mfi_sell",
+            "bars": 19
+          },
+          {
+            "entry": 2128.0,
+            "exit": 2120.0,
+            "pnl": -6.7451,
+            "reason": "bb_mfi_sell",
+            "bars": 201
+          },
+          {
+            "entry": 2127.0,
+            "exit": 2130.0,
+            "pnl": -1.5883,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 2125.0,
+            "exit": 2133.0,
+            "pnl": 0.7572,
+            "reason": "bb_mfi_sell",
+            "bars": 128
+          },
+          {
+            "entry": 2116.0,
+            "exit": 2128.0,
+            "pnl": 2.6559,
+            "reason": "bb_mfi_sell",
+            "bars": 42
+          },
+          {
+            "entry": 2126.0,
+            "exit": 2127.0,
+            "pnl": -2.5243,
+            "reason": "open_at_end",
+            "bars": 4
+          }
+        ]
+      },
+      {
+        "symbol": "BNBTRY",
+        "candles": 900,
+        "trades": 4,
+        "wins": 0,
+        "losses": 4,
+        "pnl": -22.1814,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "avg_win": 0,
+        "avg_loss": -4.0469,
+        "reasons": {
+          "bb_mfi_sell": 3,
+          "open_at_end": 1
+        },
+        "balance": 9977.82,
+        "trades_list": [
+          {
+            "entry": 29160.0,
+            "exit": 29043.0,
+            "pnl": -7.0063,
+            "reason": "bb_mfi_sell",
+            "bars": 127
+          },
+          {
+            "entry": 29049.0,
+            "exit": 28985.0,
+            "pnl": -5.1954,
+            "reason": "bb_mfi_sell",
+            "bars": 155
+          },
+          {
+            "entry": 28890.0,
+            "exit": 28920.0,
+            "pnl": -1.9602,
+            "reason": "bb_mfi_sell",
+            "bars": 267
+          },
+          {
+            "entry": 28811.0,
+            "exit": 28839.0,
+            "pnl": -2.0258,
+            "reason": "open_at_end",
+            "bars": 170
+          }
+        ]
+      },
+      {
+        "symbol": "INJTRY",
+        "candles": 900,
+        "trades": 4,
+        "wins": 3,
+        "losses": 1,
+        "pnl": -10.6821,
+        "win_rate": 75.0,
+        "profit_factor": 0.778,
+        "avg_win": 5.4745,
+        "avg_loss": -21.1072,
+        "reasons": {
+          "bb_mfi_sell": 3,
+          "open_at_end": 1
+        },
+        "balance": 9989.32,
+        "trades_list": [
+          {
+            "entry": 199.2,
+            "exit": 201.0,
+            "pnl": 6.0226,
+            "reason": "bb_mfi_sell",
+            "bars": 28
+          },
+          {
+            "entry": 199.0,
+            "exit": 199.7,
+            "pnl": 0.5125,
+            "reason": "bb_mfi_sell",
+            "bars": 307
+          },
+          {
+            "entry": 198.6,
+            "exit": 195.0,
+            "pnl": -21.1072,
+            "reason": "bb_mfi_sell",
+            "bars": 432
+          },
+          {
+            "entry": 193.4,
+            "exit": 195.9,
+            "pnl": 9.8883,
+            "reason": "open_at_end",
+            "bars": 26
+          }
+        ]
+      },
+      {
+        "symbol": "WLDTRY",
+        "candles": 900,
+        "trades": 7,
+        "wins": 3,
+        "losses": 4,
+        "pnl": -98.7284,
+        "win_rate": 42.9,
+        "profit_factor": 0.204,
+        "avg_win": 7.5273,
+        "avg_loss": -27.7088,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "stop_loss": 1,
+          "open_at_end": 1
+        },
+        "balance": 9901.27,
+        "trades_list": [
+          {
+            "entry": 16.66,
+            "exit": 16.87,
+            "pnl": 9.5861,
+            "reason": "bb_mfi_sell",
+            "bars": 41
+          },
+          {
+            "entry": 16.62,
+            "exit": 16.61,
+            "pnl": -3.6037,
+            "reason": "bb_mfi_sell",
+            "bars": 114
+          },
+          {
+            "entry": 17.2,
+            "exit": 17.2,
+            "pnl": -3.0009,
+            "reason": "bb_mfi_sell",
+            "bars": 49
+          },
+          {
+            "entry": 17.31,
+            "exit": 17.45,
+            "pnl": 5.0749,
+            "reason": "bb_mfi_sell",
+            "bars": 74
+          },
+          {
+            "entry": 17.1,
+            "exit": 15.581178000000001,
+            "pnl": -91.7056,
+            "reason": "stop_loss",
+            "bars": 179
+          },
+          {
+            "entry": 15.44,
+            "exit": 15.61,
+            "pnl": 7.921,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 15.55,
+            "exit": 15.4,
+            "pnl": -12.5248,
+            "reason": "open_at_end",
+            "bars": 109
+          }
+        ]
+      },
+      {
+        "symbol": "DOTTRY",
+        "candles": 900,
+        "trades": 7,
+        "wins": 2,
+        "losses": 5,
+        "pnl": -33.6396,
+        "win_rate": 28.6,
+        "profit_factor": 0.454,
+        "avg_win": 9.6367,
+        "avg_loss": -8.4871,
+        "reasons": {
+          "bb_mfi_sell": 7
+        },
+        "balance": 9966.36,
+        "trades_list": [
+          {
+            "entry": 36.5,
+            "exit": 36.5,
+            "pnl": -3.0,
+            "reason": "bb_mfi_sell",
+            "bars": 148
+          },
+          {
+            "entry": 36.4,
+            "exit": 36.3,
+            "pnl": -5.7405,
+            "reason": "bb_mfi_sell",
+            "bars": 67
+          },
+          {
+            "entry": 36.6,
+            "exit": 36.4,
+            "pnl": -8.4464,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 36.2,
+            "exit": 36.3,
+            "pnl": -0.2412,
+            "reason": "bb_mfi_sell",
+            "bars": 58
+          },
+          {
+            "entry": 36.2,
+            "exit": 35.4,
+            "pnl": -25.0076,
+            "reason": "bb_mfi_sell",
+            "bars": 147
+          },
+          {
+            "entry": 35.3,
+            "exit": 35.8,
+            "pnl": 11.0874,
+            "reason": "bb_mfi_sell",
+            "bars": 23
+          },
+          {
+            "entry": 35.6,
+            "exit": 36.0,
+            "pnl": 8.186,
+            "reason": "bb_mfi_sell",
+            "bars": 15
+          }
+        ]
+      }
+    ]
+  },
+  "B_BALANCED": {
+    "stop": 0.035,
+    "tp": 0.035,
+    "trades": 121,
+    "wins": 56,
+    "pnl": -478.71,
+    "wr": 46.3,
+    "symbols": [
+      {
+        "symbol": "BTCTRY",
+        "candles": 900,
+        "trades": 9,
+        "wins": 4,
+        "losses": 5,
+        "pnl": -4.7696,
+        "win_rate": 44.4,
+        "profit_factor": 1.781,
+        "avg_win": 4.9745,
+        "avg_loss": -2.2349,
+        "reasons": {
+          "bb_mfi_sell": 8,
+          "open_at_end": 1
+        },
+        "balance": 9995.23,
+        "trades_list": [
+          {
+            "entry": 3018088.0,
+            "exit": 3019940.0,
+            "pnl": -2.3873,
+            "reason": "bb_mfi_sell",
+            "bars": 59
+          },
+          {
+            "entry": 3016478.0,
+            "exit": 3017410.0,
+            "pnl": -2.6904,
+            "reason": "bb_mfi_sell",
+            "bars": 37
+          },
+          {
+            "entry": 3013656.0,
+            "exit": 3016996.0,
+            "pnl": -1.8918,
+            "reason": "bb_mfi_sell",
+            "bars": 40
+          },
+          {
+            "entry": 3015532.0,
+            "exit": 3033556.0,
+            "pnl": 2.9647,
+            "reason": "bb_mfi_sell",
+            "bars": 73
+          },
+          {
+            "entry": 3033451.0,
+            "exit": 3043495.0,
+            "pnl": 0.3058,
+            "reason": "bb_mfi_sell",
+            "bars": 33
+          },
+          {
+            "entry": 3039441.0,
+            "exit": 3084547.0,
+            "pnl": 11.8047,
+            "reason": "bb_mfi_sell",
+            "bars": 70
+          },
+          {
+            "entry": 3071986.0,
+            "exit": 3080862.0,
+            "pnl": -0.115,
+            "reason": "bb_mfi_sell",
+            "bars": 13
+          },
+          {
+            "entry": 3071548.0,
+            "exit": 3095616.0,
+            "pnl": 4.8228,
+            "reason": "bb_mfi_sell",
+            "bars": 158
+          },
+          {
+            "entry": 3092185.0,
+            "exit": 3088810.0,
+            "pnl": -4.0902,
+            "reason": "open_at_end",
+            "bars": 29
+          }
+        ]
+      },
+      {
+        "symbol": "ETHTRY",
+        "candles": 900,
+        "trades": 7,
+        "wins": 4,
+        "losses": 3,
+        "pnl": -10.2807,
+        "win_rate": 57.1,
+        "profit_factor": 1.044,
+        "avg_win": 1.2748,
+        "avg_loss": -1.6283,
+        "reasons": {
+          "bb_mfi_sell": 6,
+          "open_at_end": 1
+        },
+        "balance": 9989.72,
+        "trades_list": [
+          {
+            "entry": 90086.0,
+            "exit": 90149.0,
+            "pnl": -2.3017,
+            "reason": "bb_mfi_sell",
+            "bars": 181
+          },
+          {
+            "entry": 90078.0,
+            "exit": 90425.0,
+            "pnl": 0.8461,
+            "reason": "bb_mfi_sell",
+            "bars": 51
+          },
+          {
+            "entry": 90853.0,
+            "exit": 91152.0,
+            "pnl": 0.286,
+            "reason": "bb_mfi_sell",
+            "bars": 61
+          },
+          {
+            "entry": 90927.0,
+            "exit": 91487.0,
+            "pnl": 3.1478,
+            "reason": "bb_mfi_sell",
+            "bars": 132
+          },
+          {
+            "entry": 90999.0,
+            "exit": 91132.0,
+            "pnl": -1.54,
+            "reason": "bb_mfi_sell",
+            "bars": 59
+          },
+          {
+            "entry": 90699.0,
+            "exit": 91046.0,
+            "pnl": 0.8195,
+            "reason": "bb_mfi_sell",
+            "bars": 40
+          },
+          {
+            "entry": 91380.0,
+            "exit": 91559.0,
+            "pnl": -1.0433,
+            "reason": "open_at_end",
+            "bars": 51
+          }
+        ]
+      },
+      {
+        "symbol": "SOLTRY",
+        "candles": 900,
+        "trades": 5,
+        "wins": 4,
+        "losses": 1,
+        "pnl": 9.1473,
+        "win_rate": 80.0,
+        "profit_factor": 5.286,
+        "avg_win": 5.1332,
+        "avg_loss": -3.8845,
+        "reasons": {
+          "bb_mfi_sell": 5
+        },
+        "balance": 10009.15,
+        "trades_list": [
+          {
+            "entry": 3612.3,
+            "exit": 3609.1,
+            "pnl": -3.8845,
+            "reason": "bb_mfi_sell",
+            "bars": 21
+          },
+          {
+            "entry": 3603.0,
+            "exit": 3631.0,
+            "pnl": 4.7571,
+            "reason": "bb_mfi_sell",
+            "bars": 342
+          },
+          {
+            "entry": 3608.3,
+            "exit": 3650.6,
+            "pnl": 8.7035,
+            "reason": "bb_mfi_sell",
+            "bars": 324
+          },
+          {
+            "entry": 3644.3,
+            "exit": 3679.6,
+            "pnl": 6.6752,
+            "reason": "bb_mfi_sell",
+            "bars": 17
+          },
+          {
+            "entry": 3674.5,
+            "exit": 3687.0,
+            "pnl": 0.3971,
+            "reason": "bb_mfi_sell",
+            "bars": 16
+          }
+        ]
+      },
+      {
+        "symbol": "XRPTRY",
+        "candles": 900,
+        "trades": 4,
+        "wins": 2,
+        "losses": 2,
+        "pnl": -7.3161,
+        "win_rate": 50.0,
+        "profit_factor": 0.865,
+        "avg_win": 4.214,
+        "avg_loss": -4.8728,
+        "reasons": {
+          "bb_mfi_sell": 3,
+          "open_at_end": 1
+        },
+        "balance": 9992.68,
+        "trades_list": [
+          {
+            "entry": 47.82,
+            "exit": 48.1,
+            "pnl": 2.8465,
+            "reason": "bb_mfi_sell",
+            "bars": 349
+          },
+          {
+            "entry": 47.95,
+            "exit": 47.7,
+            "pnl": -8.207,
+            "reason": "bb_mfi_sell",
+            "bars": 327
+          },
+          {
+            "entry": 47.68,
+            "exit": 48.09,
+            "pnl": 5.5814,
+            "reason": "bb_mfi_sell",
+            "bars": 15
+          },
+          {
+            "entry": 47.85,
+            "exit": 47.92,
+            "pnl": -1.5386,
+            "reason": "open_at_end",
+            "bars": 18
+          }
+        ]
+      },
+      {
+        "symbol": "ADATRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 2,
+        "losses": 4,
+        "pnl": -35.1783,
+        "win_rate": 33.3,
+        "profit_factor": 0.352,
+        "avg_win": 7.1258,
+        "avg_loss": -10.1094,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "open_at_end": 1
+        },
+        "balance": 9964.82,
+        "trades_list": [
+          {
+            "entry": 8.49,
+            "exit": 8.51,
+            "pnl": -0.6478,
+            "reason": "bb_mfi_sell",
+            "bars": 116
+          },
+          {
+            "entry": 8.48,
+            "exit": 8.47,
+            "pnl": -4.1766,
+            "reason": "bb_mfi_sell",
+            "bars": 78
+          },
+          {
+            "entry": 8.4,
+            "exit": 8.54,
+            "pnl": 13.631,
+            "reason": "bb_mfi_sell",
+            "bars": 10
+          },
+          {
+            "entry": 8.45,
+            "exit": 8.26,
+            "pnl": -25.4624,
+            "reason": "bb_mfi_sell",
+            "bars": 372
+          },
+          {
+            "entry": 8.27,
+            "exit": 8.3,
+            "pnl": 0.6207,
+            "reason": "bb_mfi_sell",
+            "bars": 26
+          },
+          {
+            "entry": 8.35,
+            "exit": 8.29,
+            "pnl": -10.1509,
+            "reason": "open_at_end",
+            "bars": 65
+          }
+        ]
+      },
+      {
+        "symbol": "AVAXTRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 2,
+        "losses": 4,
+        "pnl": -47.7917,
+        "win_rate": 33.3,
+        "profit_factor": 0.282,
+        "avg_win": 7.6144,
+        "avg_loss": -13.5134,
+        "reasons": {
+          "stop_loss": 1,
+          "bb_mfi_sell": 4,
+          "open_at_end": 1
+        },
+        "balance": 9952.21,
+        "trades_list": [
+          {
+            "entry": 310.3,
+            "exit": 299.4395,
+            "pnl": -37.9475,
+            "reason": "stop_loss",
+            "bars": 22
+          },
+          {
+            "entry": 303.4,
+            "exit": 304.1,
+            "pnl": -0.6935,
+            "reason": "bb_mfi_sell",
+            "bars": 57
+          },
+          {
+            "entry": 306.2,
+            "exit": 303.9,
+            "pnl": -10.4564,
+            "reason": "bb_mfi_sell",
+            "bars": 371
+          },
+          {
+            "entry": 298.7,
+            "exit": 302.7,
+            "pnl": 10.3157,
+            "reason": "bb_mfi_sell",
+            "bars": 32
+          },
+          {
+            "entry": 302.0,
+            "exit": 304.4,
+            "pnl": 4.913,
+            "reason": "bb_mfi_sell",
+            "bars": 78
+          },
+          {
+            "entry": 303.1,
+            "exit": 302.5,
+            "pnl": -4.956,
+            "reason": "open_at_end",
+            "bars": 70
+          }
+        ]
+      },
+      {
+        "symbol": "LINKTRY",
+        "candles": 900,
+        "trades": 7,
+        "wins": 5,
+        "losses": 2,
+        "pnl": -3.2515,
+        "win_rate": 71.4,
+        "profit_factor": 1.358,
+        "avg_win": 5.4958,
+        "avg_loss": -10.1192,
+        "reasons": {
+          "bb_mfi_sell": 6,
+          "open_at_end": 1
+        },
+        "balance": 9996.75,
+        "trades_list": [
+          {
+            "entry": 455.7,
+            "exit": 448.8,
+            "pnl": -18.1188,
+            "reason": "bb_mfi_sell",
+            "bars": 110
+          },
+          {
+            "entry": 448.1,
+            "exit": 450.4,
+            "pnl": 2.1209,
+            "reason": "bb_mfi_sell",
+            "bars": 48
+          },
+          {
+            "entry": 450.2,
+            "exit": 456.4,
+            "pnl": 10.7306,
+            "reason": "bb_mfi_sell",
+            "bars": 47
+          },
+          {
+            "entry": 452.0,
+            "exit": 457.2,
+            "pnl": 8.4789,
+            "reason": "bb_mfi_sell",
+            "bars": 85
+          },
+          {
+            "entry": 453.8,
+            "exit": 455.6,
+            "pnl": 0.9603,
+            "reason": "bb_mfi_sell",
+            "bars": 116
+          },
+          {
+            "entry": 451.1,
+            "exit": 454.8,
+            "pnl": 5.1881,
+            "reason": "bb_mfi_sell",
+            "bars": 150
+          },
+          {
+            "entry": 453.6,
+            "exit": 454.0,
+            "pnl": -2.1196,
+            "reason": "open_at_end",
+            "bars": 22
+          }
+        ]
+      },
+      {
+        "symbol": "NEARTRY",
+        "candles": 900,
+        "trades": 8,
+        "wins": 4,
+        "losses": 4,
+        "pnl": -39.782,
+        "win_rate": 50.0,
+        "profit_factor": 0.475,
+        "avg_win": 6.2801,
+        "avg_loss": -13.2299,
+        "reasons": {
+          "bb_mfi_sell": 7,
+          "open_at_end": 1
+        },
+        "balance": 9960.22,
+        "trades_list": [
+          {
+            "entry": 77.8,
+            "exit": 77.1,
+            "pnl": -11.9839,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 77.0,
+            "exit": 77.4,
+            "pnl": 2.1841,
+            "reason": "bb_mfi_sell",
+            "bars": 30
+          },
+          {
+            "entry": 77.5,
+            "exit": 77.8,
+            "pnl": 0.8641,
+            "reason": "bb_mfi_sell",
+            "bars": 17
+          },
+          {
+            "entry": 77.6,
+            "exit": 77.3,
+            "pnl": -6.851,
+            "reason": "bb_mfi_sell",
+            "bars": 98
+          },
+          {
+            "entry": 78.1,
+            "exit": 78.8,
+            "pnl": 5.9365,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 78.1,
+            "exit": 77.8,
+            "pnl": -6.8236,
+            "reason": "bb_mfi_sell",
+            "bars": 81
+          },
+          {
+            "entry": 78.1,
+            "exit": 79.6,
+            "pnl": 16.1358,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 78.1,
+            "exit": 76.2,
+            "pnl": -27.2612,
+            "reason": "open_at_end",
+            "bars": 176
+          }
+        ]
+      },
+      {
+        "symbol": "APTTRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "pnl": -29.4121,
+        "win_rate": 50.0,
+        "profit_factor": 0.679,
+        "avg_win": 14.4161,
+        "avg_loss": -21.2301,
+        "reasons": {
+          "stop_loss": 1,
+          "bb_mfi_sell": 5
+        },
+        "balance": 9970.59,
+        "trades_list": [
+          {
+            "entry": 25.7,
+            "exit": 24.8005,
+            "pnl": -37.9475,
+            "reason": "stop_loss",
+            "bars": 263
+          },
+          {
+            "entry": 24.8,
+            "exit": 25.2,
+            "pnl": 13.0531,
+            "reason": "bb_mfi_sell",
+            "bars": 41
+          },
+          {
+            "entry": 25.0,
+            "exit": 24.8,
+            "pnl": -10.9574,
+            "reason": "bb_mfi_sell",
+            "bars": 105
+          },
+          {
+            "entry": 24.8,
+            "exit": 25.0,
+            "pnl": 5.032,
+            "reason": "bb_mfi_sell",
+            "bars": 7
+          },
+          {
+            "entry": 25.3,
+            "exit": 25.0,
+            "pnl": -14.7853,
+            "reason": "bb_mfi_sell",
+            "bars": 62
+          },
+          {
+            "entry": 24.7,
+            "exit": 25.4,
+            "pnl": 25.1633,
+            "reason": "bb_mfi_sell",
+            "bars": 143
+          }
+        ]
+      },
+      {
+        "symbol": "ARBTRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "pnl": 6.7952,
+        "win_rate": 50.0,
+        "profit_factor": 3.538,
+        "avg_win": 7.3419,
+        "avg_loss": -2.075,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "open_at_end": 1
+        },
+        "balance": 10006.8,
+        "trades_list": [
+          {
+            "entry": 3.51,
+            "exit": 3.53,
+            "pnl": 2.6895,
+            "reason": "bb_mfi_sell",
+            "bars": 110
+          },
+          {
+            "entry": 3.52,
+            "exit": 3.56,
+            "pnl": 8.3476,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 3.57,
+            "exit": 3.57,
+            "pnl": -3.0024,
+            "reason": "bb_mfi_sell",
+            "bars": 91
+          },
+          {
+            "entry": 3.57,
+            "exit": 3.62,
+            "pnl": 10.9885,
+            "reason": "bb_mfi_sell",
+            "bars": 113
+          },
+          {
+            "entry": 3.6,
+            "exit": 3.6,
+            "pnl": -3.0039,
+            "reason": "bb_mfi_sell",
+            "bars": 136
+          },
+          {
+            "entry": 3.59,
+            "exit": 3.6,
+            "pnl": -0.2188,
+            "reason": "open_at_end",
+            "bars": 109
+          }
+        ]
+      },
+      {
+        "symbol": "OPTRY",
+        "candles": 900,
+        "trades": 10,
+        "wins": 6,
+        "losses": 4,
+        "pnl": -39.9853,
+        "win_rate": 60.0,
+        "profit_factor": 0.518,
+        "avg_win": 4.4842,
+        "avg_loss": -12.9812,
+        "reasons": {
+          "bb_mfi_sell": 8,
+          "stop_loss": 1,
+          "open_at_end": 1
+        },
+        "balance": 9960.01,
+        "trades_list": [
+          {
+            "entry": 4.06,
+            "exit": 4.08,
+            "pnl": 1.9187,
+            "reason": "bb_mfi_sell",
+            "bars": 19
+          },
+          {
+            "entry": 4.05,
+            "exit": 4.08,
+            "pnl": 4.3965,
+            "reason": "bb_mfi_sell",
+            "bars": 75
+          },
+          {
+            "entry": 4.07,
+            "exit": 4.08,
+            "pnl": -0.5469,
+            "reason": "bb_mfi_sell",
+            "bars": 56
+          },
+          {
+            "entry": 4.07,
+            "exit": 3.92755,
+            "pnl": -37.9523,
+            "reason": "stop_loss",
+            "bars": 59
+          },
+          {
+            "entry": 3.99,
+            "exit": 4.02,
+            "pnl": 4.4903,
+            "reason": "bb_mfi_sell",
+            "bars": 39
+          },
+          {
+            "entry": 4.05,
+            "exit": 4.03,
+            "pnl": -7.903,
+            "reason": "bb_mfi_sell",
+            "bars": 38
+          },
+          {
+            "entry": 4.0,
+            "exit": 4.03,
+            "pnl": 4.4687,
+            "reason": "bb_mfi_sell",
+            "bars": 62
+          },
+          {
+            "entry": 4.0,
+            "exit": 4.03,
+            "pnl": 4.4701,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 3.92,
+            "exit": 3.96,
+            "pnl": 7.161,
+            "reason": "bb_mfi_sell",
+            "bars": 142
+          },
+          {
+            "entry": 3.93,
+            "exit": 3.92,
+            "pnl": -5.5224,
+            "reason": "open_at_end",
+            "bars": 60
+          }
+        ]
+      },
+      {
+        "symbol": "SUITRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 2,
+        "losses": 4,
+        "pnl": -48.2634,
+        "win_rate": 33.3,
+        "profit_factor": 0.185,
+        "avg_win": 4.4504,
+        "avg_loss": -12.0464,
+        "reasons": {
+          "bb_mfi_sell": 4,
+          "stop_loss": 1,
+          "open_at_end": 1
+        },
+        "balance": 9951.74,
+        "trades_list": [
+          {
+            "entry": 32.34,
+            "exit": 32.44,
+            "pnl": 0.0875,
+            "reason": "bb_mfi_sell",
+            "bars": 95
+          },
+          {
+            "entry": 32.43,
+            "exit": 32.44,
+            "pnl": -2.6917,
+            "reason": "bb_mfi_sell",
+            "bars": 112
+          },
+          {
+            "entry": 32.38,
+            "exit": 31.2467,
+            "pnl": -37.9262,
+            "reason": "stop_loss",
+            "bars": 255
+          },
+          {
+            "entry": 31.16,
+            "exit": 31.19,
+            "pnl": -2.0295,
+            "reason": "bb_mfi_sell",
+            "bars": 100
+          },
+          {
+            "entry": 31.16,
+            "exit": 31.53,
+            "pnl": 8.8134,
+            "reason": "bb_mfi_sell",
+            "bars": 5
+          },
+          {
+            "entry": 31.19,
+            "exit": 31.11,
+            "pnl": -5.5381,
+            "reason": "open_at_end",
+            "bars": 69
+          }
+        ]
+      },
+      {
+        "symbol": "DOGETRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "pnl": -7.9102,
+        "win_rate": 50.0,
+        "profit_factor": 1.399,
+        "avg_win": 1.2697,
+        "avg_loss": -0.9075,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "open_at_end": 1
+        },
+        "balance": 9992.09,
+        "trades_list": [
+          {
+            "entry": 3.334,
+            "exit": 3.342,
+            "pnl": -0.6041,
+            "reason": "bb_mfi_sell",
+            "bars": 40
+          },
+          {
+            "entry": 3.338,
+            "exit": 3.343,
+            "pnl": -1.504,
+            "reason": "bb_mfi_sell",
+            "bars": 83
+          },
+          {
+            "entry": 3.348,
+            "exit": 3.366,
+            "pnl": 2.3671,
+            "reason": "bb_mfi_sell",
+            "bars": 150
+          },
+          {
+            "entry": 3.354,
+            "exit": 3.366,
+            "pnl": 0.5722,
+            "reason": "bb_mfi_sell",
+            "bars": 27
+          },
+          {
+            "entry": 3.354,
+            "exit": 3.367,
+            "pnl": 0.8697,
+            "reason": "bb_mfi_sell",
+            "bars": 140
+          },
+          {
+            "entry": 3.349,
+            "exit": 3.357,
+            "pnl": -0.6145,
+            "reason": "open_at_end",
+            "bars": 245
+          }
+        ]
+      },
+      {
+        "symbol": "LTCTRY",
+        "candles": 900,
+        "trades": 9,
+        "wins": 2,
+        "losses": 7,
+        "pnl": -27.7336,
+        "win_rate": 22.2,
+        "profit_factor": 0.193,
+        "avg_win": 1.7066,
+        "avg_loss": -2.5237,
+        "reasons": {
+          "bb_mfi_sell": 8,
+          "open_at_end": 1
+        },
+        "balance": 9972.27,
+        "trades_list": [
+          {
+            "entry": 2110.0,
+            "exit": 2113.0,
+            "pnl": -1.5803,
+            "reason": "bb_mfi_sell",
+            "bars": 17
+          },
+          {
+            "entry": 2117.0,
+            "exit": 2119.0,
+            "pnl": -2.0561,
+            "reason": "bb_mfi_sell",
+            "bars": 34
+          },
+          {
+            "entry": 2122.0,
+            "exit": 2124.0,
+            "pnl": -2.0575,
+            "reason": "bb_mfi_sell",
+            "bars": 13
+          },
+          {
+            "entry": 2119.0,
+            "exit": 2123.0,
+            "pnl": -1.114,
+            "reason": "bb_mfi_sell",
+            "bars": 19
+          },
+          {
+            "entry": 2128.0,
+            "exit": 2120.0,
+            "pnl": -6.7451,
+            "reason": "bb_mfi_sell",
+            "bars": 201
+          },
+          {
+            "entry": 2127.0,
+            "exit": 2130.0,
+            "pnl": -1.5883,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 2125.0,
+            "exit": 2133.0,
+            "pnl": 0.7572,
+            "reason": "bb_mfi_sell",
+            "bars": 128
+          },
+          {
+            "entry": 2116.0,
+            "exit": 2128.0,
+            "pnl": 2.6559,
+            "reason": "bb_mfi_sell",
+            "bars": 42
+          },
+          {
+            "entry": 2126.0,
+            "exit": 2127.0,
+            "pnl": -2.5243,
+            "reason": "open_at_end",
+            "bars": 4
+          }
+        ]
+      },
+      {
+        "symbol": "BNBTRY",
+        "candles": 900,
+        "trades": 4,
+        "wins": 0,
+        "losses": 4,
+        "pnl": -22.1814,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "avg_win": 0,
+        "avg_loss": -4.0469,
+        "reasons": {
+          "bb_mfi_sell": 3,
+          "open_at_end": 1
+        },
+        "balance": 9977.82,
+        "trades_list": [
+          {
+            "entry": 29160.0,
+            "exit": 29043.0,
+            "pnl": -7.0063,
+            "reason": "bb_mfi_sell",
+            "bars": 127
+          },
+          {
+            "entry": 29049.0,
+            "exit": 28985.0,
+            "pnl": -5.1954,
+            "reason": "bb_mfi_sell",
+            "bars": 155
+          },
+          {
+            "entry": 28890.0,
+            "exit": 28920.0,
+            "pnl": -1.9602,
+            "reason": "bb_mfi_sell",
+            "bars": 267
+          },
+          {
+            "entry": 28811.0,
+            "exit": 28839.0,
+            "pnl": -2.0258,
+            "reason": "open_at_end",
+            "bars": 170
+          }
+        ]
+      },
+      {
+        "symbol": "INJTRY",
+        "candles": 900,
+        "trades": 5,
+        "wins": 4,
+        "losses": 1,
+        "pnl": -19.1058,
+        "win_rate": 80.0,
+        "profit_factor": 0.694,
+        "avg_win": 6.5867,
+        "avg_loss": -37.9609,
+        "reasons": {
+          "bb_mfi_sell": 3,
+          "stop_loss": 1,
+          "open_at_end": 1
+        },
+        "balance": 9980.89,
+        "trades_list": [
+          {
+            "entry": 199.2,
+            "exit": 201.0,
+            "pnl": 6.0226,
+            "reason": "bb_mfi_sell",
+            "bars": 28
+          },
+          {
+            "entry": 199.0,
+            "exit": 199.7,
+            "pnl": 0.5125,
+            "reason": "bb_mfi_sell",
+            "bars": 307
+          },
+          {
+            "entry": 198.6,
+            "exit": 191.649,
+            "pnl": -37.9609,
+            "reason": "stop_loss",
+            "bars": 242
+          },
+          {
+            "entry": 192.5,
+            "exit": 195.0,
+            "pnl": 9.9317,
+            "reason": "bb_mfi_sell",
+            "bars": 156
+          },
+          {
+            "entry": 193.4,
+            "exit": 195.9,
+            "pnl": 9.88,
+            "reason": "open_at_end",
+            "bars": 26
+          }
+        ]
+      },
+      {
+        "symbol": "WLDTRY",
+        "candles": 900,
+        "trades": 9,
+        "wins": 3,
+        "losses": 6,
+        "pnl": -114.9435,
+        "win_rate": 33.3,
+        "profit_factor": 0.234,
+        "avg_win": 10.3449,
+        "avg_loss": -22.0877,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "stop_loss": 3,
+          "open_at_end": 1
+        },
+        "balance": 9885.06,
+        "trades_list": [
+          {
+            "entry": 16.66,
+            "exit": 16.87,
+            "pnl": 9.5861,
+            "reason": "bb_mfi_sell",
+            "bars": 41
+          },
+          {
+            "entry": 16.62,
+            "exit": 16.61,
+            "pnl": -3.6037,
+            "reason": "bb_mfi_sell",
+            "bars": 114
+          },
+          {
+            "entry": 17.2,
+            "exit": 17.2,
+            "pnl": -3.0009,
+            "reason": "bb_mfi_sell",
+            "bars": 49
+          },
+          {
+            "entry": 17.31,
+            "exit": 17.45,
+            "pnl": 5.0749,
+            "reason": "bb_mfi_sell",
+            "bars": 74
+          },
+          {
+            "entry": 17.1,
+            "exit": 16.5015,
+            "pnl": -37.9553,
+            "reason": "stop_loss",
+            "bars": 123
+          },
+          {
+            "entry": 16.47,
+            "exit": 15.893549999999998,
+            "pnl": -37.8056,
+            "reason": "stop_loss",
+            "bars": 47
+          },
+          {
+            "entry": 15.77,
+            "exit": 15.21805,
+            "pnl": -37.6564,
+            "reason": "stop_loss",
+            "bars": 36
+          },
+          {
+            "entry": 15.31,
+            "exit": 15.61,
+            "pnl": 16.3737,
+            "reason": "bb_mfi_sell",
+            "bars": 60
+          },
+          {
+            "entry": 15.55,
+            "exit": 15.4,
+            "pnl": -12.5043,
+            "reason": "open_at_end",
+            "bars": 109
+          }
+        ]
+      },
+      {
+        "symbol": "DOTTRY",
+        "candles": 900,
+        "trades": 8,
+        "wins": 3,
+        "losses": 5,
+        "pnl": -36.7521,
+        "win_rate": 37.5,
+        "profit_factor": 0.552,
+        "avg_win": 10.1672,
+        "avg_loss": -11.0573,
+        "reasons": {
+          "bb_mfi_sell": 7,
+          "stop_loss": 1
+        },
+        "balance": 9963.25,
+        "trades_list": [
+          {
+            "entry": 36.5,
+            "exit": 36.5,
+            "pnl": -3.0,
+            "reason": "bb_mfi_sell",
+            "bars": 148
+          },
+          {
+            "entry": 36.4,
+            "exit": 36.3,
+            "pnl": -5.7405,
+            "reason": "bb_mfi_sell",
+            "bars": 67
+          },
+          {
+            "entry": 36.6,
+            "exit": 36.4,
+            "pnl": -8.4464,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 36.2,
+            "exit": 36.3,
+            "pnl": -0.2412,
+            "reason": "bb_mfi_sell",
+            "bars": 58
+          },
+          {
+            "entry": 36.2,
+            "exit": 34.933,
+            "pnl": -37.8586,
+            "reason": "stop_loss",
+            "bars": 55
+          },
+          {
+            "entry": 34.9,
+            "exit": 35.4,
+            "pnl": 11.2342,
+            "reason": "bb_mfi_sell",
+            "bars": 90
+          },
+          {
+            "entry": 35.3,
+            "exit": 35.8,
+            "pnl": 11.084,
+            "reason": "bb_mfi_sell",
+            "bars": 23
+          },
+          {
+            "entry": 35.6,
+            "exit": 36.0,
+            "pnl": 8.1834,
+            "reason": "bb_mfi_sell",
+            "bars": 15
+          }
+        ]
+      }
+    ]
+  },
+  "C_TIGHT": {
+    "stop": 0.025,
+    "tp": 0.025,
+    "trades": 125,
+    "wins": 58,
+    "pnl": -448.83,
+    "wr": 46.4,
+    "symbols": [
+      {
+        "symbol": "BTCTRY",
+        "candles": 900,
+        "trades": 9,
+        "wins": 4,
+        "losses": 5,
+        "pnl": -4.7693,
+        "win_rate": 44.4,
+        "profit_factor": 1.781,
+        "avg_win": 4.9745,
+        "avg_loss": -2.2349,
+        "reasons": {
+          "bb_mfi_sell": 8,
+          "open_at_end": 1
+        },
+        "balance": 9995.23,
+        "trades_list": [
+          {
+            "entry": 3018088.0,
+            "exit": 3019940.0,
+            "pnl": -2.3873,
+            "reason": "bb_mfi_sell",
+            "bars": 59
+          },
+          {
+            "entry": 3016478.0,
+            "exit": 3017410.0,
+            "pnl": -2.6904,
+            "reason": "bb_mfi_sell",
+            "bars": 37
+          },
+          {
+            "entry": 3013656.0,
+            "exit": 3016996.0,
+            "pnl": -1.8918,
+            "reason": "bb_mfi_sell",
+            "bars": 40
+          },
+          {
+            "entry": 3015532.0,
+            "exit": 3033556.0,
+            "pnl": 2.9647,
+            "reason": "bb_mfi_sell",
+            "bars": 73
+          },
+          {
+            "entry": 3033451.0,
+            "exit": 3043495.0,
+            "pnl": 0.3058,
+            "reason": "bb_mfi_sell",
+            "bars": 33
+          },
+          {
+            "entry": 3039441.0,
+            "exit": 3084547.0,
+            "pnl": 11.8047,
+            "reason": "bb_mfi_sell",
+            "bars": 70
+          },
+          {
+            "entry": 3071986.0,
+            "exit": 3080862.0,
+            "pnl": -0.115,
+            "reason": "bb_mfi_sell",
+            "bars": 13
+          },
+          {
+            "entry": 3071548.0,
+            "exit": 3095616.0,
+            "pnl": 4.8228,
+            "reason": "bb_mfi_sell",
+            "bars": 158
+          },
+          {
+            "entry": 3092185.0,
+            "exit": 3088811.0,
+            "pnl": -4.0898,
+            "reason": "open_at_end",
+            "bars": 29
+          }
+        ]
+      },
+      {
+        "symbol": "ETHTRY",
+        "candles": 900,
+        "trades": 7,
+        "wins": 4,
+        "losses": 3,
+        "pnl": -10.248,
+        "win_rate": 57.1,
+        "profit_factor": 1.051,
+        "avg_win": 1.2748,
+        "avg_loss": -1.6174,
+        "reasons": {
+          "bb_mfi_sell": 6,
+          "open_at_end": 1
+        },
+        "balance": 9989.75,
+        "trades_list": [
+          {
+            "entry": 90086.0,
+            "exit": 90149.0,
+            "pnl": -2.3017,
+            "reason": "bb_mfi_sell",
+            "bars": 181
+          },
+          {
+            "entry": 90078.0,
+            "exit": 90425.0,
+            "pnl": 0.8461,
+            "reason": "bb_mfi_sell",
+            "bars": 51
+          },
+          {
+            "entry": 90853.0,
+            "exit": 91152.0,
+            "pnl": 0.286,
+            "reason": "bb_mfi_sell",
+            "bars": 61
+          },
+          {
+            "entry": 90927.0,
+            "exit": 91487.0,
+            "pnl": 3.1478,
+            "reason": "bb_mfi_sell",
+            "bars": 132
+          },
+          {
+            "entry": 90999.0,
+            "exit": 91132.0,
+            "pnl": -1.54,
+            "reason": "bb_mfi_sell",
+            "bars": 59
+          },
+          {
+            "entry": 90699.0,
+            "exit": 91046.0,
+            "pnl": 0.8195,
+            "reason": "bb_mfi_sell",
+            "bars": 40
+          },
+          {
+            "entry": 91380.0,
+            "exit": 91562.0,
+            "pnl": -1.0105,
+            "reason": "open_at_end",
+            "bars": 51
+          }
+        ]
+      },
+      {
+        "symbol": "SOLTRY",
+        "candles": 900,
+        "trades": 5,
+        "wins": 4,
+        "losses": 1,
+        "pnl": 9.1473,
+        "win_rate": 80.0,
+        "profit_factor": 5.286,
+        "avg_win": 5.1332,
+        "avg_loss": -3.8845,
+        "reasons": {
+          "bb_mfi_sell": 5
+        },
+        "balance": 10009.15,
+        "trades_list": [
+          {
+            "entry": 3612.3,
+            "exit": 3609.1,
+            "pnl": -3.8845,
+            "reason": "bb_mfi_sell",
+            "bars": 21
+          },
+          {
+            "entry": 3603.0,
+            "exit": 3631.0,
+            "pnl": 4.7571,
+            "reason": "bb_mfi_sell",
+            "bars": 342
+          },
+          {
+            "entry": 3608.3,
+            "exit": 3650.6,
+            "pnl": 8.7035,
+            "reason": "bb_mfi_sell",
+            "bars": 324
+          },
+          {
+            "entry": 3644.3,
+            "exit": 3679.6,
+            "pnl": 6.6752,
+            "reason": "bb_mfi_sell",
+            "bars": 17
+          },
+          {
+            "entry": 3674.5,
+            "exit": 3687.0,
+            "pnl": 0.3971,
+            "reason": "bb_mfi_sell",
+            "bars": 16
+          }
+        ]
+      },
+      {
+        "symbol": "XRPTRY",
+        "candles": 900,
+        "trades": 4,
+        "wins": 2,
+        "losses": 2,
+        "pnl": -7.3161,
+        "win_rate": 50.0,
+        "profit_factor": 0.865,
+        "avg_win": 4.214,
+        "avg_loss": -4.8728,
+        "reasons": {
+          "bb_mfi_sell": 3,
+          "open_at_end": 1
+        },
+        "balance": 9992.68,
+        "trades_list": [
+          {
+            "entry": 47.82,
+            "exit": 48.1,
+            "pnl": 2.8465,
+            "reason": "bb_mfi_sell",
+            "bars": 349
+          },
+          {
+            "entry": 47.95,
+            "exit": 47.7,
+            "pnl": -8.207,
+            "reason": "bb_mfi_sell",
+            "bars": 327
+          },
+          {
+            "entry": 47.68,
+            "exit": 48.09,
+            "pnl": 5.5814,
+            "reason": "bb_mfi_sell",
+            "bars": 15
+          },
+          {
+            "entry": 47.85,
+            "exit": 47.92,
+            "pnl": -1.5386,
+            "reason": "open_at_end",
+            "bars": 18
+          }
+        ]
+      },
+      {
+        "symbol": "ADATRY",
+        "candles": 900,
+        "trades": 7,
+        "wins": 3,
+        "losses": 4,
+        "pnl": -36.1122,
+        "win_rate": 42.9,
+        "profit_factor": 0.403,
+        "avg_win": 5.775,
+        "avg_loss": -10.7372,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "stop_loss": 1,
+          "open_at_end": 1
+        },
+        "balance": 9963.89,
+        "trades_list": [
+          {
+            "entry": 8.49,
+            "exit": 8.51,
+            "pnl": -0.6478,
+            "reason": "bb_mfi_sell",
+            "bars": 116
+          },
+          {
+            "entry": 8.48,
+            "exit": 8.47,
+            "pnl": -4.1766,
+            "reason": "bb_mfi_sell",
+            "bars": 78
+          },
+          {
+            "entry": 8.4,
+            "exit": 8.54,
+            "pnl": 13.631,
+            "reason": "bb_mfi_sell",
+            "bars": 10
+          },
+          {
+            "entry": 8.45,
+            "exit": 8.23875,
+            "pnl": -27.9745,
+            "reason": "stop_loss",
+            "bars": 353
+          },
+          {
+            "entry": 8.21,
+            "exit": 8.26,
+            "pnl": 3.0732,
+            "reason": "bb_mfi_sell",
+            "bars": 16
+          },
+          {
+            "entry": 8.27,
+            "exit": 8.3,
+            "pnl": 0.6207,
+            "reason": "bb_mfi_sell",
+            "bars": 26
+          },
+          {
+            "entry": 8.35,
+            "exit": 8.29,
+            "pnl": -10.15,
+            "reason": "open_at_end",
+            "bars": 66
+          }
+        ]
+      },
+      {
+        "symbol": "AVAXTRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 2,
+        "losses": 4,
+        "pnl": -37.815,
+        "win_rate": 33.3,
+        "profit_factor": 0.346,
+        "avg_win": 7.622,
+        "avg_loss": -11.0211,
+        "reasons": {
+          "stop_loss": 1,
+          "bb_mfi_sell": 4,
+          "open_at_end": 1
+        },
+        "balance": 9962.18,
+        "trades_list": [
+          {
+            "entry": 310.3,
+            "exit": 302.5425,
+            "pnl": -27.9625,
+            "reason": "stop_loss",
+            "bars": 10
+          },
+          {
+            "entry": 303.4,
+            "exit": 304.1,
+            "pnl": -0.6942,
+            "reason": "bb_mfi_sell",
+            "bars": 122
+          },
+          {
+            "entry": 306.2,
+            "exit": 303.9,
+            "pnl": -10.4669,
+            "reason": "bb_mfi_sell",
+            "bars": 371
+          },
+          {
+            "entry": 298.7,
+            "exit": 302.7,
+            "pnl": 10.326,
+            "reason": "bb_mfi_sell",
+            "bars": 32
+          },
+          {
+            "entry": 302.0,
+            "exit": 304.4,
+            "pnl": 4.9179,
+            "reason": "bb_mfi_sell",
+            "bars": 78
+          },
+          {
+            "entry": 303.1,
+            "exit": 302.5,
+            "pnl": -4.961,
+            "reason": "open_at_end",
+            "bars": 71
+          }
+        ]
+      },
+      {
+        "symbol": "LINKTRY",
+        "candles": 900,
+        "trades": 7,
+        "wins": 5,
+        "losses": 2,
+        "pnl": -3.2515,
+        "win_rate": 71.4,
+        "profit_factor": 1.358,
+        "avg_win": 5.4958,
+        "avg_loss": -10.1192,
+        "reasons": {
+          "bb_mfi_sell": 6,
+          "open_at_end": 1
+        },
+        "balance": 9996.75,
+        "trades_list": [
+          {
+            "entry": 455.7,
+            "exit": 448.8,
+            "pnl": -18.1188,
+            "reason": "bb_mfi_sell",
+            "bars": 110
+          },
+          {
+            "entry": 448.1,
+            "exit": 450.4,
+            "pnl": 2.1209,
+            "reason": "bb_mfi_sell",
+            "bars": 48
+          },
+          {
+            "entry": 450.2,
+            "exit": 456.4,
+            "pnl": 10.7306,
+            "reason": "bb_mfi_sell",
+            "bars": 47
+          },
+          {
+            "entry": 452.0,
+            "exit": 457.2,
+            "pnl": 8.4789,
+            "reason": "bb_mfi_sell",
+            "bars": 85
+          },
+          {
+            "entry": 453.8,
+            "exit": 455.6,
+            "pnl": 0.9603,
+            "reason": "bb_mfi_sell",
+            "bars": 116
+          },
+          {
+            "entry": 451.1,
+            "exit": 454.8,
+            "pnl": 5.1881,
+            "reason": "bb_mfi_sell",
+            "bars": 150
+          },
+          {
+            "entry": 453.6,
+            "exit": 454.0,
+            "pnl": -2.1196,
+            "reason": "open_at_end",
+            "bars": 23
+          }
+        ]
+      },
+      {
+        "symbol": "NEARTRY",
+        "candles": 900,
+        "trades": 9,
+        "wins": 5,
+        "losses": 4,
+        "pnl": -41.0036,
+        "win_rate": 55.6,
+        "profit_factor": 0.486,
+        "avg_win": 5.2127,
+        "avg_loss": -13.3976,
+        "reasons": {
+          "bb_mfi_sell": 7,
+          "stop_loss": 1,
+          "open_at_end": 1
+        },
+        "balance": 9959.0,
+        "trades_list": [
+          {
+            "entry": 77.8,
+            "exit": 77.1,
+            "pnl": -11.9839,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 77.0,
+            "exit": 77.4,
+            "pnl": 2.1841,
+            "reason": "bb_mfi_sell",
+            "bars": 30
+          },
+          {
+            "entry": 77.5,
+            "exit": 77.8,
+            "pnl": 0.8641,
+            "reason": "bb_mfi_sell",
+            "bars": 17
+          },
+          {
+            "entry": 77.6,
+            "exit": 77.3,
+            "pnl": -6.851,
+            "reason": "bb_mfi_sell",
+            "bars": 98
+          },
+          {
+            "entry": 78.1,
+            "exit": 78.8,
+            "pnl": 5.9365,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 78.1,
+            "exit": 77.8,
+            "pnl": -6.8236,
+            "reason": "bb_mfi_sell",
+            "bars": 81
+          },
+          {
+            "entry": 78.1,
+            "exit": 79.6,
+            "pnl": 16.1358,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 78.1,
+            "exit": 76.1475,
+            "pnl": -27.9317,
+            "reason": "stop_loss",
+            "bars": 169
+          },
+          {
+            "entry": 75.9,
+            "exit": 76.2,
+            "pnl": 0.9428,
+            "reason": "open_at_end",
+            "bars": 6
+          }
+        ]
+      },
+      {
+        "symbol": "APTTRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "pnl": -22.7377,
+        "win_rate": 50.0,
+        "profit_factor": 0.744,
+        "avg_win": 13.3237,
+        "avg_loss": -17.9103,
+        "reasons": {
+          "stop_loss": 1,
+          "bb_mfi_sell": 4,
+          "take_profit": 1
+        },
+        "balance": 9977.26,
+        "trades_list": [
+          {
+            "entry": 25.7,
+            "exit": 25.057499999999997,
+            "pnl": -27.9625,
+            "reason": "stop_loss",
+            "bars": 262
+          },
+          {
+            "entry": 24.8,
+            "exit": 25.2,
+            "pnl": 13.0662,
+            "reason": "bb_mfi_sell",
+            "bars": 42
+          },
+          {
+            "entry": 25.0,
+            "exit": 24.8,
+            "pnl": -10.9683,
+            "reason": "bb_mfi_sell",
+            "bars": 105
+          },
+          {
+            "entry": 24.8,
+            "exit": 25.0,
+            "pnl": 5.0371,
+            "reason": "bb_mfi_sell",
+            "bars": 7
+          },
+          {
+            "entry": 25.3,
+            "exit": 25.0,
+            "pnl": -14.8001,
+            "reason": "bb_mfi_sell",
+            "bars": 62
+          },
+          {
+            "entry": 24.7,
+            "exit": 25.317499999999995,
+            "pnl": 21.8678,
+            "reason": "take_profit",
+            "bars": 123
+          }
+        ]
+      },
+      {
+        "symbol": "ARBTRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "pnl": 6.7952,
+        "win_rate": 50.0,
+        "profit_factor": 3.538,
+        "avg_win": 7.3419,
+        "avg_loss": -2.075,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "open_at_end": 1
+        },
+        "balance": 10006.8,
+        "trades_list": [
+          {
+            "entry": 3.51,
+            "exit": 3.53,
+            "pnl": 2.6895,
+            "reason": "bb_mfi_sell",
+            "bars": 110
+          },
+          {
+            "entry": 3.52,
+            "exit": 3.56,
+            "pnl": 8.3476,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 3.57,
+            "exit": 3.57,
+            "pnl": -3.0024,
+            "reason": "bb_mfi_sell",
+            "bars": 91
+          },
+          {
+            "entry": 3.57,
+            "exit": 3.62,
+            "pnl": 10.9885,
+            "reason": "bb_mfi_sell",
+            "bars": 113
+          },
+          {
+            "entry": 3.6,
+            "exit": 3.6,
+            "pnl": -3.0039,
+            "reason": "bb_mfi_sell",
+            "bars": 136
+          },
+          {
+            "entry": 3.59,
+            "exit": 3.6,
+            "pnl": -0.2188,
+            "reason": "open_at_end",
+            "bars": 110
+          }
+        ]
+      },
+      {
+        "symbol": "OPTRY",
+        "candles": 900,
+        "trades": 10,
+        "wins": 6,
+        "losses": 4,
+        "pnl": -30.0009,
+        "win_rate": 60.0,
+        "profit_factor": 0.642,
+        "avg_win": 4.4877,
+        "avg_loss": -10.488,
+        "reasons": {
+          "bb_mfi_sell": 8,
+          "stop_loss": 1,
+          "open_at_end": 1
+        },
+        "balance": 9970.0,
+        "trades_list": [
+          {
+            "entry": 4.06,
+            "exit": 4.08,
+            "pnl": 1.9187,
+            "reason": "bb_mfi_sell",
+            "bars": 19
+          },
+          {
+            "entry": 4.05,
+            "exit": 4.08,
+            "pnl": 4.3965,
+            "reason": "bb_mfi_sell",
+            "bars": 75
+          },
+          {
+            "entry": 4.07,
+            "exit": 4.08,
+            "pnl": -0.5469,
+            "reason": "bb_mfi_sell",
+            "bars": 56
+          },
+          {
+            "entry": 4.07,
+            "exit": 3.9682500000000003,
+            "pnl": -27.966,
+            "reason": "stop_loss",
+            "bars": 59
+          },
+          {
+            "entry": 3.99,
+            "exit": 4.02,
+            "pnl": 4.4948,
+            "reason": "bb_mfi_sell",
+            "bars": 39
+          },
+          {
+            "entry": 4.05,
+            "exit": 4.03,
+            "pnl": -7.9109,
+            "reason": "bb_mfi_sell",
+            "bars": 38
+          },
+          {
+            "entry": 4.0,
+            "exit": 4.03,
+            "pnl": 4.4732,
+            "reason": "bb_mfi_sell",
+            "bars": 62
+          },
+          {
+            "entry": 4.0,
+            "exit": 4.03,
+            "pnl": 4.4746,
+            "reason": "bb_mfi_sell",
+            "bars": 63
+          },
+          {
+            "entry": 3.92,
+            "exit": 3.96,
+            "pnl": 7.1682,
+            "reason": "bb_mfi_sell",
+            "bars": 142
+          },
+          {
+            "entry": 3.93,
+            "exit": 3.92,
+            "pnl": -5.528,
+            "reason": "open_at_end",
+            "bars": 61
+          }
+        ]
+      },
+      {
+        "symbol": "SUITRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 2,
+        "losses": 4,
+        "pnl": -38.2873,
+        "win_rate": 33.3,
+        "profit_factor": 0.233,
+        "avg_win": 4.4549,
+        "avg_loss": -9.5534,
+        "reasons": {
+          "bb_mfi_sell": 4,
+          "stop_loss": 1,
+          "open_at_end": 1
+        },
+        "balance": 9961.71,
+        "trades_list": [
+          {
+            "entry": 32.34,
+            "exit": 32.44,
+            "pnl": 0.0875,
+            "reason": "bb_mfi_sell",
+            "bars": 95
+          },
+          {
+            "entry": 32.43,
+            "exit": 32.44,
+            "pnl": -2.6917,
+            "reason": "bb_mfi_sell",
+            "bars": 112
+          },
+          {
+            "entry": 32.38,
+            "exit": 31.570500000000003,
+            "pnl": -27.9468,
+            "reason": "stop_loss",
+            "bars": 255
+          },
+          {
+            "entry": 31.16,
+            "exit": 31.19,
+            "pnl": -2.0315,
+            "reason": "bb_mfi_sell",
+            "bars": 100
+          },
+          {
+            "entry": 31.16,
+            "exit": 31.53,
+            "pnl": 8.8222,
+            "reason": "bb_mfi_sell",
+            "bars": 5
+          },
+          {
+            "entry": 31.19,
+            "exit": 31.11,
+            "pnl": -5.5437,
+            "reason": "open_at_end",
+            "bars": 70
+          }
+        ]
+      },
+      {
+        "symbol": "DOGETRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 3,
+        "losses": 3,
+        "pnl": -7.9102,
+        "win_rate": 50.0,
+        "profit_factor": 1.399,
+        "avg_win": 1.2697,
+        "avg_loss": -0.9075,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "open_at_end": 1
+        },
+        "balance": 9992.09,
+        "trades_list": [
+          {
+            "entry": 3.334,
+            "exit": 3.342,
+            "pnl": -0.6041,
+            "reason": "bb_mfi_sell",
+            "bars": 40
+          },
+          {
+            "entry": 3.338,
+            "exit": 3.343,
+            "pnl": -1.504,
+            "reason": "bb_mfi_sell",
+            "bars": 83
+          },
+          {
+            "entry": 3.348,
+            "exit": 3.366,
+            "pnl": 2.3671,
+            "reason": "bb_mfi_sell",
+            "bars": 150
+          },
+          {
+            "entry": 3.354,
+            "exit": 3.366,
+            "pnl": 0.5722,
+            "reason": "bb_mfi_sell",
+            "bars": 27
+          },
+          {
+            "entry": 3.354,
+            "exit": 3.367,
+            "pnl": 0.8697,
+            "reason": "bb_mfi_sell",
+            "bars": 140
+          },
+          {
+            "entry": 3.349,
+            "exit": 3.357,
+            "pnl": -0.6145,
+            "reason": "open_at_end",
+            "bars": 246
+          }
+        ]
+      },
+      {
+        "symbol": "LTCTRY",
+        "candles": 900,
+        "trades": 9,
+        "wins": 2,
+        "losses": 7,
+        "pnl": -27.7336,
+        "win_rate": 22.2,
+        "profit_factor": 0.193,
+        "avg_win": 1.7066,
+        "avg_loss": -2.5237,
+        "reasons": {
+          "bb_mfi_sell": 8,
+          "open_at_end": 1
+        },
+        "balance": 9972.27,
+        "trades_list": [
+          {
+            "entry": 2110.0,
+            "exit": 2113.0,
+            "pnl": -1.5803,
+            "reason": "bb_mfi_sell",
+            "bars": 17
+          },
+          {
+            "entry": 2117.0,
+            "exit": 2119.0,
+            "pnl": -2.0561,
+            "reason": "bb_mfi_sell",
+            "bars": 34
+          },
+          {
+            "entry": 2122.0,
+            "exit": 2124.0,
+            "pnl": -2.0575,
+            "reason": "bb_mfi_sell",
+            "bars": 13
+          },
+          {
+            "entry": 2119.0,
+            "exit": 2123.0,
+            "pnl": -1.114,
+            "reason": "bb_mfi_sell",
+            "bars": 19
+          },
+          {
+            "entry": 2128.0,
+            "exit": 2120.0,
+            "pnl": -6.7451,
+            "reason": "bb_mfi_sell",
+            "bars": 201
+          },
+          {
+            "entry": 2127.0,
+            "exit": 2130.0,
+            "pnl": -1.5883,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 2125.0,
+            "exit": 2133.0,
+            "pnl": 0.7572,
+            "reason": "bb_mfi_sell",
+            "bars": 128
+          },
+          {
+            "entry": 2116.0,
+            "exit": 2128.0,
+            "pnl": 2.6559,
+            "reason": "bb_mfi_sell",
+            "bars": 42
+          },
+          {
+            "entry": 2126.0,
+            "exit": 2127.0,
+            "pnl": -2.5243,
+            "reason": "open_at_end",
+            "bars": 5
+          }
+        ]
+      },
+      {
+        "symbol": "BNBTRY",
+        "candles": 900,
+        "trades": 4,
+        "wins": 0,
+        "losses": 4,
+        "pnl": -22.1814,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "avg_win": 0,
+        "avg_loss": -4.0469,
+        "reasons": {
+          "bb_mfi_sell": 3,
+          "open_at_end": 1
+        },
+        "balance": 9977.82,
+        "trades_list": [
+          {
+            "entry": 29160.0,
+            "exit": 29043.0,
+            "pnl": -7.0063,
+            "reason": "bb_mfi_sell",
+            "bars": 127
+          },
+          {
+            "entry": 29049.0,
+            "exit": 28985.0,
+            "pnl": -5.1954,
+            "reason": "bb_mfi_sell",
+            "bars": 155
+          },
+          {
+            "entry": 28890.0,
+            "exit": 28920.0,
+            "pnl": -1.9602,
+            "reason": "bb_mfi_sell",
+            "bars": 267
+          },
+          {
+            "entry": 28811.0,
+            "exit": 28839.0,
+            "pnl": -2.0258,
+            "reason": "open_at_end",
+            "bars": 171
+          }
+        ]
+      },
+      {
+        "symbol": "INJTRY",
+        "candles": 900,
+        "trades": 6,
+        "wins": 4,
+        "losses": 2,
+        "pnl": -23.9362,
+        "win_rate": 66.7,
+        "profit_factor": 0.733,
+        "avg_win": 10.2438,
+        "avg_loss": -27.9624,
+        "reasons": {
+          "bb_mfi_sell": 2,
+          "stop_loss": 2,
+          "take_profit": 1,
+          "open_at_end": 1
+        },
+        "balance": 9976.06,
+        "trades_list": [
+          {
+            "entry": 199.2,
+            "exit": 201.0,
+            "pnl": 6.0226,
+            "reason": "bb_mfi_sell",
+            "bars": 28
+          },
+          {
+            "entry": 199.0,
+            "exit": 194.025,
+            "pnl": -27.9751,
+            "reason": "stop_loss",
+            "bars": 218
+          },
+          {
+            "entry": 194.0,
+            "exit": 198.85,
+            "pnl": 21.9077,
+            "reason": "take_profit",
+            "bars": 80
+          },
+          {
+            "entry": 198.6,
+            "exit": 193.635,
+            "pnl": -27.9498,
+            "reason": "stop_loss",
+            "bars": 193
+          },
+          {
+            "entry": 193.9,
+            "exit": 195.0,
+            "pnl": 2.6555,
+            "reason": "bb_mfi_sell",
+            "bars": 204
+          },
+          {
+            "entry": 193.4,
+            "exit": 196.0,
+            "pnl": 10.3893,
+            "reason": "open_at_end",
+            "bars": 27
+          }
+        ]
+      },
+      {
+        "symbol": "WLDTRY",
+        "candles": 900,
+        "trades": 10,
+        "wins": 3,
+        "losses": 7,
+        "pnl": -118.9556,
+        "win_rate": 30.0,
+        "profit_factor": 0.207,
+        "avg_win": 9.0357,
+        "avg_loss": -18.7314,
+        "reasons": {
+          "bb_mfi_sell": 5,
+          "stop_loss": 4,
+          "open_at_end": 1
+        },
+        "balance": 9881.04,
+        "trades_list": [
+          {
+            "entry": 16.66,
+            "exit": 16.87,
+            "pnl": 9.5861,
+            "reason": "bb_mfi_sell",
+            "bars": 41
+          },
+          {
+            "entry": 16.62,
+            "exit": 16.61,
+            "pnl": -3.6037,
+            "reason": "bb_mfi_sell",
+            "bars": 114
+          },
+          {
+            "entry": 17.2,
+            "exit": 17.2,
+            "pnl": -3.0009,
+            "reason": "bb_mfi_sell",
+            "bars": 49
+          },
+          {
+            "entry": 17.31,
+            "exit": 17.45,
+            "pnl": 5.0749,
+            "reason": "bb_mfi_sell",
+            "bars": 74
+          },
+          {
+            "entry": 17.1,
+            "exit": 16.6725,
+            "pnl": -27.9682,
+            "reason": "stop_loss",
+            "bars": 94
+          },
+          {
+            "entry": 16.77,
+            "exit": 16.350749999999998,
+            "pnl": -27.8858,
+            "reason": "stop_loss",
+            "bars": 37
+          },
+          {
+            "entry": 16.23,
+            "exit": 15.82425,
+            "pnl": -27.8037,
+            "reason": "stop_loss",
+            "bars": 24
+          },
+          {
+            "entry": 15.77,
+            "exit": 15.37575,
+            "pnl": -27.7218,
+            "reason": "stop_loss",
+            "bars": 35
+          },
+          {
+            "entry": 15.37,
+            "exit": 15.61,
+            "pnl": 12.4462,
+            "reason": "bb_mfi_sell",
+            "bars": 61
+          },
+          {
+            "entry": 15.55,
+            "exit": 15.39,
+            "pnl": -13.1355,
+            "reason": "open_at_end",
+            "bars": 110
+          }
+        ]
+      },
+      {
+        "symbol": "DOTTRY",
+        "candles": 900,
+        "trades": 8,
+        "wins": 3,
+        "losses": 5,
+        "pnl": -32.5143,
+        "win_rate": 37.5,
+        "profit_factor": 0.547,
+        "avg_win": 8.2602,
+        "avg_loss": -9.065,
+        "reasons": {
+          "bb_mfi_sell": 7,
+          "stop_loss": 1
+        },
+        "balance": 9967.49,
+        "trades_list": [
+          {
+            "entry": 36.5,
+            "exit": 36.5,
+            "pnl": -3.0,
+            "reason": "bb_mfi_sell",
+            "bars": 148
+          },
+          {
+            "entry": 36.4,
+            "exit": 36.3,
+            "pnl": -5.7405,
+            "reason": "bb_mfi_sell",
+            "bars": 67
+          },
+          {
+            "entry": 36.6,
+            "exit": 36.4,
+            "pnl": -8.4464,
+            "reason": "bb_mfi_sell",
+            "bars": 53
+          },
+          {
+            "entry": 36.2,
+            "exit": 36.3,
+            "pnl": -0.2412,
+            "reason": "bb_mfi_sell",
+            "bars": 58
+          },
+          {
+            "entry": 36.2,
+            "exit": 35.295,
+            "pnl": -27.897,
+            "reason": "stop_loss",
+            "bars": 53
+          },
+          {
+            "entry": 35.1,
+            "exit": 35.4,
+            "pnl": 5.505,
+            "reason": "bb_mfi_sell",
+            "bars": 92
+          },
+          {
+            "entry": 35.3,
+            "exit": 35.8,
+            "pnl": 11.0887,
+            "reason": "bb_mfi_sell",
+            "bars": 23
+          },
+          {
+            "entry": 35.6,
+            "exit": 36.0,
+            "pnl": 8.1869,
+            "reason": "bb_mfi_sell",
+            "bars": 15
+          }
+        ]
+      }
+    ]
+  }
+}
