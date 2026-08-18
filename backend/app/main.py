@@ -1613,7 +1613,42 @@ async def gainers_radar(execute: bool = False):
         rows.append({"symbol": symbol, "price": price, "score": round(score, 1), "eligible": eligible,
                      "ret_5m": round(ret_5m, 2), "ret_1h": round(ret_1h, 2), "ret_24h": round(ret_24h, 2),
                      "volume_ratio": round(volume_ratio, 2), "imbalance": round(imbalance, 2), "spread": round(spread, 3), "trend": trend, "crsi": round(crsi, 2) if crsi is not None else None})
-    rows.sort(key=lambda row: row["score"], reverse=True)
+    # Soft MTF priority: this is a ranking aid, not a BUY filter.  A gainer
+    # must still pass the existing liquidity, momentum and cost-aware rules.
+    # Use the hot cache here so the 30-second radar refresh does not fan out
+    # into five REST requests per symbol.
+    mtf_timeframes = ["1m", "5m", "15m", "1h", "4h"]
+    mtf_weights = {"1m": 0.10, "5m": 0.20, "15m": 0.25, "1h": 0.25, "4h": 0.20}
+    for row in rows:
+        states = {}
+        weighted_score = 0.0
+        bullish_count = 0
+        for tf in mtf_timeframes:
+            closes = list((market.get_ut_kline(row["symbol"], tf) or {}).get("closes", []))
+            state = "unknown"
+            tf_score = 0.0
+            if len(closes) >= 55:
+                ema9 = radar_analyzer.calculate_ema(closes, 9)
+                ema21 = radar_analyzer.calculate_ema(closes, 21)
+                ema50 = radar_analyzer.calculate_ema(closes, 50)
+                previous_ema9 = radar_analyzer.calculate_ema(closes[:-1], 9)
+                price = closes[-1]
+                rising = ema9 > previous_ema9
+                if price > ema9 > ema21 > ema50 and rising:
+                    state, tf_score = "bullish", 100.0
+                    bullish_count += 1
+                elif price > ema21 and ema9 > ema21:
+                    state, tf_score = "mixed", 50.0
+                else:
+                    state = "bearish"
+            states[tf] = state
+            weighted_score += mtf_weights[tf] * tf_score
+        row["mtf"] = states
+        row["mtf_bullish_count"] = bullish_count
+        row["mtf_score"] = round(weighted_score, 1)
+        row["mtf_bullish_rank"] = ">".join(tf for tf in mtf_timeframes if states[tf] == "bullish") or "—"
+        row["priority_score"] = round(row["score"] * 0.70 + weighted_score * 0.30, 1)
+    rows.sort(key=lambda row: (row["priority_score"], row["score"]), reverse=True)
     radar_trades = []
     if execute and config.GAINER_RADAR_AUTO_TRADE:
         for candidate in [row for row in rows if row["eligible"]][:1]:
@@ -1633,7 +1668,8 @@ async def gainers_radar(execute: bool = False):
                         radar_trades.append(signal)
                         await ws_manager.broadcast({"type": "signal", "data": signal})
     return {"items": rows[:20], "auto_added": auto_added, "symbols": config.SYMBOLS, "paper_trades": radar_trades,
-            "auto_trade": False, "generated_at": time.time(), "model": "public_data_continuation_2pct"}
+            "auto_trade": False, "generated_at": time.time(), "model": "public_data_continuation_2pct_mtf_priority",
+            "mtf_timeframes": mtf_timeframes, "mtf_policy": "M1/M5/M15/H1/H4 soft priority; unknown data is not treated as bullish"}
 
 @app.get("/api/market/top-gainers")
 async def top_gainers_status(refresh: bool = False):
