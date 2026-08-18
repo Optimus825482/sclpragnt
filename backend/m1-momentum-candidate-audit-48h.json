@@ -1,0 +1,975 @@
+{
+  "paper_only": true,
+  "source": "historical_candles / Binance TR public M1",
+  "window": {
+    "start": "2026-08-11T04:10:00",
+    "end": "2026-08-13T04:10:00",
+    "timezone": "Europe/Istanbul"
+  },
+  "evaluation": {
+    "future_horizon_minutes": 60,
+    "warning": "Future upside/downside is evaluation-only, never a live condition."
+  },
+  "candidates": {
+    "volume_ignition": {
+      "rule": {
+        "ret_1m": 0.2,
+        "ret_5m": 0.5,
+        "ret_15m": 0.5,
+        "volume": 3.0,
+        "near_high": -0.5
+      },
+      "signals": 1918,
+      "future_up_5pct": 74,
+      "future_up_10pct": 21,
+      "future_up_20pct": 6,
+      "median_future_upside_pct": 0.4338,
+      "median_future_downside_pct": -0.7968,
+      "examples": [
+        {
+          "symbol": "COTITRY",
+          "time": 1786551300,
+          "upside_pct": 35.7283,
+          "downside_pct": 0.3057,
+          "features": {
+            "price": 0.4579,
+            "return_1m_pct": 0.2189,
+            "return_5m_pct": 0.5048,
+            "return_15m_pct": 1.4849,
+            "volume_ratio_20": 9.8287,
+            "range_15m_pct": 1.4188,
+            "close_to_15m_high_pct": 0.0874
+          }
+        },
+        {
+          "symbol": "MITOTRY",
+          "time": 1786446000,
+          "upside_pct": 30.48,
+          "downside_pct": 0.0,
+          "features": {
+            "price": 1.25,
+            "return_1m_pct": 0.4016,
+            "return_5m_pct": 1.461,
+            "return_15m_pct": 1.3788,
+            "volume_ratio_20": 3.7448,
+            "range_15m_pct": 1.7959,
+            "close_to_15m_high_pct": 0.2406
+          }
+        },
+        {
+          "symbol": "RARETRY",
+          "time": 1786529100,
+          "upside_pct": 28.6099,
+          "downside_pct": -0.4034,
+          "features": {
+            "price": 0.5949,
+            "return_1m_pct": 0.3035,
+            "return_5m_pct": 0.7963,
+            "return_15m_pct": 0.8818,
+            "volume_ratio_20": 4.0748,
+            "range_15m_pct": 0.8988,
+            "close_to_15m_high_pct": -0.0168
+          }
+        },
+        {
+          "symbol": "2ZTRY",
+          "time": 1786557480,
+          "upside_pct": 24.7045,
+          "downside_pct": -1.8913,
+          "features": {
+            "price": 2.538,
+            "return_1m_pct": 3.0869,
+            "return_5m_pct": 3.0869,
+            "return_15m_pct": 3.3388,
+            "volume_ratio_20": 307.7273,
+            "range_15m_pct": 0.2443,
+            "close_to_15m_high_pct": 3.0869
+          }
+        },
+        {
+          "symbol": "LUNATRY",
+          "time": 1786450020,
+          "upside_pct": 24.3781,
+          "downside_pct": 0.0498,
+          "features": {
+            "price": 2.01,
+            "return_1m_pct": 0.2994,
+            "return_5m_pct": 0.853,
+            "return_15m_pct": 1.005,
+            "volume_ratio_20": 49.1085,
+            "range_15m_pct": 0.7538,
+            "close_to_15m_high_pct": 0.2494
+          }
+        },
+        {
+          "symbol": "ONETRY",
+          "time": 1786505220,
+          "upside_pct": 21.6049,
+          "downside_pct": -8.0247,
+          "features": {
+            "price": 0.0486,
+            "return_1m_pct": 6.1135,
+            "return_5m_pct": 8.4821,
+            "return_15m_pct": 6.3457,
+            "volume_ratio_20": 6.9661,
+            "range_15m_pct": 5.4176,
+            "close_to_15m_high_pct": 4.0685
+          }
+        },
+        {
+          "symbol": "HEITRY",
+          "time": 1786433880,
+          "upside_pct": 17.4536,
+          "downside_pct": -0.3935,
+          "features": {
+            "price": 7.116,
+            "return_1m_pct": 0.2254,
+            "return_5m_pct": 1.3675,
+            "return_15m_pct": 1.5846,
+            "volume_ratio_20": 7.5064,
+            "range_15m_pct": 1.8359,
+            "close_to_15m_high_pct": 0.2254
+          }
+        },
+        {
+          "symbol": "AUDIOTRY",
+          "time": 1786428600,
+          "upside_pct": 17.0385,
+          "downside_pct": -0.6776,
+          "features": {
+            "price": 0.6051,
+            "return_1m_pct": 0.2153,
+            "return_5m_pct": 0.5316,
+            "return_15m_pct": 0.5651,
+            "volume_ratio_20": 6.1096,
+            "range_15m_pct": 0.3823,
+            "close_to_15m_high_pct": 0.1821
+          }
+        },
+        {
+          "symbol": "IDTRY",
+          "time": 1786494960,
+          "upside_pct": 15.8912,
+          "downside_pct": -1.2169,
+          "features": {
+            "price": 1.397,
+            "return_1m_pct": 1.1586,
+            "return_5m_pct": 1.1586,
+            "return_15m_pct": 0.9393,
+            "volume_ratio_20": 101913.8462,
+            "range_15m_pct": 0.2172,
+            "close_to_15m_high_pct": 0.9393
+          }
+        },
+        {
+          "symbol": "MOVRTRY",
+          "time": 1786534680,
+          "upside_pct": 15.6463,
+          "downside_pct": -0.4535,
+          "features": {
+            "price": 44.1,
+            "return_1m_pct": 0.6849,
+            "return_5m_pct": 1.3793,
+            "return_15m_pct": 2.5581,
+            "volume_ratio_20": 5.7432,
+            "range_15m_pct": 2.8169,
+            "close_to_15m_high_pct": 0.6849
+          }
+        },
+        {
+          "symbol": "HOLOTRY",
+          "time": 1786493580,
+          "upside_pct": 15.3226,
+          "downside_pct": -1.1241,
+          "features": {
+            "price": 4.092,
+            "return_1m_pct": 1.037,
+            "return_5m_pct": 2.0958,
+            "return_15m_pct": 5.2199,
+            "volume_ratio_20": 3.8018,
+            "range_15m_pct": 5.7269,
+            "close_to_15m_high_pct": 0.2941
+          }
+        },
+        {
+          "symbol": "RADTRY",
+          "time": 1786419360,
+          "upside_pct": 14.5031,
+          "downside_pct": -0.1791,
+          "features": {
+            "price": 11.17,
+            "return_1m_pct": 1.3612,
+            "return_5m_pct": 1.4532,
+            "return_15m_pct": 0.7214,
+            "volume_ratio_20": 9.2959,
+            "range_15m_pct": 1.0018,
+            "close_to_15m_high_pct": 0.7214
+          }
+        },
+        {
+          "symbol": "AIXBTTRY",
+          "time": 1786550220,
+          "upside_pct": 14.1509,
+          "downside_pct": 0.1179,
+          "features": {
+            "price": 0.848,
+            "return_1m_pct": 0.8323,
+            "return_5m_pct": 0.8323,
+            "return_15m_pct": 0.8323,
+            "volume_ratio_20": 4907.8368,
+            "range_15m_pct": 0.0,
+            "close_to_15m_high_pct": 0.8323
+          }
+        },
+        {
+          "symbol": "MAVTRY",
+          "time": 1786427280,
+          "upside_pct": 14.0,
+          "downside_pct": -4.0,
+          "features": {
+            "price": 0.5,
+            "return_1m_pct": 2.0408,
+            "return_5m_pct": 2.0408,
+            "return_15m_pct": 4.1667,
+            "volume_ratio_20": 48.9298,
+            "range_15m_pct": 4.2553,
+            "close_to_15m_high_pct": 2.0408
+          }
+        },
+        {
+          "symbol": "COTITRY",
+          "time": 1786555200,
+          "upside_pct": 13.7029,
+          "downside_pct": -8.284,
+          "features": {
+            "price": 0.6422,
+            "return_1m_pct": 7.6433,
+            "return_5m_pct": 4.5077,
+            "return_15m_pct": 27.8264,
+            "volume_ratio_20": 3.1328,
+            "range_15m_pct": 24.7992,
+            "close_to_15m_high_pct": 3.3307
+          }
+        },
+        {
+          "symbol": "STRAXTRY",
+          "time": 1786535460,
+          "upside_pct": 13.5714,
+          "downside_pct": -3.0952,
+          "features": {
+            "price": 0.42,
+            "return_1m_pct": 0.4785,
+            "return_5m_pct": 0.7194,
+            "return_15m_pct": 0.9615,
+            "volume_ratio_20": 12.0893,
+            "range_15m_pct": 0.4808,
+            "close_to_15m_high_pct": 0.4785
+          }
+        },
+        {
+          "symbol": "BMTTRY",
+          "time": 1786457700,
+          "upside_pct": 13.0841,
+          "downside_pct": -1.4538,
+          "features": {
+            "price": 0.963,
+            "return_1m_pct": 0.5219,
+            "return_5m_pct": 0.9434,
+            "return_15m_pct": 2.6652,
+            "volume_ratio_20": 3.8427,
+            "range_15m_pct": 2.3454,
+            "close_to_15m_high_pct": 0.3125
+          }
+        },
+        {
+          "symbol": "SOPHTRY",
+          "time": 1786530900,
+          "upside_pct": 12.0219,
+          "downside_pct": -2.1858,
+          "features": {
+            "price": 0.183,
+            "return_1m_pct": 1.105,
+            "return_5m_pct": 2.809,
+            "return_15m_pct": 2.809,
+            "volume_ratio_20": 15.7786,
+            "range_15m_pct": 1.6854,
+            "close_to_15m_high_pct": 1.105
+          }
+        },
+        {
+          "symbol": "ATMTRY",
+          "time": 1786546440,
+          "upside_pct": 11.9514,
+          "downside_pct": -0.6486,
+          "features": {
+            "price": 72.46,
+            "return_1m_pct": 0.4157,
+            "return_5m_pct": 1.0318,
+            "return_15m_pct": 0.9614,
+            "volume_ratio_20": 16.5281,
+            "range_15m_pct": 0.7951,
+            "close_to_15m_high_pct": 0.2768
+          }
+        },
+        {
+          "symbol": "ONETRY",
+          "time": 1786550640,
+          "upside_pct": 10.9694,
+          "downside_pct": -2.8061,
+          "features": {
+            "price": 0.0392,
+            "return_1m_pct": 2.0833,
+            "return_5m_pct": 3.1579,
+            "return_15m_pct": 5.9459,
+            "volume_ratio_20": 6.3006,
+            "range_15m_pct": 4.336,
+            "close_to_15m_high_pct": 1.8182
+          }
+        }
+      ],
+      "precision_up_5pct": 3.86,
+      "precision_up_10pct": 1.09,
+      "precision_up_20pct": 0.31
+    },
+    "confirmed_breakout": {
+      "rule": {
+        "ret_1m": 0.5,
+        "ret_5m": 1.0,
+        "ret_15m": 1.0,
+        "volume": 1.5,
+        "near_high": -0.5
+      },
+      "signals": 633,
+      "future_up_5pct": 73,
+      "future_up_10pct": 21,
+      "future_up_20pct": 6,
+      "median_future_upside_pct": 1.0638,
+      "median_future_downside_pct": -1.5044,
+      "examples": [
+        {
+          "symbol": "COTITRY",
+          "time": 1786551480,
+          "upside_pct": 34.0885,
+          "downside_pct": -0.5178,
+          "features": {
+            "price": 0.4635,
+            "return_1m_pct": 0.5859,
+            "return_5m_pct": 1.6447,
+            "return_15m_pct": 2.7261,
+            "volume_ratio_20": 1.8326,
+            "range_15m_pct": 2.305,
+            "close_to_15m_high_pct": 0.4116
+          }
+        },
+        {
+          "symbol": "MITOTRY",
+          "time": 1786444860,
+          "upside_pct": 31.9579,
+          "downside_pct": -1.1327,
+          "features": {
+            "price": 1.236,
+            "return_1m_pct": 0.6515,
+            "return_5m_pct": 1.8122,
+            "return_15m_pct": 2.4027,
+            "volume_ratio_20": 2.2993,
+            "range_15m_pct": 2.8428,
+            "close_to_15m_high_pct": 0.4878
+          }
+        },
+        {
+          "symbol": "RARETRY",
+          "time": 1786530480,
+          "upside_pct": 29.1439,
+          "downside_pct": -0.0662,
+          "features": {
+            "price": 0.6039,
+            "return_1m_pct": 1.1388,
+            "return_5m_pct": 1.8897,
+            "return_15m_pct": 1.7009,
+            "volume_ratio_20": 3.8369,
+            "range_15m_pct": 0.7764,
+            "close_to_15m_high_pct": 1.1388
+          }
+        },
+        {
+          "symbol": "2ZTRY",
+          "time": 1786557480,
+          "upside_pct": 24.7045,
+          "downside_pct": -1.8913,
+          "features": {
+            "price": 2.538,
+            "return_1m_pct": 3.0869,
+            "return_5m_pct": 3.0869,
+            "return_15m_pct": 3.3388,
+            "volume_ratio_20": 307.7273,
+            "range_15m_pct": 0.2443,
+            "close_to_15m_high_pct": 3.0869
+          }
+        },
+        {
+          "symbol": "ONETRY",
+          "time": 1786505220,
+          "upside_pct": 21.6049,
+          "downside_pct": -8.0247,
+          "features": {
+            "price": 0.0486,
+            "return_1m_pct": 6.1135,
+            "return_5m_pct": 8.4821,
+            "return_15m_pct": 6.3457,
+            "volume_ratio_20": 6.9661,
+            "range_15m_pct": 5.4176,
+            "close_to_15m_high_pct": 4.0685
+          }
+        },
+        {
+          "symbol": "LUNATRY",
+          "time": 1786450620,
+          "upside_pct": 20.54,
+          "downside_pct": -1.5429,
+          "features": {
+            "price": 2.074,
+            "return_1m_pct": 1.1214,
+            "return_5m_pct": 2.3692,
+            "return_15m_pct": 4.0642,
+            "volume_ratio_20": 7.6274,
+            "range_15m_pct": 3.0105,
+            "close_to_15m_high_pct": 1.0229
+          }
+        },
+        {
+          "symbol": "HEITRY",
+          "time": 1786434000,
+          "upside_pct": 18.3051,
+          "downside_pct": -0.4195,
+          "features": {
+            "price": 7.151,
+            "return_1m_pct": 0.7751,
+            "return_5m_pct": 2.1717,
+            "return_15m_pct": 2.4205,
+            "volume_ratio_20": 1.5271,
+            "range_15m_pct": 2.1658,
+            "close_to_15m_high_pct": 0.3931
+          }
+        },
+        {
+          "symbol": "MOVRTRY",
+          "time": 1786534680,
+          "upside_pct": 15.6463,
+          "downside_pct": -0.4535,
+          "features": {
+            "price": 44.1,
+            "return_1m_pct": 0.6849,
+            "return_5m_pct": 1.3793,
+            "return_15m_pct": 2.5581,
+            "volume_ratio_20": 5.7432,
+            "range_15m_pct": 2.8169,
+            "close_to_15m_high_pct": 0.6849
+          }
+        },
+        {
+          "symbol": "HOLOTRY",
+          "time": 1786493580,
+          "upside_pct": 15.3226,
+          "downside_pct": -1.1241,
+          "features": {
+            "price": 4.092,
+            "return_1m_pct": 1.037,
+            "return_5m_pct": 2.0958,
+            "return_15m_pct": 5.2199,
+            "volume_ratio_20": 3.8018,
+            "range_15m_pct": 5.7269,
+            "close_to_15m_high_pct": 0.2941
+          }
+        },
+        {
+          "symbol": "AUDIOTRY",
+          "time": 1786429140,
+          "upside_pct": 14.8557,
+          "downside_pct": -0.3568,
+          "features": {
+            "price": 0.6166,
+            "return_1m_pct": 0.9826,
+            "return_5m_pct": 2.2724,
+            "return_15m_pct": 2.2384,
+            "volume_ratio_20": 7.8951,
+            "range_15m_pct": 1.8469,
+            "close_to_15m_high_pct": 0.7352
+          }
+        },
+        {
+          "symbol": "MAVTRY",
+          "time": 1786427280,
+          "upside_pct": 14.0,
+          "downside_pct": -4.0,
+          "features": {
+            "price": 0.5,
+            "return_1m_pct": 2.0408,
+            "return_5m_pct": 2.0408,
+            "return_15m_pct": 4.1667,
+            "volume_ratio_20": 48.9298,
+            "range_15m_pct": 4.2553,
+            "close_to_15m_high_pct": 2.0408
+          }
+        },
+        {
+          "symbol": "COTITRY",
+          "time": 1786555200,
+          "upside_pct": 13.7029,
+          "downside_pct": -8.284,
+          "features": {
+            "price": 0.6422,
+            "return_1m_pct": 7.6433,
+            "return_5m_pct": 4.5077,
+            "return_15m_pct": 27.8264,
+            "volume_ratio_20": 3.1328,
+            "range_15m_pct": 24.7992,
+            "close_to_15m_high_pct": 3.3307
+          }
+        },
+        {
+          "symbol": "IDTRY",
+          "time": 1786495020,
+          "upside_pct": 13.6938,
+          "downside_pct": -3.0899,
+          "features": {
+            "price": 1.424,
+            "return_1m_pct": 1.9327,
+            "return_5m_pct": 3.1137,
+            "return_15m_pct": 2.8902,
+            "volume_ratio_20": 116.0692,
+            "range_15m_pct": 1.1586,
+            "close_to_15m_high_pct": 1.9327
+          }
+        },
+        {
+          "symbol": "ONETRY",
+          "time": 1786550520,
+          "upside_pct": 13.2812,
+          "downside_pct": -0.7812,
+          "features": {
+            "price": 0.0384,
+            "return_1m_pct": 1.5873,
+            "return_5m_pct": 1.0526,
+            "return_15m_pct": 3.7838,
+            "volume_ratio_20": 2.5974,
+            "range_15m_pct": 4.3478,
+            "close_to_15m_high_pct": 0.0
+          }
+        },
+        {
+          "symbol": "SOPHTRY",
+          "time": 1786530840,
+          "upside_pct": 13.2597,
+          "downside_pct": -1.105,
+          "features": {
+            "price": 0.181,
+            "return_1m_pct": 1.1173,
+            "return_5m_pct": 1.6854,
+            "return_15m_pct": 1.1173,
+            "volume_ratio_20": 2.5237,
+            "range_15m_pct": 0.5618,
+            "close_to_15m_high_pct": 1.1173
+          }
+        },
+        {
+          "symbol": "BMTTRY",
+          "time": 1786581360,
+          "upside_pct": 12.5763,
+          "downside_pct": -1.3431,
+          "features": {
+            "price": 0.819,
+            "return_1m_pct": 1.1111,
+            "return_5m_pct": 1.7391,
+            "return_15m_pct": 2.2472,
+            "volume_ratio_20": 3.0898,
+            "range_15m_pct": 1.8868,
+            "close_to_15m_high_pct": 1.1111
+          }
+        },
+        {
+          "symbol": "RADTRY",
+          "time": 1786428780,
+          "upside_pct": 12.4003,
+          "downside_pct": -0.2175,
+          "features": {
+            "price": 13.79,
+            "return_1m_pct": 0.8778,
+            "return_5m_pct": 1.7712,
+            "return_15m_pct": 5.2672,
+            "volume_ratio_20": 1.9203,
+            "range_15m_pct": 4.8276,
+            "close_to_15m_high_pct": 0.8041
+          }
+        },
+        {
+          "symbol": "STRAXTRY",
+          "time": 1786536300,
+          "upside_pct": 12.2353,
+          "downside_pct": -4.7059,
+          "features": {
+            "price": 0.425,
+            "return_1m_pct": 0.7109,
+            "return_5m_pct": 1.1905,
+            "return_15m_pct": 1.6746,
+            "volume_ratio_20": 5.1566,
+            "range_15m_pct": 1.199,
+            "close_to_15m_high_pct": 0.7109
+          }
+        },
+        {
+          "symbol": "RADTRY",
+          "time": 1786420140,
+          "upside_pct": 11.0243,
+          "downside_pct": -1.6493,
+          "features": {
+            "price": 11.52,
+            "return_1m_pct": 1.7668,
+            "return_5m_pct": 3.1334,
+            "return_15m_pct": 4.7273,
+            "volume_ratio_20": 4.7667,
+            "range_15m_pct": 3.4545,
+            "close_to_15m_high_pct": 1.2302
+          }
+        },
+        {
+          "symbol": "BANKTRY",
+          "time": 1786547220,
+          "upside_pct": 10.9564,
+          "downside_pct": -0.2421,
+          "features": {
+            "price": 1.652,
+            "return_1m_pct": 0.5478,
+            "return_5m_pct": 1.2876,
+            "return_15m_pct": 1.2876,
+            "volume_ratio_20": 2.0295,
+            "range_15m_pct": 1.0449,
+            "close_to_15m_high_pct": 0.4866
+          }
+        }
+      ],
+      "precision_up_5pct": 11.53,
+      "precision_up_10pct": 3.32,
+      "precision_up_20pct": 0.95
+    },
+    "fast_acceleration": {
+      "rule": {
+        "ret_1m": 1.0,
+        "ret_5m": 3.0,
+        "ret_15m": 3.0,
+        "volume": 2.0,
+        "near_high": -0.5
+      },
+      "signals": 89,
+      "future_up_5pct": 29,
+      "future_up_10pct": 14,
+      "future_up_20pct": 4,
+      "median_future_upside_pct": 2.4787,
+      "median_future_downside_pct": -3.8961,
+      "examples": [
+        {
+          "symbol": "COTITRY",
+          "time": 1786554420,
+          "upside_pct": 41.3746,
+          "downside_pct": -0.2711,
+          "features": {
+            "price": 0.5165,
+            "return_1m_pct": 2.257,
+            "return_5m_pct": 5.0224,
+            "return_15m_pct": 6.4071,
+            "volume_ratio_20": 2.1802,
+            "range_15m_pct": 5.5292,
+            "close_to_15m_high_pct": 0.9775
+          }
+        },
+        {
+          "symbol": "2ZTRY",
+          "time": 1786557480,
+          "upside_pct": 24.7045,
+          "downside_pct": -1.8913,
+          "features": {
+            "price": 2.538,
+            "return_1m_pct": 3.0869,
+            "return_5m_pct": 3.0869,
+            "return_15m_pct": 3.3388,
+            "volume_ratio_20": 307.7273,
+            "range_15m_pct": 0.2443,
+            "close_to_15m_high_pct": 3.0869
+          }
+        },
+        {
+          "symbol": "MITOTRY",
+          "time": 1786446300,
+          "upside_pct": 24.5038,
+          "downside_pct": -3.3588,
+          "features": {
+            "price": 1.31,
+            "return_1m_pct": 2.1044,
+            "return_5m_pct": 4.8,
+            "return_15m_pct": 6.0729,
+            "volume_ratio_20": 7.1153,
+            "range_15m_pct": 4.7967,
+            "close_to_15m_high_pct": 1.6292
+          }
+        },
+        {
+          "symbol": "ONETRY",
+          "time": 1786505220,
+          "upside_pct": 21.6049,
+          "downside_pct": -8.0247,
+          "features": {
+            "price": 0.0486,
+            "return_1m_pct": 6.1135,
+            "return_5m_pct": 8.4821,
+            "return_15m_pct": 6.3457,
+            "volume_ratio_20": 6.9661,
+            "range_15m_pct": 5.4176,
+            "close_to_15m_high_pct": 4.0685
+          }
+        },
+        {
+          "symbol": "LUNATRY",
+          "time": 1786451100,
+          "upside_pct": 17.9802,
+          "downside_pct": -0.4247,
+          "features": {
+            "price": 2.119,
+            "return_1m_pct": 1.9731,
+            "return_5m_pct": 3.72,
+            "return_15m_pct": 4.901,
+            "volume_ratio_20": 2.7952,
+            "range_15m_pct": 3.5166,
+            "close_to_15m_high_pct": 1.3876
+          }
+        },
+        {
+          "symbol": "HEITRY",
+          "time": 1786434360,
+          "upside_pct": 15.9338,
+          "downside_pct": 0.1629,
+          "features": {
+            "price": 7.368,
+            "return_1m_pct": 1.3062,
+            "return_5m_pct": 3.2656,
+            "return_15m_pct": 4.9872,
+            "volume_ratio_20": 5.9795,
+            "range_15m_pct": 4.107,
+            "close_to_15m_high_pct": 1.2784
+          }
+        },
+        {
+          "symbol": "MOVRTRY",
+          "time": 1786534800,
+          "upside_pct": 13.3333,
+          "downside_pct": 0.0,
+          "features": {
+            "price": 45.0,
+            "return_1m_pct": 1.1236,
+            "return_5m_pct": 3.9261,
+            "return_15m_pct": 4.6512,
+            "volume_ratio_20": 8.2253,
+            "range_15m_pct": 4.4601,
+            "close_to_15m_high_pct": 1.1236
+          }
+        },
+        {
+          "symbol": "AUDIOTRY",
+          "time": 1786429260,
+          "upside_pct": 12.3592,
+          "downside_pct": -2.3957,
+          "features": {
+            "price": 0.6303,
+            "return_1m_pct": 1.842,
+            "return_5m_pct": 3.7702,
+            "return_15m_pct": 4.7184,
+            "volume_ratio_20": 7.344,
+            "range_15m_pct": 2.9784,
+            "close_to_15m_high_pct": 1.842
+          }
+        },
+        {
+          "symbol": "MAVTRY",
+          "time": 1786427340,
+          "upside_pct": 11.7647,
+          "downside_pct": -5.8824,
+          "features": {
+            "price": 0.51,
+            "return_1m_pct": 2.0,
+            "return_5m_pct": 4.0816,
+            "return_15m_pct": 6.25,
+            "volume_ratio_20": 8.7311,
+            "range_15m_pct": 6.383,
+            "close_to_15m_high_pct": 2.0
+          }
+        },
+        {
+          "symbol": "RARETRY",
+          "time": 1786530780,
+          "upside_pct": 11.0495,
+          "downside_pct": -3.7432,
+          "features": {
+            "price": 0.7213,
+            "return_1m_pct": 5.5304,
+            "return_5m_pct": 19.4403,
+            "return_15m_pct": 21.4719,
+            "volume_ratio_20": 11.5501,
+            "range_15m_pct": 18.9873,
+            "close_to_15m_high_pct": 2.3121
+          }
+        },
+        {
+          "symbol": "RADTRY",
+          "time": 1786420140,
+          "upside_pct": 11.0243,
+          "downside_pct": -1.6493,
+          "features": {
+            "price": 11.52,
+            "return_1m_pct": 1.7668,
+            "return_5m_pct": 3.1334,
+            "return_15m_pct": 4.7273,
+            "volume_ratio_20": 4.7667,
+            "range_15m_pct": 3.4545,
+            "close_to_15m_high_pct": 1.2302
+          }
+        },
+        {
+          "symbol": "ONETRY",
+          "time": 1786550640,
+          "upside_pct": 10.9694,
+          "downside_pct": -2.8061,
+          "features": {
+            "price": 0.0392,
+            "return_1m_pct": 2.0833,
+            "return_5m_pct": 3.1579,
+            "return_15m_pct": 5.9459,
+            "volume_ratio_20": 6.3006,
+            "range_15m_pct": 4.336,
+            "close_to_15m_high_pct": 1.8182
+          }
+        },
+        {
+          "symbol": "QTUMTRY",
+          "time": 1786510080,
+          "upside_pct": 10.7595,
+          "downside_pct": -1.5823,
+          "features": {
+            "price": 31.6,
+            "return_1m_pct": 2.2654,
+            "return_5m_pct": 4.9834,
+            "return_15m_pct": 4.9834,
+            "volume_ratio_20": 14.3002,
+            "range_15m_pct": 2.99,
+            "close_to_15m_high_pct": 1.9355
+          }
+        },
+        {
+          "symbol": "IDTRY",
+          "time": 1786495080,
+          "upside_pct": 10.4366,
+          "downside_pct": -5.8663,
+          "features": {
+            "price": 1.466,
+            "return_1m_pct": 2.9494,
+            "return_5m_pct": 6.155,
+            "return_15m_pct": 5.9249,
+            "volume_ratio_20": 4.5127,
+            "range_15m_pct": 4.9964,
+            "close_to_15m_high_pct": 1.1034
+          }
+        },
+        {
+          "symbol": "LUNATRY",
+          "time": 1786456320,
+          "upside_pct": 9.1885,
+          "downside_pct": -2.3186,
+          "features": {
+            "price": 2.329,
+            "return_1m_pct": 1.9256,
+            "return_5m_pct": 3.0075,
+            "return_15m_pct": 3.9732,
+            "volume_ratio_20": 2.0634,
+            "range_15m_pct": 2.9543,
+            "close_to_15m_high_pct": 1.2609
+          }
+        },
+        {
+          "symbol": "ATMTRY",
+          "time": 1786546620,
+          "upside_pct": 9.179,
+          "downside_pct": -3.0821,
+          "features": {
+            "price": 74.3,
+            "return_1m_pct": 2.0885,
+            "return_5m_pct": 3.5973,
+            "return_15m_pct": 3.2375,
+            "volume_ratio_20": 12.825,
+            "range_15m_pct": 1.9939,
+            "close_to_15m_high_pct": 1.5721
+          }
+        },
+        {
+          "symbol": "RADTRY",
+          "time": 1786428840,
+          "upside_pct": 9.1549,
+          "downside_pct": -3.0986,
+          "features": {
+            "price": 14.2,
+            "return_1m_pct": 2.9732,
+            "return_5m_pct": 5.1073,
+            "return_15m_pct": 8.3143,
+            "volume_ratio_20": 3.0271,
+            "range_15m_pct": 5.6705,
+            "close_to_15m_high_pct": 2.9732
+          }
+        },
+        {
+          "symbol": "TSTTRY",
+          "time": 1786445340,
+          "upside_pct": 9.0433,
+          "downside_pct": -0.6553,
+          "features": {
+            "price": 0.763,
+            "return_1m_pct": 1.7333,
+            "return_5m_pct": 3.1081,
+            "return_15m_pct": 3.1081,
+            "volume_ratio_20": 3.5277,
+            "range_15m_pct": 1.8996,
+            "close_to_15m_high_pct": 1.5979
+          }
+        },
+        {
+          "symbol": "RADTRY",
+          "time": 1786441740,
+          "upside_pct": 8.8968,
+          "downside_pct": -1.7794,
+          "features": {
+            "price": 14.05,
+            "return_1m_pct": 2.0334,
+            "return_5m_pct": 3.2329,
+            "return_15m_pct": 4.3059,
+            "volume_ratio_20": 2.1818,
+            "range_15m_pct": 2.7612,
+            "close_to_15m_high_pct": 2.0334
+          }
+        },
+        {
+          "symbol": "HOLOTRY",
+          "time": 1786496220,
+          "upside_pct": 8.4668,
+          "downside_pct": -0.2288,
+          "features": {
+            "price": 4.37,
+            "return_1m_pct": 2.079,
+            "return_5m_pct": 3.8745,
+            "return_15m_pct": 6.171,
+            "volume_ratio_20": 3.2149,
+            "range_15m_pct": 5.2477,
+            "close_to_15m_high_pct": 1.8173
+          }
+        }
+      ],
+      "precision_up_5pct": 32.58,
+      "precision_up_10pct": 15.73,
+      "precision_up_20pct": 4.49
+    }
+  }
+}
