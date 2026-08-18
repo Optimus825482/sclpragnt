@@ -11,3 +11,12 @@ frontend/node_modules/
 frontend/.next/
 *.pyc
 *.tsbuildinfo
+
+# Research outputs / temporary data
+outputs/
+work/
+.omx/
+
+# Backend research artifacts (JSON/CSV dumps)
+backend/*.json
+backend/*.csv
