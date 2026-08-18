@@ -282,12 +282,17 @@ export default function SettingsPage() {
     setError(null);
     setBackupDone(false);
     try {
-      const res = await apiRequest(`${API_BASE}/api/backup`);
+      const res = await apiRequest(`${API_BASE}/api/postgres/backup`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `Yedekleme başarısız (HTTP ${res.status})`);
       }
       const blob = await res.blob();
+      const header = new Uint8Array(await blob.slice(0, 5).arrayBuffer());
+      const isPostgresCustomDump = Array.from(header).join(",") === "80,71,68,77,80";
+      if (!isPostgresCustomDump) {
+        throw new Error("Sunucunun ürettiği dosya geçerli PostgreSQL custom-format yedeği değil");
+      }
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
