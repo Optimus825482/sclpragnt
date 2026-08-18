@@ -191,7 +191,7 @@ class MarketData:
 
     async def refresh_24h_tickers(self):
         try:
-            rows = await ticker_24h()
+            rows = await ticker_24h([s.upper() for s in self.symbols])
             if not isinstance(rows, list):
                 raise RuntimeError("24h ticker yanıtı liste değil")
             now = time.time()
@@ -252,6 +252,7 @@ class MarketData:
                 [f"{symbol}@kline_{tf}" for tf in timeframes for symbol in group]
                 + [f"{symbol}@depth5@100ms" for symbol in group]
                 + [f"{symbol}@aggTrade" for symbol in group]
+                + [f"{symbol}@bookTicker" for symbol in group]
             )
             plans.append({
                 "group_id": index // group_size + 1,

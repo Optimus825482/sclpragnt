@@ -13,6 +13,8 @@ import time
 import uuid
 from urllib.request import Request, urlopen
 
+from . import security
+
 
 PROTOCOL_VERSION = "1.0"
 
@@ -43,9 +45,9 @@ async def deliver(message: dict) -> dict:
     url = os.getenv("A2A_RELAY_URL", "").strip()
     secret = os.getenv("A2A_SHARED_SECRET", "").strip()
     if not url:
-        return {"delivered": False, "queued": True, "reason": "A2A_RELAY_URL yapılandırılmamış"}
+        return {"delivered": False, "queued": True, "reason": "A2A_RELAY_URL yapilandirilmamis"}
     if not secret:
-        return {"delivered": False, "queued": True, "reason": "A2A_SHARED_SECRET yapılandırılmamış"}
+        return {"delivered": False, "queued": True, "reason": "A2A_SHARED_SECRET yapilandirilmamis"}
     body = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode()
 
     def send():
@@ -55,7 +57,7 @@ async def deliver(message: dict) -> dict:
             "X-A2A-Signature": signature(body, secret),
             "X-A2A-Message-Id": message["message_id"],
         })
-        with urlopen(request, timeout=10) as response:
+        with security.safe_provider_open(request, timeout=10) as response:
             return int(response.status)
 
     try:

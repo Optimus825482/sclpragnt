@@ -244,6 +244,8 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         tool_round = 0
         while True:
             tool_round += 1
+            if tool_round > 25:
+                raise RuntimeError(f"LLM araç döngüsü {tool_round} round'da kesildi (olası provider hatası).")
             data = response_data(result)
             choices = data.get("choices", []) if isinstance(data, dict) else []
             first = choices[0] if choices else {}

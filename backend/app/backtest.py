@@ -418,7 +418,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                                 continue
                             sell_qty = position["quantity"] * fraction
                             balance, partial_pnl = _close_partial(balance, position["entry"] * (1 + trigger), sell_qty, spread_pct, slippage_pct)
-                            partial_pnl -= position["entry"] * sell_qty * config.COMMISSION_PCT
+                            partial_pnl -= position["entry"] * sell_qty * config.COMMISSION_PCT + position["entry"] * sell_qty
                             position["realized_pnl"] = position.get("realized_pnl", 0.0) + partial_pnl
                             position["quantity"] -= sell_qty
                             position["remaining_order_size"] = position.get("invested_cost", order_size) + order_size

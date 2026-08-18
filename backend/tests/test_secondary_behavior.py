@@ -30,7 +30,7 @@ class MigrationContracts(unittest.TestCase):
             {"a2a_messages": 4, "llm_symbol_guards": 2},
             {"a2a_messages": 3, "llm_symbol_guards": 2},
         )
-        self.assertEqual(errors, ["a2a_messages: hedef satır sayısı eksik (3/4)"])
+        self.assertEqual(errors, ["a2a_messages: hedef satır sayısı uyuşmuyor (3/4)"])
 
 
 class EmbeddingWorkerContracts(unittest.IsolatedAsyncioTestCase):

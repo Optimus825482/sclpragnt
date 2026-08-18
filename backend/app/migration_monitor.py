@@ -29,8 +29,8 @@ def compare_counts(source_counts, target_counts):
         if source_count is None:
             continue
         target_count = int(target_counts.get(table) or 0)
-        if target_count < int(source_count):
-            errors.append(f"{table}: hedef satır sayısı eksik ({target_count}/{source_count})")
+        if target_count != int(source_count):
+            errors.append(f"{table}: hedef satır sayısı uyuşmuyor ({target_count}/{source_count})")
     return errors
 
 
