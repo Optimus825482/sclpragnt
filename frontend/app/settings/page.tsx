@@ -85,6 +85,9 @@ export default function SettingsPage() {
   const [activity, setActivity] = useState<Record<string, any>>({});
   const [activityFilter, setActivityFilter] = useState<"all" | "ACTIVE" | "PASSIVE" | "WARMING">("all");
   const [refreshingActivity, setRefreshingActivity] = useState(false);
+  const [mtfBackfillOpen, setMtfBackfillOpen] = useState(false);
+  const [mtfBackfill, setMtfBackfill] = useState<any>({ status: "idle", progress: 0, logs: [] });
+  const [startingMtfBackfill, setStartingMtfBackfill] = useState(false);
 
   useEffect(() => {
     apiRequest(`${API_BASE}/api/config`)
@@ -97,6 +100,16 @@ export default function SettingsPage() {
       .catch(() => setError("Binance TR sembolleri alınamadı"));
     apiRequest(`${API_BASE}/api/llm/config`).then((r) => r.json()).then(setLlm).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!mtfBackfillOpen) return;
+    let cancelled = false;
+    const load = () => apiRequest(`${API_BASE}/api/historical-mtf-backfill/status`, { cache: "no-store" })
+      .then((r) => r.json()).then((d) => { if (!cancelled) setMtfBackfill(d); }).catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 1500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [mtfBackfillOpen]);
 
   useEffect(() => {
     if (activeTab !== "scan-logs") return;
@@ -233,6 +246,20 @@ export default function SettingsPage() {
       setLlmMessage(`${body.queued || 0} tarihsel snapshot yeniden embedding kuyruğuna alındı.`);
     } catch (err) { setLlmMessage(err instanceof Error ? err.message : "Tarihsel memory onarımı başarısız"); }
     finally { setRepairingMemory(false); }
+  };
+
+  const startHistoricalMtfBackfill = async () => {
+    if (!window.confirm("Kapanmış işlemler ve açık pozisyonların giriş zamanları Binance TR public history ile yeniden hesaplanacak. PnL, bakiye ve pozisyonlar değişmeyecek. Devam edilsin mi?")) return;
+    setStartingMtfBackfill(true);
+    try {
+      const response = await apiRequest(`${API_BASE}/api/historical-mtf-backfill/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "MTF backfill başlatılamadı");
+      setMtfBackfillOpen(true);
+      setMtfBackfill(body);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "MTF backfill başlatılamadı");
+    } finally { setStartingMtfBackfill(false); }
   };
 
   const reloadLlm = async () => setLlm(await (await apiRequest(`${API_BASE}/api/llm/config`, { cache: "no-store" })).json());
@@ -515,6 +542,19 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          <div className={`card border-purple-400/30 bg-purple-400/5 ${activeTab !== "app" ? "hidden" : ""}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <p className="eyebrow text-purple-300">GEÇMİŞ MTF SNAPSHOT BACKFILL</p>
+                <p className="font-mono text-sm text-white mt-2">Eski işlem girişlerini M1/M5/M15/H1/H4 ile zenginleştir</p>
+                <p className="text-xs text-bunker-muted mt-1">Binance TR public history kullanılır. PnL, bakiye ve işlem sonucu değişmez; likidite/orderflow geçmiş için unknown kalır.</p>
+              </div>
+              <button onClick={startHistoricalMtfBackfill} disabled={startingMtfBackfill || mtfBackfill.status === "running"} className="shrink-0 px-4 py-2 rounded-lg border border-purple-400/50 bg-purple-400/10 text-purple-300 hover:bg-purple-400/20 font-mono text-xs">
+                {startingMtfBackfill || mtfBackfill.status === "running" ? "BACKFILL ÇALIŞIYOR..." : "MTF BACKFILL BAŞLAT"}
+              </button>
+            </div>
+          </div>
+
           <div className={`card bg-bunker-950 ${activeTab !== "strategies" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
               <p className="eyebrow">İŞLEM VE RİSK YÖNETİMİ</p>
@@ -665,6 +705,17 @@ export default function SettingsPage() {
             </div>
           </div>
         </>
+      )}
+      {mtfBackfillOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 p-4 flex items-center justify-center" onClick={() => setMtfBackfillOpen(false)}>
+          <div className="card bg-bunker-950 w-full max-w-3xl max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-bunker-800 pb-3 mb-4"><div><p className="eyebrow text-purple-300">MTF BACKFILL LOG</p><p className="font-mono text-sm text-white mt-1">{mtfBackfill.message || "Hazırlanıyor..."}</p></div><button onClick={() => setMtfBackfillOpen(false)} className="text-bunker-muted hover:text-white">✕</button></div>
+            <div className="grid grid-cols-3 gap-3 mb-4 text-xs font-mono"><div><span className="text-bunker-muted">DURUM</span><p className="text-purple-300 mt-1">{String(mtfBackfill.status || "idle").toUpperCase()}</p></div><div><span className="text-bunker-muted">İLERLEME</span><p className="text-white mt-1">{mtfBackfill.completed ?? 0}/{mtfBackfill.total ?? 0} · %{mtfBackfill.progress ?? 0}</p></div><div><span className="text-bunker-muted">SONUÇ</span><p className="text-neon-green mt-1">{mtfBackfill.result ? `${mtfBackfill.result.updated} güncellendi` : "—"}</p></div></div>
+            <div className="h-2 rounded bg-bunker-800 mb-4"><div className="h-2 rounded bg-purple-400 transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(mtfBackfill.progress || 0)))}%` }} /></div>
+            <div className="max-h-[48vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(mtfBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(mtfBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
+            <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend’de arka planda devam eder; tekrar açarak son durumu görebilirsiniz.</p>
+          </div>
+        </div>
       )}
     </div>
   );

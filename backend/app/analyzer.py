@@ -1271,7 +1271,7 @@ class ScalpAnalyzer:
                 bid_price, bid_qty = float(bids[0][0]), float(bids[0][1])
                 ask_price, ask_qty = float(asks[0][0]), float(asks[0][1])
                 mid = (bid_price + ask_price) / 2
-                flow.update({"bid_qty": bid_qty, "ask_qty": ask_qty,
+                flow.update({"bid_price": bid_price, "ask_price": ask_price, "bid_qty": bid_qty, "ask_qty": ask_qty,
                              "spread_pct": ((ask_price - bid_price) / mid * 100) if mid else None,
                              "source": "binance_tr_public_rest",
                              "updated_at": time.time()})
@@ -1496,9 +1496,10 @@ class ScalpAnalyzer:
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
         if self.market:
             technical_tf = self._strategy_tf(strat_name)
+            daily_klines = self.market.klines.get("1d", {}).get(symbol.upper(), {})
             symbol_klines = {
                 technical_tf: self.market.klines.get(technical_tf, {}).get(symbol.upper(), {}),
-                "1d": self.market.klines.get("1d", {}).get(symbol.upper(), {}),
+                "1d": daily_klines,
             }
             entry_context["technical"] = calculate_snapshot(
                 symbol, entry_price, symbol_klines,
@@ -1506,6 +1507,23 @@ class ScalpAnalyzer:
                 self.market.ticker_24h.get(symbol, 0),
                 order_value, technical_tf
             )
+            # Persist the same M1/M5/M15/H1/H4 evidence that the radar uses.
+            # Missing cache data is recorded explicitly as data_ready=False;
+            # it must never be silently interpreted as bullish or neutral.
+            mtf_snapshots = {}
+            for timeframe in ("1m", "5m", "15m", "1h", "4h"):
+                history = self.market.klines.get(timeframe, {}).get(symbol.upper(), {})
+                snapshot = calculate_snapshot(
+                    symbol, entry_price,
+                    {timeframe: history, "1d": daily_klines},
+                    flow,
+                    self.market.ticker_24h.get(symbol, 0),
+                    order_value,
+                    timeframe,
+                )
+                mtf_snapshots[timeframe] = snapshot
+            entry_context["technical"]["mtf_snapshots"] = mtf_snapshots
+            entry_context["technical"]["mtf_timeframes"] = list(mtf_snapshots)
             if strat_name == "BB_MFI_MEAN_REVERSION":
                 block_reason = self._bb_mfi_entry_context_block_reason(
                     entry_context["technical"], symbol_klines[technical_tf]

@@ -343,6 +343,8 @@ async def init_db():
             pass
         conn.execute("CREATE TABLE IF NOT EXISTS analysis_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, captured_at REAL NOT NULL, source TEXT NOT NULL DEFAULT 'entry', methodology_version TEXT, regime TEXT, regime_confidence REAL, confluence_score REAL, payload TEXT NOT NULL DEFAULT '{}', trade_id TEXT)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_symbol_time ON analysis_snapshots(symbol, captured_at DESC)")
+        conn.execute("CREATE TABLE IF NOT EXISTS microstructure_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, captured_at REAL NOT NULL, bid_price REAL, ask_price REAL, bid_qty REAL, ask_qty REAL, spread_pct REAL, depth_try REAL, orderflow_imbalance REAL, source TEXT NOT NULL DEFAULT 'binance_tr_public_ws', updated_at REAL, UNIQUE(symbol, captured_at))")
+        conn.execute("CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC)")
         conn.execute("""CREATE TABLE IF NOT EXISTS historical_candles (
             symbol TEXT NOT NULL, timeframe TEXT NOT NULL, open_time INTEGER NOT NULL,
             close_time INTEGER NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL,
@@ -473,7 +475,7 @@ async def reset_trading_data():
             "trades",
             "positions",
             "backtests",
-            "analysis_snapshots",
+            "analysis_snapshots", "microstructure_snapshots",
         )
         deleted = {}
         for table in tables:
@@ -893,6 +895,26 @@ async def get_trades(limit: int | None = 100, offset: int = 0, symbol: str | Non
 
     return await _run_db(op)
 
+async def apply_historical_mtf_backfill(target_type, target_id, symbol, trade_id, entry_context, snapshots):
+    """Persist public-history MTF evidence without changing trade economics."""
+    context_json = json.dumps(entry_context or {}, ensure_ascii=False, default=str)
+    def op(conn):
+        if target_type == "trade":
+            conn.execute("UPDATE trades SET entry_context=? WHERE id=?", (context_json, int(target_id)))
+        elif target_type == "position":
+            conn.execute("UPDATE positions SET entry_context=? WHERE symbol=?", (context_json, str(symbol).upper()))
+        else:
+            raise ValueError("geçersiz backfill hedefi")
+        if trade_id:
+            conn.execute("DELETE FROM analysis_snapshots WHERE trade_id=? AND source IN ('entry','historical_backfill')", (trade_id,))
+        for timeframe, snapshot in (snapshots or {}).items():
+            methods = snapshot.get("methodologies") or {}
+            regime = methods.get("regime") or {}
+            confluence = methods.get("confluence") or {}
+            conn.execute("INSERT INTO analysis_snapshots(symbol,timeframe,captured_at,source,methodology_version,regime,regime_confidence,confluence_score,payload,trade_id) VALUES(?,?,?,?,?,?,?,?,?,?)", (str(symbol).upper(), timeframe, float(snapshot.get("observation_timestamp") or time.time()), "historical_backfill", methods.get("methodology_version"), regime.get("name"), regime.get("confidence"), confluence.get("score"), json.dumps(snapshot, ensure_ascii=False, default=str), trade_id))
+        conn.commit()
+    await _run_db(op)
+
 
 async def get_trade_count(symbol: str | None = None, strategy: str | None = None):
     def op(conn):
@@ -901,6 +923,30 @@ async def get_trade_count(symbol: str | None = None, strategy: str | None = None
         if strategy: clauses.append("strategy=?"); values.append(strategy)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         return int(conn.execute(f"SELECT COUNT(*) FROM trades{where}", values).fetchone()[0] or 0)
+    return await _run_db(op)
+
+async def upsert_microstructure_snapshots(rows):
+    """Store sampled live bid/ask/depth evidence for future entry audits."""
+    values = []
+    for row in rows or []:
+        values.append(tuple(row.get(key) for key in (
+            "symbol", "captured_at", "bid_price", "ask_price", "bid_qty", "ask_qty",
+            "spread_pct", "depth_try", "orderflow_imbalance", "source", "updated_at",
+        )))
+    if not values:
+        return 0
+    def op(conn):
+        conn.executemany("""INSERT INTO microstructure_snapshots
+            (symbol,captured_at,bid_price,ask_price,bid_qty,ask_qty,spread_pct,depth_try,orderflow_imbalance,source,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(symbol,captured_at) DO UPDATE SET
+              bid_price=excluded.bid_price, ask_price=excluded.ask_price,
+              bid_qty=excluded.bid_qty, ask_qty=excluded.ask_qty,
+              spread_pct=excluded.spread_pct, depth_try=excluded.depth_try,
+              orderflow_imbalance=excluded.orderflow_imbalance,
+              source=excluded.source, updated_at=excluded.updated_at""", values)
+        conn.commit()
+        return len(values)
     return await _run_db(op)
 
 async def get_realized_pnl():
@@ -991,10 +1037,14 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
         conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason,strategy,trade_id) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason"), sig.get("strategy"), sig.get("trade_id")))
         conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
         technical = (pos.get("entry_context") or {}).get("technical") or {}
-        methods = technical.get("methodologies") or {}
-        regime = methods.get("regime") or {}
-        confluence = methods.get("confluence") or {}
-        conn.execute("INSERT INTO analysis_snapshots(symbol,timeframe,captured_at,source,methodology_version,regime,regime_confidence,confluence_score,payload,trade_id) VALUES(?,?,?,?,?,?,?,?,?,?)", (symbol, technical.get("timeframe") or "5m", pos.get("entry_time") or time.time(), "entry", methods.get("methodology_version"), regime.get("name"), regime.get("confidence"), confluence.get("score"), json.dumps(technical, default=str), pos.get("trade_id")))
+        snapshots = dict(technical.get("mtf_snapshots") or {})
+        primary_timeframe = technical.get("timeframe") or "5m"
+        snapshots.setdefault(primary_timeframe, technical)
+        for timeframe, snapshot in snapshots.items():
+            methods = snapshot.get("methodologies") or {}
+            regime = methods.get("regime") or {}
+            confluence = methods.get("confluence") or {}
+            conn.execute("INSERT INTO analysis_snapshots(symbol,timeframe,captured_at,source,methodology_version,regime,regime_confidence,confluence_score,payload,trade_id) VALUES(?,?,?,?,?,?,?,?,?,?)", (symbol, timeframe, pos.get("entry_time") or time.time(), "entry", methods.get("methodology_version"), regime.get("name"), regime.get("confidence"), confluence.get("score"), json.dumps(snapshot, default=str), pos.get("trade_id")))
         conn.commit()
     await _run_db(op)
     try:
