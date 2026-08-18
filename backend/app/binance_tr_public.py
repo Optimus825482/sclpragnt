@@ -52,6 +52,14 @@ def _get_json(path: str, params: dict):
     for attempt in range(1, REST_MAX_ATTEMPTS + 1):
         try:
             with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
+                # Track rate-limit headers
+                try:
+                    used = int(response.headers.get("X-MBX-USED-WEIGHT-1M", 0) or 0)
+                    _rate_limit_used["total"] = used
+                    _rate_limit_used["by_endpoint"][path] = max(_rate_limit_used["by_endpoint"].get(path, 0), used)
+                    _rate_limit_last_reset = time.time()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
                 return _decode_payload(response.read())
         except HTTPError as exc:
             last_error = exc
@@ -77,7 +85,7 @@ async def klines(symbol: str, interval: str, limit: int = 500, start_time_ms: in
         params["startTime"] = start_time_ms
     if end_time_ms is not None:
         params["endTime"] = end_time_ms
-    return await asyncio.to_thread(_get_json, "/api/v1/klines", params)
+    return await asyncio.to_thread(_get_json, "/api/v3/klines", params)
 
 
 async def historical_klines(symbol: str, interval: str, days_back: int, end_time_ms: int | None = None):
@@ -107,8 +115,36 @@ async def trading_symbols(quote_asset: str = "TRY"):
         if item.get("status") == "TRADING" and item.get("quoteAsset") == quote_asset.upper()
     })
 
+async def trading_symbols_with_filters(quote_asset: str = "TRY"):
+    """TRADING statüsündeki sembolleri, PRICE_FILTER / LOT_SIZE / MIN_NOTIONAL limitleriyle birlikte döndürür."""
+    payload = await asyncio.to_thread(_get_json, "/api/v3/exchangeInfo", {})
+    result = {}
+    for item in payload.get("symbols", []):
+        if item.get("status") != "TRADING" or item.get("quoteAsset") != quote_asset.upper():
+            continue
+        sym = str(item["symbol"]).upper()
+        filters = {}
+        for f in item.get("filters", []):
+            ft = f.get("filterType")
+            if ft == "PRICE_FILTER":
+                filters["min_price"] = float(f.get("minPrice", 0))
+                filters["tick_size"] = float(f.get("tickSize", 0.01))
+            elif ft == "LOT_SIZE":
+                filters["min_qty"] = float(f.get("minQty", 0))
+                filters["step_size"] = float(f.get("stepSize", 0))
+            elif ft == "MIN_NOTIONAL":
+                filters["min_notional"] = float(f.get("minNotional", 10.0))
+        result[sym] = filters
+    return result
 
-async def ticker_24h():
+
+def _ticker_params(symbols: list | None) -> dict:
+    """Binance TR symbol filtresi: ["BTCTRY","ETHTRY"] → {"symbols":"[""BTCTRY"",""ETHTRY""]"}"""
+    if not symbols:
+        return {}
+    quoted = ",".join(f'"{s}"' for s in symbols[:50])
+    return {"symbols": f"[{quoted}]"}
+async def ticker_24h(symbols: list | None = None):
     return await asyncio.to_thread(_get_json, "/api/v3/ticker/24hr", {})
 
 async def orderbook(symbol: str, limit: int = 5):
@@ -127,3 +163,13 @@ async def orderbook(symbol: str, limit: int = 5):
         raise RuntimeError("Binance TR order-book bid/ask alanları eksik")
     return {**payload, "symbol": normalized, "bids": bids[:5], "asks": asks[:5],
             "source": "binance_tr_public_rest", "received_at": time.time()}
+
+
+
+def rate_limit_snapshot():
+    """Public API rate-limit kullanım anlık görüntüsü."""
+    return {
+        "total_weight_used": _rate_limit_used["total"],
+        "by_endpoint": dict(_rate_limit_used["by_endpoint"]),
+        "last_reset_at": _rate_limit_last_reset,
+    }

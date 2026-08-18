@@ -1,6 +1,7 @@
 import os
 import asyncio
 import time
+import logging
 import subprocess
 import json
 import tempfile
@@ -17,6 +18,7 @@ from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
 
+logger = logging.getLogger("scalper.main")
 from app.config import config
 from app.market_intelligence import (estimate_local_regime, execution_quality,
                                      symbol_safety, cost_aware_trade_metrics,
@@ -38,6 +40,7 @@ from app import migration_monitor
 from app import a2a
 from app import alerting
 from app import security
+from app import pattern_research
 from app.agent_learning import (new_trace_id, start_trace, append_event, finish_trace,
                                  evaluate_output, save_evaluation, save_experience, upsert_instinct, set_runtime_pool,
                                  promote_validated_instincts)
@@ -173,9 +176,38 @@ _background_tasks = set()
 
 
 def _start_background(coro, name):
+    """Başlat ve supervisors manual da olsa, hata ile biterse sınırlı geri alımla yeniden başlat.
+
+    Uzun ömürlü background döngüleri (strategy, radar, broadcast, a2a, ...) iç
+    try/except ile kendi hatalarını yutacak şekilde yazılır. Yine de beklenmeyen
+    bir istisna düşürülürse görev, CancelledError dışındaki hatalarda sonlu bir
+    geri alımla (backoff) yeniden oluşturulur; böylece tek seferlik görevlerin
+    doğal tamamlanması yeniden başlatılmaz.
+    """
+    restart_attempt = {"count": 0}
+
+    def _restart_if_failed(task):
+        _background_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if not exc:
+            # normal tamamlama (single-pass görevleri); yeniden başlatma yok.
+            restart_attempt["count"] = 0
+            return
+        # Beklenmeyen hata: sonlu geri alımla yeniden başlat.
+        restart_attempt["count"] += 1
+        delay = min(2 * restart_attempt["count"], 30)
+        logger.error("background görev '%s' hata ile düştü (%s); %.0fs sonra yeniden deneniyor.",
+                     name, exc, delay, exc_info=True)
+        async def _respawn():
+            await asyncio.sleep(delay)
+            _start_background(coro, name)
+        asyncio.create_task(_respawn(), name=f"{name}-respawn")
+
     task = asyncio.create_task(coro, name=name)
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_restart_if_failed)
     return task
 
 
@@ -565,7 +597,31 @@ async def a2a_inbox_loop():
         await asyncio.sleep(10)
 
 
-LLM_POSITION_CONTEXT_TOOL = {"type": "function", "function": {"name": "get_llm_open_position", "description": "Açık LLM paper pozisyonunun güncel state ve planını getirir.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}}
+async def a2a_outbox_loop():
+    """Retry stranded outbound A2A messages that were queued on transport failure."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            messages = await database.get_a2a_messages(limit=50, status="queued")
+            for message in messages:
+                if message.get("direction") != "outbound":
+                    continue
+                try:
+                    delivery = await a2a.deliver(message.get("payload") or message)
+                    if delivery.get("delivered"):
+                        await database.save_a2a_message(
+                            message.get("payload") or message,
+                            direction="outbound",
+                            status="delivered",
+                        )
+                except Exception as exc:
+                    print(f"[A2A] outbox retry failed for {message.get('message_id')}: {exc}")
+        except Exception as exc:
+            print(f"[A2A] outbox loop error: {exc}")
+        await asyncio.sleep(300)
+
+
+LLM_POSITION_CONTEXT_TOOL = {"type": "function", "function": {"name": "get_llm_open_position", "description": "Acik LLM paper pozisyonunun guncel state ve planini getirir.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}}
 LLM_UPDATE_POSITION_TOOL = {"type": "function", "function": {"name": "update_llm_position_plan", "description": "LLM paper pozisyonunun TP, SL veya maksimum bekleme planını günceller; gerçek emir göndermez.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}, "changes": {"type": "object", "properties": {"stop_loss_pct": {"type": "number"}, "take_profit_pct": {"type": "number"}, "max_hold_seconds": {"type": "integer"}}}, "reason": {"type": "string"}, "evidence": {"type": "object"}}, "required": ["symbol", "changes", "reason"]}}}
 LLM_CLOSE_POSITION_TOOL = {"type": "function", "function": {"name": "close_llm_position", "description": "Güncel fiyatla LLM paper pozisyonunu kapatır; gerçek emir göndermez.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}, "reason": {"type": "string"}}, "required": ["symbol", "reason"]}}}
 LLM_SET_SYMBOL_GUARD_TOOL = {"type":"function","function":{"name":"set_llm_symbol_guard","description":"LLM’nin kendi oluşturduğu sembol bazlı BUY guard’ını oluşturur veya günceller. Paper execution guard’ıdır; strateji parametresi değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"guard_type":{"type":"string","enum":["cooldown","symbol_block","min_movement"]},"blocked_until":{"type":"number","description":"Unix timestamp; boşsa süresiz blok"},"reason":{"type":"string"},"evidence":{"type":"object"}},"required":["symbol","guard_type","reason"]}}}
@@ -865,6 +921,7 @@ async def startup_services():
     _start_background(symbol_activity_loop(), "symbol-activity")
     _start_background(llm_idle_trigger_loop(), "llm-idle-trigger")
     _start_background(a2a_inbox_loop(), "a2a-inbox")
+    _start_background(a2a_outbox_loop(), "a2a-outbox")
     _start_background(llm_position_manager_loop(), "llm-position-manager")
     _start_background(learning_promotion_loop(), "learning-promotion")
     _start_background(ws_broadcast_loop(), "ws-broadcast")
@@ -914,59 +971,61 @@ async def websocket_endpoint(websocket: WebSocket):
 async def ws_broadcast_loop():
     global _ws_snapshot_cache
     while True:
-        if market.tickers:
-            tickers = []
-            for t in market.tickers.values():
-                item = dict(t)
-                item["avg_volume"] = market.get_avg_volume(t["symbol"])
-                tickers.append(item)
-            _ws_snapshot_cache["tickers"] = tickers
-            _ws_snapshot_cache["generated_at"] = time.time()
-            await ws_manager.broadcast({"type": "tickers", "data": _ws_snapshot_cache["tickers"]})
+        try:
+            if market.tickers:
+                tickers = []
+                for t in market.tickers.values():
+                    item = dict(t)
+                    item["avg_volume"] = market.get_avg_volume(t["symbol"])
+                    tickers.append(item)
+                _ws_snapshot_cache["tickers"] = tickers
+                _ws_snapshot_cache["generated_at"] = time.time()
+                await ws_manager.broadcast({"type": "tickers", "data": _ws_snapshot_cache["tickers"]})
 
-            try_bal = await database.get_wallet_balance("TRY")
-            total_value = try_bal
-            open_positions = []
-            for sym, pos in analyzer.positions.items():
-                ticker = market.get_ticker(sym)
-                ticker_age = time.time() - float((ticker or {}).get("timestamp", 0) or 0) / 1000 if ticker else float("inf")
-                # A stale/missing ticker must not make a real open position
-                # disappear from equity or reconciliation. Mark it at entry
-                # until a fresh public price arrives.
-                current_price = float((ticker or {}).get("last_price") or pos["entry_price"])
-                current_value = pos["quantity"] * current_price
-                total_value += current_value
-                gross_pnl_try = (current_price - pos["entry_price"]) * pos["quantity"]
-                entry_commission = pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT
-                pnl_try = gross_pnl_try - entry_commission
-                pnl_pct = (pnl_try / (pos["entry_price"] * pos["quantity"]) * 100) if pos["entry_price"] and pos["quantity"] else 0.0
-                open_positions.append({
-                    "symbol": sym, "entry": pos["entry_price"], "current": current_price,
-                    "pnl_pct": pnl_pct, "pnl_try": pnl_try, "value": current_value,
-                    "entry_time": pos.get("entry_time"), "quantity": pos.get("quantity"),
-                    "side": pos.get("side", "LONG"), "stop": pos.get("stop_price"),
-                    "take_profit": pos.get("take_profit"), "entry_context": pos.get("entry_context"),
-                    "strategy": pos.get("strategy", "UT"), "price_stale": ticker_age > config.MAX_TICKER_AGE_SEC,
-                    "price_age_seconds": round(ticker_age, 2) if ticker_age != float("inf") else None,
-                    "llm_managed": pos.get("strategy") == "LLM_PAPER",
-                    "llm_stop_price": pos.get("llm_stop_price"),
-                    "llm_take_profit_price": pos.get("llm_take_profit_price"),
-                    "llm_max_hold_sec": pos.get("llm_max_hold_sec"),
-                    "plan_revision": (pos.get("entry_context") or {}).get("plan_revision", 0),
-                    "last_plan_reason": (pos.get("entry_context") or {}).get("last_plan_reason"),
-                })
-            open_positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
-            realized_pnl = await database.get_realized_pnl()
-            unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
-            open_entry_commission = sum(pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT for pos in analyzer.positions.values())
-            reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl - open_entry_commission
-            reconciliation_delta = total_value - reconciliation_expected
-            _ws_snapshot_cache["portfolio"] = {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
-                                                "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
-                                                "reconciliation_delta": reconciliation_delta, "positions": open_positions}
-            await ws_manager.broadcast({"type": "portfolio", "data": _ws_snapshot_cache["portfolio"]})
+                try_bal = await database.get_wallet_balance("TRY")
+                total_value = try_bal
+                open_positions = []
+                for sym, pos in analyzer.positions.items():
+                    ticker = market.get_ticker(sym)
+                    ticker_age = time.time() - float((ticker or {}).get("timestamp", 0) or 0) / 1000 if ticker else float("inf")
+                    # A stale/missing ticker must not make a real open position
+                    # disappear from equity or reconciliation. Mark it at entry
+                    # until a fresh public price arrives.
+                    current_price = float((ticker or {}).get("last_price") or pos["entry_price"])
+                    current_value = pos["quantity"] * current_price
+                    total_value += current_value
+                    gross_pnl_try = (current_price - pos["entry_price"]) * pos["quantity"]
+                    entry_commission = pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT
+                    pnl_try = gross_pnl_try - entry_commission
+                    pnl_pct = (pnl_try / (pos["entry_price"] * pos["quantity"]) * 100) if pos["entry_price"] and pos["quantity"] else 0.0
+                    open_positions.append({
+                        "symbol": sym, "entry": pos["entry_price"], "current": current_price,
+                        "pnl_pct": pnl_pct, "pnl_try": pnl_try, "value": current_value,
+                        "entry_time": pos.get("entry_time"), "quantity": pos.get("quantity"),
+                        "side": pos.get("side", "LONG"), "stop": pos.get("stop_price"),
+                        "take_profit": pos.get("take_profit"), "entry_context": pos.get("entry_context"),
+                        "strategy": pos.get("strategy", "UT"), "price_stale": ticker_age > config.MAX_TICKER_AGE_SEC,
+                        "price_age_seconds": round(ticker_age, 2) if ticker_age != float("inf") else None,
+                        "llm_managed": pos.get("strategy") == "LLM_PAPER",
+                        "llm_stop_price": pos.get("llm_stop_price"),
+                        "llm_take_profit_price": pos.get("llm_take_profit_price"),
+                        "llm_max_hold_sec": pos.get("llm_max_hold_sec"),
+                        "plan_revision": (pos.get("entry_context") or {}).get("plan_revision", 0),
+                        "last_plan_reason": (pos.get("entry_context") or {}).get("last_plan_reason"),
+                    })
+                open_positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
+                realized_pnl = await database.get_realized_pnl()
+                unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
+                open_entry_commission = sum(pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT for pos in analyzer.positions.values())
+                reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl - open_entry_commission
+                reconciliation_delta = total_value - reconciliation_expected
+                _ws_snapshot_cache["portfolio"] = {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
+                                                    "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
+                                                    "reconciliation_delta": reconciliation_delta, "positions": open_positions}
+                await ws_manager.broadcast({"type": "portfolio", "data": _ws_snapshot_cache["portfolio"]})
+        except Exception as exc:
+            logger.warning("ws_broadcast_loop hatasi (atlanıyor): %s", exc, exc_info=True)
         await asyncio.sleep(1.0)
-
 async def alert_loop():
     await asyncio.sleep(8)
     while True:
@@ -2992,6 +3051,10 @@ LLM_SENSITIVITY_TOOL = {"type":"function","function":{"name":"run_parameter_sens
 LLM_HOLDOUT_TOOL = {"type":"function","function":{"name":"run_holdout_test","description":"Seçimden sonra kullanılmak üzere dokunulmamış son tarih penceresinde paper-only test çalıştırır.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"train_days":{"type":"integer"},"holdout_days":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
 LLM_STATISTICAL_TOOL = {"type":"function","function":{"name":"run_statistical_validation","description":"Paper-only bootstrap, örneklem, işlem belirsizliği ve çoklu-deneme düzeltmeli screening raporu üretir; resmi kârlılık kanıtı değildir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"days_back":{"type":"integer"},"trials":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
 LLM_BACKTEST_DATA_TOOL = {"type":"function","function":{"name":"get_backtest_data_quality","description":"Backtest mumlarının eksik, duplicate, sıralama ve zaman boşluğu durumunu kontrol eder; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"days_back":{"type":"integer"}},"required":["symbol","interval"]}}}
+LLM_PATTERN_SCAN_TOOL = {"type":"function","function":{"name":"run_pattern_universe_research","description":"Aktif veya tüm Binance TR public sembol evreninde M1 causal ileri-sıçrama etiket araştırması çalıştırır; istenen timeframe'leri araştırma kapsamı metadata'sı olarak kaydeder ve sonraki M5/M15/H1/H4 feature/replay adımlarına girdi sağlar. Sonuç paper-only'dir; gerçek sinyal veya emir üretmez.","parameters":{"type":"object","properties":{"scope":{"type":"string","enum":["active","all"]},"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string"}},"days":{"type":"integer"},"threshold_pct":{"type":"number"},"horizon_minutes":{"type":"integer"}},"required":[]}}}
+LLM_PATTERN_RUNS_TOOL = {"type":"function","function":{"name":"get_pattern_research_runs","description":"Daha önce çalıştırılmış paper-only desen araştırma koşularını getirir.","parameters":{"type":"object","properties":{"run_type":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}
+LLM_PATTERN_SAVE_TOOL = {"type":"function","function":{"name":"save_research_pattern","description":"Backtest ve forward-test kanıtı olan bir deseni araştırma hafızasına kaydeder. Validated statüsü için OOS, forward, ücret dahil ve en az 20 gözlem kanıtı zorunludur; canlı stratejiye otomatik uygulamaz.","parameters":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"symbols_scope":{"type":"string","enum":["active","all","selected"]},"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string"}},"definition":{"type":"object"},"evidence":{"type":"object"},"status":{"type":"string","enum":["candidate","validated","deprecated"]},"confidence":{"type":"number"},"source_run_id":{"type":"integer"}},"required":["name","definition"]}}}
+LLM_PATTERN_LIST_TOOL = {"type":"function","function":{"name":"list_research_patterns","description":"Araştırma hafızasındaki aday, doğrulanmış veya kullanımdan kaldırılmış desenleri timeframe/status filtresiyle getirir.","parameters":{"type":"object","properties":{"status":{"type":"string","enum":["candidate","validated","deprecated"]},"timeframe":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}
 LLM_VALIDATE_PLAN_TOOL = {"type":"function","function":{"name":"validate_trade_plan","description":"Paper işlem planını bakiye, stop/TP, risk/ödül ve maliyet sonrası beklenen net sonuçla doğrular; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"entry_price":{"type":"number"},"order_value_try":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","order_value_try","stop_loss_pct","take_profit_pct"]}}}
 LLM_ORDER_STATUS_TOOL = {"type":"function","function":{"name":"get_order_status","description":"Paper emirlerinin durumunu salt-okunur getirir.","parameters":{"type":"object","properties":{"order_id":{"type":"string"},"symbol":{"type":"string"},"status":{"type":"string"}},"required":[]}}}
 LLM_CANCEL_ORDER_TOOL = {"type":"function","function":{"name":"cancel_paper_order","description":"Açık paper emrini iptal eder; gerçek borsa emri göndermez.","parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"]}}}
@@ -3065,14 +3128,16 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             "rule": "Kullanıcı izlemeye al/takibe al/alarm kur dediğinde bu tool'u çağır; aracı yokmuş gibi davranma. Alarm yalnızca websocket/web push bildirimi üretir, emir açmaz."
         }
     }
+    tools = []
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL,
                   LLM_ECONOMICS_TOOL, LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL,
                   LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
-                  LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL])
+                  LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL,
+                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL])
     for tool in tools:
         if tool.get("function", {}).get("name") == "run_custom_backtest":
             tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını backtest eder. Her koşul {indicator, op, value} biçimindedir; desteklenen identifier şeması sonuçta ve açıklamada verilir. Kategoriler: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda veri yoksa null/0 üretir; bu değerleri zorunlu gate olarak kullanmadan önce veri kaynağını dikkate al. Python çalıştırmaz, paper-only'dir." + CUSTOM_EXIT_POLICY_GUIDANCE
-    tools = [{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Seçili sembol üzerinde public historical candles ile paper-only mevcut strateji backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy":{"type":"string"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"Seçili sembol üzerinde güvenli deklaratif gösterge koşullarıyla paper-only backtest çalıştırır; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Seçili sembol ve stratejiyi farklı tarih pencerelerinde ve deterministik Monte Carlo özetiyle test eder; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"windows":{"type":"array","items":{"type":"integer"}}},"required":["strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}}}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
+    tools.extend([{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Seçili sembol üzerinde public historical candles ile paper-only mevcut strateji backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy":{"type":"string"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"Seçili sembol üzerinde güvenli deklaratif gösterge koşullarıyla paper-only backtest çalıştırır; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Seçili sembol ve stratejiyi farklı tarih pencerelerinde ve deterministik Monte Carlo özetiyle test eder; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"windows":{"type":"array","items":{"type":"integer"}}},"required":["strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}}}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}])
     # The symbol-chat route builds a second base list below; append alert and
     # research tools after that list so they are not lost when the list is
     # reassigned.
@@ -3080,7 +3145,8 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                   LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
                   LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL,
                   LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL,
-                  LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL])
+                  LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
+                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL])
     for tool in tools:
         if tool.get("function", {}).get("name") == "run_custom_backtest":
             tool["function"]["description"] = "Deklaratif paper-only backtest. Her koşul {indicator, op, value}; identifier şeması: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + "." + CUSTOM_EXIT_POLICY_GUIDANCE
@@ -3089,6 +3155,10 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         if name == "scan_market_snapshots": return await scan_market_snapshots(args)
         if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
         if name == "get_data_quality": return await get_data_quality(args)
+        if name == "run_pattern_universe_research": return await pattern_research.run_universe_research(args)
+        if name == "get_pattern_research_runs": return await pattern_research.get_runs(args)
+        if name == "save_research_pattern": return await pattern_research.save_pattern(args)
+        if name == "list_research_patterns": return await pattern_research.list_patterns(args)
         if name == "get_microstructure_snapshot": return await get_microstructure_snapshot(args)
         if name == "get_regime_snapshot": return await get_regime_snapshot(args)
         if name == "calculate_trade_economics": return await calculate_trade_economics_tool(args)
@@ -3690,6 +3760,10 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "scan_market_snapshots": return await scan_market_snapshots(args)
             if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
             if name == "get_data_quality": return await get_data_quality(args)
+            if name == "run_pattern_universe_research": return await pattern_research.run_universe_research(args)
+            if name == "get_pattern_research_runs": return await pattern_research.get_runs(args)
+            if name == "save_research_pattern": return await pattern_research.save_pattern(args)
+            if name == "list_research_patterns": return await pattern_research.list_patterns(args)
             if name == "get_microstructure_snapshot": return await get_microstructure_snapshot(args)
             if name == "get_regime_snapshot": return await get_regime_snapshot(args)
             if name == "calculate_trade_economics": return await calculate_trade_economics_tool(args)
@@ -3890,6 +3964,7 @@ async def strategies_llm_chat(payload: dict = None):
         LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
         LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL,
         LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_VALIDATE_PLAN_TOOL,
+        LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL,
         LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL,
         LLM_DEACTIVATE_TOOL, LLM_READONLY_SQL_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
         LLM_LIST_SYMBOL_GUARDS_TOOL,

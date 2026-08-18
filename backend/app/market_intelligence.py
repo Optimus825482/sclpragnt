@@ -80,7 +80,7 @@ def estimate_local_regime(rows: list[dict]) -> dict:
     if len(ready) < 3:
         return {"zone": "UNKNOWN", "score": None, "confidence": 0.0,
                 "reason": "Yeterli sembol snapshot'ı yok", "data_available": False}
-    scores = [float(r.get("score", 0)) for r in ready]
+    scores = [float(r.get("score") or 0) for r in ready]
     bullish = [r for r in ready if str(r.get("trend_direction", "")).lower() in {"bullish", "bull", "up"}]
     participation = len(bullish) / len(ready)
     avg_score = mean(scores)

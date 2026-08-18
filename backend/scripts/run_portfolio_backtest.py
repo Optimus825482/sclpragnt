@@ -406,11 +406,14 @@ def mtf_entry_features(symbol, price, signal_ts, base_window, mtf_series):
     result = {"symbol": symbol, "price": price, "signal_timestamp": signal_ts, "timeframes": {}}
     for interval in ("1m", "5m", "15m", "1h", "4h"):
         snapshot = calculate_snapshot(symbol, price, snapshots, primary_timeframe=interval)
+        bollinger = ((snapshot.get("channels") or {}).get("bollinger") or {})
         result["timeframes"][interval] = {
             "data_ready": snapshot.get("data_ready", False),
             "alignment": (snapshot.get("trend") or {}).get("alignment"),
             "atr_pct": (snapshot.get("volatility") or {}).get("atr_pct"),
-            "bb_position": ((snapshot.get("channels") or {}).get("bollinger") or {}).get("position"),
+            "bb_position": bollinger.get("position"),
+            "bb_width_pct": bollinger.get("width_pct"),
+            "rsi_14": (snapshot.get("momentum") or {}).get("rsi_14"),
             "volume_ratio_20": (snapshot.get("volume") or {}).get("volume_ratio_20"),
         }
     return result
@@ -424,6 +427,21 @@ def mtf_entry_gate(features, mode):
     bullish_count = sum((tf.get(interval) or {}).get("alignment") == "bullish" for interval in ("1m", "5m", "15m", "1h", "4h"))
     if mode == "bullish-count":
         return bullish_count >= 3, f"bullish_count_{bullish_count}"
+    if mode in {"acetry-rule", "acetry-rule-relaxed"}:
+        m1 = tf.get("1m") or {}
+        h1 = tf.get("1h") or {}
+        h4 = tf.get("4h") or {}
+        relaxed = mode == "acetry-rule-relaxed"
+        rsi_limit = 45 if relaxed else 40
+        atr_limit = 0.0005 if relaxed else 0.00866
+        bb_limit = 0.005 if relaxed else 0.03830
+        rsi_ok = isinstance(m1.get("rsi_14"), (int, float)) and m1["rsi_14"] < rsi_limit
+        atr_ok = isinstance(m1.get("atr_pct"), (int, float)) and m1["atr_pct"] >= atr_limit
+        bb_ok = isinstance(m1.get("bb_width_pct"), (int, float)) and m1["bb_width_pct"] >= bb_limit
+        h1_ok = h1.get("alignment") == "bullish"
+        h4_ok = h4.get("alignment") in {"bullish", "mixed"}
+        passed = rsi_ok and atr_ok and bb_ok and h1_ok and h4_ok and bullish_count >= 2
+        return passed, f"acetry_{'relaxed' if relaxed else 'strict'}_rsi_{'ok' if rsi_ok else 'fail'}_atr_{'ok' if atr_ok else 'fail'}_bb_{'ok' if bb_ok else 'fail'}_h1_{'ok' if h1_ok else 'fail'}_h4_{'ok' if h4_ok else 'fail'}_bullish_{bullish_count}"
     if mode == "high-tf":
         return align_1h == "bullish" and align_15m != "mixed", "high_tf_alignment"
     score = 0
@@ -956,6 +974,10 @@ async def run(args):
         "active_symbols": sorted(series), "activity": activity, "skipped_symbols": skipped,
         "data_quality": quality,
         "mtf_feature_gate": args.mtf_feature_gate,
+        "acetry_rule": {"m1_rsi_lt": 45 if args.mtf_feature_gate == "acetry-rule-relaxed" else 40,
+                         "m1_atr_pct_gte": 0.0005 if args.mtf_feature_gate == "acetry-rule-relaxed" else 0.00866,
+                         "m1_bb_width_pct_gte": 0.005 if args.mtf_feature_gate == "acetry-rule-relaxed" else 0.03830,
+                         "h1_alignment": "bullish", "h4_alignment": ["bullish", "mixed"], "mtf_bullish_count_gte": 2},
         "mtf_data_quality": mtf_quality,
         "prepared_features": ["bb_lower", "bb_upper", "mfi", "rsi", "atr", "close", "m1_alignment", "m5_alignment", "m15_alignment", "h1_alignment", "h4_alignment", "mtf_atr_pct", "mtf_bb_position"],
         "open_position_policy": args.open_position_policy,
@@ -984,7 +1006,7 @@ if __name__ == "__main__":
     parser.add_argument("--interval", choices=("1m", "3m", "5m", "15m"), default="5m")
     parser.add_argument("--data-source", choices=("public", "historical-db"), default="public")
     parser.add_argument("--pine-version", choices=("current", "v1", "v2", "v3"), default="current")
-    parser.add_argument("--mtf-feature-gate", choices=("none", "high-tf", "research-score", "bullish-count"), default="none",
+    parser.add_argument("--mtf-feature-gate", choices=("none", "high-tf", "research-score", "bullish-count", "acetry-rule", "acetry-rule-relaxed"), default="none",
                         help="M1/M5/M15/H1/H4 causal entry feature gate; research only")
     parser.add_argument("--fetch-days", type=int, default=2, help="Feature warmup dahil public candle window")
     parser.add_argument("--start-hours-ago", type=float, default=24)

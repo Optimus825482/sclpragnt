@@ -52,7 +52,21 @@ class _PostgresCompat:
             sql += " ON CONFLICT(symbol) DO UPDATE SET side=EXCLUDED.side,entry_price=EXCLUDED.entry_price,stop_price=EXCLUDED.stop_price,take_profit=EXCLUDED.take_profit,peak_price=EXCLUDED.peak_price,breakeven_hit=EXCLUDED.breakeven_hit,quantity=EXCLUDED.quantity,entry_time=EXCLUDED.entry_time,strategy=EXCLUDED.strategy,entry_context=EXCLUDED.entry_context,trade_id=EXCLUDED.trade_id"
         cur = self.conn.cursor(); cur.execute(sql, params); return cur
     def executemany(self, sql, params):
-        sql = sql.replace("?", "%s"); cur = self.conn.cursor(); cur.executemany(sql, params); return cur
+        sql = sql.replace("?", "%s")
+        was_ignore = bool(re.search(r"INSERT OR IGNORE INTO", sql, flags=re.I))
+        sql = re.sub(r"INSERT OR IGNORE INTO", "INSERT INTO", sql, flags=re.I)
+        if was_ignore and "ON CONFLICT" not in sql.upper():
+            sql += " ON CONFLICT DO NOTHING"
+        was_replace = bool(re.search(r"INSERT OR REPLACE INTO", sql, flags=re.I))
+        sql = re.sub(r"INSERT OR REPLACE INTO", "INSERT INTO", sql, flags=re.I)
+        if was_replace and "ON CONFLICT" not in sql.upper():
+            m = re.match(r"INSERT INTO\s+(\w+)\s*\(([^)]+)\)", sql, flags=re.I)
+            if m:
+                col_text = m.group(2).strip()
+                cols = [c.strip().split()[0] for c in col_text.split(",")]
+                set_clause = ",".join(f"{c}=EXCLUDED.{c}" for c in cols)
+                sql += f" ON CONFLICT DO UPDATE SET {set_clause}"
+        cur = self.conn.cursor(); cur.executemany(sql, params); return cur
     def commit(self): self.conn.commit()
     def rollback(self): self.conn.rollback()
     def close(self): self.conn.close()
@@ -136,11 +150,14 @@ async def init_db():
             # Reconcile migrated cash with trades and open positions. The
             # SQLite wallet snapshot can predate the final position snapshot;
             # using it directly would double-count open position capital.
-            conn.execute("""UPDATE virtual_wallet SET amount=(
-                %s + COALESCE((SELECT SUM(pnl) FROM trades), 0)
-                - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
-                - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0) * %s
-            ) WHERE asset='TRY'""", (config.INITIAL_BALANCE_TRY, config.COMMISSION_PCT))
+            conn.execute("""UPDATE virtual_wallet SET amount=
+                (SELECT COALESCE(
+                    (SELECT amount FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0),
+                    %s + COALESCE((SELECT SUM(pnl) FROM trades), 0)
+                    - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
+                    - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0) * %s
+                ) AS reconciled)
+            WHERE asset='TRY' AND NOT EXISTS (SELECT 1 FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0)""", (config.INITIAL_BALANCE_TRY, config.COMMISSION_PCT))
             conn.conn.commit()
         await _run_db(pg_op)
         return
@@ -322,6 +339,7 @@ async def init_db():
             ("Destek Direnç ve Pivot", "Use classic and Fibonacci pivots, Bollinger, Donchian and Keltner levels as context. Distinguish a level from a confirmed break and state timeframe."),
             ("Scalping Karar Raporu", "Return concise sections: market regime, bullish evidence, bearish evidence, liquidity and volatility risks, missing data, confidence, and paper-trading scenarios. Never invent a price target."),
             ("Canlı Sembol Tarama ve Trend Adayı", "Önce tüm etkin semboller için scan_market_snapshots aracını kullan. EMA hizalaması, ADX/DI, çoklu timeframe momentum, VWAP, hacim, spread, derinlik, ATR ve rejimi birlikte değerlendir. Yukarı adayları deep_analyze_symbol ile derinleştir; trend fazı ve süresini yalnızca mevcut mum zaman damgalarından çıkar, yoksa bilinmiyor de. Sonucu Türkçe ve paper_candidate=watch/candidate/avoid alanlarıyla ver; gerçek emir açma ve değer uydurma."),
+            ("Desen Araştırma ve Doğrulama", "İstenen sembol evreni ve timeframe'lerde pattern research araçlarını kullan. Önce causal candle/features ile aday deseni tanımla; sonra kronolojik replay/backtest, walk-forward/OOS, holdout, forward ve maliyet stresini ayrı değerlendir. Tek bir geçmiş backtesti kanıt sayma. Yalnızca yeterli örneklem, ücret dahil net sonuç ve OOS/forward tutarlılığı varsa deseni validated olarak araştırma hafızasına kaydet; bu hafıza canlı stratejiyi otomatik değiştirmez. Pattern scan geleceği yalnızca etiket olarak kullanır, giriş özelliğine sızdırma yapma."),
             (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS),
         ]
         conn.executemany("INSERT OR IGNORE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)", [(n,i,time.time()) for n,i in default_skills])
@@ -358,6 +376,19 @@ async def init_db():
             regime TEXT, regime_confidence REAL, confluence_score REAL, data_ready INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(symbol, timeframe, open_time, feature_version))""")
         conn.execute("CREATE INDEX IF NOT EXISTS historical_features_lookup_idx ON historical_feature_snapshots(symbol, timeframe, open_time)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS research_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, run_type TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'active', symbols TEXT NOT NULL DEFAULT '[]', timeframes TEXT NOT NULL DEFAULT '[]',
+            parameters TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'completed', paper_only INTEGER NOT NULL DEFAULT 1
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS research_runs_recent_idx ON research_runs(created_at DESC, run_type)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS research_patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            name TEXT NOT NULL, description TEXT, symbols_scope TEXT NOT NULL DEFAULT 'active', symbols TEXT NOT NULL DEFAULT '[]',
+            timeframes TEXT NOT NULL DEFAULT '[]', definition TEXT NOT NULL DEFAULT '{}', evidence TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'candidate', confidence REAL NOT NULL DEFAULT 0.3, source_run_id INTEGER
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS research_patterns_status_idx ON research_patterns(status, updated_at DESC)")
         conn.commit()
         conn.execute("INSERT OR IGNORE INTO virtual_wallet (asset, amount) VALUES ('TRY', ?)", (config.INITIAL_BALANCE_TRY,))
         conn.commit()
@@ -670,7 +701,11 @@ async def get_llm_config():
         models = [dict(r) for r in conn.execute("SELECT id,provider_id,name,temperature,model_type,dimensions,embedding_metric,enabled,created_at FROM llm_models ORDER BY id").fetchall()]
         skills = [dict(r) for r in conn.execute("SELECT id,name,instructions,enabled,created_at FROM llm_skills ORDER BY id").fetchall()]
         active = conn.execute("SELECT value FROM llm_settings WHERE key='active_model_id'").fetchone()
-        return {"providers": providers, "models": models, "skills": skills, "active_model_id": int(active[0]) if active else None}
+        try:
+            active_model_id = int(active[0]) if active else None
+        except (ValueError, TypeError):
+            active_model_id = None
+        return {"providers": providers, "models": models, "skills": skills, "active_model_id": active_model_id}
     return await _run_db(op)
 
 async def get_active_llm_config():
@@ -827,7 +862,16 @@ async def get_llm_setting(key, default=None):
 async def save_position(symbol, pos):
     def op(conn: sqlite3.Connection):
         conn.execute(
-            "INSERT OR REPLACE INTO positions (symbol, side, entry_price, stop_price, take_profit, peak_price, breakeven_hit, quantity, entry_time, strategy, entry_context, trade_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO positions (symbol, side, entry_price, stop_price, take_profit, peak_price,
+               breakeven_hit, quantity, entry_time, strategy, entry_context, trade_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(symbol) DO UPDATE SET
+               side=excluded.side, entry_price=excluded.entry_price,
+               stop_price=excluded.stop_price, take_profit=excluded.take_profit,
+               peak_price=excluded.peak_price, breakeven_hit=excluded.breakeven_hit,
+               quantity=excluded.quantity, entry_time=excluded.entry_time,
+               strategy=excluded.strategy, entry_context=excluded.entry_context,
+               trade_id=excluded.trade_id""",
             (symbol, pos["side"], pos["entry_price"], pos.get("stop_price"),
              pos.get("take_profit"), pos.get("peak_price", pos["entry_price"]), bool(pos.get("breakeven_hit", False)), pos["quantity"],
              pos.get("entry_time"), pos.get("strategy"), json.dumps(_position_entry_context(pos)), pos.get("trade_id"))
@@ -1065,7 +1109,9 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
         exit_notional = float(trade.get("exit_price") or 0) * float(trade.get("quantity") or 0)
         next_cash = current_cash + exit_notional * (1 - config.COMMISSION_PCT)
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", next_cash))
-        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", (asset, 0.0))
+        position_qty = float(position_row[0] or 0)
+        conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,0.0) ON CONFLICT(asset) DO NOTHING", (asset,))
+        conn.execute("UPDATE virtual_wallet SET amount=amount-? WHERE asset=?", (position_qty, asset))
         conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id")))
         persisted = conn.execute(
@@ -1472,6 +1518,68 @@ async def get_backtests(limit=50):
             out.append(d)
         return out
 
+    return await _run_db(op)
+
+async def save_research_run(result):
+    def op(conn):
+        sql = """INSERT INTO research_runs
+            (created_at,run_type,scope,symbols,timeframes,parameters,result,status,paper_only)
+            VALUES (?,?,?,?,?,?,?,?,?)"""
+        params = (time.time(), result.get("run_type", "research"), result.get("scope", "active"),
+                  json.dumps(result.get("symbols", [])), json.dumps(result.get("timeframes", [])),
+                  json.dumps(result.get("parameters", {}), default=str), json.dumps(result.get("result", {}), default=str),
+                  result.get("status", "completed"), 1)
+        if _postgres_enabled():
+            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
+        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
+    return await _run_db(op)
+
+async def get_research_runs(limit=20, run_type=None):
+    def op(conn):
+        q = "SELECT * FROM research_runs"; args = []
+        if run_type:
+            q += " WHERE run_type=?"; args.append(run_type)
+        q += " ORDER BY created_at DESC LIMIT ?"; args.append(max(1, min(int(limit), 100)))
+        out = []
+        for row in conn.execute(q, args).fetchall():
+            item = dict(row)
+            for key in ("symbols", "timeframes", "parameters", "result"):
+                item[key] = _json_value(item.get(key), [] if key in ("symbols", "timeframes") else {})
+            out.append(item)
+        return out
+    return await _run_db(op)
+
+async def save_research_pattern(item):
+    def op(conn):
+        now = time.time()
+        sql = """INSERT INTO research_patterns
+            (created_at,updated_at,name,description,symbols_scope,symbols,timeframes,definition,evidence,status,confidence,source_run_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"""
+        params = (now, now, item["name"], item.get("description"), item.get("symbols_scope", "active"),
+                  json.dumps(item.get("symbols", [])), json.dumps(item.get("timeframes", [])),
+                  json.dumps(item.get("definition", {}), default=str), json.dumps(item.get("evidence", {}), default=str),
+                  item.get("status", "candidate"), item.get("confidence", 0.3), item.get("source_run_id"))
+        if _postgres_enabled():
+            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
+        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
+    return await _run_db(op)
+
+async def get_research_patterns(status=None, timeframe=None, limit=30):
+    def op(conn):
+        q = "SELECT * FROM research_patterns"; args = []; conditions = []
+        if status:
+            conditions.append("status=?"); args.append(status)
+        if timeframe:
+            conditions.append("timeframes LIKE ?"); args.append(f"%{timeframe}%")
+        if conditions: q += " WHERE " + " AND ".join(conditions)
+        q += " ORDER BY updated_at DESC LIMIT ?"; args.append(max(1, min(int(limit), 100)))
+        out = []
+        for row in conn.execute(q, args).fetchall():
+            item = dict(row)
+            for key in ("symbols", "timeframes", "definition", "evidence"):
+                item[key] = _json_value(item.get(key), [] if key in ("symbols", "timeframes") else {})
+            out.append(item)
+        return out
     return await _run_db(op)
 
 async def delete_backtest(run_id):

@@ -1,0 +1,1174 @@
+{
+  "paper_only": true,
+  "source": "Binance TR public API",
+  "retrieved_at": "2026-08-18T16:21:57+00:00",
+  "window": {
+    "start": "2026-08-16T16:21:57+00:00",
+    "end": "2026-08-18T16:06:57+00:00",
+    "hours": 47.75
+  },
+  "strategy": "BB_MFI_MEAN_REVERSION",
+  "pine_version": "current",
+  "pine_profile": null,
+  "risk_stop_pct": 0.08882,
+  "effective_tp_pct": 0.02317,
+  "selection_mode": "all_requested_scan_symbols",
+  "initial_active_only": false,
+  "initial_active_limit": 0,
+  "passive_loss_exit_hours": 0.0,
+  "passive_net_exit_enabled": true,
+  "passive_direct_exit": false,
+  "activity_refresh_minutes": 60,
+  "activity_m1_filter": false,
+  "activity_m1_range_bars": 5,
+  "activity_m1_min_range_pct": 0.08,
+  "activity_m1_min_atr_pct": 0.05,
+  "activity_m5_min_range_pct": 0.05,
+  "activity_m5_min_atr_pct": 0.12,
+  "activity_m5_min_volume_ratio": 0.5,
+  "activity_m30_filter": false,
+  "activity_m30_regime_filter": false,
+  "activity_m30_min_range_pct": 0.45,
+  "activity_m30_min_atr_pct": 0.2,
+  "activity_m30_max_ema20_decline_pct": 0.15,
+  "daily_stop_limit": 0,
+  "daily_symbol_loss_limit_try": 0.0,
+  "symbol_loss_cooldown_hours": 0.0,
+  "max_hold_hours": 0.0,
+  "breakeven_exit_after_hours": 0.0,
+  "adverse_ema_atr_exit_hours": 0.0,
+  "adverse_ema_atr_multiplier": 1.0,
+  "entry_ema200_filter": false,
+  "entry_momentum_slowdown_filter": false,
+  "activity_volume_only": false,
+  "activity_min_quote_volume_try": 1000000.0,
+  "entry_min_volume_ratio": 0.0,
+  "entry_dip_confirmation": false,
+  "entry_dip_min_close_position": 0.55,
+  "entry_mfi_reversal": false,
+  "entry_mfi_reversal_min_delta": 0.0,
+  "entry_mfi_slowdown_max_drop": null,
+  "high_downtrend_entry_filter": false,
+  "high_downtrend_min_adx": 50,
+  "high_downtrend_min_di_gap": 0.0,
+  "high_downtrend_min_return_1h_pct": 2.0,
+  "high_downtrend_min_return_15m_pct": 1.0,
+  "pyramid_require_net_profit": false,
+  "pyramid_block_underwater_after_hours": 0.0,
+  "pyramid_profit_extension_layers": 0,
+  "pyramid_low_volume_block": false,
+  "filter_counts": {
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_fail_h1_fail_h4_fail_bullish_0": 5,
+    "mtf_acetry_relaxed_rsi_ok_atr_ok_bb_ok_h1_fail_h4_fail_bullish_0": 9,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_fail_h1_ok_h4_ok_bullish_3": 2,
+    "mtf_acetry_relaxed_rsi_fail_atr_ok_bb_fail_h1_fail_h4_ok_bullish_0": 1,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_fail_h1_fail_h4_ok_bullish_0": 1,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_ok_h1_fail_h4_fail_bullish_0": 6,
+    "mtf_acetry_relaxed_rsi_ok_atr_ok_bb_ok_h1_fail_h4_fail_bullish_1": 2,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_ok_h1_ok_h4_ok_bullish_2": 5,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_ok_h1_ok_h4_ok_bullish_3": 2,
+    "mtf_acetry_relaxed_rsi_ok_atr_ok_bb_ok_h1_ok_h4_ok_bullish_1": 2,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_ok_h1_ok_h4_fail_bullish_2": 1,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_fail_h1_fail_h4_fail_bullish_1": 6,
+    "mtf_acetry_relaxed_rsi_ok_atr_ok_bb_ok_h1_fail_h4_ok_bullish_1": 4,
+    "mtf_acetry_relaxed_rsi_ok_atr_ok_bb_fail_h1_fail_h4_fail_bullish_0": 2,
+    "mtf_acetry_relaxed_rsi_ok_atr_ok_bb_ok_h1_fail_h4_ok_bullish_0": 5,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_ok_h1_fail_h4_fail_bullish_1": 1,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_ok_h1_fail_h4_ok_bullish_2": 1,
+    "mtf_acetry_relaxed_rsi_ok_atr_fail_bb_ok_h1_ok_h4_ok_bullish_1": 1
+  },
+  "remaining_cash_sizing": false,
+  "historical_activity_gate": true,
+  "initial_balance_try": 10000.0,
+  "final_balance_try": 10018.495767,
+  "net_pnl_try": 18.495767,
+  "net_pnl_pct": 0.184958,
+  "closed_trades": 7,
+  "wins": 6,
+  "losses": 1,
+  "win_rate_pct": 85.7143,
+  "profit_factor": 3.773394,
+  "fees_total_including_open_liquidation_try": 33.067104,
+  "max_drawdown_pct": 0.571201,
+  "active_symbols": [
+    "ADATRY",
+    "APTTRY",
+    "ARBTRY",
+    "AVAXTRY",
+    "BNBTRY",
+    "BTCTRY",
+    "DOGETRY",
+    "DOTTRY",
+    "ETHTRY",
+    "INJTRY",
+    "LINKTRY",
+    "LTCTRY",
+    "NEARTRY",
+    "OPTRY",
+    "SOLTRY",
+    "SUITRY",
+    "WLDTRY",
+    "XRPTRY"
+  ],
+  "activity": {
+    "BTCTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 175619482.66,
+      "range_15m_pct": 0.2656,
+      "atr_pct": 0.1094,
+      "volume_ratio": 1.1699,
+      "spread_pct": 0.0128,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": false,
+        "volume_ratio": true,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "ETHTRY": {
+      "status": "ACTIVE",
+      "quote_volume": 148864663.33,
+      "range_15m_pct": 0.3073,
+      "atr_pct": 0.1315,
+      "volume_ratio": 1.0537,
+      "spread_pct": 0.0011,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": true
+      },
+      "reason": "active"
+    },
+    "SOLTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 40591719.47,
+      "range_15m_pct": 0.4623,
+      "atr_pct": 0.1487,
+      "volume_ratio": 0.3627,
+      "spread_pct": 0.0027,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "XRPTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 83866727.11,
+      "range_15m_pct": 0.2089,
+      "atr_pct": 0.0865,
+      "volume_ratio": 1.2595,
+      "spread_pct": 0.0209,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": false,
+        "volume_ratio": true,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "ADATRY": {
+      "status": "PASSIVE",
+      "quote_volume": 20366603.84,
+      "range_15m_pct": 0.4785,
+      "atr_pct": 0.1707,
+      "volume_ratio": 0.3295,
+      "spread_pct": 0.1194,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "AVAXTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 54896533.63,
+      "range_15m_pct": 0.3295,
+      "atr_pct": 0.1553,
+      "volume_ratio": 0.0198,
+      "spread_pct": 0.033,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "LINKTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 6314331.66,
+      "range_15m_pct": 0.1764,
+      "atr_pct": 0.2941,
+      "volume_ratio": 0.355,
+      "spread_pct": 0.066,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "NEARTRY": {
+      "status": "ACTIVE",
+      "quote_volume": 8717326.11,
+      "range_15m_pct": 0.7762,
+      "atr_pct": 0.3142,
+      "volume_ratio": 1.6727,
+      "spread_pct": 0.1291,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": true
+      },
+      "reason": "active"
+    },
+    "APTTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 6251958.14,
+      "range_15m_pct": 0.0,
+      "atr_pct": 0.1134,
+      "volume_ratio": 0.9963,
+      "spread_pct": 0.3976,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": false,
+        "atr": false,
+        "volume_ratio": true,
+        "spread": false
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "ARBTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 26888725.35,
+      "range_15m_pct": 0.2778,
+      "atr_pct": 0.0992,
+      "volume_ratio": 0.3407,
+      "spread_pct": 0.2782,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": false,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "OPTRY": {
+      "status": "ACTIVE",
+      "quote_volume": 3559576.39,
+      "range_15m_pct": 0.5051,
+      "atr_pct": 0.1443,
+      "volume_ratio": 0.5356,
+      "spread_pct": 0.2528,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": true
+      },
+      "reason": "active"
+    },
+    "SUITRY": {
+      "status": "PASSIVE",
+      "quote_volume": 31707473.06,
+      "range_15m_pct": 0.4481,
+      "atr_pct": 0.1509,
+      "volume_ratio": 0.1035,
+      "spread_pct": 0.032,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "DOGETRY": {
+      "status": "PASSIVE",
+      "quote_volume": 16948463.2,
+      "range_15m_pct": 0.1191,
+      "atr_pct": 0.0723,
+      "volume_ratio": 11.6787,
+      "spread_pct": 0.0298,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": false,
+        "volume_ratio": true,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "LTCTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 3237418.23,
+      "range_15m_pct": 0.0946,
+      "atr_pct": 0.098,
+      "volume_ratio": 1.2087,
+      "spread_pct": 0.0472,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": false,
+        "volume_ratio": true,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "BNBTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 14017107.34,
+      "range_15m_pct": 0.0936,
+      "atr_pct": 0.053,
+      "volume_ratio": 0.4676,
+      "spread_pct": 0.0035,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": false,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "INJTRY": {
+      "status": "ACTIVE",
+      "quote_volume": 10885157.62,
+      "range_15m_pct": 0.5163,
+      "atr_pct": 0.1512,
+      "volume_ratio": 1.2932,
+      "spread_pct": 0.0517,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": true,
+        "spread": true
+      },
+      "reason": "active"
+    },
+    "WLDTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 58999353.26,
+      "range_15m_pct": 0.7697,
+      "atr_pct": 0.2703,
+      "volume_ratio": 0.3699,
+      "spread_pct": 0.0641,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    },
+    "DOTTRY": {
+      "status": "PASSIVE",
+      "quote_volume": 5618742.82,
+      "range_15m_pct": 0.2793,
+      "atr_pct": 0.1596,
+      "volume_ratio": 0.2307,
+      "spread_pct": 0.2782,
+      "checks": {
+        "quote_volume": true,
+        "range_15m": true,
+        "atr": true,
+        "volume_ratio": false,
+        "spread": true
+      },
+      "reason": "movement_or_liquidity_below_threshold"
+    }
+  },
+  "skipped_symbols": {},
+  "data_quality": {
+    "BTCTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ETHTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "SOLTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "XRPTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ADATRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "AVAXTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "LINKTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "NEARTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "APTTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ARBTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "OPTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "SUITRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "DOGETRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "LTCTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "BNBTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "INJTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "WLDTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "DOTTRY": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    }
+  },
+  "mtf_feature_gate": "acetry-rule-relaxed",
+  "acetry_rule": {
+    "m1_rsi_lt": 45,
+    "m1_atr_pct_gte": 0.0005,
+    "m1_bb_width_pct_gte": 0.005,
+    "h1_alignment": "bullish",
+    "h4_alignment": [
+      "bullish",
+      "mixed"
+    ],
+    "mtf_bullish_count_gte": 2
+  },
+  "mtf_data_quality": {
+    "BTCTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ETHTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "SOLTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "XRPTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ADATRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "AVAXTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "LINKTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "NEARTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "APTTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "ARBTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "OPTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "SUITRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "DOGETRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "LTCTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "BNBTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "INJTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "WLDTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "DOTTRY:1m": {
+      "candle_count": 5759,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 0,
+      "max_gap_seconds": 0
+    },
+    "BTCTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "ETHTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "SOLTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "XRPTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "ADATRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "AVAXTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "LINKTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "NEARTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "APTTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "ARBTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "OPTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "SUITRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "DOGETRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "LTCTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "BNBTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "INJTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "WLDTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "DOTTRY:15m": {
+      "candle_count": 575,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 574,
+      "max_gap_seconds": 900
+    },
+    "BTCTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "ETHTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "SOLTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "XRPTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "ADATRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "AVAXTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "LINKTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "NEARTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "APTTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "ARBTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "OPTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "SUITRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "DOGETRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "LTCTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "BNBTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "INJTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "WLDTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "DOTTRY:1h": {
+      "candle_count": 335,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 334,
+      "max_gap_seconds": 3600
+    },
+    "BTCTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "ETHTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "SOLTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "XRPTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "ADATRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "AVAXTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "LINKTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "NEARTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "APTTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "ARBTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "OPTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "SUITRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "DOGETRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "LTCTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "BNBTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "INJTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "WLDTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    },
+    "DOTTRY:4h": {
+      "candle_count": 239,
+      "sorted": true,
+      "duplicate_timestamps": false,
+      "missing_gap_count": 238,
+      "max_gap_seconds": 14400
+    }
+  },
+  "prepared_features": [
+    "bb_lower",
+    "bb_upper",
+    "mfi",
+    "rsi",
+    "atr",
+    "close",
+    "m1_alignment",
+    "m5_alignment",
+    "m15_alignment",
+    "h1_alignment",
+    "h4_alignment",
+    "mtf_atr_pct",
+    "mtf_bb_position"
+  ],
+  "open_position_policy": "mark-to-market",
+  "open_positions_excluded": [],
+  "open_positions_marked": [],
+  "signal_counts": {
+    "none": 9279,
+    "buy": 476,
+    "sell": 163
+  },
+  "exit_reasons": {
+    "bb_mfi_v3_signal_exit": 1,
+    "historical_activity_passive_net_exit": 6
+  },
+  "trades": [
+    {
+      "symbol": "WLDTRY",
+      "entry_time": 1786912199,
+      "exit_time": 1786927499,
+      "entry": 17.192862788042838,
+      "exit": 17.1871,
+      "layers": 2,
+      "pnl": -6.669002,
+      "commission": 5.998668,
+      "reason": "bb_mfi_v3_signal_exit"
+    },
+    {
+      "symbol": "LINKTRY",
+      "entry_time": 1786916999,
+      "exit_time": 1786928699,
+      "entry": 448.83637500000003,
+      "exit": 450.96152500000005,
+      "layers": 1,
+      "pnl": 1.721494,
+      "commission": 2.996306,
+      "reason": "historical_activity_passive_net_exit"
+    },
+    {
+      "symbol": "WLDTRY",
+      "entry_time": 1786948199,
+      "exit_time": 1786953899,
+      "entry": 17.247925216179905,
+      "exit": 17.3170025,
+      "layers": 2,
+      "pnl": 1.996754,
+      "commission": 6.008539,
+      "reason": "historical_activity_passive_net_exit"
+    },
+    {
+      "symbol": "NEARTRY",
+      "entry_time": 1786955099,
+      "exit_time": 1786964699,
+      "entry": 78.05839576419389,
+      "exit": 78.64097500000001,
+      "layers": 2,
+      "pnl": 8.899596,
+      "commission": 6.019166,
+      "reason": "historical_activity_passive_net_exit"
+    },
+    {
+      "symbol": "LINKTRY",
+      "entry_time": 1786977299,
+      "exit_time": 1786979099,
+      "entry": 452.339,
+      "exit": 455.05845,
+      "layers": 1,
+      "pnl": 3.004161,
+      "commission": 3.010226,
+      "reason": "historical_activity_passive_net_exit"
+    },
+    {
+      "symbol": "NEARTRY",
+      "entry_time": 1786976399,
+      "exit_time": 1786982699,
+      "entry": 78.05838935948272,
+      "exit": 78.441125,
+      "layers": 2,
+      "pnl": 3.79327,
+      "commission": 6.017226,
+      "reason": "historical_activity_passive_net_exit"
+    },
+    {
+      "symbol": "NEARTRY",
+      "entry_time": 1787020499,
+      "exit_time": 1787029499,
+      "entry": 77.958425,
+      "exit": 78.64097500000001,
+      "layers": 1,
+      "pnl": 5.749494,
+      "commission": 3.016974,
+      "reason": "historical_activity_passive_net_exit"
+    }
+  ],
+  "cost_model": {
+    "commission_pct_each_side": 0.0015,
+    "assumed_full_spread_pct": 0.001,
+    "slippage_pct_each_side": 0.00025
+  },
+  "profit_lock": {
+    "trigger_pct": 0.0,
+    "lock_pct": 0.0,
+    "same_bar_fill": false
+  },
+  "limitations": [
+    "Historical order-book depth and spread are unavailable; current spread selects the active universe and configured spread models fills."
+  ],
+  "reconciliation": {
+    "expected": 10018.495767,
+    "actual": 10018.495767,
+    "difference": 1e-07
+  }
+}

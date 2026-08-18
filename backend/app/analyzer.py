@@ -306,9 +306,11 @@ class ScalpAnalyzer:
 
     def calculate_ema(self, prices, period):
         if len(prices) < period: return None
+        # np.convolve çekirdeği ters çevirir; bu yüzden en yeni fiyatın en
+        # büyük ağırlığı alması için çekirdeği önce flip ediyoruz.
         weights = np.exp(np.linspace(-1., 0., period))
         weights /= weights.sum()
-        return float(np.convolve(prices, weights, mode='valid')[-1])
+        return float(np.convolve(prices, np.flip(weights), mode='valid')[-1])
 
     def calculate_rsi(self, prices, period=14):
         if len(prices) < period + 1: return None
@@ -355,12 +357,14 @@ class ScalpAnalyzer:
 
     def calculate_macd(self, prices, fast=12, slow=26, signal=9):
         if len(prices) < slow + signal: return None, None, None
-        ema_fast = np.convolve(prices, np.exp(np.linspace(-1., 0., fast)) / np.sum(np.exp(np.linspace(-1., 0., fast))), mode='valid')
-        ema_slow = np.convolve(prices, np.exp(np.linspace(-1., 0., slow)) / np.sum(np.exp(np.linspace(-1., 0., slow))), mode='valid')
+        fast_weights = np.flip(np.exp(np.linspace(-1., 0., fast)) / np.sum(np.exp(np.linspace(-1., 0., fast))))
+        slow_weights = np.flip(np.exp(np.linspace(-1., 0., slow)) / np.sum(np.exp(np.linspace(-1., 0., slow))))
+        ema_fast = np.convolve(prices, fast_weights, mode='valid')
+        ema_slow = np.convolve(prices, slow_weights, mode='valid')
         ema_fast = ema_fast[-len(ema_slow):]
         macd_line = ema_fast - ema_slow
         if len(macd_line) < signal: return None, None, None
-        sig_weights = np.exp(np.linspace(-1., 0., signal))
+        sig_weights = np.flip(np.exp(np.linspace(-1., 0., signal)))
         sig_weights /= sig_weights.sum()
         signal_line = np.convolve(macd_line, sig_weights, mode='valid')
         macd_line = macd_line[-len(signal_line):]
@@ -393,7 +397,8 @@ class ScalpAnalyzer:
         historical_bws = []
         for i in range(2, config.SQUEEZE_LOOKBACK + 1):
             if len(closes) >= config.BB_PERIOD + i:
-                hist_bb = self.calculate_bollinger_bands(closes[-i:-i+config.BB_PERIOD], config.BB_PERIOD, config.BB_STD_DEV)
+                # Dilde i bar geriye gidip öncesindeki BB_PERIOD'lik pencereye bak.
+                hist_bb = self.calculate_bollinger_bands(closes[-i-config.BB_PERIOD+1:-i+1], config.BB_PERIOD, config.BB_STD_DEV)
                 if hist_bb: historical_bws.append(hist_bb["bandwidth"])
         if not historical_bws: return None
         min_bw = min(historical_bws)
@@ -1272,7 +1277,7 @@ class ScalpAnalyzer:
                 ask_price, ask_qty = float(asks[0][0]), float(asks[0][1])
                 mid = (bid_price + ask_price) / 2
                 flow.update({"bid_price": bid_price, "ask_price": ask_price, "bid_qty": bid_qty, "ask_qty": ask_qty,
-                             "spread_pct": ((ask_price - bid_price) / mid * 100) if mid else None,
+                             "spread_pct": ((ask_price - bid_price) / bid_price * 100) if bid_price else None,
                              "source": "binance_tr_public_rest",
                              "updated_at": time.time()})
                 self.market.orderflow[symbol.upper()] = flow

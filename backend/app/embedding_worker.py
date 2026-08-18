@@ -16,7 +16,15 @@ class EmbeddingWorker:
         self.pool, self.embedder = pool, embedder
         if not self.task or self.task.done():
             await self._recover_interrupted_jobs()
-            await self._fill_from_persistence()
+            try:
+                await self._fill_from_persistence()
+            except Exception as exc:
+                # DB başlangıçta erişilemezse worker görevi yine de başlatılır;
+                # _run döngüsü DB döndüğünde işleri devralır.
+                import logging
+                logging.getLogger("scalper.embedding").warning(
+                    "Başlangıç fill_from_persistence hatası (daha sonra tekrarlacak): %s", exc, exc_info=True
+                )
             self.task = asyncio.create_task(self._run(), name="embedding-worker")
 
     async def stop(self):

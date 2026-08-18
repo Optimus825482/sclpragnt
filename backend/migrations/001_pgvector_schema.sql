@@ -244,3 +244,23 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   id BIGSERIAL PRIMARY KEY, endpoint TEXT NOT NULL UNIQUE, subscription JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Paper-only pattern research registry. Research evidence is separate from
+-- live strategy configuration so an LLM cannot promote a candidate by merely
+-- writing a strategy setting.
+CREATE TABLE IF NOT EXISTS research_runs (
+  id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  run_type TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'active',
+  symbols JSONB NOT NULL DEFAULT '[]'::jsonb, timeframes JSONB NOT NULL DEFAULT '[]'::jsonb,
+  parameters JSONB NOT NULL DEFAULT '{}'::jsonb, result JSONB NOT NULL DEFAULT '{}'::jsonb,
+  status TEXT NOT NULL DEFAULT 'completed', paper_only BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS research_runs_recent_idx ON research_runs(created_at DESC, run_type);
+CREATE TABLE IF NOT EXISTS research_patterns (
+  id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  name TEXT NOT NULL, description TEXT, symbols_scope TEXT NOT NULL DEFAULT 'active',
+  symbols JSONB NOT NULL DEFAULT '[]'::jsonb, timeframes JSONB NOT NULL DEFAULT '[]'::jsonb,
+  definition JSONB NOT NULL DEFAULT '{}'::jsonb, evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+  status TEXT NOT NULL DEFAULT 'candidate', confidence DOUBLE PRECISION NOT NULL DEFAULT 0.3, source_run_id BIGINT
+);
+CREATE INDEX IF NOT EXISTS research_patterns_status_idx ON research_patterns(status, updated_at DESC);
