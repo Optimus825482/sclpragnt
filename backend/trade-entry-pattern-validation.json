@@ -1,0 +1,313 @@
+{
+  "paper_only": true,
+  "input": "D:\\scalperagent_v4\\backend\\trade-entry-pattern-analysis-enriched.json",
+  "total_trades": 206,
+  "split_sizes": {
+    "train": 123,
+    "validation": 41,
+    "test": 42
+  },
+  "split_policy": "chronological 60/20/20",
+  "baseline": {
+    "train": {
+      "rule": "baseline_all_trades",
+      "n": 123,
+      "wins": 82,
+      "losses": 41,
+      "win_rate_pct": 66.6667,
+      "net_pnl_try": 225.415839,
+      "mean_pnl_try": 1.832649,
+      "profit_factor": 1.406979
+    },
+    "validation": {
+      "rule": "baseline_all_trades",
+      "n": 41,
+      "wins": 31,
+      "losses": 10,
+      "win_rate_pct": 75.6098,
+      "net_pnl_try": 591.215081,
+      "mean_pnl_try": 14.41988,
+      "profit_factor": 3.139885
+    },
+    "test": {
+      "rule": "baseline_all_trades",
+      "n": 42,
+      "wins": 28,
+      "losses": 14,
+      "win_rate_pct": 66.6667,
+      "net_pnl_try": -100.829981,
+      "mean_pnl_try": -2.400714,
+      "profit_factor": 0.884593
+    }
+  },
+  "rules": {
+    "mtf_alignment_score_ge_1": {
+      "train": {
+        "rule": "mtf_alignment_score_ge_1",
+        "n": 26,
+        "wins": 19,
+        "losses": 7,
+        "win_rate_pct": 73.0769,
+        "net_pnl_try": 98.246579,
+        "mean_pnl_try": 3.778715,
+        "profit_factor": 1.78926
+      },
+      "validation": {
+        "rule": "mtf_alignment_score_ge_1",
+        "n": 20,
+        "wins": 16,
+        "losses": 4,
+        "win_rate_pct": 80.0,
+        "net_pnl_try": 479.647958,
+        "mean_pnl_try": 23.982398,
+        "profit_factor": 3.898295
+      },
+      "test": {
+        "rule": "mtf_alignment_score_ge_1",
+        "n": 20,
+        "wins": 13,
+        "losses": 7,
+        "win_rate_pct": 65.0,
+        "net_pnl_try": -45.746899,
+        "mean_pnl_try": -2.287345,
+        "profit_factor": 0.8703
+      }
+    },
+    "mtf_bullish_count_ge_3": {
+      "train": {
+        "rule": "mtf_bullish_count_ge_3",
+        "n": 19,
+        "wins": 14,
+        "losses": 5,
+        "win_rate_pct": 73.6842,
+        "net_pnl_try": 58.574615,
+        "mean_pnl_try": 3.082874,
+        "profit_factor": 1.50421
+      },
+      "validation": {
+        "rule": "mtf_bullish_count_ge_3",
+        "n": 18,
+        "wins": 14,
+        "losses": 4,
+        "win_rate_pct": 77.7778,
+        "net_pnl_try": 461.987345,
+        "mean_pnl_try": 25.665964,
+        "profit_factor": 3.79158
+      },
+      "test": {
+        "rule": "mtf_bullish_count_ge_3",
+        "n": 16,
+        "wins": 11,
+        "losses": 5,
+        "win_rate_pct": 68.75,
+        "net_pnl_try": 132.688947,
+        "mean_pnl_try": 8.293059,
+        "profit_factor": 2.053424
+      }
+    },
+    "h1_h4_bullish": {
+      "train": {
+        "rule": "h1_h4_bullish",
+        "n": 24,
+        "wins": 17,
+        "losses": 7,
+        "win_rate_pct": 70.8333,
+        "net_pnl_try": -10.377472,
+        "mean_pnl_try": -0.432395,
+        "profit_factor": 0.929545
+      },
+      "validation": {
+        "rule": "h1_h4_bullish",
+        "n": 21,
+        "wins": 17,
+        "losses": 4,
+        "win_rate_pct": 80.9524,
+        "net_pnl_try": 588.477698,
+        "mean_pnl_try": 28.022748,
+        "profit_factor": 4.80529
+      },
+      "test": {
+        "rule": "h1_h4_bullish",
+        "n": 14,
+        "wins": 9,
+        "losses": 5,
+        "win_rate_pct": 64.2857,
+        "net_pnl_try": -210.51381,
+        "mean_pnl_try": -15.036701,
+        "profit_factor": 0.520833
+      }
+    },
+    "m5_atr_expansion_ge_1": {
+      "train": {
+        "rule": "m5_atr_expansion_ge_1",
+        "n": 56,
+        "wins": 40,
+        "losses": 16,
+        "win_rate_pct": 71.4286,
+        "net_pnl_try": 206.641598,
+        "mean_pnl_try": 3.690029,
+        "profit_factor": 3.468802
+      },
+      "validation": {
+        "rule": "m5_atr_expansion_ge_1",
+        "n": 23,
+        "wins": 17,
+        "losses": 6,
+        "win_rate_pct": 73.913,
+        "net_pnl_try": 459.462945,
+        "mean_pnl_try": 19.97665,
+        "profit_factor": 4.070232
+      },
+      "test": {
+        "rule": "m5_atr_expansion_ge_1",
+        "n": 21,
+        "wins": 12,
+        "losses": 9,
+        "win_rate_pct": 57.1429,
+        "net_pnl_try": -306.960166,
+        "mean_pnl_try": -14.617151,
+        "profit_factor": 0.55422
+      }
+    },
+    "m5_rejection_candle": {
+      "train": {
+        "rule": "m5_rejection_candle",
+        "n": 13,
+        "wins": 9,
+        "losses": 4,
+        "win_rate_pct": 69.2308,
+        "net_pnl_try": 54.959693,
+        "mean_pnl_try": 4.227669,
+        "profit_factor": 2.607787
+      },
+      "validation": {
+        "rule": "m5_rejection_candle",
+        "n": 2,
+        "wins": 0,
+        "losses": 2,
+        "win_rate_pct": 0.0,
+        "net_pnl_try": -19.644275,
+        "mean_pnl_try": -9.822137,
+        "profit_factor": 0.0
+      },
+      "test": {
+        "rule": "m5_rejection_candle",
+        "n": 5,
+        "wins": 5,
+        "losses": 0,
+        "win_rate_pct": 100.0,
+        "net_pnl_try": 147.33023,
+        "mean_pnl_try": 29.466046,
+        "profit_factor": null
+      }
+    },
+    "m5_adx_ge_35_and_di_positive": {
+      "train": {
+        "rule": "m5_adx_ge_35_and_di_positive",
+        "n": 1,
+        "wins": 1,
+        "losses": 0,
+        "win_rate_pct": 100.0,
+        "net_pnl_try": 3.437952,
+        "mean_pnl_try": 3.437952,
+        "profit_factor": null
+      },
+      "validation": {
+        "rule": "m5_adx_ge_35_and_di_positive",
+        "n": 0,
+        "wins": 0,
+        "losses": 0,
+        "win_rate_pct": null,
+        "net_pnl_try": 0,
+        "mean_pnl_try": null,
+        "profit_factor": null
+      },
+      "test": {
+        "rule": "m5_adx_ge_35_and_di_positive",
+        "n": 0,
+        "wins": 0,
+        "losses": 0,
+        "win_rate_pct": null,
+        "net_pnl_try": 0,
+        "mean_pnl_try": null,
+        "profit_factor": null
+      }
+    }
+  },
+  "selected_on_train": [
+    "m5_atr_expansion_ge_1",
+    "m5_rejection_candle"
+  ],
+  "selected_rule_results": {
+    "m5_atr_expansion_ge_1": {
+      "train": {
+        "rule": "m5_atr_expansion_ge_1",
+        "n": 56,
+        "wins": 40,
+        "losses": 16,
+        "win_rate_pct": 71.4286,
+        "net_pnl_try": 206.641598,
+        "mean_pnl_try": 3.690029,
+        "profit_factor": 3.468802
+      },
+      "validation": {
+        "rule": "m5_atr_expansion_ge_1",
+        "n": 23,
+        "wins": 17,
+        "losses": 6,
+        "win_rate_pct": 73.913,
+        "net_pnl_try": 459.462945,
+        "mean_pnl_try": 19.97665,
+        "profit_factor": 4.070232
+      },
+      "test": {
+        "rule": "m5_atr_expansion_ge_1",
+        "n": 21,
+        "wins": 12,
+        "losses": 9,
+        "win_rate_pct": 57.1429,
+        "net_pnl_try": -306.960166,
+        "mean_pnl_try": -14.617151,
+        "profit_factor": 0.55422
+      }
+    },
+    "m5_rejection_candle": {
+      "train": {
+        "rule": "m5_rejection_candle",
+        "n": 13,
+        "wins": 9,
+        "losses": 4,
+        "win_rate_pct": 69.2308,
+        "net_pnl_try": 54.959693,
+        "mean_pnl_try": 4.227669,
+        "profit_factor": 2.607787
+      },
+      "validation": {
+        "rule": "m5_rejection_candle",
+        "n": 2,
+        "wins": 0,
+        "losses": 2,
+        "win_rate_pct": 0.0,
+        "net_pnl_try": -19.644275,
+        "mean_pnl_try": -9.822137,
+        "profit_factor": 0.0
+      },
+      "test": {
+        "rule": "m5_rejection_candle",
+        "n": 5,
+        "wins": 5,
+        "losses": 0,
+        "win_rate_pct": 100.0,
+        "net_pnl_try": 147.33023,
+        "mean_pnl_try": 29.466046,
+        "profit_factor": null
+      }
+    }
+  },
+  "selection_policy": "top 2 train profit factor with minimum 10 trades",
+  "limitations": [
+    "Only 206 historical trades; validation/test intervals are small.",
+    "Rules are trade-level filters, not standalone wallet replay results.",
+    "No historical spread/depth/orderflow fields in the backfill snapshots."
+  ]
+}

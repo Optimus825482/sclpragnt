@@ -118,6 +118,8 @@ class Config:
     # LLM yalnızca kullanıcının açık "işlem aç" talebiyle çalışabilir.
     LLM_AUTO_OPEN_ENABLED = False
     GAINER_RADAR_MIN_SCORE = 65
+    # MTF count is a soft radar-ranking bonus; it never blocks an entry.
+    GAINER_RADAR_MTF_PRIORITY_MAX_BONUS = max(0.0, float(os.getenv("GAINER_RADAR_MTF_PRIORITY_MAX_BONUS", "6")))
     GAINER_RADAR_INTERVAL_SEC = max(15, int(os.getenv("GAINER_RADAR_INTERVAL_SEC", "60")))
     TOP_GAINERS_LIMIT = max(1, min(70, int(os.getenv("TOP_GAINERS_LIMIT", "70"))))
     TOP_GAINERS_REFRESH_SEC = max(300, int(os.getenv("TOP_GAINERS_REFRESH_SEC", str(6 * 60 * 60))))

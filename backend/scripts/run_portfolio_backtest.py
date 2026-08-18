@@ -18,7 +18,7 @@ from app.analyzer import ScalpAnalyzer
 from app import database
 from app.binance_tr_public import historical_klines, orderbook, ticker_24h, trading_symbols
 from app.config import config
-from app.technical_analysis import _adx, _mfi
+from app.technical_analysis import _adx, _mfi, calculate_snapshot
 
 
 def iso(ts):
@@ -378,6 +378,66 @@ def replay_features(analyzer, window, version):
             "atr": analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD)}
 
 
+def mtf_entry_features(symbol, price, signal_ts, base_window, mtf_series):
+    """Build causal M1/M5/M15/H1/H4 snapshots using only closed candles."""
+    snapshots = {}
+    for interval, data in mtf_series.items():
+        if not data or not data.get("times"):
+            continue
+        end = bisect.bisect_right(data["times"], signal_ts)
+        if end < 55:
+            continue
+        start = max(0, end - 250)
+        snapshots[interval] = {
+            "opens": data["opens"][start:end], "highs": data["highs"][start:end],
+            "lows": data["lows"][start:end], "closes": data["closes"][start:end],
+            "volumes": data["volumes"][start:end],
+            "timestamps": [value * 1000 for value in data["times"][start:end]],
+            "last_closed_at_ms": data["times"][end - 1] * 1000,
+        }
+    if "5m" not in snapshots:
+        snapshots["5m"] = {
+            "opens": base_window["opens"], "highs": base_window["highs"],
+            "lows": base_window["lows"], "closes": base_window["closes"],
+            "volumes": base_window["volumes"],
+            "timestamps": [value * 1000 for value in base_window["times"]],
+            "last_closed_at_ms": base_window["times"][-1] * 1000,
+        }
+    result = {"symbol": symbol, "price": price, "signal_timestamp": signal_ts, "timeframes": {}}
+    for interval in ("1m", "5m", "15m", "1h", "4h"):
+        snapshot = calculate_snapshot(symbol, price, snapshots, primary_timeframe=interval)
+        result["timeframes"][interval] = {
+            "data_ready": snapshot.get("data_ready", False),
+            "alignment": (snapshot.get("trend") or {}).get("alignment"),
+            "atr_pct": (snapshot.get("volatility") or {}).get("atr_pct"),
+            "bb_position": ((snapshot.get("channels") or {}).get("bollinger") or {}).get("position"),
+            "volume_ratio_20": (snapshot.get("volume") or {}).get("volume_ratio_20"),
+        }
+    return result
+
+
+def mtf_entry_gate(features, mode):
+    """Research-only causal gate; thresholds come from the prior trade study."""
+    tf = features.get("timeframes", {})
+    align_15m = (tf.get("15m") or {}).get("alignment")
+    align_1h = (tf.get("1h") or {}).get("alignment")
+    bullish_count = sum((tf.get(interval) or {}).get("alignment") == "bullish" for interval in ("1m", "5m", "15m", "1h", "4h"))
+    if mode == "bullish-count":
+        return bullish_count >= 3, f"bullish_count_{bullish_count}"
+    if mode == "high-tf":
+        return align_1h == "bullish" and align_15m != "mixed", "high_tf_alignment"
+    score = 0
+    if align_1h == "bullish" and align_15m != "mixed": score += 2
+    if align_15m == "bullish": score += 1
+    atr_5m = (tf.get("5m") or {}).get("atr_pct") or 0
+    bb_5m = (tf.get("5m") or {}).get("bb_position")
+    if atr_5m >= 0.0034: score += 1
+    if bb_5m is not None and bb_5m <= 0.145: score += 1
+    if (tf.get("1m") or {}).get("alignment") == "mixed": score -= 2
+    if align_15m == "mixed" or align_1h == "mixed": score -= 2
+    return score >= 2, f"research_score_{score}"
+
+
 async def run(args):
     if args.interval not in {"1m", "3m", "5m", "15m"}:
         raise SystemExit("Bu replay yalnızca 1m, 3m, 5m veya 15m ile çalışır")
@@ -421,6 +481,18 @@ async def run(args):
         raise SystemExit("Aktif ve kullanılabilir sembol bulunamadı")
 
     indices = {symbol: {ts: index for index, ts in enumerate(data["times"])} for symbol, data in series.items()}
+    mtf_series_by_symbol = {symbol: {} for symbol in series}
+    mtf_quality = {}
+    if args.mtf_feature_gate != "none":
+        for interval, warmup_days in (("1m", 4), ("15m", 6), ("1h", 14), ("4h", 40)):
+            loaded_mtf = await load_market(list(series), warmup_days, args.data_source, start_ts, end_ts, interval)
+            for symbol, data, _, _, error in loaded_mtf:
+                if error or not data or not data["times"]:
+                    skipped[f"{symbol}:{interval}"] = error or "empty_candles"
+                    continue
+                mtf_series_by_symbol[symbol][interval] = data
+                mtf_quality[f"{symbol}:{interval}"] = data_quality(data)
+        print(f"[MTF] gate={args.mtf_feature_gate} symbols={len(mtf_series_by_symbol)} loaded={sum(len(value) for value in mtf_series_by_symbol.values())}", flush=True)
     if args.initial_active_only:
         # Start from the symbols that were objectively ACTIVE at the beginning
         # of this replay window, not from today's visible activity list.
@@ -638,6 +710,13 @@ async def run(args):
                 continue
             signals += 1
             print(f"[SIGNAL] {iso(data['times'][index - 1])} {symbol} BUY fill_at={iso(ts)} features={json.dumps(feature, ensure_ascii=False, default=str)}", flush=True)
+            if args.mtf_feature_gate != "none":
+                mtf_features = mtf_entry_features(symbol, data["opens"][index], data["times"][index - 1], window, {"5m": data, **mtf_series_by_symbol.get(symbol, {})})
+                passed, gate_reason = mtf_entry_gate(mtf_features, args.mtf_feature_gate)
+                if not passed:
+                    blocked += 1; filter_counts[f"mtf_{gate_reason}"] += 1
+                    print(f"[BLOCKED] {symbol} reason=mtf_{gate_reason}", flush=True)
+                    continue
             if args.daily_stop_limit and daily_stop_counts[(symbol, day_key)] >= args.daily_stop_limit:
                 blocked += 1
                 print(f"[BLOCKED] {symbol} reason=daily_stop_limit", flush=True)
@@ -876,7 +955,9 @@ async def run(args):
         "fees_total_including_open_liquidation_try": round(fees_paid, 6), "max_drawdown_pct": round(max_drawdown * 100, 6),
         "active_symbols": sorted(series), "activity": activity, "skipped_symbols": skipped,
         "data_quality": quality,
-        "prepared_features": ["bb_lower", "bb_upper", "mfi", "rsi", "atr", "close"],
+        "mtf_feature_gate": args.mtf_feature_gate,
+        "mtf_data_quality": mtf_quality,
+        "prepared_features": ["bb_lower", "bb_upper", "mfi", "rsi", "atr", "close", "m1_alignment", "m5_alignment", "m15_alignment", "h1_alignment", "h4_alignment", "mtf_atr_pct", "mtf_bb_position"],
         "open_position_policy": args.open_position_policy,
         "open_positions_excluded": excluded_open, "open_positions_marked": marked_open,
         "signal_counts": dict(signal_counts),
@@ -903,6 +984,8 @@ if __name__ == "__main__":
     parser.add_argument("--interval", choices=("1m", "3m", "5m", "15m"), default="5m")
     parser.add_argument("--data-source", choices=("public", "historical-db"), default="public")
     parser.add_argument("--pine-version", choices=("current", "v1", "v2", "v3"), default="current")
+    parser.add_argument("--mtf-feature-gate", choices=("none", "high-tf", "research-score", "bullish-count"), default="none",
+                        help="M1/M5/M15/H1/H4 causal entry feature gate; research only")
     parser.add_argument("--fetch-days", type=int, default=2, help="Feature warmup dahil public candle window")
     parser.add_argument("--start-hours-ago", type=float, default=24)
     parser.add_argument("--end-hours-ago", type=float, default=3)
