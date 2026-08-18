@@ -323,6 +323,20 @@ class RegressionContracts(unittest.TestCase):
         source = (ROOT / "app" / "main.py").read_text()
         self.assertIn('os.getenv("DB_BACKEND", "postgres")', source)
 
+    def test_postgres_backup_is_custom_format_and_validated(self):
+        source = (ROOT / "app" / "main.py").read_text()
+        self.assertIn('async def _create_postgres_backup()', source)
+        self.assertIn('"--format=custom"', source)
+        self.assertIn('"--no-acl"', source)
+        self.assertIn('backup_file.read(5) != b"PGDMP"', source)
+        self.assertIn('["pg_restore", "--list", path]', source)
+        self.assertIn('headers={"X-Backup-Format": "postgresql-custom", "X-Backup-Verified": "PGDMP"}', source)
+
+    def test_settings_uses_validated_postgres_backup_route(self):
+        source = (ROOT.parent / "frontend" / "app" / "settings" / "page.tsx").read_text(encoding="utf-8")
+        self.assertIn('`${API_BASE}/api/postgres/backup`', source)
+        self.assertIn('Sunucunun ürettiği dosya geçerli PostgreSQL custom-format yedeği değil', source)
+
     def test_production_entrypoint_is_postgres_only(self):
         source = (ROOT / "entrypoint.sh").read_text()
         self.assertIn('${DB_BACKEND:-postgres}', source)
