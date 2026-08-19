@@ -83,15 +83,45 @@ class A2AReplayBehavior(unittest.IsolatedAsyncioTestCase):
 
 
 class ConfigApiBehavior(unittest.IsolatedAsyncioTestCase):
+    async def test_config_save_prunes_break_symbols_without_rejecting_valid_symbol(self):
+        from app import main
+
+        original = {
+            "symbols": list(main.config.SYMBOLS), "ut_symbols": list(main.config.UT_SYMBOLS),
+            "order_pct": dict(main.config.SYMBOL_ORDER_PCT),
+            "layers": dict(main.config.SYMBOL_PYRAMIDING_LAYERS), "market_symbols": list(main.market.symbols),
+        }
+        try:
+            main.config.SYMBOLS = ["HEMITRY", "ACXTRY", "VICTRY"]
+            main.config.UT_SYMBOLS = list(main.config.SYMBOLS)
+            main.config.SYMBOL_ORDER_PCT = {"HEMITRY": 0.1, "ACXTRY": 0.2}
+            main.config.SYMBOL_PYRAMIDING_LAYERS = {"HEMITRY": 2, "VICTRY": 3}
+            with patch("app.main.trading_symbols", new=AsyncMock(return_value=["HEMITRY"])), \
+                 patch.object(main.market, "fetch_historical_data", new=AsyncMock()), \
+                 patch("app.main.database.get_llm_setting", new=AsyncMock(return_value="{}")), \
+                 patch("app.main.database.set_llm_setting", new=AsyncMock()), \
+                 patch("app.main.get_config", new=AsyncMock(return_value={"symbols": ["HEMITRY"]})):
+                result = await main._apply_config_update({"symbols": ["HEMITRY", "ACXTRY", "VICTRY"]})
+            self.assertEqual(main.config.SYMBOLS, ["HEMITRY"])
+            self.assertEqual(result["removed_invalid_symbols"], ["ACXTRY", "VICTRY"])
+            self.assertEqual(main.config.SYMBOL_ORDER_PCT, {"HEMITRY": 0.1})
+            self.assertEqual(main.config.SYMBOL_PYRAMIDING_LAYERS, {"HEMITRY": 2})
+        finally:
+            main.config.SYMBOLS = original["symbols"]
+            main.config.UT_SYMBOLS = original["ut_symbols"]
+            main.config.SYMBOL_ORDER_PCT = original["order_pct"]
+            main.config.SYMBOL_PYRAMIDING_LAYERS = original["layers"]
+            main.market.symbols = original["market_symbols"]
+
     async def test_config_validation_failure_is_a_json_response(self):
         from app.main import update_config
 
-        response = await update_config({"max_open_positions": 0})
+        response = await update_config({"max_open_positions": 501})
 
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.media_type, "application/json")
         self.assertIn(b'"code":"invalid_configuration"', response.body)
-        self.assertIn(b'"detail":"max_open_positions 1 ile 36 aras', response.body)
+        self.assertIn(b'"detail":"max_open_positions 0 (s', response.body)
 
     async def test_config_runtime_failure_is_a_safe_json_response(self):
         from app.main import update_config
