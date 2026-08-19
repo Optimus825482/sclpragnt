@@ -1337,17 +1337,27 @@ class ScalpAnalyzer:
         if config.SYMBOL_ACTIVITY_FILTER_ENABLED and symbol in config.PASSIVE_SYMBOLS:
             activity = dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {})
             failed = [key for key, ok in activity.get("checks", {}).items() if not ok]
-            reason = "symbol_activity:passive"
-            if failed:
-                reason += ":" + ",".join(failed)
-            blocked = {
-                "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                "reason": reason, "strategy": strat_name, "timestamp": time.time(),
-                "activity": activity,
-            }
-            await database.save_signal(blocked)
-            print(f"[Aktivite] {symbol} yeni giriş engellendi: {reason}", flush=True)
-            return blocked
+            pump_flat_override = (
+                strat_name == "PUMP_MONITOR"
+                and config.PUMP_MONITOR_ALLOW_M1_FLAT_OVERRIDE
+                and failed == ["m1_flat_candles"]
+                and float((entry_context_extra or {}).get("score") or 0) >= config.PUMP_MONITOR_MIN_SCORE
+                and (entry_context_extra or {}).get("m15_alignment") == "bullish"
+            )
+            if pump_flat_override:
+                print(f"[Aktivite] {symbol} Pump Monitor için yalnız M1 düz mum engeli aşıldı", flush=True)
+            else:
+                reason = "symbol_activity:passive"
+                if failed:
+                    reason += ":" + ",".join(failed)
+                blocked = {
+                    "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                    "reason": reason, "strategy": strat_name, "timestamp": time.time(),
+                    "activity": activity,
+                }
+                await database.save_signal(blocked)
+                print(f"[Aktivite] {symbol} yeni giriş engellendi: {reason}", flush=True)
+                return blocked
         llm_guard = await database.get_llm_symbol_guard(symbol) if strat_name == "LLM_PAPER" else None
         if llm_guard and llm_guard.get("status") == "active":
             blocked_until = llm_guard.get("blocked_until")
@@ -1500,6 +1510,20 @@ class ScalpAnalyzer:
                          "pyramid_profit_extension_layers": config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS,
                          "order_value_try": order_value,
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
+        # Observation only: preserve the exact symbol-activity context used at
+        # entry so later capital-lock research never has to infer it from a
+        # newer market state.  This is intentionally not an eligibility gate.
+        activity = dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {})
+        if activity:
+            entry_context["symbol_activity"] = {
+                "status": activity.get("status"),
+                "reason": activity.get("reason"),
+                "checked_at": activity.get("checked_at"),
+                "m1_flat_5m_count": activity.get("m1_flat_5m_count"),
+                "m1_flat_30m_count": activity.get("m1_flat_30m_count"),
+                "m1_flat_max_range_pct": activity.get("m1_flat_max_range_pct"),
+                "m1_features": dict(activity.get("m1_features") or {}),
+            }
         # Additional evidence from a distinct paper strategy is stored here
         # rather than replacing the shared writer context.  This keeps the
         # position and later trade audit trail attributable to its signal.

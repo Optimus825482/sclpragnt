@@ -18,7 +18,7 @@ from app.analyzer import ScalpAnalyzer
 from app import database
 from app.binance_tr_public import historical_klines, orderbook, ticker_24h, trading_symbols
 from app.config import config
-from app.technical_analysis import _adx, _mfi, calculate_snapshot
+from app.technical_analysis import _adx, _bollinger, _cci, _ema, _mfi, calculate_snapshot
 
 
 def iso(ts):
@@ -185,6 +185,222 @@ def m1_activity_passes(analyzer, data, index, args):
     return range_pct >= args.activity_m1_min_range_pct and atr_pct >= args.activity_m1_min_atr_pct
 
 
+def m1_flat_candle_passes(data, index, args):
+    """Reject a causal M1 window with too many completed flat H-L candles."""
+    if not args.activity_m1_flat_filter:
+        return True
+    if data is None or index is None or index < 29:
+        return False
+    highs, lows = data["highs"], data["lows"]
+    max_range_pct = args.activity_m1_flat_max_range_pct
+
+    def count_flat(size):
+        sample_highs, sample_lows = highs[index - size + 1:index + 1], lows[index - size + 1:index + 1]
+        if len(sample_highs) != size or any(low <= 0 for low in sample_lows):
+            return None
+        return sum((high - low) / low * 100 <= max_range_pct for high, low in zip(sample_highs, sample_lows))
+
+    flat_5m, flat_30m = count_flat(5), count_flat(30)
+    if flat_5m is None or flat_30m is None:
+        return False
+    flat_cluster = (flat_5m >= args.activity_m1_flat_5m_max_count or
+                    flat_30m >= args.activity_m1_flat_30m_max_count)
+    if not flat_cluster:
+        return True
+    if args.activity_m1_flat_max_volume_ratio <= 0:
+        return False
+    volumes = data.get("volumes") or []
+    recent, prior = volumes[index - 4:index + 1], volumes[index - 24:index - 4]
+    if len(recent) < 5 or len(prior) < 20:
+        return False
+    prior_average = sum(prior) / len(prior)
+    recent_average = sum(recent) / len(recent)
+    # Flat but actively traded candles can be absorption, not inactivity.
+    return bool(prior_average and recent_average / prior_average > args.activity_m1_flat_max_volume_ratio)
+
+
+def m1_m5_compression_passes(analyzer, m1_data, m1_index, m5_window, args):
+    """Reject only an unusually compressed M1+M5 context (research-only)."""
+    if not args.activity_m1_m5_compression_filter:
+        return True
+    if m1_data is None or m1_index is None or m1_index < 20:
+        return True  # Unknown data must never be silently classified as inactive.
+    m1_window = window_at(m1_data, m1_index, lookback=100)
+    m1_closes = m1_window["closes"]
+    m1_atr = analyzer.calculate_atr(m1_window, 14)
+    m5_atr = analyzer.calculate_atr(m5_window, 14)
+    m1_bb = _bollinger(m1_closes, 20, 2.0) or {}
+    if not m1_closes or not m5_window["closes"] or m1_atr is None or m5_atr is None or m1_bb.get("width_pct") is None:
+        return True
+    m1_atr_pct = m1_atr / m1_closes[-1] * 100 if m1_closes[-1] else None
+    m5_atr_pct = m5_atr / m5_window["closes"][-1] * 100 if m5_window["closes"][-1] else None
+    m1_bb_width_pct = float(m1_bb["width_pct"]) * 100
+    compressed = (m1_atr_pct is not None and m5_atr_pct is not None and
+                  m1_atr_pct <= args.activity_m1_compression_max_atr_pct and
+                  m5_atr_pct <= args.activity_m5_compression_max_atr_pct and
+                  m1_bb_width_pct <= args.activity_m1_compression_max_bb_width_pct)
+    return not compressed
+
+
+def _percentile(values, fraction):
+    """Nearest-rank percentile, deliberately using only values already seen."""
+    finite = sorted(value for value in values if value is not None and math.isfinite(value))
+    if not finite:
+        return None
+    position = max(0, min(len(finite) - 1, math.ceil(len(finite) * fraction) - 1))
+    return finite[position]
+
+
+def m1_relative_idle_observation(data, index, args):
+    """Detect a symbol that is quiet relative to *its own* recent M1 history.
+
+    It measures the user's requested H-L zeros first.  A one-tick proxy is
+    added because exchange candles can print a non-zero H-L despite no useful
+    price discovery.  No absolute price or cross-symbol threshold is used.
+    """
+    if not args.activity_m1_relative_idle_filter:
+        return {"ready": False, "inactive": False, "score": 0}
+    if data is None or index is None:
+        return {"ready": False, "inactive": False, "score": 0}
+    highs, lows, closes, volumes = (data[key] for key in ("highs", "lows", "closes", "volumes"))
+    end, window_size, lookback = index + 1, args.activity_m1_relative_idle_window_minutes, args.activity_m1_relative_idle_lookback_minutes
+    prior_start = end - window_size - lookback
+    if prior_start < 0 or end > len(closes):
+        return {"ready": False, "inactive": False, "score": 0}
+    recent_ranges = [
+        (high - low) / low * 100 for high, low in zip(highs[end - window_size:end], lows[end - window_size:end]) if low > 0
+    ]
+    prior_ranges = [
+        (high - low) / low * 100 for high, low in zip(highs[prior_start:end - window_size], lows[prior_start:end - window_size]) if low > 0
+    ]
+    if len(recent_ranges) != window_size or len(prior_ranges) < lookback * 0.9:
+        return {"ready": False, "inactive": False, "score": 0}
+    positive_prior_ranges = [value for value in prior_ranges if value > 0]
+    tick_like_limit = _percentile(positive_prior_ranges, 0.10)
+    zero_hl_count = sum(value == 0 for value in recent_ranges)
+    tick_like_count = sum(value <= tick_like_limit for value in recent_ranges) if tick_like_limit is not None else 0
+    range_threshold = _percentile(prior_ranges, args.activity_m1_relative_idle_range_percentile)
+    range_compressed = range_threshold is not None and _percentile(recent_ranges, 0.50) <= range_threshold
+    prior_chunk_averages = [
+        sum(volumes[start:start + window_size]) / window_size
+        for start in range(prior_start, end - window_size, window_size)
+        if len(volumes[start:start + window_size]) == window_size
+    ]
+    recent_volume_average = sum(volumes[end - window_size:end]) / window_size
+    volume_threshold = _percentile(prior_chunk_averages, args.activity_m1_relative_idle_volume_percentile)
+    volume_quiet = volume_threshold is not None and recent_volume_average <= volume_threshold
+    frozen_microstructure = (zero_hl_count >= args.activity_m1_relative_idle_min_zero_hl_count or
+                             tick_like_count >= args.activity_m1_relative_idle_min_ticklike_count)
+    score = sum((frozen_microstructure, range_compressed, volume_quiet))
+    return {
+        "ready": True, "inactive": score >= args.activity_m1_relative_idle_min_score, "score": score,
+        "zero_hl_count": zero_hl_count, "tick_like_count": tick_like_count,
+        "range_compressed": range_compressed, "volume_quiet": volume_quiet,
+    }
+
+
+def _m1_inactivity_observation(data, index, args):
+    """Causal, per-symbol quiet-market score for research only.
+
+    The score is intentionally an *inactivity* observation, not a direction
+    signal.  Compression thresholds are relative to the symbol's preceding
+    M1 distribution so a low-priced or high-priced TRY pair is not treated
+    differently solely due to its nominal price.
+    """
+    if data is None or index is None or index < 139:
+        return {"ready": False, "score": 0, "inactive": False}
+    closes, highs, lows, volumes = (data[key] for key in ("closes", "highs", "lows", "volumes"))
+    end = index + 1
+
+    def feature_at(stop):
+        sample_closes, sample_highs, sample_lows, sample_volumes = (
+            closes[max(0, stop - 100):stop], highs[max(0, stop - 100):stop],
+            lows[max(0, stop - 100):stop], volumes[max(0, stop - 100):stop],
+        )
+        if len(sample_closes) < 40 or not sample_closes[-1]:
+            return None
+        price = sample_closes[-1]
+        bb = _bollinger(sample_closes, 20, 2.0) or {}
+        donchian_span = max(sample_highs[-20:]) - min(sample_lows[-20:])
+        true_ranges = [
+            max(sample_highs[pos] - sample_lows[pos], abs(sample_highs[pos] - sample_closes[pos - 1]), abs(sample_lows[pos] - sample_closes[pos - 1]))
+            for pos in range(1, len(sample_closes))
+        ]
+        atr_ema = _ema(true_ranges, 13)
+        cmf_volume = sum(sample_volumes[-20:])
+        cmf = (sum(
+            (((close - low) - (high - close)) / (high - low) if high != low else 0.0) * volume
+            for high, low, close, volume in zip(sample_highs[-20:], sample_lows[-20:], sample_closes[-20:], sample_volumes[-20:])
+        ) / cmf_volume) if cmf_volume else None
+        force = [(sample_closes[pos] - sample_closes[pos - 1]) * sample_volumes[pos] for pos in range(1, len(sample_closes))]
+        efi = _ema(force, 13)
+        traded_value = sum(close * volume for close, volume in zip(sample_closes[-13:], sample_volumes[-13:]))
+        momentum = [sample_closes[pos] - sample_closes[pos - 1] for pos in range(1, len(sample_closes))]
+
+        def ema_series(values, period):
+            if len(values) < period:
+                return []
+            alpha = 2.0 / (period + 1)
+            value = sum(values[:period]) / period
+            result = [value]
+            for item in values[period:]:
+                value = alpha * item + (1 - alpha) * value
+                result.append(value)
+            return result
+
+        first_momentum = ema_series(momentum, 25)
+        first_absolute = ema_series([abs(item) for item in momentum], 25)
+        double_momentum = ema_series(first_momentum, 13)
+        double_absolute = ema_series(first_absolute, 13)
+        tsi = (double_momentum[-1] / double_absolute[-1] * 100
+               if double_momentum and double_absolute and double_absolute[-1] else None)
+        return {
+            "bb_width_pct": float(bb.get("width_pct") or 0.0) * 100,
+            "donchian_width_pct": donchian_span / price * 100,
+            "atr_ema_pct": atr_ema / price * 100 if atr_ema is not None else None,
+            "cmf_20": cmf,
+            "efi_13_normalized_pct": efi / traded_value * 100 if efi is not None and traded_value else None,
+            "tsi_25_13": tsi,
+            "cci_20": _cci(sample_highs, sample_lows, sample_closes, 20),
+        }
+
+    current = feature_at(end)
+    # The replay decides activity hourly; five-minute historical samples retain
+    # the same causal distribution while preventing a 120x nested indicator
+    # recomputation for every symbol and refresh.
+    history = [feature_at(stop) for stop in range(end - args.activity_m1_inactivity_lookback_minutes, end - 1, 5)]
+    history = [item for item in history if item]
+    required_history = max(6, args.activity_m1_inactivity_lookback_minutes // 5 - 2)
+    if current is None or len(history) < required_history:
+        return {"ready": False, "score": 0, "inactive": False}
+    low_volatility = sum(
+        current[key] is not None and current[key] <= _percentile([item[key] for item in history], 0.25)
+        for key in ("bb_width_pct", "donchian_width_pct", "atr_ema_pct")
+    ) >= 2
+    recent_volumes, prior_volumes = volumes[end - 5:end], volumes[end - 25:end - 5]
+    volume_ratio = (sum(recent_volumes) / len(recent_volumes)) / (sum(prior_volumes) / len(prior_volumes)) if sum(prior_volumes) else None
+    low_volume = volume_ratio is not None and volume_ratio <= args.activity_m1_inactivity_max_volume_ratio
+    flat_count = sum(
+        (high - low) / low * 100 <= args.activity_m1_flat_max_range_pct
+        for high, low in zip(highs[end - 30:end], lows[end - 30:end]) if low > 0
+    )
+    flat_cluster = flat_count >= args.activity_m1_inactivity_flat_30m_min_count
+    median_abs_efi = _percentile(
+        [abs(item["efi_13_normalized_pct"]) for item in history if item["efi_13_normalized_pct"] is not None], 0.50
+    )
+    neutral_flow = (current["cmf_20"] is not None and abs(current["cmf_20"]) <= args.activity_m1_inactivity_max_abs_cmf and
+                    current["efi_13_normalized_pct"] is not None and median_abs_efi is not None and
+                    abs(current["efi_13_normalized_pct"]) <= median_abs_efi)
+    neutral_momentum = ((current["tsi_25_13"] is not None and abs(current["tsi_25_13"]) <= args.activity_m1_inactivity_max_abs_tsi) or
+                        (current["cci_20"] is not None and abs(current["cci_20"]) <= args.activity_m1_inactivity_max_abs_cci))
+    score = sum((flat_cluster, low_volatility, low_volume, neutral_flow, neutral_momentum))
+    return {
+        "ready": True, "score": score, "inactive": score >= args.activity_m1_inactivity_score_min,
+        "flat_30m_count": flat_count, "low_volatility": low_volatility, "volume_ratio": volume_ratio,
+        "neutral_flow": neutral_flow, "neutral_momentum": neutral_momentum,
+    }
+
+
 def m30_activity_passes(analyzer, data, index, args):
     """Causal higher-timeframe movement and optional downtrend guard."""
     if not args.activity_m30_filter:
@@ -229,10 +445,25 @@ def historical_activity(analyzer, window, spread_pct, args=None, m1_data=None, m
     volume_only = args.activity_volume_only if args is not None else config.SYMBOL_ACTIVITY_VOLUME_ONLY
     movement_gate = True if volume_only else (range_pct >= m5_range_min and atr_pct >= m5_atr_min)
     active = (quote_volume >= quote_volume_min and movement_gate and volume_ratio >= m5_volume_min)
+    if not active:
+        return False, "base_activity"
     if args is not None and apply_auxiliary:
-        active = active and m1_activity_passes(analyzer, m1_data, m1_index, args) if args.activity_m1_filter else active
-        active = active and m30_activity_passes(analyzer, m30_data, m30_index, args) if args.activity_m30_filter else active
-    return active, "active" if active else "passive"
+        if args.activity_m1_filter and not m1_activity_passes(analyzer, m1_data, m1_index, args):
+            return False, "m1_range_atr"
+        if args.activity_m1_flat_filter and not m1_flat_candle_passes(m1_data, m1_index, args):
+            return False, "m1_flat_candles"
+        relative_idle = m1_relative_idle_observation(m1_data, m1_index, args)
+        if relative_idle["ready"] and relative_idle["inactive"]:
+            return False, f"m1_relative_idle_score_{relative_idle['score']}"
+        if not m1_m5_compression_passes(analyzer, m1_data, m1_index, window, args):
+            return False, "m1_m5_compression"
+        if args.activity_m1_inactivity_score_filter:
+            inactivity = _m1_inactivity_observation(m1_data, m1_index, args)
+            if inactivity["ready"] and inactivity["inactive"]:
+                return False, f"m1_inactivity_score_{inactivity['score']}"
+        if args.activity_m30_filter and not m30_activity_passes(analyzer, m30_data, m30_index, args):
+            return False, "m30_activity"
+    return True, "active"
 
 
 def historical_quality_score(analyzer, window, spread_pct):
@@ -622,7 +853,7 @@ async def run(args):
         if not series:
             raise SystemExit("Pencere başlangıcında ACTIVE sembol bulunamadı")
     m1_series, m1_indices, m30_series, m30_indices = {}, {}, {}, {}
-    auxiliary = (("1m", m1_series, m1_indices, args.activity_m1_filter),
+    auxiliary = (("1m", m1_series, m1_indices, args.activity_m1_filter or args.activity_m1_flat_filter or args.activity_m1_inactivity_score_filter or args.activity_m1_m5_compression_filter or args.activity_m1_relative_idle_filter),
                  ("30m", m30_series, m30_indices, args.activity_m30_filter))
     required_auxiliary = set()
     for interval, target_series, target_times, enabled in auxiliary:
@@ -651,6 +882,7 @@ async def run(args):
     filter_counts = Counter()
     loss_cooldown_until = {}
     activity_status = {symbol: False for symbol in series}
+    activity_status_reason = {symbol: "warming" for symbol in series}
     last_activity_bucket = None
 
     def arm_loss_cooldown(symbol, pnl, exit_ts):
@@ -679,6 +911,7 @@ async def run(args):
                     m30_series.get(symbol), m30_index if m30_index >= 0 else None,
                 )
                 activity_status[symbol] = active
+                activity_status_reason[symbol] = state
                 position = positions.get(symbol)
                 price = data["opens"][index]
                 if args.passive_direct_exit and not active and position:
@@ -810,7 +1043,7 @@ async def run(args):
             if decision != "buy":
                 continue
             if args.historical_activity and not activity_status.get(symbol, False):
-                blocked += 1
+                blocked += 1; filter_counts[f"historical_activity_{activity_status_reason.get(symbol, 'passive')}"] += 1
                 continue
             signals += 1
             print(f"[SIGNAL] {iso(data['times'][index - 1])} {symbol} BUY fill_at={iso(ts)} features={json.dumps(feature, ensure_ascii=False, default=str)}", flush=True)
@@ -1017,6 +1250,31 @@ async def run(args):
         "activity_m1_range_bars": args.activity_m1_range_bars,
         "activity_m1_min_range_pct": args.activity_m1_min_range_pct,
         "activity_m1_min_atr_pct": args.activity_m1_min_atr_pct,
+        "activity_m1_flat_filter": args.activity_m1_flat_filter,
+        "activity_m1_flat_max_range_pct": args.activity_m1_flat_max_range_pct,
+        "activity_m1_flat_5m_max_count": args.activity_m1_flat_5m_max_count,
+        "activity_m1_flat_30m_max_count": args.activity_m1_flat_30m_max_count,
+        "activity_m1_flat_max_volume_ratio": args.activity_m1_flat_max_volume_ratio,
+        "activity_m1_relative_idle_filter": args.activity_m1_relative_idle_filter,
+        "activity_m1_relative_idle_window_minutes": args.activity_m1_relative_idle_window_minutes,
+        "activity_m1_relative_idle_lookback_minutes": args.activity_m1_relative_idle_lookback_minutes,
+        "activity_m1_relative_idle_min_score": args.activity_m1_relative_idle_min_score,
+        "activity_m1_relative_idle_min_zero_hl_count": args.activity_m1_relative_idle_min_zero_hl_count,
+        "activity_m1_relative_idle_min_ticklike_count": args.activity_m1_relative_idle_min_ticklike_count,
+        "activity_m1_relative_idle_range_percentile": args.activity_m1_relative_idle_range_percentile,
+        "activity_m1_relative_idle_volume_percentile": args.activity_m1_relative_idle_volume_percentile,
+        "activity_m1_m5_compression_filter": args.activity_m1_m5_compression_filter,
+        "activity_m1_compression_max_atr_pct": args.activity_m1_compression_max_atr_pct,
+        "activity_m5_compression_max_atr_pct": args.activity_m5_compression_max_atr_pct,
+        "activity_m1_compression_max_bb_width_pct": args.activity_m1_compression_max_bb_width_pct,
+        "activity_m1_inactivity_score_filter": args.activity_m1_inactivity_score_filter,
+        "activity_m1_inactivity_score_min": args.activity_m1_inactivity_score_min,
+        "activity_m1_inactivity_lookback_minutes": args.activity_m1_inactivity_lookback_minutes,
+        "activity_m1_inactivity_flat_30m_min_count": args.activity_m1_inactivity_flat_30m_min_count,
+        "activity_m1_inactivity_max_volume_ratio": args.activity_m1_inactivity_max_volume_ratio,
+        "activity_m1_inactivity_max_abs_cmf": args.activity_m1_inactivity_max_abs_cmf,
+        "activity_m1_inactivity_max_abs_tsi": args.activity_m1_inactivity_max_abs_tsi,
+        "activity_m1_inactivity_max_abs_cci": args.activity_m1_inactivity_max_abs_cci,
         "activity_m5_min_range_pct": args.activity_m5_min_range_pct,
         "activity_m5_min_atr_pct": args.activity_m5_min_atr_pct,
         "activity_m5_min_volume_ratio": args.activity_m5_min_volume_ratio,
@@ -1139,6 +1397,31 @@ if __name__ == "__main__":
     parser.add_argument("--activity-m1-range-bars", type=int, default=5, help="M1 hareket aralığı için son mum sayısı")
     parser.add_argument("--activity-m1-min-range-pct", type=float, default=0.08, help="M1 kısa aralık alt sınırı (yüzde)")
     parser.add_argument("--activity-m1-min-atr-pct", type=float, default=0.05, help="M1 ATR alt sınırı (yüzde)")
+    parser.add_argument("--activity-m1-flat-filter", action="store_true", help="Son tamamlanmış M1 mumlarda H-L düz yoğunluğu yüksekse sembolü pasifleştir")
+    parser.add_argument("--activity-m1-flat-max-range-pct", type=float, default=config.SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT, help="Düz kabul edilen M1 H-L maksimum aralığı (yüzde)")
+    parser.add_argument("--activity-m1-flat-5m-max-count", type=int, default=config.SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT, help="Son 5 M1 mumda pasifleştirme eşiği")
+    parser.add_argument("--activity-m1-flat-30m-max-count", type=int, default=config.SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT, help="Son 30 M1 mumda pasifleştirme eşiği")
+    parser.add_argument("--activity-m1-flat-max-volume-ratio", type=float, default=0.0, help="Düz küme engeli için son 5dk/önceki 20dk maksimum M1 hacim oranı; 0 H-L kuralı")
+    parser.add_argument("--activity-m1-relative-idle-filter", action="store_true", help="M1 H-L sıfır/tek-tick yoğunluğunu sembolün kendi geçmişiyle karşılaştıran deneysel filtre")
+    parser.add_argument("--activity-m1-relative-idle-window-minutes", type=int, default=30, help="Deneysel göreli hareketsizlik güncel M1 penceresi")
+    parser.add_argument("--activity-m1-relative-idle-lookback-minutes", type=int, default=360, help="Deneysel göreli hareketsizlik karşılaştırma geçmişi")
+    parser.add_argument("--activity-m1-relative-idle-min-score", type=int, default=3, help="Mikroyapı+darlık+hacim göreli hareketsizlik puan eşiği (1-3)")
+    parser.add_argument("--activity-m1-relative-idle-min-zero-hl-count", type=int, default=18, help="Güncel pencerede minimum H-L=0 mum sayısı")
+    parser.add_argument("--activity-m1-relative-idle-min-ticklike-count", type=int, default=27, help="Güncel pencerede sembol içi tek-tick benzeri mum sayısı")
+    parser.add_argument("--activity-m1-relative-idle-range-percentile", type=float, default=0.10, help="Güncel medyan H-L için geçmiş göreli darlık yüzdeliği")
+    parser.add_argument("--activity-m1-relative-idle-volume-percentile", type=float, default=0.25, help="Güncel ortalama hacim için geçmiş göreli alt yüzdelik")
+    parser.add_argument("--activity-m1-m5-compression-filter", action="store_true", help="M1 ve M5 ATR ile M1 Bollinger aynı anda sıkışıksa deneysel engelleme uygula")
+    parser.add_argument("--activity-m1-compression-max-atr-pct", type=float, default=0.07, help="Deneysel sıkışma engeli M1 ATR üst sınırı (yüzde)")
+    parser.add_argument("--activity-m5-compression-max-atr-pct", type=float, default=0.30, help="Deneysel sıkışma engeli M5 ATR üst sınırı (yüzde)")
+    parser.add_argument("--activity-m1-compression-max-bb-width-pct", type=float, default=0.80, help="Deneysel sıkışma engeli M1 Bollinger genişlik üst sınırı (yüzde)")
+    parser.add_argument("--activity-m1-inactivity-score-filter", action="store_true", help="M1 H-L, sıkışma, hacim, CMF/EFI ve TSI/CCI ile deneysel hareketsizlik puanı uygula")
+    parser.add_argument("--activity-m1-inactivity-score-min", type=int, default=3, help="Deneysel M1 hareketsizlik puanında engelleme eşiği (0-5)")
+    parser.add_argument("--activity-m1-inactivity-lookback-minutes", type=int, default=120, help="Sembol içi sıkışma yüzdelikleri için geçmiş M1 dakika sayısı")
+    parser.add_argument("--activity-m1-inactivity-flat-30m-min-count", type=int, default=18, help="Deneysel puanda son 30 M1 mumda düz H-L sayısı")
+    parser.add_argument("--activity-m1-inactivity-max-volume-ratio", type=float, default=0.50, help="Deneysel puanda son 5dk/önceki 20dk M1 hacim oranı üst sınırı")
+    parser.add_argument("--activity-m1-inactivity-max-abs-cmf", type=float, default=0.05, help="Deneysel puanda mutlak CMF üst sınırı")
+    parser.add_argument("--activity-m1-inactivity-max-abs-tsi", type=float, default=15.0, help="Deneysel puanda mutlak TSI üst sınırı")
+    parser.add_argument("--activity-m1-inactivity-max-abs-cci", type=float, default=100.0, help="Deneysel puanda mutlak CCI üst sınırı")
     parser.add_argument("--activity-m30-filter", action="store_true", help="M5 aktivitesine M30 range ve ATR doğrulaması ekle")
     parser.add_argument("--activity-m30-regime-filter", action="store_true", help="M30 EMA20 sert düşüş rejiminde yeni long girişi engelle")
     parser.add_argument("--activity-m30-min-range-pct", type=float, default=0.45, help="Son iki M30 mumunun hareket alanı alt sınırı (yüzde)")
@@ -1209,6 +1492,37 @@ if __name__ == "__main__":
         parser.error("EMA/ATR çıkış parametreleri negatif olamaz")
     if args.activity_min_quote_volume_try < 0 or args.entry_min_volume_ratio < 0:
         parser.error("hacim eşikleri negatif olamaz")
+    if args.activity_m1_flat_max_range_pct < 0:
+        parser.error("--activity-m1-flat-max-range-pct negatif olamaz")
+    if args.activity_m1_flat_max_volume_ratio < 0:
+        parser.error("--activity-m1-flat-max-volume-ratio negatif olamaz")
+    if args.activity_m1_relative_idle_window_minutes < 5 or args.activity_m1_relative_idle_lookback_minutes < args.activity_m1_relative_idle_window_minutes * 2:
+        parser.error("M1 göreli hareketsizlik için pencere en az 5dk ve geçmiş en az iki pencere olmalıdır")
+    if not 1 <= args.activity_m1_relative_idle_min_score <= 3:
+        parser.error("--activity-m1-relative-idle-min-score 1 ile 3 arasında olmalıdır")
+    if not 0 <= args.activity_m1_relative_idle_min_zero_hl_count <= args.activity_m1_relative_idle_window_minutes:
+        parser.error("M1 göreli hareketsizlik H-L=0 sayısı pencere içinde olmalıdır")
+    if not 1 <= args.activity_m1_relative_idle_min_ticklike_count <= args.activity_m1_relative_idle_window_minutes:
+        parser.error("M1 göreli hareketsizlik tek-tick sayısı pencere içinde olmalıdır")
+    if not 0 < args.activity_m1_relative_idle_range_percentile <= 1 or not 0 < args.activity_m1_relative_idle_volume_percentile <= 1:
+        parser.error("M1 göreli hareketsizlik yüzdelikleri 0 ile 1 arasında olmalıdır")
+    if (args.activity_m1_compression_max_atr_pct < 0 or args.activity_m5_compression_max_atr_pct < 0 or
+            args.activity_m1_compression_max_bb_width_pct < 0):
+        parser.error("M1/M5 sıkışma eşikleri negatif olamaz")
+    if not 0 <= args.activity_m1_inactivity_score_min <= 5:
+        parser.error("--activity-m1-inactivity-score-min 0 ile 5 arasında olmalıdır")
+    if args.activity_m1_inactivity_lookback_minutes < 40:
+        parser.error("--activity-m1-inactivity-lookback-minutes en az 40 olmalıdır")
+    if not 1 <= args.activity_m1_inactivity_flat_30m_min_count <= 30:
+        parser.error("--activity-m1-inactivity-flat-30m-min-count 1 ile 30 arasında olmalıdır")
+    if args.activity_m1_inactivity_max_volume_ratio < 0 or args.activity_m1_inactivity_max_abs_cmf < 0:
+        parser.error("M1 hareketsizlik hacim ve CMF eşikleri negatif olamaz")
+    if args.activity_m1_inactivity_max_abs_tsi < 0 or args.activity_m1_inactivity_max_abs_cci < 0:
+        parser.error("M1 hareketsizlik TSI ve CCI eşikleri negatif olamaz")
+    if not 1 <= args.activity_m1_flat_5m_max_count <= 5:
+        parser.error("--activity-m1-flat-5m-max-count 1 ile 5 arasında olmalıdır")
+    if not 1 <= args.activity_m1_flat_30m_max_count <= 30:
+        parser.error("--activity-m1-flat-30m-max-count 1 ile 30 arasında olmalıdır")
     if args.daily_symbol_loss_limit_try < 0:
         parser.error("--daily-symbol-loss-limit-try negatif olamaz")
     if not 0 <= args.entry_dip_min_close_position <= 1:

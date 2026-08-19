@@ -31,7 +31,7 @@ from app import database
 from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, run_execution_stress, run_parameter_sensitivity, run_holdout_test, run_statistical_validation, get_backtest_data_quality, CUSTOM_IDENTIFIER_SCHEMA, CUSTOM_INDICATORS
 CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
-from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _ema
+from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.sma_cascade_shadow import SmaCascadeShadow
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import llm_analysis
@@ -1221,15 +1221,25 @@ async def pump_monitor_scan(*, execute: bool = False, source: str = "manual"):
             if result and result.get("action") == "BUY_SIGNAL":
                 opened.append(result)
                 row["status"] = "PAPER_OPENED"
+                row["reason"] = "Paper pozisyon açıldı"
                 await ws_manager.broadcast({"type": "signal", "data": result})
             elif result:
-                row["status"] = str(result.get("action") or "BLOCKED")
+                row["status"] = str(result.get("action") or "ENTRY_BLOCKED")
                 row["reason"] = str(result.get("reason") or "common_entry_gate_blocked")
+            else:
+                row["status"] = "ENTRY_BLOCKED"
+                row["reason"] = "Merkez giriş kapısı pozisyonu açmadı"
         except Exception as exc:
             rows.append({"symbol": symbol, "status": "ERROR", "eligible": False, "reason": str(exc)})
             print(f"[Pump Monitor] {symbol} tarama hatası: {exc}", flush=True)
     rows.sort(key=lambda item: (not bool(item.get("eligible")), -int(item.get("score") or 0), -float(item.get("volume_ratio_20") or 0)))
-    _pump_monitor_snapshot = {"generated_at": time.time(), "items": {row.get("symbol"): dict(row) for row in rows}, "last_execution": opened}
+    _pump_monitor_snapshot = {
+        "generated_at": time.time(),
+        "items": {row.get("symbol"): dict(row) for row in rows},
+        # Sayfa yenilemesi gözlem taraması çalıştırır; son otomatik/manüel
+        # yürütmenin sonucunu bununla silmemeliyiz.
+        "last_execution": opened if execute else list(_pump_monitor_snapshot.get("last_execution") or []),
+    }
     return {"items": rows, "paper_trades": opened, "generated_at": _pump_monitor_snapshot["generated_at"],
             "paper_only": True, "config": {"enabled": config.PUMP_MONITOR_ENABLED, "auto_trade": config.PUMP_MONITOR_AUTO_TRADE,
             "min_score": config.PUMP_MONITOR_MIN_SCORE, "require_m15_bullish": config.PUMP_MONITOR_REQUIRE_M15_BULLISH,
@@ -1491,6 +1501,97 @@ def _m1_flat_candle_activity(bars: dict, now_ms: int) -> dict:
         "sample_30m": len(recent_30),
     }
 
+def _m1_activity_features(indicator_analyzer: ScalpAnalyzer, bars: dict, now_ms: int) -> dict:
+    """Observation-only M1 context for later inactivity-filter research.
+
+    Every value uses only completed M1 candles.  These fields deliberately do
+    not make a symbol active/passive yet: their job is to label later replay
+    candidates without introducing a look-ahead or an unvalidated live rule.
+    """
+    closed = {key: [] for key in ("closes", "highs", "lows", "volumes")}
+    for values in zip(bars.get("timestamps") or [], bars.get("closes") or [], bars.get("highs") or [], bars.get("lows") or [], bars.get("volumes") or []):
+        timestamp, close, high, low, volume = values
+        try:
+            if int(timestamp) + 60_000 > now_ms:
+                continue
+            for key, value in zip(closed, (close, high, low, volume)):
+                closed[key].append(float(value))
+        except (TypeError, ValueError):
+            continue
+    if len(closed["closes"]) < 101:
+        return {"ready": False}
+    closes, highs, lows, volumes = (closed[key] for key in ("closes", "highs", "lows", "volumes"))
+    bb = _bollinger(closes, 20, 2.0) or {}
+    atr = _atr(highs, lows, closes, 14) or 0.0
+    vwap_volume = sum(volumes[-20:])
+    vwap = (sum(close * volume for close, volume in zip(closes[-20:], volumes[-20:])) / vwap_volume) if vwap_volume else None
+    price = closes[-1]
+    donchian_high, donchian_low = max(highs[-20:]), min(lows[-20:])
+    donchian_span = donchian_high - donchian_low
+    money_flow_multiplier = [
+        ((close - low) - (high - close)) / (high - low) if high != low else 0.0
+        for high, low, close in zip(highs[-20:], lows[-20:], closes[-20:])
+    ]
+    cmf_volume = sum(volumes[-20:])
+    cmf_20 = (
+        sum(multiplier * volume for multiplier, volume in zip(money_flow_multiplier, volumes[-20:])) / cmf_volume
+        if cmf_volume else None
+    )
+    force = [(closes[index] - closes[index - 1]) * volumes[index] for index in range(1, len(closes))]
+    efi_13 = _ema(force, 13)
+    # Raw EFI scales with the market's volume and price.  Normalising it by
+    # recent traded value makes it comparable across TRY symbols.
+    recent_traded_value = sum(close * volume for close, volume in zip(closes[-13:], volumes[-13:]))
+    efi_13_normalized = (efi_13 / recent_traded_value * 100) if efi_13 is not None and recent_traded_value else None
+
+    def ema_series(values: list[float], period: int) -> list[float]:
+        if len(values) < period:
+            return []
+        alpha = 2.0 / (period + 1)
+        current = sum(values[:period]) / period
+        result = [current]
+        for value in values[period:]:
+            current = alpha * value + (1 - alpha) * current
+            result.append(current)
+        return result
+
+    momentum = [closes[index] - closes[index - 1] for index in range(1, len(closes))]
+    first_momentum = ema_series(momentum, 25)
+    first_absolute_momentum = ema_series([abs(value) for value in momentum], 25)
+    double_momentum = ema_series(first_momentum, 13)
+    double_absolute_momentum = ema_series(first_absolute_momentum, 13)
+    tsi_25_13 = (
+        double_momentum[-1] / double_absolute_momentum[-1] * 100
+        if double_momentum and double_absolute_momentum and double_absolute_momentum[-1] else None
+    )
+    atr_series = [
+        max(highs[index] - lows[index], abs(highs[index] - closes[index - 1]), abs(lows[index] - closes[index - 1]))
+        for index in range(1, len(closes))
+    ]
+    atr_ema_13 = _ema(atr_series, 13)
+    return {
+        "ready": True,
+        "rsi_14": round(float(indicator_analyzer.calculate_rsi(closes, 14) or 0), 4),
+        "mfi_14": round(float(_mfi(highs, lows, closes, volumes, 14) or 0), 4),
+        "cmo_9": round(float(indicator_analyzer.calculate_cmo(closes, 9) or 0), 4),
+        "crsi": round(float(indicator_analyzer.calculate_crsi(closes) or 0), 4),
+        "atr_pct": round(atr / closes[-1] * 100, 5) if closes[-1] else None,
+        "bb_width_pct": round(float(bb.get("width_pct") or 0) * 100, 5),
+        "bb_position": round(float(bb.get("position") or 0), 4) if bb.get("position") is not None else None,
+        "vwap_distance_pct": round((closes[-1] / vwap - 1) * 100, 5) if vwap else None,
+        "ema_7_25_gap_pct": round(abs((_ema(closes, 7) or 0) / (_ema(closes, 25) or closes[-1]) - 1) * 100, 5),
+        "ema_25_99_gap_pct": round(abs((_ema(closes, 25) or 0) / (_ema(closes, 99) or closes[-1]) - 1) * 100, 5),
+        "cci_20": round(float(_cci(highs, lows, closes, 20) or 0), 4),
+        "sma_7_25_gap_pct": round(abs((_sma(closes, 7) or 0) / (_sma(closes, 25) or price) - 1) * 100, 5),
+        "sma_25_99_gap_pct": round(abs((_sma(closes, 25) or 0) / (_sma(closes, 99) or price) - 1) * 100, 5),
+        "donchian_20_width_pct": round(donchian_span / price * 100, 5) if price else None,
+        "donchian_20_position": round((price - donchian_low) / donchian_span, 4) if donchian_span else None,
+        "cmf_20": round(cmf_20, 5) if cmf_20 is not None else None,
+        "efi_13_normalized_pct": round(efi_13_normalized, 6) if efi_13_normalized is not None else None,
+        "tsi_25_13": round(tsi_25_13, 4) if tsi_25_13 is not None else None,
+        "atr_ema_13_pct": round(atr_ema_13 / price * 100, 5) if atr_ema_13 is not None and price else None,
+    }
+
 async def refresh_symbol_activity():
     """Refresh the full Binance TR TRY universe and mark inactive symbols."""
     known_try = set(await trading_symbols("TRY"))
@@ -1516,11 +1617,13 @@ async def refresh_symbol_activity():
         async def hydrate_m1(symbol):
             async with semaphore:
                 try:
-                    rows = await fetch_klines(symbol, "1m", limit=35)
+                    rows = await fetch_klines(symbol, "1m", limit=150)
                     return symbol, {
                         "timestamps": [int(row[0]) for row in rows or []],
+                        "closes": [float(row[4]) for row in rows or []],
                         "highs": [float(row[2]) for row in rows or []],
                         "lows": [float(row[3]) for row in rows or []],
+                        "volumes": [float(row[5]) for row in rows or []],
                     }
                 except Exception as exc:
                     print(f"[Activity M1] {symbol}: {exc}", flush=True)
@@ -1546,6 +1649,7 @@ async def refresh_symbol_activity():
             }
             continue
         m1_activity = _m1_flat_candle_activity(m1_bars.get(symbol) or {}, now_ms)
+        m1_features = _m1_activity_features(analyzer, m1_bars.get(symbol) or {}, now_ms)
         range_pct = 0.0
         low, high = min(lows[-3:]), max(highs[-3:])
         range_pct = ((high - low) / low * 100) if low else 0.0
@@ -1579,6 +1683,7 @@ async def refresh_symbol_activity():
             "m1_flat_30m_count": m1_activity["flat_30m_count"],
             "m1_flat_sample_30m": m1_activity["sample_30m"],
             "m1_flat_max_range_pct": m1_activity["flat_max_range_pct"],
+            "m1_features": m1_features,
             "checks": {"quote_volume": volume_ok, "range_15m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok, "m1_flat_candles": m1_flat_ok},
             "gates": {"spread_required": spread_required, "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY, "m1_flat_filter_enabled": config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED, "m1_flat_data_ready": m1_activity["ready"]},
             "has_open_position": symbol in analyzer.positions,
@@ -1879,6 +1984,7 @@ CONFIG_FIELDS = {
     "pump_monitor_min_score": "PUMP_MONITOR_MIN_SCORE",
     "pump_monitor_require_m15_bullish": "PUMP_MONITOR_REQUIRE_M15_BULLISH",
     "pump_monitor_high_confidence_volume_ratio": "PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO",
+    "pump_monitor_allow_m1_flat_override": "PUMP_MONITOR_ALLOW_M1_FLAT_OVERRIDE",
     "min_notional": "MIN_NOTIONAL",
     "min_24h_quote_volume_try": "MIN_24H_QUOTE_VOLUME_TRY",
     "high_liquidity_bypass_volume_try": "HIGH_LIQUIDITY_BYPASS_VOLUME_TRY",
@@ -1993,7 +2099,7 @@ CONFIG_FIELDS = {
     "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "pump_monitor_enabled", "pump_monitor_auto_trade", "pump_monitor_require_m15_bullish", "symbol_activity_m1_flat_filter_enabled"}
+BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "pump_monitor_enabled", "pump_monitor_auto_trade", "pump_monitor_require_m15_bullish", "pump_monitor_allow_m1_flat_override", "symbol_activity_m1_flat_filter_enabled"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
 INT_FIELDS = {"gainer_radar_min_score", "pump_monitor_max_open_positions", "pump_monitor_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_pyramid_profit_extension_layers", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "bb_mfi_pine_version", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
@@ -2008,6 +2114,7 @@ async def get_config():
         "pump_monitor_min_score": config.PUMP_MONITOR_MIN_SCORE,
         "pump_monitor_require_m15_bullish": config.PUMP_MONITOR_REQUIRE_M15_BULLISH,
         "pump_monitor_high_confidence_volume_ratio": config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO,
+        "pump_monitor_allow_m1_flat_override": config.PUMP_MONITOR_ALLOW_M1_FLAT_OVERRIDE,
         "symbols": config.SYMBOLS,
         "min_notional": config.MIN_NOTIONAL,
         "min_24h_quote_volume_try": config.MIN_24H_QUOTE_VOLUME_TRY,
@@ -2346,6 +2453,10 @@ async def get_pump_monitor():
     """Observation-only refresh for the Pump Monitor screen."""
     result = await pump_monitor_scan(execute=False, source="monitor_view")
     result["history"] = await database.get_signals(limit=80, strategy="PUMP_MONITOR")
+    result["scan_logs"] = [
+        dict(item) for item in _strategy_scan_logs
+        if item.get("scan_type") == "pump_monitor"
+    ][:80]
     return result
 
 
@@ -2356,6 +2467,10 @@ async def execute_pump_monitor():
         raise HTTPException(status_code=409, detail="Pump Monitor ayarlarda kapalı")
     result = await pump_monitor_scan(execute=True, source="manual_execute")
     result["history"] = await database.get_signals(limit=80, strategy="PUMP_MONITOR")
+    result["scan_logs"] = [
+        dict(item) for item in _strategy_scan_logs
+        if item.get("scan_type") == "pump_monitor"
+    ][:80]
     return result
 
 @app.put("/api/config")
@@ -3536,7 +3651,7 @@ async def strategy_scan_logs(limit: int = 250, scan_type: str = ""):
     """Return recent per-symbol scan evidence for the Settings audit panel."""
     safe_limit = max(1, min(int(limit), 1000))
     logs = list(_strategy_scan_logs)
-    if scan_type in {"automatic", "manual"}:
+    if scan_type in {"automatic", "manual", "pump_monitor"}:
         logs = [item for item in logs if item["scan_type"] == scan_type]
     return {"ok": True, "logs": logs[:safe_limit], "total": len(logs), "paper_only": True}
 
@@ -3980,6 +4095,12 @@ async def get_llm_forecast_report():
     return {"paper_only": True, "evaluated_count": evaluated, "correct_count": correct,
             "pending_count": pending, "directional_accuracy": (correct / evaluated) if evaluated else None,
             "horizons": horizons, "recent": recent}
+
+
+@app.get("/api/reports/capital-lock")
+async def get_capital_lock_report():
+    """Read-only BB-MFI capital-lock outcomes; never changes positions or rules."""
+    return await database.get_capital_lock_report()
 
 @app.get("/api/microstructure-snapshots/{symbol}")
 async def get_microstructure_snapshots(symbol: str, limit: int = 500, start: float = 0, end: float = 0):
