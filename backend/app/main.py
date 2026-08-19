@@ -1465,6 +1465,32 @@ async def top_gainers_refresh_loop():
             print(f"[Top Gainers] 6 saatlik yenileme hatası: {exc}")
         await asyncio.sleep(config.TOP_GAINERS_REFRESH_SEC)
 
+def _m1_flat_candle_activity(bars: dict, now_ms: int) -> dict:
+    """Measure only completed M1 candles whose high-low range is flat."""
+    timestamps = list((bars or {}).get("timestamps") or [])
+    highs = list((bars or {}).get("highs") or [])
+    lows = list((bars or {}).get("lows") or [])
+    usable = []
+    for timestamp, high, low in zip(timestamps, highs, lows):
+        try:
+            timestamp, high, low = int(timestamp), float(high), float(low)
+        except (TypeError, ValueError):
+            continue
+        if timestamp + 60_000 > now_ms or low <= 0:
+            continue
+        usable.append((high - low) / low * 100)
+    recent_30 = usable[-30:]
+    recent_5 = recent_30[-5:]
+    max_range_pct = float(config.SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT)
+    return {
+        "ready": len(recent_30) >= 30,
+        "flat_max_range_pct": max_range_pct,
+        "flat_5m_count": sum(value <= max_range_pct for value in recent_5),
+        "flat_30m_count": sum(value <= max_range_pct for value in recent_30),
+        "sample_5m": len(recent_5),
+        "sample_30m": len(recent_30),
+    }
+
 async def refresh_symbol_activity():
     """Refresh the full Binance TR TRY universe and mark inactive symbols."""
     known_try = set(await trading_symbols("TRY"))
@@ -1481,6 +1507,27 @@ async def refresh_symbol_activity():
         str(row.get("symbol", "")).upper(): float(row.get("quoteVolume", 0) or 0)
         for row in all_tickers or [] if row.get("symbol")
     }
+    now_ms = int(time.time() * 1000)
+    tracked_symbols = set(config.SYMBOLS) | open_symbols
+    m1_bars = {symbol: market.get_ut_kline(symbol, "1m") or {} for symbol in tracked_symbols}
+    missing_m1 = [symbol for symbol, bars in m1_bars.items() if len(bars.get("timestamps") or []) < 30]
+    if missing_m1:
+        semaphore = asyncio.Semaphore(8)
+        async def hydrate_m1(symbol):
+            async with semaphore:
+                try:
+                    rows = await fetch_klines(symbol, "1m", limit=35)
+                    return symbol, {
+                        "timestamps": [int(row[0]) for row in rows or []],
+                        "highs": [float(row[2]) for row in rows or []],
+                        "lows": [float(row[3]) for row in rows or []],
+                    }
+                except Exception as exc:
+                    print(f"[Activity M1] {symbol}: {exc}", flush=True)
+                    return symbol, {}
+        for symbol, bars in await asyncio.gather(*(hydrate_m1(symbol) for symbol in missing_m1)):
+            if bars.get("timestamps"):
+                m1_bars[symbol] = bars
     statuses = {}
     for symbol in universe:
         ticker = market.get_ticker(symbol) or {}
@@ -1498,6 +1545,7 @@ async def refresh_symbol_activity():
                 "reason": "market_data_warming", "checked_at": time.time(),
             }
             continue
+        m1_activity = _m1_flat_candle_activity(m1_bars.get(symbol) or {}, now_ms)
         range_pct = 0.0
         low, high = min(lows[-3:]), max(highs[-3:])
         range_pct = ((high - low) / low * 100) if low else 0.0
@@ -1515,16 +1563,26 @@ async def refresh_symbol_activity():
         spread_required = config.SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED
         spread_gate_ok = spread_ok if spread_required else True
         movement_gate_ok = True if config.SYMBOL_ACTIVITY_VOLUME_ONLY else (movement_ok and atr_ok)
-        active = bool(ticker and volume_ok and movement_gate_ok and volume_ratio_ok and spread_gate_ok)
+        flat_5m_blocked = m1_activity["flat_5m_count"] >= config.SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT
+        flat_30m_blocked = m1_activity["flat_30m_count"] >= config.SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT
+        m1_flat_ok = (not config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED or
+                      not m1_activity["ready"] or not (flat_5m_blocked or flat_30m_blocked))
+        active = bool(ticker and volume_ok and movement_gate_ok and volume_ratio_ok and spread_gate_ok and m1_flat_ok)
+        flat_reason = (f"m1_flat_candles:5m={m1_activity['flat_5m_count']}/5,"
+                       f"30m={m1_activity['flat_30m_count']}/30")
         statuses[symbol] = {
             "symbol": symbol, "status": "ACTIVE" if active else "PASSIVE",
             "quote_volume": quote_volume, "range_15m_pct": round(range_pct, 4),
             "atr_pct": round(atr_pct * 100, 4), "volume_ratio": round(volume_ratio, 4),
             "spread_pct": round(spread_pct, 4),
-            "checks": {"quote_volume": volume_ok, "range_15m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok},
-            "gates": {"spread_required": spread_required, "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY},
+            "m1_flat_5m_count": m1_activity["flat_5m_count"],
+            "m1_flat_30m_count": m1_activity["flat_30m_count"],
+            "m1_flat_sample_30m": m1_activity["sample_30m"],
+            "m1_flat_max_range_pct": m1_activity["flat_max_range_pct"],
+            "checks": {"quote_volume": volume_ok, "range_15m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok, "m1_flat_candles": m1_flat_ok},
+            "gates": {"spread_required": spread_required, "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY, "m1_flat_filter_enabled": config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED, "m1_flat_data_ready": m1_activity["ready"]},
             "has_open_position": symbol in analyzer.positions,
-            "reason": "active" if active else "volume_or_liquidity_below_threshold",
+            "reason": "active" if active else (flat_reason if not m1_flat_ok else "volume_or_liquidity_below_threshold"),
             "checked_at": time.time(),
         }
     config.PASSIVE_SYMBOLS = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
@@ -1863,6 +1921,10 @@ CONFIG_FIELDS = {
     "bb_mfi_bearish_min_mfi_reversal_delta": "BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA",
     "bb_mfi_pyramid_require_net_profit": "BB_MFI_PYRAMID_REQUIRE_NET_PROFIT",
     "bb_mfi_pyramid_profit_extension_layers": "BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS",
+    "symbol_activity_m1_flat_filter_enabled": "SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED",
+    "symbol_activity_m1_flat_max_range_pct": "SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT",
+    "symbol_activity_m1_flat_5m_max_count": "SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT",
+    "symbol_activity_m1_flat_30m_max_count": "SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT",
     "symbol_order_pct": "SYMBOL_ORDER_PCT",
     "symbol_pyramiding_layers": "SYMBOL_PYRAMIDING_LAYERS",
     "max_open_positions": "MAX_OPEN_POSITIONS",
@@ -1931,9 +1993,9 @@ CONFIG_FIELDS = {
     "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "pump_monitor_enabled", "pump_monitor_auto_trade", "pump_monitor_require_m15_bullish"}
+BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "pump_monitor_enabled", "pump_monitor_auto_trade", "pump_monitor_require_m15_bullish", "symbol_activity_m1_flat_filter_enabled"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "pump_monitor_max_open_positions", "pump_monitor_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_pyramid_profit_extension_layers"}
+INT_FIELDS = {"gainer_radar_min_score", "pump_monitor_max_open_positions", "pump_monitor_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_pyramid_profit_extension_layers", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "bb_mfi_pine_version", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
@@ -1991,6 +2053,10 @@ async def get_config():
         "bb_mfi_bearish_min_mfi_reversal_delta": config.BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA,
         "bb_mfi_pyramid_require_net_profit": config.BB_MFI_PYRAMID_REQUIRE_NET_PROFIT,
         "bb_mfi_pyramid_profit_extension_layers": config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS,
+        "symbol_activity_m1_flat_filter_enabled": config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED,
+        "symbol_activity_m1_flat_max_range_pct": config.SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT,
+        "symbol_activity_m1_flat_5m_max_count": config.SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT,
+        "symbol_activity_m1_flat_30m_max_count": config.SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT,
         "max_open_positions": int(config.MAX_OPEN_POSITIONS),
         "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
         "cooldown_bars": config.COOLDOWN_BARS,
@@ -2370,6 +2436,10 @@ async def _apply_config_update(payload: dict):
                     raise ValueError("pump_monitor_max_open_positions 1 ile 20 arasında olmalıdır")
                 if key == "pyramiding_layers" and not 1 <= number <= 10:
                     raise ValueError("pyramiding_layers 1 ile 10 arasında olmalıdır")
+                if key == "symbol_activity_m1_flat_5m_max_count" and not 1 <= number <= 5:
+                    raise ValueError("5 dk düz M1 mum eşiği 1 ile 5 arasında olmalıdır")
+                if key == "symbol_activity_m1_flat_30m_max_count" and not 1 <= number <= 30:
+                    raise ValueError("30 dk düz M1 mum eşiği 1 ile 30 arasında olmalıdır")
                 setattr(config, attr, number)
             elif key in STR_FIELDS:
                 if key == "bb_mfi_pine_version" and str(val).lower() not in {"v1", "v2", "v3"}:
@@ -2389,6 +2459,8 @@ async def _apply_config_update(payload: dict):
                     raise ValueError("order_pct 0 ile 1 arasında olmalıdır")
                 if key == "pump_monitor_high_confidence_volume_ratio" and not 0 <= number <= 10:
                     raise ValueError("pump_monitor_high_confidence_volume_ratio 0 ile 10 arasında olmalıdır")
+                if key == "symbol_activity_m1_flat_max_range_pct" and not 0 <= number <= 5:
+                    raise ValueError("M1 düz mum maksimum aralığı yüzde 0 ile 5 arasında olmalıdır")
                 setattr(config, attr, number)
     if "ut_symbols" in payload:
         config.UT_SYMBOLS = payload["ut_symbols"]

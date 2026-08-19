@@ -123,6 +123,12 @@ class Config:
     SYMBOL_ACTIVITY_MIN_VOLUME_RATIO = float(os.getenv("SYMBOL_ACTIVITY_MIN_VOLUME_RATIO", "0.50"))
     SYMBOL_ACTIVITY_MAX_SPREAD_PCT = float(os.getenv("SYMBOL_ACTIVITY_MAX_SPREAD_PCT", "0.30"))
     SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED = os.getenv("SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED", "false").lower() == "true"
+    # A candle with high == low did not move during its whole minute. A dense
+    # cluster of completed M1 candles blocks new paper entries only.
+    SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED = os.getenv("SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED", "true").lower() == "true"
+    SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT = max(0.0, float(os.getenv("SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT", "0")))
+    SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT = max(1, min(5, int(os.getenv("SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT", "4"))))
+    SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT = max(1, min(30, int(os.getenv("SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT", "18"))))
     PASSIVE_SYMBOLS = set()
     SYMBOL_ACTIVITY_STATUS = {}
     # Radar yalnızca gözlem/ranking yüzeyidir; otomatik pozisyon açmaz.
