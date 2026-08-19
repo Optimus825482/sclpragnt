@@ -2451,7 +2451,22 @@ async def execute_gainers_radar():
 @app.get("/api/pump-monitor")
 async def get_pump_monitor():
     """Observation-only refresh for the Pump Monitor screen."""
-    result = await pump_monitor_scan(execute=False, source="monitor_view")
+    # Birden fazla açık istemci aynı 30 sn penceresinde aynı yüzlerce sembolü
+    # yeniden hesaplamasın. Manuel yürütme endpoint'i bu cache'i kullanmaz.
+    if _pump_monitor_snapshot.get("items") and time.time() - float(_pump_monitor_snapshot.get("generated_at") or 0) < 25:
+        result = {
+            "items": [dict(item) for item in _pump_monitor_snapshot["items"].values()],
+            "paper_trades": list(_pump_monitor_snapshot.get("last_execution") or []),
+            "generated_at": _pump_monitor_snapshot["generated_at"],
+            "paper_only": True,
+            "config": {"enabled": config.PUMP_MONITOR_ENABLED, "auto_trade": config.PUMP_MONITOR_AUTO_TRADE,
+                       "min_score": config.PUMP_MONITOR_MIN_SCORE, "require_m15_bullish": config.PUMP_MONITOR_REQUIRE_M15_BULLISH,
+                       "high_confidence_volume_ratio": config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO,
+                       "max_open_positions": config.PUMP_MONITOR_MAX_OPEN_POSITIONS},
+            "model": "M5 early detection + M15/M30 context; research candidate, paper-only",
+        }
+    else:
+        result = await pump_monitor_scan(execute=False, source="monitor_view")
     result["history"] = await database.get_signals(limit=80, strategy="PUMP_MONITOR")
     result["scan_logs"] = [
         dict(item) for item in _strategy_scan_logs

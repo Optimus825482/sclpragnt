@@ -644,17 +644,13 @@ export default function PortfolioPage() {
   }, []);
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "portfolio") setPortfolio(message.data);
-    if (tab === "history" && ["signal", "trade_updated", "reset"].includes(message.type)) loadTrades();
-  }, [loadTrades, tab]);
+    if (["signal", "trade_updated", "reset"].includes(message.type)) loadTrades();
+  }, [loadTrades]);
   useLiveMessages(onLiveMessage);
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("tab") === "history")
-      setTab("history");
-  }, []);
-  useEffect(() => {
-    if (tab === "history") loadTrades();
-  }, [loadTrades, tab]);
+    loadTrades();
+  }, [loadTrades]);
 
   const formatTab = (next: "portfolio" | "history") => {
     setTab(next);
@@ -711,6 +707,12 @@ export default function PortfolioPage() {
   const losers = trades.filter((trade) => trade.pnl <= 0);
   const netClosed = trades.reduce((sum, trade) => sum + trade.pnl, 0);
   const winRate = trades.length ? (winners.length / trades.length) * 100 : 0;
+  const strategyStats = useMemo(() => Object.entries(trades.reduce<Record<string, { count: number; pnl: number; wins: number }>>((all, trade) => {
+    const key = trade.strategy || "UNKNOWN";
+    const row = all[key] || { count: 0, pnl: 0, wins: 0 };
+    row.count += 1; row.pnl += trade.pnl; row.wins += trade.pnl > 0 ? 1 : 0; all[key] = row;
+    return all;
+  }, {})).sort(([, a], [, b]) => b.pnl - a.pnl), [trades]);
   const formatKey = (key: keyof Trade) => (
     <button
       onClick={() => {
@@ -735,27 +737,11 @@ export default function PortfolioPage() {
           <h1>
             <span className="text-neon-green">PORTFÖY</span> YÖNETİMİ
           </h1>
-          <p>
-            Sanal cüzdan, açık pozisyonlar ve tamamlanan işlemleri tek bir
-            taşmasız çalışma alanında izleyin.
-          </p>
+          <p>Sermaye dağılımı, strateji başarısı ve komisyon sonrası net sonuç özeti.</p>
         </div>
         <span className="ui-badge ui-badge-info">CANLI / PAPER</span>
       </header>
-      <nav className="ui-tabs portfolio-tabs" aria-label="Portföy sekmeleri">
-        <button
-          className={tab === "portfolio" ? "active" : ""}
-          onClick={() => formatTab("portfolio")}
-        >
-          📊 PORTFÖY <small>{portfolio?.positions.length ?? 0}</small>
-        </button>
-        <button
-          className={tab === "history" ? "active" : ""}
-          onClick={() => formatTab("history")}
-        >
-          📜 TAMAMLANAN İŞLEMLER <small>{trades.length}</small>
-        </button>
-      </nav>
+      <div className="flex flex-wrap gap-2"><Link href="/reports" className="ui-button ui-button-secondary">📋 İŞLEM RAPORLARINI AÇ</Link><Link href="/" className="ui-button ui-button-secondary">⚡ CANLI SCALPING MONITOR</Link></div>
       {msg && (
         <div className="portfolio-alert" role="status">
           {msg}
@@ -789,15 +775,8 @@ export default function PortfolioPage() {
               }
             />
           </div>
-          <LlmPlanPanel
-            positions={portfolio?.positions || []}
-            trades={trades}
-          />
-          <PositionTable
-            positions={portfolio?.positions || []}
-            closePosition={closePosition}
-            closing={closing}
-          />
+          <section className="ui-card"><div className="ui-section-header"><div><p className="eyebrow">STRATEJİ PERFORMANSI</p><p className="ui-section-description">Kapanmış paper işlemler, komisyon sonrası net sonuç.</p></div><span className="font-mono text-xs text-bunker-muted">{trades.length} işlem</span></div><div className="table-scroll mt-3"><table className="data-table"><thead><tr><th>Strateji</th><th>İşlem</th><th>Başarı</th><th>Net PnL</th></tr></thead><tbody>{strategyStats.map(([name, stat]) => <tr key={name}><td>{STRATEGY_LABEL[name] || name}</td><td>{stat.count}</td><td className={stat.wins / stat.count >= .5 ? "ui-tone-positive" : "ui-tone-negative"}>%{(stat.wins / stat.count * 100).toFixed(1)}</td><td className={stat.pnl >= 0 ? "ui-tone-positive" : "ui-tone-negative"}>₺{money(stat.pnl)}</td></tr>)}{!strategyStats.length && <tr><td colSpan={4} className="py-6 text-center text-bunker-muted">Kapanmış işlem verisi bekleniyor.</td></tr>}</tbody></table></div></section>
+          <LlmPlanPanel positions={portfolio?.positions || []} trades={trades} />
         </div>
       ) : (
         <div className="portfolio-content">
