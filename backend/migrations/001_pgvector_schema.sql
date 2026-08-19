@@ -31,6 +31,29 @@ CREATE TABLE IF NOT EXISTS llm_settings (key TEXT PRIMARY KEY, value TEXT NOT NU
 CREATE TABLE IF NOT EXISTS backtests (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION, symbol TEXT, interval TEXT, strategy TEXT, params JSONB, days_back INTEGER, initial_balance DOUBLE PRECISION, final_balance DOUBLE PRECISION, net_pnl DOUBLE PRECISION, net_pnl_pct DOUBLE PRECISION, total_trades INTEGER, wins INTEGER, losses INTEGER, win_rate DOUBLE PRECISION, order_size DOUBLE PRECISION, stop_loss_pct DOUBLE PRECISION, take_profit_pct DOUBLE PRECISION, trailing_stop_pct DOUBLE PRECISION, trades JSONB, max_drawdown_pct DOUBLE PRECISION);
 CREATE TABLE IF NOT EXISTS analysis_snapshots (id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, captured_at DOUBLE PRECISION NOT NULL, source TEXT NOT NULL DEFAULT 'entry', methodology_version TEXT, regime TEXT, regime_confidence DOUBLE PRECISION, confluence_score DOUBLE PRECISION, payload JSONB NOT NULL DEFAULT '{}'::jsonb, trade_id TEXT);
 CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_symbol_time ON analysis_snapshots(symbol, captured_at DESC);
+CREATE TABLE IF NOT EXISTS llm_forecasts (
+  forecast_id TEXT PRIMARY KEY, forecast_group_id TEXT NOT NULL,
+  symbol TEXT NOT NULL, created_at DOUBLE PRECISION NOT NULL, horizon_minutes INTEGER NOT NULL,
+  entry_price DOUBLE PRECISION NOT NULL, direction TEXT NOT NULL, confidence DOUBLE PRECISION NOT NULL,
+  invalidation_price DOUBLE PRECISION, min_move_pct DOUBLE PRECISION NOT NULL,
+  regime TEXT, timeframe_context JSONB NOT NULL DEFAULT '{}'::jsonb,
+  scenario TEXT NOT NULL, counter_scenario TEXT, summary TEXT,
+  model TEXT, prompt_version TEXT NOT NULL, snapshot_hash TEXT NOT NULL,
+  snapshot JSONB NOT NULL DEFAULT '{}'::jsonb, status TEXT NOT NULL DEFAULT 'pending',
+  evaluated_at DOUBLE PRECISION, outcome_price DOUBLE PRECISION, outcome_return_pct DOUBLE PRECISION,
+  outcome_direction TEXT, direction_correct BOOLEAN, max_favorable_pct DOUBLE PRECISION,
+  max_adverse_pct DOUBLE PRECISION, outcome_details JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_llm_forecasts_due ON llm_forecasts(status, created_at, horizon_minutes);
+CREATE INDEX IF NOT EXISTS idx_llm_forecasts_symbol_time ON llm_forecasts(symbol, created_at DESC);
+CREATE TABLE IF NOT EXISTS llm_forecast_lessons (
+  lesson_key TEXT PRIMARY KEY, symbol TEXT, horizon_minutes INTEGER NOT NULL,
+  regime TEXT, direction TEXT, sample_size INTEGER NOT NULL,
+  in_sample_accuracy DOUBLE PRECISION, holdout_accuracy DOUBLE PRECISION, confidence_calibration_error DOUBLE PRECISION,
+  lesson TEXT NOT NULL, evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+  status TEXT NOT NULL DEFAULT 'candidate', generated_at DOUBLE PRECISION NOT NULL, updated_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_forecast_lessons_lookup ON llm_forecast_lessons(status, symbol, horizon_minutes);
 CREATE TABLE IF NOT EXISTS microstructure_snapshots (id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, captured_at DOUBLE PRECISION NOT NULL, bid_price DOUBLE PRECISION, ask_price DOUBLE PRECISION, bid_qty DOUBLE PRECISION, ask_qty DOUBLE PRECISION, spread_pct DOUBLE PRECISION, depth_try DOUBLE PRECISION, orderflow_imbalance DOUBLE PRECISION, source TEXT NOT NULL DEFAULT 'binance_tr_public_ws', updated_at DOUBLE PRECISION, UNIQUE(symbol, captured_at));
 CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC);
 

@@ -33,6 +33,7 @@ CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _ema
 from app.sma_cascade_shadow import SmaCascadeShadow
+from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import llm_analysis
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
@@ -175,6 +176,7 @@ _symbol_history_backfills = set()
 _strategy_scan_logs = deque(maxlen=5000)
 _background_tasks = set()
 _radar_snapshot = {"generated_at": 0.0, "items": {}}
+_forecast_evaluation_state = {"last_run_at": None, "evaluated": 0, "lessons_refreshed": 0, "last_error": None}
 
 
 def _start_background(coro, name):
@@ -884,6 +886,62 @@ async def learning_promotion_loop():
             print(f"[Learning] promotion loop: {exc}")
         await asyncio.sleep(15 * 60)
 
+
+def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
+    """Return a causal outcome only when the requested horizon has closed."""
+    bars = market.get_ut_kline(symbol, "1m") or {}
+    timestamps = list(bars.get("timestamps") or [])
+    closes = list(bars.get("closes") or [])
+    highs = list(bars.get("highs") or [])
+    lows = list(bars.get("lows") or [])
+    if min(len(timestamps), len(closes), len(highs), len(lows)) < 2:
+        return None
+    created_at_ms = int(float(forecast["created_at"]) * 1000)
+    due_at_ms = created_at_ms + int(forecast["horizon_minutes"]) * 60_000
+    close_times = [int(value) + 59_999 for value in timestamps]
+    end_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= due_at_ms), None)
+    start_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= created_at_ms), None)
+    if start_index is None or end_index is None or end_index < start_index:
+        return None
+    return {
+        "outcome_price": float(closes[end_index]),
+        "max_high": max(float(value) for value in highs[start_index:end_index + 1]),
+        "min_low": min(float(value) for value in lows[start_index:end_index + 1]),
+    }
+
+
+async def refresh_llm_forecast_lessons():
+    rows = await database.get_llm_forecasts(status="evaluated", limit=500)
+    lessons = derive_lessons(rows, min_samples=config.LLM_FORECAST_LESSON_MIN_SAMPLES)
+    saved = await database.replace_llm_forecast_lessons(lessons)
+    _forecast_evaluation_state["lessons_refreshed"] = saved
+    return {"evaluated_rows": len(rows), "lessons": saved}
+
+
+async def llm_forecast_evaluation_loop():
+    """Evaluate journal entries, not strategy signals; it never opens an order."""
+    await asyncio.sleep(20)
+    while True:
+        try:
+            pending = await database.get_pending_llm_forecasts(limit=200)
+            evaluated = 0
+            for forecast in pending:
+                observed = _forecast_outcome_from_closed_m1(forecast["symbol"], forecast)
+                if not observed:
+                    continue
+                outcome = evaluate_forecast(forecast, evaluated_at=time.time(), **observed)
+                if await database.mark_llm_forecast_evaluated(forecast["forecast_id"], outcome):
+                    evaluated += 1
+            if evaluated:
+                await refresh_llm_forecast_lessons()
+            _forecast_evaluation_state.update({"last_run_at": time.time(), "evaluated": evaluated, "last_error": None})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _forecast_evaluation_state.update({"last_run_at": time.time(), "last_error": str(exc)})
+            logger.exception("LLM forecast evaluation error: %s", exc)
+        await asyncio.sleep(config.LLM_FORECAST_EVALUATION_INTERVAL_SEC)
+
 async def startup_services():
     global _pg_pool
     await database.init_db()
@@ -920,6 +978,7 @@ async def startup_services():
     _start_background(microstructure_snapshot_loop(), "microstructure-snapshot")
     _start_background(strategy_loop(), "strategy-loop")
     _start_background(ma_cascade_shadow_loop(), "ma-cascade-shadow")
+    _start_background(llm_forecast_evaluation_loop(), "llm-forecast-evaluator")
     _start_background(radar_loop(), "radar-loop")
     _start_background(symbol_activity_loop(), "symbol-activity")
     _start_background(llm_idle_trigger_loop(), "llm-idle-trigger")
@@ -2648,27 +2707,139 @@ async def symbol_analysis_llm(symbol: str, payload: dict = None):
 
 @app.post("/api/symbol-analysis/{symbol}/llm/commentary")
 async def symbol_analysis_llm_commentary(symbol: str, payload: dict = None):
-    """Explain multi-timeframe market context in plain Turkish; read-only."""
+    """Create a short, journaled scenario forecast from fresh public snapshots."""
     snapshot = await symbol_llm_context(symbol, "5m")
     if not snapshot.get("data_ready"):
         return {"enabled": False, "status": "data_not_ready", "error": snapshot.get("error")}
     context = snapshot.get("llm_context") or {}
+    regime = str((((context.get("timeframes") or {}).get("5m") or {}).get("methodologies") or {}).get("regime", {}).get("name") or "unknown")
+    history = _forecast_price_history(symbol, context.get("timeframes") or {})
+    lessons = await database.get_llm_forecast_lessons(symbol=symbol, regime=regime, status="active", limit=8)
+    entry_price = float(snapshot.get("price") or 0)
+    atr_pct = float(((snapshot.get("volatility") or {}).get("atr_pct") or 0))
+    min_move_pct = max(config.LLM_FORECAST_MIN_MOVE_PCT, atr_pct * 0.35)
+    forecast_context = {
+        "type": "journaled_symbol_forecast", "symbol": symbol.upper(), "paper_only": True,
+        "observed_at": time.time(), "entry_price": entry_price, "regime": regime,
+        "timeframes": context.get("timeframes", {}), "recent_price_behavior": history,
+        "validated_lessons": lessons,
+        "horizons_minutes": list(config.LLM_FORECAST_HORIZONS_MINUTES),
+        "minimum_directional_move_pct": min_move_pct,
+        "data_policy": context.get("data_policy"),
+    }
     prompt = (
-        "Aşağıdaki sembolün M1, M5, M15, M30, H1, H4 ve D1 snapshot verilerini "
-        "sadece verilen bilgilerle değerlendir. Teknik terimleri mümkün olduğunca kullanma; "
-        "çok sade Türkçe yaz. Yanıtı tam olarak üç kısa başlıkla ver: 'Ne olmuş?', "
-        "'Ne oluyor?', 'Ne olabilir?'. Yönü, karşı senaryoyu ve bozulma seviyesini doğrudan açıkla; "
-        "tekrarlayan sorumluluk veya garanti uyarısı ekleme."
+        "Sadece sağlanan snapshot, geçmiş fiyat özeti ve doğrulanmış dersleri kullan. "
+        "Geleceği kesinmiş gibi anlatma; bu bir paper-only senaryo tahminidir. JSON dışında hiçbir şey yazma. "
+        "Şema tam olarak şu olmalı: {\"summary\":\"en fazla 240 karakter\",\"forecasts\":["
+        "{\"horizon_minutes\":5|15|60|240,\"direction\":\"up|down|range\",\"confidence\":0-100,"
+        "\"invalidation_price\":number|null,\"scenario\":\"en fazla 160 karakter\","
+        "\"counter_scenario\":\"en fazla 120 karakter\"}]}. Her ufuk yalnız bir kez bulunmalı. "
+        "Tahminleri M1/M5/M15 kısa vade, H1/H4/D1 ana rejim ve geçmiş fiyat davranışıyla tutarlı kur. "
+        "Doğrulanmış dersleri yalnız destekleyici bağlam say; örneklem küçükse güveni yükseltme."
     )
     result = await llm_analysis.chat(
-        {"type": "plain_language_symbol_commentary", "symbol": symbol.upper(), "paper_only": True,
-         "timeframes": context.get("timeframes", {}), "data_policy": context.get("data_policy")},
+        forecast_context,
         [{"role": "user", "content": prompt}], tools=None, tool_executor=None,
     )
+    parsed = _parse_forecast_response(result.get("text") or result.get("content"), entry_price)
+    if not parsed:
+        return {"enabled": True, "status": "invalid_forecast_format", "symbol": symbol.upper(),
+                "error": "LLM tahmin şemasına uymadı; kayıt oluşturulmadı.", "paper_only": True}
+    now = time.time(); group_id = uuid.uuid4().hex
+    snapshot_hash = hashlib.sha256(json.dumps(forecast_context, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+    forecasts = []
+    for item in parsed["forecasts"]:
+        forecasts.append({
+            "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id, "symbol": symbol.upper(),
+            "created_at": now, "horizon_minutes": item["horizon_minutes"], "entry_price": entry_price,
+            "direction": item["direction"], "confidence": item["confidence"],
+            "invalidation_price": item.get("invalidation_price"), "min_move_pct": min_move_pct,
+            "regime": regime, "timeframe_context": context.get("timeframes", {}), "scenario": item["scenario"],
+            "counter_scenario": item.get("counter_scenario"), "summary": parsed["summary"],
+            "model": result.get("model"), "prompt_version": "journaled-forecast-v2", "snapshot_hash": snapshot_hash,
+            "snapshot": forecast_context,
+        })
+    await database.save_llm_forecasts(forecasts)
+    await database.save_decision_log({"timestamp": now, "symbol": symbol.upper(), "strategy": "LLM_FORECAST",
+                                      "decision": "FORECAST_JOURNALED", "reason": "scenario_forecast_paper_only",
+                                      "price": entry_price, "metadata": {"forecast_group_id": group_id,
+                                      "horizons": [item["horizon_minutes"] for item in forecasts], "snapshot_hash": snapshot_hash}})
     return {"enabled": True, "status": result.get("status", "ok"), "symbol": symbol.upper(),
             "timeframes": list(context.get("timeframes", {}).keys()),
-            "commentary": result.get("text") or result.get("content") or "Yorum üretilemedi.",
-            "model": result.get("model"), "paper_only": True}
+            "commentary": parsed["summary"], "forecasts": [{key: row.get(key) for key in
+                ("forecast_id", "horizon_minutes", "direction", "confidence", "invalidation_price", "scenario", "counter_scenario")}
+                for row in forecasts], "forecast_group_id": group_id, "model": result.get("model"), "paper_only": True}
+
+
+def _forecast_price_history(symbol: str, snapshots: dict) -> dict:
+    """Compact, causal price behavior for fast LLM context; no future bars."""
+    result = {}
+    for timeframe in ("1m", "5m", "15m", "30m", "1h", "4h", "1d"):
+        bars = market.get_ut_kline(symbol, timeframe) or {}
+        closes = list(bars.get("closes") or [])
+        highs = list(bars.get("highs") or [])
+        lows = list(bars.get("lows") or [])
+        if len(closes) < 2:
+            snapshot = snapshots.get(timeframe) or {}
+            momentum = snapshot.get("momentum") or {}
+            result[timeframe] = {"available": False, "return_one_bar_pct": momentum.get("return_5m")}
+            continue
+        window = min(24, len(closes))
+        result[timeframe] = {
+            "available": True, "candles": len(closes),
+            "return_one_bar_pct": (float(closes[-1]) / float(closes[-2]) - 1) * 100,
+            "return_window_pct": (float(closes[-1]) / float(closes[-window]) - 1) * 100 if window > 1 else 0.0,
+            "window_high": max(float(value) for value in highs[-window:]) if highs else None,
+            "window_low": min(float(value) for value in lows[-window:]) if lows else None,
+        }
+    return result
+
+
+def _parse_forecast_response(value, entry_price: float):
+    text = str(value or "").strip()
+    candidates = [text]
+    if "```" in text:
+        candidates.extend(part.strip().removeprefix("json").strip() for part in text.split("```") if "{" in part)
+    if "{" in text and "}" in text:
+        candidates.append(text[text.find("{"):text.rfind("}") + 1])
+    decoded = None
+    for candidate in candidates:
+        try:
+            decoded = json.loads(candidate)
+            break
+        except (json.JSONDecodeError, TypeError):
+            continue
+    if not isinstance(decoded, dict) or not isinstance(decoded.get("forecasts"), list):
+        return None
+    rows, seen = [], set()
+    for item in decoded["forecasts"]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            horizon = int(item.get("horizon_minutes"))
+            confidence = max(0.0, min(100.0, float(item.get("confidence"))))
+        except (TypeError, ValueError):
+            continue
+        direction = normalize_direction(item.get("direction"))
+        if horizon not in config.LLM_FORECAST_HORIZONS_MINUTES or horizon in seen or not direction:
+            continue
+        invalidation = item.get("invalidation_price")
+        try:
+            invalidation = float(invalidation) if invalidation not in (None, "") else None
+        except (TypeError, ValueError):
+            invalidation = None
+        if invalidation is not None and invalidation <= 0:
+            invalidation = None
+        scenario = str(item.get("scenario") or "").strip()[:160]
+        if not scenario:
+            continue
+        seen.add(horizon)
+        rows.append({"horizon_minutes": horizon, "direction": direction, "confidence": confidence,
+                     "invalidation_price": invalidation, "scenario": scenario,
+                     "counter_scenario": str(item.get("counter_scenario") or "").strip()[:120] or None})
+    if set(seen) != set(config.LLM_FORECAST_HORIZONS_MINUTES) or not entry_price:
+        return None
+    return {"summary": str(decoded.get("summary") or "Senaryo tahmini kaydedildi.").strip()[:240], "forecasts": sorted(rows, key=lambda row: row["horizon_minutes"])}
 
 async def llm_query_database(args: dict, default_symbol: str | None = None):
     """Read-only structured DB query exposed to LLMs; never executes raw SQL."""
@@ -3491,6 +3662,17 @@ async def get_analysis_snapshots(symbol: str, limit: int = 50):
             output.append(item)
         return output
     return {"symbol": symbol.upper(), "snapshots": await database._run_db(op)}
+
+
+@app.get("/api/symbol-analysis/{symbol}/forecasts")
+async def get_symbol_forecasts(symbol: str, limit: int = 30):
+    """Read-only forecast journal and measured outcomes for the analysis UI."""
+    rows = await database.get_llm_forecasts(symbol=symbol, limit=limit)
+    evaluated = [row for row in rows if row.get("status") == "evaluated"]
+    accuracy = (sum(bool(row.get("direction_correct")) for row in evaluated) / len(evaluated)) if evaluated else None
+    return {"symbol": symbol.upper(), "paper_only": True, "forecasts": rows,
+            "evaluated_count": len(evaluated), "directional_accuracy": accuracy,
+            "evaluator": dict(_forecast_evaluation_state)}
 
 @app.get("/api/microstructure-snapshots/{symbol}")
 async def get_microstructure_snapshots(symbol: str, limit: int = 500, start: float = 0, end: float = 0):

@@ -54,6 +54,12 @@ class Config:
     SMA_CASCADE_MAX_SEQUENCE_MINUTES = max(1, int(os.getenv("SMA_CASCADE_MAX_SEQUENCE_MINUTES", "10")))
     SMA_CASCADE_BREAKOUT_WINDOW_MINUTES = max(1, int(os.getenv("SMA_CASCADE_BREAKOUT_WINDOW_MINUTES", "30")))
     SMA_CASCADE_OUTCOME_WINDOW_MINUTES = max(1, int(os.getenv("SMA_CASCADE_OUTCOME_WINDOW_MINUTES", "30")))
+    # LLM market commentary is a journaled, paper-only forecast.  These
+    # horizons never authorize an order or mutate strategy parameters.
+    LLM_FORECAST_HORIZONS_MINUTES = (5, 15, 60, 240)
+    LLM_FORECAST_EVALUATION_INTERVAL_SEC = max(30, int(os.getenv("LLM_FORECAST_EVALUATION_INTERVAL_SEC", "60")))
+    LLM_FORECAST_MIN_MOVE_PCT = max(0.0001, float(os.getenv("LLM_FORECAST_MIN_MOVE_PCT", "0.0015")))
+    LLM_FORECAST_LESSON_MIN_SAMPLES = max(8, int(os.getenv("LLM_FORECAST_LESSON_MIN_SAMPLES", "12")))
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     # The live BB-MFI contract defaults to the supplied Flawless Victory v3.
