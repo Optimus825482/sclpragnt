@@ -16,6 +16,7 @@ frontend/.next/
 outputs/
 work/
 .omx/
+.research_cache/
 
 # Backend research artifacts (JSON/CSV dumps)
 backend/*.json

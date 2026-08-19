@@ -481,6 +481,7 @@ class ScalpAnalyzer:
             "CHOP_TREND_FILTER": config.CHOP_TIMEFRAME,
             "DONCHIAN_BREAKOUT": config.DONCHIAN_TIMEFRAME,
             "BB_MFI_MEAN_REVERSION": config.ACTIVE_STRATEGY_TIMEFRAME,
+            "PUMP_MONITOR": "5m",
         }.get(strat_name, config.UT_TIMEFRAME)
 
     async def _manage_open_position(self, symbol, price, strat_name):
@@ -1239,11 +1240,11 @@ class ScalpAnalyzer:
             "hold_seconds": hold_seconds,
         }
 
-    async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT", order_value=None, stop_loss_pct=None, take_profit_pct=None, max_hold_sec=None):
+    async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT", order_value=None, stop_loss_pct=None, take_profit_pct=None, max_hold_sec=None, entry_context_extra=None):
         # Strategy loop ve Gainer Radar aynı anda aynı sembolü tetikleyebilir.
         # Cüzdan düşümü ile pozisyon kaydı tek atomik akışta yapılmalı.
         async with self._open_position_lock:
-            return await self._open_position_unlocked(symbol, entry_price, side, strat_name, order_value, stop_loss_pct, take_profit_pct, max_hold_sec)
+            return await self._open_position_unlocked(symbol, entry_price, side, strat_name, order_value, stop_loss_pct, take_profit_pct, max_hold_sec, entry_context_extra)
 
     @staticmethod
     def _liquidity_reason(details, prefix="entry_ineligible"):
@@ -1328,7 +1329,7 @@ class ScalpAnalyzer:
             details["reason"] = self._liquidity_reason(details)
         return liquid, details
 
-    async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None):
+    async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None, entry_context_extra=None):
         symbol = str(symbol).replace("_", "").upper()
         # Every entry path (strategy, LLM, alert, radar and pending orders)
         # converges here. A passive symbol must therefore be rejected at this
@@ -1499,6 +1500,11 @@ class ScalpAnalyzer:
                          "pyramid_profit_extension_layers": config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS,
                          "order_value_try": order_value,
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
+        # Additional evidence from a distinct paper strategy is stored here
+        # rather than replacing the shared writer context.  This keeps the
+        # position and later trade audit trail attributable to its signal.
+        if entry_context_extra:
+            entry_context["signal_context"] = dict(entry_context_extra)
         if self.market:
             technical_tf = self._strategy_tf(strat_name)
             daily_klines = self.market.klines.get("1d", {}).get(symbol.upper(), {})
@@ -1608,4 +1614,3 @@ class ScalpAnalyzer:
                         "reason": reason, "strategy": strat_name, "timestamp": time.time()}
             raise
         return sig
-

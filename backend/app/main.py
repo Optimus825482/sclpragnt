@@ -176,6 +176,8 @@ _symbol_history_backfills = set()
 _strategy_scan_logs = deque(maxlen=5000)
 _background_tasks = set()
 _radar_snapshot = {"generated_at": 0.0, "items": {}}
+_pump_monitor_snapshot = {"generated_at": 0.0, "items": {}, "last_execution": []}
+_pump_monitor_seen_candles = {}
 _forecast_evaluation_state = {"last_run_at": None, "evaluated": 0, "lessons_refreshed": 0, "last_error": None}
 
 
@@ -1116,6 +1118,125 @@ async def auto_open_from_alert(rule, event):
     return {"status": "opened" if signal.get("action") == "BUY_SIGNAL" else "blocked",
             "symbol": rule.get("symbol"), "signal": signal, "details": result, "paper_only": True}
 
+def _pump_monitor_snapshot_for(symbol: str, timeframe: str, price: float, order_value: float):
+    """Return a completed-candle technical snapshot from the hot public cache."""
+    bars = market.get_ut_kline(symbol, timeframe) or {}
+    daily = market.get_ut_kline(symbol, "1d") or {}
+    return calculate_snapshot(
+        symbol, price, {timeframe: bars, "1d": daily}, market.get_orderflow(symbol),
+        market.ticker_24h.get(symbol, 0), order_value, timeframe,
+    )
+
+
+async def pump_monitor_scan(*, execute: bool = False, source: str = "manual"):
+    """Score M5 early-pump candidates without altering the active BB-MFI path.
+
+    The rule set is the frozen research candidate: M5 upper-band expansion,
+    M5 MFI/RSI confirmation and M15 bullish context.  It is paper-only and
+    still passes the common liquidity, balance, position and re-entry gates.
+    """
+    global _pump_monitor_snapshot
+    rows, opened = [], []
+    order_value = float(config.FALLBACK_ORDER_TRY)
+    for symbol in list(dict.fromkeys(config.SYMBOLS)):
+        try:
+            ticker = market.get_ticker(symbol) or {}
+            price = float(ticker.get("last_price") or 0)
+            bars5 = market.get_ut_kline(symbol, "5m") or {}
+            bars15 = market.get_ut_kline(symbol, "15m") or {}
+            bars30 = market.get_ut_kline(symbol, "30m") or {}
+            closes5 = list(bars5.get("closes") or [])
+            if not price and closes5:
+                price = float(closes5[-1])
+            if price <= 0 or len(closes5) < 55 or len(bars15.get("closes") or []) < 55 or len(bars30.get("closes") or []) < 55:
+                rows.append({"symbol": symbol, "status": "WARMING", "eligible": False,
+                             "reason": "M5/M15/M30 için en az 55 kapanmış mum bekleniyor"})
+                continue
+            snap5 = _pump_monitor_snapshot_for(symbol, "5m", price, order_value)
+            snap15 = _pump_monitor_snapshot_for(symbol, "15m", price, order_value)
+            snap30 = _pump_monitor_snapshot_for(symbol, "30m", price, order_value)
+            if not (snap5.get("data_ready") and snap15.get("data_ready") and snap30.get("data_ready")):
+                rows.append({"symbol": symbol, "status": "WARMING", "eligible": False,
+                             "reason": "teknik snapshot henüz hazır değil"})
+                continue
+            bb_position = float((snap5.get("channels", {}).get("bollinger") or {}).get("position") or 0)
+            mfi = float(snap5.get("momentum", {}).get("mfi_14") or 0)
+            rsi = float(snap5.get("momentum", {}).get("rsi_14") or 0)
+            volume_ratio = float(snap5.get("volume", {}).get("volume_ratio_20") or 0)
+            m15_alignment = str(snap15.get("trend", {}).get("alignment") or "mixed")
+            m30_alignment = str(snap30.get("trend", {}).get("alignment") or "mixed")
+            continuation = m15_alignment == "bullish" or m30_alignment == "bullish"
+            checks = {
+                "M5 BB genişleme": bb_position >= 0.80,
+                "M15/M30 bağlam": continuation,
+                "M5 MFI": mfi >= 45,
+                "M5 RSI": rsi >= 65,
+            }
+            score = sum(checks.values())
+            m15_ok = (m15_alignment == "bullish") if config.PUMP_MONITOR_REQUIRE_M15_BULLISH else True
+            eligible = score >= config.PUMP_MONITOR_MIN_SCORE and m15_ok
+            high_confidence = eligible and volume_ratio >= config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO
+            candle_id = str(bars5.get("last_closed_at_ms") or bars5.get("timestamps", [None])[-1] or f"{len(closes5)}:{closes5[-1]}")
+            row = {
+                "symbol": symbol, "price": price, "status": "ENTRY_CANDIDATE" if eligible else "WATCH",
+                "eligible": eligible, "high_confidence": high_confidence, "score": score,
+                "checks": checks, "bb_position": round(bb_position, 3), "mfi_14": round(mfi, 2),
+                "rsi_14": round(rsi, 2), "volume_ratio_20": round(volume_ratio, 2),
+                "m15_alignment": m15_alignment, "m30_alignment": m30_alignment,
+                "has_open_position": symbol in analyzer.positions,
+                "reason": "M15 bağlam + M5 devam sinyali" if eligible else "Eşik/bağlam tamamlanmadı",
+                "candle_id": candle_id,
+            }
+            rows.append(row)
+            # A page refresh is observation-only.  It must not consume the
+            # candle id that the automatic paper executor uses later.
+            if not execute:
+                continue
+            is_new_candle = _pump_monitor_seen_candles.get(symbol) != candle_id
+            if not is_new_candle:
+                continue
+            _pump_monitor_seen_candles[symbol] = candle_id
+            if score >= 2:
+                await database.save_signal({"symbol": symbol, "action": "PUMP_CANDIDATE", "price": price,
+                                            "reason": f"score={score}/4;m15={m15_alignment};m30={m30_alignment};vol={volume_ratio:.2f}",
+                                            "strategy": "PUMP_MONITOR", "timestamp": time.time()})
+            if not (execute and config.PUMP_MONITOR_AUTO_TRADE and eligible) or symbol in analyzer.positions:
+                continue
+            pump_positions = sum(1 for pos in analyzer.positions.values() if pos.get("strategy") == "PUMP_MONITOR")
+            if pump_positions >= config.PUMP_MONITOR_MAX_OPEN_POSITIONS:
+                row["status"] = "CAP_REACHED"
+                row["reason"] = "Pump Monitor açık pozisyon limiti dolu"
+                continue
+            liquid, liquidity = await analyzer.entry_liquidity_preflight(symbol, "PUMP_MONITOR")
+            if not liquid:
+                row["status"] = "ENTRY_INELIGIBLE"
+                row["reason"] = liquidity.get("reason", "liquidity_ineligible")
+                continue
+            context = {"signal_name": "Pump Monitor · M15 + M5 devam", "score": score,
+                       "high_confidence": high_confidence, "checks": checks, "m5": {"bb_position": bb_position, "mfi_14": mfi, "rsi_14": rsi, "volume_ratio_20": volume_ratio},
+                       "m15_alignment": m15_alignment, "m30_alignment": m30_alignment, "source": source,
+                       "research_rule": "score>=3 + M15 bullish; volume>=1 high confidence"}
+            result = await analyzer.open_position(symbol, price, "LONG", "PUMP_MONITOR", entry_context_extra=context)
+            if result and result.get("action") == "BUY_SIGNAL":
+                opened.append(result)
+                row["status"] = "PAPER_OPENED"
+                await ws_manager.broadcast({"type": "signal", "data": result})
+            elif result:
+                row["status"] = str(result.get("action") or "BLOCKED")
+                row["reason"] = str(result.get("reason") or "common_entry_gate_blocked")
+        except Exception as exc:
+            rows.append({"symbol": symbol, "status": "ERROR", "eligible": False, "reason": str(exc)})
+            print(f"[Pump Monitor] {symbol} tarama hatası: {exc}", flush=True)
+    rows.sort(key=lambda item: (not bool(item.get("eligible")), -int(item.get("score") or 0), -float(item.get("volume_ratio_20") or 0)))
+    _pump_monitor_snapshot = {"generated_at": time.time(), "items": {row.get("symbol"): dict(row) for row in rows}, "last_execution": opened}
+    return {"items": rows, "paper_trades": opened, "generated_at": _pump_monitor_snapshot["generated_at"],
+            "paper_only": True, "config": {"enabled": config.PUMP_MONITOR_ENABLED, "auto_trade": config.PUMP_MONITOR_AUTO_TRADE,
+            "min_score": config.PUMP_MONITOR_MIN_SCORE, "require_m15_bullish": config.PUMP_MONITOR_REQUIRE_M15_BULLISH,
+            "high_confidence_volume_ratio": config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO,
+            "max_open_positions": config.PUMP_MONITOR_MAX_OPEN_POSITIONS},
+            "model": "M5 early detection + M15/M30 context; research candidate, paper-only"}
+
+
 async def strategy_loop():
     await asyncio.sleep(5)
     # Entry checks are aligned to the exchange 5m candle boundary, not to
@@ -1129,6 +1250,15 @@ async def strategy_loop():
         scan_checked = scan_fresh = scan_stale = scan_evaluated = scan_no_signal = scan_errors = scan_passive = scan_ineligible = 0
         scan_buy = scan_blocked = 0
         scan_id = f"automatic-{int(time.time() * 1000)}" if entry_scan_due else None
+        if entry_scan_due and config.PUMP_MONITOR_ENABLED:
+            try:
+                pump_result = await pump_monitor_scan(execute=config.PUMP_MONITOR_AUTO_TRADE, source="automatic")
+                _record_strategy_scan_log("pump_monitor", "*", "SCAN", scan_id=scan_id,
+                                          candidates=sum(1 for item in pump_result["items"] if item.get("eligible")),
+                                          opened=len(pump_result["paper_trades"]))
+            except Exception as exc:
+                print(f"[Pump Monitor] otomatik tarama hatası: {exc}", flush=True)
+                _record_strategy_scan_log("pump_monitor", "*", "ERROR", scan_id=scan_id, error=str(exc))
         if entry_scan_due:
             print(f"[Strategy] giriş taraması başladı | symbols={len(config.SYMBOLS)} trigger=5m_candle_close", flush=True)
         for sym in config.SYMBOLS:
@@ -1685,6 +1815,12 @@ async def memory_retrieve(payload: dict = None):
 
 CONFIG_FIELDS = {
     "gainer_radar_min_score": "GAINER_RADAR_MIN_SCORE",
+    "pump_monitor_enabled": "PUMP_MONITOR_ENABLED",
+    "pump_monitor_auto_trade": "PUMP_MONITOR_AUTO_TRADE",
+    "pump_monitor_max_open_positions": "PUMP_MONITOR_MAX_OPEN_POSITIONS",
+    "pump_monitor_min_score": "PUMP_MONITOR_MIN_SCORE",
+    "pump_monitor_require_m15_bullish": "PUMP_MONITOR_REQUIRE_M15_BULLISH",
+    "pump_monitor_high_confidence_volume_ratio": "PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO",
     "min_notional": "MIN_NOTIONAL",
     "min_24h_quote_volume_try": "MIN_24H_QUOTE_VOLUME_TRY",
     "high_liquidity_bypass_volume_try": "HIGH_LIQUIDITY_BYPASS_VOLUME_TRY",
@@ -1795,15 +1931,21 @@ CONFIG_FIELDS = {
     "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled"}
+BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "pump_monitor_enabled", "pump_monitor_auto_trade", "pump_monitor_require_m15_bullish"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_pyramid_profit_extension_layers"}
+INT_FIELDS = {"gainer_radar_min_score", "pump_monitor_max_open_positions", "pump_monitor_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_pyramid_profit_extension_layers"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "bb_mfi_pine_version", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
 async def get_config():
     return {
         "gainer_radar_min_score": config.GAINER_RADAR_MIN_SCORE,
+        "pump_monitor_enabled": config.PUMP_MONITOR_ENABLED,
+        "pump_monitor_auto_trade": config.PUMP_MONITOR_AUTO_TRADE,
+        "pump_monitor_max_open_positions": config.PUMP_MONITOR_MAX_OPEN_POSITIONS,
+        "pump_monitor_min_score": config.PUMP_MONITOR_MIN_SCORE,
+        "pump_monitor_require_m15_bullish": config.PUMP_MONITOR_REQUIRE_M15_BULLISH,
+        "pump_monitor_high_confidence_volume_ratio": config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO,
         "symbols": config.SYMBOLS,
         "min_notional": config.MIN_NOTIONAL,
         "min_24h_quote_volume_try": config.MIN_24H_QUOTE_VOLUME_TRY,
@@ -2110,6 +2252,24 @@ async def refresh_symbol_activity_manual():
 async def execute_gainers_radar():
     return await gainers_radar(execute=True)
 
+
+@app.get("/api/pump-monitor")
+async def get_pump_monitor():
+    """Observation-only refresh for the Pump Monitor screen."""
+    result = await pump_monitor_scan(execute=False, source="monitor_view")
+    result["history"] = await database.get_signals(limit=80, strategy="PUMP_MONITOR")
+    return result
+
+
+@app.post("/api/pump-monitor/scan")
+async def execute_pump_monitor():
+    """Run one paper execution scan; real exchange orders are never used."""
+    if not config.PUMP_MONITOR_ENABLED:
+        raise HTTPException(status_code=409, detail="Pump Monitor ayarlarda kapalı")
+    result = await pump_monitor_scan(execute=True, source="manual_execute")
+    result["history"] = await database.get_signals(limit=80, strategy="PUMP_MONITOR")
+    return result
+
 @app.put("/api/config")
 async def update_config(payload: dict):
     """Persist runtime settings while always preserving the JSON API contract."""
@@ -2182,6 +2342,10 @@ async def _apply_config_update(payload: dict):
                     raise ValueError("max_open_positions 0 (sınırsız) ile 500 arasında olmalıdır")
                 if key == "gainer_radar_min_score" and not 0 <= number <= 100:
                     raise ValueError("gainer_radar_min_score 0 ile 100 arasında olmalıdır")
+                if key == "pump_monitor_min_score" and not 3 <= number <= 4:
+                    raise ValueError("pump_monitor_min_score 3 veya 4 olmalıdır")
+                if key == "pump_monitor_max_open_positions" and not 1 <= number <= 20:
+                    raise ValueError("pump_monitor_max_open_positions 1 ile 20 arasında olmalıdır")
                 if key == "pyramiding_layers" and not 1 <= number <= 10:
                     raise ValueError("pyramiding_layers 1 ile 10 arasında olmalıdır")
                 setattr(config, attr, number)
@@ -2201,6 +2365,8 @@ async def _apply_config_update(payload: dict):
                     raise ValueError(f"{key} 0 ile 1 arasında olmalıdır")
                 if key == "order_pct" and not 0 < number <= 1:
                     raise ValueError("order_pct 0 ile 1 arasında olmalıdır")
+                if key == "pump_monitor_high_confidence_volume_ratio" and not 0 <= number <= 10:
+                    raise ValueError("pump_monitor_high_confidence_volume_ratio 0 ile 10 arasında olmalıdır")
                 setattr(config, attr, number)
     if "ut_symbols" in payload:
         config.UT_SYMBOLS = payload["ut_symbols"]

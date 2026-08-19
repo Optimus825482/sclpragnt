@@ -1660,7 +1660,9 @@ export default function ChartsPage() {
                                     const entryValue = Number(p.entry || 0) * Number(p.quantity || 0);
                                     return (
                                         <tr key={p.symbol} className="border-b border-bunker-800/50 hover:bg-bunker-900/50">
-                                            <td className="px-4 py-2 text-white font-bold"><SymbolLink symbol={p.symbol} className="text-white hover:text-neon-green" /></td>
+                                            <td className="px-4 py-2 text-white font-bold"><SymbolLink symbol={p.symbol} className="text-white hover:text-neon-green" />
+                                                <div className="mt-1 text-[10px] font-mono text-bunker-muted">{p.strategy === "PUMP_MONITOR" ? `Pump Monitor · skor ${p.entry_context?.signal_context?.score ?? "—"}/4` : (p.strategy || "UT")}</div>
+                                            </td>
                                             <td className="px-4 py-2 text-bunker-muted">{time}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{formatPrice(p.entry)}</td>
                                             <td className="px-4 py-2 text-white">{formatPrice(p.current)}</td>

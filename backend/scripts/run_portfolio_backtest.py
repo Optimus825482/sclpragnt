@@ -60,7 +60,8 @@ def apply_live_parity_72h_profile(args):
     # pencerenin ilk günü sessizce atlanır ve parity bozulur.
     args.fetch_days = max(int(args.fetch_days), 4)
     args.pine_version = "current"
-    args.symbols = [str(symbol).replace("_", "").upper() for symbol in config.SYMBOLS]
+    requested_symbols = [str(symbol).replace("_", "").upper() for symbol in (args.symbols or [])]
+    args.symbols = requested_symbols if args.live_parity_keep_symbols and requested_symbols else [str(symbol).replace("_", "").upper() for symbol in config.SYMBOLS]
     args.use_all_requested = True
     args.open_position_policy = "mark-to-market"
     args.order_pct = config.ORDER_PCT
@@ -439,7 +440,7 @@ def replay_features(analyzer, window, version):
             "atr": analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD)}
 
 
-def mtf_entry_features(symbol, price, signal_ts, base_window, mtf_series):
+def mtf_entry_features(analyzer, symbol, price, signal_ts, base_window, mtf_series):
     """Build causal M1/M5/M15/H1/H4 snapshots using only closed candles."""
     snapshots = {}
     for interval, data in mtf_series.items():
@@ -468,6 +469,16 @@ def mtf_entry_features(symbol, price, signal_ts, base_window, mtf_series):
     for interval in ("1m", "5m", "15m", "1h", "4h"):
         snapshot = calculate_snapshot(symbol, price, snapshots, primary_timeframe=interval)
         bollinger = ((snapshot.get("channels") or {}).get("bollinger") or {})
+        raw = snapshots.get(interval) or {}
+        closes = raw.get("closes") or []
+        ema9 = analyzer.calculate_ema(closes, 9)
+        previous_ema9 = analyzer.calculate_ema(closes[:-1], 9)
+        ema21 = analyzer.calculate_ema(closes, 21)
+        ema50 = analyzer.calculate_ema(closes, 50)
+        # Exact Gainer Radar definition, not merely the broader snapshot
+        # alignment label: price must be above EMA9 and EMA9 must be rising.
+        radar_bullish = bool(ema9 and previous_ema9 and ema21 and ema50 and closes and
+                             closes[-1] > ema9 > ema21 > ema50 and ema9 > previous_ema9)
         result["timeframes"][interval] = {
             "data_ready": snapshot.get("data_ready", False),
             "alignment": (snapshot.get("trend") or {}).get("alignment"),
@@ -476,6 +487,8 @@ def mtf_entry_features(symbol, price, signal_ts, base_window, mtf_series):
             "bb_width_pct": bollinger.get("width_pct"),
             "rsi_14": (snapshot.get("momentum") or {}).get("rsi_14"),
             "volume_ratio_20": (snapshot.get("volume") or {}).get("volume_ratio_20"),
+            "orderflow_proxy_20": analyzer.calculate_orderflow_proxy(raw),
+            "radar_bullish": radar_bullish,
         }
     return result
 
@@ -486,8 +499,18 @@ def mtf_entry_gate(features, mode):
     align_15m = (tf.get("15m") or {}).get("alignment")
     align_1h = (tf.get("1h") or {}).get("alignment")
     bullish_count = sum((tf.get(interval) or {}).get("alignment") == "bullish" for interval in ("1m", "5m", "15m", "1h", "4h"))
+    radar_all_5 = all((tf.get(interval) or {}).get("radar_bullish") is True for interval in ("1m", "5m", "15m", "1h", "4h"))
     if mode == "bullish-count":
         return bullish_count >= 3, f"bullish_count_{bullish_count}"
+    if mode in {"all-5", "all-5-volume-flow"}:
+        if not radar_all_5:
+            return False, "radar_not_5of5"
+        if mode == "all-5":
+            return True, "radar_5of5"
+        m1, m5 = tf.get("1m") or {}, tf.get("5m") or {}
+        volume_ok = all(isinstance(item.get("volume_ratio_20"), (int, float)) and item["volume_ratio_20"] >= 1.0 for item in (m1, m5))
+        flow_ok = all(isinstance(item.get("orderflow_proxy_20"), (int, float)) and item["orderflow_proxy_20"] >= 0.0 for item in (m1, m5))
+        return volume_ok and flow_ok, f"radar_5of5_volume_{'ok' if volume_ok else 'fail'}_flow_{'ok' if flow_ok else 'fail'}"
     if mode in {"acetry-rule", "acetry-rule-relaxed"}:
         m1 = tf.get("1m") or {}
         h1 = tf.get("1h") or {}
@@ -792,7 +815,7 @@ async def run(args):
             signals += 1
             print(f"[SIGNAL] {iso(data['times'][index - 1])} {symbol} BUY fill_at={iso(ts)} features={json.dumps(feature, ensure_ascii=False, default=str)}", flush=True)
             if args.mtf_feature_gate != "none":
-                mtf_features = mtf_entry_features(symbol, data["opens"][index], data["times"][index - 1], window, {"5m": data, **mtf_series_by_symbol.get(symbol, {})})
+                mtf_features = mtf_entry_features(analyzer, symbol, data["opens"][index], data["times"][index - 1], window, {"5m": data, **mtf_series_by_symbol.get(symbol, {})})
                 passed, gate_reason = mtf_entry_gate(mtf_features, args.mtf_feature_gate)
                 if not passed:
                     blocked += 1; filter_counts[f"mtf_{gate_reason}"] += 1
@@ -1077,11 +1100,13 @@ if __name__ == "__main__":
                         help="Live-parity penceresinin bitişini şimdiye göre geriye kaydırır; OOS için yalnız --live-parity-72h ile kullanılır")
     parser.add_argument("--live-parity-cost-multiplier", type=float, default=1.0,
                         help="Live-parity dolum maliyetlerini yalnız araştırma için çarpar; karar kurallarını değiştirmez")
+    parser.add_argument("--live-parity-keep-symbols", action="store_true",
+                        help="--live-parity-72h ile açıkça verilen sembolleri korur; verilmezse canlı yapılandırmadaki evren kullanılır")
     parser.add_argument("--use-all-requested", action="store_true", help="Verilen tarama evrenini güncel ACTIVE filtresi uygulamadan replay et")
     parser.add_argument("--interval", choices=("1m", "3m", "5m", "15m"), default="5m")
     parser.add_argument("--data-source", choices=("public", "historical-db"), default="public")
     parser.add_argument("--pine-version", choices=("current", "v1", "v2", "v3"), default="current")
-    parser.add_argument("--mtf-feature-gate", choices=("none", "high-tf", "research-score", "bullish-count", "acetry-rule", "acetry-rule-relaxed"), default="none",
+    parser.add_argument("--mtf-feature-gate", choices=("none", "high-tf", "research-score", "bullish-count", "all-5", "all-5-volume-flow", "acetry-rule", "acetry-rule-relaxed"), default="none",
                         help="M1/M5/M15/H1/H4 causal entry feature gate; research only")
     parser.add_argument("--fetch-days", type=int, default=2, help="Feature warmup dahil public candle window")
     parser.add_argument("--start-hours-ago", type=float, default=24)
