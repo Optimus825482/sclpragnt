@@ -2746,10 +2746,10 @@ async def symbol_analysis_llm_commentary(symbol: str, payload: dict = None):
     prompt = (
         "Sadece sağlanan snapshot, geçmiş fiyat özeti ve doğrulanmış dersleri kullan. "
         "Geleceği kesinmiş gibi anlatma; bu bir paper-only senaryo tahminidir. JSON dışında hiçbir şey yazma. "
-        "Şema tam olarak şu olmalı: {\"summary\":\"en fazla 240 karakter; en olası yön + ana koşul + bozulma\",\"forecasts\":["
+        "Şema tam olarak şu olmalı: {\"summary\":\"en fazla 220 karakter; en olası yön + ana koşul + bozulma\",\"forecasts\":["
         "{\"horizon_minutes\":5|15|60|240,\"direction\":\"up|down|range\",\"confidence\":0-100,"
-        "\"invalidation_price\":number|null,\"scenario\":\"en fazla 160 karakter\","
-        "\"counter_scenario\":\"en fazla 120 karakter\"}]}. Her ufuk yalnız bir kez bulunmalı. "
+        "\"invalidation_price\":number|null,\"scenario\":\"en fazla 180 karakter, tek tamamlanmış cümle\","
+        "\"counter_scenario\":\"en fazla 130 karakter, tek tamamlanmış cümle\"}]}. Her ufuk yalnız bir kez bulunmalı. "
         "Özeti doğrudan 'En olası:' diye başlat; belirsiz/genel ifadeler kullanma. Her ana senaryo yönü, "
         "fiyatın izlemesi gereken koşulu ve bozulma seviyesini açıkça söylemeli; karşı senaryo tersini belirtmeli. "
         "Tahminleri M1/M5/M15 kısa vade, H1/H4/D1 ana rejim ve geçmiş fiyat davranışıyla tutarlı kur. "
@@ -2848,16 +2848,29 @@ def _parse_forecast_response(value, entry_price: float):
             invalidation = None
         if invalidation is not None and invalidation <= 0:
             invalidation = None
-        scenario = str(item.get("scenario") or "").strip()[:160]
+        scenario = _complete_forecast_text(item.get("scenario"), 180)
         if not scenario:
             continue
         seen.add(horizon)
         rows.append({"horizon_minutes": horizon, "direction": direction, "confidence": confidence,
                      "invalidation_price": invalidation, "scenario": scenario,
-                     "counter_scenario": str(item.get("counter_scenario") or "").strip()[:120] or None})
+                     "counter_scenario": _complete_forecast_text(item.get("counter_scenario"), 130) or None})
     if set(seen) != set(config.LLM_FORECAST_HORIZONS_MINUTES) or not entry_price:
         return None
-    return {"summary": str(decoded.get("summary") or "Senaryo tahmini kaydedildi.").strip()[:240], "forecasts": sorted(rows, key=lambda row: row["horizon_minutes"])}
+    return {"summary": _complete_forecast_text(decoded.get("summary") or "Senaryo tahmini kaydedildi.", 220), "forecasts": sorted(rows, key=lambda row: row["horizon_minutes"])}
+
+
+def _complete_forecast_text(value, limit: int) -> str:
+    """Bound model text without exposing a broken word or half sentence in the UI."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    bounded = text[:limit + 1]
+    sentence_end = max(bounded.rfind("."), bounded.rfind("!"), bounded.rfind("?"))
+    if sentence_end >= max(12, limit // 2):
+        return bounded[:sentence_end + 1].strip()
+    word_end = bounded.rfind(" ")
+    return (bounded[:word_end].rstrip(" ,:;-") if word_end > 0 else bounded[:limit].rstrip()) + "…"
 
 async def llm_query_database(args: dict, default_symbol: str | None = None):
     """Read-only structured DB query exposed to LLMs; never executes raw SQL."""
