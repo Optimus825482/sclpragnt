@@ -976,6 +976,17 @@ async def startup_services():
     ]))
     await market.fetch_historical_data(priority_timeframes)
     print(f"[MarketData] öncelikli strateji verisi hazır | timeframes={priority_timeframes} tickers={len(market.tickers)}", flush=True)
+    # Pump Monitor tüm yapılandırılmış evreni değerlendirdiği için M5/M15/M30
+    # önbelleği en az teknik gösterge penceresi kadar kapalı mum içermelidir.
+    # Bu dar warmup yalnız eksik serileri 120 mumla REST'ten doldurur; her
+    # taramada yeniden geçmiş istemez ve diğer zaman dilimlerini belleğe almaz.
+    if config.PUMP_MONITOR_ENABLED:
+        pump_warmup = await market.ensure_history(("5m", "15m", "30m"), min_candles=55, candle_limit=120)
+        print(
+            f"[Pump Monitor] cache warmup | hydrated={pump_warmup['hydrated']} "
+            f"ready={pump_warmup['already_ready']} errors={len(pump_warmup['errors'])}",
+            flush=True,
+        )
     _start_background(backfill_missing_active_history(), "historical-backfill-active")
     _start_background(market.connect(skip_history=True), "market-connect")
     _start_background(microstructure_snapshot_loop(), "microstructure-snapshot")
@@ -1150,8 +1161,10 @@ async def pump_monitor_scan(*, execute: bool = False, source: str = "manual"):
             if not price and closes5:
                 price = float(closes5[-1])
             if price <= 0 or len(closes5) < 55 or len(bars15.get("closes") or []) < 55 or len(bars30.get("closes") or []) < 55:
+                candle_counts = {"M5": len(closes5), "M15": len(bars15.get("closes") or []), "M30": len(bars30.get("closes") or [])}
                 rows.append({"symbol": symbol, "status": "WARMING", "eligible": False,
-                             "reason": "M5/M15/M30 için en az 55 kapanmış mum bekleniyor"})
+                             "reason": "M5/M15/M30 için en az 55 kapanmış mum bekleniyor · " + " · ".join(f"{tf}={count}" for tf, count in candle_counts.items()),
+                             "candle_counts": candle_counts})
                 continue
             snap5 = _pump_monitor_snapshot_for(symbol, "5m", price, order_value)
             snap15 = _pump_monitor_snapshot_for(symbol, "15m", price, order_value)

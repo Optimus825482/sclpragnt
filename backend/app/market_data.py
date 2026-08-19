@@ -189,6 +189,65 @@ class MarketData:
         )
         await self.refresh_24h_tickers()
 
+    async def ensure_history(self, timeframes, *, min_candles=55, candle_limit=120):
+        """Hydrate only cache series that cannot yet support a strategy decision.
+
+        This is intentionally narrower than ``fetch_historical_data``: it
+        avoids re-fetching already warm series and keeps full-universe feature
+        monitors bounded to their required timeframes and history depth.
+        """
+        requested = list(dict.fromkeys(str(tf) for tf in (timeframes or []) if str(tf)))
+        if not requested:
+            return {"requested": 0, "hydrated": 0, "already_ready": 0, "errors": []}
+        required = max(1, int(min_candles))
+        limit = max(required + 1, min(self.MAX_HISTORY_CANDLES, int(candle_limit)))
+        symbols = list(dict.fromkeys(str(symbol).upper() for symbol in self.symbols))
+        missing = [
+            (timeframe, symbol)
+            for timeframe in requested
+            for symbol in symbols
+            if len((self.klines.get(timeframe, {}).get(symbol, {}) or {}).get("closes", [])) < required
+        ]
+        self.timeframes = sorted(set(self.timeframes).union(requested))
+        if not missing:
+            return {"requested": len(requested) * len(symbols), "hydrated": 0,
+                    "already_ready": len(requested) * len(symbols), "errors": []}
+
+        semaphore = asyncio.Semaphore(8)
+
+        async def hydrate(timeframe, symbol):
+            async with semaphore:
+                try:
+                    rows = await fetch_klines(symbol.lower(), timeframe, limit=limit)
+                    history = self._closed_history(rows, timeframe, int(time.time() * 1000))
+                    if len(history["closes"]) < required:
+                        return False, f"{symbol}/{timeframe}: insufficient_closed_candles={len(history['closes'])}"
+                    self.klines[timeframe][symbol] = history
+                    if symbol not in self.tickers:
+                        tickers = dict(self.tickers)
+                        tickers[symbol] = {
+                            "symbol": symbol,
+                            "last_price": history["closes"][-1],
+                            "timestamp": int(time.time() * 1000),
+                            "source": "binance_tr_public_rest_kline",
+                        }
+                        self.tickers = tickers
+                    return True, None
+                except Exception as exc:
+                    return False, f"{symbol}/{timeframe}: {exc}"
+
+        results = await asyncio.gather(*(hydrate(timeframe, symbol) for timeframe, symbol in missing))
+        hydrated = sum(1 for ok, _ in results if ok)
+        errors = [error for _, error in results if error]
+        if hydrated:
+            self.rest_last_event_at = time.time()
+            self.last_event_at = max(filter(None, [self.rest_last_event_at, self.ws_last_event_at]), default=self.rest_last_event_at)
+        if errors:
+            self.rest_last_error = "; ".join(errors[:5])
+            self.last_error = self.ws_last_error or self.rest_last_error
+        return {"requested": len(requested) * len(symbols), "hydrated": hydrated,
+                "already_ready": len(requested) * len(symbols) - len(missing), "errors": errors[:20]}
+
     async def refresh_24h_tickers(self):
         try:
             rows = await ticker_24h([s.upper() for s in self.symbols])
