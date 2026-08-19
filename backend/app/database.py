@@ -361,6 +361,29 @@ async def init_db():
             pass
         conn.execute("CREATE TABLE IF NOT EXISTS analysis_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, captured_at REAL NOT NULL, source TEXT NOT NULL DEFAULT 'entry', methodology_version TEXT, regime TEXT, regime_confidence REAL, confluence_score REAL, payload TEXT NOT NULL DEFAULT '{}', trade_id TEXT)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_symbol_time ON analysis_snapshots(symbol, captured_at DESC)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS llm_forecasts (
+            forecast_id TEXT PRIMARY KEY, forecast_group_id TEXT NOT NULL,
+            symbol TEXT NOT NULL, created_at REAL NOT NULL, horizon_minutes INTEGER NOT NULL,
+            entry_price REAL NOT NULL, direction TEXT NOT NULL, confidence REAL NOT NULL,
+            invalidation_price REAL, min_move_pct REAL NOT NULL,
+            regime TEXT, timeframe_context TEXT NOT NULL DEFAULT '{}',
+            scenario TEXT NOT NULL, counter_scenario TEXT, summary TEXT,
+            model TEXT, prompt_version TEXT NOT NULL, snapshot_hash TEXT NOT NULL,
+            snapshot TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending',
+            evaluated_at REAL, outcome_price REAL, outcome_return_pct REAL,
+            outcome_direction TEXT, direction_correct INTEGER, max_favorable_pct REAL,
+            max_adverse_pct REAL, outcome_details TEXT NOT NULL DEFAULT '{}'
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_forecasts_due ON llm_forecasts(status, created_at, horizon_minutes)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_forecasts_symbol_time ON llm_forecasts(symbol, created_at DESC)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS llm_forecast_lessons (
+            lesson_key TEXT PRIMARY KEY, symbol TEXT, horizon_minutes INTEGER NOT NULL,
+            regime TEXT, direction TEXT, sample_size INTEGER NOT NULL,
+            in_sample_accuracy REAL, holdout_accuracy REAL, confidence_calibration_error REAL,
+            lesson TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'candidate', generated_at REAL NOT NULL, updated_at REAL NOT NULL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_forecast_lessons_lookup ON llm_forecast_lessons(status, symbol, horizon_minutes)")
         conn.execute("CREATE TABLE IF NOT EXISTS microstructure_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, captured_at REAL NOT NULL, bid_price REAL, ask_price REAL, bid_qty REAL, ask_qty REAL, spread_pct REAL, depth_try REAL, orderflow_imbalance REAL, source TEXT NOT NULL DEFAULT 'binance_tr_public_ws', updated_at REAL, UNIQUE(symbol, captured_at))")
         conn.execute("CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC)")
         conn.execute("""CREATE TABLE IF NOT EXISTS historical_candles (
@@ -1170,6 +1193,119 @@ async def get_decision_logs(limit=500, symbol=None, strategy=None, offset=0):
             try: row["metadata"] = _json_value(row.get("metadata"), {})
             except (TypeError, json.JSONDecodeError): pass
         return result
+    return await _run_db(op)
+
+
+async def save_llm_forecasts(rows):
+    """Persist an auditable forecast journal; this has no trading side effect."""
+    rows = list(rows or [])
+    if not rows:
+        return 0
+    def op(conn):
+        sql = """INSERT INTO llm_forecasts
+            (forecast_id,forecast_group_id,symbol,created_at,horizon_minutes,entry_price,direction,confidence,
+             invalidation_price,min_move_pct,regime,timeframe_context,scenario,counter_scenario,summary,
+             model,prompt_version,snapshot_hash,snapshot,status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(forecast_id) DO NOTHING"""
+        values = []
+        for row in rows:
+            values.append((row["forecast_id"], row["forecast_group_id"], str(row["symbol"]).upper(),
+                float(row["created_at"]), int(row["horizon_minutes"]), float(row["entry_price"]),
+                row["direction"], float(row["confidence"]), row.get("invalidation_price"),
+                float(row["min_move_pct"]), row.get("regime"),
+                json.dumps(row.get("timeframe_context") or {}, ensure_ascii=False, default=str),
+                row.get("scenario") or "", row.get("counter_scenario"), row.get("summary"), row.get("model"),
+                row.get("prompt_version") or "forecast-v1", row["snapshot_hash"],
+                json.dumps(row.get("snapshot") or {}, ensure_ascii=False, default=str), "pending"))
+        conn.executemany(sql, values); conn.commit(); return len(values)
+    return await _run_db(op)
+
+
+async def get_pending_llm_forecasts(now=None, limit=200):
+    now = float(now if now is not None else time.time())
+    def op(conn):
+        rows = conn.execute("""SELECT * FROM llm_forecasts
+            WHERE status='pending' AND created_at + horizon_minutes * 60 <= ?
+            ORDER BY created_at ASC LIMIT ?""", (now, max(1, min(int(limit), 500)))).fetchall()
+        return [_forecast_row(row) for row in rows]
+    return await _run_db(op)
+
+
+async def mark_llm_forecast_evaluated(forecast_id, outcome):
+    def op(conn):
+        conn.execute("""UPDATE llm_forecasts SET status='evaluated', evaluated_at=?, outcome_price=?,
+            outcome_return_pct=?, outcome_direction=?, direction_correct=?, max_favorable_pct=?,
+            max_adverse_pct=?, outcome_details=? WHERE forecast_id=? AND status='pending'""",
+            (float(outcome["evaluated_at"]), outcome.get("outcome_price"), outcome.get("outcome_return_pct"),
+             outcome.get("outcome_direction"), bool(outcome.get("direction_correct")),
+             outcome.get("max_favorable_pct"), outcome.get("max_adverse_pct"),
+             json.dumps(outcome.get("details") or {}, ensure_ascii=False, default=str), forecast_id))
+        changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
+        conn.commit(); return bool(changed)
+    return await _run_db(op)
+
+
+def _forecast_row(row):
+    item = dict(row)
+    for key in ("timeframe_context", "snapshot", "outcome_details", "evidence"):
+        if key in item:
+            item[key] = _json_value(item.get(key), {})
+    if "direction_correct" in item and item["direction_correct"] is not None:
+        item["direction_correct"] = bool(item["direction_correct"])
+    return item
+
+
+async def get_llm_forecasts(symbol=None, status=None, limit=100):
+    def op(conn):
+        clauses, values = [], []
+        if symbol:
+            clauses.append("symbol=?"); values.append(str(symbol).upper())
+        if status:
+            clauses.append("status=?"); values.append(status)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(max(1, min(int(limit), 500)))
+        rows = conn.execute(f"SELECT * FROM llm_forecasts{where} ORDER BY created_at DESC LIMIT ?", values).fetchall()
+        return [_forecast_row(row) for row in rows]
+    return await _run_db(op)
+
+
+async def replace_llm_forecast_lessons(lessons):
+    """Upsert derived evidence; lessons are never written by the LLM itself."""
+    def op(conn):
+        now = time.time()
+        sql = """INSERT INTO llm_forecast_lessons
+            (lesson_key,symbol,horizon_minutes,regime,direction,sample_size,in_sample_accuracy,holdout_accuracy,
+             confidence_calibration_error,lesson,evidence,status,generated_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(lesson_key) DO UPDATE SET sample_size=excluded.sample_size,
+            in_sample_accuracy=excluded.in_sample_accuracy,holdout_accuracy=excluded.holdout_accuracy,
+            confidence_calibration_error=excluded.confidence_calibration_error,lesson=excluded.lesson,
+            evidence=excluded.evidence,status=excluded.status,updated_at=excluded.updated_at"""
+        values = [(item["lesson_key"], item.get("symbol"), int(item["horizon_minutes"]), item.get("regime"),
+                   item.get("direction"), int(item["sample_size"]), item.get("in_sample_accuracy"),
+                   item.get("holdout_accuracy"), item.get("confidence_calibration_error"), item["lesson"],
+                   json.dumps(item.get("evidence") or {}, ensure_ascii=False, default=str), item.get("status", "candidate"),
+                   now, now) for item in lessons]
+        if values:
+            conn.executemany(sql, values); conn.commit()
+        return len(values)
+    return await _run_db(op)
+
+
+async def get_llm_forecast_lessons(symbol=None, regime=None, status="active", limit=12):
+    def op(conn):
+        clauses, values = [], []
+        if status:
+            clauses.append("status=?"); values.append(status)
+        if symbol:
+            clauses.append("(symbol IS NULL OR symbol=?)"); values.append(str(symbol).upper())
+        if regime:
+            clauses.append("(regime IS NULL OR regime=?)"); values.append(regime)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(max(1, min(int(limit), 100)))
+        rows = conn.execute(f"SELECT * FROM llm_forecast_lessons{where} ORDER BY holdout_accuracy DESC, sample_size DESC LIMIT ?", values).fetchall()
+        return [_forecast_row(row) for row in rows]
     return await _run_db(op)
 
 async def read_only_query(sql: str, limit: int = 500):
