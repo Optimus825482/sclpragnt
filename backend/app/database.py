@@ -990,6 +990,9 @@ async def get_capital_lock_report(min_hold_hours: float = 4.0, max_favorable_pct
         "capital_lock_net_pnl_try": round(sum(row["pnl"] for row in locks), 6),
         "activity_snapshot_count": snapshot_count,
         "status": "collecting" if snapshot_count < 20 else "ready_for_research",
+        # Kept separately from the short on-screen list so CSV export can
+        # include the full labelled research population.
+        "rows": locks,
         "recent": locks[:30],
     }
 
