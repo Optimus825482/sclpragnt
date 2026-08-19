@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { API_BASE, apiRequest, fetchAllPages } from "../lib/api";
+import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
 import {
@@ -732,7 +732,8 @@ export default function ChartsPage() {
         return () => ws.close();
     }, [symbol, interval]);
 
-    // açık pozisyonları çek: her 5 sn'de bir, pozisyon gösterimi için
+    // WebSocket anlık portföyü taşır; HTTP yalnızca bağlantı kopması için
+    // düşük frekanslı geri dönüş yoludur.
     useEffect(() => {
         let cancelled = false;
         const fetchPositions = async () => {
@@ -743,16 +744,19 @@ export default function ChartsPage() {
             } catch { /* backend yoksa sessiz geç */ }
         };
         fetchPositions();
-        const t = setInterval(fetchPositions, 5000);
+        const t = setInterval(fetchPositions, 30_000);
         return () => { cancelled = true; clearInterval(t); };
     }, []);
 
     const loadClosedTrades = useCallback(async () => {
         try {
-            const result = await fetchAllPages<ClosedTrade>("/api/trades", "trades");
-            setClosedTrades(result.rows);
+            // The chart only renders performance for the selected symbol.
+            // Avoid paging the entire portfolio (up to 10k rows) every 15s.
+            const response = await apiRequest(`${API_BASE}/api/trades?symbol=${encodeURIComponent(symbol)}&limit=200`);
+            const result = await response.json();
+            setClosedTrades(result.trades || []);
         } catch { /* özet için işlem geçmişi geçici olarak kullanılamıyor */ }
-    }, []);
+    }, [symbol]);
 
     useEffect(() => {
         loadClosedTrades();
@@ -761,7 +765,10 @@ export default function ChartsPage() {
     }, [loadClosedTrades]);
 
     useLiveMessages(useCallback((message: any) => {
-        if (message.type === "portfolio") setLivePortfolio(message.data as LivePortfolio);
+        if (message.type === "portfolio") {
+            setLivePortfolio(message.data as LivePortfolio);
+            setPositions(message.data?.positions || []);
+        }
         if (["trade_updated", "signal", "reset"].includes(message.type)) loadClosedTrades();
     }, [loadClosedTrades]));
 

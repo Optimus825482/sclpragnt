@@ -644,8 +644,8 @@ export default function PortfolioPage() {
   }, []);
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "portfolio") setPortfolio(message.data);
-    if (["signal", "trade_updated", "reset"].includes(message.type)) loadTrades();
-  }, [loadTrades]);
+    if (tab === "history" && ["signal", "trade_updated", "reset"].includes(message.type)) loadTrades();
+  }, [loadTrades, tab]);
   useLiveMessages(onLiveMessage);
 
   useEffect(() => {
@@ -653,8 +653,8 @@ export default function PortfolioPage() {
       setTab("history");
   }, []);
   useEffect(() => {
-    loadTrades();
-  }, [loadTrades]);
+    if (tab === "history") loadTrades();
+  }, [loadTrades, tab]);
 
   const formatTab = (next: "portfolio" | "history") => {
     setTab(next);
