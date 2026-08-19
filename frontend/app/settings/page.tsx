@@ -107,6 +107,11 @@ export default function SettingsPage() {
   const [startingMtfBackfill, setStartingMtfBackfill] = useState(false);
 
   useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab === "strategies") setActiveTab("strategies");
+  }, []);
+
+  useEffect(() => {
     apiRequest(`${API_BASE}/api/config`)
       .then((r) => r.json())
       .then((d) => { setCfg(d); setDraft(d); })

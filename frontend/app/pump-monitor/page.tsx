@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 
@@ -17,7 +18,7 @@ type Monitor = { items: Candidate[]; history: Signal[]; scan_logs?: ScanLog[]; g
 const price = (value?: number) => value == null ? "—" : `₺${value.toLocaleString("tr-TR", { maximumFractionDigits: 6 })}`;
 const time = (value?: number) => value ? new Date(value * 1000).toLocaleString("tr-TR") : "—";
 
-export default function PumpMonitorPage() {
+export function PumpMonitorPanel() {
   const [data, setData] = useState<Monitor | null>(null);
   const [loading, setLoading] = useState(true);
   const [executing, setExecuting] = useState(false);
@@ -70,5 +71,7 @@ export default function PumpMonitorPage() {
     <p className="text-xs text-bunker-muted">Araştırma kuralı: skor ≥3 ve M15 bullish. Hacim ≥1.0x yüksek güven etiketi verir; tüm açılışlar ortak likidite, bakiye ve yeniden-giriş kapılarından geçer.</p>
   </div>;
 }
+
+export default function PumpMonitorPage() { redirect("/monitor?tab=pump"); }
 
 function Metric({ label, value, tone = "text-white" }: { label: string; value: string; tone?: string }) { return <div className="card !p-4"><p className="eyebrow">{label}</p><p className={`mt-2 font-mono text-lg font-bold ${tone}`}>{value}</p></div>; }

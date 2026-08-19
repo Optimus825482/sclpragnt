@@ -10,13 +10,10 @@ import SymbolLink from "./SymbolLink";
 const MENU = [
     { href: "/chat", label: "Chat", icon: "✦", desc: "LLM sohbet merkezi" },
     { href: "/", label: "Scalping", icon: "⚡", desc: "Canlı terminal" },
-    { href: "/portfolio", label: "Portföy", icon: "📊", desc: "Varlıklar & PnL", children: [{ href: "/portfolio?tab=history", label: "İşlem Geçmişi" }] },
-    { href: "/gainer-radar", label: "Gainer Radar", icon: "🎯", desc: "Fırsat tarayıcı" },
-    { href: "/pump-monitor", label: "Pump Monitor", icon: "🚀", desc: "Sıçrama adayları" },
-    { href: "/strategies", label: "Stratejiler", icon: "🧭", desc: "Sinyal motorları" },
+    { href: "/portfolio", label: "Portföy", icon: "📊", desc: "Sermaye ve strateji metrikleri" },
+    { href: "/monitor", label: "Monitor", icon: "🎯", desc: "Radar ve Pump adayları" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
     { href: "/backtest", label: "Backtest", icon: "🧪", desc: "Strateji test lab" },
-    { href: "/signal-replay", label: "Sinyal Denetimi", icon: "🕒", desc: "Seçili kapanmış M5 mum denetimi" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" }
 ];
