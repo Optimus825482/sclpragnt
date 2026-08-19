@@ -185,6 +185,14 @@ class RegressionContracts(unittest.TestCase):
         self.assertEqual(PARAM_FIELDS["bb_mfi_v2_rsi_upper_level"], "BB_MFI_V2_RSI_UPPER_LEVEL")
         self.assertEqual(PARAM_FIELDS["bb_mfi_stop_loss_pct"], "BB_MFI_STOP_LOSS_PCT")
 
+    def test_bb_mfi_entry_confirmation_settings_are_exposed(self):
+        from app.main import BOOL_FIELDS, CONFIG_FIELDS
+        self.assertEqual(CONFIG_FIELDS["bb_mfi_entry_volume_ratio_min"], "BB_MFI_ENTRY_VOLUME_RATIO_MIN")
+        self.assertEqual(CONFIG_FIELDS["bb_mfi_dip_min_close_position"], "BB_MFI_DIP_MIN_CLOSE_POSITION")
+        self.assertEqual(CONFIG_FIELDS["bb_mfi_entry_mfi_reversal_min_delta"], "BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA")
+        self.assertIn("bb_mfi_dip_confirmation_enabled", BOOL_FIELDS)
+        self.assertIn("bb_mfi_entry_mfi_reversal_enabled", BOOL_FIELDS)
+
     def test_bb_mfi_v3_signal_exit_fills_at_next_bar_open(self):
         from app import backtest
 

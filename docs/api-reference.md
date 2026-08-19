@@ -1,6 +1,6 @@
 # Binance TR API Referansı — Scalper Agent V4
 
-> **Oluşturulma:** 2026-08-18  
+> **Doğrulama:** 2026-08-19
 > **Kapsam:** Uygulamanın kullandığı tüm Binance TR public API endpoint'leri ve WebSocket stream'leri  
 > **Kaynak:** `backend/app/binance_tr_public.py`, `backend/app/market_data.py`
 
@@ -60,7 +60,7 @@ return sorted({
 
 **Yanıt formatı:** Her mum `[open_time, open, high, low, close, volume, close_time, quote_volume, trades, taker_buy_volume, taker_buy_quote_volume, ignore]`
 
-**Not:** Binance TR dokümantasyonunda endpoint `/api/v3/klines` olarak geçer — burada `/api/v1/klines` kullanılması **olası bir hata** ⚠️.
+**Doğrulama:** Uygulamadaki adapter güncel olarak `/api/v3/klines` çağırır. Tarihsel replay, `startTime` + `endTime` kullanır ve yalnız kapanmış mumları kabul eder.
 
 ---
 
@@ -154,6 +154,19 @@ Her aktif sembol için 3 stream:
 
 ---
 
+## Paper Araştırma: SMA Cascade Shadow
+
+`GET /api/research/ma-cascade-shadow?symbol=PUMPTRY&limit=200` yalnızca gözlem kayıtlarını döndürür; emir açmaz, portföyü değiştirmez ve aktif BB-MFI giriş akışına bağlanmaz.
+
+- Kural, **kapanmış 1 dakikalık** mumlarda sırasıyla SMA(7)'nin SMA(25)'i, SMA(99)'u; ardından SMA(25)'in SMA(99)'u yukarı kesmesini bekler.
+- Üç kesişim `SMA_CASCADE_MAX_SEQUENCE_MINUTES` (varsayılan 10) içinde olmazsa önceki aşama sıfırlanır.
+- Son aşamadan sonra `SMA_CASCADE_BREAKOUT_WINDOW_MINUTES` (varsayılan 30) içinde cascade tepesinin üstünde kapanış gözlemlenirse `BREAKOUT_OBSERVED` kaydı oluşturulur.
+- Her kırılım için `OUTCOME_30M` kaydı, 30 dakikalık getiri ile en iyi/en kötü fiyat hareketini (MFE/MAE) yazar. Kayda M5 hacim oranı, radar snapshot'ı, spread, top-5 derinlik ve order-flow imbalance da eklenir.
+
+Bu katman, ham MA deseninin PUMPTRY örnekleminde zayıf kalan sonuçlarını canlı girişe taşımadan önce hacim/radar/emir-defteri filtrelerini ölçmek içindir.
+
+---
+
 ## Binance TR API ile Global Binance API Farkları
 
 Binance TR, global Binance API ile çoğunlukla uyumludur ancak şu farklar vardır:
@@ -162,7 +175,7 @@ Binance TR, global Binance API ile çoğunlukla uyumludur ancak şu farklar vard
 2. **WS URL:** `stream-cloud.binance.tr` (TR) vs `stream.binance.com` (Global)
 3. **TR'ye özel semboller:** `_TRY` suffix'i (örn. `BTCTRY`) — globalde `BTCUSDT`
 4. **Rate limit'ler:** TR'de genelde daha cömert (dokümante edilmemiş)
-5. **Kline endpoint:** TR'de `/api/v1/klines`, globalde `/api/v3/klines` — **uygulama global v3 yerine TR v1 kullanıyor**
+5. **Kline endpoint:** Uygulamanın güncel adapter'ı `/api/v3/klines` kullanır; `/api/v1` iddiası eski nottur.
 
 ---
 

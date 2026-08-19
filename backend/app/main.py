@@ -32,6 +32,7 @@ from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, ru
 CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _ema
+from app.sma_cascade_shadow import SmaCascadeShadow
 from app import llm_analysis
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
@@ -173,6 +174,7 @@ _strategy_replay_jobs = {}
 _symbol_history_backfills = set()
 _strategy_scan_logs = deque(maxlen=5000)
 _background_tasks = set()
+_radar_snapshot = {"generated_at": 0.0, "items": {}}
 
 
 def _start_background(coro, name):
@@ -909,7 +911,7 @@ async def startup_services():
     # olduktan sonra başlasın; aksi halde ilk tarama tüm sembolleri stale sayar.
     priority_timeframes = list(dict.fromkeys([
         config.ACTIVE_STRATEGY_TIMEFRAME, config.MOMENTUM_TIMEFRAME,
-        config.ORDERFLOW_TIMEFRAME, "15m", "1h",
+        config.ORDERFLOW_TIMEFRAME, "1m", "15m", "1h",
     ]))
     await market.fetch_historical_data(priority_timeframes)
     print(f"[MarketData] öncelikli strateji verisi hazır | timeframes={priority_timeframes} tickers={len(market.tickers)}", flush=True)
@@ -917,6 +919,7 @@ async def startup_services():
     _start_background(market.connect(skip_history=True), "market-connect")
     _start_background(microstructure_snapshot_loop(), "microstructure-snapshot")
     _start_background(strategy_loop(), "strategy-loop")
+    _start_background(ma_cascade_shadow_loop(), "ma-cascade-shadow")
     _start_background(radar_loop(), "radar-loop")
     _start_background(symbol_activity_loop(), "symbol-activity")
     _start_background(llm_idle_trigger_loop(), "llm-idle-trigger")
@@ -1145,6 +1148,66 @@ async def strategy_loop():
                 flush=True,
             )
         await asyncio.sleep(2)
+
+
+def _ma_cascade_observation_context(symbol: str, event: dict) -> dict:
+    """Attach current radar/liquidity context without turning it into a gate."""
+    ticker = market.get_ticker(symbol) or {}
+    flow = market.get_orderflow(symbol) or {}
+    price = float(event.get("price") or ticker.get("last_price") or 0)
+    bid_qty = float(flow.get("bid_qty") or 0)
+    ask_qty = float(flow.get("ask_qty") or 0)
+    total_qty = bid_qty + ask_qty
+    bars_5m = market.get_ut_kline(symbol, "5m") or {}
+    volumes = list(bars_5m.get("volumes") or [])
+    average_volume = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else None
+    volume_ratio = float(volumes[-1]) / average_volume if average_volume and volumes else None
+    radar = (_radar_snapshot.get("items") or {}).get(symbol.upper())
+    return {
+        **event,
+        "paper_only": True,
+        "observation_only": True,
+        "m5_volume_ratio_20": volume_ratio,
+        "orderflow": {
+            "imbalance_pct": ((bid_qty - ask_qty) / total_qty * 100) if total_qty else None,
+            "spread_pct": flow.get("spread_pct"),
+            "depth_try": total_qty * price if price else None,
+            "updated_at": flow.get("updated_at"),
+            "source": flow.get("source"),
+        },
+        "freshness": market.data_freshness(symbol, "1m"),
+        "radar": radar,
+    }
+
+
+async def ma_cascade_shadow_loop():
+    """Persist closed-candle MA observations; it never calls the trade executor."""
+    observer = SmaCascadeShadow(
+        config.SMA_CASCADE_MAX_SEQUENCE_MINUTES,
+        config.SMA_CASCADE_BREAKOUT_WINDOW_MINUTES,
+        config.SMA_CASCADE_OUTCOME_WINDOW_MINUTES,
+    )
+    await asyncio.sleep(10)
+    while True:
+        try:
+            if config.SMA_CASCADE_SHADOW_ENABLED and migration_monitor.state["status"] != "running":
+                for symbol in list(config.SYMBOLS):
+                    for event in observer.process(symbol, market.get_ut_kline(symbol, "1m")):
+                        metadata = _ma_cascade_observation_context(symbol, event)
+                        decision = str(event["type"]).upper()
+                        await database.save_decision_log({
+                            "timestamp": time.time(), "symbol": symbol, "strategy": "SMA_CASCADE_SHADOW",
+                            "decision": decision, "reason": "closed_1m_observation_only",
+                            "price": event.get("price"), "metadata": metadata,
+                        })
+                        _record_strategy_scan_log("ma_cascade_shadow", symbol, decision,
+                                                  price=event.get("price"), event_id=event.get("event_id"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("MA cascade shadow monitor error: %s", exc)
+        await asyncio.sleep(5)
+
 
 async def radar_loop():
     await asyncio.sleep(15)
@@ -1587,6 +1650,11 @@ CONFIG_FIELDS = {
     "bb_mfi_v2_rsi_lower_level": "BB_MFI_V2_RSI_LOWER_LEVEL",
     "bb_mfi_v2_rsi_upper_level": "BB_MFI_V2_RSI_UPPER_LEVEL",
     "bb_mfi_entry_mfi_max": "BB_MFI_ENTRY_MFI_MAX",
+    "bb_mfi_entry_volume_ratio_min": "BB_MFI_ENTRY_VOLUME_RATIO_MIN",
+    "bb_mfi_dip_confirmation_enabled": "BB_MFI_DIP_CONFIRMATION_ENABLED",
+    "bb_mfi_dip_min_close_position": "BB_MFI_DIP_MIN_CLOSE_POSITION",
+    "bb_mfi_entry_mfi_reversal_enabled": "BB_MFI_ENTRY_MFI_REVERSAL_ENABLED",
+    "bb_mfi_entry_mfi_reversal_min_delta": "BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA",
     "bb_mfi_exit_rsi_min": "BB_MFI_EXIT_RSI_MIN",
     "bb_mfi_exit_mfi_min": "BB_MFI_EXIT_MFI_MIN",
     "bb_mfi_bear_pressure_filter_enabled": "BB_MFI_BEAR_PRESSURE_FILTER_ENABLED",
@@ -1668,7 +1736,7 @@ CONFIG_FIELDS = {
     "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit"}
+BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
 INT_FIELDS = {"gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_pyramid_profit_extension_layers"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "bb_mfi_pine_version", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
@@ -1704,6 +1772,11 @@ async def get_config():
         "bb_mfi_v2_rsi_lower_level": config.BB_MFI_V2_RSI_LOWER_LEVEL,
         "bb_mfi_v2_rsi_upper_level": config.BB_MFI_V2_RSI_UPPER_LEVEL,
         "bb_mfi_entry_mfi_max": config.BB_MFI_ENTRY_MFI_MAX,
+        "bb_mfi_entry_volume_ratio_min": config.BB_MFI_ENTRY_VOLUME_RATIO_MIN,
+        "bb_mfi_dip_confirmation_enabled": config.BB_MFI_DIP_CONFIRMATION_ENABLED,
+        "bb_mfi_dip_min_close_position": config.BB_MFI_DIP_MIN_CLOSE_POSITION,
+        "bb_mfi_entry_mfi_reversal_enabled": config.BB_MFI_ENTRY_MFI_REVERSAL_ENABLED,
+        "bb_mfi_entry_mfi_reversal_min_delta": config.BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA,
         "bb_mfi_exit_rsi_min": config.BB_MFI_EXIT_RSI_MIN,
         "bb_mfi_exit_mfi_min": config.BB_MFI_EXIT_MFI_MIN,
         "bb_mfi_bear_pressure_filter_enabled": config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED,
@@ -1803,6 +1876,7 @@ async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200)
 @app.get("/api/radar/gainers")
 async def gainers_radar(execute: bool = False):
     """Public-data fırsat tarayıcı: pump kovalamaz, devam edebilecek %2 adaylarını sıralar."""
+    global _radar_snapshot
     rows = []
     radar_analyzer = ScalpAnalyzer(None)
     auto_added = []
@@ -1917,6 +1991,10 @@ async def gainers_radar(execute: bool = False):
                     if signal and signal.get("action") == "BUY_SIGNAL":
                         radar_trades.append(signal)
                         await ws_manager.broadcast({"type": "signal", "data": signal})
+    _radar_snapshot = {
+        "generated_at": time.time(),
+        "items": {str(row.get("symbol", "")).upper(): dict(row) for row in rows},
+    }
     return {"items": rows[:20], "auto_added": auto_added, "symbols": config.SYMBOLS, "paper_trades": radar_trades,
             "auto_trade": False, "generated_at": time.time(), "model": "public_data_continuation_2pct_mtf_priority",
             "mtf_timeframes": mtf_timeframes, "mtf_policy": "M1/M5/M15/H1/H4 weighted score plus bullish-count soft bonus; ranking only, never a BUY blocker; unknown data is not treated as bullish"}
@@ -3429,6 +3507,27 @@ async def get_microstructure_snapshots(symbol: str, limit: int = 500, start: flo
         rows = conn.execute(f"SELECT * FROM microstructure_snapshots WHERE {' AND '.join(clauses)} ORDER BY captured_at DESC LIMIT ?", values).fetchall()
         return [dict(row) for row in rows]
     return {"symbol": symbol.upper(), "snapshots": await database._run_db(op), "source": "binance_tr_public_archived", "paper_only": True}
+
+@app.get("/api/research/ma-cascade-shadow")
+async def ma_cascade_shadow_status(limit: int = 200, symbol: str = ""):
+    """Read-only paper research events for the 1m SMA(7/25/99) hypothesis."""
+    records = await database.get_decision_logs(limit=min(max(1, limit) * 4, 500), symbol=symbol or None,
+                                               strategy="SMA_CASCADE_SHADOW")
+    records = [row for row in records if str(row.get("decision", "")).upper() in {
+        "CASCADE_DETECTED", "BREAKOUT_OBSERVED", "OUTCOME_30M",
+    }]
+    return {
+        "paper_only": True,
+        "enabled": config.SMA_CASCADE_SHADOW_ENABLED,
+        "rule": "closed 1m SMA7>SMA25 crossover, then SMA7>SMA99, then SMA25>SMA99 within the configured window",
+        "windows": {
+            "max_sequence_minutes": config.SMA_CASCADE_MAX_SEQUENCE_MINUTES,
+            "breakout_minutes": config.SMA_CASCADE_BREAKOUT_WINDOW_MINUTES,
+            "outcome_minutes": config.SMA_CASCADE_OUTCOME_WINDOW_MINUTES,
+        },
+        "events": records[:max(1, min(limit, 200))],
+    }
+
 
 @app.get("/api/decisions")
 async def get_decisions(limit: int = 500, offset: int = 0, symbol: str = "", strategy: str = ""):
