@@ -1024,6 +1024,27 @@ async def get_trade_count(symbol: str | None = None, strategy: str | None = None
         return int(conn.execute(f"SELECT COUNT(*) FROM trades{where}", values).fetchone()[0] or 0)
     return await _run_db(op)
 
+
+async def get_portfolio_trade_metrics():
+    """Return aggregate closed-trade metrics without loading the trade ledger."""
+    def op(conn):
+        row = conn.execute("""
+            SELECT
+                COUNT(*) AS closed_trades,
+                COALESCE(SUM(pnl), 0) AS net_pnl,
+                COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning_trades
+            FROM trades
+        """).fetchone()
+        closed_trades = int(row["closed_trades"] or 0)
+        winning_trades = int(row["winning_trades"] or 0)
+        return {
+            "closed_trades": closed_trades,
+            "winning_trades": winning_trades,
+            "net_pnl": float(row["net_pnl"] or 0.0),
+            "win_rate": (winning_trades / closed_trades * 100) if closed_trades else 0.0,
+        }
+    return await _run_db(op)
+
 async def upsert_microstructure_snapshots(rows):
     """Store sampled live bid/ask/depth evidence for future entry audits."""
     values = []

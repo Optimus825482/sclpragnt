@@ -3970,6 +3970,48 @@ async def get_trades(limit: int = 100, offset: int = 0, symbol: str = "", strate
     return {"trades": await database.get_trades(limit, offset, symbol or None, strategy or None),
             "total": await database.get_trade_count(symbol or None, strategy or None), "limit": limit, "offset": offset}
 
+
+@app.get("/api/portfolio/summary")
+async def portfolio_summary():
+    """Single source for global chart/portfolio headline metrics (paper only)."""
+    snapshot = _ws_snapshot_cache.get("portfolio") or {}
+    return {
+        "portfolio": snapshot,
+        "metrics": await database.get_portfolio_trade_metrics(),
+        "generated_at": time.time(),
+        "paper_only": True,
+    }
+
+
+@app.get("/api/chart/{symbol}/timeframe-trends")
+async def chart_timeframe_trends(symbol: str):
+    """Fast, completed-candle EMA alignment ribbon for the chart terminal."""
+    sym = str(symbol).replace("_", "").upper()
+    timeframes = ("1m", "5m", "15m", "30m", "1h", "4h", "1d")
+    ticker = market.get_ticker(sym) or {}
+    price = float(ticker.get("last_price") or 0.0)
+    daily = market.klines.get("1d", {}).get(sym, {})
+    flow = market.get_orderflow(sym)
+    rows = []
+    for timeframe in timeframes:
+        history = market.klines.get(timeframe, {}).get(sym, {})
+        closes = history.get("closes") or []
+        if len(closes) < 55:
+            rows.append({"timeframe": timeframe, "alignment": "unknown", "data_ready": False})
+            continue
+        snapshot = calculate_snapshot(
+            sym, price or float(closes[-1]), {timeframe: history, "1d": daily}, flow,
+            market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, timeframe,
+        )
+        alignment = str((snapshot.get("trend") or {}).get("alignment") or "unknown")
+        rows.append({
+            "timeframe": timeframe,
+            "alignment": alignment if alignment in {"bullish", "bearish", "mixed"} else "unknown",
+            "data_ready": bool(snapshot.get("data_ready")),
+            "closed_at_ms": int(history.get("last_closed_at_ms") or 0),
+        })
+    return {"symbol": sym, "timeframes": rows, "generated_at": time.time(), "candle_policy": "completed_only"}
+
 async def _create_postgres_backup() -> str:
     """Create and validate a PostgreSQL custom-format dump for download."""
     if os.getenv("DB_BACKEND", "postgres").lower() != "postgres":

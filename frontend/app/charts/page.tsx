@@ -81,8 +81,9 @@ type Bar = { time: number; open: number; high: number; low: number; close: numbe
 
 type PatternMarker = { time: number; type: "buy" | "sell"; text: string };
 type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showStrategySignals: boolean; showPressure: boolean };
-type ClosedTrade = { id: number; pnl: number };
 type LivePortfolio = { total_value?: number; unrealized_pnl?: number };
+type PortfolioMetrics = { closed_trades: number; winning_trades: number; net_pnl: number; win_rate: number };
+type TimeframeTrend = { timeframe: string; alignment: "bullish" | "bearish" | "mixed" | "unknown"; data_ready: boolean };
 const patternDescriptions: Record<string, string> = {
     "BOĞA YUTAN": "Önceki ayı gövdesini tamamen saran güçlü boğa mumu; alıcı baskısı artıyor.",
     "AYI YUTAN": "Önceki boğa gövdesini tamamen saran güçlü ayı mumu; satıcı baskısı artıyor.",
@@ -483,8 +484,9 @@ export default function ChartsPage() {
     const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
-    const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([]);
     const [livePortfolio, setLivePortfolio] = useState<LivePortfolio | null>(null);
+    const [portfolioMetrics, setPortfolioMetrics] = useState<PortfolioMetrics | null>(null);
+    const [timeframeTrends, setTimeframeTrends] = useState<TimeframeTrend[]>([]);
     const chartHeightRef = useRef(TOTAL_HEIGHT);
     const positionLinesRef = useRef<Map<string, IPriceLine[]>>(new Map());
     const positionMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
@@ -748,29 +750,44 @@ export default function ChartsPage() {
         return () => { cancelled = true; clearInterval(t); };
     }, []);
 
-    const loadClosedTrades = useCallback(async () => {
+    const loadPortfolioSummary = useCallback(async () => {
         try {
-            // The chart only renders performance for the selected symbol.
-            // Avoid paging the entire portfolio (up to 10k rows) every 15s.
-            const response = await apiRequest(`${API_BASE}/api/trades?symbol=${encodeURIComponent(symbol)}&limit=200`);
+            const response = await apiRequest(`${API_BASE}/api/portfolio/summary`);
             const result = await response.json();
-            setClosedTrades(result.trades || []);
-        } catch { /* özet için işlem geçmişi geçici olarak kullanılamıyor */ }
-    }, [symbol]);
+            if (result.portfolio && Object.keys(result.portfolio).length) setLivePortfolio(result.portfolio as LivePortfolio);
+            if (result.metrics) setPortfolioMetrics(result.metrics as PortfolioMetrics);
+        } catch { /* özet için portföy metrikleri geçici olarak kullanılamıyor */ }
+    }, []);
 
     useEffect(() => {
-        loadClosedTrades();
-        const timer = setInterval(loadClosedTrades, 15_000);
+        loadPortfolioSummary();
+        const timer = setInterval(loadPortfolioSummary, 30_000);
         return () => clearInterval(timer);
-    }, [loadClosedTrades]);
+    }, [loadPortfolioSummary]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const load = async () => {
+            try {
+                const response = await apiRequest(`${API_BASE}/api/chart/${encodeURIComponent(symbol)}/timeframe-trends`);
+                const result = await response.json();
+                if (!cancelled) setTimeframeTrends(Array.isArray(result.timeframes) ? result.timeframes : []);
+            } catch {
+                if (!cancelled) setTimeframeTrends([]);
+            }
+        };
+        load();
+        const timer = setInterval(load, 20_000);
+        return () => { cancelled = true; clearInterval(timer); };
+    }, [symbol]);
 
     useLiveMessages(useCallback((message: any) => {
         if (message.type === "portfolio") {
             setLivePortfolio(message.data as LivePortfolio);
             setPositions(message.data?.positions || []);
         }
-        if (["trade_updated", "signal", "reset"].includes(message.type)) loadClosedTrades();
-    }, [loadClosedTrades]));
+        if (["trade_updated", "signal", "reset"].includes(message.type)) loadPortfolioSummary();
+    }, [loadPortfolioSummary]));
 
     // mum serisi ilk yüklemede load() içinde setData ile kurulur,
     // canlı güncelleme WebSocket handler'ında update() ile yapılır (görünüm sıfırlanmaz)
@@ -1445,9 +1462,8 @@ export default function ChartsPage() {
     };
 
     const openPnl = livePortfolio?.unrealized_pnl ?? positions.reduce((total, position) => total + Number(position.pnl_try || 0), 0);
-    const netPnl = closedTrades.reduce((total, trade) => total + Number(trade.pnl || 0), 0);
-    const winningTrades = closedTrades.filter((trade) => Number(trade.pnl || 0) > 0).length;
-    const winRate = closedTrades.length ? (winningTrades / closedTrades.length) * 100 : 0;
+    const netPnl = portfolioMetrics?.net_pnl ?? 0;
+    const winRate = portfolioMetrics?.win_rate ?? 0;
     const money = (value: number) => `₺${value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const pnlClass = (value: number) => value >= 0 ? "text-neon-green" : "text-red-400";
     const pressure = (() => {
@@ -1518,9 +1534,21 @@ export default function ChartsPage() {
             <section aria-label="Portföy özeti" className="grid grid-cols-2 gap-2 rounded-xl border border-bunker-800 bg-bunker-950/80 p-3 sm:grid-cols-5">
                 <div className="min-w-0"><p className="eyebrow">TOPLAM PORTFÖY</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.total_value == null ? "—" : money(livePortfolio.total_value)}</p></div>
                 <div className="min-w-0"><p className="eyebrow">AÇIK PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(openPnl)}`}>{openPnl >= 0 ? "+" : ""}{money(openPnl)}</p></div>
-                <div className="min-w-0"><p className="eyebrow">KAPANAN İŞLEM</p><p className="mt-1 font-mono text-sm font-bold text-white">{closedTrades.length}</p></div>
+                <div className="min-w-0"><p className="eyebrow">KAPANAN İŞLEM</p><p className="mt-1 font-mono text-sm font-bold text-white">{portfolioMetrics?.closed_trades ?? "—"}</p></div>
                 <div className="min-w-0"><p className="eyebrow">BAŞARI</p><p className="mt-1 font-mono text-sm font-bold text-white">%{winRate.toFixed(1)}</p></div>
                 <div className="min-w-0 col-span-2 sm:col-span-1"><p className="eyebrow">NET PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(netPnl)}`}>{netPnl >= 0 ? "+" : ""}{money(netPnl)}</p></div>
+            </section>
+
+            <section aria-label="Zaman dilimi trend durumu" className="flex flex-wrap items-stretch gap-2 rounded-xl border border-bunker-800 bg-bunker-950/80 p-3">
+                <p className="flex items-center pr-1 font-mono text-[10px] font-bold tracking-wider text-bunker-muted">TF YÖNÜ<br />KAPANMIŞ MUM</p>
+                {INTERVALS.map(({ v, l }) => {
+                    const trend = timeframeTrends.find((item) => item.timeframe === v);
+                    const direction = trend?.alignment ?? "unknown";
+                    const tone = direction === "bullish" ? "border-neon-green/40 bg-neon-green/10 text-neon-green" : direction === "bearish" ? "border-red-400/40 bg-red-400/10 text-red-400" : direction === "mixed" ? "border-yellow-400/35 bg-yellow-400/10 text-yellow-300" : "border-bunker-700 bg-bunker-900/60 text-bunker-muted";
+                    const arrow = direction === "bullish" ? "↑" : direction === "bearish" ? "↓" : "—";
+                    const label = direction === "bullish" ? "BULLISH" : direction === "bearish" ? "BEARISH" : direction === "mixed" ? "KARIŞIK" : "VERİ YOK";
+                    return <div key={v} title={`${l}: ${label}`} className={`min-w-[58px] rounded-lg border px-2 py-1.5 text-center font-mono ${tone}`}><p className="text-[10px] font-bold">{l}</p><p className="mt-0.5 text-lg font-bold leading-5" aria-label={label}>{arrow}</p></div>;
+                })}
             </section>
 
             <button
