@@ -1156,11 +1156,12 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     except Exception: pass
 
 
-async def get_signals(limit: int = 100, offset: int = 0, symbol: str | None = None, action: str | None = None):
+async def get_signals(limit: int = 100, offset: int = 0, symbol: str | None = None, action: str | None = None, strategy: str | None = None):
     def op(conn: sqlite3.Connection):
         clauses, values = [], []
         if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
         if action: clauses.append("action=?"); values.append(action)
+        if strategy: clauses.append("strategy=?"); values.append(strategy)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         values.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
         rows = conn.execute(f"SELECT id, timestamp, symbol, action, price, reason, strategy, trade_id FROM signals{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?", values).fetchall()

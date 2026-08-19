@@ -15,6 +15,7 @@ const STRATEGY_LABEL: Record<string, string> = {
   CHOP_TREND_FILTER: "CHOP Trend Filter",
   DONCHIAN_BREAKOUT: "Donchian Breakout",
   LLM_PAPER: "LLM Paper",
+  PUMP_MONITOR: "Pump Monitor · M15 + M5",
 };
 
 type Position = {
@@ -81,6 +82,13 @@ const pnlTone = (value?: number) =>
     : value > 0
       ? "ui-tone-positive"
       : "ui-tone-negative";
+const entrySignal = (strategy?: string, raw?: Record<string, unknown> | string | null) => {
+  let context: Record<string, any> = {};
+  try { context = typeof raw === "string" ? JSON.parse(raw) : (raw || {}); } catch { context = {}; }
+  const signal = context.signal_context;
+  if (strategy === "PUMP_MONITOR" && signal) return `${signal.signal_name || "Pump Monitor"} · skor ${signal.score ?? "—"}/4`;
+  return STRATEGY_LABEL[strategy || ""] || strategy || "—";
+};
 const when = (value?: number) =>
   value
     ? new Date(value * 1000).toLocaleString("tr-TR", { hour12: false })
@@ -446,6 +454,7 @@ function PositionTable({
                         position.strategy ||
                         "—"}
                     </span>
+                    {position.strategy === "PUMP_MONITOR" && <small className="table-subvalue">{entrySignal(position.strategy, position.entry_context)}</small>}
                   </td>
                   <td>₺{money(position.entry)}</td>
                   <td>₺{money(position.current)}</td>

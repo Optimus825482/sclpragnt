@@ -127,6 +127,14 @@ class Config:
     SYMBOL_ACTIVITY_STATUS = {}
     # Radar yalnızca gözlem/ranking yüzeyidir; otomatik pozisyon açmaz.
     GAINER_RADAR_AUTO_TRADE = False
+    # Pump Monitor is a separate, paper-only continuation strategy.  It never
+    # changes the active BB-MFI strategy and is capped independently.
+    PUMP_MONITOR_ENABLED = os.getenv("PUMP_MONITOR_ENABLED", "true").lower() == "true"
+    PUMP_MONITOR_AUTO_TRADE = os.getenv("PUMP_MONITOR_AUTO_TRADE", "true").lower() == "true"
+    PUMP_MONITOR_MAX_OPEN_POSITIONS = max(1, int(os.getenv("PUMP_MONITOR_MAX_OPEN_POSITIONS", "3")))
+    PUMP_MONITOR_MIN_SCORE = max(3, min(4, int(os.getenv("PUMP_MONITOR_MIN_SCORE", "3"))))
+    PUMP_MONITOR_REQUIRE_M15_BULLISH = os.getenv("PUMP_MONITOR_REQUIRE_M15_BULLISH", "true").lower() == "true"
+    PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO = max(0.0, float(os.getenv("PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO", "1.0")))
     # LLM yalnızca kullanıcının açık "işlem aç" talebiyle çalışabilir.
     LLM_AUTO_OPEN_ENABLED = False
     GAINER_RADAR_MIN_SCORE = 65

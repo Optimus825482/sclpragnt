@@ -58,6 +58,12 @@ type Config = {
   mode: string;
   market_data: string;
   gainer_radar_min_score: number;
+  pump_monitor_enabled: boolean;
+  pump_monitor_auto_trade: boolean;
+  pump_monitor_max_open_positions: number;
+  pump_monitor_min_score: number;
+  pump_monitor_require_m15_bullish: boolean;
+  pump_monitor_high_confidence_volume_ratio: number;
   adr_filter_enabled: boolean;
   adr_period: number;
   adr_min_pct: number;
@@ -469,6 +475,16 @@ export default function SettingsPage() {
               </div>
               <p className="eyebrow mt-4">SEMBOL BAZLI OVERRIDE · BOŞSA GLOBAL DEĞER KULLANILIR</p>
               <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-2">{(draft.symbols || []).map(symbol => <div key={symbol} className="settings-symbol-row flex items-center gap-2 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><SymbolLink symbol={symbol} className="font-mono text-xs text-white hover:text-neon-green flex-1" /><input aria-label={`${symbol} işlem yüzdesi`} type="number" min={0.1} max={100} step={0.5} placeholder={`${num(draft.order_pct) * 100}%`} value={draft.symbol_order_pct?.[symbol] == null ? "" : Number(draft.symbol_order_pct[symbol] * 100)} onChange={e => setDraft(d => ({ ...d, symbol_order_pct: { ...(d.symbol_order_pct || {}), [symbol]: e.target.value === "" ? undefined as any : Number(e.target.value) / 100 } }))} className="w-20 bg-bunker-950 border border-bunker-700 rounded px-2 py-1 font-mono text-[11px] text-white" /><input aria-label={`${symbol} piramitleme`} type="number" min={1} max={10} step={1} placeholder={String(draft.pyramiding_layers || 2)} value={draft.symbol_pyramiding_layers?.[symbol] ?? ""} onChange={e => setDraft(d => ({ ...d, symbol_pyramiding_layers: { ...(d.symbol_pyramiding_layers || {}), [symbol]: e.target.value === "" ? undefined as any : Number(e.target.value) } }))} className="w-14 bg-bunker-950 border border-bunker-700 rounded px-2 py-1 font-mono text-[11px] text-white" /></div>)}</div>
+            </div>
+            <div className="mt-5 border-t border-bunker-800 pt-4">
+              <p className="eyebrow text-neon-green">PUMP MONITOR · PAPER EK STRATEJİ</p>
+              <p className="mt-1 text-xs text-bunker-muted">BB-MFI stratejisini değiştirmez. M5 erken teşhis ve M15 bağlamıyla ayrı paper pozisyon açar; gerçek borsa emri oluşturmaz.</p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-neon-green">İzlemeyi etkinleştir</span><input type="checkbox" checked={Boolean(draft.pump_monitor_enabled)} onChange={(e) => setDraft((d) => ({ ...d, pump_monitor_enabled: e.target.checked }))} /></label>
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-neon-green">Uygun adayda paper aç</span><input type="checkbox" checked={Boolean(draft.pump_monitor_auto_trade)} onChange={(e) => setDraft((d) => ({ ...d, pump_monitor_auto_trade: e.target.checked }))} /></label>
+                {([ ["pump_monitor_min_score", "Minimum skor", 3, 4, 1], ["pump_monitor_max_open_positions", "Maks. açık Pump", 1, 20, 1], ["pump_monitor_high_confidence_volume_ratio", "Yüksek güven hacmi", 0, 10, 0.1] ] as const).map(([key, label, min, max, step]) => <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">{label}</span><input type="number" min={min} max={max} step={step} value={num((draft as any)[key])} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-20 rounded border border-bunker-700 bg-bunker-950 px-2 py-1.5 text-right font-mono text-xs text-white" /></label>)}
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">M15 bullish zorunlu</span><input type="checkbox" checked={Boolean(draft.pump_monitor_require_m15_bullish)} onChange={(e) => setDraft((d) => ({ ...d, pump_monitor_require_m15_bullish: e.target.checked }))} /></label>
+              </div>
             </div>
             <div className="flex items-center justify-between gap-4">
               <div>
