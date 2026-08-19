@@ -14,6 +14,8 @@ class _Market:
     def __init__(self):
         self.tickers = {"BTCTRY": {"symbol": "BTCTRY", "last_price": 100.0, "timestamp": time.time() * 1000}}
         self.orderflow = {}
+        self.klines = {}
+        self.ticker_24h = {}
 
     def get_ticker(self, symbol):
         return self.tickers.get(symbol)
@@ -61,6 +63,28 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["activity"]["range_15m_pct"], 0.08)
         save_signal.assert_awaited_once()
         commit.assert_not_awaited()
+
+    async def test_qualified_pump_can_override_only_m1_flat_activity_gate(self):
+        """Pump continuation may bypass only the validated M1-flat false block."""
+        from app.analyzer import ScalpAnalyzer
+        from app.config import config
+
+        analyzer = ScalpAnalyzer(_Market())
+        activity = {"status": "PASSIVE", "checks": {"m1_flat_candles": False}}
+        with patch.object(config, "SYMBOL_ACTIVITY_FILTER_ENABLED", True), \
+             patch.object(config, "PASSIVE_SYMBOLS", {"BTCTRY"}), \
+             patch.object(config, "SYMBOL_ACTIVITY_STATUS", {"BTCTRY": activity}), \
+             patch.object(config, "PUMP_MONITOR_ALLOW_M1_FLAT_OVERRIDE", True), \
+             patch("app.analyzer.database.load_positions", new=AsyncMock(return_value={})), \
+             patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=10_000.0)), \
+             patch("app.analyzer.database.commit_open_position", new=AsyncMock()) as commit:
+            result = await analyzer.open_position(
+                "BTCTRY", 100.0, "LONG", "PUMP_MONITOR",
+                entry_context_extra={"score": 4, "m15_alignment": "bullish"},
+            )
+
+        self.assertEqual(result["action"], "BUY_SIGNAL")
+        commit.assert_awaited_once()
 
     async def test_automatic_scan_records_entry_ineligible_before_strategy_evaluation(self):
         """A failed liquidity preflight is an audit result, never a signal."""

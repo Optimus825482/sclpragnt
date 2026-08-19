@@ -962,6 +962,38 @@ async def get_trades(limit: int | None = 100, offset: int = 0, symbol: str | Non
 
     return await _run_db(op)
 
+
+async def get_capital_lock_report(min_hold_hours: float = 4.0, max_favorable_pct: float = 0.75):
+    """Read-only outcome report for positions that consumed capital without progress."""
+    trades = await get_trades(limit=None, strategy="BB_MFI_MEAN_REVERSION")
+    threshold_seconds = max(0.0, float(min_hold_hours)) * 3600
+    threshold_favorable = max(0.0, float(max_favorable_pct)) / 100
+    locks, snapshot_count = [], 0
+    for trade in trades:
+        context = _json_value(trade.get("entry_context"), {}) if isinstance(trade.get("entry_context"), str) else (trade.get("entry_context") or {})
+        activity = context.get("symbol_activity") or {}
+        if activity.get("m1_features"):
+            snapshot_count += 1
+        hold = float(trade.get("hold_seconds") or 0)
+        mfe = float(trade.get("max_favorable_pct") or 0)
+        if hold >= threshold_seconds and mfe < threshold_favorable:
+            locks.append({
+                "trade_id": trade.get("trade_id"), "symbol": trade.get("symbol"),
+                "entry_time": trade.get("entry_time"), "exit_time": trade.get("exit_time"),
+                "hold_seconds": hold, "pnl": float(trade.get("pnl") or 0),
+                "max_favorable_pct": mfe * 100, "max_adverse_pct": float(trade.get("max_adverse_pct") or 0) * 100,
+                "reason": trade.get("reason"), "activity_snapshot_present": bool(activity.get("m1_features")),
+            })
+    return {
+        "paper_only": True, "label": {"min_hold_hours": min_hold_hours, "max_favorable_pct": max_favorable_pct},
+        "trade_count": len(trades), "capital_lock_count": len(locks),
+        "capital_lock_net_pnl_try": round(sum(row["pnl"] for row in locks), 6),
+        "activity_snapshot_count": snapshot_count,
+        "status": "collecting" if snapshot_count < 20 else "ready_for_research",
+        "recent": locks[:30],
+    }
+
+
 async def apply_historical_mtf_backfill(target_type, target_id, symbol, trade_id, entry_context, snapshots):
     """Persist public-history MTF evidence without changing trade economics."""
     context_json = json.dumps(entry_context or {}, ensure_ascii=False, default=str)

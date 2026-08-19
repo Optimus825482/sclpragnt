@@ -68,6 +68,7 @@ type Config = {
   pump_monitor_min_score: number;
   pump_monitor_require_m15_bullish: boolean;
   pump_monitor_high_confidence_volume_ratio: number;
+  pump_monitor_allow_m1_flat_override: boolean;
   adr_filter_enabled: boolean;
   adr_period: number;
   adr_min_pct: number;
@@ -492,6 +493,7 @@ export default function SettingsPage() {
                 <label className="flex items-center justify-between gap-3 rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-neon-green">Uygun adayda paper aç</span><input type="checkbox" checked={Boolean(draft.pump_monitor_auto_trade)} onChange={(e) => setDraft((d) => ({ ...d, pump_monitor_auto_trade: e.target.checked }))} /></label>
                 {([ ["pump_monitor_min_score", "Minimum skor", 3, 4, 1], ["pump_monitor_max_open_positions", "Maks. açık Pump", 1, 20, 1], ["pump_monitor_high_confidence_volume_ratio", "Yüksek güven hacmi", 0, 10, 0.1] ] as const).map(([key, label, min, max, step]) => <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">{label}</span><input type="number" min={min} max={max} step={step} value={num((draft as any)[key])} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-20 rounded border border-bunker-700 bg-bunker-950 px-2 py-1.5 text-right font-mono text-xs text-white" /></label>)}
                 <label className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">M15 bullish zorunlu</span><input type="checkbox" checked={Boolean(draft.pump_monitor_require_m15_bullish)} onChange={(e) => setDraft((d) => ({ ...d, pump_monitor_require_m15_bullish: e.target.checked }))} /></label>
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Yalnız M1 düz mum engelini aş</span><input type="checkbox" checked={Boolean(draft.pump_monitor_allow_m1_flat_override)} onChange={(e) => setDraft((d) => ({ ...d, pump_monitor_allow_m1_flat_override: e.target.checked }))} /></label>
               </div>
             </div>
             <div className="flex items-center justify-between gap-4">
