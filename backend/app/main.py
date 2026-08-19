@@ -2146,6 +2146,7 @@ async def update_config(payload: dict):
 
 
 async def _apply_config_update(payload: dict):
+    payload = dict(payload or {})
     previous_symbols = set(config.SYMBOLS)
     for key, attr in CONFIG_FIELDS.items():
         if key in payload:
@@ -2207,12 +2208,24 @@ async def _apply_config_update(payload: dict):
         symbols = sorted({str(s).replace("_", "").upper() for s in payload["symbols"] if str(s).strip()})
         allowed = set(await trading_symbols("TRY"))
         invalid = sorted(set(symbols) - allowed)
+        # The settings page submits its whole draft.  A symbol may turn BREAK
+        # between page load and save; do not let that stale item block valid
+        # selections such as HEMITRY.  It must nevertheless be removed from
+        # the scan universe, never retained as an untradeable hidden symbol.
         if invalid:
-            raise ValueError(f"Binance TR'de geçersiz TRY sembolü: {', '.join(invalid)}")
+            symbols = [symbol for symbol in symbols if symbol in allowed]
         if not symbols:
+            if invalid:
+                raise ValueError(f"Binance TR'de işlemde olan TRY sembolü kalmadı: {', '.join(invalid)}")
             raise ValueError("En az bir aktif sembol seçilmelidir")
+        payload["symbols"] = symbols
+        payload["ut_symbols"] = symbols
         config.SYMBOLS = symbols
         config.UT_SYMBOLS = symbols
+        # Per-symbol overrides for delisted/BREAK pairs cannot affect a
+        # future scan or a later save.
+        config.SYMBOL_ORDER_PCT = {symbol: value for symbol, value in config.SYMBOL_ORDER_PCT.items() if symbol in symbols}
+        config.SYMBOL_PYRAMIDING_LAYERS = {symbol: value for symbol, value in config.SYMBOL_PYRAMIDING_LAYERS.items() if symbol in symbols}
         market.symbols = [s.lower() for s in symbols]
         for symbol in sorted(set(symbols) - previous_symbols):
             asyncio.create_task(backfill_symbol_history(symbol), name=f"history-backfill-{symbol}")
@@ -2228,7 +2241,10 @@ async def _apply_config_update(payload: dict):
     except json.JSONDecodeError: persisted = {}
     persisted.update({key: value for key, value in payload.items() if key in CONFIG_FIELDS or key in {"symbols", "ut_symbols"}})
     await database.set_llm_setting("runtime_config", json.dumps(persisted, ensure_ascii=False))
-    return await get_config()
+    updated = await get_config()
+    if "symbols" in payload and invalid:
+        updated["removed_invalid_symbols"] = invalid
+    return updated
 
 @app.post("/api/portfolio/reconcile")
 async def reconcile_portfolio(payload: dict = None):
@@ -2730,10 +2746,12 @@ async def symbol_analysis_llm_commentary(symbol: str, payload: dict = None):
     prompt = (
         "Sadece sağlanan snapshot, geçmiş fiyat özeti ve doğrulanmış dersleri kullan. "
         "Geleceği kesinmiş gibi anlatma; bu bir paper-only senaryo tahminidir. JSON dışında hiçbir şey yazma. "
-        "Şema tam olarak şu olmalı: {\"summary\":\"en fazla 240 karakter\",\"forecasts\":["
+        "Şema tam olarak şu olmalı: {\"summary\":\"en fazla 240 karakter; en olası yön + ana koşul + bozulma\",\"forecasts\":["
         "{\"horizon_minutes\":5|15|60|240,\"direction\":\"up|down|range\",\"confidence\":0-100,"
         "\"invalidation_price\":number|null,\"scenario\":\"en fazla 160 karakter\","
         "\"counter_scenario\":\"en fazla 120 karakter\"}]}. Her ufuk yalnız bir kez bulunmalı. "
+        "Özeti doğrudan 'En olası:' diye başlat; belirsiz/genel ifadeler kullanma. Her ana senaryo yönü, "
+        "fiyatın izlemesi gereken koşulu ve bozulma seviyesini açıkça söylemeli; karşı senaryo tersini belirtmeli. "
         "Tahminleri M1/M5/M15 kısa vade, H1/H4/D1 ana rejim ve geçmiş fiyat davranışıyla tutarlı kur. "
         "Doğrulanmış dersleri yalnız destekleyici bağlam say; örneklem küçükse güveni yükseltme."
     )
@@ -2756,7 +2774,7 @@ async def symbol_analysis_llm_commentary(symbol: str, payload: dict = None):
             "invalidation_price": item.get("invalidation_price"), "min_move_pct": min_move_pct,
             "regime": regime, "timeframe_context": context.get("timeframes", {}), "scenario": item["scenario"],
             "counter_scenario": item.get("counter_scenario"), "summary": parsed["summary"],
-            "model": result.get("model"), "prompt_version": "journaled-forecast-v2", "snapshot_hash": snapshot_hash,
+            "model": result.get("model"), "prompt_version": "journaled-forecast-v3", "snapshot_hash": snapshot_hash,
             "snapshot": forecast_context,
         })
     await database.save_llm_forecasts(forecasts)
@@ -3673,6 +3691,22 @@ async def get_symbol_forecasts(symbol: str, limit: int = 30):
     return {"symbol": symbol.upper(), "paper_only": True, "forecasts": rows,
             "evaluated_count": len(evaluated), "directional_accuracy": accuracy,
             "evaluator": dict(_forecast_evaluation_state)}
+
+
+@app.get("/api/reports/llm-forecasts")
+async def get_llm_forecast_report():
+    """Read-only, all-symbol success view for the report center."""
+    horizons = await database.get_llm_forecast_report()
+    recent = await database.get_llm_forecasts(limit=20)
+    evaluated = sum(int(row.get("evaluated_count") or 0) for row in horizons)
+    correct = sum(int(row.get("correct_count") or 0) for row in horizons)
+    pending = sum(int(row.get("pending_count") or 0) for row in horizons)
+    for row in horizons:
+        count = int(row.get("evaluated_count") or 0)
+        row["directional_accuracy"] = (int(row.get("correct_count") or 0) / count) if count else None
+    return {"paper_only": True, "evaluated_count": evaluated, "correct_count": correct,
+            "pending_count": pending, "directional_accuracy": (correct / evaluated) if evaluated else None,
+            "horizons": horizons, "recent": recent}
 
 @app.get("/api/microstructure-snapshots/{symbol}")
 async def get_microstructure_snapshots(symbol: str, limit: int = 500, start: float = 0, end: float = 0):

@@ -7,6 +7,7 @@ import SymbolLink from "../components/SymbolLink";
 
 type Config = {
   symbols: string[];
+  removed_invalid_symbols?: string[];
   min_notional: number;
   default_order_usdt: number;
   active_strategy: string;
@@ -170,7 +171,10 @@ export default function SettingsPage() {
       setCfg(updated);
       setDraft(updated);
       setSaved(true);
-      window.alert("Ayarlar başarıyla kaydedildi.");
+      const removed = Array.isArray(updated.removed_invalid_symbols) ? updated.removed_invalid_symbols : [];
+      window.alert(removed.length
+        ? `Ayarlar kaydedildi. Binance TR'de işlemde olmayan semboller çıkarıldı: ${removed.join(", ")}`
+        : "Ayarlar başarıyla kaydedildi.");
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Kaydedilemedi - backend bağlantısını kontrol et");

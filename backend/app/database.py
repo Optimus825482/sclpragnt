@@ -1270,6 +1270,21 @@ async def get_llm_forecasts(symbol=None, status=None, limit=100):
     return await _run_db(op)
 
 
+async def get_llm_forecast_report():
+    """Aggregate only journaled forecast outcomes; no trading side effects."""
+    def op(conn):
+        rows = conn.execute("""SELECT horizon_minutes,
+            COUNT(*) AS total_count,
+            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
+            SUM(CASE WHEN status='evaluated' THEN 1 ELSE 0 END) AS evaluated_count,
+            SUM(CASE WHEN status='evaluated' AND direction_correct THEN 1 ELSE 0 END) AS correct_count,
+            AVG(CASE WHEN status='evaluated' THEN confidence END) AS average_confidence,
+            AVG(CASE WHEN status='evaluated' THEN outcome_return_pct END) AS average_return_pct
+            FROM llm_forecasts GROUP BY horizon_minutes ORDER BY horizon_minutes""").fetchall()
+        return [dict(row) for row in rows]
+    return await _run_db(op)
+
+
 async def replace_llm_forecast_lessons(lessons):
     """Upsert derived evidence; lessons are never written by the LLM itself."""
     def op(conn):

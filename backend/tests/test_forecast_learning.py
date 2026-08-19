@@ -1,4 +1,6 @@
+import sqlite3
 import unittest
+from unittest.mock import patch
 
 from app.forecast_learning import derive_lessons, evaluate_forecast, normalize_direction
 
@@ -38,3 +40,26 @@ class ForecastLearningTests(unittest.TestCase):
         parsed = _parse_forecast_response(payload, 100.0)
         self.assertEqual([item["direction"] for item in parsed["forecasts"]], ["range", "up", "range", "down"])
         self.assertIsNone(_parse_forecast_response('{"summary":"x","forecasts":[]}', 100.0))
+
+
+class ForecastReportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_report_aggregates_evaluated_and_pending_by_horizon(self):
+        from app import database
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute("""CREATE TABLE llm_forecasts (
+            forecast_id TEXT PRIMARY KEY, horizon_minutes INTEGER, status TEXT,
+            direction_correct INTEGER, confidence REAL, outcome_return_pct REAL)""")
+        conn.executemany("INSERT INTO llm_forecasts VALUES (?,?,?,?,?,?)", [
+            ("a", 5, "evaluated", 1, 70, 0.01), ("b", 5, "evaluated", 0, 60, -0.01),
+            ("c", 5, "pending", None, 55, None), ("d", 60, "evaluated", 1, 65, 0.02),
+        ])
+        async def run(operation): return operation(conn)
+        with patch("app.database._run_db", new=run):
+            rows = await database.get_llm_forecast_report()
+        five = next(row for row in rows if row["horizon_minutes"] == 5)
+        self.assertEqual(five["evaluated_count"], 2)
+        self.assertEqual(five["correct_count"], 1)
+        self.assertEqual(five["pending_count"], 1)
