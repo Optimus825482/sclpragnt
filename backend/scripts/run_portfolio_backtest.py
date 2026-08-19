@@ -25,6 +25,67 @@ def iso(ts):
     return datetime.fromtimestamp(ts, timezone.utc).isoformat()
 
 
+def live_parity_snapshot():
+    """Record the live BB-MFI settings that deterministically affect a replay."""
+    names = (
+        "ACTIVE_STRATEGY", "ACTIVE_STRATEGY_TIMEFRAME", "SYMBOLS", "INITIAL_BALANCE_TRY",
+        "ORDER_PCT", "PYRAMIDING_LAYERS", "MAX_OPEN_POSITIONS", "COMMISSION_PCT",
+        "ESTIMATED_SLIPPAGE_PCT", "BACKTEST_ASSUMED_SPREAD_PCT", "BB_MFI_PINE_VERSION",
+        "BB_MFI_STOP_LOSS_PCT", "BB_MFI_TAKE_PROFIT_PCT", "BB_MFI_ENTRY_VOLUME_RATIO_MIN",
+        "BB_MFI_DIP_CONFIRMATION_ENABLED", "BB_MFI_DIP_MIN_CLOSE_POSITION",
+        "BB_MFI_ENTRY_MFI_REVERSAL_ENABLED", "BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA",
+        "BB_MFI_REQUIRE_DATA_READY", "BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION",
+        "BB_MFI_BEAR_PRESSURE_FILTER_ENABLED", "BB_MFI_BEAR_PRESSURE_MIN_ADX",
+        "BB_MFI_BEAR_PRESSURE_MIN_DI_GAP", "BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT",
+        "BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT",
+    )
+    return {name.lower(): getattr(config, name) for name in names}
+
+
+def apply_live_parity_72h_profile(args):
+    """Freeze a read-only 72-hour replay to the running BB-MFI paper profile."""
+    if config.ACTIVE_STRATEGY != "BB_MFI_MEAN_REVERSION":
+        raise SystemExit("--live-parity-72h yalnız BB_MFI_MEAN_REVERSION için kullanılabilir")
+    if not config.SYMBOLS:
+        raise SystemExit("--live-parity-72h için ayarlı sembol listesi boş")
+    # The same profile can be evaluated on a completed earlier 72-hour window
+    # without changing any strategy or portfolio rule.  This keeps OOS runs
+    # chronological and avoids using candles that overlap the baseline.
+    args.start_hours_ago = float(args.live_parity_end_hours_ago) + 72.0
+    args.end_hours_ago = float(args.live_parity_end_hours_ago)
+    args.start_date = None
+    args.end_date = None
+    args.data_source = "public"
+    # 72 saatlik karar penceresi + indikatör warm-up; daha kısa indirme ile
+    # pencerenin ilk günü sessizce atlanır ve parity bozulur.
+    args.fetch_days = max(int(args.fetch_days), 4)
+    args.pine_version = "current"
+    args.symbols = [str(symbol).replace("_", "").upper() for symbol in config.SYMBOLS]
+    args.use_all_requested = True
+    args.open_position_policy = "mark-to-market"
+    args.order_pct = config.ORDER_PCT
+    args.pyramiding = config.PYRAMIDING_LAYERS
+    args.max_positions = config.MAX_OPEN_POSITIONS
+    args.stop_pct = config.BB_MFI_STOP_LOSS_PCT
+    args.tp_pct = config.BB_MFI_TAKE_PROFIT_PCT
+    # A multiplier is research-only: it leaves every decision rule unchanged
+    # while making the modeled fills more conservative for robustness checks.
+    args.spread_pct = config.BACKTEST_ASSUMED_SPREAD_PCT * args.live_parity_cost_multiplier
+    args.slippage_pct = config.ESTIMATED_SLIPPAGE_PCT * args.live_parity_cost_multiplier
+    args.entry_min_volume_ratio = config.BB_MFI_ENTRY_VOLUME_RATIO_MIN
+    args.entry_dip_confirmation = config.BB_MFI_DIP_CONFIRMATION_ENABLED
+    args.entry_dip_min_close_position = config.BB_MFI_DIP_MIN_CLOSE_POSITION
+    args.entry_mfi_reversal = config.BB_MFI_ENTRY_MFI_REVERSAL_ENABLED
+    args.entry_mfi_reversal_min_delta = config.BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA
+    args.high_downtrend_entry_filter = config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED
+    args.high_downtrend_min_adx = config.BB_MFI_BEAR_PRESSURE_MIN_ADX
+    args.high_downtrend_min_di_gap = config.BB_MFI_BEAR_PRESSURE_MIN_DI_GAP
+    args.high_downtrend_min_return_1h_pct = config.BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT
+    args.high_downtrend_min_return_15m_pct = config.BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT
+    args.pyramid_require_net_profit = config.BB_MFI_PYRAMID_REQUIRE_NET_PROFIT
+    args.pyramid_profit_extension_layers = config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS
+
+
 def rows_to_series(rows):
     result = {key: [] for key in ("opens", "highs", "lows", "closes", "volumes", "times")}
     seen = set()
@@ -457,6 +518,8 @@ def mtf_entry_gate(features, mode):
 
 
 async def run(args):
+    if args.live_parity_72h:
+        apply_live_parity_72h_profile(args)
     if args.interval not in {"1m", "3m", "5m", "15m"}:
         raise SystemExit("Bu replay yalnızca 1m, 3m, 5m veya 15m ile çalışır")
     now = int(time.time())
@@ -910,6 +973,9 @@ async def run(args):
     gross_loss = abs(sum(trade["pnl"] for trade in losses))
     result = {
         "paper_only": True, "source": "Binance TR public API", "retrieved_at": iso(now),
+        "replay_mode": "live_parity_72h" if args.live_parity_72h else "research_override",
+        "live_config_snapshot": live_parity_snapshot() if args.live_parity_72h else None,
+        "fill_model": "next_completed_candle_signal_then_next_candle_open_with_modeled_costs",
         "window": {"start": iso(start_ts), "end": iso(end_ts), "hours": round((end_ts - start_ts) / 3600, 2)},
         "strategy": config.ACTIVE_STRATEGY, "pine_version": args.pine_version,
         "pine_profile": profile,
@@ -988,7 +1054,10 @@ async def run(args):
                        "assumed_full_spread_pct": args.spread_pct, "slippage_pct_each_side": args.slippage_pct},
         "profit_lock": {"trigger_pct": args.profit_lock_trigger_pct, "lock_pct": args.profit_lock_pct,
                         "same_bar_fill": False},
-        "limitations": ["Historical order-book depth and spread are unavailable; current spread selects the active universe and configured spread models fills."],
+        "limitations": [
+            "Historical order-book depth, ticker path and spread are unavailable; configured spread/slippage model fills.",
+            "This reuses the deterministic BB-MFI signal and shared-wallet rules, but cannot reconstruct historical WebSocket arrival order or intrabar ticker fills.",
+        ],
         "reconciliation": {"expected": round(initial + sum(trade["pnl"] for trade in trades) + sum(item["unrealized_pnl_try"] for item in marked_open), 6),
                            "actual": round(cash, 6),
                            "difference": round(cash - (initial + sum(trade["pnl"] for trade in trades) + sum(item["unrealized_pnl_try"] for item in marked_open)), 8)},
@@ -1002,6 +1071,12 @@ async def run(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbols", nargs="*")
+    parser.add_argument("--live-parity-72h", action="store_true",
+                        help="Aktif BB-MFI paper ayarlarını dondurur ve 72 saatlik, salt-okunur ortak cüzdan replay çalıştırır")
+    parser.add_argument("--live-parity-end-hours-ago", type=float, default=0.0,
+                        help="Live-parity penceresinin bitişini şimdiye göre geriye kaydırır; OOS için yalnız --live-parity-72h ile kullanılır")
+    parser.add_argument("--live-parity-cost-multiplier", type=float, default=1.0,
+                        help="Live-parity dolum maliyetlerini yalnız araştırma için çarpar; karar kurallarını değiştirmez")
     parser.add_argument("--use-all-requested", action="store_true", help="Verilen tarama evrenini güncel ACTIVE filtresi uygulamadan replay et")
     parser.add_argument("--interval", choices=("1m", "3m", "5m", "15m"), default="5m")
     parser.add_argument("--data-source", choices=("public", "historical-db"), default="public")
@@ -1091,6 +1166,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.activity_refresh_minutes <= 0:
         parser.error("--activity-refresh-minutes pozitif olmalıdır")
+    if args.live_parity_end_hours_ago < 0:
+        parser.error("--live-parity-end-hours-ago negatif olamaz")
+    if args.live_parity_cost_multiplier <= 0:
+        parser.error("--live-parity-cost-multiplier pozitif olmalıdır")
     if args.symbol_loss_cooldown_hours < 0:
         parser.error("--symbol-loss-cooldown-hours negatif olamaz")
     if args.max_hold_hours < 0:

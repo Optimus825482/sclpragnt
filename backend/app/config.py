@@ -48,6 +48,12 @@ class Config:
     # Yeni giriş/piramitleme sinyalleri tüm aktif sembollerde 5 dakikada bir
     # değerlendirilir; açık pozisyonların stop/TP yönetimi ayrı hızlı döngüdedir.
     STRATEGY_ENTRY_SCAN_INTERVAL_SEC = max(60, int(os.getenv("STRATEGY_ENTRY_SCAN_INTERVAL_SEC", "300")))
+    # Research-only monitor for the user-defined 1m SMA(7/25/99) cascade.
+    # It records observations only and is intentionally not an entry strategy.
+    SMA_CASCADE_SHADOW_ENABLED = os.getenv("SMA_CASCADE_SHADOW_ENABLED", "true").lower() == "true"
+    SMA_CASCADE_MAX_SEQUENCE_MINUTES = max(1, int(os.getenv("SMA_CASCADE_MAX_SEQUENCE_MINUTES", "10")))
+    SMA_CASCADE_BREAKOUT_WINDOW_MINUTES = max(1, int(os.getenv("SMA_CASCADE_BREAKOUT_WINDOW_MINUTES", "30")))
+    SMA_CASCADE_OUTCOME_WINDOW_MINUTES = max(1, int(os.getenv("SMA_CASCADE_OUTCOME_WINDOW_MINUTES", "30")))
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     # The live BB-MFI contract defaults to the supplied Flawless Victory v3.
