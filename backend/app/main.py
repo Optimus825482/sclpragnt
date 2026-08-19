@@ -176,6 +176,7 @@ _symbol_history_backfills = set()
 _strategy_scan_logs = deque(maxlen=5000)
 _background_tasks = set()
 _radar_snapshot = {"generated_at": 0.0, "items": {}}
+_radar_response_cache = {"generated_at": 0.0, "result": None}
 _pump_monitor_snapshot = {"generated_at": 0.0, "items": {}, "last_execution": []}
 _pump_monitor_seen_candles = {}
 _forecast_evaluation_state = {"last_run_at": None, "evaluated": 0, "lessons_refreshed": 0, "last_error": None}
@@ -1405,8 +1406,7 @@ async def radar_loop():
             await asyncio.sleep(1)
             continue
         try:
-            async with _radar_lock:
-                await gainers_radar(execute=True)
+            await gainers_radar(execute=True)
         except Exception as exc:
             print(f"[Radar] otomatik tarama hatası: {exc}")
         await asyncio.sleep(config.GAINER_RADAR_INTERVAL_SEC)
@@ -2076,6 +2076,28 @@ async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200)
 
 @app.get("/api/radar/gainers")
 async def gainers_radar(execute: bool = False):
+    """Coalesce concurrent dashboard and background radar scans.
+
+    Public radar data is already sampled on a 30-second cadence.  A short
+    response cache prevents multiple open browser tabs from redoing the same
+    multi-timeframe work while execution requests always get a fresh run.
+    """
+    global _radar_response_cache
+    now = time.time()
+    cached = _radar_response_cache.get("result")
+    if not execute and cached and now - float(_radar_response_cache.get("generated_at") or 0) < 5:
+        return cached
+    async with _radar_lock:
+        now = time.time()
+        cached = _radar_response_cache.get("result")
+        if not execute and cached and now - float(_radar_response_cache.get("generated_at") or 0) < 5:
+            return cached
+        result = await _gainers_radar_uncached(execute=execute)
+        _radar_response_cache = {"generated_at": time.time(), "result": result}
+        return result
+
+
+async def _gainers_radar_uncached(execute: bool = False):
     """Public-data fırsat tarayıcı: pump kovalamaz, devam edebilecek %2 adaylarını sıralar."""
     global _radar_snapshot
     rows = []
