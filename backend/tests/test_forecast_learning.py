@@ -41,6 +41,12 @@ class ForecastLearningTests(unittest.TestCase):
         self.assertEqual([item["direction"] for item in parsed["forecasts"]], ["range", "up", "range", "down"])
         self.assertIsNone(_parse_forecast_response('{"summary":"x","forecasts":[]}', 100.0))
 
+    def test_forecast_text_never_exposes_a_partial_word(self):
+        from app.main import _complete_forecast_text
+
+        self.assertEqual(_complete_forecast_text("Birinci cümle tamam. İkinci cümle çok uzun sürer", 24), "Birinci cümle tamam.")
+        self.assertEqual(_complete_forecast_text("Kelime kelime kelime kelime", 16), "Kelime kelime…")
+
 
 class ForecastReportTests(unittest.IsolatedAsyncioTestCase):
     async def test_report_aggregates_evaluated_and_pending_by_horizon(self):
