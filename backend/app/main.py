@@ -3738,6 +3738,7 @@ LLM_PATTERN_SCAN_TOOL = {"type":"function","function":{"name":"run_pattern_unive
 LLM_PATTERN_RUNS_TOOL = {"type":"function","function":{"name":"get_pattern_research_runs","description":"Daha önce çalıştırılmış paper-only desen araştırma koşularını getirir.","parameters":{"type":"object","properties":{"run_type":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}
 LLM_PATTERN_SAVE_TOOL = {"type":"function","function":{"name":"save_research_pattern","description":"Backtest ve forward-test kanıtı olan bir deseni araştırma hafızasına kaydeder. Validated statüsü için OOS, forward, ücret dahil ve en az 20 gözlem kanıtı zorunludur; canlı stratejiye otomatik uygulamaz.","parameters":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"symbols_scope":{"type":"string","enum":["active","all","selected"]},"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string"}},"definition":{"type":"object"},"evidence":{"type":"object"},"status":{"type":"string","enum":["candidate","validated","deprecated"]},"confidence":{"type":"number"},"source_run_id":{"type":"integer"}},"required":["name","definition"]}}}
 LLM_PATTERN_LIST_TOOL = {"type":"function","function":{"name":"list_research_patterns","description":"Araştırma hafızasındaki aday, doğrulanmış veya kullanımdan kaldırılmış desenleri timeframe/status filtresiyle getirir.","parameters":{"type":"object","properties":{"status":{"type":"string","enum":["candidate","validated","deprecated"]},"timeframe":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}
+LLM_INDICATOR_CATALOG_TOOL = {"type":"function","function":{"name":"list_indicator_research_catalog","description":"Kaynak görünürlüğü, veri gereksinimi ve paper-only araştırma durumu ile gösterge entegrasyon kataloğunu getirir. Katalog kaydı alım sinyali veya aktivasyon değildir.","parameters":{"type":"object","properties":{"status":{"type":"string","enum":["available_snapshot_feature","available_proxy_feature","research_backlog","data_infrastructure_required"]}},"required":[]}}}
 LLM_VALIDATE_PLAN_TOOL = {"type":"function","function":{"name":"validate_trade_plan","description":"Paper işlem planını bakiye, stop/TP, risk/ödül ve maliyet sonrası beklenen net sonuçla doğrular; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"entry_price":{"type":"number"},"order_value_try":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","order_value_try","stop_loss_pct","take_profit_pct"]}}}
 LLM_ORDER_STATUS_TOOL = {"type":"function","function":{"name":"get_order_status","description":"Paper emirlerinin durumunu salt-okunur getirir.","parameters":{"type":"object","properties":{"order_id":{"type":"string"},"symbol":{"type":"string"},"status":{"type":"string"}},"required":[]}}}
 LLM_CANCEL_ORDER_TOOL = {"type":"function","function":{"name":"cancel_paper_order","description":"Açık paper emrini iptal eder; gerçek borsa emri göndermez.","parameters":{"type":"object","properties":{"order_id":{"type":"string"}},"required":["order_id"]}}}
@@ -3816,7 +3817,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                   LLM_ECONOMICS_TOOL, LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL,
                   LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL,
-                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL])
+                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL])
     for tool in tools:
         if tool.get("function", {}).get("name") == "run_custom_backtest":
             tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını backtest eder. Her koşul {indicator, op, value} biçimindedir; desteklenen identifier şeması sonuçta ve açıklamada verilir. Kategoriler: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda veri yoksa null/0 üretir; bu değerleri zorunlu gate olarak kullanmadan önce veri kaynağını dikkate al. Python çalıştırmaz, paper-only'dir." + CUSTOM_EXIT_POLICY_GUIDANCE
@@ -3829,7 +3830,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                   LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL,
                   LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL,
                   LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
-                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL])
+                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL])
     for tool in tools:
         if tool.get("function", {}).get("name") == "run_custom_backtest":
             tool["function"]["description"] = "Deklaratif paper-only backtest. Her koşul {indicator, op, value}; identifier şeması: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + "." + CUSTOM_EXIT_POLICY_GUIDANCE
@@ -3842,6 +3843,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         if name == "get_pattern_research_runs": return await pattern_research.get_runs(args)
         if name == "save_research_pattern": return await pattern_research.save_pattern(args)
         if name == "list_research_patterns": return await pattern_research.list_patterns(args)
+        if name == "list_indicator_research_catalog": return await pattern_research.list_indicator_catalog(args)
         if name == "get_microstructure_snapshot": return await get_microstructure_snapshot(args)
         if name == "get_regime_snapshot": return await get_regime_snapshot(args)
         if name == "calculate_trade_economics": return await calculate_trade_economics_tool(args)
@@ -4543,6 +4545,7 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "get_pattern_research_runs": return await pattern_research.get_runs(args)
             if name == "save_research_pattern": return await pattern_research.save_pattern(args)
             if name == "list_research_patterns": return await pattern_research.list_patterns(args)
+            if name == "list_indicator_research_catalog": return await pattern_research.list_indicator_catalog(args)
             if name == "get_microstructure_snapshot": return await get_microstructure_snapshot(args)
             if name == "get_regime_snapshot": return await get_regime_snapshot(args)
             if name == "calculate_trade_economics": return await calculate_trade_economics_tool(args)
@@ -4743,7 +4746,7 @@ async def strategies_llm_chat(payload: dict = None):
         LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
         LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL,
         LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_VALIDATE_PLAN_TOOL,
-        LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL,
+        LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
         LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL,
         LLM_DEACTIVATE_TOOL, LLM_READONLY_SQL_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
         LLM_LIST_SYMBOL_GUARDS_TOOL,

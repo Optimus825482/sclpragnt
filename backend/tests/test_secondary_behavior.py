@@ -120,6 +120,49 @@ class WalkForwardContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["parameter_selection"], "none")
         self.assertEqual(result["warmup_context_days"], result["train_days"])
 
+    async def test_custom_walk_forward_applies_same_oos_acceptance_rules(self):
+        from app import backtest
+
+        rows = iter([
+            {"net_pnl": 2, "total_trades": 12},
+            {"net_pnl": 2, "total_trades": 12},
+            {"net_pnl": 2, "total_trades": 12},
+        ])
+        with patch.object(backtest, "_run_custom", side_effect=lambda *args, **kwargs: next(rows)):
+            result = await backtest.run_custom_walk_forward(
+                "BTCTRY", "5m", {"entry": [{"indicator": "close", "op": ">", "value": 0}]}, folds=3
+            )
+        self.assertTrue(result["oos_consistent"])
+        self.assertFalse(result["training_performed"])
+        self.assertEqual(result["total_oos_trades"], 36)
+
+    def test_custom_warmup_cannot_open_position_before_oos_start(self):
+        from app import backtest
+
+        data = {key: [100.0] * 24 for key in ("opens", "highs", "lows", "closes", "volumes")}
+        data["times"] = list(range(24))
+        definition = {"entry": [{"indicator": "close", "op": ">", "value": 0}],
+                      "exit_policy": {"mode": "protection_only", "use_stop_loss": False,
+                                      "use_take_profit": False, "use_max_hold": True, "max_hold_bars": 1}}
+        with patch.object(backtest, "_fetch_klines", return_value=data):
+            result = backtest._run_custom("BTCTRY", "5m", 1, definition, start_ts=10, end_ts=23)
+        self.assertTrue(result["trades"])
+        self.assertGreaterEqual(result["trades"][0]["entry_time"], 11)
+
+    def test_fast_bb_mfi_signal_series_matches_strategy_bar_by_bar(self):
+        from app.analyzer import ScalpAnalyzer
+        from app.backtest import _bb_mfi_signal_series
+
+        closes = [100.0 + ((index % 17) - 8) * 0.31 + index * 0.012 for index in range(120)]
+        data = {"closes": closes, "opens": [value - 0.08 for value in closes],
+                "highs": [value + 0.4 for value in closes], "lows": [value - 0.5 for value in closes],
+                "volumes": [100 + (index % 11) * 9 for index in range(120)], "times": list(range(120))}
+        analyzer = ScalpAnalyzer(None)
+        fast = _bb_mfi_signal_series(data, analyzer)
+        slow = [analyzer.strategy_bb_mfi_mean_reversion({key: values[:index + 1] for key, values in data.items()}, "TESTTRY")
+                for index in range(len(closes))]
+        self.assertEqual(fast, slow)
+
 
 class A2AContracts(unittest.TestCase):
     @classmethod

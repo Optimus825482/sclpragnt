@@ -321,6 +321,154 @@ def _price_action_setup(opens, highs, lows, closes):
             "candle_index": i, "entry_confirmation_required": setup != "none", "reason": reason,
             "data_policy": "confirmed candle only; no future bars"}
 
+
+def _td9_sequence(closes, lookback=4):
+    """Return a closed-bar TD9-style exhaustion count, not a trade signal."""
+    # A TD9 state needs only its recent run. Bounding it keeps large historical
+    # snapshot arrays from turning a display feature into an O(history) cost.
+    closes = list(closes)[-32:]
+    if len(closes) <= lookback:
+        return {"ready": False, "bullish_count": 0, "bearish_count": 0, "exhaustion": "none"}
+    up = down = 0
+    for index in range(lookback, len(closes)):
+        if closes[index] > closes[index - lookback]:
+            up, down = up + 1, 0
+        elif closes[index] < closes[index - lookback]:
+            down, up = down + 1, 0
+        else:
+            up = down = 0
+    exhaustion = "uptrend_9" if up >= 9 else "downtrend_9" if down >= 9 else "none"
+    return {"ready": True, "lookback": lookback, "bullish_count": up, "bearish_count": down,
+            "exhaustion": exhaustion, "data_policy": "closed candles only; sequential observation, not entry"}
+
+
+def _confirmed_structure(highs, lows, closes, volumes, pivot_length=3):
+    """Causal swing/BOS and order-block context.
+
+    A swing is emitted only after ``pivot_length`` later, already-known bars.
+    This intentionally delays labels instead of placing a pivot back in time as
+    though it was known at the turning candle.
+    """
+    # Recent active structure is what can invalidate or confirm a current
+    # setup. Keep the scan bounded for the market-wide snapshot loop.
+    size = min(len(highs), len(lows), len(closes), len(volumes), 180)
+    if size < pivot_length * 2 + 3:
+        return {"ready": False, "reason": "insufficient_confirmed_swing_history"}
+    highs, lows, closes, volumes = ([float(x) for x in values[-size:]] for values in (highs, lows, closes, volumes))
+    pivots_high, pivots_low = [], []
+    # The last usable centre is deliberately before the last `pivot_length`
+    # bars, which is the confirmation delay.
+    for index in range(pivot_length, size - pivot_length):
+        high_window = highs[index - pivot_length:index + pivot_length + 1]
+        low_window = lows[index - pivot_length:index + pivot_length + 1]
+        if highs[index] == max(high_window) and high_window.count(highs[index]) == 1:
+            pivots_high.append({"index": index, "price": highs[index], "confirmed_at": index + pivot_length})
+        if lows[index] == min(low_window) and low_window.count(lows[index]) == 1:
+            pivots_low.append({"index": index, "price": lows[index], "confirmed_at": index + pivot_length})
+    last_high = pivots_high[-1] if pivots_high else None
+    last_low = pivots_low[-1] if pivots_low else None
+    # A level needs to have been confirmed before the current candle to count
+    # as a causal structure break.
+    current = size - 1
+    usable_high = next((p for p in reversed(pivots_high) if p["confirmed_at"] < current), None)
+    usable_low = next((p for p in reversed(pivots_low) if p["confirmed_at"] < current), None)
+    bos = "bullish" if usable_high and closes[-1] > usable_high["price"] else "bearish" if usable_low and closes[-1] < usable_low["price"] else "none"
+    avg_volume = float(np.mean(volumes[-21:-1])) if size >= 21 else None
+    volume_ratio = volumes[-1] / avg_volume if avg_volume else None
+    order_block = None
+    if bos == "bullish" and usable_high:
+        start = max(0, usable_high["index"])
+        candidate = next((i for i in range(current - 1, max(1, start) - 1, -1) if closes[i] < closes[i - 1]), None)
+        if candidate is not None:
+            order_block = {"side": "bullish", "index": candidate, "low": lows[candidate], "high": highs[candidate],
+                           "status": "new", "definition": "last bearish candle before confirmed bullish BOS"}
+    elif bos == "bearish" and usable_low:
+        start = max(0, usable_low["index"])
+        candidate = next((i for i in range(current - 1, max(1, start) - 1, -1) if closes[i] > closes[i - 1]), None)
+        if candidate is not None:
+            order_block = {"side": "bearish", "index": candidate, "low": lows[candidate], "high": highs[candidate],
+                           "status": "new", "definition": "last bullish candle before confirmed bearish BOS"}
+    return {"ready": True, "pivot_length": pivot_length, "last_confirmed_high": last_high,
+            "last_confirmed_low": last_low, "break_of_structure": bos,
+            "volume_ratio_20": volume_ratio, "volume_confirmed": bool(volume_ratio and volume_ratio >= 1.2),
+            "order_block": order_block,
+            "data_policy": "pivots require right-side closed-bar confirmation; no look-ahead labels"}
+
+
+def _fair_value_gap(highs, lows, closes, atr=None, min_atr_multiple=0.25):
+    """Detect the latest three-candle FVG with a volatility floor."""
+    if min(len(highs), len(lows), len(closes)) < 3:
+        return {"ready": False, "reason": "insufficient_candles"}
+    high0, low0, close0 = float(highs[-3]), float(lows[-3]), float(closes[-1])
+    high2, low2 = float(highs[-1]), float(lows[-1])
+    floor = max(float(atr or 0) * min_atr_multiple, 0.0)
+    if low2 - high0 > floor:
+        return {"ready": True, "side": "bullish", "lower": high0, "upper": low2,
+                "size": low2 - high0, "midpoint": (high0 + low2) / 2, "filled": close0 <= high0,
+                "minimum_size": floor, "data_policy": "three completed candles; gap is context, not a fill forecast"}
+    if low0 - high2 > floor:
+        return {"ready": True, "side": "bearish", "lower": high2, "upper": low0,
+                "size": low0 - high2, "midpoint": (high2 + low0) / 2, "filled": close0 >= low0,
+                "minimum_size": floor, "data_policy": "three completed candles; gap is context, not a fill forecast"}
+    return {"ready": True, "side": "none", "minimum_size": floor,
+            "data_policy": "three completed candles; no gap detected"}
+
+
+def _wick_rejection_zscore(opens, highs, lows, closes, lookback=20):
+    """Measure an unusual closed-bar rejection wick without predicting reversal."""
+    size = min(len(opens), len(highs), len(lows), len(closes))
+    if size < lookback + 1:
+        return {"ready": False, "reason": "insufficient_wick_history"}
+    upper_ratios, lower_ratios = [], []
+    for open_, high, low, close in zip(opens[-lookback - 1:-1], highs[-lookback - 1:-1], lows[-lookback - 1:-1], closes[-lookback - 1:-1]):
+        span = max(float(high) - float(low), 1e-12)
+        upper_ratios.append((float(high) - max(float(open_), float(close))) / span)
+        lower_ratios.append((min(float(open_), float(close)) - float(low)) / span)
+    open_, high, low, close = map(float, (opens[-1], highs[-1], lows[-1], closes[-1]))
+    span = max(high - low, 1e-12)
+    upper = (high - max(open_, close)) / span
+    lower = (min(open_, close) - low) / span
+    def zscore(value, samples):
+        std = float(np.std(samples))
+        return (value - float(np.mean(samples))) / std if std > 1e-12 else 0.0
+    upper_z, lower_z = zscore(upper, upper_ratios), zscore(lower, lower_ratios)
+    signal = "bearish_rejection" if upper_z >= 1.5 and close <= low + span * .45 else "bullish_rejection" if lower_z >= 1.5 and close >= low + span * .55 else "none"
+    return {"ready": True, "lookback": lookback, "upper_wick_ratio": upper, "lower_wick_ratio": lower,
+            "upper_zscore": upper_z, "lower_zscore": lower_z, "signal": signal,
+            "data_policy": "closed-candle statistical outlier; confirmation required"}
+
+
+def _volume_profile_proxy(highs, lows, closes, volumes, lookback=48, bins=16):
+    """Bounded OHLCV proxy for POC/value context, explicitly not a footprint."""
+    size = min(len(highs), len(lows), len(closes), len(volumes))
+    if size < min(lookback, 12):
+        return {"ready": False, "reason": "insufficient_ohlcv_history"}
+    highs, lows, closes, volumes = ([float(x) for x in values[-min(size, lookback):]] for values in (highs, lows, closes, volumes))
+    floor, ceiling = min(lows), max(highs)
+    if ceiling <= floor:
+        return {"ready": False, "reason": "zero_price_range"}
+    bucket_size = (ceiling - floor) / bins
+    buckets = [0.0] * bins
+    for high, low, close, volume in zip(highs, lows, closes, volumes):
+        typical = (high + low + close) / 3
+        index = min(bins - 1, max(0, int((typical - floor) / bucket_size)))
+        buckets[index] += max(volume, 0.0)
+    poc_index = int(np.argmax(buckets)); total = sum(buckets)
+    target = total * .70
+    selected = {poc_index}; accumulated = buckets[poc_index]; left, right = poc_index - 1, poc_index + 1
+    while accumulated < target and (left >= 0 or right < bins):
+        left_volume = buckets[left] if left >= 0 else -1.0
+        right_volume = buckets[right] if right < bins else -1.0
+        if right_volume > left_volume:
+            selected.add(right); accumulated += right_volume; right += 1
+        else:
+            selected.add(left); accumulated += left_volume; left -= 1
+    return {"ready": True, "lookback": min(size, lookback), "bins": bins,
+            "poc": floor + (poc_index + .5) * bucket_size,
+            "value_area_low": floor + min(selected) * bucket_size,
+            "value_area_high": floor + (max(selected) + 1) * bucket_size,
+            "method": "typical_price_ohlcv_proxy", "data_policy": "not exchange price-level volume or footprint; contextual S/R only"}
+
 CANDLESTICK_PATTERN_INFO = {
     "bullish_engulfing": {"direction": "bullish", "strength": "strong", "tr": "Güçlü boğa yutan formasyonu; alıcı baskısında artış."},
     "bearish_engulfing": {"direction": "bearish", "strength": "strong", "tr": "Güçlü ayı yutan formasyonu; satıcı baskısında artış."},
@@ -384,6 +532,20 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     result["oscillators"]["values"]["cmo_9"] = cmo
     result["oscillators"]["values"]["crsi"] = crsi
     result["price_action"] = _price_action_setup(opens, highs, lows, closes)
+    # These features are research observations only. They are deliberately not
+    # consumed by `ScalpAnalyzer` entry strategies until a fee-aware OOS and
+    # forward evaluation creates an explicit candidate definition.
+    result["research_features"] = {
+        "version": "research-features-v1",
+        "paper_only": True,
+        "td9": _td9_sequence(closes),
+        "market_structure": _confirmed_structure(highs, lows, closes, volumes),
+        "fair_value_gap": _fair_value_gap(highs, lows, closes, atr),
+        "wick_rejection_zscore": _wick_rejection_zscore(opens, highs, lows, closes),
+        "volume_profile": _volume_profile_proxy(highs, lows, closes, volumes),
+        "unavailable_without_trade_level_data": ["footprint", "true_cvd", "aggressor_side_orderflow", "actual_liquidation_levels"],
+        "not_implemented_without_separate_validation": ["lorentzian_classifier", "supertrend_ml_clustering"],
+    }
     result["candlestick_pattern_details"] = [CANDLESTICK_PATTERN_INFO.get(name, {"direction": "neutral", "strength": "info", "tr": name}) for name in candle_patterns]
     result["candlestick_pattern_status"] = "calculated_no_pattern" if candle_patterns == ["none"] else "detected"
     if adr and len(dclose) and dclose[-1]:
