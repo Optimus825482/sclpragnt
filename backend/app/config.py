@@ -77,7 +77,10 @@ class Config:
     BB_MFI_EXIT_RSI_MIN = float(os.getenv("BB_MFI_EXIT_RSI_MIN", "69")) # RSIUpperLevel3
     BB_MFI_EXIT_MFI_MIN = float(os.getenv("BB_MFI_EXIT_MFI_MIN", "69")) # MFIUpperLevel3
     BB_MFI_ENTRY_VOLUME_RATIO_MIN = float(os.getenv("BB_MFI_ENTRY_VOLUME_RATIO_MIN", "0.0"))
-    BB_MFI_DIP_CONFIRMATION_ENABLED = os.getenv("BB_MFI_DIP_CONFIRMATION_ENABLED", "false").lower() == "true"
+    # Paper replay candidate: require the completed BB/MFI signal candle to
+    # recover from its low before entering. The tested threshold remains 55%;
+    # it can still be disabled or tuned from Settings for further paper OOS.
+    BB_MFI_DIP_CONFIRMATION_ENABLED = os.getenv("BB_MFI_DIP_CONFIRMATION_ENABLED", "true").lower() == "true"
     BB_MFI_DIP_MIN_CLOSE_POSITION = float(os.getenv("BB_MFI_DIP_MIN_CLOSE_POSITION", "0.55"))
     BB_MFI_ENTRY_MFI_REVERSAL_ENABLED = os.getenv("BB_MFI_ENTRY_MFI_REVERSAL_ENABLED", "false").lower() == "true"
     BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA = float(os.getenv("BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA", "0.0"))

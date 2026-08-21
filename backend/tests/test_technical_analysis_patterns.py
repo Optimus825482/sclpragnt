@@ -1,6 +1,9 @@
 import unittest
 
-from app.technical_analysis import CANDLESTICK_PATTERN_INFO, _candlestick_patterns
+from app.technical_analysis import (
+    CANDLESTICK_PATTERN_INFO, _candlestick_patterns, _confirmed_structure,
+    _fair_value_gap, _td9_sequence, _volume_profile_proxy, _wick_rejection_zscore, calculate_snapshot,
+)
 
 
 REQUESTED_PATTERNS = {
@@ -51,3 +54,47 @@ class CandlestickPatternBehaviorTests(unittest.TestCase):
 
     def test_misaligned_ohlc_input_fails_closed(self):
         self.assertEqual(_candlestick_patterns([1, 2, 3], [2, 3], [0, 1, 2], [1.5, 2.5, 3.5]), ["none"])
+
+
+class ResearchFeatureBehaviorTests(unittest.TestCase):
+    def test_td9_uses_only_prior_four_closed_candles(self):
+        result = _td9_sequence(list(range(1, 14)))
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["bullish_count"], 9)
+        self.assertEqual(result["exhaustion"], "uptrend_9")
+
+    def test_fvg_requires_three_candles_and_atr_floor(self):
+        bullish = _fair_value_gap([10, 11, 13], [8, 9, 12], [9, 10, 12.5], atr=2, min_atr_multiple=.25)
+        self.assertEqual(bullish["side"], "bullish")
+        self.assertFalse(bullish["filled"])
+        none = _fair_value_gap([10, 11, 10.4], [8, 9, 10.3], [9, 10, 10.35], atr=2, min_atr_multiple=.25)
+        self.assertEqual(none["side"], "none")
+
+    def test_structure_requires_confirmed_pivot_before_bos(self):
+        highs = [10, 11, 12, 11, 10, 11, 12, 11, 10, 13]
+        lows = [8, 9, 10, 9, 8, 9, 10, 9, 8, 11]
+        closes = [9, 10, 11, 10, 9, 10, 11, 10, 9, 12.5]
+        result = _confirmed_structure(highs, lows, closes, [100] * len(closes), pivot_length=2)
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["break_of_structure"], "bullish")
+        self.assertEqual(result["order_block"]["side"], "bullish")
+
+    def test_wick_zscore_and_profile_are_explicit_proxies(self):
+        opens = [10] * 21; highs = [10.8 + (i % 2) * .1 for i in range(20)] + [15]; lows = [9] * 21; closes = [10.2] * 20 + [9.5]
+        wick = _wick_rejection_zscore(opens, highs, lows, closes)
+        self.assertTrue(wick["ready"])
+        self.assertEqual(wick["signal"], "bearish_rejection")
+        profile = _volume_profile_proxy(highs, lows, closes, [100] * 21, lookback=20, bins=8)
+        self.assertTrue(profile["ready"])
+        self.assertEqual(profile["method"], "typical_price_ohlcv_proxy")
+
+    def test_snapshot_exposes_research_features_without_authorizing_entry(self):
+        closes = [100 + index * .1 for index in range(60)]
+        primary = {"opens": [value - .05 for value in closes], "highs": [value + .2 for value in closes],
+                   "lows": [value - .2 for value in closes], "closes": closes, "volumes": [100] * 60,
+                   "timestamps": list(range(60))}
+        snapshot = calculate_snapshot("TESTTRY", closes[-1], {"5m": primary, "1d": primary}, primary_timeframe="5m")
+        features = snapshot["research_features"]
+        self.assertTrue(features["paper_only"])
+        self.assertIn("market_structure", features)
+        self.assertIn("footprint", features["unavailable_without_trade_level_data"])

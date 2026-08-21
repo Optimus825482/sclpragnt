@@ -10,9 +10,14 @@ from typing import Any
 
 from app import database
 from app.analyzer import ScalpAnalyzer
-from app.technical_analysis import _adx, _macd, _bollinger, _stochastic, _mfi, _cci, _williams_r, _methodology_analysis
+from app.technical_analysis import (
+    _adx, _macd, _bollinger, _stochastic, _mfi, _cci, _williams_r, _methodology_analysis,
+    _confirmed_structure, _fair_value_gap, _td9_sequence, _volume_profile_proxy, _wick_rejection_zscore,
+)
 from app.binance_tr_public import historical_klines
 from app.config import config
+
+_ORIGINAL_BB_MFI_STRATEGY = ScalpAnalyzer.strategy_bb_mfi_mean_reversion
 
 STRATEGIES = {
     "EMA_VWAP_PULLBACK": ("EMA_VWAP_ENABLED", "EMA_VWAP_TIMEFRAME", "strategy_ema_vwap"),
@@ -50,16 +55,23 @@ PARAM_FIELDS = {
 
 # Analyzer stratejileri mevcut global config'i okuduğu için backtest config değişimini serileştir.
 _CONFIG_LOCK = threading.RLock()
-_KLINE_CACHE: dict[tuple[str, str, int], dict[str, list[float]]] = {}
+_KLINE_CACHE: dict[tuple[str, str, int, int | None], dict[str, list[float]]] = {}
 
 
-def _fetch_klines(symbol: str, interval: str, days_back: int) -> dict[str, list[float]]:
-    cache_key = (symbol.upper(), interval, int(days_back))
+def _fetch_klines(symbol: str, interval: str, days_back: int, end_time_ms: int | None = None) -> dict[str, list[float]]:
+    """Read a fixed, completed-candle window from persisted public history.
+
+    ``end_time_ms`` makes a historical fold reproducible and prevents a
+    walk-forward run from silently reading candles after the fold boundary.
+    """
+    requested_end_ms = int(end_time_ms) if end_time_ms is not None else None
+    cache_key = (symbol.upper(), interval, int(days_back), requested_end_ms)
     cached = _KLINE_CACHE.get(cache_key)
     if cached:
         return {key: list(values) for key, values in cached.items()}
     # Backtests are reproducible: they read only the persisted historical table.
-    end_ms = int(time.time() * 1000)
+    now_ms = int(time.time() * 1000)
+    end_ms = min(requested_end_ms, now_ms) if requested_end_ms is not None else now_ms
     start_ms = end_ms - int(days_back) * 86400 * 1000
     cached_rows = asyncio.run(database.get_market_candles(symbol, interval, start_ms, end_ms))
     rows = [[r["open_time"], r["open"], r["high"], r["low"], r["close"], r["volume"], r["close_time"]] for r in cached_rows]
@@ -68,13 +80,12 @@ def _fetch_klines(symbol: str, interval: str, days_back: int) -> dict[str, list[
     if not rows:
         raise ValueError(f"{symbol} için tarihsel veri bulunamadı")
     result = {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": [], "times": []}
-    now_ms = int(time.time() * 1000)
     seen_times = set()
     for row in rows:
         if len(row) < 6:
             continue
         close_ms = int(row[6]) if len(row) > 6 else int(row[0])
-        if close_ms > now_ms or close_ms in seen_times:
+        if close_ms > end_ms or close_ms in seen_times:
             continue
         values = [float(row[i]) for i in range(1, 6)]
         if not all(v == v and abs(v) != float("inf") for v in values):
@@ -154,6 +165,9 @@ CUSTOM_INDICATORS = {
     "mfi", "cci", "williams_r", "cmo", "crsi", "confluence_score", "regime_confidence", "mtf_alignment_score",
     "turtle_breakout", "turtle_breakout_confirmed", "wyckoff_score", "elliott_score", "fib_distance_support", "fib_distance_resistance",
     "rsi_bullish_divergence", "rsi_bearish_divergence", "macd_bullish_divergence", "macd_bearish_divergence",
+    "td9_up_count", "td9_down_count", "td9_up_exhaustion", "td9_down_exhaustion",
+    "bos_bullish", "bos_bearish", "structure_volume_confirmed", "fvg_bullish", "fvg_bearish",
+    "wick_bullish_rejection", "wick_bearish_rejection", "vp_poc_distance", "vp_inside_value_area",
     "data_ready", "stale", "liquidity_fresh",
 }
 CUSTOM_OPS = {"<", "<=", ">", ">=", "=="}
@@ -170,6 +184,7 @@ CUSTOM_IDENTIFIER_SCHEMA = {
     "volatility_exit": ["atr_pct", "atr_trailing_stop", "atr_trailing_stop_pct"],
     "volume_liquidity": ["volume_ratio_20", "spread_pct", "orderflow_imbalance", "vwap", "price_vs_vwap", "vwap_distance_pct", "vwap_zone", "volume_profile_poc_distance"],
     "structure": ["turtle_breakout", "turtle_breakout_confirmed", "confluence_score", "regime_confidence", "wyckoff_score", "elliott_score", "fib_distance_support", "fib_distance_resistance"],
+    "research_structure": ["td9_up_count", "td9_down_count", "td9_up_exhaustion", "td9_down_exhaustion", "bos_bullish", "bos_bearish", "structure_volume_confirmed", "fvg_bullish", "fvg_bearish", "wick_bullish_rejection", "wick_bearish_rejection", "vp_poc_distance", "vp_inside_value_area"],
     "divergence": ["rsi_bullish_divergence", "rsi_bearish_divergence", "macd_bullish_divergence", "macd_bearish_divergence"],
     "data_gate": ["data_ready", "stale", "liquidity_fresh"],
 }
@@ -203,6 +218,30 @@ def _custom_value(analyzer, window, name):
         if len(closes) < 20: return None
         offset = max(range(len(volumes) - 20, len(volumes)), key=lambda i: volumes[i])
         return closes[-1] / closes[offset] - 1 if closes[offset] else None
+    if name in {"td9_up_count", "td9_down_count", "td9_up_exhaustion", "td9_down_exhaustion"}:
+        td9 = _td9_sequence(closes)
+        if not td9.get("ready"): return None
+        if name == "td9_up_count": return td9["bullish_count"]
+        if name == "td9_down_count": return td9["bearish_count"]
+        return 1 if td9["exhaustion"] == ("uptrend_9" if name == "td9_up_exhaustion" else "downtrend_9") else 0
+    if name in {"bos_bullish", "bos_bearish", "structure_volume_confirmed"}:
+        structure = _confirmed_structure(highs, lows, closes, volumes)
+        if not structure.get("ready"): return None
+        if name == "structure_volume_confirmed": return 1 if structure.get("volume_confirmed") else 0
+        return 1 if structure.get("break_of_structure") == ("bullish" if name == "bos_bullish" else "bearish") else 0
+    if name in {"fvg_bullish", "fvg_bearish"}:
+        gap = _fair_value_gap(highs, lows, closes, analyzer.calculate_atr(window, 14))
+        if not gap.get("ready"): return None
+        return 1 if gap.get("side") == ("bullish" if name == "fvg_bullish" else "bearish") else 0
+    if name in {"wick_bullish_rejection", "wick_bearish_rejection"}:
+        wick = _wick_rejection_zscore(window["opens"], highs, lows, closes)
+        if not wick.get("ready"): return None
+        return 1 if wick.get("signal") == ("bullish_rejection" if name == "wick_bullish_rejection" else "bearish_rejection") else 0
+    if name in {"vp_poc_distance", "vp_inside_value_area"}:
+        profile = _volume_profile_proxy(highs, lows, closes, volumes)
+        if not profile.get("ready"): return None
+        if name == "vp_poc_distance": return closes[-1] / profile["poc"] - 1 if profile["poc"] else None
+        return 1 if profile["value_area_low"] <= closes[-1] <= profile["value_area_high"] else 0
     if name == "return_5": return closes[-1] / closes[-6] - 1 if len(closes) >= 6 else None
     if name == "return_21": return closes[-1] / closes[-22] - 1 if len(closes) >= 22 else None
     if name == "chop": return analyzer.calculate_chop(window, 14)
@@ -278,7 +317,7 @@ def _custom_conditions(analyzer, window, conditions):
     return bool(conditions)
 
 def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_pct=None, tp_pct=None,
-                spread_pct=0.0, slippage_pct=None):
+                spread_pct=0.0, slippage_pct=None, start_ts=None, end_ts=None):
     if not isinstance(definition, dict): raise ValueError("strategy_definition nesne olmalıdır")
     entry = definition.get("entry") or []; exit_conditions = definition.get("exit") or []
     policy = definition.get("exit_policy") or {}
@@ -296,7 +335,8 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
     if use_max_hold and max_hold_bars < 1: raise ValueError("max_hold_bars pozitif olmalı")
     if use_trailing and not 0 < trailing_pct < 1: raise ValueError("trailing_stop_pct 0 ile 1 arasında olmalı")
     if len(entry) > 8 or len(exit_conditions) > 8: raise ValueError("En fazla 8 giriş ve 8 çıkış koşulu kullanılabilir")
-    rows = _fetch_klines(symbol, interval, days_back); analyzer = ScalpAnalyzer(None); balance = config.INITIAL_BALANCE_TRY; position = None; trades = []; entry_armed = True; cooldown_until = -1
+    end_time_ms = int(float(end_ts) * 1000) if end_ts is not None else None
+    rows = _fetch_klines(symbol, interval, days_back, end_time_ms); analyzer = ScalpAnalyzer(None); balance = config.INITIAL_BALANCE_TRY; position = None; trades = []; entry_armed = True; cooldown_until = -1
     stop_pct = float(stop_pct if stop_pct is not None else config.HARD_STOP_LOSS_PCT)
     tp_pct = float(tp_pct if tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)
     interval_seconds = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "8h": 28800, "12h": 43200, "1d": 86400}.get(interval, 300)
@@ -321,7 +361,9 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
                 exit_price=close; reason="custom_exit_condition"
             if exit_price is not None:
                 balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size, reason, spread_pct, slippage_pct); trade.update({"entry_time":position["entry_time"],"exit_time":now}); trades.append(trade); position=None; cooldown_until = i + 1; entry_armed = False
-        entry_signal = _custom_conditions(analyzer, window, entry)
+        # Warm-up candles may inform indicators, but may never create a
+        # position before a chronological OOS fold begins.
+        entry_signal = (start_ts is None or now >= float(start_ts)) and _custom_conditions(analyzer, window, entry)
         if not entry_signal: entry_armed = True
         if position is None and i >= cooldown_until and entry_armed and balance >= order_size and entry_signal:
             if i + 1 >= len(rows["opens"]):
@@ -335,16 +377,119 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
     if position:
         balance, pnl, _, trade = _close_trade(balance, position["entry"], rows["closes"][-1], position["quantity"], order_size, "open_at_end_mark_to_market", spread_pct, slippage_pct); trade.update({"entry_time":position["entry_time"],"exit_time":rows["times"][-1]}); trades.append(trade)
     wins=sum(t["pnl"]>0 for t in trades); net=balance-config.INITIAL_BALANCE_TRY; losses=[t["pnl"] for t in trades if t["pnl"]<=0]; gains=[t["pnl"] for t in trades if t["pnl"]>0]
-    return {"strategy":"CUSTOM","symbol":symbol,"interval":interval,"days_back":days_back,"definition":definition,"exit_policy":policy,"initial_balance":config.INITIAL_BALANCE_TRY,"final_balance":round(balance,2),"net_pnl":round(net,2),"total_trades":len(trades),"wins":wins,"losses":len(trades)-wins,"win_rate":round(wins/len(trades)*100,2) if trades else 0,"profit_factor":round(sum(gains)/abs(sum(losses)),3) if losses else None,"trades":trades,"exit_reason_counts":dict(Counter(t["reason"] for t in trades)),"data_quality":_data_quality(rows, interval),"fill_model":"next_bar_open_entry_executable_exit","spread_pct":spread_pct,"slippage_pct":config.ESTIMATED_SLIPPAGE_PCT if slippage_pct is None else slippage_pct,"paper_only":True,"custom_strategy":True,"exit_model":exit_mode,"exit_controls":{"stop_loss":use_stop,"take_profit":use_target,"trailing_stop":use_trailing,"max_hold":use_max_hold}}
+    return {"strategy":"CUSTOM","symbol":symbol,"interval":interval,"days_back":days_back,"definition":definition,"exit_policy":policy,"initial_balance":config.INITIAL_BALANCE_TRY,"final_balance":round(balance,2),"net_pnl":round(net,2),"total_trades":len(trades),"wins":wins,"losses":len(trades)-wins,"win_rate":round(wins/len(trades)*100,2) if trades else 0,"profit_factor":round(sum(gains)/abs(sum(losses)),3) if losses else None,"trades":trades,"exit_reason_counts":dict(Counter(t["reason"] for t in trades)),"data_quality":_data_quality(rows, interval),"fill_model":"next_bar_open_entry_executable_exit","spread_pct":spread_pct,"slippage_pct":config.ESTIMATED_SLIPPAGE_PCT if slippage_pct is None else slippage_pct,"paper_only":True,"custom_strategy":True,"exit_model":exit_mode,"exit_controls":{"stop_loss":use_stop,"take_profit":use_target,"trailing_stop":use_trailing,"max_hold":use_max_hold},"evaluation_start_ts":start_ts,"evaluation_end_ts":end_ts}
 
 async def run_custom_backtest(symbol, interval, days_back, definition, order_size=500.0, stop_pct=None, tp_pct=None,
-                              spread_pct=0.0, slippage_pct=None):
-    return await asyncio.to_thread(_run_custom, symbol, interval, days_back, definition, order_size, stop_pct, tp_pct, spread_pct, slippage_pct)
+                              spread_pct=0.0, slippage_pct=None, start_ts=None, end_ts=None):
+    return await asyncio.to_thread(_run_custom, symbol, interval, days_back, definition, order_size, stop_pct, tp_pct, spread_pct, slippage_pct, start_ts, end_ts)
+
+
+async def run_custom_walk_forward(symbol: str, interval: str, definition: dict,
+                                  train_days: int = 10, test_days: int = 5,
+                                  folds: int = 4, order_size: float = 500.0,
+                                  stop_pct: float | None = None, tp_pct: float | None = None,
+                                  spread_pct: float = 0.0, slippage_pct: float | None = None):
+    """Chronological, no-fit OOS validation for declarative custom strategies."""
+    train_days = max(3, min(int(train_days), 90)); test_days = max(1, min(int(test_days), 30))
+    folds = max(1, min(int(folds), 6)); now = time.time(); results = []
+    for fold in range(folds):
+        end_ts = now - (folds - fold - 1) * test_days * 86400
+        start_ts = end_ts - test_days * 86400
+        result = await asyncio.to_thread(
+            _run_custom, symbol, interval, train_days + test_days, definition,
+            order_size, stop_pct, tp_pct, spread_pct, slippage_pct, start_ts, end_ts)
+        result["fold"] = fold + 1
+        results.append(result)
+    pnl = [float(row.get("net_pnl") or 0) for row in results]
+    positive_folds = sum(value > 0 for value in pnl)
+    total_pnl = sum(pnl)
+    total_trades = sum(max(0, int(row.get("total_trades") or 0)) for row in results)
+    reasons = []
+    if len(results) < 3: reasons.append("insufficient_folds")
+    if total_trades < 30: reasons.append("insufficient_trades")
+    if positive_folds < len(results) // 2 + 1: reasons.append("insufficient_positive_fold_majority")
+    if total_pnl <= 0: reasons.append("non_positive_total_net_pnl")
+    return {"symbol": symbol, "interval": interval, "strategy": "CUSTOM", "definition": definition,
+            "method": "chronological_oos_folds_without_parameter_training", "train_days": train_days,
+            "warmup_context_days": train_days, "training_performed": False, "parameter_selection": "none",
+            "test_days": test_days, "folds": len(results), "positive_oos_folds": positive_folds,
+            "minimum_required_folds": 3, "minimum_required_trades": 30, "total_oos_trades": total_trades,
+            "data_sufficient": len(results) >= 3 and total_trades >= 30,
+            "oos_consistent": not reasons, "validation_status": "PASS" if not reasons else "FAIL",
+            "validation_reasons": reasons, "net_pnl": round(total_pnl, 2),
+            "average_fold_pnl": round(sum(pnl) / len(pnl), 2) if pnl else 0.0,
+            "fold_results": results, "paper_only": True,
+            "warning": "Parametre eğitimi veya seçimi yapılmadı. Warm-up yalnız geçmiş gösterge bağlamıdır; işlem yalnız OOS test döneminde açılabilir. Sonuç kârlılık garantisi değildir."}
+
+
+def _bb_mfi_signal_series(data: dict[str, list[float]], analyzer: ScalpAnalyzer) -> list[str | None]:
+    """Produce Pine-v3 BB/MFI decisions once per closed candle.
+
+    The generic strategy path used to recompute RSI from bar zero for every
+    candle.  Wilder RSI is recursive, so retaining its rolling state yields
+    the same value without changing the strategy contract or using future
+    candles.  This helper is used only by the deterministic backtest path.
+    """
+    closes, highs, lows, volumes = (data[key] for key in ("closes", "highs", "lows", "volumes"))
+    size = len(closes); signals: list[str | None] = [None] * size
+    period = config.BB_MFI_RSI_PERIOD
+    rsi_values: list[float | None] = [None] * size
+    if size > period:
+        gains = [max(0.0, closes[i] - closes[i - 1]) for i in range(1, size)]
+        losses = [max(0.0, closes[i - 1] - closes[i]) for i in range(1, size)]
+        avg_gain = sum(gains[:period]) / period; avg_loss = sum(losses[:period]) / period
+        for index in range(period, size):
+            if index > period:
+                avg_gain = (avg_gain * (period - 1) + gains[index - 1]) / period
+                avg_loss = (avg_loss * (period - 1) + losses[index - 1]) / period
+            rsi_values[index] = 100.0 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss))
+
+    version = config.BB_MFI_PINE_VERSION
+    min_history = max(config.BB_MFI_BB_PERIOD, period + 1,
+                      config.BB_MFI_MFI_PERIOD + 1 if version == "v3" else 0)
+    for index in range(min_history - 1, size):
+        close = closes[index]; bb_values = closes[index - config.BB_MFI_BB_PERIOD + 1:index + 1]
+        middle = sum(bb_values) / len(bb_values)
+        variance = sum((value - middle) ** 2 for value in bb_values) / len(bb_values)
+        lower_band = middle - math.sqrt(variance) * config.BB_MFI_BB_STD_DEV
+        upper_band = middle + math.sqrt(variance) * config.BB_MFI_BB_STD_DEV
+        rsi = rsi_values[index]
+        if rsi is None:
+            continue
+        average_volume = sum(volumes[index - 20:index]) / 20 if index >= 20 else 0.0
+        volume_ratio = volumes[index] / average_volume if average_volume else 0.0
+        candle_range = highs[index] - lows[index]
+        close_position = (close - lows[index]) / candle_range if candle_range > 0 else 0.0
+        entry_volume_ok = volume_ratio >= config.BB_MFI_ENTRY_VOLUME_RATIO_MIN
+        dip_confirmed = (not config.BB_MFI_DIP_CONFIRMATION_ENABLED or close_position >= config.BB_MFI_DIP_MIN_CLOSE_POSITION)
+        if version == "v3":
+            start = index - config.BB_MFI_MFI_PERIOD
+            mfi = _mfi(highs[start:index + 1], lows[start:index + 1], closes[start:index + 1], volumes[start:index + 1], config.BB_MFI_MFI_PERIOD)
+            previous_mfi = (_mfi(highs[start - 1:index], lows[start - 1:index], closes[start - 1:index], volumes[start - 1:index], config.BB_MFI_MFI_PERIOD)
+                            if index >= config.BB_MFI_MFI_PERIOD + 1 else None)
+            mfi_reversal_ok = (not config.BB_MFI_ENTRY_MFI_REVERSAL_ENABLED or
+                               (previous_mfi is not None and mfi is not None and mfi >= previous_mfi + config.BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA))
+            mfi_slowdown_ok = (config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP < 0 or
+                               (previous_mfi is not None and mfi is not None and mfi >= previous_mfi - config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP))
+            bear_start = max(0, index - 28)
+            bear_pressure = analyzer._bb_mfi_bear_pressure({"closes": closes[bear_start:index + 1], "highs": highs[bear_start:index + 1], "lows": lows[bear_start:index + 1], "volumes": volumes[bear_start:index + 1]})
+            if close < lower_band and mfi is not None and mfi < config.BB_MFI_ENTRY_MFI_MAX and entry_volume_ok and dip_confirmed and mfi_reversal_ok and mfi_slowdown_ok and not bear_pressure:
+                signals[index] = "buy"
+            elif close > upper_band and rsi > config.BB_MFI_EXIT_RSI_MIN and mfi is not None and mfi > config.BB_MFI_EXIT_MFI_MIN:
+                signals[index] = "sell"
+        else:
+            lower = config.BB_MFI_V1_RSI_LOWER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_LOWER_LEVEL
+            upper = config.BB_MFI_V1_RSI_UPPER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_UPPER_LEVEL
+            if close < lower_band and rsi > lower and entry_volume_ok and dip_confirmed:
+                signals[index] = "buy"
+            elif close > upper_band and rsi > upper:
+                signals[index] = "sell"
+    return signals
 
 
 def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct,
                 start_ts=None, end_ts=None, spread_pct=0.0, slippage_pct=None, exit_profile=None,
-                pyramiding_layers=3, order_pct=None):
+                pyramiding_layers=3, order_pct=None, entry_filter=None):
     _validate(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct)
     # Historical candles have no bid/ask; use an explicit conservative spread
     # assumption unless a stress scenario supplies its own value.
@@ -363,7 +508,10 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                 setattr(config, flag, name == strategy)
                 setattr(config, tf, interval)
 
-            data = _fetch_klines(symbol, interval, days_back)
+            # A historical fold must fetch its own fixed endpoint; otherwise
+            # older folds could accidentally read only the newest candles.
+            data = _fetch_klines(symbol, interval, days_back,
+                                 int(float(end_ts) * 1000) if end_ts is not None else None)
             profiles = {
                 "conservative_v2": {"stages": [(0.0045, 0.25, 0.0008), (0.009, 0.25, 0.0035)], "trail_pct": 0.0055, "atr_mult": 0.8},
                 "balanced_v2": {"stages": [(0.0055, 0.25, 0.0012), (0.011, 0.25, 0.0045)], "trail_pct": 0.0080, "atr_mult": 1.2},
@@ -397,6 +545,21 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
             open_at_end = False
             unrealized_pnl = 0.0
             last_eval_i = None
+            use_fast_bb_mfi = fixed_tv_exit and getattr(fn, "__func__", fn) is _ORIGINAL_BB_MFI_STRATEGY
+            cached_signals = _bb_mfi_signal_series(data, analyzer) if use_fast_bb_mfi else None
+
+            def strategy_signal(index, window):
+                return cached_signals[index] if cached_signals is not None else fn(window, symbol)
+            entry_filter = list(entry_filter or [])
+            entry_filter_stats = {"checked": 0, "allowed": 0, "blocked": 0}
+
+            def entry_filter_allows(window):
+                if not entry_filter:
+                    return True
+                entry_filter_stats["checked"] += 1
+                allowed = _custom_conditions(analyzer, window, entry_filter)
+                entry_filter_stats["allowed" if allowed else "blocked"] += 1
+                return allowed
 
             for i, close in enumerate(data["closes"]):
                 candle_time = data["times"][i]
@@ -406,8 +569,12 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     break
                 last_eval_i = i
                 high, low = data["highs"][i], data["lows"][i]
+                # BB/MFI signals above are exact precomputed values. ATR and
+                # the research-only filter use bounded causal lookbacks, so
+                # copying the full history on every bar is unnecessary.
+                window_start = max(0, i - 249) if use_fast_bb_mfi else 0
                 if position:
-                    window = {key: values[:i + 1] for key, values in data.items()}
+                    window = {key: values[window_start:i + 1] for key, values in data.items()}
                     elapsed = max(0, data["times"][i] - position["entry_time"])
                     atr = analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD)
                     position["max_price"] = max(position.get("max_price", position["entry"]), high)
@@ -443,7 +610,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     if fixed_tv_exit and exit_price is None and high >= position["target_price"]:
                         exit_price = position["target_price"]
                         reason = "fixed_take_profit"
-                    elif fixed_tv_exit and exit_price is None and fn(window, symbol) == "sell" and i + 1 < len(data["opens"]):
+                    elif fixed_tv_exit and exit_price is None and strategy_signal(i, window) == "sell" and i + 1 < len(data["opens"]):
                         # Pine's default broker model processes strategy.close
                         # from a confirmed bar at the next bar open.
                         exit_price = data["opens"][i + 1]
@@ -456,7 +623,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                           close < position["entry"] * (1 + config.min_net_exit_pct(order_size * position.get("layers", 1)))):
                         exit_price = close
                         reason = "stale_position_below_cost"
-                    elif exit_price is None and config.EXIT_ON_OPPOSITE_SIGNAL and fn(window, symbol) == "sell":
+                    elif exit_price is None and config.EXIT_ON_OPPOSITE_SIGNAL and strategy_signal(i, window) == "sell":
                         exit_price = close
                         reason = "opposite_signal"
                     if exit_price is not None:
@@ -469,8 +636,8 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                                       "bars_held": exit_time_index - position["entry_bar"] + 1})
                         trades.append(trade); wins += pnl > 0; losses += pnl <= 0; position = None
                     elif position.get("layers", 1) < config.MAX_POSITION_LAYERS:
-                        result = fn(window, symbol)
-                        if result == "buy":
+                        result = strategy_signal(i, window)
+                        if result == "buy" and entry_filter_allows(window):
                             if i + 1 >= len(data["opens"]):
                                 continue
                             # Pine percent_of_equity includes the marked value
@@ -497,10 +664,10 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                             position["target_price"] = (position["entry"] * (1 + float(tp_pct)) if fixed_tv_exit else
                                                          position["entry"] + stop_distance * config.SYSTEM_RISK_REWARD)
                 else:
-                    window = {key: values[:i + 1] for key, values in data.items()}
-                    result = fn(window, symbol)
+                    window = {key: values[window_start:i + 1] for key, values in data.items()}
+                    result = strategy_signal(i, window)
                     entry_order_size = balance * float(order_pct) if order_pct else order_size
-                    if balance >= entry_order_size * (1 + config.COMMISSION_PCT) and result == "buy":
+                    if balance >= entry_order_size * (1 + config.COMMISSION_PCT) and result == "buy" and entry_filter_allows(window):
                         if i + 1 >= len(data["opens"]):
                             continue
                         entry_fee = entry_order_size * config.COMMISSION_PCT
@@ -564,7 +731,9 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     "data_quality": _data_quality(data, interval),
                     "open_position_at_end": open_at_end, "unrealized_pnl": round(unrealized_pnl, 8),
                     "trades": trades, "timestamp": time.time(),
-                    "evaluation_start": start_ts, "evaluation_end": end_ts, "exit_profile": exit_profile or "default"}
+                    "evaluation_start": start_ts, "evaluation_end": end_ts, "exit_profile": exit_profile or "default",
+                    "entry_filter": entry_filter, "entry_filter_stats": entry_filter_stats,
+                    "entry_filter_history_bars": 250 if use_fast_bb_mfi and entry_filter else None}
         finally:
             for attr, value in {**saved, **saved_flags, **saved_tfs, "MAX_POSITION_LAYERS": saved_position_layers}.items():
                 setattr(config, attr, value)
@@ -578,6 +747,19 @@ async def run_backtest(symbol: str, interval: str, days_back: int, strategy: str
     result = await asyncio.to_thread(_run_single, symbol, interval, days_back, strategy, params,
                                      order_size, stop_pct, tp_pct, trail_pct, None, None, 0.0, None, exit_profile, pyramiding_layers, order_pct)
     return await database.save_backtest(result), result
+
+
+async def run_filtered_backtest(symbol: str, interval: str, days_back: int, strategy: str,
+                                entry_filter: list[dict], params: dict | None = None,
+                                order_size: float = 500.0, stop_pct: float = 0.005,
+                                tp_pct: float = 0.015, spread_pct: float = 0.0,
+                                slippage_pct: float | None = None,
+                                pyramiding_layers: int = 3, order_pct: float | None = None):
+    """Paper-only replay of an existing strategy with a causal entry filter."""
+    return await asyncio.to_thread(
+        _run_single, symbol, interval, days_back, strategy, params or {}, order_size,
+        stop_pct, tp_pct, 0.0, None, None, spread_pct, slippage_pct, None,
+        pyramiding_layers, order_pct, entry_filter)
 
 
 async def run_walk_forward(symbol: str, interval: str, strategy: str,

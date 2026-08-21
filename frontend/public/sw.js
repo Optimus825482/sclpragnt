@@ -1,5 +1,5 @@
 // Bump this whenever app shell/CSS changes so installed PWAs discard stale assets.
-const CACHE = "scalper-agent-v4-shell-5";
+const CACHE = "scalper-agent-v4-shell-6";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", function (event) {

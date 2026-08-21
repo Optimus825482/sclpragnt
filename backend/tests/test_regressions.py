@@ -90,6 +90,7 @@ class RegressionContracts(unittest.TestCase):
         kline = {"closes": closes, "highs": closes, "lows": closes, "volumes": [100.0] * len(closes)}
         with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
              patch.object(analyzer, "calculate_rsi", return_value=70.0), \
+             patch("app.analyzer.config.BB_MFI_DIP_CONFIRMATION_ENABLED", False), \
              patch("app.analyzer._mfi", return_value=58.0):
             kline["closes"][-1] = 80.0
             self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline), "buy")
@@ -97,8 +98,29 @@ class RegressionContracts(unittest.TestCase):
             self.assertIsNone(analyzer.strategy_bb_mfi_mean_reversion(kline))
         with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
              patch.object(analyzer, "calculate_rsi", return_value=70.0), \
+             patch("app.analyzer.config.BB_MFI_DIP_CONFIRMATION_ENABLED", False), \
              patch("app.analyzer._mfi", return_value=70.0):
             self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline), "sell")
+
+    def test_bb_mfi_dip_confirmation_blocks_unrecovered_signal_candle(self):
+        from app.analyzer import ScalpAnalyzer
+
+        analyzer = ScalpAnalyzer(None)
+        kline = {
+            "closes": [100.0] * 20 + [80.0],
+            "highs": [101.0] * 20 + [100.0],
+            "lows": [99.0] * 20 + [70.0],
+            "volumes": [100.0] * 21,
+        }
+        with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
+             patch.object(analyzer, "calculate_rsi", return_value=70.0), \
+             patch("app.analyzer.config.BB_MFI_PINE_VERSION", "v3"), \
+             patch("app.analyzer.config.BB_MFI_DIP_CONFIRMATION_ENABLED", True), \
+             patch("app.analyzer.config.BB_MFI_DIP_MIN_CLOSE_POSITION", 0.55), \
+             patch("app.analyzer._mfi", return_value=58.0):
+            self.assertIsNone(analyzer.strategy_bb_mfi_mean_reversion(kline))
+            kline["closes"][-1] = 88.0  # (88 - 70) / (100 - 70) = 60%
+            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline), "buy")
 
     def test_portfolio_replay_reads_normalized_historical_candles(self):
         from scripts.run_portfolio_backtest import rows_to_series

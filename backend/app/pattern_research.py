@@ -18,6 +18,47 @@ from app import database
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"}
 
+# A source-aware catalogue makes the research boundary explicit: code visibility
+# does not imply an approved trading rule, and a chart-only data source is not
+# silently represented as exchange microstructure.
+INDICATOR_RESEARCH_CATALOG = {
+    "td9_exhaustion": {
+        "status": "available_snapshot_feature", "source_visibility": "open_source_reference",
+        "data_required": ["closed_ohlcv"], "entry_eligible": False,
+        "purpose": "Momentum exhaustion context; requires independent trend/volume confirmation.",
+    },
+    "market_structure_fvg_order_block": {
+        "status": "available_snapshot_feature", "source_visibility": "open_source_reference",
+        "data_required": ["closed_ohlcv"], "entry_eligible": False,
+        "purpose": "Confirmed swing/BOS, three-candle FVG and causal order-block context.",
+    },
+    "wick_rejection_zscore": {
+        "status": "available_snapshot_feature", "source_visibility": "derived_public_formula",
+        "data_required": ["closed_ohlcv"], "entry_eligible": False,
+        "purpose": "Statistical wick outlier; confirmation required.",
+    },
+    "volume_profile_context": {
+        "status": "available_proxy_feature", "source_visibility": "open_source_reference",
+        "data_required": ["closed_ohlcv"], "entry_eligible": False,
+        "purpose": "Typical-price OHLCV POC/value-area proxy, not price-level traded volume.",
+    },
+    "lorentzian_classification": {
+        "status": "research_backlog", "source_visibility": "open_source_reference",
+        "data_required": ["long_clean_ohlcv_history", "frozen_feature_spec", "held_out_labels"], "entry_eligible": False,
+        "purpose": "Separate classifier experiment; no production or paper-entry activation without OOS/forward evidence.",
+    },
+    "footprint_cvd": {
+        "status": "data_infrastructure_required", "source_visibility": "open_source_reference",
+        "data_required": ["trade_level_aggressor_data", "historical_trade_archive"], "entry_eligible": False,
+        "purpose": "True footprint/CVD cannot be reconstructed from OHLCV or top-of-book snapshots.",
+    },
+    "liquidation_levels": {
+        "status": "data_infrastructure_required", "source_visibility": "open_source_proxy_only",
+        "data_required": ["futures_liquidation_feed_or_explicit_proxy_definition"], "entry_eligible": False,
+        "purpose": "Spot OHLCV cannot establish actual liquidation levels.",
+    },
+}
+
 
 def _clean_timeframes(values):
     values = values or ["1m", "5m", "15m", "1h", "4h"]
@@ -29,6 +70,16 @@ async def list_patterns(args: dict):
         status=args.get("status"), timeframe=args.get("timeframe"), limit=args.get("limit", 30)
     )
     return {"ok": True, "paper_only": True, "count": len(rows), "patterns": rows}
+
+
+async def list_indicator_catalog(args: dict):
+    status = str(args.get("status") or "").strip()
+    items = {
+        name: value for name, value in INDICATOR_RESEARCH_CATALOG.items()
+        if not status or value["status"] == status
+    }
+    return {"ok": True, "paper_only": True, "count": len(items), "indicators": items,
+            "rule": "Catalog entries are research capabilities, never automatic entry authorization."}
 
 
 async def save_pattern(args: dict):
