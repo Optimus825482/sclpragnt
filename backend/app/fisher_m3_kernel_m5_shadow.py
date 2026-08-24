@@ -47,6 +47,60 @@ class FisherM3KernelM5Shadow:
     def __init__(self):
         self.states: dict[str, _State] = {}
 
+    @staticmethod
+    def snapshot(symbol: str, m1: dict[str, list[float]], m3: dict[str, list[float]],
+                 m5: dict[str, list[float]]) -> dict[str, Any]:
+        """Return the current rule state without changing signal-observer state."""
+        m1_times = list(m1.get("timestamps") or [])
+        m1_closes = list(m1.get("closes") or [])
+        m3_times = list(m3.get("timestamps") or [])
+        m3_highs = list(m3.get("highs") or [])
+        m3_lows = list(m3.get("lows") or [])
+        m5_closes = list(m5.get("closes") or [])
+        base: dict[str, Any] = {
+            "symbol": symbol.upper(), "m3_candles": min(len(m3_times), len(m3_highs), len(m3_lows)),
+            "m5_candles": len(m5_closes), "m1_closed_at_ms": int(m1_times[-1]) if m1_times else None,
+            "m3_closed_at_ms": int(m3_times[-1]) if m3_times else None,
+            "price": float(m1_closes[-1]) if m1_closes else None,
+        }
+        if not m1_times or not m1_closes:
+            return {**base, "ready": False, "state": "WARMING", "reason": "M1 kapanmış mum bekleniyor"}
+        if min(len(m3_times), len(m3_highs), len(m3_lows)) < 12:
+            return {**base, "ready": False, "state": "WARMING", "reason": "M3 Fisher için mum birikiyor"}
+        if len(m5_closes) < 34:
+            return {**base, "ready": False, "state": "WARMING", "reason": "M5 Kernel için mum birikiyor"}
+
+        series = _fisher([float(value) for value in m3_highs], [float(value) for value in m3_lows])
+        current, previous = series[-1], series[-2]
+        rq, gaussian = _kernel([float(value) for value in m5_closes])
+        if any(value is None for value in (*current, *previous, rq, gaussian)):
+            return {**base, "ready": False, "state": "WARMING", "reason": "Gösterge hesaplaması hazırlanıyor"}
+        fish1, fish2 = current
+        prev1, prev2 = previous
+        cross_up, cross_down = fish1 > fish2 and prev1 <= prev2, fish1 < fish2 and prev1 >= prev2
+        green = gaussian >= rq
+        entry_zone, exit_zone = fish1 < -1.0, fish1 > 2.0
+        long_ready, exit_ready = cross_up and entry_zone and green, cross_down and exit_zone
+        if long_ready:
+            state, reason = "LONG_READY", "Fisher yukarı kesti · giriş eşiği altında · Kernel yeşil"
+        elif exit_ready:
+            state, reason = "EXIT_READY", "Fisher aşağı kesti · çıkış eşiği üstünde"
+        elif cross_up and entry_zone:
+            state, reason = "KERNEL_RED", "Fisher kesişimi var · Kernel kırmızı"
+        elif cross_up:
+            state, reason = "ENTRY_LEVEL", "Fisher kesişimi var · giriş eşiğinin altında değil"
+        elif green:
+            state, reason = "WAITING_FISHER", "Kernel yeşil · Fisher yukarı kesişimi bekleniyor"
+        else:
+            state, reason = "WAITING_KERNEL", "Kernel kırmızı · Fisher ve Kernel onayı bekleniyor"
+        return {
+            **base, "ready": True, "state": state, "reason": reason,
+            "fisher": fish1, "trigger": fish2, "fisher_cross_up": cross_up,
+            "fisher_cross_down": cross_down, "fisher_entry_zone": entry_zone,
+            "kernel_rq": rq, "kernel_gaussian": gaussian, "kernel_green": green,
+            "long_ready": long_ready, "exit_ready": exit_ready,
+        }
+
     def process(self, symbol: str, m1: dict[str, list[float]], m3: dict[str, list[float]],
                 m5: dict[str, list[float]]) -> list[dict[str, Any]]:
         m1_times = list(m1.get("timestamps") or [])
