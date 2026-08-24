@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 
-type StrategyStat = { trades: number; wins: number; pnl: number; commission: number; win_rate: number };
+type StrategyStat = { trades: number; wins: number; pnl: number; commission: number; win_rate: number; profit_factor?: number | null };
 type Stats = Record<string, StrategyStat>;
 
 const STRATEGY_META: Record<string, { name: string; icon: string }> = {
@@ -15,35 +15,22 @@ const STRATEGY_META: Record<string, { name: string; icon: string }> = {
     CHOP_TREND_FILTER: { name: "CHOP Trend Filter", icon: "📐" },
     DONCHIAN_BREAKOUT: { name: "Donchian Breakout", icon: "🏹" },
     BB_MFI_MEAN_REVERSION: { name: "BB + MFI Mean Reversion", icon: "🎯" },
-    GAINER_RADAR: { name: "Gainer Radar (yalnızca tarama)", icon: "🔎" },
+    PUMP_MONITOR: { name: "Pump Monitor", icon: "🚀" },
+    FISHER_M3_KERNEL_M5_EXACT_PAPER: { name: "Fisher M3 + Kernel M5", icon: "〽️" },
 };
 
 export default function StrategyCards() {
     const [stats, setStats] = useState<Stats>({});
-    const [enabled, setEnabled] = useState<Record<string, boolean>>({});
+    const [active, setActive] = useState<string[]>([]);
 
     useEffect(() => {
-    apiRequest(`${API_BASE}/api/strategies/stats`)
+        const load = () => apiRequest(`${API_BASE}/api/strategies/stats`)
             .then((r) => r.json())
-            .then((d) => setStats(d.stats))
-            .catch(() => { });
-        apiRequest(`${API_BASE}/api/config`)
-            .then((r) => r.json())
-            .then((d) => setEnabled({
-                EMA_VWAP_PULLBACK: d.ema_vwap_enabled,
-                BB_SQUEEZE_ORDERFLOW: d.bb_squeeze_enabled,
-                ORDERFLOW: d.orderflow_enabled,
-                MOMENTUM: d.momentum_enabled,
-                VWAP_MEAN_REVERSION: d.mean_reversion_enabled,
-                KELTNER_BREAKOUT: d.keltner_enabled,
-                CHOP_TREND_FILTER: d.chop_enabled,
-                DONCHIAN_BREAKOUT: d.donchian_enabled,
-                BB_MFI_MEAN_REVERSION: d.active_strategy === "BB_MFI_MEAN_REVERSION",
-                GAINER_RADAR: false,
-            }))
-            .catch(() => { });
+            .then((d) => { setStats(d.stats || {}); setActive(Array.isArray(d.active) ? d.active : []); })
+            .catch(() => undefined);
+        load();
         const timer = setInterval(() => {
-            apiRequest(`${API_BASE}/api/strategies/stats`).then((r) => r.json()).then((d) => setStats(d.stats || {})).catch(() => undefined);
+            load();
         }, 3000);
         return () => clearInterval(timer);
     }, []);
@@ -52,19 +39,19 @@ export default function StrategyCards() {
         v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     return (
-        <div className="grid md:grid-cols-2 xl:grid-cols-5 gap-4">
-            {Object.entries(STRATEGY_META).filter(([key]) => ["BB_MFI_MEAN_REVERSION", "GAINER_RADAR"].includes(key)).map(([key, meta]) => {
+        <section className="space-y-3">
+            <div className="ui-section-header"><div><p className="eyebrow">AKTİF STRATEJİ BAŞARISI</p><p className="ui-section-description">Kapanmış paper işlemler · komisyon sonrası net sonuç.</p></div><span className="font-mono text-xs text-neon-green">{active.length} AKTİF</span></div>
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {active.map((key) => {
+                const meta = STRATEGY_META[key] || { name: key.replaceAll("_", " "), icon: "⚙️" };
                 const s = stats[key];
-                const isOn = enabled[key];
                 return (
-                    <div key={key} className={`card bg-bunker-950 ${isOn ? "border-neon-green/30" : "border-bunker-800"}`}>
+                    <div key={key} className="card bg-bunker-950 border-neon-green/30">
                         <div className="flex items-center justify-between mb-2">
                             <p className="font-mono text-sm font-bold text-white">
                                 <span className="mr-2">{meta.icon}</span>{meta.name}
                             </p>
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${isOn ? "bg-neon-green/15 text-neon-green" : "bg-bunker-800 text-bunker-muted"}`}>
-                                {isOn ? "AKTİF" : "PASİF"}
-                            </span>
+                            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-neon-green/15 text-neon-green">AKTİF</span>
                         </div>
                         {!s ? (
                             <p className="font-mono text-xs text-bunker-muted">Henüz işlem yok</p>
@@ -84,11 +71,17 @@ export default function StrategyCards() {
                                         {s.pnl >= 0 ? "+" : ""}₺{formatTL(s.pnl)}
                                     </span>
                                 </div>
+                                <div className="flex justify-between font-mono text-xs">
+                                    <span className="text-bunker-muted">Kâr faktörü</span>
+                                    <span className="text-white font-bold">{s.profit_factor == null ? "—" : s.profit_factor.toFixed(2)}</span>
+                                </div>
                             </div>
                         )}
                     </div>
                 );
             })}
-        </div>
+            {!active.length && <div className="card bg-bunker-950 text-sm text-bunker-muted">Aktif strateji bilgisi bekleniyor.</div>}
+            </div>
+        </section>
     );
 }

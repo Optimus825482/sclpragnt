@@ -4445,6 +4445,28 @@ async def fisher_m3_kernel_m5_shadow_status(limit: int = 200, symbol: str = ""):
     }
 
 
+@app.get("/api/research/fisher-m3-kernel-m5-monitor")
+async def fisher_m3_kernel_m5_monitor():
+    """Current, read-only Fisher/Kernel gate state for active symbols."""
+    active_symbols = [symbol for symbol in config.SYMBOLS if symbol not in config.PASSIVE_SYMBOLS]
+    items = [
+        FisherM3KernelM5Shadow.snapshot(
+            symbol, market.get_ut_kline(symbol, "1m"), market.get_ut_kline(symbol, "3m"), market.get_ut_kline(symbol, "5m"),
+        )
+        for symbol in active_symbols
+    ]
+    order = {"LONG_READY": 0, "EXIT_READY": 1, "KERNEL_RED": 2, "ENTRY_LEVEL": 3, "WAITING_FISHER": 4, "WAITING_KERNEL": 5, "WARMING": 6}
+    items.sort(key=lambda item: (order.get(str(item.get("state")), 99), str(item.get("symbol"))))
+    return {
+        "paper_only": True,
+        "enabled": config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED and config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED,
+        "active_symbols": len(items),
+        "updated_at": time.time(),
+        "rule": "M3 Fisher(11) cross below -1 plus green M5 Kernel(8,8,25,2); next M1 open paper execution",
+        "items": items,
+    }
+
+
 @app.get("/api/decisions")
 async def get_decisions(limit: int = 500, offset: int = 0, symbol: str = "", strategy: str = ""):
     return {"decisions": await database.get_decision_logs(limit, symbol or None, strategy or None, offset), "limit": limit, "offset": offset}
@@ -4638,15 +4660,42 @@ async def get_strategy_stats():
     trades = await database.get_trades(limit=None)
     stats = {}
     for t in trades:
-        s = stats.setdefault(t["strategy"], {"trades": 0, "wins": 0, "pnl": 0.0, "commission": 0.0})
+        s = stats.setdefault(t["strategy"], {"trades": 0, "wins": 0, "pnl": 0.0, "commission": 0.0,
+                                               "gross_profit": 0.0, "gross_loss": 0.0})
         s["trades"] += 1
-        s["pnl"] += t["pnl"] or 0.0
+        pnl = t["pnl"] or 0.0
+        s["pnl"] += pnl
         s["commission"] += t["commission"] or 0.0
-        if (t["pnl"] or 0.0) > 0:
+        if pnl > 0:
             s["wins"] += 1
+            s["gross_profit"] += pnl
+        elif pnl < 0:
+            s["gross_loss"] += abs(pnl)
+    # The source-exact Fisher forward monitor uses an isolated paper ledger,
+    # so its completed results live in decision logs rather than the main
+    # portfolio trades table.
+    fisher_key = "FISHER_M3_KERNEL_M5_EXACT_PAPER"
+    fisher_logs = await database.get_decision_logs(limit=500, strategy=fisher_key)
+    for row in fisher_logs:
+        if str(row.get("decision", "")).upper() != "PAPER_LONG_CLOSED":
+            continue
+        pnl = float((row.get("metadata") or {}).get("pnl_try") or 0.0)
+        s = stats.setdefault(fisher_key, {"trades": 0, "wins": 0, "pnl": 0.0, "commission": 0.0,
+                                          "gross_profit": 0.0, "gross_loss": 0.0})
+        s["trades"] += 1; s["pnl"] += pnl
+        if pnl > 0:
+            s["wins"] += 1; s["gross_profit"] += pnl
+        elif pnl < 0:
+            s["gross_loss"] += abs(pnl)
     for s in stats.values():
         s["win_rate"] = (s["wins"] / s["trades"] * 100) if s["trades"] else 0.0
-    return {"stats": stats}
+        s["profit_factor"] = (s["gross_profit"] / s["gross_loss"]) if s["gross_loss"] else None
+    active = [config.ACTIVE_STRATEGY]
+    if config.PUMP_MONITOR_ENABLED and config.PUMP_MONITOR_AUTO_TRADE:
+        active.append("PUMP_MONITOR")
+    if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED and config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED:
+        active.append(fisher_key)
+    return {"stats": stats, "active": list(dict.fromkeys(active))}
 
 @app.get("/api/strategies/comparison")
 async def strategy_comparison():
