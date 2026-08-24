@@ -105,6 +105,9 @@ export default function SettingsPage() {
   const [mtfBackfillOpen, setMtfBackfillOpen] = useState(false);
   const [mtfBackfill, setMtfBackfill] = useState<any>({ status: "idle", progress: 0, logs: [] });
   const [startingMtfBackfill, setStartingMtfBackfill] = useState(false);
+  const [parityBackfillOpen, setParityBackfillOpen] = useState(false);
+  const [parityBackfill, setParityBackfill] = useState<any>({ status: "idle", progress: 0, logs: [] });
+  const [startingParityBackfill, setStartingParityBackfill] = useState(false);
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
@@ -132,6 +135,16 @@ export default function SettingsPage() {
     const timer = window.setInterval(load, 1500);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [mtfBackfillOpen]);
+
+  useEffect(() => {
+    if (!parityBackfillOpen) return;
+    let cancelled = false;
+    const load = () => apiRequest(`${API_BASE}/api/replay-parity-backfill/status`, { cache: "no-store" })
+      .then((r) => r.json()).then((d) => { if (!cancelled) setParityBackfill(d); }).catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 1500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [parityBackfillOpen]);
 
   useEffect(() => {
     if (activeTab !== "scan-logs") return;
@@ -285,6 +298,37 @@ export default function SettingsPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "MTF backfill başlatılamadı");
     } finally { setStartingMtfBackfill(false); }
+  };
+
+  const startReplayParityBackfill = async () => {
+    if (!window.confirm("Mevcut karar kayıtları ayrı denetim satırlarıyla backfill edilecek. İşlemler, PnL, bakiye ve ayarlar değişmez. Eksik geçmiş likidite/M1 bağlamı unknown kalır. Devam edilsin mi?")) return;
+    setStartingParityBackfill(true);
+    try {
+      const response = await apiRequest(`${API_BASE}/api/replay-parity-backfill/start`, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Replay-parity backfill başlatılamadı");
+      setParityBackfillOpen(true);
+      setParityBackfill(body);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Replay-parity backfill başlatılamadı");
+    } finally { setStartingParityBackfill(false); }
+  };
+
+  const downloadParityTradeCsv = async () => {
+    try {
+      const response = await apiRequest(`${API_BASE}/api/replay-parity-backfill/trades.csv`, { cache: "no-store" });
+      if (!response.ok) throw new Error("İşlem CSV'si indirilemedi");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      const disposition = response.headers.get("content-disposition") || "";
+      anchor.download = disposition.match(/filename="?([^";]+)"?/i)?.[1] || "paper-islem-detaylari.csv";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) { setError(err instanceof Error ? err.message : "İşlem CSV'si indirilemedi"); }
   };
 
   const reloadLlm = async () => setLlm(await (await apiRequest(`${API_BASE}/api/llm/config`, { cache: "no-store" })).json());
@@ -605,6 +649,19 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          <div className={`card border-cyan-400/30 bg-cyan-400/5 ${activeTab !== "app" ? "hidden" : ""}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <p className="eyebrow text-cyan-300">REPLAY KARAR PARİTESİ</p>
+                <p className="font-mono text-sm text-white mt-2">Eski kararları denetim amaçlı backfill et</p>
+                <p className="text-xs text-bunker-muted mt-1">Karar olayları ayrı denetim satırlarına eklenir. PnL, bakiye, pozisyon ve strateji koşulları değişmez; geçmişte kaydedilmeyen likidite/M1 bağlamı unknown kalır.</p>
+              </div>
+              <button onClick={startReplayParityBackfill} disabled={startingParityBackfill || parityBackfill.status === "running"} className="shrink-0 px-4 py-2 rounded-lg border border-cyan-400/50 bg-cyan-400/10 text-cyan-300 hover:bg-cyan-400/20 font-mono text-xs disabled:opacity-50">
+                {startingParityBackfill || parityBackfill.status === "running" ? "BACKFILL ÇALIŞIYOR..." : "BACKFILL BAŞLAT"}
+              </button>
+            </div>
+          </div>
+
           <div className={`card bg-bunker-950 ${activeTab !== "strategies" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
               <p className="eyebrow">İŞLEM VE RİSK YÖNETİMİ</p>
@@ -764,6 +821,18 @@ export default function SettingsPage() {
             <div className="h-2 rounded bg-bunker-800 mb-4"><div className="h-2 rounded bg-purple-400 transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(mtfBackfill.progress || 0)))}%` }} /></div>
             <div className="max-h-[48vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(mtfBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(mtfBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
             <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend’de arka planda devam eder; tekrar açarak son durumu görebilirsiniz.</p>
+          </div>
+        </div>
+      )}
+      {parityBackfillOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 p-4 flex items-center justify-center" onClick={() => setParityBackfillOpen(false)}>
+          <div className="card bg-bunker-950 w-full max-w-3xl max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-bunker-800 pb-3 mb-4"><div><p className="eyebrow text-cyan-300">REPLAY PARİTE BACKFILL</p><p className="font-mono text-sm text-white mt-1">{parityBackfill.message || "Hazırlanıyor..."}</p></div><button onClick={() => setParityBackfillOpen(false)} className="text-bunker-muted hover:text-white">✕</button></div>
+            <div className="grid grid-cols-3 gap-3 mb-4 text-xs font-mono"><div><span className="text-bunker-muted">DURUM</span><p className="text-cyan-300 mt-1">{String(parityBackfill.status || "idle").toUpperCase()}</p></div><div><span className="text-bunker-muted">İLERLEME</span><p className="text-white mt-1">{parityBackfill.completed ?? 0}/{parityBackfill.total ?? 0} · %{parityBackfill.progress ?? 0}</p></div><div><span className="text-bunker-muted">SONUÇ</span><p className="text-neon-green mt-1">{parityBackfill.result ? `${parityBackfill.result.written ?? 0} eklendi` : "—"}</p></div></div>
+            <div className="h-2 rounded bg-bunker-800 mb-4"><div className="h-2 rounded bg-cyan-400 transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(parityBackfill.progress || 0)))}%` }} /></div>
+            <div className="max-h-[36vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(parityBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(parityBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
+            {parityBackfill.status === "complete" && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border border-neon-green/30 bg-neon-green/5 p-3"><p className="font-mono text-xs text-neon-green">Backfill tamamlandı. Tüm kapalı işlem ayrıntılarını indirip bu sohbete yükleyebilirsiniz.</p><button onClick={downloadParityTradeCsv} className="shrink-0 rounded-lg border border-neon-green/50 bg-neon-green/10 px-3 py-2 font-mono text-xs text-neon-green hover:bg-neon-green/20">TÜM İŞLEM CSV&apos;SİNİ İNDİR</button></div>}
+            <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend&apos;de devam eder. CSV yalnızca kapalı paper işlemlerini; tam giriş bağlamı, teknik ve MTF JSON alanlarıyla içerir.</p>
           </div>
         </div>
       )}

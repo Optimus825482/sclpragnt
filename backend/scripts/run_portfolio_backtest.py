@@ -515,7 +515,11 @@ async def load_market(symbols, days, data_source, start_ts, end_ts, interval="5m
     async def fetch(symbol):
         async with semaphore:
             try:
-                rows, spread = await asyncio.gather(historical_klines(symbol, interval, days), current_spread(symbol))
+                # Preserve the chronological OOS boundary.  Fetching the latest
+                # `days` without this end timestamp makes an older requested
+                # window silently depend on newer public candles.
+                rows, spread = await asyncio.gather(
+                    historical_klines(symbol, interval, days, int(end_ts * 1000)), current_spread(symbol))
                 data = rows_to_series(rows)
                 print(f"[DATA] {symbol} source=BinanceTR-public interval={interval} candles={len(data['times'])}", flush=True)
                 return symbol, data, quote_volumes.get(symbol, 0.0), spread, None
@@ -1047,6 +1051,16 @@ async def run(args):
                 continue
             signals += 1
             print(f"[SIGNAL] {iso(data['times'][index - 1])} {symbol} BUY fill_at={iso(ts)} features={json.dumps(feature, ensure_ascii=False, default=str)}", flush=True)
+            # Research-only exported-trade candidate.  This is deliberately
+            # applied after the strategy has produced a causal BUY and uses a
+            # fixed RSI(14), matching the persisted decision snapshot field.
+            # It never mutates Config or the live analyzer contract.
+            if args.entry_min_rsi14 > 0:
+                rsi14 = analyzer.calculate_rsi(window["closes"], 14)
+                if rsi14 is None or rsi14 < args.entry_min_rsi14:
+                    blocked += 1; filter_counts["entry_min_rsi14"] += 1
+                    print(f"[BLOCKED] {symbol} reason=entry_min_rsi14 value={rsi14}", flush=True)
+                    continue
             if args.mtf_feature_gate != "none":
                 mtf_features = mtf_entry_features(analyzer, symbol, data["opens"][index], data["times"][index - 1], window, {"5m": data, **mtf_series_by_symbol.get(symbol, {})})
                 passed, gate_reason = mtf_entry_gate(mtf_features, args.mtf_feature_gate)
@@ -1301,6 +1315,7 @@ async def run(args):
         "entry_mfi_reversal_min_delta": args.entry_mfi_reversal_min_delta,
         "entry_mfi_slowdown_max_drop": args.entry_mfi_slowdown_max_drop,
         "high_downtrend_entry_filter": args.high_downtrend_entry_filter,
+        "entry_min_rsi14": args.entry_min_rsi14,
         "high_downtrend_min_adx": args.high_downtrend_min_adx,
         "high_downtrend_min_di_gap": args.high_downtrend_min_di_gap,
         "high_downtrend_min_return_1h_pct": args.high_downtrend_min_return_1h_pct,
@@ -1446,6 +1461,8 @@ if __name__ == "__main__":
     parser.add_argument("--adverse-ema-atr-multiplier", type=float, default=1.0,
                         help="Aleyhe EMA/ATR çıkışında giriş altındaki minimum ATR katsayısı")
     parser.add_argument("--entry-ema200-filter", action="store_true", help="Girişi yalnız kapanış EMA200 üzerinde ise kabul et")
+    parser.add_argument("--entry-min-rsi14", type=float, default=0.0,
+                        help="Araştırma için mevcut BUY sinyalinde minimum RSI(14); 0 kapalı")
     parser.add_argument("--entry-momentum-slowdown-filter", action="store_true", help="Girişi son kapanış önceki kapanışın altına inmediğinde kabul et")
     parser.add_argument("--entry-min-volume-ratio", type=float, default=0.0, help="Sinyal mumunun önceki 20 M5 mumuna göre minimum hacim oranı; 0 kapalı")
     parser.add_argument("--entry-dip-confirmation", action="store_true", help="Alt BB sinyal mumunun kendi aralığında dipten dönüş kapanışı doğrulamasını iste")
