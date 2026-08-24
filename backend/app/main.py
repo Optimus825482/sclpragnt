@@ -35,7 +35,7 @@ CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.sma_cascade_shadow import SmaCascadeShadow
-from app.fisher_m3_kernel_m5_shadow import FisherM3KernelM5ExactPaper, FisherM3KernelM5Shadow
+from app.fisher_m3_kernel_m5_shadow import FisherM3KernelM5Shadow
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import llm_analysis
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
@@ -1600,28 +1600,58 @@ async def ma_cascade_shadow_loop():
 
 
 async def fisher_m3_kernel_m5_shadow_loop():
-    """Journal exact Pine candidates and isolated forward-paper fills."""
+    """Journal exact Pine candidates and execute them in the shared paper wallet."""
     observer = FisherM3KernelM5Shadow()
-    paper = FisherM3KernelM5ExactPaper()
+    pending: dict[str, dict] = {}
+    strategy = "FISHER_M3_KERNEL_M5_EXACT_PAPER"
     await asyncio.sleep(10)
     while True:
         try:
             if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED and migration_monitor.state["status"] != "running":
                 for symbol in list(config.SYMBOLS):
                     m1 = market.get_ut_kline(symbol, "1m")
-                    # The platform's ACTIVE gate decides observation scope;
-                    # it does not alter any supplied Pine condition.
                     active = symbol not in config.PASSIVE_SYMBOLS
-                    if config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED:
-                        for event in paper.advance(symbol, m1):
-                            decision = str(event["type"]).upper()
+                    times, opens = list(m1.get("timestamps") or []), list(m1.get("opens") or [])
+                    queued = pending.get(symbol)
+                    if queued and times and opens and int(times[-1]) > int(queued["signal"]["m1_closed_at_ms"]):
+                        fill_price = float(opens[-1])
+                        pending.pop(symbol, None)
+                        if queued["action"] == "open" and active:
+                            result = await analyzer.open_position(
+                                symbol, fill_price, "LONG", strategy,
+                                entry_context_extra={
+                                    "signal_name": "Fisher M3 + Kernel M5 exact-paper",
+                                    "source_rule": "M3 Fisher cross up below -1 + green M5 Kernel",
+                                    "execution": "next_completed_m1_open",
+                                    "fisher_kernel": queued["signal"],
+                                },
+                            )
+                            decision = "PAPER_LONG_OPENED" if result and result.get("action") == "BUY_SIGNAL" else "PAPER_LONG_BLOCKED"
                             await database.save_decision_log({
-                                "timestamp": time.time(), "symbol": symbol, "strategy": "FISHER_M3_KERNEL_M5_EXACT_PAPER",
-                                "decision": decision, "reason": "source_exact_next_m1_open", "price": event.get("price"), "metadata": event,
+                                "timestamp": time.time(), "symbol": symbol, "strategy": strategy, "decision": decision,
+                                "reason": "source_exact_next_m1_open", "price": fill_price,
+                                "metadata": {"source_signal": queued["signal"], "result": result},
                             })
                             _record_strategy_scan_log("fisher_m3_kernel_m5_exact_paper", symbol, decision,
-                                                      price=event.get("price"), timeframe="1m")
-                    if not active and not paper.has_open_or_pending(symbol):
+                                                      price=fill_price, timeframe="1m", reason=(result or {}).get("reason"))
+                            if result and result.get("action") == "BUY_SIGNAL":
+                                await ws_manager.broadcast({"type": "signal", "data": result})
+                        elif queued["action"] == "close":
+                            position = analyzer.positions.get(symbol) or {}
+                            if position.get("strategy") == strategy:
+                                result = await analyzer.close_position(symbol, fill_price, "fisher_m3_kernel_m5_exit_cross")
+                                if result:
+                                    await database.save_decision_log({
+                                        "timestamp": time.time(), "symbol": symbol, "strategy": strategy,
+                                        "decision": "PAPER_LONG_CLOSED", "reason": "source_exact_next_m1_open",
+                                        "price": fill_price, "metadata": {"source_signal": queued["signal"], "result": result},
+                                    })
+                                    _record_strategy_scan_log("fisher_m3_kernel_m5_exact_paper", symbol, "PAPER_LONG_CLOSED",
+                                                              price=fill_price, timeframe="1m")
+                                    await ws_manager.broadcast({"type": "signal", "data": result})
+                    position = analyzer.positions.get(symbol) or {}
+                    fisher_open = position.get("strategy") == strategy
+                    if not active and not fisher_open and symbol not in pending:
                         continue
                     events = observer.process(symbol, m1, market.get_ut_kline(symbol, "3m"), market.get_ut_kline(symbol, "5m"))
                     for event in events:
@@ -1633,8 +1663,12 @@ async def fisher_m3_kernel_m5_shadow_loop():
                         })
                         _record_strategy_scan_log("fisher_m3_kernel_m5_shadow", symbol, decision,
                                                   price=event.get("price"), timeframe="1m")
-                        if config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED and (active or event["type"] == "exit_candidate"):
-                            paper.schedule(symbol, event)
+                        if not config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED or symbol in pending:
+                            continue
+                        if event["type"] == "long_candidate" and active and not position:
+                            pending[symbol] = {"action": "open", "signal": event}
+                        elif event["type"] == "exit_candidate" and fisher_open:
+                            pending[symbol] = {"action": "close", "signal": event}
         except Exception as exc:
             print(f"[Fisher M3/Kernel M5 Shadow] hata: {exc}", flush=True)
         await asyncio.sleep(5)
@@ -4671,22 +4705,7 @@ async def get_strategy_stats():
             s["gross_profit"] += pnl
         elif pnl < 0:
             s["gross_loss"] += abs(pnl)
-    # The source-exact Fisher forward monitor uses an isolated paper ledger,
-    # so its completed results live in decision logs rather than the main
-    # portfolio trades table.
     fisher_key = "FISHER_M3_KERNEL_M5_EXACT_PAPER"
-    fisher_logs = await database.get_decision_logs(limit=500, strategy=fisher_key)
-    for row in fisher_logs:
-        if str(row.get("decision", "")).upper() != "PAPER_LONG_CLOSED":
-            continue
-        pnl = float((row.get("metadata") or {}).get("pnl_try") or 0.0)
-        s = stats.setdefault(fisher_key, {"trades": 0, "wins": 0, "pnl": 0.0, "commission": 0.0,
-                                          "gross_profit": 0.0, "gross_loss": 0.0})
-        s["trades"] += 1; s["pnl"] += pnl
-        if pnl > 0:
-            s["wins"] += 1; s["gross_profit"] += pnl
-        elif pnl < 0:
-            s["gross_loss"] += abs(pnl)
     for s in stats.values():
         s["win_rate"] = (s["wins"] / s["trades"] * 100) if s["trades"] else 0.0
         s["profit_factor"] = (s["gross_profit"] / s["gross_loss"]) if s["gross_loss"] else None

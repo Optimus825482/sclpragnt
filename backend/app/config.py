@@ -57,8 +57,8 @@ class Config:
     # Source-aligned M3 Fisher / M5 Kernel observer.  It records candidates
     # for active symbols on closed M1 bars and deliberately cannot trade.
     FISHER_M3_KERNEL_M5_SHADOW_ENABLED = os.getenv("FISHER_M3_KERNEL_M5_SHADOW_ENABLED", "true").lower() == "true"
-    # User-authorized forward paper monitor. It is isolated from the active
-    # strategy and implements only the supplied Fisher/Kernel entry and exit.
+    # User-authorized forward paper strategy. It shares the virtual wallet and
+    # portfolio history, while retaining only the supplied Fisher/Kernel exit.
     FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED = os.getenv("FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED", "true").lower() == "true"
     # LLM market commentary is a journaled, paper-only forecast.  These
     # horizons never authorize an order or mutate strategy parameters.

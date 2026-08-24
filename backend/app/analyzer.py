@@ -482,6 +482,7 @@ class ScalpAnalyzer:
             "DONCHIAN_BREAKOUT": config.DONCHIAN_TIMEFRAME,
             "BB_MFI_MEAN_REVERSION": config.ACTIVE_STRATEGY_TIMEFRAME,
             "PUMP_MONITOR": "5m",
+            "FISHER_M3_KERNEL_M5_EXACT_PAPER": "1m",
         }.get(strat_name, config.UT_TIMEFRAME)
 
     async def _manage_open_position(self, symbol, price, strat_name):
@@ -513,6 +514,11 @@ class ScalpAnalyzer:
         # not apply legacy fixed early-failure, stale, trailing, time-decay,
         # or legacy max-hold policies to these positions.
         if pos and pos.get("strategy") == "LLM_PAPER":
+            return None
+        # Fisher exits are defined only by the supplied M3 crossover above 2.
+        # Its dedicated closed-M1 loop owns the next-open fill; generic
+        # stop/target/trailing rules must not alter the source-exact contract.
+        if pos and pos.get("strategy") == "FISHER_M3_KERNEL_M5_EXACT_PAPER":
             return None
         if pos and pos.get("strategy") != "LLM_PAPER":
             entry = float(pos.get("entry_price") or price)
@@ -1432,7 +1438,7 @@ class ScalpAnalyzer:
                            "reason": "max_open_positions_reached", "strategy": strat_name, "timestamp": time.time()}
                 await database.save_signal(blocked)
                 return blocked
-            if strat_name != "LLM_PAPER":
+            if strat_name not in {"LLM_PAPER", "FISHER_M3_KERNEL_M5_EXACT_PAPER"}:
                 block_reason = self._reentry_block_reason(symbol, self._strategy_tf(strat_name))
                 if block_reason:
                     blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
