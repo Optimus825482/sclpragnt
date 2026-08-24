@@ -5,6 +5,8 @@ import logging
 import subprocess
 import json
 import tempfile
+import csv
+import io
 import random
 import re
 import hmac
@@ -165,6 +167,8 @@ _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
 _historical_mtf_backfill = {"status": "idle", "phase": "idle", "progress": 0, "completed": 0, "total": 0, "message": None, "logs": [], "result": None, "started_at": None, "finished_at": None}
 _historical_mtf_backfill_task = None
+_replay_parity_backfill = {"status": "idle", "phase": "idle", "progress": 0, "completed": 0, "total": 0, "message": None, "logs": [], "result": None, "started_at": None, "finished_at": None}
+_replay_parity_backfill_task = None
 _llm_replenish_lock = asyncio.Lock()
 _llm_last_idle_attempt_at = time.time()
 _radar_lock = asyncio.Lock()
@@ -219,7 +223,13 @@ def _start_background(coro, name):
 
 
 def _record_strategy_scan_log(scan_type: str, symbol: str, status: str, **details):
-    """Keep a bounded, UI-readable audit trail for automatic and manual scans."""
+    """Keep a bounded UI log and durable replay-parity evidence.
+
+    The durable record is observational only.  It does not alter an entry,
+    exit, portfolio balance, or strategy setting; it gives a later replay the
+    exact decision context that public historical candles cannot otherwise
+    reconstruct (universe, M1 activity and current portfolio state).
+    """
     entry = {
         "timestamp": time.time(),
         "scan_type": scan_type,
@@ -228,7 +238,86 @@ def _record_strategy_scan_log(scan_type: str, symbol: str, status: str, **detail
         **details,
     }
     _strategy_scan_logs.appendleft(entry)
+    if scan_type in {"automatic", "manual", "pump_monitor"}:
+        try:
+            asyncio.get_running_loop().create_task(
+                _persist_replay_parity_observation(dict(entry)),
+                name=f"replay-parity-{scan_type}-{symbol}",
+            )
+        except RuntimeError:
+            # This helper is also used by a few synchronous tests before the
+            # application event loop exists.  The bounded in-memory log still
+            # remains available in that case.
+            pass
     return entry
+
+
+def _replay_parity_config_snapshot():
+    """Return only decision-relevant, JSON-safe settings for a scan record."""
+    fields = (
+        "ACTIVE_STRATEGY", "ACTIVE_STRATEGY_TIMEFRAME", "ORDER_PCT",
+        "MAX_OPEN_POSITIONS", "PYRAMIDING_LAYERS", "COMMISSION_PCT",
+        "ESTIMATED_SLIPPAGE_PCT", "HARD_STOP_LOSS_PCT",
+        "BB_MFI_PINE_VERSION", "BB_MFI_BB_PERIOD", "BB_MFI_BB_STD_DEV",
+        "BB_MFI_MFI_PERIOD", "BB_MFI_RSI_PERIOD", "BB_MFI_ENTRY_MFI_MAX",
+        "BB_MFI_EXIT_RSI_MIN", "BB_MFI_EXIT_MFI_MIN",
+        "BB_MFI_DIP_CONFIRMATION_ENABLED", "BB_MFI_DIP_MIN_CLOSE_POSITION",
+        "BB_MFI_ENTRY_MFI_REVERSAL_ENABLED", "BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA",
+        "BB_MFI_BEAR_PRESSURE_FILTER_ENABLED", "BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION",
+        "BB_MFI_PYRAMID_REQUIRE_NET_PROFIT", "BB_MFI_STOP_LOSS_PCT", "BB_MFI_TAKE_PROFIT_PCT",
+        "PUMP_MONITOR_ENABLED", "PUMP_MONITOR_AUTO_TRADE", "PUMP_MONITOR_MIN_SCORE",
+        "PUMP_MONITOR_MAX_OPEN_POSITIONS", "PUMP_MONITOR_REQUIRE_M15_BULLISH",
+        "SYMBOL_ACTIVITY_FILTER_ENABLED", "SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY",
+        "SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT", "SYMBOL_ACTIVITY_MIN_ATR_PCT",
+        "SYMBOL_ACTIVITY_MIN_VOLUME_RATIO", "SYMBOL_ACTIVITY_MAX_SPREAD_PCT",
+        "SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED", "SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT",
+        "SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT", "SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT",
+    )
+    snapshot = {field.lower(): getattr(config, field, None) for field in fields}
+    snapshot["symbols"] = list(config.SYMBOLS)
+    snapshot["symbol_order_pct"] = dict(config.SYMBOL_ORDER_PCT)
+    return snapshot
+
+
+def _replay_parity_candle_evidence(symbol: str, timeframe: str):
+    """Keep the latest completed-candle identity, without duplicating history."""
+    history = market.get_ut_kline(symbol, timeframe) or {}
+    timestamps = list(history.get("timestamps") or [])
+    result = {"timeframe": timeframe, "candle_count": len(timestamps), "last_closed_open_time_ms": timestamps[-2] if len(timestamps) >= 2 else None}
+    for key in ("opens", "highs", "lows", "closes", "volumes"):
+        values = list(history.get(key) or [])
+        result[f"last_closed_{key[:-1]}"] = values[-2] if len(values) >= 2 else None
+    return result
+
+
+async def _persist_replay_parity_observation(entry: dict):
+    """Persist one scan outcome with enough context for later decision matching."""
+    symbol = str(entry.get("symbol") or "").upper()
+    timeframe = str(entry.get("timeframe") or config.ACTIVE_STRATEGY_TIMEFRAME)
+    try:
+        metadata = {
+            "schema": "replay-parity-v1",
+            "paper_only": True,
+            "scan": entry,
+            "effective_config": _replay_parity_config_snapshot(),
+            "portfolio": {
+                "try_cash": await database.get_wallet_balance("TRY"),
+                "open_symbols": sorted(analyzer.positions),
+                "open_position_count": len(analyzer.positions),
+            },
+            "symbol_activity": dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {}),
+            "closed_candle": _replay_parity_candle_evidence(symbol, timeframe) if symbol and symbol != "*" else None,
+            "data_freshness": market.data_freshness(symbol, timeframe) if symbol and symbol != "*" else None,
+        }
+        await database.save_decision_log({
+            "timestamp": entry["timestamp"], "symbol": symbol or None,
+            "strategy": "REPLAY_PARITY", "decision": f"SCAN_{entry['status']}",
+            "reason": entry.get("reason") or str(entry["status"]).lower(),
+            "price": entry.get("price"), "metadata": metadata,
+        })
+    except Exception as exc:
+        # Audit telemetry must never interrupt the paper strategy loop.
+        logger.warning("Replay-parity observation could not be persisted: %s", exc)
 
 
 async def backfill_symbol_history(symbol: str, days: int = 7):
@@ -437,6 +526,82 @@ async def start_historical_mtf_backfill(payload: dict = None):
         raise HTTPException(status_code=400, detail="force backfill için confirm=true gerekli")
     _historical_mtf_backfill_task = asyncio.create_task(_run_historical_mtf_backfill(options), name="historical-mtf-backfill")
     return {"ok": True, "status": "queued", "paper_only": True}
+
+
+def _replay_parity_backfill_log(level: str, message: str):
+    _replay_parity_backfill["logs"].append({"timestamp": time.time(), "level": level, "message": message})
+    _replay_parity_backfill["logs"] = _replay_parity_backfill["logs"][-500:]
+
+
+async def _run_replay_parity_backfill():
+    """Append only audited legacy decision evidence; never mutate trading data."""
+    _replay_parity_backfill.update({"status": "running", "phase": "scan", "progress": 0, "completed": 0, "total": 0,
+                                    "message": "Eski karar kayıtları taranıyor", "logs": [], "result": None,
+                                    "started_at": time.time(), "finished_at": None})
+    _replay_parity_backfill_log("info", "Replay-parity backfill başladı; işlemler, bakiyeler ve strateji ayarları değişmez.")
+
+    def on_progress(summary):
+        total = int(summary.get("eligible") or 0)
+        completed = int(summary.get("processed") or 0)
+        _replay_parity_backfill.update({"phase": "write", "total": total, "completed": completed,
+                                        "progress": round(completed / max(1, total) * 100, 1),
+                                        "message": f"{completed}/{total} denetim kaydı işlendi"})
+        if completed and (completed % 250 == 0 or completed == total):
+            _replay_parity_backfill_log("info", f"İlerleme: {completed}/{total}")
+
+    try:
+        result = await database.backfill_replay_parity_observations(apply=True, progress_callback=on_progress)
+        _replay_parity_backfill.update({"status": "complete", "phase": "complete", "progress": 100,
+                                        "completed": int(result.get("processed") or 0), "total": int(result.get("eligible") or 0),
+                                        "message": "Backfill tamamlandı", "result": result, "finished_at": time.time()})
+        _replay_parity_backfill_log("success", f"Tamamlandı | eklenen={result.get('written', 0)} | teknik={result.get('technical_context', 0)} | aktivite={result.get('activity_context', 0)} | unknown={result.get('unknown_context', 0)}")
+    except Exception as exc:
+        _replay_parity_backfill.update({"status": "error", "phase": "error", "message": str(exc), "finished_at": time.time()})
+        _replay_parity_backfill_log("error", f"Backfill durdu | {type(exc).__name__}: {exc}")
+
+
+@app.get("/api/replay-parity-backfill/status")
+async def replay_parity_backfill_status():
+    return {"ok": True, "paper_only": True, **_replay_parity_backfill}
+
+
+@app.post("/api/replay-parity-backfill/start")
+async def start_replay_parity_backfill():
+    global _replay_parity_backfill_task
+    if _replay_parity_backfill.get("status") == "running":
+        return {"ok": True, "already_running": True, "paper_only": True, **_replay_parity_backfill}
+    _replay_parity_backfill_task = asyncio.create_task(_run_replay_parity_backfill(), name="replay-parity-backfill")
+    return {"ok": True, "status": "queued", "paper_only": True}
+
+
+@app.get("/api/replay-parity-backfill/trades.csv")
+async def download_replay_parity_trade_csv():
+    """Download all closed paper-trade detail, including the saved entry context."""
+    rows = await database.get_trade_export_rows()
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream)
+    writer.writerow([
+        "id", "trade_id", "symbol", "strategy", "side", "entry_time_unix", "exit_time_unix",
+        "entry_price", "exit_price", "quantity", "pnl_try", "pnl_pct", "commission_try",
+        "reason", "hold_seconds", "max_favorable_pct", "max_adverse_pct", "strategy_revision",
+        "symbol_activity_json", "technical_json", "mtf_snapshots_json", "entry_context_json",
+    ])
+    for row in rows:
+        context = row.get("entry_context") or {}
+        technical = context.get("technical") or {}
+        writer.writerow([
+            row.get("id"), row.get("trade_id"), row.get("symbol"), row.get("strategy"), row.get("side"),
+            row.get("entry_time"), row.get("exit_time"), row.get("entry_price"), row.get("exit_price"),
+            row.get("quantity"), row.get("pnl"), row.get("pnl_pct"), row.get("commission"), row.get("reason"),
+            row.get("hold_seconds"), row.get("max_favorable_pct"), row.get("max_adverse_pct"),
+            context.get("strategy_revision"),
+            json.dumps(context.get("symbol_activity") or context.get("activity") or {}, ensure_ascii=False, default=str),
+            json.dumps(technical, ensure_ascii=False, default=str),
+            json.dumps(technical.get("mtf_snapshots") or {}, ensure_ascii=False, default=str),
+            json.dumps(context, ensure_ascii=False, default=str),
+        ])
+    return Response(content="\ufeff" + stream.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="paper-islem-detaylari-{time.strftime("%Y%m%d-%H%M%S")}.csv"'})
 
 
 async def backfill_missing_active_history():

@@ -122,10 +122,12 @@ def wavetrend(rows, n1, n2):
 
 def feature_matrix(rows):
     closes = [row["close"] for row in rows]
-    # Screenshot settings: RSI(10,1), WT(7,16), CCI(30,1), ADX(30), RSI(21,1).
+    # Defaults in the supplied Pine v2 source: RSI(10,21), WT(7,1),
+    # CCI(7,1), ADX(21,2), RSI(21,1). The second parameters for RSI/CCI
+    # are smoothing values supplied to MLExtensions; 1 is identity here.
     rsi10, rsi21 = rsi(closes, 10), rsi(closes, 21)
-    return list(zip(rescale(ema([value or 50.0 for value in rsi10], 1), 0, 100), normalize_unbounded(wavetrend(rows, 7, 16)),
-                    normalize_unbounded(ema([value or 0.0 for value in cci(rows, 30)], 1)), rescale(adx(rows, 30), 0, 100),
+    return list(zip(rescale(ema([value or 50.0 for value in rsi10], 21), 0, 100), normalize_unbounded(wavetrend(rows, 7, 1)),
+                    normalize_unbounded(ema([value or 0.0 for value in cci(rows, 7)], 1)), rescale(adx(rows, 21), 0, 100),
                     rescale(ema([value or 50.0 for value in rsi21], 1), 0, 100)))
 
 
@@ -154,9 +156,9 @@ def volatility_ok(rows, index):
     return ranges[-1] >= sum(ranges) / len(ranges) * .25
 
 
-def signal_series(rows, first_index, max_bars=2000, neighbors=8):
+def signal_series(rows, first_index, max_bars=1000, neighbors=5):
     features, closes = feature_matrix(rows), [row["close"] for row in rows]
-    output, prior_signal = [{"signal": 0, "prediction": 0, "new_long": False} for _ in rows], 0
+    output, prior_signal = [{"signal": 0, "prediction": 0, "new_long": False, "new_short": False} for _ in rows], 0
     for index in range(first_index, len(features)):
         current = features[index]
         prediction = 0
@@ -180,8 +182,10 @@ def signal_series(rows, first_index, max_bars=2000, neighbors=8):
         kernel_bullish = bool(yhat is not None and index > 0 and yhat > rational_quadratic(closes, index - 1))
         permitted = volatility_ok(rows, index) and regime_ok(closes, index)
         signal = 1 if prediction > 0 and permitted else -1 if prediction < 0 and permitted else prior_signal
+        kernel_bearish = bool(yhat is not None and index > 0 and yhat < rational_quadratic(closes, index - 1))
         new_long = signal == 1 and signal != prior_signal and kernel_bullish
-        output[index] = {"signal": signal, "prediction": prediction, "new_long": new_long}
+        new_short = signal == -1 and signal != prior_signal and kernel_bearish
+        output[index] = {"signal": signal, "prediction": prediction, "new_long": new_long, "new_short": new_short}
         prior_signal = signal
     return output
 
@@ -194,15 +198,26 @@ def sell_fill(price):
     return price * (1 - config.BACKTEST_ASSUMED_SPREAD_PCT / 2 - config.ESTIMATED_SLIPPAGE_PCT)
 
 
-def simulate(rows, signals, signal_index, end_ms):
+def simulate(rows, signals, signal_index, end_ms, exit_mode):
     entry_index = signal_index + 1
     if entry_index >= len(rows) or rows[entry_index]["time"] >= end_ms:
         return None
     entry = buy_fill(rows[entry_index]["open"]); quantity = ORDER_VALUE / entry
-    exit_index, reason = min(entry_index + 3, len(rows) - 1), "four_bar_exit"
-    for index in range(entry_index, min(entry_index + 4, len(rows))):
-        if signals[index]["signal"] == -1:
-            exit_index, reason = index, "opposite_signal_before_four_bars"; break
+    exit_index, reason = None, None
+    if exit_mode == "strict_four_bars":
+        exit_index, reason = min(entry_index + 3, len(rows) - 1), "four_bar_exit"
+        for index in range(entry_index, min(entry_index + 4, len(rows))):
+            if signals[index]["new_short"]:
+                exit_index, reason = index, "opposite_entry_signal_before_four_bars"; break
+    else:
+        for index in range(entry_index, len(rows)):
+            if signals[index]["new_short"]:
+                exit_index, reason = index, "opposite_entry_signal"; break
+        if exit_index is None:
+            eligible = [index for index in range(entry_index, len(rows)) if rows[index]["close_time"] <= end_ms]
+            if not eligible:
+                return None
+            exit_index, reason = eligible[-1], "window_mark_to_market"
     if rows[exit_index]["close_time"] > end_ms:
         eligible = [index for index in range(entry_index, len(rows)) if rows[index]["close_time"] <= end_ms]
         if not eligible:
@@ -263,17 +278,17 @@ async def main(args):
         for index, row in enumerate(rows[:-4]):
             if not start <= row["close_time"] <= cutoff or not signals[index]["new_long"]:
                 continue
-            trade = simulate(rows, signals, index, cutoff)
+            trade = simulate(rows, signals, index, cutoff, args.exit_mode)
             if trade:
                 events.append({"symbol": symbol, "signal_time": row["close_time"], "trade": trade})
     result = {"paper_only": True, "generated_at": datetime.now(timezone.utc).isoformat(), "window": {"start": iso(start), "end": iso(cutoff), "hours": args.hours},
               "source": "Binance TR public /api/v3/klines completed M5 OHLCV", "provenance": {"per_symbol": provenance, "errors": errors},
-              "configuration": {"feature_1": "RSI(10,1)", "feature_2": "WT(7,16)", "feature_3": "CCI(30,1)", "feature_4": "ADX(30,2)", "feature_5": "RSI(21,1)",
-                                "neighbors": 8, "max_bars_back": 2000, "volatility_filter": True, "regime_filter": {"enabled": True, "threshold": -0.1}, "adx_filter": False,
-                                "ema_filter": False, "sma_filter": False, "kernel_filter": {"enabled": True, "lookback": 8, "relative_weight": 8, "regression_level": 25}, "native_exit": "four M5 bars, or earlier opposite signal"},
+              "configuration": {"feature_1": "RSI(10,21)", "feature_2": "WT(7,1)", "feature_3": "CCI(7,1)", "feature_4": "ADX(21,2)", "feature_5": "RSI(21,1)",
+                                "neighbors": 5, "max_bars_back": 1000, "volatility_filter": True, "regime_filter": {"enabled": True, "threshold": -0.1}, "adx_filter": False,
+                                "ema_filter": False, "sma_filter": False, "kernel_filter": {"enabled": True, "lookback": 8, "relative_weight": 8, "regression_level": 25}, "exit_mode": args.exit_mode},
               "execution": {"initial_balance_try": config.INITIAL_BALANCE_TRY, "order_value_try": ORDER_VALUE, "max_positions": config.PUMP_MONITOR_MAX_OPEN_POSITIONS,
                             "commission_pct_each_side": config.COMMISSION_PCT, "spread_pct": config.BACKTEST_ASSUMED_SPREAD_PCT, "slippage_pct_each_side": config.ESTIMATED_SLIPPAGE_PCT,
-                            "entry": "next completed M5 bar open", "exit": "source-aligned strict four-bar exit on completed M5 data"},
+                            "entry": "next completed M5 bar open", "exit": "opposite confirmed Lorentzian short-entry signal, otherwise end-window mark-to-market" if args.exit_mode == "opposite_signal" else "source-aligned strict four-bar exit on completed M5 data"},
               "result": portfolio(events), "limitations": ["Source imports MLExtensions and KernelFunctions. This replay causally reimplements their documented normalized RSI/WT/CCI/ADX and Rational Quadratic concepts; it cannot certify byte-for-byte TradingView parity without running the imported Pine libraries.", "Public OHLCV has no historical spread/depth or intrabar order sequence; fixed costs are modeled.", "A 24-hour result is exploratory and cannot activate a paper-entry rule."]}
     Path(args.output).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print("RESULT_JSON=" + json.dumps({key: value for key, value in result["result"].items() if key != "trades_detail"}, ensure_ascii=False))
@@ -283,5 +298,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--hours", type=int, default=24); parser.add_argument("--end-minutes-ago", type=int, default=10)
     parser.add_argument("--fetch-days", type=int, default=10); parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--exit-mode", choices=("opposite_signal", "strict_four_bars"), default="opposite_signal")
     parser.add_argument("--symbols", nargs="*"); parser.add_argument("--output", required=True)
     asyncio.run(main(parser.parse_args()))

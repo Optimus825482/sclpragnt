@@ -441,7 +441,14 @@ def pullback_reclaim_events(symbol, rows, feature_by_index, end_ms, require_tsi=
     return events
 
 
-def portfolio(events, name):
+def portfolio(events, name, order_pct, remaining_cash_sizing, max_open_positions):
+    """Chronological shared-wallet execution for research variants.
+
+    The event's exit path is calculated from completed OHLCV only.  Notional is
+    deliberately selected when the entry becomes due, so skipped/capital-bound
+    events cannot silently retain the fixed 1,000 TRY sizing used by the older
+    exploratory runner.
+    """
     cash, peak_equity, max_dd, realized = float(config.INITIAL_BALANCE_TRY), float(config.INITIAL_BALANCE_TRY), 0.0, 0.0
     open_positions, trades, blocked, cooldown_until = {}, [], Counter(), {}
     use_rearm_cooldown = name == "pullback_reclaim_shadow"
@@ -449,7 +456,8 @@ def portfolio(events, name):
         now = event["signal_time"]
         for symbol, position in list(open_positions.items()):
             if position["trade"]["exit_time"] <= now:
-                trade = position["trade"]; cash += ORDER_VALUE + trade["pnl_try"] + ORDER_VALUE * commission_pct()
+                trade, order_value = position["trade"], position["order_value"]
+                cash += order_value + trade["pnl_try"] + order_value * commission_pct()
                 realized += trade["pnl_try"]; trades.append({**trade, "symbol": symbol, "signal_time": position["signal_time"]})
                 if use_rearm_cooldown and trade["reason"] == "early_failure_no_progress":
                     cooldown_until[symbol] = trade["exit_time"] + 60 * 60 * 1000
@@ -458,17 +466,27 @@ def portfolio(events, name):
             blocked["same_symbol_open"] += 1; continue
         if use_rearm_cooldown and now < cooldown_until.get(event["symbol"], 0):
             blocked["early_failure_cooldown"] += 1; continue
-        if len(open_positions) >= config.PUMP_MONITOR_MAX_OPEN_POSITIONS:
+        if max_open_positions > 0 and len(open_positions) >= max_open_positions:
             blocked["pump_cap_reached"] += 1; continue
-        required = ORDER_VALUE * (1 + commission_pct())
+        available_cash = cash / (1 + commission_pct())
+        order_value = (available_cash if remaining_cash_sizing else config.INITIAL_BALANCE_TRY) * order_pct
+        order_value = min(order_value, available_cash)
+        required = order_value * (1 + commission_pct())
         if cash < required:
             blocked["insufficient_cash"] += 1; continue
+        if order_value < config.MIN_PARTIAL_ORDER_TRY:
+            blocked["insufficient_cash"] += 1; continue
         cash -= required
-        open_positions[event["symbol"]] = event
-        equity = cash + sum(ORDER_VALUE + pos["trade"]["pnl_try"] + ORDER_VALUE * commission_pct() for pos in open_positions.values())
+        scale = order_value / ORDER_VALUE
+        trade = {**event["trade"], "pnl_try": event["trade"]["pnl_try"] * scale,
+                 "fees_try": event["trade"]["fees_try"] * scale,
+                 "order_value_try": order_value}
+        open_positions[event["symbol"]] = {**event, "trade": trade, "order_value": order_value}
+        equity = cash + sum(pos["order_value"] + pos["trade"]["pnl_try"] + pos["order_value"] * commission_pct() for pos in open_positions.values())
         peak_equity = max(peak_equity, equity); max_dd = max(max_dd, peak_equity - equity)
     for symbol, position in open_positions.items():
-        trade = position["trade"]; cash += ORDER_VALUE + trade["pnl_try"] + ORDER_VALUE * commission_pct()
+        trade, order_value = position["trade"], position["order_value"]
+        cash += order_value + trade["pnl_try"] + order_value * commission_pct()
         realized += trade["pnl_try"]; trades.append({**trade, "symbol": symbol, "signal_time": position["signal_time"]})
     net_values = [trade["pnl_try"] for trade in trades]; gains = sum(value for value in net_values if value > 0); losses = sum(value for value in net_values if value < 0)
     return {"trades": len(trades), "net_pnl_try": round(realized, 2), "fees_try": round(sum(t["fees_try"] for t in trades), 2),
@@ -492,7 +510,10 @@ async def fetch(symbol, days, end_ms, semaphore):
 async def main(args):
     global COST_MULTIPLIER
     COST_MULTIPLIER = args.cost_multiplier
-    end_ms = (int(time.time() * 1000) - args.end_minutes_ago * 60000) // MS_5M * MS_5M - 1
+    if args.end_date:
+        end_ms = int(datetime.fromisoformat(args.end_date).replace(tzinfo=timezone.utc).timestamp() * 1000) - 1
+    else:
+        end_ms = (int(time.time() * 1000) - args.end_minutes_ago * 60000) // MS_5M * MS_5M - 1
     start_ms = end_ms - args.hours * 3600000
     symbols = [item.strip().upper().replace("_", "") for item in (args.symbols or config.SYMBOLS)]
     semaphore = asyncio.Semaphore(args.concurrency)
@@ -526,6 +547,7 @@ async def main(args):
             avwap_reclaim = bool(current_avwap and previous_avwap and current_avwap["anchor_index"] <= index - 1 and
                                  rows[index - 1]["close"] <= previous_avwap["value"] and row["close"] > current_avwap["value"])
             if features and trade and cvd and anchored_cvd and anchored_m5_cvd:
+                features["return_1h"] = row["close"] / rows[index - 12]["close"] - 1 if index >= 12 and rows[index - 12]["close"] else None
                 feature_by_index[index] = features
                 all_events.append({"symbol": symbol, "signal_time": row["close_time"], "features": features, "trade": trade,
                                    "supertrend_representatives": representatives.get(index), "cvd_proxy": cvd, "anchored_cvd": anchored_cvd,
@@ -534,20 +556,22 @@ async def main(args):
                                    "chop_15m": chop15.get(m15[active_m15_index]["close_time"]) if active_m15_index >= 0 else None})
         pullback_events.extend(pullback_reclaim_events(symbol, rows, feature_by_index, end_ms))
         tsi_pullback_events.extend(pullback_reclaim_events(symbol, rows, feature_by_index, end_ms, require_tsi=True))
-    variants = {name: portfolio([{**event, "trade": event["trade"]} for event in all_events if allowed(event["features"], name)], name)
+    execution = (args.order_pct, args.remaining_cash_sizing, args.max_open_positions)
+    variants = {name: portfolio([{**event, "trade": event["trade"]} for event in all_events if allowed(event["features"], name)], name, *execution)
                 for name in ("baseline", "score4", "m30_bullish", "strict_score4_m30_bb_lt_1")}
-    variants["pullback_reclaim_shadow"] = portfolio(pullback_events, "pullback_reclaim_shadow")
-    variants["pullback_reclaim_tsi_shadow"] = portfolio(tsi_pullback_events, "pullback_reclaim_tsi_shadow")
-    variants["cvd_proxy_entry_filter"] = portfolio([event for event in all_events if cvd_proxy_allowed(event)], "cvd_proxy_entry_filter")
-    variants["cvd_15m_anchor_entry_filter"] = portfolio([event for event in all_events if anchored_cvd_allowed(event)], "cvd_15m_anchor_entry_filter")
-    variants["cvd_15m_anchor_trap_filter"] = portfolio([event for event in all_events if anchored_cvd_trap_allowed(event)], "cvd_15m_anchor_trap_filter")
-    variants["cvd_15m_anchor_m5_entry_filter"] = portfolio([event for event in all_events if anchored_m5_cvd_allowed(event)], "cvd_15m_anchor_m5_entry_filter")
-    variants["m15_dmi_adx_entry_filter"] = portfolio([event for event in all_events if dmi_adx_allowed(event)], "m15_dmi_adx_entry_filter")
-    variants["swing_low_avwap_reclaim_filter"] = portfolio([event for event in all_events if avwap_reclaim_allowed(event)], "swing_low_avwap_reclaim_filter")
-    variants["m15_chop_entry_filter"] = portfolio([event for event in all_events if chop_allowed(event)], "m15_chop_entry_filter")
+    variants["return_1h_le_1_13pct"] = portfolio([event for event in all_events if allowed(event["features"], "baseline") and event["features"].get("return_1h") is not None and event["features"]["return_1h"] <= .0113], "return_1h_le_1_13pct", *execution)
+    variants["pullback_reclaim_shadow"] = portfolio(pullback_events, "pullback_reclaim_shadow", *execution)
+    variants["pullback_reclaim_tsi_shadow"] = portfolio(tsi_pullback_events, "pullback_reclaim_tsi_shadow", *execution)
+    variants["cvd_proxy_entry_filter"] = portfolio([event for event in all_events if cvd_proxy_allowed(event)], "cvd_proxy_entry_filter", *execution)
+    variants["cvd_15m_anchor_entry_filter"] = portfolio([event for event in all_events if anchored_cvd_allowed(event)], "cvd_15m_anchor_entry_filter", *execution)
+    variants["cvd_15m_anchor_trap_filter"] = portfolio([event for event in all_events if anchored_cvd_trap_allowed(event)], "cvd_15m_anchor_trap_filter", *execution)
+    variants["cvd_15m_anchor_m5_entry_filter"] = portfolio([event for event in all_events if anchored_m5_cvd_allowed(event)], "cvd_15m_anchor_m5_entry_filter", *execution)
+    variants["m15_dmi_adx_entry_filter"] = portfolio([event for event in all_events if dmi_adx_allowed(event)], "m15_dmi_adx_entry_filter", *execution)
+    variants["swing_low_avwap_reclaim_filter"] = portfolio([event for event in all_events if avwap_reclaim_allowed(event)], "swing_low_avwap_reclaim_filter", *execution)
+    variants["m15_chop_entry_filter"] = portfolio([event for event in all_events if chop_allowed(event)], "m15_chop_entry_filter", *execution)
     for representative in ("bull", "neutral", "bear"):
         variants[f"supertrend_{representative}_representative"] = portfolio(
-            [event for event in all_events if representative_allowed(event, representative)], f"supertrend_{representative}_representative")
+            [event for event in all_events if representative_allowed(event, representative)], f"supertrend_{representative}_representative", *execution)
     result = {"paper_only": True, "generated_at": datetime.now(timezone.utc).isoformat(),
               "window": {"start": iso(start_ms), "end": iso(end_ms), "hours": args.hours}, "symbols": symbols,
               "provenance": {"source": "Binance TR public /api/v3/klines completed M5 and M1 OHLCV", "per_symbol": provenance, "errors": errors},
@@ -564,7 +588,7 @@ async def main(args):
               "swing_low_avwap_reclaim_rule": "Baseline plus M5 close reclaim above an AVWAP anchored to the latest swing low confirmed with two completed M5 candles on each side; enter next M5 open.",
               "m15_chop_rule": "Baseline plus completed M15 CHOP(14) < 38.2 and falling versus its prior completed M15 reading.",
               "variants": variants,
-              "execution": {"order_value_try": ORDER_VALUE, "initial_balance_try": config.INITIAL_BALANCE_TRY, "max_pump_positions": config.PUMP_MONITOR_MAX_OPEN_POSITIONS,
+              "execution": {"order_pct": args.order_pct, "remaining_cash_sizing": args.remaining_cash_sizing, "initial_balance_try": config.INITIAL_BALANCE_TRY, "max_pump_positions": args.max_open_positions,
                             "cost_multiplier": COST_MULTIPLIER, "commission_pct_each_side": commission_pct(), "spread_pct": spread_pct(), "slippage_pct_each_side": slippage_pct(),
                             "entry": "next M5 open", "exit": "Analyzer generic exit approximation; adverse stop first within OHLC bar"},
               "limitations": ["Historical order-book/depth, live liquidity gate, ticker timing and M1-flat override are unavailable and not assumed passed.", "CVD proxy uses M1 candle direction; it is not trade-level/aggressor CVD.", "Open positions at replay end are marked to the final completed M5 close.", "The pullback/reclaim rule is research-only and must pass a separate chronological OOS window before any paper activation."]}
@@ -576,9 +600,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--hours", type=int, default=24)
     parser.add_argument("--end-minutes-ago", type=int, default=10)
+    parser.add_argument("--end-date", help="UTC ISO bitiş zamanı; ör. 2026-08-24T00:50:00")
     parser.add_argument("--fetch-days", type=int, default=3)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--cost-multiplier", type=float, default=1.0)
+    parser.add_argument("--order-pct", type=float, default=config.ORDER_PCT)
+    parser.add_argument("--remaining-cash-sizing", action="store_true")
+    parser.add_argument("--max-open-positions", type=int, default=config.PUMP_MONITOR_MAX_OPEN_POSITIONS,
+                        help="0 küresel sınırı kapatır; sembol başına tek açık işlem daima korunur")
     parser.add_argument("--symbols", nargs="*")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()

@@ -217,9 +217,16 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp REAL NOT NULL,
                 symbol TEXT, strategy TEXT, decision TEXT,
-                reason TEXT, price REAL, metadata TEXT
+                reason TEXT, price REAL, metadata TEXT, source_decision_id INTEGER
             )
         """)
+        if _postgres_enabled():
+            conn.execute("ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS source_decision_id INTEGER")
+        else:
+            try:
+                conn.execute("ALTER TABLE decision_logs ADD COLUMN source_decision_id INTEGER")
+            except sqlite3.OperationalError:
+                pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS llm_tool_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,6 +246,7 @@ async def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_exit_symbol_strategy ON trades(exit_time DESC, symbol, strategy)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_time_symbol_action ON signals(timestamp DESC, symbol, action)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_decisions_time_symbol_strategy ON decision_logs(timestamp DESC, symbol, strategy)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_parity_backfill_source ON decision_logs(strategy, source_decision_id) WHERE source_decision_id IS NOT NULL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS llm_symbol_guards (
                 symbol TEXT PRIMARY KEY, guard_type TEXT NOT NULL DEFAULT 'cooldown',
@@ -963,6 +971,19 @@ async def get_trades(limit: int | None = 100, offset: int = 0, symbol: str | Non
     return await _run_db(op)
 
 
+async def get_trade_export_rows():
+    """Return every closed paper trade with its full saved entry context."""
+    def op(conn: sqlite3.Connection):
+        rows = conn.execute("SELECT * FROM trades ORDER BY entry_time ASC, id ASC").fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["entry_context"] = _json_value(item.get("entry_context"), {})
+            result.append(item)
+        return result
+    return await _run_db(op)
+
+
 async def get_capital_lock_report(min_hold_hours: float = 4.0, max_favorable_pct: float = 0.75):
     """Read-only outcome report for positions that consumed capital without progress."""
     trades = await get_trades(limit=None, strategy="BB_MFI_MEAN_REVERSION")
@@ -1133,6 +1154,106 @@ async def save_decision_log(decision):
         )
         conn.commit()
     await _run_db(op)
+
+
+async def backfill_replay_parity_observations(limit: int = 20_000, apply: bool = False, progress_callback=None):
+    """Append partial parity records for legacy decisions without inventing data.
+
+    Historical M1 activity, executable spread/depth, active universe and the
+    portfolio state were not always persisted.  They are explicitly marked as
+    unknown rather than reconstructed from today's market state.  The source
+    decision ID makes an applied run idempotent.
+    """
+    def decode(value):
+        try:
+            return _json_value(value, {}) if value else {}
+        except (TypeError, json.JSONDecodeError):
+            return {}
+
+    def op(conn: sqlite3.Connection):
+        # Older databases may predate the column; this makes the maintenance
+        # command safe before the next normal application startup migration.
+        if _postgres_enabled():
+            conn.execute("ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS source_decision_id INTEGER")
+        else:
+            try:
+                conn.execute("ALTER TABLE decision_logs ADD COLUMN source_decision_id INTEGER")
+            except sqlite3.OperationalError:
+                pass
+        try:
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_parity_backfill_source ON decision_logs(strategy, source_decision_id) WHERE source_decision_id IS NOT NULL")
+        except Exception:
+            pass
+        rows = conn.execute(
+            """SELECT source.id, source.timestamp, source.symbol, source.strategy,
+                      source.decision, source.reason, source.price, source.metadata
+                FROM decision_logs AS source
+                 LEFT JOIN decision_logs AS parity
+                   ON parity.strategy='REPLAY_PARITY_BACKFILL'
+                  AND parity.source_decision_id=source.id
+                WHERE source.strategy NOT LIKE ?
+                  AND parity.id IS NULL
+                ORDER BY source.timestamp ASC, source.id ASC
+                LIMIT ?""",
+            ("REPLAY_PARITY%", max(1, min(int(limit), 100_000))),
+        ).fetchall()
+        summary = {"eligible": len(rows), "processed": 0, "written": 0, "technical_context": 0, "activity_context": 0, "unknown_context": 0}
+
+        def report_progress():
+            if progress_callback:
+                try:
+                    progress_callback(dict(summary))
+                except Exception:
+                    # A UI progress observer must never affect a database job.
+                    pass
+
+        report_progress()
+        for index, row in enumerate(rows, start=1):
+            source_metadata = decode(row[7])
+            has_technical = bool(source_metadata.get("technical"))
+            has_activity = bool(source_metadata.get("activity") or source_metadata.get("symbol_activity"))
+            summary["technical_context"] += int(has_technical)
+            summary["activity_context"] += int(has_activity)
+            summary["unknown_context"] += int(not has_technical and not has_activity)
+            if not apply:
+                continue
+            metadata = {
+                "schema": "replay-parity-backfill-v1",
+                "paper_only": True,
+                "provenance": "historical_database_backfill",
+                "source_decision_log_id": row[0],
+                "source_decision": {
+                    "strategy": row[3], "decision": row[4], "reason": row[5],
+                    "metadata": source_metadata,
+                },
+                "available_historical_context": {
+                    "technical": has_technical,
+                    "symbol_activity": has_activity,
+                    "trade_id": bool(source_metadata.get("trade_id")),
+                },
+                "unknown_not_backfilled": [
+                    "active_symbol_universe", "effective_config", "portfolio_cash_and_open_positions",
+                    "closed_candle_identity", "historical_executable_spread_depth",
+                ],
+                "parity_eligibility": "partial_event_audit_only_not_decision_replay",
+            }
+            conn.execute(
+                """INSERT INTO decision_logs
+                   (timestamp, symbol, strategy, decision, reason, price, metadata, source_decision_id)
+                   VALUES (?, ?, 'REPLAY_PARITY_BACKFILL', ?, ?, ?, ?, ?)""",
+                (row[1], row[2], f"BACKFILL_{row[4] or 'UNKNOWN'}", row[5], row[6],
+                 json.dumps(metadata, ensure_ascii=False, default=str), row[0]),
+            )
+            summary["written"] += 1
+            summary["processed"] = index
+            if index % 25 == 0 or index == len(rows):
+                report_progress()
+        if apply:
+            conn.commit()
+        report_progress()
+        return summary
+
+    return await _run_db(op)
 
 async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, sig):
     """Atomically persist wallet balances, position and opening decision."""
