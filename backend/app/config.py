@@ -147,10 +147,6 @@ class Config:
     PUMP_MONITOR_MIN_SCORE = max(3, min(4, int(os.getenv("PUMP_MONITOR_MIN_SCORE", "3"))))
     PUMP_MONITOR_REQUIRE_M15_BULLISH = os.getenv("PUMP_MONITOR_REQUIRE_M15_BULLISH", "true").lower() == "true"
     PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO = max(0.0, float(os.getenv("PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO", "1.0")))
-    # A qualified pump already proves M5 expansion and M15 context.  It may
-    # override only the M1 flat-candle capital-lock gate; all other activity,
-    # liquidity, balance and re-entry gates remain mandatory.
-    PUMP_MONITOR_ALLOW_M1_FLAT_OVERRIDE = os.getenv("PUMP_MONITOR_ALLOW_M1_FLAT_OVERRIDE", "true").lower() == "true"
     # LLM yalnızca kullanıcının açık "işlem aç" talebiyle çalışabilir.
     LLM_AUTO_OPEN_ENABLED = False
     GAINER_RADAR_MIN_SCORE = 65
