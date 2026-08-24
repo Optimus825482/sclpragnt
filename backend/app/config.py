@@ -54,6 +54,12 @@ class Config:
     SMA_CASCADE_MAX_SEQUENCE_MINUTES = max(1, int(os.getenv("SMA_CASCADE_MAX_SEQUENCE_MINUTES", "10")))
     SMA_CASCADE_BREAKOUT_WINDOW_MINUTES = max(1, int(os.getenv("SMA_CASCADE_BREAKOUT_WINDOW_MINUTES", "30")))
     SMA_CASCADE_OUTCOME_WINDOW_MINUTES = max(1, int(os.getenv("SMA_CASCADE_OUTCOME_WINDOW_MINUTES", "30")))
+    # Source-aligned M3 Fisher / M5 Kernel observer.  It records candidates
+    # for active symbols on closed M1 bars and deliberately cannot trade.
+    FISHER_M3_KERNEL_M5_SHADOW_ENABLED = os.getenv("FISHER_M3_KERNEL_M5_SHADOW_ENABLED", "true").lower() == "true"
+    # User-authorized forward paper monitor. It is isolated from the active
+    # strategy and implements only the supplied Fisher/Kernel entry and exit.
+    FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED = os.getenv("FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED", "true").lower() == "true"
     # LLM market commentary is a journaled, paper-only forecast.  These
     # horizons never authorize an order or mutate strategy parameters.
     LLM_FORECAST_HORIZONS_MINUTES = (5, 15, 60, 240)

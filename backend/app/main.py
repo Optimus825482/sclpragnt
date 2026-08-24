@@ -35,6 +35,7 @@ CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.sma_cascade_shadow import SmaCascadeShadow
+from app.fisher_m3_kernel_m5_shadow import FisherM3KernelM5ExactPaper, FisherM3KernelM5Shadow
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import llm_analysis
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
@@ -1158,6 +1159,7 @@ async def startup_services():
     _start_background(microstructure_snapshot_loop(), "microstructure-snapshot")
     _start_background(strategy_loop(), "strategy-loop")
     _start_background(ma_cascade_shadow_loop(), "ma-cascade-shadow")
+    _start_background(fisher_m3_kernel_m5_shadow_loop(), "fisher-m3-kernel-m5-shadow")
     _start_background(llm_forecast_evaluation_loop(), "llm-forecast-evaluator")
     _start_background(radar_loop(), "radar-loop")
     _start_background(symbol_activity_loop(), "symbol-activity")
@@ -1588,6 +1590,45 @@ async def ma_cascade_shadow_loop():
         await asyncio.sleep(5)
 
 
+async def fisher_m3_kernel_m5_shadow_loop():
+    """Journal exact Pine candidates and isolated forward-paper fills."""
+    observer = FisherM3KernelM5Shadow()
+    paper = FisherM3KernelM5ExactPaper()
+    await asyncio.sleep(10)
+    while True:
+        try:
+            if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED and migration_monitor.state["status"] != "running":
+                for symbol in list(config.SYMBOLS):
+                    m1 = market.get_ut_kline(symbol, "1m")
+                    # The platform's ACTIVE gate decides observation scope;
+                    # it does not alter any supplied Pine condition.
+                    active = symbol not in config.PASSIVE_SYMBOLS
+                    if config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED:
+                        for event in paper.advance(symbol, m1):
+                            decision = str(event["type"]).upper()
+                            await database.save_decision_log({
+                                "timestamp": time.time(), "symbol": symbol, "strategy": "FISHER_M3_KERNEL_M5_EXACT_PAPER",
+                                "decision": decision, "reason": "source_exact_next_m1_open", "price": event.get("price"), "metadata": event,
+                            })
+                            _record_strategy_scan_log("fisher_m3_kernel_m5_exact_paper", symbol, decision,
+                                                      price=event.get("price"), timeframe="1m")
+                    if not active and not paper.has_open_or_pending(symbol):
+                        continue
+                    events = observer.process(symbol, m1, market.get_ut_kline(symbol, "3m"), market.get_ut_kline(symbol, "5m"))
+                    for event in events:
+                        decision = str(event["type"]).upper()
+                        await database.save_decision_log({
+                            "timestamp": time.time(), "symbol": symbol, "strategy": "FISHER_M3_KERNEL_M5_SHADOW",
+                            "decision": decision, "reason": "closed_m1_source_aligned_observation_only",
+                            "price": event.get("price"), "metadata": event,
+                        })
+                        _record_strategy_scan_log("fisher_m3_kernel_m5_shadow", symbol, decision,
+                                                  price=event.get("price"), timeframe="1m")
+                        if config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED and (active or event["type"] == "exit_candidate"):
+                            paper.schedule(symbol, event)
+        except Exception as exc:
+            print(f"[Fisher M3/Kernel M5 Shadow] hata: {exc}", flush=True)
+        await asyncio.sleep(5)
 async def radar_loop():
     await asyncio.sleep(15)
     while True:
@@ -4375,6 +4416,22 @@ async def ma_cascade_shadow_status(limit: int = 200, symbol: str = ""):
             "breakout_minutes": config.SMA_CASCADE_BREAKOUT_WINDOW_MINUTES,
             "outcome_minutes": config.SMA_CASCADE_OUTCOME_WINDOW_MINUTES,
         },
+        "events": records[:max(1, min(limit, 200))],
+    }
+
+
+@app.get("/api/research/fisher-m3-kernel-m5-shadow")
+async def fisher_m3_kernel_m5_shadow_status(limit: int = 200, symbol: str = ""):
+    """Read-only active-symbol observations for the supplied MTF Pine rule."""
+    records = await database.get_decision_logs(limit=min(max(1, limit) * 4, 500), symbol=symbol or None,
+                                               strategy="FISHER_M3_KERNEL_M5_SHADOW")
+    records = [row for row in records if str(row.get("decision", "")).upper() in {"LONG_CANDIDATE", "EXIT_CANDIDATE"}]
+    return {
+        "paper_only": True,
+        "enabled": config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED,
+        "rule": "M3 Fisher(11) crossover below -1 plus green M5 Kernel(8,8,25,2); exit candidate is crossunder above 2",
+        "clock": "closed M1; M3/M5 values use lookahead_off-equivalent release",
+        "orders_created": False,
         "events": records[:max(1, min(limit, 200))],
     }
 
