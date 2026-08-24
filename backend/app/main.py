@@ -261,6 +261,7 @@ def _replay_parity_config_snapshot():
         "BB_MFI_PINE_VERSION", "BB_MFI_BB_PERIOD", "BB_MFI_BB_STD_DEV",
         "BB_MFI_MFI_PERIOD", "BB_MFI_RSI_PERIOD", "BB_MFI_ENTRY_MFI_MAX",
         "BB_MFI_EXIT_RSI_MIN", "BB_MFI_EXIT_MFI_MIN",
+        "BB_MFI_SELL_SIGNAL_CONFIRM_BARS",
         "BB_MFI_DIP_CONFIRMATION_ENABLED", "BB_MFI_DIP_MIN_CLOSE_POSITION",
         "BB_MFI_ENTRY_MFI_REVERSAL_ENABLED", "BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA",
         "BB_MFI_BEAR_PRESSURE_FILTER_ENABLED", "BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION",
@@ -2194,6 +2195,7 @@ CONFIG_FIELDS = {
     "bb_mfi_entry_mfi_reversal_min_delta": "BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA",
     "bb_mfi_exit_rsi_min": "BB_MFI_EXIT_RSI_MIN",
     "bb_mfi_exit_mfi_min": "BB_MFI_EXIT_MFI_MIN",
+    "bb_mfi_sell_signal_confirm_bars": "BB_MFI_SELL_SIGNAL_CONFIRM_BARS",
     "bb_mfi_bear_pressure_filter_enabled": "BB_MFI_BEAR_PRESSURE_FILTER_ENABLED",
     "bb_mfi_bear_pressure_min_adx": "BB_MFI_BEAR_PRESSURE_MIN_ADX",
     "bb_mfi_bear_pressure_min_di_gap": "BB_MFI_BEAR_PRESSURE_MIN_DI_GAP",
@@ -2279,7 +2281,7 @@ CONFIG_FIELDS = {
 
 BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "pump_monitor_enabled", "pump_monitor_auto_trade", "pump_monitor_require_m15_bullish", "pump_monitor_allow_m1_flat_override", "symbol_activity_m1_flat_filter_enabled"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "pump_monitor_max_open_positions", "pump_monitor_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_pyramid_profit_extension_layers", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
+INT_FIELDS = {"gainer_radar_min_score", "pump_monitor_max_open_positions", "pump_monitor_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_sell_signal_confirm_bars", "bb_mfi_pyramid_profit_extension_layers", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "bb_mfi_pine_version", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
@@ -2327,6 +2329,7 @@ async def get_config():
         "bb_mfi_entry_mfi_reversal_min_delta": config.BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA,
         "bb_mfi_exit_rsi_min": config.BB_MFI_EXIT_RSI_MIN,
         "bb_mfi_exit_mfi_min": config.BB_MFI_EXIT_MFI_MIN,
+        "bb_mfi_sell_signal_confirm_bars": config.BB_MFI_SELL_SIGNAL_CONFIRM_BARS,
         "bb_mfi_bear_pressure_filter_enabled": config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED,
         "bb_mfi_bear_pressure_min_adx": config.BB_MFI_BEAR_PRESSURE_MIN_ADX,
         "bb_mfi_bear_pressure_min_di_gap": config.BB_MFI_BEAR_PRESSURE_MIN_DI_GAP,
@@ -2744,6 +2747,8 @@ async def _apply_config_update(payload: dict):
                     raise ValueError("pump_monitor_max_open_positions 1 ile 20 arasında olmalıdır")
                 if key == "pyramiding_layers" and not 1 <= number <= 10:
                     raise ValueError("pyramiding_layers 1 ile 10 arasında olmalıdır")
+                if key == "bb_mfi_sell_signal_confirm_bars" and not 1 <= number <= 5:
+                    raise ValueError("BB-MFI satış teyidi 1 ile 5 mum arasında olmalıdır")
                 if key == "symbol_activity_m1_flat_5m_max_count" and not 1 <= number <= 5:
                     raise ValueError("5 dk düz M1 mum eşiği 1 ile 5 arasında olmalıdır")
                 if key == "symbol_activity_m1_flat_30m_max_count" and not 1 <= number <= 30:
