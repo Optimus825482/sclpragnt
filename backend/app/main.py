@@ -1143,6 +1143,15 @@ async def startup_services():
     ]))
     await market.fetch_historical_data(priority_timeframes)
     print(f"[MarketData] öncelikli strateji verisi hazır | timeframes={priority_timeframes} tickers={len(market.tickers)}", flush=True)
+    # Fisher M3 / Kernel M5 monitor needs its own closed M3 history.  Keep its
+    # warmup out of the startup critical path so deployment health checks do
+    # not wait for another full-universe REST fetch.
+    if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED:
+        market.timeframes = sorted(set(market.timeframes).union({"3m"}))
+        _start_background(
+            market.ensure_history(("3m", "5m"), min_candles=40, candle_limit=50),
+            "fisher-m3-kernel-m5-history-warmup",
+        )
     # Pump Monitor tüm yapılandırılmış evreni değerlendirdiği için M5/M15/M30
     # önbelleği en az teknik gösterge penceresi kadar kapalı mum içermelidir.
     # Bu dar warmup yalnız eksik serileri 120 mumla REST'ten doldurur; her
