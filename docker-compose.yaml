@@ -52,10 +52,13 @@ services:
       - "8004"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=3)"]
+      # Initial history hydration for the full dynamic symbol universe can
+      # exceed the first few probes. Retain fast promotion once ready, while
+      # avoiding an early Compose abort that leaves dependents as "Created".
       start_period: 90s
       interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 20
   a2a-relay:
     build:
       context: ./a2a-relay
