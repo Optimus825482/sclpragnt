@@ -18,7 +18,7 @@ from app.analyzer import ScalpAnalyzer
 from app import database
 from app.binance_tr_public import historical_klines, orderbook, ticker_24h, trading_symbols
 from app.config import config
-from app.technical_analysis import _adx, _bollinger, _cci, _ema, _mfi, calculate_snapshot
+from app.technical_analysis import _adx, _bollinger, _cci, _ema, _mfi, _price_action_setup, calculate_snapshot
 
 
 def iso(ts):
@@ -581,6 +581,16 @@ def strategy_decision(analyzer, window, symbol, version):
     return None
 
 
+def sell_signal_confirmed(analyzer, data, signal_index, symbol, version, required_bars):
+    """Require consecutive already-closed M5 sell signals without look-ahead."""
+    for offset in range(required_bars):
+        if signal_index - offset < 0:
+            return False
+        if strategy_decision(analyzer, window_at(data, signal_index - offset), symbol, version) != "sell":
+            return False
+    return True
+
+
 def entry_filter_passes(analyzer, window, args):
     """Optional, causal filters evaluated only on the already-closed signal candle."""
     if not args.entry_ema200_filter and not args.entry_momentum_slowdown_filter:
@@ -673,6 +683,20 @@ def replay_features(analyzer, window, version):
             "rsi": analyzer.calculate_rsi(closes, profile["rsi_period"]),
             "mfi": _mfi(highs, lows, closes, volumes, profile.get("mfi_period", 16)) if version == "v3" else None,
             "atr": analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD)}
+
+
+def closed_m5_price_action_direction(window):
+    """Return the deterministic price-action direction of the signal candle.
+
+    ``_price_action_setup`` deliberately ignores its final item because the
+    production snapshot normally receives a still-forming candle.  The replay
+    window contains closed candles only, so duplicating its final row makes the
+    helper evaluate the actual signal candle without exposing a future bar.
+    """
+    if not window.get("closes"):
+        return None
+    padded = {key: list(window[key]) + [window[key][-1]] for key in ("opens", "highs", "lows", "closes")}
+    return _price_action_setup(padded["opens"], padded["highs"], padded["lows"], padded["closes"]).get("direction")
 
 
 def mtf_entry_features(analyzer, symbol, price, signal_ts, base_window, mtf_series):
@@ -1016,8 +1040,7 @@ async def run(args):
                     del positions[symbol]; exits += 1
                     print(f"[EXIT] {iso(ts)} {symbol} reason={reason} pnl={pnl:+.2f} cash={cash:.2f}", flush=True)
                     continue
-            previous_window = window_at(data, index - 1)
-            if strategy_decision(analyzer, previous_window, symbol, args.pine_version) != "sell":
+            if not sell_signal_confirmed(analyzer, data, index - 1, symbol, args.pine_version, args.sell_signal_confirm_bars):
                 continue
             exit_quote, reason = data["opens"][index], "bb_mfi_v3_signal_exit"
             exit_fill = exit_quote * (1 - args.spread_pct / 2 - args.slippage_pct)
@@ -1060,6 +1083,22 @@ async def run(args):
                 if rsi14 is None or rsi14 < args.entry_min_rsi14:
                     blocked += 1; filter_counts["entry_min_rsi14"] += 1
                     print(f"[BLOCKED] {symbol} reason=entry_min_rsi14 value={rsi14}", flush=True)
+                    continue
+            # These two switches reproduce only the candidate definitions
+            # observed in the exported-trade analysis.  They run after a
+            # causal BUY signal, operate on its already-closed M5 candle, and
+            # are never read by the production entry path.
+            if args.entry_max_mfi > 0:
+                mfi = feature.get("mfi")
+                if mfi is None or mfi > args.entry_max_mfi:
+                    blocked += 1; filter_counts["entry_max_mfi"] += 1
+                    print(f"[BLOCKED] {symbol} reason=entry_max_mfi value={mfi}", flush=True)
+                    continue
+            if args.entry_price_action_direction != "none":
+                price_action = closed_m5_price_action_direction(window)
+                if price_action != args.entry_price_action_direction:
+                    blocked += 1; filter_counts[f"entry_price_action_{args.entry_price_action_direction}"] += 1
+                    print(f"[BLOCKED] {symbol} reason=entry_price_action expected={args.entry_price_action_direction} value={price_action}", flush=True)
                     continue
             if args.mtf_feature_gate != "none":
                 mtf_features = mtf_entry_features(analyzer, symbol, data["opens"][index], data["times"][index - 1], window, {"5m": data, **mtf_series_by_symbol.get(symbol, {})})
@@ -1304,6 +1343,7 @@ async def run(args):
         "breakeven_exit_after_hours": args.breakeven_exit_after_hours,
         "adverse_ema_atr_exit_hours": args.adverse_ema_atr_exit_hours,
         "adverse_ema_atr_multiplier": args.adverse_ema_atr_multiplier,
+        "sell_signal_confirm_bars": args.sell_signal_confirm_bars,
         "entry_ema200_filter": args.entry_ema200_filter,
         "entry_momentum_slowdown_filter": args.entry_momentum_slowdown_filter,
         "activity_volume_only": args.activity_volume_only,
@@ -1314,6 +1354,8 @@ async def run(args):
         "entry_mfi_reversal": args.entry_mfi_reversal,
         "entry_mfi_reversal_min_delta": args.entry_mfi_reversal_min_delta,
         "entry_mfi_slowdown_max_drop": args.entry_mfi_slowdown_max_drop,
+        "entry_max_mfi": args.entry_max_mfi,
+        "entry_price_action_direction": args.entry_price_action_direction,
         "high_downtrend_entry_filter": args.high_downtrend_entry_filter,
         "entry_min_rsi14": args.entry_min_rsi14,
         "high_downtrend_min_adx": args.high_downtrend_min_adx,
@@ -1460,9 +1502,15 @@ if __name__ == "__main__":
                         help="Bu yaştan sonra net zararda EMA9<EMA21 ve ATR bozulması varsa çık; 0 kapalı")
     parser.add_argument("--adverse-ema-atr-multiplier", type=float, default=1.0,
                         help="Aleyhe EMA/ATR çıkışında giriş altındaki minimum ATR katsayısı")
+    parser.add_argument("--sell-signal-confirm-bars", type=int, default=1,
+                        help="Sinyal çıkışı için gereken ardışık kapalı M5 SELL sayısı; 1 mevcut davranış")
     parser.add_argument("--entry-ema200-filter", action="store_true", help="Girişi yalnız kapanış EMA200 üzerinde ise kabul et")
     parser.add_argument("--entry-min-rsi14", type=float, default=0.0,
                         help="Araştırma için mevcut BUY sinyalinde minimum RSI(14); 0 kapalı")
+    parser.add_argument("--entry-max-mfi", type=float, default=0.0,
+                        help="Araştırma için BUY sinyalinin MFI üst sınırı; 0 kapalı")
+    parser.add_argument("--entry-price-action-direction", choices=("none", "bullish", "bearish", "neutral"), default="none",
+                        help="Araştırma için sinyal mumunun kapalı M5 price-action yönü; none kapalı")
     parser.add_argument("--entry-momentum-slowdown-filter", action="store_true", help="Girişi son kapanış önceki kapanışın altına inmediğinde kabul et")
     parser.add_argument("--entry-min-volume-ratio", type=float, default=0.0, help="Sinyal mumunun önceki 20 M5 mumuna göre minimum hacim oranı; 0 kapalı")
     parser.add_argument("--entry-dip-confirmation", action="store_true", help="Alt BB sinyal mumunun kendi aralığında dipten dönüş kapanışı doğrulamasını iste")
@@ -1507,6 +1555,8 @@ if __name__ == "__main__":
         parser.error("--breakeven-exit-after-hours negatif olamaz")
     if args.adverse_ema_atr_exit_hours < 0 or args.adverse_ema_atr_multiplier < 0:
         parser.error("EMA/ATR çıkış parametreleri negatif olamaz")
+    if args.sell_signal_confirm_bars < 1:
+        parser.error("--sell-signal-confirm-bars en az 1 olmalıdır")
     if args.activity_min_quote_volume_try < 0 or args.entry_min_volume_ratio < 0:
         parser.error("hacim eşikleri negatif olamaz")
     if args.activity_m1_flat_max_range_pct < 0:

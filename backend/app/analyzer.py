@@ -537,9 +537,12 @@ class ScalpAnalyzer:
                 # live paper closes at the next available ticker price.
                 closed_at = int(kline.get("last_closed_at_ms") or 0)
                 if (closed_at and pos.get("bb_mfi_exit_evaluated_at") != closed_at and
-                        self.strategy_bb_mfi_mean_reversion(kline, symbol) == "sell"):
+                        self._bb_mfi_sell_signal_confirmed(kline, symbol)):
                     pos["bb_mfi_exit_evaluated_at"] = closed_at
-                    return await self.close_position(symbol, price, f"bb_mfi_{config.BB_MFI_PINE_VERSION}_signal_exit")
+                    return await self.close_position(
+                        symbol, price,
+                        f"bb_mfi_{config.BB_MFI_PINE_VERSION}_signal_exit_confirm{config.BB_MFI_SELL_SIGNAL_CONFIRM_BARS}",
+                    )
                 if closed_at:
                     pos["bb_mfi_exit_evaluated_at"] = closed_at
                 return None
@@ -945,6 +948,26 @@ class ScalpAnalyzer:
         if closes[-1] > bb["upper"] and rsi > upper:
             return "sell"
         return None
+
+    def _bb_mfi_sell_signal_confirmed(self, kline, symbol=None):
+        """Check consecutive closed M5 SELL signals without persisted state.
+
+        Market data retains completed candles.  Recalculating each required
+        trailing signal from that history makes a restart unable to erase a
+        partial confirmation sequence.
+        """
+        required = config.BB_MFI_SELL_SIGNAL_CONFIRM_BARS
+        closes = kline.get("closes", [])
+        if len(closes) < required:
+            return False
+        for offset in range(required):
+            end = len(closes) - offset
+            signal_kline = dict(kline)
+            for field in ("closes", "highs", "lows", "volumes"):
+                signal_kline[field] = (kline.get(field) or [])[:end]
+            if self.strategy_bb_mfi_mean_reversion(signal_kline, symbol) != "sell":
+                return False
+        return True
 
     @staticmethod
     def _bb_mfi_entry_context_block_reason(technical, kline):
@@ -1505,6 +1528,7 @@ class ScalpAnalyzer:
                          "profit_target_pct": planned_take_profit_pct,
                          "stop_loss_pct": planned_stop_loss_pct,
                          "max_hold_sec": planned_max_hold_sec,
+                         "sell_signal_confirm_bars": config.BB_MFI_SELL_SIGNAL_CONFIRM_BARS if is_bb_mfi else None,
                          "bear_pressure_filter_enabled": config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED,
                          "pyramid_require_net_profit": config.BB_MFI_PYRAMID_REQUIRE_NET_PROFIT,
                          "pyramid_profit_extension_layers": config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS,

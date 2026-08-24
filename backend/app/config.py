@@ -76,6 +76,9 @@ class Config:
     BB_MFI_ENTRY_MFI_MAX = float(os.getenv("BB_MFI_ENTRY_MFI_MAX", "59")) # MFILowerLevel3
     BB_MFI_EXIT_RSI_MIN = float(os.getenv("BB_MFI_EXIT_RSI_MIN", "69")) # RSIUpperLevel3
     BB_MFI_EXIT_MFI_MIN = float(os.getenv("BB_MFI_EXIT_MFI_MIN", "69")) # MFIUpperLevel3
+    # Paper candidate: ignore a single noisy exit signal and require this many
+    # consecutive completed M5 SELL signals before closing a BB-MFI position.
+    BB_MFI_SELL_SIGNAL_CONFIRM_BARS = min(5, max(1, int(os.getenv("BB_MFI_SELL_SIGNAL_CONFIRM_BARS", "2"))))
     BB_MFI_ENTRY_VOLUME_RATIO_MIN = float(os.getenv("BB_MFI_ENTRY_VOLUME_RATIO_MIN", "0.0"))
     # Paper replay candidate: require the completed BB/MFI signal candle to
     # recover from its low before entering. The tested threshold remains 55%;
