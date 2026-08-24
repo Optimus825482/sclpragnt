@@ -72,7 +72,9 @@ services:
       A2A_BACKEND_URL: http://backend:8004/api/a2a/messages
     depends_on:
       backend:
-        condition: service_healthy
+        # Coolify has a short compose-command timeout. The relay can start
+        # before backend history hydration completes and will retry delivery.
+        condition: service_started
     volumes:
       - scalper_a2a_relay:/data
     expose:
@@ -92,7 +94,9 @@ services:
     stop_grace_period: 5s
     depends_on:
       backend:
-        condition: service_healthy
+        # The UI shell does not require the API to be healthy at process
+        # start. Avoid leaving it in Created when backend warmup is slow.
+        condition: service_started
     environment:
       NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     expose:
