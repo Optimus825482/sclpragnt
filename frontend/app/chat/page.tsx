@@ -107,6 +107,11 @@ const TOOL_GROUPS = [
   ],
 ] as const;
 const ALL_TOOLS = TOOL_GROUPS.flatMap(([, names]) => names);
+const QUICK_PROMPTS = [
+  "Aktif stratejileri net PnL ve riskleriyle özetle.",
+  "Açık pozisyonları maliyet ve invalidasyon açısından incele.",
+  "Son 24 saatteki en önemli sinyal değişimlerini göster.",
+] as const;
 const starter: Message[] = [
   {
     role: "assistant",
@@ -140,6 +145,7 @@ export default function ChatPage() {
   const [instincts, setInstincts] = useState<any[]>([]);
   const [traces, setTraces] = useState<AgentTrace[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [controlsOpen, setControlsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"system" | "tools" | "skills">(
     "system",
   );
@@ -375,6 +381,10 @@ export default function ChatPage() {
     streamAbortRef.current?.abort();
     setLivePriceWatch((current) => current ? { ...current, status: "stopped" } : current);
   };
+  const stopResponse = () => {
+    streamAbortRef.current?.abort();
+    setLivePriceWatch((current) => current ? { ...current, status: "stopped" } : current);
+  };
   const toggle = (
     value: string,
     setter: (values: string[]) => void,
@@ -439,6 +449,9 @@ export default function ChatPage() {
             <span className={`chat-context-meter ${contextTone}`}>
               {Math.min(100, contextRatio * 100).toFixed(2)}% context
             </span>
+            <Button variant="secondary" className="chat-mobile-controls" onClick={() => setControlsOpen((current) => !current)}>
+              {controlsOpen ? "PANELİ KAPAT" : "ARAÇ DURUMU"}
+            </Button>
             <Button variant="secondary" onClick={startNewChat}>
               ＋ YENİ SOHBET
             </Button>
@@ -496,6 +509,9 @@ export default function ChatPage() {
             )}
             <div ref={endRef} />
           </div>
+          <div className="chat-quick-prompts" aria-label="Hızlı soru önerileri">
+            {QUICK_PROMPTS.map((prompt) => <button key={prompt} type="button" onClick={() => setInput(prompt)} disabled={busy}>{prompt}</button>)}
+          </div>
           <form onSubmit={send} className="chat-composer">
             <textarea
               value={input}
@@ -511,10 +527,11 @@ export default function ChatPage() {
             >
               GÖNDER ↗
             </Button>
+            {busy && <Button variant="secondary" type="button" onClick={stopResponse}>DURDUR</Button>}
           </form>
           {error && <p className="mt-3 text-xs text-neon-red">{error}</p>}
         </Card>
-        <Card className="chat-controls">
+        <Card className={`chat-controls ${controlsOpen ? "is-open" : ""}`}>
           <div className="chat-controls-header">
             <SectionHeader
               eyebrow="AKTİF DURUM"
