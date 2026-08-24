@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import sqlite3
 import threading
@@ -32,6 +33,17 @@ def _json_value(value, fallback):
     if isinstance(value, (dict, list)): return value
     try: return json.loads(value)
     except (TypeError, json.JSONDecodeError): return fallback
+
+
+def _json_safe(value):
+    """Replace JSON-invalid floating values before PostgreSQL JSON storage."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return value
 
 class _PostgresCompat:
     def __init__(self, conn): self.conn = conn
@@ -1150,7 +1162,7 @@ async def save_decision_log(decision):
             "INSERT INTO decision_logs (timestamp,symbol,strategy,decision,reason,price,metadata) VALUES (?,?,?,?,?,?,?)",
             (decision.get("timestamp") or time.time(), decision.get("symbol"), decision.get("strategy"),
              decision.get("decision"), decision.get("reason"), decision.get("price"),
-             json.dumps(decision.get("metadata") or {}, ensure_ascii=False, default=str)),
+             json.dumps(_json_safe(decision.get("metadata") or {}), ensure_ascii=False, default=str, allow_nan=False)),
         )
         conn.commit()
     await _run_db(op)
