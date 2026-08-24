@@ -64,8 +64,8 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         save_signal.assert_awaited_once()
         commit.assert_not_awaited()
 
-    async def test_qualified_pump_can_override_only_m1_flat_activity_gate(self):
-        """Pump continuation may bypass only the validated M1-flat false block."""
+    async def test_pump_is_blocked_by_m1_flat_activity_gate(self):
+        """Pump Monitor may not bypass the central passive-symbol boundary."""
         from app.analyzer import ScalpAnalyzer
         from app.config import config
 
@@ -74,17 +74,17 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         with patch.object(config, "SYMBOL_ACTIVITY_FILTER_ENABLED", True), \
              patch.object(config, "PASSIVE_SYMBOLS", {"BTCTRY"}), \
              patch.object(config, "SYMBOL_ACTIVITY_STATUS", {"BTCTRY": activity}), \
-             patch.object(config, "PUMP_MONITOR_ALLOW_M1_FLAT_OVERRIDE", True), \
-             patch("app.analyzer.database.load_positions", new=AsyncMock(return_value={})), \
-             patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=10_000.0)), \
+             patch("app.analyzer.database.save_signal", new=AsyncMock()) as save_signal, \
              patch("app.analyzer.database.commit_open_position", new=AsyncMock()) as commit:
             result = await analyzer.open_position(
                 "BTCTRY", 100.0, "LONG", "PUMP_MONITOR",
                 entry_context_extra={"score": 4, "m15_alignment": "bullish"},
             )
 
-        self.assertEqual(result["action"], "BUY_SIGNAL")
-        commit.assert_awaited_once()
+        self.assertEqual(result["action"], "BUY_BLOCKED")
+        self.assertEqual(result["reason"], "symbol_activity:passive:m1_flat_candles")
+        save_signal.assert_awaited_once()
+        commit.assert_not_awaited()
 
     async def test_automatic_scan_records_entry_ineligible_before_strategy_evaluation(self):
         """A failed liquidity preflight is an audit result, never a signal."""

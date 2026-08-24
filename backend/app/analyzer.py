@@ -1360,27 +1360,17 @@ class ScalpAnalyzer:
         if config.SYMBOL_ACTIVITY_FILTER_ENABLED and symbol in config.PASSIVE_SYMBOLS:
             activity = dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {})
             failed = [key for key, ok in activity.get("checks", {}).items() if not ok]
-            pump_flat_override = (
-                strat_name == "PUMP_MONITOR"
-                and config.PUMP_MONITOR_ALLOW_M1_FLAT_OVERRIDE
-                and failed == ["m1_flat_candles"]
-                and float((entry_context_extra or {}).get("score") or 0) >= config.PUMP_MONITOR_MIN_SCORE
-                and (entry_context_extra or {}).get("m15_alignment") == "bullish"
-            )
-            if pump_flat_override:
-                print(f"[Aktivite] {symbol} Pump Monitor için yalnız M1 düz mum engeli aşıldı", flush=True)
-            else:
-                reason = "symbol_activity:passive"
-                if failed:
-                    reason += ":" + ",".join(failed)
-                blocked = {
-                    "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                    "reason": reason, "strategy": strat_name, "timestamp": time.time(),
-                    "activity": activity,
-                }
-                await database.save_signal(blocked)
-                print(f"[Aktivite] {symbol} yeni giriş engellendi: {reason}", flush=True)
-                return blocked
+            reason = "symbol_activity:passive"
+            if failed:
+                reason += ":" + ",".join(failed)
+            blocked = {
+                "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                "reason": reason, "strategy": strat_name, "timestamp": time.time(),
+                "activity": activity,
+            }
+            await database.save_signal(blocked)
+            print(f"[Aktivite] {symbol} yeni giriş engellendi: {reason}", flush=True)
+            return blocked
         llm_guard = await database.get_llm_symbol_guard(symbol) if strat_name == "LLM_PAPER" else None
         if llm_guard and llm_guard.get("status") == "active":
             blocked_until = llm_guard.get("blocked_until")

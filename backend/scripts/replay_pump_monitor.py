@@ -160,15 +160,18 @@ def signal_features(m5, m15, m30):
     bb = _bollinger(closes)
     mfi = _mfi([r["high"] for r in m5], [r["low"] for r in m5], closes, [r["volume"] for r in m5])
     rsi = _rsi(closes)
-    if not bb or mfi is None or rsi is None:
+    if not bb or bb.get("position") is None or mfi is None or rsi is None:
         return None
     a15, a30 = alignment(m15), alignment(m30)
     checks = {"bb": bb["position"] >= .80, "context": a15 == "bullish" or a30 == "bullish",
               "mfi": mfi >= 45, "rsi": rsi >= 65}
     atr = _atr([r["high"] for r in m5], [r["low"] for r in m5], closes, config.SYSTEM_ATR_PERIOD)
+    prior_volume = sum(row["volume"] for row in m5[-21:-1]) / 20 if len(m5) >= 21 else None
+    volume_ratio_20 = m5[-1]["volume"] / prior_volume if prior_volume else None
     return {"score": sum(checks.values()), "bb_position": float(bb["position"]), "mfi_14": float(mfi),
             "rsi_14": float(rsi), "m15_alignment": a15, "m30_alignment": a30, "checks": checks,
             "ema9": _ema(closes, 9), "ema21": _ema(closes, 21), "atr14": atr,
+            "volume_ratio_20": volume_ratio_20,
             "tsi_correlation_10": time_correlation(closes, 10)}
 
 
@@ -178,6 +181,108 @@ def fill_buy(price):
 
 def fill_sell(price):
     return price * (1 - spread_pct() / 2 - slippage_pct())
+
+
+def percentile(values, fraction):
+    """Nearest-rank percentile over observations available before entry."""
+    finite = sorted(float(value) for value in values if value is not None and math.isfinite(float(value)))
+    if not finite:
+        return None
+    index = max(0, min(len(finite) - 1, math.ceil(len(finite) * fraction) - 1))
+    return finite[index]
+
+
+def m1_activity_at(rows, observation_ms):
+    """Causal M1 participation test used only by the Pump replay.
+
+    A candidate needs evidence that the symbol is actually trading: it must
+    not be dominated by flat M1 candles, its recent M1 range must be above
+    the symbol's own lower-quartile range, and its five-minute volume must be
+    at least the median of the preceding 30 completed M1 candles.  This does
+    not substitute for the live depth/spread gate, which OHLCV cannot replay.
+    """
+    end = bisect_right([row["close_time"] for row in rows], observation_ms)
+    if end < 65:
+        return {"ready": False, "score": 0, "flat_ok": False,
+                "range_active": False, "volume_active": False}
+    recent = rows[end - 5:end]
+    recent_30 = rows[end - 30:end]
+    prior = rows[end - 65:end - 5]
+    ranges = [
+        (row["high"] - row["low"]) / row["low"] * 100
+        for row in recent if row["low"] > 0
+    ]
+    prior_ranges = [
+        (row["high"] - row["low"]) / row["low"] * 100
+        for row in prior if row["low"] > 0
+    ]
+    if len(ranges) != 5 or len(prior_ranges) < 50:
+        return {"ready": False, "score": 0, "flat_ok": False,
+                "range_active": False, "volume_active": False}
+    flat_limit = float(config.SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT)
+    flat_5 = sum(value <= flat_limit for value in ranges)
+    flat_30 = sum(
+        (row["high"] - row["low"]) / row["low"] * 100 <= flat_limit
+        for row in recent_30 if row["low"] > 0
+    )
+    flat_ok = (flat_5 < config.SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT and
+               flat_30 < config.SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT)
+    range_floor = percentile(prior_ranges, .25)
+    range_active = range_floor is not None and percentile(ranges, .50) > range_floor
+    recent_volume = sum(row["volume"] for row in recent) / len(recent)
+    prior_volume = percentile([row["volume"] for row in prior], .50)
+    volume_active = prior_volume is not None and recent_volume >= prior_volume
+    def cmf(period):
+        sample = rows[end - period:end]
+        total_volume = sum(row["volume"] for row in sample)
+        if len(sample) != period or not total_volume:
+            return None
+        return sum(
+            (((row["close"] - row["low"]) - (row["high"] - row["close"])) /
+             (row["high"] - row["low"]) if row["high"] != row["low"] else 0.0) * row["volume"]
+            for row in sample
+        ) / total_volume
+
+    cmf_9, cmf_20 = cmf(9), cmf(20)
+    score = sum((flat_ok, range_active, volume_active))
+    return {"ready": True, "score": score, "flat_ok": flat_ok,
+            "range_active": range_active, "volume_active": volume_active,
+            "flat_5m_count": flat_5, "flat_30m_count": flat_30,
+            "median_range_pct": percentile(ranges, .50),
+            "range_floor_pct": range_floor,
+            "recent_volume": recent_volume, "volume_median": prior_volume,
+            "cmf_9": cmf_9, "cmf_20": cmf_20}
+
+
+def fisher_transform_series(rows, length=7):
+    """Causal M1 Fisher Transform matching the supplied Pine recurrence."""
+    times, values, fish, triggers, crosses = [], [], [], [], []
+    prior_value, prior_fish = 0.0, 0.0
+    for index, row in enumerate(rows):
+        times.append(row["close_time"])
+        if index + 1 < length:
+            values.append(None); fish.append(None); triggers.append(None); crosses.append(False)
+            continue
+        window = rows[index - length + 1:index + 1]
+        hl2_values = [(item["high"] + item["low"]) / 2.0 for item in window]
+        high_value, low_value = max(hl2_values), min(hl2_values)
+        normalized = 0.0 if high_value == low_value else ((row["high"] + row["low"]) / 2.0 - low_value) / (high_value - low_value) - 0.5
+        value = max(-0.999, min(0.999, 0.66 * normalized + 0.67 * prior_value))
+        current_fish = 0.5 * math.log((1.0 + value) / (1.0 - value)) + 0.5 * prior_fish
+        trigger = prior_fish
+        cross_up = (index > length and fish[-1] is not None and triggers[-1] is not None and
+                    current_fish > trigger and fish[-1] <= triggers[-1])
+        values.append(value); fish.append(current_fish); triggers.append(trigger); crosses.append(cross_up)
+        prior_value, prior_fish = value, current_fish
+    return {"times": times, "fish": fish, "trigger": triggers, "cross_up": crosses}
+
+
+def fisher_at(series, observation_ms):
+    index = bisect_right(series["times"], observation_ms) - 1
+    if index < 0 or series["fish"][index] is None:
+        return {"ready": False}
+    return {"ready": True, "fish": series["fish"][index], "trigger": series["trigger"][index],
+            "cross_up": series["cross_up"][index]}
 
 
 def simulate(rows, entry_index, end_ms):
@@ -235,6 +340,25 @@ def allowed(features, name):
     if name == "score4": return features["score"] >= 4
     if name == "m30_bullish": return features["score"] >= 3 and features["m30_alignment"] == "bullish"
     return features["score"] >= 4 and features["m30_alignment"] == "bullish" and features["bb_position"] < 1.0
+
+
+def baseline_mfi_allowed(event, minimum_mfi):
+    """Extra completed-M5 MFI(14) gate over the live Pump baseline."""
+    return (allowed(event["features"], "baseline") and
+            event["features"].get("mfi_14") is not None and
+            event["features"]["mfi_14"] >= minimum_mfi)
+
+
+def baseline_fisher_allowed(event, mode):
+    fisher = event.get("m1_fisher") or {}
+    if not allowed(event["features"], "baseline") or not fisher.get("ready", False):
+        return False
+    bullish = fisher["fish"] > fisher["trigger"] and fisher["fish"] > 0.0
+    if mode == "cross_up":
+        return bool(fisher.get("cross_up")) and fisher["fish"] > 0.0
+    if mode == "bullish_not_extended":
+        return bullish and fisher["fish"] < 1.5
+    return bullish
 
 
 def representative_allowed(event, representative):
@@ -405,6 +529,41 @@ def chop_allowed(event):
     return allowed(event["features"], "baseline") and chop.get("value", 100) < 38.2 and chop.get("falling", False)
 
 
+def score4_m1_allowed(event, required_activity_score):
+    activity = event.get("m1_activity") or {}
+    return (allowed(event["features"], "score4") and activity.get("ready", False) and
+            int(activity.get("score") or 0) >= required_activity_score)
+
+
+def score4_volume_positive_cmf_allowed(event, minimum_volume_ratio):
+    """PORTALTRY-inspired research rule, evaluated on closed candles only."""
+    activity = event.get("m1_activity") or {}
+    volume_ratio = event.get("features", {}).get("volume_ratio_20")
+    return (allowed(event["features"], "score4") and volume_ratio is not None and
+            volume_ratio >= minimum_volume_ratio and activity.get("ready", False) and
+            (activity.get("cmf_20") or 0.0) > 0.0)
+
+
+def score4_volume5_cmf9_allowed(event):
+    activity = event.get("m1_activity") or {}
+    volume_ratio = event.get("features", {}).get("volume_ratio_20")
+    return (allowed(event["features"], "score4") and volume_ratio is not None and
+            volume_ratio >= 5.0 and activity.get("ready", False) and
+            (activity.get("cmf_9") or 0.0) >= 0.15)
+
+
+def score4_cmf9_allowed(event):
+    activity = event.get("m1_activity") or {}
+    return (allowed(event["features"], "score4") and activity.get("ready", False) and
+            (activity.get("cmf_9") or 0.0) >= 0.15)
+
+
+def baseline_cmf9_ge_025_allowed(event):
+    activity = event.get("m1_activity") or {}
+    return (allowed(event["features"], "baseline") and activity.get("ready", False) and
+            (activity.get("cmf_9") or 0.0) >= 0.25)
+
+
 def pullback_reclaim_events(symbol, rows, feature_by_index, end_ms, require_tsi=False):
     """One pre-declared, causal shadow rule: breakout -> pullback -> reclaim.
 
@@ -528,6 +687,7 @@ async def main(args):
         dmi15, chop15 = wilder_dmi(m15), choppiness(m15)
         avwap5 = confirmed_swing_low_avwap(rows)
         cvd_series = cvd_proxy_series(m1_rows)
+        fisher_series = fisher_transform_series(m1_rows, length=7)
         m5_cvd_series = cvd_proxy_series(rows)
         t15, t30 = [r["close_time"] for r in m15], [r["close_time"] for r in m30]
         feature_by_index = {}
@@ -552,6 +712,8 @@ async def main(args):
                 all_events.append({"symbol": symbol, "signal_time": row["close_time"], "features": features, "trade": trade,
                                    "supertrend_representatives": representatives.get(index), "cvd_proxy": cvd, "anchored_cvd": anchored_cvd,
                                    "anchored_m5_cvd": anchored_m5_cvd,
+                                   "m1_activity": m1_activity_at(m1_rows, row["close_time"]),
+                                   "m1_fisher": fisher_at(fisher_series, row["close_time"]),
                                    "dmi_15m": dmi15.get(w15[-1]["close_time"]), "avwap_reclaim": avwap_reclaim,
                                    "chop_15m": chop15.get(m15[active_m15_index]["close_time"]) if active_m15_index >= 0 else None})
         pullback_events.extend(pullback_reclaim_events(symbol, rows, feature_by_index, end_ms))
@@ -559,6 +721,35 @@ async def main(args):
     execution = (args.order_pct, args.remaining_cash_sizing, args.max_open_positions)
     variants = {name: portfolio([{**event, "trade": event["trade"]} for event in all_events if allowed(event["features"], name)], name, *execution)
                 for name in ("baseline", "score4", "m30_bullish", "strict_score4_m30_bb_lt_1")}
+    variants["score4_m1_active_1of3"] = portfolio(
+        [event for event in all_events if score4_m1_allowed(event, 1)], "score4_m1_active_1of3", *execution)
+    variants["score4_m1_active_2of3"] = portfolio(
+        [event for event in all_events if score4_m1_allowed(event, 2)], "score4_m1_active_2of3", *execution)
+    variants["score4_m1_active_3of3"] = portfolio(
+        [event for event in all_events if score4_m1_allowed(event, 3)], "score4_m1_active_3of3", *execution)
+    variants["score4_m5_volume7_m1_cmf_positive"] = portfolio(
+        [event for event in all_events if score4_volume_positive_cmf_allowed(event, 7.0)],
+        "score4_m5_volume7_m1_cmf_positive", *execution)
+    variants["score4_m5_volume10_m1_cmf_positive"] = portfolio(
+        [event for event in all_events if score4_volume_positive_cmf_allowed(event, 10.0)],
+        "score4_m5_volume10_m1_cmf_positive", *execution)
+    variants["score4_m5_volume5_m1_cmf9_ge_015"] = portfolio(
+        [event for event in all_events if score4_volume5_cmf9_allowed(event)],
+        "score4_m5_volume5_m1_cmf9_ge_015", *execution)
+    variants["score4_m1_cmf9_ge_015"] = portfolio(
+        [event for event in all_events if score4_cmf9_allowed(event)],
+        "score4_m1_cmf9_ge_015", *execution)
+    variants["baseline_m1_cmf9_ge_025"] = portfolio(
+        [event for event in all_events if baseline_cmf9_ge_025_allowed(event)],
+        "baseline_m1_cmf9_ge_025", *execution)
+    for minimum_mfi in (55.0, 60.0, 65.0, 70.0):
+        name = f"baseline_m5_mfi14_ge_{int(minimum_mfi)}"
+        variants[name] = portfolio(
+            [event for event in all_events if baseline_mfi_allowed(event, minimum_mfi)], name, *execution)
+    for mode in ("bullish", "bullish_not_extended", "cross_up"):
+        name = f"baseline_m1_fisher7_{mode}"
+        variants[name] = portfolio(
+            [event for event in all_events if baseline_fisher_allowed(event, mode)], name, *execution)
     variants["return_1h_le_1_13pct"] = portfolio([event for event in all_events if allowed(event["features"], "baseline") and event["features"].get("return_1h") is not None and event["features"]["return_1h"] <= .0113], "return_1h_le_1_13pct", *execution)
     variants["pullback_reclaim_shadow"] = portfolio(pullback_events, "pullback_reclaim_shadow", *execution)
     variants["pullback_reclaim_tsi_shadow"] = portfolio(tsi_pullback_events, "pullback_reclaim_tsi_shadow", *execution)
@@ -576,6 +767,23 @@ async def main(args):
               "window": {"start": iso(start_ms), "end": iso(end_ms), "hours": args.hours}, "symbols": symbols,
               "provenance": {"source": "Binance TR public /api/v3/klines completed M5 and M1 OHLCV", "per_symbol": provenance, "errors": errors},
               "baseline_rule": "score>=3 + M15 bullish",
+              "score4_m1_activity_rules": {
+                  "score4_m1_active_1of3": "all four Pump checks plus at least one M1 activity component",
+                  "score4_m1_active_2of3": "all four Pump checks plus at least two M1 activity components",
+                  "score4_m1_active_3of3": "all four Pump checks plus no M1 flat-candle cluster, range expansion, and volume participation",
+                  "score4_m5_volume7_m1_cmf_positive": "all four Pump checks plus M5 volume_ratio_20 >= 7 and completed-M1 CMF(20) > 0",
+                  "score4_m5_volume10_m1_cmf_positive": "all four Pump checks plus M5 volume_ratio_20 >= 10 and completed-M1 CMF(20) > 0",
+                  "score4_m5_volume5_m1_cmf9_ge_015": "all four Pump checks plus M5 volume_ratio_20 >= 5 and completed-M1 CMF(9) >= 0.15",
+                  "score4_m1_cmf9_ge_015": "all four Pump checks plus completed-M1 CMF(9) >= 0.15; no M5 volume threshold",
+                  "baseline_m1_cmf9_ge_025": "baseline Pump score>=3 + M15 bullish plus completed-M1 CMF(9) >= 0.25; no score=4 or M5 volume requirement",
+                  "baseline_m5_mfi14_ge_55": "baseline Pump score>=3 + M15 bullish plus completed-M5 MFI(14) >= 55",
+                  "baseline_m5_mfi14_ge_60": "baseline Pump score>=3 + M15 bullish plus completed-M5 MFI(14) >= 60",
+                  "baseline_m5_mfi14_ge_65": "baseline Pump score>=3 + M15 bullish plus completed-M5 MFI(14) >= 65",
+                  "baseline_m5_mfi14_ge_70": "baseline Pump score>=3 + M15 bullish plus completed-M5 MFI(14) >= 70",
+                  "baseline_m1_fisher7_bullish": "baseline Pump plus completed-M1 Fisher Transform(7) above trigger and above zero",
+                  "baseline_m1_fisher7_bullish_not_extended": "baseline Pump plus completed-M1 Fisher(7) above trigger and zero, but below 1.5",
+                  "baseline_m1_fisher7_cross_up": "baseline Pump plus completed-M1 Fisher Transform(7) fresh bullish trigger crossover above zero",
+              },
               "pullback_reclaim_shadow_rule": "Arm only at score>=3 + M15 bullish + BB>=0.80; within 3 M5 bars require 0.25-0.80 ATR pullback holding EMA21, then within 2 bars a close above pullback high and EMA9; enter next M5 open; after early-failure, re-arm only after 60 minutes.",
               "pullback_reclaim_tsi_shadow_rule": "Same shadow rule, plus TSI(10)=correlation(close, bar_index, 10) > 0.35 and rising for two completed M5 observations at reclaim.",
               "supertrend_representative_rules": {"bull": "least strict: highest K-means centroid of close-minus-SuperTrend factors > 0", "neutral": "middle centroid > 0", "bear": "strict unanimous bullish: lowest centroid > 0"},
