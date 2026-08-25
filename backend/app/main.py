@@ -29,6 +29,11 @@ from app.market_intelligence import (estimate_local_regime, execution_quality,
 from app.self_learning import build_learning_context
 from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
+from app.circuit_breaker import breaker as strategy_breaker
+from app import calibration as calibration_service
+from app.correlation import CorrelationMonitor, cluster_exposure
+from app.promotion import pipeline as promotion_pipeline
+from app import universe_registry
 from app import database
 from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, run_execution_stress, run_parameter_sensitivity, run_holdout_test, run_statistical_validation, get_backtest_data_quality, CUSTOM_IDENTIFIER_SCHEMA, CUSTOM_INDICATORS
 CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
@@ -1071,6 +1076,94 @@ async def retention_loop():
             print(f"[Retention] sweep hatası: {exc}")
         await asyncio.sleep(6 * 3600)
 
+_calibration_buckets = {"buckets": {}, "updated_at": 0.0}
+
+async def calibration_refresh_loop():
+    """S3: rebuild bucketed win-rate statistics from closed trades.
+
+    Only past trades feed today's multipliers (walk-forward-safe). Buckets
+    with fewer than MIN_BUCKET_SAMPLES stay neutral.
+    """
+    await asyncio.sleep(180)  # let the trade history warm up
+    while True:
+        try:
+            trades = await database.get_trades(limit=500)
+            buckets = calibration_service.build_buckets(trades)
+            _calibration_buckets["buckets"] = buckets
+            _calibration_buckets["updated_at"] = time.time()
+            informative = sum(1 for s in buckets.values() if s["samples"] >= calibration_service.MIN_BUCKET_SAMPLES)
+            print(f"[Calibration] {len(buckets)} kova, {informative} karar-verebilir", flush=True)
+        except Exception as exc:
+            print(f"[Calibration] yenileme hatası: {exc}")
+        await asyncio.sleep(7 * 24 * 3600)
+
+
+def calibration_multiplier_for(strategy: str, symbol: str | None = None,
+                               volume_ratio: float | None = None) -> float:
+    """Current confidence multiplier for one entry; neutral before first build."""
+    buckets = _calibration_buckets.get("buckets") or {}
+    hour = None
+    ts = time.time()
+    from datetime import datetime, timezone
+    hour = datetime.fromtimestamp(ts, tz=timezone.utc).hour
+    return calibration_service.confidence_multiplier(
+        buckets, strategy=strategy, hour=hour, volume_ratio=volume_ratio)
+
+
+correlation_monitor = CorrelationMonitor()
+
+async def correlation_gate(symbol: str, order_value: float):
+    """S5 entry gate: block when the BTC-cluster exposure cap would be breached.
+
+    Fails open on any error — paper-only safety layer, never blocks on a
+    monitoring failure; the attempt is logged instead.
+    """
+    if not config.CORRELATION_CAP_ENABLED:
+        return None
+    try:
+        await correlation_monitor.maybe_refresh(
+            market, symbols=[s.upper() for s in config.SYMBOLS],
+            interval_sec=config.CORRELATION_REFRESH_SEC)
+        try_balance = await database.get_wallet_balance("TRY")
+        equity = try_balance + sum(
+            float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
+            for p in analyzer.positions.values())
+        exposure = cluster_exposure(analyzer.positions, symbol, order_value,
+                                    correlation_monitor, "BTC", equity)
+        pct = exposure.get("exposure_pct")
+        if pct is not None and pct > config.MAX_CLUSTER_EXPOSURE_PCT:
+            reason = f"cluster_exposure_cap:{pct}%>{config.MAX_CLUSTER_EXPOSURE_PCT}%"
+            await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED",
+                                        "price": 0, "reason": reason,
+                                        "strategy": "RISK", "timestamp": time.time()})
+            return {"blocked": True, "reason": reason, "exposure_pct": pct}
+        return {"blocked": False, "exposure_pct": pct}
+    except Exception as exc:
+        print(f"[Correlation] kapı hatası (fail-open): {exc}", flush=True)
+        return None
+
+async def correlation_refresh_loop():
+    """S5: periodically recompute BTC/ETH correlations from the candle cache."""
+    await asyncio.sleep(300)  # let candles warm up first
+    while True:
+        try:
+            symbols = [s.upper() for s in config.SYMBOLS]
+            result = await correlation_monitor.refresh(market, symbols=symbols)
+            if result.get("ok") and result.get("updated"):
+                print(f"[Correlation] {result['updated']} sembol güncellendi", flush=True)
+        except Exception as exc:
+            print(f"[Correlation] yenileme hatası: {exc}")
+        await asyncio.sleep(config.CORRELATION_REFRESH_SEC)
+
+async def correlation_exposure_status():
+    """Current cluster exposure snapshot for gating and the UI."""
+    try_balance = await database.get_wallet_balance("TRY")
+    equity = try_balance + sum(
+        float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
+        for p in analyzer.positions.values())
+    return cluster_exposure(analyzer.positions, None, 0.0,
+                            correlation_monitor, "BTC", equity)
+
 
 def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
     """Return a causal outcome only when the requested horizon has closed."""
@@ -1208,6 +1301,8 @@ async def startup_services():
     _start_background(llm_position_manager_loop(), "llm-position-manager")
     _start_background(learning_promotion_loop(), "learning-promotion")
     _start_background(retention_loop(), "retention")
+    _start_background(calibration_refresh_loop(), "calibration-refresh")
+    _start_background(correlation_refresh_loop(), "correlation-refresh")
     _start_background(ws_broadcast_loop(), "ws-broadcast")
     _start_background(alert_loop(), "alert-engine")
 
@@ -1442,10 +1537,19 @@ async def pump_monitor_scan(*, execute: bool = False, source: str = "manual"):
                 row["status"] = "ENTRY_INELIGIBLE"
                 row["reason"] = liquidity.get("reason", "liquidity_ineligible")
                 continue
+            planned_value = await analyzer._entry_order_value(symbol, "PUMP_MONITOR")
+            gate = await correlation_gate(symbol, order_value=planned_value)
+            if gate and gate.get("blocked"):
+                row["status"] = "CLUSTER_CAP"
+                row["reason"] = str(gate.get("reason"))
+                continue
             context = {"signal_name": "Pump Monitor · M15 + M5 devam", "score": score,
                        "high_confidence": high_confidence, "checks": checks, "m5": {"bb_position": bb_position, "mfi_14": mfi, "rsi_14": rsi, "volume_ratio_20": volume_ratio},
                        "m15_alignment": m15_alignment, "m30_alignment": m30_alignment, "source": source,
-                       "research_rule": "score>=3 + M15 bullish; volume>=1 high confidence"}
+                       "research_rule": "score>=3 + M15 bullish; volume>=1 high confidence",
+                       # S3 calibration: bucketed win-rate multiplier scales the
+                       # order size down for historically bad context buckets.
+                       "calibration_multiplier": calibration_multiplier_for("PUMP_MONITOR", symbol, volume_ratio)}
             result = await analyzer.open_position(symbol, price, "LONG", "PUMP_MONITOR", entry_context_extra=context)
             if result and result.get("action") == "BUY_SIGNAL":
                 opened.append(result)
@@ -1774,6 +1878,11 @@ async def refresh_top_gainer_symbols():
                         "top_gainers_limit": config.TOP_GAINERS_LIMIT,
                         "top_gainers_refreshed_at": time.time()})
         await database.set_llm_setting("runtime_config", json.dumps(runtime, ensure_ascii=False))
+        try:
+            from app import universe_registry
+            await universe_registry.record_universe(active, source="top_gainers")
+        except Exception as exc:
+            print(f"[Universe] kayıt hatası: {exc}", flush=True)
         return {"ok": True, "enabled": True, "limit": config.TOP_GAINERS_LIMIT,
                 "symbols": active, "selected": selected,
                 "preserved_open_positions": sorted(open_symbols),
@@ -2110,6 +2219,90 @@ async def llm_idle_trigger_loop():
 @app.get("/api/alerts")
 async def get_alerts(active_only: bool = False):
     return {"alerts": await database.list_alert_rules(active_only=active_only), "events": await database.get_alert_events(100), "paper_only": True}
+
+@app.get("/api/strategy/breaker")
+async def strategy_breaker_status():
+    """Circuit-breaker pause state per strategy (paper-only safety layer)."""
+    return {"paused": strategy_breaker.status(), "paper_only": True}
+
+@app.get("/api/strategy/calibration")
+async def strategy_calibration():
+    """S3 bucketed win-rate table (walk-forward-safe, past trades only)."""
+    buckets = _calibration_buckets.get("buckets") or {}
+    return {"buckets": calibration_service.summarize_for_ui(buckets),
+            "total_buckets": len(buckets),
+            "updated_at": _calibration_buckets.get("updated_at"),
+            "min_samples": calibration_service.MIN_BUCKET_SAMPLES,
+            "paper_only": True}
+
+@app.get("/api/strategy/correlation")
+async def strategy_correlation():
+    """S5 BTC/ETH rolling correlations and current cluster exposure."""
+    exposure = await correlation_exposure_status()
+    return {"correlations": correlation_monitor.snapshot(),
+            "last_updated": correlation_monitor.last_updated,
+            "exposure": exposure,
+            "cap_pct": config.MAX_CLUSTER_EXPOSURE_PCT if config.CORRELATION_CAP_ENABLED else None,
+            "paper_only": True}
+
+@app.get("/api/strategy/pipeline")
+async def strategy_pipeline_status():
+    """S7 candidate-strategy promotion pipeline state."""
+    await promotion_pipeline._ensure()
+    return {"strategies": promotion_pipeline.status(), "paper_only": True}
+
+@app.post("/api/strategy/pipeline/register")
+async def strategy_pipeline_register(payload: dict):
+    name = str((payload or {}).get("name") or "").strip()
+    stage = str((payload or {}).get("stage") or "shadow")
+    if not name:
+        raise HTTPException(status_code=400, detail="name gerekli")
+    entry = await promotion_pipeline.register(name, stage=stage)
+    return {"ok": True, "name": name, **entry, "paper_only": True}
+
+@app.post("/api/strategy/pipeline/promote")
+async def strategy_pipeline_promote(payload: dict):
+    """Attempt one gated advance. active stage requires human_approved=true."""
+    body = payload or {}
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name gerekli")
+
+    def _num(key):
+        value = body.get(key)
+        return float(value) if value is not None else None
+    result = await promotion_pipeline.promote(
+        name,
+        shadow_observations=int(body["shadow_observations"]) if body.get("shadow_observations") is not None else None,
+        walk_forward_pass=bool(body.get("walk_forward_pass")),
+        paper_trades=int(body["paper_trades"]) if body.get("paper_trades") is not None else None,
+        paper_expectancy=_num("paper_expectancy"),
+        human_approved=bool(body.get("human_approved")))
+    return {"ok": True, "name": name, **result, "paper_only": True}
+
+@app.get("/api/strategy/universe-history")
+async def strategy_universe_history(limit: int = 48):
+    """S7a point-in-time universe snapshots (survivorship-bias-free research)."""
+    try:
+        raw = await database.get_llm_setting("symbol_universe_history", "[]")
+        history = json.loads(raw or "[]")
+    except (ValueError, TypeError):
+        history = []
+    safe_limit = max(1, min(int(limit), 500))
+    return {"history": history[-safe_limit:], "total": len(history), "paper_only": True}
+
+@app.post("/api/strategy/breaker/resume")
+async def strategy_breaker_resume(payload: dict = None):
+    """Human-approved resume of a paused strategy. Nothing auto-resumes."""
+    strategy = str((payload or {}).get("strategy") or "").strip()
+    if not strategy:
+        raise HTTPException(status_code=400, detail="strategy gerekli")
+    if not strategy_breaker.resume(strategy):
+        raise HTTPException(status_code=404, detail=f"{strategy} duraklatılmamış")
+    await database.save_signal({"symbol": "*", "action": "STRATEGY_RESUMED",
+                                "reason": f"{strategy} manuel olarak devam ettirildi",
+                                "strategy": strategy, "timestamp": time.time()})
+    return {"ok": True, "strategy": strategy, "resumed": True, "paper_only": True}
 
 @app.post("/api/alerts")
 async def create_alert(payload: dict):

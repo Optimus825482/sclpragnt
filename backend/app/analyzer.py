@@ -8,6 +8,7 @@ from app.technical_analysis import calculate_snapshot, _adx, _stochastic, _macd,
 from app.binance_tr_public import orderbook
 from app import database
 from app import agent_learning
+from app.circuit_breaker import breaker as strategy_breaker
 
 class ScalpAnalyzer:
     def __init__(self, market):
@@ -1318,6 +1319,12 @@ class ScalpAnalyzer:
             self._hard_stop_block_until[symbol] = time.time() + config.HARD_STOP_REENTRY_BLOCK_SEC
         # A restart must not erase a documented 24h/2h re-entry block.
         await self._persist_reentry_blocks(symbol)
+        # Strategy-level circuit breaker: judge the rolling expectancy after
+        # every closed trade; a breached floor pauses new entries.
+        try:
+            await strategy_breaker.evaluate_after_close(pos.get("strategy", strat_name))
+        except Exception as exc:
+            print(f"[CircuitBreaker] değerlendirme hatası: {exc}", flush=True)
         return sig
 
     async def _record_trade(self, symbol, pos, exit_price, reason, commission=0.0):
@@ -1420,6 +1427,23 @@ class ScalpAnalyzer:
                 order_value = config.FALLBACK_ORDER_TRY
             elif available_value >= config.MIN_PARTIAL_ORDER_TRY:
                 order_value = available_value
+        # S6 volatility sizing: equal-risk scaling. A symbol whose ATR% is
+        # above the baseline takes a proportionally smaller position; a quiet
+        # one a larger one, clamped so sizing stays bounded.
+        if (config.VOLATILITY_SIZING_ENABLED and self.market and order_value > 0
+                and strat_name != "LLM_PAPER"):
+            tf = self._strategy_tf(strat_name)
+            kline = self.market.get_ut_kline(symbol, tf)
+            atr_value = self.calculate_atr(kline, config.SYSTEM_ATR_PERIOD) if kline else None
+            price = float((self.market.get_ticker(symbol) or {}).get("last_price") or 0)
+            if atr_value and price > 0:
+                atr_pct = atr_value / price
+                baseline = max(1e-9, config.VOLATILITY_BASELINE_ATR_PCT)
+                scale = min(baseline / atr_pct, 1.0) if atr_pct > baseline else min(
+                    1.0, baseline / max(atr_pct, baseline * 0.25))
+                clamp_min = config.VOLATILITY_SIZING_MIN_SCALE
+                scale = max(clamp_min, min(1.0, scale))
+                order_value *= scale
         return order_value
 
     async def entry_liquidity_preflight(self, symbol, strat_name="UT", requested_order_value=None):
@@ -1445,6 +1469,16 @@ class ScalpAnalyzer:
 
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None, entry_context_extra=None):
         symbol = str(symbol).replace("_", "").upper()
+        # Strategy-level circuit breaker: a paused strategy cannot open new
+        # positions; existing positions remain managed by the normal exits.
+        if strategy_breaker.is_paused(strat_name):
+            await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED",
+                                        "price": entry_price,
+                                        "reason": "strategy_circuit_breaker_paused",
+                                        "strategy": strat_name, "timestamp": time.time()})
+            return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                    "reason": "strategy_circuit_breaker_paused",
+                    "strategy": strat_name, "timestamp": time.time()}
         # Every entry path (strategy, LLM, alert, radar and pending orders)
         # converges here. A passive symbol must therefore be rejected at this
         # final writer boundary, not only skipped by the strategy scan loop.
@@ -1556,6 +1590,30 @@ class ScalpAnalyzer:
                     await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                                 "reason": "insufficient_balance_for_minimum_order", "strategy": strat_name, "timestamp": time.time()})
                     return None
+            # S3 calibration multiplier: historically weak context buckets take
+            # a proportionally smaller position (bounded 0.5..1.0); unknown or
+            # thin-sample buckets stay neutral at 1.0.
+            calib_multiplier = float((entry_context_extra or {}).get("calibration_multiplier") or 1.0) \
+                if isinstance(entry_context_extra, dict) else 1.0
+            if config.CALIBRATION_SIZING_ENABLED and calib_multiplier != 1.0:
+                order_value = max(config.MIN_PARTIAL_ORDER_TRY, order_value * min(1.0, max(0.5, calib_multiplier)))
+            # S4 regime-gated sizing: mean-reversion shrinks in trending
+            # regimes; continuation shrinks in confirmed dead ranges.
+            regime_info = {}
+            try:
+                from app.technical_analysis import calculate_snapshot as _cs
+                tf_probe = self._strategy_tf(strat_name)
+                k = self.market.get_ut_kline(symbol, tf_probe) if self.market else None
+                if k and len(k.get("closes") or []) >= 55:
+                    snap = _cs(k)
+                    regime_info = (snap or {}).get("regime") or {}
+                    style = __import__("app.calibration", fromlist=["strategy_style_of"]).strategy_style_of(strat_name)
+                    regime_mult = __import__("app.calibration", fromlist=["regime_size_multiplier"]).regime_size_multiplier(
+                        style, (regime_info or {}).get("name"), (regime_info or {}).get("confidence"))
+                    if config.REGIME_SIZING_ENABLED and regime_mult != 1.0:
+                        order_value = max(config.MIN_PARTIAL_ORDER_TRY, order_value * regime_mult)
+            except Exception:
+                regime_info = {}
             if order_value < config.MIN_PARTIAL_ORDER_TRY:
                 await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                             "reason": "remaining_cash_pct_below_minimum_order", "strategy": strat_name, "timestamp": time.time()})
@@ -1582,6 +1640,35 @@ class ScalpAnalyzer:
             expected_fees = (order_value + target_value) * config.COMMISSION_PCT
             expected_slippage = order_value * config.ESTIMATED_SLIPPAGE_PCT * 2
             expected_net = expected_gross - expected_fees - expected_slippage
+            # Cost-aware entry gate: the trade-history audit showed fees can
+            # exceed the gross edge; an entry whose modeled net at target is
+            # below the configured floor is economically unviable.
+            min_net = config.MIN_EXPECTED_NET_PNL_TRY
+            if expected_net is not None and expected_net < min_net:
+                ineligible = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                              "reason": "expected_net_below_floor", "strategy": strat_name,
+                              "timestamp": time.time(),
+                              "detail": {"expected_net": round(expected_net, 4), "min_net": min_net}}
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                            "reason": "expected_net_below_floor", "strategy": strat_name,
+                                            "timestamp": time.time()})
+                return ineligible
+            # Volatility-capacity gate: the target must sit far enough beyond
+            # recent noise that a normal bar can actually reach it.
+            tf = self._strategy_tf(strat_name)
+            kline = self.market.get_ut_kline(symbol, tf) if self.market else None
+            if kline:
+                atr_value = self.calculate_atr(kline, config.SYSTEM_ATR_PERIOD)
+                if atr_value and entry_price:
+                    capacity_ratio = (entry_price * target_pct) / atr_value
+                    if capacity_ratio < config.MIN_TARGET_ATR_CAPACITY_RATIO:
+                        await database.save_signal({
+                            "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                            "reason": f"atr_capacity_insufficient:{capacity_ratio:.2f}",
+                            "strategy": strat_name, "timestamp": time.time()})
+                        return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                "reason": f"atr_capacity_insufficient:{capacity_ratio:.2f}",
+                                "strategy": strat_name, "timestamp": time.time()}
         is_bb_mfi = strat_name == "BB_MFI_MEAN_REVERSION"
         planned_take_profit_pct = (
             float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
