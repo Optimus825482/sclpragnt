@@ -214,6 +214,25 @@ class Config:
     ESTIMATED_SLIPPAGE_PCT = 0.00025
     BACKTEST_ASSUMED_SPREAD_PCT = float(os.getenv("BACKTEST_ASSUMED_SPREAD_PCT", "0.001"))
     MIN_EXPECTED_NET_PNL_TRY = 0.5
+    # Target distance must be at least this multiple of recent ATR noise for
+    # an entry to be worth taking (S1 cost-aware quality gates).
+    MIN_TARGET_ATR_CAPACITY_RATIO = max(0.1, float(os.getenv("MIN_TARGET_ATR_CAPACITY_RATIO", "1.0")))
+    # S6 volatility-based sizing: equal-risk scaling around this ATR% baseline.
+    VOLATILITY_SIZING_ENABLED = os.getenv("VOLATILITY_SIZING_ENABLED", "true").lower() == "true"
+    VOLATILITY_BASELINE_ATR_PCT = max(0.0005, float(os.getenv("VOLATILITY_BASELINE_ATR_PCT", "0.006")))
+    VOLATILITY_SIZING_MIN_SCALE = max(0.25, float(os.getenv("VOLATILITY_SIZING_MIN_SCALE", "0.35")))
+    # Strategy circuit breaker (S2): rolling expectancy window and floor.
+    STRATEGY_BREAKER_WINDOW = max(10, int(os.getenv("STRATEGY_BREAKER_WINDOW", "20")))
+    STRATEGY_BREAKER_EXPECTANCY_FLOOR = float(os.getenv("STRATEGY_BREAKER_EXPECTANCY_FLOOR", "-0.5"))
+    # S3 calibration sizing: scale entries by bucketed historical win rate.
+    CALIBRATION_SIZING_ENABLED = os.getenv("CALIBRATION_SIZING_ENABLED", "true").lower() == "true"
+    # S4 regime-gated sizing: mean-reversion shrinks in trends, continuation
+    # shrinks in confirmed ranges.
+    REGIME_SIZING_ENABLED = os.getenv("REGIME_SIZING_ENABLED", "true").lower() == "true"
+    # S5 dynamic correlation cluster cap (BTC/ETH benchmark, % of equity).
+    CORRELATION_CAP_ENABLED = os.getenv("CORRELATION_CAP_ENABLED", "true").lower() == "true"
+    CORRELATION_REFRESH_SEC = max(300, int(os.getenv("CORRELATION_REFRESH_SEC", "1800")))
+    MAX_CLUSTER_EXPOSURE_PCT = max(20.0, float(os.getenv("MAX_CLUSTER_EXPOSURE_PCT", "60.0")))
 
     @classmethod
     def min_net_exit_pct(cls, order_value: float | None = None) -> float:
