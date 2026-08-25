@@ -269,6 +269,9 @@ def _replay_parity_config_snapshot():
         "BB_MFI_PYRAMID_REQUIRE_NET_PROFIT", "BB_MFI_STOP_LOSS_PCT", "BB_MFI_TAKE_PROFIT_PCT",
         "PUMP_MONITOR_ENABLED", "PUMP_MONITOR_AUTO_TRADE", "PUMP_MONITOR_MIN_SCORE",
         "PUMP_MONITOR_MAX_OPEN_POSITIONS", "PUMP_MONITOR_REQUIRE_M15_BULLISH",
+        "PUMP_MONITOR_BREAK_EVEN_ENABLED", "PUMP_MONITOR_BREAK_EVEN_TRIGGER_PCT",
+        "PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO", "PUMP_MONITOR_FAST_FAIL_SEC",
+        "PUMP_MONITOR_FAST_FAIL_MIN_PROGRESS_PCT",
         "SYMBOL_ACTIVITY_FILTER_ENABLED", "SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY",
         "SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT", "SYMBOL_ACTIVITY_MIN_ATR_PCT",
         "SYMBOL_ACTIVITY_MIN_VOLUME_RATIO", "SYMBOL_ACTIVITY_MAX_SPREAD_PCT",
@@ -1394,7 +1397,12 @@ async def pump_monitor_scan(*, execute: bool = False, source: str = "manual"):
             }
             score = sum(checks.values())
             m15_ok = (m15_alignment == "bullish") if config.PUMP_MONITOR_REQUIRE_M15_BULLISH else True
-            eligible = score >= config.PUMP_MONITOR_MIN_SCORE and m15_ok
+            # A volume_ratio far above the pump threshold means the move has
+            # already detonated; entering there bought local tops (the worst
+            # historical bucket: -1029 TRY across 77 trades).
+            volume_chasing = (config.PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO > 0 and
+                              volume_ratio > config.PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO)
+            eligible = score >= config.PUMP_MONITOR_MIN_SCORE and m15_ok and not volume_chasing
             high_confidence = eligible and volume_ratio >= config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO
             candle_id = str(bars5.get("last_closed_at_ms") or bars5.get("timestamps", [None])[-1] or f"{len(closes5)}:{closes5[-1]}")
             row = {
@@ -1404,7 +1412,9 @@ async def pump_monitor_scan(*, execute: bool = False, source: str = "manual"):
                 "rsi_14": round(rsi, 2), "volume_ratio_20": round(volume_ratio, 2),
                 "m15_alignment": m15_alignment, "m30_alignment": m30_alignment,
                 "has_open_position": symbol in analyzer.positions,
-                "reason": "M15 bağlam + M5 devam sinyali" if eligible else "Eşik/bağlam tamamlanmadı",
+                "reason": ("M15 bağlam + M5 devam sinyali" if eligible else
+                           f"Hacim oranı {volume_ratio:.1f}x > {config.PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO:.1f}x: pump zaten patladı, kovalanmaz" if volume_chasing else
+                           "Eşik/bağlam tamamlanmadı"),
                 "candle_id": candle_id,
             }
             rows.append(row)

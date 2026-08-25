@@ -584,8 +584,22 @@ class ScalpAnalyzer:
             entry = float(pos.get("entry_price") or price)
             fallback_stop_pct = config.BB_MFI_STOP_LOSS_PCT if pos.get("strategy") == "BB_MFI_MEAN_REVERSION" else config.HARD_STOP_LOSS_PCT
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
+            # Pump Monitor break-even: once the trade has proven itself with a
+            # >= trigger MFE move, the stop moves to entry so a proven winner
+            # can never round-trip into a full loss (56 historical trades lost
+            # -1536 TRY this way).
+            if (pos.get("strategy") == "PUMP_MONITOR" and config.PUMP_MONITOR_BREAK_EVEN_ENABLED
+                    and not pos.get("pump_break_even_armed")):
+                trigger = entry * (1 + config.PUMP_MONITOR_BREAK_EVEN_TRIGGER_PCT)
+                if pos.get("max_price", entry) >= trigger:
+                    pos["pump_break_even_armed"] = True
+                    new_stop = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
+                    pos["system_stop_price"] = max(system_stop, new_stop)
+                    system_stop = pos["system_stop_price"]
             if pos.get("strategy") != "BB_MFI_MEAN_REVERSION" and price <= system_stop:
-                return await self.close_position(symbol, price, "system_stop_loss")
+                return await self.close_position(
+                    symbol, price,
+                    "pump_break_even_stop" if pos.get("pump_break_even_armed") else "system_stop_loss")
             # BB-MFI canlıda backtest ile aynı karar kurallarını kullanır;
             # gerçekleşen fill, teyit sonrası mevcut canlı ticker fiyatıdır.
             if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
@@ -616,6 +630,15 @@ class ScalpAnalyzer:
             elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
             entry = pos.get("entry_price", price)
             max_progress = max(0.0, (pos.get("max_price", entry) - entry) / entry) if entry else 0.0
+            # Pump Monitor fast-fail: a pump-continuation entry that has not
+            # moved within the first minutes is a failed confirmation, not a
+            # hold candidate (48% of historical stops never saw +0.3%).
+            # Disabled by default: the 48h replay showed early exits cutting
+            # trades that later reached ATR trailing.
+            if (pos.get("strategy") == "PUMP_MONITOR" and config.PUMP_MONITOR_FAST_FAIL_ENABLED and
+                    elapsed >= config.PUMP_MONITOR_FAST_FAIL_SEC and
+                    max_progress < config.PUMP_MONITOR_FAST_FAIL_MIN_PROGRESS_PCT):
+                return await self.close_position(symbol, price, "pump_fast_fail_no_progress")
             if elapsed >= config.EARLY_FAILURE_SEC and max_progress < config.EARLY_FAILURE_MIN_PROGRESS_PCT:
                 return await self.close_position(symbol, price, "early_failure_no_progress")
             if elapsed >= config.STALE_POSITION_SEC and max_progress < config.STALE_POSITION_MIN_PROGRESS_PCT:
@@ -1289,9 +1312,9 @@ class ScalpAnalyzer:
         current_bar = self._current_bar(symbol, tf)
         if current_bar is not None:
             self._cooldown_until[symbol] = current_bar + config.COOLDOWN_BARS
-        if reason.startswith("max_hold_") or reason in {"early_failure_no_progress", "stale_position_no_progress"}:
+        if reason.startswith("max_hold_") or reason in {"early_failure_no_progress", "stale_position_no_progress", "pump_fast_fail_no_progress"}:
             self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
-        elif reason in {"hard_stop_loss", "system_stop_loss", "llm_stop_loss"}:
+        elif reason in {"hard_stop_loss", "system_stop_loss", "llm_stop_loss", "pump_break_even_stop"}:
             self._hard_stop_block_until[symbol] = time.time() + config.HARD_STOP_REENTRY_BLOCK_SEC
         # A restart must not erase a documented 24h/2h re-entry block.
         await self._persist_reentry_blocks(symbol)
