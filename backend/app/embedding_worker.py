@@ -161,7 +161,13 @@ def signal_document(signal):
 def trade_document(event, symbol, payload, signal):
     data = {"event": event, "symbol": symbol, "trade": payload, "signal": signal}
     if event in {"exit", "historical"}:
-        data["outcome"] = "profit" if float(payload.get("pnl") or 0) > 0 else "loss" if float(payload.get("pnl") or 0) < 0 else "flat"
+        # A malformed pnl string must degrade to a flat outcome, not crash the
+        # trade-close path before the document reaches the durable queue.
+        try:
+            pnl_value = float(payload.get("pnl") or 0)
+        except (TypeError, ValueError):
+            pnl_value = 0.0
+        data["outcome"] = "profit" if pnl_value > 0 else "loss" if pnl_value < 0 else "flat"
     return build_document(layer="trade", scope=symbol, symbol=symbol, strategy=payload.get("strategy"),
                           source_type=f"trade_{event}", source_id=str(payload.get("id") or signal.get("timestamp")),
                           content=json.dumps(data, ensure_ascii=False, default=str), metadata=data)

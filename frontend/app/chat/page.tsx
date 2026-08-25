@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import MarkdownMessage from "../components/MarkdownMessage";
 import { streamChat } from "../lib/streamChat";
-import { Badge, Button, Card, SectionHeader } from "../components/ui";
+import { Badge, Button, Card } from "../components/ui";
 
 type Message = { role: "user" | "assistant"; content: string };
 type Skill = {
@@ -115,8 +115,7 @@ const QUICK_PROMPTS = [
 const starter: Message[] = [
   {
     role: "assistant",
-    content:
-      "Merhaba. Paper-trading verilerini, strateji performansını ve backtest sonuçlarını birlikte inceleyebilirim. Ne araştırmak istersin?",
+    content: "Hazır. Ne araştırmak istersin?",
   },
 ];
 const CHAT_STORAGE_KEY = "scalperagent:chat:main:v1";
@@ -440,11 +439,6 @@ export default function ChatPage() {
       </div>
       <div className="chat-layout">
         <Card className="chat-conversation">
-          <SectionHeader
-            eyebrow="SOHBET"
-            title="Araştırma asistanı"
-            description="Mevcut sohbet, siz Yeni sohbet başlatana kadar korunur."
-          />
           <div className="chat-conversation-actions">
             <span className={`chat-context-meter ${contextTone}`}>
               {Math.min(100, contextRatio * 100).toFixed(2)}% context
@@ -470,14 +464,11 @@ export default function ChatPage() {
           <div className="chat-messages">
             {messages.map((message, index) => (
               <div key={index} className={`chat-message ${message.role}`}>
-                <div className="chat-avatar">
+                <div className="chat-avatar" aria-hidden="true">
                   {message.role === "user" ? "SİZ" : "AI"}
                 </div>
                 <div className="chat-bubble">
-                  <p className="eyebrow mb-2">
-                    {message.role === "user" ? "KULLANICI" : "SCALPER"}
-                  </p>
-                  {message.role === "assistant" && message.content && <button type="button" onClick={() => speakingIndex === index ? stopSpeaking() : void speak(message.content, index)} className="chat-tts-button" aria-label="Yanıtı seslendir">{speakingIndex === index ? "■ DURDUR" : "▶ SESLENDİR"}</button>}
+                  {message.role === "assistant" && message.content && <button type="button" onClick={() => speakingIndex === index ? stopSpeaking() : void speak(message.content, index)} className="chat-tts-button" aria-label="Yanıtı seslendir">{speakingIndex === index ? "■" : "▶"}</button>}
                   <MarkdownMessage content={message.content} />
                 </div>
               </div>
@@ -533,11 +524,10 @@ export default function ChatPage() {
         </Card>
         <Card className={`chat-controls ${controlsOpen ? "is-open" : ""}`}>
           <div className="chat-controls-header">
-            <SectionHeader
-              eyebrow="AKTİF DURUM"
-              title="Model akışı"
-              description="Kullanılan araçlar ve son çağrı kayıtları."
-            />
+            <div>
+              <p className="eyebrow">AKTİF DURUM</p>
+              <h2 className="font-mono text-sm font-bold text-white">MODEL AKIŞI</h2>
+            </div>
             <Button variant="secondary" onClick={() => setSettingsOpen(true)}>
               ⚙ AYARLAR
             </Button>

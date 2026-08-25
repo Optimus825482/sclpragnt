@@ -174,13 +174,27 @@ async def record_paper_trade_outcome(trade):
 
 async def promote_validated_instincts(pool, *, dry_run=True):
     if not pool:
-        return {"promoted": [], "eligible": []}
+        return {"promoted": [], "eligible": [], "decayed": 0}
     async with pool.acquire() as conn:
+        # Confidence must be able to fall, not only ratchet up: an instinct
+        # not reinforced for 14 days decays toward the candidate floor so a
+        # stale pattern cannot ride an old +0.05 streak into promotion.
+        decay = await conn.execute("""UPDATE trading_instincts
+            SET confidence = GREATEST(0.30, confidence - 0.05)
+            WHERE status='candidate' AND confidence > 0.30
+              AND COALESCE(last_seen_at, created_at) < now() - interval '14 days'""")
         rows = await conn.fetch("""SELECT id,instinct_key,confidence,evidence_count,contradiction_count
             FROM trading_instincts WHERE status='candidate' AND confidence >= 0.80
             AND evidence_count >= 3 AND contradiction_count=0""")
         ids = [int(row["id"]) for row in rows]
+        promoted_count = 0
         if not dry_run and ids:
-            await conn.execute("""UPDATE trading_instincts SET status='active',approved_at=now()
+            promoted_count = await conn.execute("""UPDATE trading_instincts SET status='active',approved_at=now()
                 WHERE id = ANY($1::bigint[])""", ids)
-    return {"eligible": [dict(row) for row in rows], "promoted": [] if dry_run else ids}
+    try:
+        decayed = int(str(decay or "").split()[-1] or 0)
+    except (ValueError, IndexError):
+        decayed = 0
+    return {"eligible": [dict(row) for row in rows],
+            "promoted": [] if dry_run else ids,
+            "decayed": decayed}

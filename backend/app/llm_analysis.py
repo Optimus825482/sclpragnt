@@ -17,6 +17,12 @@ TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
 - Öğrenme tek işlemle kural değiştirmez; yeterli örnek ve kronolojik OOS doğrulaması olmadan yeni kuralı etkinleştirme.
 """
 OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
+- Kompakt ve bilgi-yoğun yanıt ver: dolgu cümlesi, giriş paragrafı, özet-özeti, "aşağıda inceleyeceğim" gibi yapılar YOK.
+- Başlıkları (`###`) yalnızca gerçekten çok bölümlü uzun yanıtlarda kullan; kısa yanıtta doğrudan yaz. Her başlık altını kalınlaştırarak tekrarlama.
+- Kalın (**metin**) yalnızca gerçekten kritik sayı/seviyeler için; her cümleyi veya her maddeyi kalınlaştırma.
+- Madde listelerinde her madde tek satır kalsın; madde içine alt madde açma.
+- Aynı bilgiyi hem metinde hem tabloda hem maddede tekrar etme; bir kez söyle.
+- Kapanış cümlesi, özet tekrarı, "istersen ... da inceleyebilirim" türü dolgu yok; son veri/nokta ile bitir.
 - Türkçe kelimeler arasındaki boşlukları mutlaka koru; kelimeleri veya cümleleri birleştirme.
 - Yanıtı okunabilir Markdown olarak yaz: ana bölümler için `### Başlık`, maddeler için `- madde` kullan.
 - Her cümle arasında normal boşluk bırak; sembol, sayı, yüzde ve birim değerlerini ayırarak yaz (ör. `8.97 TRY`, `%0.25`).
@@ -120,6 +126,30 @@ def _context_window_messages(messages, token_budget=900_000):
         selected.append(item)
         used += estimated
     return list(reversed(selected)), used
+
+
+# Tool-loop cost guardrails: each round resends the whole conversation, so an
+# agent that keeps calling tools burns tokens quadratically. Env-tunable.
+TOOL_LOOP_MAX_ROUNDS = max(1, int(os.getenv("LLM_TOOL_MAX_ROUNDS", "25")))
+TOOL_LOOP_TOKEN_BUDGET = max(50_000, int(os.getenv("LLM_TOOL_TOKEN_BUDGET", "600_000")))
+TOOL_RESULT_MAX_CHARS = max(2_000, int(os.getenv("LLM_TOOL_RESULT_MAX_CHARS", "40_000")))
+
+
+def _estimate_tokens(conversation):
+    total = 0
+    for message in conversation:
+        if isinstance(message, dict):
+            total += max(1, (len(str(message.get("content") or "")) + 24) // 4)
+    return total
+
+
+def _trim_tool_result(value):
+    """Bound a single tool payload so one huge read cannot blow the budget."""
+    text = json.dumps(value, ensure_ascii=False, default=str) if not isinstance(value, str) else value
+    limit = TOOL_RESULT_MAX_CHARS
+    if len(text) <= limit:
+        return value if not isinstance(value, str) else text
+    return {"truncated": True, "original_chars": len(text), "preview": text[:limit]}
 
 def _fernet():
     key = os.getenv("LLM_ENCRYPTION_KEY", "").strip()
@@ -242,14 +272,23 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         result = None
         result = await call_with_retry()
         tool_round = 0
+        tool_stats = {"rounds": 0, "tool_calls": 0, "estimated_tokens": 0}
         while True:
             tool_round += 1
-            if tool_round > 25:
+            if tool_round > TOOL_LOOP_MAX_ROUNDS:
                 raise RuntimeError(f"LLM araç döngüsü {tool_round} round'da kesildi (olası provider hatası).")
+            estimated_tokens = _estimate_tokens(conversation)
+            if estimated_tokens > TOOL_LOOP_TOKEN_BUDGET:
+                raise RuntimeError(
+                    f"LLM araç döngüsü token bütçesini aştı: ~{estimated_tokens} > {TOOL_LOOP_TOKEN_BUDGET}")
             data = response_data(result)
             choices = data.get("choices", []) if isinstance(data, dict) else []
             first = choices[0] if choices else {}
             assistant = first.get("message") or {}
+            usage = data.get("usage") or {} if isinstance(data, dict) else {}
+            if isinstance(usage, dict) and (usage.get("total_tokens") or usage.get("prompt_tokens")):
+                tool_stats["provider_total_tokens"] = int(usage.get("total_tokens") or 0)
+                tool_stats["provider_prompt_tokens"] = int(usage.get("prompt_tokens") or 0)
             tool_calls = assistant.get("tool_calls", []) or []
             # A number of OpenAI-compatible gateways still emit the legacy
             # single-call function_call shape. Normalize it to the modern
@@ -266,26 +305,31 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
             conversation.append(assistant)
             for call_item in tool_calls:
                 fn = call_item.get("function") or {}; name = fn.get("name", "")
+                tool_stats["tool_calls"] += 1
                 try:
                     arguments = _decode_json_value(fn.get("arguments", "{}"), f"{name} araç argümanları")
                     if not isinstance(arguments, dict): raise ValueError("Araç argümanları nesne olmalı")
                     tool_result = await tool_executor(name, arguments)
                 except Exception as tool_error:
                     tool_result = {"error": str(tool_error), "tool": name, "retryable": False}
-                conversation.append({"role": "tool", "tool_call_id": call_item.get("id", name), "name": name, "content": json.dumps(tool_result, ensure_ascii=False, default=str)})
+                conversation.append({"role": "tool", "tool_call_id": call_item.get("id", name), "name": name,
+                                     "content": json.dumps(_trim_tool_result(tool_result), ensure_ascii=False, default=str)})
             payload["messages"] = conversation
             # Every tool round must be followed by a provider call, including
             # the last allowed round. Otherwise the last tool-call object is
             # incorrectly treated as the final assistant answer.
             result = await call_with_retry()
+            tool_stats["rounds"] = tool_round
         else:
             raise RuntimeError("LLM araç döngüsü provider tarafından sonlandırılmadan tamamlanamadı")
         data = response_data(result)
-        if isinstance(data, str): return {"enabled": True, "status": "ok", "text": data}
+        if isinstance(data, str): return {"enabled": True, "status": "ok", "text": data, "tool_loop": {**tool_stats, "estimated_tokens": _estimate_tokens(conversation)}}
         choices = data.get("choices", []) if isinstance(data, dict) else []
         text = _message_text(choices[0].get("message") if choices else None) or (data.get("output_text") if isinstance(data, dict) else None)
         if not text: raise RuntimeError("Provider chat yanıtında metin bulunamadı")
-        return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"], "generated_at": time.time()}
+        tool_stats["estimated_tokens"] = _estimate_tokens(conversation)
+        return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"],
+                "generated_at": time.time(), "tool_loop": tool_stats}
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}
 
