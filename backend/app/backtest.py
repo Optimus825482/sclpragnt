@@ -319,6 +319,10 @@ def _custom_conditions(analyzer, window, conditions):
 def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_pct=None, tp_pct=None,
                 spread_pct=0.0, slippage_pct=None, start_ts=None, end_ts=None):
     if not isinstance(definition, dict): raise ValueError("strategy_definition nesne olmalıdır")
+    # Same cost floor as the classic engine: an unset spread must not let
+    # custom/LLM-authored candidates trade cost-free in comparisons.
+    if not spread_pct:
+        spread_pct = config.BACKTEST_ASSUMED_SPREAD_PCT
     entry = definition.get("entry") or []; exit_conditions = definition.get("exit") or []
     policy = definition.get("exit_policy") or {}
     if not isinstance(policy, dict):
@@ -344,10 +348,13 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
         window = {k:v[:i+1] for k,v in rows.items()}; now = rows["times"][i]
         if position:
             exit_price = None; reason = None
-            position["max_price"] = max(position.get("max_price", position["entry"]), rows["highs"][i])
+            # Trailing must be evaluated against the peak known BEFORE this
+            # bar: within one candle the sequence of high/low is unknown, so
+            # deriving the level from this bar's own high biases exits upward.
+            prev_max_price = position.get("max_price", position["entry"])
             stop_price = position.get("stop_price")
             target_price = position.get("target_price")
-            trailing_price = position["max_price"] * (1 - trailing_pct) if use_trailing else None
+            trailing_price = prev_max_price * (1 - trailing_pct) if use_trailing else None
             condition_hit = bool(exit_conditions) and _custom_conditions(analyzer, window, exit_conditions)
             if use_stop and stop_price is not None and rows["lows"][i] <= stop_price:
                 exit_price=stop_price; reason="custom_stop_loss"
@@ -361,6 +368,10 @@ def _run_custom(symbol, interval, days_back, definition, order_size=500.0, stop_
                 exit_price=close; reason="custom_exit_condition"
             if exit_price is not None:
                 balance, pnl, _, trade = _close_trade(balance, position["entry"], exit_price, position["quantity"], order_size, reason, spread_pct, slippage_pct); trade.update({"entry_time":position["entry_time"],"exit_time":now}); trades.append(trade); position=None; cooldown_until = i + 1; entry_armed = False
+        # Update the running peak only after this bar's exits were evaluated
+        # against pre-bar knowledge.
+        if position:
+            position["max_price"] = max(position.get("max_price", position["entry"]), rows["highs"][i])
         # Warm-up candles may inform indicators, but may never create a
         # position before a chronological OOS fold begins.
         entry_signal = (start_ts is None or now >= float(start_ts)) and _custom_conditions(analyzer, window, entry)
@@ -577,9 +588,13 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                     window = {key: values[window_start:i + 1] for key, values in data.items()}
                     elapsed = max(0, data["times"][i] - position["entry_time"])
                     atr = analyzer.calculate_atr(window, config.SYSTEM_ATR_PERIOD)
-                    position["max_price"] = max(position.get("max_price", position["entry"]), high)
+                    # Trailing/stage levels derive from the peak known BEFORE
+                    # this bar: within one candle the high/low order is
+                    # unknown, so using this bar's own high biases exits up.
+                    prev_max_price = position.get("max_price", position["entry"])
+                    position["max_price"] = max(prev_max_price, high)
                     if profile:
-                        peak_pct = position["max_price"] / position["entry"] - 1
+                        peak_pct = prev_max_price / position["entry"] - 1
                         for stage_index, (trigger, fraction, lock_pct) in enumerate(profile["stages"]):
                             if stage_index in position["stages_done"] or peak_pct < trigger or position["quantity"] <= 0:
                                 continue
@@ -588,18 +603,21 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                             partial_pnl -= position["entry"] * sell_qty * config.COMMISSION_PCT + position["entry"] * sell_qty
                             position["realized_pnl"] = position.get("realized_pnl", 0.0) + partial_pnl
                             position["quantity"] -= sell_qty
-                            position["remaining_order_size"] = position.get("invested_cost", order_size) + order_size
-                            position["invested_cost"] = position["remaining_order_size"]
+                            # The sold slice's principal was credited back by _close_partial;
+                            # only its cost basis leaves the position. No cash is created here.
+                            cost_removed = position["entry"] * sell_qty
+                            position["invested_cost"] = max(0.0, position.get("invested_cost", 0.0) - cost_removed)
+                            position["remaining_order_size"] = position["invested_cost"]
                             position["stop_price"] = max(position.get("stop_price", 0), position["entry"] * (1 + lock_pct))
                             position["stages_done"].add(stage_index)
                         if atr:
-                            candidate = max(position["max_price"] - atr * profile["atr_mult"], position["max_price"] * (1 - profile["trail_pct"]))
+                            candidate = max(prev_max_price - atr * profile["atr_mult"], prev_max_price * (1 - profile["trail_pct"]))
                             if peak_pct >= profile["stages"][0][0]:
                                 position["trailing_stop"] = max(position.get("trailing_stop", 0), candidate)
                     if atr and not fixed_tv_exit:
                         activation = atr * config.SYSTEM_ATR_TRAILING_ACTIVATION_ATR
-                        if position["max_price"] - position["entry"] >= activation:
-                            candidate = position["max_price"] - atr * config.SYSTEM_ATR_TRAILING_MULTIPLIER
+                        if prev_max_price - position["entry"] >= activation:
+                            candidate = prev_max_price - atr * config.SYSTEM_ATR_TRAILING_MULTIPLIER
                             position["trailing_stop"] = max(position.get("trailing_stop", 0), candidate)
                     if high >= position["target_price"]:
                         position["target_reached"] = True

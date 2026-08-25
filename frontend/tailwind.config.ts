@@ -10,6 +10,7 @@ export default {
           900: "#1a1d4e",
           800: "#2b2f5e",
           700: "#444875",
+          600: "#6a6f9e",
           muted: "#aeb2c7"
         },
         neon: {

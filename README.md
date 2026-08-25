@@ -24,13 +24,12 @@ executor.py ──► sanal cüzdan güncelle (USDT düş, coin ekle)
 main.py ──► WebSocket /ws üzerinden frontend'e yayınla
 ```
 
-## Pozisyon Yönetimi (Trailing Stop)
+## Pozisyon Yönetimi (Aktif Stratejiye Göre)
 
-- **Giriş:** Etkin paper stratejisi ve likidite/maliyet kontrolleri → varsayılan 1.000 TRY ile LONG
-- **Hard Stop:** Fiyat girişin %1 altına düşerse kapat
-- **Take Profit:** Fiyat girişin %2 üstüne çıkarsa kapat
-- **Break-even:** Fiyat girişin %0.2 üstüne çıkınca stop giriş fiyatına taşınır (zarar imkansızlaşır)
-- **Trailing:** Fiyat zirveden %0.5 düşerse kapat (trend devam ettikçe kar büyür)
+- **BB_MFI_MEAN_REVERSION (varsayılan):** Hard stop −%8.882 (`BB_MFI_STOP_LOSS_PCT`), take profit +%2.317 (`BB_MFI_TAKE_PROFIT_PCT`), teyitli sell sinyali çıkışı (varsayılan 2 ardışık bar) ve LLM yönetilen plan stop/TP/max-hold.
+- **Diğer (legacy) stratejiler:** Sistem stop'u, RR hedefine ulaşınca ATR trailing ve erken başarısızlık/bayat pozisyon kuralları.
+- **Re-entry guard'ları:** Bar cooldown, timeout sonrası 24 saatlik blok, hard-stop sonrası 2 saatlik blok — timeout/hard-stop blokları restart'ta kalıcıdır.
+- Not: eski belgedeki −%1 hard stop / +%0.2 break-even / %0.5 trailing modeli hiçbir aktif stratejide kullanılmaz; `TAKE_PROFIT_PCT` ve `TRAILING_*` sabitleri ölü yapılandırmadır.
 
 ## Stack
 
@@ -64,7 +63,7 @@ Veya kök dizinde: `.\start.ps1` (iki servisi birden başlatır)
 | Başlangıç bakiyesi                       | 10.000 TL  | Sanal paper trading cüzdanı                   |
 | Varsayılan paper emir tutarı              | 1.000 TRY   | `DEFAULT_ORDER_USDT` adı geriye dönük uyumluluk içindir |
 
-İnce ayarlar `backend/app/config.py` içinde: sembol evreni, maliyet/likidite filtreleri, `DEFAULT_ORDER_USDT` (1.000 TRY), stop/tp/trailing yüzdeleri, `BACKTEST_ASSUMED_SPREAD_PCT` (varsayılan 0,1%) ve `GAINER_RADAR_INTERVAL_SEC` (varsayılan 60 saniye).
+İnce ayarlar `backend/app/config.py` içinde: sembol evreni, maliyet/likidite filtreleri, `DEFAULT_ORDER_USDT` (1.000 TRY; isim geriye dönük uyumluluk içindir, birim TRY'dır), BB-MFI stop/TP yüzdeleri, `BACKTEST_ASSUMED_SPREAD_PCT` (varsayılan 0,1%) ve `GAINER_RADAR_INTERVAL_SEC`. Yüksek hacimli gözlem tablolarının saklama süresi `RETENTION_DAYS` (varsayılan 30 gün) ile ayarlanır.
 
 LLM paper giriş/çıkış ve sembol bazlı öğrenme sözleşmesi: [`docs/SCALPER_TRADE_POLICY.md`](docs/SCALPER_TRADE_POLICY.md).
 
@@ -79,6 +78,7 @@ Kaynaklı araştırma ve uygulama eşlemesi: [`docs/SCALPER_RESEARCH_EVIDENCE.md
 - `WS /ws` - ticker / signal / portfolio mesajları (frontend bunu dinler)
 - `GET /api/market-klines/{symbol}` - frontend ve backend için ortak Binance TR public candle adapter’ı
 - `GET /api/trades`, `/api/signals`, `/api/decisions` - `limit`, `offset` ve ilgili sembol/strateji filtreleriyle server-side listeleme
+- `POST /api/strategy/replay` + `GET /api/strategy/replay/{job_id}` - salt-okunur kapalı-mum karar tekrarı (`/signal-replay` sayfasının arkası)
 
 Custom backtest çıkış modeli `strategy_definition.exit_policy` ile seçilir. `mode` değerleri `conditions_only`, `conditions_plus_protection` veya `protection_only` olabilir; ayrıca `use_stop_loss`, `use_take_profit`, `use_trailing_stop`, `trailing_stop_pct`, `use_max_hold` ve `max_hold_bars` alanları desteklenir. Böylece koşullu çıkış seçildiğinde sistem zorla TP/SL uygulamaz.
 - `.well-known` - alan doğrulama dosyaları için mount

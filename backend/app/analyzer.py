@@ -1,5 +1,6 @@
 import time
 import asyncio
+import json
 import numpy as np
 import uuid
 from app.config import config
@@ -44,6 +45,40 @@ class ScalpAnalyzer:
     async def load_state(self):
         self.positions = await database.load_positions()
         self.pending_orders = await database.load_paper_orders()
+        await self._load_persistent_guards()
+
+    _GUARD_SETTING_KEY = "reentry_guard_blocks"
+
+    async def _load_persistent_guards(self):
+        """Rehydrate timeout/hard-stop re-entry blocks that survive restarts."""
+        try:
+            raw = await database.get_llm_setting(self._GUARD_SETTING_KEY, "{}")
+            stored = json.loads(raw or "{}")
+        except (ValueError, TypeError):
+            stored = {}
+        now = time.time()
+        for symbol, blocks in (stored or {}).items():
+            for store_name, value in blocks.items():
+                store = getattr(self, store_name, None)
+                if isinstance(store, dict) and float(value or 0) > now:
+                    store[symbol] = float(value)
+
+    async def _persist_reentry_blocks(self, symbol):
+        """Persist the active in-memory blocks for one symbol across restarts."""
+        try:
+            raw = await database.get_llm_setting(self._GUARD_SETTING_KEY, "{}")
+            stored = json.loads(raw or "{}")
+        except (ValueError, TypeError):
+            stored = {}
+        now = time.time()
+        stored.setdefault(symbol, {})
+        if self._timeout_block_until.get(symbol, 0) > now:
+            stored[symbol]["_timeout_block_until"] = self._timeout_block_until[symbol]
+        if self._hard_stop_block_until.get(symbol, 0) > now:
+            stored[symbol]["_hard_stop_block_until"] = self._hard_stop_block_until[symbol]
+        if not stored[symbol]:
+            stored.pop(symbol, None)
+        await database.set_llm_setting(self._GUARD_SETTING_KEY, json.dumps(stored))
 
     async def _idempotent_order_replay(self, duplicate):
         status = str(duplicate.get("status") or "UNKNOWN").upper()
@@ -77,6 +112,17 @@ class ScalpAnalyzer:
         order_type = str(order.get("order_type", "MARKET")).upper()
         if order_type not in {"MARKET", "LIMIT", "STOP_LIMIT", "STOP_MARKET", "OCO"}:
             return {"ok": False, "error": "Desteklenmeyen paper emir türü"}
+
+        def _positive_leg(key):
+            try:
+                return float(order.get(key) or 0) > 0
+            except (TypeError, ValueError):
+                return False
+        if order_type == "OCO" and not (_positive_leg("stop_price") and _positive_leg("take_profit_price")):
+            # A zero stop would fire every LONG OCO instantly on evaluation.
+            return {"ok": False, "error": "OCO emri pozitif stop_price ve take_profit_price gerektirir"}
+        if order_type == "STOP_LIMIT" and not _positive_leg("limit_price"):
+            return {"ok": False, "error": "STOP_LIMIT emri pozitif limit_price gerektirir"}
         symbol = str(order.get("symbol") or "").replace("_", "").upper()
         ticker = self.market.get_ticker(symbol) if self.market else None
         price = float(order.get("price") or (ticker or {}).get("last_price") or 0)
@@ -146,12 +192,20 @@ class ScalpAnalyzer:
         return {"ok": True, "paper_only": True, "order": order}
 
     async def _evaluate_pending_orders(self, symbol, price):
+        def _leg(value):
+            try:
+                return float(value or 0)
+            except (TypeError, ValueError):
+                return 0.0
         for order in list(self.pending_orders):
             if order.get("symbol") != symbol or order.get("status") != "OPEN": continue
             side = str(order.get("side", "BUY")).upper(); order_type = str(order.get("order_type", "LIMIT")).upper()
-            stop = float(order.get("stop_price") or 0); limit = float(order.get("limit_price") or order.get("price") or 0)
+            stop = _leg(order.get("stop_price")); limit = _leg(order.get("limit_price") or order.get("price"))
             if order_type == "OCO":
-                take_profit_price = float(order.get("take_profit_price") or order.get("limit_price") or 0)
+                take_profit_price = _leg(order.get("take_profit_price"))
+                # A missing/invalid leg must leave the order idle; defaulting
+                # stop to 0 used to fire every LONG OCO instantly.
+                if stop <= 0 or take_profit_price <= 0: continue
                 take_profit_hit = price >= take_profit_price if side in {"SELL", "SHORT"} else price <= take_profit_price
                 stop_hit = price <= stop if side in {"SELL", "SHORT"} else price >= stop
                 triggered = take_profit_hit or stop_hit
@@ -171,8 +225,14 @@ class ScalpAnalyzer:
             triggered = (price <= limit if side in {"BUY", "LONG"} else price >= limit) if order_type == "LIMIT" else (price <= stop if side in {"SELL", "SHORT"} else price >= stop)
             if order_type == "STOP_LIMIT" and triggered: triggered = price <= limit if side in {"SELL", "SHORT"} else price >= limit
             if not triggered: continue
-            if order_type == "STOP_LIMIT" and limit <= 0: continue
-            execution_price = price if order_type in {"STOP_MARKET", "OCO"} else limit
+            if (order_type == "STOP_LIMIT" and limit <= 0) or (order_type == "LIMIT" and limit <= 0): continue
+            if order_type == "STOP_LIMIT" and side in {"BUY", "LONG"}:
+                # The market must still be at/below the buy limit after the
+                # stop triggers; filling at the lower limit from a higher
+                # price would grant a better-than-market paper fill.
+                execution_price = price
+            else:
+                execution_price = price if order_type in {"STOP_MARKET", "OCO"} else limit
             if side in {"BUY", "LONG"}:
                 result = await self.open_position(symbol, execution_price, "LONG", "LLM_PAPER", order.get("order_value_try"), order.get("stop_loss_pct"), order.get("take_profit_pct"), order.get("max_hold_seconds"))
             else:
@@ -1233,6 +1293,8 @@ class ScalpAnalyzer:
             self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
         elif reason in {"hard_stop_loss", "system_stop_loss", "llm_stop_loss"}:
             self._hard_stop_block_until[symbol] = time.time() + config.HARD_STOP_REENTRY_BLOCK_SEC
+        # A restart must not erase a documented 24h/2h re-entry block.
+        await self._persist_reentry_blocks(symbol)
         return sig
 
     async def _record_trade(self, symbol, pos, exit_price, reason, commission=0.0):

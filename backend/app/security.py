@@ -14,6 +14,7 @@ from urllib.request import HTTPRedirectHandler, build_opener
 
 
 SESSION_COOKIE = "scalper_session"
+_LOGIN_FAILURE_LIMIT = 512
 _login_failures = defaultdict(deque)
 
 
@@ -69,7 +70,12 @@ def record_login_result(client_key, succeeded, now=None):
     if succeeded:
         _login_failures.pop(key, None)
     else:
-        _login_failures[key].append(float(now or time.time()))
+        # Spoofed X-Real-IP values can mint unbounded keys; cap the map so a
+        # flood of unique keys cannot grow memory without bound.
+        while len(_login_failures) >= _LOGIN_FAILURE_LIMIT:
+            _login_failures.pop(next(iter(_login_failures)), None)
+        failures = _login_failures[key]
+        failures.append(float(now or time.time()))
 
 
 def request_authenticated(headers, cookies=None, query_token=None):

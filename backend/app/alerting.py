@@ -9,7 +9,12 @@ from app import database
 
 def _matches(rule, value):
     op = str(rule.get("operator", "lte")).lower()
-    threshold = float(rule.get("threshold"))
+    try:
+        threshold = float(rule.get("threshold"))
+    except (TypeError, ValueError):
+        # A malformed threshold must disable the rule, not kill the whole
+        # alert loop every second.
+        raise ValueError(f"Geçersiz alarm eşiği: {rule.get('threshold')!r}")
     return {"lt": value < threshold, "lte": value <= threshold, "gt": value > threshold,
             "gte": value >= threshold, "eq": abs(value - threshold) < 1e-9}.get(op, False)
 
@@ -51,35 +56,45 @@ async def evaluate_rules(market, on_paper_trigger=None):
     rules = await database.list_alert_rules(active_only=True)
     now = time.time()
     for rule in rules:
-        if rule.get("expires_at") and now >= float(rule["expires_at"]):
-            await database.update_alert_rule(rule["id"], {"enabled": 0}); continue
-        ticker = market.get_ticker(rule["symbol"])
-        if not ticker or not ticker.get("last_price"): continue
-        value = _rule_value(rule, market, ticker)
-        if value is None: continue
-        armed = bool(rule.get("armed", True))
-        if not armed:
-            if _rearmed(rule, value):
-                await database.update_alert_rule(rule["id"], {"armed": True, "last_value": value})
-            continue
-        if rule.get("last_triggered_at") and now - float(rule["last_triggered_at"]) < int(rule.get("cooldown_seconds") or 0): continue
-        if not _matches(rule, value): continue
-        event_key = f"{rule['id']}:{time.time_ns()}"
-        unit = "%" if str(rule.get("rule_type", "price")).lower() == "percent" else "TRY"
-        message = f"{rule['symbol']} alarmı: değer {value:g} {unit} ({rule['operator']} {rule['threshold']:g})"
-        event = await database.record_alert_trigger(rule["id"], event_key, value, message, "warning")
-        if not event: continue
-        channels = rule.get("notify_channels") or ["websocket"]
-        if "web_push" in channels: await deliver_web_push(message)
-        auto_result = None
-        if "auto_paper_trade" in channels and on_paper_trigger:
-            try:
-                auto_result = await on_paper_trigger(rule, event)
-                message += f" | otomatik paper sonuç: {auto_result.get('status', 'unknown')}"
-            except Exception as exc:
-                auto_result = {"status": "error", "error": str(exc), "paper_only": True}
-                message += f" | otomatik paper hata: {type(exc).__name__}"
-        payload = {**event, "rule_id": rule["id"], "symbol": rule["symbol"], "message": message, "channels": channels, "paper_only": True}
-        if auto_result is not None: payload["auto_paper_trade"] = auto_result
-        events.append({"type": "alert", "data": payload})
+        try:
+            events.extend(await _evaluate_single_rule(market, rule, now, on_paper_trigger))
+        except Exception as exc:
+            print(f"[Alerts] Kural {rule.get('id')} değerlendirilemedi: {type(exc).__name__}: {exc}", flush=True)
+            await database.update_alert_rule(rule["id"], {"enabled": 0})
+    return events
+
+
+async def _evaluate_single_rule(market, rule, now, on_paper_trigger):
+    events = []
+    if rule.get("expires_at") and now >= float(rule["expires_at"]):
+        await database.update_alert_rule(rule["id"], {"enabled": 0}); return events
+    ticker = market.get_ticker(rule["symbol"])
+    if not ticker or not ticker.get("last_price"): return events
+    value = _rule_value(rule, market, ticker)
+    if value is None: return events
+    armed = bool(rule.get("armed", True))
+    if not armed:
+        if _rearmed(rule, value):
+            await database.update_alert_rule(rule["id"], {"armed": True, "last_value": value})
+        return events
+    if rule.get("last_triggered_at") and now - float(rule["last_triggered_at"]) < int(rule.get("cooldown_seconds") or 0): return events
+    if not _matches(rule, value): return events
+    event_key = f"{rule['id']}:{time.time_ns()}"
+    unit = "%" if str(rule.get("rule_type", "price")).lower() == "percent" else "TRY"
+    message = f"{rule['symbol']} alarmı: değer {value:g} {unit} ({rule['operator']} {rule['threshold']:g})"
+    event = await database.record_alert_trigger(rule["id"], event_key, value, message, "warning")
+    if not event: return events
+    channels = rule.get("notify_channels") or ["websocket"]
+    if "web_push" in channels: await deliver_web_push(message)
+    auto_result = None
+    if "auto_paper_trade" in channels and on_paper_trigger:
+        try:
+            auto_result = await on_paper_trigger(rule, event)
+            message += f" | otomatik paper sonuç: {auto_result.get('status', 'unknown')}"
+        except Exception as exc:
+            auto_result = {"status": "error", "error": str(exc), "paper_only": True}
+            message += f" | otomatik paper hata: {type(exc).__name__}"
+    payload = {**event, "rule_id": rule["id"], "symbol": rule["symbol"], "message": message, "channels": channels, "paper_only": True}
+    if auto_result is not None: payload["auto_paper_trade"] = auto_result
+    events.append({"type": "alert", "data": payload})
     return events

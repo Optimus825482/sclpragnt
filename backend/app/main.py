@@ -1056,6 +1056,18 @@ async def learning_promotion_loop():
             print(f"[Learning] promotion loop: {exc}")
         await asyncio.sleep(15 * 60)
 
+async def retention_loop():
+    """Periodic sweep of high-volume observability tables (paper records kept)."""
+    await asyncio.sleep(120)  # let startup bursts finish before the first sweep
+    while True:
+        try:
+            deleted = await database.prune_retention(days=int(os.getenv("RETENTION_DAYS", "30")))
+            if any(deleted.values()):
+                print(f"[Retention] {deleted}", flush=True)
+        except Exception as exc:
+            print(f"[Retention] sweep hatası: {exc}")
+        await asyncio.sleep(6 * 3600)
+
 
 def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
     """Return a causal outcome only when the requested horizon has closed."""
@@ -1192,6 +1204,7 @@ async def startup_services():
     _start_background(a2a_outbox_loop(), "a2a-outbox")
     _start_background(llm_position_manager_loop(), "llm-position-manager")
     _start_background(learning_promotion_loop(), "learning-promotion")
+    _start_background(retention_loop(), "retention")
     _start_background(ws_broadcast_loop(), "ws-broadcast")
     _start_background(alert_loop(), "alert-engine")
 
@@ -1284,8 +1297,9 @@ async def ws_broadcast_loop():
                 open_positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
                 realized_pnl = await database.get_realized_pnl()
                 unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
-                open_entry_commission = sum(pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT for pos in analyzer.positions.values())
-                reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl - open_entry_commission
+                # pnl_try above already nets each position's entry commission;
+                # subtracting it again here double-counted open fees.
+                reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl
                 reconciliation_delta = total_value - reconciliation_expected
                 _ws_snapshot_cache["portfolio"] = {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
                                                     "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
@@ -1533,7 +1547,7 @@ async def strategy_loop():
                 if action == "BUY_SIGNAL": scan_buy += 1
                 elif action == "BUY_BLOCKED": scan_blocked += 1
                 print(f"[Sinyal] {sig}")
-                _record_strategy_scan_log("automatic", sym, str(sig.get("action", "SIGNAL")), price=sig.get("price", ticker.get("price")), reason=sig.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id)
+                _record_strategy_scan_log("automatic", sym, str(sig.get("action", "SIGNAL")), price=sig.get("price", ticker.get("last_price")), reason=sig.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id)
                 if action != "ENTRY_INELIGIBLE":
                     await ws_manager.broadcast({"type": "signal", "data": sig})
                 if str(sig.get("action", "")).startswith("CLOSE"):
@@ -1721,11 +1735,24 @@ async def refresh_top_gainer_symbols():
         selected = [row["symbol"] for row in ranked[:config.TOP_GAINERS_LIMIT]]
         open_symbols = set(analyzer.positions) | set((await database.load_positions()).keys())
         active = list(dict.fromkeys(selected + sorted(open_symbols)))
+        previous_active = set(str(symbol).upper() for symbol in market.symbols)
         if not active:
             raise RuntimeError("Binance TR top-gainer TRY listesi boş döndü")
         config.SYMBOLS = active
         config.UT_SYMBOLS = list(active)
         market.symbols = [symbol.lower() for symbol in active]
+        # Newly activated symbols would otherwise wait ~4.6h on the WS alone
+        # to collect enough closed 5m candles; hydrate them up front so MTF
+        # gates are usable from the first scan.
+        new_symbols = sorted(set(active) - previous_active)
+        if new_symbols:
+            try:
+                hydration = await market.ensure_history(
+                    market._all_timeframes(), min_candles=55, candle_limit=300)
+                print(f"[Top Gainers] {len(new_symbols)} yeni sembol hidrasyonu: "
+                      f"{hydration.get('hydrated', 0)} seri dolduruldu", flush=True)
+            except Exception as exc:
+                print(f"[Top Gainers] Yeni sembol hidrasyon hatası: {exc}", flush=True)
         market.reconnect_requested = True
         analyzer._last_signal_lengths.clear()
         persisted = await database.get_llm_setting("runtime_config", "{}")
@@ -2079,6 +2106,16 @@ async def create_alert(payload: dict):
     required = ["symbol", "operator", "threshold"]
     if any(key not in payload for key in required): raise HTTPException(400, "symbol, operator ve threshold gerekli")
     if str(payload.get("rule_type", "price")) not in {"price", "percent"}: raise HTTPException(400, "Desteklenmeyen alarm türü")
+    try:
+        float(payload.get("threshold"))
+        if payload.get("rearm_threshold") is not None: float(payload.get("rearm_threshold"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "threshold ve rearm_threshold sayısal olmalıdır")
+    if str(payload.get("operator", "")).lower() not in {"lt", "lte", "gt", "gte", "eq"}:
+        raise HTTPException(400, "operator lt, lte, gt, gte veya eq olmalıdır")
+    cooldown = payload.get("cooldown_seconds")
+    if cooldown is not None and (not isinstance(cooldown, (int, float)) or cooldown < 0):
+        raise HTTPException(400, "cooldown_seconds negatif olmayan bir sayı olmalıdır")
     rule_id = await database.create_alert_rule({**payload, "created_by": payload.get("created_by", "user")})
     return {"ok": True, "id": rule_id, "paper_only": True}
 
@@ -2899,12 +2936,20 @@ async def _apply_config_update(payload: dict):
         market.symbols = [s.lower() for s in symbols]
         for symbol in sorted(set(symbols) - previous_symbols):
             asyncio.create_task(backfill_symbol_history(symbol), name=f"history-backfill-{symbol}")
-    # timeframe değiştiyse market veri setini güncelle
+    # Only a symbol/timeframe change requires a full WS reconnect + REST
+    # re-warm; an unrelated toggle (e.g. a bool) must not halt trading with
+    # hundreds of blocking fetches and a stale-ticker gap.
+    universe_changed = bool(market.reconnect_requested) or (
+        "symbols" in payload and
+        {str(s).lower() for s in payload["symbols"]} != {str(s).lower() for s in previous_symbols})
     market.timeframes = market._all_timeframes()
-    # Apply symbol/timeframe changes immediately. Settings are runtime-only,
-    # but the running websocket/cache must not continue using the old universe.
-    market.reconnect_requested = True
-    await market.fetch_historical_data()
+    if universe_changed:
+        # Apply symbol/timeframe changes immediately. Settings are runtime-only,
+        # but the running websocket/cache must not continue using the old universe.
+        market.reconnect_requested = True
+        await market.fetch_historical_data()
+    else:
+        await market.repair_history_gaps()
     analyzer._last_signal_lengths.clear()
     existing = await database.get_llm_setting("runtime_config", "{}")
     try: persisted = json.loads(existing or "{}")
@@ -4386,9 +4431,27 @@ async def download_postgres_backup():
 
 @app.post("/api/postgres/restore")
 async def restore_postgres_backup(payload: dict = None):
-    body = payload or {}; path = os.path.abspath(str(body.get("path", "")))
+    body = payload or {}; raw_path = str(body.get("path", ""))
     if body.get("confirmation") != "RESTORE_POSTGRES": raise HTTPException(status_code=400, detail="RESTORE_POSTGRES onayı gerekli")
-    if not os.getenv("DATABASE_URL") or not path or not os.path.isfile(path): raise HTTPException(status_code=400, detail="Geçerli backup yolu ve DATABASE_URL gerekli")
+    if not os.getenv("DATABASE_URL"): raise HTTPException(status_code=400, detail="DATABASE_URL gerekli")
+    # Only dumps this backend created may be restored: an arbitrary client
+    # path combined with --clean would wipe the live schema from any file.
+    path = os.path.abspath(raw_path)
+    backup_dir = os.path.abspath(tempfile.gettempdir()) + os.sep
+    if not path.startswith(backup_dir) or not os.path.basename(path).startswith("scalper-postgres-") or not path.endswith(".dump"):
+        raise HTTPException(status_code=400, detail="Yalnızca sunucu tarafından üretilen scalper-postgres-*.dump yedekleri geri yüklenebilir")
+    if not os.path.isfile(path): raise HTTPException(status_code=404, detail="Belirtilen yedek dosyası bulunamadı")
+    try:
+        with open(path, "rb") as backup_file:
+            if backup_file.read(5) != b"PGDMP":
+                raise HTTPException(status_code=400, detail="Dosya geçerli bir PostgreSQL custom-format yedeği değil")
+        validation = await asyncio.to_thread(subprocess.run, ["pg_restore", "--list", path], capture_output=True, text=True, timeout=120)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Yedek doğrulanamadı: {exc}") from exc
+    if validation.returncode != 0:
+        raise HTTPException(status_code=400, detail=validation.stderr[-2000:] or "Yedek dosyası pg_restore --list doğrulamasından geçemedi")
     result = await asyncio.to_thread(subprocess.run, ["pg_restore", "--clean", "--if-exists", "--no-owner", "--dbname", os.environ["DATABASE_URL"], path], capture_output=True, text=True, timeout=1200)
     if result.returncode != 0: raise HTTPException(status_code=502, detail=result.stderr[-3000:] or "pg_restore başarısız")
     return {"ok": True, "message": "PostgreSQL backup geri yüklendi; backend yeniden başlatılması önerilir"}

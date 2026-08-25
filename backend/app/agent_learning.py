@@ -116,12 +116,21 @@ async def upsert_instinct(pool, *, instinct_key, scope, symbol, strategy, domain
     if not pool:
         return None
     async with pool.acquire() as conn:
+        # Only genuinely new evidence may inflate the promotion counters:
+        # repeating an already-recorded experience must not push a candidate
+        # instinct over the evidence_count >= 3 gate.
         row = await conn.fetchrow("""INSERT INTO trading_instincts
             (instinct_key,scope,symbol,strategy,domain,trigger,action,confidence,evidence_count,source_experience_ids)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,1,$9::jsonb)
-            ON CONFLICT(instinct_key) DO UPDATE SET confidence=LEAST(0.99,
-                trading_instincts.confidence + 0.05), evidence_count=trading_instincts.evidence_count+1,
-                last_seen_at=now(), source_experience_ids=(trading_instincts.source_experience_ids || EXCLUDED.source_experience_ids)
+            ON CONFLICT(instinct_key) DO UPDATE SET
+                confidence=CASE WHEN NOT (trading_instincts.source_experience_ids @> $9::jsonb)
+                    THEN LEAST(0.99, trading_instincts.confidence + 0.05) ELSE trading_instincts.confidence END,
+                evidence_count=CASE WHEN NOT (trading_instincts.source_experience_ids @> $9::jsonb)
+                    THEN trading_instincts.evidence_count+1 ELSE trading_instincts.evidence_count END,
+                last_seen_at=now(),
+                source_experience_ids=CASE WHEN NOT (trading_instincts.source_experience_ids @> $9::jsonb)
+                    THEN (trading_instincts.source_experience_ids || EXCLUDED.source_experience_ids)
+                    ELSE trading_instincts.source_experience_ids END
             RETURNING id,instinct_key,confidence,evidence_count,status""",
             instinct_key, scope, symbol, strategy, domain, trigger, action, confidence,
             json.dumps([experience_id] if experience_id else [], ensure_ascii=False))
