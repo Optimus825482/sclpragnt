@@ -76,11 +76,23 @@ class RegressionContracts(unittest.TestCase):
             closes = [100.0] * 20 + [last]
             return {"closes": closes, "highs": closes, "lows": closes, "volumes": [100.0] * len(closes)}
 
+        def dip_kline():
+            # A real dip candle: close sits above 55% of the bar range
+            # (BB_MFI_DIP_MIN_CLOSE_POSITION) yet below the BB lower band.
+            closes = [100.0] * 20 + [84.0]
+            highs = [100.0] * 20 + [95.0]
+            lows = [100.0] * 20 + [70.0]
+            return {"closes": closes, "highs": highs, "lows": lows, "volumes": [100.0] * len(closes)}
+
         with patch("app.analyzer.config.BB_MFI_PINE_VERSION", "v1"), \
              patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
              patch.object(analyzer, "calculate_rsi", return_value=80.0):
             self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline(120.0)), "sell")
-            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline(80.0)), "buy")
+            # The buy leg must respect the dip-confirmation filter: a flat
+            # candle (close at bar low, zero range → close_position 0) is
+            # blocked; a confirmed dip candle passes.
+            self.assertIsNone(analyzer.strategy_bb_mfi_mean_reversion(kline(80.0)))
+            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(dip_kline()), "buy")
 
     def test_bb_mfi_v3_requires_mfi_for_entry_and_exit(self):
         from app.analyzer import ScalpAnalyzer

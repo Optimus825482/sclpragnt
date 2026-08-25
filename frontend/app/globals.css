@@ -383,4 +383,10 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 
 @media (prefers-reduced-motion: reduce) {
   .section-tabs button, .ui-button, .ui-tabs button, .app-sidebar { transition: none !important; }
+  /* Live dots, skeletons and smooth scrolling are nonessential motion. */
+  *, *::before, *::after {
+    animation-duration: 0.001s !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }

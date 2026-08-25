@@ -17,8 +17,12 @@ def inspect_source(path):
     for table in TABLES:
         try: counts[table] = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         except sqlite3.Error: counts[table] = 0
-    digest = hashlib.sha256(p.read_bytes()).hexdigest()
-    conn.close(); return {"path":str(p.resolve()), "sha256":digest, "counts":counts, "size_bytes":p.stat().st_size}
+    # Hash in chunks: reading the whole database into RAM scales with file size.
+    digest = hashlib.sha256()
+    with open(p, "rb") as source_file:
+        for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    conn.close(); return {"path":str(p.resolve()), "sha256":digest.hexdigest(), "counts":counts, "size_bytes":p.stat().st_size}
 
 
 def compare_counts(source_counts, target_counts):
@@ -80,8 +84,16 @@ async def run(source, database_url, publish=None):
 
 def _copy_rows(source, database_url):
     script = Path(__file__).resolve().parent.parent / "scripts" / "migrate_sqlite_to_postgres.py"
-    process = subprocess.Popen([sys.executable, "-u", str(script), "--source", source, "--database-url", database_url, "--apply"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
-    stdout, stderr = process.communicate(timeout=600)
+    # The URL carries the DB password: pass it via stdin, never argv, so it
+    # is not readable from `ps` inside the container.
+    process = subprocess.Popen([sys.executable, "-u", str(script), "--source", source, "--database-url", "-", "--apply"],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    try:
+        stdout, stderr = process.communicate(input=database_url, timeout=600)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate()
+        raise RuntimeError("Migration script 600 saniyede tamamlanmadı")
     for line in stdout.splitlines():
         if line.strip(): _log(line.strip())
     if process.returncode != 0: raise RuntimeError(stderr[-4000:] or stdout[-4000:] or "Migration script failed")

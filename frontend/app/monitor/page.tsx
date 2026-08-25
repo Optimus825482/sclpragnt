@@ -12,9 +12,12 @@ const PumpMonitorPanel = dynamic(
 );
 
 export default function MonitorPage() {
-  const [tab, setTab] = useState<"radar" | "pump" | "fisher">(() =>
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "pump" ? "pump" : "radar",
-  );
+  const [tab, setTab] = useState<"radar" | "pump" | "fisher">("radar");
+  // Read the query param after mount: reading it during the first render
+  // makes SSR ("radar") and hydration (?tab=pump) disagree.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("tab") === "pump") setTab("pump");
+  }, []);
   return <main className="mx-auto max-w-7xl space-y-6">
     <header>
       <p className="eyebrow">CANLI FIRSAT İZLEME</p>

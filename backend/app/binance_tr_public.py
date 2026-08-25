@@ -18,6 +18,12 @@ REST_MAX_ATTEMPTS = 4
 REST_BACKOFF_BASE_SEC = 0.35
 REST_BACKOFF_MAX_SEC = 4.0
 
+# Server-reported used request weight (X-MBX-USED-WEIGHT-1M), tracked per
+# response. Without this the startup burst (~900 kline requests) has zero
+# rate-limit visibility.
+_rate_limit_used = {"total": 0, "by_endpoint": {}}
+_rate_limit_last_reset = None
+
 
 def _retry_delay(attempt: int, headers: Message | dict | None = None) -> float:
     retry_after = headers.get("Retry-After") if headers else None
@@ -52,13 +58,15 @@ def _get_json(path: str, params: dict):
     for attempt in range(1, REST_MAX_ATTEMPTS + 1):
         try:
             with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
-                # Track rate-limit headers
+                # Track rate-limit headers; a malformed header must not fail
+                # the response itself.
                 try:
                     used = int(response.headers.get("X-MBX-USED-WEIGHT-1M", 0) or 0)
+                    global _rate_limit_last_reset
                     _rate_limit_used["total"] = used
                     _rate_limit_used["by_endpoint"][path] = max(_rate_limit_used["by_endpoint"].get(path, 0), used)
-                    _rate_limit_last_reset = time.time()  # type: ignore[attr-defined]
-                except Exception:
+                    _rate_limit_last_reset = time.time()
+                except (TypeError, ValueError):
                     pass
                 return _decode_payload(response.read())
         except HTTPError as exc:

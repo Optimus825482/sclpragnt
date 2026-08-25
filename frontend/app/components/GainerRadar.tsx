@@ -12,8 +12,14 @@ export default function GainerRadar() {
   const [secondsLeft, setSecondsLeft] = useState(30);
   const [loading, setLoading] = useState(false);
   const [regime, setRegime] = useState<Regime>({});
+  // Backend payloads occasionally omit optional numerics; a guarded
+  // formatter keeps a missing field from crashing the whole table.
+  const fmt = (value: number | undefined | null, digits = 2) =>
+    typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
   useEffect(() => {
     let active = true;
+    // Passive viewing must not mutate bot config or fire paper executions:
+    // those stay explicit operator actions (see the apply buttons below).
     const load = () => {
       setLoading(true);
       apiRequest(`${API_BASE}/api/radar/gainers`).then((r) => r.json()).then((d) => {
@@ -23,8 +29,6 @@ export default function GainerRadar() {
         apiRequest(`${API_BASE}/api/market-snapshot-scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeframes: ["5m", "15m", "1h"], limit: 5 }) })
           .then((r) => r.json()).then((scan) => { if (active) setRegime(scan.market_regime || {}); }).catch(() => { if (active) setRegime({}); });
         setSecondsLeft(30);
-        const persist = d.auto_added?.length ? apiRequest(`${API_BASE}/api/config`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbols: d.symbols }) }) : Promise.resolve();
-        return persist.then(() => d.auto_trade ? apiRequest(`${API_BASE}/api/radar/execute`, { method: "POST" }) : undefined);
       }).catch(() => { if (active) setItems([]); }).finally(() => { if (active) setLoading(false); });
     };
     load();
@@ -32,6 +36,7 @@ export default function GainerRadar() {
     const refresh = setInterval(load, 30000);
     return () => { active = false; clearInterval(countdown); clearInterval(refresh); };
   }, []);
+  const autoAddSymbols = added.length > 0;
   return <div className="gainer-radar card bg-bunker-950 overflow-hidden">
     <div className="gainer-radar-header p-4 border-b border-bunker-800 flex justify-between items-center"><div><p className="eyebrow text-neon-green">GAINER RADAR</p><p className="text-xs text-bunker-muted mt-1">%0,5 hedef için devam potansiyeli · public veri · paper</p></div><div className="text-right"><span className="text-xs font-mono text-bunker-muted">YENİLEME <span className="text-neon-green font-bold">00:{String(secondsLeft).padStart(2, "0")}</span></span><p className="text-[10px] text-bunker-muted mt-1">{loading ? "TARANIYOR..." : "CANLI"}</p></div></div>
     <div className="px-4 py-3 border-b border-bunker-800 grid sm:grid-cols-3 gap-3 text-xs font-mono">
@@ -40,6 +45,19 @@ export default function GainerRadar() {
       <div><span className="text-bunker-muted">KAPSAM</span><p className="mt-1 text-bunker-muted">{regime.sample_size ? `${regime.sample_size} sembol · ${regime.reason || ""}` : "Yeterli snapshot bekleniyor"}</p></div>
     </div>
     {added.length > 0 && <p className="px-4 py-2 text-xs font-mono text-neon-green border-b border-bunker-800">Otomatik eklendi: {added.join(", ")}</p>}
-    <div className="overflow-x-auto"><table className="w-full text-left font-mono text-xs"><thead className="text-bunker-muted"><tr><th className="p-3">Sembol</th><th className="p-3">Öncelik</th><th className="p-3">MTF</th><th className="p-3">Bullish TF</th><th className="p-3">Skor</th><th className="p-3">CRSI</th><th className="p-3">5dk</th><th className="p-3">1s</th><th className="p-3">24s</th><th className="p-3">Hacim</th><th className="p-3">Akış</th><th className="p-3">Durum</th></tr></thead><tbody>{items.map((x) => <tr key={x.symbol} className="border-t border-bunker-800/60"><td className="p-3 font-bold"><SymbolLink symbol={x.symbol} className="text-white hover:text-neon-green" /></td><td className="p-3 text-neon-green">{x.priority_score ?? x.score}</td><td className="p-3"><span className={x.mtf_bullish_count && x.mtf_bullish_count >= 3 ? "text-neon-green" : "text-yellow-300"}>{x.mtf_bullish_count ?? 0}/5 · {x.mtf_score ?? 0}</span></td><td className="p-3 text-[10px] text-sky-300">{x.mtf_bullish_rank || "—"}</td><td className="p-3">{x.score}</td><td className="p-3">{x.crsi == null ? "—" : x.crsi.toFixed(1)}</td><td className="p-3">{x.ret_5m.toFixed(2)}%</td><td className="p-3">{x.ret_1h.toFixed(2)}%</td><td className="p-3">{x.ret_24h.toFixed(2)}%</td><td className="p-3">{x.volume_ratio.toFixed(1)}x</td><td className="p-3">{x.imbalance.toFixed(1)}%</td><td className={`p-3 ${x.eligible ? "text-neon-green" : "text-bunker-muted"}`}>{x.eligible ? "ADAY" : "İZLE"}</td></tr>)}</tbody></table>{!items.length && <p className="p-4 text-sm text-bunker-muted">Yeterli canlı mum verisi bekleniyor.</p>}</div>
+    {autoAddSymbols && <div className="px-4 py-3 border-b border-bunker-800 flex flex-wrap items-center gap-3">
+      <span className="text-xs text-bunker-muted">Adaylar aktif listeye eklenmedi. Eklemek ve (açıksa) paper taramayı çalıştırmak için onaylayın.</span>
+      <button
+        type="button"
+        className="ui-button secondary !py-1.5 !px-3 text-xs"
+        onClick={async () => {
+          try {
+            await apiRequest(`${API_BASE}/api/config`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbols: items.map((x) => x.symbol) }) });
+            setAdded([]);
+          } catch { /* keep the banner so the operator can retry */ }
+        }}
+      >✓ Listeye Ekle</button>
+    </div>}
+    <div className="overflow-x-auto"><table className="w-full text-left font-mono text-xs"><thead className="text-bunker-muted"><tr><th className="p-3">Sembol</th><th className="p-3">Öncelik</th><th className="p-3">MTF</th><th className="p-3">Bullish TF</th><th className="p-3">Skor</th><th className="p-3">CRSI</th><th className="p-3">5dk</th><th className="p-3">1s</th><th className="p-3">24s</th><th className="p-3">Hacim</th><th className="p-3">Akış</th><th className="p-3">Durum</th></tr></thead><tbody>{items.map((x) => <tr key={x.symbol} className="border-t border-bunker-800/60"><td className="p-3 font-bold"><SymbolLink symbol={x.symbol} className="text-white hover:text-neon-green" /></td><td className="p-3 text-neon-green">{x.priority_score ?? x.score}</td><td className="p-3"><span className={x.mtf_bullish_count && x.mtf_bullish_count >= 3 ? "text-neon-green" : "text-yellow-300"}>{x.mtf_bullish_count ?? 0}/5 · {x.mtf_score ?? 0}</span></td><td className="p-3 text-[10px] text-sky-300">{x.mtf_bullish_rank || "—"}</td><td className="p-3">{x.score}</td><td className="p-3">{x.crsi == null ? "—" : fmt(x.crsi, 1)}</td><td className="p-3">{fmt(x.ret_5m)}%</td><td className="p-3">{fmt(x.ret_1h)}%</td><td className="p-3">{fmt(x.ret_24h)}%</td><td className="p-3">{fmt(x.volume_ratio, 1)}x</td><td className="p-3">{fmt(x.imbalance, 1)}%</td><td className={`p-3 ${x.eligible ? "text-neon-green" : "text-bunker-muted"}`}>{x.eligible ? "ADAY" : "İZLE"}</td></tr>)}</tbody></table>{!items.length && <p className="p-4 text-sm text-bunker-muted">Yeterli canlı mum verisi bekleniyor.</p>}</div>
   </div>;
 }

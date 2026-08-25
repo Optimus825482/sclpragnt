@@ -14,6 +14,7 @@ const MENU = [
     { href: "/monitor", label: "Monitor", icon: "🎯", desc: "Radar ve Pump adayları" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
     { href: "/backtest", label: "Backtest", icon: "🧪", desc: "Strateji test lab" },
+    { href: "/signal-replay", label: "Sinyal Replay", icon: "⏪", desc: "Kapalı mum karar tekrarı" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" }
 ];

@@ -178,6 +178,12 @@ export default function SettingsPage() {
     setSaving(true);
     setError(null);
     try {
+      // A cleared numeric input serializes NaN → null and could persist a
+      // broken trading parameter. Reject the save with the offending keys.
+      const invalidKeys = Object.entries(draft)
+        .filter(([, value]) => typeof value === "number" && !Number.isFinite(value))
+        .map(([key]) => key);
+      if (invalidKeys.length) throw new Error(`Bu alanlar sayısal olmalıdır: ${invalidKeys.join(", ")}`);
       const res = await apiRequest(`${API_BASE}/api/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -212,7 +218,7 @@ export default function SettingsPage() {
     }
   };
 
-  const num = (v: any) => (typeof v === "number" ? v : parseFloat(v));
+  const num = (v: any) => (typeof v === "number" ? v : Number.isFinite(parseFloat(v)) ? parseFloat(v) : 0);
   const selectedSymbols = Array.from(new Set((draft.symbols || []).map((symbol) => String(symbol).replace(/_/g, "").toUpperCase()))).sort();
   const filteredSymbols = marketSymbols.filter((s) => s.includes(symbolQuery.trim().toUpperCase()));
   const visibleActivity = Object.values(activity).filter((item: any) => activityFilter === "all" || item.status === activityFilter).filter((item: any) => !symbolQuery.trim() || item.symbol.includes(symbolQuery.trim().toUpperCase()));

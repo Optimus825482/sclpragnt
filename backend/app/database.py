@@ -18,6 +18,15 @@ DB_NAME = os.path.abspath(_CONFIGURED_DB_PATH) if _CONFIGURED_DB_PATH else _DEFA
 _DB_LOCK = threading.Lock()
 _DB_CONN: sqlite3.Connection | None = None
 _PG_CONN = None
+# Transport-level errors that mean the cached connection itself is dead
+# (server restart, idle timeout, socket drop). On these the connection is
+# closed and rebuilt on the next operation instead of poisoning every call.
+_PG_FATAL_ERRORS: tuple[type[BaseException], ...]
+try:
+    import psycopg as _psycopg_transport
+    _PG_FATAL_ERRORS = (_psycopg_transport.OperationalError, _psycopg_transport.InterfaceError)
+except Exception:  # pragma: no cover - psycopg absent in sqlite-only envs
+    _PG_FATAL_ERRORS = ()
 
 DEFAULT_SCALPER_SKILL_NAME = "Scalper Trade Manager"
 DEFAULT_SCALPER_SKILL_INSTRUCTIONS = (
@@ -44,6 +53,13 @@ def _json_safe(value):
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(item) for item in value]
     return value
+
+def _json_safe_dumps(value, **kwargs):
+    """Serialize payloads so NaN/Inf never reach PostgreSQL JSONB columns;
+    sqlite tolerated them but psycopg rejects the whole INSERT."""
+    kwargs.setdefault("ensure_ascii", False)
+    kwargs.setdefault("default", str)
+    return json.dumps(_json_safe(value), **kwargs)
 
 class _PostgresCompat:
     def __init__(self, conn): self.conn = conn
@@ -145,6 +161,21 @@ def _execute(operation):
         conn = _get_connection()
         try:
             return operation(conn)
+        except _PG_FATAL_ERRORS as exc:
+            # The cached connection is unusable; drop it so the next
+            # operation reconnects instead of failing forever.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+            global _PG_CONN
+            if _postgres_enabled():
+                _PG_CONN = None
+            raise RuntimeError(f"PostgreSQL bağlantısı koptu, yeniden kurulacak: {exc}") from exc
         except Exception:
             try:
                 conn.rollback()
@@ -917,7 +948,7 @@ async def save_position(symbol, pos):
                trade_id=excluded.trade_id""",
             (symbol, pos["side"], pos["entry_price"], pos.get("stop_price"),
              pos.get("take_profit"), pos.get("peak_price", pos["entry_price"]), bool(pos.get("breakeven_hit", False)), pos["quantity"],
-             pos.get("entry_time"), pos.get("strategy"), json.dumps(_position_entry_context(pos)), pos.get("trade_id"))
+             pos.get("entry_time"), pos.get("strategy"), _json_safe_dumps(_position_entry_context(pos)), pos.get("trade_id"))
         )
         conn.commit()
 
@@ -936,7 +967,7 @@ async def save_paper_order(order):
             (order.get("order_id"),order.get("symbol"),order.get("side"),order.get("order_type"),order.get("status","OPEN"),
              order.get("order_value_try"),order.get("price"),order.get("limit_price"),order.get("stop_price"),order.get("take_profit_price"),
              order.get("stop_loss_pct"),order.get("take_profit_pct"),order.get("max_hold_seconds"),order.get("oco_group"),order.get("reference_price"),
-             order.get("client_request_id"),order.get("trace_id"),json.dumps(order, ensure_ascii=False, default=str),order.get("created_at",now),now,order.get("filled_at"),order.get("cancelled_at")))
+             order.get("client_request_id"),order.get("trace_id"),_json_safe_dumps(order, ensure_ascii=False, default=str),order.get("created_at",now),now,order.get("filled_at"),order.get("cancelled_at")))
         conn.commit()
     await _run_db(op)
 
@@ -960,7 +991,7 @@ async def save_trade(trade):
             (trade.get("symbol"), trade.get("strategy"), trade.get("side"),
              trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"),
              trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"),
-            trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})),
+            trade.get("commission"), trade.get("reason"), _json_safe_dumps(trade.get("entry_context", {})),
             trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id"))
         )
         conn.commit()
@@ -1032,7 +1063,7 @@ async def get_capital_lock_report(min_hold_hours: float = 4.0, max_favorable_pct
 
 async def apply_historical_mtf_backfill(target_type, target_id, symbol, trade_id, entry_context, snapshots):
     """Persist public-history MTF evidence without changing trade economics."""
-    context_json = json.dumps(entry_context or {}, ensure_ascii=False, default=str)
+    context_json = _json_safe_dumps(entry_context or {}, ensure_ascii=False, default=str)
     def op(conn):
         if target_type == "trade":
             conn.execute("UPDATE trades SET entry_context=? WHERE id=?", (context_json, int(target_id)))
@@ -1046,7 +1077,7 @@ async def apply_historical_mtf_backfill(target_type, target_id, symbol, trade_id
             methods = snapshot.get("methodologies") or {}
             regime = methods.get("regime") or {}
             confluence = methods.get("confluence") or {}
-            conn.execute("INSERT INTO analysis_snapshots(symbol,timeframe,captured_at,source,methodology_version,regime,regime_confidence,confluence_score,payload,trade_id) VALUES(?,?,?,?,?,?,?,?,?,?)", (str(symbol).upper(), timeframe, float(snapshot.get("observation_timestamp") or time.time()), "historical_backfill", methods.get("methodology_version"), regime.get("name"), regime.get("confidence"), confluence.get("score"), json.dumps(snapshot, ensure_ascii=False, default=str), trade_id))
+            conn.execute("INSERT INTO analysis_snapshots(symbol,timeframe,captured_at,source,methodology_version,regime,regime_confidence,confluence_score,payload,trade_id) VALUES(?,?,?,?,?,?,?,?,?,?)", (str(symbol).upper(), timeframe, float(snapshot.get("observation_timestamp") or time.time()), "historical_backfill", methods.get("methodology_version"), regime.get("name"), regime.get("confidence"), confluence.get("score"), _json_safe_dumps(snapshot, ensure_ascii=False, default=str), trade_id))
         conn.commit()
     await _run_db(op)
 
@@ -1145,7 +1176,7 @@ async def save_signal(sig):
         conn.execute(
             "INSERT INTO decision_logs (timestamp, symbol, strategy, decision, reason, price, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"),
-             sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str))
+             sig.get("action"), sig.get("reason"), sig.get("price"), _json_safe_dumps(sig, default=str))
         )
         conn.commit()
     await _run_db(op)
@@ -1254,7 +1285,7 @@ async def backfill_replay_parity_observations(limit: int = 20_000, apply: bool =
                    (timestamp, symbol, strategy, decision, reason, price, metadata, source_decision_id)
                    VALUES (?, ?, 'REPLAY_PARITY_BACKFILL', ?, ?, ?, ?, ?)""",
                 (row[1], row[2], f"BACKFILL_{row[4] or 'UNKNOWN'}", row[5], row[6],
-                 json.dumps(metadata, ensure_ascii=False, default=str), row[0]),
+                 _json_safe_dumps(metadata, ensure_ascii=False, default=str), row[0]),
             )
             summary["written"] += 1
             summary["processed"] = index
@@ -1286,12 +1317,12 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", next_cash))
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=virtual_wallet.amount+excluded.amount", (asset, asset_amount))
         conn.execute("INSERT OR REPLACE INTO positions (symbol,side,entry_price,stop_price,take_profit,peak_price,breakeven_hit,quantity,entry_time,strategy,entry_context,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), json.dumps(_position_entry_context(pos)), pos.get("trade_id")))
+                     (symbol, pos.get("side"), pos.get("entry_price"), pos.get("stop_price"), pos.get("take_profit"), pos.get("max_price", pos.get("entry_price")), bool(pos.get("breakeven_hit", False)), pos.get("quantity"), pos.get("entry_time"), pos.get("strategy"), _json_safe_dumps(_position_entry_context(pos)), pos.get("trade_id")))
         persisted = conn.execute("SELECT quantity,entry_time FROM positions WHERE symbol=?", (symbol,)).fetchone()
         if not persisted or float(persisted[0] or 0) != float(pos.get("quantity") or 0) or float(persisted[1] or 0) != float(pos.get("entry_time") or 0):
             raise RuntimeError("Açılan pozisyon kaydı doğrulanamadı; transaction geri alınacak")
         conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason,strategy,trade_id) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason"), sig.get("strategy"), sig.get("trade_id")))
-        conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
+        conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), _json_safe_dumps(sig, default=str)))
         technical = (pos.get("entry_context") or {}).get("technical") or {}
         snapshots = dict(technical.get("mtf_snapshots") or {})
         primary_timeframe = technical.get("timeframe") or "5m"
@@ -1300,7 +1331,7 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
             methods = snapshot.get("methodologies") or {}
             regime = methods.get("regime") or {}
             confluence = methods.get("confluence") or {}
-            conn.execute("INSERT INTO analysis_snapshots(symbol,timeframe,captured_at,source,methodology_version,regime,regime_confidence,confluence_score,payload,trade_id) VALUES(?,?,?,?,?,?,?,?,?,?)", (symbol, timeframe, pos.get("entry_time") or time.time(), "entry", methods.get("methodology_version"), regime.get("name"), regime.get("confidence"), confluence.get("score"), json.dumps(snapshot, default=str), pos.get("trade_id")))
+            conn.execute("INSERT INTO analysis_snapshots(symbol,timeframe,captured_at,source,methodology_version,regime,regime_confidence,confluence_score,payload,trade_id) VALUES(?,?,?,?,?,?,?,?,?,?)", (symbol, timeframe, pos.get("entry_time") or time.time(), "entry", methods.get("methodology_version"), regime.get("name"), regime.get("confidence"), confluence.get("score"), _json_safe_dumps(snapshot, default=str), pos.get("trade_id")))
         conn.commit()
     await _run_db(op)
     try:
@@ -1325,7 +1356,7 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,0.0) ON CONFLICT(asset) DO NOTHING", (asset,))
         conn.execute("UPDATE virtual_wallet SET amount=amount-? WHERE asset=?", (position_qty, asset))
         conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                     (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), json.dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id")))
+                     (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), _json_safe_dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id")))
         persisted = conn.execute(
             "SELECT COUNT(*) FROM trades WHERE trade_id=?",
             (trade.get("trade_id"),),
@@ -1336,7 +1367,7 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
         if int(conn.execute("SELECT COUNT(*) FROM positions WHERE symbol=?", (symbol,)).fetchone()[0] or 0) != 0:
             raise RuntimeError("Kapanan pozisyon silinemedi; transaction geri alınacak")
         conn.execute("INSERT INTO signals(timestamp,symbol,action,price,reason,strategy,trade_id) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason"), trade.get("strategy"), trade.get("trade_id")))
-        conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), trade.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), json.dumps(sig, default=str)))
+        conn.execute("INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)", (sig.get("timestamp") or time.time(), sig.get("symbol"), trade.get("strategy"), sig.get("action"), sig.get("reason"), sig.get("price"), _json_safe_dumps(sig, default=str)))
         conn.commit()
     await _run_db(op)
     try:
@@ -1404,10 +1435,10 @@ async def save_llm_forecasts(rows):
                 float(row["created_at"]), int(row["horizon_minutes"]), float(row["entry_price"]),
                 row["direction"], float(row["confidence"]), row.get("invalidation_price"),
                 float(row["min_move_pct"]), row.get("regime"),
-                json.dumps(row.get("timeframe_context") or {}, ensure_ascii=False, default=str),
+                _json_safe_dumps(row.get("timeframe_context") or {}, ensure_ascii=False, default=str),
                 row.get("scenario") or "", row.get("counter_scenario"), row.get("summary"), row.get("model"),
                 row.get("prompt_version") or "forecast-v1", row["snapshot_hash"],
-                json.dumps(row.get("snapshot") or {}, ensure_ascii=False, default=str), "pending"))
+                _json_safe_dumps(row.get("snapshot") or {}, ensure_ascii=False, default=str), "pending"))
         conn.executemany(sql, values); conn.commit(); return len(values)
     return await _run_db(op)
 
@@ -1430,7 +1461,7 @@ async def mark_llm_forecast_evaluated(forecast_id, outcome):
             (float(outcome["evaluated_at"]), outcome.get("outcome_price"), outcome.get("outcome_return_pct"),
              outcome.get("outcome_direction"), bool(outcome.get("direction_correct")),
              outcome.get("max_favorable_pct"), outcome.get("max_adverse_pct"),
-             json.dumps(outcome.get("details") or {}, ensure_ascii=False, default=str), forecast_id))
+             _json_safe_dumps(outcome.get("details") or {}, ensure_ascii=False, default=str), forecast_id))
         changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
         conn.commit(); return bool(changed)
     return await _run_db(op)
@@ -1490,7 +1521,7 @@ async def replace_llm_forecast_lessons(lessons):
         values = [(item["lesson_key"], item.get("symbol"), int(item["horizon_minutes"]), item.get("regime"),
                    item.get("direction"), int(item["sample_size"]), item.get("in_sample_accuracy"),
                    item.get("holdout_accuracy"), item.get("confidence_calibration_error"), item["lesson"],
-                   json.dumps(item.get("evidence") or {}, ensure_ascii=False, default=str), item.get("status", "candidate"),
+                   _json_safe_dumps(item.get("evidence") or {}, ensure_ascii=False, default=str), item.get("status", "candidate"),
                    now, now) for item in lessons]
         if values:
             conn.executemany(sql, values); conn.commit()
@@ -1543,7 +1574,7 @@ async def save_llm_tool_log(item):
         conn.execute(
             "INSERT INTO llm_tool_logs (timestamp, scope, tool_name, arguments, result_summary, duration_ms, success) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (item.get("timestamp") or time.time(), item.get("scope"), item.get("tool_name"),
-             json.dumps(item.get("arguments") or {}, default=str), item.get("result_summary"),
+             _json_safe_dumps(item.get("arguments") or {}, default=str), item.get("result_summary"),
              item.get("duration_ms"), bool(item.get("success")))
         )
         conn.commit()
@@ -1568,7 +1599,7 @@ async def save_a2a_message(message, direction="outbound", status="queued", error
                 (message_id,correlation_id,direction,message_type,sender,recipient,status,payload,created_at,delivered_at,acknowledged_at,last_error,attempts)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(message_id) DO NOTHING""",
                 (message.get("message_id"), message.get("correlation_id"), direction, message.get("type"),
-                 message.get("from"), message.get("to"), status, json.dumps(message, ensure_ascii=False, default=str),
+                 message.get("from"), message.get("to"), status, _json_safe_dumps(message, ensure_ascii=False, default=str),
                  message.get("created_at") or time.time(), time.time() if status == "delivered" else None,
                  time.time() if status == "acknowledged" else None, error))
             conn.commit()
@@ -1577,7 +1608,7 @@ async def save_a2a_message(message, direction="outbound", status="queued", error
             (message_id,correlation_id,direction,message_type,sender,recipient,status,payload,created_at,delivered_at,acknowledged_at,last_error,attempts)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,COALESCE((SELECT attempts FROM a2a_messages WHERE message_id=?),0))""",
             (message.get("message_id"), message.get("correlation_id"), direction, message.get("type"),
-             message.get("from"), message.get("to"), status, json.dumps(message, ensure_ascii=False, default=str),
+             message.get("from"), message.get("to"), status, _json_safe_dumps(message, ensure_ascii=False, default=str),
              message.get("created_at") or time.time(), time.time() if status == "delivered" else None,
              time.time() if status == "acknowledged" else None, error, message.get("message_id")))
         conn.commit()
@@ -1613,7 +1644,7 @@ async def update_a2a_message_status(message_id, status, payload=None):
         if payload is None:
             cur = conn.execute("UPDATE a2a_messages SET status=?, acknowledged_at=? WHERE message_id=?", (status, time.time() if status == "acknowledged" else None, str(message_id)))
         else:
-            cur = conn.execute("UPDATE a2a_messages SET status=?, payload=?, acknowledged_at=? WHERE message_id=?", (status, json.dumps(payload, ensure_ascii=False, default=str), time.time() if status == "acknowledged" else None, str(message_id)))
+            cur = conn.execute("UPDATE a2a_messages SET status=?, payload=?, acknowledged_at=? WHERE message_id=?", (status, _json_safe_dumps(payload, ensure_ascii=False, default=str), time.time() if status == "acknowledged" else None, str(message_id)))
         conn.commit()
         return cur.rowcount > 0
     return await _run_db(op)
@@ -1631,7 +1662,7 @@ async def upsert_llm_symbol_guard(symbol, guard_type="cooldown", status="active"
             ON CONFLICT(symbol) DO UPDATE SET guard_type=excluded.guard_type,status=excluded.status,
             blocked_until=excluded.blocked_until,reason=excluded.reason,evidence=excluded.evidence,
             revision=excluded.revision,updated_at=excluded.updated_at""",
-            (symbol, str(guard_type), str(status), blocked_until, reason, json.dumps(evidence or {}, ensure_ascii=False, default=str), revision, now, now))
+            (symbol, str(guard_type), str(status), blocked_until, reason, _json_safe_dumps(evidence or {}, ensure_ascii=False, default=str), revision, now, now))
         conn.commit()
         return {"symbol": symbol, "guard_type": guard_type, "status": status, "blocked_until": blocked_until, "reason": reason, "evidence": evidence or {}, "revision": revision, "updated_at": now}
     return await _run_db(op)
@@ -1672,7 +1703,7 @@ async def create_alert_rule(rule):
             rule.get("name") or f"{rule['symbol']} alarm", str(rule["symbol"]).upper(), rule.get("timeframe", "5m"),
             rule.get("rule_type", "price"), rule.get("operator", "lte"), float(rule["threshold"]),
             max(0, int(rule.get("cooldown_seconds", 1800))), True, True, rule.get("rearm_threshold"), _db_datetime_value(rule.get("expires_at")),
-            json.dumps(rule.get("notify_channels") or ["websocket"]), rule.get("created_by", "user"), rule.get("reason"), now, now))
+            _json_safe_dumps(rule.get("notify_channels") or ["websocket"]), rule.get("created_by", "user"), rule.get("reason"), now, now))
         row = cur.fetchone()
         conn.commit(); return row[0] if row else None
     return await _run_db(op)
@@ -1694,7 +1725,7 @@ async def update_alert_rule(rule_id, changes):
     allowed = {"name", "enabled", "armed", "last_value", "threshold", "operator", "rule_type", "timeframe", "cooldown_seconds", "rearm_threshold", "expires_at", "notify_channels", "reason"}
     fields = [key for key in changes if key in allowed]
     if not fields: return None
-    values = [json.dumps(changes[key]) if key == "notify_channels" else bool(changes[key]) if key in {"enabled", "armed"} else _db_datetime_value(changes[key]) if key == "expires_at" else changes[key] for key in fields]
+    values = [_json_safe_dumps(changes[key]) if key == "notify_channels" else bool(changes[key]) if key in {"enabled", "armed"} else _db_datetime_value(changes[key]) if key == "expires_at" else changes[key] for key in fields]
     values.extend([_db_timestamp(), rule_id])
     def op(conn):
         conn.execute(f"UPDATE alert_rules SET {', '.join(f'{key}=?' for key in fields)}, updated_at=? WHERE id=?", values); conn.commit()
@@ -1736,7 +1767,7 @@ async def save_push_subscription(subscription):
     now = time.time(); endpoint = str(subscription.get("endpoint") or "")
     if not endpoint: raise ValueError("push subscription endpoint gerekli")
     def op(conn):
-        conn.execute("INSERT INTO push_subscriptions(endpoint,subscription,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at", (endpoint, json.dumps(subscription), now, now)); conn.commit(); return True
+        conn.execute("INSERT INTO push_subscriptions(endpoint,subscription,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at", (endpoint, _json_safe_dumps(subscription), now, now)); conn.commit(); return True
     return await _run_db(op)
 
 async def list_push_subscriptions():
@@ -1756,7 +1787,7 @@ async def save_chart_settings(symbol, data):
     def op(conn: sqlite3.Connection):
         conn.execute(
             "INSERT INTO chart_settings (symbol, data) VALUES (?, ?) ON CONFLICT(symbol) DO UPDATE SET data=?",
-            (symbol, json.dumps(data), json.dumps(data))
+            (symbol, _json_safe_dumps(data), _json_safe_dumps(data))
         )
         conn.commit()
 
@@ -1770,12 +1801,12 @@ async def save_backtest(result):
             "win_rate, max_drawdown_pct, order_size, stop_loss_pct, take_profit_pct, trailing_stop_pct, trades) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         params = (result.get("timestamp"), result.get("symbol"), result.get("interval"),
-             result.get("strategy"), json.dumps(result.get("params", {})), result.get("days_back"),
+             result.get("strategy"), _json_safe_dumps(result.get("params", {})), result.get("days_back"),
              result.get("initial_balance"), result.get("final_balance"), result.get("net_pnl"),
              result.get("net_pnl_pct"), result.get("total_trades"), result.get("wins"),
              result.get("losses"), result.get("win_rate"), result.get("max_drawdown_pct"), result.get("order_size"),
              result.get("stop_loss_pct"), result.get("take_profit_pct"),
-             result.get("trailing_stop_pct"), json.dumps(result.get("trades", [])))
+             result.get("trailing_stop_pct"), _json_safe_dumps(result.get("trades", [])))
         if _postgres_enabled():
             row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
         cur = conn.execute(sql, params)
@@ -1829,7 +1860,7 @@ async def upsert_market_feature_snapshots(rows):
             regime_confidence=excluded.regime_confidence,confluence_score=excluded.confluence_score,data_ready=excluded.data_ready"""
         values=[]
         for r in rows:
-            values.append((r["symbol"].upper(),r["timeframe"],int(r["open_time"]),int(r["captured_at"]),r["feature_version"],json.dumps(r.get("payload",{}),default=str),r.get("regime"),r.get("regime_confidence"),r.get("confluence_score"),bool(r.get("data_ready",False))))
+            values.append((r["symbol"].upper(),r["timeframe"],int(r["open_time"]),int(r["captured_at"]),r["feature_version"],_json_safe_dumps(r.get("payload",{}),default=str),r.get("regime"),r.get("regime_confidence"),r.get("confluence_score"),bool(r.get("data_ready",False))))
         conn.executemany(sql, values); conn.commit(); return len(values)
     return await _run_db(op)
 
@@ -1867,8 +1898,8 @@ async def save_research_run(result):
             (created_at,run_type,scope,symbols,timeframes,parameters,result,status,paper_only)
             VALUES (?,?,?,?,?,?,?,?,?)"""
         params = (time.time(), result.get("run_type", "research"), result.get("scope", "active"),
-                  json.dumps(result.get("symbols", [])), json.dumps(result.get("timeframes", [])),
-                  json.dumps(result.get("parameters", {}), default=str), json.dumps(result.get("result", {}), default=str),
+                  _json_safe_dumps(result.get("symbols", [])), _json_safe_dumps(result.get("timeframes", [])),
+                  _json_safe_dumps(result.get("parameters", {}), default=str), _json_safe_dumps(result.get("result", {}), default=str),
                   result.get("status", "completed"), 1)
         if _postgres_enabled():
             row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
@@ -1897,8 +1928,8 @@ async def save_research_pattern(item):
             (created_at,updated_at,name,description,symbols_scope,symbols,timeframes,definition,evidence,status,confidence,source_run_id)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"""
         params = (now, now, item["name"], item.get("description"), item.get("symbols_scope", "active"),
-                  json.dumps(item.get("symbols", [])), json.dumps(item.get("timeframes", [])),
-                  json.dumps(item.get("definition", {}), default=str), json.dumps(item.get("evidence", {}), default=str),
+                  _json_safe_dumps(item.get("symbols", [])), _json_safe_dumps(item.get("timeframes", [])),
+                  _json_safe_dumps(item.get("definition", {}), default=str), _json_safe_dumps(item.get("evidence", {}), default=str),
                   item.get("status", "candidate"), item.get("confidence", 0.3), item.get("source_run_id"))
         if _postgres_enabled():
             row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
@@ -1929,6 +1960,39 @@ async def delete_backtest(run_id):
         conn.commit()
 
     await _run_db(op)
+
+
+async def prune_retention(days: int = 30):
+    """Delete high-volume observability rows older than ``days`` days.
+
+    microstructure_snapshots grows one row per fresh symbol per second and
+    embedding_jobs keeps full JSONB documents; without a sweep both grow
+    unbounded. Paper trades/signals/decision logs are never pruned here.
+    Returns per-table deleted row counts.
+    """
+    cutoff = time.time() - max(1, int(days)) * 86400
+
+    def op(conn):
+        deleted = {}
+        for table, column in (
+            ("microstructure_snapshots", "captured_at"),
+            ("llm_tool_logs", "timestamp"),
+            ("embedding_jobs", "created_at"),
+            ("analysis_snapshots", "captured_at"),
+            ("strategy_scan_logs", "timestamp"),
+        ):
+            try:
+                cursor = conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff,))
+                conn.commit()
+                deleted[table] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+            except Exception:
+                # A missing table (fresh sqlite schema) or a PG-compat quirk
+                # must not abort the remaining sweeps.
+                conn.rollback()
+                deleted[table] = 0
+        return deleted
+
+    return await _run_db(op)
 
 
 async def close_db():

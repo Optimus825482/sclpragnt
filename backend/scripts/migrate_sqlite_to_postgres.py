@@ -30,11 +30,13 @@ async def main():
     args = parser.parse_args()
     source = str(Path(args.source).resolve())
     if not Path(source).is_file(): raise SystemExit(f"SQLite source not found: {source}")
-    if not args.database_url: raise SystemExit("DATABASE_URL is required")
+    # "-" means the URL is piped via stdin so the password never appears in argv.
+    database_url = os.getenv("DATABASE_URL") if args.database_url == "-" else args.database_url
+    if not database_url: raise SystemExit("DATABASE_URL is required")
     sqlite_conn, counts = snapshot(source); digest = sha256(source)
     print(json.dumps({"source": source, "sha256": digest, "counts": counts}, ensure_ascii=False, indent=2))
     if not args.apply: print("Dry run only. Re-run with --apply after reviewing source."); return
-    pg = await asyncpg.connect(args.database_url)
+    pg = await asyncpg.connect(database_url)
     try:
         schema = (Path(__file__).resolve().parent.parent / "migrations" / "001_pgvector_schema.sql").read_text(encoding="utf-8")
         await pg.execute(schema)

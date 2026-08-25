@@ -101,7 +101,13 @@ class MarketData:
 
     @staticmethod
     def _closed_history(rows, tf: str, now_ms: int):
-        """Normalize REST rows, discard the open bar and deduplicate by open time."""
+        """Normalize REST rows, discard the open bar and deduplicate by open time.
+
+        ``now_ms`` is shifted back by a small margin so a host clock that
+        runs ahead of exchange time cannot admit a candle whose close is
+        still in the future (look-ahead window proportional to the skew).
+        """
+        now_ms = int(now_ms) - 1500
         normalized = {}
         duration_ms = _interval_ms(tf)
         for row in rows or []:
@@ -131,6 +137,82 @@ class MarketData:
             history["updated_at"] = time.time()
             history["source"] = "binance_tr_public_rest"
         return history
+
+    async def repair_history_gaps(self, symbols=None, timeframes=None):
+        """REST-backfill cache series whose tail predates the last expected close.
+
+        After a WebSocket outage across one or more candle closes the stream
+        resumes appending new bars onto a gapped series; freshness checks only
+        see the tail timestamp. This splices the missing closed candles in so
+        indicators never run across discontinuous bars.
+        """
+        requested_symbols = [str(symbol).upper() for symbol in (symbols or self.symbols)]
+        requested_timeframes = list(dict.fromkeys(str(tf) for tf in (timeframes or self.timeframes)))
+        now_ms = int(time.time() * 1000)
+        stale = []
+        for timeframe in requested_timeframes:
+            duration_ms = _interval_ms(timeframe)
+            for symbol in requested_symbols:
+                history = (self.klines.get(timeframe, {}).get(symbol, {}) or {})
+                timestamps = history.get("timestamps") or []
+                if not timestamps:
+                    continue
+                last_closed = int(history.get("last_closed_at_ms") or 0)
+                if last_closed < now_ms - 2 * duration_ms:
+                    stale.append((timeframe, symbol))
+        if not stale:
+            return {"checked": len(requested_timeframes) * len(requested_symbols), "repaired": 0, "errors": []}
+
+        semaphore = asyncio.Semaphore(8)
+        repaired = 0
+        errors = []
+
+        async def backfill(timeframe: str, symbol: str):
+            nonlocal repaired
+            async with semaphore:
+                try:
+                    history = (self.klines.get(timeframe, {}).get(symbol, {}) or {})
+                    timestamps = history.get("timestamps") or []
+                    if not timestamps:
+                        return
+                    gap_start_ms = int(timestamps[-1]) + 1
+                    rows = await fetch_klines(symbol.lower(), timeframe, limit=400, start_time_ms=gap_start_ms)
+                    fresh_rows = self._closed_history(rows, timeframe, now_ms)
+                    if not fresh_rows["timestamps"]:
+                        return
+                    merged = {ts: (
+                        history["opens"][index], history["highs"][index], history["lows"][index],
+                        history["closes"][index], history["volumes"][index])
+                        for index, ts in enumerate(timestamps)}
+                    for index, ts in enumerate(fresh_rows["timestamps"]):
+                        merged[ts] = (
+                            fresh_rows["opens"][index], fresh_rows["highs"][index],
+                            fresh_rows["lows"][index], fresh_rows["closes"][index],
+                            fresh_rows["volumes"][index])
+                    ordered = sorted(merged)[-self.MAX_HISTORY_CANDLES:]
+                    result = _empty_history()
+                    for ts in ordered:
+                        opened, high, low, close, volume = merged[ts]
+                        result["timestamps"].append(ts)
+                        result["opens"].append(opened)
+                        result["highs"].append(high)
+                        result["lows"].append(low)
+                        result["closes"].append(close)
+                        result["volumes"].append(volume)
+                    result["last_closed_at_ms"] = max(
+                        int(history.get("last_closed_at_ms") or 0), fresh_rows["last_closed_at_ms"])
+                    result["updated_at"] = time.time()
+                    result["source"] = "binance_tr_public_rest_gap_fill"
+                    self.klines[timeframe][symbol] = result
+                    repaired += 1
+                except Exception as exc:
+                    errors.append(f"{symbol}/{timeframe}: {type(exc).__name__}: {exc}")
+
+        await asyncio.gather(*(backfill(timeframe, symbol) for timeframe, symbol in stale))
+        if repaired or errors:
+            print(f"[MarketData] Gap repair: {repaired} seri onarıldı, {len(errors)} hata", flush=True)
+        return {"checked": len(requested_timeframes) * len(requested_symbols),
+                "repaired": repaired, "errors": errors[:20]}
 
     async def fetch_historical_data(self, timeframes=None):
         """Warm the cache using closed REST candles only."""
@@ -294,6 +376,13 @@ class MarketData:
         try:
             while self.running:
                 await self.refresh_24h_tickers()
+                # Safety net: repair any series the WS left gapped (silent
+                # per-stream stalls never raise in _run_ws_group).
+                try:
+                    await self.repair_history_gaps()
+                except Exception as exc:
+                    print(f"[MarketData] Gap repair hatası: {exc}", flush=True)
+                    break
                 await asyncio.sleep(10)
         except asyncio.CancelledError:
             raise
@@ -343,6 +432,10 @@ class MarketData:
                 self.ws_last_error = str(exc)
                 self.last_error = self.ws_last_error or self.rest_last_error
                 print(f"[MarketData] WS Hata generation={generation} grup={group_id}: {exc}", flush=True)
+                # Candles may have closed while the socket was down; splice
+                # the missing range back in before fresh bars resume.
+                asyncio.create_task(self.repair_history_gaps(symbols=plan["symbols"], timeframes=plan["timeframes"]),
+                                    name=f"market-gap-repair-g{generation}-{group_id}")
                 await asyncio.sleep(2)
 
     async def _watch_reconnect(self, generation: int):

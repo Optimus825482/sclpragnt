@@ -699,8 +699,22 @@ export default function ChartsPage() {
 
     // canlı mum güncelleme: Binance WebSocket'ten seçili sembolün kline'ını dinle
     useEffect(() => {
-        const ws = new WebSocket(`wss://stream-cloud.binance.tr/ws/${symbol.toLowerCase()}@kline_${interval}`);
-        ws.onmessage = (ev) => {
+        let ws: WebSocket | null = null;
+        let retryTimer: ReturnType<typeof setTimeout> | null = null;
+        let attempt = 0;
+        let closed = false;
+        const connect = () => {
+            if (closed) return;
+
+            ws = new WebSocket(`wss://stream-cloud.binance.tr/ws/${symbol.toLowerCase()}@kline_${interval}`);
+            ws.onclose = () => {
+                if (!closed) {
+                    attempt += 1;
+                    retryTimer = setTimeout(connect, Math.min(30_000, 2_000 * 2 ** Math.min(attempt, 4)) + Math.random() * 1_000);
+                }
+            };
+
+            ws.onmessage = (ev) => {
             try {
                 const msg = JSON.parse(ev.data);
                 const k = msg.k;
@@ -731,7 +745,13 @@ export default function ChartsPage() {
                 });
             } catch { /* parse hatası yoksay */ }
         };
-        return () => ws.close();
+        };
+        connect();
+        return () => {
+            closed = true;
+            if (retryTimer) clearTimeout(retryTimer);
+            ws?.close();
+        };
     }, [symbol, interval]);
 
     // WebSocket anlık portföyü taşır; HTTP yalnızca bağlantı kopması için

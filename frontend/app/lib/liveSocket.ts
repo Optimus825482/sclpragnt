@@ -11,6 +11,7 @@ type StatusListener = (status: LiveStatus) => void;
 
 let socket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempt = 0;
 let status: LiveStatus = "closed";
 const messageListeners = new Set<MessageListener>();
 const statusListeners = new Set<StatusListener>();
@@ -25,7 +26,7 @@ function connect() {
   setStatus("connecting");
   const instance = new WebSocket(WS_URL);
   socket = instance;
-  instance.onopen = () => { if (socket === instance) setStatus("open"); };
+  instance.onopen = () => { if (socket === instance) { reconnectAttempt = 0; setStatus("open"); } };
   instance.onmessage = (event) => {
     if (socket !== instance) return;
     try {
@@ -43,7 +44,11 @@ function connect() {
       window.dispatchEvent(new CustomEvent("scalper:auth-expired"));
       return;
     }
-    if (messageListeners.size > 0) reconnectTimer = setTimeout(connect, 2_000);
+    // Exponential backoff with jitter and a ceiling: a backend outage must
+    // not turn every open tab into a fixed 2s retry storm.
+    const delay = Math.min(30_000, 2_000 * 2 ** Math.min(reconnectAttempt, 4)) + Math.random() * 1_000;
+    reconnectAttempt += 1;
+    if (messageListeners.size > 0) reconnectTimer = setTimeout(connect, delay);
   };
   instance.onerror = () => instance.close();
 }

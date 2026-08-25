@@ -208,6 +208,7 @@ export default function BacktestPage() {
     };
 
     const remove = async (id: number) => {
+        if (!window.confirm("Bu backtest kaydı kalıcı olarak silinecek. Onaylıyor musunuz?")) return;
         await apiRequest(`${API_BASE}/api/backtests/${id}`, { method: "DELETE" });
         loadHistory();
     };

@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
-import { useLiveMessages } from "../lib/liveSocket";
+import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "./SymbolLink";
 
 type Ticker = { symbol: string; last_price: number; volume: number; avg_volume?: number };
@@ -12,6 +12,13 @@ type Portfolio = { try: number; total_value: number; positions: Position[] };
 export default function LiveTerminal() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const liveStatus = useLiveStatus();
+  // Guarded formatters: a malformed WS/API payload must not crash the page.
+  const safeNumber = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const pctText = (pct: unknown) => {
+    const value = safeNumber(pct);
+    return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+  };
   const logEndRef = useRef<HTMLDivElement | null>(null);
   const onLiveMessage = useCallback((msg: any) => {
     if (msg.type === "signal") setSignals((current) => [...current, msg.data].slice(-100));
@@ -58,7 +65,11 @@ export default function LiveTerminal() {
         <div className="card bg-bunker-950 p-0 overflow-hidden">
           <div className="p-4 border-b border-bunker-800 flex justify-between items-center">
             <p className="eyebrow">İŞLEM AKIŞI (TRADE LOG)</p>
-            <span className="text-xs text-neon-green font-mono animate-pulse">● LIVE</span>
+            {liveStatus === "open"
+              ? <span className="text-xs text-neon-green font-mono animate-pulse">● LIVE</span>
+              : <span className="text-xs font-mono text-neon-yellow" title="WebSocket bağlantısı yok; veriler bayat olabilir">
+                  {liveStatus === "connecting" ? "○ BAĞLANIYOR" : "○ BAĞLANTI YOK"}
+                </span>}
           </div>
           <div className="p-4 font-mono text-sm h-64 overflow-y-auto">
             {signals.length === 0 && <p className="text-bunker-muted">$ Bot çalışıyor, strateji sinyali bekleniyor...</p>}
@@ -67,7 +78,7 @@ export default function LiveTerminal() {
                 <span className="text-bunker-muted">[{s.timestamp ? new Date(s.timestamp * 1000).toLocaleTimeString("tr-TR") : "--"}]</span>{" "}
                 <span className="font-bold">{s.action}</span>{" "}
                 <SymbolLink symbol={s.symbol} className="font-bold text-current hover:text-white" /> {s.price && `@ ₺${s.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{" "}
-                <span className="text-bunker-700 text-xs">// {s.reason}</span>
+                <span className="text-bunker-600 text-xs">// {s.reason}</span>
               </div>
             ))}
             <div ref={logEndRef} />
@@ -92,8 +103,8 @@ export default function LiveTerminal() {
               <div key={p.symbol} className="bg-bunker-950 p-4 rounded-lg border border-bunker-800">
                 <div className="flex justify-between mb-2">
                   <SymbolLink symbol={p.symbol} className="font-bold text-white hover:text-neon-green" />
-                  <span className={`font-mono ${pnlColor(p.pnl_pct)}`}>
-                    {p.pnl_pct > 0 ? "+" : ""}{p.pnl_pct.toFixed(2)}%
+                  <span className={`font-mono ${pnlColor(safeNumber(p.pnl_pct))}`}>
+                    {pctText(p.pnl_pct)}
                   </span>
                 </div>
                 <div className="position-values flex justify-between text-xs text-bunker-muted font-mono">
@@ -101,7 +112,7 @@ export default function LiveTerminal() {
                   <span>Anlık: ₺{p.current.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
                 <div className="mt-2 text-xs text-right text-bunker-muted font-mono">
-                  PnL: <span className={pnlColor(p.pnl_pct)}>{p.pnl_try != null && p.pnl_try >= 0 ? "+" : ""}₺{formatTL(p.pnl_try)}</span> · {p.pnl_pct.toFixed(2)}%
+                  PnL: <span className={pnlColor(safeNumber(p.pnl_pct))}>{(p.pnl_try ?? 0) >= 0 ? "+" : ""}₺{formatTL(p.pnl_try)}</span> · {pctText(p.pnl_pct)}
                 </div>
                 <div className="mt-1 text-xs text-bunker-muted font-mono">Sinyal: {p.strategy === "PUMP_MONITOR" ? `Pump Monitor · skor ${p.entry_context?.signal_context?.score ?? "—"}/4` : (p.strategy || "UT")}</div>
                 <div className="mt-1 text-xs text-right text-bunker-muted font-mono">
