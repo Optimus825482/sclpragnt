@@ -153,6 +153,22 @@ class Config:
     PUMP_MONITOR_MIN_SCORE = max(3, min(4, int(os.getenv("PUMP_MONITOR_MIN_SCORE", "3"))))
     PUMP_MONITOR_REQUIRE_M15_BULLISH = os.getenv("PUMP_MONITOR_REQUIRE_M15_BULLISH", "true").lower() == "true"
     PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO = max(0.0, float(os.getenv("PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO", "1.0")))
+    # 2026-08-25 trade-history analysis (292 trades, -1680 TRY net):
+    # volume_ratio > 2.0 entries alone lost -1029 TRY (chasing an already-
+    # detonated pump); 56 stops had seen >= +0.5% MFE first (-1536 TRY); and
+    # 48% of stops never saw +0.3% at all (failed pump confirmations). These
+    # knobs are derived from that dataset and stay paper-only.
+    PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO = max(0.0, float(os.getenv("PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO", "2.0")))
+    PUMP_MONITOR_BREAK_EVEN_ENABLED = os.getenv("PUMP_MONITOR_BREAK_EVEN_ENABLED", "true").lower() == "true"
+    # 0.3% beat 0.5% in the 48h real-kline replay (work/pump_replay_engine.py):
+    # -1353 vs -1690 TRY with VR<=2.0. Keep the tighter trigger.
+    PUMP_MONITOR_BREAK_EVEN_TRIGGER_PCT = max(0.05, float(os.getenv("PUMP_MONITOR_BREAK_EVEN_TRIGGER_PCT", "0.3"))) / 100.0
+    # Fast-fail did NOT earn its keep in the 48h replay (early exits cut
+    # trades that later hit ATR trailing). Disabled by default; enable via
+    # env only after a longer-window replay supports it.
+    PUMP_MONITOR_FAST_FAIL_ENABLED = os.getenv("PUMP_MONITOR_FAST_FAIL_ENABLED", "false").lower() == "true"
+    PUMP_MONITOR_FAST_FAIL_SEC = max(60, int(os.getenv("PUMP_MONITOR_FAST_FAIL_SEC", "900")))
+    PUMP_MONITOR_FAST_FAIL_MIN_PROGRESS_PCT = max(0.05, float(os.getenv("PUMP_MONITOR_FAST_FAIL_MIN_PROGRESS_PCT", "0.3"))) / 100.0
     # LLM yalnızca kullanıcının açık "işlem aç" talebiyle çalışabilir.
     LLM_AUTO_OPEN_ENABLED = False
     GAINER_RADAR_MIN_SCORE = 65
