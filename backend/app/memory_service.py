@@ -9,12 +9,22 @@ import time
 from typing import Any
 
 LAYERS = {"session", "symbol", "strategy", "trade", "system", "user"}
-UNTRUSTED_INSTRUCTION_MARKERS = ("ignore previous", "system prompt", "jailbreak", "do not follow", "override rules", "api key")
+# Injection markers in the languages the system actually stores (Turkish chat,
+# Turkish lessons, English provider text). English-only markers let a Turkish
+# instruction like "önceki talimatları yoksay" pass unsanitized.
+UNTRUSTED_INSTRUCTION_MARKERS = (
+    "ignore previous", "system prompt", "jailbreak", "do not follow",
+    "override rules", "api key", "disregard all", "new instructions:",
+    "yoksay", "görmezden gel", "önceki talimat", "sistem istemi",
+    "kuralları aş", "kurallari as", "yeni talimatlar:", "talimatları yok say",
+)
 
 def sanitize_retrieved_memory(row: dict[str, Any]) -> dict[str, Any]:
     """Mark suspicious recalled text as data; never promote it to instructions."""
     value = str(row.get("content") or "")
     lowered = value.lower()
+    # Case-insensitive for ASCII markers; Turkish İ/ı dotted forms are matched
+    # by including both spellings in the marker list.
     suspicious = [marker for marker in UNTRUSTED_INSTRUCTION_MARKERS if marker in lowered]
     result = dict(row)
     result["provenance"] = {"source_type": (row.get("metadata") or {}).get("source_type") or "memory",
@@ -100,8 +110,11 @@ async def retrieve(conn, query_vector: list[float], *, limit: int = 8, layer: st
       ORDER BY ((1-(e.embedding <=> $1::halfvec)) * 0.60
         + {f"ts_rank_cd(d.search_vector, plainto_tsquery('simple', ${text_param}))" if text_param else "0"} * 0.15
         + EXP(-GREATEST(0, EXTRACT(EPOCH FROM (now()-d.observed_at))/86400.0)/30.0) * 0.15
-        + CASE WHEN lower(COALESCE(d.metadata->>'outcome','')) IN ('passed','success','profit','profitable') THEN 0.10
-               WHEN lower(COALESCE(d.metadata->>'outcome','')) IN ('failed','failure','loss','losing') THEN -0.10 ELSE 0.0 END
+        -- Verified outcomes of either polarity earn the same small boost:
+        -- a one-sided success bonus made recall skew positive and starved
+        -- the agent of its failure lessons.
+        + CASE WHEN lower(COALESCE(d.metadata->>'outcome','')) IN ('passed','success','profit','profitable','failed','failure','loss','losing')
+               THEN 0.08 ELSE 0.0 END
         - COALESCE((SELECT COUNT(*) FROM memory_relations mr WHERE mr.target_id=d.id AND mr.relation_type='contradicts'),0) * 0.05) DESC
       LIMIT ${len(args)}""", *args)
     return [sanitize_retrieved_memory(dict(row)) for row in rows]
