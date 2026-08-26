@@ -24,9 +24,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="tr" className="dark">
+    // suppressHydrationWarning: browser extensions inject attributes onto <html>
+    // before hydration (e.g. rtrvr-*); ignore mismatches on this element only.
+    <html lang="tr" className="dark" suppressHydrationWarning>
       <head><meta name="mobile-web-app-capable" content="yes" /></head>
-      <body>
+      {/* Extension noise lands on <body> too; same suppression, children unaffected. */}
+      <body suppressHydrationWarning>
         <AuthGate>
         <AppShell>{children}</AppShell>
         </AuthGate>

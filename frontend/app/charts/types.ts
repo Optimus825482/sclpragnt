@@ -1,6 +1,8 @@
 export type IndicatorStyle = {
   colors: string[];
   lineWidth: number;
+  // çizgi bazlı kalınlık; yoksa lineWidth kullanılır (eski kayıt uyumluluğu)
+  lineWidths?: number[];
   showPriceLine: boolean;
   showBounds: boolean;
   minValue?: number | null;

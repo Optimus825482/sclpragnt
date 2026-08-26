@@ -1,5 +1,6 @@
 import os
 import asyncio
+import math
 import time
 import logging
 import subprocess
@@ -2379,7 +2380,11 @@ async def system_health():
                       if value["ticker"]["fresh"] and value["kline"]["fresh"])
     market_degraded = market.running and bool(market.symbols) and fresh_count == 0
     overall_degraded = (db_status.startswith("postgres_") and db_status != "postgres_healthy") or llm_error or market_degraded
-    return {"status": "degraded" if overall_degraded else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "fresh_symbols": fresh_count, "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes, "rest_last_event_at": market.rest_last_event_at, "rest_error": market.rest_last_error, "ws_last_event_at": market.ws_last_event_at, "ws_error": market.ws_last_error, "ws_generation": market.connection_generation}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": analyzer.max_open_positions(), "pending_paper_orders": len(analyzer.pending_orders)}, "database": {"backend": "postgres", "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}, "a2a": {"enabled": bool(os.getenv("A2A_RELAY_URL", "").strip() and os.getenv("A2A_SHARED_SECRET", "").strip()), "relay_configured": bool(os.getenv("A2A_RELAY_URL", "").strip()), "outbox_paper_only": True}, "safety": {"paper_only": True, "memory_content_untrusted": True, "tool_audit_enabled": True}}
+    # MAX_OPEN_POSITIONS=0 "sınırsız" demektir; analyzer float("inf") döndürür ve
+    # JSON bunu temsil edemez (allow_nan=False) → API'ye null olarak çıkar.
+    _max_open_raw = analyzer.max_open_positions()
+    max_open_json = None if isinstance(_max_open_raw, float) and not math.isfinite(_max_open_raw) else _max_open_raw
+    return {"status": "degraded" if overall_degraded else "ok", "generated_at": time.time(), "market": {"symbols": len(market.symbols), "tickers": len(market.tickers), "fresh_symbols": fresh_count, "max_ticker_age_sec": max(ages) if ages else None, "timeframes": market.timeframes, "rest_last_event_at": market.rest_last_event_at, "rest_error": market.rest_last_error, "ws_last_event_at": market.ws_last_event_at, "ws_error": market.ws_last_error, "ws_generation": market.connection_generation}, "portfolio": {"open_positions": len(analyzer.positions), "max_open_positions": max_open_json, "pending_paper_orders": len(analyzer.pending_orders)}, "database": {"backend": "postgres", "status": db_status, "postgres_configured": bool(os.getenv("DATABASE_URL", "").strip()), "vector_extension": vector_status}, "embedding": embedding_worker.snapshot(), "websocket_clients": len(ws_manager.active_connections), "llm": {"configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "active": llm_active, "error": llm_error}, "a2a": {"enabled": bool(os.getenv("A2A_RELAY_URL", "").strip() and os.getenv("A2A_SHARED_SECRET", "").strip()), "relay_configured": bool(os.getenv("A2A_RELAY_URL", "").strip()), "outbox_paper_only": True}, "safety": {"paper_only": True, "memory_content_untrusted": True, "tool_audit_enabled": True}}
 
 @app.get("/api/memory/status")
 async def memory_status():

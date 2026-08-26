@@ -1,0 +1,1495 @@
+INFO:     Started server process [2976]
+INFO:     Waiting for application startup.
+[Activity] universe=308 ACTIVE=18 PASSIVE=166 WARMING=124
+[Activity] ilk kontrol tamamlandý | universe=308 active=18 passive=166 warming=124
+[MarketData] Timeframes: ['15m', '1h', '1m', '5m'] - Geçmiþ mum verileri çekiliyor...
+[MarketData] geçmiþ çekiliyor | symbol=0GTRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=1000CATTRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=1MBABYDOGETRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=2ZTRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=ACETRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=ACTTRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=ADATRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=AEROTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=AEROTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AEVOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ADATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AIGENSYNTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=2ZTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=1MBABYDOGETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AIXBTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=1000CATTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALGOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ACETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALICETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=0GTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALLOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ACTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALPINETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ALGOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ALICETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AMPTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=AIXBTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=API3TRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ALTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=APTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=AITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARBTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ALLOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARKMTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=AEVOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARKTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=AIGENSYNTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARPATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=API3TRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ARKMTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ASTERTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ARPATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATMTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ALPINETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATOMTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ARBTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ATMTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AUDIOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=AMPTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AVAXTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=APTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AVNTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ARKTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BABYTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ATOMTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BANANATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ARTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BANKTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BABYTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BARDTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=AVAXTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BARTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=AUDIOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BBTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ASTERTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BEAMXTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BARDTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BIOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BARTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BLURTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=AVNTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BMTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BANANATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BOMETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BIOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CATITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ATTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CELOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BEAMXTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CETUSTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BMTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CHIPTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BOMETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=COTITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BLURTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CRVTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=CELOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=CHIPTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CYBERTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BANKTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DODOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=BBTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DOGETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=CTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DOLOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=CYBERTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EDENTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=CETUSTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EDUTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=DOGETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EIGENTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=DOLOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ENATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=CATITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ESPTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=COTITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ETHFITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=CRVTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EULTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=EDUTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FETTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=DODOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FFTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=EULTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FIDATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ENATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FLOKITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=EDENTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FOGOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ESPTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FORMTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=FIDATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=EIGENTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GASTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ETHFITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GENIUSTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=FFTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GIGGLETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=FETTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GPSTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=FLOKITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=GIGGLETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GUNTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=GPSTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HAEDALTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=GENIUSTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HBARTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=FORMTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HEITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=HAEDALTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HOLOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=GASTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HOMETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=HEITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HUMATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=FOGOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HYPERTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=FTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=GTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ICPTRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=IDTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=HOMETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IOTATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=GUNTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=HYPERTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=JASMYTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=IOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=JTOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=IOTATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=KERNELTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=KERNELTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=KITETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=HBARTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=HOLOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LDOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=JASMYTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LINKTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=LATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LISTATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=HUMATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUMIATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=JTOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUNATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=LINKTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUNCTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ICPTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MAVTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=IDTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MEMETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=KITETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=METRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=LUNATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=METTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=LUNCTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MINATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=MEMETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MITOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=METTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MMTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=LUMIATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MOVRTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=MINATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MUBARAKTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=MUBARAKTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NEARTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=MOVRTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=LDOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NEIROTRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=NILTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=METRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NOTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=LISTATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OGNTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=NEARTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ONETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=NOTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPENTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=MAVTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPGTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ONETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=MITOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ORDITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=NILTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PENGUTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=MMTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PEOPLETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PENGUTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PHATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=OPENTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PIXELTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=NEIROTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PLUMETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=OGNTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PNUTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=OPTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=POLTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PIXELTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PORTALTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PLUMETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PSGTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PEOPLETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PUMPTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=OPGTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PYTHTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PORTALTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=QTUMTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PHATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RADTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PNUTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RARETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PUMPTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=REDTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ORDITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RENDERTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=QTUMTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PSGTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=REZTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=POLTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ROBOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=RARETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RONINTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=RENDERTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RVNTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=REDTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SAGATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=PYTHTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SANDTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=RVNTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SCRTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=ROBOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SENTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=RONINTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SHELLTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SAGATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=SANDTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SHIBTRY timeframe=15m
+[MarketData] geçmiþ çekiliyor | symbol=SLPTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=RETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOLVTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SCRTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOMITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=RADTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOPHTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SOMITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SPELLTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SLPTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SPKTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=REZTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SPELLTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STRAXTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SHELLTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STXTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SPKTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SUITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SHIBTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SUNTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SOLVTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SXTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=STRAXTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SYRUPTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=STXTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TAOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SUITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=THETATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SXTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=THETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SUNTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TLMTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SENTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TOWNSTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SYRUPTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRBTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TAOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TREETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=STOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRUMPTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=THETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRXTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TOWNSTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TSTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=SOPHTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TURBOTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TRUMPTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TURTLETRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TRXTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TWTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=THETATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USDTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TWTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USTCTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TRBTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USUALTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=USDTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=VANATRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=USTCTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=VIRTUALTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TLMTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WLDTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TREETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WLFITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=USUALTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=WLDTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XAITRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=VANATRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XPLTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TSTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XVGTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TURBOTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=YBTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=VIRTUALTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZBTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=WLFITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZKTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=TURTLETRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZROTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=WTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ONTTRY timeframe=15m
+[MarketData] geçmiþ hazýr | symbol=XAITRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=XPLTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=0GTRY timeframe=1h
+[MarketData] geçmiþ çekiliyor | symbol=1000CATTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=XVGTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=1MBABYDOGETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=YBTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=2ZTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ONTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ACETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=1MBABYDOGETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ACTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ZBTTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ADATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ZKTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AEROTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ZROTRY timeframe=15m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AEVOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=1000CATTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AIGENSYNTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ADATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=AEROTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AIXBTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=0GTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALGOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=AEVOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALICETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ACETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALLOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ACTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALPINETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ALGOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ALICETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AMPTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=2ZTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=API3TRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ALPINETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=APTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=AITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARBTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=AIXBTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARKMTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=AIGENSYNTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARKTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ALTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARPATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=API3TRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=APTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ASTERTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=AMPTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATMTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ARKTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATOMTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ARKMTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ALLOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AUDIOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ARBTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AVAXTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ASTERTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AVNTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ATMTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BABYTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=AVAXTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BANANATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ARTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BANKTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ARPATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BARDTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ATOMTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BARTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BABYTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BBTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BBTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BEAMXTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BANANATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BIOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BARDTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BLURTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=AUDIOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BMTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ATTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BOMETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=AVNTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CATITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BARTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CELOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BIOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CETUSTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=CATITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CHIPTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BANKTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=COTITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BOMETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CRVTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=CETUSTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=CELOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CYBERTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BEAMXTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DODOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=CHIPTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DOGETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=CTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DOLOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BLURTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EDENTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=DODOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EDUTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=BMTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EIGENTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=CYBERTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ENATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=EDENTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ESPTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=EIGENTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ETHFITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=DOGETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EULTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ENATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FETTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=COTITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FFTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=CRVTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FIDATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=DOLOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FLOKITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=FIDATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FOGOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ESPTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FORMTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=FFTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ETHFITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GASTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=EULTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GENIUSTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=EDUTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GIGGLETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=FETTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GPSTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=FORMTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=GASTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GUNTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=GIGGLETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HAEDALTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=GUNTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HBARTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=FTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HEITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=FLOKITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HOLOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=GENIUSTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HOMETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=GTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HUMATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=FOGOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HYPERTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=HAEDALTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ICPTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=HOLOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IDTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=GPSTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IOTATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=HBARTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ICPTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=JASMYTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=HUMATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=JTOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=IOTATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=KERNELTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=IDTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=KITETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=HEITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=JASMYTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LDOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=HOMETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LINKTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=IOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LISTATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=LATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUMIATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=HYPERTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUNATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=JTOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUNCTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=LINKTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MAVTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=KITETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MEMETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=KERNELTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=METRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=LUNCTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=METTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=LDOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MINATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=MAVTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MITOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=MEMETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MMTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=LUNATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MOVRTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=LUMIATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MUBARAKTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=MMTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NEARTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=MOVRTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NEIROTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=METTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NILTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=METRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NOTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=MITOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OGNTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=MINATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ONETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=NEIROTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPENTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=LISTATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPGTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=MUBARAKTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=OGNTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ORDITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ONETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PENGUTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=NILTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PEOPLETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ORDITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PHATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PENGUTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PIXELTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=OPENTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PLUMETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=OPGTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PNUTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=OPTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=POLTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PEOPLETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PORTALTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PHATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PSGTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PNUTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PUMPTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=NEARTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PYTHTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=POLTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=QTUMTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PIXELTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RADTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=NOTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RARETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PUMPTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=REDTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PYTHTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RENDERTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=QTUMTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PSGTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=REZTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PLUMETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ROBOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=RADTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RONINTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=RENDERTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RVNTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=RETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SAGATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=RONINTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SANDTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=REDTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SCRTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=REZTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SENTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=PORTALTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SHELLTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SANDTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SHIBTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SCRTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SLPTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SAGATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOLVTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SHELLTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOMITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SHIBTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOPHTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=RARETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SPELLTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SOMITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SPKTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=ROBOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=RVNTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STRAXTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SENTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STXTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SOLVTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SUITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SLPTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SUNTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=STRAXTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SXTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=STXTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SYRUPTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SPKTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TAOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SXTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=THETATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SYRUPTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=THETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TAOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TLMTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=THETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TOWNSTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SOPHTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRBTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TLMTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TREETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SUITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRUMPTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SPELLTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRXTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=SUNTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TSTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=STOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TURBOTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TRBTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TURTLETRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TSTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TWTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TOWNSTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USDTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TREETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USTCTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TWTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USUALTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=THETATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=VANATRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TRUMPTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=VIRTUALTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TURBOTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WLDTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=VIRTUALTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WLFITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=VANATRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=USUALTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XAITRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=USTCTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XPLTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TRXTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XVGTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=WTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=YBTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=TURTLETRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZBTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=WLDTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZKTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=XAITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZROTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=USDTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ONTTRY timeframe=1h
+[MarketData] geçmiþ hazýr | symbol=YBTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=0GTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ZKTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=1000CATTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=XVGTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=1MBABYDOGETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=WLFITRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=2ZTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ZROTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ACETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ZBTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ACTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=1000CATTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ADATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=2ZTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AEROTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ONTTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AEVOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=0GTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AIGENSYNTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ACTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=1MBABYDOGETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AIXBTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=XPLTRY timeframe=1h closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALGOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=AEVOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALICETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ADATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALLOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ACETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALPINETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=AIGENSYNTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=AITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AMPTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ALGOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=API3TRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ALLOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=APTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ALPINETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARBTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=API3TRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARKMTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=AIXBTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARKTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ARBTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARPATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=AMPTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=AEROTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ASTERTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=APTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATMTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ARPATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATOMTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ARTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ASTERTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AUDIOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ATMTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AVAXTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ALICETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AVNTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ARKMTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BABYTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ALTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BANANATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=AUDIOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BANKTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=AVAXTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BARDTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=AVNTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BARTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ATOMTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BBTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BANKTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BEAMXTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ARKTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BIOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ATTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BLURTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BARDTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BMTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BBTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BOMETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BEAMXTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CATITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BIOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CELOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BLURTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CETUSTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BOMETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CHIPTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BARTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=COTITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=CETUSTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CRVTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BABYTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BANANATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CYBERTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=CHIPTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DODOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=BMTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DOGETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=CELOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DOLOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=DODOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=CYBERTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EDENTRY timeframe=1m
+[MarketData] geçmiþ çekiliyor | symbol=EDUTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=COTITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EIGENTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=DOLOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ENATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=EDUTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ESPTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=CATITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ETHFITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=EDENTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EULTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ENATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FETTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ESPTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FFTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ETHFITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FIDATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=CRVTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FLOKITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=CTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FOGOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=FETTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FORMTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=EULTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=EIGENTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GASTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=DOGETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GENIUSTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=FORMTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GIGGLETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=FLOKITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GPSTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=FTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=GASTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GUNTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=FFTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HAEDALTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=FOGOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HBARTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=GENIUSTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HEITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=FIDATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HOLOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=HBARTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HOMETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=HEITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HUMATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=GTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HYPERTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=GUNTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ICPTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=HAEDALTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IDTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=HYPERTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IOTATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ICPTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=GIGGLETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=JASMYTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=GPSTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=JTOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=HUMATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=KERNELTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=JASMYTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=KITETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=JTOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=HOLOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LDOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=KERNELTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LINKTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=HOMETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LISTATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=KITETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUMIATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=LATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUNATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=LDOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUNCTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=LINKTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MAVTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=LISTATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MEMETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=IDTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=METRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=IOTATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=METTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=LUMIATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MINATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=IOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MITOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=LUNATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MMTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=LUNCTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MOVRTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=METRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MUBARAKTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=METTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NEARTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=MINATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NEIROTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=MITOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NILTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=MOVRTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NOTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=MEMETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OGNTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=MAVTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ONETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=NEARTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPENTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=NEIROTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPGTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=NILTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=NOTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ORDITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=OPGTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PENGUTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=OGNTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PEOPLETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ORDITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PHATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=OPTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PIXELTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PENGUTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PLUMETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PEOPLETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PNUTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=MMTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=POLTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ONETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PORTALTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=OPENTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PSGTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PIXELTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PUMPTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=MUBARAKTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PYTHTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PLUMETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=QTUMTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PNUTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RADTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PORTALTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RARETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PSGTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=REDTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PHATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RENDERTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=RARETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=REDTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=REZTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=POLTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ROBOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PYTHTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RONINTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=RETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RVNTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=RADTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SAGATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=ROBOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SANDTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=RONINTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SCRTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=RVNTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SENTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SAGATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SHELLTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SANDTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SHIBTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=PUMPTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SLPTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=QTUMTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOLVTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SCRTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOMITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SENTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOPHTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SHELLTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SPELLTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SHIBTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SPKTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SLPTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SOLVTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STRAXTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SOMITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STXTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SOPHTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SUITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=RENDERTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SUNTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=REZTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SXTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SPKTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SYRUPTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=STOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TAOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SUITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=THETATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TAOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=THETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SYRUPTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TLMTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=THETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TOWNSTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=STXTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRBTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SUNTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TREETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SXTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRUMPTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TLMTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRXTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=SPELLTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TSTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TOWNSTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TURBOTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=THETATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TURTLETRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TRBTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TWTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TREETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USDTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=STRAXTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USTCTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TRXTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USUALTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TSTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=VANATRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TWTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=VIRTUALTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=USDTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WLDTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=USUALTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WLFITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=VANATRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=WLDTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XAITRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=WLFITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XPLTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=WTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XVGTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=USTCTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=YBTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=XAITRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZBTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=XPLTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZKTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TRUMPTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZROTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=XVGTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ONTTRY timeframe=1m
+[MarketData] geçmiþ hazýr | symbol=TURBOTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=0GTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TURTLETRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=1000CATTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ZBTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=1MBABYDOGETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ZKTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=2ZTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ZROTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ACETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=0GTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ACTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=VIRTUALTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ADATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ACETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AEROTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ADATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AEVOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=AEROTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AIGENSYNTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=2ZTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=YBTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AIXBTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=AEVOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALGOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ACTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALICETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=1MBABYDOGETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALLOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=AIGENSYNTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALPINETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=AIXBTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ALTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ONTTRY timeframe=1m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AMPTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=1000CATTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=API3TRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ALICETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=APTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ALLOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARBTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=AMPTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARKMTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=API3TRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARKTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=APTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARPATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ARBTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ARTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ARKMTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ASTERTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ARKTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATMTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ALPINETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATOMTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ALTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ATTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ARPATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AUDIOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=AITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AVAXTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ASTERTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=AVNTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ATMTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BABYTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ATTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BANANATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=AVAXTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BANKTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ALGOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BARDTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ARTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BARTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ATOMTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BBTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BANKTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BEAMXTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BABYTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BIOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BANANATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BLURTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=AUDIOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BMTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BLURTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=BOMETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=AVNTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CATITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BBTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CELOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BEAMXTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CETUSTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BMTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CHIPTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BARDTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=COTITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BARTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CRVTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=CETUSTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=CHIPTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=CYBERTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=COTITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DODOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=CRVTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DOGETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=CTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=DOLOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=CATITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EDENTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=CYBERTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EDUTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BIOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EIGENTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=DODOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ENATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=DOLOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ESPTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=EDENTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ETHFITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=EIGENTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=EULTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ENATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FETTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=BOMETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FFTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=CELOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FIDATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ESPTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FLOKITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ETHFITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FOGOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=DOGETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FORMTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=FETTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=FTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=FFTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GASTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=EULTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GENIUSTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=EDUTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GIGGLETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=FLOKITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GPSTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=FOGOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=FORMTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=GUNTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=FIDATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HAEDALTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=FTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HBARTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=GASTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HEITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=GPSTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HOLOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=GTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HOMETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=GUNTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HUMATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=HAEDALTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=HYPERTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=HBARTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ICPTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=HEITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IDTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=HOLOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IOTATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=HYPERTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=IOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=GIGGLETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=JASMYTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ICPTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=JTOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=IOTATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=KERNELTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=IDTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=KITETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=JTOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=GENIUSTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LDOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=KITETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LINKTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=LATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LISTATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=IOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUMIATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=LINKTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUNATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=HOMETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=LUNCTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=HUMATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MAVTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=KERNELTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MEMETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=LISTATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=METRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=LUNCTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=METTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=MAVTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MINATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=MEMETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MITOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=JASMYTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MMTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=METTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MOVRTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=MINATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=MUBARAKTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=MITOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NEARTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=MMTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NEIROTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=LUNATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NILTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=LDOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=NOTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=MOVRTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OGNTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=MUBARAKTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ONETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=NEARTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPENTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=NEIROTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPGTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=NILTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=OPTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=LUMIATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ORDITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=OGNTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PENGUTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=OPENTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PEOPLETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=OPGTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PHATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=OPTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PIXELTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=METRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PLUMETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ORDITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PNUTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PENGUTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=POLTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PEOPLETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PORTALTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PHATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PSGTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PNUTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PUMPTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=NOTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=PYTHTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=POLTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=QTUMTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PORTALTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RADTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PSGTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RARETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=QTUMTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=REDTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=RADTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RENDERTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PUMPTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ONETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=REZTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=REDTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ROBOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PIXELTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RONINTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PLUMETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=RVNTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=RETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SAGATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=REZTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SANDTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=ROBOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SCRTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=RONINTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SENTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SAGATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SHELLTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SANDTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SHIBTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SCRTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SLPTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=PYTHTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOLVTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=RARETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOMITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SENTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SOPHTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SHIBTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SPELLTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=RVNTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SPKTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=RENDERTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SOLVTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STRAXTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SOMITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=STXTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SOPHTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SUITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=STRAXTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SUNTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=STXTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SXTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SUITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=SYRUPTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SUNTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TAOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SXTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=THETATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SPKTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=THETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=STOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TLMTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SHELLTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TOWNSTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SLPTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRBTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SYRUPTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TREETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=SPELLTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRUMPTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TRBTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TRXTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TAOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TSTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=THETATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TURBOTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TRXTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TURTLETRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=THETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=TWTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TLMTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USDTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TOWNSTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USTCTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TSTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=USUALTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TURTLETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=VANATRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TWTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=VIRTUALTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=USTCTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WLDTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TRUMPTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WLFITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TREETRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=WTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=USUALTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XAITRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=TURBOTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XPLTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=WLFITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=XVGTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=VANATRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=YBTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=XAITRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZBTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=XPLTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZKTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=XVGTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ZROTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=USDTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ çekiliyor | symbol=ONTTRY timeframe=5m
+[MarketData] geçmiþ hazýr | symbol=YBTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=ZROTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=VIRTUALTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=ONTTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=WLDTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=WTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=ZKTRY timeframe=5m closed_candles=299
+[MarketData] geçmiþ hazýr | symbol=ZBTTRY timeframe=5m closed_candles=299
+[MarketData] Geçmiþ veri yüklendi | timeframes=4 symbols=184 successful_series=736
+[MarketData] öncelikli strateji verisi hazýr | timeframes=['5m', '1m', '15m', '1h'] tickers=3076
+[Pump Monitor] cache warmup | hydrated=184 ready=368 errors=0
+[History] baþlangýç historical kontrolü | symbols=184 timeframe=5m
+[MarketData] WebSocket nesli baþlatýlýyor | generation=1 groups=9 max_streams=180
+INFO:     Application startup complete.
+[MarketData] WebSocket generation=1 grup=1 symbols=22 timeframes=6
+[MarketData] WebSocket generation=1 grup=2 symbols=22 timeframes=6
+[MarketData] WebSocket generation=1 grup=3 symbols=22 timeframes=6
+[MarketData] WebSocket generation=1 grup=4 symbols=22 timeframes=6
+[MarketData] WebSocket generation=1 grup=5 symbols=22 timeframes=6
+[MarketData] WebSocket generation=1 grup=6 symbols=22 timeframes=6
+[MarketData] WebSocket generation=1 grup=7 symbols=22 timeframes=6
+[MarketData] WebSocket generation=1 grup=8 symbols=22 timeframes=6
+[MarketData] WebSocket generation=1 grup=9 symbols=8 timeframes=6
+ERROR:    [Errno 10048] error while attempting to bind on address ('127.0.0.1', 8004): [winerror 10048] normal olarak her yuva adresi (iletiþim kuralý/að adresi/baðlantý noktasý) için yalnýzca bir kullanýma izin veriliyor
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.

@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
@@ -45,6 +45,45 @@ const preferredChartHeight = (minimumRequired: number, compact: boolean) => {
     const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
     const viewportPreference = Math.round(viewportHeight * (compact ? 0.72 : 0.78));
     return Math.max(compact ? 420 : TOTAL_HEIGHT, viewportPreference, minimumRequired);
+};
+
+// Ekrana göre paylaşımlı yerleşim: hedef toplam yükseklik görünür alanın
+// ~%78'i (mobilde %72). Alt pane'ler önce kayıtlı/tercih edilen yüksekliklerini
+// alır; toplam taşırsa ORANSAL olarak kısalır (mutlak minimumların altına
+// inmeden). Ana grafik kalan bütçenin tamamını kullanır. Böylece çok sayıda
+// gösterge eklenince canvas ekranı aşmaz, her pane daralsa da okunur kalır.
+const computePaneLayout = (
+    keys: string[],
+    saved: Record<string, number>,
+    compact: boolean
+): { total: number; heights: number[] } => {
+    const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
+    const baseMin = compact ? 210 : MAIN_MIN;
+    const targetTotal = clamp(
+        Math.round(viewportHeight * (compact ? 0.72 : 0.78)),
+        compact ? 420 : TOTAL_HEIGHT,
+        Math.round(viewportHeight * 0.92)
+    );
+    const minOf = (key: string) => paneMinimumHeight(key, compact);
+    const wanted = keys.map((key, i) =>
+        i === 0
+            ? baseMin
+            : Math.max(minOf(key), saved[key] || (key === "volume" ? minOf(key) : compact ? 124 : PANE_H))
+    );
+    const totalWanted = wanted.reduce((a, b) => a + b, 0);
+    if (totalWanted > targetTotal) {
+        const mins = keys.map((key, i) => (i === 0 ? baseMin : minOf(key)));
+        const shrinkable = wanted.map((w, i) => w - mins[i]);
+        const shrinkableTotal = shrinkable.reduce((a, b) => a + b, 0);
+        if (shrinkableTotal > 0) {
+            const factor = Math.min(1, (totalWanted - targetTotal) / shrinkableTotal);
+            for (let i = 0; i < wanted.length; i++) wanted[i] = Math.round(wanted[i] - shrinkable[i] * factor);
+        }
+    }
+    const subTotal = wanted.slice(1).reduce((a, b) => a + b, 0);
+    const mainH = Math.max(baseMin, targetTotal - subTotal);
+    const heights = [mainH, ...wanted.slice(1)];
+    return { total: heights.reduce((a, b) => a + b, 0), heights };
 };
 
 const macdHistogramColor = (value: number, previous?: number) => {
@@ -408,6 +447,44 @@ const cmo = (values: number[], period: number): number | null => {
     return 100 * (gains - losses) / (gains + losses);
 };
 
+// Klasik RSI: son kapanışlar üzerinden Wilder yumuşatmalı değer.
+const rsiLast = (bars: Bar[], period = 14): number | null => rsi(bars.map((b) => b.close), period);
+
+// MFI: tipik fiyat × hacim akışıyla 0–100 arası para akışı endeksi.
+const mfiLast = (bars: Bar[], period = 14): number | null => {
+    if (bars.length < period + 1) return null;
+    let positive = 0, negative = 0;
+    for (let j = bars.length - period; j < bars.length; j++) {
+        const current = (bars[j].high + bars[j].low + bars[j].close) / 3;
+        const previous = (bars[j - 1].high + bars[j - 1].low + bars[j - 1].close) / 3;
+        const flow = current * bars[j].volume;
+        if (current > previous) positive += flow;
+        else if (current < previous) negative += flow;
+    }
+    if (positive + negative === 0) return 50;
+    if (negative === 0) return 100;
+    return 100 - 100 / (1 + positive / negative);
+};
+
+// OBV: kapanış yönüne göre birikimli hacim; mutlak değil değişim hızı anlam taşır.
+const obvLast = (bars: Bar[]): { value: number | null; deltaPct: number | null } => {
+    if (bars.length < 2) return { value: null, deltaPct: null };
+    let value = 0;
+    for (let i = 1; i < bars.length; i++) {
+        if (bars[i].close > bars[i - 1].close) value += bars[i].volume;
+        else if (bars[i].close < bars[i - 1].close) value -= bars[i].volume;
+    }
+    // okunabilirlik: büyük değerleri M/K kısaltmasıyla göstermek için ölçek
+    const windowBars = Math.min(20, bars.length - 1);
+    let windowDelta = 0;
+    for (let i = bars.length - windowBars; i < bars.length; i++) {
+        if (bars[i].close > bars[i - 1].close) windowDelta += bars[i].volume;
+        else if (bars[i].close < bars[i - 1].close) windowDelta -= bars[i].volume;
+    }
+    const avgVolume = bars.slice(-windowBars).reduce((s, b) => s + b.volume, 0) / windowBars;
+    return { value, deltaPct: avgVolume ? (windowDelta / avgVolume) * 100 : null };
+};
+
 // CRSI hesaplama (backend ile aynı: RSI3 + Streak RSI2 + PercentRank50)
 const crsi = (values: number[], rsiPeriod: number, rankPeriod: number): number | null => {
     if (values.length < rankPeriod + 2) return null;
@@ -632,12 +709,19 @@ export default function ChartsPage() {
         const ro = new ResizeObserver(() => {
             if (!chartRef.current || !containerRef.current) return;
             const compact = window.innerWidth < 768;
-            const paneKeys = [...paneKeyByIndexRef.current.entries()]
+            const keys = [...paneKeyByIndexRef.current.entries()]
                 .sort(([left], [right]) => left - right)
                 .map(([, key]) => key);
-            const nonMainMinimum = paneKeys.slice(1)
-                .reduce((total, key) => total + paneMinimumHeight(key, compact), 0);
-            chartHeightRef.current = preferredChartHeight((compact ? 210 : MAIN_MIN) + nonMainMinimum, compact);
+            if (!keys.length) {
+                chartHeightRef.current = preferredChartHeight(MAIN_MIN, compact);
+            } else {
+                // mevcut pane yüksekliklerini koruyarak ekran bütçesine göre yeniden dağıt
+                const current: Record<string, number> = {};
+                chartRef.current.panes().forEach((p, i) => { current[keys[i] || String(i)] = p.getHeight(); });
+                const layout = computePaneLayout(keys, current, compact);
+                chartHeightRef.current = layout.total;
+                layout.heights.forEach((h, i) => chartRef.current!.panes()[i]?.setHeight(h));
+            }
             chartRef.current.applyOptions({ width: containerRef.current.clientWidth, height: chartHeightRef.current });
         });
         ro.observe(containerRef.current);
@@ -755,20 +839,21 @@ export default function ChartsPage() {
     }, [symbol, interval]);
 
     // WebSocket anlık portföyü taşır; HTTP yalnızca bağlantı kopması için
-    // düşük frekanslı geri dönüş yoludur.
+    // düşük frekanslı geri dönüş yoludur. Manuel kapatma sonrası da buradan
+    // tazelenir.
+    const fetchPositions = useCallback(async () => {
+        try {
+            const res = await apiRequest(`${API_BASE}/api/positions`);
+            const data = await res.json();
+            setPositions(data.positions || []);
+        } catch { /* backend yoksa sessiz geç */ }
+    }, []);
+
     useEffect(() => {
-        let cancelled = false;
-        const fetchPositions = async () => {
-            try {
-                const res = await apiRequest(`${API_BASE}/api/positions`);
-                const data = await res.json();
-                if (!cancelled) setPositions(data.positions || []);
-            } catch { /* backend yoksa sessiz geç */ }
-        };
         fetchPositions();
         const t = setInterval(fetchPositions, 30_000);
-        return () => { cancelled = true; clearInterval(t); };
-    }, []);
+        return () => clearInterval(t);
+    }, [fetchPositions]);
 
     const loadPortfolioSummary = useCallback(async () => {
         try {
@@ -878,11 +963,14 @@ export default function ChartsPage() {
             const isHisto = plots.length >= 3;
 
             if (inst.overlay) {
+                // çizgi başına stil: lineWidths yoksa tüm çizgiler lineWidth kullanır
+                const widthFor = (pi: number) =>
+                    (style.lineWidths?.[pi] ?? style.lineWidth) as 1 | 2 | 3 | 4;
                 const arr = plots.map((plot, pi) => {
                     const lastPoint = [...plot].reverse().find((p) => p.value != null && !Number.isNaN(p.value));
                     const s = chart.addSeries(LineSeries, {
                         color: style.colors[pi] || PALETTE[pi % PALETTE.length],
-                        lineWidth: style.lineWidth as 1 | 2 | 3 | 4,
+                        lineWidth: widthFor(pi),
                         priceLineVisible: style.showPriceLine,
                         lastValueVisible: style.showPriceLine
                     });
@@ -912,12 +1000,14 @@ export default function ChartsPage() {
                     ...(style.maxValue != null ? [{ value: style.maxValue, color: style.colors[2] || PALETTE[2] }] : [])
                 ];
                 plots.forEach((plot, pi) => {
+                    const widthFor = (idx: number) =>
+                        (style.lineWidths?.[idx] ?? style.lineWidth) as 1 | 2 | 3 | 4;
                     const numericPoints = plot.filter((p) => p.value != null && !Number.isNaN(p.value));
                     const data = numericPoints.map((p, index) => {
                         const value = p.value as number;
                         const color = isMacd && isHisto && pi === 0
                             ? macdHistogramColor(value, numericPoints[index - 1]?.value as number | undefined)
-                            : p.color;
+                            : p.color; // plot kendi semantik rengini veriyorsa (eşik altı yeşil vb.) ona öncelik ver
                         return {
                             time: p.time as UTCTimestamp,
                             value,
@@ -944,7 +1034,7 @@ export default function ChartsPage() {
                     } else {
                         const s = chart.addSeries(LineSeries, {
                             color: style.colors[pi] || PALETTE[pi % PALETTE.length],
-                            lineWidth: style.lineWidth as 1 | 2 | 3 | 4, priceLineVisible: style.showPriceLine, lastValueVisible: style.showPriceLine
+                            lineWidth: widthFor(pi), priceLineVisible: style.showPriceLine, lastValueVisible: style.showPriceLine
                         }, paneIdx);
                         s.setData(data);
                         if (style.showPriceLine) {
@@ -954,6 +1044,12 @@ export default function ChartsPage() {
                     }
                 });
                 paneSeries.current.set(inst.uid, arr);
+                // Tüm gösterge panellerinde çizginin pane'e yapışmasını engellemek
+                // için üst/alt boşluk bırak; MACD ayrıca sıfır merkezli düzen alır.
+                chart.priceScale("right", paneIdx).applyOptions({
+                    autoScale: true,
+                    scaleMargins: { top: 0.12, bottom: 0.12 }
+                });
                 if (isMacd && arr.length) {
                     // MACD histogram sıfır merkezli olmalı. Varsayılan fiyat
                     // ölçeği küçük histogram değerlerini düzleştirebildiği
@@ -961,7 +1057,7 @@ export default function ChartsPage() {
                     // uygula.
                     chart.priceScale("right", paneIdx).applyOptions({
                         autoScale: true,
-                        scaleMargins: { top: 0.08, bottom: 0.08 }
+                        scaleMargins: { top: 0.12, bottom: 0.12 }
                     });
                     arr[0].createPriceLine({
                         price: 0,
@@ -1009,39 +1105,24 @@ export default function ChartsPage() {
         // pane yükseklikleri: key bazlı eşleştirme — main/volume/uid
         // paneKeyByIndexRef'e her pane'in anahtarını yaz (observer bunu kullanır)
         paneKeyByIndexRef.current.clear();
+        // Anahtarları GERÇEKTEN oluşturulan pane'lerden türet: hesaplanamayan
+        // (plot üretemeyen) indikatörler pane açmaz; hepsi için anahtar üretmek
+        // kayıtlı yüksekliklerin yanlış pane'lere uygulanmasına yol açar.
         const paneKeys: string[] = ["main"];
         if (volumeVisible) paneKeys.push("volume");
-        // non-overlay indikatörler render sırasında paneIdx sırasıyla eklenir; burada uid sırasını kullan
-        for (const inst of instances) {
-            if (!inst.overlay) paneKeys.push(inst.uid);
-        }
-        const paneCount = chart.panes().length;
+        [...instPanes.entries()].sort(([, a], [, b]) => a - b).forEach(([key]) => paneKeys.push(key));
         // Kaydedilmiş yükseklikleri koru, ancak eski 44/56px kayıtları okunabilir
         // minimumun altına inemesin. Gerekirse canvas büyür; panel sıkışmaz.
         // skipHeight: bars canlı güncellenirken kullanıcı sürüklemesi korunur.
         if (!skipHeight) {
             const compact = typeof window !== "undefined" && window.innerWidth < 768;
-            const mainMin = compact ? 210 : MAIN_MIN;
-            const defaultPaneHeight = compact ? 124 : PANE_H;
-            const alloc = paneKeys.map((key, i) => ({
-                key,
-                h: i === 0
-                    ? mainMin
-                    : Math.max(
-                        paneMinimumHeight(key, compact),
-                        paneHeightsRef.current[key] || (key === "volume" ? paneMinimumHeight(key, compact) : defaultPaneHeight)
-                    )
-            }));
-            const nonMain = alloc.reduce((s, x, i) => (i === 0 ? s : s + x.h), 0);
-            chartHeightRef.current = preferredChartHeight(mainMin + nonMain, compact);
-            const mainH = Math.max(mainMin, chartHeightRef.current - nonMain);
-            const targetH = alloc.map((x, i) => (i === 0 ? mainH : x.h));
-
-            chart.applyOptions({ height: chartHeightRef.current });
+            const layout = computePaneLayout(paneKeys, paneHeightsRef.current, compact);
+            chartHeightRef.current = layout.total;
+            chart.applyOptions({ height: layout.total });
             chart.panes().forEach((p, i) => {
                 const key = paneKeys[i] || `pane${i}`;
                 paneKeyByIndexRef.current.set(i, key);
-                p.setHeight(targetH[i] ?? paneMinimumHeight(key, compact));
+                p.setHeight(layout.heights[i] ?? paneMinimumHeight(key, compact));
             });
         }
 
@@ -1481,6 +1562,25 @@ export default function ChartsPage() {
         } catch { /* backend yoksa localStorage kullan */ }
     };
 
+    const [closingSymbol, setClosingSymbol] = useState<string | null>(null);
+    const closePositionManually = async (sym: string) => {
+        if (closingSymbol) return;
+        setClosingSymbol(sym);
+        try {
+            const res = await apiRequest(`${API_BASE}/api/positions/${encodeURIComponent(sym)}/close`, { method: "POST" });
+            const data = await res.json();
+            if (!res.ok || !data.ok) throw new Error(data?.message || "kapatma başarısız");
+            // pozisyon listesi WS "signal" yayınıyla da tazelenir; burada emin olmak için çek
+            await fetchPositions();
+            loadPortfolioSummary();
+        } catch (err: any) {
+            console.error("manuel kapatma hatası:", err);
+            alert(`${sym} kapatılamadı: ${err?.message || "bilinmeyen hata"}`);
+        } finally {
+            setClosingSymbol(null);
+        }
+    };
+
     const openPnl = livePortfolio?.unrealized_pnl ?? positions.reduce((total, position) => total + Number(position.pnl_try || 0), 0);
     const netPnl = portfolioMetrics?.net_pnl ?? 0;
     const winRate = portfolioMetrics?.win_rate ?? 0;
@@ -1496,6 +1596,29 @@ export default function ChartsPage() {
         const volume = recent.reduce((sum, bar) => sum + bar.volume, 0);
         return clamp(volume ? (weighted / volume) * 100 : 0, -100, 100);
     })();
+
+    // Grafik altı gösterge şeridi: seçili zaman diliminin son mumlarından
+    // hesaplanır. bars WebSocket ile güncellendikçe bu memo da yeniden çalışır,
+    // böylece değerler mumla birlikte canlı tazelenir.
+    const strip = useMemo(() => ({
+        rsi: rsiLast(bars, 14),
+        mfi: mfiLast(bars, 14),
+        obv: obvLast(bars)
+    }), [bars]);
+
+    const obvCompact = (value: number) => {
+        const abs = Math.abs(value);
+        if (abs >= 1e9) return `${(value / 1e9).toLocaleString("tr-TR", { maximumFractionDigits: 2 })} Mr`;
+        if (abs >= 1e6) return `${(value / 1e6).toLocaleString("tr-TR", { maximumFractionDigits: 2 })} Mn`;
+        if (abs >= 1e3) return `${(value / 1e3).toLocaleString("tr-TR", { maximumFractionDigits: 1 })} B`;
+        return value.toLocaleString("tr-TR", { maximumFractionDigits: 0 });
+    };
+    const num1 = (value: number | null) => value == null ? "—" : value.toLocaleString("tr-TR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    // RSI/MFI bölge etiketi: aşırı bölgelerde renk değişir, nötrde beyaz kalır.
+    const zoneClass = (value: number | null, oversold: number, overbought: number) =>
+        value == null ? "text-bunker-muted" : value <= oversold ? "text-neon-green" : value >= overbought ? "text-red-400" : "text-white";
+    const zoneLabel = (value: number | null, oversold: number, overbought: number) =>
+        value == null ? "VERİ YOK" : value <= oversold ? "AŞIRI SATIM" : value >= overbought ? "AŞIRI ALIM" : "NÖTR";
 
     return (
         <div className="max-w-7xl mx-auto space-y-5">
@@ -1655,6 +1778,21 @@ export default function ChartsPage() {
                     </div>
                 )}
                 <div ref={containerRef} className="w-full" />
+                {/* gösterge şeridi: grafiğin altına sabitlenmiş, seçili TF'den canlı hesaplanan değerler */}
+                <div className="grid grid-cols-3 divide-x divide-bunker-800 border-t border-bunker-800 bg-bunker-950">
+                    {([
+                        { key: "RSI", value: strip.rsi, text: num1(strip.rsi), zone: zoneLabel(strip.rsi, 30, 70), cls: zoneClass(strip.rsi, 30, 70), hint: "14 periyot · 30/70 eşik" },
+                        { key: "MFI", value: strip.mfi, text: num1(strip.mfi), zone: zoneLabel(strip.mfi, 20, 80), cls: zoneClass(strip.mfi, 20, 80), hint: "14 periyot · 20/80 eşik" },
+                        { key: "OBV", value: strip.obv.value, text: strip.obv.value == null ? "—" : obvCompact(strip.obv.value), zone: strip.obv.deltaPct == null ? "VERİ YOK" : `${strip.obv.deltaPct >= 0 ? "+" : ""}${strip.obv.deltaPct.toFixed(0)}% / 20 mum`, cls: strip.obv.deltaPct == null ? "text-bunker-muted" : strip.obv.deltaPct >= 0 ? "text-neon-green" : "text-red-400", hint: "birikimli hacim farkı" },
+                    ]).map((item) => (
+                        <div key={item.key} title={item.hint} className="px-2 py-2 sm:px-4 sm:py-2.5 min-w-0 text-center">
+                            <p className="font-mono text-[10px] font-bold tracking-wider text-bunker-muted">{item.key}</p>
+                            <p className={`mt-0.5 truncate font-mono text-sm font-bold tabular-nums ${item.cls}`}>{item.text}</p>
+                            <p className={`mt-0.5 hidden truncate font-mono text-[10px] tracking-wide sm:block ${item.cls}`}>{item.zone}</p>
+                            <p className="mt-0.5 truncate font-mono text-[10px] text-bunker-muted">{interval}</p>
+                        </div>
+                    ))}
+                </div>
                 {patternTooltip && (
                     <div
                         className={`absolute z-30 w-64 rounded-xl border p-3 shadow-[0_12px_35px_rgba(0,0,0,0.45)] backdrop-blur pointer-events-none ${patternTooltip.pattern.type === "buy" ? "border-emerald-300/60 bg-emerald-950/95" : "border-red-300/60 bg-red-950/95"}`}
@@ -1698,12 +1836,13 @@ export default function ChartsPage() {
                                 <th className="px-4 py-2">GÜNCEL</th>
                                 <th className="px-4 py-2">TUTAR (TL)</th>
                                 <th className="px-4 py-2 text-right">PnL</th>
+                                <th className="px-3 py-2 text-right" aria-label="Manuel kapatma"><span className="sr-only">Kapat</span></th>
                             </tr>
                         </thead>
                         <tbody>
                             {positions.length === 0 ? (
                                 <tr>
-                                    <td colSpan={6} className="px-4 py-5 text-center text-bunker-muted">Açık pozisyon yok</td>
+                                    <td colSpan={7} className="px-4 py-5 text-center text-bunker-muted">Açık pozisyon yok</td>
                                 </tr>
                             ) : (
                                 positions.map((p) => {
@@ -1725,6 +1864,20 @@ export default function ChartsPage() {
                                             <td className={`px-4 py-2 text-right font-bold ${pnl >= 0 ? "text-neon-green" : "text-red-400"}`}>
                                                 <div>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}%</div>
                                                 <div className="text-xs mt-1">{pnlTry >= 0 ? "+" : ""}₺{pnlTry.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                            </td>
+                                            <td className="px-3 py-2 text-right">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => closePositionManually(p.symbol)}
+                                                    disabled={closingSymbol != null}
+                                                    title={`${p.symbol} pozisyonunu güncel fiyatla kapat`}
+                                                    className={`min-h-9 px-3 rounded-lg border font-mono text-xs transition-colors ${closingSymbol === p.symbol
+                                                        ? "border-bunker-600 bg-bunker-900 text-bunker-muted animate-pulse"
+                                                        : "border-red-400/50 bg-red-400/10 text-red-400 hover:bg-red-400/20 active:scale-[0.97] disabled:opacity-40 disabled:cursor-not-allowed"
+                                                        }`}
+                                                >
+                                                    {closingSymbol === p.symbol ? "KAPATILIYOR…" : "KAPAT"}
+                                                </button>
                                             </td>
                                         </tr>
                                     );
