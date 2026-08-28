@@ -63,6 +63,9 @@ type Config = {
   mode: string;
   market_data: string;
   gainer_radar_min_score: number;
+  top_gainers_auto_activate: boolean;
+  top_gainers_limit: number;
+  top_gainers_refresh_sec: number;
   pump_monitor_enabled: boolean;
   pump_monitor_auto_trade: boolean;
   pump_monitor_max_open_positions: number;
@@ -102,6 +105,8 @@ export default function SettingsPage() {
   const [activity, setActivity] = useState<Record<string, any>>({});
   const [activityFilter, setActivityFilter] = useState<"all" | "ACTIVE" | "PASSIVE" | "WARMING">("all");
   const [refreshingActivity, setRefreshingActivity] = useState(false);
+  const [topGainers, setTopGainers] = useState<any>({});
+  const [refreshingTopGainers, setRefreshingTopGainers] = useState(false);
   const [mtfBackfillOpen, setMtfBackfillOpen] = useState(false);
   const [mtfBackfill, setMtfBackfill] = useState<any>({ status: "idle", progress: 0, logs: [] });
   const [startingMtfBackfill, setStartingMtfBackfill] = useState(false);
@@ -124,6 +129,17 @@ export default function SettingsPage() {
       .then((d) => setMarketSymbols(d.symbols || []))
       .catch(() => setError("Binance TR sembolleri alınamadı"));
     apiRequest(`${API_BASE}/api/llm/config`).then((r) => r.json()).then(setLlm).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => apiRequest(`${API_BASE}/api/market/top-gainers`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setTopGainers(d); })
+      .catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 60000);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
   useEffect(() => {
@@ -172,6 +188,20 @@ export default function SettingsPage() {
       setActivity(data.statuses || {});
     } catch (err) { setError(err instanceof Error ? err.message : "Aktivasyon kontrolü başarısız"); }
     finally { setRefreshingActivity(false); }
+  };
+
+  const refreshTopGainers = async () => {
+    setRefreshingTopGainers(true);
+    try {
+      const response = await apiRequest(`${API_BASE}/api/market/top-gainers?refresh=true`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Top-gainer listesi alınamadı");
+      setTopGainers(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Top-gainer listesi alınamadı");
+    } finally {
+      setRefreshingTopGainers(false);
+    }
   };
 
   const save = async () => {
@@ -486,6 +516,27 @@ export default function SettingsPage() {
                 {selectedSymbols.map((symbol) => <div key={symbol} className="flex min-h-10 items-center justify-between gap-2 rounded-lg border border-neon-green/60 bg-neon-green/15 px-3 py-2 text-left font-mono text-xs text-neon-green"><SymbolLink symbol={symbol} className="text-neon-green hover:text-white" /><button type="button" onClick={() => toggleSymbol(symbol)} className="px-1 text-neon-green/70 hover:text-white" aria-label="Sembolü pasifleştir">×</button></div>)}
                 {!selectedSymbols.length && <p className="col-span-full rounded-lg border border-yellow-400/40 bg-yellow-400/5 px-3 py-3 font-mono text-xs text-yellow-300">Aktif tarama sembolü seçilmedi.</p>}
               </div>
+            </div>
+            <div className="mt-5 border-t border-bunker-800 pt-4">
+              <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                <div>
+                  <p className="eyebrow text-neon-green">DİNAMİK TOP-GAINER EVRENİ</p>
+                  <p className="text-xs text-bunker-muted mt-1">Açık olduğunda Binance TR 24 saatlik top-gainer listesinden seçilen semboller izlenir. Liste periyodik yenilenir; aktif strateji koşulları sağlanırsa yalnızca paper işlem açılır.</p>
+                </div>
+                <button type="button" onClick={refreshTopGainers} disabled={refreshingTopGainers} className="rounded border border-neon-green/50 bg-neon-green/10 px-2 py-1 font-mono text-[11px] text-neon-green transition-colors hover:bg-neon-green/20 disabled:cursor-wait disabled:opacity-60">{refreshingTopGainers ? "GÜNCELLENİYOR..." : "LİSTEYİ YENİLE"}</button>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-neon-green">Dinamik evreni etkinleştir</span><input type="checkbox" checked={Boolean(draft.top_gainers_auto_activate)} onChange={(e) => setDraft((d) => ({ ...d, top_gainers_auto_activate: e.target.checked }))} /></label>
+                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Top-gainer limiti</span><input type="number" min={1} max={50} step={1} value={num(draft.top_gainers_limit)} onChange={(e) => setDraft((d) => ({ ...d, top_gainers_limit: e.target.value === "" ? NaN : Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
+                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Yenileme (dakika)</span><input type="number" min={1} max={60} step={1} value={num(draft.top_gainers_refresh_sec) / 60} onChange={(e) => setDraft((d) => ({ ...d, top_gainers_refresh_sec: e.target.value === "" ? NaN : Number(e.target.value) * 60 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {Array.isArray(topGainers.selected) && topGainers.selected.map((symbol: string) => <span key={symbol} className="rounded border border-neon-green/40 bg-neon-green/10 px-2 py-1 font-mono text-[11px] text-neon-green">{symbol}</span>)}
+                {!Array.isArray(topGainers.selected) || !topGainers.selected.length ? <span className="rounded border border-bunker-800 bg-bunker-900 px-2 py-1 font-mono text-[11px] text-bunker-muted">Top-gainer listesi henüz yüklenmedi</span> : null}
+              </div>
+              {Array.isArray(topGainers.preserved_open_positions) && topGainers.preserved_open_positions.length > 0 && (
+                <p className="mt-2 font-mono text-[11px] text-bunker-muted">Açık pozisyonlar korunur: {topGainers.preserved_open_positions.join(", ")}</p>
+              )}
             </div>
             <div className="mt-5 border-t border-bunker-800 pt-4">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-3">

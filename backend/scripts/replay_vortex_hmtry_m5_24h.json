@@ -1,0 +1,183 @@
+{
+  "paper_only": true,
+  "generated_at": "2026-08-28T14:47:41.824960+00:00",
+  "strategy": "Vortex Breakout PRO v4.1 - Optimize SPOT LONG",
+  "window": {
+    "start": "2026-08-27T14:34:59.999000Z",
+    "end": "2026-08-28T14:34:59.999000Z",
+    "hours": 24
+  },
+  "source": "Binance TR public /api/v3/klines completed M5 OHLCV",
+  "provenance": {
+    "per_symbol": {
+      "HEMITRY": {
+        "m5_closed_candles": 864
+      }
+    },
+    "errors": {}
+  },
+  "configuration": {
+    "bollinger_period": 21,
+    "vortex_period": 8,
+    "swing_length": 5,
+    "atr_period": 15,
+    "atr_sl_mult": 4.0,
+    "swing_buf_atr": 2.5,
+    "partial": {
+      "enabled": true,
+      "tp1_qty_pct": 25,
+      "tp1_r": 0.75,
+      "tp2_r": 4.5,
+      "be_r": 0.35
+    },
+    "filters": {
+      "flat_width_ratio": 0.65,
+      "flat_vi_diff": 0.1,
+      "cooldown_bars": 3,
+      "pb_expiry_bars": 50
+    },
+    "trailing": {
+      "enabled": false
+    },
+    "position_size": "98%_equity",
+    "pyramiding": 0
+  },
+  "execution": {
+    "entry": "next completed M5 bar open",
+    "initial_balance_try": 10000.0,
+    "commission_pct_each_side": 0.0015,
+    "slippage_pct_each_side": 0.00025,
+    "spread_pct": 0.001,
+    "total_roundtrip_cost_pct": 0.0045,
+    "pine_commission": 0.001,
+    "pine_slippage_ticks": 2
+  },
+  "result": {
+    "trades": 3,
+    "net_pnl_try": 1500.9349,
+    "fees_try": 166.9676,
+    "wins": 3,
+    "losses": 0,
+    "win_rate_pct": 100.0,
+    "profit_factor": null,
+    "expectancy_try": 500.3116,
+    "max_drawdown_try": 0.0,
+    "final_balance_try": 11500.9349,
+    "reconciliation_delta_try": 0.0,
+    "exit_reasons": {
+      "tp2": 1,
+      "stop_loss_post_tp1": 2
+    }
+  },
+  "trades_detail": [
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-27T17:40:00Z",
+      "signal_close": 0.4198,
+      "trade": {
+        "entry_time": "2026-08-27T17:45:00Z",
+        "entry_price": 0.4198,
+        "stop_loss": 0.40521333,
+        "be_price": 0.42490533,
+        "tp1_price": 0.43074,
+        "tp2_price": 0.48544,
+        "risk_dist": 0.01458667,
+        "qty": 23344.4497,
+        "qty_tp1": 5836.1124,
+        "qty_runner": 17508.3373,
+        "tp1_fill": {
+          "time": "2026-08-27T18:25:00Z",
+          "price": 0.43074,
+          "idx": 622
+        },
+        "tp1_pnl": 50.1965,
+        "runner_fill": {
+          "time": "2026-08-27T19:10:00Z",
+          "price": 0.48544,
+          "idx": 631,
+          "reason": "tp2"
+        },
+        "runner_pnl": 1105.6618,
+        "total_pnl": 1155.8583,
+        "fees_try": 57.3101,
+        "net_pnl": 1098.5482,
+        "exit_reason": "tp2"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-27T22:35:00Z",
+      "signal_close": 0.5016,
+      "trade": {
+        "entry_time": "2026-08-27T22:40:00Z",
+        "entry_price": 0.5015,
+        "stop_loss": 0.46597333,
+        "be_price": 0.51396933,
+        "tp1_price": 0.52832,
+        "tp2_price": 0.66192,
+        "risk_dist": 0.03562667,
+        "qty": 19541.3759,
+        "qty_tp1": 4885.344,
+        "qty_runner": 14656.0319,
+        "tp1_fill": {
+          "time": "2026-08-28T02:10:00Z",
+          "price": 0.52832,
+          "idx": 715
+        },
+        "tp1_pnl": 117.1896,
+        "runner_fill": {
+          "time": "2026-08-28T02:20:00Z",
+          "price": 0.51396933,
+          "idx": 717,
+          "reason": "stop_loss_post_tp1"
+        },
+        "runner_pnl": 141.8234,
+        "total_pnl": 259.013,
+        "fees_try": 54.837,
+        "net_pnl": 204.176,
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-27T22:55:00Z",
+      "signal_close": 0.5036,
+      "trade": {
+        "entry_time": "2026-08-27T23:00:00Z",
+        "entry_price": 0.5036,
+        "stop_loss": 0.46845333,
+        "be_price": 0.51590133,
+        "tp1_price": 0.52996,
+        "tp2_price": 0.66176,
+        "risk_dist": 0.03514667,
+        "qty": 19459.8888,
+        "qty_tp1": 4864.9722,
+        "qty_runner": 14594.9166,
+        "tp1_fill": {
+          "time": "2026-08-28T02:10:00Z",
+          "price": 0.52996,
+          "idx": 715
+        },
+        "tp1_pnl": 114.413,
+        "runner_fill": {
+          "time": "2026-08-28T02:10:00Z",
+          "price": 0.51590133,
+          "idx": 715,
+          "reason": "stop_loss_post_tp1"
+        },
+        "runner_pnl": 138.6182,
+        "total_pnl": 253.0312,
+        "fees_try": 54.8205,
+        "net_pnl": 198.2107,
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    }
+  ],
+  "limitations": [
+    "Source-faithful Python reimplementation; not TradingView byte-identical.",
+    "Public OHLCV has no historical spread/depth or intrabar order sequence; fixed costs are modeled.",
+    "Pine uses 0.1% commission + 2 tick slippage; this replay uses config defaults which are more conservative.",
+    "Intrabar SL/TP priority uses open-to-target distance heuristic; actual orderbook sequence may differ.",
+    "A 24-hour result is exploratory and cannot activate a paper-entry rule."
+  ]
+}

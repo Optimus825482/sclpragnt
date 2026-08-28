@@ -278,6 +278,7 @@ def _replay_parity_config_snapshot():
         "PUMP_MONITOR_BREAK_EVEN_ENABLED", "PUMP_MONITOR_BREAK_EVEN_TRIGGER_PCT",
         "PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO", "PUMP_MONITOR_FAST_FAIL_SEC",
         "PUMP_MONITOR_FAST_FAIL_MIN_PROGRESS_PCT",
+        "TOP_GAINERS_AUTO_ACTIVATE", "TOP_GAINERS_LIMIT", "TOP_GAINERS_REFRESH_SEC",
         "SYMBOL_ACTIVITY_FILTER_ENABLED", "SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY",
         "SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT", "SYMBOL_ACTIVITY_MIN_ATR_PCT",
         "SYMBOL_ACTIVITY_MIN_VOLUME_RATIO", "SYMBOL_ACTIVITY_MAX_SPREAD_PCT",
@@ -1295,6 +1296,7 @@ async def startup_services():
     _start_background(fisher_m3_kernel_m5_shadow_loop(), "fisher-m3-kernel-m5-shadow")
     _start_background(llm_forecast_evaluation_loop(), "llm-forecast-evaluator")
     _start_background(radar_loop(), "radar-loop")
+    _start_background(top_gainers_refresh_loop(), "top-gainers-monitor")
     _start_background(symbol_activity_loop(), "symbol-activity")
     _start_background(llm_idle_trigger_loop(), "llm-idle-trigger")
     _start_background(a2a_inbox_loop(), "a2a-inbox")
@@ -1897,7 +1899,7 @@ async def top_gainers_refresh_loop():
             if result.get("ok"):
                 print(f"[Top Gainers] {len(result.get('selected', []))} TRY sembolü aktive edildi")
         except Exception as exc:
-            print(f"[Top Gainers] 6 saatlik yenileme hatası: {exc}")
+            print(f"[Top Gainers] {config.TOP_GAINERS_REFRESH_SEC // 60} dakikalık yenileme hatası: {exc}")
         await asyncio.sleep(config.TOP_GAINERS_REFRESH_SEC)
 
 def _m1_flat_candle_activity(bars: dict, now_ms: int) -> dict:
@@ -2500,6 +2502,9 @@ async def memory_retrieve(payload: dict = None):
     return {"query": text, "results": rows, "count": len(rows)}
 
 CONFIG_FIELDS = {
+    "top_gainers_auto_activate": "TOP_GAINERS_AUTO_ACTIVATE",
+    "top_gainers_limit": "TOP_GAINERS_LIMIT",
+    "top_gainers_refresh_sec": "TOP_GAINERS_REFRESH_SEC",
     "gainer_radar_min_score": "GAINER_RADAR_MIN_SCORE",
     "pump_monitor_enabled": "PUMP_MONITOR_ENABLED",
     "pump_monitor_auto_trade": "PUMP_MONITOR_AUTO_TRADE",
@@ -2622,14 +2627,17 @@ CONFIG_FIELDS = {
     "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "pump_monitor_enabled", "pump_monitor_auto_trade", "pump_monitor_require_m15_bullish", "symbol_activity_m1_flat_filter_enabled"}
+BOOL_FIELDS = {"top_gainers_auto_activate", "liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "pump_monitor_enabled", "pump_monitor_auto_trade", "pump_monitor_require_m15_bullish", "symbol_activity_m1_flat_filter_enabled"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"gainer_radar_min_score", "pump_monitor_max_open_positions", "pump_monitor_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_sell_signal_confirm_bars", "bb_mfi_pyramid_profit_extension_layers", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
+INT_FIELDS = {"top_gainers_limit", "top_gainers_refresh_sec", "gainer_radar_min_score", "pump_monitor_max_open_positions", "pump_monitor_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_sell_signal_confirm_bars", "bb_mfi_pyramid_profit_extension_layers", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "bb_mfi_pine_version", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
 async def get_config():
     return {
+        "top_gainers_auto_activate": config.TOP_GAINERS_AUTO_ACTIVATE,
+        "top_gainers_limit": config.TOP_GAINERS_LIMIT,
+        "top_gainers_refresh_sec": config.TOP_GAINERS_REFRESH_SEC,
         "gainer_radar_min_score": config.GAINER_RADAR_MIN_SCORE,
         "pump_monitor_enabled": config.PUMP_MONITOR_ENABLED,
         "pump_monitor_auto_trade": config.PUMP_MONITOR_AUTO_TRADE,
@@ -2933,6 +2941,7 @@ async def top_gainers_status(refresh: bool = False):
         runtime = {}
     return {"ok": True, "enabled": config.TOP_GAINERS_AUTO_ACTIVATE,
             "limit": config.TOP_GAINERS_LIMIT, "refresh_seconds": config.TOP_GAINERS_REFRESH_SEC,
+            "refresh_minutes": config.TOP_GAINERS_REFRESH_SEC // 60,
             "symbols": config.SYMBOLS, "refreshed_at": runtime.get("top_gainers_refreshed_at"),
             "source": "binance_tr_public_24h_ticker"}
 
@@ -3077,6 +3086,10 @@ async def _apply_config_update(payload: dict):
                 setattr(config, attr, bool(val))
             elif key in INT_FIELDS:
                 number = int(val)
+                if key == "top_gainers_limit" and not 1 <= number <= 50:
+                    raise ValueError("top_gainers_limit 1 ile 50 arasında olmalıdır")
+                if key == "top_gainers_refresh_sec" and not 60 <= number <= 3600:
+                    raise ValueError("top_gainers_refresh_sec 60 ile 3600 saniye arasında olmalıdır")
                 if key == "adr_period" and not 5 <= number <= 60:
                     raise ValueError("adr_period 5 ile 60 arasında olmalıdır")
                 if key == "max_open_positions" and not 0 <= number <= 500:
@@ -3164,6 +3177,10 @@ async def _apply_config_update(payload: dict):
     except json.JSONDecodeError: persisted = {}
     persisted.update({key: value for key, value in payload.items() if key in CONFIG_FIELDS or key in {"symbols", "ut_symbols"}})
     await database.set_llm_setting("runtime_config", json.dumps(persisted, ensure_ascii=False))
+    if config.TOP_GAINERS_AUTO_ACTIVATE and any(
+        key in payload for key in ("top_gainers_auto_activate", "top_gainers_limit", "top_gainers_refresh_sec")
+    ):
+        asyncio.create_task(refresh_top_gainer_symbols(), name="top-gainers-config-refresh")
     updated = await get_config()
     if "symbols" in payload and invalid:
         updated["removed_invalid_symbols"] = invalid

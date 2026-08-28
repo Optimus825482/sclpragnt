@@ -1,0 +1,617 @@
+{
+  "paper_only": true,
+  "generated_at": "2026-08-28T15:15:56.753706+00:00",
+  "strategy": "Vortex Breakout PRO v4.1 - Optimize SPOT LONG",
+  "window": {
+    "start": "2026-08-18T14:55:00Z",
+    "end": "2026-08-28T14:55:00Z",
+    "hours": 240
+  },
+  "source": "Binance TR public /api/v3/klines completed M5 OHLCV",
+  "provenance": {
+    "per_symbol": {
+      "CHIPTRY": {
+        "m5_closed_candles": 3456,
+        "window_m5_candles": 2880,
+        "first_candle": "2026-08-16T14:55:00Z",
+        "last_candle": "2026-08-28T14:50:00Z"
+      }
+    },
+    "errors": {}
+  },
+  "configuration": {
+    "bollinger_period": 21,
+    "vortex_period": 8,
+    "swing_length": 5,
+    "atr_period": 15,
+    "atr_sl_mult": 4.0,
+    "swing_buffer_atr": 2.5,
+    "partial": {
+      "enabled": true,
+      "tp1_qty_pct": 25,
+      "tp1_r": 0.75,
+      "tp2_r": 4.5,
+      "be_r": 0.35
+    },
+    "filters": {
+      "flat_width_ratio": 0.65,
+      "flat_vi_diff": 0.1,
+      "cooldown_bars": 3,
+      "pb_expiry_bars": 50
+    },
+    "trailing": {
+      "enabled": false
+    },
+    "position_size": "98%_equity_compounded",
+    "pyramiding": 0
+  },
+  "execution": {
+    "entry": "next completed M5 bar open",
+    "initial_balance_try": 10000.0,
+    "cost_mode": "config",
+    "cost_multiplier": 1.0,
+    "mode": "config",
+    "commission_pct_each_side": 0.0015,
+    "slippage_pct_each_side": 0.00025,
+    "spread_pct_each_side": 0.001,
+    "tick_size": 0.0001
+  },
+  "signal_flow": {
+    "raw_long_signals": 13,
+    "selected_trades": 10,
+    "blocked_by_open_position": 3,
+    "blocked_by_cooldown": 0
+  },
+  "result": {
+    "trades": 10,
+    "closed_trades": 10,
+    "open_positions": 0,
+    "net_pnl_try": -1288.417,
+    "realized_net_pnl_try": -1149.2145,
+    "open_unrealized_pnl_try": 0.0,
+    "gross_pnl_try": -1011.5294,
+    "fees_try": 276.8873,
+    "wins": 5,
+    "losses": 5,
+    "win_rate_pct": 50.0,
+    "profit_factor": 0.163,
+    "expectancy_try": -128.8417,
+    "max_drawdown_try": 1288.417,
+    "exposure_pct": 7.53,
+    "final_balance_try": 8711.583,
+    "reconciliation_delta_try": 0.0,
+    "exit_reasons": {
+      "stop_loss": 5,
+      "stop_loss_post_tp1": 5
+    }
+  },
+  "trades_detail": [
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-18T16:30:00Z",
+      "trade": {
+        "signal_idx": 595,
+        "entry_idx": 596,
+        "last_bar_idx": 630,
+        "entry_time": "2026-08-18T16:35:00Z",
+        "entry_price": 1.3044,
+        "entry_execution_price": 1.3060304999999999,
+        "signal_close": 1.306,
+        "stop_loss": 1.276685356729573,
+        "breakeven_price": 1.3146601251446495,
+        "tp1_price": 1.3279859824528204,
+        "tp2_price": 1.4379158947169215,
+        "risk_distance": 0.029314643270426988,
+        "quantity": 7503.828483920367,
+        "legs": [
+          {
+            "idx": 630,
+            "qty": 1875.9571209800918,
+            "price": 1.276685356729573,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.275089500033661,
+            "time": "2026-08-18T19:25:00Z",
+            "gross_pnl": -58.044,
+            "fees": 3.588,
+            "net_pnl": -61.632
+          },
+          {
+            "idx": 630,
+            "qty": 5627.8713629402755,
+            "price": 1.276685356729573,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.275089500033661,
+            "time": "2026-08-18T19:25:00Z",
+            "gross_pnl": -174.132,
+            "fees": 10.7641,
+            "net_pnl": -184.896
+          }
+        ],
+        "gross_pnl_try": -232.176,
+        "fees_try": 29.0524,
+        "net_pnl_try": -261.2284,
+        "realized_pnl_try": -246.528,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-20T11:10:00Z",
+      "trade": {
+        "signal_idx": 1107,
+        "entry_idx": 1108,
+        "last_bar_idx": 1124,
+        "entry_time": "2026-08-20T11:15:00Z",
+        "entry_price": 1.4271,
+        "entry_execution_price": 1.428883875,
+        "signal_close": 1.4258,
+        "stop_loss": 1.3698266627994873,
+        "breakeven_price": 1.4466906680201794,
+        "tp1_price": 1.4677800029003845,
+        "tp2_price": 1.677680017402307,
+        "risk_distance": 0.055973337200512674,
+        "quantity": 6693.78325711881,
+        "legs": [
+          {
+            "idx": 1115,
+            "qty": 1673.4458142797025,
+            "price": 1.4677800029003845,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 1.465945277896759,
+            "time": "2026-08-20T11:50:00Z",
+            "gross_pnl": 62.0202,
+            "fees": 3.6798,
+            "net_pnl": 58.3405
+          },
+          {
+            "idx": 1124,
+            "qty": 5020.337442839107,
+            "price": 1.4466906680201794,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 1.4448823046851542,
+            "time": "2026-08-20T12:35:00Z",
+            "gross_pnl": 80.3175,
+            "fees": 10.8807,
+            "net_pnl": 69.4368
+          }
+        ],
+        "gross_pnl_try": 142.3378,
+        "fees_try": 28.9074,
+        "net_pnl_try": 113.4303,
+        "realized_pnl_try": 127.7773,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-20T15:30:00Z",
+      "trade": {
+        "signal_idx": 1159,
+        "entry_idx": 1160,
+        "last_bar_idx": 1186,
+        "entry_time": "2026-08-20T15:35:00Z",
+        "entry_price": 1.4826,
+        "entry_execution_price": 1.4844532499999998,
+        "signal_close": 1.4825,
+        "stop_loss": 1.427008300725779,
+        "breakeven_price": 1.5020220947459773,
+        "tp1_price": 1.5241187744556657,
+        "tp2_price": 1.732212646733994,
+        "risk_distance": 0.05549169927422093,
+        "quantity": 6512.754038448567,
+        "legs": [
+          {
+            "idx": 1186,
+            "qty": 1628.1885096121418,
+            "price": 1.427008300725779,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.4252245403498718,
+            "time": "2026-08-20T17:45:00Z",
+            "gross_pnl": -96.4355,
+            "fees": 3.4808,
+            "net_pnl": -99.9163
+          },
+          {
+            "idx": 1186,
+            "qty": 4884.565528836425,
+            "price": 1.427008300725779,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.4252245403498718,
+            "time": "2026-08-20T17:45:00Z",
+            "gross_pnl": -289.3065,
+            "fees": 10.4424,
+            "net_pnl": -299.7489
+          }
+        ],
+        "gross_pnl_try": -385.742,
+        "fees_try": 28.425,
+        "net_pnl_try": -414.167,
+        "realized_pnl_try": -399.6652,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-20T21:10:00Z",
+      "trade": {
+        "signal_idx": 1227,
+        "entry_idx": 1228,
+        "last_bar_idx": 1230,
+        "entry_time": "2026-08-20T21:15:00Z",
+        "entry_price": 1.4451,
+        "entry_execution_price": 1.446906375,
+        "signal_close": 1.4409,
+        "stop_loss": 1.4152937164628232,
+        "breakeven_price": 1.454062199238012,
+        "tp1_price": 1.4601047126528828,
+        "tp2_price": 1.5561282759172959,
+        "risk_distance": 0.025606283537176866,
+        "quantity": 6419.095150253314,
+        "legs": [
+          {
+            "idx": 1230,
+            "qty": 1604.7737875633286,
+            "price": 1.4601047126528828,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 1.4582795817620666,
+            "time": "2026-08-20T21:25:00Z",
+            "gross_pnl": 18.2514,
+            "fees": 3.5103,
+            "net_pnl": 14.7411
+          },
+          {
+            "idx": 1230,
+            "qty": 4814.321362689986,
+            "price": 1.454062199238012,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 1.4522446214889646,
+            "time": "2026-08-20T21:25:00Z",
+            "gross_pnl": 25.7,
+            "fees": 10.4874,
+            "net_pnl": 15.2127
+          }
+        ],
+        "gross_pnl_try": 43.9515,
+        "fees_try": 27.9294,
+        "net_pnl_try": 16.022,
+        "realized_pnl_try": 29.9538,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-21T22:05:00Z",
+      "trade": {
+        "signal_idx": 1526,
+        "entry_idx": 1527,
+        "last_bar_idx": 1598,
+        "entry_time": "2026-08-21T22:10:00Z",
+        "entry_price": 1.5545,
+        "entry_execution_price": 1.556443125,
+        "signal_close": 1.555,
+        "stop_loss": 1.5258970314305051,
+        "breakeven_price": 1.5646860389993231,
+        "tp1_price": 1.576827226427121,
+        "tp2_price": 1.6859633585627265,
+        "risk_distance": 0.02910296856949479,
+        "quantity": 5958.183769774921,
+        "legs": [
+          {
+            "idx": 1576,
+            "qty": 1489.5459424437302,
+            "price": 1.576827226427121,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 1.5748561923940871,
+            "time": "2026-08-22T02:15:00Z",
+            "gross_pnl": 27.4271,
+            "fees": 3.5187,
+            "net_pnl": 23.9084
+          },
+          {
+            "idx": 1598,
+            "qty": 4468.63782733119,
+            "price": 1.5646860389993231,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 1.562730181450574,
+            "time": "2026-08-22T04:05:00Z",
+            "gross_pnl": 28.0946,
+            "fees": 10.4749,
+            "net_pnl": 17.6197
+          }
+        ],
+        "gross_pnl_try": 55.5217,
+        "fees_try": 27.904,
+        "net_pnl_try": 27.6177,
+        "realized_pnl_try": 41.528,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-22T12:15:00Z",
+      "trade": {
+        "signal_idx": 1696,
+        "entry_idx": 1697,
+        "last_bar_idx": 1704,
+        "entry_time": "2026-08-22T12:20:00Z",
+        "entry_price": 1.4286,
+        "entry_execution_price": 1.4303857500000001,
+        "signal_close": 1.4291,
+        "stop_loss": 1.40152372557009,
+        "breakeven_price": 1.4382516960504685,
+        "tp1_price": 1.4497822058224326,
+        "tp2_price": 1.5531932349345947,
+        "risk_distance": 0.027576274429909953,
+        "quantity": 6502.023027079981,
+        "legs": [
+          {
+            "idx": 1704,
+            "qty": 1625.5057567699953,
+            "price": 1.40152372557009,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.3997718209131276,
+            "time": "2026-08-22T12:55:00Z",
+            "gross_pnl": -49.7631,
+            "fees": 3.413,
+            "net_pnl": -53.1761
+          },
+          {
+            "idx": 1704,
+            "qty": 4876.517270309986,
+            "price": 1.40152372557009,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.3997718209131276,
+            "time": "2026-08-22T12:55:00Z",
+            "gross_pnl": -149.2894,
+            "fees": 10.239,
+            "net_pnl": -159.5284
+          }
+        ],
+        "gross_pnl_try": -199.0525,
+        "fees_try": 27.6026,
+        "net_pnl_try": -226.6551,
+        "realized_pnl_try": -212.7045,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-23T11:15:00Z",
+      "trade": {
+        "signal_idx": 1972,
+        "entry_idx": 1973,
+        "last_bar_idx": 1984,
+        "entry_time": "2026-08-23T11:20:00Z",
+        "entry_price": 1.4314,
+        "entry_execution_price": 1.4331892499999999,
+        "signal_close": 1.4325,
+        "stop_loss": 1.4038930757365153,
+        "breakeven_price": 1.4414124234922197,
+        "tp1_price": 1.4539551931976136,
+        "tp2_price": 1.5612311591856816,
+        "risk_distance": 0.028606924263484768,
+        "quantity": 6331.531664921467,
+        "legs": [
+          {
+            "idx": 1975,
+            "qty": 1582.8829162303668,
+            "price": 1.4539551931976136,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 1.4521377492061165,
+            "time": "2026-08-23T11:30:00Z",
+            "gross_pnl": 29.9933,
+            "fees": 3.4478,
+            "net_pnl": 26.5454
+          },
+          {
+            "idx": 1984,
+            "qty": 4748.648748691101,
+            "price": 1.4414124234922197,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 1.4396106579628545,
+            "time": "2026-08-23T12:15:00Z",
+            "gross_pnl": 30.493,
+            "fees": 10.2543,
+            "net_pnl": 20.2387
+          }
+        ],
+        "gross_pnl_try": 60.4863,
+        "fees_try": 27.3136,
+        "net_pnl_try": 33.1727,
+        "realized_pnl_try": 46.7841,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-25T22:10:00Z",
+      "trade": {
+        "signal_idx": 2679,
+        "entry_idx": 2680,
+        "last_bar_idx": 2703,
+        "entry_time": "2026-08-25T22:15:00Z",
+        "entry_price": 1.5596,
+        "entry_execution_price": 1.5615495000000001,
+        "signal_close": 1.5601,
+        "stop_loss": 1.5189150311967747,
+        "breakeven_price": 1.574014739081129,
+        "tp1_price": 1.590988726602419,
+        "tp2_price": 1.7454323596145138,
+        "risk_distance": 0.04118496880322531,
+        "quantity": 5834.515964361259,
+        "legs": [
+          {
+            "idx": 2703,
+            "qty": 1458.6289910903147,
+            "price": 1.5189150311967747,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.5170163874077789,
+            "time": "2026-08-26T00:10:00Z",
+            "gross_pnl": -64.9573,
+            "fees": 3.3191,
+            "net_pnl": -68.2764
+          },
+          {
+            "idx": 2703,
+            "qty": 4375.8869732709445,
+            "price": 1.5189150311967747,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.5170163874077789,
+            "time": "2026-08-26T00:10:00Z",
+            "gross_pnl": -194.8719,
+            "fees": 9.9574,
+            "net_pnl": -204.8293
+          }
+        ],
+        "gross_pnl_try": -259.8292,
+        "fees_try": 26.9429,
+        "net_pnl_try": -286.7721,
+        "realized_pnl_try": -273.1057,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-26T15:25:00Z",
+      "trade": {
+        "signal_idx": 2886,
+        "entry_idx": 2887,
+        "last_bar_idx": 2894,
+        "entry_time": "2026-08-26T15:30:00Z",
+        "entry_price": 1.5828,
+        "entry_execution_price": 1.5847784999999999,
+        "signal_close": 1.5826,
+        "stop_loss": 1.538531511588779,
+        "breakeven_price": 1.5982239709439274,
+        "tp1_price": 1.6156513663084158,
+        "tp2_price": 1.7809081978504946,
+        "risk_distance": 0.04406848841122102,
+        "quantity": 5573.986918994061,
+        "legs": [
+          {
+            "idx": 2894,
+            "qty": 1393.4967297485152,
+            "price": 1.6156513663084158,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 1.6136318021005303,
+            "time": "2026-08-26T16:05:00Z",
+            "gross_pnl": 40.207,
+            "fees": 3.3729,
+            "net_pnl": 36.8341
+          },
+          {
+            "idx": 2894,
+            "qty": 4180.4901892455455,
+            "price": 1.5982239709439274,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 1.5962261909802475,
+            "time": "2026-08-26T16:05:00Z",
+            "gross_pnl": 47.857,
+            "fees": 10.0095,
+            "net_pnl": 37.8474
+          }
+        ],
+        "gross_pnl_try": 88.0639,
+        "fees_try": 26.6327,
+        "net_pnl_try": 61.4312,
+        "realized_pnl_try": 74.6815,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "CHIPTRY",
+      "signal_time": "2026-08-26T16:05:00Z",
+      "trade": {
+        "signal_idx": 2894,
+        "entry_idx": 2895,
+        "last_bar_idx": 2905,
+        "entry_time": "2026-08-26T16:10:00Z",
+        "entry_price": 1.6271,
+        "entry_execution_price": 1.629133875,
+        "signal_close": 1.6279,
+        "stop_loss": 1.57151261799405,
+        "breakeven_price": 1.6468355837020825,
+        "tp1_price": 1.6701905365044625,
+        "tp2_price": 1.8816432190267747,
+        "risk_distance": 0.05638738200594995,
+        "quantity": 5455.859864856566,
+        "legs": [
+          {
+            "idx": 2905,
+            "qty": 1363.9649662141414,
+            "price": 1.57151261799405,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.5695482272215575,
+            "time": "2026-08-26T17:00:00Z",
+            "gross_pnl": -81.2727,
+            "fees": 3.2112,
+            "net_pnl": -84.4839
+          },
+          {
+            "idx": 2905,
+            "qty": 4091.8948986424243,
+            "price": 1.57151261799405,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 1.5695482272215575,
+            "time": "2026-08-26T17:00:00Z",
+            "gross_pnl": -243.8182,
+            "fees": 9.6336,
+            "net_pnl": -253.4518
+          }
+        ],
+        "gross_pnl_try": -325.0909,
+        "fees_try": 26.1773,
+        "net_pnl_try": -351.2683,
+        "realized_pnl_try": -337.9358,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    }
+  ],
+  "limitations": [
+    "Source-aligned Python replay; not TradingView byte-identical.",
+    "Public OHLCV has no historical spread/depth or intrabar order sequence.",
+    "When stop and target occur in the same M5 bar, fill priority uses the open-to-target distance heuristic.",
+    "Max drawdown is computed from completed trade PnL, not intrabar equity.",
+    "A favorable 24-hour result cannot activate a paper-entry rule."
+  ]
+}
