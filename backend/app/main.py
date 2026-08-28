@@ -4050,92 +4050,169 @@ async def _journal_upside_candidates(candidates: list[dict], horizon_minutes: in
     saved = await database.save_llm_forecasts(forecasts)
     return {"forecast_group_id": group_id, "saved": saved}
 
-async def detect_15m_upside_candidates(args: dict | None = None):
-    """Fresh, read-only ranking for possible next-15m upside momentum."""
-    args = args or {}
-    limit = max(1, min(int(args.get("limit", 10)), 20))
-    scan = await scan_market_snapshots({
-        "symbols": config.SYMBOLS,
-        "timeframes": ["1m", "5m", "15m"],
-        "limit": limit,
-        "fresh": True,
-    })
-    candidates = []
-    ranked_rows = scan.get("bullish_candidates") or scan.get("ranked", [])
-    for row in ranked_rows:
-        if not row.get("data_ready") or str(row.get("trend_direction", "")).lower() == "bearish":
+def _ohlcv_from_rows(rows: list) -> dict:
+    """Convert Binance public kline rows to the snapshot input shape."""
+    result = {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": [], "timestamps": []}
+    for row in rows or []:
+        try:
+            result["timestamps"].append(int(row[0]))
+            result["opens"].append(float(row[1])); result["highs"].append(float(row[2]))
+            result["lows"].append(float(row[3])); result["closes"].append(float(row[4]))
+            result["volumes"].append(float(row[5]))
+        except (TypeError, ValueError, IndexError):
             continue
-        snapshots = row.get("timeframes") or {}
-        selected = row.get("snapshot") or {}
-        momentum = selected.get("momentum") or {}
-        trend = selected.get("trend") or {}
-        volume = selected.get("volume") or {}
-        liquidity = selected.get("liquidity") or {}
-        candidates.append({
-            "symbol": row.get("symbol"), "rank": len(candidates) + 1,
-            "score": row.get("score"), "data_ready": row.get("data_ready", False),
-            "trend_direction": row.get("trend_direction", "unknown"),
-            "evidence": row.get("evidence", []), "risks": row.get("risks", []),
-            "price": selected.get("price"),
-            "returns_pct": {key: momentum.get(key) for key in ("return_1m", "return_5m", "return_15m")},
-            "trend": {key: trend.get(key) for key in ("alignment", "adx", "adx_14", "plus_di", "minus_di")},
+    if result["timestamps"]:
+        result["last_closed_at_ms"] = result["timestamps"][-1]
+    return result
+
+async def _historical_snapshot_at(symbol: str, timeframes: list[str], end_time_ms: int) -> dict:
+    """Build a causal snapshot ending at a past completed-candle boundary."""
+    async def load(tf: str):
+        try:
+            rows = await fetch_klines(symbol, tf, limit=300, end_time_ms=end_time_ms)
+            return tf, _ohlcv_from_rows(rows)
+        except Exception as exc:
+            return tf, {"data_ready": False, "error": str(exc)}
+    loaded = dict(await asyncio.gather(*(load(tf) for tf in timeframes)))
+    primary = timeframes[-1]
+    bars = loaded.get(primary) or {}
+    closes = bars.get("closes") or []
+    if len(closes) < 55:
+        return {"symbol": symbol, "data_ready": False, "as_of_ms": end_time_ms,
+                "timeframes": loaded, "error": f"{primary} geçmiş snapshotı için yeterli mum yok"}
+    snapshot = calculate_snapshot(symbol, float(closes[-1]), loaded, {}, 0, config.DEFAULT_ORDER_USDT, primary)
+    snapshot["historical"] = True
+    snapshot["as_of_ms"] = end_time_ms
+    snapshot["data_source"] = "binance_tr_public_historical_klines"
+    return snapshot
+
+async def _fastest_risers_before(symbols: list[str], horizon_minutes: int, end_time_ms: int) -> list[dict]:
+    """Find the three fastest completed horizon candles before the scan."""
+    interval = f"{horizon_minutes}m"
+    sem = asyncio.Semaphore(8)
+    async def one(symbol: str):
+        async with sem:
+            try:
+                rows = await fetch_klines(symbol, interval, limit=3, end_time_ms=end_time_ms)
+                closes = [float(row[4]) for row in rows if len(row) > 4]
+                if len(closes) < 2 or closes[-2] == 0:
+                    return None
+                return {"symbol": symbol, "return_pct": (closes[-1] / closes[-2] - 1) * 100,
+                        "interval": interval, "as_of_ms": end_time_ms, "candles": len(closes)}
+            except Exception:
+                return None
+    rows = [row for row in await asyncio.gather(*(one(symbol) for symbol in symbols)) if row]
+    return sorted(rows, key=lambda row: row["return_pct"], reverse=True)[:3]
+
+def _common_gainer_features(rows: list[dict], horizon_minutes: int) -> dict:
+    """Summarize recurring features in the current top-20 snapshots."""
+    ready = [row for row in rows if row.get("data_ready") and row.get("snapshot")]
+    def fraction(predicate):
+        return round(sum(1 for row in ready if predicate(row["snapshot"])) / len(ready), 3) if ready else None
+    def value(snapshot, path, default=None):
+        current = snapshot
+        for key in path:
+            current = current.get(key) if isinstance(current, dict) else None
+        return current if current is not None else default
+    def number(value, default=0.0):
+        if isinstance(value, dict): value = value.get("adx")
+        try: return float(value) if value is not None else default
+        except (TypeError, ValueError): return default
+    def adx_value(snapshot): return value(snapshot, ["trend", "adx"], value(snapshot, ["trend", "adx_14"], 0))
+    def di_value(snapshot, key):
+        trend = snapshot.get("trend") or {}; adx = trend.get("adx") or trend.get("adx_14") or {}
+        return trend.get(key) if trend.get(key) is not None else (adx.get(key) if isinstance(adx, dict) else 0)
+    momentum_key = "return_5m" if horizon_minutes == 5 else "return_15m"
+    metrics = {
+        "sample_size": len(ready),
+        "bullish_ema_alignment": fraction(lambda s: str(value(s, ["trend", "alignment"], "")).lower() == "bullish"),
+        "positive_horizon_momentum": fraction(lambda s: float(value(s, ["momentum", momentum_key], 0) or 0) > 0),
+        "adx_at_least_20": fraction(lambda s: number(adx_value(s)) >= 20),
+        "volume_ratio_at_least_1_1": fraction(lambda s: number(value(s, ["volume", "volume_ratio_20"], 0)) >= 1.1),
+        "positive_di_dominance": fraction(lambda s: number(di_value(s, "plus_di")) > number(di_value(s, "minus_di"))),
+        "acceptable_spread": fraction(lambda s: value(s, ["liquidity", "spread_pct"]) is not None and float(value(s, ["liquidity", "spread_pct"])) <= .25),
+    }
+    return {"metrics": metrics, "interpretation": [key for key, ratio in metrics.items() if key != "sample_size" and ratio is not None and ratio >= .5],
+            "source": "current_active_top20_gainers", "paper_only": True}
+
+def _gainer_row_to_candidate(row: dict, common: dict, horizon_minutes: int, historical_symbols: set[str]) -> dict:
+    selected = row.get("snapshot") or {}; snapshots = row.get("timeframes") or {}
+    momentum = selected.get("momentum") or {}; trend = selected.get("trend") or {}
+    volume = selected.get("volume") or {}; liquidity = selected.get("liquidity") or {}
+    score = float(row.get("score") or 0)
+    common_metrics = common.get("metrics") or {}; adx = trend.get("adx") or trend.get("adx_14") or {}
+    plus_di = trend.get("plus_di") if trend.get("plus_di") is not None else (adx.get("plus_di") if isinstance(adx, dict) else 0)
+    minus_di = trend.get("minus_di") if trend.get("minus_di") is not None else (adx.get("minus_di") if isinstance(adx, dict) else 0)
+    adx_number = adx.get("adx", 0) if isinstance(adx, dict) else adx
+    checks = {
+        "bullish_ema_alignment": str(trend.get("alignment") or "").lower() == "bullish",
+        "positive_horizon_momentum": float(momentum.get("return_5m" if horizon_minutes == 5 else "return_15m") or 0) > 0,
+        "adx_at_least_20": float(adx_number or 0) >= 20,
+        "volume_ratio_at_least_1_1": float(volume.get("volume_ratio_20") or 0) >= 1.1,
+        "positive_di_dominance": float(plus_di or 0) > float(minus_di or 0),
+        "acceptable_spread": liquidity.get("spread_pct") is not None and float(liquidity["spread_pct"]) <= .25,
+    }
+    common_bonus = sum(0.35 for key, matched in checks.items() if matched and (common_metrics.get(key) or 0) >= .5)
+    historical_bonus = 0.5 if row.get("symbol") in historical_symbols else 0
+    return {"symbol": row.get("symbol"), "rank": 0, "score": round(score + common_bonus + historical_bonus, 3),
+            "base_score": row.get("score"), "common_feature_bonus": round(common_bonus, 3),
+            "historical_fast_riser_bonus": historical_bonus, "common_feature_matches": checks,
+            "data_ready": row.get("data_ready", False), "trend_direction": row.get("trend_direction", "unknown"),
+            "evidence": row.get("evidence", []), "risks": row.get("risks", []), "price": selected.get("price"),
+            "returns_pct": {key: momentum.get(key) for key in ("return_1m", "return_3m", "return_5m", "return_15m")},
+            "trend": {"alignment": trend.get("alignment"), "adx": adx_number, "adx_14": adx_number, "plus_di": plus_di, "minus_di": minus_di},
             "volume": {key: volume.get(key) for key in ("volume_ratio_20", "quote_volume")},
             "liquidity": {key: liquidity.get(key) for key in ("spread_pct", "orderbook_depth_try", "orderflow_imbalance")},
             "regime": (selected.get("methodology") or {}).get("regime"),
             "data_gaps": [tf for tf, snapshot in snapshots.items() if not snapshot.get("data_ready")],
-            "snapshot": selected, "timeframes": snapshots,
-        })
+            "snapshot": selected, "timeframes": snapshots}
+
+async def _detect_upside_candidates(horizon_minutes: int, args: dict | None = None):
+    args = args or {}; limit = max(1, min(int(args.get("limit", 10)), 20)); now_ms = int(time.time() * 1000)
+    end_time_ms = now_ms - horizon_minutes * 60 * 1000
+    active = [str(symbol).replace("_", "").upper() for symbol in config.SYMBOLS]
+    historical_risers = await _fastest_risers_before(active, horizon_minutes, end_time_ms)
+    historical_timeframes = ["1m", "3m", "5m"] if horizon_minutes == 5 else ["1m", "5m", "15m"]
+    historical_snapshots = []
+    for riser in historical_risers:
+        snapshot = await _historical_snapshot_at(riser["symbol"], historical_timeframes, end_time_ms)
+        historical_snapshots.append({**riser, "snapshot": snapshot})
+    tickers = await ticker_24h()
+    ticker_map = {str(item.get("symbol", "")).upper(): item for item in tickers or []}
+    top20 = sorted((symbol for symbol in active if symbol in ticker_map), key=lambda symbol: float(ticker_map[symbol].get("priceChangePercent", 0) or 0), reverse=True)[:20]
+    if not top20: top20 = active[:20]
+    timeframes = historical_timeframes
+    scan = await scan_market_snapshots({"symbols": top20, "timeframes": timeframes, "limit": 20, "fresh": True})
+    top20_rows = []
+    horizon_tf = f"{horizon_minutes}m"
+    for row in scan.get("ranked", []):
+        selected = (row.get("timeframes") or {}).get(horizon_tf) or row.get("snapshot") or {}
+        score, evidence, risks = _market_candidate_score(selected)
+        top20_rows.append({**row, "snapshot": selected, "score": score, "evidence": evidence, "risks": risks,
+                           "data_ready": bool(selected.get("data_ready")), "trend_direction": selected.get("summary", row.get("trend_direction", "unknown"))})
+    common = _common_gainer_features(top20_rows, horizon_minutes)
+    historical_symbols = {row["symbol"] for row in historical_risers}
+    candidates = [_gainer_row_to_candidate(row, common, horizon_minutes, historical_symbols) for row in top20_rows if row.get("data_ready") and str(row.get("trend_direction", "")).lower() != "bearish"]
+    candidates.sort(key=lambda row: row["score"], reverse=True)
+    for rank, candidate in enumerate(candidates[:limit], 1): candidate["rank"] = rank
+    candidates = candidates[:limit]
     generated_at = scan.get("generated_at") or time.time()
-    journal = await _journal_upside_candidates(candidates, 15, generated_at)
-    return {"generated_at": generated_at, "horizon_minutes": 15,
-            "symbols_scanned": scan.get("symbols_scanned", 0),
-            "symbols_skipped_open": scan.get("symbols_skipped_open", []),
-            "candidates": candidates, "market_regime": scan.get("market_regime"),
-            "data_policy": "Taze Binance TR public snapshot; tahmin veya garanti değildir. Eksik alanlar unknown kabul edilir.",
+    journal = await _journal_upside_candidates(candidates, horizon_minutes, generated_at)
+    return {"generated_at": generated_at, "horizon_minutes": horizon_minutes, "symbols_scanned": scan.get("symbols_scanned", 0),
+            "symbols_skipped_open": scan.get("symbols_skipped_open", []), "candidates": candidates,
+            "market_regime": scan.get("market_regime"), "historical_fastest_risers": historical_snapshots,
+            "historical_as_of_ms": end_time_ms, "current_top20_gainers": top20, "top20_common_features": common,
+            "selection_pipeline": ["horizon öncesindeki en hızlı 3 tamamlanmış mum", "bu 3 sembolün geçmiş snapshot analizi", "güncel aktif Top-20 gainer ortak özellikleri", "nihai ufuk bazlı aday analizi"],
+            "data_policy": "Taze Binance TR public snapshot ve geçmiş tamamlanmış mumlar; tahmin veya garanti değildir. Eksik alanlar unknown kabul edilir.",
             "journal": journal, "paper_only": True, "live_portfolio_changed": False}
 
+async def detect_15m_upside_candidates(args: dict | None = None):
+    """Fresh, causal multi-stage ranking for possible next-15m upside momentum."""
+    return await _detect_upside_candidates(15, args)
+
 async def detect_5m_upside_candidates(args: dict | None = None):
-    """Fresh, read-only ranking for possible next-5m upside momentum."""
-    args = args or {}
-    limit = max(1, min(int(args.get("limit", 10)), 20))
-    scan = await scan_market_snapshots({
-        "symbols": config.SYMBOLS,
-        "timeframes": ["1m", "3m", "5m"],
-        "limit": limit,
-        "fresh": True,
-    })
-    candidates = []
-    for row in (scan.get("bullish_candidates") or scan.get("ranked", [])):
-        if not row.get("data_ready") or str(row.get("trend_direction", "")).lower() == "bearish":
-            continue
-        selected = row.get("snapshot") or {}
-        momentum = selected.get("momentum") or {}
-        trend = selected.get("trend") or {}
-        volume = selected.get("volume") or {}
-        liquidity = selected.get("liquidity") or {}
-        snapshots = row.get("timeframes") or {}
-        candidates.append({
-            "symbol": row.get("symbol"), "rank": len(candidates) + 1,
-            "score": row.get("score"), "data_ready": row.get("data_ready", False),
-            "trend_direction": row.get("trend_direction", "unknown"),
-            "evidence": row.get("evidence", []), "risks": row.get("risks", []),
-            "price": selected.get("price"),
-            "returns_pct": {key: momentum.get(key) for key in ("return_1m", "return_3m", "return_5m")},
-            "trend": {key: trend.get(key) for key in ("alignment", "adx", "adx_14", "plus_di", "minus_di")},
-            "volume": {key: volume.get(key) for key in ("volume_ratio_20", "quote_volume")},
-            "liquidity": {key: liquidity.get(key) for key in ("spread_pct", "orderbook_depth_try", "orderflow_imbalance")},
-            "regime": (selected.get("methodology") or {}).get("regime"),
-            "data_gaps": [tf for tf, snapshot in snapshots.items() if not snapshot.get("data_ready")],
-            "snapshot": selected, "timeframes": snapshots,
-        })
-    generated_at = scan.get("generated_at") or time.time()
-    journal = await _journal_upside_candidates(candidates, 5, generated_at)
-    return {"generated_at": generated_at, "horizon_minutes": 5,
-            "symbols_scanned": scan.get("symbols_scanned", 0),
-            "symbols_skipped_open": scan.get("symbols_skipped_open", []),
-            "candidates": candidates, "market_regime": scan.get("market_regime"),
-            "data_policy": "Taze Binance TR public snapshot; tahmin veya garanti değildir. Eksik alanlar unknown kabul edilir.",
-            "journal": journal, "paper_only": True, "live_portfolio_changed": False}
+    """Fresh, causal multi-stage ranking for possible next-5m upside momentum."""
+    return await _detect_upside_candidates(5, args)
 
 async def get_data_quality(args: dict):
     """Return freshness/completeness diagnostics before any market decision."""
