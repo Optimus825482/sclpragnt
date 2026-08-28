@@ -1,6 +1,15 @@
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
-load_dotenv()
+
+# Resolve the backend-local dotenv file from this module's location instead of
+# the process working directory. This keeps secrets such as
+# LLM_ENCRYPTION_KEY available when uvicorn is started from the repository
+# root (or by a process manager with a different cwd). Explicit environment
+# variables still win because override=False is the default.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+load_dotenv(override=False)
 
 class Config:
     STRATEGY_REVISION = os.getenv("STRATEGY_REVISION", "filters-2026-08-06-adx18-keltner-retest-chop45")
