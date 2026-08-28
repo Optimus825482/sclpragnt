@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import MarkdownMessage from "../components/MarkdownMessage";
+import SymbolLink from "../components/SymbolLink";
 import { streamChat } from "../lib/streamChat";
 import { Badge, Button, Card } from "../components/ui";
 
@@ -510,7 +511,7 @@ export default function ChatPage() {
                 {upsideCandidates.map((candidate) => (
                   <div key={candidate.symbol} className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800 pb-2 last:border-0 last:pb-0">
                     <div>
-                      <strong className="font-mono text-sm text-white">{candidate.rank}. {candidate.symbol}</strong>
+                      <strong className="font-mono text-sm text-white">{candidate.rank}. <SymbolLink symbol={candidate.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green" /></strong>
                       <span className="ml-2 text-xs text-neon-green">{candidate.trend_direction || "unknown"}</span>
                       <p className="text-[11px] text-bunker-muted">5m %{candidate.returns_pct?.return_5m ?? "—"} · 15m %{candidate.returns_pct?.return_15m ?? "—"} · ADX {indicatorNumber(candidate.trend?.adx, "adx") !== "—" ? indicatorNumber(candidate.trend?.adx, "adx") : indicatorNumber(candidate.trend?.adx_14)} · hacim {candidate.volume?.volume_ratio_20 ?? "—"}x · spread %{candidate.liquidity?.spread_pct ?? "—"}</p>
                     </div>
