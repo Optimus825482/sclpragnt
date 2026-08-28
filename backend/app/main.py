@@ -3650,7 +3650,7 @@ async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
             "selected_timeframe": preferred,
             "available_timeframes": list(snapshots.keys()),
             "data_policy": "Use only supplied public OHLCV, ticker, order-flow and calculated indicators. Missing values remain unknown.",
-            "available_calculations": ["trend", "oscillators", "moving_averages", "candlestick_patterns", "channels", "volatility", "volume", "pivots", "liquidity", "mfi_14", "obv", "fisher_9", "fisher_11", "wavetrend_7_1_crosses"],
+            "available_calculations": ["trend", "trend_indicators", "oscillators", "moving_averages", "candlestick_patterns", "channels", "volatility", "volatility_indicators", "volume", "flow_indicators", "momentum_indicators", "pivots", "liquidity", "mfi_14", "obv", "fisher_9", "fisher_11", "wavetrend_7_1_crosses", "alma_20", "dema_20", "tema_20", "hma_16", "aroon_25", "supertrend_10_3", "ichimoku_9_26_52", "vortex_14", "trix_15", "tsi_25_13", "adl", "cmf_20", "pvt", "volume_oscillator_5_20", "choppiness_14", "historical_volatility_20"],
             "timeframes": snapshots,
         }
     return selected
@@ -4131,6 +4131,12 @@ def _common_gainer_features(rows: list[dict], horizon_minutes: int) -> dict:
         "volume_ratio_at_least_1_1": fraction(lambda s: number(value(s, ["volume", "volume_ratio_20"], 0)) >= 1.1),
         "positive_di_dominance": fraction(lambda s: number(di_value(s, "plus_di")) > number(di_value(s, "minus_di"))),
         "acceptable_spread": fraction(lambda s: value(s, ["liquidity", "spread_pct"]) is not None and float(value(s, ["liquidity", "spread_pct"])) <= .25),
+        "supertrend_bullish": fraction(lambda s: bool(value(s, ["trend_indicators", "supertrend_10_3", "bullish"], False))),
+        "aroon_bullish": fraction(lambda s: bool(value(s, ["trend_indicators", "aroon_25", "bullish"], False))),
+        "vortex_bullish": fraction(lambda s: bool(value(s, ["trend_indicators", "vortex_14", "bullish"], False))),
+        "cmf_positive": fraction(lambda s: number(value(s, ["flow_indicators", "cmf_20"], 0)) > 0),
+        "trix_positive": fraction(lambda s: number(value(s, ["momentum_indicators", "trix_15"], 0)) > 0),
+        "choppiness_trending": fraction(lambda s: number(value(s, ["volatility_indicators", "choppiness_14"], 100)) < 61.8),
     }
     return {"metrics": metrics, "interpretation": [key for key, ratio in metrics.items() if key != "sample_size" and ratio is not None and ratio >= .5],
             "source": "current_active_top20_gainers", "paper_only": True}
@@ -4151,6 +4157,12 @@ def _gainer_row_to_candidate(row: dict, common: dict, horizon_minutes: int, hist
         "volume_ratio_at_least_1_1": float(volume.get("volume_ratio_20") or 0) >= 1.1,
         "positive_di_dominance": float(plus_di or 0) > float(minus_di or 0),
         "acceptable_spread": liquidity.get("spread_pct") is not None and float(liquidity["spread_pct"]) <= .25,
+        "supertrend_bullish": bool((selected.get("trend_indicators") or {}).get("supertrend_10_3", {}).get("bullish", False)),
+        "aroon_bullish": bool((selected.get("trend_indicators") or {}).get("aroon_25", {}).get("bullish", False)),
+        "vortex_bullish": bool((selected.get("trend_indicators") or {}).get("vortex_14", {}).get("bullish", False)),
+        "cmf_positive": float((selected.get("flow_indicators") or {}).get("cmf_20") or 0) > 0,
+        "trix_positive": float((selected.get("momentum_indicators") or {}).get("trix_15") or 0) > 0,
+        "choppiness_trending": float((selected.get("volatility_indicators") or {}).get("choppiness_14") or 100) < 61.8,
     }
     common_bonus = sum(0.35 for key, matched in checks.items() if matched and (common_metrics.get(key) or 0) >= .5)
     historical_bonus = 0.5 if row.get("symbol") in historical_symbols else 0

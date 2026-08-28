@@ -195,6 +195,137 @@ def _ultimate_oscillator(highs, lows, closes, periods=(7, 14, 28)):
     averages = [sum(bp[-p:]) / sum(tr[-p:]) if sum(tr[-p:]) else 0.5 for p in periods]
     return float(100 * (4 * averages[0] + 2 * averages[1] + averages[2]) / 7)
 
+def _wma(values, period):
+    if len(values) < period: return None
+    weights = np.arange(1, period + 1, dtype=float)
+    return float(np.dot(np.asarray(values[-period:], dtype=float), weights) / weights.sum())
+
+def _alma(values, period=20, offset=0.85, sigma=6.0):
+    if len(values) < period: return None
+    window = np.asarray(values[-period:], dtype=float)
+    center = offset * (period - 1); scale = period / sigma
+    weights = np.exp(-((np.arange(period) - center) ** 2) / (2 * scale * scale))
+    return float(np.dot(window, weights) / weights.sum())
+
+def _dema(closes, period=20):
+    ema = _ema(closes, period)
+    series = _ema_series(closes, period)
+    second = _ema([value for value in series if value is not None], period)
+    return float(2 * ema - second) if ema is not None and second is not None else None
+
+def _tema(closes, period=20):
+    first = _ema(closes, period)
+    first_series = [value for value in _ema_series(closes, period) if value is not None]
+    second = _ema(first_series, period)
+    second_series = [value for value in _ema_series(first_series, period) if value is not None]
+    third = _ema(second_series, period)
+    return float(3 * first - 3 * second + third) if first is not None and second is not None and third is not None else None
+
+def _hma(closes, period=16):
+    half, root = max(1, period // 2), max(1, int(math.sqrt(period)))
+    if len(closes) < period + root: return None
+    values = []
+    for end in range(period, len(closes) + 1):
+        window = closes[:end]
+        first, second = _wma(window, half), _wma(window, period)
+        if first is not None and second is not None: values.append(2 * first - second)
+    return _wma(values, root)
+
+def _aroon(highs, lows, period=25):
+    if len(highs) < period: return None
+    high_window, low_window = highs[-period:], lows[-period:]
+    high_bars = period - 1 - int(np.argmax(high_window)); low_bars = period - 1 - int(np.argmin(low_window))
+    up, down = 100 * (period - high_bars) / period, 100 * (period - low_bars) / period
+    return {"up": float(up), "down": float(down), "oscillator": float(up - down), "bullish": bool(up > down)}
+
+def _vortex(highs, lows, closes, period=14):
+    if len(closes) < period + 1: return None
+    tr, vm_plus, vm_minus = [], [], []
+    for i in range(1, len(closes)):
+        tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])))
+        vm_plus.append(abs(highs[i] - lows[i-1])); vm_minus.append(abs(lows[i] - highs[i-1]))
+    tr_sum = sum(tr[-period:])
+    if not tr_sum: return None
+    plus, minus = sum(vm_plus[-period:]) / tr_sum, sum(vm_minus[-period:]) / tr_sum
+    return {"plus": float(plus), "minus": float(minus), "bullish": bool(plus > minus)}
+
+def _choppiness(highs, lows, closes, period=14):
+    if len(closes) < period + 1: return None
+    ranges = [max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])) for i in range(1, len(closes))]
+    total = sum(ranges[-period:]); price_range = max(highs[-period:]) - min(lows[-period:])
+    if total <= 0 or price_range <= 0: return None
+    return float(100 * math.log10(total / price_range) / math.log10(period))
+
+def _trix(closes, period=15):
+    first = [value for value in _ema_series(closes, period) if value is not None]
+    second = [value for value in _ema_series(first, period) if value is not None]
+    triple = [value for value in _ema_series(second, period) if value is not None]
+    if len(triple) < 2 or triple[-2] == 0: return None
+    return float((triple[-1] - triple[-2]) / abs(triple[-2]) * 100)
+
+def _tsi(closes, long=25, short=13):
+    if len(closes) < long + short + 2: return None
+    momentum = np.diff(np.asarray(closes, dtype=float)).tolist()
+    abs_momentum = [abs(value) for value in momentum]
+    smoothed = [value for value in _ema_series(momentum, short) if value is not None]
+    smoothed_abs = [value for value in _ema_series(abs_momentum, short) if value is not None]
+    double = _ema(smoothed, long); double_abs = _ema(smoothed_abs, long)
+    return float(100 * double / double_abs) if double is not None and double_abs else None
+
+def _adl(highs, lows, closes, volumes):
+    if len(closes) < 2: return None
+    value = 0.0
+    for high, low, close, volume in zip(highs, lows, closes, volumes):
+        value += ((2 * close - high - low) / (high - low) * volume) if high != low else 0.0
+    return float(value)
+
+def _cmf(highs, lows, closes, volumes, period=20):
+    if len(closes) < period: return None
+    mfv, vol = [], []
+    for high, low, close, volume in zip(highs[-period:], lows[-period:], closes[-period:], volumes[-period:]):
+        mfv.append(((2 * close - high - low) / (high - low) * volume) if high != low else 0.0); vol.append(volume)
+    return float(sum(mfv) / sum(vol)) if sum(vol) else None
+
+def _pvt(closes, volumes):
+    if len(closes) < 2: return None
+    value = 0.0
+    for current, previous, volume in zip(closes[1:], closes[:-1], volumes[1:]):
+        if previous: value += (current - previous) / previous * volume
+    return float(value)
+
+def _volume_oscillator(volumes, fast=5, slow=20):
+    fast_value, slow_value = _ema(volumes, fast), _ema(volumes, slow)
+    return float((fast_value - slow_value) / slow_value * 100) if fast_value is not None and slow_value else None
+
+def _supertrend(highs, lows, closes, period=10, factor=3.0):
+    if len(closes) < period + 1: return None
+    atr_values = []
+    for i in range(len(closes)):
+        start = max(1, i - period + 1)
+        trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j-1]), abs(lows[j] - closes[j-1])) for j in range(start, i + 1)]
+        atr_values.append(float(np.mean(trs)) if len(trs) >= period else None)
+    direction, line = 1, None
+    for i, atr in enumerate(atr_values):
+        if atr is None: continue
+        midpoint = (highs[i] + lows[i]) / 2; upper, lower = midpoint + factor * atr, midpoint - factor * atr
+        direction = 1 if closes[i] >= (line if line is not None else lower) else -1
+        line = max(lower, line) if direction == 1 and line is not None else min(upper, line) if direction == -1 and line is not None else lower if direction == 1 else upper
+    return {"line": float(line), "direction": int(direction), "bullish": bool(direction == 1), "factor": factor, "atr_period": period}
+
+def _ichimoku(highs, lows, closes, conversion=9, base=26, span=52):
+    if len(closes) < span: return None
+    midpoint = lambda length: (max(highs[-length:]) + min(lows[-length:])) / 2
+    tenkan, kijun = midpoint(conversion), midpoint(base)
+    span_a, span_b = (tenkan + kijun) / 2, midpoint(span)
+    return {"tenkan": float(tenkan), "kijun": float(kijun), "span_a": float(span_a), "span_b": float(span_b),
+            "above_cloud": bool(closes[-1] > max(span_a, span_b)), "conversion_period": conversion, "base_period": base, "span_period": span}
+
+def _linear_regression(closes, period=20):
+    if len(closes) < period: return None
+    x = np.arange(period, dtype=float); y = np.asarray(closes[-period:], dtype=float)
+    slope, intercept = np.polyfit(x, y, 1); fitted = slope * (period - 1) + intercept
+    return {"slope": float(slope), "slope_pct": float(slope / y[-1] * 100) if y[-1] else None, "value": float(fitted), "period": period}
+
 def _signal(value, buy, strong_buy, sell, strong_sell):
     if value is None: return "unknown"
     if value >= strong_buy: return "strong_buy"
@@ -558,6 +689,16 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     fisher = _fisher_transform(highs, lows, 9)
     fisher_11 = _fisher_transform(highs, lows, 11)
     wavetrend = _wavetrend(highs, lows, closes, 7, 1, 4)
+    trend_indicators = {"alma_20": _alma(closes, 20), "dema_20": _dema(closes, 20), "tema_20": _tema(closes, 20),
+                        "hma_16": _hma(closes, 16), "aroon_25": _aroon(highs, lows, 25), "supertrend_10_3": _supertrend(highs, lows, closes, 10, 3.0),
+                        "ichimoku_9_26_52": _ichimoku(highs, lows, closes, 9, 26, 52), "vortex_14": _vortex(highs, lows, closes, 14),
+                        "linear_regression_20": _linear_regression(closes, 20)}
+    momentum_indicators = {"roc_5": ret(5), "roc_10": ret(10), "roc_21": ret(21), "trix_15": _trix(closes, 15), "tsi_25_13": _tsi(closes, 25, 13)}
+    flow_indicators = {"adl": _adl(highs, lows, closes, volumes), "cmf_20": _cmf(highs, lows, closes, volumes, 20),
+                       "pvt": _pvt(closes, volumes), "volume_oscillator_5_20": _volume_oscillator(volumes, 5, 20)}
+    volatility_indicators = {"stddev_20": float(np.std(closes[-20:])) if len(closes) >= 20 else None,
+                             "historical_volatility_20": float(np.std(np.diff(np.log(np.asarray(closes[-21:], dtype=float)))) * math.sqrt(1440) * 100) if len(closes) >= 21 and all(float(value) > 0 for value in closes[-21:]) else None,
+                             "choppiness_14": _choppiness(highs, lows, closes, 14)}
     cci = _cci(highs, lows, closes); ao = _awesome_oscillator(highs, lows); williams = _williams_r(highs, lows, closes)
     bull_bear = _bull_bear_power(highs, lows, closes); ultimate = _ultimate_oscillator(highs, lows, closes)
     moving_averages = {}
@@ -579,7 +720,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     candle_patterns = _candlestick_patterns(opens, highs, lows, closes)
     alignment = "bullish" if ema9 and ema21 and ema50 and ema9 > ema21 > ema50 else "bearish" if ema9 and ema21 and ema50 and ema9 < ema21 < ema50 else "mixed"
     methodologies = _methodology_analysis(opens, highs, lows, closes, volumes, adx, alignment)
-    result.update({"timeframe": primary_timeframe, "data_ready": True, "trend": {"ema_9": ema9, "ema_21": ema21, "ema_50": ema50, "alignment": alignment, "adx": adx}, "momentum": {"return_5m": ret(1), "return_15m": ret(3), "return_1h": ret(12), "rsi_14": _rsi(closes), "roc_21": ret(21), "macd": macd, "stochastic": stochastic, "mfi_14": mfi}, "oscillators": {"values": oscillator_values, "signals": oscillator_signals}, "moving_averages": moving_averages, "candlestick_patterns": _candlestick_patterns(opens, highs, lows, closes), "channels": {"bollinger": bollinger, "donchian": {"upper": max(highs[-20:]), "middle": _sma(closes, 20), "lower": min(lows[-20:])} if len(closes) >= 20 else None, "keltner": {"middle": ema20, "upper": ema20 + 2*atr if ema20 and atr else None, "lower": ema20 - 2*atr if ema20 and atr else None}}, "volatility": {"atr_14": atr, "atr_pct": atr / price if atr and price else None, "adr_14_pct": adr, "adr_basis": "1d", "bollinger": bollinger, "day_range_used_pct": None, "adr_utilization": None, "remaining_capacity_pct": None}, "volume": {"volume_ratio_20": volumes[-1] / vavg if vavg else None, "volume_quality": "insufficient_history" if len(volumes) < 21 else "low_volume" if vavg and volumes[-1] / vavg < 0.2 else "valid", "volume_timeframe": primary_timeframe, "vwap": float(np.sum(((np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3) * np.array(volumes[-20:])) / np.sum(volumes[-20:])) if len(volumes) >= 20 and np.sum(volumes[-20:]) else None, "obv": obv}, "pivots": _pivots(dhigh[-1], dlow[-1], dclose[-1]) if len(dclose) else None, "liquidity": {"quote_volume_24h": ticker_24h, "spread_pct": spread, "best_bid_price": flow.get("bid_price"), "best_ask_price": flow.get("ask_price"), "bid_qty": flow.get("bid_qty"), "ask_qty": flow.get("ask_qty"), "orderbook_depth_try": depth, "depth_multiplier": depth / order_value if order_value else None, "orderflow_imbalance": ((flow.get("bid_qty", 0) - flow.get("ask_qty", 0)) / (flow.get("bid_qty", 0) + flow.get("ask_qty", 0))) if (flow.get("bid_qty", 0) + flow.get("ask_qty", 0)) else None, "scope": "realtime_market", "timeframe_independent": True, "source": flow.get("source", "binance_tr_public_websocket"), "updated_at": flow.get("updated_at")}, "methodologies": methodologies})
+    result.update({"timeframe": primary_timeframe, "data_ready": True, "trend": {"ema_9": ema9, "ema_21": ema21, "ema_50": ema50, "alignment": alignment, "adx": adx}, "trend_indicators": trend_indicators, "momentum": {"return_5m": ret(1), "return_15m": ret(3), "return_1h": ret(12), "rsi_14": _rsi(closes), "roc_21": ret(21), "macd": macd, "stochastic": stochastic, "mfi_14": mfi}, "momentum_indicators": momentum_indicators, "oscillators": {"values": oscillator_values, "signals": oscillator_signals}, "moving_averages": moving_averages, "candlestick_patterns": _candlestick_patterns(opens, highs, lows, closes), "channels": {"bollinger": bollinger, "donchian": {"upper": max(highs[-20:]), "middle": _sma(closes, 20), "lower": min(lows[-20:])} if len(closes) >= 20 else None, "keltner": {"middle": ema20, "upper": ema20 + 2*atr if ema20 and atr else None, "lower": ema20 - 2*atr if ema20 and atr else None}}, "volatility": {"atr_14": atr, "atr_pct": atr / price if atr and price else None, "adr_14_pct": adr, "adr_basis": "1d", "bollinger": bollinger, "day_range_used_pct": None, "adr_utilization": None, "remaining_capacity_pct": None}, "volatility_indicators": volatility_indicators, "volume": {"volume_ratio_20": volumes[-1] / vavg if vavg else None, "volume_quality": "insufficient_history" if len(volumes) < 21 else "low_volume" if vavg and volumes[-1] / vavg < 0.2 else "valid", "volume_timeframe": primary_timeframe, "vwap": float(np.sum(((np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3) * np.array(volumes[-20:])) / np.sum(volumes[-20:])) if len(volumes) >= 20 and np.sum(volumes[-20:]) else None, "obv": obv}, "flow_indicators": flow_indicators, "pivots": _pivots(dhigh[-1], dlow[-1], dclose[-1]) if len(dclose) else None, "liquidity": {"quote_volume_24h": ticker_24h, "spread_pct": spread, "best_bid_price": flow.get("bid_price"), "best_ask_price": flow.get("ask_price"), "bid_qty": flow.get("bid_qty"), "ask_qty": flow.get("ask_qty"), "orderbook_depth_try": depth, "depth_multiplier": depth / order_value if order_value else None, "orderflow_imbalance": ((flow.get("bid_qty", 0) - flow.get("ask_qty", 0)) / (flow.get("bid_qty", 0) + flow.get("ask_qty", 0))) if (flow.get("bid_qty", 0) + flow.get("ask_qty", 0)) else None, "scope": "realtime_market", "timeframe_independent": True, "source": flow.get("source", "binance_tr_public_websocket"), "updated_at": flow.get("updated_at")}, "methodologies": methodologies})
     result["candlestick_patterns"] = candle_patterns
     result["momentum"]["cmo_9"] = cmo
     result["momentum"]["crsi"] = crsi
