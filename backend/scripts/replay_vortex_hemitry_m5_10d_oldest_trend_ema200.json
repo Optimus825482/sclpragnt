@@ -1,0 +1,979 @@
+{
+  "paper_only": true,
+  "generated_at": "2026-08-28T15:34:08.558533+00:00",
+  "strategy": "Vortex Breakout PRO v4.1 - Optimize SPOT LONG",
+  "window": {
+    "start": "2026-07-29T14:55:00Z",
+    "end": "2026-08-08T14:55:00Z",
+    "hours": 240
+  },
+  "source": "Binance TR public /api/v3/klines completed M5 OHLCV",
+  "universe": {
+    "mode": "explicit",
+    "limit": 10,
+    "selection": null
+  },
+  "provenance": {
+    "per_symbol": {
+      "HEMITRY": {
+        "m5_closed_candles": 3456,
+        "window_m5_candles": 2880,
+        "first_candle": "2026-07-27T14:55:00Z",
+        "last_candle": "2026-08-08T14:50:00Z"
+      }
+    },
+    "errors": {}
+  },
+  "configuration": {
+    "bollinger_period": 21,
+    "vortex_period": 8,
+    "swing_length": 5,
+    "atr_period": 15,
+    "atr_sl_mult": 4.0,
+    "swing_buffer_atr": 2.5,
+    "partial": {
+      "enabled": true,
+      "tp1_qty_pct": 25,
+      "tp1_r": 0.75,
+      "tp2_r": 4.5,
+      "be_r": 0.35
+    },
+    "filters": {
+      "flat_width_ratio": 0.65,
+      "flat_vi_diff": 0.1,
+      "cooldown_bars": 3,
+      "pb_expiry_bars": 50,
+      "trend_filter": "ema200"
+    },
+    "trailing": {
+      "enabled": false
+    },
+    "position_size": "98%_equity_compounded",
+    "pyramiding": 0
+  },
+  "execution": {
+    "entry": "next completed M5 bar open",
+    "initial_balance_try": 10000.0,
+    "cost_mode": "config",
+    "cost_multiplier": 1.0,
+    "mode": "config",
+    "commission_pct_each_side": 0.0015,
+    "slippage_pct_each_side": 0.00025,
+    "spread_pct_each_side": 0.001,
+    "tick_size": 0.0001
+  },
+  "signal_flow": {
+    "raw_long_signals": 25,
+    "trend_filter_passed_signals": 24,
+    "blocked_by_trend_filter": 1,
+    "selected_trades": 17,
+    "blocked_by_open_position": 6,
+    "blocked_by_cooldown": 1
+  },
+  "result": {
+    "trades": 17,
+    "closed_trades": 16,
+    "open_positions": 1,
+    "net_pnl_try": -1212.1087,
+    "realized_net_pnl_try": -868.4241,
+    "open_unrealized_pnl_try": -105.4451,
+    "gross_pnl_try": -736.7354,
+    "fees_try": 475.3737,
+    "wins": 5,
+    "losses": 12,
+    "win_rate_pct": 29.41,
+    "profit_factor": 0.076,
+    "expectancy_try": -71.3005,
+    "max_drawdown_try": 1243.0805,
+    "exposure_pct": 12.85,
+    "final_balance_try": 8787.8913,
+    "reconciliation_delta_try": 0.0,
+    "exit_reasons": {
+      "stop_loss_post_tp1": 9,
+      "stop_loss": 7,
+      "open_pre_tp1": 1
+    }
+  },
+  "trades_detail": [
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-07-30T04:30:00Z",
+      "trade": {
+        "signal_idx": 739,
+        "entry_idx": 740,
+        "last_bar_idx": 741,
+        "entry_time": "2026-07-30T04:35:00Z",
+        "entry_price": 0.2076,
+        "entry_execution_price": 0.2078595,
+        "signal_close": 0.2082,
+        "stop_loss": 0.206280347765571,
+        "breakeven_price": 0.20827187828205015,
+        "tp1_price": 0.20963973917582174,
+        "tp2_price": 0.2168384350549305,
+        "risk_distance": 0.001919652234428998,
+        "quantity": 47070.124879923154,
+        "legs": [
+          {
+            "idx": 741,
+            "qty": 11767.531219980789,
+            "price": 0.20963973917582174,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 0.20937768950185195,
+            "time": "2026-07-30T04:40:00Z",
+            "gross_pnl": 17.8653,
+            "fees": 3.6958,
+            "net_pnl": 14.1696
+          },
+          {
+            "idx": 741,
+            "qty": 35302.593659942366,
+            "price": 0.20827187828205015,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 0.2080115384341976,
+            "time": "2026-07-30T04:40:00Z",
+            "gross_pnl": 5.3674,
+            "fees": 11.015,
+            "net_pnl": -5.6477
+          }
+        ],
+        "gross_pnl_try": 23.2327,
+        "fees_try": 29.3868,
+        "net_pnl_try": -6.1541,
+        "realized_pnl_try": 8.5219,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-07-30T11:45:00Z",
+      "trade": {
+        "signal_idx": 826,
+        "entry_idx": 827,
+        "last_bar_idx": 866,
+        "entry_time": "2026-07-30T11:50:00Z",
+        "entry_price": 0.2105,
+        "entry_execution_price": 0.210763125,
+        "signal_close": 0.2111,
+        "stop_loss": 0.20707030833343154,
+        "breakeven_price": 0.21191039208329895,
+        "tp1_price": 0.21412226874992635,
+        "tp2_price": 0.22923361249955812,
+        "risk_distance": 0.004029691666568469,
+        "quantity": 46394.926489815254,
+        "legs": [
+          {
+            "idx": 866,
+            "qty": 11598.731622453814,
+            "price": 0.21412226874992635,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 0.21385461591398894,
+            "time": "2026-07-30T15:05:00Z",
+            "gross_pnl": 35.8574,
+            "fees": 3.7207,
+            "net_pnl": 32.1367
+          },
+          {
+            "idx": 866,
+            "qty": 34796.19486736144,
+            "price": 0.21191039208329895,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 0.21164550409319483,
+            "time": "2026-07-30T15:05:00Z",
+            "gross_pnl": 30.7034,
+            "fees": 11.0467,
+            "net_pnl": 19.6567
+          }
+        ],
+        "gross_pnl_try": 66.5608,
+        "fees_try": 29.4349,
+        "net_pnl_try": 37.1259,
+        "realized_pnl_try": 51.7935,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-07-31T01:05:00Z",
+      "trade": {
+        "signal_idx": 986,
+        "entry_idx": 987,
+        "last_bar_idx": 997,
+        "entry_time": "2026-07-31T01:10:00Z",
+        "entry_price": 0.2106,
+        "entry_execution_price": 0.21086325,
+        "signal_close": 0.211,
+        "stop_loss": 0.208511308041995,
+        "breakeven_price": 0.21147104218530174,
+        "tp1_price": 0.21286651896850373,
+        "tp2_price": 0.22219911381102248,
+        "risk_distance": 0.002488691958004996,
+        "quantity": 46589.34769668246,
+        "legs": [
+          {
+            "idx": 997,
+            "qty": 11647.336924170615,
+            "price": 0.208511308041995,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.20825066890694252,
+            "time": "2026-07-31T02:00:00Z",
+            "gross_pnl": -30.4296,
+            "fees": 3.6383,
+            "net_pnl": -34.068
+          },
+          {
+            "idx": 997,
+            "qty": 34942.01077251184,
+            "price": 0.208511308041995,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.20825066890694252,
+            "time": "2026-07-31T02:00:00Z",
+            "gross_pnl": -91.2888,
+            "fees": 10.915,
+            "net_pnl": -102.2039
+          }
+        ],
+        "gross_pnl_try": -121.7184,
+        "fees_try": 29.2894,
+        "net_pnl_try": -151.0078,
+        "realized_pnl_try": -136.2718,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-07-31T03:15:00Z",
+      "trade": {
+        "signal_idx": 1012,
+        "entry_idx": 1013,
+        "last_bar_idx": 1024,
+        "entry_time": "2026-07-31T03:20:00Z",
+        "entry_price": 0.2115,
+        "entry_execution_price": 0.21176437499999998,
+        "signal_close": 0.2119,
+        "stop_loss": 0.20939842288881844,
+        "breakeven_price": 0.21237555198891353,
+        "tp1_price": 0.21377618283338617,
+        "tp2_price": 0.22315709700031705,
+        "risk_distance": 0.0025015771111815688,
+        "quantity": 45693.085040113256,
+        "legs": [
+          {
+            "idx": 1023,
+            "qty": 11423.271260028314,
+            "price": 0.21377618283338617,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 0.21350896260484445,
+            "time": "2026-07-31T04:10:00Z",
+            "gross_pnl": 19.9289,
+            "fees": 3.6585,
+            "net_pnl": 16.2704
+          },
+          {
+            "idx": 1024,
+            "qty": 34269.81378008494,
+            "price": 0.21237555198891353,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 0.21211008254892738,
+            "time": "2026-07-31T04:15:00Z",
+            "gross_pnl": 11.8473,
+            "fees": 10.9035,
+            "net_pnl": 0.9439
+          }
+        ],
+        "gross_pnl_try": 31.7762,
+        "fees_try": 29.0762,
+        "net_pnl_try": 2.7001,
+        "realized_pnl_try": 17.2143,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-07-31T04:35:00Z",
+      "trade": {
+        "signal_idx": 1028,
+        "entry_idx": 1029,
+        "last_bar_idx": 1110,
+        "entry_time": "2026-07-31T04:40:00Z",
+        "entry_price": 0.2134,
+        "entry_execution_price": 0.21366675,
+        "signal_close": 0.2143,
+        "stop_loss": 0.21143755511793846,
+        "breakeven_price": 0.21440185570872153,
+        "tp1_price": 0.21644683366154613,
+        "tp2_price": 0.22718100196927687,
+        "risk_distance": 0.0028624448820615267,
+        "quantity": 45193.70423705087,
+        "legs": [
+          {
+            "idx": 1039,
+            "qty": 11298.426059262718,
+            "price": 0.21644683366154613,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 0.2161762751194692,
+            "time": "2026-07-31T05:30:00Z",
+            "gross_pnl": 28.3537,
+            "fees": 3.6637,
+            "net_pnl": 24.69
+          },
+          {
+            "idx": 1110,
+            "qty": 33895.278177788154,
+            "price": 0.21440185570872153,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 0.21413385338908564,
+            "time": "2026-07-31T11:25:00Z",
+            "gross_pnl": 15.8326,
+            "fees": 10.8872,
+            "net_pnl": 4.9454
+          }
+        ],
+        "gross_pnl_try": 44.1863,
+        "fees_try": 29.0355,
+        "net_pnl_try": 15.1508,
+        "realized_pnl_try": 29.6354,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-07-31T16:45:00Z",
+      "trade": {
+        "signal_idx": 1174,
+        "entry_idx": 1175,
+        "last_bar_idx": 1212,
+        "entry_time": "2026-07-31T16:50:00Z",
+        "entry_price": 0.2231,
+        "entry_execution_price": 0.22337887499999998,
+        "signal_close": 0.2232,
+        "stop_loss": 0.21895659563961287,
+        "breakeven_price": 0.22458519152613549,
+        "tp1_price": 0.22638255327029036,
+        "tp2_price": 0.24229531962174217,
+        "risk_distance": 0.004243404360387143,
+        "quantity": 43458.14785842293,
+        "legs": [
+          {
+            "idx": 1212,
+            "qty": 10864.536964605733,
+            "price": 0.21895659563961287,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.21868289989506334,
+            "time": "2026-07-31T19:55:00Z",
+            "gross_pnl": -51.0196,
+            "fees": 3.5638,
+            "net_pnl": -54.5834
+          },
+          {
+            "idx": 1212,
+            "qty": 32593.6108938172,
+            "price": 0.21895659563961287,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.21868289989506334,
+            "time": "2026-07-31T19:55:00Z",
+            "gross_pnl": -153.0588,
+            "fees": 10.6915,
+            "net_pnl": -163.7503
+          }
+        ],
+        "gross_pnl_try": -204.0784,
+        "fees_try": 28.8168,
+        "net_pnl_try": -232.8952,
+        "realized_pnl_try": -218.3337,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-01T00:10:00Z",
+      "trade": {
+        "signal_idx": 1263,
+        "entry_idx": 1264,
+        "last_bar_idx": 1274,
+        "entry_time": "2026-08-01T00:15:00Z",
+        "entry_price": 0.2241,
+        "entry_execution_price": 0.22438012499999999,
+        "signal_close": 0.2245,
+        "stop_loss": 0.22164570758285324,
+        "breakeven_price": 0.22509900234600136,
+        "tp1_price": 0.2266407193128601,
+        "tp2_price": 0.23734431587716048,
+        "risk_distance": 0.00285429241714677,
+        "quantity": 42189.84991536748,
+        "legs": [
+          {
+            "idx": 1274,
+            "qty": 10547.46247884187,
+            "price": 0.22164570758285324,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.22136865044837467,
+            "time": "2026-08-01T01:05:00Z",
+            "gross_pnl": -31.7634,
+            "fees": 3.5023,
+            "net_pnl": -35.2657
+          },
+          {
+            "idx": 1274,
+            "qty": 31642.38743652561,
+            "price": 0.22164570758285324,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.22136865044837467,
+            "time": "2026-08-01T01:05:00Z",
+            "gross_pnl": -95.2902,
+            "fees": 10.5069,
+            "net_pnl": -105.7972
+          }
+        ],
+        "gross_pnl_try": -127.0537,
+        "fees_try": 28.2091,
+        "net_pnl_try": -155.2628,
+        "realized_pnl_try": -141.0629,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-01T02:15:00Z",
+      "trade": {
+        "signal_idx": 1288,
+        "entry_idx": 1289,
+        "last_bar_idx": 1326,
+        "entry_time": "2026-08-01T02:20:00Z",
+        "entry_price": 0.2246,
+        "entry_execution_price": 0.22488075,
+        "signal_close": 0.2253,
+        "stop_loss": 0.22165738170475133,
+        "breakeven_price": 0.22587491640333704,
+        "tp1_price": 0.2280319637214365,
+        "tp2_price": 0.24169178232861904,
+        "risk_distance": 0.003642618295248673,
+        "quantity": 41364.68602751885,
+        "legs": [
+          {
+            "idx": 1321,
+            "qty": 10341.171506879713,
+            "price": 0.2280319637214365,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 0.2277469237667847,
+            "time": "2026-08-01T05:00:00Z",
+            "gross_pnl": 29.6396,
+            "fees": 3.5328,
+            "net_pnl": 26.1068
+          },
+          {
+            "idx": 1326,
+            "qty": 31023.51452063914,
+            "price": 0.22587491640333704,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 0.22559257275783287,
+            "time": "2026-08-01T05:25:00Z",
+            "gross_pnl": 22.0832,
+            "fees": 10.498,
+            "net_pnl": 11.5852
+          }
+        ],
+        "gross_pnl_try": 51.7228,
+        "fees_try": 27.9839,
+        "net_pnl_try": 23.7389,
+        "realized_pnl_try": 37.6921,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-01T21:40:00Z",
+      "trade": {
+        "signal_idx": 1521,
+        "entry_idx": 1522,
+        "last_bar_idx": 1543,
+        "entry_time": "2026-08-01T21:45:00Z",
+        "entry_price": 0.2231,
+        "entry_execution_price": 0.22337887499999998,
+        "signal_close": 0.2231,
+        "stop_loss": 0.22124507183144362,
+        "breakeven_price": 0.22374922485899473,
+        "tp1_price": 0.22449119612641727,
+        "tp2_price": 0.23144717675850365,
+        "risk_distance": 0.001854928168556369,
+        "quantity": 41876.86187359928,
+        "legs": [
+          {
+            "idx": 1543,
+            "qty": 10469.21546839982,
+            "price": 0.22124507183144362,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.22096851549165433,
+            "time": "2026-08-01T23:30:00Z",
+            "gross_pnl": -25.2346,
+            "fees": 3.4701,
+            "net_pnl": -28.7046
+          },
+          {
+            "idx": 1543,
+            "qty": 31407.64640519946,
+            "price": 0.22124507183144362,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.22096851549165433,
+            "time": "2026-08-01T23:30:00Z",
+            "gross_pnl": -75.7037,
+            "fees": 10.4102,
+            "net_pnl": -86.1139
+          }
+        ],
+        "gross_pnl_try": -100.9383,
+        "fees_try": 27.9118,
+        "net_pnl_try": -128.8501,
+        "realized_pnl_try": -114.8185,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-02T08:50:00Z",
+      "trade": {
+        "signal_idx": 1655,
+        "entry_idx": 1656,
+        "last_bar_idx": 1683,
+        "entry_time": "2026-08-02T08:55:00Z",
+        "entry_price": 0.2239,
+        "entry_execution_price": 0.22417987499999997,
+        "signal_close": 0.2239,
+        "stop_loss": 0.221415151588033,
+        "breakeven_price": 0.22476969694418844,
+        "tp1_price": 0.22576363630897522,
+        "tp2_price": 0.2350818178538515,
+        "risk_distance": 0.002484848411967,
+        "quantity": 41163.263894595795,
+        "legs": [
+          {
+            "idx": 1679,
+            "qty": 10290.815973648949,
+            "price": 0.22576363630897522,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 0.225481431763589,
+            "time": "2026-08-02T10:50:00Z",
+            "gross_pnl": 13.3941,
+            "fees": 3.4806,
+            "net_pnl": 9.9135
+          },
+          {
+            "idx": 1683,
+            "qty": 30872.447920946848,
+            "price": 0.22476969694418844,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 0.2244887348230082,
+            "time": "2026-08-02T11:10:00Z",
+            "gross_pnl": 9.5353,
+            "fees": 10.3958,
+            "net_pnl": -0.8605
+          }
+        ],
+        "gross_pnl_try": 22.9293,
+        "fees_try": 27.7183,
+        "net_pnl_try": -4.789,
+        "realized_pnl_try": 9.053,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-02T15:15:00Z",
+      "trade": {
+        "signal_idx": 1732,
+        "entry_idx": 1733,
+        "last_bar_idx": 1733,
+        "entry_time": "2026-08-02T15:20:00Z",
+        "entry_price": 0.2289,
+        "entry_execution_price": 0.229186125,
+        "signal_close": 0.2289,
+        "stop_loss": 0.22635721936725928,
+        "breakeven_price": 0.22978997322145925,
+        "tp1_price": 0.23080708547455553,
+        "tp2_price": 0.2403425128473332,
+        "risk_distance": 0.0025427806327407154,
+        "quantity": 40243.60666666666,
+        "legs": [
+          {
+            "idx": 1733,
+            "qty": 10060.901666666665,
+            "price": 0.23080708547455553,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 0.23051857661771233,
+            "time": "2026-08-02T15:20:00Z",
+            "gross_pnl": 13.4057,
+            "fees": 3.4788,
+            "net_pnl": 9.9268
+          },
+          {
+            "idx": 1733,
+            "qty": 30182.704999999994,
+            "price": 0.22978997322145925,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 0.22950273575493244,
+            "time": "2026-08-02T15:20:00Z",
+            "gross_pnl": 9.5562,
+            "fees": 10.3905,
+            "net_pnl": -0.8344
+          }
+        ],
+        "gross_pnl_try": 22.9618,
+        "fees_try": 27.7043,
+        "net_pnl_try": -4.7424,
+        "realized_pnl_try": 9.0925,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-03T02:05:00Z",
+      "trade": {
+        "signal_idx": 1862,
+        "entry_idx": 1863,
+        "last_bar_idx": 1874,
+        "entry_time": "2026-08-03T02:10:00Z",
+        "entry_price": 0.2258,
+        "entry_execution_price": 0.22608224999999998,
+        "signal_close": 0.2258,
+        "stop_loss": 0.222800107979297,
+        "breakeven_price": 0.22684996220724604,
+        "tp1_price": 0.22804991901552724,
+        "tp2_price": 0.2392995140931635,
+        "risk_distance": 0.002999892020702999,
+        "quantity": 40775.52707705934,
+        "legs": [
+          {
+            "idx": 1874,
+            "qty": 10193.881769264835,
+            "price": 0.222800107979297,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.2225216078443229,
+            "time": "2026-08-03T03:05:00Z",
+            "gross_pnl": -36.2968,
+            "fees": 3.4025,
+            "net_pnl": -39.6993
+          },
+          {
+            "idx": 1874,
+            "qty": 30581.645307794504,
+            "price": 0.222800107979297,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.2225216078443229,
+            "time": "2026-08-03T03:05:00Z",
+            "gross_pnl": -108.8903,
+            "fees": 10.2076,
+            "net_pnl": -119.0979
+          }
+        ],
+        "gross_pnl_try": -145.1871,
+        "fees_try": 27.4381,
+        "net_pnl_try": -172.6251,
+        "realized_pnl_try": -158.7972,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-05T01:15:00Z",
+      "trade": {
+        "signal_idx": 2428,
+        "entry_idx": 2429,
+        "last_bar_idx": 2441,
+        "entry_time": "2026-08-05T01:20:00Z",
+        "entry_price": 0.2239,
+        "entry_execution_price": 0.22417987499999997,
+        "signal_close": 0.2238,
+        "stop_loss": 0.22217437574446264,
+        "breakeven_price": 0.22446896848943806,
+        "tp1_price": 0.22501921819165302,
+        "tp2_price": 0.23111530914991812,
+        "risk_distance": 0.0016256242555373612,
+        "quantity": 40384.009901697944,
+        "legs": [
+          {
+            "idx": 2441,
+            "qty": 10096.002475424486,
+            "price": 0.22217437574446264,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.22189665777478207,
+            "time": "2026-08-05T02:20:00Z",
+            "gross_pnl": -23.0514,
+            "fees": 3.3604,
+            "net_pnl": -26.4118
+          },
+          {
+            "idx": 2441,
+            "qty": 30288.007426273456,
+            "price": 0.22217437574446264,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.22189665777478207,
+            "time": "2026-08-05T02:20:00Z",
+            "gross_pnl": -69.1541,
+            "fees": 10.0812,
+            "net_pnl": -79.2353
+          }
+        ],
+        "gross_pnl_try": -92.2055,
+        "fees_try": 27.0215,
+        "net_pnl_try": -119.227,
+        "realized_pnl_try": -105.6471,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-05T17:25:00Z",
+      "trade": {
+        "signal_idx": 2622,
+        "entry_idx": 2623,
+        "last_bar_idx": 2637,
+        "entry_time": "2026-08-05T17:30:00Z",
+        "entry_price": 0.2298,
+        "entry_execution_price": 0.23008725,
+        "signal_close": 0.2299,
+        "stop_loss": 0.22753867631849822,
+        "breakeven_price": 0.23062646328852562,
+        "tp1_price": 0.23167099276112632,
+        "tp2_price": 0.24052595656675796,
+        "risk_distance": 0.00236132368150177,
+        "quantity": 38804.25818181817,
+        "legs": [
+          {
+            "idx": 2637,
+            "qty": 9701.064545454543,
+            "price": 0.23167099276112632,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 0.23138140402017493,
+            "time": "2026-08-05T18:40:00Z",
+            "gross_pnl": 12.5547,
+            "fees": 3.367,
+            "net_pnl": 9.1877
+          },
+          {
+            "idx": 2637,
+            "qty": 29103.193636363627,
+            "price": 0.23062646328852562,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 0.23033818020941496,
+            "time": "2026-08-05T18:40:00Z",
+            "gross_pnl": 7.3029,
+            "fees": 10.0554,
+            "net_pnl": -2.7525
+          }
+        ],
+        "gross_pnl_try": 19.8575,
+        "fees_try": 26.8149,
+        "net_pnl_try": -6.9573,
+        "realized_pnl_try": 6.4352,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-06T06:05:00Z",
+      "trade": {
+        "signal_idx": 2774,
+        "entry_idx": 2775,
+        "last_bar_idx": 2794,
+        "entry_time": "2026-08-06T06:10:00Z",
+        "entry_price": 0.2399,
+        "entry_execution_price": 0.240199875,
+        "signal_close": 0.2396,
+        "stop_loss": 0.23523278156920222,
+        "breakeven_price": 0.24142852645077922,
+        "tp1_price": 0.24287541382309835,
+        "tp2_price": 0.25925248293859005,
+        "risk_distance": 0.004367218430797792,
+        "quantity": 37204.84474958263,
+        "legs": [
+          {
+            "idx": 2792,
+            "qty": 9301.211187395658,
+            "price": 0.24287541382309835,
+            "reason": "tp1",
+            "open": false,
+            "execution_price": 0.2425718195558195,
+            "time": "2026-08-06T07:35:00Z",
+            "gross_pnl": 22.062,
+            "fees": 3.3843,
+            "net_pnl": 18.6776
+          },
+          {
+            "idx": 2794,
+            "qty": 27903.633562186973,
+            "price": 0.24142852645077922,
+            "reason": "stop_loss_post_tp1",
+            "open": false,
+            "execution_price": 0.24112674079271576,
+            "time": "2026-08-06T07:45:00Z",
+            "gross_pnl": 25.8629,
+            "fees": 10.0925,
+            "net_pnl": 15.7705
+          }
+        ],
+        "gross_pnl_try": 47.9249,
+        "fees_try": 26.8817,
+        "net_pnl_try": 21.0432,
+        "realized_pnl_try": 34.4481,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss_post_tp1"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-08T07:00:00Z",
+      "trade": {
+        "signal_idx": 3361,
+        "entry_idx": 3362,
+        "last_bar_idx": 3370,
+        "entry_time": "2026-08-08T07:05:00Z",
+        "entry_price": 0.2536,
+        "entry_execution_price": 0.253917,
+        "signal_close": 0.2537,
+        "stop_loss": 0.2489968464439634,
+        "breakeven_price": 0.2552461037446128,
+        "tp1_price": 0.25722736516702743,
+        "tp2_price": 0.27486419100216464,
+        "risk_distance": 0.004703153556036593,
+        "quantity": 35218.38052029956,
+        "legs": [
+          {
+            "idx": 3370,
+            "qty": 8804.59513007489,
+            "price": 0.2489968464439634,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.24868560038590845,
+            "time": "2026-08-08T07:45:00Z",
+            "gross_pnl": -46.0604,
+            "fees": 3.2844,
+            "net_pnl": -49.3447
+          },
+          {
+            "idx": 3370,
+            "qty": 26413.785390224668,
+            "price": 0.2489968464439634,
+            "reason": "stop_loss",
+            "open": false,
+            "execution_price": 0.24868560038590845,
+            "time": "2026-08-08T07:45:00Z",
+            "gross_pnl": -138.1811,
+            "fees": 9.8531,
+            "net_pnl": -148.0342
+          }
+        ],
+        "gross_pnl_try": -184.2414,
+        "fees_try": 26.5513,
+        "net_pnl_try": -210.7927,
+        "realized_pnl_try": -197.3789,
+        "open_unrealized_pnl_try": 0.0,
+        "status": "closed",
+        "exit_reason": "stop_loss"
+      }
+    },
+    {
+      "symbol": "HEMITRY",
+      "signal_time": "2026-08-08T13:30:00Z",
+      "trade": {
+        "signal_idx": 3439,
+        "entry_idx": 3440,
+        "last_bar_idx": 3455,
+        "entry_time": "2026-08-08T13:35:00Z",
+        "entry_price": 0.2594,
+        "entry_execution_price": 0.25972425,
+        "signal_close": 0.2592,
+        "stop_loss": 0.2544919920275016,
+        "breakeven_price": 0.26104780279037443,
+        "tp1_price": 0.26273100597937377,
+        "tp2_price": 0.28038603587624267,
+        "risk_distance": 0.004708007972498374,
+        "quantity": 33674.09834876542,
+        "legs": [
+          {
+            "idx": 3455,
+            "qty": 33674.09834876542,
+            "price": 0.2573,
+            "reason": "open_pre_tp1",
+            "open": true,
+            "execution_price": 0.256978375,
+            "time": "2026-08-08T14:50:00Z",
+            "gross_pnl": -92.4649,
+            "fees": 12.9803,
+            "net_pnl": -105.4451
+          }
+        ],
+        "gross_pnl_try": -92.4649,
+        "fees_try": 26.0992,
+        "net_pnl_try": -118.5641,
+        "realized_pnl_try": 0.0,
+        "open_unrealized_pnl_try": -105.4451,
+        "status": "open",
+        "exit_reason": "open_pre_tp1"
+      }
+    }
+  ],
+  "limitations": [
+    "Source-aligned Python replay; not TradingView byte-identical.",
+    "Public OHLCV has no historical spread/depth or intrabar order sequence.",
+    "When stop and target occur in the same M5 bar, fill priority uses the open-to-target distance heuristic.",
+    "Max drawdown is computed from completed trade PnL, not intrabar equity.",
+    "A favorable 24-hour result cannot activate a paper-entry rule.",
+    "Top-gainer universe selection reflects the current public 24h ticker snapshot; historical folds cannot reconstruct the universe as it appeared at each past bar."
+  ]
+}

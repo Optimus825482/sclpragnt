@@ -405,8 +405,8 @@ class RegressionContracts(unittest.TestCase):
         source = (ROOT.parent / "docker-compose.yaml").read_text(encoding="utf-8")
         self.assertIn("LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY:?", source)
         self.assertIn("TOP_GAINERS_AUTO_ACTIVATE: ${TOP_GAINERS_AUTO_ACTIVATE:-true}", source)
-        self.assertIn("TOP_GAINERS_LIMIT: ${TOP_GAINERS_LIMIT:-70}", source)
-        self.assertIn("TOP_GAINERS_REFRESH_SEC: ${TOP_GAINERS_REFRESH_SEC:-21600}", source)
+        self.assertIn("TOP_GAINERS_LIMIT: ${TOP_GAINERS_LIMIT:-10}", source)
+        self.assertIn("TOP_GAINERS_REFRESH_SEC: ${TOP_GAINERS_REFRESH_SEC:-600}", source)
         self.assertIn("NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}", source)
 
         dockerfile = (ROOT.parent / "frontend" / "Dockerfile").read_text(encoding="utf-8")
@@ -416,21 +416,32 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("@postgres:5432/${POSTGRES_DB:-scalper}", source)
         self.assertNotIn("DATABASE_URL:-postgresql://", source)
 
-    def test_symbol_activity_replaces_scheduled_top_gainer_universe(self):
-        source = (ROOT / "app" / "main.py").read_text()
-        config_source = (ROOT / "app" / "config.py").read_text()
+    def test_dynamic_top_gainer_monitor_and_symbol_activity_are_scheduled(self):
+        source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+        config_source = (ROOT / "app" / "config.py").read_text(encoding="utf-8")
         self.assertIn('async def refresh_top_gainer_symbols()', source)
         self.assertIn('async def refresh_symbol_activity()', source)
         self.assertIn('_start_background(symbol_activity_loop(), "symbol-activity")', source)
+        self.assertIn('_start_background(top_gainers_refresh_loop(), "top-gainers-monitor")', source)
         self.assertNotIn('asyncio.create_task(top_gainers_refresh_loop()', source)
         self.assertIn('@app.get("/api/market/top-gainers")', source)
         self.assertIn('SYMBOL_ACTIVITY_REFRESH_SEC', config_source)
         self.assertIn('SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT', config_source)
         self.assertIn('SYMBOL_ACTIVITY_FILTER_ENABLED', config_source)
         self.assertIn('SYMBOL_ACTIVITY_STATUS', config_source)
-        self.assertIn('TOP_GAINERS_LIMIT = max(1, min(70', config_source)
+        self.assertIn('TOP_GAINERS_LIMIT = max(1, min(50', config_source)
+        self.assertIn('TOP_GAINERS_REFRESH_SEC = max(60', config_source)
         self.assertIn('source": "binance_tr_public_24h_ticker"', source)
         self.assertIn('known_try = set(await trading_symbols("TRY"))', source)
+
+    def test_dynamic_top_gainer_settings_are_runtime_configurable(self):
+        from app.main import BOOL_FIELDS, CONFIG_FIELDS, INT_FIELDS
+        self.assertEqual(CONFIG_FIELDS["top_gainers_auto_activate"], "TOP_GAINERS_AUTO_ACTIVATE")
+        self.assertEqual(CONFIG_FIELDS["top_gainers_limit"], "TOP_GAINERS_LIMIT")
+        self.assertEqual(CONFIG_FIELDS["top_gainers_refresh_sec"], "TOP_GAINERS_REFRESH_SEC")
+        self.assertIn("top_gainers_auto_activate", BOOL_FIELDS)
+        self.assertIn("top_gainers_limit", INT_FIELDS)
+        self.assertIn("top_gainers_refresh_sec", INT_FIELDS)
 
     def test_compose_has_bounded_shutdown_and_postgres_startup_grace(self):
         source = (ROOT.parent / "docker-compose.yaml").read_text()
