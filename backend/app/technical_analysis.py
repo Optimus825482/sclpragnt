@@ -90,6 +90,57 @@ def _obv(closes, volumes):
         values.append(obv)
     return {"value": float(obv), "slope": float(obv - values[-min(5, len(values))]) if values else 0.0}
 
+def _fisher_transform(highs, lows, length=9):
+    """Closed-candle Fisher Transform with its trigger and cross state."""
+    if len(highs) < length + 1 or len(lows) < length + 1:
+        return None
+    value = 0.0; previous_fisher = 0.0; series = []
+    for index in range(len(highs)):
+        if index + 1 < length:
+            series.append((None, None)); continue
+        mids = [(float(highs[i]) + float(lows[i])) / 2 for i in range(index - length + 1, index + 1)]
+        hi, lo = max(mids), min(mids); midpoint = (float(highs[index]) + float(lows[index])) / 2
+        ratio = (midpoint - lo) / (hi - lo) - 0.5 if hi != lo else 0.0
+        prior = value
+        value = max(-0.999, min(0.999, 0.66 * ratio + 0.67 * value))
+        fisher = 0.5 * np.log((1 + value) / (1 - value)) + 0.5 * previous_fisher
+        series.append((float(fisher), float(previous_fisher)))
+        previous_fisher = float(fisher)
+    current, trigger = series[-1]
+    previous, previous_trigger = series[-2]
+    return {"value": current, "trigger": trigger,
+            "cross_up": bool(current is not None and trigger is not None and previous is not None and previous_trigger is not None and current > trigger and previous <= previous_trigger),
+            "cross_down": bool(current is not None and trigger is not None and previous is not None and previous_trigger is not None and current < trigger and previous >= previous_trigger),
+            "length": length, "source": "closed_ohlc"}
+
+def _ema_series(values, period):
+    output = [None] * len(values)
+    if len(values) < period: return output
+    current = float(np.mean(values[:period])); output[period - 1] = current
+    alpha = 2 / (period + 1)
+    for index in range(period, len(values)):
+        current = alpha * float(values[index]) + (1 - alpha) * current
+        output[index] = current
+    return output
+
+def _wavetrend(highs, lows, closes, channel_length=7, average_length=1, signal_length=4):
+    """WaveTrend oscillator and WT1/WT2 cross from closed OHLC candles."""
+    if len(closes) < channel_length + signal_length + 2:
+        return None
+    typical = [(float(h) + float(l) + float(c)) / 3 for h, l, c in zip(highs, lows, closes)]
+    esa = _ema_series(typical, channel_length)
+    deviation_input = [abs(price - base) if base is not None else 0.0 for price, base in zip(typical, esa)]
+    deviation = _ema_series(deviation_input, channel_length)
+    ci = [0.0 if base is None or dev in (None, 0) else (price - base) / (0.015 * dev) for price, base, dev in zip(typical, esa, deviation)]
+    wt1 = _ema_series(ci, average_length)
+    wt2 = [None if index < signal_length - 1 or any(value is None for value in wt1[index - signal_length + 1:index + 1]) else float(np.mean(wt1[index - signal_length + 1:index + 1])) for index in range(len(wt1))]
+    current, signal = wt1[-1], wt2[-1]; previous, previous_signal = wt1[-2], wt2[-2]
+    return {"wt1": current, "wt2": signal, "difference": current - signal if current is not None and signal is not None else None,
+            "cross_up": bool(current is not None and signal is not None and previous is not None and previous_signal is not None and current > signal and previous <= previous_signal),
+            "cross_down": bool(current is not None and signal is not None and previous is not None and previous_signal is not None and current < signal and previous >= previous_signal),
+            "channel_length": channel_length, "average_length": average_length, "signal_length": signal_length,
+            "source": "closed_ohlc"}
+
 def _mfi(highs, lows, closes, volumes, period=14):
     """Pine-compatible MFI: sum exactly ``period`` typical-price changes."""
     if len(closes) < period + 1: return None
@@ -504,6 +555,9 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     atr = _atr(highs, lows, closes)
     macd = _macd(closes); bollinger = _bollinger(closes); stochastic = _stochastic(highs, lows, closes); stoch_rsi = _stoch_rsi(closes); cmo = _cmo(closes); crsi = _crsi(closes)
     adx = _adx(highs, lows, closes); obv = _obv(closes, volumes); mfi = _mfi(highs, lows, closes, volumes)
+    fisher = _fisher_transform(highs, lows, 9)
+    fisher_11 = _fisher_transform(highs, lows, 11)
+    wavetrend = _wavetrend(highs, lows, closes, 7, 1, 4)
     cci = _cci(highs, lows, closes); ao = _awesome_oscillator(highs, lows); williams = _williams_r(highs, lows, closes)
     bull_bear = _bull_bear_power(highs, lows, closes); ultimate = _ultimate_oscillator(highs, lows, closes)
     moving_averages = {}
@@ -513,7 +567,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     moving_averages["ichimoku_base"] = (max(highs[-26:]) + min(lows[-26:])) / 2 if len(closes) >= 26 else None
     moving_averages["vwma_20"] = float(np.sum(np.asarray(closes[-20:]) * np.asarray(volumes[-20:])) / np.sum(volumes[-20:])) if len(closes) >= 20 and np.sum(volumes[-20:]) else None
     moving_averages["hma_9"] = _sma(closes[-9:], 9)
-    oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "stochastic_d": stochastic.get("d") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "cmo_9": cmo, "crsi": crsi, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate}
+    oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "stochastic_d": stochastic.get("d") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "cmo_9": cmo, "crsi": crsi, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate, "mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend}
     oscillator_signals = {"rsi_14": _signal(oscillator_values["rsi_14"], 50, 70, 30, 20), "stochastic_k": _signal(oscillator_values["stochastic_k"], 50, 80, 20, 10), "cci_20": _signal(cci, 0, 100, -100, -200), "adx_14": "neutral" if adx is None else ("buy" if adx["plus_di"] > adx["minus_di"] else "sell"), "awesome": "buy" if (ao or 0) > 0 else "sell", "momentum_10": "buy" if (ret(10) or 0) > 0 else "sell", "macd": "buy" if macd and macd["histogram"] > 0 else "sell", "williams_r": _signal(None if williams is None else williams, -80, -20, -20, -5), "ultimate": _signal(ultimate, 50, 70, 30, 20)}
     daily = klines.get("1d", {}); dclose, dhigh, dlow = daily.get("closes", []), daily.get("highs", []), daily.get("lows", [])
     adr = None
@@ -543,6 +597,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
         "fair_value_gap": _fair_value_gap(highs, lows, closes, atr),
         "wick_rejection_zscore": _wick_rejection_zscore(opens, highs, lows, closes),
         "volume_profile": _volume_profile_proxy(highs, lows, closes, volumes),
+        "indicators": {"mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend},
         "unavailable_without_trade_level_data": ["footprint", "true_cvd", "aggressor_side_orderflow", "actual_liquidation_levels"],
         "not_implemented_without_separate_validation": ["lorentzian_classifier", "supertrend_ml_clustering"],
     }
