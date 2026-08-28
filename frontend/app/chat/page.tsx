@@ -44,6 +44,21 @@ type LivePriceWatch = {
   samples?: number;
   status: "connecting" | "live" | "completed" | "stopped" | "error";
 };
+type UpsideCandidate = {
+  symbol: string;
+  rank: number;
+  score?: number;
+  data_ready: boolean;
+  trend_direction?: string;
+  price?: number;
+  returns_pct?: Record<string, number | null>;
+  trend?: Record<string, number | string | null>;
+  volume?: Record<string, number | null>;
+  liquidity?: Record<string, number | null>;
+  evidence?: string[];
+  risks?: string[];
+  data_gaps?: string[];
+};
 const TOOL_GROUPS = [
   [
     "Veri",
@@ -66,6 +81,7 @@ const TOOL_GROUPS = [
       "run_backtest_robustness",
       "get_backtest_history",
       "scan_market_snapshots",
+      "detect_15m_upside_candidates",
       "deep_analyze_symbol",
       "get_data_quality",
       "get_microstructure_snapshot",
@@ -151,6 +167,9 @@ export default function ChatPage() {
   const [hydrated, setHydrated] = useState(false);
   const [sessionId, setSessionId] = useState("chat:main");
   const [livePriceWatch, setLivePriceWatch] = useState<LivePriceWatch | null>(null);
+  const [upsideCandidates, setUpsideCandidates] = useState<UpsideCandidate[]>([]);
+  const [upsideScanBusy, setUpsideScanBusy] = useState(false);
+  const [upsideScanMeta, setUpsideScanMeta] = useState<{ generated_at?: number; horizon_minutes?: number; symbols_scanned?: number; skipped?: string[] } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -376,6 +395,24 @@ export default function ChatPage() {
       setBusy(false);
     }
   };
+  const detectUpsideCandidates = async (horizon: 5 | 15) => {
+    if (upsideScanBusy) return;
+    setUpsideScanBusy(true);
+    setError("");
+    try {
+      const endpoint = horizon === 5 ? "upside-candidates-5m" : "upside-candidates";
+      const response = await apiRequest(`${API_BASE}/api/market-snapshot/${endpoint}?limit=10`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "15 dakikalık tarama başarısız");
+      setUpsideCandidates(Array.isArray(data.candidates) ? data.candidates : []);
+      setUpsideScanMeta({ generated_at: data.generated_at, horizon_minutes: data.horizon_minutes, symbols_scanned: data.symbols_scanned, skipped: data.symbols_skipped_open || [] });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "15 dakikalık tarama başarısız");
+      setUpsideCandidates([]);
+    } finally {
+      setUpsideScanBusy(false);
+    }
+  };
   const stopLiveWatch = () => {
     streamAbortRef.current?.abort();
     setLivePriceWatch((current) => current ? { ...current, status: "stopped" } : current);
@@ -449,7 +486,37 @@ export default function ChatPage() {
             <Button variant="secondary" onClick={startNewChat}>
               ＋ YENİ SOHBET
             </Button>
+            <Button variant="primary" onClick={() => detectUpsideCandidates(15)} disabled={upsideScanBusy}>
+              {upsideScanBusy ? "15 DK TARANIYOR…" : "⚡ 15 DK YÜKSELİŞ ADAYLARI"}
+            </Button>
+            <Button variant="secondary" onClick={() => detectUpsideCandidates(5)} disabled={upsideScanBusy}>
+              {upsideScanBusy ? "5 DK TARANIYOR…" : "⚡ 5 DK YÜKSELİŞ ADAYLARI"}
+            </Button>
           </div>
+          {upsideCandidates.length > 0 && (
+            <div className="chat-price-watch" role="status" aria-live="polite">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div>
+                  <p className="eyebrow">{upsideScanMeta?.horizon_minutes || 15} DK YUKARI MOMENTUM ADAYLARI</p>
+                  <p className="text-xs text-bunker-muted">{upsideScanMeta?.symbols_scanned || 0} aktif sembol · taze kısa-vadeli snapshot</p>
+                </div>
+                <span className="text-[10px] text-bunker-muted">{upsideScanMeta?.generated_at ? new Date(upsideScanMeta.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
+              </div>
+              <div className="space-y-2">
+                {upsideCandidates.map((candidate) => (
+                  <div key={candidate.symbol} className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800 pb-2 last:border-0 last:pb-0">
+                    <div>
+                      <strong className="font-mono text-sm text-white">{candidate.rank}. {candidate.symbol}</strong>
+                      <span className="ml-2 text-xs text-neon-green">{candidate.trend_direction || "unknown"}</span>
+                      <p className="text-[11px] text-bunker-muted">5m %{candidate.returns_pct?.return_5m ?? "—"} · 15m %{candidate.returns_pct?.return_15m ?? "—"} · ADX {candidate.trend?.adx ?? candidate.trend?.adx_14 ?? "—"} · hacim {candidate.volume?.volume_ratio_20 ?? "—"}x · spread %{candidate.liquidity?.spread_pct ?? "—"}</p>
+                    </div>
+                    <span className="font-mono text-xs text-sky-300">Skor {candidate.score ?? "—"}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-yellow-300 mt-2">Bu liste tahmin/garanti değildir; eksik veya stale veriler aday güvenini düşürür. Paper-only.</p>
+            </div>
+          )}
           {contextTone !== "normal" && (
             <div className={`chat-context-alert ${contextTone}`} role="status">
               {contextTone === "critical"

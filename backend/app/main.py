@@ -4016,6 +4016,89 @@ async def deep_analyze_symbol(args: dict):
         "paper_candidate": "candidate" if score >= 2.5 and not risks else "watch"}
     return context
 
+async def detect_15m_upside_candidates(args: dict | None = None):
+    """Fresh, read-only ranking for possible next-15m upside momentum."""
+    args = args or {}
+    limit = max(1, min(int(args.get("limit", 10)), 20))
+    scan = await scan_market_snapshots({
+        "symbols": config.SYMBOLS,
+        "timeframes": ["1m", "5m", "15m"],
+        "limit": limit,
+        "fresh": True,
+    })
+    candidates = []
+    ranked_rows = scan.get("bullish_candidates") or scan.get("ranked", [])
+    for row in ranked_rows:
+        if not row.get("data_ready") or str(row.get("trend_direction", "")).lower() == "bearish":
+            continue
+        snapshots = row.get("timeframes") or {}
+        selected = row.get("snapshot") or {}
+        momentum = selected.get("momentum") or {}
+        trend = selected.get("trend") or {}
+        volume = selected.get("volume") or {}
+        liquidity = selected.get("liquidity") or {}
+        candidates.append({
+            "symbol": row.get("symbol"), "rank": len(candidates) + 1,
+            "score": row.get("score"), "data_ready": row.get("data_ready", False),
+            "trend_direction": row.get("trend_direction", "unknown"),
+            "evidence": row.get("evidence", []), "risks": row.get("risks", []),
+            "price": selected.get("price"),
+            "returns_pct": {key: momentum.get(key) for key in ("return_1m", "return_5m", "return_15m")},
+            "trend": {key: trend.get(key) for key in ("alignment", "adx", "adx_14", "plus_di", "minus_di")},
+            "volume": {key: volume.get(key) for key in ("volume_ratio_20", "quote_volume")},
+            "liquidity": {key: liquidity.get(key) for key in ("spread_pct", "orderbook_depth_try", "orderflow_imbalance")},
+            "regime": (selected.get("methodology") or {}).get("regime"),
+            "data_gaps": [tf for tf, snapshot in snapshots.items() if not snapshot.get("data_ready")],
+            "snapshot": selected, "timeframes": snapshots,
+        })
+    return {"generated_at": scan.get("generated_at"), "horizon_minutes": 15,
+            "symbols_scanned": scan.get("symbols_scanned", 0),
+            "symbols_skipped_open": scan.get("symbols_skipped_open", []),
+            "candidates": candidates, "market_regime": scan.get("market_regime"),
+            "data_policy": "Taze Binance TR public snapshot; tahmin veya garanti değildir. Eksik alanlar unknown kabul edilir.",
+            "paper_only": True, "live_portfolio_changed": False}
+
+async def detect_5m_upside_candidates(args: dict | None = None):
+    """Fresh, read-only ranking for possible next-5m upside momentum."""
+    args = args or {}
+    limit = max(1, min(int(args.get("limit", 10)), 20))
+    scan = await scan_market_snapshots({
+        "symbols": config.SYMBOLS,
+        "timeframes": ["1m", "3m", "5m"],
+        "limit": limit,
+        "fresh": True,
+    })
+    candidates = []
+    for row in (scan.get("bullish_candidates") or scan.get("ranked", [])):
+        if not row.get("data_ready") or str(row.get("trend_direction", "")).lower() == "bearish":
+            continue
+        selected = row.get("snapshot") or {}
+        momentum = selected.get("momentum") or {}
+        trend = selected.get("trend") or {}
+        volume = selected.get("volume") or {}
+        liquidity = selected.get("liquidity") or {}
+        snapshots = row.get("timeframes") or {}
+        candidates.append({
+            "symbol": row.get("symbol"), "rank": len(candidates) + 1,
+            "score": row.get("score"), "data_ready": row.get("data_ready", False),
+            "trend_direction": row.get("trend_direction", "unknown"),
+            "evidence": row.get("evidence", []), "risks": row.get("risks", []),
+            "price": selected.get("price"),
+            "returns_pct": {key: momentum.get(key) for key in ("return_1m", "return_3m", "return_5m")},
+            "trend": {key: trend.get(key) for key in ("alignment", "adx", "adx_14", "plus_di", "minus_di")},
+            "volume": {key: volume.get(key) for key in ("volume_ratio_20", "quote_volume")},
+            "liquidity": {key: liquidity.get(key) for key in ("spread_pct", "orderbook_depth_try", "orderflow_imbalance")},
+            "regime": (selected.get("methodology") or {}).get("regime"),
+            "data_gaps": [tf for tf, snapshot in snapshots.items() if not snapshot.get("data_ready")],
+            "snapshot": selected, "timeframes": snapshots,
+        })
+    return {"generated_at": scan.get("generated_at"), "horizon_minutes": 5,
+            "symbols_scanned": scan.get("symbols_scanned", 0),
+            "symbols_skipped_open": scan.get("symbols_skipped_open", []),
+            "candidates": candidates, "market_regime": scan.get("market_regime"),
+            "data_policy": "Taze Binance TR public snapshot; tahmin veya garanti değildir. Eksik alanlar unknown kabul edilir.",
+            "paper_only": True, "live_portfolio_changed": False}
+
 async def get_data_quality(args: dict):
     """Return freshness/completeness diagnostics before any market decision."""
     symbol = str(args.get("symbol") or "").replace("_", "").upper()
@@ -4260,7 +4343,17 @@ async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
     """Tek sembol için LLM'e sunulacak güncel derin snapshot'ı döndürür."""
     return await deep_analyze_symbol({"symbol": symbol, "timeframe": timeframe})
 
+@app.get("/api/market-snapshot/upside-candidates")
+async def market_snapshot_upside_candidates(limit: int = 10):
+    return await detect_15m_upside_candidates({"limit": limit})
+
+@app.get("/api/market-snapshot/upside-candidates-5m")
+async def market_snapshot_upside_candidates_5m(limit: int = 10):
+    return await detect_5m_upside_candidates({"limit": limit})
+
 LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Aktif paper-trading sembollerini hızlı sıcak public market cache snapshot'larıyla tarar; varsayılan 5m/15m/1h kullanır, bullish adayları deterministik sıralar. Salt-okunur; pozisyon açmaz. Gerekirse fresh=true ile cache atlanır.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","30m","1h","4h","1d"]}},"limit":{"type":"integer"},"fresh":{"type":"boolean"}},"required":[]}}}
+LLM_15M_UPSIDE_TOOL = {"type":"function","function":{"name":"detect_15m_upside_candidates","description":"Aktif ve açık pozisyonu olmayan sembolleri taze 1m/5m/15m snapshot verileriyle yaklaşık 15 dakikalık olası yukarı momentum için sıralar. Trend, ADX/DI, momentum, hacim, spread, order-flow, derinlik, rejim ve veri boşluklarını döndürür; tahmin/garanti değildir, salt-okunur ve paper-only'dir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}
+LLM_5M_UPSIDE_TOOL = {"type":"function","function":{"name":"detect_5m_upside_candidates","description":"Aktif ve açık pozisyonu olmayan sembolleri taze 1m/3m/5m snapshot verileriyle yaklaşık 5 dakikalık olası yukarı momentum için sıralar. Trend, ADX/DI, momentum, hacim, spread, order-flow, derinlik, rejim ve veri boşluklarını döndürür; tahmin/garanti değildir, salt-okunur ve paper-only'dir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}
 LLM_CREATE_ALERT_TOOL = {"type":"function","function":{"name":"create_market_alert","description":"Paper-only canlı market alarmı oluşturur. auto_paper_trade seçilirse alarm tetiklenince güncel LLM giriş kapıları tekrar kontrol edilir ve uygunsa otomatik paper pozisyon açılır; gerçek emir gönderilmez.","parameters":{"type":"object","properties":{"name":{"type":"string"},"symbol":{"type":"string"},"rule_type":{"type":"string","enum":["price","percent"]},"operator":{"type":"string","enum":["lt","lte","gt","gte","eq"]},"threshold":{"type":"number"},"rearm_threshold":{"type":"number"},"cooldown_seconds":{"type":"integer"},"timeframe":{"type":"string"},"notify_channels":{"type":"array","items":{"type":"string","enum":["websocket","web_push","auto_paper_trade"]}},"expires_at":{"type":"number"},"reason":{"type":"string"}},"required":["symbol","operator","threshold","reason"]}}}
 LLM_UPDATE_ALERT_TOOL = {"type":"function","function":{"name":"update_market_alert","description":"Daha önce oluşturulmuş paper market alarmını günceller veya duraklatır.","parameters":{"type":"object","properties":{"alert_id":{"type":"integer"},"changes":{"type":"object"},"reason":{"type":"string"}},"required":["alert_id","changes","reason"]}}}
 LLM_REMOVE_ALERT_TOOL = {"type":"function","function":{"name":"remove_market_alert","description":"Paper market alarmını kaldırır.","parameters":{"type":"object","properties":{"alert_id":{"type":"integer"},"reason":{"type":"string"}},"required":["alert_id","reason"]}}}
@@ -4375,7 +4468,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     # reassigned.
     tools.extend([LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL,
                   LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
-                  LLM_MARKET_SCAN_TOOL, LLM_DEEP_SYMBOL_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL,
+                  LLM_MARKET_SCAN_TOOL, LLM_15M_UPSIDE_TOOL, LLM_5M_UPSIDE_TOOL, LLM_DEEP_SYMBOL_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL,
                   LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL,
                   LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
                   LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL])
@@ -5155,6 +5248,8 @@ async def strategies_llm_chat(payload: dict = None):
         started = time.perf_counter(); success = True
         try:
             if name == "scan_market_snapshots": return await scan_market_snapshots(args)
+            if name == "detect_15m_upside_candidates": return await detect_15m_upside_candidates(args)
+            if name == "detect_5m_upside_candidates": return await detect_5m_upside_candidates(args)
             if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
             if name == "get_data_quality": return await get_data_quality(args)
             if name == "run_pattern_universe_research": return await pattern_research.run_universe_research(args)
@@ -5357,7 +5452,7 @@ async def strategies_llm_chat(payload: dict = None):
     # eklenip genel sohbetten unutulmamalı.
     tools.extend([
         LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
-        LLM_MARKET_SCAN_TOOL, LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL,
+        LLM_MARKET_SCAN_TOOL, LLM_15M_UPSIDE_TOOL, LLM_5M_UPSIDE_TOOL, LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL,
         LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL, LLM_DEEP_SYMBOL_TOOL,
         LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
         LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL,
