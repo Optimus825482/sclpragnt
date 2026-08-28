@@ -3650,7 +3650,7 @@ async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
             "selected_timeframe": preferred,
             "available_timeframes": list(snapshots.keys()),
             "data_policy": "Use only supplied public OHLCV, ticker, order-flow and calculated indicators. Missing values remain unknown.",
-            "available_calculations": ["trend", "oscillators", "moving_averages", "candlestick_patterns", "channels", "volatility", "volume", "pivots", "liquidity"],
+            "available_calculations": ["trend", "oscillators", "moving_averages", "candlestick_patterns", "channels", "volatility", "volume", "pivots", "liquidity", "mfi_14", "obv", "fisher_9", "fisher_11", "wavetrend_7_1_crosses"],
             "timeframes": snapshots,
         }
     return selected
@@ -4016,6 +4016,40 @@ async def deep_analyze_symbol(args: dict):
         "paper_candidate": "candidate" if score >= 2.5 and not risks else "watch"}
     return context
 
+async def _journal_upside_candidates(candidates: list[dict], horizon_minutes: int, generated_at: float):
+    """Persist candidate evidence for causal M1 outcome evaluation."""
+    if not candidates:
+        return None
+    group_id = uuid.uuid4().hex
+    forecasts = []
+    for candidate in candidates:
+        price = candidate.get("price")
+        if price in (None, "") or not candidate.get("data_ready"):
+            continue
+        score = float(candidate.get("score") or 0)
+        confidence = max(1.0, min(99.0, 50.0 + score * 10.0))
+        evidence = "; ".join((candidate.get("evidence") or [])[:4]) or "deterministic short-horizon snapshot ranking"
+        risks = "; ".join((candidate.get("risks") or [])[:4]) or "none reported"
+        snapshot = {"candidate": candidate, "horizon_minutes": horizon_minutes,
+                    "generated_at": generated_at, "source": "upside_candidate_scan"}
+        snapshot_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+        forecasts.append({
+            "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id,
+            "symbol": candidate["symbol"], "created_at": generated_at,
+            "horizon_minutes": horizon_minutes, "entry_price": float(price),
+            "direction": "up", "confidence": confidence,
+            "invalidation_price": None, "min_move_pct": config.LLM_FORECAST_MIN_MOVE_PCT,
+            "regime": ((candidate.get("regime") or {}).get("name") if isinstance(candidate.get("regime"), dict) else candidate.get("regime")) or "unknown",
+            "timeframe_context": candidate.get("timeframes") or {},
+            "scenario": f"{horizon_minutes} dakikada yukarı momentum olasılığı: {evidence}",
+            "counter_scenario": f"Yanılma riskleri: {risks}",
+            "summary": f"{horizon_minutes}dk aday taraması · skor {score:.2f}",
+            "model": "deterministic-upside-ranker", "prompt_version": "upside-candidate-v1",
+            "snapshot_hash": snapshot_hash, "snapshot": snapshot,
+        })
+    saved = await database.save_llm_forecasts(forecasts)
+    return {"forecast_group_id": group_id, "saved": saved}
+
 async def detect_15m_upside_candidates(args: dict | None = None):
     """Fresh, read-only ranking for possible next-15m upside momentum."""
     args = args or {}
@@ -4051,12 +4085,14 @@ async def detect_15m_upside_candidates(args: dict | None = None):
             "data_gaps": [tf for tf, snapshot in snapshots.items() if not snapshot.get("data_ready")],
             "snapshot": selected, "timeframes": snapshots,
         })
-    return {"generated_at": scan.get("generated_at"), "horizon_minutes": 15,
+    generated_at = scan.get("generated_at") or time.time()
+    journal = await _journal_upside_candidates(candidates, 15, generated_at)
+    return {"generated_at": generated_at, "horizon_minutes": 15,
             "symbols_scanned": scan.get("symbols_scanned", 0),
             "symbols_skipped_open": scan.get("symbols_skipped_open", []),
             "candidates": candidates, "market_regime": scan.get("market_regime"),
             "data_policy": "Taze Binance TR public snapshot; tahmin veya garanti değildir. Eksik alanlar unknown kabul edilir.",
-            "paper_only": True, "live_portfolio_changed": False}
+            "journal": journal, "paper_only": True, "live_portfolio_changed": False}
 
 async def detect_5m_upside_candidates(args: dict | None = None):
     """Fresh, read-only ranking for possible next-5m upside momentum."""
@@ -4092,12 +4128,14 @@ async def detect_5m_upside_candidates(args: dict | None = None):
             "data_gaps": [tf for tf, snapshot in snapshots.items() if not snapshot.get("data_ready")],
             "snapshot": selected, "timeframes": snapshots,
         })
-    return {"generated_at": scan.get("generated_at"), "horizon_minutes": 5,
+    generated_at = scan.get("generated_at") or time.time()
+    journal = await _journal_upside_candidates(candidates, 5, generated_at)
+    return {"generated_at": generated_at, "horizon_minutes": 5,
             "symbols_scanned": scan.get("symbols_scanned", 0),
             "symbols_skipped_open": scan.get("symbols_skipped_open", []),
             "candidates": candidates, "market_regime": scan.get("market_regime"),
             "data_policy": "Taze Binance TR public snapshot; tahmin veya garanti değildir. Eksik alanlar unknown kabul edilir.",
-            "paper_only": True, "live_portfolio_changed": False}
+            "journal": journal, "paper_only": True, "live_portfolio_changed": False}
 
 async def get_data_quality(args: dict):
     """Return freshness/completeness diagnostics before any market decision."""
