@@ -59,6 +59,10 @@ type UpsideCandidate = {
   risks?: string[];
   data_gaps?: string[];
 };
+const indicatorNumber = (value: number | string | Record<string, unknown> | null | undefined, key?: string) => {
+  const candidate = key && value && typeof value === "object" ? value[key] : value;
+  return typeof candidate === "number" || typeof candidate === "string" ? candidate : "—";
+};
 const TOOL_GROUPS = [
   [
     "Veri",
@@ -508,7 +512,7 @@ export default function ChatPage() {
                     <div>
                       <strong className="font-mono text-sm text-white">{candidate.rank}. {candidate.symbol}</strong>
                       <span className="ml-2 text-xs text-neon-green">{candidate.trend_direction || "unknown"}</span>
-                      <p className="text-[11px] text-bunker-muted">5m %{candidate.returns_pct?.return_5m ?? "—"} · 15m %{candidate.returns_pct?.return_15m ?? "—"} · ADX {candidate.trend?.adx ?? candidate.trend?.adx_14 ?? "—"} · hacim {candidate.volume?.volume_ratio_20 ?? "—"}x · spread %{candidate.liquidity?.spread_pct ?? "—"}</p>
+                      <p className="text-[11px] text-bunker-muted">5m %{candidate.returns_pct?.return_5m ?? "—"} · 15m %{candidate.returns_pct?.return_15m ?? "—"} · ADX {indicatorNumber(candidate.trend?.adx, "adx") !== "—" ? indicatorNumber(candidate.trend?.adx, "adx") : indicatorNumber(candidate.trend?.adx_14)} · hacim {candidate.volume?.volume_ratio_20 ?? "—"}x · spread %{candidate.liquidity?.spread_pct ?? "—"}</p>
                     </div>
                     <span className="font-mono text-xs text-sky-300">Skor {candidate.score ?? "—"}</span>
                   </div>
