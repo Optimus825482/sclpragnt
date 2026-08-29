@@ -166,15 +166,19 @@ async def top_gainers(symbol_count: int = 20, *, quote_asset: str = "TRY",
 
     Mirrors the website's top-gaining tab; the returned rows keep
     priceChangePercent and quoteVolume so callers can justify the pool.
+    Delisted/suspended symbols are excluded: the 24h ticker still lists
+    dead pairs with stale closes (BAKETRY kept trading data a year after
+    delisting), so the pool is intersected with current TRADING symbols.
     """
-    rows = await ticker_24h()
+    rows, info = await asyncio.gather(ticker_24h(), trading_symbols(quote_asset))
+    trading = set(info)
     floor = (MIN_TOP_GAINER_QUOTE_VOLUME_TRY if min_quote_volume is None
              else float(min_quote_volume))
     suffix = quote_asset.upper()
     candidates = []
     for row in rows:
         symbol = str(row.get("symbol") or "").upper()
-        if not symbol.endswith(suffix):
+        if not symbol.endswith(suffix) or symbol not in trading:
             continue
         try:
             change = float(row.get("priceChangePercent") or 0)

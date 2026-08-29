@@ -4610,6 +4610,11 @@ async def detect_velocity_candidates(args: dict | None = None):
                 return None
             if len(rows) < 30:
                 return None
+            # Ölü/borsa dışı semboller 24h ticker'da eski kapanış verisiyle
+            # listelenmeye devam edebiliyor; güncel mum şart.
+            last_age_sec = (now_ms - (int(rows[-1][0]) + 59_999)) / 1000
+            if last_age_sec > 180:
+                return None
             closes = [float(r[4]) for r in rows]
             highs = [float(r[2]) for r in rows]
             lows = [float(r[3]) for r in rows]
@@ -4755,6 +4760,44 @@ async def velocity_learning_loop():
 @app.get("/api/market-snapshot/velocity-5m")
 async def market_snapshot_velocity_5m(limit: int = 3):
     return await detect_velocity_candidates({"limit": limit})
+
+
+@app.get("/api/reports/velocity")
+async def get_velocity_report(limit: int = 60):
+    """Hız avcısı journal'ı: koşullu dokunuş başarısı + öğrenme durumu."""
+    stats = await database.get_velocity_calibration_stats()
+    recent = await database.get_velocity_candidates(limit=limit)
+    evaluated = int(stats.get("evaluated_count") or 0)
+    touched = int(stats.get("touched_count") or 0)
+    passing = int(stats.get("passing_count") or 0)
+    passing_touched = int(stats.get("passing_touched_count") or 0)
+    # Sembol bazında başarı
+    symbol_rows = [row for row in recent if row.get("status") == "evaluated"]
+    by_symbol: dict[str, dict] = {}
+    for row in symbol_rows:
+        bucket = by_symbol.setdefault(row["symbol"], {"evaluated": 0, "touched": 0, "sum_mfe": 0.0})
+        bucket["evaluated"] += 1
+        bucket["touched"] += 1 if row.get("touched_target") else 0
+        bucket["sum_mfe"] += float(row.get("mfe_pct") or 0)
+    symbols = [{"symbol": symbol, "evaluated": bucket["evaluated"],
+                "touched": bucket["touched"],
+                "touch_rate": bucket["touched"] / bucket["evaluated"] if bucket["evaluated"] else None,
+                "average_mfe_pct": bucket["sum_mfe"] / bucket["evaluated"] if bucket["evaluated"] else None}
+               for symbol, bucket in sorted(by_symbol.items(), key=lambda kv: -kv[1]["evaluated"])]
+    return {"paper_only": True,
+            "stats": {"total": int(stats.get("total") or 0), "pending": int(stats.get("pending_count") or 0),
+                       "evaluated": evaluated, "touched": touched,
+                       "touch_rate": touched / evaluated if evaluated else None,
+                       "average_mfe_pct": stats.get("average_mfe_pct"),
+                       "passing_count": passing, "passing_touched": passing_touched,
+                       "passing_hit_rate": passing_touched / passing if passing else None,
+                       "passing_average_mfe_pct": stats.get("passing_mfe_pct")},
+            "filters": {"min_atr_pct": VELOCITY_MIN_ATR_PCT,
+                         "min_volume_ratio": VELOCITY_MIN_VOLUME_RATIO,
+                         "min_ret3_pct": VELOCITY_MIN_RET3_PCT},
+            "learning_state": dict(_velocity_learning_state),
+            "symbols": symbols[:20], "recent": recent}
+
 
 async def get_data_quality(args: dict):
     """Return freshness/completeness diagnostics before any market decision."""
