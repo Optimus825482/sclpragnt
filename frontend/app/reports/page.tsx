@@ -19,10 +19,25 @@ function ForecastTab({ report, loading, error }: { report: any; loading: boolean
  const pct=(value:any)=>value==null?"—":`%${(Number(value)*100).toFixed(1)}`;
  return <div className="space-y-4"><div className="grid grid-cols-2 gap-3 lg:grid-cols-4"><Stat title="Ölçülen tahmin" value={String(report.evaluated_count||0)}/><Stat title="Yön doğruluğu" value={pct(report.directional_accuracy)} tone={report.directional_accuracy!=null&&report.directional_accuracy>=.55?"text-neon-green":"text-yellow-300"}/><Stat title="Doğru tahmin" value={`${report.correct_count||0}/${report.evaluated_count||0}`}/><Stat title="Bekleyen" value={String(report.pending_count||0)} tone="text-sky-300"/></div><section className="card"><p className="eyebrow">UFUK BAZLI BAŞARI</p><div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Ufuk</th><th>Ölçülen</th><th>Doğru</th><th>Başarı</th><th>Ort. hareket</th><th>Bekleyen</th></tr></thead><tbody>{(report.horizons||[]).map((row:any)=><tr key={row.horizon_minutes}><td>{row.horizon_minutes} dk</td><td>{row.evaluated_count||0}</td><td>{row.correct_count||0}</td><td className={row.directional_accuracy!=null&&row.directional_accuracy>=.55?"text-neon-green":"text-neon-red"}>{pct(row.directional_accuracy)}</td><td>{pct(row.average_return_pct)}</td><td>{row.pending_count||0}</td></tr>)}</tbody></table></div><p className="mt-3 text-xs text-bunker-muted">Sonuçlar yalnızca kapanmış M1 mumlarıyla ölçülür; az örneklem karar kanıtı değildir.</p></section><section className="card"><p className="eyebrow">SON TAHMİNLER</p><div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Ufuk</th><th>Tahmin</th><th>Güven</th><th>Sonuç</th><th>Hareket</th></tr></thead><tbody>{(report.recent||[]).map((row:any)=><tr key={row.forecast_id}><td>{new Date(Number(row.created_at)*1000).toLocaleString("tr-TR")}</td><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.horizon_minutes} dk</td><td>{row.direction==="up"?"YUKARI":row.direction==="down"?"AŞAĞI":"YATAY"}</td><td>%{Math.round(Number(row.confidence)||0)}</td><td className={row.status==="evaluated"?(row.direction_correct?"text-neon-green":"text-neon-red"):"text-yellow-300"}>{row.status==="evaluated"?(row.direction_correct?"DOĞRU":"YANLIŞ"):"BEKLİYOR"}</td><td>{row.status==="evaluated"?pct(row.outcome_return_pct):"—"}</td></tr>)}</tbody></table></div></section></div>;
 }
+type VelocityLiveRow = {
+  candidate_id: string; symbol: string; entry_price: number; current_price: number | null;
+  change_pct: number | null; target_pct: number; passes: boolean; velocity_score: number;
+  status: string; touched: boolean; touch_sec: number | null; best_mfe_pct: number | null;
+  elapsed_sec: number; remaining_sec: number; window_closed: boolean; window_time: string;
+};
 function VelocityTab({ report, loading, error }: { report: any; loading: boolean; error: string }) {
  const [deletingId,setDeletingId]=useState<string|null>(null);
  const [reloadKey,setReloadKey]=useState(0);
  const [data,setData]=useState<any>(null);
+ const [live,setLive]=useState<VelocityLiveRow[]|null>(null);
+ // Canlı izleme: 5 sn'de bir fiyat/süre tazeleme
+ useEffect(()=>{
+  let cancelled=false;
+  const tick=()=>{apiRequest(`${API_BASE}/api/reports/velocity/live`,{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject(new Error(`HTTP ${r.status}`))).then(d=>{if(!cancelled)setLive(d.tracking||[]);}).catch(()=>undefined);};
+  tick();
+  const timer=window.setInterval(tick,5000);
+  return ()=>{cancelled=true;window.clearInterval(timer);};
+ },[reloadKey]);
  useEffect(()=>{
   if(!reloadKey) return; // ilk yükleme sayfa fetch'iyle gelir; reloadKey değişince tazele
   let cancelled=false;
@@ -42,15 +57,32 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
  if (!view) return <section className="card text-bunker-muted">Henüz hız avcısı taraması yok; Chat sayfasındaki "🚀 5 DK %2 HIZ AVCISI" butonuyla tarama başlatın.</section>;
  const pct=(value:any)=>value==null||Number.isNaN(Number(value))?"—":`%${(Number(value)*100).toFixed(1)}`;
  const stats=view.stats||{}; const learning=view.learning_state||{}; const filters=view.filters||{};
+ const liveRows=live||[];
+ const hitCount=liveRows.filter(r=>r.touched).length;
  return <div className="space-y-4">
-  <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+  <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+   <Stat title="Canlı takip" value={String(liveRows.length)} tone="text-sky-300"/>
+   <Stat title="+%2 dokunan" value={String(hitCount)} tone={hitCount>0?"text-neon-green":"text-white"}/>
+   <Stat title="Dokunuş oranı (canlı)" value={liveRows.length?pct(hitCount/liveRows.length):"—"} tone={liveRows.length&&hitCount/liveRows.length>=0.15?"text-neon-green":"text-yellow-300"}/>
    <Stat title="Toplam aday" value={String(stats.total||0)}/>
    <Stat title="Ölçülen" value={String(stats.evaluated||0)} tone="text-sky-300"/>
-   <Stat title="+%2 dokunan" value={`${stats.touched||0}/${stats.evaluated||0}`} tone={(stats.touch_rate??0)>=0.15?"text-neon-green":"text-yellow-300"}/>
-   <Stat title="Dokunuş oranı" value={pct(stats.touch_rate)} tone={(stats.touch_rate??0)>=0.15?"text-neon-green":"text-yellow-300"}/>
    <Stat title="Ort. MFE" value={pct(stats.average_mfe_pct)}/>
   </div>
-  <section className="card"><p className="eyebrow">FİLTRE PERFORMANSI · GEÇENLER (3 KOŞUL SAĞLANDI)</p>
+  <section className="card"><p className="eyebrow">CANLI İZLEME · ANALİZ ANI FİYAT → 5 DK PENCERE</p>
+   <p className="mt-1 text-xs text-bunker-muted">Her satır, son taramalardaki adayı analiz anındaki fiyattan itibaren izler; +%2'ye ulaşınca sonuç kilitlenir ve kaç saniyede ulaşıldığı yazılır. Pencere 5 dakika sonra kapanır. 5 saniyede bir güncellenir.</p>
+   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Giriş fiyatı</th><th>Canlı fiyat</th><th>Değişim</th><th>Durum</th><th>Süre / Ulaşım</th><th>Max MFE</th><th>Pencere</th></tr></thead><tbody>{liveRows.map((row:VelocityLiveRow)=><tr key={row.candidate_id} className={row.touched?"bg-neon-green/5":""}>
+    <td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className={row.touched?"text-neon-green font-bold hover:text-white":"text-white hover:text-neon-green"}/></td>
+    <td className="font-mono">{row.entry_price.toLocaleString("tr-TR",{maximumFractionDigits:8})}</td>
+    <td className="font-mono">{row.current_price?.toLocaleString("tr-TR",{maximumFractionDigits:8})??"—"}</td>
+    <td className={`font-mono ${(row.change_pct??0)>=2?"text-neon-green font-bold":(row.change_pct??0)>0?"text-neon-green":(row.change_pct??0)<0?"text-neon-red":""}`}>{row.change_pct!=null?`${row.change_pct>=0?"+":""}${row.change_pct.toFixed(2)}%`:"—"}</td>
+    <td className={row.touched?"text-neon-green font-bold":row.window_closed?(row.status==="evaluated"?"text-neon-red":"text-bunker-muted"):"text-sky-300"}>{row.touched?"+%2 ULAŞTI":row.window_closed?"PENCERE BİTTİ — DOKUNMADI":`İZLENİYOR`}</td>
+    <td className="font-mono text-xs">{row.touched?(row.touch_sec!=null?`${row.touch_sec} sn'de ulaştı`:"—"):row.window_closed?"5 dk doldu":`${Math.floor(row.remaining_sec/60)}:${String(row.remaining_sec%60).padStart(2,"0")} kaldı`}</td>
+    <td className={((row.best_mfe_pct??0)>=2)?"text-neon-green":"font-mono"}>{pct(row.best_mfe_pct)}</td>
+    <td className="text-bunker-muted text-xs">{row.window_time}</td>
+   </tr>)}</tbody></table></div>
+   {!liveRows.length&&<p className="mt-2 text-sm text-bunker-muted">Son 30 dakikada aday yok; Chat sayfasından "🚀 5 DK %2 HIZ AVCISI" taraması başlatın.</p>}
+  </section>
+  <section className="card"><p className="eyebrow">FİLTRE PERFORMANSI · GEÇENLER</p>
    <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
     <Stat title="Geçen aday" value={String(stats.passing_count||0)}/>
     <Stat title="Geçenlerde dokunuş" value={`${stats.passing_touched||0}/${stats.passing_count||0}`}/>
