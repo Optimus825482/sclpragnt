@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest, fetchAllPages } from "../lib/api";
-import { useLiveMessages } from "../lib/liveSocket";
+import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
 import MemoryTab from "../memory/MemoryTab";
 
@@ -27,10 +27,14 @@ type VelocityLiveRow = {
   window_closed: boolean; window_time: string;
 };
 function VelocityTab({ report, loading, error }: { report: any; loading: boolean; error: string }) {
+ const liveStatus = useLiveStatus();
  const [deletingId,setDeletingId]=useState<string|null>(null);
  const [reloadKey,setReloadKey]=useState(0);
  const [data,setData]=useState<any>(null);
  const [live,setLive]=useState<VelocityLiveRow[]|null>(null);
+ const [bottomTab,setBottomTab]=useState<"candidates"|"perf"|"auto">("candidates");
+ const [page,setPage]=useState(1);
+ const pageSize=12;
  // Canlı izleme: 5 sn'de bir fiyat/süre tazeleme
  useEffect(()=>{
   let cancelled=false;
@@ -40,7 +44,7 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
   return ()=>{cancelled=true;window.clearInterval(timer);};
  },[reloadKey]);
  useEffect(()=>{
-  if(!reloadKey) return; // ilk yükleme sayfa fetch'iyle gelir; reloadKey değişince tazele
+  if(!reloadKey) return;
   let cancelled=false;
   apiRequest(`${API_BASE}/api/reports/velocity?limit=60`,{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject(new Error(`HTTP ${r.status}`))).then(d=>{if(!cancelled){setData(d);}}).catch(()=>undefined);
   return ()=>{cancelled=true;};
@@ -76,37 +80,129 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
  const okCount=liveRows.filter(r=>r.outcome==="ok").length;
  const failCount=liveRows.filter(r=>r.outcome==="failed").length;
  const outcomeLabel=(row:VelocityLiveRow):{text:string;cls:string}=>{
-  if(row.outcome==="success") return {text:"BAŞARILI · +%2 GEÇTİ",cls:"text-neon-green font-bold"};
-  if(row.outcome==="ok") return {text:"OK · ÜZERİNE ÇIKTI",cls:"text-yellow-300"};
-  if(row.outcome==="failed") return {text:"BAŞARISIZ · ÇIKAMADI",cls:"text-neon-red"};
+  if(row.outcome==="success") return {text:"BAŞARILI",cls:"text-neon-green font-bold"};
+  if(row.outcome==="ok") return {text:"OK",cls:"text-yellow-300"};
+  if(row.outcome==="failed") return {text:"BAŞARISIZ",cls:"text-neon-red"};
   return {text:"İZLENİYOR",cls:"text-sky-300"};
  };
+ const allRecent=view.recent||[];
+ const pages=Math.max(1,Math.ceil(allRecent.length/pageSize));
+ const safePage=Math.min(page,pages);
+ const visible=allRecent.slice((safePage-1)*pageSize,safePage*pageSize);
  return <div className="space-y-4">
-  <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+  <div className="grid grid-cols-3 gap-2 lg:grid-cols-6">
    <Stat title="Canlı takip" value={String(liveRows.length)} tone="text-sky-300"/>
-   <Stat title="Başarılı (+%2)" value={String(hitCount)} tone={hitCount>0?"text-neon-green":"text-white"}/>
-   <Stat title="OK (üzerine çıktı)" value={String(okCount)} tone="text-yellow-300"/>
+   <Stat title="Başarılı" value={String(hitCount)} tone={hitCount>0?"text-neon-green":"text-white"}/>
+   <Stat title="OK" value={String(okCount)} tone="text-yellow-300"/>
    <Stat title="Başarısız" value={String(failCount)} tone={failCount>0?"text-neon-red":"text-white"}/>
-   <Stat title="Toplam aday" value={String(stats.total||0)}/>
-   <Stat title="Ölçülen" value={String(stats.evaluated||0)} tone="text-sky-300"/>
+   <Stat title="Koşullu isabet" value={pct(stats.passing_hit_rate)} tone={(stats.passing_hit_rate??0)>=0.19?"text-neon-green":"text-yellow-300"}/>
+   <Stat title="Ölçülen" value={String(stats.evaluated||0)}/>
   </div>
-  <section className="card"><p className="eyebrow">CANLI İZLEME · ANALİZ ANI FİYAT → 5 DK PENCERE</p>
-   <p className="mt-1 text-xs text-bunker-muted">BAŞARILI = 5 dk içinde +%2'yi geçti · OK = giriş fiyatının üzerine çıktı ama +%2 olmadı · BAŞARISIZ = üzerine hiç çıkamadı. Pencere kapanınca sonuç kilitlenir; 5 saniyede bir güncellenir.</p>
-   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Giriş fiyatı</th><th>Canlı fiyat</th><th>Değişim</th><th>Sonuç</th><th>Süre</th><th>Max MFE</th><th>Pencere</th></tr></thead><tbody>{liveRows.map((row:VelocityLiveRow)=>{
-    const lbl=outcomeLabel(row);
-    return <tr key={row.candidate_id} className={row.outcome==="success"?"bg-neon-green/5":""}>
-    <td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className={row.outcome==="success"?"text-neon-green font-bold hover:text-white":"text-white hover:text-neon-green"}/></td>
-    <td className="font-mono">{row.entry_price.toLocaleString("tr-TR",{maximumFractionDigits:8})}</td>
-    <td className="font-mono">{row.current_price?.toLocaleString("tr-TR",{maximumFractionDigits:8})??"—"}</td>
-    <td className={`font-mono ${(row.change_pct??0)>=2?"text-neon-green font-bold":(row.change_pct??0)>0?"text-neon-green":(row.change_pct??0)<0?"text-neon-red":""}`}>{row.change_pct!=null?`${row.change_pct>=0?"+":""}${row.change_pct.toFixed(2)}%`:"—"}</td>
-    <td className={lbl.cls}>{lbl.text}</td>
-    <td className="font-mono text-xs">{row.outcome==="success"&&row.touch_sec!=null?`${Math.floor(row.touch_sec/60)}dk ${row.touch_sec%60}sn'de geçti`:row.outcome==="pending"?`${Math.floor(row.elapsed_sec/60)}:${String(row.elapsed_sec%60).padStart(2,"0")} / 5:00`:"5:00 doldu"}</td>
-    <td className={((row.best_mfe_pct??0)>=2)?"text-neon-green":"font-mono"}>{pct(row.best_mfe_pct)}</td>
-    <td className="text-bunker-muted text-xs">{row.window_time}</td>
-   </tr>;})}</tbody></table></div>
-   {!liveRows.length&&<p className="mt-2 text-sm text-bunker-muted">Son 30 dakikada aday yok; Chat sayfasından "🚀 5 DK %2 HIZ AVCISI" taraması başlatın.</p>}
+
+  <section className="card">
+   <div className="flex items-center justify-between mb-2">
+    <p className="eyebrow">CANLI İZLEME · GİRİŞ FİYATI → 5 DK PENCERE</p>
+    {liveStatus==="open"?<span className="text-[10px] text-neon-green font-mono animate-pulse">● CANLI</span>:<span className="text-[10px] text-bunker-muted">○ yenileniyor</span>}
+   </div>
+   <div className="table-scroll">
+    <table className="data-table">
+     <thead><tr><th>Sembol</th><th>Giriş</th><th>Şimdi</th><th>Değ.</th><th>Sonuç</th><th>Süre</th><th>Max MFE</th><th>Saat</th></tr></thead>
+     <tbody>{liveRows.map((row:VelocityLiveRow)=>{
+      const lbl=outcomeLabel(row);
+      return <tr key={row.candidate_id} className={row.outcome==="success"?"bg-neon-green/5":""}>
+       <td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className={row.outcome==="success"?"text-neon-green font-bold hover:text-white":"text-white hover:text-neon-green"}/></td>
+       <td className="font-mono text-xs">{row.entry_price.toLocaleString("tr-TR",{maximumFractionDigits:6})}</td>
+       <td className="font-mono text-xs">{row.current_price?.toLocaleString("tr-TR",{maximumFractionDigits:6})??"—"}</td>
+       <td className={`font-mono text-xs ${(row.change_pct??0)>=2?"text-neon-green font-bold":(row.change_pct??0)>0?"text-neon-green":(row.change_pct??0)<0?"text-neon-red":""}`}>{row.change_pct!=null?`${row.change_pct>=0?"+":""}${row.change_pct.toFixed(2)}%`:"—"}</td>
+       <td className={lbl.cls}>{lbl.text}</td>
+       <td className="font-mono text-xs">{row.outcome==="success"&&row.touch_sec!=null?`${Math.floor(row.touch_sec/60)}:${String(row.touch_sec%60).padStart(2,"0")}'de geçti`:row.outcome==="pending"?`${Math.floor(row.elapsed_sec/60)}:${String(row.elapsed_sec%60).padStart(2,"0")}`:"5:00"}</td>
+       <td className={((row.best_mfe_pct??0)>=2)?"text-neon-green font-mono text-xs":"font-mono text-xs"}>{pct(row.best_mfe_pct)}</td>
+       <td className="text-bunker-muted text-xs">{row.window_time}</td>
+      </tr>;})}
+      {!liveRows.length&&<tr><td colSpan={8} className="py-5 text-center text-bunker-muted">Son 30 dakikada aday yok; Chat'ten "🚀 5 DK %2 HIZ AVCISI" başlatın.</td></tr>}
+     </tbody>
+    </table>
+   </div>
+   <p className="mt-2 text-[10px] text-bunker-muted">BAŞARILI = +%2 geçti · OK = üzerine çıktı, +%2 olmadı · BAŞARISIZ = hiç çıkamadı · 5 sn'de bir güncellenir.</p>
   </section>
-  <section className="card"><p className="eyebrow">OTONOM HIZ AVCISI · 15 DK'DA BİR OTOMATİK POZİSYON</p>
+
+  <div className="flex flex-wrap gap-2">
+   {([["candidates","Son Adaylar"],["perf","Performans & Öğrenme"],["auto","Otonom Durum"]] as const).map(([key,label])=>(
+    <button key={key} onClick={()=>setBottomTab(key)} className={`rounded-lg px-4 py-2 font-mono text-xs border transition-colors ${bottomTab===key?"border-neon-green/60 bg-neon-green/15 text-neon-green":"border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>{label}</button>
+   ))}
+  </div>
+
+  {bottomTab==="candidates"&&<section className="card">
+   <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+    <p className="eyebrow">SON ADAYLAR VE SONUÇLARI</p>
+    <div className="flex items-center gap-2">
+     <button onClick={remeasureAll} disabled={deletingId!==null} className="min-h-8 rounded border border-sky-400/40 bg-sky-400/10 px-3 font-mono text-xs text-sky-300 disabled:opacity-50">↻ TÜMÜNÜ YENİDEN ÖLÇ</button>
+     <span className="font-mono text-xs text-bunker-muted">{allRecent.length} kayıt</span>
+    </div>
+   </div>
+   <div className="table-scroll">
+    <table className="data-table">
+     <thead><tr><th>Zaman</th><th>Sembol</th><th>Koşul</th><th>ATR%</th><th>İvme</th><th>Skor</th><th>Sonuç</th><th>MFE</th><th>İşlem</th></tr></thead>
+     <tbody>{visible.map((row:any)=>{
+      const winDetails=(row.outcome_details||{});
+      const winTip=winDetails.window_first?`Pencere: ${winDetails.window_first}-${winDetails.window_last} (${winDetails.window_bars} mum)${winDetails.remeasured?" · yeniden ölçüldü":""}`:"Pencere detayı yok";
+      return <tr key={row.candidate_id}>
+       <td className="text-xs">{new Date(Number(row.created_at)*1000).toLocaleString("tr-TR")}</td>
+       <td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td>
+       <td className={row.passes?"text-neon-green text-xs":"text-bunker-muted text-xs"}>{row.passes?"GEÇTİ":"İZLEME"}</td>
+       <td className="text-xs">{row.atr_pct}</td>
+       <td className="text-xs">%{row.ret3_pct}</td>
+       <td className="font-mono text-xs">{row.velocity_score}</td>
+       <td className={row.status==="evaluated"?(row.touched_target?"text-neon-green text-xs":"text-neon-red text-xs"):"text-yellow-300 text-xs"}>{row.status==="evaluated"?(row.touched_target?"+%2 DOKUNDU":"DOKUNMADI"):"BEKLİYOR"}</td>
+       <td title={winTip} className="text-xs">{row.status==="evaluated"?pct(row.mfe_pct):"—"}</td>
+       <td className="whitespace-nowrap">
+        <button onClick={()=>remeasureRow(row.candidate_id)} disabled={deletingId!==null} title="Yeniden ölç" className="mr-1 rounded border border-sky-400/50 bg-sky-400/10 px-2 py-0.5 font-mono text-[10px] text-sky-300 hover:bg-sky-400/20 disabled:opacity-50">↻</button>
+        <button onClick={()=>deleteRow(row.candidate_id)} disabled={deletingId!==null} title="Sil (kalıcı)" className="rounded border border-red-400/50 bg-red-400/10 px-2 py-0.5 font-mono text-[10px] text-red-300 hover:bg-red-400/20 disabled:opacity-50">{deletingId===row.candidate_id?"…":"✕"}</button>
+       </td>
+      </tr>;})}
+      {!allRecent.length&&<tr><td colSpan={9} className="py-5 text-center text-bunker-muted">Kayıt yok; Chat'ten hız taraması başlatın.</td></tr>}
+     </tbody>
+    </table>
+   </div>
+   {pages>1&&<div className="mt-3 flex items-center justify-between font-mono text-xs text-bunker-muted">
+    <span>Sayfa {safePage}/{pages}</span>
+    <div className="flex gap-2">
+     <button onClick={()=>setPage(p=>Math.max(1,p-1))} disabled={safePage<=1} className="rounded border border-bunker-700 px-3 py-1 disabled:opacity-40">← Önceki</button>
+     <button onClick={()=>setPage(p=>Math.min(pages,p+1))} disabled={safePage>=pages} className="rounded border border-bunker-700 px-3 py-1 disabled:opacity-40">Sonraki →</button>
+    </div>
+   </div>}
+  </section>}
+
+  {bottomTab==="perf"&&<>
+   <section className="card">
+    <p className="eyebrow">SEMBOLE GÖRE DOKUNUŞ BAŞARISI</p>
+    <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Ölçülen</th><th>Dokunan</th><th>Oran</th><th>Ort. MFE</th></tr></thead><tbody>{(view.symbols||[]).map((row:any)=><tr key={row.symbol}><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.evaluated}</td><td>{row.touched}</td><td className={(row.touch_rate??0)>=0.15?"text-neon-green":"text-neon-red"}>{pct(row.touch_rate)}</td><td>{pct(row.average_mfe_pct)}</td></tr>)}</tbody></table></div>
+    {!(view.symbols||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Henüz ölçülmüş sembol yok.</p>}
+   </section>
+   <section className="card">
+    <p className="eyebrow">FİLTRE PERFORMANSI · GEÇENLER</p>
+    <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+     <Stat title="Geçen aday" value={String(stats.passing_count||0)}/>
+     <Stat title="Geçenlerde dokunuş" value={`${stats.passing_touched||0}/${stats.passing_count||0}`}/>
+     <Stat title="Koşullu isabet" value={pct(stats.passing_hit_rate)} tone={(stats.passing_hit_rate??0)>=0.19?"text-neon-green":"text-yellow-300"}/>
+     <Stat title="Geçenlerde ort. MFE" value={pct(stats.passing_average_mfe_pct)}/>
+    </div>
+    <p className="mt-3 text-xs text-bunker-muted">v2 filtre: ATR% ≥ {filters.min_atr_pct} · BB genişliği ≥ %{filters.min_bb_width_pct} · RSI ≥ {filters.trend_rsi_min} (trend) veya ≤ {filters.reversal_rsi_max} (V-dönüşü) · MFI 10-90 · LinReg ≥ %{filters.struct_slope_pct} veya Aroon ≥ 50. Kalibrasyon hedefi %19 (replay); canlı değer saparsa öğrenme döngüsü ATR eşiğini ±0.05 kaydırır.</p>
+   </section>
+   <section className="card">
+    <p className="eyebrow">ÖĞRENME DÖNGÜSÜ</p>
+    <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-xs lg:grid-cols-4">
+     <span className="rounded border border-bunker-700 p-2">Son ölçüm: {learning.last_run_at?new Date(learning.last_run_at*1000).toLocaleTimeString("tr-TR"):"—"}</span>
+     <span className="rounded border border-bunker-700 p-2">Ölçülen: {learning.measured||0}</span>
+     <span className="rounded border border-bunker-700 p-2">Son kalibrasyon: {learning.last_calibrated_at?new Date(learning.last_calibrated_at*1000).toLocaleTimeString("tr-TR"):"—"}</span>
+     <span className={`rounded border border-bunker-700 p-2 ${learning.last_error?"text-neon-red":"text-neon-green"}`}>{learning.last_error?"HATA":"Çalışıyor"}</span>
+    </div>
+    {learning.active_filters&&<p className="mt-2 font-mono text-xs text-sky-300">Kalibre edilmiş filtre: {JSON.stringify(learning.active_filters)}</p>}
+   </section>
+  </>}
+
+  {bottomTab==="auto"&&<section className="card">
+   <p className="eyebrow">OTONOM HIZ AVCISI · DURUM</p>
    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-mono">
     <span className={`rounded px-2 py-1 ${(view.auto_trade?.enabled)?"text-neon-green border border-neon-green/40":"text-yellow-300 border border-yellow-400/40"}`}>{view.auto_trade?.enabled?"OTONOM AKTİF":"KAPALI (env: VELOCITY_AUTO_ENABLED + LLM paper ayarı)"}</span>
     <span className="rounded border border-bunker-700 px-2 py-1">her {Math.round((view.auto_trade?.interval_sec||900)/60)} dk</span>
@@ -118,39 +214,11 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
    <p className="mt-2 text-xs text-bunker-muted">Çıkış merdiveni: fiyat girişin üstüne çıktığında stop break-even'e çekilir (kar kilitli), +%1'e ulaşınca ATR trailing devreye girer (maksimum kâr koşusu), sert stop her zaman %1.5.</p>
    {view.auto_trade?.state?.last_open&&<p className="mt-2 font-mono text-xs text-sky-300">Son deneme: {view.auto_trade.state.last_open.symbol} — {view.auto_trade.state.last_open.status}{view.auto_trade.state.last_open.reason?` (${view.auto_trade.state.last_open.reason})`:""}</p>}
    {(view.auto_trade?.recent_opens||[]).length>0&&<div className="mt-2 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Miktar</th><th>Giriş</th><th>Stop</th><th>Skor</th></tr></thead><tbody>{(view.auto_trade.recent_opens||[]).slice().reverse().map((o:any,i:number)=><tr key={i}><td>{o.at?new Date(o.at*1000).toLocaleTimeString("tr-TR"):"—"}</td><td>{o.symbol}</td><td>{o.order_value_try} TL</td><td>{o.entry}</td><td>%{o.stop_loss_pct}</td><td>{o.score}</td></tr>)}</tbody></table></div>}
-  </section>
-  <section className="card"><p className="eyebrow">FİLTRE PERFORMANSI · GEÇENLER</p>
-   <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
-    <Stat title="Geçen aday" value={String(stats.passing_count||0)}/>
-    <Stat title="Geçenlerde dokunuş" value={`${stats.passing_touched||0}/${stats.passing_count||0}`}/>
-    <Stat title="Koşullu isabet" value={pct(stats.passing_hit_rate)} tone={(stats.passing_hit_rate??0)>=0.19?"text-neon-green":"text-yellow-300"}/>
-    <Stat title="Geçenlerde ort. MFE" value={pct(stats.passing_average_mfe_pct)}/>
-   </div>
-   <p className="mt-3 text-xs text-bunker-muted">v2 filtre: ATR% ≥ {filters.min_atr_pct} · Bollinger genişliği ≥ %{filters.min_bb_width_pct} · RSI ≥ {filters.trend_rsi_min} (trend) veya ≤ {filters.reversal_rsi_max} (V-dönüşü) · LinReg ≥ %{filters.struct_slope_pct} veya Aroon ≥ 50. Kalibrasyon hedefi %19 (replay); canlı değer saparsa öğrenme döngüsü ATR eşiğini ±0.05 kaydırır.</p>
-  </section>
-  <section className="card"><p className="eyebrow">ÖĞRENME DÖNGÜSÜ</p>
-   <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-xs lg:grid-cols-4">
-    <span className="rounded border border-bunker-700 p-2">Son ölçüm: {learning.last_run_at?new Date(learning.last_run_at*1000).toLocaleTimeString("tr-TR"):"—"}</span>
-    <span className="rounded border border-bunker-700 p-2">Ölçülen: {learning.measured||0}</span>
-    <span className="rounded border border-bunker-700 p-2">Son kalibrasyon: {learning.last_calibrated_at?new Date(learning.last_calibrated_at*1000).toLocaleTimeString("tr-TR"):"—"}</span>
-    <span className={`rounded border border-bunker-700 p-2 ${learning.last_error?"text-neon-red":"text-neon-green"}`}>{learning.last_error?"HATA":"Çalışıyor"}</span>
-   </div>
-   {learning.active_filters&&<p className="mt-2 font-mono text-xs text-sky-300">Kalibre edilmiş filtre: {JSON.stringify(learning.active_filters)}</p>}
-  </section>
-  <section className="card"><p className="eyebrow">SEMBOLE GÖRE DOKUNUŞ BAŞARISI</p>
-   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Ölçülen</th><th>Dokunan</th><th>Oran</th><th>Ort. MFE</th></tr></thead><tbody>{(view.symbols||[]).map((row:any)=><tr key={row.symbol}><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.evaluated}</td><td>{row.touched}</td><td className={(row.touch_rate??0)>=0.15?"text-neon-green":"text-neon-red"}>{pct(row.touch_rate)}</td><td>{pct(row.average_mfe_pct)}</td></tr>)}</tbody></table></div>
-   {!(view.symbols||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Henüz ölçülmüş sembol yok; sonuçlar 5 dakikalık pencere kapandıktan sonra birikir.</p>}
-  </section>
-  <section className="card"><p className="eyebrow">SON ADAYLAR VE SONUÇLARI</p>
-   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Koşul</th><th>ATR%</th><th>İvme</th><th>Skor</th><th>Sonuç</th><th>MFE</th><th>İşlem</th></tr></thead><tbody>{(view.recent||[]).map((row:any)=>{
-    const winDetails=(row.outcome_details||{});
-    const winTip=winDetails.window_first?`Pencere: ${winDetails.window_first}-${winDetails.window_last} (${winDetails.window_bars} mum)${winDetails.remeasured?" · yeniden ölçüldü":""}`:"Pencere detayı yok";
-    return <tr key={row.candidate_id}><td>{new Date(Number(row.created_at)*1000).toLocaleString("tr-TR")}</td><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td className={row.passes?"text-neon-green":"text-bunker-muted"}>{row.passes?"GEÇTİ":"İZLEME"}</td><td>{row.atr_pct}</td><td>%{row.ret3_pct}</td><td>{row.velocity_score}</td><td className={row.status==="evaluated"?(row.touched_target?"text-neon-green":"text-neon-red"):"text-yellow-300"}>{row.status==="evaluated"?(row.touched_target?"+%2 DOKUNDU":"DOKUNMADI"):"BEKLİYOR"}</td><td title={winTip}>{row.status==="evaluated"?pct(row.mfe_pct):"—"}</td><td className="whitespace-nowrap"><button onClick={()=>remeasureRow(row.candidate_id)} disabled={deletingId!==null} title="Kapanmış mumlarla yeniden ölç" className="mr-1 rounded border border-sky-400/50 bg-sky-400/10 px-2 py-0.5 font-mono text-[10px] text-sky-300 hover:bg-sky-400/20 disabled:opacity-50">{deletingId===row.candidate_id?"↻":"↻"}</button><button onClick={()=>deleteRow(row.candidate_id)} disabled={deletingId!==null} title="Bu kaydı rapordan sil (kalıcı)" className="rounded border border-red-400/50 bg-red-400/10 px-2 py-0.5 font-mono text-[10px] text-red-300 hover:bg-red-400/20 disabled:opacity-50">{deletingId===row.candidate_id?"…":"✕"}</button></td></tr>;})}</tbody></table></div>
-   <div className="mt-2 flex items-center gap-2"><button onClick={remeasureAll} disabled={deletingId!==null} className="min-h-8 rounded border border-sky-400/40 bg-sky-400/10 px-3 font-mono text-xs text-sky-300 disabled:opacity-50">↻ TÜMÜNÜ YENİDEN ÖLÇ</button><span className="text-xs text-bunker-muted">Ölçülmüş kayıtları kapanmış M1 mumlarla tekrar hesaplar (tutarsız değerleri düzeltir).</span></div>
-   {!(view.recent||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Kayıt yok; Chat sayfasından hız taraması başlatın.</p>}
-  </section>
+  </section>}
  </div>;
 }
+
+
 function ChatPredictionsTab({ report, loading, error }: { report: any; loading: boolean; error: string }) {
  const [symbolFilter,setSymbolFilter]=useState("");
  const [replay,setReplay]=useState<any>(null);
