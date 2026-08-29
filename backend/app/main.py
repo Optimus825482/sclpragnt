@@ -15,7 +15,7 @@ import hashlib
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from starlette.background import BackgroundTask
@@ -1111,7 +1111,7 @@ def calibration_multiplier_for(strategy: str, symbol: str | None = None,
     buckets = _calibration_buckets.get("buckets") or {}
     hour = None
     ts = time.time()
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     hour = datetime.fromtimestamp(ts, tz=timezone.utc).hour
     return calibration_service.confidence_multiplier(
         buckets, strategy=strategy, hour=hour, volume_ratio=volume_ratio)
@@ -4674,14 +4674,14 @@ async def remeasure_velocity_candidate(candidate_id: str):
     await database.mark_velocity_candidate_evaluated(
         candidate_id, mfe_pct=round(mfe_pct, 4), touched_target=touched,
         details={"remeasured": True, "window_bars": len(window),
-                  "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000).strftime("%H:%M"),
-                  "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000).strftime("%H:%M"),
+                  "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
+                  "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
                   "entry": entry, "target_pct": candidate["target_pct"], "touch_sec": touch_sec},
         force=True)
     return {"ok": True, "paper_only": True, "mfe_pct": round(mfe_pct, 3),
             "touched_target": touched, "window_bars": len(window),
-            "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000).strftime("%H:%M"),
-            "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000).strftime("%H:%M"),
+            "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
+            "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
             "touch_sec": touch_sec}
 
 
@@ -4745,10 +4745,15 @@ async def get_velocity_live_tracking():
     kapanınca durum kesinleşir; öğrenme döngüsü nihai sonucu journal'a yazar.
     """
     import datetime as _dt
+    tz_tr = _dt.timezone(_dt.timedelta(hours=3))  # GMT+3 sabit
     now_ms = int(time.time() * 1000)
     rows = await database.get_velocity_candidates(limit=25)
-    # yalnız son 30 dakikanın adayları canlı takip edilir
-    rows = [r for r in rows if now_ms / 1000 - float(r["created_at"]) <= 1800]
+    # Canlı takip: penceresi hâlâ açık olanlar + kapanmış ama journal'a henüz
+    # yazılmamışlar. Süresi dolup değerlendirilenler rapordan düşer (Son
+    # Adaylar sekmesinde kalıcı olarak yaşar).
+    rows = [r for r in rows
+            if now_ms / 1000 - float(r["created_at"]) <= 300
+            or r["status"] == "pending"]
     sem = asyncio.Semaphore(6)
     tracked = []
 
@@ -4815,7 +4820,7 @@ async def get_velocity_live_tracking():
             "best_mfe_pct": round(effective_mfe, 3) if effective_mfe is not None else None,
             "elapsed_sec": elapsed_sec, "remaining_sec": max(0, int((due_ms - now_ms) / 1000)),
             "window_closed": window_closed,
-            "window_time": datetime.fromtimestamp(created_ms / 1000).strftime("%H:%M:%S"),
+            "window_time": _dt.datetime.fromtimestamp(created_ms / 1000, tz=tz_tr).strftime("%H:%M:%S"),
         })
 
     await asyncio.gather(*(track(r) for r in rows))
