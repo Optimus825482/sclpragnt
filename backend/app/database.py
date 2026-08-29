@@ -1477,13 +1477,15 @@ def _forecast_row(row):
     return item
 
 
-async def get_llm_forecasts(symbol=None, status=None, limit=100):
+async def get_llm_forecasts(symbol=None, status=None, limit=100, source=None):
     def op(conn):
         clauses, values = [], []
         if symbol:
             clauses.append("symbol=?"); values.append(str(symbol).upper())
         if status:
             clauses.append("status=?"); values.append(status)
+        if source == "chat":
+            clauses.append("prompt_version LIKE 'upside-candidate-%'")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         values.append(max(1, min(int(limit), 500)))
         rows = conn.execute(f"SELECT * FROM llm_forecasts{where} ORDER BY created_at DESC LIMIT ?", values).fetchall()
@@ -1491,17 +1493,18 @@ async def get_llm_forecasts(symbol=None, status=None, limit=100):
     return await _run_db(op)
 
 
-async def get_llm_forecast_report():
+async def get_llm_forecast_report(source=None):
     """Aggregate only journaled forecast outcomes; no trading side effects."""
     def op(conn):
-        rows = conn.execute("""SELECT horizon_minutes,
+        source_clause = " AND prompt_version LIKE 'upside-candidate-%'" if source == "chat" else ""
+        rows = conn.execute(f"""SELECT horizon_minutes,
             COUNT(*) AS total_count,
             SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
             SUM(CASE WHEN status='evaluated' THEN 1 ELSE 0 END) AS evaluated_count,
             SUM(CASE WHEN status='evaluated' AND direction_correct THEN 1 ELSE 0 END) AS correct_count,
             AVG(CASE WHEN status='evaluated' THEN confidence END) AS average_confidence,
             AVG(CASE WHEN status='evaluated' THEN outcome_return_pct END) AS average_return_pct
-            FROM llm_forecasts GROUP BY horizon_minutes ORDER BY horizon_minutes""").fetchall()
+            FROM llm_forecasts WHERE 1=1{source_clause} GROUP BY horizon_minutes ORDER BY horizon_minutes""").fetchall()
         return [dict(row) for row in rows]
     return await _run_db(op)
 
