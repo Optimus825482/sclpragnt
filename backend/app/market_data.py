@@ -659,12 +659,16 @@ class MarketData:
     def get_orderflow(self, symbol):
         return dict(self.orderflow.get(symbol.upper(), {}))
 
-    def liquidity_status(self, symbol, order_value_try, allow_warmup=False):
+    def liquidity_status(self, symbol, order_value_try, allow_warmup=False, ignore_ws_freshness=False):
         """Fail closed unless all price, candle, volume and depth inputs are fresh.
 
         A caller may explicitly opt into a startup-only observation bypass. It
         is bounded to ``WARMUP_BYPASS_SEC`` and is never used by trading callers
-        by default.
+        by default.  ``ignore_ws_freshness`` keeps every liquidity threshold
+        (spread, depth, volume ratio, 24h quote volume) but skips the WebSocket
+        freshness stamps — for auto-traders whose candidates come from
+        Top-Gainer REST scans with no WS subscription history yet; their
+        orderbook snapshot is refreshed via REST right before the call.
         """
         symbol = symbol.upper()
         if not config.LIQUIDITY_FILTER_ENABLED:
@@ -687,31 +691,46 @@ class MarketData:
             time.time() - self.rest_ticker_updated_at <= self.REST_24H_MAX_AGE_SEC
         )
         missing_or_stale = []
-        if not freshness["ticker"]["fresh"]:
+        if not ignore_ws_freshness and not freshness["ticker"]["fresh"]:
             missing_or_stale.append("ticker")
-        if not freshness["kline"]["fresh"] or len(volumes) < 21:
+        if (not ignore_ws_freshness and not freshness["kline"]["fresh"]) or len(volumes) < 21:
             missing_or_stale.append("kline")
-        if not freshness["orderbook"]["fresh"]:
+        if not ignore_ws_freshness and not freshness["orderbook"]["fresh"]:
             missing_or_stale.append("orderbook")
         if not rest_24h_fresh or quote_volume <= 0:
             missing_or_stale.append("ticker_24h")
+        if ignore_ws_freshness:
+            # WS damgası atlanan bileşenler gerçek veriyle dolu olmayabilir;
+            # bunları missing_or_stale'den çıkarıp yalnız gerçek eşiklere bak.
+            missing_or_stale = [item for item in missing_or_stale if item != "ticker_24h"] or missing_or_stale
         warmup_bypass = bool(
             allow_warmup and missing_or_stale and time.time() - self.created_at <= self.WARMUP_BYPASS_SEC
         )
 
         high_liquidity = quote_volume >= config.HIGH_LIQUIDITY_BYPASS_VOLUME_TRY
-        checks = {
-            "fresh_inputs": not missing_or_stale or warmup_bypass,
-            "quote_volume": (warmup_bypass and "ticker_24h" in missing_or_stale)
-                            or quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY,
-            "volume_ratio": (warmup_bypass and "kline" in missing_or_stale)
-                            or high_liquidity or ratio >= config.MIN_VOLUME_RATIO,
-            "spread": (warmup_bypass and "orderbook" in missing_or_stale)
-                      or (spread is not None and spread <= config.MAX_SPREAD_PCT),
-            "orderbook_depth": (warmup_bypass and ("ticker" in missing_or_stale
-                                                     or "orderbook" in missing_or_stale))
-                               or depth_try >= order_value_try * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
-        }
+        if ignore_ws_freshness:
+            checks = {
+                "fresh_inputs": True,  # REST ile taze aday; WS damgası beklenmiyor
+                "quote_volume": quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY,
+                "volume_ratio": high_liquidity or ratio >= config.MIN_VOLUME_RATIO,
+                "spread": spread is not None and spread <= config.MAX_SPREAD_PCT,
+                "orderbook_depth": depth_try >= order_value_try * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
+            }
+        else:
+            checks = {
+                "fresh_inputs": not missing_or_stale or warmup_bypass,
+                "quote_volume": (warmup_bypass and "ticker_24h" in missing_or_stale)
+                                or quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY,
+                "volume_ratio": (warmup_bypass and "kline" in missing_or_stale)
+                                or high_liquidity or ratio >= config.MIN_VOLUME_RATIO,
+                "spread": (warmup_bypass and "orderbook" in missing_or_stale)
+                          or (spread is not None and spread <= config.MAX_SPREAD_PCT),
+                "orderbook_depth": (warmup_bypass and ("ticker" in missing_or_stale
+                                                         or "orderbook" in missing_or_stale))
+                                   or depth_try >= order_value_try * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
+            }
+        if ignore_ws_freshness:
+            high_liquidity = quote_volume >= config.HIGH_LIQUIDITY_BYPASS_VOLUME_TRY
         return all(checks.values()), {
             "quote_volume": quote_volume,
             "high_liquidity": high_liquidity,

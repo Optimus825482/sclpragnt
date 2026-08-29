@@ -4986,6 +4986,94 @@ _velocity_auto_state = {"last_scan_at": None, "last_error": None, "opened": [],
                           "last_open": None, "total_opened": 0}
 
 
+async def _velocity_rest_liquidity_ok(symbol: str, order_value: float) -> tuple[bool, str | None]:
+    """Hız avcısı için REST tabanlı likidite kapısı.
+
+    Geleneksel preflight, WebSocket orderbook/ticker tazeliğini şart koşar;
+    Top-Gainer'dan yeni gelen sembollerin WS akışı dolana kadar 'stale' sayılıp
+    her adayı ENTRY_INELIGIBLE yapabiliyordu. Burada yalnız taze REST verisiyle
+    gerçek likidite koşullarını kontrol eder: spread, emir defteri derinliği
+    ve 24s quoteVolume. Tarama zaten kapanmış 1m mumlar üzerinden geçtiği için
+    fiyat kalitesi bu kapıyı geçen adayda güvence altındadır.
+    """
+    try:
+        book = await orderbook(symbol, 5)
+        bids = book.get("bids") or []
+        asks = book.get("asks") or []
+        if not bids or not asks:
+            return False, "emir_defteri_bos"
+        bid, ask = float(bids[0][0]), float(asks[0][0])
+        if bid <= 0:
+            return False, "gecersiz_fiyat"
+        spread_pct = (ask - bid) / bid * 100
+        if spread_pct > config.MAX_SPREAD_PCT:
+            return False, f"spread_genis:{spread_pct:.2f}%"
+        depth_try = (sum(float(q) for _, q in bids[:5]) + sum(float(q) for _, q in asks[:5])) * ((bid + ask) / 2)
+        if depth_try < order_value * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER:
+            return False, f"derinlik_yetersiz:{depth_try:.0f}TRY"
+    except Exception as exc:
+        return False, f"orderbook_hata:{type(exc).__name__}"
+    try:
+        gainers = await top_gainers(50)
+        qv = next((float(g["quoteVolume"]) for g in gainers if g["symbol"] == symbol), None)
+        if qv is not None and qv < config.MIN_24H_QUOTE_VOLUME_TRY:
+            return False, f"24s_hacim_dusuk:{qv:.0f}TRY"
+    except Exception:
+        pass  # ticker erişilemezse spread+derinlik yeterli güvence
+    return True, None
+
+
+async def _hydrate_market_cache_for(symbol: str):
+    """Top-Gainer adayının market önbelleğini REST'ten doldurur.
+
+    market.ticker_24h / market.klines yalnız başlangıç sembol listesi için
+    dolar; Top-Gainer'dan gelen yeni sembollerin recheck'i 0 hacim/derinlik
+    üzerinden reddediliyordu. Bu fonksiyon tek sembolün 24s ticker'ını,
+    1m kline geçmişini ve orderbook akışını önbelleğe işler.
+    """
+    try:
+        rows = await ticker_24h()
+        row = next((r for r in rows if str(r.get("symbol", "")).upper() == symbol), None)
+        if row:
+            qv = float(row.get("quoteVolume", 0) or 0)
+            last_price = float(row.get("lastPrice", 0) or 0)
+            market.ticker_24h[symbol] = qv
+            if last_price > 0:
+                now_ms = int(time.time() * 1000)
+                market.tickers[symbol] = {**(market.tickers.get(symbol) or {}),
+                                            "symbol": symbol, "last_price": last_price,
+                                            "timestamp": now_ms, "source": "binance_tr_public_rest"}
+    except Exception as exc:
+        logger.warning("hydrate ticker %s: %s", symbol, exc)
+    try:
+        kline_rows = await fetch_klines(symbol, config.MOMENTUM_TIMEFRAME, 120)
+        if kline_rows:
+            market.klines.setdefault(config.MOMENTUM_TIMEFRAME, {})[symbol] = {
+                "timestamps": [int(r[0]) for r in kline_rows],
+                "opens": [float(r[1]) for r in kline_rows],
+                "highs": [float(r[2]) for r in kline_rows],
+                "lows": [float(r[3]) for r in kline_rows],
+                "closes": [float(r[4]) for r in kline_rows],
+                "volumes": [float(r[5]) for r in kline_rows],
+            }
+    except Exception as exc:
+        logger.warning("hydrate klines %s: %s", symbol, exc)
+    try:
+        book = await orderbook(symbol, 5)
+        bids, asks = book.get("bids") or [], book.get("asks") or []
+        if bids and asks:
+            bid_price, bid_qty = float(bids[0][0]), float(bids[0][1])
+            ask_price, ask_qty = float(asks[0][0]), float(asks[0][1])
+            mid = (bid_price + ask_price) / 2
+            market.orderflow[symbol] = {**(market.orderflow.get(symbol) or {}),
+                                          "bid_price": bid_price, "ask_price": ask_price,
+                                          "bid_qty": bid_qty, "ask_qty": ask_qty,
+                                          "spread_pct": ((ask_price - bid_price) / bid_price * 100) if bid_price else None,
+                                          "source": "binance_tr_public_rest", "updated_at": time.time()}
+    except Exception as exc:
+        logger.warning("hydrate orderbook %s: %s", symbol, exc)
+
+
 async def _open_velocity_position(candidate: dict) -> dict:
     """En iyi hız adayına serbest TL'nin %50'si ile paper pozisyon açar."""
     symbol = str(candidate["symbol"] or "").upper()
@@ -5011,10 +5099,16 @@ async def _open_velocity_position(candidate: dict) -> dict:
     order_value = min(order_value, balance)
     if order_value < config.MIN_PARTIAL_ORDER_TRY:
         return {"symbol": symbol, "status": "SKIPPED", "reason": f"bakiye_yetersiz:{order_value}TRY"}
-    # Likidite ön kontrolü
-    eligible, eligibility = await analyzer.entry_liquidity_preflight(symbol, "VELOCITY_AUTO", order_value)
-    if not eligible:
-        return {"symbol": symbol, "status": "ENTRY_INELIGIBLE", "reason": eligibility.get("reason", "likidite")}
+    # Likidite ön kontrolü: REST tabanlı (WS tazeliği beklemeyen) kapı.
+    # Top-Gainer'dan yeni gelen sembollerin WS orderbook akışı dolmadan
+    # geleneksel preflight 'stale' diyordu ve hiç işlem açılmıyordu.
+    ok, reason = await _velocity_rest_liquidity_ok(symbol, order_value)
+    if not ok:
+        return {"symbol": symbol, "status": "ENTRY_INELIGIBLE", "reason": reason}
+    # open_position içindeki son recheck market önbelleğini kullanır;
+    # Top-Gainer adayının önbelleğini REST'ten doldur ki 0 hacim/derinlik
+    # üzerinden reddedilmesin.
+    await _hydrate_market_cache_for(symbol)
     stop_loss_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
     context = {"signal_name": "Otonom Hız Avcısı · en iyi aday",
                 "velocity_score": candidate.get("velocity_score"),
