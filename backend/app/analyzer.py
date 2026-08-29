@@ -590,7 +590,12 @@ class ScalpAnalyzer:
             return None
         if pos and pos.get("strategy") != "LLM_PAPER":
             entry = float(pos.get("entry_price") or price)
-            fallback_stop_pct = config.BB_MFI_STOP_LOSS_PCT if pos.get("strategy") == "BB_MFI_MEAN_REVERSION" else config.HARD_STOP_LOSS_PCT
+            if pos.get("strategy") == "CHAT_PREDICTION":
+                fallback_stop_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
+            elif pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
+                fallback_stop_pct = config.BB_MFI_STOP_LOSS_PCT
+            else:
+                fallback_stop_pct = config.HARD_STOP_LOSS_PCT
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
             # Chat Prediction (velocity auto-trade) koruma merdiveni:
             # 1) Kâr anında break-even: fiyat girişin üstüne çıktıysa stop
@@ -601,9 +606,12 @@ class ScalpAnalyzer:
             if (pos.get("strategy") == "CHAT_PREDICTION"
                     and not pos.get("velocity_protection_armed")):
                 mfe_price = float(pos.get("max_price") or entry)
-                if mfe_price > entry:
+                be_stop = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
+                # ÖNEMLİ: Stop ancak fiyat break-even mesafesine ulaştıktan SONRA
+                # girişin üstüne çekilir. Aksi halde stop, girişin üzerinde kalır
+                # ve pozisyon açılır açılmaz system_stop_loss ile kapanır.
+                if mfe_price >= be_stop:
                     pos["velocity_protection_armed"] = True
-                    be_stop = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
                     pos["system_stop_price"] = max(system_stop, be_stop)
                     system_stop = pos["system_stop_price"]
             if (pos.get("strategy") == "CHAT_PREDICTION"
@@ -1865,11 +1873,21 @@ class ScalpAnalyzer:
                 technical_tf = self._strategy_tf(strat_name)
                 system_kline = self.market.get_ut_kline(symbol, technical_tf) if self.market else None
                 atr = self.calculate_atr(system_kline, config.SYSTEM_ATR_PERIOD) if system_kline else None
-                strategy_stop_pct = config.BB_MFI_STOP_LOSS_PCT if strat_name == "BB_MFI_MEAN_REVERSION" else config.HARD_STOP_LOSS_PCT
-                stop_distance = entry_price * strategy_stop_pct if strat_name == "BB_MFI_MEAN_REVERSION" else max(
-                    entry_price * strategy_stop_pct,
-                    float(atr or 0) * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER,
-                )
+                if strat_name == "CHAT_PREDICTION":
+                    strategy_stop_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
+                elif strat_name == "BB_MFI_MEAN_REVERSION":
+                    strategy_stop_pct = config.BB_MFI_STOP_LOSS_PCT
+                else:
+                    strategy_stop_pct = config.HARD_STOP_LOSS_PCT
+                # CHAT_PREDICTION için her zaman sabit %1.5 stop (ATR'ye göre
+                # genişletilmez). Kullanıcı kontratı: stop = fiyatın %98.5'i.
+                if strat_name == "CHAT_PREDICTION":
+                    stop_distance = entry_price * strategy_stop_pct
+                else:
+                    stop_distance = entry_price * strategy_stop_pct if strat_name == "BB_MFI_MEAN_REVERSION" else max(
+                        entry_price * strategy_stop_pct,
+                        float(atr or 0) * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER,
+                    )
                 if stop_distance <= 0:
                     stop_distance = entry_price * strategy_stop_pct
                 pos["system_stop_price"] = entry_price - stop_distance
