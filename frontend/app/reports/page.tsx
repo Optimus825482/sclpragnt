@@ -23,6 +23,11 @@ function ChatPredictionsTab({ report, loading, error }: { report: any; loading: 
  const [symbolFilter,setSymbolFilter]=useState("");
  const [replay,setReplay]=useState<any>(null);
  const [replayBusy,setReplayBusy]=useState(false);
+ // Hook'lar koşulsuz ve early return'lerden ÖNCE çağrılmalı; aksi halde render
+ // sırasında hook sayısı değişir ve React #310 ("Rendered fewer hooks")
+ // oluşur. Filtreleme de bu yüzden hooksuz hesaplanıyor.
+ const insights=useMemo(()=>((report||{}).insights||[]).filter((row:any)=>!symbolFilter||row.symbol===symbolFilter.toUpperCase()),[report,symbolFilter]);
+ const recent=useMemo(()=>((report||{}).recent||[]).filter((row:any)=>!symbolFilter||row.symbol===symbolFilter.toUpperCase()),[report,symbolFilter]);
  const runReplay=async(lookbackHours:number)=>{
   if(replayBusy)return;
   setReplayBusy(true);
@@ -44,8 +49,6 @@ function ChatPredictionsTab({ report, loading, error }: { report: any; loading: 
  if (error) return <section className="card border-neon-red/30 text-neon-red">Chat tahmin raporu alınamadı: {error}</section>;
  if (!report) return <section className="card text-bunker-muted">Henüz Chat sayfasından kaydedilmiş M5/M15 tahmini yok.</section>;
  const pct=(value:any)=>value==null||Number.isNaN(Number(value))?"—":`%${(Number(value)*100).toFixed(1)}`;
- const insights=useMemo(()=>(report.insights||[]).filter((row:any)=>!symbolFilter||row.symbol===symbolFilter.toUpperCase()),[report,symbolFilter]);
- const recent=useMemo(()=>(report.recent||[]).filter((row:any)=>!symbolFilter||row.symbol===symbolFilter.toUpperCase()),[report,symbolFilter]);
  const learning=report.learning_state||{};
  const replayResult=replay?.state?.result; const replayState=replay?.state||{};
  return <div className="space-y-4">
