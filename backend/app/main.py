@@ -38,7 +38,7 @@ from app import universe_registry
 from app import database
 from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, run_execution_stress, run_parameter_sensitivity, run_holdout_test, run_statistical_validation, get_backtest_data_quality, CUSTOM_IDENTIFIER_SCHEMA, CUSTOM_INDICATORS
 CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
-from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook
+from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook, top_gainers
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.sma_cascade_shadow import SmaCascadeShadow
 from app.fisher_m3_kernel_m5_shadow import FisherM3KernelM5Shadow
@@ -1363,6 +1363,7 @@ async def startup_services():
     _start_background(fisher_m3_kernel_m5_shadow_loop(), "fisher-m3-kernel-m5-shadow")
     _start_background(llm_forecast_evaluation_loop(), "llm-forecast-evaluator")
     _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
+    _start_background(chat_prediction_auto_trade_loop(), "chat-prediction-auto-trade")
     _start_background(radar_loop(), "radar-loop")
     _start_background(top_gainers_refresh_loop(), "top-gainers-monitor")
     _start_background(symbol_activity_loop(), "symbol-activity")
@@ -4090,6 +4091,126 @@ async def deep_analyze_symbol(args: dict):
         "paper_candidate": "candidate" if score >= 2.5 and not risks else "watch"}
     return context
 
+async def _enqueue_chat_auto_trades(candidates: list[dict], horizon_minutes: int):
+    """Yüksek güvenli adayları paper açılış kuyruğuna yazar (debounce 15 dk).
+
+    Açılış kararı burada verilmez; sadece aday damgalanır. Gerçek açılış
+    chat_prediction_auto_trade_loop içinde tüm risk kapılarından geçirilir.
+    """
+    now = time.time()
+    last = _chat_auto_trade_state.setdefault("last_enqueued", {})
+    fresh = []
+    for candidate in candidates:
+        symbol = str(candidate.get("symbol") or "").upper()
+        if not symbol or now - float(last.get(f"{symbol}:{horizon_minutes}", 0)) < 900:
+            continue
+        last[f"{symbol}:{horizon_minutes}"] = now
+        fresh.append({"symbol": symbol, "horizon_minutes": horizon_minutes,
+                      "score": candidate.get("score"),
+                      "matches": (candidate.get("pattern_evaluation") or {}).get("matches") or [],
+                      "queued_at": now})
+    if fresh:
+        _chat_auto_trade_state["queue"].extend(fresh)
+        # Kuyruk sınırsız büyümesin
+        del _chat_auto_trade_state["queue"][:-20]
+        await database.save_llm_setting("chat_auto_trade_queue", json.dumps(
+            _chat_auto_trade_state["queue"][-20:], ensure_ascii=False))
+
+
+_chat_auto_trade_state = {"queue": [], "opened": [], "last_enqueued": {}, "last_run_at": None,
+                           "last_error": None, "total_opened": 0}
+
+
+async def _chat_auto_trade_open(cue: dict) -> dict:
+    """Tüm risk kapılarından geçirip paper pozisyon açar; canlı emir yok."""
+    symbol = str(cue.get("symbol") or "").upper()
+    # 1) Sembol aktif listede mi?
+    if symbol not in [str(s).upper() for s in config.SYMBOLS]:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": "sembol_aktif_listede_degil"}
+    # 2) Zaten açık pozisyon var mı?
+    if symbol in analyzer.positions:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": "acik_pozisyon_var"}
+    # 3) Chat stratejisi pozisyon limiti
+    chat_open = sum(1 for pos in analyzer.positions.values() if pos.get("strategy") == "CHAT_PREDICTION")
+    if chat_open >= config.CHAT_PREDICTION_MAX_OPEN_POSITIONS:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": "chat_pozisyon_limiti_dolu"}
+    # 4) LLM cooldown/guard kapısı
+    guard = await database.get_llm_symbol_guard(symbol)
+    guard_reason = _llm_guard_block_reason(guard)
+    if guard_reason:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": guard_reason}
+    # 5) Fiyat
+    ticker = market.get_ticker(symbol)
+    if not ticker or not ticker.get("last_price"):
+        try:
+            latest = await fetch_klines(symbol, "1m", 2)
+            if latest:
+                ticker = {"symbol": symbol, "last_price": float(latest[-1][4]), "timestamp": time.time() * 1000}
+        except Exception:
+            pass
+    if not ticker or not ticker.get("last_price"):
+        return {"symbol": symbol, "status": "SKIPPED", "reason": "fiyat_alinamadi"}
+    # 6) Giriş kalite kapısı (mikro yapı/overextension)
+    try:
+        entry_snapshot = await symbol_analysis(symbol, "5m")
+        gate_ok, gate_reasons = _llm_entry_quality_gate(entry_snapshot, {})
+    except Exception as exc:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": f"giris_snapshot_hatasi:{type(exc).__name__}"}
+    if not gate_ok:
+        return {"symbol": symbol, "status": "ENTRY_BLOCKED", "reason": "giris_kalite_kapisi:" + ",".join(gate_reasons[:3])}
+    # 7) Likidite ön kontrolü
+    order_value = min(config.CHAT_PREDICTION_ORDER_VALUE_TRY,
+                      max(config.MIN_PARTIAL_ORDER_TRY, await database.get_wallet_balance("TRY")))
+    eligible, eligibility = await analyzer.entry_liquidity_preflight(symbol, "CHAT_PREDICTION", order_value)
+    if not eligible:
+        return {"symbol": symbol, "status": "ENTRY_INELIGIBLE", "reason": eligibility.get("reason", "likidite_yetersiz")}
+    # 8) Replay'den gelen asimetrik çıkış planı
+    plan = chat_pattern_replay.live_trade_plan(cue.get("horizon_minutes", 5),
+                                                   float((entry_snapshot.get("volatility") or {}).get("atr_pct") or 0))
+    context = {"signal_name": f"Chat Tahmin · {cue.get('horizon_minutes')}dk yüksek güven desen",
+               "pattern_matches": cue.get("matches") or [], "horizon_minutes": cue.get("horizon_minutes"),
+               "candidate_score": cue.get("score"), "paper_only": True,
+               "exit_plan": plan, "source": "chat_prediction_auto_trade"}
+    result = await analyzer.open_position(symbol, float(ticker["last_price"]), "LONG", "CHAT_PREDICTION",
+                                           order_value,
+                                           take_profit_pct=plan["take_profit_pct"],
+                                           stop_loss_pct=plan["stop_loss_pct"],
+                                           max_hold_sec=plan["max_hold_seconds"],
+                                           entry_context_extra=context)
+    if result and str(result.get("action", "")).upper() == "BUY_SIGNAL":
+        await ws_manager.broadcast({"type": "signal", "data": result})
+        return {"symbol": symbol, "status": "PAPER_OPENED", "plan": plan, "signal_id": result.get("trade_id")}
+    return {"symbol": symbol, "status": "ENTRY_BLOCKED", "reason": str((result or {}).get("reason") or "merkezi_kapı")}
+
+
+async def chat_prediction_auto_trade_loop():
+    """Yüksek güvenli chat tahmin adaylarını (15 sn'de bir) paper pozisyona çevirir."""
+    await asyncio.sleep(90)
+    while True:
+        try:
+            enabled = config.CHAT_PREDICTION_AUTO_TRADE_ENABLED and \
+                (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
+            if enabled and _chat_auto_trade_state["queue"]:
+                cue = _chat_auto_trade_state["queue"].pop(0)
+                outcome = await _chat_auto_trade_open(cue)
+                outcome["queued_at"] = cue.get("queued_at")
+                _chat_auto_trade_state["opened"].append(outcome)
+                del _chat_auto_trade_state["opened"][:-30]
+                if outcome.get("status") == "PAPER_OPENED":
+                    _chat_auto_trade_state["total_opened"] += 1
+                    await database.save_signal({"symbol": outcome["symbol"], "action": "BUY_SIGNAL",
+                                                 "price": None, "reason": "chat_prediction_high_confidence_pattern",
+                                                 "strategy": "CHAT_PREDICTION", "timestamp": time.time()})
+            _chat_auto_trade_state["last_run_at"] = time.time()
+            _chat_auto_trade_state["last_error"] = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _chat_auto_trade_state["last_error"] = str(exc)
+            logger.exception("chat auto trade loop: %s", exc)
+        await asyncio.sleep(15)
+
+
 async def _journal_upside_candidates(candidates: list[dict], horizon_minutes: int, generated_at: float):
     """Persist candidate evidence for causal M1 outcome evaluation."""
     if not candidates:
@@ -4288,17 +4409,25 @@ def _gainer_row_to_candidate(row: dict, common: dict, horizon_minutes: int, hist
 async def _detect_upside_candidates(horizon_minutes: int, args: dict | None = None):
     args = args or {}; limit = max(1, min(int(args.get("limit", 10)), 20)); now_ms = int(time.time() * 1000)
     end_time_ms = now_ms - horizon_minutes * 60 * 1000
-    active = [str(symbol).replace("_", "").upper() for symbol in config.SYMBOLS]
-    historical_risers = await _fastest_risers_before(active, horizon_minutes, end_time_ms)
+    # Aday havuzu web'deki Top-Gaining sekmesiyle aynı kaynaktır: /ticker/24hr
+    # içinden TRY çiftleri, 24s değişime göre ilk 20 ve minimum quoteVolume.
+    # Açık pozisyonlu semboller daha sonra scan_market_snapshots içinde elenir.
+    try:
+        gainer_rows = await top_gainers(20)
+    except Exception as exc:
+        logger.warning("Top-gaining listesi alınamadı, aktif sembollere düşülüyor: %s", exc)
+        gainer_rows = []
+    gainer_symbols = [item["symbol"] for item in gainer_rows]
+    gainer_meta = {item["symbol"]: item for item in gainer_rows}
+    if not gainer_symbols:
+        gainer_symbols = [str(symbol).replace("_", "").upper() for symbol in config.SYMBOLS][:20]
+    historical_risers = await _fastest_risers_before(gainer_symbols, horizon_minutes, end_time_ms)
     historical_timeframes = ["1m", "3m", "5m"] if horizon_minutes == 5 else ["1m", "5m", "15m"]
     historical_snapshots = []
     for riser in historical_risers:
         snapshot = await _historical_snapshot_at(riser["symbol"], historical_timeframes, end_time_ms)
         historical_snapshots.append({**riser, "snapshot": snapshot})
-    tickers = await ticker_24h()
-    ticker_map = {str(item.get("symbol", "")).upper(): item for item in tickers or []}
-    top20 = sorted((symbol for symbol in active if symbol in ticker_map), key=lambda symbol: float(ticker_map[symbol].get("priceChangePercent", 0) or 0), reverse=True)[:20]
-    if not top20: top20 = active[:20]
+    top20 = gainer_symbols
     timeframes = historical_timeframes
     scan = await scan_market_snapshots({"symbols": top20, "timeframes": timeframes, "limit": 20, "fresh": True})
     top20_rows = []
@@ -4331,17 +4460,84 @@ async def _detect_upside_candidates(horizon_minutes: int, args: dict | None = No
     # kanıt olarak bağlam verir. LLM kendi dersini kendisi aktif etmez.
     learned_insights = chat_prediction_learning.insight_summary(
         await database.get_chat_prediction_insights(horizon_minutes=horizon_minutes, limit=4))
+    # Desen kapısı: her aday kapanmış 1m mumlardan zengin özellik çıkarılıp
+    # train'den gelen desen etiketleriyle eşleştirilir. Yüksek güvenli adaylar
+    # auto-trade döngüsü tarafından paper pozisyona dönüştürülebilir.
+    pattern_state = await refresh_chat_pattern_state()
+    if config.CHAT_PREDICTION_PATTERN_ENABLED:
+        sem = asyncio.Semaphore(4)
+        async def _pattern_gate(candidate):
+            async with sem:
+                try:
+                    rows = await fetch_klines(candidate["symbol"], "1m", 120)
+                except Exception:
+                    candidate["pattern_evaluation"] = {"confidence_tier": "watch", "matches": [], "error": "kline_unavailable"}
+                    return
+                result = chat_pattern_replay.evaluate_live_candidate(
+                    rows, horizon_minutes, pattern_tags=set(pattern_state.get("tags") or []),
+                    min_matches=pattern_state.get("min_matches", 2),
+                    high_confidence_matches=pattern_state.get("high_confidence_matches", 3))
+                candidate["pattern_evaluation"] = result or {"confidence_tier": "watch", "matches": []}
+        await asyncio.gather(*(_pattern_gate(candidate) for candidate in candidates))
+    else:
+        for candidate in candidates:
+            candidate["pattern_evaluation"] = {"confidence_tier": "watch", "matches": []}
+    high_confidence = [c for c in candidates if (c.get("pattern_evaluation") or {}).get("confidence_tier") == "high"]
     generated_at = scan.get("generated_at") or time.time()
     journal = await _journal_upside_candidates(candidates, horizon_minutes, generated_at)
+    # Yüksek güvenli adayları otomatik paper-trade kuyruğuna bırak (devre dışıysa yoksayılır).
+    if high_confidence:
+        await _enqueue_chat_auto_trades(high_confidence, horizon_minutes)
     return {"generated_at": generated_at, "horizon_minutes": horizon_minutes, "symbols_scanned": scan.get("symbols_scanned", 0),
             "symbols_skipped_open": scan.get("symbols_skipped_open", []), "candidates": candidates,
             "market_regime": scan.get("market_regime"), "historical_fastest_risers": historical_snapshots,
-            "historical_as_of_ms": end_time_ms, "current_top20_gainers": top20, "top20_common_features": common,
+            "historical_as_of_ms": end_time_ms, "current_top20_gainers": top20,
+            "top20_gainer_details": [gainer_meta.get(symbol) or {"symbol": symbol} for symbol in top20],
+            "pool_source": "binance_tr_web_top_gaining_tab",
+            "pattern_state": dict(_chat_pattern_state),
+            "high_confidence_symbols": [c["symbol"] for c in high_confidence],
+            "top20_common_features": common,
             "validated_forecast_lessons": validated_lessons,
             "learned_prediction_insights": learned_insights,
-            "selection_pipeline": ["horizon öncesindeki en hızlı 3 tamamlanmış mum", "bu 3 sembolün geçmiş snapshot analizi", "güncel aktif Top-20 gainer ortak özellikleri", "nihai ufuk bazlı aday analizi"],
+            "selection_pipeline": ["web Top-Gaining ilk 20 (24s değişim, min hacim)", "horizon öncesindeki en hızlı 3 tamamlanmış mum", "bu 3 sembolün geçmiş snapshot analizi", "güncel Top-20 gainer ortak özellikleri", "nihai ufuk bazlı aday analizi", "desen kapısı (train etiketleri)"],
             "data_policy": "Taze Binance TR public snapshot ve geçmiş tamamlanmış mumlar; tahmin veya garanti değildir. Eksik alanlar unknown kabul edilir.",
             "journal": journal, "paper_only": True, "live_portfolio_changed": False}
+
+
+_chat_pattern_state = {"tags": list(chat_prediction_replay.DEFAULT_TRAIN_TAGS),
+                        "mined_at": None, "source": "default (replay 2026-08-29)",
+                        "min_matches": 2, "high_confidence_matches": 3}
+
+
+async def refresh_chat_pattern_state():
+    """Kapanmış son 6 saatlik pencereden desen etiketlerini tazele (ucuz, cache'li)."""
+    mined_at = _chat_pattern_state.get("mined_at")
+    if mined_at and time.time() - mined_at < 30 * 60:
+        return _chat_pattern_state
+    try:
+        rows = await database.get_chat_predictions(status="evaluated", analyzed=True, limit=300)
+        train_rows = []
+        for row in rows:
+            snapshot = row.get("snapshot") or {}
+            features = (snapshot.get("features") or {}) if isinstance(snapshot, dict) else {}
+            if not features:
+                continue
+            train_rows.append({"features": features,
+                               "win": bool(row.get("direction_correct")) and row.get("outcome_direction") == "up"})
+        if len(train_rows) >= 20:
+            patterns = chat_pattern_replay.mine_patterns(train_rows, min_support=4, lift_floor=1.25)
+            if patterns:
+                _chat_pattern_state.update({
+                    "tags": [p["tag"] for p in patterns[:8]],
+                    "mined_at": time.time(),
+                    "source": f"journal ({len(train_rows)} ölçüm)",
+                    "min_matches": config.CHAT_PREDICTION_MIN_PATTERN_MATCHES,
+                    "high_confidence_matches": config.CHAT_PREDICTION_HIGH_CONFIDENCE_MATCHES,
+                })
+    except Exception as exc:
+        logger.debug("chat pattern refresh: %s", exc)
+    return _chat_pattern_state
+
 
 async def detect_15m_upside_candidates(args: dict | None = None):
     """Fresh, causal multi-stage ranking for possible next-15m upside momentum."""
@@ -5112,11 +5308,22 @@ async def get_chat_predictions_report(symbol: str | None = None, limit: int = 50
     for row in horizons.get("symbols", []):
         count = int(row.get("evaluated_count") or 0)
         row["directional_accuracy"] = (int(row.get("correct_count") or 0) / count) if count else None
+    auto_trade_enabled = config.CHAT_PREDICTION_AUTO_TRADE_ENABLED and \
+        (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
     return {"paper_only": True, "evaluated_count": evaluated, "correct_count": correct,
             "pending_count": pending, "analyzed_count": analyzed,
             "directional_accuracy": (correct / evaluated) if evaluated else None,
             "horizons": horizons.get("horizons", []), "symbols": horizons.get("symbols", []),
-            "insights": insights, "recent": recent, "learning_state": dict(_chat_prediction_learning_state)}
+            "insights": insights, "recent": recent, "learning_state": dict(_chat_prediction_learning_state),
+            "pattern_state": dict(_chat_pattern_state),
+            "auto_trade": {"enabled": bool(auto_trade_enabled),
+                            "config": {"min_pattern_matches": config.CHAT_PREDICTION_MIN_PATTERN_MATCHES,
+                                        "high_confidence_matches": config.CHAT_PREDICTION_HIGH_CONFIDENCE_MATCHES,
+                                        "tp_pct": config.CHAT_PREDICTION_TP_PCT, "sl_pct": config.CHAT_PREDICTION_SL_PCT,
+                                        "max_hold_seconds": config.CHAT_PREDICTION_MAX_HOLD_SEC,
+                                        "max_open_positions": config.CHAT_PREDICTION_MAX_OPEN_POSITIONS,
+                                        "order_value_try": config.CHAT_PREDICTION_ORDER_VALUE_TRY},
+                            "state": {key: value for key, value in _chat_auto_trade_state.items() if key != "last_enqueued"}}}
 
 
 @app.get("/api/reports/chat-predictions/insights")

@@ -523,16 +523,23 @@ export default function ChatPage() {
                     <span className="text-[10px] text-bunker-muted">{result.generated_at ? new Date(result.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
                   </div>
                   <div className="space-y-2">
-                    {candidates.length === 0 ? <p className="text-xs text-bunker-muted">Bu ufuk için henüz tarama yapılmadı.</p> : candidates.map((candidate) => (
+                    {candidates.length === 0 ? <p className="text-xs text-bunker-muted">Bu ufuk için henüz tarama yapılmadı.</p> : candidates.map((candidate) => {
+                      const tier = (candidate as any).pattern_evaluation?.confidence_tier
+                      const matches = (candidate as any).pattern_evaluation?.matches || []
+                      return (
                   <div key={candidate.symbol} className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800 pb-2 last:border-0 last:pb-0">
                     <div>
                       <strong className="font-mono text-sm text-white">{candidate.rank}. <SymbolLink symbol={candidate.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green" /></strong>
+                      {tier === "high" && <span title={`Desen eşleşmeleri: ${matches.join(", ")}`} className="ml-2 rounded border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[10px] text-neon-green">YÜKSEK GÜVEN</span>}
+                      {tier === "watch" && <span title={`Desen eşleşmeleri: ${matches.join(", ")}`} className="ml-2 rounded border border-yellow-400/40 px-1.5 py-0.5 font-mono text-[10px] text-yellow-300">İZLEME</span>}
                       <span className="ml-2 text-xs text-neon-green">{candidate.trend_direction || "unknown"}</span>
                       <p className="text-[11px] text-bunker-muted">5m %{candidate.returns_pct?.return_5m ?? "—"} · 15m %{candidate.returns_pct?.return_15m ?? "—"} · ADX {indicatorNumber(candidate.trend?.adx, "adx") !== "—" ? indicatorNumber(candidate.trend?.adx, "adx") : indicatorNumber(candidate.trend?.adx_14)} · hacim {candidate.volume?.volume_ratio_20 ?? "—"}x · spread %{candidate.liquidity?.spread_pct ?? "—"}</p>
+                      {matches.length > 0 && <p className="text-[10px] text-sky-300">desen: {matches.join(" + ")}</p>}
                     </div>
                     <span className="font-mono text-xs text-sky-300">Skor {candidate.score ?? "—"}</span>
                   </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </>;
               })()}
