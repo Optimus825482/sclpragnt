@@ -1516,12 +1516,19 @@ class ScalpAnalyzer:
         # Every entry path (strategy, LLM, alert, radar and pending orders)
         # converges here. A passive symbol must therefore be rejected at this
         # final writer boundary, not only skipped by the strategy scan loop.
-        if config.SYMBOL_ACTIVITY_FILTER_ENABLED and symbol in config.PASSIVE_SYMBOLS:
+        # CHAT_PREDICTION (velocity) is exempt: its candidates come from
+        # Top-Gainer REST scans whose WS volume history the activity filter
+        # needs does not exist yet, and the velocity pipeline enforces its own
+        # stricter liquidity gates (spread, depth, 24h volume) before opening.
+        if (config.SYMBOL_ACTIVITY_FILTER_ENABLED and symbol in config.PASSIVE_SYMBOLS
+                and strat_name != "CHAT_PREDICTION"):
             activity = dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {})
             failed = [key for key, ok in activity.get("checks", {}).items() if not ok]
             reason = "symbol_activity:passive"
             if failed:
                 reason += ":" + ",".join(failed)
+            # Log strat_name for debugging velocity auto-trader passthrough
+            print(f"[Activity Debug] symbol={symbol} strat_name={strat_name!r} PASSIVE checks failed={failed}", flush=True)
             blocked = {
                 "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                 "reason": reason, "strategy": strat_name, "timestamp": time.time(),
