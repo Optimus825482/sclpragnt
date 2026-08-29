@@ -54,6 +54,30 @@ CREATE TABLE IF NOT EXISTS llm_forecast_lessons (
   status TEXT NOT NULL DEFAULT 'candidate', generated_at DOUBLE PRECISION NOT NULL, updated_at DOUBLE PRECISION NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_llm_forecast_lessons_lookup ON llm_forecast_lessons(status, symbol, horizon_minutes);
+CREATE TABLE IF NOT EXISTS chat_predictions (
+  prediction_id TEXT PRIMARY KEY, forecast_group_id TEXT NOT NULL,
+  symbol TEXT NOT NULL, horizon_minutes INTEGER NOT NULL, created_at DOUBLE PRECISION NOT NULL,
+  entry_price DOUBLE PRECISION NOT NULL, direction TEXT NOT NULL, confidence DOUBLE PRECISION NOT NULL,
+  score DOUBLE PRECISION, min_move_pct DOUBLE PRECISION NOT NULL, regime TEXT,
+  evidence JSONB NOT NULL DEFAULT '[]'::jsonb, risks JSONB NOT NULL DEFAULT '[]'::jsonb,
+  snapshot JSONB NOT NULL DEFAULT '{}'::jsonb, snapshot_hash TEXT NOT NULL,
+  model TEXT, prompt_version TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+  evaluated_at DOUBLE PRECISION, outcome_price DOUBLE PRECISION, outcome_return_pct DOUBLE PRECISION,
+  outcome_direction TEXT, direction_correct BOOLEAN, max_favorable_pct DOUBLE PRECISION,
+  max_adverse_pct DOUBLE PRECISION, outcome_details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  analysis_status TEXT NOT NULL DEFAULT 'pending', analysis TEXT,
+  analysis_factors JSONB NOT NULL DEFAULT '{}'::jsonb, analysis_model TEXT, analysis_at DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_chat_predictions_due ON chat_predictions(status, created_at, horizon_minutes);
+CREATE INDEX IF NOT EXISTS idx_chat_predictions_symbol_time ON chat_predictions(symbol, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_predictions_analysis ON chat_predictions(status, analysis_status);
+CREATE TABLE IF NOT EXISTS chat_prediction_insights (
+  insight_key TEXT PRIMARY KEY, scope TEXT NOT NULL, symbol TEXT, horizon_minutes INTEGER,
+  sample_size INTEGER NOT NULL, success_count INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0,
+  insight TEXT NOT NULL, factors JSONB NOT NULL DEFAULT '{}'::jsonb, source_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+  status TEXT NOT NULL DEFAULT 'active', generated_at DOUBLE PRECISION NOT NULL, updated_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_prediction_insights_lookup ON chat_prediction_insights(status, symbol, horizon_minutes);
 CREATE TABLE IF NOT EXISTS microstructure_snapshots (id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, captured_at DOUBLE PRECISION NOT NULL, bid_price DOUBLE PRECISION, ask_price DOUBLE PRECISION, bid_qty DOUBLE PRECISION, ask_qty DOUBLE PRECISION, spread_pct DOUBLE PRECISION, depth_try DOUBLE PRECISION, orderflow_imbalance DOUBLE PRECISION, source TEXT NOT NULL DEFAULT 'binance_tr_public_ws', updated_at DOUBLE PRECISION, UNIQUE(symbol, captured_at));
 CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC);
 
