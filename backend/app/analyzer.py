@@ -616,14 +616,33 @@ class ScalpAnalyzer:
                     system_stop = pos["system_stop_price"]
             if (pos.get("strategy") == "CHAT_PREDICTION"
                     and not pos.get("velocity_trailing_armed")):
+                # Trailing yalnızca +%1 kâr görüldükten sonra devreye girer;
+                # bu, pozisyonun en azından küçük bir avantaj kazanmasını şart
+                # koşar. Aksi halde fiyat girişin etrafında salınırken trailing
+                # stop anında kapanışa neden olur.
                 trigger = entry * (1 + config.VELOCITY_TRAIL_TRIGGER_PCT / 100.0)
                 if float(pos.get("max_price") or entry) >= trigger:
                     pos["velocity_trailing_armed"] = True
             if pos.get("strategy") == "CHAT_PREDICTION" and pos.get("velocity_trailing_armed"):
-                atr_value = (pos.get("entry_context") or {}).get("atr_1m") or \
-                             float(pos.get("entry_context", {}).get("atr_pct", 0)) * entry
-                if atr_value > 0:
-                    trailing = float(pos.get("max_price") or entry) - 2.0 * atr_value
+                # ATR değeri: entry_context içinde FİYAT cinsinden (atr_1m) veya
+                # yüzde cinsinden (atr_pct, örn. 0.8 = %0.8) saklanabilir.
+                # Yüzdeyi fiyat birimine çevir, yanlış birimle çarpıp trailing
+                # stop'u aşırı aşağı çekmeyi engelle.
+                ectx = pos.get("entry_context") or {}
+                atr_price = None
+                if ectx.get("atr_1m"):
+                    atr_price = float(ectx["atr_1m"])
+                elif ectx.get("atr_pct"):
+                    raw = float(ectx["atr_pct"])
+                    if raw > 1:
+                        raw = raw / 100.0
+                    atr_price = raw * entry
+                if atr_price is not None and atr_price > 0:
+                    trailing = float(pos.get("max_price") or entry) - 2.0 * atr_price
+                    # Trailing asla girişin altına inmez (zarara dönmez) ve
+                    # girişin üstüne taşmaz (fiyat geri çekilirse erken
+                    # kapanışa yol açmaz). Trailing yalnızca tepeyi takip eder.
+                    trailing = max(trailing, entry)
                     if trailing > system_stop:
                         pos["system_stop_price"] = trailing
                         system_stop = trailing
@@ -1757,7 +1776,9 @@ class ScalpAnalyzer:
         planned_stop_loss_pct = (
             float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None
             else (None if strat_name == "LLM_PAPER" else
-                  (config.BB_MFI_STOP_LOSS_PCT if is_bb_mfi else config.HARD_STOP_LOSS_PCT))
+                  (config.BB_MFI_STOP_LOSS_PCT if is_bb_mfi else
+                   (config.VELOCITY_AUTO_SL_PCT / 100.0 if strat_name == "CHAT_PREDICTION"
+                    else config.HARD_STOP_LOSS_PCT)))
         )
         # BB-MFI exits through its fixed stop/target or a confirmed sell signal;
         # the generic max-hold setting is not an active exit for this strategy.
