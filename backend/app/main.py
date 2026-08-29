@@ -4891,6 +4891,64 @@ async def delete_velocity_candidate(candidate_id: str):
     return {"ok": True, "deleted": deleted, "paper_only": True}
 
 
+@app.post("/api/reports/velocity/{candidate_id}/remeasure")
+async def remeasure_velocity_candidate(candidate_id: str):
+    """Journal satırını kapanmış M1 mumlarla yeniden ölçer.
+
+    Eski/yanlış ölçülmüş kayıtlar için: pencere (created → created+5dk)
+    yeniden hesaplanır, MFE ve dokunuş journal'a tekrar yazılır.
+    """
+    rows = await database.get_velocity_candidates(limit=200)
+    candidate = next((r for r in rows if r["candidate_id"] == candidate_id), None)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Kayıt bulunamadı")
+    symbol = candidate["symbol"]
+    created_ms = int(float(candidate["created_at"]) * 1000)
+    due_ms = created_ms + 5 * 60_000
+    try:
+        rows1m = await fetch_klines(symbol, "1m", 12, created_ms, due_ms + 65_000)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"mum verisi alınamadı: {exc}")
+    window = [r for r in rows1m if int(r[0]) + 59_999 > created_ms and int(r[0]) + 59_999 <= due_ms]
+    if len(window) < 3:
+        raise HTTPException(status_code=409, detail=f"pencere mumları yetersiz: {len(window)}")
+    entry = float(candidate["price"])
+    highs = [float(r[2]) for r in window]
+    mfe_pct = (max(highs) / entry - 1) * 100 if entry > 0 else 0.0
+    touched = mfe_pct >= float(candidate["target_pct"])
+    touch_bar = next((r for r in window if float(r[2]) == max(highs)), None)
+    touch_sec = int((int(touch_bar[0]) + 59_999 - created_ms) / 1000) if touched and touch_bar else None
+    await database.mark_velocity_candidate_evaluated(
+        candidate_id, mfe_pct=round(mfe_pct, 4), touched_target=touched,
+        details={"remeasured": True, "window_bars": len(window),
+                  "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000).strftime("%H:%M"),
+                  "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000).strftime("%H:%M"),
+                  "entry": entry, "target_pct": candidate["target_pct"], "touch_sec": touch_sec},
+        force=True)
+    return {"ok": True, "paper_only": True, "mfe_pct": round(mfe_pct, 3),
+            "touched_target": touched, "window_bars": len(window),
+            "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000).strftime("%H:%M"),
+            "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000).strftime("%H:%M"),
+            "touch_sec": touch_sec}
+
+
+@app.post("/api/reports/velocity/remeasure-all")
+async def remeasure_all_velocity():
+    """Journal'daki tüm ölçülmüş kayıtları yeniden ölçer (sunucu saati/veri
+    tutarsızlıklarını topluca gidermek için)."""
+    rows = await database.get_velocity_candidates(limit=300)
+    remeasured, failed = 0, []
+    for candidate in rows:
+        if candidate["status"] != "evaluated":
+            continue
+        try:
+            await remeasure_velocity_candidate(candidate["candidate_id"])
+            remeasured += 1
+        except HTTPException as exc:
+            failed.append({"candidate_id": candidate["candidate_id"], "detail": exc.detail})
+    return {"ok": True, "paper_only": True, "remeasured": remeasured, "failed": failed[:10]}
+
+
 @app.get("/api/reports/velocity/live")
 async def get_velocity_live_tracking():
     """Canlı izleme: son taramaların adaylarını güncel fiyatla takip eder.

@@ -1798,10 +1798,11 @@ async def get_pending_velocity_candidates(now=None, limit=100):
     return await _run_db(op)
 
 
-async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_target, details):
+async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_target, details, force=False):
     def op(conn):
-        conn.execute("""UPDATE velocity_candidates SET status='evaluated', evaluated_at=?, mfe_pct=?,
-            touched_target=?, outcome_details=? WHERE candidate_id=? AND status='pending'""",
+        where = "WHERE candidate_id=?" + ("" if force else " AND status='pending'")
+        conn.execute(f"""UPDATE velocity_candidates SET status='evaluated', evaluated_at=?, mfe_pct=?,
+            touched_target=?, outcome_details=? {where}""",
             (time.time(), float(mfe_pct), bool(touched_target),
              _json_safe_dumps(details or {}, ensure_ascii=False, default=str), candidate_id))
         changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
