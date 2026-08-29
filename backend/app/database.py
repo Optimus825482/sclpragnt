@@ -1809,6 +1809,19 @@ async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_ta
     return await _run_db(op)
 
 
+async def delete_velocity_candidates(candidate_ids):
+    """Journal temizliği: seçili aday satırlarını kalıcı olarak siler."""
+    ids = [str(i) for i in (candidate_ids or []) if str(i)]
+    if not ids:
+        return 0
+    def op(conn):
+        placeholders = ",".join("?" for _ in ids)
+        conn.execute(f"DELETE FROM velocity_candidates WHERE candidate_id IN ({placeholders})", ids)
+        deleted = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else len(ids)
+        conn.commit(); return int(deleted)
+    return await _run_db(op)
+
+
 async def get_velocity_candidates(limit=50, status=None):
     def op(conn):
         clauses, values = [], []
