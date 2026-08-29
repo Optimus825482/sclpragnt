@@ -408,13 +408,16 @@ def live_pattern_tags(kline_rows: list, horizon_minutes: int) -> dict | None:
     kline_rows: kapanmış 1m kline satırları (Binance public klines çıktısı).
     Dönen sözlük features/tags içerir; hiçbir alan geleceğe bakmaz.
     """
-    closed = [r for r in kline_rows if _close_time(r) <= int(r[0]) + 59_999]
-    if len(closed) < MIN_SYMBOL_CANDLES:
+    try:
+        closed = [r for r in kline_rows if _close_time(r) <= int(r[0]) + 59_999]
+        if len(closed) < MIN_SYMBOL_CANDLES:
+            return None
+        feat = rich_features("LIVE", closed, horizon_minutes)
+        if not feat:
+            return None
+        return {"features": feat, "tags": tags_of_features(feat)}
+    except Exception:
         return None
-    feat = rich_features("LIVE", closed, horizon_minutes)
-    if not feat:
-        return None
-    return {"features": feat, "tags": tags_of_features(feat)}
 
 
 def evaluate_live_candidate(kline_rows: list, horizon_minutes: int, *,
@@ -425,7 +428,10 @@ def evaluate_live_candidate(kline_rows: list, horizon_minutes: int, *,
             'features': {...}} — journal ve auto-trade bu kararı kullanır.
     pattern_tags boşsa (henüz train yok) aday 'watch' olarak geçer.
     """
-    evaluated = live_pattern_tags(kline_rows, horizon_minutes)
+    try:
+        evaluated = live_pattern_tags(kline_rows, horizon_minutes)
+    except Exception:
+        return None
     if not evaluated:
         return None
     tags = evaluated["tags"]
