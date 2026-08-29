@@ -537,6 +537,31 @@ const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time: numbe
     return signals;
 };
 
+const STRATEGY_LABEL_TR: Record<string, string> = {
+    CHAT_PREDICTION: "🚀 Hız Avcısı (Otonom)",
+    PUMP_MONITOR: "Pump Monitor",
+    LLM_PAPER: "LLM Paper",
+    FISHER_M3_KERNEL_M5_EXACT_PAPER: "Fisher M3 + Kernel M5",
+    BB_MFI_MEAN_REVERSION: "BB + MFI Mean Reversion",
+    EMA_VWAP_PULLBACK: "EMA + VWAP Pullback",
+    MOMENTUM: "MTF Momentum",
+    UT: "UT",
+};
+
+function strategyLabelFor(p: { strategy?: string; entry_context?: any }) {
+    const strat = String(p.strategy || "UT").toUpperCase();
+    if (strat === "CHAT_PREDICTION") {
+        const score = (p.entry_context as any)?.velocity_score;
+        const mode = (p.entry_context as any)?.mode === "v_donusu" ? "V-dönüşü" : "Trend-devam";
+        return `🚀 Hız Avcısı${score != null ? ` · skor ${score}` : ""} · ${mode}`;
+    }
+    if (strat === "PUMP_MONITOR") {
+        const score = (p.entry_context as any)?.signal_context?.score;
+        return `Pump Monitor · skor ${score ?? "—"}/4`;
+    }
+    return STRATEGY_LABEL_TR[strat] || p.strategy || "UT";
+}
+
 export default function ChartsPage() {
     const searchParams = useSearchParams();
     const [symbol, setSymbol] = useState<string>("BTCTRY");
@@ -1855,7 +1880,7 @@ export default function ChartsPage() {
                                     return (
                                         <tr key={p.symbol} className="border-b border-bunker-800/50 hover:bg-bunker-900/50">
                                             <td className="px-4 py-2 text-white font-bold"><SymbolLink symbol={p.symbol} className="text-white hover:text-neon-green" />
-                                                <div className="mt-1 text-[10px] font-mono text-bunker-muted">{p.strategy === "PUMP_MONITOR" ? `Pump Monitor · skor ${p.entry_context?.signal_context?.score ?? "—"}/4` : (p.strategy || "UT")}</div>
+                                                <div className="mt-1 text-[10px] font-mono text-bunker-muted">{strategyLabelFor(p)}</div>
                                             </td>
                                             <td className="px-4 py-2 text-bunker-muted">{time}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{formatPrice(p.entry)}</td>
