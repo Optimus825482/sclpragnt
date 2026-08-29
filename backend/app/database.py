@@ -435,6 +435,33 @@ async def init_db():
             status TEXT NOT NULL DEFAULT 'candidate', generated_at REAL NOT NULL, updated_at REAL NOT NULL
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_forecast_lessons_lookup ON llm_forecast_lessons(status, symbol, horizon_minutes)")
+        # Chat sayfası M5/M15 yükseliş aday tahminleri için ayrı günlük;
+        # llm_forecasts'tan bağımsız tablo + LLM postmortem alanları.
+        conn.execute("""CREATE TABLE IF NOT EXISTS chat_predictions (
+            prediction_id TEXT PRIMARY KEY, forecast_group_id TEXT NOT NULL,
+            symbol TEXT NOT NULL, horizon_minutes INTEGER NOT NULL, created_at REAL NOT NULL,
+            entry_price REAL NOT NULL, direction TEXT NOT NULL, confidence REAL NOT NULL,
+            score REAL, min_move_pct REAL NOT NULL, regime TEXT,
+            evidence TEXT NOT NULL DEFAULT '[]', risks TEXT NOT NULL DEFAULT '[]',
+            snapshot TEXT NOT NULL DEFAULT '{}', snapshot_hash TEXT NOT NULL,
+            model TEXT, prompt_version TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+            evaluated_at REAL, outcome_price REAL, outcome_return_pct REAL,
+            outcome_direction TEXT, direction_correct INTEGER, max_favorable_pct REAL,
+            max_adverse_pct REAL, outcome_details TEXT NOT NULL DEFAULT '{}',
+            analysis_status TEXT NOT NULL DEFAULT 'pending', analysis TEXT,
+            analysis_factors TEXT NOT NULL DEFAULT '{}', analysis_model TEXT, analysis_at REAL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_predictions_due ON chat_predictions(status, created_at, horizon_minutes)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_predictions_symbol_time ON chat_predictions(symbol, created_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_predictions_analysis ON chat_predictions(status, analysis_status)")
+        # LLM postmortem'lerinden türetilen, sonraki tahminlere bağlam olan dersler.
+        conn.execute("""CREATE TABLE IF NOT EXISTS chat_prediction_insights (
+            insight_key TEXT PRIMARY KEY, scope TEXT NOT NULL, symbol TEXT, horizon_minutes INTEGER,
+            sample_size INTEGER NOT NULL, success_count INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0,
+            insight TEXT NOT NULL, factors TEXT NOT NULL DEFAULT '{}', source_ids TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'active', generated_at REAL NOT NULL, updated_at REAL NOT NULL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_prediction_insights_lookup ON chat_prediction_insights(status, symbol, horizon_minutes)")
         conn.execute("CREATE TABLE IF NOT EXISTS microstructure_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, captured_at REAL NOT NULL, bid_price REAL, ask_price REAL, bid_qty REAL, ask_qty REAL, spread_pct REAL, depth_try REAL, orderflow_imbalance REAL, source TEXT NOT NULL DEFAULT 'binance_tr_public_ws', updated_at REAL, UNIQUE(symbol, captured_at))")
         conn.execute("CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC)")
         conn.execute("""CREATE TABLE IF NOT EXISTS historical_candles (
@@ -1547,6 +1574,174 @@ async def get_llm_forecast_lessons(symbol=None, regime=None, status="active", li
         values.append(max(1, min(int(limit), 100)))
         rows = conn.execute(f"SELECT * FROM llm_forecast_lessons{where} ORDER BY holdout_accuracy DESC, sample_size DESC LIMIT ?", values).fetchall()
         return [_forecast_row(row) for row in rows]
+    return await _run_db(op)
+
+
+def _prediction_row(row):
+    item = dict(row)
+    for key in ("evidence", "risks", "snapshot", "outcome_details", "analysis_factors"):
+        if key in item:
+            item[key] = _json_value(item.get(key), [] if key in ("evidence", "risks") else {})
+    if "direction_correct" in item and item["direction_correct"] is not None:
+        item["direction_correct"] = bool(item["direction_correct"])
+    return item
+
+
+async def save_chat_predictions(rows):
+    """Chat M5/M15 tahminlerini kendi tablosuna kaydet; llm_forecasts'a paralel denetim günlüğü."""
+    rows = list(rows or [])
+    if not rows:
+        return 0
+    def op(conn):
+        sql = """INSERT INTO chat_predictions
+            (prediction_id,forecast_group_id,symbol,horizon_minutes,created_at,entry_price,direction,confidence,
+             score,min_move_pct,regime,evidence,risks,snapshot,snapshot_hash,model,prompt_version,status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(prediction_id) DO NOTHING"""
+        values = []
+        for row in rows:
+            values.append((row["prediction_id"], row["forecast_group_id"], str(row["symbol"]).upper(),
+                int(row["horizon_minutes"]), float(row["created_at"]), float(row["entry_price"]),
+                row["direction"], float(row["confidence"]), float(row.get("score") or 0),
+                float(row["min_move_pct"]), row.get("regime"),
+                _json_safe_dumps(row.get("evidence") or [], ensure_ascii=False, default=str),
+                _json_safe_dumps(row.get("risks") or [], ensure_ascii=False, default=str),
+                _json_safe_dumps(row.get("snapshot") or {}, ensure_ascii=False, default=str),
+                row["snapshot_hash"], row.get("model"), row.get("prompt_version") or "chat-upside-v1", "pending"))
+        conn.executemany(sql, values); conn.commit(); return len(values)
+    return await _run_db(op)
+
+
+async def get_pending_chat_predictions(now=None, limit=100):
+    now = float(now if now is not None else time.time())
+    def op(conn):
+        rows = conn.execute("""SELECT * FROM chat_predictions
+            WHERE status='pending' AND created_at + horizon_minutes * 60 <= ?
+            ORDER BY created_at ASC LIMIT ?""", (now, max(1, min(int(limit), 500)))).fetchall()
+        return [_prediction_row(row) for row in rows]
+    return await _run_db(op)
+
+
+async def mark_chat_prediction_evaluated(prediction_id, outcome):
+    def op(conn):
+        conn.execute("""UPDATE chat_predictions SET status='evaluated', evaluated_at=?, outcome_price=?,
+            outcome_return_pct=?, outcome_direction=?, direction_correct=?, max_favorable_pct=?,
+            max_adverse_pct=?, outcome_details=? WHERE prediction_id=? AND status='pending'""",
+            (float(outcome["evaluated_at"]), outcome.get("outcome_price"), outcome.get("outcome_return_pct"),
+             outcome.get("outcome_direction"), bool(outcome.get("direction_correct")),
+             outcome.get("max_favorable_pct"), outcome.get("max_adverse_pct"),
+             _json_safe_dumps(outcome.get("details") or {}, ensure_ascii=False, default=str), prediction_id))
+        changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
+        conn.commit(); return bool(changed)
+    return await _run_db(op)
+
+
+async def get_chat_predictions_needing_analysis(limit=6):
+    def op(conn):
+        rows = conn.execute("""SELECT * FROM chat_predictions
+            WHERE status='evaluated' AND analysis_status='pending'
+            ORDER BY created_at ASC LIMIT ?""", (max(1, min(int(limit), 50)),)).fetchall()
+        return [_prediction_row(row) for row in rows]
+    return await _run_db(op)
+
+
+async def mark_chat_prediction_analyzed(prediction_id, *, analysis, factors, model, analysis_status="done"):
+    def op(conn):
+        conn.execute("""UPDATE chat_predictions SET analysis_status=?, analysis=?, analysis_factors=?, analysis_model=?, analysis_at=?
+            WHERE prediction_id=? AND analysis_status='pending'""",
+            (analysis_status, analysis, _json_safe_dumps(factors or {}, ensure_ascii=False, default=str),
+             model, time.time(), prediction_id))
+        changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
+        conn.commit(); return bool(changed)
+    return await _run_db(op)
+
+
+async def get_chat_predictions(symbol=None, status=None, horizon_minutes=None, analyzed=None, limit=50):
+    def op(conn):
+        clauses, values = [], []
+        if symbol:
+            clauses.append("symbol=?"); values.append(str(symbol).upper())
+        if status:
+            clauses.append("status=?"); values.append(status)
+        if horizon_minutes is not None:
+            clauses.append("horizon_minutes=?"); values.append(int(horizon_minutes))
+        if analyzed is not None:
+            clauses.append("analysis_status=?"); values.append("done" if analyzed else "pending")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(max(1, min(int(limit), 500)))
+        rows = conn.execute(f"SELECT * FROM chat_predictions{where} ORDER BY created_at DESC LIMIT ?", values).fetchall()
+        return [_prediction_row(row) for row in rows]
+    return await _run_db(op)
+
+
+async def get_chat_prediction_aggregates():
+    """Ufuk ve sembol bazında ölçülen başarı; salt kapanmış mum sonuçları."""
+    def op(conn):
+        horizons = [dict(row) for row in conn.execute("""SELECT horizon_minutes,
+            COUNT(*) AS total_count,
+            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
+            SUM(CASE WHEN status='evaluated' THEN 1 ELSE 0 END) AS evaluated_count,
+            SUM(CASE WHEN status='evaluated' AND direction_correct THEN 1 ELSE 0 END) AS correct_count,
+            AVG(CASE WHEN status='evaluated' THEN confidence END) AS average_confidence,
+            AVG(CASE WHEN status='evaluated' THEN ABS((confidence / 100.0) - CASE WHEN direction_correct THEN 1.0 ELSE 0.0 END) END) AS calibration_error,
+            AVG(CASE WHEN status='evaluated' THEN outcome_return_pct END) AS average_return_pct,
+            AVG(CASE WHEN status='evaluated' THEN max_favorable_pct END) AS average_favorable_pct,
+            AVG(CASE WHEN status='evaluated' THEN max_adverse_pct END) AS average_adverse_pct,
+            SUM(CASE WHEN status='evaluated' AND analysis_status='done' THEN 1 ELSE 0 END) AS analyzed_count,
+            SUM(CASE WHEN status='evaluated' AND outcome_direction='range' THEN 1 ELSE 0 END) AS range_count
+            FROM chat_predictions GROUP BY horizon_minutes ORDER BY horizon_minutes""").fetchall()]
+        symbols = [dict(row) for row in conn.execute("""SELECT symbol,
+            COUNT(*) AS total_count,
+            SUM(CASE WHEN status='evaluated' THEN 1 ELSE 0 END) AS evaluated_count,
+            SUM(CASE WHEN status='evaluated' AND direction_correct THEN 1 ELSE 0 END) AS correct_count,
+            AVG(CASE WHEN status='evaluated' THEN outcome_return_pct END) AS average_return_pct
+            FROM chat_predictions GROUP BY symbol ORDER BY evaluated_count DESC, symbol LIMIT 25""").fetchall()]
+        return {"horizons": horizons, "symbols": symbols}
+    return await _run_db(op)
+
+
+async def upsert_chat_prediction_insights(insights):
+    """Sadece arka plan analizi türetir; LLM kendi dersini doğrudan aktif etmez."""
+    def op(conn):
+        now = time.time()
+        sql = """INSERT INTO chat_prediction_insights
+            (insight_key,scope,symbol,horizon_minutes,sample_size,success_count,failure_count,
+             insight,factors,source_ids,status,generated_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(insight_key) DO UPDATE SET sample_size=excluded.sample_size,
+            success_count=excluded.success_count,failure_count=excluded.failure_count,insight=excluded.insight,
+            factors=excluded.factors,source_ids=excluded.source_ids,status=excluded.status,updated_at=excluded.updated_at"""
+        values = [(item["insight_key"], item["scope"], item.get("symbol"), int(item.get("horizon_minutes") or 0),
+                   int(item["sample_size"]), int(item.get("success_count") or 0), int(item.get("failure_count") or 0),
+                   item["insight"], _json_safe_dumps(item.get("factors") or {}, ensure_ascii=False, default=str),
+                   _json_safe_dumps(item.get("source_ids") or [], ensure_ascii=False, default=str),
+                   item.get("status", "active"), now, now) for item in insights]
+        if values:
+            conn.executemany(sql, values); conn.commit()
+        return len(values)
+    return await _run_db(op)
+
+
+async def get_chat_prediction_insights(symbol=None, horizon_minutes=None, status="active", limit=12):
+    def op(conn):
+        clauses, values = [], []
+        if status:
+            clauses.append("status=?"); values.append(status)
+        if symbol:
+            clauses.append("(symbol IS NULL OR symbol=?)"); values.append(str(symbol).upper())
+        if horizon_minutes is not None:
+            clauses.append("horizon_minutes=?"); values.append(int(horizon_minutes))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(max(1, min(int(limit), 100)))
+        rows = conn.execute(f"""SELECT * FROM chat_prediction_insights{where}
+            ORDER BY sample_size DESC, updated_at DESC LIMIT ?""", values).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["factors"] = _json_value(item.get("factors"), {})
+            item["source_ids"] = _json_value(item.get("source_ids"), [])
+            result.append(item)
+        return result
     return await _run_db(op)
 
 async def read_only_query(sql: str, limit: int = 500):
