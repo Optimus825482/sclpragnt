@@ -4866,6 +4866,15 @@ async def get_velocity_report(limit: int = 60):
             "symbols": symbols[:20], "recent": recent}
 
 
+@app.delete("/api/reports/velocity/{candidate_id}")
+async def delete_velocity_candidate(candidate_id: str):
+    """Journal temizliği: geçersiz/ölü sembol kaydını raporlardan kaldırır."""
+    deleted = await database.delete_velocity_candidates([candidate_id])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Kayıt bulunamadı")
+    return {"ok": True, "deleted": deleted, "paper_only": True}
+
+
 async def get_data_quality(args: dict):
     """Return freshness/completeness diagnostics before any market decision."""
     symbol = str(args.get("symbol") or "").replace("_", "").upper()

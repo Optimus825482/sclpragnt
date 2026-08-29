@@ -20,11 +20,28 @@ function ForecastTab({ report, loading, error }: { report: any; loading: boolean
  return <div className="space-y-4"><div className="grid grid-cols-2 gap-3 lg:grid-cols-4"><Stat title="Ölçülen tahmin" value={String(report.evaluated_count||0)}/><Stat title="Yön doğruluğu" value={pct(report.directional_accuracy)} tone={report.directional_accuracy!=null&&report.directional_accuracy>=.55?"text-neon-green":"text-yellow-300"}/><Stat title="Doğru tahmin" value={`${report.correct_count||0}/${report.evaluated_count||0}`}/><Stat title="Bekleyen" value={String(report.pending_count||0)} tone="text-sky-300"/></div><section className="card"><p className="eyebrow">UFUK BAZLI BAŞARI</p><div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Ufuk</th><th>Ölçülen</th><th>Doğru</th><th>Başarı</th><th>Ort. hareket</th><th>Bekleyen</th></tr></thead><tbody>{(report.horizons||[]).map((row:any)=><tr key={row.horizon_minutes}><td>{row.horizon_minutes} dk</td><td>{row.evaluated_count||0}</td><td>{row.correct_count||0}</td><td className={row.directional_accuracy!=null&&row.directional_accuracy>=.55?"text-neon-green":"text-neon-red"}>{pct(row.directional_accuracy)}</td><td>{pct(row.average_return_pct)}</td><td>{row.pending_count||0}</td></tr>)}</tbody></table></div><p className="mt-3 text-xs text-bunker-muted">Sonuçlar yalnızca kapanmış M1 mumlarıyla ölçülür; az örneklem karar kanıtı değildir.</p></section><section className="card"><p className="eyebrow">SON TAHMİNLER</p><div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Ufuk</th><th>Tahmin</th><th>Güven</th><th>Sonuç</th><th>Hareket</th></tr></thead><tbody>{(report.recent||[]).map((row:any)=><tr key={row.forecast_id}><td>{new Date(Number(row.created_at)*1000).toLocaleString("tr-TR")}</td><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.horizon_minutes} dk</td><td>{row.direction==="up"?"YUKARI":row.direction==="down"?"AŞAĞI":"YATAY"}</td><td>%{Math.round(Number(row.confidence)||0)}</td><td className={row.status==="evaluated"?(row.direction_correct?"text-neon-green":"text-neon-red"):"text-yellow-300"}>{row.status==="evaluated"?(row.direction_correct?"DOĞRU":"YANLIŞ"):"BEKLİYOR"}</td><td>{row.status==="evaluated"?pct(row.outcome_return_pct):"—"}</td></tr>)}</tbody></table></div></section></div>;
 }
 function VelocityTab({ report, loading, error }: { report: any; loading: boolean; error: string }) {
+ const [deletingId,setDeletingId]=useState<string|null>(null);
+ const [reloadKey,setReloadKey]=useState(0);
+ const [data,setData]=useState<any>(null);
+ useEffect(()=>{
+  if(!reloadKey) return; // ilk yükleme sayfa fetch'iyle gelir; reloadKey değişince tazele
+  let cancelled=false;
+  apiRequest(`${API_BASE}/api/reports/velocity?limit=60`,{cache:"no-store"}).then(r=>r.ok?r.json():Promise.reject(new Error(`HTTP ${r.status}`))).then(d=>{if(!cancelled){setData(d);}}).catch(()=>undefined);
+  return ()=>{cancelled=true;};
+ },[reloadKey]);
+ const view = data || report;
+ const deleteRow = (candidateId:string)=>{
+  if(!window.confirm("Bu aday kaydı rapordan silinsin mi? (kalıcı)")) return;
+  setDeletingId(candidateId);
+  apiRequest(`${API_BASE}/api/reports/velocity/${encodeURIComponent(candidateId)}`,{method:"DELETE"})
+   .then(r=>{if(!r.ok) throw new Error(`HTTP ${r.status}`); setDeletingId(null); setReloadKey(k=>k+1);})
+   .catch(()=>setDeletingId(null));
+ };
  if (loading) return <section className="card text-bunker-muted">Hız avcısı raporu yükleniyor…</section>;
  if (error) return <section className="card border-neon-red/30 text-neon-red">Hız avcısı raporu alınamadı: {error}</section>;
- if (!report) return <section className="card text-bunker-muted">Henüz hız avcısı taraması yok; Chat sayfasındaki "🚀 5 DK %2 HIZ AVCISI" butonuyla tarama başlatın.</section>;
+ if (!view) return <section className="card text-bunker-muted">Henüz hız avcısı taraması yok; Chat sayfasındaki "🚀 5 DK %2 HIZ AVCISI" butonuyla tarama başlatın.</section>;
  const pct=(value:any)=>value==null||Number.isNaN(Number(value))?"—":`%${(Number(value)*100).toFixed(1)}`;
- const stats=report.stats||{}; const learning=report.learning_state||{}; const filters=report.filters||{};
+ const stats=view.stats||{}; const learning=view.learning_state||{}; const filters=view.filters||{};
  return <div className="space-y-4">
   <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
    <Stat title="Toplam aday" value={String(stats.total||0)}/>
@@ -52,12 +69,12 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
    {learning.active_filters&&<p className="mt-2 font-mono text-xs text-sky-300">Kalibre edilmiş filtre: {JSON.stringify(learning.active_filters)}</p>}
   </section>
   <section className="card"><p className="eyebrow">SEMBOLE GÖRE DOKUNUŞ BAŞARISI</p>
-   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Ölçülen</th><th>Dokunan</th><th>Oran</th><th>Ort. MFE</th></tr></thead><tbody>{(report.symbols||[]).map((row:any)=><tr key={row.symbol}><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.evaluated}</td><td>{row.touched}</td><td className={(row.touch_rate??0)>=0.15?"text-neon-green":"text-neon-red"}>{pct(row.touch_rate)}</td><td>{pct(row.average_mfe_pct)}</td></tr>)}</tbody></table></div>
-   {!(report.symbols||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Henüz ölçülmüş sembol yok; sonuçlar 5 dakikalık pencere kapandıktan sonra birikir.</p>}
+   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Ölçülen</th><th>Dokunan</th><th>Oran</th><th>Ort. MFE</th></tr></thead><tbody>{(view.symbols||[]).map((row:any)=><tr key={row.symbol}><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.evaluated}</td><td>{row.touched}</td><td className={(row.touch_rate??0)>=0.15?"text-neon-green":"text-neon-red"}>{pct(row.touch_rate)}</td><td>{pct(row.average_mfe_pct)}</td></tr>)}</tbody></table></div>
+   {!(view.symbols||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Henüz ölçülmüş sembol yok; sonuçlar 5 dakikalık pencere kapandıktan sonra birikir.</p>}
   </section>
   <section className="card"><p className="eyebrow">SON ADAYLAR VE SONUÇLARI</p>
-   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Koşul</th><th>ATR%</th><th>Hacim</th><th>İvme</th><th>Skor</th><th>Sonuç</th><th>MFE</th></tr></thead><tbody>{(report.recent||[]).map((row:any)=><tr key={row.candidate_id}><td>{new Date(Number(row.created_at)*1000).toLocaleString("tr-TR")}</td><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td className={row.passes?"text-neon-green":"text-bunker-muted"}>{row.passes?"GEÇTİ":"İZLEME"}</td><td>{row.atr_pct}</td><td>{row.volume_ratio}x</td><td>%{row.ret3_pct}</td><td>{row.velocity_score}</td><td className={row.status==="evaluated"?(row.touched_target?"text-neon-green":"text-neon-red"):"text-yellow-300"}>{row.status==="evaluated"?(row.touched_target?"+%2 DOKUNDU":"DOKUNMADI"):"BEKLİYOR"}</td><td>{row.status==="evaluated"?pct(row.mfe_pct):"—"}</td></tr>)}</tbody></table></div>
-   {!(report.recent||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Kayıt yok; Chat sayfasından hız taraması başlatın.</p>}
+   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Koşul</th><th>ATR%</th><th>İvme</th><th>Skor</th><th>Sonuç</th><th>MFE</th><th>Sil</th></tr></thead><tbody>{(view.recent||[]).map((row:any)=><tr key={row.candidate_id}><td>{new Date(Number(row.created_at)*1000).toLocaleString("tr-TR")}</td><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td className={row.passes?"text-neon-green":"text-bunker-muted"}>{row.passes?"GEÇTİ":"İZLEME"}</td><td>{row.atr_pct}</td><td>%{row.ret3_pct}</td><td>{row.velocity_score}</td><td className={row.status==="evaluated"?(row.touched_target?"text-neon-green":"text-neon-red"):"text-yellow-300"}>{row.status==="evaluated"?(row.touched_target?"+%2 DOKUNDU":"DOKUNMADI"):"BEKLİYOR"}</td><td>{row.status==="evaluated"?pct(row.mfe_pct):"—"}</td><td><button onClick={()=>deleteRow(row.candidate_id)} disabled={deletingId!==null} title="Bu kaydı rapordan sil (kalıcı)" className="rounded border border-red-400/50 bg-red-400/10 px-2 py-0.5 font-mono text-[10px] text-red-300 hover:bg-red-400/20 disabled:opacity-50">{deletingId===row.candidate_id?"…":"✕"}</button></td></tr>)}</tbody></table></div>
+   {!(view.recent||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Kayıt yok; Chat sayfasından hız taraması başlatın.</p>}
   </section>
  </div>;
 }
