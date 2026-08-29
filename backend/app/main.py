@@ -1906,31 +1906,34 @@ def _comprehensive_passive_analysis(m1_bars: dict, m5_bars: dict, now_ms: int) -
     
     # PASIF KARARI
     def is_passive(tf: dict) -> tuple[bool, str]:
-        """Tek timeframe için pasif kararı verir."""
+        """Tek timeframe için pasif kararı verir.
+        
+        ÖNEMLİ: Gerçek mum = High > Low. Çizgi veri (H=L) = mum yok!
+        """
         if not tf.get("ready", False):
             return True, f"veri_yok ({tf.get('reason', 'bilinmiyor')})"
         
-        # YENİ: Gerçek mum sayısı yetersizse pasif sayma
-        if not tf.get("sufficient_real_candles", False):
-            real_count = tf.get("real_candle_count", 0)
-            required = 7 if tf["name"] == "M1" else 3
+        # YENİ: Gerçek mum sayısı yetersizse KESİNLİKLE pasif say
+        real_count = tf.get("real_candle_count", 0)
+        required = 7 if tf["name"] == "M1" else 3
+        sample_count = tf.get("sample_count", 0)
+        
+        # M1: Son 10 mumdan en az 7'si, M5: Son 5 mumdan en az 3'ü gerçek mum olmalı
+        if real_count < required:
             return True, f"yetersiz_gercek_mum:{real_count}/{required}"
         
-        # Mutlak pasif: Çok düşük hacim + flat mumlar
-        if tf["volume_ratio"] < 0.15 and tf["flat_ratio"] > 0.7:
-            return True, "mutlak_pasif"
+        # Tüm son N mumların gerçek mum olup olmadığını kontrol et
+        # (AITRY gibi vr=0.00 ama flat=0.00% olanlar için)
+        real_ratio = real_count / sample_count if sample_count > 0 else 0
         
-        # Güçlü pasif: Düşük hacim + yüksek flat oranı
-        if tf["volume_ratio"] < 0.30 and tf["flat_ratio"] > 0.5:
-            return True, "gucuksuz_hareket"
+        # Eğer gerçek mum oranı çok düşükse pasif
+        min_real_ratio = 0.70  # En az %70'i gerçek mum olmalı
+        if real_ratio < min_real_ratio:
+            return True, f"dusuk_gercek_mum_orani:{real_ratio:.0%}"
         
-        # Orta pasif: Çok az hareket + düşük volatilite
-        if tf["avg_candle_move_pct"] < 0.03 and tf["volatility_pct"] < 0.05:
-            return True, "dusuk_volatilite"
-        
-        # Son mum çok flat ise (kısa vadeli pasif işareti)
-        if tf["last_candle_range_pct"] < 0.01 and tf["short_volume_ratio"] < 0.20:
-            return True, "ani_pasiflestirme"
+        # Gerçek mum oranı yeterli ama flat oranı çok yüksekse pasif
+        if tf["flat_ratio"] > 0.7:
+            return True, "cok_fazla_flat_mum"
         
         return False, "aktif"
     
@@ -2227,9 +2230,11 @@ async def refresh_symbol_activity():
         if comp.get("m1", {}).get("ready") and comp.get("m5", {}).get("ready"):
             m1 = comp.get("m1", {})
             m5 = comp.get("m5", {})
+            m1_real = m1.get("real_candle_count", 0)
+            m5_real = m5.get("real_candle_count", 0)
             print(f"[Activity Debug] {symbol}: passive={comp.get('is_passive')} | "
-                  f"M1: vr={m1.get('volume_ratio',0):.2f} flat={m1.get('flat_ratio',0):.2%} move={m1.get('avg_candle_move_pct',0):.4f}% | "
-                  f"M5: vr={m5.get('volume_ratio',0):.2f} flat={m5.get('flat_ratio',0):.2%} move={m5.get('avg_candle_move_pct',0):.4f}%", flush=True)
+                  f"M1: real={m1_real}/10 vr={m1.get('volume_ratio',0):.2f} flat={m1.get('flat_ratio',0):.0%} move={m1.get('avg_candle_move_pct',0):.4f}% | "
+                  f"M5: real={m5_real}/5 vr={m5.get('volume_ratio',0):.2f} flat={m5.get('flat_ratio',0):.0%} move={m5.get('avg_candle_move_pct',0):.4f}%", flush=True)
     
     print(f"[Activity] universe={len(universe)} ACTIVE={active_count} PASSIVE={len(config.PASSIVE_SYMBOLS)} WARMING={warming_count}", flush=True)
     return {"ok": True, "statuses": statuses, "active_count": active_count,
