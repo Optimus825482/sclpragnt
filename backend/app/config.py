@@ -102,7 +102,7 @@ class Config:
     # serbest TL'nin %50'si ile pozisyon. Çıkış merdiveni analyzer'da:
     # kâr → break-even, +%1 → ATR trailing, sert stop %1.5.
     VELOCITY_AUTO_ENABLED = os.getenv("VELOCITY_AUTO_ENABLED", "false").lower() == "true"
-    VELOCITY_AUTO_INTERVAL_SEC = max(300, int(os.getenv("VELOCITY_AUTO_INTERVAL_SEC", "900")))
+    VELOCITY_AUTO_INTERVAL_SEC = max(300, int(os.getenv("VELOCITY_AUTO_INTERVAL_SEC", "300")))
     VELOCITY_AUTO_BALANCE_PCT = 50.0
     VELOCITY_AUTO_SL_PCT = 1.5
     VELOCITY_TRAIL_TRIGGER_PCT = 1.0  # ATR trailing bu kâr yüzdesinde devreye girer
