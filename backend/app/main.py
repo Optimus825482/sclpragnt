@@ -4880,6 +4880,70 @@ async def delete_velocity_candidate(candidate_id: str):
     return {"ok": True, "deleted": deleted, "paper_only": True}
 
 
+@app.get("/api/reports/velocity/live")
+async def get_velocity_live_tracking():
+    """Canlı izleme: son taramaların adaylarını güncel fiyatla takip eder.
+
+    Her aday için: analiz anındaki giriş fiyatı, güncel fiyat, +%2'ye ulaşıp
+    ulaşılmadığı, ulaşıldıysa kaç saniyede ulaşıldığı. 5 dakikalık pencere
+    kapanınca durum kesinleşir; öğrenme döngüsü nihai sonucu journal'a yazar.
+    """
+    import datetime as _dt
+    now_ms = int(time.time() * 1000)
+    rows = await database.get_velocity_candidates(limit=25)
+    # yalnız son 30 dakikanın adayları canlı takip edilir
+    rows = [r for r in rows if now_ms / 1000 - float(r["created_at"]) <= 1800]
+    sem = asyncio.Semaphore(6)
+    tracked = []
+
+    async def track(row):
+        symbol = row["symbol"]
+        entry = float(row["price"])
+        created_ms = int(float(row["created_at"]) * 1000)
+        due_ms = created_ms + 5 * 60_000
+        # Kapanmış M1 mumlardan pencere içi tepe + dokunuş anı (5 sn çözünürlük için mum üstü)
+        best_high, touch_sec = None, None
+        try:
+            window_rows = await fetch_klines(symbol, "1m", 12, created_ms, due_ms + 65_000)
+            window = [r for r in window_rows if int(r[0]) + 59_999 > created_ms and int(r[0]) + 59_999 <= due_ms]
+            if entry > 0:
+                touched_high = max((float(r[2]) for r in window if float(r[2]) / entry >= 1.02), default=None)
+                best_high = max((float(r[2]) for r in window), default=None)
+                if touched_high is not None:
+                    touch_bar = next(r for r in window if float(r[2]) == touched_high)
+                    touch_sec = max(0, int((int(touch_bar[0]) + 59_999 - created_ms) / 1000))
+        except Exception:
+            window = []
+        # güncel fiyat: pencere içindeyse en son kapanmış mum, pencere bittiyse son fiyat
+        try:
+            fresh = await fetch_klines(symbol, "1m", 2)
+            current_price = float(fresh[-1][4]) if fresh else None
+        except Exception:
+            current_price = None
+        elapsed_sec = int((now_ms - created_ms) / 1000)
+        window_closed = now_ms >= due_ms
+        touched = touch_sec is not None
+        tracked.append({
+            "candidate_id": row["candidate_id"], "symbol": symbol,
+            "entry_price": entry, "current_price": current_price,
+            "change_pct": round((current_price / entry - 1) * 100, 3) if current_price and entry else None,
+            "target_pct": float(row["target_pct"]),
+            "passes": bool(row.get("passes")),
+            "velocity_score": row.get("velocity_score"),
+            "status": row["status"],
+            "touched": touched or (row["status"] == "evaluated" and bool(row.get("touched_target"))),
+            "touch_sec": touch_sec,
+            "best_mfe_pct": round((best_high / entry - 1) * 100, 3) if best_high and entry else None,
+            "elapsed_sec": elapsed_sec, "remaining_sec": max(0, int((due_ms - now_ms) / 1000)),
+            "window_closed": window_closed,
+            "window_time": datetime.fromtimestamp(created_ms / 1000).strftime("%H:%M:%S"),
+        })
+
+    await asyncio.gather(*(track(r) for r in rows))
+    tracked.sort(key=lambda r: (not r["touched"], -r["elapsed_sec"]))
+    return {"paper_only": True, "server_time": now_ms / 1000, "tracking": tracked}
+
+
 async def get_data_quality(args: dict):
     """Return freshness/completeness diagnostics before any market decision."""
     symbol = str(args.get("symbol") or "").replace("_", "").upper()
