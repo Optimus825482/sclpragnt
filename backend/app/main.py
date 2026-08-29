@@ -1740,6 +1740,220 @@ async def top_gainers_refresh_loop():
             print(f"[Top Gainers] {config.TOP_GAINERS_REFRESH_SEC // 60} dakikalık yenileme hatası: {exc}")
         await asyncio.sleep(config.TOP_GAINERS_REFRESH_SEC)
 
+def _is_real_candle(high: float, low: float) -> bool:
+    """Gerçek bir mum mu? High ve Low farklı olmalı."""
+    if low <= 0:
+        return False
+    range_pct = (high - low) / low * 100
+    return range_pct > 0.001  # En az %0.001 hareket
+
+
+def _all_same(values: list) -> bool:
+    """Tüm değerler birbirine eşit mi?"""
+    if not values:
+        return True
+    first = values[0]
+    return all(abs(v - first) < 1e-10 for v in values)
+
+
+def _comprehensive_passive_analysis(m1_bars: dict, m5_bars: dict, now_ms: int) -> dict:
+    """Kapsamlı pasif sembol tespiti: son 50 M1 mum + son 30 M5 mum analizi.
+    
+    Bir sembolün gerçekten pasif olup olmadığını anlamak için:
+    1. M1 (1dk): Son 50 mumun hacim, hareket ve flat oranını analiz eder
+    2. M5 (5dk): Son 30 mumun aynı metriklerini analiz eder
+    3. Her iki timeframe'da da pasif işaretler arar
+    """
+    def analyze_timeframe(bars: dict, lookback: int, name: str) -> dict:
+        """Tek bir timeframe için derinlemesine analiz."""
+        timestamps = list((bars or {}).get("timestamps") or [])
+        closes = list((bars or {}).get("closes") or [])
+        highs = list((bars or {}).get("highs") or [])
+        lows = list((bars or {}).get("lows") or [])
+        volumes = list((bars or {}).get("volumes") or [])
+        
+        # Sadece tamamlanmış mumları al (şu anki mum hariç)
+        completed_timestamps = []
+        completed_closes = []
+        completed_highs = []
+        completed_lows = []
+        completed_volumes = []
+        
+        for i in range(len(timestamps)):
+            try:
+                ts = int(timestamps[i])
+                # Mum tamamlanmışsa (şu anki zamandan önce bitmişse)
+                bar_interval = 60_000 if name == "M1" else 300_000  # M1=60sn, M5=300sn
+                if ts + bar_interval <= now_ms:
+                    completed_timestamps.append(ts)
+                    completed_closes.append(float(closes[i]))
+                    completed_highs.append(float(highs[i]))
+                    completed_lows.append(float(lows[i]))
+                    completed_volumes.append(float(volumes[i]))
+            except (TypeError, ValueError):
+                continue
+        
+        if len(completed_closes) < lookback:
+            return {
+                "name": name,
+                "ready": False,
+                "reason": f"yetersiz_veri: {len(completed_closes)}/{lookback}",
+                "sample_count": len(completed_closes),
+            }
+        
+        # Son N mumu al
+        closes_n = completed_closes[-lookback:]
+        highs_n = completed_highs[-lookback:]
+        lows_n = completed_lows[-lookback:]
+        volumes_n = completed_volumes[-lookback:]
+        
+        # YENİ: Gerçek mum tespiti - H-L farkı olmalı ve OHLC birbirine eşit olmamalı
+        real_candle_count = 0
+        for h, l in zip(highs_n, lows_n):
+            if _is_real_candle(h, l):
+                real_candle_count += 1
+        
+        # Son 10 M1 için en az 7, son 5 M5 için en az 3 gerçek mum olmalı
+        required_real = 7 if name == "M1" else 3
+        required_total = 10 if name == "M1" else 5
+        real_candle_ratio = real_candle_count / min(required_total, len(highs_n)) if highs_n else 0
+        
+        # Gerçek mum oranı kontrolü
+        sufficient_real_candles = real_candle_count >= required_real
+        
+        # 1. HACİM ANALİZİ (sadece gerçek mumlarla)
+        real_volumes = [v for h, l, v in zip(highs_n, lows_n, volumes_n) if _is_real_candle(h, l)]
+        avg_volume = sum(real_volumes) / len(real_volumes) if real_volumes else 0
+        current_volume = volumes_n[-1] if volumes_n else 0
+        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
+        
+        # Son 10 mumun hacim ortalaması (kısa vadeli)
+        short_avg = sum(volumes_n[-10:]) / min(10, len(volumes_n)) if len(volumes_n) >= 2 else avg_volume
+        short_volume_ratio = current_volume / short_avg if short_avg > 0 else 0
+        
+        # 2. HAREKET ANALİZİ (sadece gerçek mumlarla)
+        valid_ranges = [(highs_n[i] - lows_n[i]) / lows_n[i] * 100 
+                        for i in range(len(highs_n)) 
+                        if lows_n[i] > 0 and _is_real_candle(highs_n[i], lows_n[i])]
+        
+        price_range = max(highs_n) - min(lows_n) if highs_n and lows_n else 0
+        avg_price = sum(closes_n) / len(closes_n) if closes_n else 0
+        range_pct = (price_range / avg_price * 100) if avg_price > 0 else 0
+        
+        # Mum başına ortalama hareket (sadece gerçek mumlarla)
+        candle_moves = []
+        for i in range(1, len(closes_n)):
+            if _is_real_candle(highs_n[i], lows_n[i]) and closes_n[i-1] > 0:
+                move = abs(closes_n[i] - closes_n[i-1]) / closes_n[i-1] * 100
+                candle_moves.append(move)
+        avg_candle_move = sum(candle_moves) / len(candle_moves) if candle_moves else 0
+        
+        # 3. FLAT MUM ANALİZİ
+        flat_threshold = 0.02  # %0.02'den az hareket = flat
+        flat_count = 0
+        for high, low in zip(highs_n, lows_n):
+            if _is_real_candle(high, low):
+                candle_range = (high - low) / low * 100
+                if candle_range <= flat_threshold:
+                    flat_count += 1
+        flat_ratio = flat_count / real_candle_count if real_candle_count > 0 else 1.0
+        
+        # 4. SON MUMUN HAREKET DURUMU
+        last_is_real = _is_real_candle(highs_n[-1], lows_n[-1]) if highs_n and lows_n else False
+        last_range = (highs_n[-1] - lows_n[-1]) / lows_n[-1] * 100 if lows_n[-1] and last_is_real else 0
+        last_direction = "up" if closes_n[-1] > closes_n[-2] else "down" if closes_n[-1] < closes_n[-2] else "flat"
+        
+        # 5. VOLATILITY (ATR benzeri - sadece gerçek mumlarla)
+        true_ranges = []
+        for i in range(1, len(closes_n)):
+            if _is_real_candle(highs_n[i], lows_n[i]) and closes_n[i-1] > 0:
+                tr = max(
+                    highs_n[i] - lows_n[i],
+                    abs(highs_n[i] - closes_n[i-1]),
+                    abs(lows_n[i] - closes_n[i-1])
+                )
+                true_ranges.append(tr)
+        avg_tr = sum(true_ranges) / len(true_ranges) if true_ranges else 0
+        volatility_pct = (avg_tr / avg_price * 100) if avg_price > 0 else 0
+        
+        return {
+            "name": name,
+            "ready": True,
+            "sample_count": len(closes_n),
+            "real_candle_count": real_candle_count,
+            "real_candle_ratio": round(real_candle_ratio, 4),
+            "sufficient_real_candles": sufficient_real_candles,
+            # Hacim metrikleri
+            "volume_ratio": round(volume_ratio, 4),
+            "short_volume_ratio": round(short_volume_ratio, 4),
+            "current_volume": round(current_volume, 2),
+            "avg_volume": round(avg_volume, 2),
+            # Hareket metrikleri
+            "range_pct": round(range_pct, 4),
+            "avg_candle_move_pct": round(avg_candle_move, 4),
+            "last_candle_range_pct": round(last_range, 4),
+            "last_direction": last_direction,
+            "last_is_real_candle": last_is_real,
+            "volatility_pct": round(volatility_pct, 4),
+            # Flat analizi
+            "flat_count": flat_count,
+            "flat_ratio": round(flat_ratio, 4),
+        }
+    
+    # Her iki timeframe'ı analiz et
+    m1_analysis = analyze_timeframe(m1_bars, 50, "M1")
+    m5_analysis = analyze_timeframe(m5_bars, 30, "M5")
+    
+    # PASIF KARARI
+    def is_passive(tf: dict) -> tuple[bool, str]:
+        """Tek timeframe için pasif kararı verir."""
+        if not tf.get("ready", False):
+            return True, f"veri_yok ({tf.get('reason', 'bilinmiyor')})"
+        
+        # YENİ: Gerçek mum sayısı yetersizse pasif sayma
+        if not tf.get("sufficient_real_candles", False):
+            real_count = tf.get("real_candle_count", 0)
+            required = 7 if tf["name"] == "M1" else 3
+            return True, f"yetersiz_gercek_mum:{real_count}/{required}"
+        
+        # Mutlak pasif: Çok düşük hacim + flat mumlar
+        if tf["volume_ratio"] < 0.15 and tf["flat_ratio"] > 0.7:
+            return True, "mutlak_pasif"
+        
+        # Güçlü pasif: Düşük hacim + yüksek flat oranı
+        if tf["volume_ratio"] < 0.30 and tf["flat_ratio"] > 0.5:
+            return True, "gucuksuz_hareket"
+        
+        # Orta pasif: Çok az hareket + düşük volatilite
+        if tf["avg_candle_move_pct"] < 0.03 and tf["volatility_pct"] < 0.05:
+            return True, "dusuk_volatilite"
+        
+        # Son mum çok flat ise (kısa vadeli pasif işareti)
+        if tf["last_candle_range_pct"] < 0.01 and tf["short_volume_ratio"] < 0.20:
+            return True, "ani_pasiflestirme"
+        
+        return False, "aktif"
+    
+    m1_passive, m1_reason = is_passive(m1_analysis)
+    m5_passive, m5_reason = is_passive(m5_analysis)
+    
+    # Birleşik karar: Her iki timeframe'da da pasif olmalı
+    is_purely_passive = m1_passive and m5_passive
+    
+    return {
+        "ready": m1_analysis.get("ready", False) and m5_analysis.get("ready", False),
+        "is_passive": is_purely_passive,
+        "confidence": "high" if (m1_passive and m5_passive) or (not m1_passive and not m5_passive) else "low",
+        "m1": m1_analysis,
+        "m5": m5_analysis,
+        "m1_passive": m1_passive,
+        "m1_reason": m1_reason,
+        "m5_passive": m5_passive,
+        "m5_reason": m5_reason,
+        "combined_reason": f"M1={m1_reason}, M5={m5_reason}" if is_purely_passive else "her_iki_timeframe_da_aktif",
+    }
+
+
 def _m1_flat_candle_activity(bars: dict, now_ms: int) -> dict:
     """Measure only completed M1 candles whose high-low range is flat."""
     timestamps = list((bars or {}).get("timestamps") or [])
@@ -1896,6 +2110,28 @@ async def refresh_symbol_activity():
         for symbol, bars in await asyncio.gather(*(hydrate_m1(symbol) for symbol in missing_m1)):
             if bars.get("timestamps"):
                 m1_bars[symbol] = bars
+    # M5 mumlarını al (kapsamlı analiz için)
+    m5_bars = {symbol: market.get_ut_kline(symbol, "5m") or {} for symbol in tracked_symbols}
+    missing_m5 = [symbol for symbol, bars in m5_bars.items() if len(bars.get("closes") or []) < 30]
+    if missing_m5:
+        semaphore_m5 = asyncio.Semaphore(8)
+        async def hydrate_m5(symbol):
+            async with semaphore_m5:
+                try:
+                    rows = await fetch_klines(symbol, "5m", limit=80)
+                    return symbol, {
+                        "timestamps": [int(row[0]) for row in rows or []],
+                        "closes": [float(row[4]) for row in rows or []],
+                        "highs": [float(row[2]) for row in rows or []],
+                        "lows": [float(row[3]) for row in rows or []],
+                        "volumes": [float(row[5]) for row in rows or []],
+                    }
+                except Exception as exc:
+                    print(f"[Activity M5] {symbol}: {exc}", flush=True)
+                    return symbol, {}
+        for symbol, bars in await asyncio.gather(*(hydrate_m5(symbol) for symbol in missing_m5)):
+            if bars.get("closes"):
+                m5_bars[symbol] = bars
     statuses = {}
     for symbol in universe:
         ticker = market.get_ticker(symbol) or {}
@@ -1915,6 +2151,14 @@ async def refresh_symbol_activity():
             continue
         m1_activity = _m1_flat_candle_activity(m1_bars.get(symbol) or {}, now_ms)
         m1_features = _m1_activity_features(analyzer, m1_bars.get(symbol) or {}, now_ms)
+        
+        # YENİ: Kapsamlı pasif analizi (M1 50 mum + M5 30 mum)
+        comprehensive = _comprehensive_passive_analysis(
+            m1_bars.get(symbol) or {},
+            m5_bars.get(symbol) or {},
+            now_ms
+        )
+        
         range_pct = 0.0
         low, high = min(lows[-3:]), max(highs[-3:])
         range_pct = ((high - low) / low * 100) if low else 0.0
@@ -1936,7 +2180,11 @@ async def refresh_symbol_activity():
         flat_30m_blocked = m1_activity["flat_30m_count"] >= config.SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT
         m1_flat_ok = (not config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED or
                       not m1_activity["ready"] or not (flat_5m_blocked or flat_30m_blocked))
-        active = bool(ticker and volume_ok and movement_gate_ok and volume_ratio_ok and spread_gate_ok and m1_flat_ok)
+        
+        # YENİ: Kapsamlı pasif kontrolü - M1 ve M5'de de pasif olmalı
+        truly_passive = comprehensive.get("is_passive", False)
+        
+        active = bool(ticker and volume_ok and movement_gate_ok and volume_ratio_ok and spread_gate_ok and m1_flat_ok and not truly_passive)
         flat_reason = (f"m1_flat_candles:5m={m1_activity['flat_5m_count']}/5,"
                        f"30m={m1_activity['flat_30m_count']}/30")
         statuses[symbol] = {
@@ -1949,10 +2197,22 @@ async def refresh_symbol_activity():
             "m1_flat_sample_30m": m1_activity["sample_30m"],
             "m1_flat_max_range_pct": m1_activity["flat_max_range_pct"],
             "m1_features": m1_features,
-            "checks": {"quote_volume": volume_ok, "range_15m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok, "m1_flat_candles": m1_flat_ok},
+            # YENİ: Kapsamlı pasif analiz sonuçları
+            "comprehensive_passive": {
+                "is_passive": comprehensive.get("is_passive", False),
+                "confidence": comprehensive.get("confidence", "unknown"),
+                "m1": comprehensive.get("m1", {}),
+                "m5": comprehensive.get("m5", {}),
+                "m1_passive": comprehensive.get("m1_passive", False),
+                "m1_reason": comprehensive.get("m1_reason", ""),
+                "m5_passive": comprehensive.get("m5_passive", False),
+                "m5_reason": comprehensive.get("m5_reason", ""),
+                "combined_reason": comprehensive.get("combined_reason", ""),
+            },
+            "checks": {"quote_volume": volume_ok, "range_15m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok, "m1_flat_candles": m1_flat_ok, "comprehensive_passive": not truly_passive},
             "gates": {"spread_required": spread_required, "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY, "m1_flat_filter_enabled": config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED, "m1_flat_data_ready": m1_activity["ready"]},
             "has_open_position": symbol in analyzer.positions,
-            "reason": "active" if active else (flat_reason if not m1_flat_ok else "volume_or_liquidity_below_threshold"),
+            "reason": "active" if active else (comprehensive.get("combined_reason", flat_reason if not m1_flat_ok else "volume_or_liquidity_below_threshold")),
             "checked_at": time.time(),
         }
     config.PASSIVE_SYMBOLS = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
@@ -1960,6 +2220,17 @@ async def refresh_symbol_activity():
     await database.set_llm_setting("symbol_activity_status", json.dumps(statuses, ensure_ascii=False))
     active_count = sum(1 for item in statuses.values() if item["status"] == "ACTIVE")
     warming_count = sum(1 for item in statuses.values() if item["status"] == "WARMING")
+    
+    # Debug: Yeni kapsamlı analiz sonuçlarını logla
+    for symbol, status in sorted(statuses.items()):
+        comp = status.get("comprehensive_passive", {})
+        if comp.get("m1", {}).get("ready") and comp.get("m5", {}).get("ready"):
+            m1 = comp.get("m1", {})
+            m5 = comp.get("m5", {})
+            print(f"[Activity Debug] {symbol}: passive={comp.get('is_passive')} | "
+                  f"M1: vr={m1.get('volume_ratio',0):.2f} flat={m1.get('flat_ratio',0):.2%} move={m1.get('avg_candle_move_pct',0):.4f}% | "
+                  f"M5: vr={m5.get('volume_ratio',0):.2f} flat={m5.get('flat_ratio',0):.2%} move={m5.get('avg_candle_move_pct',0):.4f}%", flush=True)
+    
     print(f"[Activity] universe={len(universe)} ACTIVE={active_count} PASSIVE={len(config.PASSIVE_SYMBOLS)} WARMING={warming_count}", flush=True)
     return {"ok": True, "statuses": statuses, "active_count": active_count,
             "passive_count": len(config.PASSIVE_SYMBOLS), "warming_count": warming_count}
