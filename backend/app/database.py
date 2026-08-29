@@ -1485,7 +1485,7 @@ async def get_llm_forecasts(symbol=None, status=None, limit=100, source=None):
         if status:
             clauses.append("status=?"); values.append(status)
         if source == "chat":
-            clauses.append("prompt_version LIKE 'upside-candidate-%'")
+            clauses.append("prompt_version LIKE ?"); values.append("upside-candidate-%")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         values.append(max(1, min(int(limit), 500)))
         rows = conn.execute(f"SELECT * FROM llm_forecasts{where} ORDER BY created_at DESC LIMIT ?", values).fetchall()
