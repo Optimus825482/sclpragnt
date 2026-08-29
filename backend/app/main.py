@@ -1372,6 +1372,7 @@ async def startup_services():
     _start_background(llm_forecast_evaluation_loop(), "llm-forecast-evaluator")
     _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
     _start_background(chat_prediction_auto_trade_loop(), "chat-prediction-auto-trade")
+    _start_background(velocity_learning_loop(), "velocity-learner")
     _start_background(radar_loop(), "radar-loop")
     _start_background(top_gainers_refresh_loop(), "top-gainers-monitor")
     _start_background(symbol_activity_loop(), "symbol-activity")
@@ -4644,15 +4645,111 @@ async def detect_velocity_candidates(args: dict | None = None):
         candidate["rank"] = rank
     watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= 0.8]
     watchlist.sort(key=lambda r: r["velocity_score"], reverse=True)
+    # Journal: geçenler + izleme listesi kaydedilir; 5 dk sonra kapanmış M1
+    # mumlarla gerçek dokunuş ölçülüp eşikler otomatik yeniden kalibre edilir.
+    try:
+        journal_rows = [{
+            "candidate_id": f"vel-{int(now_ms)}-{r['symbol']}",
+            "created_at": now_ms / 1000, "symbol": r["symbol"], "price": r["price"],
+            "target_pct": 2.0, "atr_pct": r["atr_pct"], "volume_ratio": r["volume_ratio"],
+            "ret3_pct": r["ret3_pct"], "velocity_score": r["velocity_score"],
+            "passes": r["passes"], "rank": r.get("rank"),
+        } for r in (candidates[:3] + watchlist[:5])]
+        await database.save_velocity_candidates(journal_rows)
+    except Exception as exc:
+        logger.warning("velocity journal hatası: %s", exc)
+    live_stats = await database.get_velocity_calibration_stats()
+    live_hit_pct = (float(live_stats.get("passing_touched_count") or 0) /
+                    float(live_stats.get("passing_count") or 0) * 100) if live_stats.get("passing_count") else None
     return {"generated_at": now_ms / 1000, "target": "min %2 move in 5 minutes",
             "pool_source": "binance_tr_top_gaining_tab", "symbols_scanned": len(pool),
             "filter": {"min_atr_pct": VELOCITY_MIN_ATR_PCT, "min_volume_ratio": VELOCITY_MIN_VOLUME_RATIO,
                         "min_ret3_pct": VELOCITY_MIN_RET3_PCT},
             "calibration": {"base_rate_pct": VELOCITY_BASE_RATE_PCT,
                              "conditional_hit_pct": VELOCITY_CALIBRATED_HIT_PCT,
-                             "note": "koşullar sağlandığında 5dk+%2 dokunuş olasılığı ~%19 (baz %2; replay kalibrasyonu 2026-08-29)"},
+                             "live_hit_pct": live_hit_pct,
+                             "live_evaluated": int(live_stats.get("evaluated_count") or 0),
+                             "live_passing_touched": int(live_stats.get("passing_touched_count") or 0),
+                             "live_passing_count": int(live_stats.get("passing_count") or 0),
+                             "note": "koşullar sağlandığında 5dk+%2 dokunuş olasılığı ~%19 (baz %2; replay kalibrasyonu 2026-08-29). live_hit_pct canlı journal'dan gelir."},
             "candidates": candidates[:3], "watchlist": watchlist[:5],
             "data_policy": "kapanmış 1m mumlar; tahmin/garanti değil, paper-only"}
+
+
+_velocity_learning_state = {"last_run_at": None, "measured": 0, "last_error": None,
+                             "last_calibrated_at": None, "active_filters": None}
+
+
+async def velocity_learning_loop():
+    """5 dk dolan hız adaylarını kapanmış M1 mumlarıyla ölç; eşikleri canlı
+    dokunuş oranına göre ayarla; LLM'e postmortem bağlamı kaydet."""
+    await asyncio.sleep(120)
+    while True:
+        try:
+            pending = await database.get_pending_velocity_candidates(limit=100)
+            measured = 0
+            for candidate in pending:
+                symbol = candidate["symbol"]
+                created_ms = int(float(candidate["created_at"]) * 1000)
+                due_ms = created_ms + 5 * 60_000
+                try:
+                    rows = await fetch_klines(symbol, "1m", 12, created_ms, due_ms + 65_000)
+                except Exception:
+                    continue
+                # Sadece tarama anından SONRAKİ 5 dakikalık pencere
+                window = [r for r in rows if int(r[0]) + 59_999 > created_ms and int(r[0]) + 59_999 <= due_ms]
+                if len(window) < 5:
+                    continue
+                highs = [float(r[2]) for r in window]
+                entry = float(candidate["price"])
+                if entry <= 0:
+                    continue
+                mfe_pct = (max(highs) / entry - 1) * 100
+                touched = mfe_pct >= float(candidate["target_pct"])
+                ok = await database.mark_velocity_candidate_evaluated(
+                    candidate["candidate_id"], mfe_pct=round(mfe_pct, 4),
+                    touched_target=touched,
+                    details={"window_bars": len(window), "entry": entry, "target_pct": candidate["target_pct"]})
+                if ok:
+                    measured += 1
+                    # LLM hafıza katmanına kanıt olarak yaz (postmortem döngüsü okur)
+                    await embedding_worker.enqueue_persistent(build_document(
+                        layer="symbol", scope=f"velocity-outcome:{symbol}", symbol=symbol,
+                        source_type="velocity_candidate_outcome", source_id=str(candidate["candidate_id"]),
+                        content=json.dumps({
+                            "candidate": {k: candidate.get(k) for k in ("atr_pct", "volume_ratio", "ret3_pct", "velocity_score", "passes")},
+                            "outcome": {"mfe_pct": round(mfe_pct, 3), "touched_target": touched},
+                        }, ensure_ascii=False, default=str),
+                        metadata={"source_type": "velocity_candidate_outcome",
+                                  "touched_target": touched, "passes": candidate.get("passes")},
+                        observed_at=time.time()))
+            if measured:
+                _velocity_learning_state["measured"] = _velocity_learning_state.get("measured", 0) + measured
+                # Otomatik kalibrasyon: en az 50 ölçüm birikince geçen adayların
+                # gerçek dokunuş oranına göre eşikleri nazikçe kaydır.
+                stats = await database.get_velocity_calibration_stats()
+                passing = int(stats.get("passing_count") or 0)
+                if passing >= 50:
+                    hit = int(stats.get("passing_touched_count") or 0) / passing
+                    if hit < 0.10:
+                        config.VELOCITY_MIN_ATR_PCT = round(min(1.0, config.VELOCITY_MIN_ATR_PCT + 0.05), 2)
+                        _velocity_learning_state["last_calibrated_at"] = time.time()
+                    elif hit > 0.45:
+                        config.VELOCITY_MIN_ATR_PCT = round(max(0.10, config.VELOCITY_MIN_ATR_PCT - 0.05), 2)
+                        _velocity_learning_state["last_calibrated_at"] = time.time()
+                    _velocity_learning_state["active_filters"] = {
+                        "min_atr_pct": config.VELOCITY_MIN_ATR_PCT,
+                        "min_volume_ratio": config.VELOCITY_MIN_VOLUME_RATIO,
+                        "min_ret3_pct": config.VELOCITY_MIN_RET3_PCT,
+                        "live_hit_pct": round(hit * 100, 1),
+                    }
+            _velocity_learning_state.update({"last_run_at": time.time(), "last_error": None})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _velocity_learning_state.update({"last_run_at": time.time(), "last_error": str(exc)})
+            logger.exception("velocity learning loop: %s", exc)
+        await asyncio.sleep(60)
 
 
 @app.get("/api/market-snapshot/velocity-5m")
