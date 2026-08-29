@@ -193,6 +193,7 @@ _radar_response_cache = {"generated_at": 0.0, "result": None}
 _pump_monitor_snapshot = {"generated_at": 0.0, "items": {}, "last_execution": []}
 _pump_monitor_seen_candles = {}
 _forecast_evaluation_state = {"last_run_at": None, "evaluated": 0, "lessons_refreshed": 0, "last_error": None}
+_cluster_block_log_state: dict[str, float] = {}
 _chat_prediction_learning_state = {"last_run_at": None, "evaluated": 0, "analyzed": 0, "insights": 0,
                                     "last_analysis_at": None, "last_error": None,
                                     "last_analysis_error": None}
@@ -1140,9 +1141,16 @@ async def correlation_gate(symbol: str, order_value: float):
         pct = exposure.get("exposure_pct")
         if pct is not None and pct > config.MAX_CLUSTER_EXPOSURE_PCT:
             reason = f"cluster_exposure_cap:{pct}%>{config.MAX_CLUSTER_EXPOSURE_PCT}%"
-            await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED",
-                                        "price": 0, "reason": reason,
-                                        "strategy": "RISK", "timestamp": time.time()})
+            # Aynı sembol için 5 dakikada bir kez kaydet; her tarama turunda
+            # tekrarlanan bloklar sinyal tablosunu doldurup analiz karartıyordu
+            # (869 blok kaydının 521'i buydu).
+            now = time.time()
+            last = _cluster_block_log_state.setdefault(symbol, 0.0)
+            if now - last >= 300:
+                _cluster_block_log_state[symbol] = now
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED",
+                                            "price": 0, "reason": reason,
+                                            "strategy": "RISK", "timestamp": now})
             return {"blocked": True, "reason": reason, "exposure_pct": pct}
         return {"blocked": False, "exposure_pct": pct}
     except Exception as exc:
@@ -1881,7 +1889,15 @@ async def fisher_m3_kernel_m5_shadow_loop():
                         if not config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED or symbol in pending:
                             continue
                         if event["type"] == "long_candidate" and active and not position:
-                            pending[symbol] = {"action": "open", "signal": event}
+                            import datetime as _dt
+                            if (config.FISHER_ENTRY_BLOCKED_HOURS or []) and _dt.datetime.now().hour in config.FISHER_ENTRY_BLOCKED_HOURS:
+                                await database.save_decision_log({
+                                    "timestamp": time.time(), "symbol": symbol, "strategy": strategy,
+                                    "decision": "ENTRY_BLOCKED", "reason": "fisher_entry_blocked_hour",
+                                    "price": event.get("price"), "metadata": {"blocked_hour": _dt.datetime.now().hour},
+                                })
+                            else:
+                                pending[symbol] = {"action": "open", "signal": event}
                         elif event["type"] == "exit_candidate" and fisher_open:
                             pending[symbol] = {"action": "close", "signal": event}
         except Exception as exc:

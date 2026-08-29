@@ -579,7 +579,13 @@ class ScalpAnalyzer:
         # Fisher exits are defined only by the supplied M3 crossover above 2.
         # Its dedicated closed-M1 loop owns the next-open fill; generic
         # stop/target/trailing rules must not alter the source-exact contract.
+        # Exception: a catastrophic drawdown stop — 62 of 268 historical
+        # trades bled to -11% waiting for an exit cross that never came.
         if pos and pos.get("strategy") == "FISHER_M3_KERNEL_M5_EXACT_PAPER":
+            fisher_entry = float(pos.get("entry_price") or price)
+            emergency = fisher_entry * (1 - config.FISHER_EMERGENCY_STOP_PCT / 100.0)
+            if price <= emergency:
+                return await self.close_position(symbol, price, "fisher_emergency_stop")
             return None
         if pos and pos.get("strategy") != "LLM_PAPER":
             entry = float(pos.get("entry_price") or price)
