@@ -1496,7 +1496,8 @@ async def get_llm_forecasts(symbol=None, status=None, limit=100, source=None):
 async def get_llm_forecast_report(source=None):
     """Aggregate only journaled forecast outcomes; no trading side effects."""
     def op(conn):
-        source_clause = " AND prompt_version LIKE 'upside-candidate-%'" if source == "chat" else ""
+        source_clause = " AND prompt_version LIKE ?" if source == "chat" else ""
+        params = ("upside-candidate-%",) if source == "chat" else ()
         rows = conn.execute(f"""SELECT horizon_minutes,
             COUNT(*) AS total_count,
             SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
@@ -1504,7 +1505,7 @@ async def get_llm_forecast_report(source=None):
             SUM(CASE WHEN status='evaluated' AND direction_correct THEN 1 ELSE 0 END) AS correct_count,
             AVG(CASE WHEN status='evaluated' THEN confidence END) AS average_confidence,
             AVG(CASE WHEN status='evaluated' THEN outcome_return_pct END) AS average_return_pct
-            FROM llm_forecasts WHERE 1=1{source_clause} GROUP BY horizon_minutes ORDER BY horizon_minutes""").fetchall()
+            FROM llm_forecasts WHERE 1=1{source_clause} GROUP BY horizon_minutes ORDER BY horizon_minutes""", params).fetchall()
         return [dict(row) for row in rows]
     return await _run_db(op)
 
