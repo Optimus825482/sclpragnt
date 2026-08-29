@@ -544,6 +544,7 @@ class ScalpAnalyzer:
             "BB_MFI_MEAN_REVERSION": config.ACTIVE_STRATEGY_TIMEFRAME,
             "PUMP_MONITOR": "5m",
             "FISHER_M3_KERNEL_M5_EXACT_PAPER": "1m",
+            "CHAT_PREDICTION": "1m",
         }.get(strat_name, config.UT_TIMEFRAME)
 
     async def _manage_open_position(self, symbol, price, strat_name):
@@ -1657,9 +1658,15 @@ class ScalpAnalyzer:
         if self.market:
             # The final recheck covers the small race between a preflight and
             # the atomic portfolio write.  It is an eligibility outcome, never
-            # a BUY_BLOCKED signal or notification.
+            # a BUY_BLOCKED signal or notification.  CHAT_PREDICTION candidates
+            # come from Top-Gainer REST scans, so their WS orderbook stream may
+            # not be subscribed yet; the snapshot is refreshed via REST and WS
+            # freshness stamps are skipped — the real liquidity thresholds
+            # (spread, depth, volume) still apply in full.
             flow = await self._refresh_liquidity_snapshot(symbol)
-            liquid, details = self.market.liquidity_status(symbol, order_value)
+            liquid, details = self.market.liquidity_status(
+                symbol, order_value,
+                ignore_ws_freshness=(strat_name == "CHAT_PREDICTION"))
             if not liquid:
                 reason = self._liquidity_reason(details, "entry_recheck_failed")
                 ineligible = {"symbol": symbol, "action": "ENTRY_INELIGIBLE", "price": entry_price,
