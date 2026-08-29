@@ -5,6 +5,7 @@ import { API_BASE, apiRequest } from "../lib/api";
 import MarkdownMessage from "../components/MarkdownMessage";
 import SymbolLink from "../components/SymbolLink";
 import { streamChat } from "../lib/streamChat";
+import { useLiveMessages } from "../lib/liveSocket";
 import Link from "next/link";
 import { Badge, Button, Card } from "../components/ui";
 
@@ -205,6 +206,9 @@ export default function ChatPage() {
   const [velocityBusy, setVelocityBusy] = useState(false);
   const [velocity15Result, setVelocity15Result] = useState<VelocityScanResult | null>(null);
   const [velocity15Busy, setVelocity15Busy] = useState(false);
+  // Model akışı: arka plan etkinliklerinin canlı logu (en yeni üstte)
+  const [activities, setActivities] = useState<{ key: string; kind: string; text: string; time: string; success?: boolean; duration_ms?: number }[]>([]);
+  const activityEndRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -361,6 +365,23 @@ export default function ChatPage() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, busy]);
+
+  // Arka plan model etkinliklerini canlı akışa ekle (en yeni üstte)
+  useLiveMessages((msg: any) => {
+    if (msg.type !== "model_activity") return;
+    const d = msg.data || {};
+    const text: string = typeof d.summary === "string" && d.summary
+      ? d.summary
+      : `${d.kind || "işlem"}: ${d.tool || ""}`;
+    setActivities((current) => [{
+      key: `${d.at || Date.now() / 1000}-${d.tool || d.kind}-${Math.random().toString(36).slice(2, 7)}`,
+      kind: String(d.kind || "info"),
+      text,
+      time: new Date((d.at || Date.now() / 1000) * 1000).toLocaleTimeString("tr-TR"),
+      success: d.success,
+      duration_ms: d.duration_ms,
+    }, ...current].slice(0, 40));
+  });
   const enabledSkills = useMemo(
     () => skills.filter((s) => s.enabled),
     [skills],
@@ -728,57 +749,36 @@ export default function ChatPage() {
         <Card className={`chat-controls ${controlsOpen ? "is-open" : ""}`}>
           <div className="chat-controls-header">
             <div>
-              <p className="eyebrow">AKTİF DURUM</p>
+              <p className="eyebrow">ARKA PLAN İŞLERİ</p>
               <h2 className="font-mono text-sm font-bold text-white">MODEL AKIŞI</h2>
             </div>
             <Link href="/settings?tab=chat" className="ui-button ui-button-secondary" style={{ textDecoration: "none" }}>
               ⚙ CHAT AYARLARI
             </Link>
           </div>
-          <div className="chat-live-tools">
-            <p className="eyebrow mb-2">AKTİF ARAÇLAR · {activeTools.length}</p>
-            <div className="chat-tool-chips">
-              {activeTools.map((name) => (
-                <Badge key={name} tone="info">
-                  {name}
-                </Badge>
-              ))}
-            </div>
-          </div>
           <div className="chat-log-panel">
             <div className="flex items-center justify-between mb-2">
-              <p className="eyebrow">CANLI TOOL LOGLARI</p>
+              <p className="eyebrow">CANLI ETKİNLİK AKIŞI</p>
               <span className="status-dot" />
             </div>
-            {logs.length ? (
-              logs.slice(0, 12).map((log) => (
-                <div className="chat-log-row" key={log.id}>
-                  <div>
-                    <p className="font-mono text-xs text-white truncate">
-                      {log.tool_name}
-                    </p>
-                    <p className="text-[10px] text-bunker-muted">
-                      {log.result_summary ||
-                        (log.success ? "başarılı" : "hata")}
-                    </p>
-                  </div>
-                  <span
-                    className={
-                      log.success ? "text-neon-green" : "text-neon-red"
-                    }
-                  >
-                    {log.duration_ms ? `${Math.round(log.duration_ms)}ms` : "•"}
-                  </span>
+            <div className="model-activity-stream" aria-live="polite">
+              {activities.length === 0 && (
+                <p className="text-xs text-bunker-muted">$ Model boşta; bir şey sorduğunda araç çağrıları ve hesaplamalar buraya akmaya başlar…</p>
+              )}
+              {activities.map((a) => (
+                <div key={a.key} className={`model-activity-row ${a.kind === "tool" ? (a.success ? "ok" : "err") : a.kind}`}>
+                  <span className="text-bunker-muted text-[10px] font-mono shrink-0">{a.time}</span>
+                  <span className="min-w-0 flex-1">{a.text}</span>
+                  {a.kind === "tool" && a.duration_ms != null && (
+                    <span className={a.success ? "text-neon-green text-[10px] shrink-0" : "text-neon-red text-[10px] shrink-0"}>{Math.round(a.duration_ms)}ms</span>
+                  )}
                 </div>
-              ))
-            ) : (
-              <p className="text-xs text-bunker-muted">
-                Henüz tool çağrısı yok.
-              </p>
-            )}
+              ))}
+              <div ref={activityEndRef} />
+            </div>
           </div>
           <div className="chat-log-panel">
-            <p className="eyebrow mb-2">TRACE / EVALUATION / INSTINCT</p>
+            <p className="eyebrow mb-2">ÖZET</p>
             <div className="chat-trace-grid grid grid-cols-3 gap-2 text-[10px] font-mono">
               <span className="rounded border border-bunker-700 p-2">
                 Trace: {traces.length}
@@ -791,32 +791,6 @@ export default function ChatPage() {
                 Kural: {instincts.length}
               </span>
             </div>
-            {traces.slice(0, 2).map((item) => (
-              <div className="chat-log-row" key={item.trace_id}>
-                <span className="truncate">
-                  {item.intent || item.trace_id.slice(0, 18)}
-                </span>
-                <span
-                  className={
-                    item.status === "completed"
-                      ? "text-neon-green"
-                      : "text-yellow-300"
-                  }
-                >
-                  {item.status}
-                </span>
-              </div>
-            ))}
-            {evaluations.slice(0, 3).map((item) => (
-              <div className="chat-log-row" key={item.id}>
-                <span>{item.evaluator_type}</span>
-                <span
-                  className={item.passed ? "text-neon-green" : "text-neon-red"}
-                >
-                  {item.passed ? "PASS" : item.failure_category || "FAIL"}
-                </span>
-              </div>
-            ))}
           </div>
         </Card>
       </div>
