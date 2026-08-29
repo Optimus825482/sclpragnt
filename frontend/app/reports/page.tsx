@@ -22,8 +22,9 @@ function ForecastTab({ report, loading, error }: { report: any; loading: boolean
 type VelocityLiveRow = {
   candidate_id: string; symbol: string; entry_price: number; current_price: number | null;
   change_pct: number | null; target_pct: number; passes: boolean; velocity_score: number;
-  status: string; touched: boolean; touch_sec: number | null; best_mfe_pct: number | null;
-  elapsed_sec: number; remaining_sec: number; window_closed: boolean; window_time: string;
+  status: string; touched: boolean; journal_touched: boolean | null; touch_sec: number | null;
+  best_mfe_pct: number | null; elapsed_sec: number; remaining_sec: number; window_closed: boolean;
+  window_time: string;
 };
 function VelocityTab({ report, loading, error }: { report: any; loading: boolean; error: string }) {
  const [deletingId,setDeletingId]=useState<string|null>(null);
@@ -75,7 +76,7 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
     <td className="font-mono">{row.entry_price.toLocaleString("tr-TR",{maximumFractionDigits:8})}</td>
     <td className="font-mono">{row.current_price?.toLocaleString("tr-TR",{maximumFractionDigits:8})??"—"}</td>
     <td className={`font-mono ${(row.change_pct??0)>=2?"text-neon-green font-bold":(row.change_pct??0)>0?"text-neon-green":(row.change_pct??0)<0?"text-neon-red":""}`}>{row.change_pct!=null?`${row.change_pct>=0?"+":""}${row.change_pct.toFixed(2)}%`:"—"}</td>
-    <td className={row.touched?"text-neon-green font-bold":row.window_closed?(row.status==="evaluated"?"text-neon-red":"text-bunker-muted"):"text-sky-300"}>{row.touched?"+%2 ULAŞTI":row.window_closed?"PENCERE BİTTİ — DOKUNMADI":`İZLENİYOR`}</td>
+    <td className={row.touched?"text-neon-green font-bold":row.window_closed?(row.journal_touched===false?"text-neon-red":"text-yellow-300"):"text-sky-300"}>{row.touched?"+%2 ULAŞTI":row.window_closed?(row.journal_touched===false?"PENCERE BİTTİ — DOKUNMADI":"ÖLÇÜM SIRASINDA"):"İZLENİYOR"}</td>
     <td className="font-mono text-xs">{row.touched?(row.touch_sec!=null?`${row.touch_sec} sn'de ulaştı`:"—"):row.window_closed?"5 dk doldu":`${Math.floor(row.remaining_sec/60)}:${String(row.remaining_sec%60).padStart(2,"0")} kaldı`}</td>
     <td className={((row.best_mfe_pct??0)>=2)?"text-neon-green":"font-mono"}>{pct(row.best_mfe_pct)}</td>
     <td className="text-bunker-muted text-xs">{row.window_time}</td>

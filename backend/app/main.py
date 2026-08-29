@@ -4768,9 +4768,12 @@ async def velocity_learning_loop():
                     rows = await fetch_klines(symbol, "1m", 12, created_ms, due_ms + 65_000)
                 except Exception:
                     continue
-                # Sadece tarama anından SONRAKİ 5 dakikalık pencere
+                # Tarama anı bir M1 mumun ortasına denk gelebilir; o mum atak
+                # öncesi sayılır ve pencereye tam 5 mum sığmayabilir (4 mümkün).
+                # Pencere süresi dolduysa 3+ mum yeterli — aksi halde kayıt
+                # sonsuza dek 'pending' kalıyordu.
                 window = [r for r in rows if int(r[0]) + 59_999 > created_ms and int(r[0]) + 59_999 <= due_ms]
-                if len(window) < 5:
+                if time.time() * 1000 < due_ms or len(window) < 3:
                     continue
                 highs = [float(r[2]) for r in window]
                 entry = float(candidate["price"])
@@ -4923,6 +4926,10 @@ async def get_velocity_live_tracking():
         elapsed_sec = int((now_ms - created_ms) / 1000)
         window_closed = now_ms >= due_ms
         touched = touch_sec is not None
+        if row["status"] == "evaluated":
+            journal_touched = bool(row.get("touched_target"))
+        else:
+            journal_touched = None  # henüz öğrenme döngüsü yazmadı
         tracked.append({
             "candidate_id": row["candidate_id"], "symbol": symbol,
             "entry_price": entry, "current_price": current_price,
@@ -4931,7 +4938,8 @@ async def get_velocity_live_tracking():
             "passes": bool(row.get("passes")),
             "velocity_score": row.get("velocity_score"),
             "status": row["status"],
-            "touched": touched or (row["status"] == "evaluated" and bool(row.get("touched_target"))),
+            "touched": touched or (journal_touched is True),
+            "journal_touched": journal_touched,
             "touch_sec": touch_sec,
             "best_mfe_pct": round((best_high / entry - 1) * 100, 3) if best_high and entry else None,
             "elapsed_sec": elapsed_sec, "remaining_sec": max(0, int((due_ms - now_ms) / 1000)),
