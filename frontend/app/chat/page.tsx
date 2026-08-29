@@ -76,7 +76,11 @@ type VelocityCandidate = {
   rank?: number;
   price: number;
   atr_pct: number;
-  volume_ratio: number;
+  bb_width_pct?: number | null;
+  rsi?: number | null;
+  mfi?: number | null;
+  mode?: string | null;
+  exhausted?: string | null;
   ret3_pct: number;
   velocity_score: number;
   passes: boolean;
@@ -548,18 +552,18 @@ export default function ChatPage() {
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div>
                   <p className="eyebrow">5 DK İÇİNDE %2+ HIZ POTANSİYELİ · İLK 3</p>
-                  <p className="text-xs text-bunker-muted">{velocityResult.symbols_scanned || 0} sembol tarandı · filtre: ATR%≥0.3 + hacim≥2x + 3bar ivme&gt;%0.3</p>
+                  <p className="text-xs text-bunker-muted">{velocityResult.symbols_scanned || 0} sembol tarandı · v2 filtre: ATR%≥0.3 + BB genişliği≥%2.5 + RSI 35-80 + MFI 10-90 (aşırı uçlar elenir)</p>
                 </div>
                 <span className="text-[10px] text-bunker-muted">{velocityResult.generated_at ? new Date(velocityResult.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
               </div>
-              {(velocityResult.candidates || []).length === 0 && <p className="text-xs text-yellow-300">Şu an koşulları (ATR+hacim+ivme) geçen sembol yok; yüksek salınım rejimi bekleniyor.</p>}
+              {(velocityResult.candidates || []).length === 0 && <p className="text-xs text-yellow-300">Şu an koşulları geçen sembol yok; yüksek salınım rejimi bekleniyor (aşırı alım/satım semboller elenir).</p>}
               <div className="space-y-2">
                 {(velocityResult.candidates || []).map((candidate) => (
                   <div key={candidate.symbol} className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800 pb-2 last:border-0 last:pb-0">
                     <div>
                       <strong className="font-mono text-sm text-white">#{candidate.rank ?? "—"} <SymbolLink symbol={candidate.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green" /></strong>
                       <span className="ml-2 rounded border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[10px] text-neon-green">%2 POTANSİYEL</span>
-                      <p className="text-[11px] text-bunker-muted">fiyat {candidate.price.toLocaleString("tr-TR", { maximumFractionDigits: 8 })} · ATR %{candidate.atr_pct} · hacim {candidate.volume_ratio}x · son 3dk %{candidate.ret3_pct}</p>
+                      <p className="text-[11px] text-bunker-muted">fiyat {candidate.price.toLocaleString("tr-TR", { maximumFractionDigits: 8 })} · ATR %{candidate.atr_pct} · BB genişliği %{candidate.bb_width_pct} · RSI {candidate.rsi} · MFI {candidate.mfi} · {candidate.mode === "v_donusu" ? "V-dönüşü" : "trend-devam"} · son 3dk %{candidate.ret3_pct}</p>
                     </div>
                     <span className="font-mono text-xs text-neon-green">hız skoru {candidate.velocity_score}</span>
                   </div>

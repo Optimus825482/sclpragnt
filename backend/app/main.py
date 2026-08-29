@@ -4586,6 +4586,12 @@ VELOCITY_MIN_BB_WIDTH_PCT = 2.5    # Bollinger(20,2) genişliği ≥ %2.5 (d=+0.
 VELOCITY_TREND_RSI_MIN = 60.0      # trend-içi mod: RSI ≥ 60 (momentum devam)
 VELOCITY_REVERSAL_RSI_MAX = 35.0   # V-dönüşü mod: RSI ≤ 35 (aşırı satımdan sıçrama)
 VELOCITY_STRUCT_SLOPE_PCT = 0.20   # LinReg(20) eğimi ≥ %0.2/10bar VEYA Aroon ≥ +50
+# Aşırı uç elme: MFI/RSI tükenmişlikte +%2 olasılığı bazın altına düşüyor
+# (14.475 gözlem: MFI≥95 → %0.71, RSI≥80 → %0.65, sağlıklı bant %1.56-2.48).
+# Zaten fırlamış sembol "gidecek yeri yok" — geri çekilme riski en yüksek.
+VELOCITY_MFI_UPPER = 90.0          # MFI ≥ 90 → ele (M1, 14 periyot)
+VELOCITY_MFI_LOWER = 10.0          # MFI ≤ 10 → ele (aşırı satım da aynı risk)
+VELOCITY_RSI_UPPER = 80.0          # RSI ≥ 80 → ele (trend-devam modunun üst sınırı)
 VELOCITY_BASE_RATE_PCT = 1.97
 VELOCITY_CALIBRATED_HIT_PCT = 19.3
 
@@ -4599,6 +4605,19 @@ def _velocity_rsi(closes, n=14):
         if d > 0: gains += d
         else: losses -= d
     return 100 - 100 / (1 + gains / losses) if losses else 100.0
+
+
+def _velocity_mfi(highs, lows, closes, vols, n=14):
+    if len(closes) < n + 1:
+        return None
+    pos = neg = 0.0
+    for i in range(len(closes) - n, len(closes)):
+        tp = (highs[i] + lows[i] + closes[i]) / 3
+        ptp = (highs[i - 1] + lows[i - 1] + closes[i - 1]) / 3
+        flow = tp * vols[i]
+        if tp > ptp: pos += flow
+        elif tp < ptp: neg += flow
+    return 100 - 100 / (1 + pos / neg) if neg else 100.0
 
 
 def _velocity_bollinger_width(closes, n=20, mult=2.0):
@@ -4665,6 +4684,7 @@ async def detect_velocity_candidates(args: dict | None = None):
             closes = [float(r[4]) for r in rows]
             highs = [float(r[2]) for r in rows]
             lows = [float(r[3]) for r in rows]
+            vols = [float(r[5]) for r in rows]
             i = len(rows) - 1
             price = closes[-1]
             if price <= 0:
@@ -4674,6 +4694,7 @@ async def detect_velocity_candidates(args: dict | None = None):
             atr_pct = (sum(trs) / len(trs)) / price * 100 if trs else 0.0
             bb_width = _velocity_bollinger_width(closes)
             rsi = _velocity_rsi(closes)
+            mfi = _velocity_mfi(highs, lows, closes, vols)
             slope = _velocity_linreg_slope(closes)
             aroon = _velocity_aroon(highs)
             ret3 = (closes[-1] / closes[-4] - 1) * 100 if len(closes) >= 4 else 0.0
@@ -4684,7 +4705,17 @@ async def detect_velocity_candidates(args: dict | None = None):
                    "v_donusu" if rsi <= VELOCITY_REVERSAL_RSI_MAX else None
             struct_ok = (slope is not None and slope >= VELOCITY_STRUCT_SLOPE_PCT) or \
                         (aroon is not None and aroon >= 50)
-            passes = (atr_pct >= VELOCITY_MIN_ATR_PCT and
+            # Aşırı uç elme: zaten fırlamış/tükenmiş semboller geri çekilme
+            # riski taşır; +%2 olasılığı bazın altına düşüyor (forensics 14.475 gözlem).
+            exhausted = None
+            if mfi is not None and mfi >= VELOCITY_MFI_UPPER:
+                exhausted = f"mfi_asiri_alim:{mfi:.0f}"
+            elif mfi is not None and mfi <= VELOCITY_MFI_LOWER:
+                exhausted = f"mfi_asiri_satim:{mfi:.0f}"
+            elif rsi >= VELOCITY_RSI_UPPER:
+                exhausted = f"rsi_asiri_alim:{rsi:.0f}"
+            passes = (exhausted is None and
+                      atr_pct >= VELOCITY_MIN_ATR_PCT and
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
                       mode is not None and
                       (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)))
@@ -4698,7 +4729,8 @@ async def detect_velocity_candidates(args: dict | None = None):
                                     (1.0 + max(0.0, ret3) / 2.0), 2)
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
-                    "rsi": round(rsi, 1) if rsi else None, "mode": mode,
+                    "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
+                    "mode": mode, "exhausted": exhausted,
                     "linreg_slope10_pct": round(slope, 3) if slope is not None else None,
                     "aroon_up": round(aroon, 0) if aroon is not None else None,
                     "ret3_pct": round(ret3, 3),
