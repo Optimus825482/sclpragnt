@@ -93,6 +93,19 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
    </tr>;})}</tbody></table></div>
    {!liveRows.length&&<p className="mt-2 text-sm text-bunker-muted">Son 30 dakikada aday yok; Chat sayfasından "🚀 5 DK %2 HIZ AVCISI" taraması başlatın.</p>}
   </section>
+  <section className="card"><p className="eyebrow">OTONOM HIZ AVCISI · 15 DK'DA BİR OTOMATİK POZİSYON</p>
+   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-mono">
+    <span className={`rounded px-2 py-1 ${(view.auto_trade?.enabled)?"text-neon-green border border-neon-green/40":"text-yellow-300 border border-yellow-400/40"}`}>{view.auto_trade?.enabled?"OTONOM AKTİF":"KAPALI (env: VELOCITY_AUTO_ENABLED + LLM paper ayarı)"}</span>
+    <span className="rounded border border-bunker-700 px-2 py-1">her {Math.round((view.auto_trade?.interval_sec||900)/60)} dk</span>
+    <span className="rounded border border-bunker-700 px-2 py-1">bakiyenin %{view.auto_trade?.balance_pct||50}'i</span>
+    <span className="rounded border border-neon-red/40 px-2 py-1">stop %{view.auto_trade?.sl_pct||1.5}</span>
+    <span className="rounded border border-sky-400/40 px-2 py-1">+%{view.auto_trade?.trail_trigger_pct||1}'de ATR trailing</span>
+    <span className="rounded border border-bunker-700 px-2 py-1">açılan: {view.auto_trade?.state?.total_opened||0}</span>
+   </div>
+   <p className="mt-2 text-xs text-bunker-muted">Çıkış merdiveni: fiyat girişin üstüne çıktığında stop break-even'e çekilir (kar kilitli), +%1'e ulaşınca ATR trailing devreye girer (maksimum kâr koşusu), sert stop her zaman %1.5.</p>
+   {view.auto_trade?.state?.last_open&&<p className="mt-2 font-mono text-xs text-sky-300">Son deneme: {view.auto_trade.state.last_open.symbol} — {view.auto_trade.state.last_open.status}{view.auto_trade.state.last_open.reason?` (${view.auto_trade.state.last_open.reason})`:""}</p>}
+   {(view.auto_trade?.recent_opens||[]).length>0&&<div className="mt-2 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Miktar</th><th>Giriş</th><th>Stop</th><th>Skor</th></tr></thead><tbody>{(view.auto_trade.recent_opens||[]).slice().reverse().map((o:any,i:number)=><tr key={i}><td>{o.at?new Date(o.at*1000).toLocaleTimeString("tr-TR"):"—"}</td><td>{o.symbol}</td><td>{o.order_value_try} TL</td><td>{o.entry}</td><td>%{o.stop_loss_pct}</td><td>{o.score}</td></tr>)}</tbody></table></div>}
+  </section>
   <section className="card"><p className="eyebrow">FİLTRE PERFORMANSI · GEÇENLER</p>
    <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
     <Stat title="Geçen aday" value={String(stats.passing_count||0)}/>

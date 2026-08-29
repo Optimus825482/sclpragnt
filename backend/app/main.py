@@ -1373,6 +1373,7 @@ async def startup_services():
     _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
     _start_background(chat_prediction_auto_trade_loop(), "chat-prediction-auto-trade")
     _start_background(velocity_learning_loop(), "velocity-learner")
+    _start_background(autonomous_velocity_loop(), "velocity-auto-trader")
     _start_background(radar_loop(), "radar-loop")
     _start_background(top_gainers_refresh_loop(), "top-gainers-monitor")
     _start_background(symbol_activity_loop(), "symbol-activity")
@@ -4871,6 +4872,13 @@ async def get_velocity_report(limit: int = 60):
                          "reversal_rsi_max": VELOCITY_REVERSAL_RSI_MAX,
                          "struct_slope_pct": VELOCITY_STRUCT_SLOPE_PCT},
             "learning_state": dict(_velocity_learning_state),
+            "auto_trade": {"enabled": bool(config.VELOCITY_AUTO_ENABLED and (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"),
+                            "interval_sec": config.VELOCITY_AUTO_INTERVAL_SEC,
+                            "balance_pct": config.VELOCITY_AUTO_BALANCE_PCT,
+                            "sl_pct": config.VELOCITY_AUTO_SL_PCT,
+                            "trail_trigger_pct": config.VELOCITY_TRAIL_TRIGGER_PCT,
+                            "state": {k: v for k, v in _velocity_auto_state.items() if k != "opened"},
+                            "recent_opens": list(_velocity_auto_state["opened"][-5:])},
             "symbols": symbols[:20], "recent": recent}
 
 
@@ -4972,6 +4980,93 @@ async def get_velocity_live_tracking():
     for r in tracked:
         counts[r["outcome"]] += 1
     return {"paper_only": True, "server_time": now_ms / 1000, "counts": counts, "tracking": tracked}
+
+
+_velocity_auto_state = {"last_scan_at": None, "last_error": None, "opened": [],
+                          "last_open": None, "total_opened": 0}
+
+
+async def _open_velocity_position(candidate: dict) -> dict:
+    """En iyi hız adayına serbest TL'nin %50'si ile paper pozisyon açar."""
+    symbol = str(candidate["symbol"] or "").upper()
+    if symbol in analyzer.positions:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": "acik_pozisyon_var"}
+    chat_open = sum(1 for pos in analyzer.positions.values() if pos.get("strategy") == "CHAT_PREDICTION")
+    if chat_open >= config.CHAT_PREDICTION_MAX_OPEN_POSITIONS:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": "pozisyon_limiti_dolu"}
+    guard = await database.get_llm_symbol_guard(symbol)
+    guard_reason = _llm_guard_block_reason(guard)
+    if guard_reason:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": guard_reason}
+    try:
+        latest = await fetch_klines(symbol, "1m", 2)
+        price = float(latest[-1][4]) if latest else None
+    except Exception:
+        price = None
+    if not price:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": "fiyat_alinamadi"}
+    # Serbest TL'nin %50'si
+    balance = await database.get_wallet_balance("TRY")
+    order_value = round(balance * config.VELOCITY_AUTO_BALANCE_PCT / 100.0, 2)
+    order_value = min(order_value, balance)
+    if order_value < config.MIN_PARTIAL_ORDER_TRY:
+        return {"symbol": symbol, "status": "SKIPPED", "reason": f"bakiye_yetersiz:{order_value}TRY"}
+    # Likidite ön kontrolü
+    eligible, eligibility = await analyzer.entry_liquidity_preflight(symbol, "VELOCITY_AUTO", order_value)
+    if not eligible:
+        return {"symbol": symbol, "status": "ENTRY_INELIGIBLE", "reason": eligibility.get("reason", "likidite")}
+    stop_loss_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
+    context = {"signal_name": "Otonom Hız Avcısı · en iyi aday",
+                "velocity_score": candidate.get("velocity_score"),
+                "mode": candidate.get("mode"), "pattern_matches": candidate.get("pattern_matches"),
+                "paper_only": True, "source": "velocity_auto",
+                "atr_pct": candidate.get("atr_pct")}
+    result = await analyzer.open_position(symbol, price, "LONG", "CHAT_PREDICTION", order_value,
+                                           stop_loss_pct=stop_loss_pct,
+                                           entry_context_extra=context)
+    if result and str(result.get("action", "")).upper() == "BUY_SIGNAL":
+        await ws_manager.broadcast({"type": "signal", "data": result})
+        return {"symbol": symbol, "status": "PAPER_OPENED", "order_value_try": order_value,
+                 "entry": price, "stop_loss_pct": stop_loss_pct * 100}
+    return {"symbol": symbol, "status": "ENTRY_BLOCKED", "reason": str((result or {}).get("reason") or "kapı")}
+
+
+async def autonomous_velocity_loop():
+    """15 dk'da bir hız taraması; en iyi adaya (GEÇTİ veya İZLEME) pozisyon.
+
+    Açılış VELOCITY_AUTO_ENABLED + LLM paper anahtarıyla çift kilitli.
+    Pozisyon yönetimi analyzer'ın genel döngüsünde: kâr → break-even,
+    +%1 → ATR trailing, %1.5 sert stop.
+    """
+    await asyncio.sleep(60)
+    while True:
+        try:
+            enabled = config.VELOCITY_AUTO_ENABLED and \
+                (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
+            if enabled:
+                scan = await detect_velocity_candidates({})
+                _velocity_auto_state["last_scan_at"] = time.time()
+                # GEÇTİ adayları önce, sonra en yüksek skorlu İZLEME
+                pool = list(scan.get("candidates") or []) + list(scan.get("watchlist") or [])
+                pool.sort(key=lambda c: -float(c.get("velocity_score") or 0))
+                opened = False
+                for candidate in pool[:1]:
+                    outcome = await _open_velocity_position(candidate)
+                    _velocity_auto_state["last_open"] = outcome
+                    if outcome.get("status") == "PAPER_OPENED":
+                        _velocity_auto_state["total_opened"] += 1
+                        _velocity_auto_state["opened"].append({**outcome, "at": time.time(),
+                                                                "score": candidate.get("velocity_score")})
+                        del _velocity_auto_state["opened"][:-20]
+                        opened = True
+                    break  # tur başına en fazla bir pozisyon
+            _velocity_auto_state["last_error"] = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _velocity_auto_state["last_error"] = str(exc)
+            logger.exception("autonomous velocity loop: %s", exc)
+        await asyncio.sleep(config.VELOCITY_AUTO_INTERVAL_SEC)
 
 
 async def get_data_quality(args: dict):
