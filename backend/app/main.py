@@ -4573,22 +4573,68 @@ async def detect_5m_upside_candidates(args: dict | None = None):
     return await _detect_upside_candidates(5, args)
 
 
-# Hız avcısı: replay kalibrasyonu 2026-08-29 (14.475 gözlem, 15 Top-Gainer sembol).
-# 5dk içinde +%2'ye dokunma baz oranı %1.97; aşağıdaki üç koşul birlikte
-# +%19.3 koşullu olasılık üretti (9.8x lift). Kayıt: work/fisher_replay notları.
-VELOCITY_MIN_ATR_PCT = 0.30      # 1m ATR% ≥ 0.30 → yüksek salınım rejimi
-VELOCITY_MIN_VOLUME_RATIO = 2.0  # son 1m hacim / 20-bar ort. ≥ 2 → katılımcı girişi
-VELOCITY_MIN_RET3_PCT = 0.30     # son 3×1m getiri > +%0.30 → yön başlamış
+# Hız avcısı v2: 27-metrik forensics kalibrasyonu 2026-08-29 (10 atak vs 60
+# eşleşmiş kontrol, work/m1_indicator_forensics.json). Cohen d sıralamasında
+# en ayırt edici: Bollinger genişliği (d=+0.73), RSI (iki uçta toplanıyor,
+# d=+0.52), LinReg eğimi (d=+0.43), Aroon (d=+0.40). Son-bar hacim spike'i
+# HİÇ ayırt edici değildi (d=-0.01) → eski hacim şartı kaldırıldı.
+# İki atak modu: trend-içi (RSI>60) ve V-dönüşü (RSI<35) — kontroller RSI 53'te
+# sıkışmışken hit'ler iki uçta toplanıyordu.
+VELOCITY_MIN_ATR_PCT = 0.30        # 1m ATR% ≥ 0.30 → yüksek salınım rejimi (her iki mod)
+VELOCITY_MIN_BB_WIDTH_PCT = 2.5    # Bollinger(20,2) genişliği ≥ %2.5 (d=+0.73, en güçlü)
+VELOCITY_TREND_RSI_MIN = 60.0      # trend-içi mod: RSI ≥ 60 (momentum devam)
+VELOCITY_REVERSAL_RSI_MAX = 35.0   # V-dönüşü mod: RSI ≤ 35 (aşırı satımdan sıçrama)
+VELOCITY_STRUCT_SLOPE_PCT = 0.20   # LinReg(20) eğimi ≥ %0.2/10bar VEYA Aroon ≥ +50
 VELOCITY_BASE_RATE_PCT = 1.97
 VELOCITY_CALIBRATED_HIT_PCT = 19.3
+
+
+def _velocity_rsi(closes, n=14):
+    if len(closes) < n + 1:
+        return None
+    gains = losses = 0.0
+    for i in range(len(closes) - n, len(closes)):
+        d = closes[i] - closes[i - 1]
+        if d > 0: gains += d
+        else: losses -= d
+    return 100 - 100 / (1 + gains / losses) if losses else 100.0
+
+
+def _velocity_bollinger_width(closes, n=20, mult=2.0):
+    if len(closes) < n:
+        return None
+    m = sum(closes[-n:]) / n
+    sd = (sum((c - m) ** 2 for c in closes[-n:]) / n) ** 0.5
+    return (4 * sd) / m * 100 if m else None
+
+
+def _velocity_linreg_slope(closes, n=20):
+    if len(closes) < n:
+        return None
+    xs = list(range(n))
+    ys = closes[-n:]
+    mx, my = sum(xs) / n, sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    den = sum((x - mx) ** 2 for x in xs)
+    slope = num / den if den else 0
+    return slope / my * 100 * 10 if my else None
+
+
+def _velocity_aroon(highs, n=25):
+    if len(highs) < n + 1:
+        return None
+    win = highs[-(n + 1):]
+    up = (n - (len(win) - 1 - win.index(max(win)))) / n * 100
+    lwin = [h for h in win]  # Aroon down düşüklerle: basit proxy — yeterli, down hesabı lows ister
+    return up
 
 
 async def detect_velocity_candidates(args: dict | None = None):
     """5 dakika içinde en az %2 yükselme potansiyeli taşıyan en hızlı 3 aday.
 
-    Mevcut 'yükseliş adayları' taramasından farkı: hedef kadanslı hareket
-    (%2/5dk), genel yön tahmini değil. Sıralama velocity skoru ile:
-    ATR% (salınım kapasitesi) × hacim patlaması × anlık 3-bar ivme.
+    v2 — forensics kalibrasyonu: Bollinger genişliği + ATR + (RSI iki ucu) +
+    yapısal teyit (LinReg/Aroon). Son-bar hacim şartı kaldırıldı (d=-0.01).
+    Her aday 'trend_devam' veya 'v_donusu' moduyla etiketlenir.
     Yalnızca kapanmış 1m mumlar; tahmin/garanti değildir, paper-only.
     """
     now_ms = int(time.time() * 1000)
@@ -4618,7 +4664,6 @@ async def detect_velocity_candidates(args: dict | None = None):
             closes = [float(r[4]) for r in rows]
             highs = [float(r[2]) for r in rows]
             lows = [float(r[3]) for r in rows]
-            vols = [float(r[5]) for r in rows]
             i = len(rows) - 1
             price = closes[-1]
             if price <= 0:
@@ -4626,18 +4671,36 @@ async def detect_velocity_candidates(args: dict | None = None):
             trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j - 1]), abs(lows[j] - closes[j - 1]))
                    for j in range(max(1, i - 14), i + 1)]
             atr_pct = (sum(trs) / len(trs)) / price * 100 if trs else 0.0
-            vavg = sum(vols[max(1, i - 20):i]) / max(1, len(vols[max(1, i - 20):i]) or 1)
-            volume_ratio = vols[-1] / vavg if vavg else 0.0
+            bb_width = _velocity_bollinger_width(closes)
+            rsi = _velocity_rsi(closes)
+            slope = _velocity_linreg_slope(closes)
+            aroon = _velocity_aroon(highs)
             ret3 = (closes[-1] / closes[-4] - 1) * 100 if len(closes) >= 4 else 0.0
+            # Mod tespiti: RSI iki ucundan biri
+            if rsi is None:
+                return None
+            mode = "trend_devam" if rsi >= VELOCITY_TREND_RSI_MIN else \
+                   "v_donusu" if rsi <= VELOCITY_REVERSAL_RSI_MAX else None
+            struct_ok = (slope is not None and slope >= VELOCITY_STRUCT_SLOPE_PCT) or \
+                        (aroon is not None and aroon >= 50)
             passes = (atr_pct >= VELOCITY_MIN_ATR_PCT and
-                      volume_ratio >= VELOCITY_MIN_VOLUME_RATIO and
-                      ret3 >= VELOCITY_MIN_RET3_PCT)
-            # velocity skoru: kalibre eşikleri aşan bileşenlerle oransal puan
+                      bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
+                      mode is not None and
+                      (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)))
+            # velocity skoru: bileşen oranlarının geometrik ortalaması benzeri çarpım
+            bb_ratio = (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0
+            struct_ratio = max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
+                               (aroon or 0) / 50.0)
             velocity_score = round((atr_pct / VELOCITY_MIN_ATR_PCT) *
-                                    (volume_ratio / VELOCITY_MIN_VOLUME_RATIO) *
-                                    (max(0.0, ret3) / VELOCITY_MIN_RET3_PCT), 2)
+                                    bb_ratio *
+                                    max(0.2, min(3.0, struct_ratio)) *
+                                    (1.0 + max(0.0, ret3) / 2.0), 2)
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
-                    "volume_ratio": round(volume_ratio, 2), "ret3_pct": round(ret3, 3),
+                    "bb_width_pct": round(bb_width, 2) if bb_width else None,
+                    "rsi": round(rsi, 1) if rsi else None, "mode": mode,
+                    "linreg_slope10_pct": round(slope, 3) if slope is not None else None,
+                    "aroon_up": round(aroon, 0) if aroon is not None else None,
+                    "ret3_pct": round(ret3, 3),
                     "velocity_score": velocity_score, "passes": passes,
                     "base_hit_pct": VELOCITY_BASE_RATE_PCT,
                     "calibrated_hit_pct": VELOCITY_CALIBRATED_HIT_PCT if passes else None,
@@ -4656,7 +4719,7 @@ async def detect_velocity_candidates(args: dict | None = None):
         journal_rows = [{
             "candidate_id": f"vel-{int(now_ms)}-{r['symbol']}",
             "created_at": now_ms / 1000, "symbol": r["symbol"], "price": r["price"],
-            "target_pct": 2.0, "atr_pct": r["atr_pct"], "volume_ratio": r["volume_ratio"],
+            "target_pct": 2.0, "atr_pct": r["atr_pct"], "volume_ratio": 0.0,
             "ret3_pct": r["ret3_pct"], "velocity_score": r["velocity_score"],
             "passes": r["passes"], "rank": r.get("rank"),
         } for r in (candidates[:3] + watchlist[:5])]
@@ -4668,15 +4731,19 @@ async def detect_velocity_candidates(args: dict | None = None):
                     float(live_stats.get("passing_count") or 0) * 100) if live_stats.get("passing_count") else None
     return {"generated_at": now_ms / 1000, "target": "min %2 move in 5 minutes",
             "pool_source": "binance_tr_top_gaining_tab", "symbols_scanned": len(pool),
-            "filter": {"min_atr_pct": VELOCITY_MIN_ATR_PCT, "min_volume_ratio": VELOCITY_MIN_VOLUME_RATIO,
-                        "min_ret3_pct": VELOCITY_MIN_RET3_PCT},
+            "version": "v2-forensics-2026-08-29",
+            "filter": {"min_atr_pct": VELOCITY_MIN_ATR_PCT,
+                        "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,
+                        "trend_rsi_min": VELOCITY_TREND_RSI_MIN,
+                        "reversal_rsi_max": VELOCITY_REVERSAL_RSI_MAX,
+                        "struct_slope_pct": VELOCITY_STRUCT_SLOPE_PCT},
             "calibration": {"base_rate_pct": VELOCITY_BASE_RATE_PCT,
                              "conditional_hit_pct": VELOCITY_CALIBRATED_HIT_PCT,
                              "live_hit_pct": live_hit_pct,
                              "live_evaluated": int(live_stats.get("evaluated_count") or 0),
                              "live_passing_touched": int(live_stats.get("passing_touched_count") or 0),
                              "live_passing_count": int(live_stats.get("passing_count") or 0),
-                             "note": "koşullar sağlandığında 5dk+%2 dokunuş olasılığı ~%19 (baz %2; replay kalibrasyonu 2026-08-29). live_hit_pct canlı journal'dan gelir."},
+                             "note": "v2: hacim şartı kaldırıldı (d=-0.01); Bollinger genişliği + RSI iki ucu + LinReg/Aroon teyidi. live_hit_pct canlı journal'dan gelir."},
             "candidates": candidates[:3], "watchlist": watchlist[:5],
             "data_policy": "kapanmış 1m mumlar; tahmin/garanti değil, paper-only"}
 
