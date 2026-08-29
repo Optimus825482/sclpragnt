@@ -53,6 +53,19 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
    .then(r=>{if(!r.ok) throw new Error(`HTTP ${r.status}`); setDeletingId(null); setReloadKey(k=>k+1);})
    .catch(()=>setDeletingId(null));
  };
+ const remeasureRow = (candidateId:string)=>{
+  setDeletingId(candidateId);
+  apiRequest(`${API_BASE}/api/reports/velocity/${encodeURIComponent(candidateId)}/remeasure`,{method:"POST"})
+   .then(r=>{if(!r.ok) throw new Error(`HTTP ${r.status}`); setDeletingId(null); setReloadKey(k=>k+1);})
+   .catch(()=>setDeletingId(null));
+ };
+ const remeasureAll = ()=>{
+  if(!window.confirm("Tüm ölçülmüş kayıtlar kapanmış mumlarla yeniden ölçülsün mü?")) return;
+  setDeletingId("__all__");
+  apiRequest(`${API_BASE}/api/reports/velocity/remeasure-all`,{method:"POST"})
+   .then(r=>{if(!r.ok) throw new Error(`HTTP ${r.status}`); setDeletingId(null); setReloadKey(k=>k+1);})
+   .catch(()=>setDeletingId(null));
+ };
  if (loading) return <section className="card text-bunker-muted">Hız avcısı raporu yükleniyor…</section>;
  if (error) return <section className="card border-neon-red/30 text-neon-red">Hız avcısı raporu alınamadı: {error}</section>;
  if (!view) return <section className="card text-bunker-muted">Henüz hız avcısı taraması yok; Chat sayfasındaki "🚀 5 DK %2 HIZ AVCISI" butonuyla tarama başlatın.</section>;
@@ -129,7 +142,11 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
    {!(view.symbols||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Henüz ölçülmüş sembol yok; sonuçlar 5 dakikalık pencere kapandıktan sonra birikir.</p>}
   </section>
   <section className="card"><p className="eyebrow">SON ADAYLAR VE SONUÇLARI</p>
-   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Koşul</th><th>ATR%</th><th>İvme</th><th>Skor</th><th>Sonuç</th><th>MFE</th><th>Sil</th></tr></thead><tbody>{(view.recent||[]).map((row:any)=><tr key={row.candidate_id}><td>{new Date(Number(row.created_at)*1000).toLocaleString("tr-TR")}</td><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td className={row.passes?"text-neon-green":"text-bunker-muted"}>{row.passes?"GEÇTİ":"İZLEME"}</td><td>{row.atr_pct}</td><td>%{row.ret3_pct}</td><td>{row.velocity_score}</td><td className={row.status==="evaluated"?(row.touched_target?"text-neon-green":"text-neon-red"):"text-yellow-300"}>{row.status==="evaluated"?(row.touched_target?"+%2 DOKUNDU":"DOKUNMADI"):"BEKLİYOR"}</td><td>{row.status==="evaluated"?pct(row.mfe_pct):"—"}</td><td><button onClick={()=>deleteRow(row.candidate_id)} disabled={deletingId!==null} title="Bu kaydı rapordan sil (kalıcı)" className="rounded border border-red-400/50 bg-red-400/10 px-2 py-0.5 font-mono text-[10px] text-red-300 hover:bg-red-400/20 disabled:opacity-50">{deletingId===row.candidate_id?"…":"✕"}</button></td></tr>)}</tbody></table></div>
+   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Koşul</th><th>ATR%</th><th>İvme</th><th>Skor</th><th>Sonuç</th><th>MFE</th><th>İşlem</th></tr></thead><tbody>{(view.recent||[]).map((row:any)=>{
+    const winDetails=(row.outcome_details||{});
+    const winTip=winDetails.window_first?`Pencere: ${winDetails.window_first}-${winDetails.window_last} (${winDetails.window_bars} mum)${winDetails.remeasured?" · yeniden ölçüldü":""}`:"Pencere detayı yok";
+    return <tr key={row.candidate_id}><td>{new Date(Number(row.created_at)*1000).toLocaleString("tr-TR")}</td><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td className={row.passes?"text-neon-green":"text-bunker-muted"}>{row.passes?"GEÇTİ":"İZLEME"}</td><td>{row.atr_pct}</td><td>%{row.ret3_pct}</td><td>{row.velocity_score}</td><td className={row.status==="evaluated"?(row.touched_target?"text-neon-green":"text-neon-red"):"text-yellow-300"}>{row.status==="evaluated"?(row.touched_target?"+%2 DOKUNDU":"DOKUNMADI"):"BEKLİYOR"}</td><td title={winTip}>{row.status==="evaluated"?pct(row.mfe_pct):"—"}</td><td className="whitespace-nowrap"><button onClick={()=>remeasureRow(row.candidate_id)} disabled={deletingId!==null} title="Kapanmış mumlarla yeniden ölç" className="mr-1 rounded border border-sky-400/50 bg-sky-400/10 px-2 py-0.5 font-mono text-[10px] text-sky-300 hover:bg-sky-400/20 disabled:opacity-50">{deletingId===row.candidate_id?"↻":"↻"}</button><button onClick={()=>deleteRow(row.candidate_id)} disabled={deletingId!==null} title="Bu kaydı rapordan sil (kalıcı)" className="rounded border border-red-400/50 bg-red-400/10 px-2 py-0.5 font-mono text-[10px] text-red-300 hover:bg-red-400/20 disabled:opacity-50">{deletingId===row.candidate_id?"…":"✕"}</button></td></tr>;})}</tbody></table></div>
+   <div className="mt-2 flex items-center gap-2"><button onClick={remeasureAll} disabled={deletingId!==null} className="min-h-8 rounded border border-sky-400/40 bg-sky-400/10 px-3 font-mono text-xs text-sky-300 disabled:opacity-50">↻ TÜMÜNÜ YENİDEN ÖLÇ</button><span className="text-xs text-bunker-muted">Ölçülmüş kayıtları kapanmış M1 mumlarla tekrar hesaplar (tutarsız değerleri düzeltir).</span></div>
    {!(view.recent||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Kayıt yok; Chat sayfasından hız taraması başlatın.</p>}
   </section>
  </div>;
