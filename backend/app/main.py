@@ -5206,16 +5206,20 @@ async def _hydrate_market_cache_for(symbol: str):
     except Exception as exc:
         logger.warning("hydrate ticker %s: %s", symbol, exc)
     try:
-        kline_rows = await fetch_klines(symbol, config.MOMENTUM_TIMEFRAME, 120)
-        if kline_rows:
-            market.klines.setdefault(config.MOMENTUM_TIMEFRAME, {})[symbol] = {
-                "timestamps": [int(r[0]) for r in kline_rows],
-                "opens": [float(r[1]) for r in kline_rows],
-                "highs": [float(r[2]) for r in kline_rows],
-                "lows": [float(r[3]) for r in kline_rows],
-                "closes": [float(r[4]) for r in kline_rows],
-                "volumes": [float(r[5]) for r in kline_rows],
-            }
+        # 1m (ATR kapasite + hız hesapları) ve 5m (MOMENTUM_TIMEFRAME,
+        # preflight/recheck) ikisini de doldur; aksi halde recheck 0 bar
+        # üzerinden yanlış reddediyor.
+        for tf in ("1m", config.MOMENTUM_TIMEFRAME):
+            kline_rows = await fetch_klines(symbol, tf, 120)
+            if kline_rows:
+                market.klines.setdefault(tf, {})[symbol] = {
+                    "timestamps": [int(r[0]) for r in kline_rows],
+                    "opens": [float(r[1]) for r in kline_rows],
+                    "highs": [float(r[2]) for r in kline_rows],
+                    "lows": [float(r[3]) for r in kline_rows],
+                    "closes": [float(r[4]) for r in kline_rows],
+                    "volumes": [float(r[5]) for r in kline_rows],
+                }
     except Exception as exc:
         logger.warning("hydrate klines %s: %s", symbol, exc)
     try:

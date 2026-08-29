@@ -1695,20 +1695,44 @@ class ScalpAnalyzer:
                 return ineligible
             # Volatility-capacity gate: the target must sit far enough beyond
             # recent noise that a normal bar can actually reach it.
+            # CHAT_PREDICTION (velocity) already passed its own ATR-based
+            # filter in the scan (ATR% >= 0.30) and carries the real target
+            # + horizon in entry_context; its capacity is measured against
+            # the horizon bar count instead of a single bar.
             tf = self._strategy_tf(strat_name)
-            kline = self.market.get_ut_kline(symbol, tf) if self.market else None
-            if kline:
-                atr_value = self.calculate_atr(kline, config.SYSTEM_ATR_PERIOD)
-                if atr_value and entry_price:
-                    capacity_ratio = (entry_price * target_pct) / atr_value
-                    if capacity_ratio < config.MIN_TARGET_ATR_CAPACITY_RATIO:
-                        await database.save_signal({
-                            "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                            "reason": f"atr_capacity_insufficient:{capacity_ratio:.2f}",
-                            "strategy": strat_name, "timestamp": time.time()})
-                        return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+            if strat_name == "CHAT_PREDICTION":
+                ctx = entry_context_extra or {}
+                horizon = int(ctx.get("horizon_minutes") or 5)
+                # 5dk-%2 / 15dk-%3 profilleri: hedef / (ATR × √bar) kapasitesi
+                kline = self.market.get_ut_kline(symbol, "1m") if self.market else None
+                if kline:
+                    atr_value = self.calculate_atr(kline, config.SYSTEM_ATR_PERIOD)
+                    if atr_value and entry_price:
+                        import math as _math
+                        expected_move = atr_value * _math.sqrt(max(1, horizon))
+                        capacity_ratio = (entry_price * 0.02) / expected_move
+                        if capacity_ratio < 1.0:
+                            await database.save_signal({
+                                "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                 "reason": f"atr_capacity_insufficient:{capacity_ratio:.2f}",
-                                "strategy": strat_name, "timestamp": time.time()}
+                                "strategy": strat_name, "timestamp": time.time()})
+                            return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                    "reason": f"atr_capacity_insufficient:{capacity_ratio:.2f}",
+                                    "strategy": strat_name, "timestamp": time.time()}
+            else:
+                kline = self.market.get_ut_kline(symbol, tf) if self.market else None
+                if kline:
+                    atr_value = self.calculate_atr(kline, config.SYSTEM_ATR_PERIOD)
+                    if atr_value and entry_price:
+                        capacity_ratio = (entry_price * target_pct) / atr_value
+                        if capacity_ratio < config.MIN_TARGET_ATR_CAPACITY_RATIO:
+                            await database.save_signal({
+                                "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                "reason": f"atr_capacity_insufficient:{capacity_ratio:.2f}",
+                                "strategy": strat_name, "timestamp": time.time()})
+                            return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                    "reason": f"atr_capacity_insufficient:{capacity_ratio:.2f}",
+                                    "strategy": strat_name, "timestamp": time.time()}
         is_bb_mfi = strat_name == "BB_MFI_MEAN_REVERSION"
         planned_take_profit_pct = (
             float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
