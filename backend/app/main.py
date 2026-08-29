@@ -4484,15 +4484,23 @@ async def _detect_upside_candidates(horizon_minutes: int, args: dict | None = No
         sem = asyncio.Semaphore(4)
         async def _pattern_gate(candidate):
             async with sem:
+                # 5m/15m snapshot 55+ kapanmış mum istiyor; 120×1m sadece 24 mum
+                # ürettiğinden 500 barla çağırıyoruz (1m resample yeterli).
                 try:
-                    rows = await fetch_klines(candidate["symbol"], "1m", 120)
+                    rows = await fetch_klines(candidate["symbol"], "1m", 500)
                 except Exception:
                     candidate["pattern_evaluation"] = {"confidence_tier": "watch", "matches": [], "error": "kline_unavailable"}
                     return
-                result = chat_pattern_replay.evaluate_live_candidate(
-                    rows, horizon_minutes, pattern_tags=set(pattern_state.get("tags") or []),
-                    min_matches=pattern_state.get("min_matches", 2),
-                    high_confidence_matches=pattern_state.get("high_confidence_matches", 3))
+                try:
+                    result = chat_pattern_replay.evaluate_live_candidate(
+                        rows, horizon_minutes, pattern_tags=set(pattern_state.get("tags") or []),
+                        min_matches=pattern_state.get("min_matches", 2),
+                        high_confidence_matches=pattern_state.get("high_confidence_matches", 3))
+                except Exception as exc:
+                    logger.warning("Pattern gate exception %s: %s", candidate.get("symbol"), exc)
+                    candidate["pattern_evaluation"] = {"confidence_tier": "watch", "matches": [],
+                                                        "error": f"gate_exception:{type(exc).__name__}"}
+                    return
                 candidate["pattern_evaluation"] = result or {"confidence_tier": "watch", "matches": []}
         await asyncio.gather(*(_pattern_gate(candidate) for candidate in candidates))
     else:
