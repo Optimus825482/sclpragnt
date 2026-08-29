@@ -182,7 +182,7 @@ async def promote_validated_instincts(pool, *, dry_run=True):
         decay = await conn.execute("""UPDATE trading_instincts
             SET confidence = GREATEST(0.30, confidence - 0.05)
             WHERE status='candidate' AND confidence > 0.30
-              AND COALESCE(last_seen_at, created_at) < now() - interval '14 days'""")
+              AND COALESCE(last_seen_at, first_seen_at) < now() - interval '14 days'""")
         rows = await conn.fetch("""SELECT id,instinct_key,confidence,evidence_count,contradiction_count
             FROM trading_instincts WHERE status='candidate' AND confidence >= 0.80
             AND evidence_count >= 3 AND contradiction_count=0""")
