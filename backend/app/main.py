@@ -1832,6 +1832,19 @@ async def fisher_m3_kernel_m5_shadow_loop():
     await asyncio.sleep(10)
     while True:
         try:
+            # Kill-switch: runtime_config'ten her turda canlı oku; settings
+            # API'siyle kapatmak restart gerektirmeden döngüyü durdurur.
+            if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED:
+                try:
+                    _rt = await database.get_llm_setting("runtime_config")
+                    if _rt:
+                        _rc = json.loads(_rt)
+                        if _rc.get("fisher_m3_kernel_m5_shadow_enabled") is False:
+                            config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED = False
+                        if _rc.get("fisher_m3_kernel_m5_exact_paper_enabled") is False:
+                            config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED = False
+                except Exception:
+                    pass
             if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED and migration_monitor.state["status"] != "running":
                 for symbol in list(config.SYMBOLS):
                     m1 = market.get_ut_kline(symbol, "1m")
@@ -5002,6 +5015,40 @@ async def remeasure_all_velocity():
         except HTTPException as exc:
             failed.append({"candidate_id": candidate["candidate_id"], "detail": exc.detail})
     return {"ok": True, "paper_only": True, "remeasured": remeasured, "failed": failed[:10]}
+
+
+@app.post("/api/velocity/manual-scan")
+async def manual_velocity_scan():
+    """Manuel hız avcısı taraması: 5dk-%2 + 15dk-%3 profillerini tarar,
+    en yüksek skorlu adaya (GEÇTİ veya İZLEME) paper pozisyon açar.
+
+    Otonom döngüyle aynı kapılardan geçer; buton bunu anında tetikler.
+    """
+    scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
+    scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
+    pool = (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
+            + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
+    pool.sort(key=lambda c: -float(c.get("velocity_score") or 0))
+    if not pool:
+        return {"ok": True, "paper_only": True, "opened": False,
+                "message": "Şu an koşulları geçen aday yok; yüksek salınım rejimi bekleniyor.",
+                "scan5": {"candidates": scan5.get("candidates", []), "watchlist": scan5.get("watchlist", [])},
+                "scan15": {"candidates": scan15.get("candidates", []), "watchlist": scan15.get("watchlist", [])}}
+    best = pool[0]
+    outcome = await _open_velocity_position(best)
+    _velocity_auto_state["last_open"] = outcome
+    if outcome.get("status") == "PAPER_OPENED":
+        _velocity_auto_state["total_opened"] += 1
+        _velocity_auto_state["opened"].append({**outcome, "at": time.time(),
+                                                "score": best.get("velocity_score"),
+                                                "horizon": best.get("horizon_minutes"),
+                                                "manual": True})
+        del _velocity_auto_state["opened"][:-20]
+    return {"ok": True, "paper_only": True,
+            "opened": outcome.get("status") == "PAPER_OPENED",
+            "best_candidate": best, "outcome": outcome,
+            "scan5": {"candidates": scan5.get("candidates", []), "watchlist": scan5.get("watchlist", [])},
+            "scan15": {"candidates": scan15.get("candidates", []), "watchlist": scan15.get("watchlist", [])}}
 
 
 @app.get("/api/reports/velocity/live")

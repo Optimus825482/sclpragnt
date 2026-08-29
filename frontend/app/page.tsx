@@ -80,7 +80,25 @@ export default function Home() {
   const [closing, setClosing] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [alertsOpen, setAlertsOpen] = useState(false);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanResult, setScanResult] = useState<any>(null);
   const liveStatus = useLiveStatus();
+
+  const runManualVelocityScan = async () => {
+    if (scanBusy) return;
+    setScanBusy(true);
+    setScanResult(null);
+    try {
+      const response = await apiRequest(`${API_BASE}/api/velocity/manual-scan`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.detail || "Tarama başarısız");
+      setScanResult(data);
+    } catch (e) {
+      setScanResult({ error: e instanceof Error ? e.message : "Tarama hatası" });
+    } finally {
+      setScanBusy(false);
+    }
+  };
   const logEndRef = useRef<HTMLDivElement | null>(null);
 
   const loadTrades = useCallback(() => {
@@ -161,10 +179,59 @@ export default function Home() {
           <p className="eyebrow mt-1">Sermaye durumu · işlem başarısı · canlı işlem akışı</p>
         </div>
         <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
+          <button onClick={runManualVelocityScan} disabled={scanBusy} className="ui-button ui-button-primary disabled:cursor-wait disabled:opacity-60">
+            {scanBusy ? "⚡ TARANIYOR…" : "🚀 MANUEL HIZ TARAMASI"}
+          </button>
           <button onClick={() => setAlertsOpen(true)} className="ui-button ui-button-secondary">🔔 ALARMLAR</button>
         </div>
       </header>
       {msg && <div className="rounded-lg border px-3 py-2 text-xs font-mono border-neon-green/30 text-bunker-muted">{msg}</div>}
+
+      {scanResult && (
+        <div className="card space-y-3 border-sky-400/30 bg-sky-400/5">
+          <div className="flex items-center justify-between">
+            <p className="eyebrow text-sky-300">MANUEL HIZ AVCISI SONUCU</p>
+            <span className="font-mono text-[10px] text-bunker-muted">{scanResult.best_candidate ? new Date().toLocaleTimeString("tr-TR") : ""}</span>
+          </div>
+          {scanResult.error && <p className="text-xs text-neon-red">{scanResult.error}</p>}
+          {scanResult.message && <p className="text-xs text-yellow-300">{scanResult.message}</p>}
+          {scanResult.best_candidate && (
+            <div className="text-xs space-y-1">
+              <p>
+                En iyi aday: <b className="font-mono text-white">{scanResult.best_candidate.symbol}</b> · skor{" "}
+                <b className="text-neon-green">{scanResult.best_candidate.velocity_score}</b> · mod{" "}
+                {scanResult.best_candidate.mode === "v_donusu" ? "V-dönüşü" : "trend-devam"} · ATR %{scanResult.best_candidate.atr_pct} · RSI {scanResult.best_candidate.rsi} · MFI {scanResult.best_candidate.mfi}
+              </p>
+              <p className={scanResult.opened ? "text-neon-green font-bold" : "text-yellow-300"}>
+                {scanResult.opened
+                  ? `✓ PAPER POZİSYON AÇILDI · ${scanResult.outcome.order_value_try} TL · stop %${scanResult.outcome.stop_loss_pct}`
+                  : `İşlem açılmadı: ${scanResult.outcome?.reason || scanResult.outcome?.status || "bilinmiyor"}`}
+              </p>
+            </div>
+          )}
+          {scanResult.scan5?.candidates?.length > 0 && (
+            <div>
+              <p className="eyebrow mb-1">5 DK %2 GEÇENLER</p>
+              <div className="flex flex-wrap gap-1.5">
+                {scanResult.scan5.candidates.map((c: any) => (
+                  <span key={c.symbol} className="rounded border border-neon-green/40 bg-neon-green/5 px-2 py-0.5 font-mono text-[10px] text-neon-green">{c.symbol} · skor {c.velocity_score}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          {scanResult.scan15?.candidates?.length > 0 && (
+            <div>
+              <p className="eyebrow mb-1">15 DK %3 GEÇENLER</p>
+              <div className="flex flex-wrap gap-1.5">
+                {scanResult.scan15.candidates.map((c: any) => (
+                  <span key={c.symbol} className="rounded border border-sky-400/40 bg-sky-400/5 px-2 py-0.5 font-mono text-[10px] text-sky-300">{c.symbol} · skor {c.velocity_score}</span>
+                ))}
+              </div>
+            </div>
+          )}
+          <p className="text-[10px] text-bunker-muted">Uygun aday bulunursa otonom döngüyle aynı risk kapılarından geçirilip serbest TL'nin %50'si ile paper pozisyon açılır (stop %1.5, break-even → +%1'de ATR trailing).</p>
+        </div>
+      )}
 
       {/* ÜST: Dinamik portföy bilgileri */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
