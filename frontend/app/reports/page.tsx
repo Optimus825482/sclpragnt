@@ -22,9 +22,9 @@ function ForecastTab({ report, loading, error }: { report: any; loading: boolean
 type VelocityLiveRow = {
   candidate_id: string; symbol: string; entry_price: number; current_price: number | null;
   change_pct: number | null; target_pct: number; passes: boolean; velocity_score: number;
-  status: string; touched: boolean; journal_touched: boolean | null; touch_sec: number | null;
-  best_mfe_pct: number | null; elapsed_sec: number; remaining_sec: number; window_closed: boolean;
-  window_time: string;
+  status: string; touched: boolean; journal_touched: boolean | null; outcome: "success" | "ok" | "failed" | "pending";
+  touch_sec: number | null; best_mfe_pct: number | null; elapsed_sec: number; remaining_sec: number;
+  window_closed: boolean; window_time: string;
 };
 function VelocityTab({ report, loading, error }: { report: any; loading: boolean; error: string }) {
  const [deletingId,setDeletingId]=useState<string|null>(null);
@@ -59,28 +59,38 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
  const pct=(value:any)=>value==null||Number.isNaN(Number(value))?"—":`%${(Number(value)*100).toFixed(1)}`;
  const stats=view.stats||{}; const learning=view.learning_state||{}; const filters=view.filters||{};
  const liveRows=live||[];
- const hitCount=liveRows.filter(r=>r.touched).length;
+ const hitCount=liveRows.filter(r=>r.outcome==="success").length;
+ const okCount=liveRows.filter(r=>r.outcome==="ok").length;
+ const failCount=liveRows.filter(r=>r.outcome==="failed").length;
+ const outcomeLabel=(row:VelocityLiveRow):{text:string;cls:string}=>{
+  if(row.outcome==="success") return {text:"BAŞARILI · +%2 GEÇTİ",cls:"text-neon-green font-bold"};
+  if(row.outcome==="ok") return {text:"OK · ÜZERİNE ÇIKTI",cls:"text-yellow-300"};
+  if(row.outcome==="failed") return {text:"BAŞARISIZ · ÇIKAMADI",cls:"text-neon-red"};
+  return {text:"İZLENİYOR",cls:"text-sky-300"};
+ };
  return <div className="space-y-4">
   <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
    <Stat title="Canlı takip" value={String(liveRows.length)} tone="text-sky-300"/>
-   <Stat title="+%2 dokunan" value={String(hitCount)} tone={hitCount>0?"text-neon-green":"text-white"}/>
-   <Stat title="Dokunuş oranı (canlı)" value={liveRows.length?pct(hitCount/liveRows.length):"—"} tone={liveRows.length&&hitCount/liveRows.length>=0.15?"text-neon-green":"text-yellow-300"}/>
+   <Stat title="Başarılı (+%2)" value={String(hitCount)} tone={hitCount>0?"text-neon-green":"text-white"}/>
+   <Stat title="OK (üzerine çıktı)" value={String(okCount)} tone="text-yellow-300"/>
+   <Stat title="Başarısız" value={String(failCount)} tone={failCount>0?"text-neon-red":"text-white"}/>
    <Stat title="Toplam aday" value={String(stats.total||0)}/>
    <Stat title="Ölçülen" value={String(stats.evaluated||0)} tone="text-sky-300"/>
-   <Stat title="Ort. MFE" value={pct(stats.average_mfe_pct)}/>
   </div>
   <section className="card"><p className="eyebrow">CANLI İZLEME · ANALİZ ANI FİYAT → 5 DK PENCERE</p>
-   <p className="mt-1 text-xs text-bunker-muted">Her satır, son taramalardaki adayı analiz anındaki fiyattan itibaren izler; +%2'ye ulaşınca sonuç kilitlenir ve kaç saniyede ulaşıldığı yazılır. Pencere 5 dakika sonra kapanır. 5 saniyede bir güncellenir.</p>
-   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Giriş fiyatı</th><th>Canlı fiyat</th><th>Değişim</th><th>Durum</th><th>Süre / Ulaşım</th><th>Max MFE</th><th>Pencere</th></tr></thead><tbody>{liveRows.map((row:VelocityLiveRow)=><tr key={row.candidate_id} className={row.touched?"bg-neon-green/5":""}>
-    <td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className={row.touched?"text-neon-green font-bold hover:text-white":"text-white hover:text-neon-green"}/></td>
+   <p className="mt-1 text-xs text-bunker-muted">BAŞARILI = 5 dk içinde +%2'yi geçti · OK = giriş fiyatının üzerine çıktı ama +%2 olmadı · BAŞARISIZ = üzerine hiç çıkamadı. Pencere kapanınca sonuç kilitlenir; 5 saniyede bir güncellenir.</p>
+   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Giriş fiyatı</th><th>Canlı fiyat</th><th>Değişim</th><th>Sonuç</th><th>Süre</th><th>Max MFE</th><th>Pencere</th></tr></thead><tbody>{liveRows.map((row:VelocityLiveRow)=>{
+    const lbl=outcomeLabel(row);
+    return <tr key={row.candidate_id} className={row.outcome==="success"?"bg-neon-green/5":""}>
+    <td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className={row.outcome==="success"?"text-neon-green font-bold hover:text-white":"text-white hover:text-neon-green"}/></td>
     <td className="font-mono">{row.entry_price.toLocaleString("tr-TR",{maximumFractionDigits:8})}</td>
     <td className="font-mono">{row.current_price?.toLocaleString("tr-TR",{maximumFractionDigits:8})??"—"}</td>
     <td className={`font-mono ${(row.change_pct??0)>=2?"text-neon-green font-bold":(row.change_pct??0)>0?"text-neon-green":(row.change_pct??0)<0?"text-neon-red":""}`}>{row.change_pct!=null?`${row.change_pct>=0?"+":""}${row.change_pct.toFixed(2)}%`:"—"}</td>
-    <td className={row.touched?"text-neon-green font-bold":row.window_closed?(row.journal_touched===false?"text-neon-red":"text-yellow-300"):"text-sky-300"}>{row.touched?"+%2 ULAŞTI":row.window_closed?(row.journal_touched===false?"PENCERE BİTTİ — DOKUNMADI":"ÖLÇÜM SIRASINDA"):"İZLENİYOR"}</td>
-    <td className="font-mono text-xs">{row.touched?(row.touch_sec!=null?`${row.touch_sec} sn'de ulaştı`:"—"):row.window_closed?"5 dk doldu":`${Math.floor(row.remaining_sec/60)}:${String(row.remaining_sec%60).padStart(2,"0")} kaldı`}</td>
+    <td className={lbl.cls}>{lbl.text}</td>
+    <td className="font-mono text-xs">{row.outcome==="success"&&row.touch_sec!=null?`${Math.floor(row.touch_sec/60)}dk ${row.touch_sec%60}sn'de geçti`:row.outcome==="pending"?`${Math.floor(row.elapsed_sec/60)}:${String(row.elapsed_sec%60).padStart(2,"0")} / 5:00`:"5:00 doldu"}</td>
     <td className={((row.best_mfe_pct??0)>=2)?"text-neon-green":"font-mono"}>{pct(row.best_mfe_pct)}</td>
     <td className="text-bunker-muted text-xs">{row.window_time}</td>
-   </tr>)}</tbody></table></div>
+   </tr>;})}</tbody></table></div>
    {!liveRows.length&&<p className="mt-2 text-sm text-bunker-muted">Son 30 dakikada aday yok; Chat sayfasından "🚀 5 DK %2 HIZ AVCISI" taraması başlatın.</p>}
   </section>
   <section className="card"><p className="eyebrow">FİLTRE PERFORMANSI · GEÇENLER</p>

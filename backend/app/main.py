@@ -4928,8 +4928,25 @@ async def get_velocity_live_tracking():
         touched = touch_sec is not None
         if row["status"] == "evaluated":
             journal_touched = bool(row.get("touched_target"))
+            journal_mfe = row.get("mfe_pct")
         else:
             journal_touched = None  # henüz öğrenme döngüsü yazmadı
+            journal_mfe = None
+        # Pencere içi en iyi hareket: kapanmış mumlardan (canlı) ve journal'dan
+        # (ölçülmüşse) ikisinin büyüğü.
+        live_mfe = ((best_high / entry - 1) * 100) if (best_high and entry) else None
+        mfe_values = [v for v in (live_mfe, journal_mfe) if v is not None]
+        effective_mfe = max(mfe_values) if mfe_values else None
+        # Üçlü sınıflandırma (pencere kapandığında kesinleşir):
+        #   success → +%2 hedefini geçti
+        #   ok      → giriş fiyatının üzerine çıktı ama +%2'ye ulaşmadı
+        #   failed  → pencere boyunca giriş fiyatının üzerine hiç çıkamadı
+        if touched or journal_touched is True:
+            outcome = "success"
+        elif window_closed and journal_touched is False:
+            outcome = "ok" if (effective_mfe is not None and effective_mfe > 0) else "failed"
+        else:
+            outcome = "pending"
         tracked.append({
             "candidate_id": row["candidate_id"], "symbol": symbol,
             "entry_price": entry, "current_price": current_price,
@@ -4940,16 +4957,21 @@ async def get_velocity_live_tracking():
             "status": row["status"],
             "touched": touched or (journal_touched is True),
             "journal_touched": journal_touched,
+            "outcome": outcome,
             "touch_sec": touch_sec,
-            "best_mfe_pct": round((best_high / entry - 1) * 100, 3) if best_high and entry else None,
+            "best_mfe_pct": round(effective_mfe, 3) if effective_mfe is not None else None,
             "elapsed_sec": elapsed_sec, "remaining_sec": max(0, int((due_ms - now_ms) / 1000)),
             "window_closed": window_closed,
             "window_time": datetime.fromtimestamp(created_ms / 1000).strftime("%H:%M:%S"),
         })
 
     await asyncio.gather(*(track(r) for r in rows))
-    tracked.sort(key=lambda r: (not r["touched"], -r["elapsed_sec"]))
-    return {"paper_only": True, "server_time": now_ms / 1000, "tracking": tracked}
+    rank_order = {"success": 0, "ok": 1, "pending": 2, "failed": 3}
+    tracked.sort(key=lambda r: (rank_order.get(r["outcome"], 2), -r["elapsed_sec"]))
+    counts = {"success": 0, "ok": 0, "failed": 0, "pending": 0}
+    for r in tracked:
+        counts[r["outcome"]] += 1
+    return {"paper_only": True, "server_time": now_ms / 1000, "counts": counts, "tracking": tracked}
 
 
 async def get_data_quality(args: dict):
