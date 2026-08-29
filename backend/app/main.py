@@ -2589,14 +2589,14 @@ async def migration_status():
 @app.post("/api/migration/start")
 async def migration_start(payload: dict = None):
     body = payload or {}
-    source = str(body.get("source") or os.getenv("MIGRATION_SOURCE_PATH") or database.DB_NAME)
+    source = str(body.get("source") or os.getenv("MIGRATION_SOURCE_PATH") or "legacy-pasif")
     if migration_monitor.state["status"] == "running": return {"ok": False, "message": "Migration zaten çalışıyor"}
     try: info = migration_monitor.inspect_source(source)
     except Exception as exc: raise HTTPException(status_code=400, detail=str(exc))
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url: raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
     migration_monitor.state.update({"source":info, "status":"queued", "phase":"queued", "progress":0, "message":"Migration kuyruğa alındı"})
-    asyncio.create_task(migration_monitor.run(source, database_url), name="sqlite-postgres-migration")
+    asyncio.create_task(migration_monitor.run(source, database_url), name="legacy-migration-check")
     return {"ok":True, "source":info}
 
 @app.post("/api/memory/retrieve")
