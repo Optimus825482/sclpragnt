@@ -183,6 +183,79 @@ const estimateTokens = (items: Message[]) =>
 const newSessionId = () =>
   `chat:main:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+function VelocityPanel({ title, badge, tone, result }: {
+  title: string;
+  badge: string;
+  tone: "green" | "blue";
+  result: VelocityScanResult;
+}) {
+  const toneText = tone === "green" ? "text-neon-green" : "text-sky-300";
+  const badgeCls = tone === "green"
+    ? "border-neon-green/50 bg-neon-green/10 text-neon-green"
+    : "border-sky-400/50 bg-sky-400/10 text-sky-300";
+  const candidates = result.candidates || [];
+  const watchlist = result.watchlist || [];
+  return (
+    <div className="chat-price-watch !block" role="status" aria-live="polite">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <p className="eyebrow">{title} · İLK 3</p>
+          <p className="text-xs text-bunker-muted mt-1">{result.symbols_scanned || 0} sembol tarandı · ATR≥%0.3 + BB≥%2.5 + RSI 35-80 + MFI 10-90</p>
+        </div>
+        <span className="text-[10px] text-bunker-muted shrink-0">{result.generated_at ? new Date(result.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
+      </div>
+      {candidates.length === 0 ? (
+        <p className="text-xs text-yellow-300">Şu an koşulları geçen sembol yok; yüksek salınım rejimi bekleniyor (aşırı alım/satım semboller elenir).</p>
+      ) : (
+        <div className="velocity-table">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-bunker-muted">
+                <th className="text-left py-1 pr-2 font-normal">#</th>
+                <th className="text-left py-1 pr-2 font-normal">Sembol</th>
+                <th className="text-right py-1 px-2 font-normal">Fiyat</th>
+                <th className="text-right py-1 px-2 font-normal">ATR%</th>
+                <th className="text-right py-1 px-2 font-normal">BB%</th>
+                <th className="text-right py-1 px-2 font-normal">RSI</th>
+                <th className="text-right py-1 px-2 font-normal">MFI</th>
+                <th className="text-center py-1 px-2 font-normal">Mod</th>
+                <th className="text-right py-1 pl-2 font-normal">Skor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {candidates.map((c) => (
+                <tr key={c.symbol} className="border-t border-bunker-800">
+                  <td className="py-1.5 pr-2 font-mono text-bunker-muted">{c.rank ?? "—"}</td>
+                  <td className="py-1.5 pr-2 font-bold"><SymbolLink symbol={c.symbol} timeframe="1m" newTab className={`hover:text-white ${toneText}`} /></td>
+                  <td className="py-1.5 px-2 text-right font-mono text-white">{c.price.toLocaleString("tr-TR", { maximumFractionDigits: 8 })}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{c.atr_pct}</td>
+                  <td className="py-1.5 px-2 text-right font-mono">{c.bb_width_pct}</td>
+                  <td className={`py-1.5 px-2 text-right font-mono ${(c.rsi ?? 50) >= 70 ? "text-yellow-300" : ""}`}>{c.rsi}</td>
+                  <td className={`py-1.5 px-2 text-right font-mono ${(c.mfi ?? 50) >= 80 ? "text-yellow-300" : ""}`}>{c.mfi}</td>
+                  <td className="py-1.5 px-2 text-center"><span className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${c.mode === "v_donusu" ? "border border-purple-400/50 text-purple-300" : "border border-neon-green/40 text-neon-green"}`}>{c.mode === "v_donusu" ? "V-DÖN" : "TREND"}</span></td>
+                  <td className={`py-1.5 pl-2 text-right font-mono font-bold ${toneText}`}>{c.velocity_score}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {watchlist.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+          <span className="text-[10px] text-bunker-muted">İZLEME:</span>
+          {watchlist.map((w) => (
+            <span key={w.symbol} className="rounded border border-bunker-700 px-1.5 py-0.5 font-mono text-[10px] text-bunker-muted">
+              <SymbolLink symbol={w.symbol} timeframe="1m" newTab className="text-bunker-muted hover:text-white" /> {w.velocity_score}
+            </span>
+          ))}
+        </div>
+      )}
+      <p className="text-[10px] text-yellow-300 mt-2">{result.calibration?.note || "Tahmin/garanti değildir; kapanmış mumlar, paper-only."}</p>
+      <span className={`hidden ${badgeCls}`}>{badge}</span>
+    </div>
+  );
+}
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>(starter);
   const [input, setInput] = useState("");
@@ -578,60 +651,20 @@ export default function ChatPage() {
             </Button>
           </div>
           {velocityResult && (
-            <div className="chat-price-watch" role="status" aria-live="polite">
-              <div className="flex items-center justify-between gap-3 mb-2">
-                <div>
-                  <p className="eyebrow">5 DK İÇİNDE %2+ HIZ POTANSİYELİ · İLK 3</p>
-                  <p className="text-xs text-bunker-muted">{velocityResult.symbols_scanned || 0} sembol tarandı · v2 filtre: ATR%≥0.3 + BB genişliği≥%2.5 + RSI 35-80 + MFI 10-90 (aşırı uçlar elenir)</p>
-                </div>
-                <span className="text-[10px] text-bunker-muted">{velocityResult.generated_at ? new Date(velocityResult.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
-              </div>
-              {(velocityResult.candidates || []).length === 0 && <p className="text-xs text-yellow-300">Şu an koşulları geçen sembol yok; yüksek salınım rejimi bekleniyor (aşırı alım/satım semboller elenir).</p>}
-              <div className="space-y-2">
-                {(velocityResult.candidates || []).map((candidate) => (
-                  <div key={candidate.symbol} className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800 pb-2 last:border-0 last:pb-0">
-                    <div>
-                      <strong className="font-mono text-sm text-white">#{candidate.rank ?? "—"} <SymbolLink symbol={candidate.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green" /></strong>
-                      <span className="ml-2 rounded border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[10px] text-neon-green">%2 POTANSİYEL</span>
-                      <p className="text-[11px] text-bunker-muted">fiyat {candidate.price.toLocaleString("tr-TR", { maximumFractionDigits: 8 })} · ATR %{candidate.atr_pct} · BB genişliği %{candidate.bb_width_pct} · RSI {candidate.rsi} · MFI {candidate.mfi} · {candidate.mode === "v_donusu" ? "V-dönüşü" : "trend-devam"} · son 3dk %{candidate.ret3_pct}</p>
-                    </div>
-                    <span className="font-mono text-xs text-neon-green">hız skoru {candidate.velocity_score}</span>
-                  </div>
-                ))}
-                {(velocityResult.watchlist || []).length > 0 && (
-                  <p className="text-[11px] text-bunker-muted">İzleme (koşullara yakın): {(velocityResult.watchlist || []).map((w) => `${w.symbol} (${w.velocity_score})`).join(" · ")}</p>
-                )}
-              </div>
-              <p className="text-[10px] text-yellow-300 mt-2">{velocityResult.calibration?.note || "Tahmin/garanti değildir; kapanmış mumlar, paper-only."}</p>
-            </div>
+            <VelocityPanel
+              title="5 DK İÇİNDE %2+ HIZ POTANSİYELİ"
+              badge="%2 POTANSİYEL"
+              tone="green"
+              result={velocityResult}
+            />
           )}
           {velocity15Result && (
-            <div className="chat-price-watch" role="status" aria-live="polite">
-              <div className="flex items-center justify-between gap-3 mb-2">
-                <div>
-                  <p className="eyebrow">15 DK İÇİNDE %3+ HIZ POTANSİYELİ · İLK 3</p>
-                  <p className="text-xs text-bunker-muted">{velocity15Result.symbols_scanned || 0} sembol tarandı · aynı v2 filtre seti (aşırı uçlar elenir)</p>
-                </div>
-                <span className="text-[10px] text-bunker-muted">{velocity15Result.generated_at ? new Date(velocity15Result.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
-              </div>
-              {(velocity15Result.candidates || []).length === 0 && <p className="text-xs text-yellow-300">Şu an 15dk-%3 koşullarını geçen sembol yok; izleme listesine bakın.</p>}
-              <div className="space-y-2">
-                {(velocity15Result.candidates || []).map((candidate) => (
-                  <div key={candidate.symbol} className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800 pb-2 last:border-0 last:pb-0">
-                    <div>
-                      <strong className="font-mono text-sm text-white">#{candidate.rank ?? "—"} <SymbolLink symbol={candidate.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green" /></strong>
-                      <span className="ml-2 rounded border border-sky-400/50 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-300">%3 POTANSİYEL</span>
-                      <p className="text-[11px] text-bunker-muted">fiyat {candidate.price.toLocaleString("tr-TR", { maximumFractionDigits: 8 })} · ATR %{candidate.atr_pct} · BB genişliği %{candidate.bb_width_pct} · RSI {candidate.rsi} · MFI {candidate.mfi} · {candidate.mode === "v_donusu" ? "V-dönüşü" : "trend-devam"} · son 3dk %{candidate.ret3_pct}</p>
-                    </div>
-                    <span className="font-mono text-xs text-sky-300">hız skoru {candidate.velocity_score}</span>
-                  </div>
-                ))}
-                {(velocity15Result.watchlist || []).length > 0 && (
-                  <p className="text-[11px] text-bunker-muted">İzleme: {(velocity15Result.watchlist || []).map((w) => `${w.symbol} (${w.velocity_score})`).join(" · ")}</p>
-                )}
-              </div>
-              <p className="text-[10px] text-yellow-300 mt-2">{velocity15Result.calibration?.note || "Tahmin/garanti değildir; kapanmış mumlar, paper-only."}</p>
-            </div>
+            <VelocityPanel
+              title="15 DK İÇİNDE %3+ HIZ POTANSİYELİ"
+              badge="%3 POTANSİYEL"
+              tone="blue"
+              result={velocity15Result}
+            />
           )}
           {(upsideResults[5].candidates.length > 0 || upsideResults[15].candidates.length > 0) && (
             <div className="chat-price-watch" role="status" aria-live="polite">
