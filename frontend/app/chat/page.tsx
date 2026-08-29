@@ -180,8 +180,7 @@ export default function ChatPage() {
   const [sessionId, setSessionId] = useState("chat:main");
   const [livePriceWatch, setLivePriceWatch] = useState<LivePriceWatch | null>(null);
   const [upsideResults, setUpsideResults] = useState<Record<5 | 15, UpsideScanResult>>({ 5: { candidates: [] }, 15: { candidates: [] } });
-  const [upsidePanelTab, setUpsidePanelTab] = useState<5 | 15 | "performance">(15);
-  const [forecastReport, setForecastReport] = useState<any>(null);
+  const [upsidePanelTab, setUpsidePanelTab] = useState<5 | 15>(15);
   const [upsideScanBusy, setUpsideScanBusy] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
@@ -192,12 +191,6 @@ export default function ChatPage() {
   const [ttsRate, setTtsRate] = useState(0);
   const [ttsPitch, setTtsPitch] = useState(0);
   const chatSettingsReady = useRef(false);
-  useEffect(() => {
-    apiRequest(`${API_BASE}/api/reports/llm-forecasts`, { cache: "no-store" })
-      .then((response) => response.ok ? response.json() : null)
-      .then(setForecastReport)
-      .catch(() => setForecastReport(null));
-  }, []);
   useEffect(() => {
     try {
       const saved = JSON.parse(
@@ -426,10 +419,6 @@ export default function ChatPage() {
       const result: UpsideScanResult = { generated_at: data.generated_at, horizon_minutes: data.horizon_minutes, symbols_scanned: data.symbols_scanned, skipped: data.symbols_skipped_open || [], candidates: (Array.isArray(data.candidates) ? data.candidates : []).slice(0, 3) };
       setUpsideResults((current) => ({ ...current, [horizon]: result }));
       setUpsidePanelTab(horizon);
-      apiRequest(`${API_BASE}/api/reports/llm-forecasts`, { cache: "no-store" })
-        .then((reportResponse) => reportResponse.ok ? reportResponse.json() : null)
-        .then(setForecastReport)
-        .catch(() => undefined);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "15 dakikalık tarama başarısız");
     } finally {
@@ -516,14 +505,13 @@ export default function ChatPage() {
               {upsideScanBusy ? "5 DK TARANIYOR…" : "⚡ 5 DK YÜKSELİŞ ADAYLARI"}
             </Button>
           </div>
-          {(upsideResults[5].candidates.length > 0 || upsideResults[15].candidates.length > 0 || forecastReport) && (
+          {(upsideResults[5].candidates.length > 0 || upsideResults[15].candidates.length > 0) && (
             <div className="chat-price-watch" role="status" aria-live="polite">
               <div className="section-tabs mb-3" aria-label="Yükseliş tahmin sekmeleri">
                 <button className={upsidePanelTab === 5 ? "active" : ""} onClick={() => setUpsidePanelTab(5)}>5 DK ADAYLARI</button>
                 <button className={upsidePanelTab === 15 ? "active" : ""} onClick={() => setUpsidePanelTab(15)}>15 DK ADAYLARI</button>
-                <button className={upsidePanelTab === "performance" ? "active" : ""} onClick={() => setUpsidePanelTab("performance")}>TAHMİN BAŞARISI</button>
               </div>
-              {upsidePanelTab !== "performance" && (() => {
+              {(() => {
                 const result = upsideResults[upsidePanelTab];
                 const candidates = result.candidates.slice(0, 3);
                 return <>
@@ -548,7 +536,6 @@ export default function ChatPage() {
                   </div>
                 </>;
               })()}
-              {upsidePanelTab === "performance" && <div className="grid grid-cols-2 gap-2 text-xs"><div className="card"><span className="text-bunker-muted">Ölçülen</span><strong className="block text-lg text-white">{forecastReport?.evaluated_count || 0}</strong></div><div className="card"><span className="text-bunker-muted">Yön doğruluğu</span><strong className="block text-lg text-neon-green">{forecastReport?.directional_accuracy == null ? "—" : `%${(Number(forecastReport.directional_accuracy) * 100).toFixed(1)}`}</strong></div><div className="card"><span className="text-bunker-muted">Doğru</span><strong className="block text-lg text-white">{forecastReport?.correct_count || 0}</strong></div><div className="card"><span className="text-bunker-muted">Bekleyen</span><strong className="block text-lg text-yellow-300">{forecastReport?.pending_count || 0}</strong></div><p className="col-span-2 text-[10px] text-bunker-muted">Sonuçlar kapanmış M1 mumlarıyla ölçülür. Tahminler paper-only’dir.</p></div>}
               <p className="text-[10px] text-yellow-300 mt-2">Liste tahmin/garanti değildir; eksik veya stale veriler güveni düşürür. Paper-only.</p>
             </div>
           )}

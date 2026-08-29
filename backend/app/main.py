@@ -4954,6 +4954,22 @@ async def get_llm_forecast_report():
             "pending_count": pending, "directional_accuracy": (correct / evaluated) if evaluated else None,
             "horizons": horizons, "recent": recent}
 
+@app.get("/api/reports/llm-chat-forecasts")
+async def get_llm_chat_forecast_report():
+    """Chat button candidate forecasts only; separate from other LLM forecasts."""
+    horizons = await database.get_llm_forecast_report(source="chat")
+    recent = await database.get_llm_forecasts(limit=50, source="chat")
+    evaluated = sum(int(row.get("evaluated_count") or 0) for row in horizons)
+    correct = sum(int(row.get("correct_count") or 0) for row in horizons)
+    pending = sum(int(row.get("pending_count") or 0) for row in horizons)
+    for row in horizons:
+        count = int(row.get("evaluated_count") or 0)
+        row["directional_accuracy"] = (int(row.get("correct_count") or 0) / count) if count else None
+    return {"paper_only": True, "source": "chat_upside_candidate_buttons", "evaluated_count": evaluated,
+            "correct_count": correct, "pending_count": pending,
+            "directional_accuracy": (correct / evaluated) if evaluated else None,
+            "horizons": horizons, "recent": recent}
+
 
 @app.get("/api/reports/capital-lock")
 async def get_capital_lock_report():
