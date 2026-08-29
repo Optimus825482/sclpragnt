@@ -41,7 +41,6 @@ CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook, top_gainers
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.sma_cascade_shadow import SmaCascadeShadow
-from app.fisher_m3_kernel_m5_shadow import FisherM3KernelM5Shadow
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import chat_prediction_learning
 from app import chat_prediction_replay
@@ -1343,32 +1342,11 @@ async def startup_services():
     ]))
     await market.fetch_historical_data(priority_timeframes)
     print(f"[MarketData] öncelikli strateji verisi hazır | timeframes={priority_timeframes} tickers={len(market.tickers)}", flush=True)
-    # Fisher M3 / Kernel M5 monitor needs its own closed M3 history.  Keep its
-    # warmup out of the startup critical path so deployment health checks do
-    # not wait for another full-universe REST fetch.
-    if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED:
-        market.timeframes = sorted(set(market.timeframes).union({"3m"}))
-        _start_background(
-            market.ensure_history(("3m", "5m"), min_candles=40, candle_limit=50),
-            "fisher-m3-kernel-m5-history-warmup",
-        )
-    # Pump Monitor tüm yapılandırılmış evreni değerlendirdiği için M5/M15/M30
-    # önbelleği en az teknik gösterge penceresi kadar kapalı mum içermelidir.
-    # Bu dar warmup yalnız eksik serileri 120 mumla REST'ten doldurur; her
-    # taramada yeniden geçmiş istemez ve diğer zaman dilimlerini belleğe almaz.
-    if config.PUMP_MONITOR_ENABLED:
-        pump_warmup = await market.ensure_history(("5m", "15m", "30m"), min_candles=55, candle_limit=120)
-        print(
-            f"[Pump Monitor] cache warmup | hydrated={pump_warmup['hydrated']} "
-            f"ready={pump_warmup['already_ready']} errors={len(pump_warmup['errors'])}",
-            flush=True,
-        )
     _start_background(backfill_missing_active_history(), "historical-backfill-active")
     _start_background(market.connect(skip_history=True), "market-connect")
     _start_background(microstructure_snapshot_loop(), "microstructure-snapshot")
     _start_background(strategy_loop(), "strategy-loop")
     _start_background(ma_cascade_shadow_loop(), "ma-cascade-shadow")
-    _start_background(fisher_m3_kernel_m5_shadow_loop(), "fisher-m3-kernel-m5-shadow")
     _start_background(llm_forecast_evaluation_loop(), "llm-forecast-evaluator")
     _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
     _start_background(chat_prediction_auto_trade_loop(), "chat-prediction-auto-trade")
@@ -1526,143 +1504,6 @@ def _pump_monitor_snapshot_for(symbol: str, timeframe: str, price: float, order_
     )
 
 
-async def pump_monitor_scan(*, execute: bool = False, source: str = "manual"):
-    """Score M5 early-pump candidates without altering the active BB-MFI path.
-
-    The rule set is the frozen research candidate: M5 upper-band expansion,
-    M5 MFI/RSI confirmation and M15 bullish context.  It is paper-only and
-    still passes the common liquidity, balance, position and re-entry gates.
-    """
-    global _pump_monitor_snapshot
-    rows, opened = [], []
-    order_value = float(config.FALLBACK_ORDER_TRY)
-    for symbol in list(dict.fromkeys(config.SYMBOLS)):
-        try:
-            ticker = market.get_ticker(symbol) or {}
-            price = float(ticker.get("last_price") or 0)
-            bars5 = market.get_ut_kline(symbol, "5m") or {}
-            bars15 = market.get_ut_kline(symbol, "15m") or {}
-            bars30 = market.get_ut_kline(symbol, "30m") or {}
-            closes5 = list(bars5.get("closes") or [])
-            if not price and closes5:
-                price = float(closes5[-1])
-            if price <= 0 or len(closes5) < 55 or len(bars15.get("closes") or []) < 55 or len(bars30.get("closes") or []) < 55:
-                candle_counts = {"M5": len(closes5), "M15": len(bars15.get("closes") or []), "M30": len(bars30.get("closes") or [])}
-                rows.append({"symbol": symbol, "status": "WARMING", "eligible": False,
-                             "reason": "M5/M15/M30 için en az 55 kapanmış mum bekleniyor · " + " · ".join(f"{tf}={count}" for tf, count in candle_counts.items()),
-                             "candle_counts": candle_counts})
-                continue
-            snap5 = _pump_monitor_snapshot_for(symbol, "5m", price, order_value)
-            snap15 = _pump_monitor_snapshot_for(symbol, "15m", price, order_value)
-            snap30 = _pump_monitor_snapshot_for(symbol, "30m", price, order_value)
-            if not (snap5.get("data_ready") and snap15.get("data_ready") and snap30.get("data_ready")):
-                rows.append({"symbol": symbol, "status": "WARMING", "eligible": False,
-                             "reason": "teknik snapshot henüz hazır değil"})
-                continue
-            bb_position = float((snap5.get("channels", {}).get("bollinger") or {}).get("position") or 0)
-            mfi = float(snap5.get("momentum", {}).get("mfi_14") or 0)
-            rsi = float(snap5.get("momentum", {}).get("rsi_14") or 0)
-            volume_ratio = float(snap5.get("volume", {}).get("volume_ratio_20") or 0)
-            m15_alignment = str(snap15.get("trend", {}).get("alignment") or "mixed")
-            m30_alignment = str(snap30.get("trend", {}).get("alignment") or "mixed")
-            continuation = m15_alignment == "bullish" or m30_alignment == "bullish"
-            checks = {
-                "M5 BB genişleme": bb_position >= 0.80,
-                "M15/M30 bağlam": continuation,
-                "M5 MFI": mfi >= 45,
-                "M5 RSI": rsi >= 65,
-            }
-            score = sum(checks.values())
-            m15_ok = (m15_alignment == "bullish") if config.PUMP_MONITOR_REQUIRE_M15_BULLISH else True
-            # A volume_ratio far above the pump threshold means the move has
-            # already detonated; entering there bought local tops (the worst
-            # historical bucket: -1029 TRY across 77 trades).
-            volume_chasing = (config.PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO > 0 and
-                              volume_ratio > config.PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO)
-            eligible = score >= config.PUMP_MONITOR_MIN_SCORE and m15_ok and not volume_chasing
-            high_confidence = eligible and volume_ratio >= config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO
-            candle_id = str(bars5.get("last_closed_at_ms") or bars5.get("timestamps", [None])[-1] or f"{len(closes5)}:{closes5[-1]}")
-            row = {
-                "symbol": symbol, "price": price, "status": "ENTRY_CANDIDATE" if eligible else "WATCH",
-                "eligible": eligible, "high_confidence": high_confidence, "score": score,
-                "checks": checks, "bb_position": round(bb_position, 3), "mfi_14": round(mfi, 2),
-                "rsi_14": round(rsi, 2), "volume_ratio_20": round(volume_ratio, 2),
-                "m15_alignment": m15_alignment, "m30_alignment": m30_alignment,
-                "has_open_position": symbol in analyzer.positions,
-                "reason": ("M15 bağlam + M5 devam sinyali" if eligible else
-                           f"Hacim oranı {volume_ratio:.1f}x > {config.PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO:.1f}x: pump zaten patladı, kovalanmaz" if volume_chasing else
-                           "Eşik/bağlam tamamlanmadı"),
-                "candle_id": candle_id,
-            }
-            rows.append(row)
-            # A page refresh is observation-only.  It must not consume the
-            # candle id that the automatic paper executor uses later.
-            if not execute:
-                continue
-            is_new_candle = _pump_monitor_seen_candles.get(symbol) != candle_id
-            if not is_new_candle:
-                continue
-            _pump_monitor_seen_candles[symbol] = candle_id
-            if score >= 2:
-                await database.save_signal({"symbol": symbol, "action": "PUMP_CANDIDATE", "price": price,
-                                            "reason": f"score={score}/4;m15={m15_alignment};m30={m30_alignment};vol={volume_ratio:.2f}",
-                                            "strategy": "PUMP_MONITOR", "timestamp": time.time()})
-            if not (execute and config.PUMP_MONITOR_AUTO_TRADE and eligible) or symbol in analyzer.positions:
-                continue
-            pump_positions = sum(1 for pos in analyzer.positions.values() if pos.get("strategy") == "PUMP_MONITOR")
-            if pump_positions >= config.PUMP_MONITOR_MAX_OPEN_POSITIONS:
-                row["status"] = "CAP_REACHED"
-                row["reason"] = "Pump Monitor açık pozisyon limiti dolu"
-                continue
-            liquid, liquidity = await analyzer.entry_liquidity_preflight(symbol, "PUMP_MONITOR")
-            if not liquid:
-                row["status"] = "ENTRY_INELIGIBLE"
-                row["reason"] = liquidity.get("reason", "liquidity_ineligible")
-                continue
-            planned_value = await analyzer._entry_order_value(symbol, "PUMP_MONITOR")
-            gate = await correlation_gate(symbol, order_value=planned_value)
-            if gate and gate.get("blocked"):
-                row["status"] = "CLUSTER_CAP"
-                row["reason"] = str(gate.get("reason"))
-                continue
-            context = {"signal_name": "Pump Monitor · M15 + M5 devam", "score": score,
-                       "high_confidence": high_confidence, "checks": checks, "m5": {"bb_position": bb_position, "mfi_14": mfi, "rsi_14": rsi, "volume_ratio_20": volume_ratio},
-                       "m15_alignment": m15_alignment, "m30_alignment": m30_alignment, "source": source,
-                       "research_rule": "score>=3 + M15 bullish; volume>=1 high confidence",
-                       # S3 calibration: bucketed win-rate multiplier scales the
-                       # order size down for historically bad context buckets.
-                       "calibration_multiplier": calibration_multiplier_for("PUMP_MONITOR", symbol, volume_ratio)}
-            result = await analyzer.open_position(symbol, price, "LONG", "PUMP_MONITOR", entry_context_extra=context)
-            if result and result.get("action") == "BUY_SIGNAL":
-                opened.append(result)
-                row["status"] = "PAPER_OPENED"
-                row["reason"] = "Paper pozisyon açıldı"
-                await ws_manager.broadcast({"type": "signal", "data": result})
-            elif result:
-                row["status"] = str(result.get("action") or "ENTRY_BLOCKED")
-                row["reason"] = str(result.get("reason") or "common_entry_gate_blocked")
-            else:
-                row["status"] = "ENTRY_BLOCKED"
-                row["reason"] = "Merkez giriş kapısı pozisyonu açmadı"
-        except Exception as exc:
-            rows.append({"symbol": symbol, "status": "ERROR", "eligible": False, "reason": str(exc)})
-            print(f"[Pump Monitor] {symbol} tarama hatası: {exc}", flush=True)
-    rows.sort(key=lambda item: (not bool(item.get("eligible")), -int(item.get("score") or 0), -float(item.get("volume_ratio_20") or 0)))
-    _pump_monitor_snapshot = {
-        "generated_at": time.time(),
-        "items": {row.get("symbol"): dict(row) for row in rows},
-        # Sayfa yenilemesi gözlem taraması çalıştırır; son otomatik/manüel
-        # yürütmenin sonucunu bununla silmemeliyiz.
-        "last_execution": opened if execute else list(_pump_monitor_snapshot.get("last_execution") or []),
-    }
-    return {"items": rows, "paper_trades": opened, "generated_at": _pump_monitor_snapshot["generated_at"],
-            "paper_only": True, "config": {"enabled": config.PUMP_MONITOR_ENABLED, "auto_trade": config.PUMP_MONITOR_AUTO_TRADE,
-            "min_score": config.PUMP_MONITOR_MIN_SCORE, "require_m15_bullish": config.PUMP_MONITOR_REQUIRE_M15_BULLISH,
-            "high_confidence_volume_ratio": config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO,
-            "max_open_positions": config.PUMP_MONITOR_MAX_OPEN_POSITIONS},
-            "model": "M5 early detection + M15/M30 context; research candidate, paper-only"}
-
-
 async def strategy_loop():
     await asyncio.sleep(5)
     # Entry checks are aligned to the exchange 5m candle boundary, not to
@@ -1676,15 +1517,6 @@ async def strategy_loop():
         scan_checked = scan_fresh = scan_stale = scan_evaluated = scan_no_signal = scan_errors = scan_passive = scan_ineligible = 0
         scan_buy = scan_blocked = 0
         scan_id = f"automatic-{int(time.time() * 1000)}" if entry_scan_due else None
-        if entry_scan_due and config.PUMP_MONITOR_ENABLED:
-            try:
-                pump_result = await pump_monitor_scan(execute=config.PUMP_MONITOR_AUTO_TRADE, source="automatic")
-                _record_strategy_scan_log("pump_monitor", "*", "SCAN", scan_id=scan_id,
-                                          candidates=sum(1 for item in pump_result["items"] if item.get("eligible")),
-                                          opened=len(pump_result["paper_trades"]))
-            except Exception as exc:
-                print(f"[Pump Monitor] otomatik tarama hatası: {exc}", flush=True)
-                _record_strategy_scan_log("pump_monitor", "*", "ERROR", scan_id=scan_id, error=str(exc))
         if entry_scan_due:
             print(f"[Strategy] giriş taraması başladı | symbols={len(config.SYMBOLS)} trigger=5m_candle_close", flush=True)
         for sym in config.SYMBOLS:
@@ -1824,100 +1656,6 @@ async def ma_cascade_shadow_loop():
         await asyncio.sleep(5)
 
 
-async def fisher_m3_kernel_m5_shadow_loop():
-    """Journal exact Pine candidates and execute them in the shared paper wallet."""
-    observer = FisherM3KernelM5Shadow()
-    pending: dict[str, dict] = {}
-    strategy = "FISHER_M3_KERNEL_M5_EXACT_PAPER"
-    await asyncio.sleep(10)
-    while True:
-        try:
-            # Kill-switch: runtime_config'ten her turda canlı oku; settings
-            # API'siyle kapatmak restart gerektirmeden döngüyü durdurur.
-            if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED:
-                try:
-                    _rt = await database.get_llm_setting("runtime_config")
-                    if _rt:
-                        _rc = json.loads(_rt)
-                        if _rc.get("fisher_m3_kernel_m5_shadow_enabled") is False:
-                            config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED = False
-                        if _rc.get("fisher_m3_kernel_m5_exact_paper_enabled") is False:
-                            config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED = False
-                except Exception:
-                    pass
-            if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED and migration_monitor.state["status"] != "running":
-                for symbol in list(config.SYMBOLS):
-                    m1 = market.get_ut_kline(symbol, "1m")
-                    active = symbol not in config.PASSIVE_SYMBOLS
-                    times, opens = list(m1.get("timestamps") or []), list(m1.get("opens") or [])
-                    queued = pending.get(symbol)
-                    if queued and times and opens and int(times[-1]) > int(queued["signal"]["m1_closed_at_ms"]):
-                        fill_price = float(opens[-1])
-                        pending.pop(symbol, None)
-                        if queued["action"] == "open" and active:
-                            result = await analyzer.open_position(
-                                symbol, fill_price, "LONG", strategy,
-                                entry_context_extra={
-                                    "signal_name": "Fisher M3 + Kernel M5 exact-paper",
-                                    "source_rule": "M3 Fisher cross up below -1 + green M5 Kernel",
-                                    "execution": "next_completed_m1_open",
-                                    "fisher_kernel": queued["signal"],
-                                },
-                            )
-                            decision = "PAPER_LONG_OPENED" if result and result.get("action") == "BUY_SIGNAL" else "PAPER_LONG_BLOCKED"
-                            await database.save_decision_log({
-                                "timestamp": time.time(), "symbol": symbol, "strategy": strategy, "decision": decision,
-                                "reason": "source_exact_next_m1_open", "price": fill_price,
-                                "metadata": {"source_signal": queued["signal"], "result": result},
-                            })
-                            _record_strategy_scan_log("fisher_m3_kernel_m5_exact_paper", symbol, decision,
-                                                      price=fill_price, timeframe="1m", reason=(result or {}).get("reason"))
-                            if result and result.get("action") == "BUY_SIGNAL":
-                                await ws_manager.broadcast({"type": "signal", "data": result})
-                        elif queued["action"] == "close":
-                            position = analyzer.positions.get(symbol) or {}
-                            if position.get("strategy") == strategy:
-                                result = await analyzer.close_position(symbol, fill_price, "fisher_m3_kernel_m5_exit_cross")
-                                if result:
-                                    await database.save_decision_log({
-                                        "timestamp": time.time(), "symbol": symbol, "strategy": strategy,
-                                        "decision": "PAPER_LONG_CLOSED", "reason": "source_exact_next_m1_open",
-                                        "price": fill_price, "metadata": {"source_signal": queued["signal"], "result": result},
-                                    })
-                                    _record_strategy_scan_log("fisher_m3_kernel_m5_exact_paper", symbol, "PAPER_LONG_CLOSED",
-                                                              price=fill_price, timeframe="1m")
-                                    await ws_manager.broadcast({"type": "signal", "data": result})
-                    position = analyzer.positions.get(symbol) or {}
-                    fisher_open = position.get("strategy") == strategy
-                    if not active and not fisher_open and symbol not in pending:
-                        continue
-                    events = observer.process(symbol, m1, market.get_ut_kline(symbol, "3m"), market.get_ut_kline(symbol, "5m"))
-                    for event in events:
-                        decision = str(event["type"]).upper()
-                        await database.save_decision_log({
-                            "timestamp": time.time(), "symbol": symbol, "strategy": "FISHER_M3_KERNEL_M5_SHADOW",
-                            "decision": decision, "reason": "closed_m1_source_aligned_observation_only",
-                            "price": event.get("price"), "metadata": event,
-                        })
-                        _record_strategy_scan_log("fisher_m3_kernel_m5_shadow", symbol, decision,
-                                                  price=event.get("price"), timeframe="1m")
-                        if not config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED or symbol in pending:
-                            continue
-                        if event["type"] == "long_candidate" and active and not position:
-                            import datetime as _dt
-                            if (config.FISHER_ENTRY_BLOCKED_HOURS or []) and _dt.datetime.now().hour in config.FISHER_ENTRY_BLOCKED_HOURS:
-                                await database.save_decision_log({
-                                    "timestamp": time.time(), "symbol": symbol, "strategy": strategy,
-                                    "decision": "ENTRY_BLOCKED", "reason": "fisher_entry_blocked_hour",
-                                    "price": event.get("price"), "metadata": {"blocked_hour": _dt.datetime.now().hour},
-                                })
-                            else:
-                                pending[symbol] = {"action": "open", "signal": event}
-                        elif event["type"] == "exit_candidate" and fisher_open:
-                            pending[symbol] = {"action": "close", "signal": event}
-        except Exception as exc:
-            print(f"[Fisher M3/Kernel M5 Shadow] hata: {exc}", flush=True)
-        await asyncio.sleep(5)
 async def radar_loop():
     await asyncio.sleep(15)
     while True:
@@ -2606,14 +2344,6 @@ CONFIG_FIELDS = {
     "top_gainers_limit": "TOP_GAINERS_LIMIT",
     "top_gainers_refresh_sec": "TOP_GAINERS_REFRESH_SEC",
     "gainer_radar_min_score": "GAINER_RADAR_MIN_SCORE",
-    "pump_monitor_enabled": "PUMP_MONITOR_ENABLED",
-    "pump_monitor_auto_trade": "PUMP_MONITOR_AUTO_TRADE",
-    "fisher_m3_kernel_m5_shadow_enabled": "FISHER_M3_KERNEL_M5_SHADOW_ENABLED",
-    "fisher_m3_kernel_m5_exact_paper_enabled": "FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED",
-    "pump_monitor_max_open_positions": "PUMP_MONITOR_MAX_OPEN_POSITIONS",
-    "pump_monitor_min_score": "PUMP_MONITOR_MIN_SCORE",
-    "pump_monitor_require_m15_bullish": "PUMP_MONITOR_REQUIRE_M15_BULLISH",
-    "pump_monitor_high_confidence_volume_ratio": "PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO",
     "min_notional": "MIN_NOTIONAL",
     "min_24h_quote_volume_try": "MIN_24H_QUOTE_VOLUME_TRY",
     "high_liquidity_bypass_volume_try": "HIGH_LIQUIDITY_BYPASS_VOLUME_TRY",
@@ -2729,9 +2459,9 @@ CONFIG_FIELDS = {
     "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"top_gainers_auto_activate", "liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "pump_monitor_enabled", "pump_monitor_auto_trade", "pump_monitor_require_m15_bullish", "fisher_m3_kernel_m5_shadow_enabled", "fisher_m3_kernel_m5_exact_paper_enabled", "symbol_activity_m1_flat_filter_enabled"}
+BOOL_FIELDS = {"top_gainers_auto_activate", "liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "symbol_activity_m1_flat_filter_enabled"}
 DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"top_gainers_limit", "top_gainers_refresh_sec", "gainer_radar_min_score", "pump_monitor_max_open_positions", "pump_monitor_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_sell_signal_confirm_bars", "bb_mfi_pyramid_profit_extension_layers", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
+INT_FIELDS = {"top_gainers_limit", "top_gainers_refresh_sec", "gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_sell_signal_confirm_bars", "bb_mfi_pyramid_profit_extension_layers", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
 STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "bb_mfi_pine_version", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
 
 @app.get("/api/config")
@@ -2741,12 +2471,7 @@ async def get_config():
         "top_gainers_limit": config.TOP_GAINERS_LIMIT,
         "top_gainers_refresh_sec": config.TOP_GAINERS_REFRESH_SEC,
         "gainer_radar_min_score": config.GAINER_RADAR_MIN_SCORE,
-        "pump_monitor_enabled": config.PUMP_MONITOR_ENABLED,
-        "pump_monitor_auto_trade": config.PUMP_MONITOR_AUTO_TRADE,
-        "pump_monitor_max_open_positions": config.PUMP_MONITOR_MAX_OPEN_POSITIONS,
-        "pump_monitor_min_score": config.PUMP_MONITOR_MIN_SCORE,
         "pump_monitor_require_m15_bullish": config.PUMP_MONITOR_REQUIRE_M15_BULLISH,
-        "pump_monitor_high_confidence_volume_ratio": config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO,
         "symbols": config.SYMBOLS,
         "min_notional": config.MIN_NOTIONAL,
         "min_24h_quote_volume_try": config.MIN_24H_QUOTE_VOLUME_TRY,
@@ -3081,46 +2806,6 @@ async def refresh_symbol_activity_manual():
 async def execute_gainers_radar():
     return await gainers_radar(execute=True)
 
-
-@app.get("/api/pump-monitor")
-async def get_pump_monitor():
-    """Observation-only refresh for the Pump Monitor screen."""
-    # Birden fazla açık istemci aynı 30 sn penceresinde aynı yüzlerce sembolü
-    # yeniden hesaplamasın. Manuel yürütme endpoint'i bu cache'i kullanmaz.
-    if _pump_monitor_snapshot.get("items") and time.time() - float(_pump_monitor_snapshot.get("generated_at") or 0) < 25:
-        result = {
-            "items": [dict(item) for item in _pump_monitor_snapshot["items"].values()],
-            "paper_trades": list(_pump_monitor_snapshot.get("last_execution") or []),
-            "generated_at": _pump_monitor_snapshot["generated_at"],
-            "paper_only": True,
-            "config": {"enabled": config.PUMP_MONITOR_ENABLED, "auto_trade": config.PUMP_MONITOR_AUTO_TRADE,
-                       "min_score": config.PUMP_MONITOR_MIN_SCORE, "require_m15_bullish": config.PUMP_MONITOR_REQUIRE_M15_BULLISH,
-                       "high_confidence_volume_ratio": config.PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO,
-                       "max_open_positions": config.PUMP_MONITOR_MAX_OPEN_POSITIONS},
-            "model": "M5 early detection + M15/M30 context; research candidate, paper-only",
-        }
-    else:
-        result = await pump_monitor_scan(execute=False, source="monitor_view")
-    result["history"] = await database.get_signals(limit=80, strategy="PUMP_MONITOR")
-    result["scan_logs"] = [
-        dict(item) for item in _strategy_scan_logs
-        if item.get("scan_type") == "pump_monitor"
-    ][:80]
-    return result
-
-
-@app.post("/api/pump-monitor/scan")
-async def execute_pump_monitor():
-    """Run one paper execution scan; real exchange orders are never used."""
-    if not config.PUMP_MONITOR_ENABLED:
-        raise HTTPException(status_code=409, detail="Pump Monitor ayarlarda kapalı")
-    result = await pump_monitor_scan(execute=True, source="manual_execute")
-    result["history"] = await database.get_signals(limit=80, strategy="PUMP_MONITOR")
-    result["scan_logs"] = [
-        dict(item) for item in _strategy_scan_logs
-        if item.get("scan_type") == "pump_monitor"
-    ][:80]
-    return result
 
 @app.put("/api/config")
 async def update_config(payload: dict):
@@ -6221,44 +5906,6 @@ async def ma_cascade_shadow_status(limit: int = 200, symbol: str = ""):
     }
 
 
-@app.get("/api/research/fisher-m3-kernel-m5-shadow")
-async def fisher_m3_kernel_m5_shadow_status(limit: int = 200, symbol: str = ""):
-    """Read-only active-symbol observations for the supplied MTF Pine rule."""
-    records = await database.get_decision_logs(limit=min(max(1, limit) * 4, 500), symbol=symbol or None,
-                                               strategy="FISHER_M3_KERNEL_M5_SHADOW")
-    records = [row for row in records if str(row.get("decision", "")).upper() in {"LONG_CANDIDATE", "EXIT_CANDIDATE"}]
-    return {
-        "paper_only": True,
-        "enabled": config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED,
-        "rule": "M3 Fisher(11) crossover below -1 plus green M5 Kernel(8,8,25,2); exit candidate is crossunder above 2",
-        "clock": "closed M1; M3/M5 values use lookahead_off-equivalent release",
-        "orders_created": False,
-        "events": records[:max(1, min(limit, 200))],
-    }
-
-
-@app.get("/api/research/fisher-m3-kernel-m5-monitor")
-async def fisher_m3_kernel_m5_monitor():
-    """Current, read-only Fisher/Kernel gate state for active symbols."""
-    active_symbols = [symbol for symbol in config.SYMBOLS if symbol not in config.PASSIVE_SYMBOLS]
-    items = [
-        FisherM3KernelM5Shadow.snapshot(
-            symbol, market.get_ut_kline(symbol, "1m"), market.get_ut_kline(symbol, "3m"), market.get_ut_kline(symbol, "5m"),
-        )
-        for symbol in active_symbols
-    ]
-    order = {"LONG_READY": 0, "EXIT_READY": 1, "KERNEL_RED": 2, "ENTRY_LEVEL": 3, "WAITING_FISHER": 4, "WAITING_KERNEL": 5, "WARMING": 6}
-    items.sort(key=lambda item: (order.get(str(item.get("state")), 99), str(item.get("symbol"))))
-    return {
-        "paper_only": True,
-        "enabled": config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED and config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED,
-        "active_symbols": len(items),
-        "updated_at": time.time(),
-        "rule": "M3 Fisher(11) cross below -1 plus green M5 Kernel(8,8,25,2); next M1 open paper execution",
-        "items": items,
-    }
-
-
 @app.get("/api/decisions")
 async def get_decisions(limit: int = 500, offset: int = 0, symbol: str = "", strategy: str = ""):
     return {"decisions": await database.get_decision_logs(limit, symbol or None, strategy or None, offset), "limit": limit, "offset": offset}
@@ -6463,15 +6110,12 @@ async def get_strategy_stats():
             s["gross_profit"] += pnl
         elif pnl < 0:
             s["gross_loss"] += abs(pnl)
-    fisher_key = "FISHER_M3_KERNEL_M5_EXACT_PAPER"
     for s in stats.values():
         s["win_rate"] = (s["wins"] / s["trades"] * 100) if s["trades"] else 0.0
         s["profit_factor"] = (s["gross_profit"] / s["gross_loss"]) if s["gross_loss"] else None
     active = [config.ACTIVE_STRATEGY]
     if config.PUMP_MONITOR_ENABLED and config.PUMP_MONITOR_AUTO_TRADE:
         active.append("PUMP_MONITOR")
-    if config.FISHER_M3_KERNEL_M5_SHADOW_ENABLED and config.FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED:
-        active.append(fisher_key)
     return {"stats": stats, "active": list(dict.fromkeys(active))}
 
 @app.get("/api/strategies/comparison")

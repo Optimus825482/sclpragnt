@@ -65,14 +65,10 @@ class Config:
     SMA_CASCADE_OUTCOME_WINDOW_MINUTES = max(1, int(os.getenv("SMA_CASCADE_OUTCOME_WINDOW_MINUTES", "30")))
     # Source-aligned M3 Fisher / M5 Kernel observer.  It records candidates
     # for active symbols on closed M1 bars and deliberately cannot trade.
-    FISHER_M3_KERNEL_M5_SHADOW_ENABLED = os.getenv("FISHER_M3_KERNEL_M5_SHADOW_ENABLED", "true").lower() == "true"
     # User-authorized forward paper strategy. It shares the virtual wallet and
     # portfolio history, while retaining only the supplied Fisher/Kernel exit.
-    FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED = os.getenv("FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED", "true").lower() == "true"
-    # Fisher pozisyonları exit-cross sözleşmesi gereği genel stop yönetiminden
-    # muaftır; ancak 268 işlemlik geçmişte 62 işlem planlı %1.2 SL'yi aşıp
-    # -%11'e kadar serbest düştü. Kaynak sözleşmeyi bozmayan tek çıkış:
-    # yalnız katastrofik düşüşü kesen geniş acil durum stop'u.
+    # Fisher stratejisi sistemden kaldırıldı; eski açık pozisyonlar için
+    # katastrofik düşüş stop'u korumaya devam eder.
     FISHER_EMERGENCY_STOP_PCT = max(0.5, float(os.getenv("FISHER_EMERGENCY_STOP_PCT", "3.0")))
     # Saat bazlı replay'de bu bantlar ortalama -%1.4..-%2.8 PnL üretti
     # (likidite ölü / gürültü yüksek). Varsayılan: 03-06 ve 18-20 kapalı.
