@@ -2,21 +2,18 @@ import asyncio
 import json
 import math
 import os
-import sqlite3
 import threading
 import time
 import tempfile
 import re
 from datetime import datetime, timezone
 
+import psycopg
+
 from app.config import config
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_DB_PATH = os.path.abspath(os.path.join(_APP_DIR, "..", "scalper_db_v4.sqlite"))
-_CONFIGURED_DB_PATH = os.getenv("SCALPER_DB_PATH", "").strip()
-DB_NAME = os.path.abspath(_CONFIGURED_DB_PATH) if _CONFIGURED_DB_PATH else _DEFAULT_DB_PATH
 _DB_LOCK = threading.Lock()
-_DB_CONN: sqlite3.Connection | None = None
 _PG_CONN = None
 # Transport-level errors that mean the cached connection itself is dead
 # (server restart, idle timeout, socket drop). On these the connection is
@@ -25,7 +22,7 @@ _PG_FATAL_ERRORS: tuple[type[BaseException], ...]
 try:
     import psycopg as _psycopg_transport
     _PG_FATAL_ERRORS = (_psycopg_transport.OperationalError, _psycopg_transport.InterfaceError)
-except Exception:  # pragma: no cover - psycopg absent in sqlite-only envs
+except Exception:  # pragma: no cover - psycopg absent in minimal-env
     _PG_FATAL_ERRORS = ()
 
 DEFAULT_SCALPER_SKILL_NAME = "Scalper Trade Manager"
@@ -56,7 +53,7 @@ def _json_safe(value):
 
 def _json_safe_dumps(value, **kwargs):
     """Serialize payloads so NaN/Inf never reach PostgreSQL JSONB columns;
-    sqlite tolerated them but psycopg rejects the whole INSERT."""
+    NaN/Inf reject the whole INSERT."""
     kwargs.setdefault("ensure_ascii", False)
     kwargs.setdefault("default", str)
     return json.dumps(_json_safe(value), **kwargs)
@@ -110,10 +107,10 @@ def _hybrid_row_factory(cursor):
     names = [col.name for col in cursor.description]
     return lambda values: _HybridRow(zip(names, values))
 
-def _postgres_enabled(): return os.getenv("DB_BACKEND", "postgres").lower() == "postgres"
+def _postgres_enabled(): return True
 
 def _db_timestamp():
-    return datetime.now(timezone.utc) if _postgres_enabled() else time.time()
+    return datetime.now(timezone.utc)
 
 def _epoch_value(value):
     if isinstance(value, datetime):
@@ -122,7 +119,7 @@ def _epoch_value(value):
 
 def _db_datetime_value(value):
     """Convert Unix expiry values to PostgreSQL timestamps when needed."""
-    if value in (None, "") or not _postgres_enabled():
+    if value in (None, ""):
         return value
     if isinstance(value, datetime):
         return value
@@ -132,23 +129,14 @@ def _db_datetime_value(value):
         return value
 
 
-def _get_connection() -> sqlite3.Connection:
-    global _DB_CONN
-    if _postgres_enabled():
-        global _PG_CONN
-        if _PG_CONN is None:
-            try:
-                import psycopg
-                _PG_CONN = _PostgresCompat(psycopg.connect(os.environ["DATABASE_URL"], row_factory=_hybrid_row_factory))
-            except Exception as exc:
-                raise RuntimeError(f"PostgreSQL bağlantısı kurulamadı: {exc}") from exc
-        return _PG_CONN
-    if _DB_CONN is None:
-        _DB_CONN = sqlite3.connect(DB_NAME, check_same_thread=False)
-        _DB_CONN.row_factory = sqlite3.Row
-        _DB_CONN.execute("PRAGMA journal_mode=WAL")
-        _DB_CONN.execute("PRAGMA busy_timeout=5000")
-    return _DB_CONN
+def _get_connection():
+    global _PG_CONN
+    if _PG_CONN is None:
+        try:
+            _PG_CONN = _PostgresCompat(psycopg.connect(os.environ["DATABASE_URL"], row_factory=_hybrid_row_factory))
+        except Exception as exc:
+            raise RuntimeError(f"PostgreSQL bağlantısı kurulamadı: {exc}") from exc
+    return _PG_CONN
 
 
 async def _run_db(operation):
@@ -173,8 +161,7 @@ def _execute(operation):
             except Exception:
                 pass
             global _PG_CONN
-            if _postgres_enabled():
-                _PG_CONN = None
+            _PG_CONN = None
             raise RuntimeError(f"PostgreSQL bağlantısı koptu, yeniden kurulacak: {exc}") from exc
         except Exception:
             try:
@@ -185,346 +172,26 @@ def _execute(operation):
 
 
 async def init_db():
-    if _postgres_enabled():
-        def pg_op(conn):
-            schema_path = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations", "001_pgvector_schema.sql"))
-            with open(schema_path, encoding="utf-8") as schema_file:
-                conn.conn.execute(schema_file.read())
-            # Reconcile migrated cash with trades and open positions. The
-            # SQLite wallet snapshot can predate the final position snapshot;
-            # using it directly would double-count open position capital.
-            conn.execute("""UPDATE virtual_wallet SET amount=
-                (SELECT COALESCE(
-                    (SELECT amount FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0),
-                    %s + COALESCE((SELECT SUM(pnl) FROM trades), 0)
-                    - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
-                    - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0) * %s
-                ) AS reconciled)
-            WHERE asset='TRY' AND NOT EXISTS (SELECT 1 FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0)""", (config.INITIAL_BALANCE_TRY, config.COMMISSION_PCT))
-            conn.conn.commit()
-        await _run_db(pg_op)
-        return
-    def op(conn: sqlite3.Connection):
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS positions (
-                symbol TEXT PRIMARY KEY, side TEXT, entry_price REAL,
-                stop_price REAL, take_profit REAL, peak_price REAL,
-                breakeven_hit INTEGER, quantity REAL, entry_time REAL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT, strategy TEXT, side TEXT,
-                entry_price REAL, exit_price REAL, quantity REAL,
-                pnl REAL, pnl_pct REAL, entry_time REAL, exit_time REAL
-            )
-        """)
-        # eski trades tablosuna commission kolonu ekle (yoksa)
-        try:
-            conn.execute("ALTER TABLE trades ADD COLUMN commission REAL")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # kolon zaten var
-        for col in ("entry_context TEXT", "max_favorable_pct REAL", "max_adverse_pct REAL", "hold_seconds REAL", "trade_id TEXT"):
-            try:
-                conn.execute(f"ALTER TABLE trades ADD COLUMN {col}")
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
-        # Kapanış nedeni eski veritabanlarında bulunmayabilir.
-        try:
-            conn.execute("ALTER TABLE trades ADD COLUMN reason TEXT")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass  # kolon zaten var
-        try:
-            conn.execute("ALTER TABLE positions ADD COLUMN trade_id TEXT")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp REAL, symbol TEXT, action TEXT,
-                price REAL, reason TEXT, strategy TEXT, trade_id TEXT
-            )
-        """)
-        for col in ("strategy TEXT", "trade_id TEXT"):
-            try:
-                conn.execute(f"ALTER TABLE signals ADD COLUMN {col}")
-            except sqlite3.OperationalError:
-                pass
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS decision_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp REAL NOT NULL,
-                symbol TEXT, strategy TEXT, decision TEXT,
-                reason TEXT, price REAL, metadata TEXT, source_decision_id INTEGER
-            )
-        """)
-        if _postgres_enabled():
-            conn.execute("ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS source_decision_id INTEGER")
-        else:
-            try:
-                conn.execute("ALTER TABLE decision_logs ADD COLUMN source_decision_id INTEGER")
-            except sqlite3.OperationalError:
-                pass
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS llm_tool_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp REAL NOT NULL,
-                scope TEXT, tool_name TEXT, arguments TEXT,
-                result_summary TEXT, duration_ms REAL, success INTEGER
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS a2a_messages (
-                message_id TEXT PRIMARY KEY, correlation_id TEXT, direction TEXT NOT NULL,
-                message_type TEXT NOT NULL, sender TEXT, recipient TEXT, status TEXT NOT NULL DEFAULT 'queued',
-                payload TEXT NOT NULL, created_at REAL NOT NULL, delivered_at REAL, acknowledged_at REAL,
-                last_error TEXT, attempts INTEGER NOT NULL DEFAULT 0
-        )
-        """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_exit_symbol_strategy ON trades(exit_time DESC, symbol, strategy)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_time_symbol_action ON signals(timestamp DESC, symbol, action)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_decisions_time_symbol_strategy ON decision_logs(timestamp DESC, symbol, strategy)")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_parity_backfill_source ON decision_logs(strategy, source_decision_id) WHERE source_decision_id IS NOT NULL")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS llm_symbol_guards (
-                symbol TEXT PRIMARY KEY, guard_type TEXT NOT NULL DEFAULT 'cooldown',
-                status TEXT NOT NULL DEFAULT 'active', blocked_until REAL,
-                reason TEXT, evidence TEXT, revision INTEGER NOT NULL DEFAULT 1,
-                created_at REAL NOT NULL, updated_at REAL NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS alert_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-                symbol TEXT NOT NULL, timeframe TEXT NOT NULL DEFAULT '5m',
-                rule_type TEXT NOT NULL DEFAULT 'price', operator TEXT NOT NULL,
-                threshold REAL NOT NULL, cooldown_seconds INTEGER NOT NULL DEFAULT 1800,
-                enabled INTEGER NOT NULL DEFAULT 1, armed INTEGER NOT NULL DEFAULT 1, last_triggered_at REAL,
-                last_value REAL, rearm_threshold REAL, expires_at REAL,
-            notify_channels TEXT NOT NULL DEFAULT '["websocket"]',
-                created_by TEXT NOT NULL DEFAULT 'user', reason TEXT,
-                created_at REAL NOT NULL, updated_at REAL NOT NULL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS alert_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id INTEGER NOT NULL,
-                symbol TEXT NOT NULL, event_key TEXT NOT NULL UNIQUE,
-                value REAL, message TEXT NOT NULL, severity TEXT NOT NULL DEFAULT 'info',
-                triggered_at REAL NOT NULL, acknowledged_at REAL,
-                FOREIGN KEY(rule_id) REFERENCES alert_rules(id) ON DELETE CASCADE
-            )
-        """)
-        try:
-            conn.execute("ALTER TABLE alert_rules ADD COLUMN armed INTEGER NOT NULL DEFAULT 1")
-        except sqlite3.OperationalError:
-            pass
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS notification_channels (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, channel_type TEXT NOT NULL,
-                destination TEXT NOT NULL, secret_ref TEXT, enabled INTEGER NOT NULL DEFAULT 1,
-                created_at REAL NOT NULL, UNIQUE(channel_type, destination)
-            )
-        """)
-        conn.execute("""CREATE TABLE IF NOT EXISTS push_subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, endpoint TEXT NOT NULL UNIQUE,
-            subscription TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL
-        )""")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS paper_orders (
-                order_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, side TEXT NOT NULL,
-                order_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
-                order_value_try REAL, price REAL, limit_price REAL, stop_price REAL,
-                take_profit_price REAL, stop_loss_pct REAL, take_profit_pct REAL,
-                max_hold_seconds INTEGER, oco_group TEXT, reference_price REAL,
-                client_request_id TEXT UNIQUE, trace_id TEXT, payload TEXT NOT NULL DEFAULT '{}',
-                created_at REAL NOT NULL, updated_at REAL NOT NULL, filled_at REAL, cancelled_at REAL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS virtual_wallet (
-                asset TEXT PRIMARY KEY,
-                amount REAL
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS chart_settings (
-                symbol TEXT PRIMARY KEY,
-                data TEXT NOT NULL
-            )
-        """)
-        conn.execute("""CREATE TABLE IF NOT EXISTS llm_providers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, base_url TEXT NOT NULL,
-            api_key_encrypted TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-            created_at REAL NOT NULL, updated_at REAL NOT NULL
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS llm_models (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id INTEGER NOT NULL, name TEXT NOT NULL,
-            temperature REAL NOT NULL DEFAULT 0.2, model_type TEXT NOT NULL DEFAULT 'chat',
-            dimensions INTEGER, embedding_metric TEXT NOT NULL DEFAULT 'cosine',
-            enabled INTEGER NOT NULL DEFAULT 1,
-            created_at REAL NOT NULL, FOREIGN KEY(provider_id) REFERENCES llm_providers(id) ON DELETE CASCADE
-        )""")
-        for col in ("model_type TEXT NOT NULL DEFAULT 'chat'", "dimensions INTEGER", "embedding_metric TEXT NOT NULL DEFAULT 'cosine'"):
-            try: conn.execute(f"ALTER TABLE llm_models ADD COLUMN {col}"); conn.commit()
-            except sqlite3.OperationalError: pass
-        conn.execute("""CREATE TABLE IF NOT EXISTS llm_skills (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, instructions TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL
-        )""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS llm_settings (
-            key TEXT PRIMARY KEY, value TEXT NOT NULL
-        )""")
-        default_skills = [
-            ("Scalping Teknik Analiz", "Evaluate trend, momentum, volatility, volume and liquidity as separate dimensions. Prefer confirmed multi-timeframe alignment over one indicator."),
-            ("Maliyet ve Net PnL", "Always distinguish gross move, entry fee, exit fee, slippage and net PnL. Never call a trade profitable when supplied net PnL is non-positive."),
-            ("Veri Güvenilirliği", "Treat null, zero or stale spread/depth/volume as missing data. Do not invent values; explicitly state confidence and data limitations."),
-            ("Paper Trading Risk", "This is public-data paper trading. Never place orders, recommend bypassing risk filters, or override hard stop, liquidity, timeout or position-limit rules."),
-            ("Trend ve Rejim", "Classify trend using EMA structure, ADX and multi-timeframe agreement. Separate trend, range and transition regimes; do not infer a trend from one indicator."),
-            ("Osilatör ve Formasyon", "Interpret RSI, Stochastic, CCI, MACD, Williams %R, candle patterns and channels together. Treat overbought or oversold as context, not an automatic reversal signal."),
-            ("Destek Direnç ve Pivot", "Use classic and Fibonacci pivots, Bollinger, Donchian and Keltner levels as context. Distinguish a level from a confirmed break and state timeframe."),
-            ("Scalping Karar Raporu", "Return concise sections: market regime, bullish evidence, bearish evidence, liquidity and volatility risks, missing data, confidence, and paper-trading scenarios. Never invent a price target."),
-            ("Canlı Sembol Tarama ve Trend Adayı", "Önce tüm etkin semboller için scan_market_snapshots aracını kullan. EMA hizalaması, ADX/DI, çoklu timeframe momentum, VWAP, hacim, spread, derinlik, ATR ve rejimi birlikte değerlendir. Yukarı adayları deep_analyze_symbol ile derinleştir; trend fazı ve süresini yalnızca mevcut mum zaman damgalarından çıkar, yoksa bilinmiyor de. Sonucu Türkçe ve paper_candidate=watch/candidate/avoid alanlarıyla ver; gerçek emir açma ve değer uydurma."),
-            ("Desen Araştırma ve Doğrulama", "İstenen sembol evreni ve timeframe'lerde pattern research araçlarını kullan. Önce causal candle/features ile aday deseni tanımla; sonra kronolojik replay/backtest, walk-forward/OOS, holdout, forward ve maliyet stresini ayrı değerlendir. Tek bir geçmiş backtesti kanıt sayma. Yalnızca yeterli örneklem, ücret dahil net sonuç ve OOS/forward tutarlılığı varsa deseni validated olarak araştırma hafızasına kaydet; bu hafıza canlı stratejiyi otomatik değiştirmez. Pattern scan geleceği yalnızca etiket olarak kullanır, giriş özelliğine sızdırma yapma."),
-            (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS),
-        ]
-        conn.executemany("INSERT OR IGNORE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)", [(n,i,time.time()) for n,i in default_skills])
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS backtests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp REAL, symbol TEXT, interval TEXT, strategy TEXT,
-                params TEXT, days_back INTEGER, initial_balance REAL,
-                final_balance REAL, net_pnl REAL, net_pnl_pct REAL,
-                total_trades INTEGER, wins INTEGER, losses INTEGER,
-                win_rate REAL, order_size REAL, stop_loss_pct REAL,
-                take_profit_pct REAL, trailing_stop_pct REAL,
-                trades TEXT
-            )
-        """)
-        try:
-            conn.execute("ALTER TABLE backtests ADD COLUMN max_drawdown_pct REAL")
-        except sqlite3.OperationalError:
-            pass
-        conn.execute("CREATE TABLE IF NOT EXISTS analysis_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, captured_at REAL NOT NULL, source TEXT NOT NULL DEFAULT 'entry', methodology_version TEXT, regime TEXT, regime_confidence REAL, confluence_score REAL, payload TEXT NOT NULL DEFAULT '{}', trade_id TEXT)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_symbol_time ON analysis_snapshots(symbol, captured_at DESC)")
-        conn.execute("""CREATE TABLE IF NOT EXISTS llm_forecasts (
-            forecast_id TEXT PRIMARY KEY, forecast_group_id TEXT NOT NULL,
-            symbol TEXT NOT NULL, created_at REAL NOT NULL, horizon_minutes INTEGER NOT NULL,
-            entry_price REAL NOT NULL, direction TEXT NOT NULL, confidence REAL NOT NULL,
-            invalidation_price REAL, min_move_pct REAL NOT NULL,
-            regime TEXT, timeframe_context TEXT NOT NULL DEFAULT '{}',
-            scenario TEXT NOT NULL, counter_scenario TEXT, summary TEXT,
-            model TEXT, prompt_version TEXT NOT NULL, snapshot_hash TEXT NOT NULL,
-            snapshot TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending',
-            evaluated_at REAL, outcome_price REAL, outcome_return_pct REAL,
-            outcome_direction TEXT, direction_correct INTEGER, max_favorable_pct REAL,
-            max_adverse_pct REAL, outcome_details TEXT NOT NULL DEFAULT '{}'
-        )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_forecasts_due ON llm_forecasts(status, created_at, horizon_minutes)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_forecasts_symbol_time ON llm_forecasts(symbol, created_at DESC)")
-        conn.execute("""CREATE TABLE IF NOT EXISTS llm_forecast_lessons (
-            lesson_key TEXT PRIMARY KEY, symbol TEXT, horizon_minutes INTEGER NOT NULL,
-            regime TEXT, direction TEXT, sample_size INTEGER NOT NULL,
-            in_sample_accuracy REAL, holdout_accuracy REAL, confidence_calibration_error REAL,
-            lesson TEXT NOT NULL, evidence TEXT NOT NULL DEFAULT '{}',
-            status TEXT NOT NULL DEFAULT 'candidate', generated_at REAL NOT NULL, updated_at REAL NOT NULL
-        )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_forecast_lessons_lookup ON llm_forecast_lessons(status, symbol, horizon_minutes)")
-        # Chat sayfası M5/M15 yükseliş aday tahminleri için ayrı günlük;
-        # llm_forecasts'tan bağımsız tablo + LLM postmortem alanları.
-        conn.execute("""CREATE TABLE IF NOT EXISTS chat_predictions (
-            prediction_id TEXT PRIMARY KEY, forecast_group_id TEXT NOT NULL,
-            symbol TEXT NOT NULL, horizon_minutes INTEGER NOT NULL, created_at REAL NOT NULL,
-            entry_price REAL NOT NULL, direction TEXT NOT NULL, confidence REAL NOT NULL,
-            score REAL, min_move_pct REAL NOT NULL, regime TEXT,
-            evidence TEXT NOT NULL DEFAULT '[]', risks TEXT NOT NULL DEFAULT '[]',
-            snapshot TEXT NOT NULL DEFAULT '{}', snapshot_hash TEXT NOT NULL,
-            model TEXT, prompt_version TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-            evaluated_at REAL, outcome_price REAL, outcome_return_pct REAL,
-            outcome_direction TEXT, direction_correct INTEGER, max_favorable_pct REAL,
-            max_adverse_pct REAL, outcome_details TEXT NOT NULL DEFAULT '{}',
-            analysis_status TEXT NOT NULL DEFAULT 'pending', analysis TEXT,
-            analysis_factors TEXT NOT NULL DEFAULT '{}', analysis_model TEXT, analysis_at REAL
-        )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_predictions_due ON chat_predictions(status, created_at, horizon_minutes)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_predictions_symbol_time ON chat_predictions(symbol, created_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_predictions_analysis ON chat_predictions(status, analysis_status)")
-        # LLM postmortem'lerinden türetilen, sonraki tahminlere bağlam olan dersler.
-        conn.execute("""CREATE TABLE IF NOT EXISTS chat_prediction_insights (
-            insight_key TEXT PRIMARY KEY, scope TEXT NOT NULL, symbol TEXT, horizon_minutes INTEGER,
-            sample_size INTEGER NOT NULL, success_count INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0,
-            insight TEXT NOT NULL, factors TEXT NOT NULL DEFAULT '{}', source_ids TEXT NOT NULL DEFAULT '[]',
-            status TEXT NOT NULL DEFAULT 'active', generated_at REAL NOT NULL, updated_at REAL NOT NULL
-        )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_prediction_insights_lookup ON chat_prediction_insights(status, symbol, horizon_minutes)")
-        # Hız avcısı journal'ı: tarama adayları + ölçülen %2 dokunuş sonuçları.
-        conn.execute("""CREATE TABLE IF NOT EXISTS velocity_candidates (
-            candidate_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
-            symbol TEXT NOT NULL, price REAL NOT NULL, target_pct REAL NOT NULL,
-            atr_pct REAL NOT NULL, volume_ratio REAL NOT NULL, ret3_pct REAL NOT NULL,
-            velocity_score REAL NOT NULL, passes INTEGER NOT NULL,
-            rank INTEGER, status TEXT NOT NULL DEFAULT 'pending',
-            evaluated_at REAL, mfe_pct REAL, touched_target INTEGER,
-            outcome_details TEXT NOT NULL DEFAULT '{}'
-        )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_velocity_candidates_due ON velocity_candidates(status, created_at)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_velocity_candidates_symbol ON velocity_candidates(symbol, created_at DESC)")
-        conn.execute("CREATE TABLE IF NOT EXISTS microstructure_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, captured_at REAL NOT NULL, bid_price REAL, ask_price REAL, bid_qty REAL, ask_qty REAL, spread_pct REAL, depth_try REAL, orderflow_imbalance REAL, source TEXT NOT NULL DEFAULT 'binance_tr_public_ws', updated_at REAL, UNIQUE(symbol, captured_at))")
-        conn.execute("CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC)")
-        conn.execute("""CREATE TABLE IF NOT EXISTS historical_candles (
-            symbol TEXT NOT NULL, timeframe TEXT NOT NULL, open_time INTEGER NOT NULL,
-            close_time INTEGER NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL,
-            close REAL NOT NULL, volume REAL NOT NULL, quote_volume REAL, trade_count INTEGER,
-            source TEXT NOT NULL DEFAULT 'binance_tr_public', fetched_at REAL NOT NULL,
-            PRIMARY KEY(symbol, timeframe, open_time))""")
-        conn.execute("CREATE INDEX IF NOT EXISTS historical_candles_lookup_idx ON historical_candles(symbol, timeframe, open_time)")
-        conn.execute("""CREATE TABLE IF NOT EXISTS historical_feature_snapshots (
-            symbol TEXT NOT NULL, timeframe TEXT NOT NULL, open_time INTEGER NOT NULL,
-            captured_at INTEGER NOT NULL, feature_version TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}',
-            regime TEXT, regime_confidence REAL, confluence_score REAL, data_ready INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY(symbol, timeframe, open_time, feature_version))""")
-        conn.execute("CREATE INDEX IF NOT EXISTS historical_features_lookup_idx ON historical_feature_snapshots(symbol, timeframe, open_time)")
-        conn.execute("""CREATE TABLE IF NOT EXISTS research_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, run_type TEXT NOT NULL,
-            scope TEXT NOT NULL DEFAULT 'active', symbols TEXT NOT NULL DEFAULT '[]', timeframes TEXT NOT NULL DEFAULT '[]',
-            parameters TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'completed', paper_only INTEGER NOT NULL DEFAULT 1
-        )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS research_runs_recent_idx ON research_runs(created_at DESC, run_type)")
-        conn.execute("""CREATE TABLE IF NOT EXISTS research_patterns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL NOT NULL, updated_at REAL NOT NULL,
-            name TEXT NOT NULL, description TEXT, symbols_scope TEXT NOT NULL DEFAULT 'active', symbols TEXT NOT NULL DEFAULT '[]',
-            timeframes TEXT NOT NULL DEFAULT '[]', definition TEXT NOT NULL DEFAULT '{}', evidence TEXT NOT NULL DEFAULT '{}',
-            status TEXT NOT NULL DEFAULT 'candidate', confidence REAL NOT NULL DEFAULT 0.3, source_run_id INTEGER
-        )""")
-        conn.execute("CREATE INDEX IF NOT EXISTS research_patterns_status_idx ON research_patterns(status, updated_at DESC)")
-        conn.commit()
-        conn.execute("INSERT OR IGNORE INTO virtual_wallet (asset, amount) VALUES ('TRY', ?)", (config.INITIAL_BALANCE_TRY,))
-        conn.commit()
-        # eski tabloya kolon ekle (yoksa)
-        for col in ("entry_time REAL", "strategy TEXT"):
-            try:
-                conn.execute(f"ALTER TABLE positions ADD COLUMN {col}")
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass  # kolon zaten var
-        try:
-            conn.execute("ALTER TABLE positions ADD COLUMN entry_context TEXT")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
-
-        _migrate_old_trades(conn)
-        _backfill_commission(conn)
-        _backfill_position_strategy(conn)
-        _recalculate_wallet(conn)
-        conn.commit()
-
-    await _run_db(op)
+    """Initialize the PostgreSQL schema (single backend)."""
+    def pg_op(conn):
+        schema_path = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations", "001_pgvector_schema.sql"))
+        with open(schema_path, encoding="utf-8") as schema_file:
+            conn.conn.execute(schema_file.read())
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_skills_name ON llm_skills(name)")
+        conn.execute("INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(%s,%s,TRUE,%s) "
+                     "ON CONFLICT(name) DO NOTHING",
+                     (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS, time.time()))
+        # Reconcile migrated cash with trades and open positions.
+        conn.execute("""UPDATE virtual_wallet SET amount=
+            (SELECT COALESCE(
+                (SELECT amount FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0),
+                %s + COALESCE((SELECT SUM(pnl) FROM trades), 0)
+                - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
+                - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0) * %s
+            ) AS reconciled)
+        WHERE asset='TRY' AND NOT EXISTS (SELECT 1 FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0)""", (config.INITIAL_BALANCE_TRY, config.COMMISSION_PCT))
+        conn.conn.commit()
+    await _run_db(pg_op)
 
 async def ensure_default_scalper_skill():
     """Keep the built-in trade manager visible in the active database skill registry."""
@@ -542,11 +209,11 @@ async def ensure_default_scalper_skill():
         conn.commit()
     return await _run_db(op)
 
-def _backfill_position_strategy(conn: sqlite3.Connection):
+def _backfill_position_strategy(conn):
     """strategy NULL olan açık pozisyonlara UT ata (eski kayıtlar)."""
     conn.execute("UPDATE positions SET strategy='UT' WHERE strategy IS NULL")
 
-def _recalculate_wallet(conn: sqlite3.Connection):
+def _recalculate_wallet(conn):
     """TRY bakiyesini trades + açık pozisyonlardan yeniden hesapla (komisyon dahil)."""
     start = config.INITIAL_BALANCE_TRY
     spent = conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM trades").fetchone()[0]
@@ -557,7 +224,7 @@ def _recalculate_wallet(conn: sqlite3.Connection):
     try_balance = start - spent - comm + received - open_cost - open_entry_commission
     conn.execute("UPDATE virtual_wallet SET amount=? WHERE asset='TRY'", (try_balance,))
 
-def _backfill_commission(conn: sqlite3.Connection):
+def _backfill_commission(conn):
     """commission NULL olan eski kayıtlara geriye dönük komisyon hesapla."""
     rows = conn.execute(
         "SELECT * FROM trades WHERE commission IS NULL"
@@ -573,7 +240,7 @@ def _backfill_commission(conn: sqlite3.Connection):
             (commission, pnl, pnl_pct, t["id"])
         )
 
-def _migrate_old_trades(conn: sqlite3.Connection):
+def _migrate_old_trades(conn):
     """trades tablosu oluşmadan önce kapanan işlemleri signals'tan geriye dönük aktar."""
     if conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] > 0:
         return  # zaten aktarılmış
@@ -605,7 +272,7 @@ async def reset_trading_data():
     Strateji, sembol ve LLM ayarları korunur. Tarihsel piyasa cache'i de
     silinmez; böylece yeni strateji hemen aynı veriyle çalışabilir.
     """
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         # Bağımlı kayıtları önce temizle (özellikle alert/paper order tabloları).
         tables = (
             "alert_events",
@@ -634,7 +301,7 @@ async def reset_trading_data():
     return await _run_db(op)
 
 async def get_wallet_balance(asset="USDT"):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", (asset,)).fetchone()
         return row[0] if row else 0.0
 
@@ -642,7 +309,7 @@ async def get_wallet_balance(asset="USDT"):
 
 
 async def update_wallet_balance(asset, amount):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.execute(
             "INSERT INTO virtual_wallet (asset, amount) VALUES (?, ?) ON CONFLICT(asset) DO UPDATE SET amount=?",
             (asset, amount, amount)
@@ -914,7 +581,7 @@ async def set_llm_setting(key, value):
 
 
 async def load_positions():
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         positions = {}
         rows = conn.execute("SELECT * FROM positions").fetchall()
         for row in rows:
@@ -973,7 +640,7 @@ async def get_llm_setting(key, default=None):
 
 
 async def save_position(symbol, pos):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.execute(
             """INSERT INTO positions (symbol, side, entry_price, stop_price, take_profit, peak_price,
                breakeven_hit, quantity, entry_time, strategy, entry_context, trade_id)
@@ -1024,7 +691,7 @@ async def get_paper_order_by_client_request_id(client_request_id):
     return await _run_db(op)
 
 async def save_trade(trade):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.execute(
             "INSERT INTO trades (symbol, strategy, side, entry_price, exit_price, quantity, pnl, pnl_pct, entry_time, exit_time, commission, reason, entry_context, max_favorable_pct, max_adverse_pct, hold_seconds, trade_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (trade.get("symbol"), trade.get("strategy"), trade.get("side"),
@@ -1038,7 +705,7 @@ async def save_trade(trade):
     await _run_db(op)
 
 async def get_trades(limit: int | None = 100, offset: int = 0, symbol: str | None = None, strategy: str | None = None):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         clauses, values = [], []
         if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
         if strategy: clauses.append("strategy=?"); values.append(strategy)
@@ -1055,7 +722,7 @@ async def get_trades(limit: int | None = 100, offset: int = 0, symbol: str | Non
 
 async def get_trade_export_rows():
     """Return every closed paper trade with its full saved entry context."""
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         rows = conn.execute("SELECT * FROM trades ORDER BY entry_time ASC, id ASC").fetchall()
         result = []
         for row in rows:
@@ -1176,30 +843,31 @@ async def upsert_microstructure_snapshots(rows):
     return await _run_db(op)
 
 async def get_realized_pnl():
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         row = conn.execute("SELECT COALESCE(SUM(pnl), 0) AS pnl FROM trades").fetchone()
         return float(row["pnl"] or 0.0)
 
     return await _run_db(op)
 
 async def create_backup_file():
-    """Create a consistent SQLite snapshot for download while the bot is running."""
-    def op(conn: sqlite3.Connection):
-        fd, path = tempfile.mkstemp(prefix="scalperagent-backup-", suffix=".sqlite")
-        os.close(fd)
-        backup_conn = sqlite3.connect(path)
-        try:
-            conn.backup(backup_conn)
-            backup_conn.commit()
-        finally:
-            backup_conn.close()
-        return path
-
-    return await _run_db(op)
+    """Create a PostgreSQL custom-format dump file for download."""
+    import subprocess
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL tanımlı değil")
+    fd, path = tempfile.mkstemp(prefix="scalperagent-backup-", suffix=".dump")
+    os.close(fd)
+    result = subprocess.run(
+        ["pg_dump", "--format=custom", "--no-owner", "--no-acl", "--file", path, database_url],
+        capture_output=True, text=True, timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"pg_dump başarısız: {result.stderr[:500]}")
+    return path
 
 
 async def delete_position(symbol):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
         conn.commit()
 
@@ -1207,7 +875,7 @@ async def delete_position(symbol):
 
 
 async def save_signal(sig):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.execute(
             "INSERT INTO signals (timestamp, symbol, action, price, reason, strategy, trade_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (sig.get("timestamp"), sig.get("symbol"), sig.get("action"), sig.get("price"), sig.get("reason"), sig.get("strategy"), sig.get("trade_id"))
@@ -1227,7 +895,7 @@ async def save_signal(sig):
 
 
 async def save_decision_log(decision):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.execute(
             "INSERT INTO decision_logs (timestamp,symbol,strategy,decision,reason,price,metadata) VALUES (?,?,?,?,?,?,?)",
             (decision.get("timestamp") or time.time(), decision.get("symbol"), decision.get("strategy"),
@@ -1252,16 +920,10 @@ async def backfill_replay_parity_observations(limit: int = 20_000, apply: bool =
         except (TypeError, json.JSONDecodeError):
             return {}
 
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         # Older databases may predate the column; this makes the maintenance
         # command safe before the next normal application startup migration.
-        if _postgres_enabled():
-            conn.execute("ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS source_decision_id INTEGER")
-        else:
-            try:
-                conn.execute("ALTER TABLE decision_logs ADD COLUMN source_decision_id INTEGER")
-            except sqlite3.OperationalError:
-                pass
+        conn.execute("ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS source_decision_id INTEGER")
         try:
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_parity_backfill_source ON decision_logs(strategy, source_decision_id) WHERE source_decision_id IS NOT NULL")
         except Exception:
@@ -1342,12 +1004,12 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
     def op(conn):
         if _postgres_enabled():
             conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
-        existing = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + (" FOR UPDATE" if _postgres_enabled() else ""), (symbol,)).fetchone()
+        existing = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + (" FOR UPDATE"), (symbol,)).fetchone()
         if not existing:
             open_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] or 0)
             if int(config.MAX_OPEN_POSITIONS) > 0 and open_count >= int(config.MAX_OPEN_POSITIONS):
                 raise RuntimeError("max_open_positions_reached")
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + (" FOR UPDATE" if _postgres_enabled() else ""), ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + (" FOR UPDATE"), ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else config.INITIAL_BALANCE_TRY)
         debit = float(asset_amount or 0) * float(sig.get("price") or pos.get("entry_price") or 0) * (1 + config.COMMISSION_PCT)
         if debit <= 0 or current_cash + 1e-9 < debit:
@@ -1383,10 +1045,10 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     def op(conn):
         if _postgres_enabled():
             conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
-        position_row = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + (" FOR UPDATE" if _postgres_enabled() else ""), (symbol,)).fetchone()
+        position_row = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + (" FOR UPDATE"), (symbol,)).fetchone()
         if not position_row:
             raise RuntimeError("paper_position_not_found")
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + (" FOR UPDATE" if _postgres_enabled() else ""), ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + (" FOR UPDATE"), ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
         exit_notional = float(trade.get("exit_price") or 0) * float(trade.get("quantity") or 0)
         next_cash = current_cash + exit_notional * (1 - config.COMMISSION_PCT)
@@ -1416,7 +1078,7 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
 
 
 async def get_signals(limit: int = 100, offset: int = 0, symbol: str | None = None, action: str | None = None, strategy: str | None = None):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         clauses, values = [], []
         if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
         if action: clauses.append("action=?"); values.append(action)
@@ -1439,7 +1101,7 @@ async def get_signal_count(symbol: str | None = None, action: str | None = None)
 
 
 async def get_decision_logs(limit=500, symbol=None, strategy=None, offset=0):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         clauses, values = [], []
         if symbol:
             clauses.append("symbol=?"); values.append(symbol.upper())
@@ -1501,7 +1163,7 @@ async def mark_llm_forecast_evaluated(forecast_id, outcome):
              outcome.get("outcome_direction"), bool(outcome.get("direction_correct")),
              outcome.get("max_favorable_pct"), outcome.get("max_adverse_pct"),
              _json_safe_dumps(outcome.get("details") or {}, ensure_ascii=False, default=str), forecast_id))
-        changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
+        changed = conn.execute("SELECT 1").fetchone()[0]
         conn.commit(); return bool(changed)
     return await _run_db(op)
 
@@ -1643,7 +1305,7 @@ async def mark_chat_prediction_evaluated(prediction_id, outcome):
              outcome.get("outcome_direction"), bool(outcome.get("direction_correct")),
              outcome.get("max_favorable_pct"), outcome.get("max_adverse_pct"),
              _json_safe_dumps(outcome.get("details") or {}, ensure_ascii=False, default=str), prediction_id))
-        changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
+        changed = conn.execute("SELECT 1").fetchone()[0]
         conn.commit(); return bool(changed)
     return await _run_db(op)
 
@@ -1663,7 +1325,7 @@ async def mark_chat_prediction_analyzed(prediction_id, *, analysis, factors, mod
             WHERE prediction_id=? AND analysis_status='pending'""",
             (analysis_status, analysis, _json_safe_dumps(factors or {}, ensure_ascii=False, default=str),
              model, time.time(), prediction_id))
-        changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
+        changed = conn.execute("SELECT 1").fetchone()[0]
         conn.commit(); return bool(changed)
     return await _run_db(op)
 
@@ -1805,7 +1467,7 @@ async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_ta
             touched_target=?, outcome_details=? {where}""",
             (time.time(), float(mfe_pct), bool(touched_target),
              _json_safe_dumps(details or {}, ensure_ascii=False, default=str), candidate_id))
-        changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
+        changed = conn.execute("SELECT 1").fetchone()[0]
         conn.commit(); return bool(changed)
     return await _run_db(op)
 
@@ -1877,7 +1539,7 @@ async def read_only_query(sql: str, limit: int = 500):
 
 
 async def save_llm_tool_log(item):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.execute(
             "INSERT INTO llm_tool_logs (timestamp, scope, tool_name, arguments, result_summary, duration_ms, success) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (item.get("timestamp") or time.time(), item.get("scope"), item.get("tool_name"),
@@ -1889,7 +1551,7 @@ async def save_llm_tool_log(item):
 
 
 async def get_llm_tool_logs(limit=500):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         rows = conn.execute("SELECT * FROM llm_tool_logs ORDER BY timestamp DESC LIMIT ?", (max(1, min(int(limit), 1000)),)).fetchall()
         result = [dict(r) for r in rows]
         for row in result:
@@ -1900,7 +1562,7 @@ async def get_llm_tool_logs(limit=500):
 
 
 async def save_a2a_message(message, direction="outbound", status="queued", error=None, insert_only=False):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         if insert_only:
             cursor = conn.execute("""INSERT INTO a2a_messages
                 (message_id,correlation_id,direction,message_type,sender,recipient,status,payload,created_at,delivered_at,acknowledged_at,last_error,attempts)
@@ -1924,7 +1586,7 @@ async def save_a2a_message(message, direction="outbound", status="queued", error
 
 
 async def get_a2a_messages(limit=100, status=None):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         params = [max(1, min(int(limit), 500))]
         where = ""
         if status:
@@ -1939,7 +1601,7 @@ async def get_a2a_messages(limit=100, status=None):
 
 
 async def acknowledge_a2a_message(message_id):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         cur = conn.execute("UPDATE a2a_messages SET status='acknowledged', acknowledged_at=? WHERE message_id=?", (time.time(), str(message_id)))
         conn.commit()
         return cur.rowcount > 0
@@ -1947,7 +1609,7 @@ async def acknowledge_a2a_message(message_id):
 
 
 async def update_a2a_message_status(message_id, status, payload=None):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         if payload is None:
             cur = conn.execute("UPDATE a2a_messages SET status=?, acknowledged_at=? WHERE message_id=?", (status, time.time() if status == "acknowledged" else None, str(message_id)))
         else:
@@ -2055,7 +1717,7 @@ async def record_alert_trigger(rule_id, event_key, value, message, severity="inf
     def op(conn):
         inserted = conn.execute("INSERT INTO alert_events(rule_id,symbol,event_key,value,message,severity,triggered_at) SELECT id,symbol,?,?,?,?,? FROM alert_rules WHERE id=? ON CONFLICT(event_key) DO NOTHING", (event_key, value, message, severity, now, rule_id))
         if inserted.rowcount == 0: conn.rollback(); return None
-        armed_false = "FALSE" if _postgres_enabled() else "0"
+        armed_false = "FALSE"
         conn.execute(f"UPDATE alert_rules SET last_triggered_at=?, last_value=?, armed=CASE WHEN rearm_threshold IS NULL THEN armed ELSE {armed_false} END, updated_at=? WHERE id=?", (now, value, now, rule_id)); conn.commit()
         row = conn.execute("SELECT * FROM alert_events WHERE event_key=?", (event_key,)).fetchone(); return dict(row) if row else None
     return await _run_db(op)
@@ -2083,7 +1745,7 @@ async def list_push_subscriptions():
 
 
 async def get_chart_settings(symbol):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         row = conn.execute("SELECT data FROM chart_settings WHERE symbol=?", (symbol,)).fetchone()
         return _json_value(row[0], None) if row else None
 
@@ -2091,7 +1753,7 @@ async def get_chart_settings(symbol):
 
 
 async def save_chart_settings(symbol, data):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.execute(
             "INSERT INTO chart_settings (symbol, data) VALUES (?, ?) ON CONFLICT(symbol) DO UPDATE SET data=?",
             (symbol, _json_safe_dumps(data), _json_safe_dumps(data))
@@ -2102,7 +1764,7 @@ async def save_chart_settings(symbol, data):
 
 async def save_backtest(result):
     """Backtest sonucunu kaydet, kayıt id'sini döndür."""
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         sql = ("INSERT INTO backtests (timestamp, symbol, interval, strategy, params, days_back, "
             "initial_balance, final_balance, net_pnl, net_pnl_pct, total_trades, wins, losses, "
             "win_rate, max_drawdown_pct, order_size, stop_loss_pct, take_profit_pct, trailing_stop_pct, trades) "
@@ -2185,7 +1847,7 @@ async def get_market_feature_snapshots(symbol, timeframe="5m", start_ms=None, en
 
 async def get_backtests(limit=50):
     """Son backtest kayıtlarını getir (en yeni önce)."""
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         rows = conn.execute(
             "SELECT * FROM backtests ORDER BY timestamp DESC LIMIT ?", (limit,)
         ).fetchall()
@@ -2262,7 +1924,7 @@ async def get_research_patterns(status=None, timeframe=None, limit=30):
     return await _run_db(op)
 
 async def delete_backtest(run_id):
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.execute("DELETE FROM backtests WHERE id=?", (run_id,))
         conn.commit()
 
@@ -2293,7 +1955,7 @@ async def prune_retention(days: int = 30):
                 conn.commit()
                 deleted[table] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
             except Exception:
-                # A missing table (fresh sqlite schema) or a PG-compat quirk
+                # A missing table or a PG-compat quirk
                 # must not abort the remaining sweeps.
                 conn.rollback()
                 deleted[table] = 0
@@ -2303,11 +1965,10 @@ async def prune_retention(days: int = 30):
 
 
 async def close_db():
-    def op(conn: sqlite3.Connection):
+    def op(conn):
         conn.commit()
         conn.close()
 
     await _run_db(op)
-    global _DB_CONN, _PG_CONN
-    _DB_CONN = None
+    global _PG_CONN
     _PG_CONN = None
