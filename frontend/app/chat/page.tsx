@@ -71,6 +71,24 @@ const indicatorNumber = (value: number | string | Record<string, unknown> | null
   const candidate = key && value && typeof value === "object" ? value[key] : value;
   return typeof candidate === "number" || typeof candidate === "string" ? candidate : "—";
 };
+type VelocityCandidate = {
+  symbol: string;
+  rank?: number;
+  price: number;
+  atr_pct: number;
+  volume_ratio: number;
+  ret3_pct: number;
+  velocity_score: number;
+  passes: boolean;
+  calibrated_hit_pct?: number | null;
+};
+type VelocityScanResult = {
+  generated_at?: number;
+  symbols_scanned?: number;
+  calibration?: { base_rate_pct?: number; conditional_hit_pct?: number; note?: string };
+  candidates: VelocityCandidate[];
+  watchlist?: VelocityCandidate[];
+};
 const TOOL_GROUPS = [
   [
     "Veri",
@@ -182,6 +200,8 @@ export default function ChatPage() {
   const [upsideResults, setUpsideResults] = useState<Record<5 | 15, UpsideScanResult>>({ 5: { candidates: [] }, 15: { candidates: [] } });
   const [upsidePanelTab, setUpsidePanelTab] = useState<5 | 15>(15);
   const [upsideScanBusy, setUpsideScanBusy] = useState(false);
+  const [velocityResult, setVelocityResult] = useState<VelocityScanResult | null>(null);
+  const [velocityBusy, setVelocityBusy] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -425,6 +445,21 @@ export default function ChatPage() {
       setUpsideScanBusy(false);
     }
   };
+  const detectVelocityCandidates = async () => {
+    if (velocityBusy) return;
+    setVelocityBusy(true);
+    setError("");
+    try {
+      const response = await apiRequest(`${API_BASE}/api/market-snapshot/velocity-5m`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Hız taraması başarısız");
+      setVelocityResult(data);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Hız taraması başarısız");
+    } finally {
+      setVelocityBusy(false);
+    }
+  };
   const stopLiveWatch = () => {
     streamAbortRef.current?.abort();
     setLivePriceWatch((current) => current ? { ...current, status: "stopped" } : current);
@@ -504,7 +539,38 @@ export default function ChatPage() {
             <Button variant="secondary" onClick={() => detectUpsideCandidates(5)} disabled={upsideScanBusy}>
               {upsideScanBusy ? "5 DK TARANIYOR…" : "⚡ 5 DK YÜKSELİŞ ADAYLARI"}
             </Button>
+            <Button variant="primary" onClick={detectVelocityCandidates} disabled={velocityBusy}>
+              {velocityBusy ? "HIZ AVLANIYOR…" : "🚀 5 DK %2 HIZ AVCISI"}
+            </Button>
           </div>
+          {velocityResult && (
+            <div className="chat-price-watch" role="status" aria-live="polite">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div>
+                  <p className="eyebrow">5 DK İÇİNDE %2+ HIZ POTANSİYELİ · İLK 3</p>
+                  <p className="text-xs text-bunker-muted">{velocityResult.symbols_scanned || 0} sembol tarandı · filtre: ATR%≥0.3 + hacim≥2x + 3bar ivme&gt;%0.3</p>
+                </div>
+                <span className="text-[10px] text-bunker-muted">{velocityResult.generated_at ? new Date(velocityResult.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
+              </div>
+              {(velocityResult.candidates || []).length === 0 && <p className="text-xs text-yellow-300">Şu an koşulları (ATR+hacim+ivme) geçen sembol yok; yüksek salınım rejimi bekleniyor.</p>}
+              <div className="space-y-2">
+                {(velocityResult.candidates || []).map((candidate) => (
+                  <div key={candidate.symbol} className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800 pb-2 last:border-0 last:pb-0">
+                    <div>
+                      <strong className="font-mono text-sm text-white">#{candidate.rank ?? "—"} <SymbolLink symbol={candidate.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green" /></strong>
+                      <span className="ml-2 rounded border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[10px] text-neon-green">%2 POTANSİYEL</span>
+                      <p className="text-[11px] text-bunker-muted">fiyat {candidate.price.toLocaleString("tr-TR", { maximumFractionDigits: 8 })} · ATR %{candidate.atr_pct} · hacim {candidate.volume_ratio}x · son 3dk %{candidate.ret3_pct}</p>
+                    </div>
+                    <span className="font-mono text-xs text-neon-green">hız skoru {candidate.velocity_score}</span>
+                  </div>
+                ))}
+                {(velocityResult.watchlist || []).length > 0 && (
+                  <p className="text-[11px] text-bunker-muted">İzleme (koşullara yakın): {(velocityResult.watchlist || []).map((w) => `${w.symbol} (${w.velocity_score})`).join(" · ")}</p>
+                )}
+              </div>
+              <p className="text-[10px] text-yellow-300 mt-2">{velocityResult.calibration?.note || "Tahmin/garanti değildir; kapanmış mumlar, paper-only."}</p>
+            </div>
+          )}
           {(upsideResults[5].candidates.length > 0 || upsideResults[15].candidates.length > 0) && (
             <div className="chat-price-watch" role="status" aria-live="polite">
               <div className="section-tabs mb-3" aria-label="Yükseliş tahmin sekmeleri">
