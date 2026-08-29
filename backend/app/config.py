@@ -98,6 +98,14 @@ class Config:
     CHAT_PREDICTION_AUTO_TRADE_ENABLED = os.getenv("CHAT_PREDICTION_AUTO_TRADE_ENABLED", "false").lower() == "true"
     CHAT_PREDICTION_MAX_OPEN_POSITIONS = max(1, int(os.getenv("CHAT_PREDICTION_MAX_OPEN_POSITIONS", "2")))
     CHAT_PREDICTION_ORDER_VALUE_TRY = max(50.0, float(os.getenv("CHAT_PREDICTION_ORDER_VALUE_TRY", "300.0")))
+    # Otonom hız avcısı: 15 dk'da bir tarama, en iyi adaya (GEÇTİ veya İZLEME)
+    # serbest TL'nin %50'si ile pozisyon. Çıkış merdiveni analyzer'da:
+    # kâr → break-even, +%1 → ATR trailing, sert stop %1.5.
+    VELOCITY_AUTO_ENABLED = os.getenv("VELOCITY_AUTO_ENABLED", "false").lower() == "true"
+    VELOCITY_AUTO_INTERVAL_SEC = max(300, int(os.getenv("VELOCITY_AUTO_INTERVAL_SEC", "900")))
+    VELOCITY_AUTO_BALANCE_PCT = 50.0
+    VELOCITY_AUTO_SL_PCT = 1.5
+    VELOCITY_TRAIL_TRIGGER_PCT = 1.0  # ATR trailing bu kâr yüzdesinde devreye girer
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     # The live BB-MFI contract defaults to the supplied Flawless Victory v3.

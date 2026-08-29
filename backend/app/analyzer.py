@@ -591,6 +591,33 @@ class ScalpAnalyzer:
             entry = float(pos.get("entry_price") or price)
             fallback_stop_pct = config.BB_MFI_STOP_LOSS_PCT if pos.get("strategy") == "BB_MFI_MEAN_REVERSION" else config.HARD_STOP_LOSS_PCT
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
+            # Chat Prediction (velocity auto-trade) koruma merdiveni:
+            # 1) Kâr anında break-even: fiyat girişin üstüne çıktıysa stop
+            #    girişe çekilir (maliyet+min kâr), kar kilitlenir.
+            # 2) +%1'e ulaşınca ATR trailing: stop = max_fiyat - 2×ATR,
+            #    maksimum kârı koşturur.
+            # 3) Sert stop: açılıştan itibaren %1.5 altı (chart stop).
+            if (pos.get("strategy") == "CHAT_PREDICTION"
+                    and not pos.get("velocity_protection_armed")):
+                mfe_price = float(pos.get("max_price") or entry)
+                if mfe_price > entry:
+                    pos["velocity_protection_armed"] = True
+                    be_stop = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
+                    pos["system_stop_price"] = max(system_stop, be_stop)
+                    system_stop = pos["system_stop_price"]
+            if (pos.get("strategy") == "CHAT_PREDICTION"
+                    and not pos.get("velocity_trailing_armed")):
+                trigger = entry * (1 + config.VELOCITY_TRAIL_TRIGGER_PCT / 100.0)
+                if float(pos.get("max_price") or entry) >= trigger:
+                    pos["velocity_trailing_armed"] = True
+            if pos.get("strategy") == "CHAT_PREDICTION" and pos.get("velocity_trailing_armed"):
+                atr_value = (pos.get("entry_context") or {}).get("atr_1m") or \
+                             float(pos.get("entry_context", {}).get("atr_pct", 0)) * entry
+                if atr_value > 0:
+                    trailing = float(pos.get("max_price") or entry) - 2.0 * atr_value
+                    if trailing > system_stop:
+                        pos["system_stop_price"] = trailing
+                        system_stop = trailing
             # Pump Monitor break-even: once the trade has proven itself with a
             # >= trigger MFE move, the stop moves to entry so a proven winner
             # can never round-trip into a full loss (56 historical trades lost
