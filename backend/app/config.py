@@ -69,6 +69,15 @@ class Config:
     # User-authorized forward paper strategy. It shares the virtual wallet and
     # portfolio history, while retaining only the supplied Fisher/Kernel exit.
     FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED = os.getenv("FISHER_M3_KERNEL_M5_EXACT_PAPER_ENABLED", "true").lower() == "true"
+    # Fisher pozisyonları exit-cross sözleşmesi gereği genel stop yönetiminden
+    # muaftır; ancak 268 işlemlik geçmişte 62 işlem planlı %1.2 SL'yi aşıp
+    # -%11'e kadar serbest düştü. Kaynak sözleşmeyi bozmayan tek çıkış:
+    # yalnız katastrofik düşüşü kesen geniş acil durum stop'u.
+    FISHER_EMERGENCY_STOP_PCT = max(0.5, float(os.getenv("FISHER_EMERGENCY_STOP_PCT", "3.0")))
+    # Saat bazlı replay'de bu bantlar ortalama -%1.4..-%2.8 PnL üretti
+    # (likidite ölü / gürültü yüksek). Varsayılan: 03-06 ve 18-20 kapalı.
+    # Virgülle ayrılmış saat listesi; boş = filtre yok.
+    FISHER_ENTRY_BLOCKED_HOURS = [int(h) for h in os.getenv("FISHER_ENTRY_BLOCKED_HOURS", "3,4,5,18,19").split(",") if h.strip().isdigit()]
     # LLM market commentary is a journaled, paper-only forecast.  These
     # horizons never authorize an order or mutate strategy parameters.
     LLM_FORECAST_HORIZONS_MINUTES = (5, 15, 60, 240)
