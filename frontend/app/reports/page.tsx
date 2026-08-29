@@ -21,6 +21,25 @@ function ForecastTab({ report, loading, error }: { report: any; loading: boolean
 }
 function ChatPredictionsTab({ report, loading, error }: { report: any; loading: boolean; error: string }) {
  const [symbolFilter,setSymbolFilter]=useState("");
+ const [replay,setReplay]=useState<any>(null);
+ const [replayBusy,setReplayBusy]=useState(false);
+ const runReplay=async(lookbackHours:number)=>{
+  if(replayBusy)return;
+  setReplayBusy(true);
+  try{
+   // refresh=true her zaman yeni replay işi başlatır; iş arka planda koşar, state'i yoklayalım
+   apiRequest(`${API_BASE}/api/reports/chat-predictions/replay?lookback_hours=${lookbackHours}&horizons=5,15&refresh=true`,{cache:"no-store"}).then(r=>r.json()).then(setReplay).catch(()=>undefined);
+   const deadline=Date.now()+180_000;
+   const poll=window.setInterval(async()=>{
+    try{
+     const res=await apiRequest(`${API_BASE}/api/reports/chat-predictions/replay?lookback_hours=${lookbackHours}&horizons=5,15`,{cache:"no-store"});
+     const data=await res.json();
+     setReplay(data);
+     if(data.state?.status==="completed"||data.state?.status==="failed"||Date.now()>deadline){window.clearInterval(poll);setReplayBusy(false);}
+    }catch{window.clearInterval(poll);setReplayBusy(false);}
+   },4000);
+  }catch{setReplayBusy(false);}
+ };
  if (loading) return <section className="card text-bunker-muted">Chat M5/M15 tahmin raporu yükleniyor…</section>;
  if (error) return <section className="card border-neon-red/30 text-neon-red">Chat tahmin raporu alınamadı: {error}</section>;
  if (!report) return <section className="card text-bunker-muted">Henüz Chat sayfasından kaydedilmiş M5/M15 tahmini yok.</section>;
@@ -28,6 +47,7 @@ function ChatPredictionsTab({ report, loading, error }: { report: any; loading: 
  const insights=useMemo(()=>(report.insights||[]).filter((row:any)=>!symbolFilter||row.symbol===symbolFilter.toUpperCase()),[report,symbolFilter]);
  const recent=useMemo(()=>(report.recent||[]).filter((row:any)=>!symbolFilter||row.symbol===symbolFilter.toUpperCase()),[report,symbolFilter]);
  const learning=report.learning_state||{};
+ const replayResult=replay?.state?.result; const replayState=replay?.state||{};
  return <div className="space-y-4">
   <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
    <Stat title="Ölçülen tahmin" value={String(report.evaluated_count||0)}/>
@@ -36,6 +56,30 @@ function ChatPredictionsTab({ report, loading, error }: { report: any; loading: 
    <Stat title="Bekleyen" value={String(report.pending_count||0)} tone="text-sky-300"/>
    <Stat title="LLM analizi" value={`${report.analyzed_count||0}`} tone="text-sky-300"/>
   </div>
+  <section className="card">
+   <div className="flex flex-wrap items-center justify-between gap-3">
+    <div><p className="eyebrow">REPLAY TESTİ · GERİYE DÖNÜK SANAL TARAMA</p>
+     <p className="mt-2 text-sm text-bunker-muted">Canlı pipeline'ı geçmiş kapanmış mumlarla yeniden koşar: her adımda o ana kadar kapanmış 1m→5m/15m mumlardan snapshot üretir, aynı skorla en iyi 3 adayı seçer ve sonucu sonraki kapanmış mumlarla ölçer.</p></div>
+    <div className="flex gap-2">
+     <button onClick={()=>runReplay(6)} disabled={replayBusy} className="min-h-10 rounded-lg border border-neon-green/40 bg-neon-green/10 px-4 font-mono text-sm text-neon-green disabled:opacity-50">{replayBusy?"REPLAY KOŞUYOR…":"SON 6 SAAT (M5+M15)"}</button>
+     <button onClick={()=>runReplay(24)} disabled={replayBusy} className="min-h-10 rounded-lg border border-sky-400/40 bg-sky-400/10 px-4 font-mono text-sm text-sky-300 disabled:opacity-50">SON 24 SAAT</button>
+    </div>
+   </div>
+   {replayState.status==="running"&&<p className="mt-3 font-mono text-xs text-yellow-300">Replay arka planda koşuyor · {replayState.message||"…"}</p>}
+   {replayState.status==="failed"&&<p className="mt-3 font-mono text-xs text-neon-red">Replay başarısız: {replayState.message||"bilinmeyen hata"}</p>}
+   {replayResult&&replayResult.status==="ok"&&<div className="mt-4 space-y-3">
+    <div className="grid grid-cols-2 gap-2 font-mono text-xs lg:grid-cols-5">
+     <span className="rounded border border-bunker-700 p-2">Pencere: {replayResult.lookback_hours} saat · {replayResult.steps} adım</span>
+     <span className="rounded border border-bunker-700 p-2">Sembol: {replayResult.symbols_scanned}</span>
+     <span className="rounded border border-bunker-700 p-2">Aralık: {new Date(replayResult.window_start_ms).toLocaleString("tr-TR",{dateStyle:"short",timeStyle:"short"})} → {new Date(replayResult.window_end_ms).toLocaleString("tr-TR",{dateStyle:"short",timeStyle:"short"})}</span>
+     <span className="rounded border border-bunker-700 p-2">Etiket: canlı journal ile aynı eşik</span>
+     <span className="rounded border border-bunker-700 p-2 text-yellow-300">Sınırlar: spread/derinlik geçmişi yok</span>
+    </div>
+    <div className="table-scroll"><table className="data-table"><thead><tr><th>Ufuk</th><th>Aday seçimi</th><th>Ölçülen</th><th>Doğru</th><th>Başarı</th><th>Eşik altı (range)</th><th>Ort. hareket</th><th>Ort. güven</th><th>Calibration</th></tr></thead><tbody>{(replayResult.horizons||[]).map((row:any)=><tr key={row.horizon_minutes}><td className="font-bold">{row.horizon_minutes} dk</td><td>{row.predictions||0}</td><td>{row.evaluated||0}</td><td>{row.correct||0}</td><td className={row.directional_accuracy!=null&&row.directional_accuracy>=.55?"text-neon-green":row.directional_accuracy!=null?"text-neon-red":"text-bunker-muted"}>{pct(row.directional_accuracy)}</td><td>{row.range_count||0}</td><td>{pct(row.average_return_pct)}</td><td>{row.average_confidence?`%${Math.round(row.average_confidence)}`:"—"}</td><td>{pct(row.calibration_error)}</td></tr>)}</tbody></table></div>
+    <p className="eyebrow">SEMBOLE GÖRE REPLAY SONUCU</p>
+    <div className="table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Ölçülen</th><th>Doğru</th><th>Başarı</th><th>Ort. hareket</th></tr></thead><tbody>{(replayResult.symbols||[]).map((row:any)=><tr key={row.symbol}><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.evaluated}</td><td>{row.correct}</td><td className={row.directional_accuracy>=.55?"text-neon-green":"text-neon-red"}>{pct(row.directional_accuracy)}</td><td>{pct(row.average_return_pct)}</td></tr>)}</tbody></table></div>
+   </div>}
+  </section>
   <section className="card"><p className="eyebrow">M5 VE M15 UFUK BAZLI BAŞARI</p><div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Ufuk</th><th>Kayıt</th><th>Ölçülen</th><th>Doğru</th><th>Başarı</th><th>Ort. hareket</th><th>Calibration</th><th>Analiz</th></tr></thead><tbody>{(report.horizons||[]).map((row:any)=><tr key={row.horizon_minutes}><td className="font-bold">{row.horizon_minutes} dk</td><td>{row.total_count||0}</td><td>{row.evaluated_count||0}</td><td>{row.correct_count||0}</td><td className={row.directional_accuracy!=null&&row.directional_accuracy>=.55?"text-neon-green":"text-neon-red"}>{pct(row.directional_accuracy)}</td><td>{pct(row.average_return_pct)}</td><td>{pct(row.calibration_error)}</td><td>{row.analyzed_count||0}</td></tr>)}</tbody></table></div><p className="mt-3 text-xs text-bunker-muted">Sonuç yalnızca kapanmış M1 mumlarıyla ölçülür; tahmin, giriş eşiği + tur maliyeti + ATR gürültü oranını geçmezse 'range' sayılır. LLM analizi arka planda çalışır; sonuç asla LLM tarafından üretilmez.</p></section>
   <section className="card"><p className="eyebrow">SEMBOLE GÖRE BAŞARI</p><div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Ölçülen</th><th>Doğru</th><th>Başarı</th><th>Ort. hareket</th></tr></thead><tbody>{(report.symbols||[]).map((row:any)=><tr key={row.symbol}><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.evaluated_count||0}</td><td>{row.correct_count||0}</td><td className={row.directional_accuracy!=null&&row.directional_accuracy>=.55?"text-neon-green":"text-neon-red"}>{pct(row.directional_accuracy)}</td><td>{pct(row.average_return_pct)}</td></tr>)}</tbody></table></div>{!(report.symbols||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Henüz ölçülmüş sembol yok.</p>}</section>
   <section className="card"><div className="flex flex-wrap items-center justify-between gap-3"><p className="eyebrow">ÖĞRENİLEN DERSLER · LLM POSTMORTEM</p><input value={symbolFilter} onChange={e=>setSymbolFilter(e.target.value)} placeholder="Sembol filtrele (örn. BTCTRY)" className="min-h-9 w-56 rounded-lg border border-bunker-700 bg-bunker-950 px-3 font-mono text-xs text-white"/></div>
