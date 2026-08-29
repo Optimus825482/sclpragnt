@@ -4571,6 +4571,94 @@ async def detect_5m_upside_candidates(args: dict | None = None):
     """Fresh, causal multi-stage ranking for possible next-5m upside momentum."""
     return await _detect_upside_candidates(5, args)
 
+
+# Hız avcısı: replay kalibrasyonu 2026-08-29 (14.475 gözlem, 15 Top-Gainer sembol).
+# 5dk içinde +%2'ye dokunma baz oranı %1.97; aşağıdaki üç koşul birlikte
+# +%19.3 koşullu olasılık üretti (9.8x lift). Kayıt: work/fisher_replay notları.
+VELOCITY_MIN_ATR_PCT = 0.30      # 1m ATR% ≥ 0.30 → yüksek salınım rejimi
+VELOCITY_MIN_VOLUME_RATIO = 2.0  # son 1m hacim / 20-bar ort. ≥ 2 → katılımcı girişi
+VELOCITY_MIN_RET3_PCT = 0.30     # son 3×1m getiri > +%0.30 → yön başlamış
+VELOCITY_BASE_RATE_PCT = 1.97
+VELOCITY_CALIBRATED_HIT_PCT = 19.3
+
+
+async def detect_velocity_candidates(args: dict | None = None):
+    """5 dakika içinde en az %2 yükselme potansiyeli taşıyan en hızlı 3 aday.
+
+    Mevcut 'yükseliş adayları' taramasından farkı: hedef kadanslı hareket
+    (%2/5dk), genel yön tahmini değil. Sıralama velocity skoru ile:
+    ATR% (salınım kapasitesi) × hacim patlaması × anlık 3-bar ivme.
+    Yalnızca kapanmış 1m mumlar; tahmin/garanti değildir, paper-only.
+    """
+    now_ms = int(time.time() * 1000)
+    try:
+        gainer_rows = await top_gainers(20)
+    except Exception as exc:
+        logger.warning("velocity scan: top_gainers hatası: %s", exc)
+        gainer_rows = []
+    pool = [item["symbol"] for item in gainer_rows]
+    if not pool:
+        pool = [str(s).replace("_", "").upper() for s in config.SYMBOLS][:20]
+    sem = asyncio.Semaphore(6)
+
+    async def scan_one(symbol: str) -> dict | None:
+        async with sem:
+            try:
+                rows = await fetch_klines(symbol, "1m", 60)
+            except Exception:
+                return None
+            if len(rows) < 30:
+                return None
+            closes = [float(r[4]) for r in rows]
+            highs = [float(r[2]) for r in rows]
+            lows = [float(r[3]) for r in rows]
+            vols = [float(r[5]) for r in rows]
+            i = len(rows) - 1
+            price = closes[-1]
+            if price <= 0:
+                return None
+            trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j - 1]), abs(lows[j] - closes[j - 1]))
+                   for j in range(max(1, i - 14), i + 1)]
+            atr_pct = (sum(trs) / len(trs)) / price * 100 if trs else 0.0
+            vavg = sum(vols[max(1, i - 20):i]) / max(1, len(vols[max(1, i - 20):i]) or 1)
+            volume_ratio = vols[-1] / vavg if vavg else 0.0
+            ret3 = (closes[-1] / closes[-4] - 1) * 100 if len(closes) >= 4 else 0.0
+            passes = (atr_pct >= VELOCITY_MIN_ATR_PCT and
+                      volume_ratio >= VELOCITY_MIN_VOLUME_RATIO and
+                      ret3 >= VELOCITY_MIN_RET3_PCT)
+            # velocity skoru: kalibre eşikleri aşan bileşenlerle oransal puan
+            velocity_score = round((atr_pct / VELOCITY_MIN_ATR_PCT) *
+                                    (volume_ratio / VELOCITY_MIN_VOLUME_RATIO) *
+                                    (max(0.0, ret3) / VELOCITY_MIN_RET3_PCT), 2)
+            return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
+                    "volume_ratio": round(volume_ratio, 2), "ret3_pct": round(ret3, 3),
+                    "velocity_score": velocity_score, "passes": passes,
+                    "base_hit_pct": VELOCITY_BASE_RATE_PCT,
+                    "calibrated_hit_pct": VELOCITY_CALIBRATED_HIT_PCT if passes else None,
+                    "last_closed_at": rows[-1][0]}
+
+    results = await asyncio.gather(*(scan_one(s) for s in pool))
+    candidates = [r for r in results if r and r["passes"]]
+    candidates.sort(key=lambda r: r["velocity_score"], reverse=True)
+    for rank, candidate in enumerate(candidates[:3], 1):
+        candidate["rank"] = rank
+    watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= 0.8]
+    watchlist.sort(key=lambda r: r["velocity_score"], reverse=True)
+    return {"generated_at": now_ms / 1000, "target": "min %2 move in 5 minutes",
+            "pool_source": "binance_tr_top_gaining_tab", "symbols_scanned": len(pool),
+            "filter": {"min_atr_pct": VELOCITY_MIN_ATR_PCT, "min_volume_ratio": VELOCITY_MIN_VOLUME_RATIO,
+                        "min_ret3_pct": VELOCITY_MIN_RET3_PCT},
+            "calibration": {"base_rate_pct": VELOCITY_BASE_RATE_PCT,
+                             "conditional_hit_pct": VELOCITY_CALIBRATED_HIT_PCT,
+                             "note": "koşullar sağlandığında 5dk+%2 dokunuş olasılığı ~%19 (baz %2; replay kalibrasyonu 2026-08-29)"},
+            "candidates": candidates[:3], "watchlist": watchlist[:5],
+            "data_policy": "kapanmış 1m mumlar; tahmin/garanti değil, paper-only"}
+
+
+@app.get("/api/market-snapshot/velocity-5m")
+async def market_snapshot_velocity_5m(limit: int = 3):
+    return await detect_velocity_candidates({"limit": limit})
+
 async def get_data_quality(args: dict):
     """Return freshness/completeness diagnostics before any market decision."""
     symbol = str(args.get("symbol") or "").replace("_", "").upper()
