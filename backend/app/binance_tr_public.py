@@ -155,6 +155,39 @@ def _ticker_params(symbols: list | None) -> dict:
 async def ticker_24h(symbols: list | None = None):
     return await asyncio.to_thread(_get_json, "/api/v3/ticker/24hr", {})
 
+# Web'deki https://www.binance.tr/en/markets/overview?tab=top-gaining listesiyle
+# aynı kaynak: /api/v3/ticker/24hr, priceChangePercent'e göre azalan sıralama.
+# quoteVolume tabanlı minimum hacim, ince/alakasız çiftleri elemek içindir.
+MIN_TOP_GAINER_QUOTE_VOLUME_TRY = 5_000_000.0
+
+async def top_gainers(symbol_count: int = 20, *, quote_asset: str = "TRY",
+                      min_quote_volume: float | None = None):
+    """Top-gaining TRY pairs, 24h change descending, volume-filtered.
+
+    Mirrors the website's top-gaining tab; the returned rows keep
+    priceChangePercent and quoteVolume so callers can justify the pool.
+    """
+    rows = await ticker_24h()
+    floor = (MIN_TOP_GAINER_QUOTE_VOLUME_TRY if min_quote_volume is None
+             else float(min_quote_volume))
+    suffix = quote_asset.upper()
+    candidates = []
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol.endswith(suffix):
+            continue
+        try:
+            change = float(row.get("priceChangePercent") or 0)
+            quote_volume = float(row.get("quoteVolume") or 0)
+        except (TypeError, ValueError):
+            continue
+        if quote_volume < floor:
+            continue
+        candidates.append({"symbol": symbol, "priceChangePercent": change,
+                           "quoteVolume": quote_volume, "lastPrice": row.get("lastPrice")})
+    candidates.sort(key=lambda item: item["priceChangePercent"], reverse=True)
+    return candidates[:max(1, min(int(symbol_count), 50))]
+
 async def orderbook(symbol: str, limit: int = 5):
     """Read-only best bid/ask depth from Binance TR public API."""
     normalized = symbol.replace("_", "").upper()

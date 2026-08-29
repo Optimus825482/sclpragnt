@@ -75,6 +75,20 @@ class Config:
     LLM_FORECAST_EVALUATION_INTERVAL_SEC = max(30, int(os.getenv("LLM_FORECAST_EVALUATION_INTERVAL_SEC", "60")))
     LLM_FORECAST_MIN_MOVE_PCT = max(0.0001, float(os.getenv("LLM_FORECAST_MIN_MOVE_PCT", "0.0015")))
     LLM_FORECAST_LESSON_MIN_SAMPLES = max(8, int(os.getenv("LLM_FORECAST_LESSON_MIN_SAMPLES", "12")))
+    # Chat M5/M15 yükseliş adayları için desen kapısı ve otomatik paper işlem.
+    # Desen: replay train penceresinden çıkan etiketler; min eşleşme şartı
+    # sağlanmayan aday yalnızca izleme listesinde kalır, journal'a "watch" yazılır.
+    CHAT_PREDICTION_PATTERN_ENABLED = os.getenv("CHAT_PREDICTION_PATTERN_ENABLED", "true").lower() == "true"
+    CHAT_PREDICTION_MIN_PATTERN_MATCHES = max(1, int(os.getenv("CHAT_PREDICTION_MIN_PATTERN_MATCHES", "2")))
+    CHAT_PREDICTION_HIGH_CONFIDENCE_MATCHES = max(2, int(os.getenv("CHAT_PREDICTION_HIGH_CONFIDENCE_MATCHES", "3")))
+    # Replay simülasyonundan çıkan asimetrik çıkış: hedef > stop.
+    CHAT_PREDICTION_TP_PCT = max(0.1, float(os.getenv("CHAT_PREDICTION_TP_PCT", "0.8")))
+    CHAT_PREDICTION_SL_PCT = max(0.1, float(os.getenv("CHAT_PREDICTION_SL_PCT", "0.5")))
+    CHAT_PREDICTION_MAX_HOLD_SEC = max(300, int(os.getenv("CHAT_PREDICTION_MAX_HOLD_SEC", "900")))
+    # Otomatik paper açılış: yüksek güven + LLM paper trade ayarı açık olmalı.
+    CHAT_PREDICTION_AUTO_TRADE_ENABLED = os.getenv("CHAT_PREDICTION_AUTO_TRADE_ENABLED", "false").lower() == "true"
+    CHAT_PREDICTION_MAX_OPEN_POSITIONS = max(1, int(os.getenv("CHAT_PREDICTION_MAX_OPEN_POSITIONS", "2")))
+    CHAT_PREDICTION_ORDER_VALUE_TRY = max(50.0, float(os.getenv("CHAT_PREDICTION_ORDER_VALUE_TRY", "300.0")))
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     # The live BB-MFI contract defaults to the supplied Flawless Victory v3.

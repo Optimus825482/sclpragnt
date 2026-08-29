@@ -57,8 +57,9 @@ class ReplayRunnerTests(unittest.TestCase):
     def _runner(self, rows, lookback_hours=6, horizons=(5, 15), step_minutes=15):
         async def fake_fetch(symbol, interval, limit, *args, **kwargs):
             return rows
+        # use_top_gainers=False: testler canlı Top-Gaining API'sine bağlanmaz
         return ReplayRunner(["BTCTRY"], lookback_hours=lookback_hours, horizons=list(horizons),
-                            step_minutes=step_minutes, fetch_klines=fake_fetch)
+                            step_minutes=step_minutes, fetch_klines=fake_fetch, use_top_gainers=False)
 
     def test_run_produces_horizon_stats(self):
         # 12 saatlik sentetik seri: pencere 6 saat, adım 15dk, ölçüm 5/15dk

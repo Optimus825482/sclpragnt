@@ -25,6 +25,9 @@ DEFAULT_LOOKBACK_HOURS = 6
 MIN_SYMBOL_CANDLES = 60  # calculate_snapshot needs >= 55 closed bars
 MAX_SCAN_SYMBOLS = 20
 MAX_CANDIDATES_PER_STEP = 3
+# Journal verisi desen madenciliğini besleyene kadar kullanılan başlangıç
+# etiketleri (replay 2026-08-29 train penceresinden türetildi).
+DEFAULT_TRAIN_TAGS = ("atr_yuksek", "vol_spike", "vol_spike_strong")
 
 
 def _resample_1m(rows: list, factor: int) -> dict:
@@ -126,13 +129,16 @@ def _close_time(row) -> int:
 
 class ReplayRunner:
     def __init__(self, symbols: list[str], *, lookback_hours: int, horizons: list[int],
-                 step_minutes: int, fetch_klines, log=None):
+                 step_minutes: int, fetch_klines, log=None, use_top_gainers: bool = True):
         self.symbols = symbols
         self.lookback_hours = lookback_hours
         self.horizons = horizons
         self.step_minutes = max(step_minutes, max(horizons))
         self.fetch_klines = fetch_klines  # injected to reuse the live public-data client
         self.log = log or (lambda message: None)
+        # True: evren canlı Top-Gaining ilk 20'den kurulur ve her adımda
+        # kapanmış mumlarla nedensel olarak yeniden sıralanır.
+        self.use_top_gainers = use_top_gainers
 
     async def _load_symbol_data(self, symbol: str) -> dict | None:
         """Fetch one 1m series long enough for every replay step."""
@@ -188,16 +194,63 @@ class ReplayRunner:
         }
         return evaluate_forecast(prediction, evaluated_at=due_ms / 1000, **observed)
 
+    def _top_gainers_at(self, loaded: dict, decision_ms: int, count: int = 20) -> list[dict]:
+        """Causal top-gaining pool: symbols ranked by their 24h-style change
+        computed from closed candles only (no future data). The website's
+        live list uses the rolling 24h ticker; here the change is measured
+        between the close 24h before the decision (or series start) and the
+        decision close, so a historical step still sees only the past."""
+        ranked = []
+        for symbol, data in loaded.items():
+            rows = [row for row in data["rows_1m"] if _close_time(row) <= decision_ms]
+            if len(rows) < MIN_SYMBOL_CANDLES:
+                continue
+            close_now = float(rows[-1][4])
+            cutoff_ms = decision_ms - 24 * 3_600_000
+            base_row = rows[0]
+            for row in rows:
+                if int(row[0]) + 59_999 >= cutoff_ms:
+                    base_row = row
+                    break
+            base_close = float(base_row[4])
+            if base_close <= 0:
+                continue
+            ranked.append({"symbol": symbol,
+                           "change_pct": (close_now / base_close - 1) * 100.0,
+                           "quote_volume": sum(float(row[5]) for row in rows
+                                               if int(row[0]) + 59_999 > decision_ms - 24 * 3_600_000)})
+        ranked.sort(key=lambda item: item["change_pct"], reverse=True)
+        return ranked[:count]
+
     async def run(self) -> dict:
         from app.config import config
         now_ms = int(time.time() * 1000)
+        # Universe: current live Top-Gaining list (web tab's source) plus the
+        # configured actives. Historical steps re-rank this pool causally with
+        # _top_gainers_at, so a step never uses symbols that did not exist yet.
+        if self.use_top_gainers:
+            from app.binance_tr_public import top_gainers as fetch_top_gainers
+            try:
+                live_gainers = await fetch_top_gainers(20)
+                self.log(f"Canlı Top-Gaining listesi: {', '.join(item['symbol'] for item in live_gainers[:10])}…")
+            except Exception as exc:
+                self.log(f"Top-Gaining listesi alınamadı ({exc}); aktif sembollere düşülüyor")
+                live_gainers = []
+            universe = [item["symbol"] for item in live_gainers]
+            for symbol in self.symbols:
+                if symbol not in universe:
+                    universe.append(symbol)
+        else:
+            universe = list(self.symbols)
+        universe = universe[:MAX_SCAN_SYMBOLS * 2]  # kline fetch limitine karşı havuz
         loaded = {}
-        for symbol in self.symbols[:MAX_SCAN_SYMBOLS]:
+        for symbol in universe:
             data = await self._load_symbol_data(symbol)
             if data:
                 loaded[symbol] = data
         if not loaded:
             return {"status": "no_data", "message": "Hiçbir sembol için yeterli kapalı 1m mum alınamadı.", "paper_only": True}
+        self.log(f"{len(loaded)} sembol için 1m seri yüklendi")
 
         end_ms = max(max(_close_time(row) for row in data["rows_1m"]) for data in loaded.values())
         first_ms = min(min(int(row[0]) for row in data["rows_1m"]) for data in loaded.values())
@@ -215,9 +268,19 @@ class ReplayRunner:
                                          for h in self.horizons}
         per_symbol: dict[str, dict] = defaultdict(lambda: {"evaluated": 0, "correct": 0, "sum_return": 0.0})
         picks = []
-        for decision_ms in steps:
+        pool_history = []
+        for step_index, decision_ms in enumerate(steps):
+            # Nedensel Top-20 gainer havuzu: her adımda kapanmış mumlarla yeniden sıralanır
+            gainer_pool = self._top_gainers_at(loaded, decision_ms, 20) if self.use_top_gainers \
+                else [{"symbol": symbol, "change_pct": None, "quote_volume": None} for symbol in loaded]
+            pool_history.append({"decision_at": decision_ms / 1000,
+                                 "pool": [item["symbol"] for item in gainer_pool[:10]]})
             ranked = []
-            for symbol, data in loaded.items():
+            for item in gainer_pool:
+                symbol = item["symbol"]
+                data = loaded.get(symbol)
+                if not data:
+                    continue
                 snapshot = self._snapshot_at(symbol, data, decision_ms)
                 if not snapshot:
                     continue
@@ -238,6 +301,7 @@ class ReplayRunner:
                     bucket["predictions"] += 1
                     entry = {"decision_at": decision_ms / 1000, "symbol": symbol, "horizon_minutes": horizon,
                              "score": score, "confidence": prediction["confidence"], "entry_price": prediction["entry_price"],
+                             "pool_change_pct": item["change_pct"], "pool_quote_volume": item["quote_volume"],
                              "evidence": evidence[:3], "risks": risks[:3]}
                     if outcome is None:
                         entry["status"] = "unmeasured"
@@ -285,7 +349,9 @@ class ReplayRunner:
                 "lookback_hours": self.lookback_hours, "horizons_minutes": sorted(self.horizons),
                 "step_minutes": self.step_minutes, "symbols_scanned": len(loaded),
                 "steps": len(steps), "window_start_ms": start_ms, "window_end_ms": end_ms,
+                "pool_mode": "top_gaining_20" if self.use_top_gainers else "configured_symbols",
                 "label_policy_note": "min_move_pct = max(tutarlılık eşiği, tur maliyeti x1.05, ATR x gürültü oranı) — canlı journal ile aynı etiketleme",
                 "replay_gaps": ["canlı orderbook/spread/24h ticker geçmişi yok; spread-derinlik bilinmiyor sayılır",
-                                 "aday havuzu canlı Top-20 gainer taraması yerine aktif sembol listesinden sınırlıdır"],
+                                 "her adımdaki Top-20 gainer havuzu 24h ticker yerine kapanmış mumlardan hesaplanan nedensel 24s değişimle sıralanır"],
+                "pool_history": pool_history[-30:],
                 "horizons": horizons, "symbols": symbols[:25], "picks": picks[:120]}
