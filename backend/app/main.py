@@ -4649,14 +4649,23 @@ def _velocity_aroon(highs, n=25):
     return up
 
 
-async def detect_velocity_candidates(args: dict | None = None):
-    """5 dakika içinde en az %2 yükselme potansiyeli taşıyan en hızlı 3 aday.
+VELOCITY_PROFILES = {
+    # horizon_minutes: {target_pct, ölçüm penceresi, journal profile etiketi}
+    5: {"target_pct": 2.0, "label": "5dk-%2"},
+    15: {"target_pct": 3.0, "label": "15dk-%3"},
+}
+
+
+async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5):
+    """Belirli ufukta (5dk/15dk) en az hedef % (2/3) yükselme potansiyeli taşıyan en hızlı 3 aday.
 
     v2 — forensics kalibrasyonu: Bollinger genişliği + ATR + (RSI iki ucu) +
-    yapısal teyit (LinReg/Aroon). Son-bar hacim şartı kaldırıldı (d=-0.01).
-    Her aday 'trend_devam' veya 'v_donusu' moduyla etiketlenir.
+    yapısal teyit (LinReg/Aroon) + aşırı uç elme (MFI/RSI). Her aday
+    'trend_devam' veya 'v_donusu' moduyla etiketlenir.
     Yalnızca kapanmış 1m mumlar; tahmin/garanti değildir, paper-only.
     """
+    profile = VELOCITY_PROFILES.get(horizon_minutes) or VELOCITY_PROFILES[5]
+    target_pct = float(profile["target_pct"])
     now_ms = int(time.time() * 1000)
     try:
         gainer_rows = await top_gainers(20)
@@ -4746,13 +4755,14 @@ async def detect_velocity_candidates(args: dict | None = None):
         candidate["rank"] = rank
     watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= 0.8]
     watchlist.sort(key=lambda r: r["velocity_score"], reverse=True)
-    # Journal: geçenler + izleme listesi kaydedilir; 5 dk sonra kapanmış M1
-    # mumlarla gerçek dokunuş ölçülüp eşikler otomatik yeniden kalibre edilir.
+    # Journal: geçenler + izleme listesi kaydedilir; ufuk süresi dolunca
+    # kapanmış M1 mumlarla gerçek dokunuş ölçülüp eşikler kalibre edilir.
+    candidate_id_prefix = f"vel-{profile['label']}-{int(now_ms)}"
     try:
         journal_rows = [{
-            "candidate_id": f"vel-{int(now_ms)}-{r['symbol']}",
+            "candidate_id": f"{candidate_id_prefix}-{r['symbol']}",
             "created_at": now_ms / 1000, "symbol": r["symbol"], "price": r["price"],
-            "target_pct": 2.0, "atr_pct": r["atr_pct"], "volume_ratio": 0.0,
+            "target_pct": target_pct, "atr_pct": r["atr_pct"], "volume_ratio": 0.0,
             "ret3_pct": r["ret3_pct"], "velocity_score": r["velocity_score"],
             "passes": r["passes"], "rank": r.get("rank"),
         } for r in (candidates[:3] + watchlist[:5])]
@@ -4762,13 +4772,16 @@ async def detect_velocity_candidates(args: dict | None = None):
     live_stats = await database.get_velocity_calibration_stats()
     live_hit_pct = (float(live_stats.get("passing_touched_count") or 0) /
                     float(live_stats.get("passing_count") or 0) * 100) if live_stats.get("passing_count") else None
-    return {"generated_at": now_ms / 1000, "target": "min %2 move in 5 minutes",
+    return {"generated_at": now_ms / 1000, "target": f"min %{target_pct:g} move in {horizon_minutes} minutes",
+            "horizon_minutes": horizon_minutes, "target_pct": target_pct,
             "pool_source": "binance_tr_top_gaining_tab", "symbols_scanned": len(pool),
             "version": "v2-forensics-2026-08-29",
             "filter": {"min_atr_pct": VELOCITY_MIN_ATR_PCT,
                         "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,
                         "trend_rsi_min": VELOCITY_TREND_RSI_MIN,
                         "reversal_rsi_max": VELOCITY_REVERSAL_RSI_MAX,
+                        "mfi_upper": VELOCITY_MFI_UPPER, "mfi_lower": VELOCITY_MFI_LOWER,
+                        "rsi_upper": VELOCITY_RSI_UPPER,
                         "struct_slope_pct": VELOCITY_STRUCT_SLOPE_PCT},
             "calibration": {"base_rate_pct": VELOCITY_BASE_RATE_PCT,
                              "conditional_hit_pct": VELOCITY_CALIBRATED_HIT_PCT,
@@ -4776,7 +4789,7 @@ async def detect_velocity_candidates(args: dict | None = None):
                              "live_evaluated": int(live_stats.get("evaluated_count") or 0),
                              "live_passing_touched": int(live_stats.get("passing_touched_count") or 0),
                              "live_passing_count": int(live_stats.get("passing_count") or 0),
-                             "note": "v2: hacim şartı kaldırıldı (d=-0.01); Bollinger genişliği + RSI iki ucu + LinReg/Aroon teyidi. live_hit_pct canlı journal'dan gelir."},
+                             "note": "v2: hacim şartı kaldırıldı; BB genişliği + RSI/MFI uç elmesi + LinReg/Aroon teyidi. live_hit_pct canlı journal'dan gelir."},
             "candidates": candidates[:3], "watchlist": watchlist[:5],
             "data_policy": "kapanmış 1m mumlar; tahmin/garanti değil, paper-only"}
 
@@ -4786,27 +4799,29 @@ _velocity_learning_state = {"last_run_at": None, "measured": 0, "last_error": No
 
 
 async def velocity_learning_loop():
-    """5 dk dolan hız adaylarını kapanmış M1 mumlarıyla ölç; eşikleri canlı
-    dokunuş oranına göre ayarla; LLM'e postmortem bağlamı kaydet."""
+    """Ufku dolan hız adaylarını (5dk-%2 ve 15dk-%3) kapanmış M1 mumlarıyla
+    ölç; eşikleri canlı dokunuş oranına göre ayarla; LLM'e postmortem bağlamı
+    kaydet."""
     await asyncio.sleep(120)
     while True:
         try:
-            pending = await database.get_pending_velocity_candidates(limit=100)
+            pending = await database.get_pending_velocity_candidates(limit=200)
             measured = 0
             for candidate in pending:
                 symbol = candidate["symbol"]
                 created_ms = int(float(candidate["created_at"]) * 1000)
-                due_ms = created_ms + 5 * 60_000
+                horizon = 15 if "15dk-%3" in str(candidate.get("candidate_id", "")) else 5
+                due_ms = created_ms + horizon * 60_000
                 try:
-                    rows = await fetch_klines(symbol, "1m", 12, created_ms, due_ms + 65_000)
+                    rows = await fetch_klines(symbol, "1m", horizon + 12, created_ms, due_ms + 65_000)
                 except Exception:
                     continue
                 # Tarama anı bir M1 mumun ortasına denk gelebilir; o mum atak
-                # öncesi sayılır ve pencereye tam 5 mum sığmayabilir (4 mümkün).
-                # Pencere süresi dolduysa 3+ mum yeterli — aksi halde kayıt
-                # sonsuza dek 'pending' kalıyordu.
+                # öncesi sayılır ve pencereye tam ufuk kadar mum sığmayabilir.
+                # Pencere süresi dolduysa ufuk × %60 mum yeterli — aksi halde
+                # kayıt sonsuza dek 'pending' kalıyordu.
                 window = [r for r in rows if int(r[0]) + 59_999 > created_ms and int(r[0]) + 59_999 <= due_ms]
-                if time.time() * 1000 < due_ms or len(window) < 3:
+                if time.time() * 1000 < due_ms or len(window) < horizon * 3 // 5:
                     continue
                 highs = [float(r[2]) for r in window]
                 entry = float(candidate["price"])
@@ -4865,7 +4880,13 @@ async def velocity_learning_loop():
 
 @app.get("/api/market-snapshot/velocity-5m")
 async def market_snapshot_velocity_5m(limit: int = 3):
-    return await detect_velocity_candidates({"limit": limit})
+    return await detect_velocity_candidates({"limit": limit}, horizon_minutes=5)
+
+
+@app.get("/api/market-snapshot/velocity-15m")
+async def market_snapshot_velocity_15m(limit: int = 3):
+    """15 dakikada +%3 hedefli hız avcısı; aynı v2 filtre seti, ayrı journal profili."""
+    return await detect_velocity_candidates({"limit": limit}, horizon_minutes=15)
 
 
 @app.get("/api/reports/velocity")
@@ -5216,8 +5237,10 @@ async def _open_velocity_position(candidate: dict) -> dict:
 
 
 async def autonomous_velocity_loop():
-    """15 dk'da bir hız taraması; en iyi adaya (GEÇTİ veya İZLEME) pozisyon.
+    """5 dk'da bir hız taraması; en iyi adaya (GEÇTİ veya İZLEME) pozisyon.
 
+    Her turda önce 5dk-%2, sonra 15dk-%3 profili taranır; iki profilin
+    adayları birleşik skorla sıralanır ve en iyi tek adaya pozisyon açılır.
     Açılış VELOCITY_AUTO_ENABLED + LLM paper anahtarıyla çift kilitli.
     Pozisyon yönetimi analyzer'ın genel döngüsünde: kâr → break-even,
     +%1 → ATR trailing, %1.5 sert stop.
@@ -5228,22 +5251,23 @@ async def autonomous_velocity_loop():
             enabled = config.VELOCITY_AUTO_ENABLED and \
                 (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
             if enabled:
-                scan = await detect_velocity_candidates({})
+                scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
+                scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
                 _velocity_auto_state["last_scan_at"] = time.time()
-                # GEÇTİ adayları önce, sonra en yüksek skorlu İZLEME
-                pool = list(scan.get("candidates") or []) + list(scan.get("watchlist") or [])
+                # İki profilin adayları birleşik; skor üzerinden adil sıralama
+                pool = list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or []) \
+                    + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or [])
                 pool.sort(key=lambda c: -float(c.get("velocity_score") or 0))
-                opened = False
-                for candidate in pool[:1]:
-                    outcome = await _open_velocity_position(candidate)
+                if pool:
+                    best = pool[0]
+                    outcome = await _open_velocity_position(best)
                     _velocity_auto_state["last_open"] = outcome
                     if outcome.get("status") == "PAPER_OPENED":
                         _velocity_auto_state["total_opened"] += 1
                         _velocity_auto_state["opened"].append({**outcome, "at": time.time(),
-                                                                "score": candidate.get("velocity_score")})
+                                                                "score": best.get("velocity_score"),
+                                                                "horizon": best.get("horizon_minutes")})
                         del _velocity_auto_state["opened"][:-20]
-                        opened = True
-                    break  # tur başına en fazla bir pozisyon
             _velocity_auto_state["last_error"] = None
         except asyncio.CancelledError:
             raise

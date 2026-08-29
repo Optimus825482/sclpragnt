@@ -79,8 +79,10 @@ type Config = {
   adr_min_remaining_pct: number;
 };
 
+import ChatSettingsPanel from "./ChatSettingsPanel";
+
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "scan-logs" | "system-health">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "chat" | "scan-logs" | "system-health">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -471,6 +473,7 @@ export default function SettingsPage() {
             ["app", "Uygulama Ayarları", "⚙️"],
             ["strategies", "Strateji Ayarları", "📈"],
             ["llm", "LLM / Provider", "🤖"],
+            ["chat", "Chat Ayarları", "✦"],
             ["scan-logs", "Tarama Logları", "🧾"],
             ["system-health", "Sistem Sağlığı", "🩺"],
           ] as const).map(([key, label, icon]) => (
@@ -485,6 +488,9 @@ export default function SettingsPage() {
         <>
           <div className={`${activeTab !== "system-health" ? "hidden" : ""}`}>
             <SystemHealthTab />
+          </div>
+          <div className={`${activeTab !== "chat" ? "hidden" : ""}`}>
+            <ChatSettingsPanel />
           </div>
           <div className={`card bg-bunker-950 ${activeTab !== "scan-logs" ? "hidden" : ""}`}>
             <div className="flex flex-wrap items-center justify-between gap-3 mb-4">

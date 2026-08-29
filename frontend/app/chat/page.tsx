@@ -5,6 +5,7 @@ import { API_BASE, apiRequest } from "../lib/api";
 import MarkdownMessage from "../components/MarkdownMessage";
 import SymbolLink from "../components/SymbolLink";
 import { streamChat } from "../lib/streamChat";
+import Link from "next/link";
 import { Badge, Button, Card } from "../components/ui";
 
 type Message = { role: "user" | "assistant"; content: string };
@@ -193,11 +194,7 @@ export default function ChatPage() {
   const [evaluations, setEvaluations] = useState<AgentEvaluation[]>([]);
   const [instincts, setInstincts] = useState<any[]>([]);
   const [traces, setTraces] = useState<AgentTrace[]>([]);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [controlsOpen, setControlsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"system" | "tools" | "skills">(
-    "system",
-  );
   const [hydrated, setHydrated] = useState(false);
   const [sessionId, setSessionId] = useState("chat:main");
   const [livePriceWatch, setLivePriceWatch] = useState<LivePriceWatch | null>(null);
@@ -206,6 +203,8 @@ export default function ChatPage() {
   const [upsideScanBusy, setUpsideScanBusy] = useState(false);
   const [velocityResult, setVelocityResult] = useState<VelocityScanResult | null>(null);
   const [velocityBusy, setVelocityBusy] = useState(false);
+  const [velocity15Result, setVelocity15Result] = useState<VelocityScanResult | null>(null);
+  const [velocity15Busy, setVelocity15Busy] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -464,6 +463,21 @@ export default function ChatPage() {
       setVelocityBusy(false);
     }
   };
+  const detectVelocity15 = async () => {
+    if (velocity15Busy) return;
+    setVelocity15Busy(true);
+    setError("");
+    try {
+      const response = await apiRequest(`${API_BASE}/api/market-snapshot/velocity-15m`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Hız taraması başarısız");
+      setVelocity15Result(data);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Hız taraması başarısız");
+    } finally {
+      setVelocity15Busy(false);
+    }
+  };
   const stopLiveWatch = () => {
     streamAbortRef.current?.abort();
     setLivePriceWatch((current) => current ? { ...current, status: "stopped" } : current);
@@ -491,7 +505,6 @@ export default function ChatPage() {
         active_skills: activeSkills,
       }),
     });
-    setSettingsOpen(false);
   };
   const startNewChat = () => {
     const nextSession = newSessionId();
@@ -531,20 +544,16 @@ export default function ChatPage() {
             <span className={`chat-context-meter ${contextTone}`}>
               {Math.min(100, contextRatio * 100).toFixed(2)}% context
             </span>
-            <Button variant="secondary" className="chat-mobile-controls" onClick={() => setControlsOpen((current) => !current)}>
-              {controlsOpen ? "PANELİ KAPAT" : "ARAÇ DURUMU"}
-            </Button>
             <Button variant="secondary" onClick={startNewChat}>
               ＋ YENİ SOHBET
             </Button>
-            <Button variant="primary" onClick={() => detectUpsideCandidates(15)} disabled={upsideScanBusy}>
-              {upsideScanBusy ? "15 DK TARANIYOR…" : "⚡ 15 DK YÜKSELİŞ ADAYLARI"}
-            </Button>
-            <Button variant="secondary" onClick={() => detectUpsideCandidates(5)} disabled={upsideScanBusy}>
-              {upsideScanBusy ? "5 DK TARANIYOR…" : "⚡ 5 DK YÜKSELİŞ ADAYLARI"}
-            </Button>
+          </div>
+          <div className="chat-scan-buttons" role="toolbar" aria-label="Hız avcısı taramaları">
             <Button variant="primary" onClick={detectVelocityCandidates} disabled={velocityBusy}>
               {velocityBusy ? "HIZ AVLANIYOR…" : "🚀 5 DK %2 HIZ AVCISI"}
+            </Button>
+            <Button variant="primary" onClick={detectVelocity15} disabled={velocity15Busy}>
+              {velocity15Busy ? "HIZ AVLANIYOR…" : "🚀 15 DK %3 HIZ AVCISI"}
             </Button>
           </div>
           {velocityResult && (
@@ -573,6 +582,34 @@ export default function ChatPage() {
                 )}
               </div>
               <p className="text-[10px] text-yellow-300 mt-2">{velocityResult.calibration?.note || "Tahmin/garanti değildir; kapanmış mumlar, paper-only."}</p>
+            </div>
+          )}
+          {velocity15Result && (
+            <div className="chat-price-watch" role="status" aria-live="polite">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div>
+                  <p className="eyebrow">15 DK İÇİNDE %3+ HIZ POTANSİYELİ · İLK 3</p>
+                  <p className="text-xs text-bunker-muted">{velocity15Result.symbols_scanned || 0} sembol tarandı · aynı v2 filtre seti (aşırı uçlar elenir)</p>
+                </div>
+                <span className="text-[10px] text-bunker-muted">{velocity15Result.generated_at ? new Date(velocity15Result.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
+              </div>
+              {(velocity15Result.candidates || []).length === 0 && <p className="text-xs text-yellow-300">Şu an 15dk-%3 koşullarını geçen sembol yok; izleme listesine bakın.</p>}
+              <div className="space-y-2">
+                {(velocity15Result.candidates || []).map((candidate) => (
+                  <div key={candidate.symbol} className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800 pb-2 last:border-0 last:pb-0">
+                    <div>
+                      <strong className="font-mono text-sm text-white">#{candidate.rank ?? "—"} <SymbolLink symbol={candidate.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green" /></strong>
+                      <span className="ml-2 rounded border border-sky-400/50 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-300">%3 POTANSİYEL</span>
+                      <p className="text-[11px] text-bunker-muted">fiyat {candidate.price.toLocaleString("tr-TR", { maximumFractionDigits: 8 })} · ATR %{candidate.atr_pct} · BB genişliği %{candidate.bb_width_pct} · RSI {candidate.rsi} · MFI {candidate.mfi} · {candidate.mode === "v_donusu" ? "V-dönüşü" : "trend-devam"} · son 3dk %{candidate.ret3_pct}</p>
+                    </div>
+                    <span className="font-mono text-xs text-sky-300">hız skoru {candidate.velocity_score}</span>
+                  </div>
+                ))}
+                {(velocity15Result.watchlist || []).length > 0 && (
+                  <p className="text-[11px] text-bunker-muted">İzleme: {(velocity15Result.watchlist || []).map((w) => `${w.symbol} (${w.velocity_score})`).join(" · ")}</p>
+                )}
+              </div>
+              <p className="text-[10px] text-yellow-300 mt-2">{velocity15Result.calibration?.note || "Tahmin/garanti değildir; kapanmış mumlar, paper-only."}</p>
             </div>
           )}
           {(upsideResults[5].candidates.length > 0 || upsideResults[15].candidates.length > 0) && (
@@ -694,9 +731,9 @@ export default function ChatPage() {
               <p className="eyebrow">AKTİF DURUM</p>
               <h2 className="font-mono text-sm font-bold text-white">MODEL AKIŞI</h2>
             </div>
-            <Button variant="secondary" onClick={() => setSettingsOpen(true)}>
-              ⚙ AYARLAR
-            </Button>
+            <Link href="/settings?tab=chat" className="ui-button ui-button-secondary" style={{ textDecoration: "none" }}>
+              ⚙ CHAT AYARLARI
+            </Link>
           </div>
           <div className="chat-live-tools">
             <p className="eyebrow mb-2">AKTİF ARAÇLAR · {activeTools.length}</p>
@@ -783,132 +820,6 @@ export default function ChatPage() {
           </div>
         </Card>
       </div>
-      {settingsOpen && (
-        <div
-          className="chat-modal-backdrop"
-          onClick={() => setSettingsOpen(false)}
-        >
-          <div
-            className="chat-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Chat ayarları"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="chat-modal-head">
-              <div>
-                <p className="eyebrow">CHAT YAPILANDIRMASI</p>
-                <h2 className="font-mono text-lg font-bold">
-                  Sistem ve yetenekler
-                </h2>
-              </div>
-              <Button variant="ghost" onClick={() => setSettingsOpen(false)}>
-                ✕
-              </Button>
-            </div>
-            <div className="chat-modal-tabs">
-              {(
-                [
-                  ["system", "Sistem + Soul"],
-                  ["tools", `Araçlar (${activeTools.length})`],
-                  ["skills", `Skill'ler (${activeSkills.length || "tümü"})`],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  className={settingsTab === id ? "active" : ""}
-                  onClick={() => setSettingsTab(id)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="chat-modal-body">
-              {settingsTab === "system" && (
-                <div className="space-y-3">
-                  <div className="chat-setting-card">
-                    <Badge tone="positive">AKTİF</Badge>
-                    <h3>System prompt</h3>
-                    <p>
-                      Paper-only çalışma, Türkçe yanıt, veri uydurmama ve risk
-                      kurallarına uyum.
-                    </p>
-                  </div>
-                  <div className="chat-setting-card">
-                    <Badge tone="positive">EDGE TTS · Emel</Badge>
-                    <h3>Sesli yanıt</h3>
-                    <label className="chat-tts-setting">Hız: {ttsRate > 0 ? "+" : ""}{ttsRate}%<input type="range" min="-30" max="50" value={ttsRate} onChange={(event) => setTtsRate(Number(event.target.value))} /></label>
-                    <label className="chat-tts-setting">Perde: {ttsPitch > 0 ? "+" : ""}{ttsPitch}Hz<input type="range" min="-20" max="20" value={ttsPitch} onChange={(event) => setTtsPitch(Number(event.target.value))} /></label>
-                  </div>
-                  <div className="chat-setting-card">
-                    <Badge tone="positive">AKTİF</Badge>
-                    <h3>Soul persona</h3>
-                    <p>
-                      Kanıta dayalı, risk duyarlı ve strateji araştırmasına
-                      odaklı asistan karakteri.
-                    </p>
-                  </div>
-                </div>
-              )}
-              {settingsTab === "tools" && (
-                <div>
-                  {TOOL_GROUPS.map(([group, names]) => (
-                    <div key={group} className="mb-4">
-                      <p className="eyebrow mb-2">{group}</p>
-                      {names.map((name) => (
-                        <label key={name} className="chat-toggle compact">
-                          <input
-                            type="checkbox"
-                            checked={activeTools.includes(name)}
-                            onChange={() =>
-                              toggle(name, setActiveTools, activeTools)
-                            }
-                          />
-                          <span>{name}</span>
-                        </label>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {settingsTab === "skills" && (
-                <div>
-                  {enabledSkills.length ? (
-                    enabledSkills.map((skill) => (
-                      <label key={skill.id} className="chat-toggle compact">
-                        <input
-                          type="checkbox"
-                          checked={activeSkills.includes(String(skill.id))}
-                          onChange={() =>
-                            toggle(
-                              String(skill.id),
-                              setActiveSkills,
-                              activeSkills,
-                            )
-                          }
-                        />
-                        <span>
-                          <b>{skill.name}</b>
-                          <small>{skill.instructions}</small>
-                        </span>
-                      </label>
-                    ))
-                  ) : (
-                    <p className="text-xs text-bunker-muted">
-                      Aktif skill bulunamadı.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="chat-modal-foot">
-              <Button variant="primary" onClick={() => setSettingsOpen(false)}>
-                UYGULA VE KAPAT
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
       <footer className="chat-footer">
         <span>SCALPERAGENT · CHAT</span>
         <span className="chat-footer-status">
