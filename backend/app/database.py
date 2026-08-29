@@ -1504,6 +1504,7 @@ async def get_llm_forecast_report(source=None):
             SUM(CASE WHEN status='evaluated' THEN 1 ELSE 0 END) AS evaluated_count,
             SUM(CASE WHEN status='evaluated' AND direction_correct THEN 1 ELSE 0 END) AS correct_count,
             AVG(CASE WHEN status='evaluated' THEN confidence END) AS average_confidence,
+            AVG(CASE WHEN status='evaluated' THEN ABS((confidence / 100.0) - CASE WHEN direction_correct THEN 1.0 ELSE 0.0 END) END) AS calibration_error,
             AVG(CASE WHEN status='evaluated' THEN outcome_return_pct END) AS average_return_pct
             FROM llm_forecasts WHERE 1=1{source_clause} GROUP BY horizon_minutes ORDER BY horizon_minutes""", params).fetchall()
         return [dict(row) for row in rows]

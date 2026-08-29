@@ -4021,30 +4021,45 @@ async def _journal_upside_candidates(candidates: list[dict], horizon_minutes: in
     if not candidates:
         return None
     group_id = uuid.uuid4().hex
+    prior = await database.get_llm_forecasts(status="evaluated", limit=500, source="chat")
+    prior_horizon = [row for row in prior if int(row.get("horizon_minutes") or 0) == horizon_minutes]
+    prior_accuracy = (sum(bool(row.get("direction_correct")) for row in prior_horizon) / len(prior_horizon)) if prior_horizon else None
     forecasts = []
     for candidate in candidates:
         price = candidate.get("price")
         if price in (None, "") or not candidate.get("data_ready"):
             continue
         score = float(candidate.get("score") or 0)
-        confidence = max(1.0, min(99.0, 50.0 + score * 10.0))
+        base_confidence = max(35.0, min(85.0, 50.0 + score * 8.0))
+        # Do not recalibrate from a tiny sample. Once enough causal outcomes
+        # exist, shrink the heuristic score toward observed chat accuracy.
+        confidence = base_confidence if len(prior_horizon) < 20 or prior_accuracy is None else max(35.0, min(85.0, base_confidence * .65 + prior_accuracy * 100 * .35))
         evidence = "; ".join((candidate.get("evidence") or [])[:4]) or "deterministic short-horizon snapshot ranking"
         risks = "; ".join((candidate.get("risks") or [])[:4]) or "none reported"
+        volatility = candidate.get("snapshot", {}).get("volatility") or {}
+        atr_pct = float(volatility.get("atr_pct") or 0)
+        # A forecast is only counted as an actionable directional hit when it
+        # clears round-trip cost and a fraction of current ATR noise.
+        noise_ratio = .25 if horizon_minutes == 5 else .35
+        min_move_pct = max(config.LLM_FORECAST_MIN_MOVE_PCT, config.min_net_exit_pct(config.DEFAULT_ORDER_USDT) * 1.05, atr_pct * noise_ratio)
         snapshot = {"candidate": candidate, "horizon_minutes": horizon_minutes,
-                    "generated_at": generated_at, "source": "upside_candidate_scan"}
+                    "generated_at": generated_at, "source": "upside_candidate_scan",
+                    "label_policy": {"min_move_pct": min_move_pct, "atr_pct": atr_pct, "noise_ratio": noise_ratio,
+                                     "round_trip_cost_floor": config.min_net_exit_pct(config.DEFAULT_ORDER_USDT),
+                                     "prior_chat_samples": len(prior_horizon), "prior_chat_accuracy": prior_accuracy}}
         snapshot_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
         forecasts.append({
             "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id,
             "symbol": candidate["symbol"], "created_at": generated_at,
             "horizon_minutes": horizon_minutes, "entry_price": float(price),
             "direction": "up", "confidence": confidence,
-            "invalidation_price": None, "min_move_pct": config.LLM_FORECAST_MIN_MOVE_PCT,
+            "invalidation_price": None, "min_move_pct": min_move_pct,
             "regime": ((candidate.get("regime") or {}).get("name") if isinstance(candidate.get("regime"), dict) else candidate.get("regime")) or "unknown",
             "timeframe_context": candidate.get("timeframes") or {},
             "scenario": f"{horizon_minutes} dakikada yukarı momentum olasılığı: {evidence}",
             "counter_scenario": f"Yanılma riskleri: {risks}",
             "summary": f"{horizon_minutes}dk aday taraması · skor {score:.2f}",
-            "model": "deterministic-upside-ranker", "prompt_version": "upside-candidate-v1",
+            "model": "deterministic-upside-ranker", "prompt_version": "upside-candidate-v2-cost-calibrated",
             "snapshot_hash": snapshot_hash, "snapshot": snapshot,
         })
     saved = await database.save_llm_forecasts(forecasts)
@@ -4205,6 +4220,19 @@ async def _detect_upside_candidates(horizon_minutes: int, args: dict | None = No
     common = _common_gainer_features(top20_rows, horizon_minutes)
     historical_symbols = {row["symbol"] for row in historical_risers}
     candidates = [_gainer_row_to_candidate(row, common, horizon_minutes, historical_symbols) for row in top20_rows if row.get("data_ready") and str(row.get("trend_direction", "")).lower() != "bearish"]
+    validated_lessons = await database.get_llm_forecast_lessons(status="active", limit=100)
+    for candidate in candidates:
+        matching = [lesson for lesson in validated_lessons
+                    if int(lesson.get("horizon_minutes") or 0) == horizon_minutes
+                    and str(lesson.get("direction") or "") == "up"
+                    and (not lesson.get("symbol") or str(lesson.get("symbol")).upper() == candidate["symbol"])]
+        matching.sort(key=lambda lesson: (bool(lesson.get("symbol")), float(lesson.get("holdout_accuracy") or 0)), reverse=True)
+        lesson = matching[0] if matching else None
+        accuracy = float(lesson.get("holdout_accuracy") or 0) if lesson else 0.0
+        candidate["validated_lesson"] = {"lesson": lesson.get("lesson"), "holdout_accuracy": accuracy,
+                                          "sample_size": lesson.get("sample_size")} if lesson else None
+        candidate["validated_lesson_bonus"] = round(min(.5, max(0.0, accuracy - .5) * 2), 3) if lesson else 0.0
+        candidate["score"] = round(float(candidate["score"]) + candidate["validated_lesson_bonus"], 3)
     candidates.sort(key=lambda row: row["score"], reverse=True)
     for rank, candidate in enumerate(candidates[:limit], 1): candidate["rank"] = rank
     candidates = candidates[:limit]
@@ -4214,6 +4242,7 @@ async def _detect_upside_candidates(horizon_minutes: int, args: dict | None = No
             "symbols_skipped_open": scan.get("symbols_skipped_open", []), "candidates": candidates,
             "market_regime": scan.get("market_regime"), "historical_fastest_risers": historical_snapshots,
             "historical_as_of_ms": end_time_ms, "current_top20_gainers": top20, "top20_common_features": common,
+            "validated_forecast_lessons": validated_lessons,
             "selection_pipeline": ["horizon öncesindeki en hızlı 3 tamamlanmış mum", "bu 3 sembolün geçmiş snapshot analizi", "güncel aktif Top-20 gainer ortak özellikleri", "nihai ufuk bazlı aday analizi"],
             "data_policy": "Taze Binance TR public snapshot ve geçmiş tamamlanmış mumlar; tahmin veya garanti değildir. Eksik alanlar unknown kabul edilir.",
             "journal": journal, "paper_only": True, "live_portfolio_changed": False}
