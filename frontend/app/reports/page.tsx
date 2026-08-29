@@ -57,7 +57,7 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
     <Stat title="Koşullu isabet" value={pct(stats.passing_hit_rate)} tone={(stats.passing_hit_rate??0)>=0.19?"text-neon-green":"text-yellow-300"}/>
     <Stat title="Geçenlerde ort. MFE" value={pct(stats.passing_average_mfe_pct)}/>
    </div>
-   <p className="mt-3 text-xs text-bunker-muted">Aktif filtre: ATR% ≥ {filters.min_atr_pct} · hacim ≥ {filters.min_volume_ratio}x · 3-bar ivme &gt; %{filters.min_ret3_pct}. Kalibrasyon hedefi %19 (replay); canlı değer saparsa öğrenme döngüsü ATR eşiğini ±0.05 kaydırır.</p>
+   <p className="mt-3 text-xs text-bunker-muted">v2 filtre: ATR% ≥ {filters.min_atr_pct} · Bollinger genişliği ≥ %{filters.min_bb_width_pct} · RSI ≥ {filters.trend_rsi_min} (trend) veya ≤ {filters.reversal_rsi_max} (V-dönüşü) · LinReg ≥ %{filters.struct_slope_pct} veya Aroon ≥ 50. Kalibrasyon hedefi %19 (replay); canlı değer saparsa öğrenme döngüsü ATR eşiğini ±0.05 kaydırır.</p>
   </section>
   <section className="card"><p className="eyebrow">ÖĞRENME DÖNGÜSÜ</p>
    <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-xs lg:grid-cols-4">

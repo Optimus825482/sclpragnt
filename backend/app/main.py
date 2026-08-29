@@ -4798,21 +4798,24 @@ async def velocity_learning_loop():
             if measured:
                 _velocity_learning_state["measured"] = _velocity_learning_state.get("measured", 0) + measured
                 # Otomatik kalibrasyon: en az 50 ölçüm birikince geçen adayların
-                # gerçek dokunuş oranına göre eşikleri nazikçe kaydır.
+                # gerçek dokunuş oranına göre eşikleri nazikçe kaydır. v2'de
+                # modül-sabitlerini yerinde güncelliyoruz (scan_one aynı modülü okur).
+                global VELOCITY_MIN_ATR_PCT
                 stats = await database.get_velocity_calibration_stats()
                 passing = int(stats.get("passing_count") or 0)
                 if passing >= 50:
                     hit = int(stats.get("passing_touched_count") or 0) / passing
                     if hit < 0.10:
-                        config.VELOCITY_MIN_ATR_PCT = round(min(1.0, config.VELOCITY_MIN_ATR_PCT + 0.05), 2)
+                        VELOCITY_MIN_ATR_PCT = round(min(1.0, VELOCITY_MIN_ATR_PCT + 0.05), 2)
                         _velocity_learning_state["last_calibrated_at"] = time.time()
                     elif hit > 0.45:
-                        config.VELOCITY_MIN_ATR_PCT = round(max(0.10, config.VELOCITY_MIN_ATR_PCT - 0.05), 2)
+                        VELOCITY_MIN_ATR_PCT = round(max(0.10, VELOCITY_MIN_ATR_PCT - 0.05), 2)
                         _velocity_learning_state["last_calibrated_at"] = time.time()
                     _velocity_learning_state["active_filters"] = {
-                        "min_atr_pct": config.VELOCITY_MIN_ATR_PCT,
-                        "min_volume_ratio": config.VELOCITY_MIN_VOLUME_RATIO,
-                        "min_ret3_pct": config.VELOCITY_MIN_RET3_PCT,
+                        "min_atr_pct": VELOCITY_MIN_ATR_PCT,
+                        "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,
+                        "trend_rsi_min": VELOCITY_TREND_RSI_MIN,
+                        "reversal_rsi_max": VELOCITY_REVERSAL_RSI_MAX,
                         "live_hit_pct": round(hit * 100, 1),
                     }
             _velocity_learning_state.update({"last_run_at": time.time(), "last_error": None})
@@ -4860,8 +4863,10 @@ async def get_velocity_report(limit: int = 60):
                        "passing_hit_rate": passing_touched / passing if passing else None,
                        "passing_average_mfe_pct": stats.get("passing_mfe_pct")},
             "filters": {"min_atr_pct": VELOCITY_MIN_ATR_PCT,
-                         "min_volume_ratio": VELOCITY_MIN_VOLUME_RATIO,
-                         "min_ret3_pct": VELOCITY_MIN_RET3_PCT},
+                         "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,
+                         "trend_rsi_min": VELOCITY_TREND_RSI_MIN,
+                         "reversal_rsi_max": VELOCITY_REVERSAL_RSI_MAX,
+                         "struct_slope_pct": VELOCITY_STRUCT_SLOPE_PCT},
             "learning_state": dict(_velocity_learning_state),
             "symbols": symbols[:20], "recent": recent}
 
