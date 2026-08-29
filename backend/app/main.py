@@ -6462,6 +6462,53 @@ async def risk_summary():
             "risk_flags": {"consecutive_loss_streak": losses >= 3, "daily_loss": today_pnl < 0}}
 
 @app.post("/api/strategies/llm/chat")
+def _tool_activity_summary(name: str, args: dict) -> str:
+    """Araç çağrısını insan-okur Türkçe eylem cümlesine çevirir (model akışı paneli)."""
+    args = args or {}
+    symbol = str(args.get("symbol") or "").upper()
+    sym = f" {symbol}" if symbol else ""
+    if name == "scan_market_snapshots": return f"Piyasa taranıyor{sym} · snapshot'lar hesaplanıyor"
+    if name == "detect_15m_upside_candidates": return "15 dk yükseliş adayları taranıyor · hızlı yükselenler hesaplanıyor"
+    if name == "detect_5m_upside_candidates": return "5 dk yükseliş adayları taranıyor"
+    if name == "deep_analyze_symbol": return f"{symbol} derinlemesine analiz ediliyor · gösterge seti hesaplanıyor"
+    if name == "get_data_quality": return f"{symbol} veri tazeliği kontrol ediliyor"
+    if name == "get_microstructure_snapshot": return f"{symbol} emir defteri dengesi okunuyor"
+    if name == "get_regime_snapshot": return f"{symbol} piyasa rejimi belirleniyor"
+    if name == "calculate_trade_economics": return f"{symbol} işlem ekonomisi hesaplanıyor · maliyet/kâr analizi"
+    if name == "get_symbol_outcome_profile": return f"{symbol} geçmiş işlem başarısı çıkarılıyor"
+    if name == "run_backtest" or name == "run_custom_backtest": return f"{symbol or 'strateji'} backtest çalıştırılıyor · geçmiş veri işleniyor"
+    if name == "run_walk_forward": return "Walk-forward validasyonu çalıştırılıyor"
+    if name == "run_holdout_test": return "Holdout testi çalıştırılıyor"
+    if name == "run_statistical_validation": return "İstatistiksel doğrulama denemeleri koşuluyor"
+    if name == "run_execution_stress_test": return "Emir gerçekleşme stres testi koşuluyor"
+    if name == "get_trades": return "Kapanmış işlem geçmişi okunuyor"
+    if name == "get_signals": return "Sinyal kayıtları okunuyor"
+    if name == "get_decision_logs": return "Karar logları inceleniyor"
+    if name == "get_strategy_stats": return "Strateji başarı istatistikleri hesaplanıyor"
+    if name == "get_strategy_config": return "Strateji yapılandırması okunuyor"
+    if name == "search_memory" or name == "search_memory_by_text": return "Hafıza arama yapılıyor · geçmiş dersler çağrılıyor"
+    if name == "query_database" or name == "read_only_sql": return "Veritabanı sorgusu çalıştırılıyor"
+    if name == "create_market_alert": return f"{symbol} için alarm kuralı oluşturuluyor"
+    if name == "remove_market_alert": return "Alarm kuralı kaldırılıyor"
+    if name == "list_market_alerts": return "Aktif alarmlar listeleniyor"
+    if name == "open_llm_paper_trade": return f"{symbol} için paper pozisyon planı uygulanıyor"
+    if name == "close_llm_position": return f"{symbol} pozisyonu kapatılıyor"
+    if name == "get_llm_open_position": return f"{symbol} açık pozisyonu inceleniyor"
+    if name == "update_llm_position_plan": return f"{symbol} pozisyon planı güncelleniyor"
+    if name == "set_llm_symbol_guard" or name == "remove_llm_symbol_guard": return f"{symbol} sembol kısıtı yönetiliyor"
+    if name == "activate_coin": return f"{symbol} analiz evrenine ekleniyor"
+    if name == "deactivate_coin": return f"{symbol} evrenden çıkarılıyor"
+    if name == "request_codex_research": return "Dış araştırma talebi gönderiliyor (A2A)"
+    if name == "get_a2a_messages": return "Dış araştırma yanıtları okunuyor"
+    if name == "place_paper_order": return f"{symbol} paper emri oluşturuluyor"
+    if name == "cancel_paper_order": return "Paper emir iptal ediliyor"
+    if name == "get_order_status": return "Emir durumu kontrol ediliyor"
+    if name == "reconcile_portfolio": return "Portföy mutabakatı yapılıyor"
+    if name == "validate_trade_plan": return "İşlem planı doğrulanıyor · risk kontrolü"
+    if name == "calculate_trade_economics_tool": return "İşlem ekonomisi hesaplanıyor"
+    return f"{name} çalıştırılıyor{sym}"
+
+
 async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
     messages = body.get("messages") or []
@@ -6752,6 +6799,15 @@ async def strategies_llm_chat(payload: dict = None):
                 # Observability must never turn a valid LLM/tool response into
                 # a failed chat request.
                 print(f"[LLM] tool log kaydedilemedi: {log_error}")
+            # Model akışı paneli: aracın ne yaptığını insan-okur özetle canlı yayınla.
+            try:
+                await ws_manager.broadcast({"type": "model_activity", "data": {
+                    "kind": "tool", "tool": name, "args": args,
+                    "summary": _tool_activity_summary(name, args),
+                    "duration_ms": round((time.perf_counter() - started) * 1000),
+                    "success": bool(success), "at": time.time()}})
+            except Exception:
+                pass
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL, LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL, LLM_DEACTIVATE_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL, LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL])
     tools.append({"type":"function","function":{"name":"activate_coin","description":"Binance TR public TRY piyasasındaki coini paper analiz evrenine ekler; gerçek emir açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}})
     tools.append({"type":"function","function":{"name":"place_paper_order","description":"Yalnızca sanal paper emir oluşturur; gerçek borsa emri göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"side":{"type":"string","enum":["BUY","SELL","LONG"]},"order_type":{"type":"string","enum":["MARKET","LIMIT","STOP_LIMIT","STOP_MARKET","OCO"]},"order_value_try":{"type":"number"},"price":{"type":"number"},"limit_price":{"type":"number"},"stop_price":{"type":"number"},"take_profit_pct":{"type":"number"},"stop_loss_pct":{"type":"number"},"max_hold_seconds":{"type":"integer"},"oco_group":{"type":"string"}},"required":["symbol","side","order_type"]}}})
