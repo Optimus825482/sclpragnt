@@ -81,6 +81,8 @@ button, a { touch-action: manipulation; }
 .chat-controls { min-height:0; overflow-y:auto; }
 .chat-controls-header { display:flex; justify-content:space-between; gap:.75rem; align-items:flex-start; }
 .chat-conversation-actions { display:flex; align-items:center; justify-content:flex-end; gap:.6rem; margin:0 0 .5rem; }
+.chat-scan-buttons { display:flex; flex-wrap:wrap; gap:.5rem; margin:0 0 .6rem; }
+.chat-scan-buttons .ui-button { min-height:2.4rem; padding:.55rem .85rem; font-size:.68rem; }
 .chat-context-meter { color:#94a3b8; font:600 .65rem/1 ui-monospace,monospace; letter-spacing:.04em; }
 .chat-context-meter.warning { color:#fde68a; }
 .chat-context-meter.critical { color:#fda4af; }
@@ -318,6 +320,8 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .chat-layout { height:auto; min-height:0; }
   .chat-conversation { min-height:calc(100dvh - 9rem); }
   .chat-conversation-actions { justify-content:space-between; }
+  .chat-scan-buttons { flex-direction:row; margin:0 0 .5rem; }
+  .chat-scan-buttons .ui-button { flex:1 1 100%; min-height:2.75rem; justify-content:center; text-align:center; }
   .chat-mobile-controls { display:inline-flex; }
   .chat-conversation-actions .ui-button { min-height:2.25rem; padding:.55rem .7rem; }
   .chat-context-alert { align-items:flex-start; flex-direction:column; }
@@ -337,8 +341,7 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .chat-composer textarea { min-height:3.15rem; padding:.7rem; font-size:16px; }
   .chat-composer .ui-button { min-height:3.15rem; padding:.6rem .7rem; font-size:.65rem; }
   .chat-price-watch { grid-template-columns:1fr; align-items:stretch; }
-  .chat-controls { display:none; }
-  .chat-controls.is-open { display:block; max-height:70dvh; overflow-y:auto; }
+  .chat-controls { display:block; max-height:60dvh; overflow-y:auto; }
   .card { padding: 1rem; border-radius: .75rem; }
   .page-heading h1 { font-size: 1.15rem; }
   .ui-stat-value { font-size: 1.35rem; }
