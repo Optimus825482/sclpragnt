@@ -462,6 +462,18 @@ async def init_db():
             status TEXT NOT NULL DEFAULT 'active', generated_at REAL NOT NULL, updated_at REAL NOT NULL
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_prediction_insights_lookup ON chat_prediction_insights(status, symbol, horizon_minutes)")
+        # Hız avcısı journal'ı: tarama adayları + ölçülen %2 dokunuş sonuçları.
+        conn.execute("""CREATE TABLE IF NOT EXISTS velocity_candidates (
+            candidate_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
+            symbol TEXT NOT NULL, price REAL NOT NULL, target_pct REAL NOT NULL,
+            atr_pct REAL NOT NULL, volume_ratio REAL NOT NULL, ret3_pct REAL NOT NULL,
+            velocity_score REAL NOT NULL, passes INTEGER NOT NULL,
+            rank INTEGER, status TEXT NOT NULL DEFAULT 'pending',
+            evaluated_at REAL, mfe_pct REAL, touched_target INTEGER,
+            outcome_details TEXT NOT NULL DEFAULT '{}'
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_velocity_candidates_due ON velocity_candidates(status, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_velocity_candidates_symbol ON velocity_candidates(symbol, created_at DESC)")
         conn.execute("CREATE TABLE IF NOT EXISTS microstructure_snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, captured_at REAL NOT NULL, bid_price REAL, ask_price REAL, bid_qty REAL, ask_qty REAL, spread_pct REAL, depth_try REAL, orderflow_imbalance REAL, source TEXT NOT NULL DEFAULT 'binance_tr_public_ws', updated_at REAL, UNIQUE(symbol, captured_at))")
         conn.execute("CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC)")
         conn.execute("""CREATE TABLE IF NOT EXISTS historical_candles (
@@ -1742,6 +1754,87 @@ async def get_chat_prediction_insights(symbol=None, horizon_minutes=None, status
             item["source_ids"] = _json_value(item.get("source_ids"), [])
             result.append(item)
         return result
+    return await _run_db(op)
+
+
+def _velocity_row(row):
+    item = dict(row)
+    if "outcome_details" in item:
+        item["outcome_details"] = _json_value(item.get("outcome_details"), {})
+    if "passes" in item and item["passes"] is not None:
+        item["passes"] = bool(item["passes"])
+    if "touched_target" in item and item["touched_target"] is not None:
+        item["touched_target"] = bool(item["touched_target"])
+    return item
+
+
+async def save_velocity_candidates(rows):
+    """Hız avcısı tarama adaylarını journal'a yazar; tekrar idempotent."""
+    rows = list(rows or [])
+    if not rows:
+        return 0
+    def op(conn):
+        sql = """INSERT INTO velocity_candidates
+            (candidate_id,created_at,symbol,price,target_pct,atr_pct,volume_ratio,ret3_pct,
+             velocity_score,passes,rank,status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(candidate_id) DO NOTHING"""
+        values = [(row["candidate_id"], float(row["created_at"]), str(row["symbol"]).upper(),
+                   float(row["price"]), float(row["target_pct"]), float(row["atr_pct"]),
+                   float(row["volume_ratio"]), float(row["ret3_pct"]), float(row["velocity_score"]),
+                   bool(row.get("passes")), row.get("rank"), "pending") for row in rows]
+        conn.executemany(sql, values); conn.commit(); return len(values)
+    return await _run_db(op)
+
+
+async def get_pending_velocity_candidates(now=None, limit=100):
+    now = float(now if now is not None else time.time())
+    def op(conn):
+        # Hedef penceresi 5 dakika; tarama anından 5 dk geçenler ölçüme hazır.
+        rows = conn.execute("""SELECT * FROM velocity_candidates
+            WHERE status='pending' AND created_at <= ? - 300
+            ORDER BY created_at ASC LIMIT ?""", (now, max(1, min(int(limit), 500)))).fetchall()
+        return [_velocity_row(row) for row in rows]
+    return await _run_db(op)
+
+
+async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_target, details):
+    def op(conn):
+        conn.execute("""UPDATE velocity_candidates SET status='evaluated', evaluated_at=?, mfe_pct=?,
+            touched_target=?, outcome_details=? WHERE candidate_id=? AND status='pending'""",
+            (time.time(), float(mfe_pct), bool(touched_target),
+             _json_safe_dumps(details or {}, ensure_ascii=False, default=str), candidate_id))
+        changed = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else conn.execute("SELECT 1").fetchone()[0]
+        conn.commit(); return bool(changed)
+    return await _run_db(op)
+
+
+async def get_velocity_candidates(limit=50, status=None):
+    def op(conn):
+        clauses, values = [], []
+        if status:
+            clauses.append("status=?"); values.append(status)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(max(1, min(int(limit), 500)))
+        rows = conn.execute(f"SELECT * FROM velocity_candidates{where} ORDER BY created_at DESC LIMIT ?", values).fetchall()
+        return [_velocity_row(row) for row in rows]
+    return await _run_db(op)
+
+
+async def get_velocity_calibration_stats():
+    """Koşullu dokunuş oranı + bileşen bazlı istatistik; eşik otomatik kalibrasyonu bununla yapılır."""
+    def op(conn):
+        rows = [dict(row) for row in conn.execute("""SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
+            SUM(CASE WHEN status='evaluated' THEN 1 ELSE 0 END) AS evaluated_count,
+            SUM(CASE WHEN status='evaluated' AND touched_target THEN 1 ELSE 0 END) AS touched_count,
+            AVG(CASE WHEN status='evaluated' THEN mfe_pct END) AS average_mfe_pct,
+            AVG(CASE WHEN status='evaluated' AND passes THEN mfe_pct END) AS passing_mfe_pct,
+            SUM(CASE WHEN status='evaluated' AND passes AND touched_target THEN 1 ELSE 0 END) AS passing_touched_count,
+            SUM(CASE WHEN status='evaluated' AND passes THEN 1 ELSE 0 END) AS passing_count
+            FROM velocity_candidates""").fetchall()]
+        return rows[0] if rows else {}
     return await _run_db(op)
 
 async def read_only_query(sql: str, limit: int = 500):
