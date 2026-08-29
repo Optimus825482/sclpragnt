@@ -44,6 +44,7 @@ from app.sma_cascade_shadow import SmaCascadeShadow
 from app.fisher_m3_kernel_m5_shadow import FisherM3KernelM5Shadow
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import chat_prediction_learning
+from app import chat_prediction_replay
 from app import llm_analysis
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
@@ -5124,6 +5125,68 @@ async def get_chat_prediction_insights_endpoint(symbol: str | None = None, horiz
     rows = await database.get_chat_prediction_insights(symbol=symbol, horizon_minutes=horizon_minutes, limit=20)
     return {"paper_only": True, "insights": rows,
             "learning_state": dict(_chat_prediction_learning_state)}
+
+
+_chat_prediction_replay_state = {"status": "idle", "running": False, "started_at": None, "finished_at": None,
+                                  "progress": 0, "total": 0, "message": None, "result": None}
+
+
+async def _run_chat_prediction_replay(symbols: list[str], lookback_hours: int, horizons: list[int], step_minutes: int):
+    """Background replay job; state is polled by the reports UI."""
+
+    def log(message: str):
+        _chat_prediction_replay_state["message"] = message
+
+    try:
+        runner = chat_prediction_replay.ReplayRunner(
+            symbols, lookback_hours=lookback_hours, horizons=horizons, step_minutes=step_minutes,
+            fetch_klines=fetch_klines, log=log)
+        _chat_prediction_replay_state["total"] = len(runner.symbols)
+        result = await runner.run()
+        _chat_prediction_replay_state["result"] = result
+        _chat_prediction_replay_state["status"] = "completed" if result.get("status") == "ok" else "failed"
+        _chat_prediction_replay_state["message"] = None if result.get("status") == "ok" else result.get("message")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("Chat prediction replay failed: %s", exc)
+        _chat_prediction_replay_state["status"] = "failed"
+        _chat_prediction_replay_state["message"] = str(exc)
+    finally:
+        _chat_prediction_replay_state["running"] = False
+        _chat_prediction_replay_state["finished_at"] = time.time()
+
+
+@app.get("/api/reports/chat-predictions/replay")
+async def get_chat_prediction_replay(lookback_hours: int = 6, horizons: str = "5,15",
+                                     step_minutes: int | None = None, symbols: str | None = None,
+                                     refresh: bool = False):
+    """Causal replay backtest of the chat M5/M15 candidate pipeline.
+
+    Default: last 6 hours, both horizons, at most 20 active symbols. Public
+    data only; read-only research that never writes the prediction journal.
+    """
+    try:
+        horizon_list = sorted({int(item) for item in str(horizons).split(",") if item.strip()})
+    except ValueError:
+        raise HTTPException(status_code=400, detail="horizons virgülle ayrılmış sayı olmalı, örn. 5,15")
+    horizon_list = [value for value in horizon_list if value in (5, 15)] or [5, 15]
+    lookback_hours = max(1, min(int(lookback_hours), 48))
+    step_minutes = max(max(horizon_list), min(int(step_minutes or max(horizon_list)), 240))
+    if symbols and symbols.strip():
+        symbol_list = [token.strip().upper() for token in symbols.split(",") if token.strip()][:20]
+    else:
+        symbol_list = [str(symbol).upper() for symbol in config.SYMBOLS][:20]
+    if refresh or not _chat_prediction_replay_state.get("result") or not _chat_prediction_replay_state.get("running"):
+        if not _chat_prediction_replay_state.get("running"):
+            _chat_prediction_replay_state.update({"status": "running", "running": True, "started_at": time.time(),
+                                                   "finished_at": None, "progress": 0, "message": "1m verileri yükleniyor…",
+                                                   "result": None})
+            _start_background(_run_chat_prediction_replay(symbol_list, lookback_hours, horizon_list, step_minutes),
+                              "chat-prediction-replay")
+    return {"paper_only": True, "state": dict(_chat_prediction_replay_state),
+            "parameters": {"lookback_hours": lookback_hours, "horizons": horizon_list,
+                            "step_minutes": step_minutes, "symbols": symbol_list}}
 
 
 @app.get("/api/reports/capital-lock")
