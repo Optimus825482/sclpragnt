@@ -3335,32 +3335,51 @@ async def save_chart_settings(symbol: str, payload: dict):
 async def get_positions():
     positions = []
     for sym, pos in analyzer.positions.items():
-        ticker = market.get_ticker(sym)
-        current = ticker["last_price"] if ticker else pos["entry_price"]
-        gross_pnl_try = (current - pos["entry_price"]) * pos["quantity"]
-        pnl_try = gross_pnl_try - pos["entry_price"] * pos["quantity"] * config.COMMISSION_PCT
-        pnl_pct = (pnl_try / (pos["entry_price"] * pos["quantity"]) * 100) if pos["entry_price"] and pos["quantity"] else 0.0
-        positions.append({
-            "symbol": sym,
-            "side": pos["side"],
-            "strategy": pos.get("strategy", "UT"),
-            "entry": pos["entry_price"],
-            "current": current,
-            "pnl_pct": pnl_pct,
-            "pnl_try": pnl_try,
-            "quantity": pos["quantity"],
-            "entry_time": pos.get("entry_time"),
-            "stop": pos.get("stop_price"),
-            "take_profit": pos.get("take_profit"),
-            "entry_context": pos.get("entry_context"),
-            "llm_managed": pos.get("strategy") == "LLM_PAPER",
-            "llm_stop_price": pos.get("llm_stop_price"),
-            "llm_take_profit_price": pos.get("llm_take_profit_price"),
-            "llm_max_hold_sec": pos.get("llm_max_hold_sec"),
-            "plan_revision": (pos.get("entry_context") or {}).get("plan_revision", 0),
-            "last_plan_reason": (pos.get("entry_context") or {}).get("last_plan_reason"),
-            "last_plan_updated_at": (pos.get("entry_context") or {}).get("plan_updated_at"),
-        })
+        try:
+            current = float((market.get_ticker(sym) or {}).get("last_price") or pos["entry_price"] or 0)
+            entry = float(pos["entry_price"] or 0)
+            qty = float(pos["quantity"] or 0)
+            gross_pnl_try = (current - entry) * qty
+            entry_commission = entry * qty * config.COMMISSION_PCT
+            pnl_try = gross_pnl_try - entry_commission
+            pnl_pct = (pnl_try / (entry * qty) * 100) if (entry and qty) else 0.0
+            ectx = pos.get("entry_context")
+            ectx = ectx if isinstance(ectx, dict) else {}
+            positions.append({
+                "symbol": sym,
+                "side": pos.get("side", "LONG"),
+                "strategy": pos.get("strategy", "UT"),
+                "entry": entry,
+                "current": current,
+                "pnl_pct": round(pnl_pct, 4),
+                "pnl_try": round(pnl_try, 4),
+                "quantity": qty,
+                "entry_time": pos.get("entry_time"),
+                "stop": pos.get("stop_price"),
+                "take_profit": pos.get("take_profit"),
+                "entry_context": ectx,
+                "llm_managed": pos.get("strategy") == "LLM_PAPER",
+                "llm_stop_price": pos.get("llm_stop_price"),
+                "llm_take_profit_price": pos.get("llm_take_profit_price"),
+                "llm_max_hold_sec": pos.get("llm_max_hold_sec"),
+                "plan_revision": ectx.get("plan_revision", 0),
+                "last_plan_reason": ectx.get("last_plan_reason"),
+                "last_plan_updated_at": ectx.get("plan_updated_at"),
+            })
+        except Exception as exc:
+            # Tek bir bozuk pozisyonun tüm listeyi 500'le düşürmesini engelle;
+            # o pozisyonu boş/uzak değerlerle ekle ki panel en azından sembolü görsün.
+            logger.warning("/api/positions: %s için serileştirme hatası (%s): %s", sym, type(exc).__name__, exc)
+            positions.append({
+                "symbol": sym, "side": pos.get("side", "LONG"), "strategy": pos.get("strategy", "UT"),
+                "entry": pos.get("entry_price"), "current": pos.get("entry_price"),
+                "pnl_pct": 0.0, "pnl_try": 0.0, "quantity": pos.get("quantity"),
+                "entry_time": pos.get("entry_time"), "stop": pos.get("stop_price"),
+                "take_profit": pos.get("take_profit"), "entry_context": {},
+                "llm_managed": False, "llm_stop_price": None, "llm_take_profit_price": None,
+                "llm_max_hold_sec": None, "plan_revision": 0, "last_plan_reason": None,
+                "last_plan_updated_at": None, "error": str(exc),
+            })
     positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
     return {"positions": positions}
 
@@ -4124,10 +4143,12 @@ async def _chat_auto_trade_open(cue: dict) -> dict:
     # 2) Zaten açık pozisyon var mı?
     if symbol in analyzer.positions:
         return {"symbol": symbol, "status": "SKIPPED", "reason": "acik_pozisyon_var"}
-    # 3) Chat stratejisi pozisyon limiti
-    chat_open = sum(1 for pos in analyzer.positions.values() if pos.get("strategy") == "CHAT_PREDICTION")
-    if chat_open >= config.CHAT_PREDICTION_MAX_OPEN_POSITIONS:
-        return {"symbol": symbol, "status": "SKIPPED", "reason": "chat_pozisyon_limiti_dolu"}
+    # 3) Chat stratejisi pozisyon limiti (0 = sınırsız)
+    chat_max = int(config.CHAT_PREDICTION_MAX_OPEN_POSITIONS)
+    if 0 < chat_max <= 9999:
+        chat_open = sum(1 for pos in analyzer.positions.values() if pos.get("strategy") == "CHAT_PREDICTION")
+        if chat_open >= chat_max:
+            return {"symbol": symbol, "status": "SKIPPED", "reason": "chat_pozisyon_limiti_dolu"}
     # 4) LLM cooldown/guard kapısı
     guard = await database.get_llm_symbol_guard(symbol)
     guard_reason = _llm_guard_block_reason(guard)
@@ -4712,6 +4733,54 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                                     bb_ratio *
                                     max(0.2, min(3.0, struct_ratio)) *
                                     (1.0 + max(0.0, ret3) / 2.0), 2)
+            # ---- M5 momentum+volatilite deseni (7g replay: %66.8 başarı) ----
+            # g0: en son kapanan M5 mumu; g1: ondan önceki; g2: iki önceki aralık.
+            # Eşikler config.VELOCITY_PATTERN_* (24s/72s/7g doğrulandı).
+            m5_pattern = None
+            m5_pattern_ok = None
+            try:
+                m5_rows = await fetch_klines(symbol, "5m", 40)  # ~3.3 saat warmup
+                if len(m5_rows) >= 35:
+                    m5_closes = [float(r[4]) for r in m5_rows]
+                    m5_highs = [float(r[2]) for r in m5_rows]
+                    m5_lows = [float(r[3]) for r in m5_rows]
+                    m5_vols = [float(r[5]) for r in m5_rows]
+                    k = len(m5_rows) - 1  # son kapanmiş M5
+                    def _m5_groups():
+                        # g1: k-1'e kadar tam seri; g2: son 2 çıkar; g0: k dahil tam seri
+                        g1 = m5_rows[:k]
+                        g2 = m5_rows[:k - 2] if k > 3 else m5_rows[:k]
+                        g0 = m5_rows  # son kapanan dahil
+                        return g0, g1, g2
+                    def _grp_vals(grp):
+                        cls = [float(r[4]) for r in grp]
+                        hs = [float(r[2]) for r in grp]
+                        ls = [float(r[3]) for r in grp]
+                        vs = [float(r[5]) for r in grp]
+                        atr_v = None
+                        if len(cls) >= 15:
+                            trs = [max(hs[j] - ls[j], abs(hs[j] - cls[j - 1]), abs(ls[j] - cls[j - 1]))
+                                   for j in range(len(cls) - 14, len(cls))]
+                            atr_v = sum(trs) / len(trs)
+                        atr_pct = (atr_v / cls[-1] * 100) if atr_v and cls[-1] else None
+                        chg5 = (cls[-1] / cls[-6] - 1) * 100 if len(cls) >= 6 else None
+                        chg3 = (cls[-1] / cls[-4] - 1) * 100 if len(cls) >= 4 else None
+                        roc10 = (cls[-1] / cls[-11] - 1) * 100 if len(cls) >= 11 else None
+                        return {"atr_pct": atr_pct, "chg5": chg5, "chg3": chg3, "roc": roc10}
+                    g0, g1, g2 = _m5_groups()
+                    v0, v1, v2 = _grp_vals(g0), _grp_vals(g1), _grp_vals(g2)
+                    conds = {
+                        "g0_chg5": v0["chg5"] is not None and v0["chg5"] >= config.VELOCITY_PATTERN_G0_CHG5,
+                        "g0_chg3": v0["chg3"] is not None and v0["chg3"] >= config.VELOCITY_PATTERN_G0_CHG3,
+                        "g0_roc": v0["roc"] is not None and v0["roc"] >= config.VELOCITY_PATTERN_G0_ROC,
+                        "g0_atr": v0["atr_pct"] is not None and v0["atr_pct"] >= config.VELOCITY_PATTERN_G0_ATR,
+                        "g1_atr": v1["atr_pct"] is not None and v1["atr_pct"] >= config.VELOCITY_PATTERN_G1_ATR,
+                        "g2_atr": v2["atr_pct"] is not None and v2["atr_pct"] >= config.VELOCITY_PATTERN_G2_ATR,
+                    }
+                    m5_pattern = {k: bool(v) for k, v in conds.items()}
+                    m5_pattern_ok = all(conds.values())
+            except Exception as exc:
+                logger.warning("velocity m5 pattern hesabı: %s", exc)
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
@@ -4720,6 +4789,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "aroon_up": round(aroon, 0) if aroon is not None else None,
                     "ret3_pct": round(ret3, 3),
                     "velocity_score": velocity_score, "passes": passes,
+                    "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
                     "base_hit_pct": VELOCITY_BASE_RATE_PCT,
                     "calibrated_hit_pct": VELOCITY_CALIBRATED_HIT_PCT if passes else None,
                     "last_closed_at": rows[-1][0]}
@@ -4741,6 +4811,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             "target_pct": target_pct, "atr_pct": r["atr_pct"], "volume_ratio": 0.0,
             "ret3_pct": r["ret3_pct"], "velocity_score": r["velocity_score"],
             "passes": r["passes"], "rank": r.get("rank"),
+            "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
         } for r in (candidates[:3] + watchlist[:5])]
         await database.save_velocity_candidates(journal_rows)
     except Exception as exc:
@@ -5207,11 +5278,19 @@ async def _hydrate_market_cache_for(symbol: str):
 async def _open_velocity_position(candidate: dict) -> dict:
     """En iyi hız adayına serbest TL'nin %50'si ile paper pozisyon açar."""
     symbol = str(candidate["symbol"] or "").upper()
+    # M5 momentum+volatilite deseni (7g replay: %66.8 başarı). Filtre açıkken
+    # desen karşılanmayan adaylar açılmaz — yalnızca journal'da kalır.
+    if config.VELOCITY_PATTERN_FILTER_ENABLED:
+        if not candidate.get("m5_pattern_ok"):
+            return {"symbol": symbol, "status": "SKIPPED",
+                    "reason": "m5_pattern_reddet", "m5_pattern": candidate.get("m5_pattern")}
     if symbol in analyzer.positions:
         return {"symbol": symbol, "status": "SKIPPED", "reason": "acik_pozisyon_var"}
-    chat_open = sum(1 for pos in analyzer.positions.values() if pos.get("strategy") == "CHAT_PREDICTION")
-    if chat_open >= config.CHAT_PREDICTION_MAX_OPEN_POSITIONS:
-        return {"symbol": symbol, "status": "SKIPPED", "reason": "pozisyon_limiti_dolu"}
+    chat_max = int(config.CHAT_PREDICTION_MAX_OPEN_POSITIONS)
+    if 0 < chat_max <= 9999:
+        chat_open = sum(1 for pos in analyzer.positions.values() if pos.get("strategy") == "CHAT_PREDICTION")
+        if chat_open >= chat_max:
+            return {"symbol": symbol, "status": "SKIPPED", "reason": "pozisyon_limiti_dolu"}
     guard = await database.get_llm_symbol_guard(symbol)
     guard_reason = _llm_guard_block_reason(guard)
     if guard_reason:
@@ -5265,14 +5344,31 @@ async def autonomous_velocity_loop():
     +%1 → ATR trailing, %1.5 sert stop.
     """
     await asyncio.sleep(60)
+    _last_m5_close_ms = 0
     while True:
         try:
             enabled = config.VELOCITY_AUTO_ENABLED and \
                 (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
             if enabled:
+                # M5 kapanış tetiklemesi: yeni kapanmış M5 mumu gelmeden tarama
+                # yapma (replay'deki ile aynı senkron; her kapanışta 1 kez tara).
+                try:
+                    m5_tick = await fetch_klines("BTCTRY", "5m", 2)
+                    if m5_tick:
+                        latest_close_ms = int(m5_tick[-1][0])
+                    else:
+                        latest_close_ms = _last_m5_close_ms
+                except Exception:
+                    latest_close_ms = _last_m5_close_ms
+                if latest_close_ms == _last_m5_close_ms:
+                    # Yeni M5 kapanışı yok; kapanışa kadar bekle.
+                    await asyncio.sleep(3)
+                    continue
+                _last_m5_close_ms = latest_close_ms
                 scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
                 scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
                 _velocity_auto_state["last_scan_at"] = time.time()
+                _velocity_auto_state["last_m5_close_ms"] = latest_close_ms
                 # İki profilin adayları birleşik; skor üzerinden adil sıralama
                 pool = list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or []) \
                     + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or [])
@@ -5293,7 +5389,8 @@ async def autonomous_velocity_loop():
         except Exception as exc:
             _velocity_auto_state["last_error"] = str(exc)
             logger.exception("autonomous velocity loop: %s", exc)
-        await asyncio.sleep(config.VELOCITY_AUTO_INTERVAL_SEC)
+        # Kapanış senkronlu: bir sonraki kontrolü 5sn'de bir yap (interval'e bağlı değil)
+        await asyncio.sleep(5)
 
 
 async def get_data_quality(args: dict):
@@ -5828,6 +5925,10 @@ async def get_trades(limit: int = 100, offset: int = 0, symbol: str = "", strate
 async def portfolio_summary():
     """Single source for global chart/portfolio headline metrics (paper only)."""
     snapshot = _ws_snapshot_cache.get("portfolio") or {}
+    try:
+        snapshot = database._json_safe(snapshot)
+    except Exception:
+        pass
     return {
         "portfolio": snapshot,
         "metrics": await database.get_portfolio_trade_metrics(),

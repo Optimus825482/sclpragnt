@@ -202,6 +202,20 @@ export default function Home() {
                 <b className="text-neon-green">{scanResult.best_candidate.velocity_score}</b> · mod{" "}
                 {scanResult.best_candidate.mode === "v_donusu" ? "V-dönüşü" : "trend-devam"} · ATR %{scanResult.best_candidate.atr_pct} · RSI {scanResult.best_candidate.rsi} · MFI {scanResult.best_candidate.mfi}
               </p>
+              <p>
+                <span className="text-bunker-muted">M5 momentum deseni:</span>{" "}
+                {scanResult.best_candidate.m5_pattern_ok
+                  ? <b className="text-neon-green">✓ UYGUN (6/6)</b>
+                  : <b className="text-red-400">✗ GEÇMEDİ</b>}{" "}
+                <span className="text-[10px] text-bunker-muted">
+                  {scanResult.best_candidate.m5_pattern
+                    ? Object.entries(scanResult.best_candidate.m5_pattern)
+                        .filter(([, v]) => v === false)
+                        .map(([k]) => k.replace("g0_", "").replace("g1_", "").replace("g2_", ""))
+                        .join(", ") || "tümü sağlandı"
+                    : "veri yok"}
+                </span>
+              </p>
               <p className={scanResult.opened ? "text-neon-green font-bold" : "text-yellow-300"}>
                 {scanResult.opened
                   ? `✓ PAPER POZİSYON AÇILDI · ${scanResult.outcome.order_value_try} TL · stop %${scanResult.outcome.stop_loss_pct}`
