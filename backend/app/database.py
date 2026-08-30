@@ -1438,13 +1438,24 @@ async def save_velocity_candidates(rows):
     def op(conn):
         sql = """INSERT INTO velocity_candidates
             (candidate_id,created_at,symbol,price,target_pct,atr_pct,volume_ratio,ret3_pct,
-             velocity_score,passes,rank,status)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             velocity_score,passes,rank,status,outcome_details)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(candidate_id) DO NOTHING"""
-        values = [(row["candidate_id"], float(row["created_at"]), str(row["symbol"]).upper(),
-                   float(row["price"]), float(row["target_pct"]), float(row["atr_pct"]),
-                   float(row["volume_ratio"]), float(row["ret3_pct"]), float(row["velocity_score"]),
-                   bool(row.get("passes")), row.get("rank"), "pending") for row in rows]
+        values = []
+        for row in rows:
+            vals = [row["candidate_id"], float(row["created_at"]), str(row["symbol"]).upper(),
+                    float(row["price"]), float(row["target_pct"]), float(row["atr_pct"]),
+                    float(row["volume_ratio"]), float(row["ret3_pct"]), float(row["velocity_score"]),
+                    bool(row.get("passes")), row.get("rank"), "pending"]
+            # M5 desen durumunu outcome_details'e göm (kolon zaten mevcut).
+            if row.get("m5_pattern") is not None or row.get("m5_pattern_ok") is not None:
+                vals.append(_json_safe_dumps({
+                    "m5_pattern": row.get("m5_pattern"),
+                    "m5_pattern_ok": row.get("m5_pattern_ok"),
+                }))
+            else:
+                vals.append(None)
+            values.append(vals)
         conn.executemany(sql, values); conn.commit(); return len(values)
     return await _run_db(op)
 

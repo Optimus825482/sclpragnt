@@ -92,7 +92,7 @@ class Config:
     CHAT_PREDICTION_MAX_HOLD_SEC = max(300, int(os.getenv("CHAT_PREDICTION_MAX_HOLD_SEC", "900")))
     # Otomatik paper açılış: yüksek güven + LLM paper trade ayarı açık olmalı.
     CHAT_PREDICTION_AUTO_TRADE_ENABLED = os.getenv("CHAT_PREDICTION_AUTO_TRADE_ENABLED", "false").lower() == "true"
-    CHAT_PREDICTION_MAX_OPEN_POSITIONS = max(1, int(os.getenv("CHAT_PREDICTION_MAX_OPEN_POSITIONS", "2")))
+    CHAT_PREDICTION_MAX_OPEN_POSITIONS = max(0, int(os.getenv("CHAT_PREDICTION_MAX_OPEN_POSITIONS", "0")))  # 0 = sınırsız
     CHAT_PREDICTION_ORDER_VALUE_TRY = max(50.0, float(os.getenv("CHAT_PREDICTION_ORDER_VALUE_TRY", "300.0")))
     # Otonom hız avcısı: 15 dk'da bir tarama, en iyi adaya (GEÇTİ veya İZLEME)
     # serbest TL'nin %50'si ile pozisyon. Çıkış merdiveni analyzer'da:
@@ -100,8 +100,19 @@ class Config:
     VELOCITY_AUTO_ENABLED = os.getenv("VELOCITY_AUTO_ENABLED", "false").lower() == "true"
     VELOCITY_AUTO_INTERVAL_SEC = max(300, int(os.getenv("VELOCITY_AUTO_INTERVAL_SEC", "300")))
     VELOCITY_AUTO_BALANCE_PCT = 50.0
-    VELOCITY_AUTO_SL_PCT = 1.5
+    VELOCITY_AUTO_SL_PCT = float(os.getenv("VELOCITY_AUTO_SL_PCT", "2.5"))  # Hız Avcısı sert stop %2.5
     VELOCITY_TRAIL_TRIGGER_PCT = 1.0  # ATR trailing bu kâr yüzdesinde devreye girer
+    # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
+    # (24s/72s/7g altı pencerede %66-68 başarı). Aday pozisyon açmadan önce
+    # bu eşikleri karşılamalıdır. VELOCITY_PATTERN_FILTER_ENABLED=true ise
+    # pattern koşulu sağlanmazsa aday "watch" olarak journal'a düşer, açılmaz.
+    VELOCITY_PATTERN_FILTER_ENABLED = os.getenv("VELOCITY_PATTERN_FILTER_ENABLED", "true").lower() == "true"
+    VELOCITY_PATTERN_G0_CHG5 = float(os.getenv("VELOCITY_PATTERN_G0_CHG5", "1.2177"))
+    VELOCITY_PATTERN_G0_CHG3 = float(os.getenv("VELOCITY_PATTERN_G0_CHG3", "0.8834"))
+    VELOCITY_PATTERN_G0_ROC = float(os.getenv("VELOCITY_PATTERN_G0_ROC", "1.6839"))
+    VELOCITY_PATTERN_G0_ATR = float(os.getenv("VELOCITY_PATTERN_G0_ATR", "0.5779"))
+    VELOCITY_PATTERN_G1_ATR = float(os.getenv("VELOCITY_PATTERN_G1_ATR", "0.5432"))
+    VELOCITY_PATTERN_G2_ATR = float(os.getenv("VELOCITY_PATTERN_G2_ATR", "0.5097"))
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     # The live BB-MFI contract defaults to the supplied Flawless Victory v3.
