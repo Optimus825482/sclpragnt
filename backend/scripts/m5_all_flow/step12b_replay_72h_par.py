@@ -26,7 +26,7 @@ if os.path.exists(_env):
 
 TARGET = 1.0
 MIN_SCORE = 2.5
-TEST_HOURS = 168
+TEST_HOURS = 72
 EXCLUDE_LAST_HOURS = 6
 WORKERS = 16
 
@@ -270,7 +270,9 @@ def process_symbol(sym, test_start, test_end, M5_WARMUP, M1_WARMUP):
             passes_f65 = True
             for fname, thr in FILTERS:
                 grp, var = fname.split("_", 1)
-                vv = {"g0": g0_v, "g1": g1_v, "g2": g2_v}.get(grp, {}).get(var)
+                # g0_v/g1_v/g2_v anahtarları: atr_pct (filtre adındaki "atr" → atr_pct)
+                real_key = "atr_pct" if var == "atr" else var
+                vv = {"g0": g0_v, "g1": g1_v, "g2": g2_v}.get(grp, {}).get(real_key)
                 if vv is None or vv < thr:
                     passes_f65 = False
                     break
@@ -359,6 +361,32 @@ def main():
            "workers": WORKERS, "duration_sec": round(time.time()-t0, 1)}
     # ---- FILTRE ARA: farkli esik kombinasyonlarini tek veri setinde dene ----
     if records:
+        # ---- F65 sinyallerinin UPSIDE DAGILIMI ----
+        f65_all = [r for r in records if r["f65"]]
+        if f65_all:
+            ups = sorted(r["upside"] for r in f65_all)
+            arr = np.array(ups)
+            print("\n=== F65 FILTRELI SINYAL UPSIDE DAGILIMI ===")
+            print(f"  N={len(f65_all)}")
+            print(f"  min={arr.min():.2f}  p10={np.percentile(arr,10):.2f}  p25={np.percentile(arr,25):.2f}  "
+                  f"medyan={np.median(arr):.2f}  p75={np.percentile(arr,75):.2f}  p90={np.percentile(arr,90):.2f}  max={arr.max():.2f}")
+            for lo, hi in [(-10, 0), (0, 0.5), (0.5, 1), (1, 1.5), (1.5, 2), (2, 3), (3, 5), (5, 100)]:
+                band = [r for r in f65_all if lo <= r["upside"] < hi]
+                if band:
+                    print(f"  upside[{lo}..{hi}): {len(band):>4} sinyal (%{len(band)/len(f65_all)*100:.1f})")
+            hits = [r for r in f65_all if r["hit"]]
+            miss = [r for r in f65_all if not r["hit"]]
+            if hits:
+                h_arr = np.array([r["upside"] for r in hits])
+                print(f"  BASARILI(+%1): {len(hits)} sin  ort={h_arr.mean():.2f}  medyan={np.median(h_arr):.2f}  "
+                      f"p90={np.percentile(h_arr,90):.2f}  max={h_arr.max():.2f}")
+            if miss:
+                m_arr = np.array([r["upside"] for r in miss])
+                print(f"  HATALI: {len(miss)} sin  ort={m_arr.mean():.2f}  p25={np.percentile(m_arr,25):.2f}  min={m_arr.min():.2f}")
+            top = sorted(f65_all, key=lambda r: -r["upside"])[:10]
+            print("  En iyi 10:")
+            for r in top:
+                print(f"    {time.strftime('%m-%d %H:%M', time.localtime(r['ts']/1000))} {r['symbol']:<10} upside={r['upside']:+.2f}%")
         print("\n=== FILTRE KOMBINASYON ARA (72s gercekci esikler) ===")
         def test_filters(fs):
             keep = [r for r in records if all(r.get(k) is not None and r.get(k) >= v for k, v in fs)]
@@ -385,9 +413,9 @@ def main():
             res = test_filters(fs)
             if res:
                 print(f"  {name:<28} {res[0]:>5} sinyal  %{res[1]:.1f}  recall %{res[0]/total*100:.1f}")
-    with open(os.path.join(os.path.dirname(__file__), "..", "..", "..", "replay_7g_f65_raporu.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(os.path.dirname(__file__), "..", "..", "..", "replay_f65_upside_raporu.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
-    print("\nKaydedildi: replay_7g_f65_raporu.json")
+    print("\nKaydedildi: replay_f65_upside_raporu.json")
 
 
 if __name__ == "__main__":

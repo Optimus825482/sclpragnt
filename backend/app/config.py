@@ -101,6 +101,7 @@ class Config:
     VELOCITY_AUTO_INTERVAL_SEC = max(300, int(os.getenv("VELOCITY_AUTO_INTERVAL_SEC", "300")))
     VELOCITY_AUTO_BALANCE_PCT = 50.0
     VELOCITY_AUTO_SL_PCT = float(os.getenv("VELOCITY_AUTO_SL_PCT", "2.5"))  # Hız Avcısı sert stop %2.5
+    VELOCITY_POOL_SIZE = max(5, min(50, int(os.getenv("VELOCITY_POOL_SIZE", "30"))))  # Hız Avcısı aday havuzu (top gainer)
     VELOCITY_TRAIL_TRIGGER_PCT = 1.0  # ATR trailing bu kâr yüzdesinde devreye girer
     # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
     # (24s/72s/7g altı pencerede %66-68 başarı). Aday pozisyon açmadan önce

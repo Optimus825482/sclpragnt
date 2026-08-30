@@ -4665,7 +4665,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     target_pct = float(profile["target_pct"])
     now_ms = int(time.time() * 1000)
     try:
-        gainer_rows = await top_gainers(20)
+        gainer_rows = await top_gainers(config.VELOCITY_POOL_SIZE)
     except Exception as exc:
         logger.warning("velocity scan: top_gainers hatası: %s", exc)
         gainer_rows = []
@@ -5047,6 +5047,27 @@ async def remeasure_all_velocity():
         except HTTPException as exc:
             failed.append({"candidate_id": candidate["candidate_id"], "detail": exc.detail})
     return {"ok": True, "paper_only": True, "remeasured": remeasured, "failed": failed[:10]}
+
+
+@app.get("/api/velocity/status")
+async def velocity_status():
+    """Hız Avcısı otonom tarama durumu: son tarama zamanı, M5 kapanış zamanı,
+    aday havuzu boyutu, desen filtresi durumu."""
+    return {
+        "ok": True,
+        "auto_enabled": bool(config.VELOCITY_AUTO_ENABLED and
+                             (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"),
+        "pool_size": config.VELOCITY_POOL_SIZE,
+        "pattern_filter_enabled": config.VELOCITY_PATTERN_FILTER_ENABLED,
+        "sl_pct": config.VELOCITY_AUTO_SL_PCT,
+        "last_scan_at": _velocity_auto_state.get("last_scan_at"),
+        "last_m5_close_ms": _velocity_auto_state.get("last_m5_close_ms"),
+        "total_opened": _velocity_auto_state.get("total_opened", 0),
+        "last_error": _velocity_auto_state.get("last_error"),
+        "last_open": _velocity_auto_state.get("last_open"),
+        "recent_opens": list(_velocity_auto_state.get("opened", [])[-5:]),
+        "server_time": time.time(),
+    }
 
 
 @app.post("/api/velocity/manual-scan")

@@ -142,14 +142,25 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
    </div>
    <div className="table-scroll">
     <table className="data-table">
-     <thead><tr><th>Zaman</th><th>Sembol</th><th>Koşul</th><th>ATR%</th><th>İvme</th><th>Skor</th><th>Sonuç</th><th>MFE</th><th>İşlem</th></tr></thead>
+     <thead><tr><th>Zaman</th><th>Sembol</th><th>Koşul</th><th>M5 Desen (6 şart)</th><th>ATR%</th><th>İvme</th><th>Skor</th><th>Sonuç</th><th>MFE</th><th>İşlem</th></tr></thead>
      <tbody>{visible.map((row:any)=>{
       const winDetails=(row.outcome_details||{});
       const winTip=winDetails.window_first?`Pencere: ${winDetails.window_first}-${winDetails.window_last} (${winDetails.window_bars} mum)${winDetails.remeasured?" · yeniden ölçüldü":""}`:"Pencere detayı yok";
+      const mp=winDetails.m5_pattern||null;
+      const mpOk=winDetails.m5_pattern_ok;
+      const patternCell=mp?(
+       <span className={`inline-flex flex-wrap gap-0.5 font-mono text-[10px] ${mpOk?"text-neon-green":"text-red-400"}`}>
+        {[["g0_chg5","5dk"],["g0_chg3","3dk"],["g0_roc","ROC"],["g0_atr","ATR"],["g1_atr","G1A"],["g2_atr","G2A"]].map(([k,label])=>{
+         const v=mp[k]; const ok=v===true;
+         return <span key={k} title={k} className={`rounded px-1 ${ok?"bg-neon-green/15 text-neon-green":"bg-red-400/15 text-red-400"}`}>{ok?"✓":"✗"}{label}</span>;
+        })}
+       </span>
+      ):(<span className="text-[10px] text-bunker-muted">—</span>);
       return <tr key={row.candidate_id}>
        <td className="text-xs">{new Date(Number(row.created_at)*1000).toLocaleString("tr-TR")}</td>
        <td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td>
        <td className={row.passes?"text-neon-green text-xs":"text-bunker-muted text-xs"}>{row.passes?"GEÇTİ":"İZLEME"}</td>
+       <td>{patternCell}</td>
        <td className="text-xs">{row.atr_pct}</td>
        <td className="text-xs">%{row.ret3_pct}</td>
        <td className="font-mono text-xs">{row.velocity_score}</td>
@@ -160,7 +171,7 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
         <button onClick={()=>deleteRow(row.candidate_id)} disabled={deletingId!==null} title="Sil (kalıcı)" className="rounded border border-red-400/50 bg-red-400/10 px-2 py-0.5 font-mono text-[10px] text-red-300 hover:bg-red-400/20 disabled:opacity-50">{deletingId===row.candidate_id?"…":"✕"}</button>
        </td>
       </tr>;})}
-      {!allRecent.length&&<tr><td colSpan={9} className="py-5 text-center text-bunker-muted">Kayıt yok; Chat'ten hız taraması başlatın.</td></tr>}
+      {!allRecent.length&&<tr><td colSpan={10} className="py-5 text-center text-bunker-muted">Kayıt yok; Chat'ten hız taraması başlatın.</td></tr>}
      </tbody>
     </table>
    </div>
