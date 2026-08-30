@@ -13,9 +13,7 @@ load_dotenv(override=False)
 
 class Config:
     STRATEGY_REVISION = os.getenv("STRATEGY_REVISION", "filters-2026-08-06-adx18-keltner-retest-chop45")
-    API_KEY = os.getenv("BINANCE_API_KEY", "")
-    API_SECRET = os.getenv("BINANCE_API_SECRET", "")
-    
+
     SYMBOLS = [
     "BTCTRY", "ETHTRY", "SOLTRY",   # Ana Hacimliler (Balinalar)
     "XRPTRY", "ADATRY", "AVAXTRY",  # Orta Hacimliler (Trend Takipçileri)
@@ -43,12 +41,6 @@ class Config:
     STALE_POSITION_MIN_PROGRESS_PCT = float(os.getenv("STALE_POSITION_MIN_PROGRESS_PCT", "0.004"))
     STALE_POSITION_EXIT_BELOW_COST = os.getenv("STALE_POSITION_EXIT_BELOW_COST", "false").lower() == "true"
     EXIT_ON_OPPOSITE_SIGNAL = os.getenv("EXIT_ON_OPPOSITE_SIGNAL", "false").lower() == "true"
-    STRATEGY_MAX_HOLD_SEC = {
-        "KELTNER_BREAKOUT": int(os.getenv("KELTNER_MAX_HOLD_SEC", str(60 * 60))),
-        "MOMENTUM": int(os.getenv("MOMENTUM_MAX_HOLD_SEC", str(90 * 60))),
-        "EMA_VWAP_PULLBACK": int(os.getenv("EMA_VWAP_MAX_HOLD_SEC", str(90 * 60))),
-        "CHOP_TREND_FILTER": int(os.getenv("CHOP_MAX_HOLD_SEC", str(120 * 60))),
-    }
     TIMEOUT_REENTRY_BLOCK_SEC = 24 * 60 * 60
     HARD_STOP_REENTRY_BLOCK_SEC = 2 * 60 * 60
     MAX_POSITION_LAYERS = 1
@@ -203,7 +195,6 @@ class Config:
     PUMP_MONITOR_MAX_OPEN_POSITIONS = max(1, int(os.getenv("PUMP_MONITOR_MAX_OPEN_POSITIONS", "3")))
     PUMP_MONITOR_MIN_SCORE = max(3, min(4, int(os.getenv("PUMP_MONITOR_MIN_SCORE", "3"))))
     PUMP_MONITOR_REQUIRE_M15_BULLISH = os.getenv("PUMP_MONITOR_REQUIRE_M15_BULLISH", "true").lower() == "true"
-    PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO = max(0.0, float(os.getenv("PUMP_MONITOR_HIGH_CONFIDENCE_VOLUME_RATIO", "1.0")))
     # 2026-08-25 trade-history analysis (292 trades, -1680 TRY net):
     # volume_ratio > 2.0 entries alone lost -1029 TRY (chasing an already-
     # detonated pump); 56 stops had seen >= +0.5% MFE first (-1536 TRY); and
@@ -236,21 +227,12 @@ class Config:
     
     HARD_STOP_LOSS_PCT = 0.012
     COOLDOWN_BARS = 2
-    TAKE_PROFIT_PCT = 0.02
-    # Time-decay spot take-profit: start ambitious, then accept the first
-    # cost-covered exit as the position ages.
+    # Time-decay spot take-profit: accept the first cost-covered exit as the
+    # position ages. Single stage by design; the multi-stage decay and the
+    # legacy TAKE_PROFIT_PCT / TRAILING_* knobs were dead configuration and
+    # were removed.
     SPOT_PROFIT_TARGET_PCT = 0.01
     TIME_DECAY_TP_1_PCT = 0.012
-    TIME_DECAY_TP_2_PCT = 0.0075
-    TIME_DECAY_TP_3_PCT = 0.005
-    TIME_DECAY_TP_STAGE_2_SEC = 20 * 60
-    TIME_DECAY_TP_STAGE_3_SEC = 40 * 60
-    TIME_DECAY_BREAKEVEN_SEC = 60 * 60
-    # Kâr koruma: hedefe ulaşmadan önce yeterli ilerleme oluştuğunda
-    # maksimum fiyatın gerisinden takip eden stop devreye girer.
-    TRAILING_STOP_ENABLED = os.getenv("TRAILING_STOP_ENABLED", "true").lower() == "true"
-    TRAILING_ACTIVATION_PCT = float(os.getenv("TRAILING_ACTIVATION_PCT", "0.0075"))
-    TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "0.005"))
 
     # Klasik/sistem stratejileri için exit modeli. LLM_PAPER bu ayarları kullanmaz;
     # kendi planındaki stop, hedef ve max-hold değerleriyle yönetilir.

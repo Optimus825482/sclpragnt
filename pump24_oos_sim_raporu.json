@@ -1,0 +1,260 @@
+{
+ "type": "pump24_oos_sim_raporu",
+ "generated_at": "2026-08-31 00:13:24",
+ "windows": {
+  "train": "08-24 00:05 .. 08-30 00:05",
+  "test (OOS)": "08-30 00:05 .. 08-31 00:05"
+ },
+ "data_integrity": "normalize_binance sutun kaymasi bugi bulunup duzeltildi; 213,574 bozuk satir silindi, 7d veri yeniden cekildi; TUM sonuclar temiz veriyle yeniden hesaplandi",
+ "universe": 50,
+ "train_events_2pct": 249,
+ "test_events_2pct": 54,
+ "bulgular": {
+  "1_sinyal_gercek_mi": "EVET. En iyi kurallar OOS test penceresinde de ayni gucte: m5g0_atr_pct>1.5 fee-target %70.8, m5g0_ema_gap>2 raw %69.9 vs taban %12.5-13.7. Train->test dususu ~1 puan (overfit yok).",
+  "2_erken_giris_var_mi": "HAYIR. M1/onceki-M5 gostergeleriyle karar mumunun ACILISINDAN giris EV lift yalnizca +0.01..0.02 puan. Pump oncesi ongoru yok; sinyal ancak pumpun ILK M5 mumu icinde kendini gosteriyor.",
+  "3_maliyet_sonrasi_kar": "TAKER ile EV~0 (net -0.03%) hedef dar (+0.6). Yaris simülasyonu (+0.6 net / -1.5 stop) tum kurallarda negatif EV: test en iyisi ema_gap>2 maker_both -0.071%. Stop/kick asimetrisi avantaji yiyor.",
+  "4_mfe_gercek_potansiyel": "ema_gap>2 test MFE: medyan %1.96, %61.7 >= +1.35 gross, %52.6 >= +1.85. Sinyal DEVAM ongoruyor; para aslinda disarida: daha genis hedef + daha dar stop + maker giris kombinasyonu taranmali."
+ },
+ "fee_target_test": {
+  "m5g0_vwap_dist_pct_gt2": {
+   "n": 334,
+   "fee_pct": 48.8,
+   "lift": 35.9
+  },
+  "m5g0_atr_pct_gt1.0": {
+   "n": 1259,
+   "fee_pct": 47.7,
+   "lift": 34.7
+  },
+  "m5g1_atr_pct_gt1.0": {
+   "n": 1258,
+   "fee_pct": 47.1,
+   "lift": 34.1
+  },
+  "m5g1_m5g2_atr_pct_gt1.0": {
+   "n": 1292,
+   "fee_pct": 46.3,
+   "lift": 33.3
+  },
+  "m5g2_atr_pct_gt1.0": {
+   "n": 1257,
+   "fee_pct": 46.3,
+   "lift": 33.4
+  },
+  "m5g0_ema_gap_pct_gt1": {
+   "n": 548,
+   "fee_pct": 46.2,
+   "lift": 33.2
+  },
+  "m1g0_bb_width_gt0.02": {
+   "n": 1450,
+   "fee_pct": 41.6,
+   "lift": 28.6
+  },
+  "m1g1_bb_width_gt0.02": {
+   "n": 1429,
+   "fee_pct": 41.1,
+   "lift": 28.2
+  }
+ },
+ "raced_ev_test": {
+  "base": {
+   "taker_035": {
+    "n": 10560,
+    "win_pct": 13.2,
+    "ev_pct": -0.339
+   },
+   "maker_entry_0225": {
+    "n": 10560,
+    "win_pct": 15.8,
+    "ev_pct": -0.195
+   },
+   "maker_both_015": {
+    "n": 10560,
+    "win_pct": 17.5,
+    "ev_pct": -0.11
+   }
+  },
+  "rules": {
+   "m5g0_ema_gap_pct_gt2": {
+    "taker_035": {
+     "n": 175,
+     "win_pct": 54.9,
+     "stop_pct": 41.1,
+     "ev_pct": -0.313
+    },
+    "maker_entry_0225": {
+     "n": 175,
+     "win_pct": 57.7,
+     "stop_pct": 40.0,
+     "ev_pct": -0.15
+    },
+    "maker_both_015": {
+     "n": 175,
+     "win_pct": 58.3,
+     "stop_pct": 40.0,
+     "ev_pct": -0.071
+    }
+   },
+   "m5g0_vwap_dist_pct_gt2": {
+    "taker_035": {
+     "n": 331,
+     "win_pct": 48.9,
+     "stop_pct": 33.8,
+     "ev_pct": -0.559
+    },
+    "maker_entry_0225": {
+     "n": 331,
+     "win_pct": 51.1,
+     "stop_pct": 33.2,
+     "ev_pct": -0.41
+    },
+    "maker_both_015": {
+     "n": 331,
+     "win_pct": 52.3,
+     "stop_pct": 33.2,
+     "ev_pct": -0.328
+    }
+   },
+   "m5g0_atr_pct_gt1.0": {
+    "taker_035": {
+     "n": 2500,
+     "win_pct": 47.8,
+     "stop_pct": 30.7,
+     "ev_pct": -0.482
+    },
+    "maker_entry_0225": {
+     "n": 2500,
+     "win_pct": 51.8,
+     "stop_pct": 29.8,
+     "ev_pct": -0.315
+    },
+    "maker_both_015": {
+     "n": 2500,
+     "win_pct": 53.4,
+     "stop_pct": 29.5,
+     "ev_pct": -0.225
+    }
+   },
+   "m1g0_bb_width_gt0.02": {
+    "taker_035": {
+     "n": 1433,
+     "win_pct": 41.8,
+     "stop_pct": 24.1,
+     "ev_pct": -0.39
+    },
+    "maker_entry_0225": {
+     "n": 1433,
+     "win_pct": 45.6,
+     "stop_pct": 23.3,
+     "ev_pct": -0.228
+    },
+    "maker_both_015": {
+     "n": 1433,
+     "win_pct": 48.2,
+     "stop_pct": 23.2,
+     "ev_pct": -0.135
+    }
+   }
+  }
+ },
+ "mfe_distribution": {
+  "m5g0_atr_pct_gt1.0|train": {
+   "n": 6299,
+   "pct_above_0.95": 49.3,
+   "pct_above_1.35": 36.2,
+   "pct_above_1.85": 24.6,
+   "percentiles": {
+    "p10": 0.09,
+    "p25": 0.38,
+    "p50": 0.93,
+    "p60": 1.23,
+    "p70": 1.6,
+    "p75": 1.84,
+    "p80": 2.12,
+    "p90": 3.14
+   }
+  },
+  "m5g0_atr_pct_gt1.0|test": {
+   "n": 1250,
+   "pct_above_0.95": 53.9,
+   "pct_above_1.35": 40.8,
+   "pct_above_1.85": 31.2,
+   "percentiles": {
+    "p10": 0.04,
+    "p25": 0.42,
+    "p50": 1.04,
+    "p60": 1.37,
+    "p70": 1.91,
+    "p75": 2.26,
+    "p80": 2.76,
+    "p90": 4.3
+   }
+  },
+  "m5g0_ema_gap_pct_gt2|train": {
+   "n": 694,
+   "pct_above_0.95": 63.8,
+   "pct_above_1.35": 53.0,
+   "pct_above_1.85": 42.4,
+   "percentiles": {
+    "p10": 0.13,
+    "p25": 0.58,
+    "p50": 1.46,
+    "p60": 1.91,
+    "p70": 2.44,
+    "p75": 2.89,
+    "p80": 3.36,
+    "p90": 5.18
+   }
+  },
+  "m5g0_ema_gap_pct_gt2|test": {
+   "n": 175,
+   "pct_above_0.95": 70.9,
+   "pct_above_1.35": 61.7,
+   "pct_above_1.85": 52.6,
+   "percentiles": {
+    "p10": 0.29,
+    "p25": 0.86,
+    "p50": 1.96,
+    "p60": 3.01,
+    "p70": 3.96,
+    "p75": 4.54,
+    "p80": 5.04,
+    "p90": 8.08
+   }
+  },
+  "m5g0_vwap_dist_pct_gt2|train": {
+   "n": 1571,
+   "pct_above_0.95": 54.2,
+   "pct_above_1.35": 42.2,
+   "pct_above_1.85": 31.0,
+   "percentiles": {
+    "p10": 0.08,
+    "p25": 0.41,
+    "p50": 1.09,
+    "p60": 1.44,
+    "p70": 1.88,
+    "p75": 2.15,
+    "p80": 2.61,
+    "p90": 3.97
+   }
+  },
+  "m5g0_vwap_dist_pct_gt2|test": {
+   "n": 331,
+   "pct_above_0.95": 58.0,
+   "pct_above_1.35": 46.5,
+   "pct_above_1.85": 36.3,
+   "percentiles": {
+    "p10": 0.16,
+    "p25": 0.45,
+    "p50": 1.22,
+    "p60": 1.64,
+    "p70": 2.51,
+    "p75": 3.11,
+    "p80": 3.95,
+    "p90": 5.77
+   }
+  }
+ },
+ "sonraki_adim_onerisi": "1) Target/stop izgarasi train penceresinde opt edilip testte dogrulanmali (giris maker limit: sinyal barinin acilisina emir konmaz; sinyal bari kapanista taker). 2) Sinyal sadece ilk pump barindan SONRA gelir -> giris sinyal bari kapanisinda yapilir, hedef 3 barlik MFE p75 (~+2.3) seviyesine cekilir, stop -1.0. 3) Uretim oncesi 30+ gun veri ile dogrulama."
+}

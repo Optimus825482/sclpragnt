@@ -8,6 +8,13 @@ ve hiçbir SQLite dosyasına dokunulmaz.
 
 import time
 
+# Durable tables that any historical SQLite → PostgreSQL migration had to
+# cover. Kept as the canonical list so migration/verification contracts stay
+# testable even though the live app is PostgreSQL-only.
+TABLES = ("positions", "trades", "signals", "decision_logs", "llm_tool_logs",
+          "a2a_messages", "llm_symbol_guards", "virtual_wallet", "chart_settings",
+          "llm_providers", "llm_models", "llm_skills", "llm_settings", "backtests")
+
 state = {
     "status": "idle",
     "phase": "idle",
@@ -34,7 +41,16 @@ def inspect_source(path):
 
 
 def compare_counts(source_counts, target_counts):
-    return []
+    """Return deterministic lower-bound violations for migrated tables."""
+    errors = []
+    for table in TABLES:
+        source_count = source_counts.get(table)
+        if source_count is None:
+            continue
+        target_count = int(target_counts.get(table) or 0)
+        if target_count != int(source_count):
+            errors.append(f"{table}: hedef satır sayısı uyuşmuyor ({target_count}/{source_count})")
+    return errors
 
 
 async def fetch_target_counts(pool):

@@ -191,7 +191,8 @@ class RegressionContracts(unittest.TestCase):
 
     def test_alert_trigger_uses_a_boolean_false_for_postgres(self):
         source = (ROOT / "app" / "database.py").read_text()
-        self.assertIn('armed_false = "FALSE" if _postgres_enabled() else "0"', source)
+        # Postgres-only backend: alert rearm must use a real SQL boolean.
+        self.assertIn('armed_false = "FALSE"', source)
         self.assertIn("ELSE {armed_false} END", source)
 
     def test_tts_normalizes_turkish_market_numbers(self):
@@ -600,43 +601,31 @@ class StrategyReplayBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertIn("trigger=5m_candle_close", main_source)
         self.assertIn("await database.get_market_candles(symbol, \"5m\")", main_source)
 
-    def test_sqlite_list_contract_supports_filter_and_offset(self):
+    def test_get_trades_contract_supports_filter_and_offset(self):
         from app import database
 
-        previous_backend = os.environ.get("DB_BACKEND")
-        previous_conn = database._DB_CONN
-        try:
-            os.environ["DB_BACKEND"] = "sqlite"
-            database._DB_CONN = sqlite3.connect(":memory:", check_same_thread=False)
-            database._DB_CONN.row_factory = sqlite3.Row
-            asyncio.run(database.init_db())
-            asyncio.run(database.ensure_default_scalper_skill())
-            skills = database._DB_CONN.execute(
-                "SELECT name,enabled FROM llm_skills WHERE name=?",
-                ("Scalper Trade Manager",),
-            ).fetchall()
-            self.assertEqual(len(skills), 1)
-            self.assertEqual(skills[0]["enabled"], 1)
-            database._DB_CONN.execute(
-                "INSERT INTO trades(symbol,strategy,exit_time,pnl) VALUES (?,?,?,?)",
-                ("BTCTRY", "MOMENTUM", 3, 1.0),
-            )
-            database._DB_CONN.execute(
-                "INSERT INTO trades(symbol,strategy,exit_time,pnl) VALUES (?,?,?,?)",
-                ("ETHTRY", "MOMENTUM", 2, 2.0),
-            )
-            database._DB_CONN.commit()
-            rows = asyncio.run(database.get_trades(limit=1, offset=1, strategy="MOMENTUM"))
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.executescript("""
+            CREATE TABLE trades(id INTEGER PRIMARY KEY, symbol TEXT, strategy TEXT, side TEXT,
+              entry_price REAL, exit_price REAL, quantity REAL, pnl REAL, pnl_pct REAL,
+              entry_time REAL, exit_time REAL, commission REAL, reason TEXT, entry_context TEXT,
+              max_favorable_pct REAL, max_adverse_pct REAL, hold_seconds REAL, trade_id TEXT);
+        """)
+
+        async def run(operation):
+            return operation(conn)
+
+        async def flow():
+            await database.save_trade({"symbol": "BTCTRY", "strategy": "MOMENTUM", "exit_time": 3, "pnl": 1.0})
+            await database.save_trade({"symbol": "ETHTRY", "strategy": "MOMENTUM", "exit_time": 2, "pnl": 2.0})
+            rows = await database.get_trades(limit=1, offset=1, strategy="MOMENTUM")
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["symbol"], "ETHTRY")
-        finally:
-            if database._DB_CONN:
-                database._DB_CONN.close()
-            database._DB_CONN = previous_conn
-            if previous_backend is None:
-                os.environ.pop("DB_BACKEND", None)
-            else:
-                os.environ["DB_BACKEND"] = previous_backend
+
+        with patch("app.database._run_db", new=run):
+            asyncio.run(flow())
 
 
 if __name__ == "__main__":

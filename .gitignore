@@ -21,4 +21,7 @@ work/
 # Backend research artifacts (JSON/CSV dumps)
 backend/*.json
 backend/*.csv
+backend/scripts/*.json
+backend/scripts/*.csv
+backend/scripts/*.log
 docs/*

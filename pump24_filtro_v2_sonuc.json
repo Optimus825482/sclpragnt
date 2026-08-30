@@ -1,0 +1,99 @@
+{
+ "type": "pump24_filter_v2_test_sonuc",
+ "generated_at": "2026-08-31 00:37:06",
+ "filter": {
+  "min_atr_pct": 0.3,
+  "min_bb_width_pct": 2.5,
+  "trend_rsi_min": 60,
+  "reversal_rsi_max": 35,
+  "mfi_range": [
+   10,
+   90
+  ],
+  "linreg_slope_pct_min": 0.2,
+  "aroon_up_min": 50,
+  "note": "linreg slope = per-bar LR(20) slope / close * 100"
+ },
+ "data": "7d temiz M5 verisi, 50 sembol; karar bar = M5 kapanis; dokunus = sonraki 3 M5 bar high >= hedef (MFE)",
+ "train": {
+  "bars": 82396,
+  "passed": 6848,
+  "pass_rate_pct": 8.31,
+  "touch_0.6_pct": 45.6,
+  "touch_0.6_base_pct": 22.4,
+  "touch_0.6_lift": 23.2,
+  "touch_0.95_pct": 30.2,
+  "touch_0.95_base_pct": 11.8,
+  "touch_0.95_lift": 18.4,
+  "touch_1.0_pct": 28.7,
+  "touch_1.0_base_pct": 11.0,
+  "touch_1.0_lift": 17.8,
+  "touch_1.5_pct": 17.4,
+  "touch_1.5_base_pct": 5.3,
+  "touch_1.5_lift": 12.1,
+  "touch_2.0_pct": 11.5,
+  "touch_2.0_base_pct": 3.0,
+  "touch_2.0_lift": 8.5,
+  "avg_mfe3_pct": 0.918,
+  "avg_mfe3_base_pct": 0.412
+ },
+ "test_oos": {
+  "bars": 9859,
+  "passed": 976,
+  "pass_rate_pct": 9.9,
+  "touch_0.6_pct": 54.4,
+  "touch_0.6_base_pct": 24.5,
+  "touch_0.6_lift": 29.9,
+  "touch_0.95_pct": 40.4,
+  "touch_0.95_base_pct": 14.4,
+  "touch_0.95_lift": 26.0,
+  "touch_1.0_pct": 38.4,
+  "touch_1.0_base_pct": 13.4,
+  "touch_1.0_lift": 25.0,
+  "touch_1.5_pct": 27.5,
+  "touch_1.5_base_pct": 7.9,
+  "touch_1.5_lift": 19.5,
+  "touch_2.0_pct": 20.0,
+  "touch_2.0_base_pct": 5.2,
+  "touch_2.0_lift": 14.8,
+  "avg_mfe3_pct": 1.416,
+  "avg_mfe3_base_pct": 0.528
+ },
+ "branches": {
+  "train": {
+   "trend": {
+    "n": 6278,
+    "touch_0.95_pct": 30.0,
+    "touch_1.5_pct": 17.4,
+    "avg_mfe_pct": 0.916
+   },
+   "vrev": {
+    "n": 570,
+    "touch_0.95_pct": 32.3,
+    "touch_1.5_pct": 17.2,
+    "avg_mfe_pct": 0.945
+   }
+  },
+  "test": {
+   "trend": {
+    "n": 936,
+    "touch_0.95_pct": 41.0,
+    "touch_1.5_pct": 28.0,
+    "avg_mfe_pct": 1.449
+   },
+   "vrev": {
+    "n": 40,
+    "touch_0.95_pct": 25.0,
+    "touch_1.5_pct": 15.0,
+    "avg_mfe_pct": 0.639
+   }
+  }
+ },
+ "SONUC": [
+  "Filtre gercek secim gucu tasiyor: test penceresinde (24h OOS) gecen barlarin %40.4u sonraki 3 barda +0.95%% dokunuyor vs taban %14.4 (lift +26.0pp).",
+  "avg MFE3: gecenlerde %1.42 vs taban %0.53 (2.7x). Train->test guc ARTTI (%30.2 -> %40.4) - bozulan bir filtre degil.",
+  "RSI trend kolu (>=60) degeri tasiyor (test: %41.0 dokunus, n=936); V-donus kolu (<=35) zayif ve orneklem kucuk (n=40, %25.0).",
+  "Not: UI kalibrasyonu (hedef %19, olculen %17.5) baska bir isabet tanimi kullanıyor olabilir; bizim tanimda (MFE>=0.95, 3 bar) gecenlerde isabet cok daha yuksek. Tanim hizalanmali.",
+  "Uyari: dokunus != islenebilir EV. Onceki izgara taramasi stoplu girislerde pozitif EV uretmedi; bu filtre ADAY SECIM (izleme) degeri tasir, giris karari olarak degil."
+ ]
+}

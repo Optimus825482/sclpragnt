@@ -1004,12 +1004,13 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
     def op(conn):
         if _postgres_enabled():
             conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
-        existing = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + (" FOR UPDATE"), (symbol,)).fetchone()
+        row_lock = " FOR UPDATE" if _postgres_enabled() else ""
+        existing = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + row_lock, (symbol,)).fetchone()
         if not existing:
             open_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] or 0)
             if int(config.MAX_OPEN_POSITIONS) > 0 and open_count >= int(config.MAX_OPEN_POSITIONS):
                 raise RuntimeError("max_open_positions_reached")
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + (" FOR UPDATE"), ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + row_lock, ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else config.INITIAL_BALANCE_TRY)
         debit = float(asset_amount or 0) * float(sig.get("price") or pos.get("entry_price") or 0) * (1 + config.COMMISSION_PCT)
         if debit <= 0 or current_cash + 1e-9 < debit:
@@ -1045,10 +1046,11 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     def op(conn):
         if _postgres_enabled():
             conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
-        position_row = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + (" FOR UPDATE"), (symbol,)).fetchone()
+        row_lock = " FOR UPDATE" if _postgres_enabled() else ""
+        position_row = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + row_lock, (symbol,)).fetchone()
         if not position_row:
             raise RuntimeError("paper_position_not_found")
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + (" FOR UPDATE"), ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + row_lock, ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
         exit_notional = float(trade.get("exit_price") or 0) * float(trade.get("quantity") or 0)
         next_cash = current_cash + exit_notional * (1 - config.COMMISSION_PCT)
