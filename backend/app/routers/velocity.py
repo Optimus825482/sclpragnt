@@ -85,13 +85,16 @@ def _velocity_linreg_slope(closes, n=20):
     return slope / my * 100 * 10 if my else None
 
 
-def _velocity_aroon(highs, n=25):
+def _velocity_aroon(highs, lows=None, n=25):
     if len(highs) < n + 1:
         return None
     win = highs[-(n + 1):]
     up = (n - (len(win) - 1 - win.index(max(win)))) / n * 100
-    lwin = [h for h in win]  # Aroon down düşüklerle: basit proxy — yeterli, down hesabı lows ister
-    return up
+    down = None
+    if lows is not None and len(lows) >= n + 1:
+        lwin = lows[-(n + 1):]
+        down = (n - (len(lwin) - 1 - lwin.index(min(lwin)))) / n * 100
+    return {"up": up, "down": down}
 
 
 VELOCITY_PROFILES = {
@@ -150,7 +153,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             rsi = _velocity_rsi(closes)
             mfi = _velocity_mfi(highs, lows, closes, vols)
             slope = _velocity_linreg_slope(closes)
-            aroon = _velocity_aroon(highs)
+            aroon = _velocity_aroon(highs, lows)
+            aroon_up = aroon["up"] if aroon else None
+            aroon_down = aroon["down"] if aroon else None
             ret3 = (closes[-1] / closes[-4] - 1) * 100 if len(closes) >= 4 else 0.0
             # Mod tespiti: RSI iki ucundan biri
             if rsi is None:
@@ -158,7 +163,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             mode = "trend_devam" if rsi >= VELOCITY_TREND_RSI_MIN else \
                    "v_donusu" if rsi <= VELOCITY_REVERSAL_RSI_MAX else None
             struct_ok = (slope is not None and slope >= VELOCITY_STRUCT_SLOPE_PCT) or \
-                        (aroon is not None and aroon >= 50)
+                        (aroon_up is not None and aroon_up >= 50)
             # Aşırı uç elme: zaten fırlamış/tükenmiş semboller geri çekilme
             # riski taşır; +%2 olasılığı bazın altına düşüyor (forensics 14.475 gözlem).
             exhausted = None
@@ -176,7 +181,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # velocity skoru: bileşen oranlarının geometrik ortalaması benzeri çarpım
             bb_ratio = (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0
             struct_ratio = max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
-                               (aroon or 0) / 50.0)
+                               (aroon_up or 0) / 50.0)
             velocity_score = round((atr_pct / VELOCITY_MIN_ATR_PCT) *
                                     bb_ratio *
                                     max(0.2, min(3.0, struct_ratio)) *
@@ -234,7 +239,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
                     "mode": mode, "exhausted": exhausted,
                     "linreg_slope10_pct": round(slope, 3) if slope is not None else None,
-                    "aroon_up": round(aroon, 0) if aroon is not None else None,
+                    "aroon_up": round(aroon_up, 0) if aroon_up is not None else None,
+                    "aroon_down": round(aroon_down, 0) if aroon_down is not None else None,
+                    "horizon_minutes": horizon_minutes,
                     "ret3_pct": round(ret3, 3),
                     "velocity_score": velocity_score, "passes": passes,
                     "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
@@ -243,9 +250,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "last_closed_at": rows[-1][0]}
 
     results = await asyncio.gather(*(scan_one(s) for s in pool))
+    limit = max(1, min(int((args or {}).get("limit", 3)), 10))
     candidates = [r for r in results if r and r["passes"]]
     candidates.sort(key=lambda r: r["velocity_score"], reverse=True)
-    for rank, candidate in enumerate(candidates[:3], 1):
+    for rank, candidate in enumerate(candidates[:limit], 1):
         candidate["rank"] = rank
     watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= 0.8]
     watchlist.sort(key=lambda r: r["velocity_score"], reverse=True)
@@ -260,7 +268,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             "ret3_pct": r["ret3_pct"], "velocity_score": r["velocity_score"],
             "passes": r["passes"], "rank": r.get("rank"),
             "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
-        } for r in (candidates[:3] + watchlist[:5])]
+        } for r in (candidates[:limit] + watchlist[:5])]
         await database.save_velocity_candidates(journal_rows)
     except Exception as exc:
         logger.warning("velocity journal hatası: %s", exc)
@@ -285,7 +293,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                              "live_passing_touched": int(live_stats.get("passing_touched_count") or 0),
                              "live_passing_count": int(live_stats.get("passing_count") or 0),
                              "note": "v2: hacim şartı kaldırıldı; BB genişliği + RSI/MFI uç elmesi + LinReg/Aroon teyidi. live_hit_pct canlı journal'dan gelir."},
-            "candidates": candidates[:3], "watchlist": watchlist[:5],
+            "candidates": candidates[:limit], "watchlist": watchlist[:5],
             "data_policy": "kapanmış 1m mumlar; tahmin/garanti değil, paper-only"}
 
 
@@ -790,7 +798,7 @@ async def _open_velocity_position(candidate: dict) -> dict:
     stop_loss_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
     context = {"signal_name": "Otonom Hız Avcısı · en iyi aday",
                 "velocity_score": candidate.get("velocity_score"),
-                "mode": candidate.get("mode"), "pattern_matches": candidate.get("pattern_matches"),
+                "mode": candidate.get("mode"), "pattern_matches": candidate.get("m5_pattern"),
                 "paper_only": True, "source": "velocity_auto",
                 "atr_pct": candidate.get("atr_pct")}
     result = await analyzer.open_position(symbol, price, "LONG", "CHAT_PREDICTION", order_value,
@@ -813,7 +821,16 @@ async def autonomous_velocity_loop():
     +%1 → ATR trailing, %1.5 sert stop.
     """
     await asyncio.sleep(60)
+    # Restart sonrası mevcut M5 kapanışıyla senkron başla: ilk turda hazır
+    # kapanışa bağlı kalıp yeni mum gelmeden taramayalım (0 ile başlarsak
+    # açılışta anında, mum ortasından bir tarama yapılırdı).
     _last_m5_close_ms = 0
+    try:
+        m5_tick = await fetch_klines("BTCTRY", "5m", 2)
+        if m5_tick:
+            _last_m5_close_ms = int(m5_tick[-1][0])
+    except Exception:
+        pass
     while True:
         try:
             enabled = config.VELOCITY_AUTO_ENABLED and \
@@ -838,9 +855,11 @@ async def autonomous_velocity_loop():
                 scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
                 _velocity_auto_state["last_scan_at"] = time.time()
                 _velocity_auto_state["last_m5_close_ms"] = latest_close_ms
-                # İki profilin adayları birleşik; skor üzerinden adil sıralama
-                pool = list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or []) \
-                    + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or [])
+                # İki profilin adayları birleşik; skor üzerinden adil sıralama.
+                # Zaten açık pozisyonu olan semboller atlanır (çoklu açılışı önler).
+                pool = [c for c in (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
+                        + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
+                        if str(c.get("symbol") or "").upper() not in analyzer.positions]
                 pool.sort(key=lambda c: -float(c.get("velocity_score") or 0))
                 if pool:
                     best = pool[0]
