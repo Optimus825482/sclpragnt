@@ -1694,7 +1694,6 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
     return result
 
-@router.post("/api/strategies/llm/chat")
 def _tool_activity_summary(name: str, args: dict) -> str:
     """Araç çağrısını insan-okur Türkçe eylem cümlesine çevirir (model akışı paneli)."""
     args = args or {}
@@ -1742,6 +1741,7 @@ def _tool_activity_summary(name: str, args: dict) -> str:
     return f"{name} çalıştırılıyor{sym}"
 
 
+@router.post("/api/strategies/llm/chat")
 async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
     messages = body.get("messages") or []
