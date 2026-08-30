@@ -38,8 +38,12 @@ class UniverseRegistryTests(unittest.TestCase):
         async def fake_get(key, default=None):
             return default
 
-        result = asyncio.run(universe_at(time_now()))
-        self.assertEqual(result["symbols"], [])
+        async def flow():
+            result = await universe_at(time_now())
+            self.assertEqual(result["symbols"], [])
+
+        with patch.object(database, "get_llm_setting", new=fake_get):
+            asyncio.run(flow())
 
 
 def time_now():

@@ -18,7 +18,7 @@ analyzer.py (her 2 sn, tüm coinler)
         └── İkisi de TRUE ──► BUY (varsayılan 1.000 TRY paper emir)
         │
         ▼
-executor.py ──► sanal cüzdan güncelle (USDT düş, coin ekle)
+analyzer.py + database.py ──► sanal cüzdan güncelle (USDT düş, coin ekle)
         │
         ▼
 main.py ──► WebSocket /ws üzerinden frontend'e yayınla
@@ -29,7 +29,7 @@ main.py ──► WebSocket /ws üzerinden frontend'e yayınla
 - **BB_MFI_MEAN_REVERSION (varsayılan):** Hard stop −%8.882 (`BB_MFI_STOP_LOSS_PCT`), take profit +%2.317 (`BB_MFI_TAKE_PROFIT_PCT`), teyitli sell sinyali çıkışı (varsayılan 2 ardışık bar) ve LLM yönetilen plan stop/TP/max-hold.
 - **Diğer (legacy) stratejiler:** Sistem stop'u, RR hedefine ulaşınca ATR trailing ve erken başarısızlık/bayat pozisyon kuralları.
 - **Re-entry guard'ları:** Bar cooldown, timeout sonrası 24 saatlik blok, hard-stop sonrası 2 saatlik blok — timeout/hard-stop blokları restart'ta kalıcıdır.
-- Not: eski belgedeki −%1 hard stop / +%0.2 break-even / %0.5 trailing modeli hiçbir aktif stratejide kullanılmaz; `TAKE_PROFIT_PCT` ve `TRAILING_*` sabitleri ölü yapılandırmadır.
+- Not: eski belgedeki −%1 hard stop / +%0.2 break-even / %0.5 trailing modeli hiçbir aktif stratejide kullanılmaz; ölü yapılandırma sabitleri (`TAKE_PROFIT_PCT`, `TRAILING_*`, çok kademeli `TIME_DECAY_TP_*`) config'ten kaldırılmıştır.
 
 ## Stack
 

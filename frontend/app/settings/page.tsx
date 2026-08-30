@@ -125,7 +125,7 @@ export default function SettingsPage() {
     apiRequest(`${API_BASE}/api/config`)
       .then((r) => r.json())
       .then((d) => { setCfg(d); setDraft(d); })
-      .catch(() => setError("Backend'e bağlanılamadı (http://localhost:8004)"));
+      .catch(() => setError(`Backend'e bağlanılamadı (${API_BASE})`));
     apiRequest(`${API_BASE}/api/market-symbols`)
       .then((r) => r.json())
       .then((d) => setMarketSymbols(d.symbols || []))

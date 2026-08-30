@@ -8,6 +8,7 @@ from app.technical_analysis import calculate_snapshot, _adx, _stochastic, _macd,
 from app.binance_tr_public import orderbook
 from app import database
 from app import agent_learning
+from app import calibration as calibration_service
 from app.circuit_breaker import breaker as strategy_breaker
 
 class ScalpAnalyzer:
@@ -1661,9 +1662,15 @@ class ScalpAnalyzer:
                     return None
             # S3 calibration multiplier: historically weak context buckets take
             # a proportionally smaller position (bounded 0.5..1.0); unknown or
-            # thin-sample buckets stay neutral at 1.0.
+            # thin-sample buckets stay neutral at 1.0. Callers may override via
+            # entry_context_extra; otherwise the shared bucket state decides.
             calib_multiplier = float((entry_context_extra or {}).get("calibration_multiplier") or 1.0) \
                 if isinstance(entry_context_extra, dict) else 1.0
+            if config.CALIBRATION_SIZING_ENABLED and calib_multiplier == 1.0:
+                try:
+                    calib_multiplier = calibration_service.multiplier_for(strat_name)
+                except Exception:
+                    calib_multiplier = 1.0
             if config.CALIBRATION_SIZING_ENABLED and calib_multiplier != 1.0:
                 order_value = max(config.MIN_PARTIAL_ORDER_TRY, order_value * min(1.0, max(0.5, calib_multiplier)))
             # S4 regime-gated sizing: mean-reversion shrinks in trending
@@ -1676,8 +1683,8 @@ class ScalpAnalyzer:
                 if k and len(k.get("closes") or []) >= 55:
                     snap = _cs(k)
                     regime_info = (snap or {}).get("regime") or {}
-                    style = __import__("app.calibration", fromlist=["strategy_style_of"]).strategy_style_of(strat_name)
-                    regime_mult = __import__("app.calibration", fromlist=["regime_size_multiplier"]).regime_size_multiplier(
+                    style = calibration_service.strategy_style_of(strat_name)
+                    regime_mult = calibration_service.regime_size_multiplier(
                         style, (regime_info or {}).get("name"), (regime_info or {}).get("confidence"))
                     if config.REGIME_SIZING_ENABLED and regime_mult != 1.0:
                         order_value = max(config.MIN_PARTIAL_ORDER_TRY, order_value * regime_mult)

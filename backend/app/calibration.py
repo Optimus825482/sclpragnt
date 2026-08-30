@@ -17,6 +17,7 @@ module closes that loop deterministically:
 No machine learning, no parameter fitting — plain counting with
 walk-forward-safe semantics (only *past* trades feed today's multiplier).
 """
+import time
 from collections import defaultdict
 
 MIN_BUCKET_SAMPLES = 8
@@ -24,6 +25,31 @@ GOOD_WIN_RATE = 0.55     # >= this wins -> full size (multiplier 1.0)
 BAD_WIN_RATE = 0.35      # <= this wins -> minimum multiplier
 MIN_MULTIPLIER = 0.5
 MAX_MULTIPLIER = 1.0
+
+# Shared bucket state. Refreshed weekly by the main.py calibration loop and
+# read by the analyzer at entry time; kept here so both sides share one
+# source of truth without a circular import.
+_bucket_state = {"buckets": {}, "updated_at": 0.0}
+
+
+def store_buckets(buckets: dict) -> None:
+    """Publish a freshly built bucket table (weekly refresh path)."""
+    _bucket_state["buckets"] = buckets or {}
+    _bucket_state["updated_at"] = time.time()
+
+
+def bucket_state() -> dict:
+    """Read-only view for UI/report surfaces."""
+    return dict(_bucket_state)
+
+
+def multiplier_for(strategy: str, *, volume_ratio: float | None = None) -> float:
+    """Current confidence multiplier for one entry; neutral before first build."""
+    from datetime import datetime, timezone
+    hour = datetime.now(timezone.utc).hour
+    return confidence_multiplier(
+        _bucket_state.get("buckets") or {},
+        strategy=strategy, hour=hour, volume_ratio=volume_ratio)
 
 
 def hour_band(hour: int | None) -> str:

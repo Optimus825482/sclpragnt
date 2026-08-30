@@ -68,7 +68,12 @@ except ImportError:
 
 app = FastAPI(title="Scalper Agent V4 - Paper Trading")
 cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3004,http://localhost:3000").split(",") if origin.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# Explicit method/header allowlist: wildcard methods+headers combined with
+# credentials is a known CORS misconfiguration risk if CORS_ORIGINS is ever
+# broadened. The API only needs the methods below.
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=True,
+                   allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+                   allow_headers=["Authorization", "Content-Type", "X-Real-IP", "X-A2A-Signature"])
 
 _TTS_VOICE = "tr-TR-EmelNeural"
 _TTS_EMOJI = re.compile("[\\U00010000-\\U0010ffff]")
@@ -1083,8 +1088,6 @@ async def retention_loop():
             print(f"[Retention] sweep hatası: {exc}")
         await asyncio.sleep(6 * 3600)
 
-_calibration_buckets = {"buckets": {}, "updated_at": 0.0}
-
 async def calibration_refresh_loop():
     """S3: rebuild bucketed win-rate statistics from closed trades.
 
@@ -1096,8 +1099,7 @@ async def calibration_refresh_loop():
         try:
             trades = await database.get_trades(limit=500)
             buckets = calibration_service.build_buckets(trades)
-            _calibration_buckets["buckets"] = buckets
-            _calibration_buckets["updated_at"] = time.time()
+            calibration_service.store_buckets(buckets)
             informative = sum(1 for s in buckets.values() if s["samples"] >= calibration_service.MIN_BUCKET_SAMPLES)
             print(f"[Calibration] {len(buckets)} kova, {informative} karar-verebilir", flush=True)
         except Exception as exc:
@@ -1108,13 +1110,7 @@ async def calibration_refresh_loop():
 def calibration_multiplier_for(strategy: str, symbol: str | None = None,
                                volume_ratio: float | None = None) -> float:
     """Current confidence multiplier for one entry; neutral before first build."""
-    buckets = _calibration_buckets.get("buckets") or {}
-    hour = None
-    ts = time.time()
-    from datetime import datetime, timedelta, timezone
-    hour = datetime.fromtimestamp(ts, tz=timezone.utc).hour
-    return calibration_service.confidence_multiplier(
-        buckets, strategy=strategy, hour=hour, volume_ratio=volume_ratio)
+    return calibration_service.multiplier_for(strategy, volume_ratio=volume_ratio)
 
 
 correlation_monitor = CorrelationMonitor()
@@ -2347,10 +2343,11 @@ async def strategy_breaker_status():
 @app.get("/api/strategy/calibration")
 async def strategy_calibration():
     """S3 bucketed win-rate table (walk-forward-safe, past trades only)."""
-    buckets = _calibration_buckets.get("buckets") or {}
+    state = calibration_service.bucket_state()
+    buckets = state.get("buckets") or {}
     return {"buckets": calibration_service.summarize_for_ui(buckets),
             "total_buckets": len(buckets),
-            "updated_at": _calibration_buckets.get("updated_at"),
+            "updated_at": state.get("updated_at"),
             "min_samples": calibration_service.MIN_BUCKET_SAMPLES,
             "paper_only": True}
 

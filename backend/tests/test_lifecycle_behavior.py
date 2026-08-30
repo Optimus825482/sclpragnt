@@ -400,7 +400,11 @@ class RestartPersistenceBehavior(unittest.IsolatedAsyncioTestCase):
                "strategy": "LLM_PAPER", "entry_context": {}, "trade_id": "t1"}
         sig = {"timestamp": 1.0, "symbol": "BTCTRY", "action": "BUY_SIGNAL", "price": 100.0,
                "reason": "position_opened", "strategy": "LLM_PAPER", "trade_id": "t1"}
-        with patch.object(config, "MAX_OPEN_POSITIONS", 1), patch("app.database._run_db", new=run):
+        # The op layer emits Postgres advisory locks; this test emulates the
+        # SQLite dialect contract, so disable the Postgres branch explicitly.
+        with patch.object(config, "MAX_OPEN_POSITIONS", 1), \
+                patch("app.database._postgres_enabled", return_value=False), \
+                patch("app.database._run_db", new=run):
             await database.commit_open_position("BTCTRY", "BTC", 0.0, 1.0, pos, sig)
             cash = conn.execute("SELECT amount FROM virtual_wallet WHERE asset='TRY'").fetchone()[0]
             self.assertLess(cash, 9900.0)
