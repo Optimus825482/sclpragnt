@@ -64,7 +64,8 @@ except ImportError:
 from app.state import market, analyzer  # noqa: F401  (shared singletons)
 from app.api_common import (  # noqa: F401
     _start_background, _background_tasks, _record_strategy_scan_log, _strategy_scan_logs,
-    _json_safe_positions, _fresh_public_price, _llm_guard_block_reason, correlation_monitor)
+    _json_safe_positions, _fresh_public_price, _llm_guard_block_reason, correlation_monitor,
+    _radar_snapshot, _radar_response_cache)
 from app.routers import a2a as a2a_routes, backtest as backtest_routes, llm_chat as llm_chat_routes
 from app.routers import maintenance as maintenance_routes, reports as reports_routes
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
@@ -321,7 +322,6 @@ async def startup_services():
     _start_background(alert_loop(), "alert-engine")
 
 async def shutdown_services():
-    global _pg_pool
     market.stop()
     tasks = list(_background_tasks)
     for task in tasks:
@@ -755,7 +755,6 @@ async def gainers_radar(execute: bool = False):
     response cache prevents multiple open browser tabs from redoing the same
     multi-timeframe work while execution requests always get a fresh run.
     """
-    global _radar_response_cache
     now = time.time()
     cached = _radar_response_cache.get("result")
     if not execute and cached and now - float(_radar_response_cache.get("generated_at") or 0) < 5:
@@ -766,13 +765,13 @@ async def gainers_radar(execute: bool = False):
         if not execute and cached and now - float(_radar_response_cache.get("generated_at") or 0) < 5:
             return cached
         result = await _gainers_radar_uncached(execute=execute)
-        _radar_response_cache = {"generated_at": time.time(), "result": result}
+        _radar_response_cache.clear()
+        _radar_response_cache.update({"generated_at": time.time(), "result": result})
         return result
 
 
 async def _gainers_radar_uncached(execute: bool = False):
     """Public-data fırsat tarayıcı: pump kovalamaz, devam edebilecek %2 adaylarını sıralar."""
-    global _radar_snapshot
     rows = []
     radar_analyzer = ScalpAnalyzer(None)
     auto_added = []
@@ -887,10 +886,11 @@ async def _gainers_radar_uncached(execute: bool = False):
                     if signal and signal.get("action") == "BUY_SIGNAL":
                         radar_trades.append(signal)
                         await ws_manager.broadcast({"type": "signal", "data": signal})
-    _radar_snapshot = {
+    _radar_snapshot.clear()
+    _radar_snapshot.update({
         "generated_at": time.time(),
         "items": {str(row.get("symbol", "")).upper(): dict(row) for row in rows},
-    }
+    })
     return {"items": rows[:20], "auto_added": auto_added, "symbols": config.SYMBOLS, "paper_trades": radar_trades,
             "auto_trade": False, "generated_at": time.time(), "model": "public_data_continuation_2pct_mtf_priority",
             "mtf_timeframes": mtf_timeframes, "mtf_policy": "M1/M5/M15/H1/H4 weighted score plus bullish-count soft bonus; ranking only, never a BUY blocker; unknown data is not treated as bullish"}
