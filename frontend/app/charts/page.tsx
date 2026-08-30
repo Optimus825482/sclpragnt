@@ -869,9 +869,16 @@ export default function ChartsPage() {
     const fetchPositions = useCallback(async () => {
         try {
             const res = await apiRequest(`${API_BASE}/api/positions`);
+            // Hata yanıtı (401/5xx) pozisyon listesini SIFIRLAMAMALI: daha
+            // önce `data.positions || []` her yanıtta uygulandığı için bir
+            // başarısız REST çağrısı WS'ten gelen listeyi siliyor ve tablo
+            // "Açık pozisyon yok" gösteriyordu. Başarılı yanıtta da yalnızca
+            // positions alanı gerçekten dizi ise güncelle; aksi halde mevcut
+            // liste korunur.
+            if (!res.ok) return;
             const data = await res.json();
-            setPositions(data.positions || []);
-        } catch { /* backend yoksa sessiz geç */ }
+            if (Array.isArray(data?.positions)) setPositions(data.positions);
+        } catch { /* backend yoksa sessiz geç; mevcut liste korunur */ }
     }, []);
 
     useEffect(() => {
@@ -914,7 +921,11 @@ export default function ChartsPage() {
     useLiveMessages(useCallback((message: any) => {
         if (message.type === "portfolio") {
             setLivePortfolio(message.data as LivePortfolio);
-            setPositions(message.data?.positions || []);
+            // WS portfolio'da positions alanı eksikse mevcut REST listesini
+            // boşaltma; alan varsa (dizi) güncelle.
+            if (Array.isArray(message.data?.positions)) {
+                setPositions(message.data.positions);
+            }
         }
         if (["trade_updated", "signal", "reset"].includes(message.type)) loadPortfolioSummary();
     }, [loadPortfolioSummary]));

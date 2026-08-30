@@ -95,6 +95,16 @@ export default function Home() {
       .catch(() => undefined);
   }, []);
 
+  // REST 15 sn'de bir taban veriyi tazeler; WS portfolio mesajı geldiğinde
+  // güncel anlık değerlerle üzerine yazılır. Böylece WS kopukken bile açık
+  // pozisyonlar listede görünür (eskiden tablo yalnızca WS'e bağlıydı ve
+  // bağlantı kopunca "Açık pozisyon yok" yanıltıcı metni gösteriyordu).
+  useEffect(() => {
+    loadRestPositions();
+    const timer = window.setInterval(loadRestPositions, 15000);
+    return () => window.clearInterval(timer);
+  }, [loadRestPositions]);
+
   useEffect(() => {
     let cancelled = false;
     const tick = () => {
@@ -157,12 +167,30 @@ export default function Home() {
       const response = await apiRequest(`${API_BASE}/api/positions/${symbol}/close`, { method: "POST" });
       const data = await response.json();
       setMsg(data.message || (data.ok ? "Pozisyon kapatıldı." : "Pozisyon kapatılamadı."));
+      loadRestPositions();
     } catch {
       setMsg("Pozisyon kapatılamadı.");
     } finally {
       setClosing(null);
     }
   };
+
+  // Tablo kaynağı: REST tabanlı liste + WS portfolio'dan güncel kalemler.
+  // WS kalemi varsa REST kalemini ezer (anlık PnL taze olur); WS yoksa REST
+  // listesi tek başına görünür kalır. Aynı sembol için güncel entry_time
+  // sahip olan kazanır (manuel kapatma/açılış sonrası tutarlılık).
+  const displayPositions = useMemo(() => {
+    const bySymbol = new Map<string, Position>();
+    for (const p of restPositions) bySymbol.set(p.symbol, p);
+    for (const p of portfolio?.positions || []) {
+      const existing = bySymbol.get(p.symbol);
+      if (!existing || Number(p.entry_time || 0) >= Number(existing.entry_time || 0)) {
+        bySymbol.set(p.symbol, p);
+      }
+    }
+    return [...bySymbol.values()].sort((a, b) =>
+      Number(b.entry_time || 0) - Number(a.entry_time || 0));
+  }, [restPositions, portfolio]);
 
   // Performans istatistikleri: kapanmış işlemler + bugün
   const stats = useMemo(() => {
@@ -173,12 +201,12 @@ export default function Home() {
     const commission = closed.reduce((a, t) => a + (t.commission ?? 0), 0);
     const today = closed.filter((t) => Number(t.exit_time || 0) >= dayStart);
     const todayPnl = today.reduce((a, t) => a + (t.pnl ?? 0), 0);
-    const openPnl = (portfolio?.positions || []).reduce((a, p) => a + (p.pnl_try ?? 0), 0);
+    const openPnl = displayPositions.reduce((a, p) => a + (p.pnl_try ?? 0), 0);
     return {
       closedCount: closed.length, wins, winRate: closed.length ? wins / closed.length * 100 : null,
       netPnl, commission, todayCount: today.length, todayPnl, openPnl,
     };
-  }, [trades, portfolio]);
+  }, [trades, displayPositions]);
 
   const strategyStats = useMemo(() => {
     const map = new Map<string, { count: number; wins: number; pnl: number }>();
@@ -285,7 +313,7 @@ export default function Home() {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <MetricCard label="TOPLAM DEĞER" value={`₺${money(portfolio?.total_value)}`} />
         <MetricCard label="MEVCUT TL" value={`₺${money(portfolio?.try)}`} tone="ui-tone-positive" />
-        <MetricCard label="AÇIK POZİSYON" value={portfolio?.positions.length ?? 0} />
+        <MetricCard label="AÇIK POZİSYON" value={displayPositions.length} />
         <MetricCard label="AÇIK PnL" value={`₺${money(stats.openPnl)}`} tone={pnlTone(stats.openPnl)} />
         <MetricCard label="GERÇEKLEŞEN PnL" value={`₺${money(portfolio?.realized_pnl ?? stats.netPnl)}`} tone={pnlTone(portfolio?.realized_pnl ?? stats.netPnl)} />
       </div>
@@ -313,7 +341,7 @@ export default function Home() {
             <table className="data-table">
               <thead><tr><th>Sembol</th><th>Strateji</th><th>PnL</th><th>%</th><th>İşlem</th></tr></thead>
               <tbody>
-                {(portfolio?.positions || []).map((p) => (
+                {displayPositions.map((p) => (
                   <tr key={p.symbol}>
                     <td><SymbolLink symbol={p.symbol} className="text-white hover:text-neon-green" /></td>
                     <td className="text-xs">{STRATEGY_LABEL[p.strategy || ""] || p.strategy || "—"}</td>
@@ -322,7 +350,7 @@ export default function Home() {
                     <td><button onClick={() => closePosition(p.symbol)} disabled={closing !== null} className="rounded border border-red-400/50 bg-red-400/10 px-2 py-1 font-mono text-[10px] text-red-300 disabled:opacity-50">{closing === p.symbol ? "…" : "KAPAT"}</button></td>
                   </tr>
                 ))}
-                {!(portfolio?.positions || []).length && <tr><td colSpan={5} className="py-6 text-center text-bunker-muted">Açık pozisyon yok; otonom hız avcısı yeni fırsat arıyor.</td></tr>}
+                {!displayPositions.length && <tr><td colSpan={5} className="py-6 text-center text-bunker-muted">{liveStatus === "open" ? "Açık pozisyon yok; otonom hız avcısı yeni fırsat arıyor." : "Pozisyon verisi alınamıyor — bağlantı durumu: " + liveStatus}</td></tr>}
               </tbody>
             </table>
           </div>

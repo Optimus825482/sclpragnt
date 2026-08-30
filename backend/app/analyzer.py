@@ -598,11 +598,12 @@ class ScalpAnalyzer:
                 fallback_stop_pct = config.HARD_STOP_LOSS_PCT
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
             # Chat Prediction (velocity auto-trade) koruma merdiveni:
-            # 1) Kâr anında break-even: fiyat girişin üstüne çıktıysa stop
-            #    girişe çekilir (maliyet+min kâr), kar kilitlenir.
+            # 1) Break-even: fiyat break-even eşiğine (maliyet + çift
+            #    komisyon + min net kâr) ulaştıysa stop girişin üstüne
+            #    çekilir, kar kilitlenir.
             # 2) +%1'e ulaşınca ATR trailing: stop = max_fiyat - 2×ATR,
             #    maksimum kârı koşturur.
-            # 3) Sert stop: açılıştan itibaren %1.5 altı (chart stop).
+            # 3) Plan sert stop: açılıştan itibaren plan SL%'si altı.
             if (pos.get("strategy") == "CHAT_PREDICTION"
                     and not pos.get("velocity_protection_armed")):
                 mfe_price = float(pos.get("max_price") or entry)
@@ -662,6 +663,27 @@ class ScalpAnalyzer:
                 return await self.close_position(
                     symbol, price,
                     "pump_break_even_stop" if pos.get("pump_break_even_armed") else "system_stop_loss")
+            if pos.get("strategy") == "CHAT_PREDICTION":
+                # Replay planı çıkışları: sabit plan TP ve plan max-hold.
+                # Plan TP girişte system_take_profit_price olarak yazılır ve
+                # positions.take_profit kolonuna da düşer; restart sonrası
+                # restore'da system_ alanı yoksa take_profit devreye girer.
+                # Plansız (trailing) yolda take_profit None'dur, TP kontrolü
+                # atlanır. Max-hold reason'ı "max_hold_" ön ekli değildir ki
+                # 24 saatlik timeout re-entry bloğu tetiklenmesin (15 dk scalp
+                # planı için aşırı).
+                plan_tp = float(pos.get("system_take_profit_price") or pos.get("take_profit") or 0)
+                if plan_tp and price >= plan_tp:
+                    return await self.close_position(symbol, price, "chat_plan_take_profit")
+                # velocity_max_hold_sec bellek alanıdır; restart sonrası
+                # restore edilen pozisyonlar için plan süresi kalıcı
+                # entry_context'ten okunur.
+                ectx_hold = (pos.get("entry_context") or {}).get("max_hold_sec")
+                plan_hold = float(pos.get("velocity_max_hold_sec") or ectx_hold or 0)
+                if plan_hold > 0:
+                    elapsed_hold = max(0.0, time.time() - float(pos.get("entry_time") or time.time()))
+                    if elapsed_hold >= plan_hold:
+                        return await self.close_position(symbol, price, "chat_plan_max_hold")
             # BB-MFI canlıda backtest ile aynı karar kurallarını kullanır;
             # gerçekleşen fill, teyit sonrası mevcut canlı ticker fiyatıdır.
             if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
@@ -1768,25 +1790,38 @@ class ScalpAnalyzer:
                                     "reason": f"atr_capacity_insufficient:{capacity_ratio:.2f}",
                                     "strategy": strat_name, "timestamp": time.time()}
         is_bb_mfi = strat_name == "BB_MFI_MEAN_REVERSION"
-        planned_take_profit_pct = (
-            float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
-            else (None if strat_name == "LLM_PAPER" else
-                  (config.BB_MFI_TAKE_PROFIT_PCT if is_bb_mfi else config.SPOT_PROFIT_TARGET_PCT))
-        )
-        planned_stop_loss_pct = (
-            float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None
-            else (None if strat_name == "LLM_PAPER" else
-                  (config.BB_MFI_STOP_LOSS_PCT if is_bb_mfi else
-                   (config.VELOCITY_AUTO_SL_PCT / 100.0 if strat_name == "CHAT_PREDICTION"
-                    else config.HARD_STOP_LOSS_PCT)))
-        )
-        # BB-MFI exits through its fixed stop/target or a confirmed sell signal;
-        # the generic max-hold setting is not an active exit for this strategy.
-        planned_max_hold_sec = (
-            int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None
-            else (None if strat_name in {"LLM_PAPER", "BB_MFI_MEAN_REVERSION"}
-                  else config.MAX_POSITION_HOLD_SEC)
-        )
+        if strat_name == "CHAT_PREDICTION":
+            # İki giriş yolu, iki çıkış planı:
+            # - Chat tahmin otomatı (replay planı TP %0.8 / SL %0.5 / 900 sn):
+            #   caller plan parametrelerini gönderir. Eskiden bu parametreler
+            #   sessizce atılıyor, %2.5 stop + 4 saat max-hold devreye
+            #   giriyordu; işlemler planın amaçladığından çok daha geniş
+            #   zararla kapanıyordu.
+            # - Otonom hız avcısı: yalnızca stop gönderir; sabit TP yerine
+            #   break-even + ATR trailing merdiveni koşar (TP/hold kapalı).
+            planned_stop_loss_pct = float(requested_stop_pct) if requested_stop_pct is not None \
+                else config.VELOCITY_AUTO_SL_PCT / 100.0
+            planned_take_profit_pct = float(requested_tp_pct) if requested_tp_pct is not None else None
+            planned_max_hold_sec = int(requested_hold_sec) if requested_hold_sec is not None else None
+        else:
+            planned_take_profit_pct = (
+                float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
+                else (None if strat_name == "LLM_PAPER" else
+                      (config.BB_MFI_TAKE_PROFIT_PCT if is_bb_mfi else config.SPOT_PROFIT_TARGET_PCT))
+            )
+            planned_stop_loss_pct = (
+                float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None
+                else (None if strat_name == "LLM_PAPER" else
+                      (config.BB_MFI_STOP_LOSS_PCT if is_bb_mfi else config.HARD_STOP_LOSS_PCT))
+            )
+            # BB-MFI exits through its fixed stop/target or a confirmed sell
+            # signal; the generic max-hold setting is not an active exit for
+            # this strategy.
+            planned_max_hold_sec = (
+                int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None
+                else (None if strat_name in {"LLM_PAPER", "BB_MFI_MEAN_REVERSION"}
+                      else config.MAX_POSITION_HOLD_SEC)
+            )
         entry_context = {"strategy_revision": config.STRATEGY_REVISION,
                          "liquidity": details if self.market else {},
                          "expected_gross_pnl_try": expected_gross if self.market else None,
@@ -1895,13 +1930,14 @@ class ScalpAnalyzer:
                 system_kline = self.market.get_ut_kline(symbol, technical_tf) if self.market else None
                 atr = self.calculate_atr(system_kline, config.SYSTEM_ATR_PERIOD) if system_kline else None
                 if strat_name == "CHAT_PREDICTION":
-                    strategy_stop_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
+                    # Replay planındaki SL (%0.5) burada gerçek stop olur.
+                    strategy_stop_pct = planned_stop_loss_pct
                 elif strat_name == "BB_MFI_MEAN_REVERSION":
                     strategy_stop_pct = config.BB_MFI_STOP_LOSS_PCT
                 else:
                     strategy_stop_pct = config.HARD_STOP_LOSS_PCT
-                # CHAT_PREDICTION için her zaman sabit %1.5 stop (ATR'ye göre
-                # genişletilmez). Kullanıcı kontratı: stop = fiyatın %98.5'i.
+                # CHAT_PREDICTION stop'u ATR'ye göre genişletilmez: plan
+                # yüzdesi birebir uygulanır (stop = giriş × (1 - SL%)).
                 if strat_name == "CHAT_PREDICTION":
                     stop_distance = entry_price * strategy_stop_pct
                 else:
@@ -1912,12 +1948,24 @@ class ScalpAnalyzer:
                 if stop_distance <= 0:
                     stop_distance = entry_price * strategy_stop_pct
                 pos["system_stop_price"] = entry_price - stop_distance
-                pos["system_take_profit_price"] = entry_price * (1 + config.BB_MFI_TAKE_PROFIT_PCT) if strat_name == "BB_MFI_MEAN_REVERSION" else entry_price + stop_distance * config.SYSTEM_RISK_REWARD
+                if strat_name == "CHAT_PREDICTION":
+                    # Planlı yol (chat tahmin otomatı): asimetrik plan — TP
+                    # plan yüzdesiyle sabitlenir (RR çarpanı plan TP'sini
+                    # şişirmez), max-hold plan süresiyle sınırlıdır. Plansız
+                    # yol (otonom hız avcısı): sabit TP yok, çıkışı
+                    # break-even + ATR trailing merdiveni üstlenir.
+                    if planned_take_profit_pct is not None:
+                        pos["system_take_profit_price"] = entry_price * (1 + planned_take_profit_pct)
+                    if planned_max_hold_sec is not None:
+                        pos["velocity_max_hold_sec"] = planned_max_hold_sec
+                else:
+                    pos["system_take_profit_price"] = entry_price * (1 + config.BB_MFI_TAKE_PROFIT_PCT) if strat_name == "BB_MFI_MEAN_REVERSION" else entry_price + stop_distance * config.SYSTEM_RISK_REWARD
                 pos["stop_price"] = pos["system_stop_price"]
-                pos["take_profit"] = pos["system_take_profit_price"]
+                pos["take_profit"] = pos.get("system_take_profit_price")
                 pos["system_atr"] = float(atr or 0)
                 pos["system_risk_reward"] = config.SYSTEM_RISK_REWARD
-                pos["system_exit_model"] = "atr_trailing_after_rr_target"
+                pos["system_exit_model"] = ("chat_replay_plan" if planned_take_profit_pct is not None
+                                            else "velocity_trailing") if strat_name == "CHAT_PREDICTION" else "atr_trailing_after_rr_target"
             if strat_name == "LLM_PAPER":
                 if requested_stop_pct is not None:
                     pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(requested_stop_pct)))
