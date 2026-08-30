@@ -166,7 +166,7 @@ class Config:
     MIN_24H_QUOTE_VOLUME_TRY = 1_000_000.0
     HIGH_LIQUIDITY_BYPASS_VOLUME_TRY = 3_000_000.0
     MIN_VOLUME_RATIO = 0.3
-    MAX_SPREAD_PCT = 0.30
+    MAX_SPREAD_PCT = float(os.getenv("MAX_SPREAD_PCT", "0.5"))  # geniş spread toleransı: %0.5 (düşük fiyatlı coinler için)
     MIN_ORDERBOOK_DEPTH_MULTIPLIER = 5.0
     LIQUIDITY_FILTER_ENABLED = True
     # Aktivite için hem likidite/hacim hem de fiyat hareketi gerekir. Hacim,
@@ -181,7 +181,7 @@ class Config:
     ))
     SYMBOL_ACTIVITY_MIN_ATR_PCT = float(os.getenv("SYMBOL_ACTIVITY_MIN_ATR_PCT", "0.0012"))
     SYMBOL_ACTIVITY_MIN_VOLUME_RATIO = float(os.getenv("SYMBOL_ACTIVITY_MIN_VOLUME_RATIO", "0.50"))
-    SYMBOL_ACTIVITY_MAX_SPREAD_PCT = float(os.getenv("SYMBOL_ACTIVITY_MAX_SPREAD_PCT", "0.30"))
+    SYMBOL_ACTIVITY_MAX_SPREAD_PCT = float(os.getenv("SYMBOL_ACTIVITY_MAX_SPREAD_PCT", "0.5"))
     SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED = os.getenv("SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED", "false").lower() == "true"
     # A candle with high == low did not move during its whole minute. A dense
     # cluster of completed M1 candles blocks new paper entries only.
