@@ -455,4 +455,4 @@ def live_trade_plan(horizon_minutes: int, atr_pct: float) -> dict:
             "max_hold_seconds": config.CHAT_PREDICTION_MAX_HOLD_SEC,
             "tp_pct_display": config.CHAT_PREDICTION_TP_PCT,
             "sl_pct_display": config.CHAT_PREDICTION_SL_PCT,
-            "basis": "replay_2026-08-29 TP0.8/SL0.5 worst-case pozitif"}
+            "basis": "kâr kilidi +%1'de (maliyet+%0,01+komisyon), %0,5 dinamik trailing, TP %2, SL %0,5"}

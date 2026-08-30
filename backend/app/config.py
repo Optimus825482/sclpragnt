@@ -87,7 +87,7 @@ class Config:
     CHAT_PREDICTION_MIN_PATTERN_MATCHES = max(1, int(os.getenv("CHAT_PREDICTION_MIN_PATTERN_MATCHES", "2")))
     CHAT_PREDICTION_HIGH_CONFIDENCE_MATCHES = max(2, int(os.getenv("CHAT_PREDICTION_HIGH_CONFIDENCE_MATCHES", "3")))
     # Replay simülasyonundan çıkan asimetrik çıkış: hedef > stop.
-    CHAT_PREDICTION_TP_PCT = max(0.1, float(os.getenv("CHAT_PREDICTION_TP_PCT", "0.8")))
+    CHAT_PREDICTION_TP_PCT = max(0.1, float(os.getenv("CHAT_PREDICTION_TP_PCT", "2.0")))
     CHAT_PREDICTION_SL_PCT = max(0.1, float(os.getenv("CHAT_PREDICTION_SL_PCT", "0.5")))
     CHAT_PREDICTION_MAX_HOLD_SEC = max(300, int(os.getenv("CHAT_PREDICTION_MAX_HOLD_SEC", "900")))
     # Otomatik paper açılış: yüksek güven + LLM paper trade ayarı açık olmalı.
@@ -96,13 +96,16 @@ class Config:
     CHAT_PREDICTION_ORDER_VALUE_TRY = max(50.0, float(os.getenv("CHAT_PREDICTION_ORDER_VALUE_TRY", "300.0")))
     # Otonom hız avcısı: 15 dk'da bir tarama, en iyi adaya (GEÇTİ veya İZLEME)
     # serbest TL'nin %50'si ile pozisyon. Çıkış merdiveni analyzer'da:
-    # kâr → break-even, +%1 → ATR trailing, sert stop %1.5.
+    # +%1 kâr → stop maliyet+%0,01'e çekilir (kâr garantisi), sonrasında
+    # %0,5 dinamik trailing, sert stop %2.5, plan TP %2.
     VELOCITY_AUTO_ENABLED = os.getenv("VELOCITY_AUTO_ENABLED", "false").lower() == "true"
     VELOCITY_AUTO_INTERVAL_SEC = max(300, int(os.getenv("VELOCITY_AUTO_INTERVAL_SEC", "300")))
     VELOCITY_AUTO_BALANCE_PCT = 50.0
     VELOCITY_AUTO_SL_PCT = float(os.getenv("VELOCITY_AUTO_SL_PCT", "2.5"))  # Hız Avcısı sert stop %2.5
     VELOCITY_POOL_SIZE = max(5, min(50, int(os.getenv("VELOCITY_POOL_SIZE", "30"))))  # Hız Avcısı aday havuzu (top gainer)
-    VELOCITY_TRAIL_TRIGGER_PCT = 1.0  # ATR trailing bu kâr yüzdesinde devreye girer
+    VELOCITY_TRAIL_TRIGGER_PCT = 1.0  # Trailing/kâr kilidi bu kâr yüzdesinde devreye girer
+    VELOCITY_TRAIL_GAP_PCT = 0.5  # Dinamik trailing: stop = tepe - tepe*%0.5
+    VELOCITY_PROFIT_LOCK_PCT = 0.01  # +%1'de kilitlenen net kâr (girişin %0.01 üstü + komisyon)
     # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
     # (24s/72s/7g altı pencerede %66-68 başarı). Aday pozisyon açmadan önce
     # bu eşikleri karşılamalıdır. VELOCITY_PATTERN_FILTER_ENABLED=true ise

@@ -1462,7 +1462,9 @@ async def ws_broadcast_loop():
                 _ws_snapshot_cache["portfolio"] = {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
                                                     "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
                                                     "reconciliation_delta": reconciliation_delta, "positions": open_positions}
-                await ws_manager.broadcast({"type": "portfolio", "data": _ws_snapshot_cache["portfolio"]})
+                # NaN/±Infinity tek bir WS portfolio mesajını da tüketicilerde
+                # bozabilir; /api/positions ile aynı güvenlik uygulanır.
+                await ws_manager.broadcast({"type": "portfolio", "data": _json_safe_positions(_ws_snapshot_cache["portfolio"])})
         except Exception as exc:
             logger.warning("ws_broadcast_loop hatasi (atlanıyor): %s", exc, exc_info=True)
         await asyncio.sleep(1.0)
@@ -3331,6 +3333,17 @@ async def save_chart_settings(symbol: str, payload: dict):
     await database.save_chart_settings(symbol, payload)
     return {"symbol": symbol, "saved": True}
 
+def _json_safe_positions(value):
+    """Recursively replace NaN/±Infinity floats with None (JSON-safe)."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe_positions(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_positions(v) for v in value]
+    return value
+
+
 @app.get("/api/positions")
 async def get_positions():
     positions = []
@@ -3381,6 +3394,11 @@ async def get_positions():
                 "last_plan_updated_at": None, "error": str(exc),
             })
     positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
+    # Canlı sunucuda pozisyon alanlarından biri NaN/±Infinity olduğunda
+    # json.dumps "Out of range float values are not JSON compliant" ile TÜM
+    # yanıtı 500'e düşürüyordu ve açık pozisyon paneli boşalıyordu. NaN/Inf
+    # değerler None'a çevrilir; tek pozisyon listeyi bloklamamalı.
+    positions = _json_safe_positions(positions)
     return {"positions": positions}
 
 @app.get("/api/symbol-analysis/{symbol}")
