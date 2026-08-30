@@ -20,7 +20,8 @@ from app import llm_analysis
 import json
 from app import migration_monitor
 from app.analyzer import ScalpAnalyzer
-from app.api_common import _json_safe_positions, correlation_monitor
+from app.api_common import (_json_safe_positions, correlation_monitor,
+                            _radar_snapshot, _radar_response_cache)
 from app.correlation import cluster_exposure
 
 
@@ -57,8 +58,6 @@ _radar_lock = asyncio.Lock()
 _top_gainers_lock = asyncio.Lock()
 _ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
 
-_radar_snapshot = {"generated_at": 0.0, "items": {}}
-_radar_response_cache = {"generated_at": 0.0, "result": None}
 _pump_monitor_snapshot = {"generated_at": 0.0, "items": {}, "last_execution": []}
 _pump_monitor_seen_candles = {}
 

@@ -14,6 +14,11 @@ from app.state import market, analyzer
 
 logger = logging.getLogger("scalper.api_common")
 
+# Radar paylaşılan durumu: /api/radar/gainers (main.py) ve radar döngüsü
+# (routers/runtime.py) aynı nesneyi okur/yazar. Rebind yerine mutasyon
+# (clear/update) kullanılır; aksi halde iki modül ayrı kopyalarda çalışır.
+_radar_snapshot = {"generated_at": 0.0, "items": {}}
+_radar_response_cache = {"generated_at": 0.0, "result": None}
 
 _strategy_scan_logs = deque(maxlen=5000)
 
