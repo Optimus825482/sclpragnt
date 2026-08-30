@@ -103,7 +103,7 @@ class Config:
     VELOCITY_AUTO_BALANCE_PCT = 50.0
     VELOCITY_AUTO_SL_PCT = float(os.getenv("VELOCITY_AUTO_SL_PCT", "2.5"))  # Hız Avcısı sert stop %2.5
     VELOCITY_POOL_SIZE = max(5, min(50, int(os.getenv("VELOCITY_POOL_SIZE", "30"))))  # Hız Avcısı aday havuzu (top gainer)
-    VELOCITY_TRAIL_TRIGGER_PCT = 1.0  # Trailing/kâr kilidi bu kâr yüzdesinde devreye girer
+    VELOCITY_TRAIL_TRIGGER_PCT = float(os.getenv("VELOCITY_TRAIL_TRIGGER_PCT", "0.7"))  # Trailing/kâr kilidi bu kâr yüzdesinde devreye girer (24h replay: 0.7 > 1.0)
     VELOCITY_TRAIL_GAP_PCT = 0.5  # Dinamik trailing: stop = tepe - tepe*%0.5
     VELOCITY_PROFIT_LOCK_PCT = 0.01  # +%1'de kilitlenen net kâr (girişin %0.01 üstü + komisyon)
     # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
