@@ -316,17 +316,36 @@ async def llm_position_manager_loop():
             print(f"[LLM position manager] döngü hatası: {exc}")
         await asyncio.sleep(60)
 
-def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
-    """Return a causal outcome only when the requested horizon has closed."""
+async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
+    """Return a causal outcome only when the requested horizon has closed.
+
+    Sıcak WS cache önceliklidir; sembol abone değilse (top-gainer havuzundan
+    gelip config.SYMBOLS'ta olmayabilir) kapanmış mumlar REST'ten getirilir —
+    aksi halde bu öngörüler sonsuza dek 'pending' kalıyordu.
+    """
+    created_at_ms = int(float(forecast["created_at"]) * 1000)
+    due_at_ms = created_at_ms + int(forecast["horizon_minutes"]) * 60_000
     bars = market.get_ut_kline(symbol, "1m") or {}
     timestamps = list(bars.get("timestamps") or [])
     closes = list(bars.get("closes") or [])
     highs = list(bars.get("highs") or [])
     lows = list(bars.get("lows") or [])
+    # Sıcak cache pencerenin tamamını kapsamıyorsa (veya sembol abone değilse)
+    # REST'ten kapanmış mumları getir. Pencere süresi henüz dolmadıysa None.
+    if min(len(timestamps), len(closes), len(highs), len(lows)) < 2 or \
+            int(timestamps[-1]) + 59_999 < due_at_ms:
+        try:
+            rows = await fetch_klines(symbol, "1m", int(forecast["horizon_minutes"]) + 12,
+                                      start_time_ms=created_at_ms, end_time_ms=due_at_ms + 65_000)
+        except Exception:
+            rows = []
+        if len(rows) >= 2:
+            timestamps = [int(r[0]) for r in rows]
+            closes = [float(r[4]) for r in rows]
+            highs = [float(r[2]) for r in rows]
+            lows = [float(r[3]) for r in rows]
     if min(len(timestamps), len(closes), len(highs), len(lows)) < 2:
         return None
-    created_at_ms = int(float(forecast["created_at"]) * 1000)
-    due_at_ms = created_at_ms + int(forecast["horizon_minutes"]) * 60_000
     close_times = [int(value) + 59_999 for value in timestamps]
     end_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= due_at_ms), None)
     start_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= created_at_ms), None)
@@ -355,7 +374,7 @@ async def llm_forecast_evaluation_loop():
             pending = await database.get_pending_llm_forecasts(limit=200)
             evaluated = 0
             for forecast in pending:
-                observed = _forecast_outcome_from_closed_m1(forecast["symbol"], forecast)
+                observed = await _forecast_outcome_from_closed_m1(forecast["symbol"], forecast)
                 if not observed:
                     continue
                 outcome = evaluate_forecast(forecast, evaluated_at=time.time(), **observed)
@@ -396,7 +415,7 @@ async def chat_prediction_learning_loop():
             evaluated = 0
             pending = await database.get_pending_chat_predictions(limit=100)
             for prediction in pending:
-                observed = _forecast_outcome_from_closed_m1(prediction["symbol"], prediction)
+                observed = await _forecast_outcome_from_closed_m1(prediction["symbol"], prediction)
                 if not observed:
                     continue
                 outcome = evaluate_forecast(prediction, evaluated_at=time.time(), **observed)
@@ -935,6 +954,16 @@ async def _chat_auto_trade_open(cue: dict) -> dict:
 async def chat_prediction_auto_trade_loop():
     """Yüksek güvenli chat tahmin adaylarını (15 sn'de bir) paper pozisyona çevirir."""
     await asyncio.sleep(90)
+    # Kalıcı kuyruğu geri yükle: _enqueue_chat_auto_trades DB'ye yazıyor ama
+    # restart'ta buradan okunmalıydı — aksi halde bekleyen adaylar kayboluyordu.
+    try:
+        raw = await database.get_llm_setting("chat_auto_trade_queue", "[]")
+        if raw:
+            loaded = json.loads(raw) if isinstance(raw, str) else raw
+            restored = [cue for cue in loaded if isinstance(cue, dict) and cue.get("symbol")]
+            _chat_auto_trade_state["queue"] = restored[-20:]
+    except Exception as exc:
+        logger.warning("chat auto trade kuyruğu yüklenemedi: %s", exc)
     while True:
         try:
             enabled = config.CHAT_PREDICTION_AUTO_TRADE_ENABLED and \
@@ -1217,10 +1246,10 @@ async def _detect_upside_candidates(horizon_minutes: int, args: dict | None = No
         sem = asyncio.Semaphore(4)
         async def _pattern_gate(candidate):
             async with sem:
-                # 5m/15m snapshot 55+ kapanmış mum istiyor; 120×1m sadece 24 mum
-                # ürettiğinden 500 barla çağırıyoruz (1m resample yeterli).
+                # 5m/15m snapshot 55+ kapanmış mum istiyor; 1m resample ile
+                # yeterli derinlik için 1000 barla çağırıyoruz (~16s: 200×5m / 66×15m).
                 try:
-                    rows = await fetch_klines(candidate["symbol"], "1m", 500)
+                    rows = await fetch_klines(candidate["symbol"], "1m", 1000)
                 except Exception:
                     candidate["pattern_evaluation"] = {"confidence_tier": "watch", "matches": [], "error": "kline_unavailable"}
                     return

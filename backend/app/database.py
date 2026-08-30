@@ -1158,15 +1158,15 @@ async def get_pending_llm_forecasts(now=None, limit=200):
 
 async def mark_llm_forecast_evaluated(forecast_id, outcome):
     def op(conn):
-        conn.execute("""UPDATE llm_forecasts SET status='evaluated', evaluated_at=?, outcome_price=?,
+        cur = conn.execute("""UPDATE llm_forecasts SET status='evaluated', evaluated_at=?, outcome_price=?,
             outcome_return_pct=?, outcome_direction=?, direction_correct=?, max_favorable_pct=?,
             max_adverse_pct=?, outcome_details=? WHERE forecast_id=? AND status='pending'""",
             (float(outcome["evaluated_at"]), outcome.get("outcome_price"), outcome.get("outcome_return_pct"),
              outcome.get("outcome_direction"), bool(outcome.get("direction_correct")),
              outcome.get("max_favorable_pct"), outcome.get("max_adverse_pct"),
              _json_safe_dumps(outcome.get("details") or {}, ensure_ascii=False, default=str), forecast_id))
-        changed = conn.execute("SELECT 1").fetchone()[0]
-        conn.commit(); return bool(changed)
+        changed = cur.rowcount
+        conn.commit(); return changed > 0
     return await _run_db(op)
 
 
@@ -1300,15 +1300,15 @@ async def get_pending_chat_predictions(now=None, limit=100):
 
 async def mark_chat_prediction_evaluated(prediction_id, outcome):
     def op(conn):
-        conn.execute("""UPDATE chat_predictions SET status='evaluated', evaluated_at=?, outcome_price=?,
+        cur = conn.execute("""UPDATE chat_predictions SET status='evaluated', evaluated_at=?, outcome_price=?,
             outcome_return_pct=?, outcome_direction=?, direction_correct=?, max_favorable_pct=?,
             max_adverse_pct=?, outcome_details=? WHERE prediction_id=? AND status='pending'""",
             (float(outcome["evaluated_at"]), outcome.get("outcome_price"), outcome.get("outcome_return_pct"),
              outcome.get("outcome_direction"), bool(outcome.get("direction_correct")),
              outcome.get("max_favorable_pct"), outcome.get("max_adverse_pct"),
              _json_safe_dumps(outcome.get("details") or {}, ensure_ascii=False, default=str), prediction_id))
-        changed = conn.execute("SELECT 1").fetchone()[0]
-        conn.commit(); return bool(changed)
+        changed = cur.rowcount
+        conn.commit(); return changed > 0
     return await _run_db(op)
 
 
@@ -1323,12 +1323,12 @@ async def get_chat_predictions_needing_analysis(limit=6):
 
 async def mark_chat_prediction_analyzed(prediction_id, *, analysis, factors, model, analysis_status="done"):
     def op(conn):
-        conn.execute("""UPDATE chat_predictions SET analysis_status=?, analysis=?, analysis_factors=?, analysis_model=?, analysis_at=?
+        cur = conn.execute("""UPDATE chat_predictions SET analysis_status=?, analysis=?, analysis_factors=?, analysis_model=?, analysis_at=?
             WHERE prediction_id=? AND analysis_status='pending'""",
             (analysis_status, analysis, _json_safe_dumps(factors or {}, ensure_ascii=False, default=str),
              model, time.time(), prediction_id))
-        changed = conn.execute("SELECT 1").fetchone()[0]
-        conn.commit(); return bool(changed)
+        changed = cur.rowcount
+        conn.commit(); return changed > 0
     return await _run_db(op)
 
 
@@ -1476,12 +1476,12 @@ async def get_pending_velocity_candidates(now=None, limit=100):
 async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_target, details, force=False):
     def op(conn):
         where = "WHERE candidate_id=?" + ("" if force else " AND status='pending'")
-        conn.execute(f"""UPDATE velocity_candidates SET status='evaluated', evaluated_at=?, mfe_pct=?,
+        cur = conn.execute(f"""UPDATE velocity_candidates SET status='evaluated', evaluated_at=?, mfe_pct=?,
             touched_target=?, outcome_details=? {where}""",
             (time.time(), float(mfe_pct), bool(touched_target),
              _json_safe_dumps(details or {}, ensure_ascii=False, default=str), candidate_id))
-        changed = conn.execute("SELECT 1").fetchone()[0]
-        conn.commit(); return bool(changed)
+        changed = cur.rowcount
+        conn.commit(); return changed > 0
     return await _run_db(op)
 
 
