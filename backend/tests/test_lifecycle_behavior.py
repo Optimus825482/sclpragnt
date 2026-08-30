@@ -89,6 +89,7 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
     async def test_automatic_scan_records_entry_ineligible_before_strategy_evaluation(self):
         """A failed liquidity preflight is an audit result, never a signal."""
         from app import main
+        from app.routers import runtime as strategy_runtime
 
         class _Clock:
             def __init__(self):
@@ -123,18 +124,18 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
             if sleep_calls > 1:
                 raise asyncio.CancelledError()
 
-        with patch.object(main, "time", _Clock()), \
-             patch.object(main, "market", market), \
-             patch.object(main, "analyzer", analyzer), \
-             patch.object(main, "ws_manager", ws_manager), \
-             patch.object(main, "_record_strategy_scan_log", scan_log), \
-             patch.object(main, "migration_monitor", SimpleNamespace(state={"status": "idle"})), \
-             patch.object(main.asyncio, "sleep", new=stop_after_first_cycle), \
+        with patch.object(strategy_runtime, "time", _Clock()), \
+             patch.object(strategy_runtime, "market", market), \
+             patch.object(strategy_runtime, "analyzer", analyzer), \
+             patch.object(strategy_runtime, "ws_manager", ws_manager), \
+             patch.object(strategy_runtime, "_record_strategy_scan_log", scan_log), \
+             patch.object(strategy_runtime, "migration_monitor", SimpleNamespace(state={"status": "idle"})), \
+             patch.object(strategy_runtime.asyncio, "sleep", new=stop_after_first_cycle), \
              patch.object(main.config, "SYMBOLS", ["BTCTRY"]), \
              patch.object(main.config, "PASSIVE_SYMBOLS", set()), \
              patch.object(main.config, "STRATEGY_ENTRY_SCAN_INTERVAL_SEC", 60):
             with self.assertRaises(asyncio.CancelledError):
-                await main.strategy_loop()
+                await strategy_runtime.strategy_loop()
 
         analyzer.entry_liquidity_preflight.assert_awaited_once_with("BTCTRY", main.config.ACTIVE_STRATEGY)
         analyzer.evaluate.assert_awaited_once_with("BTCTRY", ticker, allow_entry=False)

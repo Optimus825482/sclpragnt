@@ -10,9 +10,17 @@ from unittest.mock import AsyncMock, patch
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
+def _backend_sources():
+    """Combined source of main + extracted router modules (post-split layout)."""
+    app_dir = ROOT / "app"
+    files = [app_dir / "main.py", app_dir / "api_common.py", app_dir / "state.py"]
+    files += sorted((app_dir / "routers").glob("*.py"))
+    return "\n".join(p.read_text(encoding="utf-8") for p in files)
+
+
 class RegressionContracts(unittest.TestCase):
     def test_open_position_payloads_are_sorted_newest_first(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = _backend_sources()
 
         self.assertIn('"entry_time": pos.get("entry_time")', source)
         self.assertEqual(
@@ -41,7 +49,7 @@ class RegressionContracts(unittest.TestCase):
         )
 
     def test_strategy_chat_has_live_analysis_and_price_sse_contract(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = _backend_sources()
         self.assertIn('"live_analysis_contract"', source)
         self.assertIn("event: price", source)
         self.assertIn("watch_completed", source)
@@ -49,7 +57,7 @@ class RegressionContracts(unittest.TestCase):
 
     def test_market_analysis_avoids_repetitive_disclaimer_language(self):
         llm_source = (ROOT / "app" / "llm_analysis.py").read_text()
-        main_source = (ROOT / "app" / "main.py").read_text()
+        main_source = _backend_sources()
         self.assertIn("tekrarlayan sorumluluk uyarıları ekleme", llm_source)
         self.assertIn("kullanıcı istemedikçe sorumluluk veya garanti uyarısı yazma", main_source)
         self.assertNotIn("Bu kısa akış tek başına al/sat kararı değildir", main_source)
@@ -281,7 +289,7 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("requires_fresh_setup", source)
 
     def test_llm_entry_has_overextension_and_microstructure_gate(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = _backend_sources()
         self.assertIn("_llm_entry_quality_gate", source)
         self.assertIn("overbought_rsi", source)
         self.assertIn("negative_orderflow", source)
@@ -340,7 +348,7 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('"policy_version": "scalper-trade-manager-v2"', source)
 
     def test_llm_close_does_not_schedule_immediate_replenishment(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = _backend_sources()
         self.assertGreaterEqual(source.count('if str(sig.get("strategy", "")).upper() != "LLM_PAPER":'), 2)
         self.assertIn('llm_guard = await database.get_llm_symbol_guard(symbol)', source)
         self.assertIn('guard_reason = _llm_guard_block_reason(llm_guard)', source)
@@ -355,7 +363,7 @@ class RegressionContracts(unittest.TestCase):
 
     def test_alert_can_trigger_gated_paper_entry(self):
         source = (ROOT / "app" / "alerting.py").read_text()
-        main_source = (ROOT / "app" / "main.py").read_text()
+        main_source = _backend_sources()
         self.assertIn('on_paper_trigger=None', source)
         self.assertIn('"auto_paper_trade" in channels', source)
         self.assertIn('on_paper_trigger=auto_open_from_alert', main_source)
@@ -418,7 +426,7 @@ class RegressionContracts(unittest.TestCase):
         self.assertNotIn("DATABASE_URL:-postgresql://", source)
 
     def test_dynamic_top_gainer_monitor_and_symbol_activity_are_scheduled(self):
-        source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+        source = _backend_sources()
         config_source = (ROOT / "app" / "config.py").read_text(encoding="utf-8")
         self.assertIn('async def refresh_top_gainer_symbols()', source)
         self.assertIn('async def refresh_symbol_activity()', source)
@@ -465,15 +473,16 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('"symbol_activity:passive"', opening_source)
 
     def test_symbol_activity_does_not_overwrite_configured_scan_symbols(self):
-        tree = ast.parse((ROOT / "app" / "main.py").read_text())
+        combined = _backend_sources()
+        tree = ast.parse(combined)
         refresh = next(node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "refresh_symbol_activity")
-        refresh_source = ast.get_source_segment((ROOT / "app" / "main.py").read_text(), refresh)
+        refresh_source = ast.get_source_segment(combined, refresh)
         self.assertIsNotNone(refresh_source)
         self.assertNotIn("config.SYMBOLS = universe", refresh_source)
         self.assertIn("configured paper-trading scan universe", refresh_source)
 
     def test_scan_logs_have_one_auditable_scan_id_path_for_each_symbol(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = _backend_sources()
         self.assertIn('scan_id = f"automatic-{int(time.time() * 1000)}"', source)
         self.assertIn('scan_id = f"manual-{uuid.uuid4().hex[:12]}"', source)
         self.assertIn('"MIGRATION_BLOCKED"', source)
@@ -490,9 +499,9 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('activity_status=activity_status', manual_source)
 
     def test_strategy_replay_uses_configured_symbols_and_public_history_fallback(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = (ROOT / "app" / "routers" / "maintenance.py").read_text()
         start = source.index('async def _run_strategy_replay(')
-        end = source.index('\n@app.post("/api/strategy/manual-scan")', start)
+        end = len(source)
         replay_source = source[start:end]
         self.assertIn('symbols = [s.upper() for s in config.SYMBOLS]', replay_source)
         self.assertNotIn('config.SYMBOLS if s not in config.PASSIVE_SYMBOLS', replay_source)
@@ -562,7 +571,7 @@ class StrategyReplayBehavior(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(raised.exception.status_code, 422)
 
     def test_llm_market_scan_uses_fast_hot_cache_defaults(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = _backend_sources()
         config_source = (ROOT / "app" / "config.py").read_text()
         self.assertIn('["5m", "15m", "1h"]', source)
         self.assertIn('LLM_MARKET_SCAN_CACHE_SEC', config_source)
@@ -570,13 +579,13 @@ class StrategyReplayBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"fresh"', source)
 
     def test_main_has_one_reconcile_function(self):
-        tree = ast.parse((ROOT / "app" / "main.py").read_text())
+        tree = ast.parse(_backend_sources())
         names = [node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
         self.assertEqual(names.count("reconcile_portfolio"), 1)
         self.assertEqual(names.count("reconcile_portfolio_state"), 1)
 
     def test_radar_has_interval_and_lock(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = _backend_sources()
         self.assertIn("async with _radar_lock", source)
         self.assertIn("await asyncio.sleep(config.GAINER_RADAR_INTERVAL_SEC)", source)
 
@@ -594,12 +603,12 @@ class StrategyReplayBehavior(unittest.IsolatedAsyncioTestCase):
 
     def test_live_strategy_reads_ram_market_klines_not_historical_database(self):
         source = (ROOT / "app" / "analyzer.py").read_text()
-        main_source = (ROOT / "app" / "main.py").read_text()
+        combined = _backend_sources()
         # Live evaluation receives the in-memory MarketData cache. Historical
         # PostgreSQL reads belong to replay/backtest paths only.
         self.assertGreaterEqual(source.count("self.market.get_ut_kline(symbol, tf)"), 1)
-        self.assertIn("trigger=5m_candle_close", main_source)
-        self.assertIn("await database.get_market_candles(symbol, \"5m\")", main_source)
+        self.assertIn("trigger=5m_candle_close", _backend_sources())
+        self.assertIn("await database.get_market_candles(symbol, \"5m\")", _backend_sources())
 
     def test_get_trades_contract_supports_filter_and_offset(self):
         from app import database
