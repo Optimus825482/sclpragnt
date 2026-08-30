@@ -83,7 +83,17 @@ export default function Home() {
   const [scanBusy, setScanBusy] = useState(false);
   const [scanResult, setScanResult] = useState<any>(null);
   const [velocityStatus, setVelocityStatus] = useState<any>(null);
+  // AÇIK POZİSYONLAR tablosu güvenilir kaynak: REST /api/positions
+  // (WS portfolio mesajı koparsa panel boş kalmasın diye REST'ten beslenir)
+  const [restPositions, setRestPositions] = useState<Position[]>([]);
   const liveStatus = useLiveStatus();
+
+  const loadRestPositions = useCallback(() => {
+    apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => { setRestPositions(d.positions || []); })
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
