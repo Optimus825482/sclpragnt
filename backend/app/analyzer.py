@@ -1931,6 +1931,11 @@ class ScalpAnalyzer:
             await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
         except Exception as exc:
             error_text = str(exc).lower()
+            # Her DB hatasında bellek pozisyonunu GERİ AL: aksi halde zumbi
+            # pozisyon bellek↔DB tutarsızlığı yaratır, /api/positions 500 verir
+            # ve rapor sayfasında "AÇIK" görünen ama DB'de olmayan hayalet
+            # sinyaller oluşur.
+            self.positions.pop(symbol, None)
             if any(token in error_text for token in ("duplicate key", "unique constraint", "max_open_positions_reached", "insufficient_paper_balance")):
                 self.positions = await database.load_positions()
                 reason = "max_open_positions_reached" if "max_open_positions" in error_text else "insufficient_paper_balance" if "insufficient" in error_text else "position_already_open"
