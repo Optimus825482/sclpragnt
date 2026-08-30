@@ -82,7 +82,21 @@ export default function Home() {
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
   const [scanResult, setScanResult] = useState<any>(null);
+  const [velocityStatus, setVelocityStatus] = useState<any>(null);
   const liveStatus = useLiveStatus();
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      apiRequest(`${API_BASE}/api/velocity/status`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+        .then((d) => { if (!cancelled) setVelocityStatus(d); })
+        .catch(() => undefined);
+    };
+    tick();
+    const timer = window.setInterval(tick, 10000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
 
   const runManualVelocityScan = async () => {
     if (scanBusy) return;
@@ -186,6 +200,16 @@ export default function Home() {
         </div>
       </header>
       {msg && <div className="rounded-lg border px-3 py-2 text-xs font-mono border-neon-green/30 text-bunker-muted">{msg}</div>}
+      {velocityStatus && (
+        <div className="rounded-lg border border-bunker-700 bg-bunker-900/60 px-3 py-2 text-[11px] font-mono text-bunker-muted flex flex-wrap gap-x-4 gap-y-1">
+          <span>⏱ Son otonom tarama: <b className={velocityStatus.last_scan_at ? (Math.floor(Date.now()/1000) - (velocityStatus.last_scan_at ?? 0) < 360 ? "text-neon-green" : "text-yellow-300") : "text-bunker-muted"}>{velocityStatus.last_scan_at ? new Date((velocityStatus.last_scan_at ?? 0)*1000).toLocaleTimeString("tr-TR") : "—"}</b></span>
+          <span>📊 Son M5 kapanış: <b>{velocityStatus.last_m5_close_ms ? new Date((velocityStatus.last_m5_close_ms ?? 0)).toLocaleTimeString("tr-TR") : "—"}</b></span>
+          <span>🎯 Havuz: <b>{velocityStatus.pool_size}</b> sembol</span>
+          <span>🧩 Desen filtresi: <b className={velocityStatus.pattern_filter_enabled ? "text-neon-green" : "text-yellow-300"}>{velocityStatus.pattern_filter_enabled ? "AÇIK" : "KAPALI"}</b></span>
+          <span>🛑 Stop: <b>%{velocityStatus.sl_pct}</b></span>
+          <span>🟢 Otonom: <b className={velocityStatus.auto_enabled ? "text-neon-green" : "text-bunker-muted"}>{velocityStatus.auto_enabled ? "AÇIK" : "KAPALI"}</b></span>
+        </div>
+      )}
 
       {scanResult && (
         <div className="card space-y-3 border-sky-400/30 bg-sky-400/5">
