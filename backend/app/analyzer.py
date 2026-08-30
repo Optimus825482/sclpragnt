@@ -597,56 +597,35 @@ class ScalpAnalyzer:
             else:
                 fallback_stop_pct = config.HARD_STOP_LOSS_PCT
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
-            # Chat Prediction (velocity auto-trade) koruma merdiveni:
-            # 1) Break-even: fiyat break-even eşiğine (maliyet + çift
-            #    komisyon + min net kâr) ulaştıysa stop girişin üstüne
-            #    çekilir, kar kilitlenir.
-            # 2) +%1'e ulaşınca ATR trailing: stop = max_fiyat - 2×ATR,
-            #    maksimum kârı koşturur.
-            # 3) Plan sert stop: açılıştan itibaren plan SL%'si altı.
-            if (pos.get("strategy") == "CHAT_PREDICTION"
-                    and not pos.get("velocity_protection_armed")):
-                mfe_price = float(pos.get("max_price") or entry)
-                be_stop = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
-                # ÖNEMLİ: Stop ancak fiyat break-even mesafesine ulaştıktan SONRA
-                # girişin üstüne çekilir. Aksi halde stop, girişin üzerinde kalır
-                # ve pozisyon açılır açılmaz system_stop_loss ile kapanır.
-                if mfe_price >= be_stop:
+            # Chat Prediction (velocity auto-trade) kâr koruma merdiveni:
+            # 1) +%1 kâr görülünce stop, maliyet + %0,01 sabit kâr + çift
+            #    komisyon payına çekilir → pozisyon artık zarara dönemez.
+            # 2) Aynı andan itibaren dinamik trailing: stop = tepe_fiyat ×
+            #    (1 - %0.5); tepe yükseldikçe stop da yükselir, asla inmez.
+            # 3) Sert stop: açılıştan itibaren plan SL%'si altı.
+            # Eski merdiven (BE arm'dan sonra ATR trailing) 6h replay'de
+            # BE floor'un TP'li işlemleri +0,50 TL'de kestiğini gösterdi;
+            # kullanıcı kontratı: kâr kilidi +%1'de, trailing %0,5 dinamik.
+            if pos.get("strategy") == "CHAT_PREDICTION" and not pos.get("velocity_protection_armed"):
+                lock_trigger = entry * (1 + config.VELOCITY_TRAIL_TRIGGER_PCT / 100.0)
+                if float(pos.get("max_price") or entry) >= lock_trigger:
                     pos["velocity_protection_armed"] = True
-                    pos["system_stop_price"] = max(system_stop, be_stop)
+                    qty_value = float(pos.get("quantity", 0) or 0) * entry
+                    # Kâr kilidi: giriş + %0,01 sabit kâr + geri alınmamış
+                    # giriş komisyonu payı → kapanışta kesin pozitif net.
+                    lock_stop = entry * (1 + config.VELOCITY_PROFIT_LOCK_PCT / 100.0) \
+                        + qty_value * config.COMMISSION_PCT / max(float(pos.get("quantity") or 1), 1e-9)
+                    pos["system_stop_price"] = max(system_stop, lock_stop)
                     system_stop = pos["system_stop_price"]
-            if (pos.get("strategy") == "CHAT_PREDICTION"
-                    and not pos.get("velocity_trailing_armed")):
-                # Trailing yalnızca +%1 kâr görüldükten sonra devreye girer;
-                # bu, pozisyonun en azından küçük bir avantaj kazanmasını şart
-                # koşar. Aksi halde fiyat girişin etrafında salınırken trailing
-                # stop anında kapanışa neden olur.
-                trigger = entry * (1 + config.VELOCITY_TRAIL_TRIGGER_PCT / 100.0)
-                if float(pos.get("max_price") or entry) >= trigger:
-                    pos["velocity_trailing_armed"] = True
-            if pos.get("strategy") == "CHAT_PREDICTION" and pos.get("velocity_trailing_armed"):
-                # ATR değeri: entry_context içinde FİYAT cinsinden (atr_1m) veya
-                # yüzde cinsinden (atr_pct, örn. 0.8 = %0.8) saklanabilir.
-                # Yüzdeyi fiyat birimine çevir, yanlış birimle çarpıp trailing
-                # stop'u aşırı aşağı çekmeyi engelle.
-                ectx = pos.get("entry_context") or {}
-                atr_price = None
-                if ectx.get("atr_1m"):
-                    atr_price = float(ectx["atr_1m"])
-                elif ectx.get("atr_pct"):
-                    raw = float(ectx["atr_pct"])
-                    if raw > 1:
-                        raw = raw / 100.0
-                    atr_price = raw * entry
-                if atr_price is not None and atr_price > 0:
-                    trailing = float(pos.get("max_price") or entry) - 2.0 * atr_price
-                    # Trailing asla girişin altına inmez (zarara dönmez) ve
-                    # girişin üstüne taşmaz (fiyat geri çekilirse erken
-                    # kapanışa yol açmaz). Trailing yalnızca tepeyi takip eder.
-                    trailing = max(trailing, entry)
-                    if trailing > system_stop:
-                        pos["system_stop_price"] = trailing
-                        system_stop = trailing
+            if pos.get("strategy") == "CHAT_PREDICTION" and pos.get("velocity_protection_armed"):
+                # Dinamik trailing: kâr kilidi devredeyken tepe fiyatın %0,5
+                # altını takip eder. Yalnızca yukarı taşınır; kâr kilidi
+                # seviyesinin altına inmez.
+                trail_gap = config.VELOCITY_TRAIL_GAP_PCT / 100.0
+                trailing = float(pos.get("max_price") or entry) * (1 - trail_gap)
+                if trailing > system_stop:
+                    pos["system_stop_price"] = trailing
+                    system_stop = trailing
             # Pump Monitor break-even: once the trade has proven itself with a
             # >= trigger MFE move, the stop moves to entry so a proven winner
             # can never round-trip into a full loss (56 historical trades lost
