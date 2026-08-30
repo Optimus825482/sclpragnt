@@ -21,8 +21,28 @@ analyzer.py (her 2 sn, tüm coinler)
 analyzer.py + database.py ──► sanal cüzdan güncelle (USDT düş, coin ekle)
         │
         ▼
-main.py ──► WebSocket /ws üzerinden frontend'e yayınla
+main.py (app kurulumu + lifecycle + WS) ──► WebSocket /ws üzerinden frontend'e yayınla
 ```
+
+### Modüler API yapısı
+
+Eski 7.000+ satırlık `app/main.py` monoliti FastAPI `APIRouter` modüllerine bölünmüştür:
+
+| Modül | Sorumluluk |
+|---|---|
+| `app/main.py` | FastAPI kurulumu, CORS, startup/lifecycle, WS endpoint, pozisyon aç/kapa, config |
+| `app/state.py` | Paylaşılan `market` + `analyzer` singleton'ları |
+| `app/api_common.py` | Ortak runtime yardımcıları (scan log, correlation monitor, guard) |
+| `app/routers/runtime.py` | Yayın, alert, strateji tarama, radar, sembol aktivite döngüleri |
+| `app/routers/llm_chat.py` | LLM sohbet, market tarama, chat auto-trade |
+| `app/routers/velocity.py` | Hız Avcısı (velocity) aday takibi ve otonom paper girişler |
+| `app/routers/maintenance.py` | Backfill, replay-parity, strateji replay işleri |
+| `app/routers/a2a.py` | Agent-to-agent mesajlaşma döngüleri ve rotaları |
+| `app/routers/system.py` | Sağlık, memory, migration sistem rotaları |
+| `app/routers/reports.py` | Salt-okunur rapor endpoint'leri |
+| `app/routers/backtest.py` | Backtest çalıştırma/robustness rotaları |
+
+Frontend'de `frontend/app/charts/` altında grafik mantığı `chartShared.ts` (format/yerleşim sabitleri) ve `signals.ts` (gösterge/strateji sinyal matematiği) olarak ayrılmıştır.
 
 ## Pozisyon Yönetimi (Aktif Stratejiye Göre)
 

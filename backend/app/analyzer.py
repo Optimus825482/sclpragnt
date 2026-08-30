@@ -471,61 +471,6 @@ class ScalpAnalyzer:
         if is_squeeze and is_volume_spike and price < bb["lower"]: return "sell"
         return None
 
-    def strategy_ema_pullback(self, kline):
-        closes = kline.get("closes", [])
-        if len(closes) < config.EMA_TREND + 5: return None
-        price = closes[-1]
-        ema9 = self.calculate_ema(closes, config.EMA_SHORT)
-        ema21 = self.calculate_ema(closes, config.EMA_MID)
-        ema50 = self.calculate_ema(closes, config.EMA_TREND)
-        rsi = self.calculate_rsi(closes, config.RSI_PERIOD)
-        if ema9 is None or ema21 is None or ema50 is None or rsi is None: return None
-
-        is_uptrend = ema9 > ema21 > ema50
-        pulled_back = closes[-2] <= ema21 and price > ema21
-        rsi_cooled = 40 <= rsi <= 55
-        if is_uptrend and pulled_back and rsi_cooled: return "buy"
-
-        if ema9 < ema21: return "sell"
-        return None
-
-    def strategy_vwap_macd(self, kline):
-        closes = kline.get("closes", [])
-        highs = kline.get("highs", [])
-        lows = kline.get("lows", [])
-        volumes = kline.get("volumes", [])
-        if len(closes) < config.VWAP_PERIOD + config.MACD_SLOW: return None
-        price = closes[-1]
-        typical_prices = (np.array(highs[-config.VWAP_PERIOD:]) + np.array(lows[-config.VWAP_PERIOD:]) + np.array(closes[-config.VWAP_PERIOD:])) / 3
-        vols = np.array(volumes[-config.VWAP_PERIOD:])
-        vwap = float(np.sum(typical_prices * vols) / np.sum(vols))
-        macd, signal, hist = self.calculate_macd(closes, config.MACD_FAST, config.MACD_SLOW, config.MACD_SIGNAL)
-        if macd is None or signal is None or hist is None: return None
-
-        if price > vwap and hist > 0 and macd > signal: return "buy"
-        if hist < 0 and macd < signal: return "sell"
-        return None
-
-    # --- STRATEJİ 4: CMO + CRSI DERİN DİP TOPLAMA ---
-    def strategy_cmo_crsi(self, kline):
-        closes = kline.get("closes", [])
-        if len(closes) < 70: return None
-
-        cmo = self.calculate_cmo(closes, period=9)
-        crsi = self.calculate_crsi(closes, rsi_period=3, streak_period=2, rank_period=100)
-
-        if cmo is None or crsi is None: return None
-
-        # CMO -63 ve CRSI 30 ise = LONG (AL)
-        if cmo <= -63 and crsi <= 30:
-            return "buy"
-
-        # Çıkış Sinyali: CMO +63 üstü (aşırı alım)
-        if cmo >= 63:
-            return "sell"
-
-        return None
-
     # --- POZİSYON TAKİBİ (açık pozisyon varsa stratejiye göre) ---
     def _strategy_tf(self, strat_name):
         """Stratejinin takip ettiği timeframe."""
@@ -872,14 +817,6 @@ class ScalpAnalyzer:
         touched_ema = any(low <= e21 * 1.002 for low in recent_lows)
         bullish_reclaim = closes[-1] > closes[-2] and closes[-1] > e21
         if e9 > e21 > e50 and adx_ok and closes[-1] > vwap and touched_ema and bullish_reclaim and flow_ok and volume_ok and mtf_ok: return "buy"
-        return None
-
-    def strategy_breakout(self, kline, symbol=None):
-        closes, volumes = kline.get("closes", []), kline.get("volumes", [])
-        if len(closes) < 25: return None
-        high = max(closes[-21:-1]); avg_vol = float(np.mean(volumes[-21:-1]))
-        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
-        if closes[-1] > high and volumes[-1] > avg_vol * 1.5 and flow_ok: return "buy"
         return None
 
     def strategy_orderflow(self, kline, symbol=None):

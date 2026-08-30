@@ -57,9 +57,11 @@ class SecurityBehavior(unittest.TestCase):
             self.assertEqual(security.validate_provider_url("http://127.0.0.1:8080/v1"), "http://127.0.0.1:8080/v1")
 
     def test_a2a_route_requires_configured_secret(self):
-        source = (Path(__file__).resolve().parent.parent / "app" / "main.py").read_text(encoding="utf-8")
-        self.assertIn('if not secret:\n        raise HTTPException(status_code=503', source)
-        self.assertIn('and os.getenv("A2A_SHARED_SECRET", "").strip()', source)
+        app_dir = Path(__file__).resolve().parent.parent / "app"
+        route_source = (app_dir / "routers" / "a2a.py").read_text(encoding="utf-8")
+        main_source = (app_dir / "main.py").read_text(encoding="utf-8")
+        self.assertIn('if not secret:\n        raise HTTPException(status_code=503', route_source)
+        self.assertIn('and os.getenv("A2A_SHARED_SECRET", "").strip()', main_source)
 
 
 class A2AReplayBehavior(unittest.IsolatedAsyncioTestCase):
