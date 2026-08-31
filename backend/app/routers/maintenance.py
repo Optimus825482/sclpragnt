@@ -129,6 +129,54 @@ async def backfill_symbol_history(symbol: str, days: int = 7):
         _symbol_history_backfills.discard(symbol)
 
 
+async def history_candle_loop(interval_minutes: int = 5):
+    """Canlı 5m mum kalıcılığı: her 5 dakikada son kapanan barları upsert eder.
+
+    historical_candles'a yalnızca tek seferlik backfill'ler yazıyordu; deploy
+    aralarında tablo bayatlıyor ve ML eğitimi 'boş' pencereye düşüyordu.
+    Evren: config.SYMBOLS + veritabanında zaten bulunan semboller (hız avcısı
+    backfill'leriyle büyüyen evren). Kapanmamış bar yazılmaz.
+    """
+    semaphore = asyncio.Semaphore(8)
+    await asyncio.sleep(120)  # startup backfill'i bitmeden çakışmasın
+    while True:
+        try:
+            universe = list(dict.fromkeys(
+                [s.upper() for s in config.SYMBOLS] + await database.get_market_symbols("5m")))
+            now_ms = int(time.time() * 1000)
+            written_total = 0
+            async def persist(symbol: str) -> int:
+                try:
+                    raw = await fetch_klines(symbol, "5m", limit=3)
+                    rows = []
+                    for item in raw or []:
+                        if len(item) < 6:
+                            continue
+                        open_time = int(item[0])
+                        close_time = int(item[6]) if len(item) > 6 else open_time
+                        if close_time > now_ms:  # henüz kapanmamış bar
+                            continue
+                        rows.append({"symbol": symbol, "timeframe": "5m", "open_time": open_time,
+                                     "close_time": close_time, "open": float(item[1]), "high": float(item[2]),
+                                     "low": float(item[3]), "close": float(item[4]), "volume": float(item[5]),
+                                     "quote_volume": float(item[7]) if len(item) > 7 else None,
+                                     "trade_count": int(item[8]) if len(item) > 8 else None,
+                                     "source": "binance_tr_public_live", "fetched_at": now_ms})
+                    return await database.upsert_market_candles(rows)
+                except Exception:
+                    return 0
+            async def worker(symbol: str):
+                nonlocal written_total
+                async with semaphore:
+                    written_total += await persist(symbol)
+            await asyncio.gather(*(worker(sym) for sym in universe))
+            if written_total:
+                print(f"[History] canlı mum kalıcılığı | symbols={len(universe)} rows={written_total}", flush=True)
+        except Exception as exc:
+            print(f"[History] canlı mum döngüsü hatası: {exc}", flush=True)
+        await asyncio.sleep(interval_minutes * 60)
+
+
 async def microstructure_snapshot_loop():
     """Sample live bid/ask and depth only for symbols with open positions.
 
@@ -397,12 +445,18 @@ async def download_replay_parity_trade_csv():
 
 
 async def backfill_missing_active_history():
-    """At startup, queue only active symbols whose persisted 5m history is missing."""
+    """At startup, queue active symbols whose persisted 5m history is missing or stale."""
     semaphore = asyncio.Semaphore(8)
+    now_ms = int(time.time() * 1000)
+    stale_ms = 30 * 60 * 1000
     async def inspect(symbol):
         try:
             rows = await database.get_market_candles(symbol, "5m")
-            if len(rows) < 2016:  # seven days of 5m candles, with a small tolerance
+            newest = max((int(r.get("open_time") or 0) for r in rows), default=0)
+            # Satır sayısı tek başına yetmez: yazıcı döngüsü olmadan sayı sabit
+            # kalır ve eski tarihli 2016+ satır "taze" sanılır. Mumlar 30 dakikadan
+            # eskiyse de backfill çalışsın.
+            if len(rows) < 2016 or newest < now_ms - stale_ms:
                 async with semaphore:
                     await backfill_symbol_history(symbol, 7)
         except Exception as exc:

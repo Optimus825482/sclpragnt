@@ -73,7 +73,7 @@ from app.routers import a2a as a2a_routes, backtest as backtest_routes, llm_chat
 from app.routers import maintenance as maintenance_routes, reports as reports_routes
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
 from app.routers.maintenance import (  # noqa: F401
-    backfill_symbol_history, backfill_missing_active_history, _run_strategy_replay,
+    backfill_symbol_history, backfill_missing_active_history, history_candle_loop, _run_strategy_replay,
     _strategy_replay_jobs, microstructure_snapshot_loop)
 from app.routers.a2a import a2a_inbox_loop, a2a_outbox_loop  # noqa: F401
 from app.routers.llm_chat import (  # noqa: F401
@@ -344,6 +344,7 @@ async def startup_services():
     await market.fetch_historical_data(priority_timeframes)
     print(f"[MarketData] öncelikli strateji verisi hazır | timeframes={priority_timeframes} tickers={len(market.tickers)}", flush=True)
     _start_background(backfill_missing_active_history(), "historical-backfill-active")
+    _start_background(history_candle_loop(), "history-candle-loop")
     _start_background(market.connect(skip_history=True), "market-connect")
     _start_background(microstructure_snapshot_loop(), "microstructure-snapshot")
     _start_background(strategy_loop(), "strategy-loop")
