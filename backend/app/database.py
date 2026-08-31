@@ -1189,6 +1189,8 @@ async def get_llm_forecasts(symbol=None, status=None, limit=100, source=None):
             clauses.append("status=?"); values.append(status)
         if source == "chat":
             clauses.append("prompt_version LIKE ?"); values.append("upside-candidate-%")
+        elif source == "upside_scout":
+            clauses.append("prompt_version LIKE ?"); values.append("upside-scout-%")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         values.append(max(1, min(int(limit), 500)))
         rows = conn.execute(f"SELECT * FROM llm_forecasts{where} ORDER BY created_at DESC LIMIT ?", values).fetchall()
@@ -1199,13 +1201,22 @@ async def get_llm_forecasts(symbol=None, status=None, limit=100, source=None):
 async def get_llm_forecast_report(source=None):
     """Aggregate only journaled forecast outcomes; no trading side effects."""
     def op(conn):
-        source_clause = " AND prompt_version LIKE ?" if source == "chat" else ""
-        params = ("upside-candidate-%",) if source == "chat" else ()
+        if source == "chat":
+            source_clause = " AND prompt_version LIKE ?"
+            params = ("upside-candidate-%",)
+        elif source == "upside_scout":
+            source_clause = " AND prompt_version LIKE ?"
+            params = ("upside-scout-%",)
+        else:
+            source_clause = ""
+            params = ()
         rows = conn.execute(f"""SELECT horizon_minutes,
             COUNT(*) AS total_count,
             SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
             SUM(CASE WHEN status='evaluated' THEN 1 ELSE 0 END) AS evaluated_count,
             SUM(CASE WHEN status='evaluated' AND direction_correct THEN 1 ELSE 0 END) AS correct_count,
+            SUM(CASE WHEN status='evaluated' AND direction='up' AND max_favorable_pct IS NOT NULL
+                     AND max_favorable_pct >= min_move_pct THEN 1 ELSE 0 END) AS target_hit_count,
             AVG(CASE WHEN status='evaluated' THEN confidence END) AS average_confidence,
             AVG(CASE WHEN status='evaluated' THEN ABS((confidence / 100.0) - CASE WHEN direction_correct THEN 1.0 ELSE 0.0 END) END) AS calibration_error,
             AVG(CASE WHEN status='evaluated' THEN outcome_return_pct END) AS average_return_pct
