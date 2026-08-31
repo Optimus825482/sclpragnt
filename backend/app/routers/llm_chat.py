@@ -26,6 +26,8 @@ from app.market_intelligence import (estimate_local_regime, execution_quality, s
                                      symbol_behavior_profile, regime_transition_signal)
 from app.microflow import microflow
 from app.self_learning import build_learning_context
+from app.routers.velocity import (detect_velocity_candidates, _velocity_journal_quality,
+                                  _journal_touch_rates, _quality_multiplier, _rank_score)
 from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app.circuit_breaker import breaker as strategy_breaker
@@ -585,6 +587,110 @@ async def symbol_analysis_llm_commentary(symbol: str, payload: dict = None):
             "commentary": parsed["summary"], "forecasts": [{key: row.get(key) for key in
                 ("forecast_id", "horizon_minutes", "direction", "confidence", "invalidation_price", "scenario", "counter_scenario")}
                 for row in forecasts], "forecast_group_id": group_id, "model": result.get("model"), "paper_only": True}
+
+
+@router.post("/api/llm/upside-scout")
+async def llm_upside_scout(payload: dict = None):
+    """En hızlı yükseliş potansiyelli sembolü öğrenilen tüm katmanlarla seçip LLM'e analiz ettirir.
+
+    Seçim deterministik: 5dk/15dk hız taramaları birleştirilir, journal dokunuş
+    oranlarından kalite çarpanlı sıra skoru hesaplanır (sembol kalitesi öğrenimi),
+    açık pozisyonlu semboller elenir. LLM'e çoklu timeframe snapshot + journal
+    kalite istatistiği + chat tahmin dersleri + forecast dersleri + hafıza verilir.
+    Salt-okunur; pozisyon açmaz.
+    """
+    # 1) Deterministik aday seçimi: her iki hız profili, kalite çarpanlı sıralama.
+    scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
+    scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
+    open_symbols = {str(s or "").upper() for s in (analyzer.positions or {})}
+    pool = [c for c in (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
+            + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
+            if str(c.get("symbol") or "").upper() not in open_symbols]
+    if not pool:
+        return {"enabled": False, "status": "no_candidates",
+                "error": "Şu an yükseliş adayı bulunamadı; tarama havuzu boş."}
+    touch_rates = await _journal_touch_rates()
+    pool.sort(key=lambda c: -_rank_score(c, touch_rates))
+    best = pool[0]
+    symbol = str(best.get("symbol") or "").upper()
+
+    # 2) Öğrenilen bağlam: sembol journal kalitesi, chat tahmin dersleri,
+    #    forecast dersleri, hafıza ve işlem öğrenimi.
+    journal_quality = await _velocity_journal_quality(symbol)
+    try:
+        chat_insights = chat_prediction_learning.insight_summary(
+            await database.get_chat_prediction_insights(symbol=symbol, limit=4), limit=4)
+    except Exception:
+        chat_insights = []
+    try:
+        forecast_lessons = await database.get_llm_forecast_lessons(symbol=symbol, status="active", limit=6)
+    except Exception:
+        forecast_lessons = []
+    memory_context = await _chat_memory_context(
+        f"{symbol} hızlı yükseliş, momentum, pump sonrası davranış", symbol=symbol, limit=6)
+    trade_learning = build_learning_context(await database.get_trades(), limit=200)
+
+    # 3) Çoklu timeframe taze teknik snapshot.
+    snapshot = await symbol_llm_context(symbol, "5m")
+    if not snapshot.get("data_ready"):
+        return {"enabled": False, "status": "data_not_ready", "symbol": symbol,
+                "error": snapshot.get("error") or "Teknik snapshot hazır değil"}
+
+    rank_score = _rank_score(best, touch_rates)
+    touch_rate = touch_rates.get(symbol)
+    scout_context = {
+        "type": "upside_scout", "symbol": symbol, "paper_only": True,
+        "instruction": ("Bu sembol, hız avcısı taramalarında öğrenilen sembol kalitesi ve skor "
+                        "sıralamasına göre 'en hızlı yükseliş potansiyeli' olarak deterministik seçildi. "
+                        "Görevin: verilen tüm teknik ve öğrenilmiş kanıtı birleştirip kısa vadeli "
+                        "yükseliş senaryosunu değerlendirmek. Şunları üret: (1) seçilme gerekçesinin "
+                        "doğrulanması veya çürütülmesi, (2) giriş bölgesi + teyit şartı + invalidasyon "
+                        "seviyesi, (3) hedef bölge ve beklenen süre, (4) karşı senaryo ve riskler, "
+                        "(5) güven seviyesi. Öğrenilmiş bağlamdaki sembol davranış geçmişini (dokunuş "
+                        "oranı, MFE, dersler) kanıt olarak kullan; çelişki varsa açıkça belirt."),
+        "selection": {
+            "method": "velocity_5m+15m, journal kalite çarpanlı sıralama",
+            "rank_score": round(rank_score, 2),
+            "raw_velocity_score": round(float(best.get("velocity_score") or 0), 2),
+            "quality_multiplier": _quality_multiplier(touch_rate),
+            "journal_touch_rate": round(touch_rate, 3) if touch_rate is not None else None,
+            "min_score_gate": {"threshold": config.VELOCITY_AUTO_MIN_SCORE,
+                               "passes": float(best.get("velocity_score") or 0) >= config.VELOCITY_AUTO_MIN_SCORE},
+            "profile_5m": best if best in list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or []) else None,
+            "profile_15m": best if best in list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []) else None,
+            "runner_ups": [{"symbol": c.get("symbol"),
+                            "rank_score": round(_rank_score(c, touch_rates), 2)} for c in pool[1:4]],
+        },
+        "symbol_journal_quality": journal_quality,
+        "learned_prediction_insights": {"insights": chat_insights,
+                                        "note": "Ölçülmüş chat tahmin sonuçları; güven kalibrasyonu için."},
+        "forecast_lessons": forecast_lessons,
+        "memory_context": memory_context,
+        "trade_learning": trade_learning,
+        "llm_context": snapshot.get("llm_context"),
+        "data_policy": "Yalnızca sağlanan public veri ve öğrenilmiş kayıtlar kullanılır; eksik alan 'bilinmiyor' kalır.",
+    }
+    result = await llm_analysis.analyze(scout_context)
+    if not result.get("enabled") or result.get("status") != "ok":
+        return {"enabled": result.get("enabled", False), "status": result.get("status", "error"),
+                "symbol": symbol, "selection": scout_context["selection"],
+                "error": result.get("error") or "LLM yapılandırması yok"}
+
+    # 4) Analizi hafızaya yaz: sonraki scout/chat yanıtları bu analizleri hatırlasın.
+    try:
+        await embedding_worker.enqueue_persistent(build_document(
+            layer="session", scope="upside-scout", symbol=symbol, strategy="UPSIDE_SCOUT",
+            source_type="upside_scout", source_id=f"{symbol}:{int(time.time())}",
+            content=json.dumps({"selection": scout_context["selection"],
+                                "analysis": result.get("text", "")}, ensure_ascii=False, default=str),
+            metadata={"rank_score": scout_context["selection"]["rank_score"],
+                      "quality_multiplier": scout_context["selection"]["quality_multiplier"]}))
+    except Exception as exc:
+        logger.debug("upside-scout hafıza yazılamadı: %s", exc)
+
+    return {"enabled": True, "status": "ok", "symbol": symbol,
+            "selection": scout_context["selection"], "analysis": result.get("text", ""),
+            "model": result.get("model"), "generated_at": result.get("generated_at")}
 
 
 def _forecast_price_history(symbol: str, snapshots: dict) -> dict:
