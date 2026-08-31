@@ -543,6 +543,14 @@ class ScalpAnalyzer:
             else:
                 fallback_stop_pct = config.HARD_STOP_LOSS_PCT
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
+            # Otonom hız avcısı no-initial-stop modu: açılışta sert stop yok.
+            # entry_context'taki no_initial_stop bayrağıyla başlangıç stopu
+            # etkisiz kılınır (system_stop_price=None + burada -inf); +%1 kâr
+            # kilidi/trailing (velocity_protection_armed) aşağıdaki merdivende
+            # yine devreye girer ve stop'u yukarı taşır.
+            if pos.get("strategy") == "CHAT_PREDICTION" and \
+                    bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
+                system_stop = float("-inf")
             # Chat Prediction (velocity auto-trade) kâr koruma merdiveni:
             # 1) +%1 kâr görülünce stop, maliyet + %0,01 sabit kâr + çift
             #    komisyon payına çekilir → pozisyon artık zarara dönemez.
@@ -1732,8 +1740,15 @@ class ScalpAnalyzer:
             #   zararla kapanıyordu.
             # - Otonom hız avcısı: yalnızca stop gönderir; sabit TP yerine
             #   break-even + ATR trailing merdiveni koşar (TP/hold kapalı).
-            planned_stop_loss_pct = float(requested_stop_pct) if requested_stop_pct is not None \
-                else config.VELOCITY_AUTO_SL_PCT / 100.0
+            #   no_initial_stop bayrağı açıkken açılışta sert stop koyulmaz —
+            #   sinyal sonrası önce geri çekilme olur, stop erken kapatıp
+            #   yükselişi kaçırırdı. Kâr koruma merdiveni yine çalışır.
+            no_initial_stop = bool((entry_context_extra or {}).get("no_initial_stop"))
+            if no_initial_stop:
+                planned_stop_loss_pct = 0.0
+            else:
+                planned_stop_loss_pct = float(requested_stop_pct) if requested_stop_pct is not None \
+                    else config.VELOCITY_AUTO_SL_PCT / 100.0
             planned_take_profit_pct = float(requested_tp_pct) if requested_tp_pct is not None else None
             planned_max_hold_sec = int(requested_hold_sec) if requested_hold_sec is not None else None
         else:
@@ -1880,7 +1895,14 @@ class ScalpAnalyzer:
                     )
                 if stop_distance <= 0:
                     stop_distance = entry_price * strategy_stop_pct
-                pos["system_stop_price"] = entry_price - stop_distance
+                # no-initial-stop modunda (otonom hız avcısı) başlangıç stopu
+                # hiç konmaz — system_stop_price set edilmez, _manage_open_position
+                # bunu -inf gibi ele alır; +%1 kâr kilidi stop'u yukarı taşır.
+                if not (strat_name == "CHAT_PREDICTION" and no_initial_stop):
+                    pos["system_stop_price"] = entry_price - stop_distance
+                elif strat_name == "CHAT_PREDICTION":
+                    # stop yok; yine de alanın varlığını koru (okuyanlar None'a dayanmasın)
+                    pos["system_stop_price"] = None
                 if strat_name == "CHAT_PREDICTION":
                     # Planlı yol (chat tahmin otomatı): asimetrik plan — TP
                     # plan yüzdesiyle sabitlenir (RR çarpanı plan TP'sini

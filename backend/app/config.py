@@ -99,6 +99,9 @@ class Config:
     VELOCITY_AUTO_INTERVAL_SEC = max(300, int(os.getenv("VELOCITY_AUTO_INTERVAL_SEC", "300")))
     VELOCITY_AUTO_BALANCE_PCT = 50.0
     VELOCITY_AUTO_SL_PCT = float(os.getenv("VELOCITY_AUTO_SL_PCT", "2.5"))  # Hız Avcısı sert stop %2.5
+    # Sinyal sonrası fiyat önce geri çekilip sonra yükseldiği için açılışta sert
+    # stop koyma; kâr koruma merdiveni (+%1 kâr kilidi + trailing) yine çalışır.
+    VELOCITY_NO_INITIAL_STOP = os.getenv("VELOCITY_NO_INITIAL_STOP", "true").lower() == "true"
     VELOCITY_POOL_SIZE = max(5, min(50, int(os.getenv("VELOCITY_POOL_SIZE", "30"))))  # Hız Avcısı aday havuzu (top gainer)
     VELOCITY_TRAIL_TRIGGER_PCT = float(os.getenv("VELOCITY_TRAIL_TRIGGER_PCT", "0.7"))  # Trailing/kâr kilidi bu kâr yüzdesinde devreye girer (24h replay: 0.7 > 1.0)
     # Trailing is intentionally wider than the old 0.5% setting so a brief
