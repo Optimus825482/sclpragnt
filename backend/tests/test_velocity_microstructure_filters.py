@@ -83,6 +83,27 @@ class VelocityMicrostructureFilterTests(unittest.IsolatedAsyncioTestCase):
         finally:
             config.VELOCITY_FLOW_CONFIRMATION_FILTER = old_flag
 
+    async def test_get_snapshot_handles_deque_tape(self):
+        # Canlıda _tape bir deque'tir (maxlen sınırlı FIFO); get_snapshot'ın
+        # slippage hesabı tape'i dilimlerken deque'ye izin verilmeyen bir slice
+        # uygulamamalıdır. Regresyon: "sequence index must be integer, not 'slice'".
+        from collections import deque
+        from app.microflow import microflow
+
+        symbol = "BTCTRY"
+        microflow.symbol = symbol
+        bucket = microflow.trade_flow[symbol]
+        bucket.update({"buy_count": 10, "sell_count": 5, "buy_notional": 30_000.0,
+                       "sell_notional": 20_000.0, "whale_buys": 1, "whale_sells": 0,
+                       "window_start": time.time() - 30, "updated_at": time.time()})
+        now_ms = int(time.time() * 1000)
+        bucket["_tape"] = deque((_trade(now_ms - 40_000 + i * 1_000, 100.0, 1.0) for i in range(40)),
+                                maxlen=2000)
+        snapshot = microflow.get_snapshot(price=100.0)
+        self.assertTrue(snapshot.get("data_ready") or snapshot.get("price"))
+        self.assertIn("slippage", snapshot)
+        self.assertGreaterEqual(snapshot["slippage"]["sample_trades"], 10)
+
     async def test_filters_are_fail_open_when_microflow_has_no_data(self):
         from app.microflow import microflow
         from app.routers.velocity import _open_velocity_position
