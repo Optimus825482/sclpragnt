@@ -1544,6 +1544,26 @@ async def get_velocity_calibration_stats(profile: str | None = None):
     return await _run_db(op)
 
 
+async def get_velocity_symbol_quality_stats():
+    """Sembol bazlı velocity journal sonuçları: ölçülen aday, dokunan, ort. MFE.
+
+    Sembol kalite filtresinin journal geçmişini de kullanabilmesi için;
+    yalnızca ölçülmüş (status='evaluated') satırlar sayılır. Dokunuş oranı
+    düşük ve ort. MFE'si zayıf semboller pump sonrası momentumu tutamıyor
+    (2026-08-31 araştırması: HEMITRY/NOTTRY/CHIPTRY 4 ölçümde 0 dokunuş).
+    """
+    def op(conn):
+        rows = conn.execute("""SELECT symbol,
+            COUNT(*) AS evaluated,
+            SUM(CASE WHEN touched_target THEN 1 ELSE 0 END) AS touched,
+            AVG(mfe_pct) AS average_mfe_pct
+            FROM velocity_candidates
+            WHERE status='evaluated'
+            GROUP BY symbol""").fetchall()
+        return [dict(row) for row in rows]
+    return await _run_db(op)
+
+
 async def get_velocity_pattern_hit_rates():
     """m5_pattern_ok=true/false alt kümelerinde koşullu (passes) dokunuş oranı.
 

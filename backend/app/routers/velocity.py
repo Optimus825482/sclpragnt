@@ -953,6 +953,27 @@ async def _symbol_quality(symbol: str, lookback_trades: int = 10) -> float | Non
     return sum(rets) / len(rets)
 
 
+async def _velocity_journal_quality(symbol: str) -> dict | None:
+    """Sembolün velocity journal geçmişi: ölçülen aday, dokunuş, ort. MFE.
+
+    Kapanmış işlem geçmişi olmayan sembollerde bile (örn. yeni listelenen
+    pump sembolleri) kalite sinyali verir; ölçüm yoksa None döner.
+    """
+    try:
+        rows = await database.get_velocity_symbol_quality_stats()
+    except Exception:
+        return None
+    row = next((r for r in rows if str(r.get("symbol", "")).upper() == symbol), None)
+    if not row:
+        return None
+    evaluated = int(row.get("evaluated") or 0)
+    if evaluated <= 0:
+        return None
+    touched = int(row.get("touched") or 0)
+    avg_mfe = float(row.get("average_mfe_pct") or 0.0)
+    return {"evaluated": evaluated, "touched": touched, "avg_mfe_pct": round(avg_mfe, 3)}
+
+
 async def _open_velocity_position(candidate: dict) -> dict:
     """En iyi hız adayına serbest TL'nin %50'si ile paper pozisyon açar."""
     symbol = str(candidate["symbol"] or "").upper()
@@ -975,6 +996,21 @@ async def _open_velocity_position(candidate: dict) -> dict:
                         "reason": f"sembol_kalite_negatif:{q:.2f}", "symbol_quality": q}
         except Exception as exc:
             logger.warning("velocity sembol kalite filtresi: %s", exc)
+        # Journal tabanlı kalite: yeterli ölçümde hiç +%2/3 dokunuşu olmayan ve
+        # ort. MFE'si zayıf semboller pump sonrası momentumu tutamıyor; atla.
+        # Örneklem eşiği altındaki sembollerde fail-open — veri biriktikçe devreye girer.
+        try:
+            jq = await _velocity_journal_quality(symbol)
+            if (jq is not None
+                    and jq["evaluated"] >= config.VELOCITY_SYMBOL_QUALITY_JOURNAL_MIN_EVALUATED
+                    and jq["touched"] == 0
+                    and jq["avg_mfe_pct"] < config.VELOCITY_SYMBOL_QUALITY_JOURNAL_MAX_AVG_MFE_PCT):
+                return {"symbol": symbol, "status": "SKIPPED",
+                        "reason": (f"sembol_journal_kalitesi:0_dokunus/{jq['evaluated']}_olcum"
+                                   f"/mfe{jq['avg_mfe_pct']:.2f}"),
+                        "journal_quality": jq}
+        except Exception as exc:
+            logger.warning("velocity journal kalite filtresi: %s", exc)
     if symbol in analyzer.positions:
         return {"symbol": symbol, "status": "SKIPPED", "reason": "acik_pozisyon_var"}
     chat_max = int(config.CHAT_PREDICTION_MAX_OPEN_POSITIONS)

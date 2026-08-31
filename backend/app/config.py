@@ -125,6 +125,12 @@ class Config:
     # olan semboller yeni açılışta atlanır (7g backtest: iyi semboller +0.04%
     # vs kötüler -0.74%).
     VELOCITY_SYMBOL_QUALITY_FILTER = os.getenv("VELOCITY_SYMBOL_QUALITY_FILTER", "true").lower() == "true"
+    # Journal tabanlı sembol kalitesi: hız avcısı adaylarının ölçülmüş geçmişi.
+    # Yeterli örneklemde (≥ min_evaluated) hiç dokunuşu olmayan ve ort. MFE'si
+    # eşiğin altında kalan semboller yeni açılışta atlanır. Min örneklem altındaki
+    # sembollerde filtre uygulanmaz (fail-open) — veri biriktikçe devreye girer.
+    VELOCITY_SYMBOL_QUALITY_JOURNAL_MIN_EVALUATED = max(1, int(os.getenv("VELOCITY_SYMBOL_QUALITY_JOURNAL_MIN_EVALUATED", "3")))
+    VELOCITY_SYMBOL_QUALITY_JOURNAL_MAX_AVG_MFE_PCT = float(os.getenv("VELOCITY_SYMBOL_QUALITY_JOURNAL_MAX_AVG_MFE_PCT", "1.0"))
     # Mikro-yapı giriş filtreleri (2026-08-31, microflow verisiyle):
     # 1) Whale dağıtım filtresi: son whale'ler dağıtım ağırlıklıysa (fiyat etkisi
     #    analizi) girişi engelle — "sahte kırılım" elemesi. Varsayılan OFF:
