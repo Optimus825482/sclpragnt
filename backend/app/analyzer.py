@@ -1378,7 +1378,7 @@ class ScalpAnalyzer:
         # Strategy-level circuit breaker: judge the rolling expectancy after
         # every closed trade; a breached floor pauses new entries.
         try:
-            await strategy_breaker.evaluate_after_close(pos.get("strategy", strat_name))
+            await strategy_breaker.evaluate_after_close(closed_strategy)
         except Exception as exc:
             print(f"[CircuitBreaker] değerlendirme hatası: {exc}", flush=True)
         return sig

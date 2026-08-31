@@ -1025,7 +1025,7 @@ async def _open_velocity_position(candidate: dict) -> dict:
         if not micro_snapshot.get("data_ready"):
             _velocity_auto_state["filters"]["microflow_yok"] += 1
     except Exception as exc:
-        logger.warning("velocity mikro yapı filtresi: %s", exc)
+        logger.warning("velocity mikro yapı filtresi: %s", exc, exc_info=True)
     # Serbest TL'nin %50'si
     balance = await database.get_wallet_balance("TRY")
     order_value = round(balance * config.VELOCITY_AUTO_BALANCE_PCT / 100.0, 2)

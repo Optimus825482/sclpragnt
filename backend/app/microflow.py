@@ -297,7 +297,9 @@ class MicroFlow:
             whale_activity = {"verdict": "error", "data_ready": False}
         slippage = None
         if len(tape) >= 10 and last_price:
-            prices = [item["p"] for item in tape[-30:]]
+            # _tape bir deque'tir; deque dilimlemeyi desteklemez, bu yüzden
+            # önce listeye çevirilir.
+            prices = [item["p"] for item in list(tape)[-30:]]
             realized = (max(prices) - min(prices)) / min(prices) * 100 if min(prices) > 0 else None
             if realized is not None:
                 slippage = {
