@@ -108,8 +108,10 @@ class Config:
     # + intrabar tetikleme, pump'ın "hızlı tepe vurup dönme" davranışında kârı
     # kilitleyip erken kaçıyor; geniş trailing (%0.8) kârı geri veriyordu.
     VELOCITY_TRAIL_GAP_PCT = float(os.getenv("VELOCITY_TRAIL_GAP_PCT", "0.3"))
-    # Trailing tetikleme modu: "intrabar" = mum low'u stopa değince çık (backtest
-    # kazananı); "close" = sadece kapanışta kontrol (eski davranış).
+    # Trailing tepe takibi: true ise max_price mum high'ıyla güncellenir
+    # (trailing stop gerçek tepeye göre hesaplanır). ÇIKIŞ her zaman kapanış
+    # fiyatından yapılır — intrabar low'dan kapatmak slippage yaratıyordu
+    # (ZKTRY: stop 0.4915, fill 0.48).
     VELOCITY_TRAIL_INTRABAR = os.getenv("VELOCITY_TRAIL_INTRABAR", "true").lower() == "true"
     # Maksimum tutma süresi (dk): 30dk sonra kapanıştan çık — kâr erimesini önler.
     VELOCITY_MAX_HOLD_MIN = int(os.getenv("VELOCITY_MAX_HOLD_MIN", "30"))
