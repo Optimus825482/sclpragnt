@@ -898,6 +898,28 @@ async def _hydrate_market_cache_for(symbol: str):
         logger.warning("hydrate orderbook %s: %s", symbol, exc)
 
 
+async def _symbol_quality(symbol: str, lookback_trades: int = 10) -> float | None:
+    """Sembolün son işlemlerindeki ortalama getirisi (sinyal kalite skoru).
+
+    Kapanmış CHAT_PREDICTION işlemlerinden pnl yüzdesini okur; pozitifse
+    sembol pump sonrası momentumu koruyor demektir. Yetersiz örneklemde
+    None döner (filtre uygulanmaz).
+    """
+    try:
+        trades = await database.get_trades(limit=lookback_trades, strategy="CHAT_PREDICTION", symbol=symbol)
+    except Exception:
+        return None
+    rets = []
+    for t in trades or []:
+        entry = float(t.get("entry_price") or 0)
+        exit_px = float(t.get("exit_price") or 0)
+        if entry > 0 and exit_px > 0:
+            rets.append((exit_px / entry - 1) * 100)
+    if len(rets) < 3:
+        return None
+    return sum(rets) / len(rets)
+
+
 async def _open_velocity_position(candidate: dict) -> dict:
     """En iyi hız adayına serbest TL'nin %50'si ile paper pozisyon açar."""
     symbol = str(candidate["symbol"] or "").upper()
@@ -907,6 +929,19 @@ async def _open_velocity_position(candidate: dict) -> dict:
         if not candidate.get("m5_pattern_ok"):
             return {"symbol": symbol, "status": "SKIPPED",
                     "reason": "m5_pattern_reddet", "m5_pattern": candidate.get("m5_pattern")}
+    # Sembol bazlı kalite filtresi (araştırma 2026-08-31): bazı semboller
+    # pump sonrası momentumu koruyor, bazıları anında dönüyor. 7 günlük
+    # backtest: iyi sembollerde sinyal-sonrası getiri +0.04% vs kötülerde
+    # -0.74%. Kapanmış işlemlerden sembolün son N işleminin ort getirisine
+    # bakar; negatifse adayı atlar.
+    if config.VELOCITY_SYMBOL_QUALITY_FILTER:
+        try:
+            q = await _symbol_quality(symbol)
+            if q is not None and q < 0:
+                return {"symbol": symbol, "status": "SKIPPED",
+                        "reason": f"sembol_kalite_negatif:{q:.2f}", "symbol_quality": q}
+        except Exception as exc:
+            logger.warning("velocity sembol kalite filtresi: %s", exc)
     if symbol in analyzer.positions:
         return {"symbol": symbol, "status": "SKIPPED", "reason": "acik_pozisyon_var"}
     chat_max = int(config.CHAT_PREDICTION_MAX_OPEN_POSITIONS)
