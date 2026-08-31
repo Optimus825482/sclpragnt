@@ -47,7 +47,6 @@ type Config = {
   min_24h_quote_volume_try: number;
   high_liquidity_bypass_volume_try: number;
   min_volume_ratio: number;
-  max_spread_pct: number;
   min_orderbook_depth_multiplier: number;
   max_open_positions: number;
   hard_stop_loss_pct: number;
@@ -560,12 +559,12 @@ export default function SettingsPage() {
             </div>
             <div className="mt-5 border-t border-bunker-800 pt-4">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div><p className="eyebrow text-neon-green">GERÇEK AKTİVİTE DURUMU</p><p className="text-xs text-bunker-muted mt-1">Arka planda saatte bir güncellenir; bu ekrandan manuel kontrol de yapılabilir. Aktiflik; hareket, ATR, hacim, spread ve tamamlanmış M1 düz mum yoğunluğu ile hesaplanır.</p></div>
+                <div><p className="eyebrow text-neon-green">GERÇEK AKTİVİTE DURUMU</p><p className="text-xs text-bunker-muted mt-1">Arka planda saatte bir güncellenir; bu ekrandan manuel kontrol de yapılabilir. Aktiflik; hareket, ATR, hacim ve tamamlanmış M1 düz mum yoğunluğu ile hesaplanır.</p></div>
                 <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono"><span className="rounded border border-neon-green/40 px-2 py-1 text-neon-green">AKTİF {activityCounts.ACTIVE}</span><span className="rounded border border-yellow-400/40 px-2 py-1 text-yellow-300">PASİF {activityCounts.PASSIVE}</span><span className="rounded border border-sky-400/40 px-2 py-1 text-sky-300">ISINIYOR {activityCounts.WARMING}</span><button type="button" onClick={refreshActivity} disabled={refreshingActivity} className="rounded border border-neon-green/50 bg-neon-green/10 px-2 py-1 text-neon-green transition-colors hover:bg-neon-green/20 disabled:cursor-wait disabled:opacity-60">{refreshingActivity ? "KONTROL EDİLİYOR..." : "AKTİVASYON KONTROLÜ"}</button></div>
               </div>
               <div className="flex flex-wrap gap-2 mb-3">{([ ["all", "TÜMÜ"], ["ACTIVE", "AKTİF"], ["PASSIVE", "PASİF"], ["WARMING", "ISINIYOR"] ] as const).map(([key, label]) => <button key={key} onClick={() => setActivityFilter(key)} className={`rounded-lg border px-3 py-1.5 font-mono text-xs ${activityFilter === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 text-bunker-muted"}`}>{label}</button>)}</div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 max-h-[32rem] overflow-y-auto pr-1">
-                {visibleActivity.map((item: any) => <div key={item.symbol} className={`rounded-lg border px-3 py-2 ${item.status === "ACTIVE" ? "border-neon-green/30 bg-neon-green/5" : item.status === "WARMING" ? "border-sky-400/30 bg-sky-400/5" : "border-bunker-800 bg-bunker-900/60"}`}><div className="flex items-center justify-between gap-2"><SymbolLink symbol={item.symbol} className="font-mono text-sm text-white hover:text-neon-green" /><span className={`font-mono text-[10px] ${item.status === "ACTIVE" ? "text-neon-green" : item.status === "WARMING" ? "text-sky-300" : "text-yellow-300"}`}>{item.status}</span></div><div className="mt-2 grid grid-cols-2 gap-2 text-[10px] font-mono text-bunker-muted"><span>15m {item.range_15m_pct == null ? "—" : `${item.range_15m_pct}%`}</span><span>ATR {item.atr_pct == null ? "—" : `${item.atr_pct}%`}</span><span>VOL {item.volume_ratio == null ? "—" : `${item.volume_ratio}x`}</span><span>M1 düz {item.m1_flat_sample_30m ? `${item.m1_flat_5m_count}/5 · ${item.m1_flat_30m_count}/30` : "—"}</span></div><p className="mt-2 truncate text-[10px] text-bunker-muted" title={item.reason || ""}>{item.reason || "—"}{item.spread_pct != null ? ` · spread ${item.spread_pct}%` : ""}</p></div>)}
+                {visibleActivity.map((item: any) => <div key={item.symbol} className={`rounded-lg border px-3 py-2 ${item.status === "ACTIVE" ? "border-neon-green/30 bg-neon-green/5" : item.status === "WARMING" ? "border-sky-400/30 bg-sky-400/5" : "border-bunker-800 bg-bunker-900/60"}`}><div className="flex items-center justify-between gap-2"><SymbolLink symbol={item.symbol} className="font-mono text-sm text-white hover:text-neon-green" /><span className={`font-mono text-[10px] ${item.status === "ACTIVE" ? "text-neon-green" : item.status === "WARMING" ? "text-sky-300" : "text-yellow-300"}`}>{item.status}</span></div><div className="mt-2 grid grid-cols-2 gap-2 text-[10px] font-mono text-bunker-muted"><span>15m {item.range_15m_pct == null ? "—" : `${item.range_15m_pct}%`}</span><span>ATR {item.atr_pct == null ? "—" : `${item.atr_pct}%`}</span><span>VOL {item.volume_ratio == null ? "—" : `${item.volume_ratio}x`}</span><span>M1 düz {item.m1_flat_sample_30m ? `${item.m1_flat_5m_count}/5 · ${item.m1_flat_30m_count}/30` : "—"}</span></div><p className="mt-2 truncate text-[10px] text-bunker-muted" title={item.reason || ""}>{item.reason || "—"}</p></div>)}
                 {!visibleActivity.length && <p className="col-span-full py-6 text-center font-mono text-xs text-bunker-muted">Aktivite verisi henüz hazır değil.</p>}
               </div>
             </div>
@@ -631,13 +630,12 @@ export default function SettingsPage() {
             </div>
             <div className="mt-5 border-t border-bunker-800 pt-4">
               <p className="eyebrow">LİKİDİTE FİLTRESİ</p>
-              <p className="text-xs text-bunker-muted mt-1">İşlem açılmadan önce düşük hacim, geniş spread ve sığ emir defteri engellenir.</p>
+              <p className="text-xs text-bunker-muted mt-1">İşlem açılmadan önce düşük hacim ve sığ emir defteri engellenir.</p>
               <div className="grid sm:grid-cols-2 gap-3 mt-3">
                 {([
                   ["min_24h_quote_volume_try", "Minimum 24s hacim (TL)", 1000],
                   ["high_liquidity_bypass_volume_try", "Yüksek likidite eşiği (TL)", 1000],
                   ["min_volume_ratio", "Minimum hacim oranı", 0.1],
-                  ["max_spread_pct", "Maksimum spread (%)", 0.01],
                   ["min_orderbook_depth_multiplier", "Emir defteri çarpanı", 0.5],
                 ] as const).map(([key, label, step]) => (
                   <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2">
@@ -646,7 +644,7 @@ export default function SettingsPage() {
                   </label>
                 ))}
               </div>
-              <p className="text-[11px] text-bunker-muted mt-2 font-mono">Önerilen: 1.000.000 TL · 0,3x · %0,30 · 5x</p>
+              <p className="text-[11px] text-bunker-muted mt-2 font-mono">Önerilen: 1.000.000 TL · 0,3x · 5x</p>
             </div>
             <div className="mt-5 border-t border-bunker-800 pt-4">
               <p className="eyebrow">MTF MOMENTUM · ADR FİLTRESİ</p>

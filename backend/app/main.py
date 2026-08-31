@@ -489,7 +489,6 @@ CONFIG_FIELDS = {
     "min_24h_quote_volume_try": "MIN_24H_QUOTE_VOLUME_TRY",
     "high_liquidity_bypass_volume_try": "HIGH_LIQUIDITY_BYPASS_VOLUME_TRY",
     "min_volume_ratio": "MIN_VOLUME_RATIO",
-    "max_spread_pct": "MAX_SPREAD_PCT",
     "min_orderbook_depth_multiplier": "MIN_ORDERBOOK_DEPTH_MULTIPLIER",
     "liquidity_filter_enabled": "LIQUIDITY_FILTER_ENABLED",
     "default_order_usdt": "DEFAULT_ORDER_USDT",
@@ -619,7 +618,6 @@ async def get_config():
         "min_24h_quote_volume_try": config.MIN_24H_QUOTE_VOLUME_TRY,
         "high_liquidity_bypass_volume_try": config.HIGH_LIQUIDITY_BYPASS_VOLUME_TRY,
         "min_volume_ratio": config.MIN_VOLUME_RATIO,
-        "max_spread_pct": config.MAX_SPREAD_PCT,
         "min_orderbook_depth_multiplier": config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
         "liquidity_filter_enabled": config.LIQUIDITY_FILTER_ENABLED,
         "default_order_usdt": config.DEFAULT_ORDER_USDT,
@@ -809,7 +807,6 @@ async def _gainers_radar_uncached(execute: bool = False):
         flow = market.get_orderflow(symbol)
         bid, ask = flow.get("bid_qty", 0), flow.get("ask_qty", 0)
         imbalance = ((bid - ask) / (bid + ask) * 100) if bid + ask else 0
-        spread = flow.get("spread_pct") or 999
         ema9 = sum(closes[-9:]) / 9
         ema21 = sum(closes[-21:]) / 21
         trend = price > ema9 > ema21
@@ -820,12 +817,11 @@ async def _gainers_radar_uncached(execute: bool = False):
         score += min(max(imbalance, 0), 25)
         score += 20 if trend else 0
         score += min(max(ret_1h * 3, 0), 15)
-        score += 10 if 0 < spread <= 0.20 else 0
         score += crsi_score
-        eligible = 3 <= ret_24h <= 18 and ret_1h > 0 and volume_ratio >= 2.0 and spread <= 0.15 and crsi is not None and 20 <= crsi <= 80 and score >= config.GAINER_RADAR_MIN_SCORE
+        eligible = 3 <= ret_24h <= 18 and ret_1h > 0 and volume_ratio >= 2.0 and crsi is not None and 20 <= crsi <= 80 and score >= config.GAINER_RADAR_MIN_SCORE
         rows.append({"symbol": symbol, "price": price, "score": round(score, 1), "eligible": eligible,
                      "ret_5m": round(ret_5m, 2), "ret_1h": round(ret_1h, 2), "ret_24h": round(ret_24h, 2),
-                     "volume_ratio": round(volume_ratio, 2), "imbalance": round(imbalance, 2), "spread": round(spread, 3), "trend": trend, "crsi": round(crsi, 2) if crsi is not None else None})
+                     "volume_ratio": round(volume_ratio, 2), "imbalance": round(imbalance, 2), "trend": trend, "crsi": round(crsi, 2) if crsi is not None else None})
     # Soft MTF priority: this is a ranking aid, not a BUY filter.  A gainer
     # must still pass the existing liquidity, momentum and cost-aware rules.
     # Use the hot cache here so the 30-second radar refresh does not fan out
@@ -930,9 +926,7 @@ async def symbol_activity_status():
                            "min_range_15m_pct": config.SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT,
                            "min_atr_pct": config.SYMBOL_ACTIVITY_MIN_ATR_PCT * 100,
                            "min_volume_ratio": config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO,
-                           "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY,
-                           "max_spread_pct": config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT,
-                           "spread_filter_enabled": config.SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED}}
+                           "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY}}
 
 @app.post("/api/symbol-activity/refresh")
 async def refresh_symbol_activity_manual():
@@ -1048,7 +1042,7 @@ async def _apply_config_update(payload: dict):
                     config.MEAN_REVERSION_ENABLED = True
             else:
                 number = float(val)
-                if key in {"min_notional", "default_order_usdt", "min_24h_quote_volume_try", "high_liquidity_bypass_volume_try", "min_volume_ratio", "max_spread_pct", "min_orderbook_depth_multiplier"} and number <= 0:
+                if key in {"min_notional", "default_order_usdt", "min_24h_quote_volume_try", "high_liquidity_bypass_volume_try", "min_volume_ratio", "min_orderbook_depth_multiplier"} and number <= 0:
                     raise ValueError(f"{key} pozitif olmalıdır")
                 if key in {"hard_stop_loss_pct", "take_profit_pct", "trailing_stop_pct", "adr_min_pct", "adr_max_utilization_pct", "adr_min_remaining_pct"} and not 0 < number < 1:
                     raise ValueError(f"{key} 0 ile 1 arasında olmalıdır")
@@ -1356,7 +1350,6 @@ async def llm_entry_policy():
             "max_stochastic": 92,
             "max_mfi": 80,
             "max_cci": 220,
-            "max_spread_pct": 0.15,
             "min_orderflow_imbalance": -0.10,
             "higher_timeframes": ["15m", "1h"],
             "loss_streak_block_at": 2,

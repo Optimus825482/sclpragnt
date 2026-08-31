@@ -665,10 +665,12 @@ class MarketData:
         A caller may explicitly opt into a startup-only observation bypass. It
         is bounded to ``WARMUP_BYPASS_SEC`` and is never used by trading callers
         by default.  ``ignore_ws_freshness`` keeps every liquidity threshold
-        (spread, depth, volume ratio, 24h quote volume) but skips the WebSocket
+        (depth, volume ratio, 24h quote volume) but skips the WebSocket
         freshness stamps — for auto-traders whose candidates come from
         Top-Gainer REST scans with no WS subscription history yet; their
         orderbook snapshot is refreshed via REST right before the call.
+        Spread hiçbir likidite kapısında koşul değildir: spread koruması
+        otonom ve manuel taramadan tamamen kaldırıldı.
         """
         symbol = symbol.upper()
         if not config.LIQUIDITY_FILTER_ENABLED:
@@ -681,7 +683,6 @@ class MarketData:
         average = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else 0.0
         ratio = current / average if average > 0 else 0.0
         flow = self.get_orderflow(symbol)
-        spread = flow.get("spread_pct")
         price = float(ticker.get("last_price", 0) or 0)
         depth_try = (float(flow.get("bid_qty", 0) or 0) + float(flow.get("ask_qty", 0) or 0)) * price
         quote_volume = float(self.ticker_24h.get(symbol, 0) or 0)
@@ -713,7 +714,6 @@ class MarketData:
                 "fresh_inputs": True,  # REST ile taze aday; WS damgası beklenmiyor
                 "quote_volume": quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY,
                 "volume_ratio": high_liquidity or ratio >= config.MIN_VOLUME_RATIO,
-                "spread": spread is not None and spread <= config.MAX_SPREAD_PCT,
                 "orderbook_depth": depth_try >= order_value_try * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
             }
         else:
@@ -723,8 +723,6 @@ class MarketData:
                                 or quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY,
                 "volume_ratio": (warmup_bypass and "kline" in missing_or_stale)
                                 or high_liquidity or ratio >= config.MIN_VOLUME_RATIO,
-                "spread": (warmup_bypass and "orderbook" in missing_or_stale)
-                          or (spread is not None and spread <= config.MAX_SPREAD_PCT),
                 "orderbook_depth": (warmup_bypass and ("ticker" in missing_or_stale
                                                          or "orderbook" in missing_or_stale))
                                    or depth_try >= order_value_try * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
@@ -735,7 +733,6 @@ class MarketData:
             "quote_volume": quote_volume,
             "high_liquidity": high_liquidity,
             "volume_ratio": ratio,
-            "spread": spread,
             "depth_try": depth_try,
             "checks": checks,
             "missing_or_stale": missing_or_stale,

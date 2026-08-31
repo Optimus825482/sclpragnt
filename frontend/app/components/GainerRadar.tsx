@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import SymbolLink from "./SymbolLink";
 
-type Candidate = { symbol: string; score: number; priority_score?: number; eligible: boolean; ret_5m: number; ret_1h: number; ret_24h: number; volume_ratio: number; imbalance: number; spread: number; trend: boolean; crsi?: number | null; mtf_score?: number; mtf_bullish_count?: number; mtf_bullish_rank?: string; mtf?: Record<string, string> };
+type Candidate = { symbol: string; score: number; priority_score?: number; eligible: boolean; ret_5m: number; ret_1h: number; ret_24h: number; volume_ratio: number; imbalance: number; trend: boolean; crsi?: number | null; mtf_score?: number; mtf_bullish_count?: number; mtf_bullish_rank?: string; mtf?: Record<string, string> };
 type Regime = { zone?: string; score?: number | null; confidence?: number; reason?: string; sample_size?: number };
 
 export default function GainerRadar() {

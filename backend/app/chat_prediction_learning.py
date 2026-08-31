@@ -65,7 +65,7 @@ ANALYSIS_PROMPT = (
     "Tahmin doğruysa success_factors içine hangi metrikler kararı taşıdığını yaz; "
     "yanlışsa misleading_factors içine hangi kanıtların yanılttığını yaz. "
     "Her faktör kısa bir metrik/kanıt etiketi olsun (örn. 'hacim_orani_yuksek', 'adx_yetersiz', "
-    "'spread_genis', 'rejim_uyusmazligi'). outcome_direction 'range' ise hareket eşiği "
+    "'rejim_uyusmazligi'). outcome_direction 'range' ise hareket eşiği "
     "aşılamadığını başarısızlık nedeni olarak değerlendir. JSON dışında hiçbir şey yazma. "
     "Şema tam olarak: {\"summary\":\"...\",\"misleading_factors\":[...],\"success_factors\":[...],"
     "\"lesson\":\"...\",\"confidence_note\":\"...\"}"

@@ -694,7 +694,7 @@ export default function ChatPage() {
                       {tier === "high" && <span title={`Desen eşleşmeleri: ${matches.join(", ")}`} className="ml-2 rounded border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[10px] text-neon-green">YÜKSEK GÜVEN</span>}
                       {tier === "watch" && <span title={`Desen eşleşmeleri: ${matches.join(", ")}`} className="ml-2 rounded border border-yellow-400/40 px-1.5 py-0.5 font-mono text-[10px] text-yellow-300">İZLEME</span>}
                       <span className="ml-2 text-xs text-neon-green">{candidate.trend_direction || "unknown"}</span>
-                      <p className="text-[11px] text-bunker-muted">5m %{candidate.returns_pct?.return_5m ?? "—"} · 15m %{candidate.returns_pct?.return_15m ?? "—"} · ADX {indicatorNumber(candidate.trend?.adx, "adx") !== "—" ? indicatorNumber(candidate.trend?.adx, "adx") : indicatorNumber(candidate.trend?.adx_14)} · hacim {candidate.volume?.volume_ratio_20 ?? "—"}x · spread %{candidate.liquidity?.spread_pct ?? "—"}</p>
+                      <p className="text-[11px] text-bunker-muted">5m %{candidate.returns_pct?.return_5m ?? "—"} · 15m %{candidate.returns_pct?.return_15m ?? "—"} · ADX {indicatorNumber(candidate.trend?.adx, "adx") !== "—" ? indicatorNumber(candidate.trend?.adx, "adx") : indicatorNumber(candidate.trend?.adx_14)} · hacim {candidate.volume?.volume_ratio_20 ?? "—"}x</p>
                       {matches.length > 0 && <p className="text-[10px] text-sky-300">desen: {matches.join(" + ")}</p>}
                     </div>
                     <span className="font-mono text-xs text-sky-300">Skor {candidate.score ?? "—"}</span>
