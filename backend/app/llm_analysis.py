@@ -184,9 +184,11 @@ async def analyze(snapshot, max_tokens=None):
             except json.JSONDecodeError: pass
         choices = payload_result.get("choices") if isinstance(payload_result, dict) else None
         text = None
+        finish_reason = None
         if choices and isinstance(choices, list):
             first = choices[0] or {}
             message = first.get("message") or {}
+            finish_reason = first.get("finish_reason")
             text = _message_text(message) or first.get("text")
         if not text and isinstance(payload_result, dict):
             text = payload_result.get("output_text") or payload_result.get("response") or payload_result.get("content")
@@ -196,7 +198,7 @@ async def analyze(snapshot, max_tokens=None):
             provider_error = (payload_result.get("error") if isinstance(payload_result, dict) else None) or (result.get("error") if isinstance(result, dict) else None)
             detail = provider_error.get("message") if isinstance(provider_error, dict) else provider_error
             fields = ', '.join(payload_result.keys()) if isinstance(payload_result, dict) else type(payload_result).__name__
-            raise RuntimeError(detail or f"Provider beklenmeyen yanıt döndürdü (alanlar: {fields})")
+            raise RuntimeError(detail or f"Provider metin döndürmedi (alanlar: {fields}, finish_reason: {finish_reason})")
         return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"], "generated_at": time.time()}
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}

@@ -745,7 +745,7 @@ async def _upside_scout_impl():
         "llm_context": snapshot.get("llm_context"),
         "data_policy": "Yalnızca sağlanan public veri ve öğrenilmiş kayıtlar kullanılır; eksik alan 'bilinmiyor' kalır.",
     }
-    result = await llm_analysis.analyze(scout_context, max_tokens=250)
+    result = await llm_analysis.analyze(scout_context, max_tokens=1500)
     if not result.get("enabled") or result.get("status") != "ok":
         return {"enabled": result.get("enabled", False), "status": result.get("status", "error"),
                 "symbol": symbol, "selection": scout_context["selection"],
