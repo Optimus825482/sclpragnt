@@ -1267,15 +1267,18 @@ async def get_ml_training_candles(cutoff_ms: int, max_bars_per_symbol: int = 300
             """SELECT symbol, open_time, high, low, close, volume
                FROM historical_candles WHERE timeframe='5m' AND open_time >= ?
                ORDER BY symbol, open_time DESC""", (int(cutoff_ms),)).fetchall()
-        for symbol, open_time, high, low, close, volume in rows:
-            bucket = data.setdefault(str(symbol), {"open_time": [], "high": [], "low": [], "close": [], "volume": []})
+        for row in rows:
+            # Postgres (asyncpg) satırları dict döner; tuple-unpack anahtar
+            # stringlerini değişkene atadığı için dict erişimi kullanılır.
+            symbol = str(row["symbol"]).upper()
+            bucket = data.setdefault(symbol, {"open_time": [], "high": [], "low": [], "close": [], "volume": []})
             if len(bucket["open_time"]) >= max_bars_per_symbol:
                 continue
-            bucket["open_time"].append(int(open_time))
-            bucket["high"].append(float(high))
-            bucket["low"].append(float(low))
-            bucket["close"].append(float(close))
-            bucket["volume"].append(float(volume))
+            bucket["open_time"].append(int(row["open_time"]))
+            bucket["high"].append(float(row["high"]))
+            bucket["low"].append(float(row["low"]))
+            bucket["close"].append(float(row["close"]))
+            bucket["volume"].append(float(row["volume"]))
         return {sym: {k: list(reversed(v)) for k, v in bucket.items()} for sym, bucket in data.items()}
     return await _run_db(op)
 
