@@ -585,9 +585,14 @@ class ScalpAnalyzer:
                     pos["system_stop_price"] = max(system_stop, new_stop)
                     system_stop = pos["system_stop_price"]
             if pos.get("strategy") != "BB_MFI_MEAN_REVERSION" and price <= system_stop:
+                exit_reason = "system_stop_loss"
+                if pos.get("strategy") == "CHAT_PREDICTION" and pos.get("velocity_protection_armed"):
+                    # A trailing stop is profit protection, not a fresh hard
+                    # stop. Keep it out of the hard-stop re-entry lock.
+                    exit_reason = "velocity_trailing"
                 return await self.close_position(
                     symbol, price,
-                    "pump_break_even_stop" if pos.get("pump_break_even_armed") else "system_stop_loss")
+                    "pump_break_even_stop" if pos.get("pump_break_even_armed") else exit_reason)
             if pos.get("strategy") == "CHAT_PREDICTION":
                 # Replay planı çıkışları: sabit plan TP ve plan max-hold.
                 # Plan TP girişte system_take_profit_price olarak yazılır ve
@@ -1312,11 +1317,17 @@ class ScalpAnalyzer:
         tf = self._strategy_tf(pos.get("strategy", "UT"))
         current_bar = self._current_bar(symbol, tf)
         if current_bar is not None:
-            self._cooldown_until[symbol] = current_bar + config.COOLDOWN_BARS
+            cooldown_bars = (config.VELOCITY_REENTRY_COOLDOWN_BARS
+                             if closed_strategy == "CHAT_PREDICTION"
+                             else config.COOLDOWN_BARS)
+            self._cooldown_until[symbol] = current_bar + cooldown_bars
         if reason.startswith("max_hold_") or reason in {"early_failure_no_progress", "stale_position_no_progress", "pump_fast_fail_no_progress"}:
             self._timeout_block_until[symbol] = time.time() + config.TIMEOUT_REENTRY_BLOCK_SEC
         elif reason in {"hard_stop_loss", "system_stop_loss", "llm_stop_loss", "pump_break_even_stop"}:
-            self._hard_stop_block_until[symbol] = time.time() + config.HARD_STOP_REENTRY_BLOCK_SEC
+            hard_stop_block_sec = (config.VELOCITY_HARD_STOP_REENTRY_BLOCK_SEC
+                                   if closed_strategy == "CHAT_PREDICTION"
+                                   else config.HARD_STOP_REENTRY_BLOCK_SEC)
+            self._hard_stop_block_until[symbol] = time.time() + hard_stop_block_sec
         # A restart must not erase a documented 24h/2h re-entry block.
         await self._persist_reentry_blocks(symbol)
         # Strategy-level circuit breaker: judge the rolling expectancy after
@@ -1690,7 +1701,7 @@ class ScalpAnalyzer:
                         import math as _math
                         expected_move = atr_value * _math.sqrt(max(1, horizon))
                         capacity_ratio = (entry_price * 0.02) / expected_move
-                        if capacity_ratio < 1.0:
+                        if capacity_ratio < config.VELOCITY_MIN_ATR_CAPACITY_RATIO:
                             await database.save_signal({
                                 "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                 "reason": f"atr_capacity_insufficient:{capacity_ratio:.2f}",

@@ -43,6 +43,11 @@ class Config:
     EXIT_ON_OPPOSITE_SIGNAL = os.getenv("EXIT_ON_OPPOSITE_SIGNAL", "false").lower() == "true"
     TIMEOUT_REENTRY_BLOCK_SEC = 24 * 60 * 60
     HARD_STOP_REENTRY_BLOCK_SEC = 2 * 60 * 60
+    # Short-horizon velocity paper entries get a shorter, still non-zero
+    # hard-stop lock. Classic strategy protection remains unchanged.
+    VELOCITY_HARD_STOP_REENTRY_BLOCK_SEC = max(
+        60, int(os.getenv("VELOCITY_HARD_STOP_REENTRY_BLOCK_SEC", str(15 * 60)))
+    )
     MAX_POSITION_LAYERS = 1
     ACTIVE_STRATEGY = os.getenv("ACTIVE_STRATEGY", "BB_MFI_MEAN_REVERSION")
     ACTIVE_STRATEGY_TIMEFRAME = os.getenv("ACTIVE_STRATEGY_TIMEFRAME", "5m")
@@ -89,14 +94,16 @@ class Config:
     # Otonom hız avcısı: 15 dk'da bir tarama, en iyi adaya (GEÇTİ veya İZLEME)
     # serbest TL'nin %50'si ile pozisyon. Çıkış merdiveni analyzer'da:
     # +%1 kâr → stop maliyet+%0,01'e çekilir (kâr garantisi), sonrasında
-    # %0,5 dinamik trailing, sert stop %2.5, plan TP %2.
+    # %0,8 dinamik trailing, sert stop %2.5, plan TP %2.
     VELOCITY_AUTO_ENABLED = os.getenv("VELOCITY_AUTO_ENABLED", "false").lower() == "true"
     VELOCITY_AUTO_INTERVAL_SEC = max(300, int(os.getenv("VELOCITY_AUTO_INTERVAL_SEC", "300")))
     VELOCITY_AUTO_BALANCE_PCT = 50.0
     VELOCITY_AUTO_SL_PCT = float(os.getenv("VELOCITY_AUTO_SL_PCT", "2.5"))  # Hız Avcısı sert stop %2.5
     VELOCITY_POOL_SIZE = max(5, min(50, int(os.getenv("VELOCITY_POOL_SIZE", "30"))))  # Hız Avcısı aday havuzu (top gainer)
     VELOCITY_TRAIL_TRIGGER_PCT = float(os.getenv("VELOCITY_TRAIL_TRIGGER_PCT", "0.7"))  # Trailing/kâr kilidi bu kâr yüzdesinde devreye girer (24h replay: 0.7 > 1.0)
-    VELOCITY_TRAIL_GAP_PCT = 0.5  # Dinamik trailing: stop = tepe - tepe*%0.5
+    # Trailing is intentionally wider than the old 0.5% setting so a brief
+    # pullback does not close a still-strong velocity move immediately.
+    VELOCITY_TRAIL_GAP_PCT = float(os.getenv("VELOCITY_TRAIL_GAP_PCT", "0.8"))
     VELOCITY_PROFIT_LOCK_PCT = 0.01  # +%1'de kilitlenen net kâr (girişin %0.01 üstü + komisyon)
     # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
     # (24s/72s/7g altı pencerede %66-68 başarı). Aday pozisyon açmadan önce
@@ -227,6 +234,9 @@ class Config:
     
     HARD_STOP_LOSS_PCT = 0.012
     COOLDOWN_BARS = 2
+    VELOCITY_REENTRY_COOLDOWN_BARS = max(
+        0, int(os.getenv("VELOCITY_REENTRY_COOLDOWN_BARS", "1"))
+    )
     # Time-decay spot take-profit: accept the first cost-covered exit as the
     # position ages. Single stage by design; the multi-stage decay and the
     # legacy TAKE_PROFIT_PCT / TRAILING_* knobs were dead configuration and
@@ -250,6 +260,9 @@ class Config:
     # Target distance must be at least this multiple of recent ATR noise for
     # an entry to be worth taking (S1 cost-aware quality gates).
     MIN_TARGET_ATR_CAPACITY_RATIO = max(0.1, float(os.getenv("MIN_TARGET_ATR_CAPACITY_RATIO", "1.0")))
+    VELOCITY_MIN_ATR_CAPACITY_RATIO = max(
+        0.1, float(os.getenv("VELOCITY_MIN_ATR_CAPACITY_RATIO", "0.50"))
+    )
     # S6 volatility-based sizing: equal-risk scaling around this ATR% baseline.
     VOLATILITY_SIZING_ENABLED = os.getenv("VOLATILITY_SIZING_ENABLED", "true").lower() == "true"
     VOLATILITY_BASELINE_ATR_PCT = max(0.0005, float(os.getenv("VOLATILITY_BASELINE_ATR_PCT", "0.006")))

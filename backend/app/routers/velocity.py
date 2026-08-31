@@ -561,6 +561,9 @@ async def velocity_status():
         "pool_size": config.VELOCITY_POOL_SIZE,
         "pattern_filter_enabled": config.VELOCITY_PATTERN_FILTER_ENABLED,
         "sl_pct": config.VELOCITY_AUTO_SL_PCT,
+        "reentry_hard_stop_block_sec": config.VELOCITY_HARD_STOP_REENTRY_BLOCK_SEC,
+        "reentry_cooldown_bars": config.VELOCITY_REENTRY_COOLDOWN_BARS,
+        "min_atr_capacity_ratio": config.VELOCITY_MIN_ATR_CAPACITY_RATIO,
         "last_scan_at": _velocity_auto_state.get("last_scan_at"),
         "last_m5_close_ms": _velocity_auto_state.get("last_m5_close_ms"),
         "total_opened": _velocity_auto_state.get("total_opened", 0),
@@ -845,7 +848,8 @@ async def _open_velocity_position(candidate: dict) -> dict:
                 "velocity_score": candidate.get("velocity_score"),
                 "mode": candidate.get("mode"), "pattern_matches": candidate.get("m5_pattern"),
                 "paper_only": True, "source": "velocity_auto",
-                "atr_pct": candidate.get("atr_pct")}
+                "atr_pct": candidate.get("atr_pct"),
+                "velocity_relaxed_reentry": True}
     result = await analyzer.open_position(symbol, price, "LONG", "CHAT_PREDICTION", order_value,
                                            stop_loss_pct=stop_loss_pct,
                                            entry_context_extra=context)
