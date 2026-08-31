@@ -638,10 +638,18 @@ async def llm_upside_scout(payload: dict = None):
 
     rank_score = _rank_score(best, touch_rates)
     touch_rate = touch_rates.get(symbol)
+    best_horizon = int(best.get("horizon_minutes") or 0)
     scout_context = {
         "type": "upside_scout", "symbol": symbol, "paper_only": True,
+        "analysis_subject": {"symbol": symbol,
+                             "current_price": best.get("price"),
+                             "selected_profile": f"{best_horizon}dk"},
         "instruction": ("Bu sembol, hız avcısı taramalarında öğrenilen sembol kalitesi ve skor "
-                        "sıralamasına göre 'en hızlı yükseliş potansiyeli' olarak deterministik seçildi. "
+                        f"sıralamasına göre 'en hızlı yükseliş potansiyeli' olarak seçildi: {symbol}. "
+                        "ZORUNLU ÇIKTI KURALI: Analizin ilk cümlesinde sembol adını açıkça yaz ve "
+                        f"analiz boyunca fiyat/düzey verilerini her verdiğinde sembol adını kullan "
+                        f"(örn. '{symbol} fiyatı ...', '{symbol} için invalidasyon ...'). Sembol adı "
+                        "olmayan anonim bir analiz eksik sayılır. "
                         "Görevin: verilen tüm teknik ve öğrenilmiş kanıtı birleştirip kısa vadeli "
                         "yükseliş senaryosunu değerlendirmek. Şunları üret: (1) seçilme gerekçesinin "
                         "doğrulanması veya çürütülmesi, (2) giriş bölgesi + teyit şartı + invalidasyon "
@@ -656,8 +664,8 @@ async def llm_upside_scout(payload: dict = None):
             "journal_touch_rate": round(touch_rate, 3) if touch_rate is not None else None,
             "min_score_gate": {"threshold": config.VELOCITY_AUTO_MIN_SCORE,
                                "passes": float(best.get("velocity_score") or 0) >= config.VELOCITY_AUTO_MIN_SCORE},
-            "profile_5m": best if best in list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or []) else None,
-            "profile_15m": best if best in list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []) else None,
+            "profile_5m": best if best_horizon == 5 else None,
+            "profile_15m": best if best_horizon == 15 else None,
             "runner_ups": [{"symbol": c.get("symbol"),
                             "rank_score": round(_rank_score(c, touch_rates), 2)} for c in pool[1:4]],
         },
