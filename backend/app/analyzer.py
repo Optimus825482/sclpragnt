@@ -508,8 +508,17 @@ class ScalpAnalyzer:
         # Önce hedef/stop kontrolü; aynı anda süre dolduysa gerçek kapanış nedeni korunur.
         pos = self.positions.get(symbol)
         if pos:
-            pos["max_price"] = max(pos.get("max_price", pos["entry_price"]), price)
-            pos["min_price"] = min(pos.get("min_price", pos["entry_price"]), price)
+            # İntrabar modda mum high/low'su da tepe/dip sayılır — trailing stop
+            # kapanış fiyatına değil gerçek tepeye göre hesaplanır.
+            cur_hi = cur_lo = price
+            if config.VELOCITY_TRAIL_INTRABAR and kline and len(kline) > 0:
+                try:
+                    cur_hi = max(float(kline[-1][2]), price)
+                    cur_lo = min(float(kline[-1][3]), price)
+                except (TypeError, ValueError, IndexError):
+                    pass
+            pos["max_price"] = max(pos.get("max_price", pos["entry_price"]), cur_hi)
+            pos["min_price"] = min(pos.get("min_price", pos["entry_price"]), cur_lo)
         if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_stop_price") and price <= pos["llm_stop_price"]:
             return await self.close_position(symbol, price, "llm_stop_loss")
         if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_take_profit_price") and price >= pos["llm_take_profit_price"]:
@@ -572,14 +581,33 @@ class ScalpAnalyzer:
                     pos["system_stop_price"] = max(system_stop, lock_stop)
                     system_stop = pos["system_stop_price"]
             if pos.get("strategy") == "CHAT_PREDICTION" and pos.get("velocity_protection_armed"):
-                # Dinamik trailing: kâr kilidi devredeyken tepe fiyatın %0,5
+                # Dinamik trailing: kâr kilidi devredeyken tepe fiyatın %0,3
                 # altını takip eder. Yalnızca yukarı taşınır; kâr kilidi
-                # seviyesinin altına inmez.
+                # seviyesinin altına inmez. İntrabar modda mum low'u stopa
+                # değdiğinde çıkılır (backtest: kapanış bazlıya göre pozitif EV).
                 trail_gap = config.VELOCITY_TRAIL_GAP_PCT / 100.0
                 trailing = float(pos.get("max_price") or entry) * (1 - trail_gap)
                 if trailing > system_stop:
                     pos["system_stop_price"] = trailing
                     system_stop = trailing
+                # İntrabar tetikleme: mevcut 1m mumun low'u stopa değdiyse çık.
+                # Kapanış bazlı kontrol fiyatın dibe vurup toparlandığı mumlarda
+                # çıkışı kaçırıyor/geciktiriyordu.
+                if config.VELOCITY_TRAIL_INTRABAR:
+                    try:
+                        cur_low = float(kline[-1][3]) if kline and len(kline) > 0 else None
+                    except (TypeError, ValueError, IndexError):
+                        cur_low = None
+                    if cur_low is not None and cur_low <= system_stop:
+                        return await self.close_position(symbol, cur_low, "velocity_trailing")
+            # Zaman sınırı (yalnızca otonom hız avcısı, planlı yol değil):
+            # kâr kilidi devreye girmemişse bile 30dk sonunda kapanıştan çık —
+            # pump sonrası kâr erimesini önler (backtest: hold30 kazananı).
+            if pos.get("strategy") == "CHAT_PREDICTION" and config.VELOCITY_MAX_HOLD_MIN > 0 and \
+                    bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
+                entry_time = float(pos.get("entry_time") or 0)
+                if entry_time and (time.time() - entry_time) >= config.VELOCITY_MAX_HOLD_MIN * 60:
+                    return await self.close_position(symbol, price, "velocity_max_hold")
             # Pump Monitor break-even: once the trade has proven itself with a
             # >= trigger MFE move, the stop moves to entry so a proven winner
             # can never round-trip into a full loss (56 historical trades lost
