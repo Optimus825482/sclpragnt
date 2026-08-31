@@ -91,6 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_velocity_candidates_due ON velocity_candidates(st
 CREATE INDEX IF NOT EXISTS idx_velocity_candidates_symbol ON velocity_candidates(symbol, created_at DESC);
 CREATE TABLE IF NOT EXISTS microstructure_snapshots (id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, captured_at DOUBLE PRECISION NOT NULL, bid_price DOUBLE PRECISION, ask_price DOUBLE PRECISION, bid_qty DOUBLE PRECISION, ask_qty DOUBLE PRECISION, spread_pct DOUBLE PRECISION, depth_try DOUBLE PRECISION, orderflow_imbalance DOUBLE PRECISION, source TEXT NOT NULL DEFAULT 'binance_tr_public_ws', updated_at DOUBLE PRECISION, UNIQUE(symbol, captured_at));
 CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC);
+CREATE INDEX IF NOT EXISTS microstructure_snapshots_captured_idx ON microstructure_snapshots(captured_at);
 
 CREATE TABLE IF NOT EXISTS historical_candles (
   symbol TEXT NOT NULL, timeframe TEXT NOT NULL, open_time BIGINT NOT NULL,

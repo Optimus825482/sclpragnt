@@ -2043,20 +2043,38 @@ async def delete_backtest(run_id):
     await _run_db(op)
 
 
-async def prune_retention(days: int = 30):
+async def prune_retention(days: int = 30, microstructure_days: int = 7):
     """Delete high-volume observability rows older than ``days`` days.
 
     microstructure_snapshots grows one row per fresh symbol per second and
     embedding_jobs keeps full JSONB documents; without a sweep both grow
     unbounded. Paper trades/signals/decision logs are never pruned here.
-    Returns per-table deleted row counts.
+    microstructure_snapshots uses its own, tighter window (``microstructure_days``)
+    and is deleted in batches so a large backlogs does not hold one long
+    transaction. Returns per-table deleted row counts.
     """
     cutoff = time.time() - max(1, int(days)) * 86400
+    micro_cutoff = time.time() - max(1, int(microstructure_days)) * 86400
 
     def op(conn):
         deleted = {}
+        # Batched sweep: single DELETE on a 100M-row backlog holds a long
+        # transaction and bloats WAL; 500k-row chunks commit incrementally.
+        deleted["microstructure_snapshots"] = 0
+        while True:
+            try:
+                cursor = conn.execute("""DELETE FROM microstructure_snapshots WHERE ctid IN (
+                    SELECT ctid FROM microstructure_snapshots WHERE captured_at < %s LIMIT 500000)""",
+                    (micro_cutoff,))
+                conn.commit()
+                batch = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+            except Exception:
+                conn.rollback()
+                break
+            deleted["microstructure_snapshots"] += batch
+            if batch < 500000:
+                break
         for table, column in (
-            ("microstructure_snapshots", "captured_at"),
             ("llm_tool_logs", "timestamp"),
             ("embedding_jobs", "created_at"),
             ("analysis_snapshots", "captured_at"),
