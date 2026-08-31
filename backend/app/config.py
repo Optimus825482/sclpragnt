@@ -113,6 +113,12 @@ class Config:
     VELOCITY_TRAIL_INTRABAR = os.getenv("VELOCITY_TRAIL_INTRABAR", "true").lower() == "true"
     # Maksimum tutma süresi (dk): 30dk sonra kapanıştan çık — kâr erimesini önler.
     VELOCITY_MAX_HOLD_MIN = int(os.getenv("VELOCITY_MAX_HOLD_MIN", "30"))
+    # Kâr kilidi tetiklenmeden ÖNCE güvenlik stopu: fiyat +%0.5'i hiç görmeden
+    # bu kadar düşerse kapat. Stopsuz açılış, fiyat hiç yükselmezse sınırsız
+    # zarar demek (canlıda -%7.5 görüldü); -%3 stop EV'yi korur, max kaybı
+    # sınırlar. Kâr kilidi sonrası intrabar trailing devreye girince bu stop
+    # zaten anlamsızlaşır (trailing daha yukarıda).
+    VELOCITY_EMERGENCY_STOP_PCT = float(os.getenv("VELOCITY_EMERGENCY_STOP_PCT", "3.0"))
     VELOCITY_PROFIT_LOCK_PCT = 0.01  # +%0.5'te kilitlenen net kâr (girişin %0.01 üstü + komisyon)
     # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
     # (24s/72s/7g altı pencerede %66-68 başarı). Aday pozisyon açmadan önce
