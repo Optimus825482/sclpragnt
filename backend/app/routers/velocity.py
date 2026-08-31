@@ -941,20 +941,27 @@ async def _open_velocity_position(candidate: dict) -> dict:
     # Top-Gainer adayının önbelleğini REST'ten doldur ki 0 hacim/derinlik
     # üzerinden reddedilmesin.
     await _hydrate_market_cache_for(symbol)
-    stop_loss_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
+    # Kullanıcı kontratı: sinyal sonrası fiyat önce geri çekiliyor; açılışta sert
+    # stop koymak geri çekilmede kapatıp yükselişi kaçırıyor. No-initial-stop
+    # modunda stop'suz açılır (kâr koruma merdiveni +%1'de yine devreye girer).
+    no_initial_stop = bool(config.VELOCITY_NO_INITIAL_STOP)
+    stop_loss_pct = None if no_initial_stop else config.VELOCITY_AUTO_SL_PCT / 100.0
     context = {"signal_name": "Otonom Hız Avcısı · en iyi aday",
                 "velocity_score": candidate.get("velocity_score"),
                 "mode": candidate.get("mode"), "pattern_matches": candidate.get("m5_pattern"),
                 "paper_only": True, "source": "velocity_auto",
                 "atr_pct": candidate.get("atr_pct"),
-                "velocity_relaxed_reentry": True}
+                "velocity_relaxed_reentry": True,
+                "no_initial_stop": no_initial_stop}
     result = await analyzer.open_position(symbol, price, "LONG", "CHAT_PREDICTION", order_value,
                                            stop_loss_pct=stop_loss_pct,
                                            entry_context_extra=context)
     if result and str(result.get("action", "")).upper() == "BUY_SIGNAL":
         await ws_manager.broadcast({"type": "signal", "data": result})
         return {"symbol": symbol, "status": "PAPER_OPENED", "order_value_try": order_value,
-                 "entry": price, "stop_loss_pct": stop_loss_pct * 100}
+                 "entry": price,
+                 "stop_loss_pct": (stop_loss_pct * 100) if stop_loss_pct is not None else None,
+                 "no_initial_stop": no_initial_stop}
     return {"symbol": symbol, "status": "ENTRY_BLOCKED", "reason": str((result or {}).get("reason") or "kapı")}
 
 
