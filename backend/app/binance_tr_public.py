@@ -210,6 +210,28 @@ async def orderbook(symbol: str, limit: int = 5):
             "source": "binance_tr_public_rest", "received_at": time.time()}
 
 
+async def depth(symbol: str, limit: int = 5):
+    """Read-only top-``limit`` order-book levels (all returned, not top-5 capped).
+
+    The legacy ``orderbook`` adapter truncates to the top five levels even when
+    a wider snapshot is requested; ``depth`` preserves the full returned depth
+    so callers can measure wall size / ladder asymmetry from the same public
+    REST endpoint. Same weight, same rate-limit headers as ``orderbook``.
+    """
+    normalized = symbol.replace("_", "").upper()
+    payload = await asyncio.to_thread(_get_json, "/api/v3/depth", {
+        "symbol": normalized, "limit": min(1000, max(1, int(limit)))
+    })
+    if not isinstance(payload, dict):
+        raise RuntimeError("Binance TR order-book yanıtı nesne değil")
+    bids = payload.get("bids")
+    asks = payload.get("asks")
+    if not isinstance(bids, list) or not isinstance(asks, list):
+        raise RuntimeError("Binance TR order-book bid/ask alanları eksik")
+    return {**payload, "symbol": normalized, "bids": bids, "asks": asks,
+            "source": "binance_tr_public_rest", "received_at": time.time()}
+
+
 
 def rate_limit_snapshot():
     """Public API rate-limit kullanım anlık görüntüsü."""

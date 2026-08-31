@@ -727,6 +727,13 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     result["oscillators"]["values"]["cmo_9"] = cmo
     result["oscillators"]["values"]["crsi"] = crsi
     result["price_action"] = _price_action_setup(opens, highs, lows, closes)
+    # Realtime microstructure is derived from the same WS/REST depth + aggTrade
+    # streams the rest of the system uses. Every value is public market data;
+    # nothing here implies order-book or position truth. The block stays
+    # additive so snapshot consumers that do not need it are unaffected.
+    microstructure = _microstructure_block(flow, price)
+    if microstructure:
+        result["microstructure"] = microstructure
     # These features are research observations only. They are deliberately not
     # consumed by `ScalpAnalyzer` entry strategies until a fee-aware OOS and
     # forward evaluation creates an explicit candidate definition.
@@ -750,3 +757,38 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
         result["volatility"].update({"day_range_used_pct": used, "adr_utilization": used / adr, "remaining_capacity_pct": adr - used})
     result["summary"] = "bullish" if result["trend"]["alignment"] == "bullish" and (result["momentum"]["rsi_14"] or 0) >= 50 else "mixed"
     return result
+
+
+def _microstructure_block(flow: dict, price: float) -> dict:
+    """Additive realtime microstructure block for one snapshot.
+
+    Consumes the same top-of-book depth/aggTrade fields the live feed already
+    carries. Returns {} when the feed has not delivered depth yet, so callers
+    that treat missing microstructure as 'unknown' stay unchanged.
+    """
+    if not flow or not isinstance(flow, dict):
+        return {}
+    bid = flow.get("bid_price")
+    ask = flow.get("ask_price")
+    bid_qty = float(flow.get("bid_qty") or 0)
+    ask_qty = float(flow.get("ask_qty") or 0)
+    book_total = bid_qty + ask_qty
+    if not bid or not ask or book_total <= 0:
+        return {}
+    spread_pct = flow.get("spread_pct")
+    if spread_pct is None and bid > 0:
+        spread_pct = (ask - bid) / bid * 100
+    mid = (bid + ask) / 2
+    block = {
+        "scope": "realtime_market",
+        "best_bid_price": bid,
+        "best_ask_price": ask,
+        "spread_pct": round(float(spread_pct), 6) if spread_pct is not None else None,
+        "orderbook_depth_try": round(book_total * mid, 2),
+        "depth_imbalance": round((bid_qty - ask_qty) / book_total, 4),
+        "last_trade_side": flow.get("last_trade_side"),
+        "last_trade_qty": flow.get("last_trade_qty"),
+        "source": flow.get("source") or "binance_tr_public_ws",
+        "updated_at": flow.get("updated_at"),
+    }
+    return block

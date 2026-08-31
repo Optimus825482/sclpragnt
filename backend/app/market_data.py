@@ -58,6 +58,24 @@ class MarketData:
             "updated_at": 0.0,
             "source": None,
         })
+        # Aggressive-flow accumulation from the existing aggTrade stream. The
+        # Binance TR WS already delivers per-symbol aggTrade events; previously
+        # only the latest trade was kept. These rolling 60s counters turn the
+        # same stream into a realtime CVD proxy (maker/taker side known from
+        # the m flag), a trade-frequency gauge and a whale detector. All values
+        # are observable market data, not position/orderbook truths.
+        self.trade_flow = defaultdict(lambda: {
+            "buy_qty": 0.0,
+            "sell_qty": 0.0,
+            "buy_count": 0,
+            "sell_count": 0,
+            "buy_notional": 0.0,
+            "sell_notional": 0.0,
+            "whale_buys": 0,
+            "whale_sells": 0,
+            "window_start": 0.0,
+            "updated_at": 0.0,
+        })
         self.running = False
         self.history_loaded = False
         self.created_at = time.time()
@@ -523,6 +541,7 @@ class MarketData:
         if event in {"aggTrade", "trade"} or ("p" in kline_data and "q" in kline_data):
             symbol = str(kline_data.get("s", "")).upper()
             if symbol:
+                self._accumulate_trade(symbol, kline_data)
                 flow = self.orderflow[symbol]
                 flow["last_trade_qty"] = float(kline_data.get("q", kline_data.get("Q", 0)) or 0)
                 flow["last_trade_side"] = "sell" if kline_data.get("m", False) else "buy"
@@ -658,6 +677,140 @@ class MarketData:
 
     def get_orderflow(self, symbol):
         return dict(self.orderflow.get(symbol.upper(), {}))
+
+    # Aggressive-flow accumulation window in seconds; the rolling counters are
+    # reset when the window rolls over, never mid-window.
+    TRADE_FLOW_WINDOW_SEC = 60.0
+
+    @staticmethod
+    def _trade_side(is_buyer_maker: bool) -> str:
+        """Binance `m` flag: true → buyer was maker → aggressive SELL."""
+        return "sell" if is_buyer_maker else "buy"
+
+    def _accumulate_trade(self, symbol: str, trade: dict):
+        """Fold one aggTrade event into the symbol's rolling 60s trade flow.
+
+        Uses the same WS stream that was already subscribed; this is a pure
+        addition of counters, not a new connection or API dependency. Whale
+        thresholds are in TRY notional so a low-priced AXLTRY fill needs far
+        more units to count as a whale than a BTCTRY fill.
+        """
+        try:
+            qty = float(trade.get("q", trade.get("Q", 0)) or 0)
+            price = float(trade.get("p", trade.get("P", 0)) or 0)
+        except (TypeError, ValueError):
+            return
+        if qty <= 0 or price <= 0:
+            return
+        notional = qty * price
+        side = self._trade_side(bool(trade.get("m", False)))
+        bucket = self.trade_flow[symbol]
+        now = time.time()
+        if now - float(bucket.get("window_start") or 0) >= self.TRADE_FLOW_WINDOW_SEC:
+            bucket.update({
+                "buy_qty": 0.0, "sell_qty": 0.0, "buy_count": 0, "sell_count": 0,
+                "buy_notional": 0.0, "sell_notional": 0.0,
+                "whale_buys": 0, "whale_sells": 0, "window_start": now,
+            })
+        if side == "buy":
+            bucket["buy_qty"] += qty
+            bucket["buy_count"] += 1
+            bucket["buy_notional"] += notional
+            if notional >= self.WHALE_NOTIONAL_TRY:
+                bucket["whale_buys"] += 1
+        else:
+            bucket["sell_qty"] += qty
+            bucket["sell_count"] += 1
+            bucket["sell_notional"] += notional
+            if notional >= self.WHALE_NOTIONAL_TRY:
+                bucket["whale_sells"] += 1
+        bucket["updated_at"] = now
+
+    # A single trade is "whale-sized" when its TRY notional reaches this.
+    # Binance TR spot notional for BTCTRY ~ 25k+ TRY; for low-price pairs the
+    # same threshold still catches genuinely large market orders.
+    WHALE_NOTIONAL_TRY = 25_000.0
+
+    def _roll_trade_window(self, symbol: str):
+        bucket = self.trade_flow[symbol]
+        now = time.time()
+        if now - float(bucket.get("window_start") or 0) >= self.TRADE_FLOW_WINDOW_SEC:
+            bucket.update({
+                "buy_qty": 0.0, "sell_qty": 0.0, "buy_count": 0, "sell_count": 0,
+                "buy_notional": 0.0, "sell_notional": 0.0,
+                "whale_buys": 0, "whale_sells": 0, "window_start": now,
+            })
+
+    def get_microstructure(self, symbol: str, price: float | None = None,
+                           window_sec: float = 60.0) -> dict:
+        """Realtime microstructure: depth imbalance + rolling aggressive flow.
+
+        ``price`` lets callers compute a spread_pct snapshot and TRY depth when
+        the ticker and the orderbook have slightly different freshness; the
+        returned flags never claim data that the WS has not delivered.
+        """
+        symbol = symbol.upper()
+        flow = self.orderflow[symbol]
+        trades = self.trade_flow[symbol]
+        self._roll_trade_window(symbol)
+        now = time.time()
+        bid, ask = flow.get("bid_price"), flow.get("ask_price")
+        bid_qty = float(flow.get("bid_qty") or 0)
+        ask_qty = float(flow.get("ask_qty") or 0)
+        book_total = bid_qty + ask_qty
+        spread_pct = flow.get("spread_pct")
+        if spread_pct is None and bid and ask and bid > 0:
+            spread_pct = (ask - bid) / bid * 100
+        mid = (bid + ask) / 2 if bid and ask else (price or 0)
+        depth_try = book_total * mid if (book_total > 0 and mid > 0) else None
+        imbalance = (bid_qty - ask_qty) / book_total if book_total > 0 else None
+        buy_notional = float(trades.get("buy_notional") or 0)
+        sell_notional = float(trades.get("sell_notional") or 0)
+        trade_total = buy_notional + sell_notional
+        trade_imbalance = (buy_notional - sell_notional) / trade_total if trade_total > 0 else None
+        buy_count = int(trades.get("buy_count") or 0)
+        sell_count = int(trades.get("sell_count") or 0)
+        buy_qty = float(trades.get("buy_qty") or 0)
+        sell_qty = float(trades.get("sell_qty") or 0)
+        whale_buys = int(trades.get("whale_buys") or 0)
+        whale_sells = int(trades.get("whale_sells") or 0)
+        age_sec = (now - float(flow.get("updated_at") or 0)) if flow.get("updated_at") else None
+        trade_age_sec = (now - float(trades.get("updated_at") or 0)) if trades.get("updated_at") else None
+        flags = []
+        if age_sec is None or age_sec > self.ORDERBOOK_MAX_AGE_SEC:
+            flags.append("orderbook_stale")
+        if not buy_count and not sell_count:
+            flags.append("no_agg_trades_60s")
+        elif trade_age_sec is not None and trade_age_sec > self.TRADE_FLOW_WINDOW_SEC:
+            flags.append("trade_flow_stale")
+        return {
+            "symbol": symbol,
+            "spread_pct": round(spread_pct, 6) if spread_pct is not None else None,
+            "best_bid": bid, "best_ask": ask,
+            "bid_qty": round(bid_qty, 8), "ask_qty": round(ask_qty, 8),
+            "depth_imbalance": round(imbalance, 4) if imbalance is not None else None,
+            "orderbook_depth_try": round(depth_try, 2) if depth_try is not None else None,
+            "trade_flow": {
+                "window_sec": self.TRADE_FLOW_WINDOW_SEC,
+                "buy_qty": round(buy_qty, 8), "sell_qty": round(sell_qty, 8),
+                "buy_count": buy_count, "sell_count": sell_count,
+                "buy_notional_try": round(buy_notional, 2),
+                "sell_notional_try": round(sell_notional, 2),
+                "cvd_try": round(buy_notional - sell_notional, 2),
+                "trade_imbalance": round(trade_imbalance, 4) if trade_imbalance is not None else None,
+                "trade_rate_per_min": buy_count + sell_count,
+                "whale_buys": whale_buys, "whale_sells": whale_sells,
+                "whale_notional_threshold_try": self.WHALE_NOTIONAL_TRY,
+            },
+            "freshness": {
+                "orderbook_age_sec": round(age_sec, 3) if age_sec is not None else None,
+                "trade_flow_age_sec": round(trade_age_sec, 3) if trade_age_sec is not None else None,
+            },
+            "flags": flags,
+            "data_ready": not flags,
+            "source": flow.get("source") or "binance_tr_public_ws",
+            "updated_at": now,
+        }
 
     def liquidity_status(self, symbol, order_value_try, allow_warmup=False, ignore_ws_freshness=False):
         """Fail closed unless all price, candle, volume and depth inputs are fresh.

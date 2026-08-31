@@ -15,6 +15,7 @@ from app.api_common import _start_background, _fresh_public_price
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.market_intelligence import microstructure_snapshot
+from app.microflow import microflow
 from app import calibration as calibration_service
 from app.binance_tr_public import top_gainers, ticker_24h
 from app.embedding_worker import worker as embedding_worker
@@ -292,6 +293,15 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     # Journal: geçenler + izleme listesi kaydedilir; ufuk süresi dolunca
     # kapanmış M1 mumlarla gerçek dokunuş ölçülüp eşikler kalibre edilir.
     candidate_id_prefix = f"vel-{profile['label']}-{int(now_ms)}"
+    # Adaylar için tekil WS mikro yapı akışını başlat; 1s/5s bar ve agresif
+    # akış, aday izleme sırasında LLM/panelin gerçek zamanlı görüntü almasını
+    # sağlar. En fazla 3 aday, sembol sayısı sınırlı olduğu için bağlantı
+    # maliyeti düşüktür. Başarısızlık taramayı düşürmez.
+    try:
+        for cand in candidates[:limit]:
+            await microflow.start(cand["symbol"])
+    except Exception as exc:
+        logger.warning("velocity microflow aday başlatma: %s", exc)
     try:
         journal_rows = [{
             "candidate_id": f"{candidate_id_prefix}-{r['symbol']}",
@@ -960,6 +970,13 @@ async def _open_velocity_position(candidate: dict) -> dict:
         price = None
     if not price:
         return {"symbol": symbol, "status": "SKIPPED", "reason": "fiyat_alinamadi"}
+    # Açılış öncesi sub-minute mikro yapı akışını başlat: 1s/5s bar, agresif
+    # alış/satış akışı ve whale sayısı, pozisyon yönetiminin giriş anını
+    # gerçek zamanlı görmesini sağlar. Başarısızlık açılışı engellemez.
+    try:
+        await microflow.start(symbol)
+    except Exception as exc:
+        logger.warning("velocity microflow başlatma: %s", exc)
     # Serbest TL'nin %50'si
     balance = await database.get_wallet_balance("TRY")
     order_value = round(balance * config.VELOCITY_AUTO_BALANCE_PCT / 100.0, 2)

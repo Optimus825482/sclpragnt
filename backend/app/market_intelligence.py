@@ -44,11 +44,13 @@ def trade_economics(entry_price: float, stop_price: float | None = None,
 def microstructure_snapshot(snapshot: dict, order_value_try: float = 500.0) -> dict:
     """Normalize realtime liquidity/order-flow fields for an LLM decision."""
     liquidity = snapshot.get("liquidity") or {}
+    micro = snapshot.get("microstructure") or {}
     flow = {
         "spread_pct": liquidity.get("spread_pct"),
         "orderbook_depth_try": liquidity.get("orderbook_depth_try"),
         "depth_multiplier": liquidity.get("depth_multiplier"),
         "orderflow_imbalance": liquidity.get("orderflow_imbalance"),
+        "depth_imbalance": micro.get("depth_imbalance"),
         "last_trade_side": liquidity.get("last_trade_side"),
         "last_trade_qty": liquidity.get("last_trade_qty"),
         "updated_at": liquidity.get("updated_at"),
@@ -174,6 +176,120 @@ def symbol_outcome_profile(trades: list[dict], symbol: str | None = None,
             "max_drawdown_try": round(max_drawdown, 6),
             "current_loss_streak": streak, "longest_loss_streak": longest,
             "recent_trades": rows[-10:], "sample_sufficient_for_inference": len(rows) >= 30,
+            "paper_only": True}
+
+
+def symbol_behavior_profile(snapshot: dict, history: dict | None = None) -> dict:
+    """Sembolün 'kişiliğini' derler: günün hangi saatinde hareketli olduğu ve
+    güncel kırılım potansiyeli (hacim/volatilite rejimi).
+
+    ``history`` yalnız zaten yüklenmiş kapanmış mum sözlüğüdür (timeframe →
+    {timestamps, closes, highs, lows, volumes}); bu fonksiyon yeni REST çağrısı
+    yapmaz ve tahmin/garanti değildir.
+    """
+    symbol = str(snapshot.get("symbol") or "")
+    flow = snapshot.get("liquidity") or {}
+    volume = snapshot.get("volume") or {}
+    volatility = snapshot.get("volatility") or {}
+    flags = []
+    hour_profile = None
+    if history:
+        tf = snapshot.get("timeframe") or "5m"
+        kline = history.get(tf) or {}
+        timestamps = kline.get("timestamps") or []
+        closes = kline.get("closes") or []
+        volumes = kline.get("volumes") or []
+        if len(timestamps) >= 12:
+            buckets: dict[int, dict] = {}
+            for ts, close, vol in zip(timestamps, closes, volumes):
+                try:
+                    hour = int(ts / 3_600_000) % 24
+                except (TypeError, ValueError, ZeroDivisionError):
+                    continue
+                bucket = buckets.setdefault(hour, {"count": 0, "range_sum": 0.0, "vol_sum": 0.0, "last_close": None})
+                bucket["count"] += 1
+                bucket["vol_sum"] += float(vol or 0)
+                bucket["last_close"] = float(close or 0)
+            for hour, bucket in buckets.items():
+                if bucket["count"] >= 4:
+                    bucket["avg_vol"] = bucket["vol_sum"] / bucket["count"]
+            if buckets:
+                total_vol = sum(b["vol_sum"] for b in buckets.values()) or 1.0
+                hour_profile = {
+                    "active_hours_tst": sorted(
+                        ({"hour": hour, "volume_share": round(b["vol_sum"] / total_vol, 4)}
+                         for hour, b in buckets.items() if b["count"] >= 4),
+                        key=lambda item: -item["volume_share"],
+                    )[:5],
+                    "last_hour": sorted(buckets)[-1] % 24,
+                }
+    volume_ratio = volume.get("volume_ratio_20")
+    atr_pct = volatility.get("atr_pct")
+    spread = flow.get("spread_pct")
+    if volume_ratio is None: flags.append("volume_ratio bilinmiyor")
+    if atr_pct is None: flags.append("atr_pct bilinmiyor")
+    activity_level = "unknown"
+    if volume_ratio is not None:
+        activity_level = ("high" if volume_ratio >= 1.5 else
+                          "normal" if volume_ratio >= 0.5 else "low")
+    volatility_regime = "unknown"
+    if atr_pct is not None:
+        volatility_regime = ("expanding" if atr_pct >= 0.5 else
+                             "normal" if atr_pct >= 0.15 else "contracting")
+    return {"symbol": symbol,
+            "activity_level": activity_level,
+            "volatility_regime": volatility_regime,
+            "volume_ratio_20": round(float(volume_ratio), 4) if volume_ratio is not None else None,
+            "atr_pct": round(float(atr_pct), 6) if atr_pct is not None else None,
+            "spread_pct": round(float(spread), 6) if spread is not None else None,
+            "hour_profile": hour_profile,
+            "flags": flags,
+            "data_available": bool(flow) or bool(volume),
+            "methodology": "symbol-behavior-v1",
+            "paper_only": True}
+
+
+def regime_transition_signal(snapshot: dict) -> dict:
+    """Range → trend geçişlerini önceden sezdiren türetilmiş sinyaller.
+
+    Bunlar tahmin değildir; yalnız anlık rejim göstergelerinin eşik geçişidir
+    ve kanıt olarak snapshot alanlarını kullanır.
+    """
+    volatility = snapshot.get("volatility") or {}
+    volume = snapshot.get("volume") or {}
+    indicators = snapshot.get("volatility_indicators") or {}
+    volume_ratio = volume.get("volume_ratio_20")
+    choppiness = indicators.get("choppiness_14")
+    adx = (snapshot.get("trend") or {}).get("adx") or {}
+    adx_value = adx.get("adx") if isinstance(adx, dict) else adx
+    signals = []
+    # Düşük choppiness + hacim sıçraması → range kırılımı adayı
+    if choppiness is not None and volume_ratio is not None:
+        if choppiness < 45 and volume_ratio >= 1.5:
+            signals.append("range_breakout_volume")
+    if choppiness is not None and choppiness < 35:
+        signals.append("trending_strengthening")
+    # ADX düşükken yükselmeye başlaması → yeni trend oluşumu
+    if adx_value is not None:
+        if adx_value > 25:
+            signals.append("trend_confirmed")
+        elif adx_value > 20:
+            signals.append("trend_forming")
+    # ATR rejimi
+    atr_pct = volatility.get("atr_pct")
+    if atr_pct is not None:
+        if atr_pct >= 0.5:
+            signals.append("volatility_expanding")
+        elif atr_pct < 0.15:
+            signals.append("volatility_contracting")
+    return {"signals": signals,
+            "regime": "range_breakout_candidate" if "range_breakout_volume" in signals else
+                     ("trend" if "trend_confirmed" in signals else
+                      ("range" if "volatility_contracting" in signals else "mixed")),
+            "choppiness_14": round(float(choppiness), 4) if choppiness is not None else None,
+            "volume_ratio_20": round(float(volume_ratio), 4) if volume_ratio is not None else None,
+            "adx_14": round(float(adx_value), 4) if adx_value is not None else None,
+            "atr_pct": round(float(atr_pct), 6) if atr_pct is not None else None,
             "paper_only": True}
 
 

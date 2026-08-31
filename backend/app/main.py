@@ -26,9 +26,11 @@ from app.config import config
 from app.market_intelligence import (estimate_local_regime, execution_quality,
                                      symbol_safety, cost_aware_trade_metrics,
                                      walk_forward_assessment, trade_economics,
-                                     microstructure_snapshot, symbol_outcome_profile)
+                                     microstructure_snapshot, symbol_outcome_profile,
+                                     symbol_behavior_profile, regime_transition_signal)
 from app.self_learning import build_learning_context
 from app.market_data import MarketData
+from app.microflow import microflow
 from app.analyzer import ScalpAnalyzer
 from app.circuit_breaker import breaker as strategy_breaker
 from app import calibration as calibration_service
@@ -323,6 +325,10 @@ async def startup_services():
 
 async def shutdown_services():
     market.stop()
+    try:
+        await microflow.stop()
+    except Exception:
+        pass
     tasks = list(_background_tasks)
     for task in tasks:
         task.cancel()
@@ -1309,6 +1315,13 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
             flow["rest_error"] = str(exc)
     snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, flow, market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, requested_timeframe)
     snapshot["analysis_build"] = "rest-fallback-v4"
+    # Sembol davranış profili ve range→trend geçiş sinyali; yalnız anlık
+    # snapshot alanlarından türetilir, yeni ağ çağrısı yapmaz.
+    try:
+        snapshot["symbol_behavior"] = symbol_behavior_profile(snapshot, market.klines.get(requested_timeframe, {}).get(sym, {}))
+        snapshot["regime_transition"] = regime_transition_signal(snapshot)
+    except Exception:
+        pass
     return snapshot
 
 @app.get("/api/llm/config")

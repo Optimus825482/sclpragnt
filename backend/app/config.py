@@ -275,6 +275,9 @@ class Config:
     ESTIMATED_SLIPPAGE_PCT = 0.00025
     BACKTEST_ASSUMED_SPREAD_PCT = float(os.getenv("BACKTEST_ASSUMED_SPREAD_PCT", "0.001"))
     MIN_EXPECTED_NET_PNL_TRY = 0.5
+    # LLM paper-entry gate: an entry is blocked when the live top-of-book spread
+    # exceeds this percent (thin-orderbook protection for low-price TRY pairs).
+    LLM_MAX_ENTRY_SPREAD_PCT = float(os.getenv("LLM_MAX_ENTRY_SPREAD_PCT", "1.0"))
     # Target distance must be at least this multiple of recent ATR noise for
     # an entry to be worth taking (S1 cost-aware quality gates).
     MIN_TARGET_ATR_CAPACITY_RATIO = max(0.1, float(os.getenv("MIN_TARGET_ATR_CAPACITY_RATIO", "1.0")))
