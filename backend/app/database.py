@@ -1255,12 +1255,17 @@ async def fix_upside_scout_units():
 
 
 async def get_ml_training_candles(cutoff_ms: int, max_bars_per_symbol: int = 3000):
-    """M1 candle'ları sembol başına son N bar olacak şekilde dict döndürür."""
+    """M5 candle'ları sembol başına son N bar olacak şekilde dict döndürür.
+
+    historical_candles'a yalnızca 5m mumlar yazılır (backfill + backtest);
+    1m veri toplanmadığından ML eğitimi 5m bar üzerinden çalışır
+    (5dk ufuk = 1 bar, 15dk ufuk = 3 bar).
+    """
     def op(conn):
         data: dict[str, dict[str, list]] = {}
         rows = conn.execute(
             """SELECT symbol, open_time, high, low, close, volume
-               FROM historical_candles WHERE timeframe='1m' AND open_time >= ?
+               FROM historical_candles WHERE timeframe='5m' AND open_time >= ?
                ORDER BY symbol, open_time DESC""", (int(cutoff_ms),)).fetchall()
         for symbol, open_time, high, low, close, volume in rows:
             bucket = data.setdefault(str(symbol), {"open_time": [], "high": [], "low": [], "close": [], "volume": []})

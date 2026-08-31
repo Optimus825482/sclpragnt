@@ -25,7 +25,7 @@ from .config import config
 
 logger = logging.getLogger("scalper.ml")
 
-FEATURE_VERSION = "v1"
+FEATURE_VERSION = "v2"  # v2: 5m bar tabanlı özellikler (1m veri toplanmıyor)
 HORIZONS = (5, 15)
 FEATURE_NAMES = [
     "ret1_pct", "ret3_pct", "ret5_pct", "atr_pct", "bb_width_pct", "rsi14",
@@ -81,9 +81,12 @@ def _future_extreme(a: np.ndarray, horizon: int, highest: bool) -> np.ndarray:
 
 
 def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarray,
-                         close: np.ndarray, volume: np.ndarray, symbol_code: int) -> dict[str, np.ndarray]:
-    """Tek sembolün M1 dizilerinden özellik matrisi + etiketler üretir.
+                         close: np.ndarray, volume: np.ndarray, symbol_code: int,
+                         bar_minutes: int = 1) -> dict[str, np.ndarray]:
+    """Tek sembolün bar dizilerinden özellik matrisi + etiketler üretir.
 
+    bar_minutes: bar başına dakika (1m veri = 1, 5m veri = 5). HORIZONS dakika
+    cinsindendir; bar horizonu = horizon / bar_minutes (5m veride 5dk=1, 15dk=3).
     Tüm hesaplar vektörel; özellik yalnızca bar t kapanışına kadar bilgi
     kullanır, etiketler t+1..t+H geleceğinden gelir (sızıntı yok).
     """
@@ -147,8 +150,9 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
 
     labels = {}
     for horizon in HORIZONS:
-        fut_high = _future_extreme(h, horizon, highest=True)
-        fut_low = _future_extreme(low_, horizon, highest=False)
+        bars = max(1, round(horizon / bar_minutes))
+        fut_high = _future_extreme(h, bars, highest=True)
+        fut_low = _future_extreme(low_, bars, highest=False)
         labels[f"mfe_{horizon}"] = (fut_high / c - 1).astype(np.float32)
         labels[f"mae_{horizon}"] = (fut_low / c - 1).astype(np.float32)
     labels["open_time"] = open_time.astype(np.int64)
@@ -192,7 +196,7 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
 
 
 def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -> dict[str, Any]:
-    """Eğitim: candle verisi + journal örnekleri -> artifact + metrics sözlüğü.
+    """Eğitim: 5m candle verisi + journal örnekleri -> artifact + metrics sözlüğü.
 
     Saf/senkron fonksiyon; DB okuma ve artifact kaydı çağıran tarafta async
     yapılır. Holdout: candle örneklerinin zaman sırasıyla son %15'i.
@@ -207,7 +211,7 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -
     import joblib
 
     if not candles:
-        raise RuntimeError("Eğitim verisi yok: historical_candles boş")
+        raise RuntimeError("Eğitim verisi yok: historical_candles (5m) boş")
     symbols = sorted(candles)
     symbol_codes = {sym: idx for idx, sym in enumerate(symbols)}
     journal_X, journal_mfe, journal_hit, journal_h, journal_w = prepare_journal_samples(journal_rows, symbol_codes)
@@ -217,7 +221,8 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -
         if len(arrays["close"]) < 120:
             continue
         ds = build_symbol_dataset(arrays["open_time"], arrays["high"], arrays["low"],
-                                  arrays["close"], arrays["volume"], symbol_codes[sym])
+                                  arrays["close"], arrays["volume"], symbol_codes[sym],
+                                  bar_minutes=5)
         for horizon in HORIZONS:
             mfe = ds[f"mfe_{horizon}"]
             valid = np.isfinite(mfe) & np.isfinite(ds["features"][:, 3])
