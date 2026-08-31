@@ -594,18 +594,14 @@ export default function ChatPage() {
       if (!response.ok || data.enabled === false) {
         throw new Error(data.detail || data.error || "Yükseliş keşfi başarısız");
       }
-      const sel = data.selection || {};
-      const jq = data.symbol_journal_quality;
-      const jqText = jq
-        ? ` · ${jq.evaluated} ölçüm, ${jq.touched} dokunuş, ort. MFE %${Number(jq.avg_mfe_pct).toFixed(2)}`
-        : "";
+      const syms = Array.isArray(data.symbols) && data.symbols.length
+        ? data.symbols.join(", ")
+        : data.symbol;
       setMessages((current) => [
         ...current,
         {
           role: "user" as const,
-          content:
-            `🎯 EN HIZLI YÜKSELİŞ KEŞFİ: ${data.symbol} — sıra skoru ${sel.rank_score}, ` +
-            `kalite çarpanı ×${sel.quality_multiplier}${jqText}`,
+          content: `🎯 EN HIZLI YÜKSELİŞ KEŞFİ: ${syms}`,
         },
         { role: "assistant" as const, content: data.analysis || "Analiz üretilemedi." },
       ]);
