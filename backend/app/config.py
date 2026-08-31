@@ -103,11 +103,17 @@ class Config:
     # stop koyma; kâr koruma merdiveni (+%1 kâr kilidi + trailing) yine çalışır.
     VELOCITY_NO_INITIAL_STOP = os.getenv("VELOCITY_NO_INITIAL_STOP", "true").lower() == "true"
     VELOCITY_POOL_SIZE = max(5, min(50, int(os.getenv("VELOCITY_POOL_SIZE", "30"))))  # Hız Avcısı aday havuzu (top gainer)
-    VELOCITY_TRAIL_TRIGGER_PCT = float(os.getenv("VELOCITY_TRAIL_TRIGGER_PCT", "0.7"))  # Trailing/kâr kilidi bu kâr yüzdesinde devreye girer (24h replay: 0.7 > 1.0)
-    # Trailing is intentionally wider than the old 0.5% setting so a brief
-    # pullback does not close a still-strong velocity move immediately.
-    VELOCITY_TRAIL_GAP_PCT = float(os.getenv("VELOCITY_TRAIL_GAP_PCT", "0.8"))
-    VELOCITY_PROFIT_LOCK_PCT = 0.01  # +%1'de kilitlenen net kâr (girişin %0.01 üstü + komisyon)
+    VELOCITY_TRAIL_TRIGGER_PCT = float(os.getenv("VELOCITY_TRAIL_TRIGGER_PCT", "0.5"))  # Kâr kilidi bu kâr yüzdesinde devreye girer (3-gün walk-forward: 0.5 > 0.7)
+    # Trailing boşluğu: tepe fiyatın bu yüzde altına inince çık. Sıkı (%0.3)
+    # + intrabar tetikleme, pump'ın "hızlı tepe vurup dönme" davranışında kârı
+    # kilitleyip erken kaçıyor; geniş trailing (%0.8) kârı geri veriyordu.
+    VELOCITY_TRAIL_GAP_PCT = float(os.getenv("VELOCITY_TRAIL_GAP_PCT", "0.3"))
+    # Trailing tetikleme modu: "intrabar" = mum low'u stopa değince çık (backtest
+    # kazananı); "close" = sadece kapanışta kontrol (eski davranış).
+    VELOCITY_TRAIL_INTRABAR = os.getenv("VELOCITY_TRAIL_INTRABAR", "true").lower() == "true"
+    # Maksimum tutma süresi (dk): 30dk sonra kapanıştan çık — kâr erimesini önler.
+    VELOCITY_MAX_HOLD_MIN = int(os.getenv("VELOCITY_MAX_HOLD_MIN", "30"))
+    VELOCITY_PROFIT_LOCK_PCT = 0.01  # +%0.5'te kilitlenen net kâr (girişin %0.01 üstü + komisyon)
     # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
     # (24s/72s/7g altı pencerede %66-68 başarı). Aday pozisyon açmadan önce
     # bu eşikleri karşılamalıdır. VELOCITY_PATTERN_FILTER_ENABLED=true ise
