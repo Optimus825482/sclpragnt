@@ -125,6 +125,15 @@ class Config:
     # olan semboller yeni açılışta atlanır (7g backtest: iyi semboller +0.04%
     # vs kötüler -0.74%).
     VELOCITY_SYMBOL_QUALITY_FILTER = os.getenv("VELOCITY_SYMBOL_QUALITY_FILTER", "true").lower() == "true"
+    # Mikro-yapı giriş filtreleri (2026-08-31, microflow verisiyle):
+    # 1) Whale dağıtım filtresi: son whale'ler dağıtım ağırlıklıysa (fiyat etkisi
+    #    analizi) girişi engelle — "sahte kırılım" elemesi. Varsayılan OFF:
+    #    canlı istatistik (kaç açılışın dağıtım sinyaliyle engellendiği) toplanmadan
+    #    giriş kalitesini bozabilecek bir filtreyi zorunlu kılma.
+    VELOCITY_WHALE_DISTRIBUTION_FILTER = os.getenv("VELOCITY_WHALE_DISTRIBUTION_FILTER", "false").lower() == "true"
+    # 2) Agresif akış onayı: giriş yönüne (long) aykırı net agresif satış akışı
+    #    (CVD) varsa girişi reddet. Varsayılan OFF (aynı gerekçe).
+    VELOCITY_FLOW_CONFIRMATION_FILTER = os.getenv("VELOCITY_FLOW_CONFIRMATION_FILTER", "false").lower() == "true"
     VELOCITY_PROFIT_LOCK_PCT = 0.01  # +%0.5'te kilitlenen net kâr (girişin %0.01 üstü + komisyon)
     # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
     # (24s/72s/7g altı pencerede %66-68 başarı). Aday pozisyon açmadan önce

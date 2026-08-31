@@ -312,6 +312,21 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
             "leading_ok": r.get("leading_ok"),
         } for r in (candidates[:limit] + watchlist[:5])]
+        # Adaylar için mikro yapı (whale dağıtım sinyali, CVD) journal'a eklenir;
+        # filtreler kapalıyken dahi ileride canlı istatistik üretmek için kaydedilir.
+        for row in journal_rows:
+            try:
+                micro = microflow.get_snapshot(price=row["price"])
+                flow = (micro.get("trade_flow") or {})
+                activity = (flow.get("whale_activity") or {})
+                row["microstructure"] = {
+                    "whale_verdict": activity.get("verdict"),
+                    "whale_count": activity.get("whale_count"),
+                    "cvd_try": flow.get("cvd_try"),
+                    "trade_rate_per_min": flow.get("trade_rate_per_min"),
+                }
+            except Exception:
+                pass
         await database.save_velocity_candidates(journal_rows)
     except Exception as exc:
         logger.warning("velocity journal hatası: %s", exc)
@@ -586,6 +601,12 @@ async def get_velocity_report(limit: int = 60):
                             "sl_pct": config.VELOCITY_AUTO_SL_PCT,
                             "trail_trigger_pct": config.VELOCITY_TRAIL_TRIGGER_PCT,
                             "state": {k: v for k, v in _velocity_auto_state.items() if k != "opened"},
+                            "microstructure_filters": {
+                                "whale_distribution_enabled": bool(config.VELOCITY_WHALE_DISTRIBUTION_FILTER),
+                                "flow_confirmation_enabled": bool(config.VELOCITY_FLOW_CONFIRMATION_FILTER),
+                                "skip_counts": dict(_velocity_auto_state["filters"]),
+                                "note": "Filtreler varsayılan kapalı; istatistik toplanırken giriş kalitesi değişmez. Canlı istatistik sonrası açılabilir.",
+                            },
                             "recent_opens": list(_velocity_auto_state["opened"][-5:])},
             "symbols": symbols[:20], "recent": recent}
 
@@ -814,7 +835,9 @@ async def get_velocity_live_tracking():
 
 
 _velocity_auto_state = {"last_scan_at": None, "last_error": None, "opened": [],
-                          "last_open": None, "total_opened": 0}
+                          "last_open": None, "total_opened": 0,
+                          "filters": {"whale_dagilim_reddet": 0, "akis_aykiri_reddet": 0,
+                                      "microflow_yok": 0}}
 
 
 async def _velocity_rest_liquidity_ok(symbol: str, order_value: float) -> tuple[bool, str | None]:
@@ -977,6 +1000,32 @@ async def _open_velocity_position(candidate: dict) -> dict:
         await microflow.start(symbol)
     except Exception as exc:
         logger.warning("velocity microflow başlatma: %s", exc)
+    # Mikro-yapı giriş filtreleri (deterministik, LLM çağrısız): whale dağıtım
+    # sinyali ve aykırı agresif satış akışı "sahte kırılım" riskini işaretler.
+    # Yalnız gerçek veri varsa uygulanır; veri yoksa kapı açık kalır (fail-open:
+    # mikro yapı akışı daha yeni başladığı için ilk turda veri eksik olabilir).
+    try:
+        micro_snapshot = microflow.get_snapshot(price=price)
+        micro_activity = (micro_snapshot.get("trade_flow") or {}).get("whale_activity") or {}
+        micro_flow = micro_snapshot.get("trade_flow") or {}
+        if config.VELOCITY_WHALE_DISTRIBUTION_FILTER:
+            if micro_activity.get("whale_count") and micro_activity.get("verdict") in {"distribution", "mixed"}:
+                _velocity_auto_state["filters"]["whale_dagilim_reddet"] += 1
+                return {"symbol": symbol, "status": "SKIPPED",
+                        "reason": f"whale_dagilim:{micro_activity.get('verdict')}",
+                        "whale_activity": {k: micro_activity.get(k) for k in
+                                           ("verdict", "accumulation", "distribution", "whale_count")}}
+        if config.VELOCITY_FLOW_CONFIRMATION_FILTER:
+            cvd = micro_flow.get("cvd_try")
+            if cvd is not None and cvd < 0:
+                _velocity_auto_state["filters"]["akis_aykiri_reddet"] += 1
+                return {"symbol": symbol, "status": "SKIPPED",
+                        "reason": f"akis_aykiri:cvd={cvd:.0f}TRY",
+                        "cvd_try": cvd}
+        if not micro_snapshot.get("data_ready"):
+            _velocity_auto_state["filters"]["microflow_yok"] += 1
+    except Exception as exc:
+        logger.warning("velocity mikro yapı filtresi: %s", exc)
     # Serbest TL'nin %50'si
     balance = await database.get_wallet_balance("TRY")
     order_value = round(balance * config.VELOCITY_AUTO_BALANCE_PCT / 100.0, 2)

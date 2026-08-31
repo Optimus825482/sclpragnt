@@ -293,6 +293,172 @@ def regime_transition_signal(snapshot: dict) -> dict:
             "paper_only": True}
 
 
+# ---------------------------------------------------------------------------
+# Whale accumulation / distribution detection.
+#
+# Binance TR spot exposes no wallet/position data, so "who entered" cannot be
+# known directly. What the public aggTrade tape *does* give us is the price
+# impact that follows each large fill. A whale buy whose price holds above the
+# pre-trade mid is consistent with genuine accumulation (buyer absorbing the
+# offer side); a whale buy that immediately gives the move back is consistent
+# with distribution into retail bids. Same logic mirrored for whale sells.
+# These are directional proxies, not order-book truths.
+# ---------------------------------------------------------------------------
+
+# Bir whale işleminden sonra fiyat etkisinin ölçüldüğü saniye penceresi.
+WHALE_IMPACT_WINDOW_SEC = 30.0
+# Whale işleminin en az ne kadar öncesinden referans fiyatı alınır.
+WHALE_REFERENCE_BACK_MS = 5_000
+
+
+def classify_whale_trade(whale: dict, tape: list[dict]) -> dict:
+    """Bir whale işleminin giriş (birikim) mi çıkış (dağıtım) mı olduğunu
+    işlem-sonrası fiyat etkisiyle sınıflandırır.
+
+    ``whale``: {"t": ms, "p": fiyat, "q": miktar, "m": bool} (buyer_is_maker).
+    ``tape``: aynı şemada, whale işlemini de içeren, artan zaman sıralı işlem
+    akışı. Fiyat etkisi, whale işleminden sonraki 15s içindeki işlemlerin
+    medyan fiyatı ile whale işleminden 5s önceki referans fiyatı arasındaki
+    değişimdir. Etki eşiği ~0.10%'dir; daha küçük hareketler "nötr/absorbed"
+    sayılır.
+    """
+    try:
+        whale_ms = int(whale.get("t") or 0)
+        whale_price = float(whale.get("p") or 0)
+    except (TypeError, ValueError):
+        return {"verdict": "unknown", "reason": "geçersiz whale kaydı"}
+    if whale_ms <= 0 or whale_price <= 0:
+        return {"verdict": "unknown", "reason": "geçersiz whale zaman/fiyat"}
+    reference = None
+    for trade in (tape or []):
+        try:
+            if int(trade.get("t") or 0) < whale_ms - WHALE_REFERENCE_BACK_MS:
+                reference = float(trade.get("p") or 0)
+            else:
+                break
+        except (TypeError, ValueError):
+            continue
+    # Tape whale ile başlıyorsa (canlı akışın ilk saniyeleri) hemen önceki
+    # trade referans olarak kullanılır; böylece "unknown" yerine en azından
+    # mevcut fiyat seviyesine göre sınıflandırma yapılabilir.
+    if reference is None:
+        for trade in reversed(tape or []):
+            try:
+                if int(trade.get("t") or 0) < whale_ms:
+                    reference = float(trade.get("p") or 0)
+                    break
+            except (TypeError, ValueError):
+                continue
+    if reference is None or reference <= 0:
+        return {"verdict": "unknown", "reason": "referans fiyat yok"}
+    impact_prices = []
+    for trade in (tape or []):
+        try:
+            ts = int(trade.get("t") or 0)
+            price = float(trade.get("p") or 0)
+        except (TypeError, ValueError):
+            continue
+        if whale_ms < ts <= whale_ms + int(WHALE_IMPACT_WINDOW_SEC * 1000) and price > 0:
+            impact_prices.append(price)
+    # Pencerede işlem yoksa (büyük işlem sonrası sessizlik) tape'te whale'den
+    # sonraki ilk işlem referans alınır; yine yoksa gerçekten bilgi yoktur.
+    if not impact_prices:
+        for trade in (tape or []):
+            try:
+                ts = int(trade.get("t") or 0)
+                price = float(trade.get("p") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts > whale_ms and price > 0:
+                impact_prices.append(price)
+                break
+    if not impact_prices:
+        return {"verdict": "unknown", "reason": "etki penceresinde işlem yok"}
+    impact_prices.sort()
+    n = len(impact_prices)
+    post_median = float(impact_prices[n // 2])
+    change_pct = (post_median / reference - 1) * 100 if reference > 0 else 0.0
+    threshold = 0.10  # %0.10
+    is_buy = not bool(whale.get("m", False))
+    if is_buy:
+        if change_pct >= threshold:
+            verdict = "accumulation"
+            reason = f"whale buy sonrası fiyat +{change_pct:.3f}% korundu (referans {reference}, medyan {post_median})"
+        elif change_pct <= -threshold:
+            verdict = "distribution"
+            reason = f"whale buy sonrası fiyat {change_pct:.3f}% geri verildi — satıcı absorb ediyor"
+        else:
+            verdict = "neutral"
+            reason = f"whale buy fiyatı {change_pct:+.3f}% — nötr/absorbed"
+    else:
+        if change_pct <= -threshold:
+            verdict = "distribution"
+            reason = f"whale sell sonrası fiyat {change_pct:.3f}% düştü — çıkış baskısı gerçek"
+        elif change_pct >= threshold:
+            verdict = "accumulation"
+            reason = f"whale sell fiyatı +{change_pct:.3f}% toparladı — alıcı emiyor (birikim lehine)"
+        else:
+            verdict = "neutral"
+            reason = f"whale sell fiyatı {change_pct:+.3f}% — nötr/absorbed"
+    return {"verdict": verdict, "side": "buy" if is_buy else "sell",
+            "notional_try": round(whale_price * float(whale.get("q") or 0), 2),
+            "reference_price": round(reference, 8),
+            "post_median_price": round(post_median, 8),
+            "impact_pct": round(change_pct, 4),
+            "impact_window_sec": WHALE_IMPACT_WINDOW_SEC,
+            "impact_trades": n,
+            "reason": reason}
+
+
+def whale_activity_from_tape(tape: list[dict], whale_threshold_try: float = 25_000.0,
+                             limit: int = 8) -> dict:
+    """Tapedeki tüm whale işlemlerini sınıflandırıp birikim/dağıtım özeti üretir.
+
+    ``tape`` artan zaman sıralı olmalıdır. Son ``limit`` whale işlemi
+    sınıflandırılır; özet hem toplam notional ağırlığını hem de son whale'in
+    yönünü verir. Tahmin/garanti değildir, paper-only'dir.
+    """
+    whales = []
+    for trade in (tape or []):
+        try:
+            ts = int(trade.get("t") or 0)
+            price = float(trade.get("p") or 0)
+            qty = float(trade.get("q") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts > 0 and price > 0 and qty > 0 and price * qty >= whale_threshold_try:
+            whales.append({"t": ts, "p": price, "q": qty, "m": bool(trade.get("m", False))})
+    if not whales:
+        return {"whale_count": 0, "accumulation": 0, "distribution": 0, "neutral": 0,
+                "net_direction": "none", "verdict": "no_whale", "classified": [], "data_ready": True}
+    classified = []
+    for whale in whales[-limit:]:
+        result = classify_whale_trade(whale, tape)
+        result["t"] = whale["t"]
+        classified.append(result)
+    acc = sum(1 for item in classified if item.get("verdict") == "accumulation")
+    dist = sum(1 for item in classified if item.get("verdict") == "distribution")
+    neu = sum(1 for item in classified if item.get("verdict") == "neutral")
+    if acc > dist and acc > 0:
+        verdict = "accumulation"
+    elif dist > acc and dist > 0:
+        verdict = "distribution"
+    elif acc == dist and acc > 0:
+        verdict = "mixed"
+    else:
+        verdict = "neutral"
+    return {"whale_count": len(whales), "classified_count": len(classified),
+            "accumulation": acc, "distribution": dist, "neutral": neu,
+            "net_direction": "buy" if acc > dist else "sell" if dist > acc else "neutral",
+            "verdict": verdict,
+            "accumulation_notional_try": round(sum(item.get("notional_try") or 0 for item in classified if item.get("verdict") == "accumulation"), 2),
+            "distribution_notional_try": round(sum(item.get("notional_try") or 0 for item in classified if item.get("verdict") == "distribution"), 2),
+            "last_whale": classified[-1] if classified else None,
+            "classified": classified,
+            "threshold_try": whale_threshold_try,
+            "data_ready": True}
+
+
 def walk_forward_assessment(windows: list[dict]) -> dict:
     """Flag degradation across ordered historical windows without overclaiming."""
     if len(windows) < 2:
