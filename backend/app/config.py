@@ -125,6 +125,11 @@ class Config:
     # olan semboller yeni açılışta atlanır (7g backtest: iyi semboller +0.04%
     # vs kötüler -0.74%).
     VELOCITY_SYMBOL_QUALITY_FILTER = os.getenv("VELOCITY_SYMBOL_QUALITY_FILTER", "true").lower() == "true"
+    # Otonom açılış için minimum velocity skoru. Journal analizi (2026-08-31):
+    # skor <10 geçen adaylarda dokunuş %16.7 (n=12), 10-30 arası %47.6 (n=21),
+    # 30+ %50.0 (n=14) — 10 altı adaylarda açılış yapmak EV'yi düşürüyor.
+    # 0 = filtre kapalı. Eşik ham velocity_score'a bakar; kalite çarpanı uygulanmaz.
+    VELOCITY_AUTO_MIN_SCORE = float(os.getenv("VELOCITY_AUTO_MIN_SCORE", "10"))
     # Journal tabanlı sembol kalitesi: hız avcısı adaylarının ölçülmüş geçmişi.
     # Yeterli örneklemde (≥ min_evaluated) hiç dokunuşu olmayan ve ort. MFE'si
     # eşiğin altında kalan semboller yeni açılışta atlanır. Min örneklem altındaki
