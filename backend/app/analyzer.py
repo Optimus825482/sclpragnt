@@ -510,11 +510,16 @@ class ScalpAnalyzer:
         if pos:
             # İntrabar modda mum high/low'su da tepe/dip sayılır — trailing stop
             # kapanış fiyatına değil gerçek tepeye göre hesaplanır.
+            # kline yapısı: {"highs": [...], "lows": [...], "closes": [...], ...}
             cur_hi = cur_lo = price
-            if config.VELOCITY_TRAIL_INTRABAR and kline and len(kline) > 0:
+            if config.VELOCITY_TRAIL_INTRABAR and kline:
                 try:
-                    cur_hi = max(float(kline[-1][2]), price)
-                    cur_lo = min(float(kline[-1][3]), price)
+                    k_highs = kline.get("highs") or []
+                    k_lows = kline.get("lows") or []
+                    if k_highs:
+                        cur_hi = max(float(k_highs[-1]), price)
+                    if k_lows:
+                        cur_lo = min(float(k_lows[-1]), price)
                 except (TypeError, ValueError, IndexError):
                     pass
             pos["max_price"] = max(pos.get("max_price", pos["entry_price"]), cur_hi)
@@ -592,10 +597,11 @@ class ScalpAnalyzer:
                     system_stop = trailing
                 # İntrabar tetikleme: mevcut 1m mumun low'u stopa değdiyse çık.
                 # Kapanış bazlı kontrol fiyatın dibe vurup toparlandığı mumlarda
-                # çıkışı kaçırıyor/geciktiriyordu.
+                # çıkışı kaçırıyor/geciktiriyordu. kline: {"lows": [...], ...}
                 if config.VELOCITY_TRAIL_INTRABAR:
                     try:
-                        cur_low = float(kline[-1][3]) if kline and len(kline) > 0 else None
+                        k_lows = kline.get("lows") or [] if kline else []
+                        cur_low = float(k_lows[-1]) if k_lows else None
                     except (TypeError, ValueError, IndexError):
                         cur_low = None
                     if cur_low is not None and cur_low <= system_stop:
