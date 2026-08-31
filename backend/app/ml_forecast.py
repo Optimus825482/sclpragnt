@@ -90,10 +90,11 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
     Tüm hesaplar vektörel; özellik yalnızca bar t kapanışına kadar bilgi
     kullanır, etiketler t+1..t+H geleceğinden gelir (sızıntı yok).
     """
-    c = close.astype(np.float64)
-    h = high.astype(np.float64)
-    low_ = low.astype(np.float64)
-    v = volume.astype(np.float64)
+    c = np.asarray(close, dtype=np.float64)
+    h = np.asarray(high, dtype=np.float64)
+    low_ = np.asarray(low, dtype=np.float64)
+    v = np.asarray(volume, dtype=np.float64)
+    open_time = np.asarray(open_time, dtype=np.int64)
     n = len(c)
     prev_c = np.concatenate(([np.nan], c[:-1]))
 
