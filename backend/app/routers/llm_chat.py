@@ -22,7 +22,9 @@ from app.routers.maintenance import backfill_symbol_history
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, top_gainers, orderbook
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.market_intelligence import (estimate_local_regime, execution_quality, symbol_safety,
-                                     cost_aware_trade_metrics, microstructure_snapshot, symbol_outcome_profile)
+                                     cost_aware_trade_metrics, microstructure_snapshot, symbol_outcome_profile,
+                                     symbol_behavior_profile, regime_transition_signal)
+from app.microflow import microflow
 from app.self_learning import build_learning_context
 from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
@@ -67,6 +69,10 @@ LLM_MICROSTRUCTURE_TOOL = {"type":"function","function":{"name":"get_microstruct
 LLM_REGIME_TOOL = {"type":"function","function":{"name":"get_regime_snapshot","description":"5m/15m/1h gibi timeframe'lerde trend, rejim ve çoklu timeframe hizalamasını getirir; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframes":{"type":"array","items":{"type":"string"}}},"required":["symbol"]}}}
 LLM_ECONOMICS_TOOL = {"type":"function","function":{"name":"calculate_trade_economics","description":"Komisyon, spread ve slippage dahil paper işlem break-even, beklenen net PnL ve edge/cost oranını hesaplar; işlem açmaz.","parameters":{"type":"object","properties":{"entry_price":{"type":"number"},"stop_price":{"type":"number"},"take_profit":{"type":"number"},"quantity":{"type":"number"},"order_value_try":{"type":"number"},"spread_pct":{"type":"number"}},"required":["entry_price"]}}}
 LLM_OUTCOME_PROFILE_TOOL = {"type":"function","function":{"name":"get_symbol_outcome_profile","description":"Sembol/strateji geçmişinin komisyon sonrası expectancy, profit factor, drawdown, loss streak ve örnek yeterliliğini getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}
+LLM_REALTIME_FLOW_TOOL = {"type":"function","function":{"name":"get_realtime_flow","description":"Sembolün canlı agresif alış/satış akışını (CVD, trade frekansı, whale sayısı) ve emir defteri dengesizliğini getirir; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
+LLM_SYMBOL_BEHAVIOR_TOOL = {"type":"function","function":{"name":"get_symbol_behavior","description":"Sembolün davranış profilini (hangi saatlerde hareketli, hacim/volatilite rejimi) ve range→trend geçiş sinyalini getirir; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframe":{"type":"string"}},"required":["symbol"]}}}
+LLM_SUBMINUTE_TOOL = {"type":"function","function":{"name":"get_subminute_microstructure","description":"Sembolün 1s/5s bar bazlı sub-minute mikro yapısını (ret, agresif akış, derinlik, whale) getirir; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"depth_limit":{"type":"integer"}},"required":["symbol"]}}}
+LLM_SLIPPAGE_TOOL = {"type":"function","function":{"name":"get_historical_slippage","description":"Sembolün tarihsel slippage dağılımını (fiyat aralığı/kademe) ve komisyon eklenmiş tahmini net maliyeti hesaplar; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"days_back":{"type":"integer"}},"required":["symbol"]}}}
 LLM_WALK_FORWARD_TOOL = {"type":"function","function":{"name":"run_walk_forward","description":"Public candle verisi üzerinde kronolojik out-of-sample fold backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"train_days":{"type":"integer"},"test_days":{"type":"integer"},"folds":{"type":"integer"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy"]}}}
 LLM_EXECUTION_STRESS_TOOL = {"type":"function","function":{"name":"run_execution_stress_test","description":"Paper-only backtesti spread, slippage ve maliyet senaryolarında tekrarlar; gerçek emir göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"days_back":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
 LLM_SENSITIVITY_TOOL = {"type":"function","function":{"name":"run_parameter_sensitivity","description":"Paper-only TP/SL ve risk/ödül komşu varyantlarını karşılaştırır; tek bir parametre noktasına güvenmeyi engeller.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"days_back":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
@@ -763,6 +769,9 @@ def _llm_entry_quality_gate(snapshot: dict, outcome_profile: dict | None = None)
     if rsi is not None and float(rsi) >= 90: reasons.append("overbought_rsi")
     imbalance = liquidity.get("orderflow_imbalance")
     if imbalance is not None and float(imbalance) < -0.10: reasons.append("negative_orderflow")
+    spread_pct = liquidity.get("spread_pct")
+    if spread_pct is not None and float(spread_pct) > config.LLM_MAX_ENTRY_SPREAD_PCT:
+        reasons.append("spread_above_entry_limit")
     profile = outcome_profile or {}
     sample = int(profile.get("trades") or 0)
     loss_streak = int(profile.get("current_loss_streak") or 0)
@@ -804,11 +813,17 @@ async def scan_market_snapshots(args: dict | None = None):
             ready = [row for row in rows.values() if row.get("data_ready")]
             selected = rows.get("5m") if rows.get("5m", {}).get("data_ready") else (ready[0] if ready else rows.get(timeframes[0], {}))
             score, evidence, risks = _market_candidate_score(selected)
+            flow_row = None
+            try:
+                flow_row = market.get_microstructure(sym, selected.get("price"))
+            except Exception:
+                flow_row = None
             return {"symbol": sym, "selected_timeframe": selected.get("timeframe", "5m"), "score": score,
                     "data_ready": bool(selected.get("data_ready")),
                     "trend_direction": (selected.get("summary") or (selected.get("trend") or {}).get("alignment") or "unknown"),
                     "evidence": evidence, "risks": risks, "data_ready_timeframes": list(rows.keys()),
                     "snapshot": selected, "timeframes": rows,
+                    "realtime_flow": flow_row,
                     "outcome_profile": symbol_outcome_profile(historical_trades, sym, "LLM_PAPER", 100)}
     results = await asyncio.gather(*(one(sym) for sym in symbols))
     results.sort(key=lambda row: row["score"], reverse=True)
@@ -1416,6 +1431,100 @@ async def get_symbol_outcome_profile_tool(args: dict):
     trades = await database.get_trades()
     return symbol_outcome_profile(trades, args.get("symbol"), args.get("strategy"), args.get("limit", 100))
 
+
+async def get_realtime_flow(args: dict):
+    """Canlı agresif akış: 60s CVD, trade frekansı, whale sayısı + derinlik dengesizliği."""
+    symbol = str(args.get("symbol") or "").replace("_", "").upper()
+    if not symbol:
+        return {"error": "symbol gerekli"}
+    snapshot = await symbol_analysis(symbol, "5m")
+    flow = None
+    try:
+        flow = market.get_microstructure(symbol, snapshot.get("price"))
+    except Exception as exc:
+        flow = {"error": str(exc)}
+    result = {"symbol": symbol, "data_ready": bool(snapshot.get("data_ready")),
+              "snapshot_price": snapshot.get("price"), "realtime_flow": flow, "paper_only": True}
+    if not snapshot.get("data_ready"):
+        result["snapshot_error"] = snapshot.get("error")
+    return result
+
+
+async def get_symbol_behavior(args: dict):
+    """Davranış profili + range→trend geçiş sinyali (yeni ağ çağrısı yok)."""
+    symbol = str(args.get("symbol") or "").replace("_", "").upper()
+    timeframe = str(args.get("timeframe") or "5m")
+    if not symbol:
+        return {"error": "symbol gerekli"}
+    snapshot = await symbol_analysis(symbol, timeframe)
+    if not snapshot.get("data_ready"):
+        return {"symbol": symbol, "data_ready": False, "error": snapshot.get("error"), "paper_only": True}
+    behavior = snapshot.get("symbol_behavior") or symbol_behavior_profile(snapshot)
+    regime = snapshot.get("regime_transition") or regime_transition_signal(snapshot)
+    return {"symbol": symbol, "timeframe": timeframe, "data_ready": True,
+            "symbol_behavior": behavior, "regime_transition": regime, "paper_only": True}
+
+
+async def get_subminute_microstructure(args: dict):
+    """1s/5s bar + agresif akış + derinlik için tekil sembol WS akışını başlatır."""
+    symbol = str(args.get("symbol") or "").replace("_", "").upper()
+    if not symbol:
+        return {"error": "symbol gerekli"}
+    depth_limit = max(5, min(int(args.get("depth_limit") or 20), 100))
+    await microflow.start(symbol)
+    await asyncio.sleep(2.5)  # 1s/5s bar ve aggTrade birikimi için kısa bekleme
+    try:
+        await microflow.refresh_depth(depth_limit)
+    except Exception:
+        pass
+    snapshot = microflow.get_snapshot()
+    snapshot["depth_limit"] = depth_limit
+    return snapshot
+
+
+async def get_historical_slippage(args: dict):
+    """Tarihsel kapanış-mum slippage dağılımı + komisyon/slippage modeli."""
+    symbol = str(args.get("symbol") or "").replace("_", "").upper()
+    interval = str(args.get("interval") or "1m")
+    days_back = max(1, min(int(args.get("days_back") or 30), 90))
+    if interval not in {"1m", "5m", "15m", "1h"}:
+        interval = "1m"
+    try:
+        rows = await historical_klines(symbol, interval, days_back)
+    except Exception as exc:
+        return {"symbol": symbol, "error": str(exc), "paper_only": True}
+    if len(rows) < 30:
+        return {"symbol": symbol, "interval": interval, "samples": len(rows),
+                "data_ready": False, "error": "yetersiz mum verisi", "paper_only": True}
+    ranges = []
+    for row in rows:
+        try:
+            high, low = float(row[2]), float(row[3])
+            close = float(row[4])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if low > 0:
+            ranges.append((high - low) / low * 100)
+    if not ranges:
+        return {"symbol": symbol, "interval": interval, "data_ready": False,
+                "error": "geçerli mum yok", "paper_only": True}
+    ranges.sort()
+    n = len(ranges)
+    percentile = lambda p: float(ranges[min(n - 1, int(n * p))])
+    p25, p50, p90 = percentile(0.25), percentile(0.5), percentile(0.9)
+    # Kademe-yarım slippage varsayımı: mum aralığının %10'u (ilk mum girişi).
+    est_slippage_p50 = p50 * 0.10
+    est_slippage_p90 = p90 * 0.10
+    round_trip_pct = config.COMMISSION_PCT * 2 + est_slippage_p50 * 2
+    return {"symbol": symbol, "interval": interval, "samples": n, "data_ready": True,
+            "range_distribution_pct": {"p25": round(p25, 4), "p50": round(p50, 4), "p90": round(p90, 4),
+                                       "mean": round(sum(ranges) / n, 4)},
+            "estimated_slippage_pct": {"p50": round(est_slippage_p50, 4), "p90": round(est_slippage_p90, 4),
+                                       "model": "half-tick intra-candle heuristic"},
+            "estimated_round_trip_cost_pct": round(round_trip_pct, 6),
+            "commission_pct": config.COMMISSION_PCT,
+            "paper_only": True}
+
 async def validate_trade_plan(args: dict):
     """Deterministic preflight; validation never opens or modifies a position."""
     symbol = str(args.get("symbol") or "").replace("_", "").upper()
@@ -1542,7 +1651,9 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     }
     tools = []
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL,
-                  LLM_ECONOMICS_TOOL, LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL,
+                  LLM_ECONOMICS_TOOL, LLM_OUTCOME_PROFILE_TOOL, LLM_REALTIME_FLOW_TOOL,
+                  LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
+                  LLM_WALK_FORWARD_TOOL,
                   LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL,
                   LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL])
@@ -1558,7 +1669,8 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                   LLM_MARKET_SCAN_TOOL, LLM_15M_UPSIDE_TOOL, LLM_5M_UPSIDE_TOOL, LLM_DEEP_SYMBOL_TOOL, LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL,
                   LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL,
                   LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
-                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL])
+                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
+                  LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL])
     for tool in tools:
         if tool.get("function", {}).get("name") == "run_custom_backtest":
             tool["function"]["description"] = "Deklaratif paper-only backtest. Her koşul {indicator, op, value}; identifier şeması: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + "." + CUSTOM_EXIT_POLICY_GUIDANCE
@@ -1576,6 +1688,10 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         if name == "get_regime_snapshot": return await get_regime_snapshot(args)
         if name == "calculate_trade_economics": return await calculate_trade_economics_tool(args)
         if name == "get_symbol_outcome_profile": return await get_symbol_outcome_profile_tool(args)
+        if name == "get_realtime_flow": return await get_realtime_flow(args)
+        if name == "get_symbol_behavior": return await get_symbol_behavior(args)
+        if name == "get_subminute_microstructure": return await get_subminute_microstructure(args)
+        if name == "get_historical_slippage": return await get_historical_slippage(args)
         if name == "run_walk_forward":
             strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
             if strategy.upper() == "LLM_PAPER": return {"ok": False, "retryable": False, "paper_only": True, "error": "LLM_PAPER için explicit plan ve exit koşulları gerekir; run_custom_backtest kullanın."}
@@ -1706,6 +1822,10 @@ def _tool_activity_summary(name: str, args: dict) -> str:
     if name == "get_regime_snapshot": return f"{symbol} piyasa rejimi belirleniyor"
     if name == "calculate_trade_economics": return f"{symbol} işlem ekonomisi hesaplanıyor · maliyet/kâr analizi"
     if name == "get_symbol_outcome_profile": return f"{symbol} geçmiş işlem başarısı çıkarılıyor"
+    if name == "get_realtime_flow": return f"{symbol} agresif alış/satış akışı okunuyor · whale tespiti"
+    if name == "get_symbol_behavior": return f"{symbol} davranış profili ve rejim sinyali hesaplanıyor"
+    if name == "get_subminute_microstructure": return f"{symbol} 1s/5s mikro yapı akışı başlatılıyor"
+    if name == "get_historical_slippage": return f"{symbol} tarihsel slippage dağılımı hesaplanıyor"
     if name == "run_backtest" or name == "run_custom_backtest": return f"{symbol or 'strateji'} backtest çalıştırılıyor · geçmiş veri işleniyor"
     if name == "run_walk_forward": return "Walk-forward validasyonu çalıştırılıyor"
     if name == "run_holdout_test": return "Holdout testi çalıştırılıyor"
@@ -1821,7 +1941,9 @@ async def strategies_llm_chat(payload: dict = None):
                 context["symbol_data"] = {"symbol": requested, "data_ready": False, "error": str(exc)}
     tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Public historical candles üzerinde yalnızca paper/backtest simülasyonu çalıştırır. Gerçek emir ve canlı portföy değişikliği yoktur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","3m","5m","15m","30m","1h","2h","4h","1d"]},"days_back":{"type":"integer","description":"1-90 arası tarihsel gün"},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"params":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını candle verisi üzerinde backtest eder; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object","description":"entry/exit koşulları: indicator, op, value. En fazla 8 koşul.","properties":{"entry":{"type":"array"},"exit":{"type":"array"}}},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Aynı stratejiyi birden fazla tarih penceresinde çalıştırır ve trade PnL'leri üzerinde deterministik Monte Carlo dayanıklılık özeti üretir. Sonuçlar araştırma amaçlıdır; walk-forward için gerçek tarih aralığı ayrımı olmadığını açıkça belirtir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"windows":{"type":"array","items":{"type":"integer"},"description":"En fazla 3 pencere; 7-90 gün"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     tools.extend([LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
-                  LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL,
+                  LLM_OUTCOME_PROFILE_TOOL, LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL,
+                  LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
+                  LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL,
                   LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_DATA_QUALITY_TOOL,
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL])
     for tool in tools:
@@ -1848,6 +1970,10 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "get_regime_snapshot": return await get_regime_snapshot(args)
             if name == "calculate_trade_economics": return await calculate_trade_economics_tool(args)
             if name == "get_symbol_outcome_profile": return await get_symbol_outcome_profile_tool(args)
+            if name == "get_realtime_flow": return await get_realtime_flow(args)
+            if name == "get_symbol_behavior": return await get_symbol_behavior(args)
+            if name == "get_subminute_microstructure": return await get_subminute_microstructure(args)
+            if name == "get_historical_slippage": return await get_historical_slippage(args)
             if name == "run_walk_forward":
                 strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
                 if strategy.upper() == "LLM_PAPER":
@@ -2051,7 +2177,9 @@ async def strategies_llm_chat(payload: dict = None):
         LLM_MARKET_SCAN_TOOL, LLM_15M_UPSIDE_TOOL, LLM_5M_UPSIDE_TOOL, LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL,
         LLM_A2A_MESSAGES_TOOL, LLM_REQUEST_CODEX_RESEARCH_TOOL, LLM_DEEP_SYMBOL_TOOL,
         LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
-        LLM_OUTCOME_PROFILE_TOOL, LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL,
+        LLM_OUTCOME_PROFILE_TOOL, LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL,
+        LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
+        LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL,
         LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_VALIDATE_PLAN_TOOL,
         LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
         LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL,
