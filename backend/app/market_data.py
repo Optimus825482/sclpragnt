@@ -1,13 +1,14 @@
 import asyncio
 import json
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 
 import numpy as np
 import websockets
 
 from app.binance_tr_public import WS_BASE, klines as fetch_klines, ticker_24h
 from app.config import config
+from app.market_intelligence import whale_activity_from_tape
 
 
 def _empty_history():
@@ -725,6 +726,12 @@ class MarketData:
             if notional >= self.WHALE_NOTIONAL_TRY:
                 bucket["whale_sells"] += 1
         bucket["updated_at"] = now
+        # Bounded FIFO trade tape: whale activity classification needs the
+        # surrounding trades to measure the post-fill price impact. 2000
+        # aggTrade events is enough for a multi-minute context on active pairs.
+        tape = bucket.setdefault("_tape", deque(maxlen=2000))
+        tape.append({"t": int(trade.get("T", trade.get("E", 0)) or 0),
+                     "p": price, "q": qty, "m": bool(trade.get("m", False))})
 
     # A single trade is "whale-sized" when its TRY notional reaches this.
     # Binance TR spot notional for BTCTRY ~ 25k+ TRY; for low-price pairs the
@@ -735,11 +742,14 @@ class MarketData:
         bucket = self.trade_flow[symbol]
         now = time.time()
         if now - float(bucket.get("window_start") or 0) >= self.TRADE_FLOW_WINDOW_SEC:
+            tape = bucket.get("_tape")
             bucket.update({
                 "buy_qty": 0.0, "sell_qty": 0.0, "buy_count": 0, "sell_count": 0,
                 "buy_notional": 0.0, "sell_notional": 0.0,
                 "whale_buys": 0, "whale_sells": 0, "window_start": now,
             })
+            if tape:
+                bucket["_tape"] = tape
 
     def get_microstructure(self, symbol: str, price: float | None = None,
                            window_sec: float = 60.0) -> dict:
@@ -783,6 +793,14 @@ class MarketData:
             flags.append("no_agg_trades_60s")
         elif trade_age_sec is not None and trade_age_sec > self.TRADE_FLOW_WINDOW_SEC:
             flags.append("trade_flow_stale")
+        # Whale giriş/çıkış sınıflandırması: tape'teki whale işlemlerinin
+        # işlem-sonrası fiyat etkisiyle birikim/dağıtım ayrımı. Pahalı değildir
+        # ve veri yoksa no_whale döner.
+        try:
+            whale_activity = whale_activity_from_tape(list(trades.get("_tape") or []),
+                                                      self.WHALE_NOTIONAL_TRY, 8)
+        except Exception:
+            whale_activity = {"verdict": "error", "data_ready": False}
         return {
             "symbol": symbol,
             "spread_pct": round(spread_pct, 6) if spread_pct is not None else None,
@@ -801,6 +819,7 @@ class MarketData:
                 "trade_rate_per_min": buy_count + sell_count,
                 "whale_buys": whale_buys, "whale_sells": whale_sells,
                 "whale_notional_threshold_try": self.WHALE_NOTIONAL_TRY,
+                "whale_activity": whale_activity,
             },
             "freshness": {
                 "orderbook_age_sec": round(age_sec, 3) if age_sec is not None else None,

@@ -24,6 +24,7 @@ from collections import defaultdict, deque
 import websockets
 
 from app.binance_tr_public import WS_BASE, depth as rest_depth
+from app.market_intelligence import whale_activity_from_tape
 
 logger = logging.getLogger("scalper.microflow")
 
@@ -212,7 +213,10 @@ class MicroFlow:
         bucket = self.trade_flow[symbol]
         now = time.time()
         if now - float(bucket.get("window_start") or 0) >= self.TRADE_WINDOW_SEC:
+            tape = bucket.get("_tape")
             bucket.update(_reset_flow())
+            if tape:
+                bucket["_tape"] = tape
         if side == "buy":
             bucket["buy_qty"] += qty
             bucket["buy_count"] += 1
@@ -287,6 +291,10 @@ class MicroFlow:
         depth_try = (bid_total + ask_total) * mid if mid else None
         ladder_asymmetry = (bid_total - ask_total) / (bid_total + ask_total) if (bid_total + ask_total) > 0 else None
         tape = flow.get("_tape") or []
+        try:
+            whale_activity = whale_activity_from_tape(list(tape), self.WHALE_NOTIONAL_TRY, 8)
+        except Exception:
+            whale_activity = {"verdict": "error", "data_ready": False}
         slippage = None
         if len(tape) >= 10 and last_price:
             prices = [item["p"] for item in tape[-30:]]
@@ -319,6 +327,7 @@ class MicroFlow:
                 "whale_buys": int(flow.get("whale_buys") or 0),
                 "whale_sells": int(flow.get("whale_sells") or 0),
                 "whale_notional_threshold_try": self.WHALE_NOTIONAL_TRY,
+                "whale_activity": whale_activity,
             },
             "depth": {
                 "levels": len(bids),
