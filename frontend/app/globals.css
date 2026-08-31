@@ -335,7 +335,8 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .chat-conversation { min-height:calc(100dvh - 9rem); }
   .chat-conversation-actions { justify-content:space-between; }
   .chat-scan-buttons { flex-direction:row; margin:0 0 .5rem; }
-  .chat-scan-buttons .ui-button { flex:1 1 100%; min-height:2.75rem; justify-content:center; text-align:center; }
+  .chat-scan-buttons .ui-button { flex:1 1 calc(50% - .25rem); min-height:2.75rem; justify-content:center; text-align:center; white-space:normal; font-size:.6rem; line-height:1.25; padding:.55rem .5rem; }
+  .chat-scan-buttons .ui-button.chat-scan-button-wide { flex:1 1 100%; }
   .chat-mobile-controls { display:inline-flex; }
   .chat-conversation-actions .ui-button { min-height:2.25rem; padding:.55rem .7rem; }
   .chat-context-alert { align-items:flex-start; flex-direction:column; }

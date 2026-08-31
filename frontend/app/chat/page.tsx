@@ -279,6 +279,7 @@ export default function ChatPage() {
   const [velocityBusy, setVelocityBusy] = useState(false);
   const [velocity15Result, setVelocity15Result] = useState<VelocityScanResult | null>(null);
   const [velocity15Busy, setVelocity15Busy] = useState(false);
+  const [upsideScoutBusy, setUpsideScoutBusy] = useState(false);
   // Model akışı: arka plan etkinliklerinin canlı logu (en yeni üstte)
   const [activities, setActivities] = useState<{ key: string; kind: string; text: string; time: string; success?: boolean; duration_ms?: number }[]>([]);
   const activityEndRef = useRef<HTMLDivElement>(null);
@@ -572,6 +573,41 @@ export default function ChatPage() {
       setVelocity15Busy(false);
     }
   };
+  const runUpsideScout = async () => {
+    if (upsideScoutBusy || busy) return;
+    setUpsideScoutBusy(true);
+    setError("");
+    try {
+      const response = await apiRequest(`${API_BASE}/api/llm/upside-scout`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await response.json();
+      if (!response.ok || data.enabled === false) {
+        throw new Error(data.detail || data.error || "Yükseliş keşfi başarısız");
+      }
+      const sel = data.selection || {};
+      const jq = data.symbol_journal_quality;
+      const jqText = jq
+        ? ` · ${jq.evaluated} ölçüm, ${jq.touched} dokunuş, ort. MFE %${Number(jq.avg_mfe_pct).toFixed(2)}`
+        : "";
+      setMessages((current) => [
+        ...current,
+        {
+          role: "user" as const,
+          content:
+            `🎯 EN HIZLI YÜKSELİŞ KEŞFİ: ${data.symbol} — sıra skoru ${sel.rank_score}, ` +
+            `kalite çarpanı ×${sel.quality_multiplier}${jqText}`,
+        },
+        { role: "assistant" as const, content: data.analysis || "Analiz üretilemedi." },
+      ]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Yükseliş keşfi başarısız");
+    } finally {
+      setUpsideScoutBusy(false);
+    }
+  };
   const stopLiveWatch = () => {
     streamAbortRef.current?.abort();
     setLivePriceWatch((current) => current ? { ...current, status: "stopped" } : current);
@@ -648,6 +684,9 @@ export default function ChatPage() {
             </Button>
             <Button variant="primary" onClick={detectVelocity15} disabled={velocity15Busy}>
               {velocity15Busy ? "HIZ AVLANIYOR…" : "🚀 15 DK %3 HIZ AVCISI"}
+            </Button>
+            <Button variant="secondary" className="chat-scan-button-wide" onClick={runUpsideScout} disabled={upsideScoutBusy || busy}>
+              {upsideScoutBusy ? "LLM ANALİZ EDİYOR…" : "🎯 EN HIZLI YÜKSELİŞ: LLM ANALİZİ"}
             </Button>
           </div>
           {velocityResult && (
