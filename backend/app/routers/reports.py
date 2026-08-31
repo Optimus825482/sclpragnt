@@ -83,6 +83,46 @@ async def get_llm_chat_forecast_report():
             "horizons": horizons, "recent": recent}
 
 
+@router.get("/api/reports/upside-scout-forecasts")
+async def get_upside_scout_forecast_report(limit: int = 100):
+    """Upside-scout (en hızlı yükseliş keşfi) journal'ı: hedefe ulaşma başarısı.
+
+    Hedefe ulaşma: ufuk içinde en yüksek fiyat (max_favorable_pct) tahmin
+    edilen min_move_pct hedefine değdi mi? Snapshot'lar satırla birlikte döner.
+    """
+    limit = max(1, min(int(limit), 500))
+    horizons = await database.get_llm_forecast_report(source="upside_scout")
+    recent = await database.get_llm_forecasts(limit=limit, source="upside_scout")
+    now = time.time()
+    for row in recent:
+        if row.get("status") == "evaluated" and row.get("direction") == "up":
+            mfe = row.get("max_favorable_pct")
+            target = row.get("min_move_pct")
+            row["target_hit"] = (mfe is not None and target is not None and float(mfe) >= float(target))
+            row["target_price"] = (float(row.get("entry_price")) * (1 + float(target) / 100)
+                                   if row.get("entry_price") and target is not None else None)
+        else:
+            row["target_hit"] = None
+            row["target_price"] = (float(row.get("entry_price")) * (1 + float(row.get("min_move_pct")) / 100)
+                                   if row.get("entry_price") and row.get("min_move_pct") is not None else None)
+        row["window_closed"] = bool(row.get("created_at") and
+                                    float(row["created_at"]) + int(row.get("horizon_minutes") or 0) * 60 <= now)
+    evaluated = sum(int(row.get("evaluated_count") or 0) for row in horizons)
+    correct = sum(int(row.get("correct_count") or 0) for row in horizons)
+    target_hits = sum(int(row.get("target_hit_count") or 0) for row in horizons)
+    pending = sum(int(row.get("pending_count") or 0) for row in horizons)
+    for row in horizons:
+        count = int(row.get("evaluated_count") or 0)
+        row["directional_accuracy"] = (int(row.get("correct_count") or 0) / count) if count else None
+        row["target_hit_rate"] = (int(row.get("target_hit_count") or 0) / count) if count else None
+    return {"paper_only": True, "source": "upside_scout", "evaluated_count": evaluated,
+            "correct_count": correct, "target_hit_count": target_hits, "pending_count": pending,
+            "directional_accuracy": (correct / evaluated) if evaluated else None,
+            "target_hit_rate": (target_hits / evaluated) if evaluated else None,
+            "horizons": horizons, "recent": recent,
+            "evaluator": dict(_forecast_evaluation_state)}
+
+
 @router.get("/api/reports/chat-predictions")
 async def get_chat_predictions_report(symbol: str | None = None, limit: int = 50):
     """Chat M5/M15 prediction journal: measured success + LLM postmortems + insights."""
