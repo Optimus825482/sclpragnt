@@ -130,6 +130,7 @@ export default function SettingsPage() {
       .then((d) => setMarketSymbols(d.symbols || []))
       .catch(() => setError("Binance TR sembolleri alınamadı"));
     apiRequest(`${API_BASE}/api/llm/config`).then((r) => r.json()).then(setLlm).catch(() => undefined);
+    loadMlStatus();
   }, []);
 
   useEffect(() => {
@@ -396,6 +397,33 @@ export default function SettingsPage() {
     },
     "Provider kaydedildi",
   );
+
+  const [mlStatus, setMlStatus] = useState<any>(null);
+  const [mlTraining, setMlTraining] = useState(false);
+  const [mlDone, setMlDone] = useState(false);
+  const [mlError, setMlError] = useState<string | null>(null);
+
+  const loadMlStatus = () => apiRequest(`${API_BASE}/api/ml/status`, { cache: "no-store" })
+    .then((r) => r.json()).then(setMlStatus).catch(() => undefined);
+
+  const trainMlNow = async () => {
+    setMlTraining(true);
+    setMlDone(false);
+    setMlError(null);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/ml/train`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `Eğitim başarısız (HTTP ${res.status})`);
+      }
+      setMlDone(true);
+      loadMlStatus();
+    } catch (e) {
+      setMlError(e instanceof Error ? e.message : "Bilinmeyen hata");
+    } finally {
+      setMlTraining(false);
+    }
+  };
 
   const downloadBackup = async () => {
     setBackingUp(true);
@@ -694,6 +722,27 @@ export default function SettingsPage() {
               </div>
               <button onClick={downloadBackup} disabled={backingUp} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${backupDone ? "border-neon-green/60 bg-neon-green/20 text-neon-green" : "border-neon-green/50 bg-neon-green/10 text-neon-green hover:bg-neon-green/20"}`}>
                 {backingUp ? "YEDEKLENİYOR..." : backupDone ? "✓ YEDEK İNDİRİLDİ" : "VERİTABANI YEDEĞİ AL"}
+              </button>
+            </div>
+          </div>
+
+          <div className={`card border-amber-300/30 bg-amber-300/5 ${activeTab !== "app" ? "hidden" : ""}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="min-w-0">
+                <p className="eyebrow text-amber-300">ML FIYAT TAHMIN MODELI</p>
+                <p className="font-mono text-sm text-white mt-2">Yükseliş hedefi modelini journal sonuçlarıyla yeniden eğit</p>
+                <p className="text-xs text-bunker-muted mt-1">
+                  {mlStatus?.status === "ready" && mlStatus?.artifact
+                    ? `Son eğitim: ${new Date(Number(mlStatus.artifact.created_at) * 1000).toLocaleString("tr-TR")} · ${mlStatus.artifact.sample_count.toLocaleString("tr-TR")} örnek · ${mlStatus.artifact.symbol_count} sembol · ${mlStatus.artifact.journal_sample_count} journal örneği`
+                    : mlStatus?.status === "not_trained"
+                      ? "Henüz eğitim yok; otomatik döngü veya buton ile başlatın."
+                      : "Durum alınıyor..."}
+                  {mlStatus?.interval_hours ? ` · Otomatik: her ${mlStatus.interval_hours} saatte bir` : ""}
+                </p>
+                {mlError && <p className="text-xs text-neon-red mt-1">{mlError}</p>}
+              </div>
+              <button onClick={trainMlNow} disabled={mlTraining} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${mlDone ? "border-neon-green/60 bg-neon-green/20 text-neon-green" : "border-amber-300/50 bg-amber-300/10 text-amber-300 hover:bg-amber-300/20"}`}>
+                {mlTraining ? "EĞİTİLİYOR..." : mlDone ? "✓ EĞİTİM TAMAM" : "ŞİMDİ EĞİT"}
               </button>
             </div>
           </div>

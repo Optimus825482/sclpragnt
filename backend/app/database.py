@@ -1192,7 +1192,9 @@ async def get_llm_forecasts(symbol=None, status=None, limit=100, source=None):
         elif source == "upside_scout":
             clauses.append("prompt_version LIKE ?"); values.append("upside-scout-%")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        values.append(max(1, min(int(limit), 500)))
+        # 5000: ML journal eğitimi tüm ölçülmüş canlı tahminleri ister;
+        # diğer çağrılar kendi limitiyle kalır.
+        values.append(max(1, min(int(limit), 5000)))
         rows = conn.execute(f"SELECT * FROM llm_forecasts{where} ORDER BY created_at DESC LIMIT ?", values).fetchall()
         return [_forecast_row(row) for row in rows]
     return await _run_db(op)
@@ -1217,11 +1219,81 @@ async def get_llm_forecast_report(source=None):
             SUM(CASE WHEN status='evaluated' AND direction_correct THEN 1 ELSE 0 END) AS correct_count,
             SUM(CASE WHEN status='evaluated' AND direction='up' AND max_favorable_pct IS NOT NULL
                      AND max_favorable_pct >= min_move_pct THEN 1 ELSE 0 END) AS target_hit_count,
+            SUM(CASE WHEN status='evaluated' AND outcome_details->>'first_hit_minutes' IS NOT NULL
+                     THEN 1 ELSE 0 END) AS eventual_hit_count,
             AVG(CASE WHEN status='evaluated' THEN confidence END) AS average_confidence,
             AVG(CASE WHEN status='evaluated' THEN ABS((confidence / 100.0) - CASE WHEN direction_correct THEN 1.0 ELSE 0.0 END) END) AS calibration_error,
             AVG(CASE WHEN status='evaluated' THEN outcome_return_pct END) AS average_return_pct
             FROM llm_forecasts WHERE 1=1{source_clause} GROUP BY horizon_minutes ORDER BY horizon_minutes""", params).fetchall()
         return [dict(row) for row in rows]
+    return await _run_db(op)
+
+
+async def fix_upside_scout_units():
+    """One-shot repair for upside-scout rows saved with percent-unit targets.
+
+    İlk upside-scout kayıtları min_move_pct'i yüzde (2.0) tutuyordu;
+    değerlendirme kesir (0.02) beklediği için tüm satırlar 'hedefe ulaşılmadı'
+    ölçüldü. Deploy'da idempotent çalışır: kesir birimine çevirir, eski
+    (eventual_hit anahtarı olmayan) değerlendirmeleri yeniden ölçüm için
+    pending'e döndürür. Düzeltme sonrası ikinci çalıştırmada 0 satır etkilenir.
+    """
+    def op(conn):
+        converted = conn.execute(
+            "UPDATE llm_forecasts SET min_move_pct = min_move_pct / 100.0 "
+            "WHERE prompt_version LIKE ? AND min_move_pct > 0.5", ("upside-scout-%",)).rowcount
+        requeued = conn.execute(
+            "UPDATE llm_forecasts SET status='pending', evaluated_at=NULL, outcome_price=NULL, "
+            "outcome_return_pct=NULL, outcome_direction=NULL, direction_correct=NULL, "
+            "max_favorable_pct=NULL, max_adverse_pct=NULL, outcome_details='{}' "
+            "WHERE prompt_version LIKE ? AND status='evaluated' "
+            "AND (outcome_details IS NULL OR outcome_details->>'eventual_hit' IS NULL)",
+            ("upside-scout-%",)).rowcount
+        conn.commit()
+        return {"unit_converted": converted or 0, "requeued": requeued or 0}
+    return await _run_db(op)
+
+
+async def get_ml_training_candles(cutoff_ms: int, max_bars_per_symbol: int = 3000):
+    """M1 candle'ları sembol başına son N bar olacak şekilde dict döndürür."""
+    def op(conn):
+        data: dict[str, dict[str, list]] = {}
+        rows = conn.execute(
+            """SELECT symbol, open_time, high, low, close, volume
+               FROM historical_candles WHERE timeframe='1m' AND open_time >= ?
+               ORDER BY symbol, open_time DESC""", (int(cutoff_ms),)).fetchall()
+        for symbol, open_time, high, low, close, volume in rows:
+            bucket = data.setdefault(str(symbol), {"open_time": [], "high": [], "low": [], "close": [], "volume": []})
+            if len(bucket["open_time"]) >= max_bars_per_symbol:
+                continue
+            bucket["open_time"].append(int(open_time))
+            bucket["high"].append(float(high))
+            bucket["low"].append(float(low))
+            bucket["close"].append(float(close))
+            bucket["volume"].append(float(volume))
+        return {sym: {k: list(reversed(v)) for k, v in bucket.items()} for sym, bucket in data.items()}
+    return await _run_db(op)
+
+
+async def save_ml_model_artifact(meta: dict):
+    def op(conn):
+        conn.execute("""INSERT INTO ml_model_artifacts
+            (created_at, horizons, sample_count, journal_sample_count, symbol_count,
+             metrics, artifact_path, feature_version, status)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (float(meta["created_at"]), json.dumps(meta.get("horizons") or []),
+             int(meta.get("sample_count") or 0), int(meta.get("journal_sample_count") or 0),
+             int(meta.get("symbol_count") or 0), json.dumps(meta.get("metrics") or {},
+             ensure_ascii=False, default=str), meta["artifact_path"],
+             meta.get("feature_version") or "v1", meta.get("status") or "ready"))
+        conn.commit()
+    return await _run_db(op)
+
+
+async def get_latest_ml_model_artifact():
+    def op(conn):
+        row = conn.execute("SELECT * FROM ml_model_artifacts ORDER BY created_at DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
     return await _run_db(op)
 
 

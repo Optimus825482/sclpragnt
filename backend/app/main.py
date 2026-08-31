@@ -44,6 +44,7 @@ from app.binance_tr_public import klines as fetch_klines, historical_klines, tra
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.sma_cascade_shadow import SmaCascadeShadow
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
+from app import ml_forecast
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app import llm_analysis
@@ -250,6 +251,42 @@ async def retention_loop():
             print(f"[Retention] sweep hatası: {exc}")
         await asyncio.sleep(6 * 3600)
 
+_ml_train_lock = asyncio.Lock()
+
+
+async def run_ml_training(trigger: str = "scheduled"):
+    """ML modelini yeniden eğitir: candle + journal örnekleri -> artifact.
+
+    Journal satırları (doğrulanmış canlı tahmin sonuçları) ağırlıklı örnekle
+    eğitime girer -> model kendi hatalarından/başarılarından pekişir.
+    """
+    async with _ml_train_lock:
+        cutoff_ms = int((time.time() - config.ML_TRAIN_LOOKBACK_DAYS * 86400) * 1000)
+        candles = await database.get_ml_training_candles(
+            cutoff_ms, max_bars_per_symbol=config.ML_MAX_BARS_PER_SYMBOL)
+        journal = await database.get_llm_forecasts(status="evaluated", limit=5000)
+        meta = await asyncio.to_thread(ml_forecast.train, candles, journal)
+        await database.save_ml_model_artifact(meta)
+        print(f"[ML] eğitim ({trigger}): {meta['sample_count']} örnek, "
+              f"{meta['symbol_count']} sembol, {meta['journal_sample_count']} journal örneği", flush=True)
+        return meta
+
+
+async def ml_training_loop():
+    """Faz 1: periyodik ML eğitim döngüsü (startup + ML_TRAIN_INTERVAL_HOURS)."""
+    await asyncio.sleep(300)  # startup patlaması bitsin
+    try:
+        await run_ml_training("startup")
+    except Exception as exc:
+        print(f"[ML] startup eğitimi atlandı: {exc}", flush=True)
+    while True:
+        await asyncio.sleep(config.ML_TRAIN_INTERVAL_HOURS * 3600)
+        try:
+            await run_ml_training("scheduled")
+        except Exception as exc:
+            print(f"[ML] eğitim hatası: {exc}", flush=True)
+
+
 async def calibration_refresh_loop():
     """S3: rebuild bucketed win-rate statistics from closed trades.
 
@@ -272,6 +309,12 @@ async def calibration_refresh_loop():
 async def startup_services():
     global _pg_pool
     await database.init_db()
+    try:
+        repair = await database.fix_upside_scout_units()
+        if any(repair.values()):
+            print(f"[UpsideScout] birim onarımı: {repair}", flush=True)
+    except Exception as exc:
+        print(f"[UpsideScout] birim onarımı atlandı: {exc}")
     await database.ensure_default_scalper_skill()
     saved_config = await database.get_llm_setting("runtime_config")
     if saved_config:
@@ -319,6 +362,7 @@ async def startup_services():
     _start_background(llm_position_manager_loop(), "llm-position-manager")
     _start_background(learning_promotion_loop(), "learning-promotion")
     _start_background(retention_loop(), "retention")
+    _start_background(ml_training_loop(), "ml_training")
     _start_background(calibration_refresh_loop(), "calibration-refresh")
     _start_background(correlation_refresh_loop(), "correlation-refresh")
     _start_background(ws_broadcast_loop(), "ws-broadcast")
@@ -1507,6 +1551,35 @@ async def add_llm_provider(payload: dict):
         return {"ok": True, "provider_id": provider_id}
     except RuntimeError as exc: raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/ml/status")
+async def ml_status():
+    """Son ML artifact metadata + metrics (Faz 1 izleme)."""
+    latest = await database.get_latest_ml_model_artifact()
+    if not latest:
+        return {"status": "not_trained", "interval_hours": config.ML_TRAIN_INTERVAL_HOURS}
+    return {"status": latest.get("status"), "artifact": latest,
+            "interval_hours": config.ML_TRAIN_INTERVAL_HOURS,
+            "models_dir": config.ML_MODELS_DIR}
+
+
+@app.post("/api/ml/train")
+async def ml_train_now():
+    """Manuel eğitim tetikleme (ayarlar butonu / Faz 2 öncesi doğrulama)."""
+    try:
+        meta = await run_ml_training("manual")
+        return {"ok": True, **meta}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"ML eğitimi başarısız: {exc}")
+
+
+@app.get("/api/ml/predict")
+async def ml_predict(symbol: str, horizon: int = 5):
+    """Tek nokta ML tahmini (Faz 2 gölge mod doğrulaması için)."""
+    target = ml_forecast.predict_target(symbol, {}, horizon)
+    return {"symbol": symbol.upper(), "horizon": horizon, "available": target is not None,
+            "prediction": target}
+
 
 @app.post("/api/llm/models")
 async def add_llm_model(payload: dict):

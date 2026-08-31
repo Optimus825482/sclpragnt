@@ -95,30 +95,65 @@ async def get_upside_scout_forecast_report(limit: int = 100):
     recent = await database.get_llm_forecasts(limit=limit, source="upside_scout")
     now = time.time()
     for row in recent:
+        # min_move_pct kesirdir (0.02 = %2); evaluate_forecast ile aynı kural.
+        target = row.get("min_move_pct")
+        entry = row.get("entry_price")
+        row["target_pct_display"] = float(target) * 100 if target is not None else None
+        row["target_price"] = (float(entry) * (1 + float(target))
+                               if entry and target is not None else None)
         if row.get("status") == "evaluated" and row.get("direction") == "up":
             mfe = row.get("max_favorable_pct")
-            target = row.get("min_move_pct")
             row["target_hit"] = (mfe is not None and target is not None and float(mfe) >= float(target))
-            row["target_price"] = (float(row.get("entry_price")) * (1 + float(target) / 100)
-                                   if row.get("entry_price") and target is not None else None)
         else:
             row["target_hit"] = None
-            row["target_price"] = (float(row.get("entry_price")) * (1 + float(row.get("min_move_pct")) / 100)
-                                   if row.get("entry_price") and row.get("min_move_pct") is not None else None)
+        details = row.get("outcome_details") or {}
+        row["first_hit_minutes"] = details.get("first_hit_minutes")
+        row["eventual_hit"] = bool(details.get("eventual_hit")) if row.get("status") == "evaluated" else None
         row["window_closed"] = bool(row.get("created_at") and
                                     float(row["created_at"]) + int(row.get("horizon_minutes") or 0) * 60 <= now)
+        # Gölge mod: ML hedefi vs sabit hedef sapması (ölçülen satırlarda).
+        ml_target = (row.get("snapshot") or {}).get("ml_target_pct")
+        row["ml_target_pct"] = ml_target
+        row["ml_hit_probability"] = (row.get("snapshot") or {}).get("ml_hit_probability")
+        if row.get("status") == "evaluated" and row.get("max_favorable_pct") is not None:
+            actual_pct = float(row["max_favorable_pct"]) * 100
+            row["fixed_error_pct"] = (abs(float(target) * 100 - actual_pct)
+                                      if target is not None else None)
+            row["ml_error_pct"] = (abs(float(ml_target) - actual_pct)
+                                   if ml_target is not None else None)
+        else:
+            row["fixed_error_pct"] = None
+            row["ml_error_pct"] = None
     evaluated = sum(int(row.get("evaluated_count") or 0) for row in horizons)
     correct = sum(int(row.get("correct_count") or 0) for row in horizons)
     target_hits = sum(int(row.get("target_hit_count") or 0) for row in horizons)
+    eventual_hits = sum(int(row.get("eventual_hit_count") or 0) for row in horizons)
     pending = sum(int(row.get("pending_count") or 0) for row in horizons)
     for row in horizons:
         count = int(row.get("evaluated_count") or 0)
         row["directional_accuracy"] = (int(row.get("correct_count") or 0) / count) if count else None
         row["target_hit_rate"] = (int(row.get("target_hit_count") or 0) / count) if count else None
+        row["eventual_hit_rate"] = (int(row.get("eventual_hit_count") or 0) / count) if count else None
+    fixed_errs = [float(r["fixed_error_pct"]) for r in recent if r.get("fixed_error_pct") is not None]
+    ml_errs = [float(r["ml_error_pct"]) for r in recent if r.get("ml_error_pct") is not None]
+    shadow = {"ml_rows": len(ml_errs),
+              "fixed_mae_pct": round(sum(fixed_errs) / len(fixed_errs), 3) if fixed_errs else None,
+              "ml_mae_pct": round(sum(ml_errs) / len(ml_errs), 3) if ml_errs else None}
+    if shadow["fixed_mae_pct"] is not None and shadow["ml_mae_pct"] is not None:
+        shadow["ml_better"] = shadow["ml_mae_pct"] < shadow["fixed_mae_pct"]
+        shadow["improvement_pct"] = round(
+            (shadow["fixed_mae_pct"] - shadow["ml_mae_pct"]) / shadow["fixed_mae_pct"] * 100, 1)
+    # Madencilenen desen dersleri: aktif önce, adaylar sonra.
+    pattern_rows = await database.get_llm_forecast_lessons(regime="pattern", status=None, limit=14)
+    pattern_rows.sort(key=lambda r: (0 if r.get("status") == "active" else 1,
+                                     -(int(r.get("sample_size") or 0))))
     return {"paper_only": True, "source": "upside_scout", "evaluated_count": evaluated,
-            "correct_count": correct, "target_hit_count": target_hits, "pending_count": pending,
+            "correct_count": correct, "target_hit_count": target_hits,
+            "eventual_hit_count": eventual_hits, "pending_count": pending,
             "directional_accuracy": (correct / evaluated) if evaluated else None,
             "target_hit_rate": (target_hits / evaluated) if evaluated else None,
+            "eventual_hit_rate": (eventual_hits / evaluated) if evaluated else None,
+            "shadow": shadow, "patterns": pattern_rows,
             "horizons": horizons, "recent": recent,
             "evaluator": dict(_forecast_evaluation_state)}
 

@@ -33,9 +33,11 @@ from app.analyzer import ScalpAnalyzer
 from app.circuit_breaker import breaker as strategy_breaker
 from app import calibration as calibration_service
 from app import llm_analysis
+from app import ml_forecast
 from app import chat_prediction_learning
 from app import chat_prediction_replay
-from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
+from app.forecast_learning import (normalize_direction, evaluate_forecast,
+                                   derive_lessons, mine_target_patterns)
 from app import agent_learning
 import uuid
 import hashlib
@@ -330,21 +332,30 @@ async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
     Sıcak WS cache önceliklidir; sembol abone değilse (top-gainer havuzundan
     gelip config.SYMBOLS'ta olmayabilir) kapanmış mumlar REST'ten getirilir —
     aksi halde bu öngörüler sonsuza dek 'pending' kalıyordu.
+
+    Ufuk kapanışı sonrası LLM_FORECAST_HIT_GRACE_MINUTES dakikalık ek gözlem
+    penceresinde hedef fiyatı izlenir; ilk dokunuş dakikası first_hit_minutes
+    olarak döner (hedefe hiç ulaşılmadıysa None). Yön/aralık doğruluğu ve
+    MFE/MAE yalnızca ufuk penceresinden hesaplanmaya devam eder.
     """
     created_at_ms = int(float(forecast["created_at"]) * 1000)
-    due_at_ms = created_at_ms + int(forecast["horizon_minutes"]) * 60_000
+    horizon_minutes = int(forecast["horizon_minutes"])
+    due_at_ms = created_at_ms + horizon_minutes * 60_000
+    grace_minutes = max(0, int(getattr(config, "LLM_FORECAST_HIT_GRACE_MINUTES", 0)))
+    grace_end_ms = due_at_ms + grace_minutes * 60_000
     bars = market.get_ut_kline(symbol, "1m") or {}
     timestamps = list(bars.get("timestamps") or [])
     closes = list(bars.get("closes") or [])
     highs = list(bars.get("highs") or [])
     lows = list(bars.get("lows") or [])
     # Sıcak cache pencerenin tamamını kapsamıyorsa (veya sembol abone değilse)
-    # REST'ten kapanmış mumları getir. Pencere süresi henüz dolmadıysa None.
+    # REST'ten kapanmış mumları getir. Değerlendirme penceresi (ufuk + grace)
+    # süresi henüz dolmadıysa None.
     if min(len(timestamps), len(closes), len(highs), len(lows)) < 2 or \
-            int(timestamps[-1]) + 59_999 < due_at_ms:
+            int(timestamps[-1]) + 59_999 < grace_end_ms:
         try:
-            rows = await fetch_klines(symbol, "1m", int(forecast["horizon_minutes"]) + 12,
-                                      start_time_ms=created_at_ms, end_time_ms=due_at_ms + 65_000)
+            rows = await fetch_klines(symbol, "1m", horizon_minutes + grace_minutes + 12,
+                                      start_time_ms=created_at_ms, end_time_ms=grace_end_ms + 65_000)
         except Exception:
             rows = []
         if len(rows) >= 2:
@@ -359,16 +370,37 @@ async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
     start_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= created_at_ms), None)
     if start_index is None or end_index is None or end_index < start_index:
         return None
+    first_hit_minutes = None
+    entry_price = float(forecast["entry_price"])
+    threshold = float(forecast.get("min_move_pct") or 0)
+    if entry_price > 0 and threshold > 0:
+        direction = normalize_direction(forecast.get("direction")) or "up"
+        target_price = entry_price * (1 + threshold) if direction == "up" else entry_price * (1 - threshold)
+        grace_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= grace_end_ms),
+                           len(close_times) - 1)
+        probe = highs if direction == "up" else lows
+        hit_index = None
+        for index in range(start_index, grace_index + 1):
+            value = float(probe[index])
+            if (direction == "up" and value >= target_price) or (direction == "down" and value <= target_price):
+                hit_index = index
+                break
+        if hit_index is not None:
+            first_hit_minutes = round((int(timestamps[hit_index]) - created_at_ms) / 60_000.0, 1)
     return {
         "outcome_price": float(closes[end_index]),
         "max_high": max(float(value) for value in highs[start_index:end_index + 1]),
         "min_low": min(float(value) for value in lows[start_index:end_index + 1]),
+        "first_hit_minutes": first_hit_minutes,
     }
 
 
 async def refresh_llm_forecast_lessons():
     rows = await database.get_llm_forecasts(status="evaluated", limit=500)
     lessons = derive_lessons(rows, min_samples=config.LLM_FORECAST_LESSON_MIN_SAMPLES)
+    # Desen madenciliği: upside-scout satırlarından koşul->isabet kuralları.
+    scout_rows = [row for row in rows if str(row.get("prompt_version") or "").startswith("upside-scout-")]
+    lessons += mine_target_patterns(scout_rows, min_support=config.LLM_PATTERN_MIN_SUPPORT)
     saved = await database.replace_llm_forecast_lessons(lessons)
     _forecast_evaluation_state["lessons_refreshed"] = saved
     return {"evaluated_rows": len(rows), "lessons": saved}
@@ -704,6 +736,8 @@ async def _upside_scout_impl():
     symbols = [str(c.get("symbol") or "").upper() for c in top]
 
     # 2) Öğrenilen bağlam: sembol journal kalitesi + aktif forecast dersleri.
+    #    Faz 2 gölge mod: ML modelinin hedefi kaydedilir (sıralamayı süremez,
+    #    yalnızca ölçülür; raporda sabit hedefe karşı karşılaştırılır).
     candidates_ctx = []
     for cand in top:
         sym = str(cand.get("symbol") or "").upper()
@@ -718,10 +752,22 @@ async def _upside_scout_impl():
             lessons = await database.get_llm_forecast_lessons(symbol=sym, status="active", limit=3)
         except Exception:
             lessons = []
+        ml_pred = None
+        try:
+            ml_pred = ml_forecast.predict_target(sym, {
+                "ret3_pct": cand.get("ret3_pct"), "atr_pct": cand.get("atr_pct"),
+                "bb_width_pct": cand.get("bb_width_pct"), "rsi": cand.get("rsi"),
+                "mfi": cand.get("mfi"), "linreg_slope10_pct": cand.get("linreg_slope10_pct"),
+                "aroon_up": cand.get("aroon_up"), "aroon_down": cand.get("aroon_down"),
+            }, horizon)
+        except Exception as exc:
+            logger.debug("ML gölge tahmin atlandı (%s): %s", sym, exc)
         candidates_ctx.append({
             "symbol": sym, "current_price": price, "horizon_minutes": horizon,
             "target_pct": target_pct,
             "target_price": round(price * (1 + target_pct / 100), 6) if price else None,
+            "ml_target_pct": ml_pred.get("target_pct") if ml_pred else None,
+            "ml_hit_probability": ml_pred.get("hit_probability") if ml_pred else None,
             "upside_rank": round(_upside_rank_score(cand, touch_rates), 2),
             "velocity_score": round(float(cand.get("velocity_score") or 0), 2),
             "rsi": cand.get("rsi"), "mfi": cand.get("mfi"), "atr_pct": cand.get("atr_pct"),
@@ -773,7 +819,9 @@ async def _upside_scout_impl():
             "symbol": ctx["symbol"], "created_at": now,
             "horizon_minutes": ctx["horizon_minutes"], "entry_price": ctx["current_price"],
             "direction": "up", "confidence": confidence,
-            "invalidation_price": None, "min_move_pct": ctx["target_pct"],
+            "invalidation_price": None,
+            # evaluate_forecast kesir karşılaştırması yapar (0.02 = %2).
+            "min_move_pct": ctx["target_pct"] / 100.0,
             "regime": "velocity", "timeframe_context": {"profile": f"{ctx['horizon_minutes']}dk"},
             "scenario": (f"upside-scout: {ctx['symbol']} upside sıra {ctx['upside_rank']}; "
                          f"{ctx['horizon_minutes']}dk içinde %{ctx['target_pct']:g} hedef"),
