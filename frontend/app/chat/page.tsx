@@ -583,7 +583,14 @@ export default function ChatPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const data = await response.json();
+      // 5xx yanıtlar JSON değil düz metin olabilir; okunabilir hataya çevir.
+      let data: any;
+      try {
+        data = await response.json();
+      } catch {
+        const text = await response.text().catch(() => "");
+        throw new Error(text.slice(0, 200) || `Sunucu hatası (HTTP ${response.status})`);
+      }
       if (!response.ok || data.enabled === false) {
         throw new Error(data.detail || data.error || "Yükseliş keşfi başarısız");
       }

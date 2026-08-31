@@ -599,6 +599,14 @@ async def llm_upside_scout(payload: dict = None):
     kalite istatistiği + chat tahmin dersleri + forecast dersleri + hafıza verilir.
     Salt-okunur; pozisyon açmaz.
     """
+    try:
+        return await _upside_scout_impl()
+    except Exception as exc:
+        logger.exception("upside-scout beklenmeyen hata")
+        return {"enabled": False, "status": "error", "error": f"Keşif hatası: {exc}"}
+
+
+async def _upside_scout_impl():
     # 1) Deterministik aday seçimi: her iki hız profili, kalite çarpanlı sıralama.
     scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
     scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
