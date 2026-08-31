@@ -1,0 +1,103 @@
+{
+ "window": {
+  "start": "08-30 06:00",
+  "end": "08-31 06:00"
+ },
+ "base": {
+  "bars": 63108,
+  "next_rise_pct": 0.18,
+  "touch3_pct": 5.84
+ },
+ "signals": [
+  {
+   "name": "m3g0_bbw>0.04",
+   "n": 3149,
+   "next_rise_pct": 2.73,
+   "next_rise_lift": 2.55,
+   "fwd3_rise_pct": 8.64,
+   "touch3_pct": 33.53,
+   "avg_3bar_high_pct": 1.07
+  },
+  {
+   "name": "m5g1_bbw>0.06",
+   "n": 1790,
+   "next_rise_pct": 4.02,
+   "next_rise_lift": 3.84,
+   "fwd3_rise_pct": 11.4,
+   "touch3_pct": 38.94,
+   "avg_3bar_high_pct": 1.3
+  },
+  {
+   "name": "m3g0_atr>1.0",
+   "n": 989,
+   "next_rise_pct": 7.38,
+   "next_rise_lift": 7.2,
+   "fwd3_rise_pct": 20.12,
+   "touch3_pct": 53.59,
+   "avg_3bar_high_pct": 1.87
+  },
+  {
+   "name": "m5g1_atr>1.5",
+   "n": 784,
+   "next_rise_pct": 7.65,
+   "next_rise_lift": 7.47,
+   "fwd3_rise_pct": 21.94,
+   "touch3_pct": 54.85,
+   "avg_3bar_high_pct": 1.97
+  },
+  {
+   "name": "m1g0_atr>0.6",
+   "n": 771,
+   "next_rise_pct": 8.3,
+   "next_rise_lift": 8.12,
+   "fwd3_rise_pct": 22.7,
+   "touch3_pct": 57.85,
+   "avg_3bar_high_pct": 2.06
+  },
+  {
+   "name": "COMBO_m5>1.5_AND_m3>1.0",
+   "n": 720,
+   "next_rise_pct": 8.19,
+   "next_rise_lift": 8.02,
+   "fwd3_rise_pct": 22.78,
+   "touch3_pct": 57.08,
+   "avg_3bar_high_pct": 2.05
+  },
+  {
+   "name": "COMBO_m5>1.5_AND_m1>0.6",
+   "n": 566,
+   "next_rise_pct": 9.54,
+   "next_rise_lift": 9.36,
+   "fwd3_rise_pct": 25.62,
+   "touch3_pct": 61.31,
+   "avg_3bar_high_pct": 2.25
+  },
+  {
+   "name": "m3g0_atr>1.5",
+   "n": 454,
+   "next_rise_pct": 11.89,
+   "next_rise_lift": 11.72,
+   "fwd3_rise_pct": 28.63,
+   "touch3_pct": 61.45,
+   "avg_3bar_high_pct": 2.43
+  },
+  {
+   "name": "m1g0_atr>1.0",
+   "n": 276,
+   "next_rise_pct": 13.41,
+   "next_rise_lift": 13.23,
+   "fwd3_rise_pct": 35.87,
+   "touch3_pct": 63.77,
+   "avg_3bar_high_pct": 2.8
+  },
+  {
+   "name": "COMBO_m3>1.5_AND_m1>1.0",
+   "n": 251,
+   "next_rise_pct": 13.55,
+   "next_rise_lift": 13.37,
+   "fwd3_rise_pct": 36.25,
+   "touch3_pct": 64.94,
+   "avg_3bar_high_pct": 2.8
+  }
+ ]
+}

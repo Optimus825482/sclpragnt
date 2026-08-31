@@ -1,0 +1,66 @@
+{
+  "degerlendirme": "UI filtre paneli + canlı journal + bağımsız backtest",
+  "tarih": "2026-08-31",
+  "panel_goruntusu": {
+    "gecen_aday": 977,
+    "dokunus": "175/977",
+    "kosisullu_isabet_pct": 17.9,
+    "ortalama_mfe_gorunen_pct": 148.1,
+    "not": "Panel anlık görüntüsü; şu anki DB'de 511 geçen var (zamanla değişiyor)."
+  },
+  "bulgular": {
+    "ui_birim_hatasi": {
+      "sorun": "frontend pct() değeri *100 ile çarpıyor; backend passing_average_mfe_pct zaten yüzde cinsinden (2.25 gibi). Sonuç: 'ort. MFE %148.1' görünüyor, gerçek ~%2.25.",
+      "dosyalar": ["frontend/app/reports/page.tsx:76 pct()", "backend/app/routers/velocity.py:463 passing_average_mfe_pct"],
+      "oneri": "pct() çağrısını geçenlerde ort MFE için çıkarmak veya backend'in ham oran döndürmesi."
+    },
+    "harmanlama_hatasi": {
+      "sorun": "Panel 5dk-%2 ve 15dk-%3 profillerini tek 'koşullu isabet' sayısında harmanlıyor (farklı hedefler: +%2 vs +%3). Harmanlanmış oran anlamsız.",
+      "profil_ayrik_gercek": {
+        "5dk_2": {"passing": 251, "touched": 71, "rate_pct": 28.3},
+        "15dk_3": {"passing": 246, "touched": 88, "rate_pct": 35.8}
+      },
+      "oneri": "Panel profilleri ayrı göstermeli."
+    },
+    "canli_vs_gecmis_farki": {
+      "canli_journal_5dk_2": {"rate_pct": 28.3, "tanim": "5dk içinde +%2 MFE dokunuşu (canlı hedef)"},
+      "gecmis_backtest_40_4": {"rate_pct": 40.4, "tanim": "M5 kapanışında filtre, sonraki 3 M5 bar (15dk) high >= +%1 dokunuş — FARKLI tanım"},
+      "sonuc": "İki sayı farklı tanımları ölçüyor; %17.9 vs %40.4 kıyası geçersiz. Doğru kıyas: canlı 5dk-%2 = %28.3 (aynı +%2 hedefle) — kalibrasyon hedefi %19'dan İYİ."
+    },
+    "secim_yanliligi": {
+      "sorun": "Canlı loop sadece top-3 adayı journal'a yazıyor; geçenlerin %88'i rank=1 (en yüksek skorlu). Bu, journal isabetini tüm geçenlerden yüksek gösterir.",
+      "kanit": "Aynı 85 sembolde aynı filtre replay: tüm geçenler 5dk+%2 isabeti %10.8; rank-1 simülasyonu %19.7; canlı journal %28.3.",
+      "not": "Canlı %28.3 = filtre + rank seçimi + top-gainer havuzunun bileşik sonucu. Tek başına filtrenin başarısı değil."
+    },
+    "ogrenme_dongusu_sorunu": {
+      "sorun": "Kalibrasyon eşikleri (hit<0.10 → ATR+0.05, hit>0.45 → ATR-0.05) harmanlanmış orana bakıyor. Mevcut harman %32 (5dk 28.3 / 15dk 35.8) eşikler arasında → öğrenme döngüsü HİÇ tetiklenmiyor.",
+      "kanit": "velocity_min_atr_pct DB'de None (hiç kalibre edilmemiş); active_filters.last_calibrated_at = None.",
+      "oneri": "Kalibrasyonu profil bazlı yap (5dk ayrı, 15dk ayrı); hedefi canlı 5dk-%2 için %28.3 civarına güncelle; eşikleri profil başına bağımsız uygula."
+    }
+  },
+  "bagimsiz_backtest": {
+    "arac": "backend/scripts/pump24/velocity_backtest.py — v2 filtre formülleri birebir (velocity.py ile aynı), geçmiş 1m verisi üzerinde",
+    "tum_sembol_24h": {
+      "5dk_2": {"passing": 2461, "touch_pct": 11.3, "avg_mfe_pct": 0.944, "avg_ret_pct": 0.091},
+      "15dk_3": {"passing": 2445, "touch_pct": 15.7, "avg_mfe_pct": 1.788, "avg_ret_pct": 0.193}
+    },
+    "journal_sembolleri_48h_replay": {
+      "passing": 3897,
+      "touch_2_pct": 10.8,
+      "touch_1_pct": 30.0,
+      "avg_mfe_pct": 0.911
+    },
+    "rank1_simulasyonu": {
+      "scans": 229,
+      "passing_total": 445,
+      "rank1_touch_2_pct": 19.7,
+      "rank1_avg_mfe_pct": 1.3
+    }
+  },
+  "ozet": {
+    "filtre_gercek_deger": "v2 filtresi tek başına (tüm semboller, 5dk+%2): %11.3 isabet — baz orandan anlamlı yüksek ama panelin gösterdiği gibi %28 değil.",
+    "panel_neden_yuksek": "top-3/rank-1 seçimi + top-gainer havuzu + profil harmanı + MFE birim hatası birleşince panel yanıltıcı derecede iyi görünüyor.",
+    "gercekci_beklenti": "Filtre + rank-1 seçimi: ~%20 (5dk+%2). Canlı %28.3 ile tutarlı aralık.",
+    "maliyet_notu": "avg_ret (kapanış-kapanış) 5dk'da %0.09, 15dk'da %0.19 — maliyet sonrası pozitif EV için bu yeterli DEĞİL (önceki grid çalışmasıyla uyumlu). Filtre izleme/öncü değeri taşır, giriş kararı değil."
+  }
+}

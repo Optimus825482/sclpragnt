@@ -74,6 +74,9 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
  if (error) return <section className="card border-neon-red/30 text-neon-red">Hız avcısı raporu alınamadı: {error}</section>;
  if (!view) return <section className="card text-bunker-muted">Henüz hız avcısı taraması yok; Chat sayfasındaki "🚀 5 DK %2 HIZ AVCISI" butonuyla tarama başlatın.</section>;
  const pct=(value:any)=>value==null||Number.isNaN(Number(value))?"—":`%${(Number(value)*100).toFixed(1)}`;
+ // MFE değerleri backend'den ZATEN yüzde cinsinden gelir (ör. 2.25 = %2.25);
+ // pct() ile ×100 çarpmak "ort MFE %148.1" gibi yanlış gösterime yol açıyordu.
+ const pctRaw=(value:any)=>value==null||Number.isNaN(Number(value))?"—":`%${Number(value).toFixed(2)}`;
  const stats=view.stats||{}; const learning=view.learning_state||{}; const filters=view.filters||{};
  const liveRows=live||[];
  const hitCount=liveRows.filter(r=>r.outcome==="success").length;
@@ -116,7 +119,7 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
        <td className={`font-mono text-xs ${(row.change_pct??0)>=2?"text-neon-green font-bold":(row.change_pct??0)>0?"text-neon-green":(row.change_pct??0)<0?"text-neon-red":""}`}>{row.change_pct!=null?`${row.change_pct>=0?"+":""}${row.change_pct.toFixed(2)}%`:"—"}</td>
        <td className={lbl.cls}>{lbl.text}</td>
        <td className="font-mono text-xs">{row.outcome==="success"&&row.touch_sec!=null?`${Math.floor(row.touch_sec/60)}:${String(row.touch_sec%60).padStart(2,"0")}'de geçti`:row.outcome==="pending"?`${Math.floor(row.elapsed_sec/60)}:${String(row.elapsed_sec%60).padStart(2,"0")}`:"5:00"}</td>
-       <td className={((row.best_mfe_pct??0)>=2)?"text-neon-green font-mono text-xs":"font-mono text-xs"}>{pct(row.best_mfe_pct)}</td>
+       <td className={((row.best_mfe_pct??0)>=2)?"text-neon-green font-mono text-xs":"font-mono text-xs"}>{pctRaw(row.best_mfe_pct)}</td>
        <td className="text-bunker-muted text-xs">{row.window_time}</td>
       </tr>;})}
       {!liveRows.length&&<tr><td colSpan={8} className="py-5 text-center text-bunker-muted">Son 30 dakikada aday yok; Chat'ten "🚀 5 DK %2 HIZ AVCISI" başlatın.</td></tr>}
@@ -187,7 +190,7 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
   {bottomTab==="perf"&&<>
    <section className="card">
     <p className="eyebrow">SEMBOLE GÖRE DOKUNUŞ BAŞARISI</p>
-    <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Ölçülen</th><th>Dokunan</th><th>Oran</th><th>Ort. MFE</th></tr></thead><tbody>{(view.symbols||[]).map((row:any)=><tr key={row.symbol}><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.evaluated}</td><td>{row.touched}</td><td className={(row.touch_rate??0)>=0.15?"text-neon-green":"text-neon-red"}>{pct(row.touch_rate)}</td><td>{pct(row.average_mfe_pct)}</td></tr>)}</tbody></table></div>
+    <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Sembol</th><th>Ölçülen</th><th>Dokunan</th><th>Oran</th><th>Ort. MFE</th></tr></thead><tbody>{(view.symbols||[]).map((row:any)=><tr key={row.symbol}><td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td><td>{row.evaluated}</td><td>{row.touched}</td><td className={(row.touch_rate??0)>=0.15?"text-neon-green":"text-neon-red"}>{pct(row.touch_rate)}</td><td>{pctRaw(row.average_mfe_pct)}</td></tr>)}</tbody></table></div>
     {!(view.symbols||[]).length&&<p className="mt-2 text-sm text-bunker-muted">Henüz ölçülmüş sembol yok.</p>}
    </section>
    <section className="card">
@@ -196,9 +199,15 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
      <Stat title="Geçen aday" value={String(stats.passing_count||0)}/>
      <Stat title="Geçenlerde dokunuş" value={`${stats.passing_touched||0}/${stats.passing_count||0}`}/>
      <Stat title="Koşullu isabet" value={pct(stats.passing_hit_rate)} tone={(stats.passing_hit_rate??0)>=0.19?"text-neon-green":"text-yellow-300"}/>
-     <Stat title="Geçenlerde ort. MFE" value={pct(stats.passing_average_mfe_pct)}/>
+     <Stat title="Geçenlerde ort. MFE" value={pctRaw(stats.passing_average_mfe_pct)}/>
     </div>
-    <p className="mt-3 text-xs text-bunker-muted">v2 filtre: ATR% ≥ {filters.min_atr_pct} · BB genişliği ≥ %{filters.min_bb_width_pct} · RSI ≥ {filters.trend_rsi_min} (trend) veya ≤ {filters.reversal_rsi_max} (V-dönüşü) · MFI 10-90 · LinReg ≥ %{filters.struct_slope_pct} veya Aroon ≥ 50. Kalibrasyon hedefi %19 (replay); canlı değer saparsa öğrenme döngüsü ATR eşiğini ±0.05 kaydırır.</p>
+    <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+     {(view.stats_by_profile||{})["5m"]&&<Stat title="5dk-%2 isabet" value={pct(view.stats_by_profile["5m"].passing_hit_rate)} tone={(view.stats_by_profile["5m"].passing_hit_rate??0)>=0.15?"text-neon-green":"text-yellow-300"}/>}
+     {(view.stats_by_profile||{})["5m"]&&<Stat title="5dk-%2 geçen" value={`${view.stats_by_profile["5m"].passing_touched||0}/${view.stats_by_profile["5m"].passing_count||0}`}/>}
+     {(view.stats_by_profile||{})["15m"]&&<Stat title="15dk-%3 isabet" value={pct(view.stats_by_profile["15m"].passing_hit_rate)} tone={(view.stats_by_profile["15m"].passing_hit_rate??0)>=0.15?"text-neon-green":"text-yellow-300"}/>}
+     {(view.stats_by_profile||{})["15m"]&&<Stat title="15dk-%3 geçen" value={`${view.stats_by_profile["15m"].passing_touched||0}/${view.stats_by_profile["15m"].passing_count||0}`}/>}
+    </div>
+    <p className="mt-3 text-xs text-bunker-muted">v2 filtre: ATR% ≥ {filters.min_atr_pct} · BB genişliği ≥ %{filters.min_bb_width_pct} · RSI ≥ {filters.trend_rsi_min} (trend) veya ≤ {filters.reversal_rsi_max} (V-dönüşü) · MFI 10-90 · LinReg ≥ %{filters.struct_slope_pct} veya Aroon ≥ 50. 5dk-%2 ve 15dk-%3 profilleri farklı hedeflere sahip olduğu için ayrı gösterilir; öğrenme döngüsü ATR eşiğini profil bazlı kalibre eder.</p>
    </section>
    <section className="card">
     <p className="eyebrow">ÖĞRENME DÖNGÜSÜ</p>
@@ -260,6 +269,9 @@ function ChatPredictionsTab({ report, loading, error }: { report: any; loading: 
  if (error) return <section className="card border-neon-red/30 text-neon-red">Chat tahmin raporu alınamadı: {error}</section>;
  if (!report) return <section className="card text-bunker-muted">Henüz Chat sayfasından kaydedilmiş M5/M15 tahmini yok.</section>;
  const pct=(value:any)=>value==null||Number.isNaN(Number(value))?"—":`%${(Number(value)*100).toFixed(1)}`;
+ // MFE değerleri backend'den ZATEN yüzde cinsinden gelir (ör. 2.25 = %2.25);
+ // pct() ile ×100 çarpmak "ort MFE %148.1" gibi yanlış gösterime yol açıyordu.
+ const pctRaw=(value:any)=>value==null||Number.isNaN(Number(value))?"—":`%${Number(value).toFixed(2)}`;
  const learning=report.learning_state||{};
  const replayResult=replay?.state?.result; const replayState=replay?.state||{};
  return <div className="space-y-4">

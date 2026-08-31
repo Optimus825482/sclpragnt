@@ -1,0 +1,86 @@
+{
+ "window": {
+  "start": "08-30 06:33",
+  "end": "08-31 06:33"
+ },
+ "horizon_minutes": 15,
+ "target_pct": 3.0,
+ "step_minutes": 1,
+ "symbols_scanned": 301,
+ "passing_count": 2445,
+ "touch_pct": 15.71,
+ "avg_mfe_pct": 1.788,
+ "avg_ret_pct": 0.193,
+ "examples": [
+  {
+   "symbol": "0GTRY",
+   "at": "08-31 00:51",
+   "mode": "trend_devam",
+   "mfe": 0.66,
+   "touched": false
+  },
+  {
+   "symbol": "0GTRY",
+   "at": "08-31 00:52",
+   "mode": "trend_devam",
+   "mfe": 0.66,
+   "touched": false
+  },
+  {
+   "symbol": "0GTRY",
+   "at": "08-31 01:49",
+   "mode": "v_donusu",
+   "mfe": 0.88,
+   "touched": false
+  },
+  {
+   "symbol": "0GTRY",
+   "at": "08-31 02:29",
+   "mode": "v_donusu",
+   "mfe": 0.44,
+   "touched": false
+  },
+  {
+   "symbol": "0GTRY",
+   "at": "08-31 02:30",
+   "mode": "v_donusu",
+   "mfe": 1.32,
+   "touched": false
+  },
+  {
+   "symbol": "0GTRY",
+   "at": "08-31 02:32",
+   "mode": "v_donusu",
+   "mfe": 0.9,
+   "touched": false
+  },
+  {
+   "symbol": "0GTRY",
+   "at": "08-31 02:33",
+   "mode": "v_donusu",
+   "mfe": 0.5,
+   "touched": false
+  },
+  {
+   "symbol": "0GTRY",
+   "at": "08-31 02:34",
+   "mode": "v_donusu",
+   "mfe": 0.25,
+   "touched": false
+  },
+  {
+   "symbol": "0GTRY",
+   "at": "08-31 02:35",
+   "mode": "v_donusu",
+   "mfe": 0.25,
+   "touched": false
+  },
+  {
+   "symbol": "ACETRY",
+   "at": "08-31 00:13",
+   "mode": "v_donusu",
+   "mfe": 0.99,
+   "touched": false
+  }
+ ]
+}

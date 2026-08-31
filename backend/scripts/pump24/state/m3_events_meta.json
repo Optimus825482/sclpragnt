@@ -1,0 +1,15 @@
+{
+ "window": {
+  "start": "08-30 05:55",
+  "end": "08-31 05:55"
+ },
+ "hours": 24,
+ "events": 84,
+ "snapshots": 1344,
+ "skipped": {
+  "no_m5": 0,
+  "short": 0,
+  "no_m1": 0,
+  "no_hour": 0
+ }
+}

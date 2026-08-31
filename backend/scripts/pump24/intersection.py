@@ -34,6 +34,21 @@ PUMP_RULES = {
     "p_awesome_gt1": lambda f, i: (f["awesome_pct"][i] or -99) > 1.0,
     "p_bb_width_gt6": lambda f, i: (f["bb_width"][i] or -99) > 0.06,
 }
+# Rejim/kalite filtreleri: "hatalı sinyalleri engelle" amacıyla her bar için
+# ölçülen per-bar koşullar (supertrend/chop/vortex/vwap build_frame'de zaten var).
+# supertrend_dir >= 1  → bull rejim; chop < eşik → sıkışma (range) DEĞİL;
+# vortex_plus > vortex_minus → yükseliş gücü; vwap_dist < 1 → fiyat VWAP'a yakın.
+REGIME_RULES = {
+    "r_st_bull": lambda f, i: bool((f["supertrend_dir"][i] or 0) >= 1),
+    "r_st_bear": lambda f, i: bool((f["supertrend_dir"][i] or 0) < 1),
+    "r_chop_lt61": lambda f, i: (f["chop_14"][i] if f["chop_14"][i] is not None else 99) < 61.8,
+    "r_chop_lt55": lambda f, i: (f["chop_14"][i] if f["chop_14"][i] is not None else 99) < 55.0,
+    "r_chop_lt50": lambda f, i: (f["chop_14"][i] if f["chop_14"][i] is not None else 99) < 50.0,
+    "r_vortex_bull": lambda f, i: bool(f["vortex_bull"][i]),
+    "r_vwap_near": lambda f, i: (abs(f["vwap_dist_pct"][i] or 99) < 1.0),
+    "r_st_bull_n_chop": lambda f, i: bool((f["supertrend_dir"][i] or 0) >= 1)
+        and (f["chop_14"][i] if f["chop_14"][i] is not None else 99) < 55.0,
+}
 COSTS = {"taker": 0.35, "maker": 0.15}
 
 
@@ -72,6 +87,8 @@ def scan(symbols, start_ms, end_ms):
                 continue
             flags = {"v2": v2_pass(f5, i, lr)}
             for name, fn in PUMP_RULES.items():
+                flags[name] = fn(f5, i)
+            for name, fn in REGIME_RULES.items():
                 flags[name] = fn(f5, i)
             mfe3 = max((f5["high"][j] / entry - 1) * 100 for j in range(i + 1, i + 4))
             ret3 = (f5["close"][i + 3] / entry - 1) * 100
@@ -124,11 +141,42 @@ def main():
         ("v2_AND_p_atr_ge1.0", lambda r: r["v2"] and r["p_atr_ge1.0"]),
         ("v2_AND_p_atr_ge1.5_OR_vwap2", lambda r: r["v2"] and (r["p_atr_ge1.5"] or r["p_vwap_dist_gt2"])),
         ("v2_AND_p_atr_ge1.5_AND_awesome_gt1", lambda r: r["v2"] and r["p_atr_ge1.5"] and r["p_awesome_gt1"]),
+        # --- Rejim filtreli kesişimler (hatalı sinyalleri engelleme hedefi) ---
+        ("v2_AND_st_bull", lambda r: r["v2"] and r["r_st_bull"]),
+        ("v2_AND_p_atr_ge1.5_AND_st_bull", lambda r: r["v2"] and r["p_atr_ge1.5"] and r["r_st_bull"]),
+        ("v2_AND_p_ema_gap_gt2_AND_st_bull", lambda r: r["v2"] and r["p_ema_gap_gt2"] and r["r_st_bull"]),
+        ("v2_AND_st_bull_n_chop", lambda r: r["v2"] and r["r_st_bull_n_chop"]),
+        ("v2_AND_p_atr_ge1.5_AND_st_bull_n_chop", lambda r: r["v2"] and r["p_atr_ge1.5"] and r["r_st_bull_n_chop"]),
+        ("v2_AND_st_bull_n_vortex_bull", lambda r: r["v2"] and r["r_st_bull"] and r["r_vortex_bull"]),
+        ("v2_AND_p_atr_ge1.5_AND_st_bull_AND_vortex_bull", lambda r: r["v2"] and r["p_atr_ge1.5"] and r["r_st_bull"] and r["r_vortex_bull"]),
+        ("v2_AND_p_atr_ge1.5_AND_st_bull_AND_vwap_near", lambda r: r["v2"] and r["p_atr_ge1.5"] and r["r_st_bull"] and r["r_vwap_near"]),
     ]
     report = {"type": "pump24_intersection_test", "generated_at": datetime.now(TZ).isoformat(),
               "windows": {"train_hours": 144, "test_hours": 24},
               "sets_train": [set_stats(tr, fn, lab) for lab, fn in sets],
               "sets_test": [set_stats(te, fn, lab) for lab, fn in sets]}
+    # Gün-bazlı döküm: TRAIN+TEST birleşik (7 gün, kötü günler 08-24/26/28 dahil).
+    # Tek bir parlak güne güvenmemek için (TESTLER.md dersi: test günü yanıltıcıydı)
+    # filtreli setlerin her gündeki avg_ret3/touch95'ini ve pozitif gün sayısını göster.
+    all_rows = tr + te
+    daily = {}
+    for lab, fn in sets:
+        if lab == "all_bars":
+            continue
+        by_day = {}
+        for r in all_rows:
+            day = datetime.fromtimestamp(r["t"] / 1000, tz=TZ).strftime("%Y-%m-%d")
+            d = by_day.setdefault(day, {"n": 0, "ret3_sum": 0.0, "t95": 0})
+            if fn(r):
+                d["n"] += 1
+                d["ret3_sum"] += r["ret3"]
+                d["t95"] += 1 if r["mfe3"] >= 0.95 else 0
+        days = sorted(by_day)
+        daily[lab] = [{"day": d, **by_day[d],
+                       "avg_ret3": round(by_day[d]["ret3_sum"] / by_day[d]["n"], 3) if by_day[d]["n"] else None,
+                       "touch95_pct": round(100 * by_day[d]["t95"] / by_day[d]["n"], 1) if by_day[d]["n"] else None}
+                      for d in days]
+    report["daily_all7d"] = daily
     (STATE / "intersection_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1))
     json.dump(report, open("../../../pump24_kesisim_test.json", "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
@@ -136,11 +184,18 @@ def main():
         print(f"== {w.upper()} ==", flush=True)
         for s in report[f"sets_{w}"]:
             if s["n"] == 0:
-                print(f"  {s['label']:<38} n=0", flush=True)
+                print(f"  {s['label']:<44} n=0", flush=True)
                 continue
-            print(f"  {s['label']:<38} n={s['n']:<6} touch95={s['touch_0.95_pct']}% touch1.5={s['touch_1.5_pct']}% "
+            print(f"  {s['label']:<44} n={s['n']:<6} touch95={s['touch_0.95_pct']}% touch1.5={s['touch_1.5_pct']}% "
                   f"medMFE={s['median_mfe3_pct']}% p75={s['p75_mfe3_pct']}% avgRet3={s['avg_ret3_pct']}% "
                   f"EV(0.15)={s['ev_stopless3_maker_pct']}%", flush=True)
+    print("== GÜN BAZLI (7 GÜN: train+test, kötü günler 08-24/26/28 dahil) ==", flush=True)
+    for lab, days in (report.get("daily_all7d") or {}).items():
+        if not days:
+            continue
+        pos_days = sum(1 for d in days if (d["avg_ret3"] or 0) > 0)
+        line = "  ".join(f"{d['day'][-5:]}: n={d['n']} r3={d['avg_ret3']}% t95={d['touch95_pct']}%" for d in days)
+        print(f"  {lab:<44} pozitif_gün={pos_days}/{len(days)} | {line}", flush=True)
     print("[ix done]", flush=True)
 
 
