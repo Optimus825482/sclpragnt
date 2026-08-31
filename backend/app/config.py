@@ -121,6 +121,10 @@ class Config:
     # sınırlar. Kâr kilidi sonrası intrabar trailing devreye girince bu stop
     # zaten anlamsızlaşır (trailing daha yukarıda).
     VELOCITY_EMERGENCY_STOP_PCT = float(os.getenv("VELOCITY_EMERGENCY_STOP_PCT", "3.0"))
+    # Sembol bazlı kalite filtresi: kapanmış işlemlerde ort getirisi negatif
+    # olan semboller yeni açılışta atlanır (7g backtest: iyi semboller +0.04%
+    # vs kötüler -0.74%).
+    VELOCITY_SYMBOL_QUALITY_FILTER = os.getenv("VELOCITY_SYMBOL_QUALITY_FILTER", "true").lower() == "true"
     VELOCITY_PROFIT_LOCK_PCT = 0.01  # +%0.5'te kilitlenen net kâr (girişin %0.01 üstü + komisyon)
     # 7 günlük replay doğrulamasıyla bulunan M5 momentum+volatilite deseni
     # (24s/72s/7g altı pencerede %66-68 başarı). Aday pozisyon açmadan önce
