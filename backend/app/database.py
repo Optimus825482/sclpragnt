@@ -1458,6 +1458,10 @@ async def save_velocity_candidates(rows):
                 extra["leading_ok"] = bool(row.get("leading_ok"))
                 extra["m1_atr_prev"] = row.get("m1_atr_prev")
                 extra["m3_atr_prev"] = row.get("m3_atr_prev")
+            # Mikro yapı anlık görüntüsü (whale verdict, CVD): kalıcı yazılmıyordu;
+            # filtre istatistiklerinin birikmesi için outcome_details'e gömülür.
+            if row.get("microstructure"):
+                extra["microstructure"] = row["microstructure"]
             vals.append(_json_safe_dumps(extra) if extra else None)
             values.append(vals)
         conn.executemany(sql, values); conn.commit(); return len(values)

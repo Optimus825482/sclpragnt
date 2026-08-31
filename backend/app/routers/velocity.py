@@ -715,7 +715,9 @@ async def manual_velocity_scan():
     scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
     pool = (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
             + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
-    pool.sort(key=lambda c: -float(c.get("velocity_score") or 0))
+    # Sıralama: ham skor × sembol kalite çarpanı (otonom döngüyle aynı kapılar).
+    touch_rates = await _journal_touch_rates()
+    pool.sort(key=lambda c: -_rank_score(c, touch_rates))
     if not pool:
         return {"ok": True, "paper_only": True, "opened": False,
                 "message": "Şu an koşulları geçen aday yok; yüksek salınım rejimi bekleniyor.",
@@ -974,9 +976,59 @@ async def _velocity_journal_quality(symbol: str) -> dict | None:
     return {"evaluated": evaluated, "touched": touched, "avg_mfe_pct": round(avg_mfe, 3)}
 
 
+async def _journal_touch_rates() -> dict[str, float]:
+    """Sembol başına journal dokunuş oranı; yeterli örneklemi olanlar dahil.
+
+    Aday sıralamasında kalite çarpanı için kullanılır; veri yoksa boş döner
+    (tüm adaylar çarpan 1.0 ile sıralanır — fail-open).
+    """
+    try:
+        rows = await database.get_velocity_symbol_quality_stats()
+    except Exception:
+        return {}
+    rates: dict[str, float] = {}
+    for row in rows:
+        evaluated = int(row.get("evaluated") or 0)
+        if evaluated < config.VELOCITY_SYMBOL_QUALITY_JOURNAL_MIN_EVALUATED:
+            continue
+        rates[str(row.get("symbol", "")).upper()] = int(row.get("touched") or 0) / evaluated
+    return rates
+
+
+def _quality_multiplier(touch_rate: float | None) -> float:
+    """Journal dokunuş oranına göre aday sıralama çarpanı.
+
+    İyi sembollerde geçen adayların dokunuşu %46.3 (journal analizi);
+    binary engel yerine sıralamada önceliklendirme yapılır.
+    """
+    if touch_rate is None:
+        return 1.0
+    if touch_rate >= 0.20:
+        return 1.3
+    if touch_rate >= 0.10:
+        return 1.1
+    if touch_rate < 0.05:
+        return 0.4
+    return 0.7
+
+
+def _rank_score(candidate: dict, touch_rates: dict[str, float]) -> float:
+    """Ham skor × sembol kalite çarpanı; açılış havuzunun sıralama anahtarı."""
+    base = float(candidate.get("velocity_score") or 0)
+    rate = touch_rates.get(str(candidate.get("symbol") or "").upper())
+    return base * _quality_multiplier(rate)
+
+
 async def _open_velocity_position(candidate: dict) -> dict:
     """En iyi hız adayına serbest TL'nin %50'si ile paper pozisyon açar."""
     symbol = str(candidate["symbol"] or "").upper()
+    # Minimum skor eşiği: düşük skorlu adaylarda dokunuş oranının üçte biri
+    # (journal analizi: <10 → %16.7, ≥10 → ~%50). Eşik altında tur pas geçilir.
+    min_score = config.VELOCITY_AUTO_MIN_SCORE
+    score = float(candidate.get("velocity_score") or 0)
+    if min_score > 0 and score < min_score:
+        return {"symbol": symbol, "status": "SKIPPED",
+                "reason": f"skor_esigi_alti:{score:.2f}<{min_score:g}"}
     # M5 momentum+volatilite deseni (7g replay: %66.8 başarı). Filtre açıkken
     # desen karşılanmayan adaylar açılmaz — yalnızca journal'da kalır.
     if config.VELOCITY_PATTERN_FILTER_ENABLED:
@@ -1146,12 +1198,14 @@ async def autonomous_velocity_loop():
                 scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
                 _velocity_auto_state["last_scan_at"] = time.time()
                 _velocity_auto_state["last_m5_close_ms"] = latest_close_ms
-                # İki profilin adayları birleşik; skor üzerinden adil sıralama.
+                # İki profilin adayları birleşik; kalite çarpanlı skor ile sıralama.
                 # Zaten açık pozisyonu olan semboller atlanır (çoklu açılışı önler).
                 pool = [c for c in (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
                         + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
                         if str(c.get("symbol") or "").upper() not in analyzer.positions]
-                pool.sort(key=lambda c: -float(c.get("velocity_score") or 0))
+                # Sıralama: ham skor × sembol kalite çarpanı (journal dokunuş oranı).
+                touch_rates = await _journal_touch_rates()
+                pool.sort(key=lambda c: -_rank_score(c, touch_rates))
                 if pool:
                     best = pool[0]
                     outcome = await _open_velocity_position(best)

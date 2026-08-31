@@ -41,6 +41,8 @@ class VelocityMicrostructureFilterTests(unittest.IsolatedAsyncioTestCase):
 
         old_flag = config.VELOCITY_WHALE_DISTRIBUTION_FILTER
         config.VELOCITY_WHALE_DISTRIBUTION_FILTER = True
+        old_min_score = config.VELOCITY_AUTO_MIN_SCORE
+        config.VELOCITY_AUTO_MIN_SCORE = 0.0  # bu test whale kapısını ölçer; skor eşiği kapalı olsun
         try:
             # _open_velocity_position ilk kapılardan geçebilmesi için aday sahte;
             # whale filtresi likidite kapısından ÖNCE çalışır, bu yüzden erken
@@ -55,6 +57,7 @@ class VelocityMicrostructureFilterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["whale_activity"]["verdict"], "distribution")
         finally:
             config.VELOCITY_WHALE_DISTRIBUTION_FILTER = old_flag
+            config.VELOCITY_AUTO_MIN_SCORE = old_min_score
 
     async def test_flow_confirmation_filter_blocks_negative_cvd_when_enabled(self):
         from app.microflow import microflow
@@ -71,6 +74,8 @@ class VelocityMicrostructureFilterTests(unittest.IsolatedAsyncioTestCase):
 
         old_flag = config.VELOCITY_FLOW_CONFIRMATION_FILTER
         config.VELOCITY_FLOW_CONFIRMATION_FILTER = True
+        old_min_score = config.VELOCITY_AUTO_MIN_SCORE
+        config.VELOCITY_AUTO_MIN_SCORE = 0.0
         try:
             result = await _open_velocity_position({
                 "symbol": symbol, "price": 100.0, "velocity_score": 5.0,
@@ -82,6 +87,7 @@ class VelocityMicrostructureFilterTests(unittest.IsolatedAsyncioTestCase):
             self.assertLess(result["cvd_try"], 0)
         finally:
             config.VELOCITY_FLOW_CONFIRMATION_FILTER = old_flag
+            config.VELOCITY_AUTO_MIN_SCORE = old_min_score
 
     async def test_get_snapshot_handles_deque_tape(self):
         # Canlıda _tape bir deque'tir (maxlen sınırlı FIFO); get_snapshot'ın
