@@ -168,20 +168,21 @@ async def analyze(snapshot, max_tokens=None):
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
     system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Yanıtını piyasa rejimi, kanıtlar, riskler, veri eksikleri ve güven seviyesi başlıklarıyla açıkla. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
-    payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False, default=str)}]}
-    if max_tokens: payload["max_tokens"] = int(max_tokens)
     base_url = validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
-    def call():
+    def call(max_tokens):
+        payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False, default=str)}]}
+        if max_tokens: payload["max_tokens"] = int(max_tokens)
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
         with safe_provider_open(req, timeout=90) as response: return _decode_provider_response(response.read())
-    try:
-        result = await asyncio.to_thread(call)
+    def _unwrap(result):
         # Some compatible gateways wrap the upstream response in {success, data}.
         payload_result = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), (dict, list, str)) else result
         if isinstance(payload_result, str):
             try: payload_result = json.loads(payload_result)
             except json.JSONDecodeError: pass
+        return payload_result
+    def _extract_text(payload_result):
         choices = payload_result.get("choices") if isinstance(payload_result, dict) else None
         text = None
         finish_reason = None
@@ -194,6 +195,16 @@ async def analyze(snapshot, max_tokens=None):
             text = payload_result.get("output_text") or payload_result.get("response") or payload_result.get("content")
         if not text and isinstance(payload_result, str):
             text = payload_result
+        return text, finish_reason
+    try:
+        result = await asyncio.to_thread(call, max_tokens)
+        payload_result = _unwrap(result)
+        text, finish_reason = _extract_text(payload_result)
+        # Reasoning modeller gizli akıl yürütmeye cap'i harcayıp içerik yazamayabilir; cap'siz tek tekrar.
+        if not text and finish_reason == "length" and max_tokens:
+            result = await asyncio.to_thread(call, None)
+            payload_result = _unwrap(result)
+            text, finish_reason = _extract_text(payload_result)
         if not text:
             provider_error = (payload_result.get("error") if isinstance(payload_result, dict) else None) or (result.get("error") if isinstance(result, dict) else None)
             detail = provider_error.get("message") if isinstance(provider_error, dict) else provider_error
