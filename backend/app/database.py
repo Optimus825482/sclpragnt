@@ -1476,10 +1476,17 @@ async def get_pending_velocity_candidates(now=None, limit=100):
 async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_target, details, force=False):
     def op(conn):
         where = "WHERE candidate_id=?" + ("" if force else " AND status='pending'")
+        # outcome_details taramada m5_pattern/m5_pattern_ok taşıyor; üzerine
+        # yazmak yerine birleştiriyoruz — aksi halde frontend "M5 Desen"
+        # sütunu değerlendirme sonrası boş görünüyordu.
+        existing = conn.execute("SELECT outcome_details FROM velocity_candidates WHERE candidate_id=?",
+                                 (candidate_id,)).fetchone()
+        prior = _json_value(existing[0], {}) if existing else {}
+        merged = {**(prior or {}), **(details or {})}
         cur = conn.execute(f"""UPDATE velocity_candidates SET status='evaluated', evaluated_at=?, mfe_pct=?,
             touched_target=?, outcome_details=? {where}""",
             (time.time(), float(mfe_pct), bool(touched_target),
-             _json_safe_dumps(details or {}, ensure_ascii=False, default=str), candidate_id))
+             _json_safe_dumps(merged, ensure_ascii=False, default=str), candidate_id))
         changed = cur.rowcount
         conn.commit(); return changed > 0
     return await _run_db(op)
@@ -1510,10 +1517,18 @@ async def get_velocity_candidates(limit=50, status=None):
     return await _run_db(op)
 
 
-async def get_velocity_calibration_stats():
-    """Koşullu dokunuş oranı + bileşen bazlı istatistik; eşik otomatik kalibrasyonu bununla yapılır."""
+async def get_velocity_calibration_stats(profile: str | None = None):
+    """Koşullu dokunuş oranı + bileşen bazlı istatistik; eşik otomatik kalibrasyonu bununla yapılır.
+
+    profile: None (tümü), "5m" (vel-5dk-... journal'ları) veya "15m" (vel-15dk-...).
+    5dk-%2 ve 15dk-%3 profillerinin hit oranları çok farklı; harmanlanmış tek
+    havuz otomatik kalibrasyonu yanlış yönlendiriyordu — profil ayrımı eklendi.
+    """
+    prefix = {"5m": "vel-5dk-%", "15m": "vel-15dk-%"}.get(profile)
     def op(conn):
-        rows = [dict(row) for row in conn.execute("""SELECT
+        where = " WHERE candidate_id LIKE ?" if prefix else ""
+        params = (prefix,) if prefix else ()
+        rows = [dict(row) for row in conn.execute(f"""SELECT
             COUNT(*) AS total,
             SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_count,
             SUM(CASE WHEN status='evaluated' THEN 1 ELSE 0 END) AS evaluated_count,
@@ -1522,9 +1537,45 @@ async def get_velocity_calibration_stats():
             AVG(CASE WHEN status='evaluated' AND passes THEN mfe_pct END) AS passing_mfe_pct,
             SUM(CASE WHEN status='evaluated' AND passes AND touched_target THEN 1 ELSE 0 END) AS passing_touched_count,
             SUM(CASE WHEN status='evaluated' AND passes THEN 1 ELSE 0 END) AS passing_count
-            FROM velocity_candidates""").fetchall()]
+            FROM velocity_candidates{where}""", params).fetchall()]
         return rows[0] if rows else {}
     return await _run_db(op)
+
+
+async def get_velocity_pattern_hit_rates():
+    """m5_pattern_ok=true/false alt kümelerinde koşullu (passes) dokunuş oranı.
+
+    outcome_details JSON'unda gömülü olduğu için Python tarafında gruplanır
+    (JSONB sorgusu şema başına farklılaştığından basit ve taşınabilir kalır).
+    """
+    def op(conn):
+        rows = conn.execute("""SELECT outcome_details, touched_target FROM velocity_candidates
+            WHERE status='evaluated' AND passes=TRUE""").fetchall()
+        return [(_json_value(row[0], {}) or {}, bool(row[1])) for row in rows]
+    raw = await _run_db(op)
+    buckets = {"pattern_ok": {"evaluated": 0, "touched": 0}, "pattern_not_ok": {"evaluated": 0, "touched": 0},
+               "no_pattern": {"evaluated": 0, "touched": 0}}
+    for details, touched in raw:
+        pattern_ok = details.get("m5_pattern_ok")
+        key = "pattern_ok" if pattern_ok is True else "pattern_not_ok" if pattern_ok is False else "no_pattern"
+        buckets[key]["evaluated"] += 1
+        buckets[key]["touched"] += 1 if touched else 0
+    for bucket in buckets.values():
+        bucket["hit_rate"] = bucket["touched"] / bucket["evaluated"] if bucket["evaluated"] else None
+    return buckets
+
+
+async def cleanup_stale_velocity_candidates(max_age_seconds: int = 6 * 3600):
+    """Sembol WS/REST'ten hiç mum üretmediği için sonsuza dek 'pending' kalan
+    kayıtları 'expired' işaretler; istatistikleri şişirmelerini önler."""
+    cutoff = time.time() - max_age_seconds
+    def op(conn):
+        cur = conn.execute("""UPDATE velocity_candidates SET status='expired', evaluated_at=?
+            WHERE status='pending' AND created_at <= ?""", (time.time(), cutoff))
+        changed = cur.rowcount
+        conn.commit(); return changed
+    return await _run_db(op)
+
 
 async def read_only_query(sql: str, limit: int = 500):
     """Execute a narrowly validated, read-only query for LLM inspection."""

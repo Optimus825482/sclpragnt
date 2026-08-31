@@ -879,7 +879,7 @@ async def _enqueue_chat_auto_trades(candidates: list[dict], horizon_minutes: int
         _chat_auto_trade_state["queue"].extend(fresh)
         # Kuyruk sınırsız büyümesin
         del _chat_auto_trade_state["queue"][:-20]
-        await database.save_llm_setting("chat_auto_trade_queue", json.dumps(
+        await database.set_llm_setting("chat_auto_trade_queue", json.dumps(
             _chat_auto_trade_state["queue"][-20:], ensure_ascii=False))
 
 

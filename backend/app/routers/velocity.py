@@ -306,6 +306,16 @@ async def velocity_learning_loop():
     ölç; eşikleri canlı dokunuş oranına göre ayarla; LLM'e postmortem bağlamı
     kaydet."""
     await asyncio.sleep(120)
+    global VELOCITY_MIN_ATR_PCT
+    # Kalibre edilmiş eşiği kalıcı depodan geri yükle; aksi halde her restart
+    # öğrenilen değeri fabrika ayarına (0.30) sıfırlıyordu.
+    try:
+        saved = await database.get_llm_setting("velocity_min_atr_pct", None)
+        if saved:
+            VELOCITY_MIN_ATR_PCT = round(float(saved), 2)
+            _velocity_learning_state["active_filters"] = {"min_atr_pct": VELOCITY_MIN_ATR_PCT}
+    except Exception as exc:
+        logger.warning("velocity eşiği geri yüklenemedi: %s", exc)
     while True:
         try:
             pending = await database.get_pending_velocity_candidates(limit=200)
@@ -351,27 +361,48 @@ async def velocity_learning_loop():
                         observed_at=time.time()))
             if measured:
                 _velocity_learning_state["measured"] = _velocity_learning_state.get("measured", 0) + measured
-                # Otomatik kalibrasyon: en az 50 ölçüm birikince geçen adayların
-                # gerçek dokunuş oranına göre eşikleri nazikçe kaydır. v2'de
-                # modül-sabitlerini yerinde güncelliyoruz (scan_one aynı modülü okur).
-                global VELOCITY_MIN_ATR_PCT
-                stats = await database.get_velocity_calibration_stats()
-                passing = int(stats.get("passing_count") or 0)
-                if passing >= 50:
-                    hit = int(stats.get("passing_touched_count") or 0) / passing
+                # Otomatik kalibrasyon: 5dk-%2 ve 15dk-%3 profillerinin hit
+                # oranları çok farklı; harmanlanmış tek havuz yanlış yönlendirir.
+                # Her profil ayrı ayrı >=50 örnekleme ulaştığında hit oranı
+                # hesaplanır, ardından eşit ağırlıklı ortalama alınır — böylece
+                # örnek sayısı fazla olan profil diğerini bastırmaz.
+                stats_by_profile = {}
+                hit_rates = []
+                for label in ("5m", "15m"):
+                    stats = await database.get_velocity_calibration_stats(profile=label)
+                    passing = int(stats.get("passing_count") or 0)
+                    hit_pct = (int(stats.get("passing_touched_count") or 0) / passing) if passing else None
+                    stats_by_profile[label] = {"passing_count": passing, "hit_pct": hit_pct}
+                    if passing >= 50:
+                        hit_rates.append(hit_pct)
+                if hit_rates:
+                    hit = sum(hit_rates) / len(hit_rates)
+                    calibrated = False
                     if hit < 0.10:
                         VELOCITY_MIN_ATR_PCT = round(min(1.0, VELOCITY_MIN_ATR_PCT + 0.05), 2)
-                        _velocity_learning_state["last_calibrated_at"] = time.time()
+                        calibrated = True
                     elif hit > 0.45:
                         VELOCITY_MIN_ATR_PCT = round(max(0.10, VELOCITY_MIN_ATR_PCT - 0.05), 2)
+                        calibrated = True
+                    if calibrated:
                         _velocity_learning_state["last_calibrated_at"] = time.time()
+                        try:
+                            await database.set_llm_setting("velocity_min_atr_pct", str(VELOCITY_MIN_ATR_PCT))
+                        except Exception as exc:
+                            logger.warning("velocity eşiği kalıcı yazılamadı: %s", exc)
                     _velocity_learning_state["active_filters"] = {
                         "min_atr_pct": VELOCITY_MIN_ATR_PCT,
                         "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,
                         "trend_rsi_min": VELOCITY_TREND_RSI_MIN,
                         "reversal_rsi_max": VELOCITY_REVERSAL_RSI_MAX,
                         "live_hit_pct": round(hit * 100, 1),
+                        "by_profile": stats_by_profile,
                     }
+            # Ölü/sessiz sembollerde mum hiç gelmediği için sonsuza dek pending
+            # kalan kayıtları temizle — istatistikleri şişirmesini önler.
+            expired = await database.cleanup_stale_velocity_candidates()
+            if expired:
+                logger.info("velocity: %s ölü pending kayıt expired işaretlendi", expired)
             _velocity_learning_state.update({"last_run_at": time.time(), "last_error": None})
         except asyncio.CancelledError:
             raise
@@ -396,11 +427,21 @@ async def market_snapshot_velocity_15m(limit: int = 3):
 async def get_velocity_report(limit: int = 60):
     """Hız avcısı journal'ı: koşullu dokunuş başarısı + öğrenme durumu."""
     stats = await database.get_velocity_calibration_stats()
+    stats_5m = await database.get_velocity_calibration_stats(profile="5m")
+    stats_15m = await database.get_velocity_calibration_stats(profile="15m")
+    pattern_hit_rates = await database.get_velocity_pattern_hit_rates()
     recent = await database.get_velocity_candidates(limit=limit)
     evaluated = int(stats.get("evaluated_count") or 0)
     touched = int(stats.get("touched_count") or 0)
     passing = int(stats.get("passing_count") or 0)
     passing_touched = int(stats.get("passing_touched_count") or 0)
+
+    def _profile_stats(raw):
+        p = int(raw.get("passing_count") or 0)
+        pt = int(raw.get("passing_touched_count") or 0)
+        return {"passing_count": p, "passing_touched": pt,
+                "passing_hit_rate": pt / p if p else None,
+                "evaluated": int(raw.get("evaluated_count") or 0)}
     # Sembol bazında başarı
     symbol_rows = [row for row in recent if row.get("status") == "evaluated"]
     by_symbol: dict[str, dict] = {}
@@ -422,6 +463,8 @@ async def get_velocity_report(limit: int = 60):
                        "passing_count": passing, "passing_touched": passing_touched,
                        "passing_hit_rate": passing_touched / passing if passing else None,
                        "passing_average_mfe_pct": stats.get("passing_mfe_pct")},
+            "stats_by_profile": {"5m": _profile_stats(stats_5m), "15m": _profile_stats(stats_15m)},
+            "pattern_hit_rates": pattern_hit_rates,
             "filters": {"min_atr_pct": VELOCITY_MIN_ATR_PCT,
                          "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,
                          "trend_rsi_min": VELOCITY_TREND_RSI_MIN,
@@ -436,6 +479,7 @@ async def get_velocity_report(limit: int = 60):
                             "state": {k: v for k, v in _velocity_auto_state.items() if k != "opened"},
                             "recent_opens": list(_velocity_auto_state["opened"][-5:])},
             "symbols": symbols[:20], "recent": recent}
+
 
 
 @router.delete("/api/reports/velocity/{candidate_id}")
@@ -459,10 +503,11 @@ async def remeasure_velocity_candidate(candidate_id: str):
     if not candidate:
         raise HTTPException(status_code=404, detail="Kayıt bulunamadı")
     symbol = candidate["symbol"]
+    horizon = 15 if "15dk-%3" in str(candidate.get("candidate_id", "")) else 5
     created_ms = int(float(candidate["created_at"]) * 1000)
-    due_ms = created_ms + 5 * 60_000
+    due_ms = created_ms + horizon * 60_000
     try:
-        rows1m = await fetch_klines(symbol, "1m", 12, created_ms, due_ms + 65_000)
+        rows1m = await fetch_klines(symbol, "1m", horizon + 12, created_ms, due_ms + 65_000)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"mum verisi alınamadı: {exc}")
     window = [r for r in rows1m if int(r[0]) + 59_999 > created_ms and int(r[0]) + 59_999 <= due_ms]
