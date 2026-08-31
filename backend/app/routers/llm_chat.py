@@ -803,6 +803,34 @@ async def _upside_scout_impl():
                 "error": result.get("error") or "LLM yapılandırması yok"}
     analysis_text = result.get("text", "")
 
+    def _parse_scout_targets(text: str) -> dict[str, float]:
+        """4 satırlık scout bloklarından 'Tahmini artış' yüzdesini ayrıştırır.
+
+        İki düzen desteklenir: satır satır etiketli ("Sembol: X / Tahmini artış: %1.5")
+        ve etiketlerin başta bir kez geldiği değer sütunu düzeni
+        ("SYM\\n10.569 TRY\\n%1.5\\n5 dakika · ...").
+        """
+        targets: dict[str, float] = {}
+
+        def _put(sym: str, pct: str):
+            try:
+                targets[sym.upper()] = float(pct.replace(",", "."))
+            except ValueError:
+                pass
+
+        for sym, pct in re.findall(
+                r"Sembol:\s*([A-Z0-9]+)[^\n]*\nAnlık fiyat:[^\n]*\nTahmini artış:\s*%?\s*([0-9]+(?:[.,][0-9]+)?)",
+                text or "", re.IGNORECASE):
+            _put(sym, pct)
+        if not targets:
+            for sym, pct in re.findall(
+                    r"(?:^|\n)\s*([A-Z0-9]{2,})\s*\n\s*[\d.,]+\s*(?:TRY|₺)\s*\n\s*%?\s*([0-9]+(?:[.,][0-9]+)?)",
+                    text or ""):
+                _put(sym, pct)
+        return targets
+
+    llm_targets = _parse_scout_targets(analysis_text)
+
     # 3) Her aday journaled forecast olarak kaydedilir; ufuk kapanınca M1
     #    mumlarla ölçülür (llm_forecast_evaluation_loop) ve dersler türetilir.
     now = time.time()
@@ -811,6 +839,17 @@ async def _upside_scout_impl():
     for ctx in candidates_ctx:
         if ctx["current_price"] <= 0:
             continue
+        # LLM'in metinde öngördüğü hedefi kullan; gösterilen = ölçülen olsun.
+        # 0.5-1.5x sınırları dışına çıkan/hatalı yanıtlar sabit hedefe döner.
+        base_pct = float(ctx["target_pct"])
+        adjusted = llm_targets.get(ctx["symbol"])
+        if adjusted is not None and adjusted > 0:
+            adjusted = max(base_pct * 0.5, min(base_pct * 1.5, adjusted))
+        effective_pct = round(adjusted, 2) if adjusted else base_pct
+        ctx["base_target_pct"] = base_pct
+        ctx["llm_adjusted"] = bool(adjusted and abs(adjusted - base_pct) > 1e-9)
+        ctx["target_pct"] = effective_pct
+        ctx["target_price"] = round(ctx["current_price"] * (1 + effective_pct / 100.0), 6)
         confidence = max(30.0, min(65.0, 35.0 + ctx["velocity_score"] * 0.5))
         snapshot = dict(ctx)
         snapshot.update({"paper_only": True, "generated_at": now, "source": "upside_scout"})
