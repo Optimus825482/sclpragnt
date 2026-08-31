@@ -238,6 +238,31 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     m5_pattern_ok = all(conds.values())
             except Exception as exc:
                 logger.warning("velocity m5 pattern hesabı: %s", exc)
+            # ---- M1/M3 öncü ATR deseni (araştırma: v2×M1/M3 kesişimi dokunuşu 2.5× artırıyor) ----
+            # M1 öncü ATR: son kapanmış 1m'den ÖNCEKİ barın ATR%'si; M3 öncü: 3 dk öncesi.
+            # Yüksekse (M1>1.0 VE M3>1.0) aday "kesişim deseni" taşır — skorlamada önceliklendirilir.
+            try:
+                m1_atr_prev = m3_atr_prev = None
+                if len(closes) >= 16:
+                    def _atr_pct_at(idx):
+                        if idx < 15:
+                            return None
+                        trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j - 1]),
+                                   abs(lows[j] - closes[j - 1]))
+                               for j in range(idx - 14, idx + 1)]
+                        return (sum(trs) / len(trs)) / closes[idx] * 100 if trs else None
+                    m1_atr_prev = _atr_pct_at(i - 1)
+                    m3_atr_prev = _atr_pct_at(i - 3)
+                leading_ok = bool(m1_atr_prev is not None and m3_atr_prev is not None
+                                  and m1_atr_prev > 1.0 and m3_atr_prev > 1.0)
+                # Kesişim deseni dokunuşu ~2.5× artırıyor (araştırma run 14); skor
+                # çarpanı aday sıralamasında önceliklendirir.
+                if leading_ok:
+                    velocity_score = round(velocity_score * 1.5, 2)
+            except Exception as exc:
+                logger.warning("velocity m1/m3 leading hesabı: %s", exc)
+                m1_atr_prev = m3_atr_prev = None
+                leading_ok = False
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
@@ -249,6 +274,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "ret3_pct": round(ret3, 3),
                     "velocity_score": velocity_score, "passes": passes,
                     "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
+                    "m1_atr_prev": round(m1_atr_prev, 3) if m1_atr_prev is not None else None,
+                    "m3_atr_prev": round(m3_atr_prev, 3) if m3_atr_prev is not None else None,
+                    "leading_ok": leading_ok,
                     "base_hit_pct": VELOCITY_BASE_RATE_PCT,
                     "calibrated_hit_pct": VELOCITY_CALIBRATED_HIT_PCT if passes else None,
                     "last_closed_at": rows[-1][0]}
@@ -272,6 +300,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             "ret3_pct": r["ret3_pct"], "velocity_score": r["velocity_score"],
             "passes": r["passes"], "rank": r.get("rank"),
             "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
+            "leading_ok": r.get("leading_ok"),
         } for r in (candidates[:limit] + watchlist[:5])]
         await database.save_velocity_candidates(journal_rows)
     except Exception as exc:
@@ -298,6 +327,11 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                              "live_passing_count": int(live_stats.get("passing_count") or 0),
                              "note": "v2: hacim şartı kaldırıldı; BB genişliği + RSI/MFI uç elmesi + LinReg/Aroon teyidi. live_hit_pct canlı journal'dan gelir."},
             "candidates": candidates[:limit], "watchlist": watchlist[:5],
+            "leading_summary": {
+                "scanned": len(results),
+                "leading_ok_count": sum(1 for r in results if r and r.get("leading_ok")),
+                "note": "M1/M3 öncü ATR kesişimi (M1>1.0 VE M3>1.0) dokunuşu ~2.5x artırır; skorda 1.5x öncelik.",
+            },
             "data_policy": "kapanmış 1m mumlar; tahmin/garanti değil, paper-only"}
 
 

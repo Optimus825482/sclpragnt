@@ -1449,14 +1449,16 @@ async def save_velocity_candidates(rows):
                     float(row["price"]), float(row["target_pct"]), float(row["atr_pct"]),
                     float(row["volume_ratio"]), float(row["ret3_pct"]), float(row["velocity_score"]),
                     bool(row.get("passes")), row.get("rank"), "pending"]
-            # M5 desen durumunu outcome_details'e göm (kolon zaten mevcut).
+            # M5 desen + M1/M3 öncü ATR durumunu outcome_details'e göm (kolon mevcut).
+            extra = {}
             if row.get("m5_pattern") is not None or row.get("m5_pattern_ok") is not None:
-                vals.append(_json_safe_dumps({
-                    "m5_pattern": row.get("m5_pattern"),
-                    "m5_pattern_ok": row.get("m5_pattern_ok"),
-                }))
-            else:
-                vals.append(None)
+                extra["m5_pattern"] = row.get("m5_pattern")
+                extra["m5_pattern_ok"] = row.get("m5_pattern_ok")
+            if row.get("leading_ok") is not None:
+                extra["leading_ok"] = bool(row.get("leading_ok"))
+                extra["m1_atr_prev"] = row.get("m1_atr_prev")
+                extra["m3_atr_prev"] = row.get("m3_atr_prev")
+            vals.append(_json_safe_dumps(extra) if extra else None)
             values.append(vals)
         conn.executemany(sql, values); conn.commit(); return len(values)
     return await _run_db(op)
@@ -1555,14 +1557,25 @@ async def get_velocity_pattern_hit_rates():
     raw = await _run_db(op)
     buckets = {"pattern_ok": {"evaluated": 0, "touched": 0}, "pattern_not_ok": {"evaluated": 0, "touched": 0},
                "no_pattern": {"evaluated": 0, "touched": 0}}
+    leading_buckets = {"leading_ok": {"evaluated": 0, "touched": 0},
+                       "leading_not_ok": {"evaluated": 0, "touched": 0}}
     for details, touched in raw:
         pattern_ok = details.get("m5_pattern_ok")
         key = "pattern_ok" if pattern_ok is True else "pattern_not_ok" if pattern_ok is False else "no_pattern"
         buckets[key]["evaluated"] += 1
         buckets[key]["touched"] += 1 if touched else 0
+        leading = details.get("leading_ok")
+        if leading is True:
+            leading_buckets["leading_ok"]["evaluated"] += 1
+            leading_buckets["leading_ok"]["touched"] += 1 if touched else 0
+        elif leading is False:
+            leading_buckets["leading_not_ok"]["evaluated"] += 1
+            leading_buckets["leading_not_ok"]["touched"] += 1 if touched else 0
     for bucket in buckets.values():
         bucket["hit_rate"] = bucket["touched"] / bucket["evaluated"] if bucket["evaluated"] else None
-    return buckets
+    for bucket in leading_buckets.values():
+        bucket["hit_rate"] = bucket["touched"] / bucket["evaluated"] if bucket["evaluated"] else None
+    return {**buckets, "leading": leading_buckets}
 
 
 async def cleanup_stale_velocity_candidates(max_age_seconds: int = 6 * 3600):

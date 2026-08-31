@@ -207,7 +207,13 @@ function VelocityTab({ report, loading, error }: { report: any; loading: boolean
      {(view.stats_by_profile||{})["15m"]&&<Stat title="15dk-%3 isabet" value={pct(view.stats_by_profile["15m"].passing_hit_rate)} tone={(view.stats_by_profile["15m"].passing_hit_rate??0)>=0.15?"text-neon-green":"text-yellow-300"}/>}
      {(view.stats_by_profile||{})["15m"]&&<Stat title="15dk-%3 geçen" value={`${view.stats_by_profile["15m"].passing_touched||0}/${view.stats_by_profile["15m"].passing_count||0}`}/>}
     </div>
-    <p className="mt-3 text-xs text-bunker-muted">v2 filtre: ATR% ≥ {filters.min_atr_pct} · BB genişliği ≥ %{filters.min_bb_width_pct} · RSI ≥ {filters.trend_rsi_min} (trend) veya ≤ {filters.reversal_rsi_max} (V-dönüşü) · MFI 10-90 · LinReg ≥ %{filters.struct_slope_pct} veya Aroon ≥ 50. 5dk-%2 ve 15dk-%3 profilleri farklı hedeflere sahip olduğu için ayrı gösterilir; öğrenme döngüsü ATR eşiğini profil bazlı kalibre eder.</p>
+    {(view.pattern_hit_rates||{})?.leading&&<div className="mt-2 grid grid-cols-2 gap-3 lg:grid-cols-4">
+     <Stat title="Öncü desen (M1+M3 ATR yüksek)" value={`${view.pattern_hit_rates.leading.leading_ok?.touched||0}/${view.pattern_hit_rates.leading.leading_ok?.evaluated||0}`} tone="text-sky-300"/>
+     <Stat title="Öncü desen isabet" value={pct(view.pattern_hit_rates.leading.leading_ok?.hit_rate)} tone={(view.pattern_hit_rates.leading.leading_ok?.hit_rate??0)>=0.2?"text-neon-green":"text-yellow-300"}/>
+     <Stat title="Öncüsüz isabet" value={pct(view.pattern_hit_rates.leading.leading_not_ok?.hit_rate)}/>
+     <Stat title="Öncüsüz geçen" value={`${view.pattern_hit_rates.leading.leading_not_ok?.touched||0}/${view.pattern_hit_rates.leading.leading_not_ok?.evaluated||0}`}/>
+    </div>}
+    <p className="mt-3 text-xs text-bunker-muted">v2 filtre: ATR% ≥ {filters.min_atr_pct} · BB genişliği ≥ %{filters.min_bb_width_pct} · RSI ≥ {filters.trend_rsi_min} (trend) veya ≤ {filters.reversal_rsi_max} (V-dönüşü) · MFI 10-90 · LinReg ≥ %{filters.struct_slope_pct} veya Aroon ≥ 50. 5dk-%2 ve 15dk-%3 profilleri farklı hedeflere sahip olduğu için ayrı gösterilir; öğrenme döngüsü ATR eşiğini profil bazlı kalibre eder. Öncü desen: yükselişten önceki M1+M3 ATR yüksekliği (M1{">"}1.0, M3{">"}1.0) — dokunuşu ~2.5× artırır (araştırma), giriş kararı değil.</p>
    </section>
    <section className="card">
     <p className="eyebrow">ÖĞRENME DÖNGÜSÜ</p>
