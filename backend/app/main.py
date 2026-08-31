@@ -242,7 +242,8 @@ async def retention_loop():
     await asyncio.sleep(120)  # let startup bursts finish before the first sweep
     while True:
         try:
-            deleted = await database.prune_retention(days=int(os.getenv("RETENTION_DAYS", "30")))
+            deleted = await database.prune_retention(days=int(os.getenv("RETENTION_DAYS", "30")),
+                                                     microstructure_days=int(os.getenv("MICROSTRUCTURE_RETENTION_DAYS", "7")))
             if any(deleted.values()):
                 print(f"[Retention] {deleted}", flush=True)
         except Exception as exc:

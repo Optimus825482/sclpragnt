@@ -130,33 +130,42 @@ async def backfill_symbol_history(symbol: str, days: int = 7):
 
 
 async def microstructure_snapshot_loop():
-    """Sample live bid/ask and depth so future entries have an audit trail."""
+    """Sample live bid/ask and depth only for symbols with open positions.
+
+    Sürekli tüm sembolleri saniyede bir kaydetmek tabloyu aylık ~130M satıra
+    (34 GB) büyütüyordu; mikro yapı kanıtının değeri işlem anında olduğundan
+    yalnızca açık pozisyonu olan semboller örneklenir.
+    """
     while True:
         try:
-            captured_at = float(int(time.time()))
-            rows = []
-            now = time.time()
-            for symbol in list(config.SYMBOLS):
-                flow = market.get_orderflow(symbol) or {}
-                updated_at = float(flow.get("updated_at") or 0)
-                if not updated_at or now - updated_at > 10:
-                    continue
-                ticker = market.get_ticker(symbol) or {}
-                price = float(ticker.get("last_price") or 0)
-                bid_qty = float(flow.get("bid_qty") or 0)
-                ask_qty = float(flow.get("ask_qty") or 0)
-                imbalance = ((bid_qty - ask_qty) / (bid_qty + ask_qty)) if bid_qty + ask_qty else None
-                rows.append({
-                    "symbol": str(symbol).upper(), "captured_at": captured_at,
-                    "bid_price": flow.get("bid_price"), "ask_price": flow.get("ask_price"),
-                    "bid_qty": bid_qty, "ask_qty": ask_qty,
-                    "spread_pct": flow.get("spread_pct"),
-                    "depth_try": (bid_qty + ask_qty) * price if price else None,
-                    "orderflow_imbalance": imbalance, "source": flow.get("source") or "binance_tr_public_ws",
-                    "updated_at": updated_at,
-                })
-            if rows:
-                await database.upsert_microstructure_snapshots(rows)
+            open_symbols = {str(symbol or "").upper() for symbol in analyzer.positions}
+            if open_symbols:
+                captured_at = float(int(time.time()))
+                rows = []
+                now = time.time()
+                for symbol in list(config.SYMBOLS):
+                    if str(symbol).upper() not in open_symbols:
+                        continue
+                    flow = market.get_orderflow(symbol) or {}
+                    updated_at = float(flow.get("updated_at") or 0)
+                    if not updated_at or now - updated_at > 10:
+                        continue
+                    ticker = market.get_ticker(symbol) or {}
+                    price = float(ticker.get("last_price") or 0)
+                    bid_qty = float(flow.get("bid_qty") or 0)
+                    ask_qty = float(flow.get("ask_qty") or 0)
+                    imbalance = ((bid_qty - ask_qty) / (bid_qty + ask_qty)) if bid_qty + ask_qty else None
+                    rows.append({
+                        "symbol": str(symbol).upper(), "captured_at": captured_at,
+                        "bid_price": flow.get("bid_price"), "ask_price": flow.get("ask_price"),
+                        "bid_qty": bid_qty, "ask_qty": ask_qty,
+                        "spread_pct": flow.get("spread_pct"),
+                        "depth_try": (bid_qty + ask_qty) * price if price else None,
+                        "orderflow_imbalance": imbalance, "source": flow.get("source") or "binance_tr_public_ws",
+                        "updated_at": updated_at,
+                    })
+                if rows:
+                    await database.upsert_microstructure_snapshots(rows)
         except Exception as exc:
             print(f"[Microstructure] snapshot yazma hatası: {exc}", flush=True)
         await asyncio.sleep(1)
