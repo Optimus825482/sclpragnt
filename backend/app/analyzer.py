@@ -749,17 +749,16 @@ class ScalpAnalyzer:
             return True, 0.0
         flow = self.market.get_orderflow(symbol)
         bid, ask = flow.get("bid_qty", 0), flow.get("ask_qty", 0)
-        spread = flow.get("spread_pct")
-        if not bid or not ask or spread is None:
+        if not bid or not ask:
             return False, 0.0
         imbalance = (bid - ask) / (bid + ask)
-        return imbalance >= config.ORDERFLOW_MIN_IMBALANCE and spread <= 0.25, imbalance
+        return imbalance >= config.ORDERFLOW_MIN_IMBALANCE, imbalance
 
     def _optional_flow_filter(self, symbol):
         """Akış verisi yoksa trend stratejisini kilitleme; varsa kalite filtresi uygula."""
         if not self.market: return True, 0.0
         flow = self.market.get_orderflow(symbol)
-        if not flow.get("bid_qty") or not flow.get("ask_qty") or flow.get("spread_pct") is None:
+        if not flow.get("bid_qty") or not flow.get("ask_qty"):
             return True, 0.0
         return self._flow_filter(symbol)
 
@@ -1496,7 +1495,7 @@ class ScalpAnalyzer:
         # CHAT_PREDICTION (velocity) is exempt: its candidates come from
         # Top-Gainer REST scans whose WS volume history the activity filter
         # needs does not exist yet, and the velocity pipeline enforces its own
-        # stricter liquidity gates (spread, depth, 24h volume) before opening.
+        # stricter liquidity gates (depth, 24h volume) before opening.
         if (config.SYMBOL_ACTIVITY_FILTER_ENABLED and symbol in config.PASSIVE_SYMBOLS
                 and strat_name != "CHAT_PREDICTION"):
             activity = dict(config.SYMBOL_ACTIVITY_STATUS.get(symbol) or {})
@@ -1651,8 +1650,8 @@ class ScalpAnalyzer:
             # a BUY_BLOCKED signal or notification.  CHAT_PREDICTION candidates
             # come from Top-Gainer REST scans, so their WS orderbook stream may
             # not be subscribed yet; the snapshot is refreshed via REST and WS
-            # freshness stamps are skipped — the real liquidity thresholds
-            # (spread, depth, volume) still apply in full.
+            # freshness stamps are skipped. Spread hiçbir likidite kapısında
+            # koşul değildir; derinlik ve hacim eşikleri aynen uygulanır.
             flow = await self._refresh_liquidity_snapshot(symbol)
             liquid, details = self.market.liquidity_status(
                 symbol, order_value,

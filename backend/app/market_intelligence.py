@@ -56,11 +56,9 @@ def microstructure_snapshot(snapshot: dict, order_value_try: float = 500.0) -> d
     }
     imbalance = flow["orderflow_imbalance"]
     depth = flow["orderbook_depth_try"]
-    spread = flow["spread_pct"]
     flags = []
     if imbalance is None: flags.append("order-flow imbalance bilinmiyor")
     if depth in (None, 0): flags.append("order-book derinliği bilinmiyor")
-    if spread is None: flags.append("spread bilinmiyor")
     stale = False
     if flow["updated_at"]:
         import time
@@ -104,15 +102,10 @@ def estimate_local_regime(rows: list[dict]) -> dict:
 def execution_quality(snapshot: dict, order_value_try: float = 500.0) -> dict:
     """Translate execution-model concepts into TR spot paper constraints."""
     liquidity = snapshot.get("liquidity") or {}
-    spread = liquidity.get("spread_pct")
     depth = liquidity.get("orderbook_depth_try")
     volume = (snapshot.get("volume") or {}).get("volume_ratio_20")
     reasons = []
     quality = 1.0
-    if spread is None:
-        quality -= 0.35; reasons.append("spread bilinmiyor")
-    elif float(spread) > 0.20:
-        quality -= 0.35; reasons.append("spread yüksek")
     if depth is None or float(depth or 0) <= 0:
         quality -= 0.35; reasons.append("derinlik bilinmiyor")
     elif float(depth) < order_value_try * 5:
@@ -123,7 +116,7 @@ def execution_quality(snapshot: dict, order_value_try: float = 500.0) -> dict:
         quality -= 0.1; reasons.append("hacim ortalamanın altında")
     return {"score": round(max(0.0, quality), 3), "reasons": reasons,
             "order_value_try": order_value_try,
-            "data_available": not (spread is None and depth in (None, 0))}
+            "data_available": depth is not None and depth > 0}
 
 
 def symbol_safety(snapshot: dict) -> dict:
@@ -133,8 +126,6 @@ def symbol_safety(snapshot: dict) -> dict:
     flags = []
     if not snapshot.get("data_ready"):
         flags.append("snapshot hazır değil")
-    if liquidity.get("spread_pct") is None:
-        flags.append("spread bilinmiyor")
     if volume in (None, 0):
         flags.append("hacim bilinmiyor")
     return {"status": "PASS" if not flags else "REVIEW", "flags": flags,

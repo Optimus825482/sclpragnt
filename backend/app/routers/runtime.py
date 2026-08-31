@@ -827,12 +827,8 @@ async def refresh_symbol_activity():
         avg_volume = sum(bars.get("volumes", [])[-21:-1]) / max(1, len(bars.get("volumes", [])[-21:-1])) if len(bars.get("volumes", [])) >= 21 else 0.0
         volume_ratio = (bars.get("volumes", [])[-1] / avg_volume) if avg_volume else 0.0
         flow = market.get_orderflow(symbol) or {}
-        spread_pct = float(flow.get("spread_pct") or 0.0)
         atr_ok = atr_pct >= config.SYMBOL_ACTIVITY_MIN_ATR_PCT
         volume_ratio_ok = volume_ratio >= config.SYMBOL_ACTIVITY_MIN_VOLUME_RATIO
-        spread_ok = (spread_pct <= config.SYMBOL_ACTIVITY_MAX_SPREAD_PCT if spread_pct else False)
-        spread_required = config.SYMBOL_ACTIVITY_SPREAD_FILTER_ENABLED
-        spread_gate_ok = spread_ok if spread_required else True
         movement_gate_ok = True if config.SYMBOL_ACTIVITY_VOLUME_ONLY else (movement_ok and atr_ok)
         flat_5m_blocked = m1_activity["flat_5m_count"] >= config.SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT
         flat_30m_blocked = m1_activity["flat_30m_count"] >= config.SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT
@@ -842,14 +838,13 @@ async def refresh_symbol_activity():
         # YENİ: Kapsamlı pasif kontrolü - M1 ve M5'de de pasif olmalı
         truly_passive = comprehensive.get("is_passive", False)
         
-        active = bool(ticker and volume_ok and movement_gate_ok and volume_ratio_ok and spread_gate_ok and m1_flat_ok and not truly_passive)
+        active = bool(ticker and volume_ok and movement_gate_ok and volume_ratio_ok and m1_flat_ok and not truly_passive)
         flat_reason = (f"m1_flat_candles:5m={m1_activity['flat_5m_count']}/5,"
                        f"30m={m1_activity['flat_30m_count']}/30")
         statuses[symbol] = {
             "symbol": symbol, "status": "ACTIVE" if active else "PASSIVE",
             "quote_volume": quote_volume, "range_15m_pct": round(range_pct, 4),
             "atr_pct": round(atr_pct * 100, 4), "volume_ratio": round(volume_ratio, 4),
-            "spread_pct": round(spread_pct, 4),
             "m1_flat_5m_count": m1_activity["flat_5m_count"],
             "m1_flat_30m_count": m1_activity["flat_30m_count"],
             "m1_flat_sample_30m": m1_activity["sample_30m"],
@@ -867,8 +862,8 @@ async def refresh_symbol_activity():
                 "m5_reason": comprehensive.get("m5_reason", ""),
                 "combined_reason": comprehensive.get("combined_reason", ""),
             },
-            "checks": {"quote_volume": volume_ok, "range_15m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "spread": spread_ok, "m1_flat_candles": m1_flat_ok, "comprehensive_passive": not truly_passive},
-            "gates": {"spread_required": spread_required, "volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY, "m1_flat_filter_enabled": config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED, "m1_flat_data_ready": m1_activity["ready"]},
+            "checks": {"quote_volume": volume_ok, "range_15m": movement_ok, "atr": atr_ok, "volume_ratio": volume_ratio_ok, "m1_flat_candles": m1_flat_ok, "comprehensive_passive": not truly_passive},
+            "gates": {"volume_only": config.SYMBOL_ACTIVITY_VOLUME_ONLY, "m1_flat_filter_enabled": config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED, "m1_flat_data_ready": m1_activity["ready"]},
             "has_open_position": symbol in analyzer.positions,
             "reason": "active" if active else (comprehensive.get("combined_reason", flat_reason if not m1_flat_ok else "volume_or_liquidity_below_threshold")),
             "checked_at": time.time(),

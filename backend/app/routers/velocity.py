@@ -714,9 +714,11 @@ async def _velocity_rest_liquidity_ok(symbol: str, order_value: float) -> tuple[
     Geleneksel preflight, WebSocket orderbook/ticker tazeliğini şart koşar;
     Top-Gainer'dan yeni gelen sembollerin WS akışı dolana kadar 'stale' sayılıp
     her adayı ENTRY_INELIGIBLE yapabiliyordu. Burada yalnız taze REST verisiyle
-    gerçek likidite koşullarını kontrol eder: spread, emir defteri derinliği
-    ve 24s quoteVolume. Tarama zaten kapanmış 1m mumlar üzerinden geçtiği için
-    fiyat kalitesi bu kapıyı geçen adayda güvence altındadır.
+    gerçek likidite koşullarını kontrol eder: emir defteri derinliği ve 24s
+    quoteVolume. Spread koruması otonom ve manuel taramada tamamen kaldırıldı;
+    düşük fiyatlı coinlerde geniş spread işlem açılışını engelliyordu. Tarama
+    zaten kapanmış 1m mumlar üzerinden geçtiği için fiyat kalitesi bu kapıyı
+    geçen adayda güvence altındadır.
     """
     try:
         book = await orderbook(symbol, 5)
@@ -727,9 +729,6 @@ async def _velocity_rest_liquidity_ok(symbol: str, order_value: float) -> tuple[
         bid, ask = float(bids[0][0]), float(asks[0][0])
         if bid <= 0:
             return False, "gecersiz_fiyat"
-        spread_pct = (ask - bid) / bid * 100
-        if spread_pct > config.MAX_SPREAD_PCT:
-            return False, f"spread_genis:{spread_pct:.2f}%"
         depth_try = (sum(float(q) for _, q in bids[:5]) + sum(float(q) for _, q in asks[:5])) * ((bid + ask) / 2)
         if depth_try < order_value * config.MIN_ORDERBOOK_DEPTH_MULTIPLIER:
             return False, f"derinlik_yetersiz:{depth_try:.0f}TRY"

@@ -28,7 +28,7 @@ except Exception:  # pragma: no cover - psycopg absent in minimal-env
 DEFAULT_SCALPER_SKILL_NAME = "Scalper Trade Manager"
 DEFAULT_SCALPER_SKILL_INSTRUCTIONS = (
     "Paper-only scalper trade manager. Build a symbol-specific setup from 5m, 15m and 1h data; "
-    "require trend/regime alignment, liquidity, spread/order-flow and cost-aware net edge before entry. "
+    "require trend/regime alignment, liquidity, order-flow and cost-aware net edge before entry. "
     "Do not chase overbought resistance or reopen after a close without cooldown, fresh setup and required "
     "price rearm. Treat BUY_BLOCKED as no trade, and learn only from validated multi-trade out-of-sample "
     "evidence; never invent data or place real orders."
