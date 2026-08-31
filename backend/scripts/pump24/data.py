@@ -56,6 +56,34 @@ def okx_symbol(symbol):
     return f"{symbol}-USDT"
 
 
+M3_MS = 180_000
+
+
+def build_m3_from_m1(m1_rows):
+    """Aggregate 1m candles into 3m candles (3-minute buckets starting on the hour).
+
+    Binance TR serves the ``3m`` interval directly, but M3 must stay aligned
+    with the M1 series used for the pre-rise window, so we build it from the
+    same M1 source. Returns chronological dicts with open/high/low/close/volume.
+    """
+    if not m1_rows:
+        return []
+    buckets = {}
+    for r in m1_rows:
+        t = r["open_time"]
+        key = (t // M3_MS) * M3_MS
+        b = buckets.get(key)
+        if b is None:
+            b = buckets[key] = {"open_time": key, "close_time": key + M3_MS - 1,
+                                "open": r["open"], "high": r["high"], "low": r["low"],
+                                "close": r["close"], "volume": 0.0}
+        b["high"] = max(b["high"], r["high"])
+        b["low"] = min(b["low"], r["low"])
+        b["close"] = r["close"]
+        b["volume"] += r["volume"]
+    return [buckets[k] for k in sorted(buckets)]
+
+
 def fetch_okx_klines(symbol, interval, start_ms, end_ms, bar="5m"):
     """OKX public candles; interval seconds mapping. Returns normalized rows."""
     import urllib.request
@@ -129,6 +157,32 @@ def load_candles(conn, symbol, timeframe, start_ms, end_ms):
             (symbol, timeframe, start_ms, end_ms))
         return [{"open_time": r[0], "close_time": r[1], "open": r[2], "high": r[3],
                  "low": r[4], "close": r[5], "volume": r[6]} for r in cur.fetchall()]
+
+
+def load_m3_from_m1(conn, symbol, start_ms, end_ms):
+    """3m candles aggregated from stored 1m rows (keeps M3 aligned with M1)."""
+    return build_m3_from_m1(load_candles(conn, symbol, "1m", start_ms, end_ms))
+
+
+def upsert_candles_m3(conn, symbol, m3_rows):
+    """Persist aggregated M3 rows under the explicit ``3m`` timeframe."""
+    rows = [r for r in m3_rows if r.get("volume") is not None]
+    if not rows:
+        return 0
+    rows = sorted({r["open_time"]: r for r in rows}.values(), key=lambda r: r["open_time"])
+    now = time.time()
+    params = [(symbol, "3m", r["open_time"], r["close_time"],
+               r["open"], r["high"], r["low"], r["close"],
+               r["volume"], None, now) for r in rows]
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO historical_candles (symbol,timeframe,open_time,close_time,open,high,low,close,volume,quote_volume,fetched_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (symbol,timeframe,open_time) DO UPDATE SET high=EXCLUDED.high, low=EXCLUDED.low, "
+            "close=EXCLUDED.close, volume=EXCLUDED.volume, fetched_at=EXCLUDED.fetched_at",
+            params)
+    conn.commit()
+    return len(rows)
 
 
 async def fetch_window(symbol, timeframe, start_ms, end_ms, day_backs=None):

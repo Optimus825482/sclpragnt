@@ -173,8 +173,12 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 exhausted = f"mfi_asiri_satim:{mfi:.0f}"
             elif rsi >= VELOCITY_RSI_UPPER:
                 exhausted = f"rsi_asiri_alim:{rsi:.0f}"
+            # Profil bazlı ATR eşiği: kalibrasyon 5dk/15dk için ayrı kaydeder;
+            # yoksa global varsayılan kullanılır.
+            prof_key = "5m" if horizon_minutes == 5 else "15m"
+            prof_atr = _velocity_profile_atr.get(prof_key) or VELOCITY_MIN_ATR_PCT
             passes = (exhausted is None and
-                      atr_pct >= VELOCITY_MIN_ATR_PCT and
+                      atr_pct >= prof_atr and
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
                       mode is not None and
                       (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)))
@@ -182,7 +186,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             bb_ratio = (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0
             struct_ratio = max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
                                (aroon_up or 0) / 50.0)
-            velocity_score = round((atr_pct / VELOCITY_MIN_ATR_PCT) *
+            velocity_score = round((atr_pct / prof_atr) *
                                     bb_ratio *
                                     max(0.2, min(3.0, struct_ratio)) *
                                     (1.0 + max(0.0, ret3) / 2.0), 2)
@@ -300,6 +304,78 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
 _velocity_learning_state = {"last_run_at": None, "measured": 0, "last_error": None,
                              "last_calibrated_at": None, "active_filters": None}
 
+# Kalibrasyon parametreleri — profil bazlı.
+# 5dk-%2 ve 15dk-%3 farklı hedefler; ayrı ATR eşiği + ayrı hedef bant.
+# Hedef bant backtest/forensics'ten: tüm-sembol 5dk-%2 ~%11-15, canlı (top-gainer
+# + rank seçimi) ~%20-28. Bant histerezisli: eşik, isabet hedefin dışına
+# çıkınca ±0.05 kayar; bant içinde kalırsa dokunulmaz (salınım önlenir).
+VELOCITY_PROFILE_CALIB = {
+    "5m": {"target_low": 0.12, "target_high": 0.30, "step": 0.05,
+           "min_atr": 0.10, "max_atr": 1.00, "min_samples": 30},
+    "15m": {"target_low": 0.15, "target_high": 0.38, "step": 0.05,
+            "min_atr": 0.10, "max_atr": 1.00, "min_samples": 30},
+}
+_velocity_profile_atr = {"5m": None, "15m": None}  # lazy-loaded per-profile thresholds
+
+
+def _profile_prefix(profile):
+    return {"5m": "vel-5dk-%", "15m": "vel-15dk-%"}.get(profile)
+
+
+async def velocity_calibrate():
+    """Profil bazlı ATR eşiği kalibrasyonu; her döngüde değerlendirilir.
+
+    Döndürür: (değişiklik_yapıldı_mı, durum_sözlüğü). Eşikler
+    ``llm_settings``'e kalıcı yazılır (restart'ta geri yüklenir).
+    """
+    global VELOCITY_MIN_ATR_PCT
+    changed = False
+    by_profile = {}
+    hit_rates = []
+    for profile, cal in VELOCITY_PROFILE_CALIB.items():
+        stats = await database.get_velocity_calibration_stats(profile=profile)
+        passing = int(stats.get("passing_count") or 0)
+        touched = int(stats.get("passing_touched_count") or 0)
+        hit = (touched / passing) if passing else None
+        by_profile[profile] = {"passing_count": passing, "passing_touched": touched,
+                               "hit_pct": round(hit * 100, 1) if hit is not None else None}
+        if passing < cal["min_samples"] or hit is None:
+            continue
+        hit_rates.append(hit)
+        # Profil eşiği: global VELOCITY_MIN_ATR_PCT'e çarpan olarak sakla.
+        # (Modül global'i tek kalır; profil çarpanı ayrı kaydedilir.)
+        key = f"velocity_min_atr_pct_{profile}"
+        saved = await database.get_llm_setting(key, None)
+        if saved:
+            _velocity_profile_atr[profile] = round(float(saved), 2)
+        else:
+            _velocity_profile_atr[profile] = VELOCITY_MIN_ATR_PCT
+        cur = _velocity_profile_atr[profile]
+        if hit < cal["target_low"] and cur < cal["max_atr"]:
+            new_v = round(min(cal["max_atr"], cur + cal["step"]), 2)
+            _velocity_profile_atr[profile] = new_v
+            await database.set_llm_setting(key, str(new_v))
+            changed = True
+            logger.info("velocity: %s isabet %s%% hedef altı (%s%%) → ATR %s→%s",
+                        profile, round(hit * 100, 1), round(cal["target_low"] * 100),
+                        cur, new_v)
+        elif hit > cal["target_high"] and cur > cal["min_atr"]:
+            new_v = round(max(cal["min_atr"], cur - cal["step"]), 2)
+            _velocity_profile_atr[profile] = new_v
+            await database.set_llm_setting(key, str(new_v))
+            changed = True
+            logger.info("velocity: %s isabet %s%% hedef üstü (%s%%) → ATR %s→%s",
+                        profile, round(hit * 100, 1), round(cal["target_high"] * 100),
+                        cur, new_v)
+        by_profile[profile]["atr_threshold"] = _velocity_profile_atr[profile]
+    if hit_rates:
+        # Genel (global) eşik: profil ortalaması; UI'ın tek göstergesi için.
+        mean_hit = sum(hit_rates) / len(hit_rates)
+        by_profile["_meta"] = {"mean_hit_pct": round(mean_hit * 100, 1)}
+    if changed:
+        _velocity_learning_state["last_calibrated_at"] = time.time()
+    return changed, by_profile
+
 
 async def velocity_learning_loop():
     """Ufku dolan hız adaylarını (5dk-%2 ve 15dk-%3) kapanmış M1 mumlarıyla
@@ -307,15 +383,24 @@ async def velocity_learning_loop():
     kaydet."""
     await asyncio.sleep(120)
     global VELOCITY_MIN_ATR_PCT
-    # Kalibre edilmiş eşiği kalıcı depodan geri yükle; aksi halde her restart
-    # öğrenilen değeri fabrika ayarına (0.30) sıfırlıyordu.
+    # Kalibre edilmiş eşikleri kalıcı depodan geri yükle; aksi halde her restart
+    # öğrenilen değeri fabrika ayarına (0.30) sıfırlıyordu. Hem global hem
+    # profil bazlı (5m/15m) eşikler ayrı ayrı yüklenir.
     try:
         saved = await database.get_llm_setting("velocity_min_atr_pct", None)
         if saved:
             VELOCITY_MIN_ATR_PCT = round(float(saved), 2)
-            _velocity_learning_state["active_filters"] = {"min_atr_pct": VELOCITY_MIN_ATR_PCT}
+        for profile in ("5m", "15m"):
+            key = f"velocity_min_atr_pct_{profile}"
+            val = await database.get_llm_setting(key, None)
+            if val:
+                _velocity_profile_atr[profile] = round(float(val), 2)
+        _velocity_learning_state["active_filters"] = {
+            "min_atr_pct": VELOCITY_MIN_ATR_PCT,
+            "profile_atr": {k: v for k, v in _velocity_profile_atr.items() if v is not None},
+        }
     except Exception as exc:
-        logger.warning("velocity eşiği geri yüklenemedi: %s", exc)
+        logger.warning("velocity eşikleri geri yüklenemedi: %s", exc)
     while True:
         try:
             pending = await database.get_pending_velocity_candidates(limit=200)
@@ -361,43 +446,22 @@ async def velocity_learning_loop():
                         observed_at=time.time()))
             if measured:
                 _velocity_learning_state["measured"] = _velocity_learning_state.get("measured", 0) + measured
-                # Otomatik kalibrasyon: 5dk-%2 ve 15dk-%3 profillerinin hit
-                # oranları çok farklı; harmanlanmış tek havuz yanlış yönlendirir.
-                # Her profil ayrı ayrı >=50 örnekleme ulaştığında hit oranı
-                # hesaplanır, ardından eşit ağırlıklı ortalama alınır — böylece
-                # örnek sayısı fazla olan profil diğerini bastırmaz.
-                stats_by_profile = {}
-                hit_rates = []
-                for label in ("5m", "15m"):
-                    stats = await database.get_velocity_calibration_stats(profile=label)
-                    passing = int(stats.get("passing_count") or 0)
-                    hit_pct = (int(stats.get("passing_touched_count") or 0) / passing) if passing else None
-                    stats_by_profile[label] = {"passing_count": passing, "hit_pct": hit_pct}
-                    if passing >= 50:
-                        hit_rates.append(hit_pct)
-                if hit_rates:
-                    hit = sum(hit_rates) / len(hit_rates)
-                    calibrated = False
-                    if hit < 0.10:
-                        VELOCITY_MIN_ATR_PCT = round(min(1.0, VELOCITY_MIN_ATR_PCT + 0.05), 2)
-                        calibrated = True
-                    elif hit > 0.45:
-                        VELOCITY_MIN_ATR_PCT = round(max(0.10, VELOCITY_MIN_ATR_PCT - 0.05), 2)
-                        calibrated = True
-                    if calibrated:
-                        _velocity_learning_state["last_calibrated_at"] = time.time()
-                        try:
-                            await database.set_llm_setting("velocity_min_atr_pct", str(VELOCITY_MIN_ATR_PCT))
-                        except Exception as exc:
-                            logger.warning("velocity eşiği kalıcı yazılamadı: %s", exc)
-                    _velocity_learning_state["active_filters"] = {
-                        "min_atr_pct": VELOCITY_MIN_ATR_PCT,
-                        "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,
-                        "trend_rsi_min": VELOCITY_TREND_RSI_MIN,
-                        "reversal_rsi_max": VELOCITY_REVERSAL_RSI_MAX,
-                        "live_hit_pct": round(hit * 100, 1),
-                        "by_profile": stats_by_profile,
-                    }
+            # Kalibrasyon her döngüde değerlendirilir (yeni ölçüm olmasa bile
+            # mevcut istatistikler zamanla değişebilir). Profil bazlıdır.
+            try:
+                cal_changed, by_profile = await velocity_calibrate()
+            except Exception as exc:
+                logger.warning("velocity kalibrasyon hatası: %s", exc)
+                by_profile = {}
+                cal_changed = False
+            _velocity_learning_state["active_filters"] = {
+                "min_atr_pct": VELOCITY_MIN_ATR_PCT,
+                "profile_atr": {k: v for k, v in _velocity_profile_atr.items() if v is not None},
+                "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,
+                "trend_rsi_min": VELOCITY_TREND_RSI_MIN,
+                "reversal_rsi_max": VELOCITY_REVERSAL_RSI_MAX,
+                "by_profile": by_profile,
+            }
             # Ölü/sessiz sembollerde mum hiç gelmediği için sonsuza dek pending
             # kalan kayıtları temizle — istatistikleri şişirmesini önler.
             expired = await database.cleanup_stale_velocity_candidates()
@@ -466,6 +530,7 @@ async def get_velocity_report(limit: int = 60):
             "stats_by_profile": {"5m": _profile_stats(stats_5m), "15m": _profile_stats(stats_15m)},
             "pattern_hit_rates": pattern_hit_rates,
             "filters": {"min_atr_pct": VELOCITY_MIN_ATR_PCT,
+                         "profile_atr": {k: v for k, v in _velocity_profile_atr.items() if v is not None},
                          "min_bb_width_pct": VELOCITY_MIN_BB_WIDTH_PCT,
                          "trend_rsi_min": VELOCITY_TREND_RSI_MIN,
                          "reversal_rsi_max": VELOCITY_REVERSAL_RSI_MAX,

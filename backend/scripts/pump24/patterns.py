@@ -63,6 +63,11 @@ GROUP_SETS = [
     ("m1_g1", ["m1_g1"]),
     ("m1_g2", ["m1_g2"]),
     ("m1_all10", [f"m1_g{k}" for k in range(10)]),
+    # M3 pre-rise groups (rise-start M5 covers ~1-2 M3 bars; g0 = last closed M3 before the rise)
+    ("m3_g0", ["m3_g0"]),
+    ("m3_g1", ["m3_g1"]),
+    ("m3_g2", ["m3_g2"]),
+    ("m3_all3", ["m3_g0", "m3_g1", "m3_g2"]),
 ]
 
 
@@ -124,7 +129,7 @@ def snapshot_hits(groups, rule):
 
 
 def rule_tag(rule):
-    short = rule["group_key"].replace("m5_g", "m5g").replace("m1_g", "m1g").replace("+", "_")
+    short = rule["group_key"].replace("m5_g", "m5g").replace("m1_g", "m1g").replace("m3_g", "m3g").replace("+", "_")
     return f"{short}_{rule['field']}_{rule['direction']}{rule['threshold']}"
 
 
