@@ -30,18 +30,39 @@ function UpsideScoutTab({ report, loading, error }: { report: any; loading: bool
  return <div className="space-y-4">
   <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
    <Stat title="Ölçülen tahmin" value={String(report.evaluated_count||0)}/>
-   <Stat title="Hedefe ulaştı" value={`${report.target_hit_count||0}/${report.evaluated_count||0}`} tone={report.target_hit_rate!=null&&report.target_hit_rate>=.5?"text-neon-green":"text-yellow-300"}/>
-   <Stat title="Ulaşma oranı" value={rate(report.target_hit_rate)} tone={report.target_hit_rate!=null&&report.target_hit_rate>=.5?"text-neon-green":"text-yellow-300"}/>
+   <Stat title="Hedefe ulaştı (ufuk içi)" value={`${report.target_hit_count||0}/${report.evaluated_count||0}`} tone={report.target_hit_rate!=null&&report.target_hit_rate>=.5?"text-neon-green":"text-yellow-300"}/>
+   <Stat title="Sonradan ulaştı (dahil)" value={`${report.eventual_hit_count||0}/${report.evaluated_count||0}`} tone={report.eventual_hit_rate!=null&&report.eventual_hit_rate>=.5?"text-neon-green":"text-yellow-300"}/>
    <Stat title="Bekleyen" value={String(report.pending_count||0)} tone="text-sky-300"/>
   </div>
   <section className="card"><p className="eyebrow">UFUK BAZLI BAŞARI</p>
-   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Ufuk</th><th>Ölçülen</th><th>Hedefe ulaştı</th><th>Ulaşma oranı</th><th>Yön doğru</th><th>Ort. getiri</th><th>Bekleyen</th></tr></thead><tbody>
-   {(report.horizons||[]).map((row:any)=><tr key={row.horizon_minutes}><td>{row.horizon_minutes} dk</td><td>{row.evaluated_count||0}</td><td>{row.target_hit_count||0}</td><td className={row.target_hit_rate!=null&&row.target_hit_rate>=.5?"text-neon-green":"text-neon-red"}>{rate(row.target_hit_rate)}</td><td>{pctValue((row.directional_accuracy??0)*100)}</td><td>{pctValue(row.average_return_pct)}</td><td>{row.pending_count||0}</td></tr>)}
+   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Ufuk</th><th>Ölçülen</th><th>Ufuk içinde</th><th>Sonradan dahil</th><th>Yön doğru</th><th>Ort. getiri</th><th>Bekleyen</th></tr></thead><tbody>
+   {(report.horizons||[]).map((row:any)=><tr key={row.horizon_minutes}><td>{row.horizon_minutes} dk</td><td>{row.evaluated_count||0}</td><td className={row.target_hit_rate!=null&&row.target_hit_rate>=.5?"text-neon-green":"text-yellow-300"}>{row.target_hit_count||0} ({rate(row.target_hit_rate)})</td><td className={row.eventual_hit_rate!=null&&row.eventual_hit_rate>=.5?"text-neon-green":"text-yellow-300"}>{row.eventual_hit_count||0} ({rate(row.eventual_hit_rate)})</td><td>{pctValue((row.directional_accuracy??0)*100)}</td><td>{pctValue(row.average_return_pct)}</td><td>{row.pending_count||0}</td></tr>)}
    </tbody></table></div>
-   <p className="mt-3 text-xs text-bunker-muted">Hedefe ulaşma: tahmin edilen süre içinde en yüksek fiyat, tahmin edilen hedef yüzdesine değdi mi? Yalnızca kapanmış M1 mumlarıyla ölçülür.</p>
+   <p className="mt-3 text-xs text-bunker-muted">Ufuk içinde: tahmin süresi dolmadan hedefe değdi mi. Sonradan dahil: ufuk + {`grace`} penceresinde (varsayılan 120 dk) hedefe ilk dokunuş ölçülür; dokunuş dakikası satırda gösterilir. Yalnızca kapanmış M1 mumlarıyla ölçülür.</p>
+  </section>
+  <section className="card"><p className="eyebrow">GÖLGE MOD · MODEL VS SABIT HEDEF</p>
+   <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <Stat title="ML tahmini olan satır" value={String(report.shadow?.ml_rows ?? 0)} tone="text-amber-300"/>
+    <Stat title="Sabit hedef sapması" value={report.shadow?.fixed_mae_pct != null ? `%${Number(report.shadow.fixed_mae_pct).toFixed(2)}` : "—"} tone="text-bunker-muted"/>
+    <Stat title="ML hedef sapması" value={report.shadow?.ml_mae_pct != null ? `%${Number(report.shadow.ml_mae_pct).toFixed(2)}` : "—"} tone="text-amber-300"/>
+    <Stat title="Model farkı" value={report.shadow?.improvement_pct != null ? `%${Number(report.shadow.improvement_pct).toFixed(1)} ${report.shadow.ml_better ? "daha iyi" : "daha kötü"}` : "—"} tone={report.shadow?.ml_better ? "text-neon-green" : "text-neon-red"}/>
+   </div>
+   <p className="mt-3 text-xs text-bunker-muted">Sapma = |tahmin edilen hedef − gerçek maksimum yükseliş|, ölçülen satırların ortalaması (MAE). ML hedefi gölge moddadır: kaydedilir ama sıralamayı etkilemez. Model tutarlı biçimde sabit hedefi geçince devir devreye alınır.</p>
+  </section>
+  <section className="card"><p className="eyebrow">ÇIKARILAN DESENLER · ÖLÇÜLMÜŞ TAHMİNLERDEN</p>
+   {(report.patterns||[]).length===0 ? (
+    <p className="mt-2 text-xs text-bunker-muted">Henüz desen çıkmadı; en az {`8`} ölçülmüş tahmin ve anlamlı sapma gerekir. Tahminler ölçüldükçe otomatik güncellenir.</p>
+   ) : (
+    <ul className="mt-2 space-y-2">
+     {(report.patterns||[]).map((p:any)=><li key={p.lesson_key} className="flex items-start gap-2 text-xs">
+      <span className={`shrink-0 mt-0.5 px-1.5 py-0.5 rounded font-mono text-[10px] ${p.status==="active"?"bg-neon-green/15 text-neon-green":"bg-sky-400/10 text-sky-300"}`}>{p.status==="active"?"AKTİF":"ADAY"}</span>
+      <span className="text-bunker-muted">{p.lesson}</span>
+     </li>)}
+    </ul>
+   )}
   </section>
   <section className="card"><p className="eyebrow">KEŞİF TAHMİNLERİ · SNAPSHOT'I GÖRMEK İÇİN SATIRA TIKLAYIN</p>
-   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Ufuk</th><th>Giriş</th><th>Hedef</th><th>Hedef fiyat</th><th>Güven</th><th>Puan</th><th>Sonuç</th><th>En yüksek</th><th>Getiri</th></tr></thead><tbody>
+   <div className="mt-3 table-scroll"><table className="data-table"><thead><tr><th>Zaman</th><th>Sembol</th><th>Ufuk</th><th>Giriş</th><th>Hedef</th><th>Hedef fiyat</th><th>Güven</th><th>Puan</th><th>Sonuç</th><th>Erişim</th><th>En yüksek</th><th>Getiri</th></tr></thead><tbody>
    {(report.recent||[]).map((row:any)=>{
     const snap=row.snapshot||{};
     return [<tr key={row.forecast_id} className="cursor-pointer" onClick={()=>setExpanded(expanded===row.forecast_id?null:row.forecast_id)}>
@@ -49,17 +70,18 @@ function UpsideScoutTab({ report, loading, error }: { report: any; loading: bool
      <td><SymbolLink symbol={row.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green"/></td>
      <td>{row.horizon_minutes} dk</td>
      <td>{money8(row.entry_price)}</td>
-     <td className="text-neon-green">%{Number(row.min_move_pct).toFixed(1)}</td>
+     <td className="text-neon-green">%{(Number(row.target_pct_display ?? Number(row.min_move_pct)*100)).toFixed(1)}</td>
      <td>{money8(row.target_price)}</td>
      <td>%{Math.round(Number(row.confidence)||0)}</td>
      <td>{snap.upside_rank!=null?Number(snap.upside_rank).toFixed(1):"—"}</td>
-     <td className={row.status!=="evaluated"?(row.window_closed?"text-neon-red":"text-yellow-300"):(row.target_hit?"text-neon-green font-bold":"text-neon-red")}>
-      {row.status!=="evaluated"?(row.window_closed?"ÖLÇÜM BEKLİYOR":"SÜRE DOLMADI"):(row.target_hit?"✓ ULAŞTI":"✗ OLMADI")}
+     <td className={row.status!=="evaluated"?(row.window_closed?"text-neon-red":"text-yellow-300"):(row.target_hit?"text-neon-green font-bold":(row.eventual_hit?"text-amber-300 font-bold":"text-neon-red"))}>
+      {row.status!=="evaluated"?(row.window_closed?"ÖLÇÜM BEKLİYOR":"SÜRE DOLMADI"):(row.target_hit?"✓ ULAŞTI":(row.eventual_hit?"✓ SONRADAN":"✗ OLMADI"))}
      </td>
+     <td>{row.first_hit_minutes!=null?`${Number(row.first_hit_minutes).toFixed(0)} dk`:"—"}</td>
      <td>{row.status==="evaluated"?pctValue(row.max_favorable_pct):"—"}</td>
      <td>{row.status==="evaluated"?pctValue(row.outcome_return_pct):"—"}</td>
     </tr>,
-    expanded===row.forecast_id&&<tr key={`${row.forecast_id}-snap`} className="bg-neon-green/5"><td colSpan={11}>
+    expanded===row.forecast_id&&<tr key={`${row.forecast_id}-snap`} className="bg-neon-green/5"><td colSpan={12}>
      <div className="grid grid-cols-2 gap-2 p-2 text-xs md:grid-cols-4">
       <span>Hız puanı: <b className="text-amber-300">{snap.velocity_score??"—"}</b></span>
       <span>RSI: <b>{snap.rsi??"—"}</b></span>
@@ -73,6 +95,10 @@ function UpsideScoutTab({ report, loading, error }: { report: any; loading: bool
       <span>Öncü ATR: <b>{snap.leading_ok?"uyumlu":"uyumsuz"}</b></span>
       <span>Journal kalitesi: <b>{snap.journal_quality?JSON.stringify(snap.journal_quality).slice(0,60):"—"}</b></span>
       <span>Aktif ders: <b>{Array.isArray(snap.active_forecast_lessons)?snap.active_forecast_lessons.length:0} adet</b></span>
+      <span>ML hedefi: <b className="text-amber-300">{snap.ml_target_pct!=null?`%${Number(snap.ml_target_pct).toFixed(2)}`:"—"}</b></span>
+      <span>ML dokunma olasılığı: <b>{snap.ml_hit_probability!=null?`%${(Number(snap.ml_hit_probability)*100).toFixed(0)}`:"—"}</b></span>
+      <span>Sabit hedef sapması: <b>{row.fixed_error_pct!=null?`%${Number(row.fixed_error_pct).toFixed(2)}`:"—"}</b></span>
+      <span>ML sapması: <b>{row.ml_error_pct!=null?`%${Number(row.ml_error_pct).toFixed(2)}`:"—"}</b></span>
      </div>
      {Array.isArray(snap.active_forecast_lessons)&&snap.active_forecast_lessons.length>0&&<ul className="mt-2 space-y-1 px-2 text-xs text-bunker-muted list-disc pl-6">{snap.active_forecast_lessons.map((l:string,i:number)=><li key={i}>{l}</li>)}</ul>}
     </td></tr>];

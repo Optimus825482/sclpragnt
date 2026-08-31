@@ -76,7 +76,22 @@ class Config:
     LLM_FORECAST_HORIZONS_MINUTES = (5, 15, 60, 240)
     LLM_FORECAST_EVALUATION_INTERVAL_SEC = max(30, int(os.getenv("LLM_FORECAST_EVALUATION_INTERVAL_SEC", "60")))
     LLM_FORECAST_MIN_MOVE_PCT = max(0.0001, float(os.getenv("LLM_FORECAST_MIN_MOVE_PCT", "0.0015")))
+    # Hedefe erişim ölçümü için ufuk sonrası ek gözlem süresi (dakika).
+    # Değerlendirme ufuk kapanınca yapılır; hedef fiyat bu pencerede de izlenir
+    # ve ilk dokunuş dakikası outcome_details.first_hit_minutes olarak kaydedilir.
+    LLM_FORECAST_HIT_GRACE_MINUTES = max(0, int(os.getenv("LLM_FORECAST_HIT_GRACE_MINUTES", "120")))
+
+    # ML fiyat-tahmin modeli (Faz 1: gecelik eğitim + artifact).
+    ML_MODELS_DIR = os.getenv("ML_MODELS_DIR", "/data/ml_models")
+    ML_TRAIN_INTERVAL_HOURS = max(1, int(os.getenv("ML_TRAIN_INTERVAL_HOURS", "12")))
+    ML_TRAIN_LOOKBACK_DAYS = max(2, int(os.getenv("ML_TRAIN_LOOKBACK_DAYS", "10")))
+    ML_MAX_BARS_PER_SYMBOL = max(500, int(os.getenv("ML_MAX_BARS_PER_SYMBOL", "3000")))
+    ML_TARGET_QUANTILE = min(0.95, max(0.5, float(os.getenv("ML_TARGET_QUANTILE", "0.65"))))
+    ML_JOURNAL_SAMPLE_WEIGHT = max(1.0, float(os.getenv("ML_JOURNAL_SAMPLE_WEIGHT", "3.0")))
+    ML_HIT_TARGET_PCT = {5: 0.02, 15: 0.03}  # ufuk -> sınıflandırıcı hedefi (kesir)
     LLM_FORECAST_LESSON_MIN_SAMPLES = max(8, int(os.getenv("LLM_FORECAST_LESSON_MIN_SAMPLES", "12")))
+    # Desen madenciliği minimum destek sayısı (koşula uyan ölçülmüş tahmin).
+    LLM_PATTERN_MIN_SUPPORT = max(5, int(os.getenv("LLM_PATTERN_MIN_SUPPORT", "8")))
     # Chat M5/M15 yükseliş adayları için desen kapısı ve otomatik paper işlem.
     # Desen: replay train penceresinden çıkan etiketler; min eşleşme şartı
     # sağlanmayan aday yalnızca izleme listesinde kalır, journal'a "watch" yazılır.

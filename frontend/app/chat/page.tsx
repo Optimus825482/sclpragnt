@@ -15,6 +15,8 @@ type ScoutCandidate = {
   horizon_minutes: number;
   target_pct: number;
   target_price: number | null;
+  ml_target_pct?: number | null;
+  ml_hit_probability?: number | null;
   upside_rank: number;
   velocity_score: number;
 };
@@ -248,6 +250,12 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
                   +%{Number(candidate.target_pct).toFixed(1)} → {fmtScoutPrice(candidate.target_price)}
                 </div>
                 <div className="text-[10px] text-bunker-muted">~{candidate.horizon_minutes} dk içinde</div>
+                {candidate.ml_target_pct != null && (
+                  <div className="text-[10px] text-amber-300/90" title="ML modeli gölge tahmini (sıralamayı etkilemez)">
+                    ML hedefi +%{Number(candidate.ml_target_pct).toFixed(1)}
+                    {candidate.ml_hit_probability != null && ` · P %${(Number(candidate.ml_hit_probability) * 100).toFixed(0)}`}
+                  </div>
+                )}
               </div>
             </div>
           ))}

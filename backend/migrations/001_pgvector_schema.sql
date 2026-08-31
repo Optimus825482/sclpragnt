@@ -93,6 +93,20 @@ CREATE TABLE IF NOT EXISTS microstructure_snapshots (id BIGSERIAL PRIMARY KEY, s
 CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC);
 CREATE INDEX IF NOT EXISTS microstructure_snapshots_captured_idx ON microstructure_snapshots(captured_at);
 
+CREATE TABLE IF NOT EXISTS ml_model_artifacts (
+  id BIGSERIAL PRIMARY KEY,
+  created_at DOUBLE PRECISION NOT NULL,
+  horizons JSONB NOT NULL,
+  sample_count BIGINT NOT NULL,
+  journal_sample_count BIGINT NOT NULL DEFAULT 0,
+  symbol_count INTEGER NOT NULL,
+  metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+  artifact_path TEXT NOT NULL,
+  feature_version TEXT NOT NULL DEFAULT 'v1',
+  status TEXT NOT NULL DEFAULT 'ready'
+);
+CREATE INDEX IF NOT EXISTS ml_model_artifacts_created_idx ON ml_model_artifacts(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS historical_candles (
   symbol TEXT NOT NULL, timeframe TEXT NOT NULL, open_time BIGINT NOT NULL,
   close_time BIGINT NOT NULL, open DOUBLE PRECISION NOT NULL, high DOUBLE PRECISION NOT NULL,
