@@ -565,6 +565,16 @@ class ScalpAnalyzer:
             if pos.get("strategy") == "CHAT_PREDICTION" and \
                     bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
                 system_stop = float("-inf")
+            # Otonom hız avcısı güvenlik stopu (kâr kilidi tetiklenmeden ÖNCE):
+            # stopsuz açılış, fiyat +%0.5'i hiç görmezse sınırsız zarar demek
+            # (canlıda AXLTRY -%7.5 ile max_hold'da kapandı). Fiyat bu kadar
+            # düşerse acil kapat; kâr kilidi sonrası intrabar trailing zaten
+            # devreye girer. Backtest: -%3 stop EV +0.182%, max kayıp -%3.
+            if pos.get("strategy") == "CHAT_PREDICTION" and not pos.get("velocity_protection_armed") and \
+                    bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
+                emg_stop = entry * (1 - config.VELOCITY_EMERGENCY_STOP_PCT / 100.0)
+                if price <= emg_stop:
+                    return await self.close_position(symbol, price, "velocity_emergency_stop")
             # Chat Prediction (velocity auto-trade) kâr koruma merdiveni:
             # 1) +%1 kâr görülünce stop, maliyet + %0,01 sabit kâr + çift
             #    komisyon payına çekilir → pozisyon artık zarara dönemez.
