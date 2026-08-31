@@ -598,24 +598,18 @@ class ScalpAnalyzer:
             if pos.get("strategy") == "CHAT_PREDICTION" and pos.get("velocity_protection_armed"):
                 # Dinamik trailing: kâr kilidi devredeyken tepe fiyatın %0,3
                 # altını takip eder. Yalnızca yukarı taşınır; kâr kilidi
-                # seviyesinin altına inmez. İntrabar modda mum low'u stopa
-                # değdiğinde çıkılır (backtest: kapanış bazlıya göre pozitif EV).
+                # seviyesinin altına inmez.
+                # ÖNEMLİ: çıkış KAPANIŞ fiyatından yapılır (price <= stop).
+                # İntrabar low'dan kapatmak, mum kapanışında fiyat zaten
+                # düşmüşse stop fiyatı yerine dip fiyatından fill olur —
+                # canlıda ZKTRY 0.4915 stop yerine 0.48'den kapandı (-2.3%
+                # slippage). Kapanış bazlı fill gerçekçidir ve slippage'ı
+                # ortadan kaldırır.
                 trail_gap = config.VELOCITY_TRAIL_GAP_PCT / 100.0
                 trailing = float(pos.get("max_price") or entry) * (1 - trail_gap)
                 if trailing > system_stop:
                     pos["system_stop_price"] = trailing
                     system_stop = trailing
-                # İntrabar tetikleme: mevcut 1m mumun low'u stopa değdiyse çık.
-                # Kapanış bazlı kontrol fiyatın dibe vurup toparlandığı mumlarda
-                # çıkışı kaçırıyor/geciktiriyordu. kline: {"lows": [...], ...}
-                if config.VELOCITY_TRAIL_INTRABAR:
-                    try:
-                        k_lows = kline.get("lows") or [] if kline else []
-                        cur_low = float(k_lows[-1]) if k_lows else None
-                    except (TypeError, ValueError, IndexError):
-                        cur_low = None
-                    if cur_low is not None and cur_low <= system_stop:
-                        return await self.close_position(symbol, cur_low, "velocity_trailing")
             # Zaman sınırı (yalnızca otonom hız avcısı, planlı yol değil):
             # kâr kilidi devreye girmemişse bile 30dk sonunda kapanıştan çık —
             # pump sonrası kâr erimesini önler (backtest: hold30 kazananı).
