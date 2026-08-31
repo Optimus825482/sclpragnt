@@ -9,7 +9,22 @@ import { useLiveMessages } from "../lib/liveSocket";
 import Link from "next/link";
 import { Badge, Button, Card } from "../components/ui";
 
-type Message = { role: "user" | "assistant"; content: string };
+type ScoutCandidate = {
+  symbol: string;
+  current_price: number;
+  horizon_minutes: number;
+  target_pct: number;
+  target_price: number | null;
+  upside_rank: number;
+  velocity_score: number;
+};
+type ScoutResult = {
+  symbols: string[];
+  candidates: ScoutCandidate[];
+  generated_at?: number;
+  journal_saved?: number;
+};
+type Message = { role: "user" | "assistant"; content: string; scout?: ScoutResult };
 type Skill = {
   id: number;
   name: string;
@@ -182,6 +197,69 @@ const estimateTokens = (items: Message[]) =>
   );
 const newSessionId = () =>
   `chat:main:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+const fmtScoutPrice = (value: number | null | undefined) =>
+  Number.isFinite(Number(value)) && value !== null && value !== undefined
+    ? value.toLocaleString("tr-TR", { maximumFractionDigits: 8 })
+    : "—";
+
+const RANK_TONE = ["text-amber-300", "text-sky-300", "text-bunker-muted"] as const;
+
+function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
+  const candidates = scout.candidates || [];
+  return (
+    <div className="chat-price-watch !block" role="status" aria-live="polite">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <p className="eyebrow">🎯 EN HIZLI YÜKSELİŞ KEŞFİ · İLK {candidates.length}</p>
+        <span className="text-[10px] text-bunker-muted shrink-0">
+          {scout.generated_at ? new Date(scout.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}
+        </span>
+      </div>
+      {candidates.length === 0 ? (
+        <p className="text-xs text-yellow-300">Aday verisi alınamadı.</p>
+      ) : (
+        <div className="space-y-2">
+          {candidates.map((candidate, index) => (
+            <div
+              key={candidate.symbol}
+              className={`flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors ${
+                index === 0
+                  ? "border-amber-300/40 bg-amber-300/5"
+                  : "border-neon-green/20 bg-neon-green/5"
+              }`}
+            >
+              <span className={`font-mono text-xs font-bold ${RANK_TONE[index] || "text-bunker-muted"}`}>
+                #{index + 1}
+              </span>
+              <SymbolLink
+                symbol={candidate.symbol}
+                timeframe="1m"
+                className="font-mono text-sm font-bold text-white hover:text-neon-green"
+              />
+              <span
+                className="font-mono text-[10px] text-amber-300/90 whitespace-nowrap"
+                title="Upside puanı: dakika başına hedef × hız skoru × sembol kalite çarpanı"
+              >
+                {Number(candidate.upside_rank).toFixed(1)} puan
+              </span>
+              <div className="ml-auto text-right font-mono text-xs space-y-0.5">
+                <div className="text-white">Anlık {fmtScoutPrice(candidate.current_price)}</div>
+                <div className="text-neon-green font-bold">
+                  +%{Number(candidate.target_pct).toFixed(1)} → {fmtScoutPrice(candidate.target_price)}
+                </div>
+                <div className="text-[10px] text-bunker-muted">~{candidate.horizon_minutes} dk içinde</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-[10px] text-bunker-muted mt-2">
+        Sembol adına tıklayınca M1 grafiği açılır · {scout.journal_saved ?? candidates.length} tahmin
+        journal&apos;a kaydedildi; ufuk kapanınca sonucu ölçülüp öğrenilir.
+      </p>
+    </div>
+  );
+}
 
 function VelocityPanel({ title, badge, tone, result }: {
   title: string;
@@ -594,16 +672,28 @@ export default function ChatPage() {
       if (!response.ok || data.enabled === false) {
         throw new Error(data.detail || data.error || "Yükseliş keşfi başarısız");
       }
-      const syms = Array.isArray(data.symbols) && data.symbols.length
-        ? data.symbols.join(", ")
-        : data.symbol;
+      const scout: ScoutResult = {
+        symbols: Array.isArray(data.symbols) ? data.symbols : [],
+        candidates: Array.isArray(data.candidates) ? data.candidates : [],
+        generated_at: data.generated_at,
+        journal_saved: data.journal_saved,
+      };
+      const scoreText = scout.candidates.length
+        ? scout.candidates
+            .map((c) => `${c.symbol} (${Number(c.upside_rank).toFixed(1)} puan)`)
+            .join(", ")
+        : scout.symbols.join(", ") || data.symbol;
       setMessages((current) => [
         ...current,
         {
           role: "user" as const,
-          content: `🎯 EN HIZLI YÜKSELİŞ KEŞFİ: ${syms}`,
+          content: `🎯 EN HIZLI YÜKSELİŞ KEŞFİ: ${scoreText}`,
         },
-        { role: "assistant" as const, content: data.analysis || "Analiz üretilemedi." },
+        {
+          role: "assistant" as const,
+          content: data.analysis || "Analiz üretilemedi.",
+          scout,
+        },
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Yükseliş keşfi başarısız");
@@ -768,7 +858,14 @@ export default function ChatPage() {
                 </div>
                 <div className="chat-bubble">
                   {message.role === "assistant" && message.content && <button type="button" onClick={() => speakingIndex === index ? stopSpeaking() : void speak(message.content, index)} className="chat-tts-button" aria-label="Yanıtı seslendir">{speakingIndex === index ? "■" : "▶"}</button>}
-                  <MarkdownMessage content={message.content} />
+                  {message.scout ? (
+                    <div className="space-y-2">
+                      <UpsideScoutCard scout={message.scout} />
+                      {message.content && <MarkdownMessage content={message.content} />}
+                    </div>
+                  ) : (
+                    <MarkdownMessage content={message.content} />
+                  )}
                 </div>
               </div>
             ))}

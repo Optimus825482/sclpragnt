@@ -1767,83 +1767,71 @@ async def chart_timeframe_trends(symbol: str):
         })
     return {"symbol": sym, "timeframes": rows, "generated_at": time.time(), "candle_policy": "completed_only"}
 
-async def _create_postgres_backup() -> str:
-    """Create and validate a PostgreSQL custom-format dump for download."""
+def _require_postgres_target() -> str:
     if os.getenv("DB_BACKEND", "postgres").lower() != "postgres":
         raise HTTPException(status_code=503, detail="Sistem yalnızca PostgreSQL kullanmalıdır; DB_BACKEND=postgres yapın")
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
-    fd, path = tempfile.mkstemp(prefix="scalper-postgres-", suffix=".dump")
-    os.close(fd)
-    try:
-        result = await asyncio.to_thread(
-            subprocess.run,
-            ["pg_dump", "--format=custom", "--no-owner", "--no-acl", "--file", path, database_url],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-    except FileNotFoundError as exc:
-        if os.path.exists(path): os.unlink(path)
-        raise HTTPException(status_code=503, detail="PostgreSQL yedek aracı pg_dump backend imajında kurulu değil") from exc
-    except Exception:
-        if os.path.exists(path): os.unlink(path)
-        raise
-    if result.returncode != 0:
-        if os.path.exists(path): os.unlink(path)
-        raise HTTPException(status_code=502, detail=result.stderr[-2000:] or "pg_dump başarısız")
+    return database_url
 
-    # A Navicat header-only export can still have a .dump suffix. Reject it
-    # here so the Settings button can never deliver a non-restorable file.
+
+async def _pg_dump_stream(database_url: str):
+    """Stream a pg_dump custom-format dump while it runs.
+
+    Büyük veritabanında tüm yedeği sunucuda tamponlayıp sonra göndermek,
+    ilk bayt gitmeden bekleyen proxy/tarayıcı bağlantısını zaman aşımına
+    düşürüyordu; pg_dump çıktısı üretildikçe akıtılır.
+    """
     try:
-        with open(path, "rb") as backup_file:
-            if backup_file.read(5) != b"PGDMP":
-                raise HTTPException(status_code=502, detail="pg_dump geçerli PostgreSQL custom-format çıktısı üretmedi")
-        validation = await asyncio.to_thread(
-            subprocess.run,
-            ["pg_restore", "--list", path],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        proc = await asyncio.create_subprocess_exec(
+            "pg_dump", "--format=custom", "--no-owner", "--no-acl", database_url,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     except FileNotFoundError as exc:
-        if os.path.exists(path): os.unlink(path)
-        raise HTTPException(status_code=503, detail="PostgreSQL doğrulama aracı pg_restore backend imajında kurulu değil") from exc
-    except HTTPException:
-        if os.path.exists(path): os.unlink(path)
-        raise
-    except Exception:
-        if os.path.exists(path): os.unlink(path)
-        raise
-    if validation.returncode != 0:
-        if os.path.exists(path): os.unlink(path)
-        raise HTTPException(status_code=502, detail=validation.stderr[-2000:] or "Üretilen PostgreSQL yedeği doğrulanamadı")
-    return path
+        raise HTTPException(status_code=503, detail="PostgreSQL yedek aracı pg_dump backend imajında kurulu değil") from exc
+    first = await proc.stdout.read(5)
+    if first != b"PGDMP":
+        proc.kill()
+        stderr = (await proc.stderr.read() or b"")[-2000:].decode("utf-8", "replace")
+        raise HTTPException(status_code=502, detail=stderr or "pg_dump geçerli PostgreSQL custom-format çıktısı üretmedi")
+    yield first
+    try:
+        while True:
+            chunk = await proc.stdout.read(256 * 1024)
+            if not chunk:
+                break
+            yield chunk
+        returncode = await proc.wait()
+        if returncode != 0:
+            stderr = (await proc.stderr.read() or b"")[-2000:].decode("utf-8", "replace")
+            logger.error("pg_dump akışı hatalı bitti (rc=%s): %s", returncode, stderr)
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+
+
+def _backup_headers() -> dict:
+    return {"X-Backup-Format": "postgresql-custom", "X-Backup-Verified": "PGDMP",
+            "Content-Disposition": f'attachment; filename="scalperagent-postgres-{time.strftime("%Y%m%d-%H%M%S")}.dump"'}
 
 
 @app.get("/api/backup")
 async def download_backup():
-    """Download a validated PostgreSQL custom-format dump."""
-    path = await _create_postgres_backup()
-    return FileResponse(
-        path,
+    """Download a PostgreSQL custom-format dump (streamed while pg_dump runs)."""
+    return StreamingResponse(
+        _pg_dump_stream(_require_postgres_target()),
         media_type="application/octet-stream",
-        filename=f"scalperagent-postgres-{time.strftime('%Y%m%d-%H%M%S')}.dump",
-        headers={"X-Backup-Format": "postgresql-custom", "X-Backup-Verified": "PGDMP"},
-        background=BackgroundTask(lambda: os.unlink(path) if os.path.exists(path) else None),
+        headers=_backup_headers(),
     )
+
 
 @app.get("/api/postgres/backup")
 async def download_postgres_backup():
     """Explicit alias for clients that use the PostgreSQL-specific route."""
-    path = await _create_postgres_backup()
-    return FileResponse(
-        path,
+    return StreamingResponse(
+        _pg_dump_stream(_require_postgres_target()),
         media_type="application/octet-stream",
-        filename=f"scalperagent-postgres-{time.strftime('%Y%m%d-%H%M%S')}.dump",
-        headers={"X-Backup-Format": "postgresql-custom", "X-Backup-Verified": "PGDMP"},
-        background=BackgroundTask(lambda: os.unlink(path) if os.path.exists(path) else None),
+        headers=_backup_headers(),
     )
 
 @app.post("/api/postgres/restore")
