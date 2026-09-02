@@ -32,15 +32,19 @@ export const paneMinimumHeight = (key: string, compact: boolean) => {
 
 export const preferredChartHeight = (minimumRequired: number, compact: boolean) => {
     const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
-    const viewportPreference = Math.round(viewportHeight * (compact ? 0.72 : 0.78));
-    return Math.max(compact ? 420 : TOTAL_HEIGHT, viewportPreference, minimumRequired);
+    // Mobilde üst araç çubuğu + alt içerik için ~200px bütçe ayır; chart tüm
+    // ekranı kaplamasın (alt tablolara ulaşmak için dev kaydırma yaratıyordu).
+    const usable = Math.max(240, viewportHeight - (compact ? 200 : 0));
+    const viewportPreference = Math.round(usable * (compact ? 0.78 : 0.78));
+    return Math.max(compact ? 340 : TOTAL_HEIGHT, viewportPreference, minimumRequired);
 };
 
 // Ekrana göre paylaşımlı yerleşim: hedef toplam yükseklik görünür alanın
-// ~%78'i (mobilde %72). Alt pane'ler önce kayıtlı/tercih edilen yüksekliklerini
-// alır; toplam taşırsa ORANSAL olarak kısalır (mutlak minimumların altına
-// inmeden). Ana grafik kalan bütçenin tamamını kullanır. Böylece çok sayıda
-// gösterge eklenince canvas ekranı aşmaz, her pane daralsa da okunur kalır.
+// ~%78'i (mobilde %78 — üst/alt UI bütçesi düşüldükten sonra). Alt pane'ler
+// önce kayıtlı/tercih edilen yüksekliklerini alır; toplam taşırsa ORANSAL
+// olarak kısalır (mutlak minimumların altına inmeden). Ana grafik kalan
+// bütçenin tamamını kullanır. Böylece çok sayıda gösterge eklenince canvas
+// ekranı aşmaz, her pane daralsa da okunur kalır.
 export const computePaneLayout = (
     keys: string[],
     saved: Record<string, number>,
@@ -48,10 +52,12 @@ export const computePaneLayout = (
 ): { total: number; heights: number[] } => {
     const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
     const baseMin = compact ? 210 : MAIN_MIN;
+    // Mobil tavan: viewport'un %82'si, üst/alt UI için en az ~110px pay bırak.
+    const usable = Math.max(280, viewportHeight - (compact ? 110 : 0));
     const targetTotal = clamp(
-        Math.round(viewportHeight * (compact ? 0.72 : 0.78)),
-        compact ? 420 : TOTAL_HEIGHT,
-        Math.round(viewportHeight * 0.92)
+        Math.round(usable * (compact ? 0.82 : 0.78)),
+        compact ? 340 : TOTAL_HEIGHT,
+        Math.round(usable * (compact ? 0.95 : 0.92))
     );
     const minOf = (key: string) => paneMinimumHeight(key, compact);
     const wanted = keys.map((key, i) =>

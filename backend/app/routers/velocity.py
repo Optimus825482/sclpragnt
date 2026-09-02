@@ -933,28 +933,6 @@ async def _hydrate_market_cache_for(symbol: str):
         logger.warning("hydrate orderbook %s: %s", symbol, exc)
 
 
-async def _symbol_quality(symbol: str, lookback_trades: int = 10) -> float | None:
-    """Sembolün son işlemlerindeki ortalama getirisi (sinyal kalite skoru).
-
-    Kapanmış CHAT_PREDICTION işlemlerinden pnl yüzdesini okur; pozitifse
-    sembol pump sonrası momentumu koruyor demektir. Yetersiz örneklemde
-    None döner (filtre uygulanmaz).
-    """
-    try:
-        trades = await database.get_trades(limit=lookback_trades, strategy="CHAT_PREDICTION", symbol=symbol)
-    except Exception:
-        return None
-    rets = []
-    for t in trades or []:
-        entry = float(t.get("entry_price") or 0)
-        exit_px = float(t.get("exit_price") or 0)
-        if entry > 0 and exit_px > 0:
-            rets.append((exit_px / entry - 1) * 100)
-    if len(rets) < 3:
-        return None
-    return sum(rets) / len(rets)
-
-
 async def _velocity_journal_quality(symbol: str) -> dict | None:
     """Sembolün velocity journal geçmişi: ölçülen aday, dokunuş, ort. MFE.
 
@@ -1035,34 +1013,6 @@ async def _open_velocity_position(candidate: dict) -> dict:
         if not candidate.get("m5_pattern_ok"):
             return {"symbol": symbol, "status": "SKIPPED",
                     "reason": "m5_pattern_reddet", "m5_pattern": candidate.get("m5_pattern")}
-    # Sembol bazlı kalite filtresi (araştırma 2026-08-31): bazı semboller
-    # pump sonrası momentumu koruyor, bazıları anında dönüyor. 7 günlük
-    # backtest: iyi sembollerde sinyal-sonrası getiri +0.04% vs kötülerde
-    # -0.74%. Kapanmış işlemlerden sembolün son N işleminin ort getirisine
-    # bakar; negatifse adayı atlar.
-    if config.VELOCITY_SYMBOL_QUALITY_FILTER:
-        try:
-            q = await _symbol_quality(symbol)
-            if q is not None and q < 0:
-                return {"symbol": symbol, "status": "SKIPPED",
-                        "reason": f"sembol_kalite_negatif:{q:.2f}", "symbol_quality": q}
-        except Exception as exc:
-            logger.warning("velocity sembol kalite filtresi: %s", exc)
-        # Journal tabanlı kalite: yeterli ölçümde hiç +%2/3 dokunuşu olmayan ve
-        # ort. MFE'si zayıf semboller pump sonrası momentumu tutamıyor; atla.
-        # Örneklem eşiği altındaki sembollerde fail-open — veri biriktikçe devreye girer.
-        try:
-            jq = await _velocity_journal_quality(symbol)
-            if (jq is not None
-                    and jq["evaluated"] >= config.VELOCITY_SYMBOL_QUALITY_JOURNAL_MIN_EVALUATED
-                    and jq["touched"] == 0
-                    and jq["avg_mfe_pct"] < config.VELOCITY_SYMBOL_QUALITY_JOURNAL_MAX_AVG_MFE_PCT):
-                return {"symbol": symbol, "status": "SKIPPED",
-                        "reason": (f"sembol_journal_kalitesi:0_dokunus/{jq['evaluated']}_olcum"
-                                   f"/mfe{jq['avg_mfe_pct']:.2f}"),
-                        "journal_quality": jq}
-        except Exception as exc:
-            logger.warning("velocity journal kalite filtresi: %s", exc)
     if symbol in analyzer.positions:
         return {"symbol": symbol, "status": "SKIPPED", "reason": "acik_pozisyon_var"}
     chat_max = int(config.CHAT_PREDICTION_MAX_OPEN_POSITIONS)
@@ -1132,36 +1082,51 @@ async def _open_velocity_position(candidate: dict) -> dict:
     await _hydrate_market_cache_for(symbol)
     # Kullanıcı kontratı: sinyal sonrası fiyat önce geri çekiliyor; açılışta sert
     # stop koymak geri çekilmede kapatıp yükselişi kaçırıyor. No-initial-stop
-    # modunda stop'suz açılır (kâr koruma merdiveni +%1'de yine devreye girer).
+    # modunda stop'suz açılır; kâr koruması +%0.5'te yine devreye girer.
+    # Kapanış modeli: trailing DEĞİL — açılışta tahmin edilen hedef (target_pct:
+    # 5dk-%2 / 15dk-%3) TP olarak konur; fiyat oraya ulaşınca take_profit ile
+    # kapanır. TP'ye ulaşmazsa +%0.5 kâr kilidi stop'u maliyet üstüne çeker,
+    # 30dk max-hold ve -%3 acil stop zararı sınırlar.
     no_initial_stop = bool(config.VELOCITY_NO_INITIAL_STOP)
     stop_loss_pct = None if no_initial_stop else config.VELOCITY_AUTO_SL_PCT / 100.0
+    target_pct = float(candidate.get("target_pct") or
+                       (VELOCITY_PROFILES.get(int(candidate.get("horizon_minutes") or 5)) or VELOCITY_PROFILES[5])["target_pct"])
+    horizon_minutes = int(candidate.get("horizon_minutes") or 5)
     context = {"signal_name": "Otonom Hız Avcısı · en iyi aday",
                 "velocity_score": candidate.get("velocity_score"),
                 "mode": candidate.get("mode"), "pattern_matches": candidate.get("m5_pattern"),
                 "paper_only": True, "source": "velocity_auto",
                 "atr_pct": candidate.get("atr_pct"),
                 "velocity_relaxed_reentry": True,
-                "no_initial_stop": no_initial_stop}
+                "no_initial_stop": no_initial_stop,
+                "horizon_minutes": horizon_minutes,
+                "target_pct": target_pct,
+                "exit_model": "plan_tp"}
     result = await analyzer.open_position(symbol, price, "LONG", "CHAT_PREDICTION", order_value,
                                            stop_loss_pct=stop_loss_pct,
+                                           take_profit_pct=target_pct / 100.0,
                                            entry_context_extra=context)
     if result and str(result.get("action", "")).upper() == "BUY_SIGNAL":
         await ws_manager.broadcast({"type": "signal", "data": result})
         return {"symbol": symbol, "status": "PAPER_OPENED", "order_value_try": order_value,
                  "entry": price,
                  "stop_loss_pct": (stop_loss_pct * 100) if stop_loss_pct is not None else None,
-                 "no_initial_stop": no_initial_stop}
+                 "no_initial_stop": no_initial_stop,
+                 "take_profit_pct": target_pct, "horizon_minutes": horizon_minutes,
+                 "exit_model": "plan_tp"}
     return {"symbol": symbol, "status": "ENTRY_BLOCKED", "reason": str((result or {}).get("reason") or "kapı")}
 
 
 async def autonomous_velocity_loop():
-    """5 dk'da bir hız taraması; en iyi adaya (GEÇTİ veya İZLEME) pozisyon.
+    """Her M5 kapanışında hız taraması; en iyi adaya (GEÇTİ veya İZLEME) pozisyon.
 
     Her turda önce 5dk-%2, sonra 15dk-%3 profili taranır; iki profilin
     adayları birleşik skorla sıralanır ve en iyi tek adaya pozisyon açılır.
     Açılış VELOCITY_AUTO_ENABLED + LLM paper anahtarıyla çift kilitli.
-    Pozisyon yönetimi analyzer'ın genel döngüsünde: kâr → break-even,
-    +%1 → ATR trailing, %1.5 sert stop.
+    Pozisyon yönetimi analyzer'ın genel döngüsünde: açılışta tahmin edilen
+    hedef (target_pct) TP olarak konur → fiyat oraya ulaşınca take_profit ile
+    kapanır; +%0.5 kâr kilidi stop'u maliyet üstüne çeker (trailing yok),
+    30dk max-hold + -%3 acil stop zararı sınırlar.
     """
     await asyncio.sleep(60)
     # Restart sonrası mevcut M5 kapanışıyla senkron başla: ilk turda hazır

@@ -106,49 +106,45 @@ class Config:
     CHAT_PREDICTION_AUTO_TRADE_ENABLED = os.getenv("CHAT_PREDICTION_AUTO_TRADE_ENABLED", "false").lower() == "true"
     CHAT_PREDICTION_MAX_OPEN_POSITIONS = max(0, int(os.getenv("CHAT_PREDICTION_MAX_OPEN_POSITIONS", "0")))  # 0 = sınırsız
     CHAT_PREDICTION_ORDER_VALUE_TRY = max(50.0, float(os.getenv("CHAT_PREDICTION_ORDER_VALUE_TRY", "300.0")))
-    # Otonom hız avcısı: 15 dk'da bir tarama, en iyi adaya (GEÇTİ veya İZLEME)
-    # serbest TL'nin %50'si ile pozisyon. Çıkış merdiveni analyzer'da:
-    # +%1 kâr → stop maliyet+%0,01'e çekilir (kâr garantisi), sonrasında
-    # %0,8 dinamik trailing, sert stop %2.5, plan TP %2.
+    # Otonom hız avcısı: her M5 kapanışında tarama, en iyi adaya (GEÇTİ veya
+    # İZLEME) serbest TL'nin %50'si ile pozisyon. Kapanış modeli analyzer'da:
+    # açılışta tahmin edilen hedef TP olarak konur (5dk-%2 / 15dk-%3) → fiyat
+    # oraya ulaşınca take_profit ile kapanır; +%0.5'te kâr kilidi stop'u
+    # maliyet üstüne çeker (trailing yok); 30dk max-hold + -%3 acil stop.
     VELOCITY_AUTO_ENABLED = os.getenv("VELOCITY_AUTO_ENABLED", "false").lower() == "true"
     VELOCITY_AUTO_INTERVAL_SEC = max(300, int(os.getenv("VELOCITY_AUTO_INTERVAL_SEC", "300")))
     VELOCITY_AUTO_BALANCE_PCT = 50.0
     VELOCITY_AUTO_SL_PCT = float(os.getenv("VELOCITY_AUTO_SL_PCT", "2.5"))  # Hız Avcısı sert stop %2.5
     # Sinyal sonrası fiyat önce geri çekilip sonra yükseldiği için açılışta sert
-    # stop koyma; kâr koruma merdiveni (+%1 kâr kilidi + trailing) yine çalışır.
+    # stop koyma; kâr kilidi (+%0.5) ve hedef TP çıkışı yine çalışır.
     VELOCITY_NO_INITIAL_STOP = os.getenv("VELOCITY_NO_INITIAL_STOP", "true").lower() == "true"
     VELOCITY_POOL_SIZE = max(5, min(50, int(os.getenv("VELOCITY_POOL_SIZE", "30"))))  # Hız Avcısı aday havuzu (top gainer)
     VELOCITY_TRAIL_TRIGGER_PCT = float(os.getenv("VELOCITY_TRAIL_TRIGGER_PCT", "0.5"))  # Kâr kilidi bu kâr yüzdesinde devreye girer (3-gün walk-forward: 0.5 > 0.7)
-    # Trailing boşluğu: tepe fiyatın bu yüzde altına inince çık. Sıkı (%0.3)
-    # + intrabar tetikleme, pump'ın "hızlı tepe vurup dönme" davranışında kârı
-    # kilitleyip erken kaçıyor; geniş trailing (%0.8) kârı geri veriyordu.
+    # Not: dinamik trailing kaldırıldı (2026-09-03). Aşağıdaki iki ayar yalnızca
+    # kâr kilidinin stop'unu hesaplarken tepe takibi için korunur; çıkış hedef
+    # TP'sinde yapılır. Kod eski trailing dalını çağırmaz.
     VELOCITY_TRAIL_GAP_PCT = float(os.getenv("VELOCITY_TRAIL_GAP_PCT", "0.3"))
-    # Trailing tepe takibi: true ise max_price mum high'ıyla güncellenir
-    # (trailing stop gerçek tepeye göre hesaplanır). ÇIKIŞ her zaman kapanış
-    # fiyatından yapılır — intrabar low'dan kapatmak slippage yaratıyordu
-    # (ZKTRY: stop 0.4915, fill 0.48).
+    # Trailing tepe takibi: max_price mum high'ıyla güncellenir. ÇIKIŞ her
+    # zaman kapanış fiyatından yapılır — intrabar low'dan kapatmak slippage
+    # yaratıyordu (ZKTRY: stop 0.4915, fill 0.48).
     VELOCITY_TRAIL_INTRABAR = os.getenv("VELOCITY_TRAIL_INTRABAR", "true").lower() == "true"
     # Maksimum tutma süresi (dk): 30dk sonra kapanıştan çık — kâr erimesini önler.
     VELOCITY_MAX_HOLD_MIN = int(os.getenv("VELOCITY_MAX_HOLD_MIN", "30"))
     # Kâr kilidi tetiklenmeden ÖNCE güvenlik stopu: fiyat +%0.5'i hiç görmeden
     # bu kadar düşerse kapat. Stopsuz açılış, fiyat hiç yükselmezse sınırsız
     # zarar demek (canlıda -%7.5 görüldü); -%3 stop EV'yi korur, max kaybı
-    # sınırlar. Kâr kilidi sonrası intrabar trailing devreye girince bu stop
-    # zaten anlamsızlaşır (trailing daha yukarıda).
+    # sınırlar. Kâr kilidi devreye girince bu stop zaten anlamsızlaşır (kâr
+    # kilidi stop'u daha yukarıdadır).
     VELOCITY_EMERGENCY_STOP_PCT = float(os.getenv("VELOCITY_EMERGENCY_STOP_PCT", "3.0"))
-    # Sembol bazlı kalite filtresi: kapanmış işlemlerde ort getirisi negatif
-    # olan semboller yeni açılışta atlanır (7g backtest: iyi semboller +0.04%
-    # vs kötüler -0.74%).
-    VELOCITY_SYMBOL_QUALITY_FILTER = os.getenv("VELOCITY_SYMBOL_QUALITY_FILTER", "true").lower() == "true"
     # Otonom açılış için minimum velocity skoru. Journal analizi (2026-08-31):
     # skor <10 geçen adaylarda dokunuş %16.7 (n=12), 10-30 arası %47.6 (n=21),
     # 30+ %50.0 (n=14) — 10 altı adaylarda açılış yapmak EV'yi düşürüyor.
     # 0 = filtre kapalı. Eşik ham velocity_score'a bakar; kalite çarpanı uygulanmaz.
     VELOCITY_AUTO_MIN_SCORE = float(os.getenv("VELOCITY_AUTO_MIN_SCORE", "10"))
-    # Journal tabanlı sembol kalitesi: hız avcısı adaylarının ölçülmüş geçmişi.
-    # Yeterli örneklemde (≥ min_evaluated) hiç dokunuşu olmayan ve ort. MFE'si
-    # eşiğin altında kalan semboller yeni açılışta atlanır. Min örneklem altındaki
-    # sembollerde filtre uygulanmaz (fail-open) — veri biriktikçe devreye girer.
+    # Journal tabanlı sembol kalitesi: hız avcısı adaylarının ölçülmüş geçmişi
+    # (dokunuş oranı, ort. MFE) yalnızca sıralama çarpanı ve LLM bağlamı için
+    # kullanılır. Açılış engelleyen sembol kalite filtresi kaldırıldı
+    # (2026-09-03, kullanıcı kararı); journal dokunuş oranı _rank_score'u besler.
     VELOCITY_SYMBOL_QUALITY_JOURNAL_MIN_EVALUATED = max(1, int(os.getenv("VELOCITY_SYMBOL_QUALITY_JOURNAL_MIN_EVALUATED", "3")))
     VELOCITY_SYMBOL_QUALITY_JOURNAL_MAX_AVG_MFE_PCT = float(os.getenv("VELOCITY_SYMBOL_QUALITY_JOURNAL_MAX_AVG_MFE_PCT", "1.0"))
     # Mikro-yapı giriş filtreleri (2026-08-31, microflow verisiyle):

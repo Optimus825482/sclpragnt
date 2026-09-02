@@ -27,8 +27,9 @@ export default {
         }
       },
       fontFamily: {
-        display: ["Poppins", "sans-serif"],
-        mono: ["JetBrains Mono", "monospace"]
+        sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        display: ["var(--font-display)", "var(--font-sans)", "sans-serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"]
       }
     }
   },

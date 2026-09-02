@@ -559,31 +559,30 @@ class ScalpAnalyzer:
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
             # Otonom hız avcısı no-initial-stop modu: açılışta sert stop yok.
             # entry_context'taki no_initial_stop bayrağıyla başlangıç stopu
-            # etkisiz kılınır (system_stop_price=None + burada -inf); +%1 kâr
-            # kilidi/trailing (velocity_protection_armed) aşağıdaki merdivende
-            # yine devreye girer ve stop'u yukarı taşır.
+            # etkisiz kılınır (system_stop_price=None + burada -inf); +%0.5
+            # kâr kilidi (velocity_protection_armed) aşağıdaki merdivende stop'u
+            # maliyet üstüne çeker, hedef TP çıkışı ayrıca işler.
             if pos.get("strategy") == "CHAT_PREDICTION" and \
                     bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
                 system_stop = float("-inf")
             # Otonom hız avcısı güvenlik stopu (kâr kilidi tetiklenmeden ÖNCE):
             # stopsuz açılış, fiyat +%0.5'i hiç görmezse sınırsız zarar demek
             # (canlıda AXLTRY -%7.5 ile max_hold'da kapandı). Fiyat bu kadar
-            # düşerse acil kapat; kâr kilidi sonrası intrabar trailing zaten
-            # devreye girer. Backtest: -%3 stop EV +0.182%, max kayıp -%3.
+            # düşerse acil kapat; kâr kilidi devreye girince bu stop zaten
+            # anlamsızlaşır (kâr kilidi daha yukarıda). Backtest: -%3 stop
+            # EV +0.182%, max kayıp -%3.
             if pos.get("strategy") == "CHAT_PREDICTION" and not pos.get("velocity_protection_armed") and \
                     bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
                 emg_stop = entry * (1 - config.VELOCITY_EMERGENCY_STOP_PCT / 100.0)
                 if price <= emg_stop:
                     return await self.close_position(symbol, price, "velocity_emergency_stop")
             # Chat Prediction (velocity auto-trade) kâr koruma merdiveni:
-            # 1) +%1 kâr görülünce stop, maliyet + %0,01 sabit kâr + çift
+            # 1) +%0.5 kâr görülünce stop, maliyet + %0,01 sabit kâr + çift
             #    komisyon payına çekilir → pozisyon artık zarara dönemez.
-            # 2) Aynı andan itibaren dinamik trailing: stop = tepe_fiyat ×
-            #    (1 - %0.5); tepe yükseldikçe stop da yükselir, asla inmez.
-            # 3) Sert stop: açılıştan itibaren plan SL%'si altı.
-            # Eski merdiven (BE arm'dan sonra ATR trailing) 6h replay'de
-            # BE floor'un TP'li işlemleri +0,50 TL'de kestiğini gösterdi;
-            # kullanıcı kontratı: kâr kilidi +%1'de, trailing %0,5 dinamik.
+            # 2) Dinamik trailing YOK: çıkış, açılışta tahmin edilen hedefe
+            #    (target_pct → system_take_profit_price) göre TP'de yapılır;
+            #    kâr kilidi stop'u sabit tutar (tepeyi takip etmez).
+            # 3) Sert/acil stop: -%3 emergency stop + max-hold (30dk) korur.
             if pos.get("strategy") == "CHAT_PREDICTION" and not pos.get("velocity_protection_armed"):
                 lock_trigger = entry * (1 + config.VELOCITY_TRAIL_TRIGGER_PCT / 100.0)
                 if float(pos.get("max_price") or entry) >= lock_trigger:
@@ -595,21 +594,6 @@ class ScalpAnalyzer:
                         + qty_value * config.COMMISSION_PCT / max(float(pos.get("quantity") or 1), 1e-9)
                     pos["system_stop_price"] = max(system_stop, lock_stop)
                     system_stop = pos["system_stop_price"]
-            if pos.get("strategy") == "CHAT_PREDICTION" and pos.get("velocity_protection_armed"):
-                # Dinamik trailing: kâr kilidi devredeyken tepe fiyatın %0,3
-                # altını takip eder. Yalnızca yukarı taşınır; kâr kilidi
-                # seviyesinin altına inmez.
-                # ÖNEMLİ: çıkış KAPANIŞ fiyatından yapılır (price <= stop).
-                # İntrabar low'dan kapatmak, mum kapanışında fiyat zaten
-                # düşmüşse stop fiyatı yerine dip fiyatından fill olur —
-                # canlıda ZKTRY 0.4915 stop yerine 0.48'den kapandı (-2.3%
-                # slippage). Kapanış bazlı fill gerçekçidir ve slippage'ı
-                # ortadan kaldırır.
-                trail_gap = config.VELOCITY_TRAIL_GAP_PCT / 100.0
-                trailing = float(pos.get("max_price") or entry) * (1 - trail_gap)
-                if trailing > system_stop:
-                    pos["system_stop_price"] = trailing
-                    system_stop = trailing
             # Zaman sınırı (yalnızca otonom hız avcısı, planlı yol değil):
             # kâr kilidi devreye girmemişse bile 30dk sonunda kapanıştan çık —
             # pump sonrası kâr erimesini önler (backtest: hold30 kazananı).
@@ -631,23 +615,19 @@ class ScalpAnalyzer:
                     pos["system_stop_price"] = max(system_stop, new_stop)
                     system_stop = pos["system_stop_price"]
             if pos.get("strategy") != "BB_MFI_MEAN_REVERSION" and price <= system_stop:
-                exit_reason = "system_stop_loss"
-                if pos.get("strategy") == "CHAT_PREDICTION" and pos.get("velocity_protection_armed"):
-                    # A trailing stop is profit protection, not a fresh hard
-                    # stop. Keep it out of the hard-stop re-entry lock.
-                    exit_reason = "velocity_trailing"
+                # Kâr kilidi stop'u bir trailing değil, kârı koruyan sabit bir
+                # zemindir; normal stop-loss çıkışı olarak işlenir.
                 return await self.close_position(
                     symbol, price,
-                    "pump_break_even_stop" if pos.get("pump_break_even_armed") else exit_reason)
+                    "pump_break_even_stop" if pos.get("pump_break_even_armed") else "system_stop_loss")
             if pos.get("strategy") == "CHAT_PREDICTION":
-                # Replay planı çıkışları: sabit plan TP ve plan max-hold.
-                # Plan TP girişte system_take_profit_price olarak yazılır ve
-                # positions.take_profit kolonuna da düşer; restart sonrası
-                # restore'da system_ alanı yoksa take_profit devreye girer.
-                # Plansız (trailing) yolda take_profit None'dur, TP kontrolü
-                # atlanır. Max-hold reason'ı "max_hold_" ön ekli değildir ki
-                # 24 saatlik timeout re-entry bloğu tetiklenmesin (15 dk scalp
-                # planı için aşırı).
+                # Replay planı ve otonom hız avcısı çıkışları: sabit plan TP
+                # (hedef fiyat) ve max-hold. TP girişte
+                # system_take_profit_price olarak yazılır ve positions.take_profit
+                # kolonuna da düşer; restart sonrası restore'da system_ alanı
+                # yoksa take_profit devreye girer. Max-hold reason'ı "max_hold_"
+                # ön ekli değildir ki 24 saatlik timeout re-entry bloğu
+                # tetiklenmesin (15 dk scalp planı için aşırı).
                 plan_tp = float(pos.get("system_take_profit_price") or pos.get("take_profit") or 0)
                 if plan_tp and price >= plan_tp:
                     return await self.close_position(symbol, price, "chat_plan_take_profit")
@@ -1525,16 +1505,9 @@ class ScalpAnalyzer:
 
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None, entry_context_extra=None):
         symbol = str(symbol).replace("_", "").upper()
-        # Strategy-level circuit breaker: a paused strategy cannot open new
-        # positions; existing positions remain managed by the normal exits.
-        if strategy_breaker.is_paused(strat_name):
-            await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED",
-                                        "price": entry_price,
-                                        "reason": "strategy_circuit_breaker_paused",
-                                        "strategy": strat_name, "timestamp": time.time()})
-            return {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                    "reason": "strategy_circuit_breaker_paused",
-                    "strategy": strat_name, "timestamp": time.time()}
+        # Kullanıcı kararı (2026-09-03): strategy-level circuit breaker pause
+        # kaldırıldı. Pause'lu strateji artık yeni pozisyon açabilir; risk
+        # yönetimi sembol bazlı guard/kalite filtreleriyle sürer.
         # Every entry path (strategy, LLM, alert, radar and pending orders)
         # converges here. A passive symbol must therefore be rejected at this
         # final writer boundary, not only skipped by the strategy scan loop.
@@ -1776,11 +1749,12 @@ class ScalpAnalyzer:
             #   sessizce atılıyor, %2.5 stop + 4 saat max-hold devreye
             #   giriyordu; işlemler planın amaçladığından çok daha geniş
             #   zararla kapanıyordu.
-            # - Otonom hız avcısı: yalnızca stop gönderir; sabit TP yerine
-            #   break-even + ATR trailing merdiveni koşar (TP/hold kapalı).
-            #   no_initial_stop bayrağı açıkken açılışta sert stop koyulmaz —
-            #   sinyal sonrası önce geri çekilme olur, stop erken kapatıp
-            #   yükselişi kaçırırdı. Kâr koruma merdiveni yine çalışır.
+            # - Otonom hız avcısı: tahmin edilen hedef (target_pct: 5dk-%2 /
+            #   15dk-%3) take_profit_pct olarak gelir → açılışta sabit TP konur,
+            #   fiyat oraya ulaşınca chat_plan_take_profit ile kapanır. Trailing
+            #   yoktur; no_initial_stop açıkken sert stop koyulmaz, kâr kilidi
+            #   (+%0.5) stop'u maliyet üstüne çeker, 30dk max-hold + -%3 acil
+            #   stop zararı sınırlar.
             no_initial_stop = bool((entry_context_extra or {}).get("no_initial_stop"))
             if no_initial_stop:
                 planned_stop_loss_pct = 0.0
@@ -1942,11 +1916,11 @@ class ScalpAnalyzer:
                     # stop yok; yine de alanın varlığını koru (okuyanlar None'a dayanmasın)
                     pos["system_stop_price"] = None
                 if strat_name == "CHAT_PREDICTION":
-                    # Planlı yol (chat tahmin otomatı): asimetrik plan — TP
-                    # plan yüzdesiyle sabitlenir (RR çarpanı plan TP'sini
-                    # şişirmez), max-hold plan süresiyle sınırlıdır. Plansız
-                    # yol (otonom hız avcısı): sabit TP yok, çıkışı
-                    # break-even + ATR trailing merdiveni üstlenir.
+                    # Planlı yol (chat tahmin otomatı + otonom hız avcısı):
+                    # TP açılışta sabitlenir — chat tahmin otomatında plan
+                    # yüzdesi, otonom hız avcısında tahmin edilen hedef
+                    # (target_pct: 5dk-%2 / 15dk-%3) take_profit_pct olarak
+                    # gelir; max-hold plan süresiyle sınırlıdır. Trailing yoktur.
                     if planned_take_profit_pct is not None:
                         pos["system_take_profit_price"] = entry_price * (1 + planned_take_profit_pct)
                     if planned_max_hold_sec is not None:
@@ -1958,7 +1932,7 @@ class ScalpAnalyzer:
                 pos["system_atr"] = float(atr or 0)
                 pos["system_risk_reward"] = config.SYSTEM_RISK_REWARD
                 pos["system_exit_model"] = ("chat_replay_plan" if planned_take_profit_pct is not None
-                                            else "velocity_trailing") if strat_name == "CHAT_PREDICTION" else "atr_trailing_after_rr_target"
+                                            else "velocity_no_plan") if strat_name == "CHAT_PREDICTION" else "atr_trailing_after_rr_target"
             if strat_name == "LLM_PAPER":
                 if requested_stop_pct is not None:
                     pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(requested_stop_pct)))
