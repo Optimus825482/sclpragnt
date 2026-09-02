@@ -1,9 +1,13 @@
-import asyncio, base64, json, os, time
+import asyncio, ast, base64, json, os, re, time
 from urllib.error import HTTPError
 from urllib.request import Request
 from cryptography.fernet import Fernet
 from app import database
 from app.security import safe_provider_open, validate_provider_url
+
+# Sentinel returned by _json_load_lenient when no recovery strategy works;
+# a real ``None`` payload is distinguishable from "undecodable".
+_JSON_UNDECODABLE = object()
 
 PERSONA = """Persona adın Scalper. Kullanıcının adı Erkan'dır; ona Türkçe, doğrudan ve teknik bir çalışma arkadaşı gibi hitap edersin. Erkan'ın talimatlarını mevcut sistem kapsamı içinde uygularsın; kimlik, yetki veya kişisel bilgi uydurmazsın. Paper-trading güvenlik kurallarını aşmayı önermezsin."""
 TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
@@ -18,6 +22,8 @@ TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
 """
 OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
 - Kompakt ve bilgi-yoğun yanıt ver: dolgu cümlesi, giriş paragrafı, özet-özeti, "aşağıda inceleyeceğim" gibi yapılar YOK.
+- Kullanıcı açıkça istemedikçe gösterge değerlerini tek tek sıralayıp teknik detay dökümü yapma (RSI şu, MACD şu, EMA şu, ADX şu...). Gösterge/kanıt adları yalnızca sonucu destekleyen tek bir cümle içinde geçebilir; asla amaç değil, gerekçedir.
+- Analiz isteyen kullanıcının derdi "şu an ne durumda ve bundan sonra ne olabilir"dir. Yanıtı şu iskelete oturt: (1) Şu anki durum tek paragrafla, (2) bundan sonrası için net senaryolar (olası yön + onu tetikleyen seviye + bozulma seviyesi), (3) tek cümlelik yalın sonuç/özet. Kullanıcı sormadıkça bunun dışına çıkıp başlık/yığın açma.
 - Başlıkları (`###`) yalnızca gerçekten çok bölümlü uzun yanıtlarda kullan; kısa yanıtta doğrudan yaz. Her başlık altını kalınlaştırarak tekrarlama.
 - Kalın (**metin**) yalnızca gerçekten kritik sayı/seviyeler için; her cümleyi veya her maddeyi kalınlaştırma.
 - Madde listelerinde her madde tek satır kalsın; madde içine alt madde açma.
@@ -109,6 +115,139 @@ def _message_text(message):
     return None
 
 
+def _brace_scan(text: str):
+    """Return the largest balanced top-level object substring, or None.
+
+    Models often wrap JSON in prose (``İşte analiz: {...} Umarım yardımcı
+    olur``) or omit the final closing brace.  A naive ``find("{")..rfind("}")``
+    breaks whenever a scenario string contains a ``}``.  This scanner walks
+    string literals (escape-aware) and only accepts a substring whose braces
+    balance at depth zero.
+    """
+    start = None
+    depth = 0
+    quote = None
+    escaped = False
+    for index, char in enumerate(text):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ("\"", "'"):
+            quote = char
+        elif char == "{":
+            if start is None:
+                start = index
+            depth += 1
+        elif char == "}":
+            if start is not None:
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+    if start is not None and depth > 0:
+        # Unterminated top-level object (model cut off mid-write).
+        return text[start:]
+    return None
+
+
+def _repair_scalar_tokens(text: str) -> str:
+    """Convert single-quoted JSON scalars to double-quoted equivalents.
+
+    The ast.literal_eval path already handles whole ``'...'`` documents; this
+    covers the JSON-specific syntax repair: single-quoted string *scalars*
+    nested in an otherwise double-quoted document, plus bare ``None`` /
+    ``True`` / ``False`` constants.  Double-quoted spans are left untouched
+    because they are already valid JSON.
+    """
+    single = re.compile(r"'((?:\\.|[^'\\])*)'")
+    def _fix(match):
+        body = match.group(1).replace("\\'", "'").replace("\\\\", "\\")
+        return json.dumps(body)
+    text = single.sub(_fix, text)
+    text = re.sub(r"\bNone\b", "null", text)
+    text = re.sub(r"\bTrue\b", "true", text)
+    text = re.sub(r"\bFalse\b", "false", text)
+    return text
+
+
+def _json_load_lenient(value, *, _visited: int = 0) -> object:
+    """Best-effort decode of model JSON that is not strictly valid.
+
+    Attempt order: full text, balanced-brace slice, outer fence removal,
+    double-encoded JSON (``\"{...}\"``), then syntax repair that re-quotes
+    barewords/keys, converts single quotes, and drops trailing commas before
+    one final ``json.loads``.  Returns a sentinel ``_JSON_UNDECODABLE`` when
+    nothing works so callers can keep a ``None`` result meaningful.
+    """
+    if _visited > 5 or value is None:
+        return _JSON_UNDECODABLE
+    if isinstance(value, (dict, list)):
+        return value
+    text = str(value).strip()
+    if not text:
+        return _JSON_UNDECODABLE
+    # Strip markdown fences first so the brace scan sees the payload.
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```[A-Za-z]*\s*", "", candidate).strip()
+        candidate = re.sub(r"\s*```\s*$", "", candidate).strip()
+    span = _brace_scan(candidate)
+    pieces = [candidate, span] if span else [candidate]
+    for piece in pieces:
+        if not piece:
+            continue
+        # A provider JSON-string content field returns a quoted string that
+        # decodes to valid JSON text (e.g. '"{\\"summary\\":...}"').  The
+        # string itself is not the payload: peel the outer quotes and retry.
+        if piece.startswith('"') and piece.endswith('"'):
+            try:
+                inner = json.loads(piece)
+                if isinstance(inner, str) and not inner.startswith("```"):
+                    recovered = _json_load_lenient(inner, _visited=_visited + 1)
+                    if recovered is not _JSON_UNDECODABLE:
+                        return recovered
+            except json.JSONDecodeError:
+                pass
+        if piece.startswith("{") or piece.startswith("["):
+            # Unterminated top-level object (model cut off mid-write): the
+            # decoder may still succeed with a single closing brace appended
+            # (a dangling comma before the cut is dropped first).  Even when
+            # the tail already closes an inner list/object, the top-level
+            # container may still be open, so always try the appended close.
+            tail = piece.rstrip()
+            if tail.endswith(","):
+                tail = tail[:-1]
+            try:
+                return _decode_provider_response(tail)
+            except Exception:
+                pass
+            try:
+                return _decode_provider_response(tail + ("}" if piece.startswith("{") else "]"))
+            except Exception:
+                pass
+        # Single-quoted JSON: ast.literal_eval handles dicts whose keys and
+        # string scalars use '...' (JSON itself only permits double quotes).
+        if re.search(r"['\"]", piece):
+            try:
+                return ast.literal_eval(piece)
+            except (SyntaxError, ValueError):
+                pass
+    # Syntax repair: unquote bare keys, convert None/True/False, single
+    # quotes, drop trailing commas.  Applied to the brace slice when present
+    # so trailing prose does not poison the attempt.
+    target = span or candidate
+    repaired = _repair_scalar_tokens(re.sub(r"([,{]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)", r'\1"\2"\3', target))
+    repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+    try:
+        return _decode_provider_response(repaired)
+    except Exception:
+        return _JSON_UNDECODABLE
+
+
 def _context_window_messages(messages, token_budget=900_000):
     """Keep the newest conversation messages inside the 1M-token model window.
 
@@ -167,7 +306,7 @@ async def analyze(snapshot, max_tokens=None):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Yanıtını piyasa rejimi, kanıtlar, riskler, veri eksikleri ve güven seviyesi başlıklarıyla açıkla. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
+    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Kullanıcı bir coin için analiz istediğinde amacı 'şu an ne durumda, sistemin tüm verisiyle bundan sonra ne olabilir' öğrenmektir: önce net durumu söyle, sonra olası senaryoları (yön + tetikleyici seviye + bozulma seviyesi) ver, en sonda tek cümlelik somut sonuca bağla. Gösterge değerlerini istenmedikçe tek tek sıralama; yalnızca sonucu destekleyen tek kanıt cümlesi kullan. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     base_url = validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     def call(max_tokens):
@@ -237,12 +376,12 @@ async def embedding(text, model_id=None):
     except Exception as exc:
         return {"status":"error", "error":str(exc), "model":model.get("name")}
 
-async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None):
+async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None, *, json_mode=False):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     selected = set(str(value) for value in (active_skills or []))
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"] and (not selected or str(s["id"]) in selected or s["name"] in selected))
-    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
+    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Kullanıcı bir coin için analiz istediğinde gösterge değerlerini tek tek sıralayıp onu boğma; 'şu an ne durumda' + 'bundan sonra ne olabilir' + tek cümlelik somut sonuç düzeninde net ve kısa yanıt ver. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     context_messages, _estimated_tokens = _context_window_messages(messages)
     for item in context_messages:
@@ -257,6 +396,13 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         conversation.append(message)
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation}
     if tools: payload["tools"] = tools; payload["tool_choice"] = "auto"
+    if json_mode:
+        # Structured-output call. OpenAI-compatible gateways (and the JSON
+        # mode behind them) return the object inside content; the response is
+        # then re-decoded by the caller. Some self-hosted gateways reject the
+        # response_format key, so fall back to a plain call when refused.
+        payload["response_format"] = {"type": "json_object"}
+        payload.setdefault("temperature", 0.2)
     base_url = validate_provider_url(cfg["provider"]["base_url"]); url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
@@ -266,6 +412,11 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         for attempt in range(2):
             try:
                 return await asyncio.to_thread(call)
+            except HTTPError:
+                # Provider-level rejections (4xx/5xx) are surfaced to the
+                # caller, not retried as transport noise: the fallback path
+                # above decides whether to drop response_format.
+                raise
             except (TimeoutError, OSError) as exc:
                 last_error = exc
                 if attempt == 0: await asyncio.sleep(0.4)
@@ -284,7 +435,22 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         return current
     try:
         result = None
-        result = await call_with_retry()
+        try:
+            result = await call_with_retry()
+        except HTTPError as http_error:
+            # Gateways that do not implement response_format commonly answer
+            # with 4xx. Retry once without the key so a refused structured
+            # call still yields the model text (parsing stays tolerant).
+            if json_mode and http_error.code // 100 == 4:
+                payload.pop("response_format", None)
+                if payload.get("temperature") == 0.2:
+                    payload["temperature"] = cfg["model"]["temperature"]
+                try:
+                    result = await call_with_retry()
+                except Exception as exc:
+                    raise RuntimeError(f"LLM gateway yanıt vermedi: {exc}") from exc
+            else:
+                raise
         tool_round = 0
         tool_stats = {"rounds": 0, "tool_calls": 0, "estimated_tokens": 0}
         while True:
@@ -365,7 +531,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         yield {"event": "error", "data": {"status": "disabled", "error": "Aktif LLM yapılandırması yok"}}
         return
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme.\n" + skills
+    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme. Coin analizinde kullanıcıyı gösterge detayıyla boğma: önce durumu, sonra olası senaryoları (yön + seviye + bozulma), en sonda tek cümlelik net sonucu söyle.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Güncel snapshot:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     for item in (messages or [])[-12:]:
         if isinstance(item, dict):

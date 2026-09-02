@@ -57,11 +57,15 @@ class ForecastReportTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(conn.close)
         conn.execute("""CREATE TABLE llm_forecasts (
             forecast_id TEXT PRIMARY KEY, horizon_minutes INTEGER, status TEXT,
-            direction_correct INTEGER, confidence REAL, outcome_return_pct REAL)""")
-        conn.executemany("INSERT INTO llm_forecasts VALUES (?,?,?,?,?,?)", [
-            ("a", 5, "evaluated", 1, 70, 0.01), ("b", 5, "evaluated", 0, 60, -0.01),
-            ("c", 5, "pending", None, 55, None), ("d", 60, "evaluated", 1, 65, 0.02),
-        ])
+            direction TEXT, confidence REAL, outcome_return_pct REAL,
+            direction_correct INTEGER, max_favorable_pct REAL, min_move_pct REAL,
+            outcome_details TEXT)""")
+        conn.executemany(
+            "INSERT INTO llm_forecasts (forecast_id,horizon_minutes,status,direction,confidence,outcome_return_pct,direction_correct,max_favorable_pct,min_move_pct,outcome_details) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [("a", 5, "evaluated", "up", 70, 0.01, 1, 0.012, 0.01, None),
+             ("b", 5, "evaluated", "up", 60, -0.01, 0, 0.005, 0.01, None),
+             ("c", 5, "pending", "range", 55, None, None, None, 0.01, None),
+             ("d", 60, "evaluated", "up", 65, 0.02, 1, 0.025, 0.01, None)])
         async def run(operation): return operation(conn)
         with patch("app.database._run_db", new=run):
             rows = await database.get_llm_forecast_report()
