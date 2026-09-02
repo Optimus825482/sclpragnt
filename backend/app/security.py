@@ -4,6 +4,7 @@ import hmac
 import ipaddress
 import json
 import os
+import secrets
 import socket
 import time
 from collections import defaultdict, deque
@@ -16,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, build_opener
 SESSION_COOKIE = "scalper_session"
 _LOGIN_FAILURE_LIMIT = 512
 _login_failures = defaultdict(deque)
+_PBKDF2_ITERATIONS = 200_000
 
 
 def auth_configured():
@@ -31,11 +33,30 @@ def _unb64(value):
     return urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
-def create_session_token(ttl_seconds=43200):
+def hash_password(password: str) -> str:
+    """PBKDF2-HMAC-SHA256 with a random 16-byte salt; format salt$hash."""
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", str(password or "").encode(), salt, _PBKDF2_ITERATIONS)
+    return f"{_b64(salt)}${_b64(digest)}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        salt_b64, hash_b64 = str(stored or "").split("$", 1)
+        salt = _unb64(salt_b64)
+        expected = _unb64(hash_b64)
+        digest = hashlib.pbkdf2_hmac("sha256", str(password or "").encode(), salt, _PBKDF2_ITERATIONS)
+        return hmac.compare_digest(digest, expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def create_session_token(username: str = "admin", role: str = "admin", ttl_seconds=43200):
     secret = os.getenv("SCALPER_SESSION_SECRET", "").encode()
     if not secret:
         raise RuntimeError("SCALPER_SESSION_SECRET tanımlı değil")
-    payload = _b64(json.dumps({"sub": "admin", "exp": int(time.time()) + int(ttl_seconds)}, separators=(",", ":")).encode())
+    payload = _b64(json.dumps({"sub": str(username).lower(), "role": str(role).lower(),
+                               "exp": int(time.time()) + int(ttl_seconds)}, separators=(",", ":")).encode())
     signature = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
     return f"{payload}.{signature}"
 
@@ -47,9 +68,28 @@ def verify_session_token(token):
         expected = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
         data = json.loads(_unb64(payload))
         return bool(secret and hmac.compare_digest(signature, expected)
-                    and data.get("sub") == "admin" and int(data.get("exp", 0)) > time.time())
+                    and int(data.get("exp", 0)) > time.time())
     except (ValueError, TypeError, json.JSONDecodeError):
         return False
+
+
+def session_user(token) -> dict | None:
+    """Decode a valid session token into {username, role}; None when invalid."""
+    try:
+        payload, signature = str(token or "").split(".", 1)
+        secret = os.getenv("SCALPER_SESSION_SECRET", "").encode()
+        expected = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
+        data = json.loads(_unb64(payload))
+        if not (secret and hmac.compare_digest(signature, expected)
+                and int(data.get("exp", 0)) > time.time()):
+            return None
+        username = str(data.get("sub") or "").strip().lower()
+        role = str(data.get("role") or "user").lower()
+        if not username:
+            return None
+        return {"username": username, "role": role}
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
 
 
 def password_matches(password):
@@ -79,13 +119,18 @@ def record_login_result(client_key, succeeded, now=None):
 
 
 def request_authenticated(headers, cookies=None, query_token=None):
+    return request_user(headers, cookies, query_token) is not None
+
+
+def request_user(headers, cookies=None, query_token=None):
+    """Return {username, role} for the request principal, or None."""
     authorization = str(headers.get("authorization", ""))
     bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
     admin_token = os.getenv("SCALPER_ADMIN_TOKEN", "").strip()
     if admin_token and bearer and hmac.compare_digest(bearer, admin_token):
-        return True
+        return {"username": "admin", "role": "admin"}
     token = (cookies or {}).get(SESSION_COOKIE) or query_token
-    return verify_session_token(token)
+    return session_user(token)
 
 
 def validate_provider_url(base_url):

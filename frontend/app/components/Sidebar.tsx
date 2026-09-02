@@ -6,13 +6,18 @@ import { Button } from "./ui";
 import { apiFetch } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "./SymbolLink";
+import { useAuth } from "../lib/auth";
 
-const MENU = [
+const MENU_BASE = [
     { href: "/chat", label: "Chat", icon: "✦", desc: "LLM sohbet merkezi" },
     { href: "/", label: "Scalping", icon: "⚡", desc: "Portföy, performans ve canlı işlem akışı" },
-    { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
-    { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" }
+];
+// Admin-only menü öğeleri: normal kullanıcılar göremez.
+const MENU_ADMIN = [
+    { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
+    { href: "/users", label: "Kullanıcı Yönetimi", icon: "👥", desc: "Kullanıcı ekle/düzenle/sil" },
+    { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" },
 ];
 const formatNotificationDate = (value: unknown) => {
     const numeric = Number(value);
@@ -22,6 +27,8 @@ const formatNotificationDate = (value: unknown) => {
 
 export default function Sidebar() {
     const pathname = usePathname();
+    const { username, role } = useAuth();
+    const isAdmin = role === "admin";
     const [open, setOpen] = useState(false);
     const [installEvent, setInstallEvent] = useState<any>(null);
     const [notifications, setNotifications] = useState<any[]>([]);
@@ -89,7 +96,7 @@ export default function Sidebar() {
             </div>
 
             <nav className="flex-1 overflow-y-auto p-3 space-y-1">
-                {MENU.map((m) => {
+                {[...MENU_BASE, ...(isAdmin ? MENU_ADMIN : [])].map((m) => {
                     const active = pathname === m.href;
                     return (
                         <div key={m.href}>
@@ -115,6 +122,13 @@ export default function Sidebar() {
             </nav>
 
             <div className="p-4 border-t border-bunker-800">
+                {username && (
+                    <p className="mb-2 flex items-center gap-1.5 font-mono text-[11px] text-bunker-muted">
+                        <span className="w-1.5 h-1.5 rounded-full bg-neon-green" />
+                        <span className="truncate">{username}</span>
+                        <span className={`rounded px-1.5 py-0.5 font-mono text-[9px] ${isAdmin ? "border border-neon-green/50 text-neon-green" : "border border-bunker-600 text-bunker-muted"}`}>{isAdmin ? "ADMIN" : "USER"}</span>
+                    </p>
+                )}
                 <Button variant={installEvent ? "primary" : "secondary"} onClick={install} disabled={!installEvent} className="w-full mb-4">⬇ {installEvent ? "UYGULAMA OLARAK YÜKLE" : "YÜKLEME İÇİN TARAYICI MENÜSÜ"}</Button>
                 <p className="eyebrow">SİSTEM DURUMU</p>
                 <p className={`font-mono text-xs mt-2 flex items-center gap-1.5 ${health?.status === "ok" && liveStatus === "open" ? "text-neon-green" : "text-yellow-300"}`}>

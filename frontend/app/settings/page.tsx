@@ -79,8 +79,12 @@ type Config = {
 };
 
 import ChatSettingsPanel from "./ChatSettingsPanel";
+import RequireAdmin from "../components/RequireAdmin";
 
 export default function SettingsPage() {
+  return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
+}
+function SettingsPageInner() {
   const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "chat" | "scan-logs" | "system-health">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});

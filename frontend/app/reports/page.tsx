@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest, fetchAllPages } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
+import RequireAdmin from "../components/RequireAdmin";
 import SymbolLink from "../components/SymbolLink";
 import MemoryTab from "../memory/MemoryTab";
 
@@ -513,6 +514,9 @@ const MODULES = [
 ] as const;
 
 export default function ReportsPage(){
+ return <RequireAdmin><ReportsPageInner /></RequireAdmin>;
+}
+function ReportsPageInner(){
  const[tab,setTab]=useState<"overview"|"today"|"signals"|"memory"|"forecasts"|"chat_predictions"|"velocity"|"upside">("overview"); const[trades,setTrades]=useState<Trade[]>([]); const[signals,setSignals]=useState<any[]>([]); const[decisions,setDecisions]=useState<Decision[]>([]); const[complete,setComplete]=useState(true); const[risk,setRisk]=useState<any>(null); const[forecastReport,setForecastReport]=useState<any>(null); const[forecastLoading,setForecastLoading]=useState(true); const[forecastError,setForecastError]=useState(""); const[upsideReport,setUpsideReport]=useState<any>(null); const[upsideLoading,setUpsideLoading]=useState(true); const[upsideError,setUpsideError]=useState(""); const[chatPredictions,setChatPredictions]=useState<any>(null); const[chatPredictionsLoading,setChatPredictionsLoading]=useState(true); const[chatPredictionsError,setChatPredictionsError]=useState(""); const[velocityReport,setVelocityReport]=useState<any>(null); const[velocityLoading,setVelocityLoading]=useState(true); const[velocityError,setVelocityError]=useState("");
  const loadVersion=useRef(0);
  const load=useCallback(()=>{const version=++loadVersion.current;return Promise.all([fetchAllPages<Trade>("/api/trades","trades"),fetchAllPages<any>("/api/signals","signals"),fetchAllPages<Decision>("/api/decisions","decisions"),apiRequest(`${API_BASE}/api/risk/summary`,{cache:"no-store"}).then(r=>r.ok?r.json():null),]).then(([a,b,c,d])=>{if(version!==loadVersion.current)return;setTrades(a.rows);setSignals(b.rows);setDecisions(c.rows);setComplete(a.complete&&b.complete&&c.complete);setRisk(d)}).catch(()=>{if(version===loadVersion.current)setComplete(false)})},[]);

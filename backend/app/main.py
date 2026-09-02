@@ -179,10 +179,28 @@ async def require_admin_session(request: Request, call_next):
     return await call_next(request)
 
 
+def _session_user(request: Request):
+    """Current principal from cookie/bearer, or None."""
+    return security.request_user(request.headers, request.cookies)
+
+
+def _require_admin(request: Request):
+    """Admin-only gate; raises 403 for non-admin principals."""
+    user = security.request_user(request.headers, request.cookies)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Bu işlem yalnız sistem yöneticisine açıktır")
+    return user
+
+
 @app.get("/api/auth/status")
 async def auth_status(request: Request):
+    user = _session_user(request)
     return {"configured": security.auth_configured(),
-            "authenticated": security.request_authenticated(request.headers, request.cookies)}
+            "authenticated": user is not None,
+            "username": (user or {}).get("username"),
+            "role": (user or {}).get("role")}
 
 
 @app.post("/api/auth/login")
@@ -193,20 +211,128 @@ async def auth_login(payload: dict, response: Response, request: Request):
     client_key = trusted_edge_ip or (request.client.host if request.client else "unknown")
     if not security.login_allowed(client_key):
         raise HTTPException(status_code=429, detail="Çok fazla başarısız giriş; 5 dakika sonra tekrar deneyin")
-    matched = security.password_matches(payload.get("password"))
+    username = str(payload.get("username") or "").strip().lower()
+    password = str(payload.get("password") or "")
+    # Varsayılan admin (env şifresi) ile DB kullanıcısı aynı anda denenir:
+    # env'de SCALPER_ADMIN_PASSWORD tanımlıysa o şifreyle "admin" girişine izin ver.
+    matched = False
+    user = None
+    try:
+        user = await database.get_user_by_username(username)
+    except Exception:
+        user = None
+    if user is not None:
+        matched = bool(user.get("is_active")) and security.verify_password(password, user.get("password_hash") or "")
+        if user.get("is_active") and not matched:
+            matched = False
+    elif username == "admin":
+        # Henüz DB'ye tohumlanmamış admin: env şifresiyle eşleşirse geçici kabul.
+        matched = security.password_matches(password)
+        if matched:
+            user = {"username": "admin", "role": "admin", "is_active": True}
     security.record_login_result(client_key, matched)
-    if not matched:
-        raise HTTPException(status_code=401, detail="Geçersiz parola")
-    response.set_cookie(security.SESSION_COOKIE, security.create_session_token(), httponly=True,
+    if not matched or user is None:
+        raise HTTPException(status_code=401, detail="Kullanıcı adı veya şifre hatalı")
+    role = str(user.get("role") or "user").lower()
+    response.set_cookie(security.SESSION_COOKIE,
+                        security.create_session_token(username=user.get("username") or username, role=role),
+                        httponly=True,
                         secure=os.getenv("SCALPER_COOKIE_SECURE", "1") == "1", samesite="strict",
                         max_age=43200, path="/")
-    return {"ok": True, "authenticated": True}
+    return {"ok": True, "authenticated": True, "username": (user.get("username") or username).lower(), "role": role}
 
 
 @app.post("/api/auth/logout")
 async def auth_logout(response: Response):
     response.delete_cookie(security.SESSION_COOKIE, path="/")
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Admin-only user management (2026-09-03)
+# ---------------------------------------------------------------------------
+def _public_user(user: dict) -> dict:
+    return {k: v for k, v in (user or {}).items() if k != "password_hash"}
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(request: Request):
+    _require_admin(request)
+    return {"ok": True, "users": await database.list_users()}
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(payload: dict, request: Request):
+    _require_admin(request)
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    if not username or len(username) < 3 or len(username) > 32:
+        raise HTTPException(status_code=422, detail="Kullanıcı adı 3-32 karakter olmalı")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", username):
+        raise HTTPException(status_code=422, detail="Kullanıcı adı yalnız harf, rakam, nokta, tire ve alt çizgi içerebilir")
+    if len(password) < 6:
+        raise HTTPException(status_code=422, detail="Şifre en az 6 karakter olmalı")
+    existing = await database.get_user_by_username(username)
+    if existing:
+        raise HTTPException(status_code=409, detail="Bu kullanıcı adı zaten kayıtlı")
+    role = str(payload.get("role") or "user").lower()
+    if role not in {"admin", "user"}:
+        raise HTTPException(status_code=422, detail="Rol 'admin' veya 'user' olmalı")
+    user = await database.create_user(username, security.hash_password(password), role=role,
+                                      is_active=bool(payload.get("is_active", True)))
+    return {"ok": True, "user": _public_user(user)}
+
+
+@app.put("/api/admin/users/{user_id}")
+async def admin_update_user(user_id: int, payload: dict, request: Request):
+    admin = _require_admin(request)
+    existing = await database.get_user_by_id(user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    kwargs = {}
+    if "username" in payload:
+        username = str(payload.get("username") or "").strip()
+        if not username or len(username) < 3 or len(username) > 32:
+            raise HTTPException(status_code=422, detail="Kullanıcı adı 3-32 karakter olmalı")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", username):
+            raise HTTPException(status_code=422, detail="Kullanıcı adı yalnız harf, rakam, nokta, tire ve alt çizgi içerebilir")
+        dup = await database.get_user_by_username(username)
+        if dup and int(dup["id"]) != int(user_id):
+            raise HTTPException(status_code=409, detail="Bu kullanıcı adı zaten kayıtlı")
+        kwargs["username"] = username
+    if "password" in payload and str(payload.get("password") or "").strip():
+        password = str(payload.get("password") or "")
+        if len(password) < 6:
+            raise HTTPException(status_code=422, detail="Şifre en az 6 karakter olmalı")
+        kwargs["password_hash"] = security.hash_password(password)
+    if "role" in payload:
+        role = str(payload.get("role") or "user").lower()
+        if role not in {"admin", "user"}:
+            raise HTTPException(status_code=422, detail="Rol 'admin' veya 'user' olmalı")
+        # Son admin kilitlenmesin: kendi rolünü değiştiren admin engellenir.
+        if existing.get("username") == admin.get("username") and role != "admin":
+            raise HTTPException(status_code=422, detail="Kendi admin rolünüzü değiştiremezsiniz")
+        kwargs["role"] = role
+    if "is_active" in payload:
+        kwargs["is_active"] = bool(payload.get("is_active", True))
+    user = await database.update_user(user_id, **kwargs)
+    return {"ok": True, "user": _public_user(user)}
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: int, request: Request):
+    admin = _require_admin(request)
+    existing = await database.get_user_by_id(user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    if existing.get("username") == admin.get("username"):
+        raise HTTPException(status_code=422, detail="Kendi hesabınızı silemezsiniz")
+    if existing.get("role") == "admin":
+        admins = [u for u in await database.list_users() if u.get("role") == "admin"]
+        if len(admins) <= 1:
+            raise HTTPException(status_code=422, detail="Son admin silinemez")
+    await database.delete_user(user_id)
+    return {"ok": True, "deleted": user_id}
 
 _pg_pool = None
 _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
@@ -306,9 +432,22 @@ async def calibration_refresh_loop():
         await asyncio.sleep(7 * 24 * 3600)
 
 
+async def _ensure_admin_user():
+    """Admin kullanıcıyı DB'ye tohumla (yoksa). Şifre: SCALPER_ADMIN_PASSWORD env'i."""
+    if await database.count_users() > 0:
+        return
+    password = os.getenv("SCALPER_ADMIN_PASSWORD", "").strip() or "518518Erkan"
+    await database.create_user("admin", security.hash_password(password), role="admin", is_active=True)
+    print("[Auth] admin kullanıcı oluşturuldu (şifre env'den)", flush=True)
+
+
 async def startup_services():
     global _pg_pool
     await database.init_db()
+    try:
+        await _ensure_admin_user()
+    except Exception as exc:
+        print(f"[Auth] admin kullanıcı tohumlama hatası: {exc}", flush=True)
     try:
         repair = await database.fix_upside_scout_units()
         if any(repair.values()):
