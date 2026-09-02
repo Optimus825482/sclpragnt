@@ -13,6 +13,20 @@ type ScoutCandidate = {
   symbol: string;
   current_price: number;
   horizon_minutes: number;
+  best_profile_minutes?: number;
+  profiles?: Record<
+    string,
+    {
+      horizon_minutes: number;
+      target_pct: number;
+      target_price: number | null;
+      velocity_score?: number | null;
+      upside_rank?: number | null;
+      passes?: boolean;
+      mode?: string | null;
+      available?: boolean;
+    }
+  >;
   target_pct: number;
   target_price: number | null;
   ml_target_pct?: number | null;
@@ -63,54 +77,6 @@ type LivePriceWatch = {
   low?: number;
   samples?: number;
   status: "connecting" | "live" | "completed" | "stopped" | "error";
-};
-type UpsideCandidate = {
-  symbol: string;
-  rank: number;
-  score?: number;
-  data_ready: boolean;
-  trend_direction?: string;
-  price?: number;
-  returns_pct?: Record<string, number | null>;
-  trend?: Record<string, number | string | null>;
-  volume?: Record<string, number | null>;
-  liquidity?: Record<string, number | null>;
-  evidence?: string[];
-  risks?: string[];
-  data_gaps?: string[];
-};
-type UpsideScanResult = {
-  candidates: UpsideCandidate[];
-  generated_at?: number;
-  horizon_minutes?: number;
-  symbols_scanned?: number;
-  skipped?: string[];
-};
-const indicatorNumber = (value: number | string | Record<string, unknown> | null | undefined, key?: string) => {
-  const candidate = key && value && typeof value === "object" ? value[key] : value;
-  return typeof candidate === "number" || typeof candidate === "string" ? candidate : "—";
-};
-type VelocityCandidate = {
-  symbol: string;
-  rank?: number;
-  price: number;
-  atr_pct: number;
-  bb_width_pct?: number | null;
-  rsi?: number | null;
-  mfi?: number | null;
-  mode?: string | null;
-  exhausted?: string | null;
-  ret3_pct: number;
-  velocity_score: number;
-  passes: boolean;
-  calibrated_hit_pct?: number | null;
-};
-type VelocityScanResult = {
-  generated_at?: number;
-  symbols_scanned?: number;
-  calibration?: { base_rate_pct?: number; conditional_hit_pct?: number; note?: string };
-  candidates: VelocityCandidate[];
-  watchlist?: VelocityCandidate[];
 };
 const TOOL_GROUPS = [
   [
@@ -212,7 +178,7 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
   return (
     <div className="chat-price-watch !block" role="status" aria-live="polite">
       <div className="flex items-center justify-between gap-3 mb-3">
-        <p className="eyebrow">🎯 EN HIZLI YÜKSELİŞ KEŞFİ · İLK {candidates.length}</p>
+        <p className="eyebrow">🎯 EN HIZLI YÜKSELİŞ ANALİZİ · İLK {candidates.length}</p>
         <span className="text-[10px] text-bunker-muted shrink-0">
           {scout.generated_at ? new Date(scout.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}
         </span>
@@ -244,6 +210,16 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
               >
                 {Number(candidate.upside_rank).toFixed(1)} puan
               </span>
+              <span
+                className="rounded border border-sky-400/50 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-300 whitespace-nowrap"
+                title={`Harmanlanan profiller: ${candidate.profiles ? Object.keys(candidate.profiles).map((h) => `${h}dk %${candidate.profiles?.[h]?.target_pct ?? ""}`).join(" + ") : "5dk+15dk"}`}
+              >
+                {candidate.best_profile_minutes === 5
+                  ? "5dk %2 profili"
+                  : candidate.best_profile_minutes === 15
+                    ? "15dk %3 profili"
+                    : `${candidate.horizon_minutes ?? "—"}dk profil`}
+              </span>
               <div className="ml-auto text-right font-mono text-xs space-y-0.5">
                 <div className="text-white">Anlık {fmtScoutPrice(candidate.current_price)}</div>
                 <div className="text-neon-green font-bold">
@@ -262,82 +238,9 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
         </div>
       )}
       <p className="text-[10px] text-bunker-muted mt-2">
-        Sembol adına tıklayınca M1 grafiği açılır · {scout.journal_saved ?? candidates.length} tahmin
-        journal&apos;a kaydedildi; ufuk kapanınca sonucu ölçülüp öğrenilir.
+        Sembol adına tıklayınca M1 grafiği açılır · 5dk-%2 ve 15dk-%3 hız profilleri harmanlandı ·{" "}
+        {scout.journal_saved ?? candidates.length} tahmin journal&apos;a kaydedildi; ufuk kapanınca sonucu ölçülüp öğrenilir.
       </p>
-    </div>
-  );
-}
-
-function VelocityPanel({ title, badge, tone, result }: {
-  title: string;
-  badge: string;
-  tone: "green" | "blue";
-  result: VelocityScanResult;
-}) {
-  const toneText = tone === "green" ? "text-neon-green" : "text-sky-300";
-  const badgeCls = tone === "green"
-    ? "border-neon-green/50 bg-neon-green/10 text-neon-green"
-    : "border-sky-400/50 bg-sky-400/10 text-sky-300";
-  const candidates = result.candidates || [];
-  const watchlist = result.watchlist || [];
-  return (
-    <div className="chat-price-watch !block" role="status" aria-live="polite">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div>
-          <p className="eyebrow">{title} · İLK 3</p>
-          <p className="text-xs text-bunker-muted mt-1">{result.symbols_scanned || 0} sembol tarandı · ATR≥%0.3 + BB≥%2.5 + RSI 35-80 + MFI 10-90</p>
-        </div>
-        <span className="text-[10px] text-bunker-muted shrink-0">{result.generated_at ? new Date(result.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
-      </div>
-      {candidates.length === 0 ? (
-        <p className="text-xs text-yellow-300">Şu an koşulları geçen sembol yok; yüksek salınım rejimi bekleniyor (aşırı alım/satım semboller elenir).</p>
-      ) : (
-        <div className="velocity-table">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="text-bunker-muted">
-                <th className="text-left py-1 pr-2 font-normal">#</th>
-                <th className="text-left py-1 pr-2 font-normal">Sembol</th>
-                <th className="text-right py-1 px-2 font-normal">Fiyat</th>
-                <th className="text-right py-1 px-2 font-normal">ATR%</th>
-                <th className="text-right py-1 px-2 font-normal">BB%</th>
-                <th className="text-right py-1 px-2 font-normal">RSI</th>
-                <th className="text-right py-1 px-2 font-normal">MFI</th>
-                <th className="text-center py-1 px-2 font-normal">Mod</th>
-                <th className="text-right py-1 pl-2 font-normal">Skor</th>
-              </tr>
-            </thead>
-            <tbody>
-              {candidates.map((c) => (
-                <tr key={c.symbol} className="border-t border-bunker-800">
-                  <td className="py-1.5 pr-2 font-mono text-bunker-muted">{c.rank ?? "—"}</td>
-                  <td className="py-1.5 pr-2 font-bold"><SymbolLink symbol={c.symbol} timeframe="1m" newTab className={`hover:text-white ${toneText}`} /></td>
-                  <td className="py-1.5 px-2 text-right font-mono text-white">{c.price.toLocaleString("tr-TR", { maximumFractionDigits: 8 })}</td>
-                  <td className="py-1.5 px-2 text-right font-mono">{c.atr_pct}</td>
-                  <td className="py-1.5 px-2 text-right font-mono">{c.bb_width_pct}</td>
-                  <td className={`py-1.5 px-2 text-right font-mono ${(c.rsi ?? 50) >= 70 ? "text-yellow-300" : ""}`}>{c.rsi}</td>
-                  <td className={`py-1.5 px-2 text-right font-mono ${(c.mfi ?? 50) >= 80 ? "text-yellow-300" : ""}`}>{c.mfi}</td>
-                  <td className="py-1.5 px-2 text-center"><span className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${c.mode === "v_donusu" ? "border border-purple-400/50 text-purple-300" : "border border-neon-green/40 text-neon-green"}`}>{c.mode === "v_donusu" ? "V-DÖN" : "TREND"}</span></td>
-                  <td className={`py-1.5 pl-2 text-right font-mono font-bold ${toneText}`}>{c.velocity_score}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {watchlist.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5 items-center">
-          <span className="text-[10px] text-bunker-muted">İZLEME:</span>
-          {watchlist.map((w) => (
-            <span key={w.symbol} className="rounded border border-bunker-700 px-1.5 py-0.5 font-mono text-[10px] text-bunker-muted">
-              <SymbolLink symbol={w.symbol} timeframe="1m" newTab className="text-bunker-muted hover:text-white" /> {w.velocity_score}
-            </span>
-          ))}
-        </div>
-      )}
-      <p className="text-[10px] text-yellow-300 mt-2">{result.calibration?.note || "Tahmin/garanti değildir; kapanmış mumlar, paper-only."}</p>
-      <span className={`hidden ${badgeCls}`}>{badge}</span>
     </div>
   );
 }
@@ -358,13 +261,6 @@ export default function ChatPage() {
   const [hydrated, setHydrated] = useState(false);
   const [sessionId, setSessionId] = useState("chat:main");
   const [livePriceWatch, setLivePriceWatch] = useState<LivePriceWatch | null>(null);
-  const [upsideResults, setUpsideResults] = useState<Record<5 | 15, UpsideScanResult>>({ 5: { candidates: [] }, 15: { candidates: [] } });
-  const [upsidePanelTab, setUpsidePanelTab] = useState<5 | 15>(15);
-  const [upsideScanBusy, setUpsideScanBusy] = useState(false);
-  const [velocityResult, setVelocityResult] = useState<VelocityScanResult | null>(null);
-  const [velocityBusy, setVelocityBusy] = useState(false);
-  const [velocity15Result, setVelocity15Result] = useState<VelocityScanResult | null>(null);
-  const [velocity15Busy, setVelocity15Busy] = useState(false);
   const [upsideScoutBusy, setUpsideScoutBusy] = useState(false);
   // Model akışı: arka plan etkinliklerinin canlı logu (en yeni üstte)
   const [activities, setActivities] = useState<{ key: string; kind: string; text: string; time: string; success?: boolean; duration_ms?: number }[]>([]);
@@ -611,54 +507,6 @@ export default function ChatPage() {
       setBusy(false);
     }
   };
-  const detectUpsideCandidates = async (horizon: 5 | 15) => {
-    if (upsideScanBusy) return;
-    setUpsideScanBusy(true);
-    setError("");
-    try {
-      const endpoint = horizon === 5 ? "upside-candidates-5m" : "upside-candidates";
-      const response = await apiRequest(`${API_BASE}/api/market-snapshot/${endpoint}?limit=3`, { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "15 dakikalık tarama başarısız");
-      const result: UpsideScanResult = { generated_at: data.generated_at, horizon_minutes: data.horizon_minutes, symbols_scanned: data.symbols_scanned, skipped: data.symbols_skipped_open || [], candidates: (Array.isArray(data.candidates) ? data.candidates : []).slice(0, 3) };
-      setUpsideResults((current) => ({ ...current, [horizon]: result }));
-      setUpsidePanelTab(horizon);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "15 dakikalık tarama başarısız");
-    } finally {
-      setUpsideScanBusy(false);
-    }
-  };
-  const detectVelocityCandidates = async () => {
-    if (velocityBusy) return;
-    setVelocityBusy(true);
-    setError("");
-    try {
-      const response = await apiRequest(`${API_BASE}/api/market-snapshot/velocity-5m`, { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Hız taraması başarısız");
-      setVelocityResult(data);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Hız taraması başarısız");
-    } finally {
-      setVelocityBusy(false);
-    }
-  };
-  const detectVelocity15 = async () => {
-    if (velocity15Busy) return;
-    setVelocity15Busy(true);
-    setError("");
-    try {
-      const response = await apiRequest(`${API_BASE}/api/market-snapshot/velocity-15m`, { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Hız taraması başarısız");
-      setVelocity15Result(data);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Hız taraması başarısız");
-    } finally {
-      setVelocity15Busy(false);
-    }
-  };
   const runUpsideScout = async () => {
     if (upsideScoutBusy || busy) return;
     setUpsideScoutBusy(true);
@@ -695,7 +543,7 @@ export default function ChatPage() {
         ...current,
         {
           role: "user" as const,
-          content: `🎯 EN HIZLI YÜKSELİŞ KEŞFİ: ${scoreText}`,
+          content: `🎯 EN HIZLI YÜKSELİŞ ANALİZİ: ${scoreText}`,
         },
         {
           role: "assistant" as const,
@@ -779,74 +627,11 @@ export default function ChatPage() {
               ＋ YENİ SOHBET
             </Button>
           </div>
-          <div className="chat-scan-buttons" role="toolbar" aria-label="Hız avcısı taramaları">
-            <Button variant="primary" onClick={detectVelocityCandidates} disabled={velocityBusy}>
-              {velocityBusy ? "HIZ AVLANIYOR…" : "🚀 5 DK %2 HIZ AVCISI"}
-            </Button>
-            <Button variant="primary" onClick={detectVelocity15} disabled={velocity15Busy}>
-              {velocity15Busy ? "HIZ AVLANIYOR…" : "🚀 15 DK %3 HIZ AVCISI"}
-            </Button>
+          <div className="chat-scan-buttons" role="toolbar" aria-label="Yükseliş analizi">
             <Button variant="secondary" className="chat-scan-button-wide" onClick={runUpsideScout} disabled={upsideScoutBusy || busy}>
-              {upsideScoutBusy ? "LLM ANALİZ EDİYOR…" : "🎯 EN HIZLI YÜKSELİŞ: LLM ANALİZİ"}
+              {upsideScoutBusy ? "LLM ANALİZ EDİYOR…" : "🎯 EN HIZLI YÜKSELİŞ ANALİZİ (5DK+15DK)"}
             </Button>
           </div>
-          {velocityResult && (
-            <VelocityPanel
-              title="5 DK İÇİNDE %2+ HIZ POTANSİYELİ"
-              badge="%2 POTANSİYEL"
-              tone="green"
-              result={velocityResult}
-            />
-          )}
-          {velocity15Result && (
-            <VelocityPanel
-              title="15 DK İÇİNDE %3+ HIZ POTANSİYELİ"
-              badge="%3 POTANSİYEL"
-              tone="blue"
-              result={velocity15Result}
-            />
-          )}
-          {(upsideResults[5].candidates.length > 0 || upsideResults[15].candidates.length > 0) && (
-            <div className="chat-price-watch" role="status" aria-live="polite">
-              <div className="section-tabs mb-3" aria-label="Yükseliş tahmin sekmeleri">
-                <button className={upsidePanelTab === 5 ? "active" : ""} onClick={() => setUpsidePanelTab(5)}>5 DK ADAYLARI</button>
-                <button className={upsidePanelTab === 15 ? "active" : ""} onClick={() => setUpsidePanelTab(15)}>15 DK ADAYLARI</button>
-              </div>
-              {(() => {
-                const result = upsideResults[upsidePanelTab];
-                const candidates = result.candidates.slice(0, 3);
-                return <>
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <div>
-                      <p className="eyebrow">{upsidePanelTab} DK YUKARI MOMENTUM · İLK 3</p>
-                      <p className="text-xs text-bunker-muted">{result.symbols_scanned || 0} aktif sembol · veritabanına kaydedildi</p>
-                    </div>
-                    <span className="text-[10px] text-bunker-muted">{result.generated_at ? new Date(result.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}</span>
-                  </div>
-                  <div className="space-y-2">
-                    {candidates.length === 0 ? <p className="text-xs text-bunker-muted">Bu ufuk için henüz tarama yapılmadı.</p> : candidates.map((candidate) => {
-                      const tier = (candidate as any).pattern_evaluation?.confidence_tier
-                      const matches = (candidate as any).pattern_evaluation?.matches || []
-                      return (
-                  <div key={candidate.symbol} className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800 pb-2 last:border-0 last:pb-0">
-                    <div>
-                      <strong className="font-mono text-sm text-white">{candidate.rank}. <SymbolLink symbol={candidate.symbol} timeframe="1m" newTab className="text-white hover:text-neon-green" /></strong>
-                      {tier === "high" && <span title={`Desen eşleşmeleri: ${matches.join(", ")}`} className="ml-2 rounded border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[10px] text-neon-green">YÜKSEK GÜVEN</span>}
-                      {tier === "watch" && <span title={`Desen eşleşmeleri: ${matches.join(", ")}`} className="ml-2 rounded border border-yellow-400/40 px-1.5 py-0.5 font-mono text-[10px] text-yellow-300">İZLEME</span>}
-                      <span className="ml-2 text-xs text-neon-green">{candidate.trend_direction || "unknown"}</span>
-                      <p className="text-[11px] text-bunker-muted">5m %{candidate.returns_pct?.return_5m ?? "—"} · 15m %{candidate.returns_pct?.return_15m ?? "—"} · ADX {indicatorNumber(candidate.trend?.adx, "adx") !== "—" ? indicatorNumber(candidate.trend?.adx, "adx") : indicatorNumber(candidate.trend?.adx_14)} · hacim {candidate.volume?.volume_ratio_20 ?? "—"}x</p>
-                      {matches.length > 0 && <p className="text-[10px] text-sky-300">desen: {matches.join(" + ")}</p>}
-                    </div>
-                    <span className="font-mono text-xs text-sky-300">Skor {candidate.score ?? "—"}</span>
-                  </div>
-                      );
-                    })}
-                  </div>
-                </>;
-              })()}
-              <p className="text-[10px] text-yellow-300 mt-2">Liste tahmin/garanti değildir; eksik veya stale veriler güveni düşürür. Paper-only.</p>
-            </div>
-          )}
           {contextTone !== "normal" && (
             <div className={`chat-context-alert ${contextTone}`} role="status">
               {contextTone === "critical"
