@@ -337,3 +337,17 @@ CREATE TABLE IF NOT EXISTS research_patterns (
   status TEXT NOT NULL DEFAULT 'candidate', confidence DOUBLE PRECISION NOT NULL DEFAULT 0.3, source_run_id BIGINT
 );
 CREATE INDEX IF NOT EXISTS research_patterns_status_idx ON research_patterns(status, updated_at DESC);
+
+-- Users & roles for username+password auth (2026-09-03). Username is stored
+-- lowercased (admin/ADMIN accepted case-insensitively); passwords are PBKDF2
+-- hashed, never plaintext.
+CREATE TABLE IF NOT EXISTS users (
+  id BIGSERIAL PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'user',
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at DOUBLE PRECISION NOT NULL,
+  updated_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS users_username_idx ON users(username);

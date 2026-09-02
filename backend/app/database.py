@@ -2182,3 +2182,92 @@ async def close_db():
     await _run_db(op)
     global _PG_CONN
     _PG_CONN = None
+
+
+# ---------------------------------------------------------------------------
+# Users (username+password auth, 2026-09-03)
+# ---------------------------------------------------------------------------
+def _user_row(row) -> dict | None:
+    if row is None:
+        return None
+    return {"id": int(row["id"]), "username": row["username"], "password_hash": row["password_hash"],
+            "role": row["role"], "is_active": bool(row["is_active"]),
+            "created_at": float(row["created_at"] or 0), "updated_at": float(row["updated_at"] or 0)}
+
+
+async def get_user_by_username(username: str) -> dict | None:
+    """Case-insensitive lookup: username stored lowercased."""
+    def op(conn):
+        row = conn.execute("SELECT * FROM users WHERE username=%s", (str(username or "").strip().lower(),)).fetchone()
+        return _user_row(row)
+    return await _run_db(op)
+
+
+async def get_user_by_id(user_id: int) -> dict | None:
+    def op(conn):
+        row = conn.execute("SELECT * FROM users WHERE id=%s", (int(user_id),)).fetchone()
+        return _user_row(row)
+    return await _run_db(op)
+
+
+async def list_users() -> list[dict]:
+    def op(conn):
+        rows = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        out = []
+        for row in rows:
+            u = _user_row(row)
+            if u:
+                u.pop("password_hash", None)
+                out.append(u)
+        return out
+    return await _run_db(op)
+
+
+async def create_user(username: str, password_hash: str, role: str = "user", is_active: bool = True) -> dict:
+    now = time.time()
+    def op(conn):
+        cur = conn.execute(
+            "INSERT INTO users(username,password_hash,role,is_active,created_at,updated_at) "
+            "VALUES(%s,%s,%s,%s,%s,%s) RETURNING *",
+            (str(username).strip().lower(), password_hash, str(role).lower(), bool(is_active), now, now))
+        conn.commit()
+        return _user_row(cur.fetchone())
+    return await _run_db(op)
+
+
+async def update_user(user_id: int, *, username: str | None = None, password_hash: str | None = None,
+                      role: str | None = None, is_active: bool | None = None) -> dict | None:
+    def op(conn):
+        sets, values = [], []
+        if username is not None:
+            sets.append("username=%s"); values.append(str(username).strip().lower())
+        if password_hash is not None:
+            sets.append("password_hash=%s"); values.append(password_hash)
+        if role is not None:
+            sets.append("role=%s"); values.append(str(role).lower())
+        if is_active is not None:
+            sets.append("is_active=%s"); values.append(bool(is_active))
+        if not sets:
+            row = conn.execute("SELECT * FROM users WHERE id=%s", (int(user_id),)).fetchone()
+            return _user_row(row)
+        sets.append("updated_at=%s"); values.append(time.time())
+        values.append(int(user_id))
+        row = conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=%s RETURNING *", tuple(values)).fetchone()
+        conn.commit()
+        return _user_row(row)
+    return await _run_db(op)
+
+
+async def delete_user(user_id: int) -> bool:
+    def op(conn):
+        cur = conn.execute("DELETE FROM users WHERE id=%s", (int(user_id),))
+        conn.commit()
+        return cur.rowcount > 0
+    return await _run_db(op)
+
+
+async def count_users() -> int:
+    def op(conn):
+        row = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
+        return int(row["n"]) if row else 0
+    return await _run_db(op)
