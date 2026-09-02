@@ -130,8 +130,8 @@ export default function IndicatorSettings({ entry, initialParams, initialStyle, 
     };
 
     return (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center pt-16" onClick={onClose}>
-            <div className="bg-bunker-900 border border-bunker-700 rounded-xl w-[480px] max-w-[95vw]" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center pt-16 px-3" onClick={onClose}>
+            <div className="bg-bunker-900 border border-bunker-700 rounded-xl w-full max-w-[480px] min-w-0" onClick={(e) => e.stopPropagation()}>
                 <div className="p-4 border-b border-bunker-800 flex justify-between items-center">
                     <div>
                         <p className="font-mono text-sm font-bold text-white">

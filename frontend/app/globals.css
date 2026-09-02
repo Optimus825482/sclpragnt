@@ -1,4 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600;700&family=Inter:wght@400;500;700&family=JetBrains+Mono&display=swap');
+/* Fontlar next/font ile self-hosted yüklenir (layout.tsx: --font-sans/display/mono
+   CSS değişkenleri). Google Fonts @import kaldırıldı — render-blocking'di. */
 
 @tailwind base;
 @tailwind components;
@@ -80,6 +81,29 @@ button, a { touch-action: manipulation; }
 .chat-toggle input { margin-top:.1rem; }
 .chat-controls { min-height:0; overflow-y:auto; }
 .chat-controls-header { display:flex; justify-content:space-between; gap:.75rem; align-items:flex-start; }
+/* Chat kontrol paneli: masaüstünde her zaman açık başlık + içerik; mobilde
+   başlık toggle'a dönüşür ve içerik varsayılan kapalıdır (sayfa kaydırmasını
+   ~2 ekran şişiriyordu). */
+.chat-controls-toggle { display:none; }
+.chat-controls-settings { display:inline-flex; }
+.chat-controls-settings { margin-top:.5rem; }
+.chat-controls-body { display:block; }
+@media (max-width: 768px) {
+  .chat-controls-header { display:none; }
+  .chat-controls-toggle {
+    display:flex; width:100%; align-items:center; justify-content:space-between;
+    gap:.75rem; padding:.85rem .9rem; min-height:3rem;
+    border:1px solid rgb(51 65 85 / .65); border-radius:.7rem;
+    background:rgb(5 8 13 / .4); cursor:pointer; color:inherit; text-align:left;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .chat-controls-toggle-label { display:flex; align-items:center; justify-content:space-between; gap:.75rem; width:100%; }
+  .chat-controls-toggle-icon { font:700 1.2rem/1 ui-monospace,monospace; color:#10b981; }
+  .chat-controls:not(.is-open) .chat-controls-body { display:none; }
+  .chat-controls.is-open .chat-controls-body { display:block; }
+  .chat-controls.is-open { border-color:rgb(16 185 129 / .35); }
+  .chat-controls-settings { display:none; }
+}
 .chat-conversation-actions { display:flex; align-items:center; justify-content:flex-end; gap:.6rem; margin:0 0 .5rem; }
 .chat-scan-buttons { display:flex; flex-wrap:wrap; gap:.5rem; margin:0 0 .6rem; }
 .chat-scan-buttons .ui-button { min-height:2.4rem; padding:.55rem .85rem; font-size:.68rem; }
@@ -338,17 +362,19 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
   .chat-scan-buttons .ui-button { flex:1 1 calc(50% - .25rem); min-height:2.75rem; justify-content:center; text-align:center; white-space:normal; font-size:.6rem; line-height:1.25; padding:.55rem .5rem; }
   .chat-scan-buttons .ui-button.chat-scan-button-wide { flex:1 1 100%; }
   .chat-mobile-controls { display:inline-flex; }
-  .chat-conversation-actions .ui-button { min-height:2.25rem; padding:.55rem .7rem; }
+  .chat-conversation-actions .ui-button { min-height:2.75rem; padding:.55rem .7rem; }
   .chat-context-alert { align-items:flex-start; flex-direction:column; }
   .chat-context-alert span { white-space:normal; }
   .chat-messages { min-height:0; max-height:none; padding-bottom:.6rem; }
   .chat-message { max-width:100%; gap:.45rem; margin-bottom:.75rem; }
   .chat-avatar { width:1.7rem; height:1.7rem; border-radius:.5rem; font-size:.5rem; }
   .chat-bubble { padding:.75rem .8rem; border-radius:.7rem; font-size:.85rem; line-height:1.6; }
-  .chat-tts-button { min-height:2rem; padding:.35rem .5rem; }
+  /* Dokunma hedefleri: mobilde 44px altındaki kontroller WCAG 2.5.5'i ihlal
+     ediyordu (TTS 32px, quick-prompt 36px, actions 36px). */
+  .chat-tts-button { min-height:2.75rem; min-width:2.75rem; padding:.35rem .5rem; }
   .chat-quick-prompts { overflow-x:auto; flex-wrap:nowrap; margin:0 -.15rem; padding:.65rem .15rem .35rem; scrollbar-width:none; }
   .chat-quick-prompts::-webkit-scrollbar { display:none; }
-  .chat-quick-prompts button { flex:0 0 min(15rem,78vw); min-height:2.25rem; font-size:.62rem; white-space:normal; }
+  .chat-quick-prompts button { flex:0 0 min(15rem,78vw); min-height:2.75rem; font-size:.62rem; white-space:normal; }
   .chat-trace-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .chat-bubble pre, .chat-bubble code { max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; }
   .chat-footer { margin-top:.65rem; padding-bottom:calc(.45rem + env(safe-area-inset-bottom)); }

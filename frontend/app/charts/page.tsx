@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
@@ -8,8 +9,11 @@ import {
     createChart, createSeriesMarkers, CandlestickSeries, LineSeries, HistogramSeries,
     IChartApi, ISeriesApi, IPriceLine, UTCTimestamp, Time
 } from "lightweight-charts";
-import IndicatorPicker, { filterIndicatorInstances, findIndicatorEntry } from "./IndicatorPicker";
-import IndicatorSettings from "./IndicatorSettings";
+import { filterIndicatorInstances, findIndicatorEntry } from "./IndicatorPicker";
+// Ağır modal bileşenleri ayrı chunk'a al: yalnızca kullanıcı picker'ı açınca
+// yüklenir. Senkron yardımcılar (filter/find) yukarıdaki statik import'tan gelir.
+const IndicatorPicker = dynamic(() => import("./IndicatorPicker").then((m) => m.default), { ssr: false });
+const IndicatorSettings = dynamic(() => import("./IndicatorSettings"), { ssr: false });
 import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "./types";
 import {
     FALLBACK_SYMBOLS, INTERVALS, INTERVAL_MS, PALETTE, TOTAL_HEIGHT, MAIN_MIN,
@@ -166,7 +170,10 @@ export default function ChartsPage() {
                 horzLines: { color: "rgba(55, 65, 81, 0.2)" }
             },
             crosshair: { mode: 0, vertLine: { color: "#10b981" }, horzLine: { color: "#10b981" } },
-            timeScale: { timeVisible: true, secondsVisible: false }
+            timeScale: { timeVisible: true, secondsVisible: false },
+            // Mobilde chart dikey kaydırmayı yutmasın: parmak dikeyde sayfayı
+            // kaydırır, yatayda chart'ı. Touch tuzak UX hatasını önler.
+            handleScroll: { vertTouchDrag: false, horzTouchDrag: true, mouseWheel: true, pressedMouseMove: true }
         });
         chart.priceScale("right").applyOptions({ scaleMargins: { top: 0.08, bottom: 0.08 } });
         const series = chart.addSeries(CandlestickSeries, {
@@ -305,14 +312,17 @@ export default function ChartsPage() {
                     if (!prev.length) return prev;
                     const last = prev[prev.length - 1];
                     if (bar.time === last.time) {
-                        // aynı mum güncelleniyor — update() ile yerinde güncelle (görünümü sıfırlamaz)
+                        // Aynı mum güncelleniyor: canvas'a update() yeterli.
+                        // State'i her tick'te değiştirmek, [bars] effect'ini
+                        // tetikleyip TÜM indikatör serilerini söküp takıyor
+                        // (mobilde jank). Açık mum yalnız canvas'ta canlıdır;
+                        // kapanışta setBars ile state + indikatörler güncellenir.
                         candleRef.current?.update(bar as any);
-                        const next = [...prev];
-                        next[next.length - 1] = bar;
-                        return next;
+                        return prev;
                     }
                     if (bar.time > last.time) {
-                        // yeni mum açıldı — update() son bara ekler
+                        // yeni mum açıldı — update() son bara ekler; state'i de
+                        // güncelle ki indikatörler kapanmış son barla yeniden hesaplansın.
                         candleRef.current?.update(bar as any);
                         return [...prev.slice(-199), bar];
                     }
@@ -1211,7 +1221,8 @@ export default function ChartsPage() {
                 <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
                     <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-bunker-700 bg-bunker-900/90 backdrop-blur font-mono text-xs text-bunker-muted pointer-events-none">
                         <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" />
-                        MUM KAPANIŞ: <span className="text-neon-green font-bold tabular-nums">
+                        <span className="hidden sm:inline">MUM KAPANIŞ: </span>
+                        <span className="text-neon-green font-bold tabular-nums">
                             {String(Math.floor(countdown / 60000)).padStart(2, "0")}:{String(Math.floor((countdown % 60000) / 1000)).padStart(2, "0")}
                         </span>
                     </div>
@@ -1227,7 +1238,7 @@ export default function ChartsPage() {
                     <h2 className="font-mono text-sm font-bold text-neon-green">AÇIK POZİSYONLAR</h2>
                     <span className="font-mono text-xs text-bunker-muted">{positions.length} pozisyon</span>
                 </div>
-                <div className="overflow-x-auto">
+                <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-sm font-mono">
                         <thead>
                             <tr className="text-left text-bunker-muted text-xs border-b border-bunker-800">
@@ -1286,6 +1297,52 @@ export default function ChartsPage() {
                             )}
                         </tbody>
                     </table>
+                </div>
+                {/* Mobil: 680px'lik yatay kaydırmalı tablo yerine kart listesi */}
+                <div className="md:hidden divide-y divide-bunker-800/50">
+                    {positions.length === 0 ? (
+                        <p className="px-4 py-5 text-center text-bunker-muted text-sm">Açık pozisyon yok</p>
+                    ) : (
+                        positions.map((p) => {
+                            const pnl = p.pnl_pct ?? 0;
+                            const pnlTry = p.pnl_try ?? 0;
+                            const time = p.entry_time
+                                ? new Date(p.entry_time * 1000).toLocaleTimeString("tr-TR")
+                                : "-";
+                            const entryValue = Number(p.entry || 0) * Number(p.quantity || 0);
+                            return (
+                                <div key={p.symbol} className="px-3 py-3 flex items-center gap-3">
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <SymbolLink symbol={p.symbol} className="text-white font-bold hover:text-neon-green" />
+                                            <span className="font-mono text-[10px] text-bunker-muted">{time}</span>
+                                        </div>
+                                        <div className="mt-1 text-[10px] font-mono text-bunker-muted truncate">{strategyLabelFor(p)}</div>
+                                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-xs">
+                                            <span className="text-bunker-muted">G {formatPrice(p.entry)}</span>
+                                            <span className="text-white">GÜ {formatPrice(p.current)}</span>
+                                            {entryValue > 0 && <span className="text-bunker-muted">{money(entryValue)}</span>}
+                                            <span className={`font-bold ${pnl >= 0 ? "text-neon-green" : "text-red-400"}`}>
+                                                {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}% {pnlTry >= 0 ? "+" : ""}₺{pnlTry.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => closePositionManually(p.symbol)}
+                                        disabled={closingSymbol != null}
+                                        title={`${p.symbol} pozisyonunu güncel fiyatla kapat`}
+                                        className={`shrink-0 min-h-11 px-3 rounded-lg border font-mono text-xs transition-colors ${closingSymbol === p.symbol
+                                            ? "border-bunker-600 bg-bunker-900 text-bunker-muted animate-pulse"
+                                            : "border-red-400/50 bg-red-400/10 text-red-400 hover:bg-red-400/20 active:scale-[0.97] disabled:opacity-40 disabled:cursor-not-allowed"
+                                            }`}
+                                    >
+                                        {closingSymbol === p.symbol ? "…" : "KAPAT"}
+                                    </button>
+                                </div>
+                            );
+                        })
+                    )}
                 </div>
             </div>
 

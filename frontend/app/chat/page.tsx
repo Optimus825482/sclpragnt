@@ -190,7 +190,7 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
           {candidates.map((candidate, index) => (
             <div
               key={candidate.symbol}
-              className={`flex items-center gap-3 rounded-lg border px-3 py-2 transition-colors ${
+              className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border px-3 py-2 transition-colors ${
                 index === 0
                   ? "border-amber-300/40 bg-amber-300/5"
                   : "border-neon-green/20 bg-neon-green/5"
@@ -205,13 +205,13 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
                 className="font-mono text-sm font-bold text-white hover:text-neon-green"
               />
               <span
-                className="font-mono text-[10px] text-amber-300/90 whitespace-nowrap"
+                className="font-mono text-[10px] text-amber-300/90"
                 title="Upside puanı: dakika başına hedef × hız skoru × sembol kalite çarpanı"
               >
                 {Number(candidate.upside_rank).toFixed(1)} puan
               </span>
               <span
-                className="rounded border border-sky-400/50 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-300 whitespace-nowrap"
+                className="rounded border border-sky-400/50 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-300"
                 title={`Harmanlanan profiller: ${candidate.profiles ? Object.keys(candidate.profiles).map((h) => `${h}dk %${candidate.profiles?.[h]?.target_pct ?? ""}`).join(" + ") : "5dk+15dk"}`}
               >
                 {candidate.best_profile_minutes === 5
@@ -375,17 +375,22 @@ export default function ChatPage() {
     return () => window.clearTimeout(timer);
   }, [activeTools, activeSkills, ttsRate, ttsPitch]);
   useEffect(() => {
-    const load = () =>
+    const load = () => {
+      // Sekme arka plandayken poll'ları atla: görünmeyen panel için ağ + CPU
+      // israfı (mobilde pil). Sekme öne gelince interval zaten tazeler.
+      if (document.hidden) return;
       apiRequest(`${API_BASE}/api/llm/tool-logs?limit=24`)
         .then((r) => r.json())
         .then((data) => setLogs(data.logs || []))
         .catch(() => undefined);
+    };
     load();
     const timer = window.setInterval(load, 3000);
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
-    const load = () =>
+    const load = () => {
+      if (document.hidden) return;
       Promise.all([
         apiRequest(`${API_BASE}/api/llm/evaluations?limit=8`).then((r) => r.json()),
         apiRequest(`${API_BASE}/api/llm/instincts?status=active&limit=6`).then((r) =>
@@ -399,6 +404,7 @@ export default function ChatPage() {
           setTraces(traceData.traces || []);
         })
         .catch(() => undefined);
+    };
     load();
     const timer = window.setInterval(load, 5000);
     return () => window.clearInterval(timer);
@@ -408,6 +414,7 @@ export default function ChatPage() {
       if (
         event.key !== "Enter" ||
         event.shiftKey ||
+        (event as KeyboardEvent).isComposing ||
         (event.target as HTMLElement)?.tagName !== "TEXTAREA"
       )
         return;
@@ -418,8 +425,39 @@ export default function ChatPage() {
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [busy, input]);
+  // Otomatik kaydırma: yalnız kullanıcı zaten en alttayken aşağı kaydır.
+  // Akış sırasında smooth animasyon her delta'da jank yaratıyor; kullanıcı
+  // yukarıdayken geçmiş okuyorsa pozisyonu koru (aşağı zıplatma).
+  // Desktop'ta scroll konteyneri .chat-messages, mobilde tam sayfa scroll'dur;
+  // ikisini de dinle.
+  const stickToBottomRef = useRef(true);
+  const handleScroll = () => {
+    const el = endRef.current?.parentElement;
+    if (!el) return;
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+  const handleWindowScroll = () => {
+    const el = endRef.current?.parentElement;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    // .chat-messages görünüm alanından taşıyorsa (mobil) sayfa scroll'una bak.
+    const nearBottom = window.innerHeight + window.scrollY >=
+      (el.scrollHeight + rect.top + window.scrollY) - 80;
+    stickToBottomRef.current = nearBottom;
+  };
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = endRef.current?.parentElement;
+    if (!el) return;
+    el.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("scroll", handleWindowScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("scroll", handleWindowScroll);
+    };
+  }, []);
+  useEffect(() => {
+    if (stickToBottomRef.current)
+      endRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [messages, busy]);
 
   // Arka plan model etkinliklerini canlı akışa ekle (en yeni üstte)
@@ -717,10 +755,20 @@ export default function ChatPage() {
               <p className="eyebrow">ARKA PLAN İŞLERİ</p>
               <h2 className="font-mono text-sm font-bold text-white">MODEL AKIŞI</h2>
             </div>
-            <Link href="/settings?tab=chat" className="ui-button ui-button-secondary" style={{ textDecoration: "none" }}>
+            <Link href="/settings?tab=chat" className="ui-button ui-button-secondary chat-controls-settings" style={{ textDecoration: "none" }}>
               ⚙ CHAT AYARLARI
             </Link>
           </div>
+          <button type="button" className="chat-controls-toggle" onClick={() => setControlsOpen((v) => !v)} aria-expanded={controlsOpen} aria-controls="chat-controls-body">
+            <span className="chat-controls-toggle-label">
+              <span>
+                <span className="eyebrow block text-left">ARKA PLAN İŞLERİ</span>
+                <span className="block text-left font-mono text-sm font-bold text-white">MODEL AKIŞI</span>
+              </span>
+              <span className="chat-controls-toggle-icon" aria-hidden="true">{controlsOpen ? "−" : "+"}</span>
+            </span>
+          </button>
+          <div id="chat-controls-body" className="chat-controls-body">
           <div className="chat-log-panel">
             <div className="flex items-center justify-between mb-2">
               <p className="eyebrow">CANLI ETKİNLİK AKIŞI</p>
@@ -756,6 +804,7 @@ export default function ChatPage() {
                 Kural: {instincts.length}
               </span>
             </div>
+          </div>
           </div>
         </Card>
       </div>
