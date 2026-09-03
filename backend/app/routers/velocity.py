@@ -300,12 +300,14 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     ml_hit_prob = float(ml_pred.get("hit_probability") or 0)
             except Exception as exc:
                 logger.debug("velocity ML tahmin hatası %s: %s", symbol, exc)
-            # Hedef karari: adayin olcülen hedefi SABIT BASE hedeftir (%2 / %3).
-            # ML ve adaptif sembol durumu hedefi ezmez; yalniz tahmin/olasilik olarak
-            # ayri alanlarda tasinir (UI/rapor gosterimi ve siralama icin). Aksi halde
-            # quantile modelinin dusuk ciktisi (%0.3-0.6) %2 hedefi silip bildirim
-            # filtresinden gecemeyen adaylar uretiyordu (2026-09-03 teshis).
-            effective_target = float(base_target_pct)
+            # Hedef kurali: EN AZ base hedef (5dk:%2 / 15dk:%3); ML tahmini daha
+            # iddiyaliysa (base'in ustu) o kullanilir. Dusuk tahminler alt siniri
+            # asamaz; boylece "en az %2/%3" garantisi ile kalitesiz dusuk hedef
+            # bildirilmemis olur. ML yoksa/base'in altindaysa base hedef kalir.
+            if ml_target is not None and ml_target > 0:
+                effective_target = max(float(base_target_pct), ml_target)
+            else:
+                effective_target = float(base_target_pct)
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
