@@ -242,52 +242,94 @@ const emaSeries = (bars: any[], period: number, color: string) => {
     return out;
 };
 
-// SlingShot System: TradingView'daki CM_SlingShotSystem'in aynısı.
-// Tek çizgi (EMA50) — trend yönüne göre yeşil (yükseliş) veya kırmızı (düşüş).
-// Buy/Sell sinyalleri "B"/"S" harfleri ile gösterilir.
+// Nadaraya-Watson: Rational Quadratic Kernel (Non-Repainting)
+// Tek çizgi — trend yönüne göre yeşil (yükseliş) veya kırmızı (düşüş).
+// Rational Quadratic Kernel kullanarak fiyatı tahmin eder.
 // Varsayılan grafik indikatörü; kullanıcı kendi ekledikçe yerini alır.
 export const SLING_SHOT_ENTRY: RegistryEntry = {
     id: "sling_shot",
-    name: "SlingShot (EMA50/EMA11)",
-    shortName: "SlingShot",
+    name: "Rational Quadratic Kernel",
+    shortName: "RQ Kernel",
     category: "Trend",
     group: "custom",
     overlay: true,
     inputConfig: [
-        { id: "slowPeriod", type: "number", title: "Yavaş EMA (Trend)", defval: 50, min: 5, step: 1 },
-        { id: "fastPeriod", type: "number", title: "Hızlı EMA (Sinyal)", defval: 11, min: 2, step: 1 },
-        { id: "conservative", type: "bool", title: "Konservatif Giriş (Kırılım)", defval: true },
+        { id: "h", type: "number", title: "Lookback Window", defval: 8, min: 3, step: 1 },
+        { id: "r", type: "number", title: "Relative Weighting", defval: 2, min: 0.25, step: 0.25 },
+        { id: "smoothColors", type: "bool", title: "Smooth Colors", defval: false },
         { id: "showSignals", type: "bool", title: "B/S Sinyallerini Göster", defval: true },
     ],
     calculate: (bars: any[], params: any) => {
-        const slowPeriod = Math.max(5, Math.round(params.slowPeriod ?? 50));
-        const fastPeriod = Math.max(2, Math.round(params.fastPeriod ?? 11));
+        const h = Math.max(3, Number(params.h ?? 8));
+        const r = Math.max(0.25, Number(params.r ?? 2));
+        const smoothColors = params.smoothColors ?? false;
         const closes = bars.map((bar: any) => Number(bar.close));
-        // İki ayrı seri: yeşil (yükseliş) ve kırmızı (düşüş)
+        const t = bars.map((bar: any) => Number(bar.time));
+        // Nadaraya-Watson Rational Quadratic Kernel regresyonu
+        // w(i) = (1 + (i^2 / (h^2 * 2 * r)))^(-r)
+        // yhat = sum(price[i] * w(i)) / sum(w(i))
+        const calculateYhat = (endIdx: number): number | null => {
+            if (endIdx < 1) return null;
+            let currentWeight = 0;
+            let cumulativeWeight = 0;
+            // Son h kadar mum için hesapla (geriye doğru)
+            const lookback = Math.min(h, endIdx + 1);
+            for (let i = 0; i < lookback; i++) {
+                const price = closes[endIdx - i];
+                if (price == null || !Number.isFinite(price)) continue;
+                // Rational Quadratic Kernel ağırlığı
+                const w = Math.pow(1 + (Math.pow(i, 2) / (Math.pow(h, 2) * 2 * r)), -r);
+                currentWeight += price * w;
+                cumulativeWeight += w;
+            }
+            if (cumulativeWeight === 0) return null;
+            return currentWeight / cumulativeWeight;
+        };
+        // Tüm barlar için yhat hesapla
+        const yhat1: (number | null)[] = []; // Mevcut tahmin
+        const yhat2: (number | null)[] = []; // Lag'li tahmin (smooth colors için)
+        for (let i = 0; i < bars.length; i++) {
+            yhat1.push(calculateYhat(i));
+            yhat2.push(calculateYhat(Math.max(0, i - 2))); // 2 bar lag
+        }
+        // Trend yönüne göre renk belirle
         const greenPlot: { time: number; value: number | null }[] = [];
         const redPlot: { time: number; value: number | null }[] = [];
-        const kSlow = 2 / (slowPeriod + 1);
-        const kFast = 2 / (fastPeriod + 1);
-        let emaSlow: number | null = null;
-        let emaFast: number | null = null;
         for (let i = 0; i < bars.length; i++) {
-            const c = closes[i];
-            const t = Number(bars[i].time);
-            emaSlow = emaSlow === null ? c : (c - emaSlow) * kSlow + emaSlow;
-            emaFast = emaFast === null ? c : (c - emaFast) * kFast + emaFast;
-            const v = emaSlow != null && Number.isFinite(emaSlow) ? emaSlow : null;
-            // Trend yönüne göre uygun seriye ekle (diğerine null)
-            if (v != null && emaFast != null && emaFast >= emaSlow) {
-                // Yükseliş trendi: yeşil
-                greenPlot.push({ time: t, value: v });
-                redPlot.push({ time: t, value: null });
-            } else if (v != null && emaFast != null) {
-                // Düşüş trendi: kırmızı
-                greenPlot.push({ time: t, value: null });
-                redPlot.push({ time: t, value: v });
+            const v = yhat1[i];
+            if (v == null || !Number.isFinite(v)) {
+                greenPlot.push({ time: t[i], value: null });
+                redPlot.push({ time: t[i], value: null });
+                continue;
+            }
+            // Önceki değerler
+            const prev1 = i >= 1 ? yhat1[i - 1] : null;
+            const prev2 = i >= 2 ? yhat1[i - 2] : null;
+            const v2 = yhat2[i];
+            let isBullish = false;
+            if (smoothColors) {
+                // Smooth colors: yhat2 vs yhat1 crossover
+                isBullish = v2 != null && v2 > v;
             } else {
-                greenPlot.push({ time: t, value: null });
-                redPlot.push({ time: t, value: null });
+                // Rate of change: yhat1 yönü
+                if (prev1 != null && prev2 != null) {
+                    const wasBearish = prev2 > prev1;
+                    const wasBullish = prev2 < prev1;
+                    const isBearishNow = prev1 > v;
+                    const isBullishNow = prev1 < v;
+                    isBullish = isBullishNow || (wasBearish && !isBearishNow);
+                } else if (prev1 != null) {
+                    isBullish = prev1 < v;
+                } else {
+                    isBullish = true;
+                }
+            }
+            if (isBullish) {
+                greenPlot.push({ time: t[i], value: v });
+                redPlot.push({ time: t[i], value: null });
+            } else {
+                greenPlot.push({ time: t[i], value: null });
+                redPlot.push({ time: t[i], value: v });
             }
         }
         return {
