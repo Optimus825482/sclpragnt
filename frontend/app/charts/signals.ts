@@ -391,8 +391,8 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
 };
 
     // SlingShot System: EMA50/EMA11 trend takip sistemi
-    // Conservative Entry: trend yönünde EMA11'e dönüş sonrası kırılım
-    // Aggressive Entry: trend yönünde EMA11'e pullback (potansiyel giriş)
+    // Alternating signals: B'den sonra S gelmeli, S'den sonra B gelmeli
+    // Aynı sinyal arka arkaya tekrar etmez
     const slingShotSignals = (bars: Bar[], params: Record<string, any>) => {
         const slowPeriod = Math.max(5, Math.round(params.slowPeriod ?? 50));
         const fastPeriod = Math.max(2, Math.round(params.fastPeriod ?? 11));
@@ -408,6 +408,8 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
             }
             return ema;
         };
+        // Son sinyal türünü takip et — alternasyon için
+        let lastSignalType: "buy" | "sell" | null = null;
         for (let i = slowPeriod; i < bars.length; i++) {
             const slice = closes.slice(0, i + 1);
             const prevSlice = closes.slice(0, i);
@@ -416,20 +418,26 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
             const prevEmaFast = ema(prevSlice, fastPeriod);
             const close = closes[i];
             const prevClose = closes[i - 1];
+            let detectedType: "buy" | "sell" | null = null;
             if (useConservative) {
                 // Conservative: önceki bar EMA11 altı/üstü, şimdi kırılım
                 if (emaFast > emaSlow && prevClose <= prevEmaFast && close > emaFast) {
-                    signals.push({ time: bars[i].time, type: "buy" });
+                    detectedType = "buy";
                 } else if (emaFast < emaSlow && prevClose >= prevEmaFast && close < emaFast) {
-                    signals.push({ time: bars[i].time, type: "sell" });
+                    detectedType = "sell";
                 }
             } else {
                 // Aggressive: trend yönünde EMA11'e pullback
                 if (emaFast > emaSlow && close < emaFast) {
-                    signals.push({ time: bars[i].time, type: "buy" });
+                    detectedType = "buy";
                 } else if (emaFast < emaSlow && close > emaFast) {
-                    signals.push({ time: bars[i].time, type: "sell" });
+                    detectedType = "sell";
                 }
+            }
+            // Sadece farklı türde sinyal üret (alternasyon)
+            if (detectedType && detectedType !== lastSignalType) {
+                signals.push({ time: bars[i].time, type: detectedType });
+                lastSignalType = detectedType;
             }
         }
         return signals;
