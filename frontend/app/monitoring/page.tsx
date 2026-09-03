@@ -16,6 +16,14 @@ type Candidate = {
   horizon_minutes: number;
 };
 
+type NotificationSettings = {
+  enabled: boolean;
+  min_score: number;
+  min_target_pct: number;
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+};
+
 type MonitoringState = {
   last_scan_at: number | null;
   scan_count: number;
@@ -36,6 +44,14 @@ export default function MonitoringPage() {
   const [radarAngle, setRadarAngle] = useState(0);
   const [notifications, setNotifications] = useState<{ id: number; message: string; time: number }[]>([]);
   const [notifPermission, setNotifPermission] = useState<NotificationPermission>("default");
+  const [settings, setSettings] = useState<NotificationSettings>({
+    enabled: true,
+    min_score: 1.0,
+    min_target_pct: 2.0,
+    quiet_hours_start: null,
+    quiet_hours_end: null,
+  });
+  const [showSettings, setShowSettings] = useState(false);
   const scanTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const radarTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const notifIdRef = useRef(0);
@@ -63,6 +79,39 @@ export default function MonitoringPage() {
     setNotifications((prev) => [{ id, message, time: Date.now() }, ...prev].slice(0, 50));
   }, []);
 
+  // Load settings from DB
+  const loadSettings = useCallback(async () => {
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setSettings({
+          enabled: data.enabled ?? true,
+          min_score: data.min_score ?? 1.0,
+          min_target_pct: data.min_target_pct ?? 2.0,
+          quiet_hours_start: data.quiet_hours_start ?? null,
+          quiet_hours_end: data.quiet_hours_end ?? null,
+        });
+      }
+    } catch {
+      // Use defaults
+    }
+  }, []);
+
+  // Save settings to DB
+  const saveSettings = useCallback(async (newSettings: NotificationSettings) => {
+    try {
+      await apiRequest(`${API_BASE}/api/monitoring/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newSettings),
+      });
+      setSettings(newSettings);
+    } catch {
+      // Failed to save
+    }
+  }, []);
+
   // Run scan
   const runScan = useCallback(async () => {
     setScanning(true);
@@ -76,6 +125,16 @@ export default function MonitoringPage() {
           candidates: data.candidates || [],
           watchlist: data.watchlist || [],
         });
+        // Update settings from response
+        if (data.settings) {
+          setSettings({
+            enabled: data.settings.enabled ?? true,
+            min_score: data.settings.min_score ?? 1.0,
+            min_target_pct: data.settings.min_target_pct ?? 2.0,
+            quiet_hours_start: data.settings.quiet_hours_start ?? null,
+            quiet_hours_end: data.settings.quiet_hours_end ?? null,
+          });
+        }
         // Notify for new candidates
         if (data.new_notifications > 0) {
           for (const c of data.candidates || []) {
@@ -94,6 +153,7 @@ export default function MonitoringPage() {
 
   // Initial load + periodic scan
   useEffect(() => {
+    loadSettings();
     // Load initial state
     apiRequest(`${API_BASE}/api/monitoring/state`, { cache: "no-store" })
       .then((r) => r.json())
@@ -121,7 +181,7 @@ export default function MonitoringPage() {
       if (scanTimerRef.current) clearInterval(scanTimerRef.current);
       if (radarTimerRef.current) clearInterval(radarTimerRef.current);
     };
-  }, [runScan]);
+  }, [runScan, loadSettings]);
 
   const formatTime = (ts: number | null) => {
     if (!ts) return "—";
@@ -148,11 +208,115 @@ export default function MonitoringPage() {
               🔔 Bildirimleri Aç
             </button>
           )}
+          <button onClick={() => setShowSettings(!showSettings)} className="ui-button">
+            ⚙️ Ayarlar
+          </button>
           <button onClick={runScan} disabled={scanning} className="ui-button ui-button-primary">
             {scanning ? "TARANIYOR…" : "ŞİMDİ TARA"}
           </button>
         </div>
       </div>
+
+      {/* Notification Permission Banner */}
+      {notifPermission === "default" && (
+        <div className="card border-yellow-400/30 bg-yellow-400/5 flex items-center justify-between">
+          <div>
+            <p className="font-mono text-sm text-yellow-300">📱 Bildirim İzni Gerekli</p>
+            <p className="text-xs text-bunker-muted mt-1">Mobil ve masaüstü bildirimleri almak için izin verin. Uygulama kapalıyken bile bildirim gönderilir.</p>
+          </div>
+          <button onClick={requestNotificationPermission} className="ui-button ui-button-primary shrink-0">
+            İzin Ver
+          </button>
+        </div>
+      )}
+      {notifPermission === "denied" && (
+        <div className="card border-neon-red/30 bg-neon-red/5">
+          <p className="font-mono text-sm text-neon-red">🚨 Bildirim İzni Reddedildi</p>
+          <p className="text-xs text-bunker-muted mt-1">Tarayıcı ayarlarından bildirim izni verebilirsiniz. Uygulama kapalıyken bildirim alınamaz.</p>
+        </div>
+      )}
+
+      {/* Settings Panel */}
+      {showSettings && (
+        <div className="card border-neon-green/20">
+          <p className="eyebrow text-neon-green">BİLDİRİM AYARLARI</p>
+          <div className="mt-4 space-y-4">
+            {/* Enable/Disable */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-mono text-sm text-white">Bildirimleri Etkinleştir</p>
+                <p className="text-xs text-bunker-muted">Yeni adaylar için bildirim gönder</p>
+              </div>
+              <button
+                onClick={() => saveSettings({ ...settings, enabled: !settings.enabled })}
+                className={`w-12 h-6 rounded-full border transition-colors relative ${settings.enabled ? "bg-neon-green/30 border-neon-green/50" : "bg-bunker-800 border-bunker-700"}`}
+              >
+                <span className={`absolute top-0.5 w-5 h-5 rounded-full transition-all ${settings.enabled ? "left-6 bg-neon-green" : "left-0.5 bg-bunker-muted"}`} />
+              </button>
+            </div>
+            {/* Min Score */}
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <p className="font-mono text-sm text-white">Minimum Skor</p>
+                <span className="font-mono text-sm text-neon-green">{settings.min_score.toFixed(1)}</span>
+              </div>
+              <input
+                type="range"
+                min="0.5"
+                max="3.0"
+                step="0.1"
+                value={settings.min_score}
+                onChange={(e) => setSettings({ ...settings, min_score: parseFloat(e.target.value) })}
+                onMouseUp={() => saveSettings(settings)}
+                onTouchEnd={() => saveSettings(settings)}
+                className="w-full accent-neon-green"
+              />
+              <p className="text-xs text-bunker-muted mt-1">Bu skorun üzerindeki adaylar bildirilir</p>
+            </div>
+            {/* Min Target % */}
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <p className="font-mono text-sm text-white">Minimum Hedef Artış</p>
+                <span className="font-mono text-sm text-neon-green">%{settings.min_target_pct.toFixed(1)}</span>
+              </div>
+              <input
+                type="range"
+                min="1.0"
+                max="5.0"
+                step="0.5"
+                value={settings.min_target_pct}
+                onChange={(e) => setSettings({ ...settings, min_target_pct: parseFloat(e.target.value) })}
+                onMouseUp={() => saveSettings(settings)}
+                onTouchEnd={() => saveSettings(settings)}
+                className="w-full accent-neon-green"
+              />
+              <p className="text-xs text-bunker-muted mt-1">Bu yüzdenin üzerindeki hedefler bildirilir</p>
+            </div>
+            {/* Quiet Hours */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="font-mono text-sm text-white mb-1">Sessiz Saat Başlangıç</p>
+                <input
+                  type="time"
+                  value={settings.quiet_hours_start || ""}
+                  onChange={(e) => saveSettings({ ...settings, quiet_hours_start: e.target.value || null })}
+                  className="w-full bg-bunker-950 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+                />
+              </div>
+              <div>
+                <p className="font-mono text-sm text-white mb-1">Sessiz Saat Bitiş</p>
+                <input
+                  type="time"
+                  value={settings.quiet_hours_end || ""}
+                  onChange={(e) => saveSettings({ ...settings, quiet_hours_end: e.target.value || null })}
+                  className="w-full bg-bunker-950 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-bunker-muted">Sessiz saatlerde bildirim gönderilmez (PWA kapalıyça da geçerli).</p>
+          </div>
+        </div>
+      )}
 
       {/* Status Bar */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -184,7 +348,7 @@ export default function MonitoringPage() {
             <div className="monitoring-radar-ring monitoring-radar-ring-3" />
             <div className="monitoring-radar-center" />
           </div>
-          <p className="mt-4 font-mono text-sm text-neon-green animate-pulse">SEMMBOLLER TARANIYOR…</p>
+          <p className="mt-4 font-mono text-sm text-neon-green animate-pulse">SEMBOLLER TARANIYOR…</p>
         </div>
       )}
 
@@ -192,7 +356,7 @@ export default function MonitoringPage() {
       <section className="card">
         <div className="flex justify-between items-center">
           <p className="eyebrow text-neon-green">🎯 UYGUN ADAYLAR ({state.candidates.length})</p>
-          <span className="text-xs text-bunker-muted">%2+ potansiyel | Skor üst sıralı</span>
+          <span className="text-xs text-bunker-muted">%{settings.min_target_pct}+ potansiyel | Skor ≥ {settings.min_score}</span>
         </div>
         {state.candidates.length === 0 ? (
           <p className="mt-3 text-bunker-muted">Henüz uygun aday bulunamadı. Tarama devam ediyor…</p>
@@ -242,7 +406,7 @@ export default function MonitoringPage() {
       {/* Watchlist */}
       <section className="card">
         <div className="flex justify-between items-center">
-          <p className="eyebrow text-yellow-300">👁 İZLEME LİSTESİ ({state.watchlist.length})</p>
+          <p className="eyebrow text-yellow-300">👁 İZME LİSTESİ ({state.watchlist.length})</p>
           <span className="text-xs text-bunker-muted">Daha sık analiz edilir</span>
         </div>
         {state.watchlist.length === 0 ? (
