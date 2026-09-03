@@ -475,7 +475,8 @@ async def admin_db_table_export(request: Request, table: str = "", format: str =
                     vals.append(str(v))
                 else:
                     vals.append("'" + str(v).replace("'", "''") + "'")
-            lines.append(f'INSERT INTO "{name}" ("{'" ,"'.join(cols)}") VALUES ({", ".join(vals)});')
+            col_list = ", ".join(f'"{cc}"' for cc in cols)
+            lines.append(f'INSERT INTO "{name}" ({col_list}) VALUES ({", ".join(vals)});')
         content = "\n".join(lines)
         media = "application/sql; charset=utf-8"
         filename = f"{name}.sql"
