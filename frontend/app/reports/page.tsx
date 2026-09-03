@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
 
 const money = (v?: number | null) =>
@@ -732,8 +733,178 @@ function SelfLearningTab() {
     </div>
   );
 }
+
+/* ---- Kullanıcı: Radar Tespitleri sekmesi ---- */
+function UserRadarTab() {
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [breakdown, setBreakdown] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const ntRes = await apiRequest(`${API_BASE}/api/reports/notifications?limit=50`, { cache: "no-store" });
+      const nt = await ntRes.json();
+      if (ntRes.ok) {
+        setNotifications(nt.notifications || []);
+        setBreakdown(nt.breakdown || null);
+      }
+    } catch {
+      setError("Radar tespitleri alınamadı");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <section className="card text-bunker-muted">Radar tespitleri yükleniyor…</section>;
+  if (error) return <section className="card border-neon-red/40 text-neon-red">{error}</section>;
+
+  return (
+    <div className="space-y-5">
+      {breakdown && (
+        <section className="card">
+          <p className="eyebrow text-neon-green">TESPİT BAŞARI KIRILIMI</p>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <StatCard label="TAMAMEN" value={String(breakdown.counts?.["TAMAMEN BAŞARILI"] || 0)} tone="text-neon-green" />
+            <StatCard label="BAŞARILI" value={String(breakdown.counts?.BAŞARILI || 0)} tone="text-neon-green" />
+            <StatCard label="KISMİ" value={String(breakdown.counts?.KISMİ || 0)} tone="text-yellow-300" />
+            <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.BAŞARISIZ || 0)} tone="text-neon-red" />
+            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.BEKLİYOR || 0) + (breakdown.counts?.ÖLÇÜLEMEDİ || 0))} sub={`ölçülemedi ${breakdown.counts?.ÖLÇÜLEMEDİ || 0}`} />
+            <StatCard label="GENEL BAŞARI" value={breakdown.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"} tone="text-sky-300"
+              sub={`${breakdown.success_count}/${breakdown.evaluated} ölçülen`} />
+          </div>
+          <p className="mt-2 font-mono text-[10px] text-bunker-muted">
+            Başarı, kapanmış M1 mumlarıyla ölçülen gerçek MFE ve hedef dokunuşuna dayanır.
+          </p>
+        </section>
+      )}
+
+      <section className="card">
+        <div className="flex items-center justify-between">
+          <p className="eyebrow text-neon-green">RADAR TESPİTLERİ ({notifications.length})</p>
+          <button onClick={load} className="ui-button ui-button-secondary">⟳ Tazele</button>
+        </div>
+        {notifications.length === 0 ? (
+          <p className="mt-3 text-sm text-bunker-muted">Henüz radar tespiti yok.</p>
+        ) : (
+          <div className="mt-3 table-scroll">
+            <table className="data-table">
+              <thead><tr><th>Zaman</th><th>Sembol</th><th>Mod</th><th>Hedef</th><th>Ölçülen MFE</th><th>Durum</th></tr></thead>
+              <tbody>
+                {notifications.map((n: any) => (
+                  <tr key={`${n.id}-${n.symbol}-${n.detected_at}`}>
+                    <td className="font-mono text-xs text-bunker-muted">{fmtDt(n.detected_at)}</td>
+                    <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
+                    <td className="font-mono text-xs text-bunker-muted">{n.mode || "—"}</td>
+                    <td className="font-mono text-xs text-neon-green">{n.target_pct ? `+%${Number(n.target_pct).toFixed(1)}` : "—"}</td>
+                    <td className="font-mono text-xs text-white">{n.mfe_pct != null ? `%${Number(n.mfe_pct).toFixed(2)}` : "—"}</td>
+                    <td>
+                      {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">TAMAMEN</Badge>
+                        : n.status === "BAŞARILI" ? <Badge tone="ok">BAŞARILI</Badge>
+                        : n.status === "KISMİ" ? <Badge tone="warn">KISMİ</Badge>
+                        : n.status === "BAŞARISIZ" ? <Badge tone="bad">BAŞARISIZ</Badge>
+                        : n.status === "ÖLÇÜLEMEDİ" ? <Badge tone="warn">ÖLÇÜLEMEDİ</Badge>
+                        : <Badge>BEKLİYOR</Badge>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/* ---- Kullanıcı: Otonom Pozisyonlar sekmesi ---- */
+function UserPositionsTab() {
+  const [positions, setPositions] = useState<any[]>([]);
+  const [trades, setTrades] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [posRes, trRes] = await Promise.all([
+        apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/trades?limit=50`, { cache: "no-store" }),
+      ]);
+      const [pos, tr] = await Promise.all([posRes.json(), trRes.json()]);
+      if (posRes.ok) setPositions(pos.positions || []);
+      if (trRes.ok) setTrades((tr.trades || []).filter((t: any) => /CHAT_PREDICTION|VELOCITY|PUMP_MONITOR|LLM_PAPER/.test(String(t.strategy || "").toUpperCase())));
+    } catch {
+      setError("Pozisyon verisi alınamadı");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <section className="card text-bunker-muted">Otonom pozisyonlar yükleniyor…</section>;
+  if (error) return <section className="card border-neon-red/40 text-neon-red">{error}</section>;
+
+  return (
+    <div className="space-y-5">
+      <section className="card">
+        <p className="eyebrow text-neon-green">AÇIK OTONOM POZİSYONLAR ({positions.length})</p>
+        {positions.length === 0 ? (
+          <p className="mt-3 text-sm text-bunker-muted">Şu an açık otonom pozisyon yok.</p>
+        ) : (
+          <div className="mt-3 table-scroll">
+            <table className="data-table">
+              <thead><tr><th>Sembol</th><th>Strateji</th><th>Giriş</th><th>Güncel</th><th>PnL</th><th>PnL %</th></tr></thead>
+              <tbody>
+                {positions.map((p: any) => (
+                  <tr key={p.symbol}>
+                    <td><SymbolLink symbol={p.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
+                    <td className="font-mono text-xs text-bunker-muted">{strategyLabel(p.strategy)}</td>
+                    <td className="font-mono text-xs text-white">{num(p.entry)}</td>
+                    <td className="font-mono text-xs text-white">{num(p.current)}</td>
+                    <td className={`font-mono text-xs ${pnlTone(p.pnl_try)}`}>{money(p.pnl_try)}</td>
+                    <td className={`font-mono text-xs ${pnlTone(p.pnl_pct)}`}>{p.pnl_pct != null ? `${p.pnl_pct >= 0 ? "+" : ""}${Number(p.pnl_pct).toFixed(2)}%` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="card">
+        <p className="eyebrow text-neon-green">KAPANAN OTONOM İŞLEMLER ({trades.length})</p>
+        {trades.length === 0 ? (
+          <p className="mt-3 text-sm text-bunker-muted">Henüz kapanan otonom işlem yok.</p>
+        ) : (
+          <div className="mt-3 table-scroll">
+            <table className="data-table">
+              <thead><tr><th>Zaman</th><th>Sembol</th><th>Strateji</th><th>PnL</th><th>PnL %</th></tr></thead>
+              <tbody>
+                {trades.map((t: any) => (
+                  <tr key={t.id}>
+                    <td className="font-mono text-xs text-bunker-muted">{fmtDt(t.exit_time || t.entry_time)}</td>
+                    <td><SymbolLink symbol={t.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
+                    <td className="font-mono text-xs text-bunker-muted">{strategyLabel(t.strategy)}</td>
+                    <td className={`font-mono text-xs ${pnlTone(t.pnl)}`}>{money(t.pnl)}</td>
+                    <td className={`font-mono text-xs ${pnlTone(t.pnl_pct)}`}>{t.pnl_pct != null ? `${t.pnl_pct >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 /* ---- Sayfa çerçevesi + sekmeler ---- */
-const TABS = [
+const ADMIN_TABS = [
+  { id: "radar", label: "RADAR TESPİTLERİ" },
+  { id: "positions", label: "OTONOM POZİSYONLAR" },
   { id: "overview", label: "ÖZET" },
   { id: "symbols", label: "SEMBOL BAZLI" },
   { id: "autonomous", label: "OTONOM GEÇMİŞ" },
@@ -741,25 +912,36 @@ const TABS = [
   { id: "llm", label: "LLM TAHMİN" },
   { id: "learning", label: "SELF-LEARNING" },
 ];
+const USER_TABS = [
+  { id: "radar", label: "RADAR TESPİTLERİ" },
+  { id: "positions", label: "OTONOM POZİSYONLAR" },
+];
 
 export default function ReportsPage() {
-  const [tab, setTab] = useState("overview");
+  const { role } = useAuth();
+  const isAdmin = role === "admin";
+  const tabs = isAdmin ? ADMIN_TABS : USER_TABS;
+  const [tab, setTab] = useState(isAdmin ? "overview" : "radar");
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === tab)) setTab(isAdmin ? "overview" : "radar");
+  }, [role]);
 
   return (
       <main className="page-shell">
         <div className="page-heading flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="eyebrow text-neon-green">RAPOR MERKEZİ</p>
+            <p className="eyebrow text-neon-green">{isAdmin ? "RAPOR MERKEZİ (YÖNETİM)" : "RAPORLAR"}</p>
             <h1 className="font-mono text-2xl font-bold text-white">Raporlar</h1>
             <p className="mt-1 text-sm text-bunker-muted">
-              Kapanmış paper işlemler, sembol bazlı performans, otonom karar akışı, hız avcısı journalı,
-              LLM tahmin başarısı ve self-learning sistemi — tümü salt okunur, paper-only.
+              {isAdmin
+                ? "Kullanıcı görünümüne ek olarak strateji performansı, sembol bazlı, otonom geçmiş, hız avcısı, LLM tahmin ve self-learning detayları — salt okunur, paper-only."
+                : "Radar tespitleri ve otonom sistemin açtığı pozisyonların durumları — salt okunur, paper-only."}
             </p>
           </div>
         </div>
 
         <div className="section-tabs mb-5" role="tablist" aria-label="Rapor sekmesi">
-          {TABS.map((item) => (
+          {tabs.map((item) => (
             <button key={item.id} type="button" role="tab" aria-selected={tab === item.id}
               className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
               {item.label}
@@ -767,18 +949,25 @@ export default function ReportsPage() {
           ))}
         </div>
 
-        {tab === "overview" && <OverviewTab />}
-        {tab === "symbols" && <SymbolsTab />}
-        {tab === "autonomous" && <AutonomousTab />}
-        {tab === "velocity" && <VelocityTab />}
-        {tab === "llm" && <LlmTab />}
-        {tab === "learning" && <SelfLearningTab />}
+        {isAdmin ? (
+          <>
+            {tab === "radar" && <UserRadarTab />}
+            {tab === "positions" && <UserPositionsTab />}
+            {tab === "overview" && <OverviewTab />}
+            {tab === "symbols" && <SymbolsTab />}
+            {tab === "autonomous" && <AutonomousTab />}
+            {tab === "velocity" && <VelocityTab />}
+            {tab === "llm" && <LlmTab />}
+            {tab === "learning" && <SelfLearningTab />}
+          </>
+        ) : (
+          <>
+            {tab === "radar" && <UserRadarTab />}
+            {tab === "positions" && <UserPositionsTab />}
+          </>
+        )}
       </main>
   );
 }
-
-
-
-
 
 
