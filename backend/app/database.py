@@ -858,6 +858,112 @@ async def get_realized_pnl():
 
     return await _run_db(op)
 
+async def get_report_trade_breakdown():
+    """Salt-okunur admin raporu: strateji/sembol bazlı kapanmış işlem özetleri.
+
+    Yalnızca trades tablosunu okur; hiçbir strateji parametresini veya pozisyonu
+    değiştirmez. Geciken ticaretleri 'BEKLİYOR' statüsü gibi yorumlamaz; verilen
+    her rakam kapanmış paper işlemlerden gelir.
+    """
+    def op(conn):
+        strategies = conn.execute(
+            """SELECT strategy,
+                  COUNT(*) AS trade_count,
+                  COALESCE(SUM(pnl), 0) AS net_pnl,
+                  COALESCE(SUM(commission), 0) AS commission,
+                  COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning,
+                  COALESCE(AVG(max_favorable_pct), 0) AS avg_max_favorable,
+                  COALESCE(AVG(max_adverse_pct), 0) AS avg_max_adverse
+               FROM trades GROUP BY strategy ORDER BY net_pnl DESC""").fetchall()
+        symbols = conn.execute(
+            """SELECT symbol,
+                  COUNT(*) AS trade_count,
+                  COALESCE(SUM(pnl), 0) AS net_pnl,
+                  COALESCE(SUM(commission), 0) AS commission,
+                  COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning,
+                  COALESCE(AVG(max_favorable_pct), 0) AS avg_mfe_pct,
+                  COALESCE(AVG(max_adverse_pct), 0) AS avg_dd_pct,
+                  COALESCE(MIN(exit_time), 0) AS first_seen,
+                  COALESCE(MAX(exit_time), 0) AS last_seen
+               FROM trades GROUP BY symbol ORDER BY net_pnl DESC""").fetchall()
+        by_symbol = []
+        for row in symbols:
+            item = dict(row)
+            total = int(item.get("trade_count") or 0)
+            wins = int(item.get("winning") or 0)
+            item["win_rate"] = round((wins / total) * 100, 2) if total else 0.0
+            by_symbol.append(item)
+        stats_row = conn.execute("""SELECT COUNT(*) AS trade_count,
+              COALESCE(SUM(pnl), 0) AS net_pnl,
+              COALESCE(SUM(commission), 0) AS commission,
+              COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning,
+              COALESCE(AVG(max_favorable_pct), 0) AS avg_max_favorable,
+              COALESCE(AVG(max_adverse_pct), 0) AS avg_max_adverse
+            FROM trades""").fetchone()
+        overall = dict(stats_row)
+        strategy_rows = []
+        for row in strategies:
+            item = dict(row)
+            total = int(item.get("trade_count") or 0)
+            wins = int(item.get("winning") or 0)
+            item["win_rate"] = round((wins / total) * 100, 2) if total else 0.0
+            strategy_rows.append(item)
+        return {"strategies": strategy_rows, "symbols": by_symbol, "overall": overall}
+    return await _run_db(op)
+
+
+async def get_report_autonomous_log(limit: int = 200, offset: int = 0, symbol: str = "", strategy: str = ""):
+    """Geçmiş otonom işlem akışı: sinyaller + karar logları (salt okunur).
+
+    Otonom döngüler tarafindan üretilen tüm kararlar bu tablolarda saklanir.
+    Bu fonksiyon yalnızca yönetici raporunda listelenmek üzere okur; hiçbir
+    yazma veya pozisyon değişikliği yapmaz. Sinyal tablosu işlem açma/kapama,
+    decision_logs ise her tarama kararını içerir.
+    """
+    limit = max(1, min(int(limit) or 200, 500))
+    offset = max(0, int(offset) or 0)
+    def op(conn):
+        clauses, values = [], []
+        if symbol: clauses.append("symbol=?"); values.append(str(symbol).upper())
+        if strategy: clauses.append("strategy=?"); values.append(strategy)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        values.extend([limit, offset])
+        rows = conn.execute(
+            f"SELECT timestamp, symbol, action, price, reason, strategy, trade_id FROM signals{where}"
+            " ORDER BY timestamp DESC LIMIT ? OFFSET ?", values).fetchall()
+        return [dict(row) for row in rows]
+    return await _run_db(op)
+
+
+async def get_report_decision_summary(symbol: str = "", limit: int = 25):
+    """Karar loglarından son durum özeti: strateji × karar dağılımı (salt okunur)."""
+    limit = max(1, min(int(limit) or 25, 100))
+    def op(conn):
+        clauses, values = [], []
+        if symbol: clauses.append("symbol=?"); values.append(str(symbol).upper())
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            f"""SELECT strategy, decision, COUNT(*) AS count, MAX(timestamp) AS last_at
+                FROM decision_logs{where}
+                GROUP BY strategy, decision ORDER BY count DESC LIMIT ?""", values + [limit]).fetchall()
+        return [dict(row) for row in rows]
+    return await _run_db(op)
+
+
+async def get_report_symbol_velocity_quality():
+    """Hız avcısı sembol kalite istatistikleri (velocity_candidates, salt okunur)."""
+    def op(conn):
+        rows = conn.execute(
+            """SELECT symbol,
+                  COUNT(*) AS evaluated,
+                  SUM(CASE WHEN touched_target THEN 1 ELSE 0 END) AS touched,
+                  AVG(mfe_pct) AS average_mfe_pct
+               FROM velocity_candidates WHERE status='evaluated'
+               GROUP BY symbol ORDER BY evaluated DESC""").fetchall()
+        return [dict(row) for row in rows]
+    return await _run_db(op)
+
+
 async def create_backup_file():
     """Create a PostgreSQL custom-format dump file for download."""
     import subprocess
@@ -1984,6 +2090,62 @@ async def save_monitoring_notifications(entries):
     return await _run_db(op)
 
 
+
+async def get_monitoring_velocity_matches(limit: int = 200):
+    """Bildirimleri aynı andaki velocity adayıyla eşleştir (salt okunur).
+
+    monitoring_notifications ve velocity_candidates aynı tarama turunda
+    üretilir: bildirimin tespit anı (detected_at) ile velocity adayının
+    kayıt anı (created_at) <= 60 saniye fark ve hedef % eşleşmesi aranır.
+    Velocity adayı değerlendirildiyse gerçek M1 kapanış ölçümü (mfe_pct,
+    touched_target) kullanılır; değilse bekliyor kabul edilir.
+    """
+    def op(conn):
+        notif_rows = conn.execute(
+            "SELECT id, symbol, mode, score, target_pct, price, expected_price,"
+            " horizon_minutes, detected_at, sent_via_push, message, title"
+            " FROM monitoring_notifications ORDER BY detected_at DESC LIMIT ?",
+            (max(1, min(int(limit), 1000)),)).fetchall()
+        matches = []
+        for n in notif_rows:
+            item = dict(n)
+            symbol = str(item.get("symbol") or "").upper()
+            detected = float(item.get("detected_at") or 0)
+            target = float(item.get("target_pct") or 0)
+            best = None
+            if symbol and detected > 0:
+                cands = conn.execute(
+                    """SELECT candidate_id, symbol, target_pct, passes, status,
+                              mfe_pct, touched_target, created_at, ml_target_pct
+                       FROM velocity_candidates
+                       WHERE symbol=? AND ABS(created_at - ?) <= 60
+                       ORDER BY ABS(created_at - ?) LIMIT 4""",
+                    (symbol, detected, detected)).fetchall()
+                for c in cands:
+                    row = dict(c)
+                    if target > 0 and abs(float(row.get("target_pct") or 0) - target) < 0.01:
+                        best = row
+                        break
+                if best is None and cands:
+                    best = dict(cands[0])
+            if best:
+                item["candidate_id"] = best.get("candidate_id")
+                item["candidate_status"] = best.get("status")
+                item["mfe_pct"] = best.get("mfe_pct")
+                item["touched_target"] = bool(best.get("touched_target")) if best.get("touched_target") is not None else None
+                item["candidate_target_pct"] = best.get("target_pct")
+                item["candidate_passes"] = bool(best.get("passes")) if best.get("passes") is not None else None
+            else:
+                item["candidate_id"] = None
+                item["candidate_status"] = None
+                item["mfe_pct"] = None
+                item["touched_target"] = None
+                item["candidate_target_pct"] = None
+                item["candidate_passes"] = None
+            matches.append(item)
+        return matches
+    return await _run_db(op)
+
 async def list_monitoring_notifications(limit=50):
     """En son monitoring bildirimlerini döndür (yeni -> eski)."""
     def op(conn):
@@ -2641,3 +2803,4 @@ async def get_all_symbol_target_states() -> list[dict]:
                  "success_count": int(r["success_count"] or 0), "fail_count": int(r["fail_count"] or 0),
                  "total_count": int(r["total_count"] or 0), "last_adjusted_at": float(r["last_adjusted_at"] or 0)} for r in rows]
     return await _run_db(op)
+

@@ -262,6 +262,117 @@ async def get_chat_prediction_replay(lookback_hours: int = 6, horizons: str = "5
                             "step_minutes": step_minutes, "symbols": symbol_list}}
 
 
+@router.get("/api/reports/overview")
+async def get_report_overview():
+    """Admin Rapor Merkezi Özet sekmesi: kapanmış işlem, strateji ve karar özeti.
+
+    Salt okunur; yalnızca trades/signals/decision_logs/monitoring_notifications
+    üzerinden kümeleme yapar. Hiçbir strateji parametresini veya pozisyonu
+    değiştirmez, paper-only kuralını korur.
+    """
+    breakdown = await database.get_report_trade_breakdown()
+    decision_summary = await database.get_report_decision_summary()
+    open_positions = []
+    try:
+        for sym, pos in analyzer.positions.items():
+            open_positions.append({
+                "symbol": sym,
+                "strategy": pos.get("strategy", "UT"),
+                "side": pos.get("side", "LONG"),
+                "entry": pos.get("entry_price"),
+                "entry_time": pos.get("entry_time"),
+                "quantity": pos.get("quantity"),
+                "stop": pos.get("stop_price"),
+                "take_profit": pos.get("take_profit"),
+            })
+    except Exception:
+        pass
+    try:
+        balance = await database.get_wallet_balance("TRY")
+    except Exception:
+        balance = None
+    now = time.time()
+    overall = dict(breakdown.get("overall") or {})
+    overall["open_positions"] = len(open_positions)
+    overall["try_balance"] = balance
+    return {
+        "paper_only": True,
+        "generated_at": now,
+        "overall": overall,
+        "strategies": breakdown.get("strategies", []),
+        "decision_summary": decision_summary[:40],
+        "open_positions": open_positions,
+    }
+
+
+@router.get("/api/reports/symbols")
+async def get_report_symbols(limit: int = 200):
+    """Sembol bazlı detaylı rapor: net PnL, başarı, MFE/DD ve ilk/son işlem."""
+    limit = max(1, min(int(limit) or 200, 500))
+    breakdown = await database.get_report_trade_breakdown()
+    symbols = [row for row in breakdown.get("symbols", [])][:limit]
+    velocity = await database.get_report_symbol_velocity_quality()
+    velocity_by_symbol = {str(row.get("symbol", "")).upper(): row for row in velocity}
+    for row in symbols:
+        sym = str(row.get("symbol", "")).upper()
+        vrow = velocity_by_symbol.get(sym) or {}
+        row["velocity_evaluated"] = int(vrow.get("evaluated") or 0)
+        row["velocity_touched"] = int(vrow.get("touched") or 0)
+        ev = int(vrow.get("evaluated") or 0)
+        row["velocity_touch_rate"] = round(int(vrow.get("touched") or 0) / ev * 100, 2) if ev else None
+    return {"paper_only": True, "symbols": symbols, "total": len(symbols)}
+
+
+@router.get("/api/reports/autonomous-log")
+async def get_report_autonomous_log(limit: int = 200, offset: int = 0,
+                                    symbol: str = "", strategy: str = ""):
+    """Geçmiş otonom işlem akışı (signals) — yönetici raporu için salt okunur."""
+    limit = max(1, min(int(limit) or 200, 500))
+    offset = max(0, int(offset) or 0)
+    rows = await database.get_report_autonomous_log(
+        limit=limit, offset=offset, symbol=symbol, strategy=strategy)
+    return {"paper_only": True, "rows": rows, "limit": limit, "offset": offset,
+            "next_offset": offset + len(rows) if len(rows) == limit else None}
+
+
+@router.get("/api/reports/self-learning")
+async def get_report_self_learning(limit: int = 12):
+    """Self-learning sistem özeti: dersler + velocity pattern kırılımı + ML durumu.
+
+    Salt okunur; öğrenme sistemi durumunu ve türetilmiş dersleri raporlar.
+    Öğrenme hiçbir zaman aktif strateji parametrelerini değiştirmez.
+    """
+    limit = max(1, min(int(limit) or 12, 50))
+    from app.self_learning import build_learning_context
+    trades = await database.get_trades(limit=200)
+    learning = build_learning_context(trades, limit=200)
+    lessons = await database.get_llm_forecast_lessons(limit=limit)
+    velocity_patterns = await database.get_velocity_pattern_hit_rates()
+    ml_artifact = await database.get_latest_ml_model_artifact()
+    return {
+        "paper_only": True,
+        "learning": learning,
+        "lessons": lessons,
+        "velocity_patterns": velocity_patterns,
+        "ml_artifact": ml_artifact,
+    }
+
+
+@router.get("/api/reports/autonomous-decisions")
+async def get_report_autonomous_decisions(limit: int = 100, offset: int = 0,
+                                          symbol: str = "", strategy: str = ""):
+    """Karar logu özeti (decision_logs) — yönetici raporu için salt okunur."""
+    limit = max(1, min(int(limit) or 100, 300))
+    offset = max(0, int(offset) or 0)
+    decisions = await database.get_decision_logs(limit=limit, offset=offset,
+                                                  symbol=symbol or None,
+                                                  strategy=strategy or None)
+    summary = await database.get_report_decision_summary(symbol=symbol, limit=30)
+    return {"paper_only": True, "decisions": decisions, "summary": summary,
+            "limit": limit, "offset": offset,
+            "next_offset": offset + len(decisions) if len(decisions) == limit else None}
+
+
 @router.get("/api/reports/capital-lock")
 async def get_capital_lock_report():
     """Read-only BB-MFI capital-lock outcomes; never changes positions or rules."""

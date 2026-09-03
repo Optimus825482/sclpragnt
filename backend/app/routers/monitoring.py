@@ -363,37 +363,51 @@ async def monitoring_state():
 
 @router.get("/api/reports/notifications")
 async def report_notifications(limit: int = 200):
-    """Bildirim raporu: her aday için beklenen fiyat ile gerçekleşen piyasa fiyatını karşılaştırır.
+    """Radar bildirim raporu — gerçek kapanmış M1 ölçümüne dayalı başarı.
 
-    Başarı durumu expected_price'a göre hesaplanır:
-    - fark <= %0.2  : TAMAMEN BAŞARILI (hedefe ulaşmış)
-    - fark <= %1.0  : BAŞARILI    (hedefe yaklaşmış)
-    - fark <= %3.0  : KISMİ       (hareket başlamış)
-    - diğer         : BAŞARISIZ   (hedefe ulaşamamış / karşı yöne gitmiş)
+    Bildirim, oluşturulduğu tarama turundaki velocity adayıyla eşleştirilir
+    (<=60 sn ve hedef % eşleşmesi). Velocity learning loop, ufuk süresi
+    dolunca kapanmış M1 mumlarından gerçek MFE ve hedef dokunuşunu ölçer:
+
+    - aday evaluated + touched_target : TAMAMEN BAŞARILI (hedefe ulaşıldı)
+    - aday evaluated + MFE >= hedef*0.5 : BAŞARILI (hedefe yaklaşıldı)
+    - aday evaluated + MFE > 0         : KISMİ (hareket başladı)
+    - aday evaluated + diğer           : BAŞARISIZ (hedefe ulaşamadı)
+    - aday pending                     : BEKLİYOR (ölçüm sürüyor)
+    - eşleşen velocity adayı yok       : ÖLÇÜLEMEDİ (kayıt öncesi/eski kayıt)
+
+    Eski hesap (expected_price - price) / price, kayıtlı expected_price
+    zaten hedef kadarlık artış içerdiğinden her zaman sabit hedef %'sini
+    veriyordu ve gerçek piyasa sonucunu hiç ölçmüyordu; bu sürüm düzeltir.
     """
-    rows = await database.list_monitoring_notifications(max(1, min(int(limit), 500)))
+    limit = max(1, min(int(limit), 500))
+    rows = await database.get_monitoring_velocity_matches(limit=limit)
+    now = time.time()
     result = []
     for row in rows:
         symbol = row.get("symbol")
         price = float(row.get("price") or 0)
-        expected = float(row.get("expected_price") or 0)
         target_pct = float(row.get("target_pct") or 0)
-        expected_from_price = price * (1 + target_pct / 100) if price > 0 and target_pct > 0 else None
-        expected_used = expected if expected > 0 else expected_from_price
         detected_at = float(row.get("detected_at") or 0)
-        diff_pct = None
-        status = "BEKLENİYOR"
-        if expected_used and expected_used > 0 and price > 0:
-            diff_pct = ((expected_used - price) / price) * 100
-            abs_diff = abs(diff_pct)
-            if abs_diff <= 0.2:
+        mfe = row.get("mfe_pct")
+        mfe_pct = float(mfe) if mfe is not None else None
+        touched = row.get("touched_target")
+        candidate_status = str(row.get("candidate_status") or "")
+        horizon = int(row.get("horizon_minutes") or 0)
+        window_closed = bool(detected_at and horizon and (now - detected_at) >= (horizon + 2) * 60)
+        if candidate_status == "evaluated" and mfe_pct is not None:
+            if touched:
                 status = "TAMAMEN BAŞARILI"
-            elif abs_diff <= 1.0:
+            elif target_pct > 0 and mfe_pct >= target_pct * 0.5:
                 status = "BAŞARILI"
-            elif abs_diff <= 3.0:
+            elif mfe_pct > 0:
                 status = "KISMİ"
             else:
                 status = "BAŞARISIZ"
+        elif candidate_status == "pending" and not window_closed:
+            status = "BEKLİYOR"
+        else:
+            status = "ÖLÇÜLEMEDİ" if window_closed else "BEKLİYOR"
         result.append({
             "id": row.get("id"),
             "symbol": symbol,
@@ -402,15 +416,26 @@ async def report_notifications(limit: int = 200):
             "score": row.get("score"),
             "target_pct": target_pct,
             "price": price,
-            "expected_price": expected_used,
-            "diff_pct": round(diff_pct, 3) if diff_pct is not None else None,
+            "expected_price": row.get("expected_price"),
+            "mfe_pct": mfe_pct,
+            "touched_target": touched,
             "status": status,
             "mode": row.get("mode"),
-            "horizon_minutes": row.get("horizon_minutes"),
+            "horizon_minutes": horizon,
             "detected_at": detected_at,
             "sent_via_push": row.get("sent_via_push"),
+            "candidate_id": row.get("candidate_id"),
         })
-    return {"paper_only": True, "notifications": result, "total": len(result)}
+    counts = {"TAMAMEN BAŞARILI": 0, "BAŞARILI": 0, "KISMİ": 0,
+              "BAŞARISIZ": 0, "BEKLİYOR": 0, "ÖLÇÜLEMEDİ": 0}
+    for item in result:
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+    evaluated = sum(counts[k] for k in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ"))
+    success = counts["TAMAMEN BAŞARILI"] + counts["BAŞARILI"]
+    return {"paper_only": True, "notifications": result, "total": len(result),
+            "breakdown": {"counts": counts, "evaluated": evaluated,
+                          "success_count": success,
+                          "success_rate": (success / evaluated * 100) if evaluated else None}}
 
 
 @router.post("/api/monitoring/reset-notifications")
