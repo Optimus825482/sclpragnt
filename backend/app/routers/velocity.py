@@ -308,6 +308,12 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 effective_target = max(float(base_target_pct), ml_target)
             else:
                 effective_target = float(base_target_pct)
+            # ML siralama bonusu: ML base'in ustunde tahmin ettiginde aday
+            # siralamada one cikar. Dusuk tahminler adayi ezmez (bonus=1.0).
+            ml_bonus = 1.0
+            if ml_target is not None and ml_target > base_target_pct:
+                ml_bonus = 1.0 + min(2.0, (ml_target - base_target_pct) / base_target_pct)
+            velocity_score = round(velocity_score * ml_bonus, 2)
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
