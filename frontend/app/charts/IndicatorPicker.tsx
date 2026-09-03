@@ -292,14 +292,12 @@ export const SLING_SHOT_ENTRY: RegistryEntry = {
             yhat1.push(calculateYhat(i));
             yhat2.push(calculateYhat(Math.max(0, i - 2))); // 2 bar lag
         }
-        // Trend yönüne göre renk belirle
-        const greenPlot: { time: number; value: number | null }[] = [];
-        const redPlot: { time: number; value: number | null }[] = [];
+        // Trend yönüne göre renk belirle — TEK SERİ, segment bazlı renk
+        const kernelLine: { time: number; value: number | null; color?: string }[] = [];
         for (let i = 0; i < bars.length; i++) {
             const v = yhat1[i];
             if (v == null || !Number.isFinite(v)) {
-                greenPlot.push({ time: t[i], value: null });
-                redPlot.push({ time: t[i], value: null });
+                kernelLine.push({ time: t[i], value: null });
                 continue;
             }
             // Önceki değerler
@@ -308,13 +306,10 @@ export const SLING_SHOT_ENTRY: RegistryEntry = {
             const v2 = yhat2[i];
             let isBullish = false;
             if (smoothColors) {
-                // Smooth colors: yhat2 vs yhat1 crossover
                 isBullish = v2 != null && v2 > v;
             } else {
-                // Rate of change: yhat1 yönü
                 if (prev1 != null && prev2 != null) {
                     const wasBearish = prev2 > prev1;
-                    const wasBullish = prev2 < prev1;
                     const isBearishNow = prev1 > v;
                     const isBullishNow = prev1 < v;
                     isBullish = isBullishNow || (wasBearish && !isBearishNow);
@@ -324,19 +319,12 @@ export const SLING_SHOT_ENTRY: RegistryEntry = {
                     isBullish = true;
                 }
             }
-            if (isBullish) {
-                greenPlot.push({ time: t[i], value: v });
-                redPlot.push({ time: t[i], value: null });
-            } else {
-                greenPlot.push({ time: t[i], value: null });
-                redPlot.push({ time: t[i], value: v });
-            }
+            kernelLine.push({ time: t[i], value: v, color: isBullish ? "#3AFF17" : "#FD1707" });
         }
         return {
             metadata: { overlay: true },
             plots: {
-                plot0: greenPlot, // Yükseliş (yeşil)
-                plot1: redPlot,   // Düşüş (kırmızı)
+                plot0: kernelLine, // Tek seri, her nokta kendi renginde
             },
         };
     },

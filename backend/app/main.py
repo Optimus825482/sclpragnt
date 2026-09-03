@@ -89,6 +89,7 @@ from app.routers.runtime import (  # noqa: F401
     _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status)
 from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop  # noqa: F401
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
+from app.routers import monitoring  # noqa: F401
 
 try:
     import edge_tts
@@ -111,6 +112,7 @@ app.include_router(chart_forecast_routes.router)
 app.include_router(system_routes.router)
 app.include_router(reports_routes.router)
 app.include_router(velocity_routes.router)
+app.include_router(monitoring.router)
 app.include_router(backtest_routes.router)
 
 
