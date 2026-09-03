@@ -400,8 +400,9 @@ class MarketData:
                 try:
                     await self.repair_history_gaps()
                 except Exception as exc:
-                    print(f"[MarketData] Gap repair hatası: {exc}", flush=True)
-                    break
+                    # Hata durumunda döngüyü sonlandırma — logla ve devam et.
+                    # Geçici bir hata (ağ kopması, timeout) tüm izlemeyi durdurmasın.
+                    print(f"[MarketData] Gap repair hatası (denenecek): {exc}", flush=True)
                 await asyncio.sleep(10)
         except asyncio.CancelledError:
             raise
@@ -582,12 +583,21 @@ class MarketData:
         timestamps = history.setdefault("timestamps", [])
         values = (opened, high, low, close, volume)
         keys = ("opens", "highs", "lows", "closes", "volumes")
-        if opened_at_ms in timestamps:
-            index = timestamps.index(opened_at_ms)
+        # O(n) linear scan yerine dict mapping kullan — O(1) lookup
+        ts_index_map = history.get("_ts_index_map")
+        if ts_index_map is None:
+            # İlk sefer: mapping oluştur (lazy initialization)
+            ts_index_map = {ts: idx for idx, ts in enumerate(timestamps)}
+            history["_ts_index_map"] = ts_index_map
+        index = ts_index_map.get(opened_at_ms)
+        if index is not None:
             for key, value in zip(keys, values):
                 history[key][index] = value
+            # Mapping'i güncelle (değişiklik yok ama tutarlılık için)
         else:
+            index = len(timestamps)
             timestamps.append(opened_at_ms)
+            ts_index_map[opened_at_ms] = index
             for key, value in zip(keys, values):
                 history.setdefault(key, []).append(value)
         history["last_closed_at_ms"] = max(int(history.get("last_closed_at_ms", 0) or 0), closed_at_ms)
@@ -598,6 +608,10 @@ class MarketData:
             del timestamps[:excess]
             for key in keys:
                 del history[key][:excess]
+            # Mapping'i yeniden indeksle — eski offset'i düzelt
+            ts_index_map = history.get("_ts_index_map")
+            if ts_index_map is not None:
+                history["_ts_index_map"] = {ts: idx for idx, ts in enumerate(timestamps)}
 
     def get_ticker(self, symbol):
         return self.tickers.get(symbol.upper())

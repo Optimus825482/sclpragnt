@@ -80,8 +80,6 @@ class PromotionPipeline:
                       paper_expectancy: float | None = None,
                       human_approved: bool = False) -> dict:
         """Attempt one gate advance; refuses without objective evidence."""
-        from app.config import config
-        del config  # imported for symmetry/future gates
         await self._ensure()
         if name not in self._state:
             raise ValueError(f"{name} boru hattında kayıtlı değil")

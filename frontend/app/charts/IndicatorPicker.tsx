@@ -242,7 +242,9 @@ const emaSeries = (bars: any[], period: number, color: string) => {
     return out;
 };
 
-// SlingShot: yalnız EMA50 (lime) + EMA11 (red) çizgileri — üçgen/marker YOK.
+// SlingShot System: EMA50 (yeşil) + EMA11 (kırmızı) trend takip sistemi.
+// Conservative entry: trend yönünde EMA11'e dönüş sonrası kırılım.
+// Aggressive entry: trend yönünde EMA11'e pullback (potansiyel giriş uyarısı).
 // Varsayılan grafik indikatörü; kullanıcı kendi ekledikçe yerini alır.
 export const SLING_SHOT_ENTRY: RegistryEntry = {
     id: "sling_shot",
@@ -251,13 +253,30 @@ export const SLING_SHOT_ENTRY: RegistryEntry = {
     category: "Trend",
     group: "custom",
     overlay: true,
-    inputConfig: [],
+    inputConfig: [
+        { id: "slowPeriod", type: "number", title: "Yavaş EMA (Trend)", defval: 50, min: 5, step: 1 },
+        { id: "fastPeriod", type: "number", title: "Hızlı EMA (Sinyal)", defval: 11, min: 2, step: 1 },
+        { id: "conservative", type: "bool", title: "Konservatif Giriş (Kırılım)", defval: true },
+    ],
     calculate: (bars: any[], params: any) => {
+        const slowPeriod = Math.max(5, Math.round(params.slowPeriod ?? 50));
+        const fastPeriod = Math.max(2, Math.round(params.fastPeriod ?? 11));
+        // Renk trend yönüne göre değişir: yeşil = yükseliş, kırmızı = düşüş
+        const slowPlot = emaSeries(bars, slowPeriod, "#39FF14");
+        const fastPlot = emaSeries(bars, fastPeriod, "#ef4444");
+        // Trend yönüne göre slow EMA rengini değiştir
+        const coloredSlow = slowPlot.map((point, idx) => {
+            if (point.value == null) return point;
+            const fastPoint = fastPlot[idx];
+            if (fastPoint?.value == null) return point;
+            const isBullish = fastPoint.value >= point.value;
+            return { ...point, color: isBullish ? "#39FF14" : "#ef4444" };
+        });
         return {
             metadata: { overlay: true },
             plots: {
-                plot0: emaSeries(bars, 50, "#39FF14"),
-                plot1: emaSeries(bars, 11, "#ef4444"),
+                plot0: coloredSlow,
+                plot1: fastPlot,
             },
         };
     },

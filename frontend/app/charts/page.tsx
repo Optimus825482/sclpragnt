@@ -322,6 +322,8 @@ export default function ChartsPage() {
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
         let attempt = 0;
         let closed = false;
+        // Race condition önleme: sembol/timeframe değiştiğinde eski mesajları yoksay
+        const connId = JSON.stringify({ symbol: symbol.toLowerCase(), interval });
         const connect = () => {
             if (closed) return;
 
@@ -335,6 +337,8 @@ export default function ChartsPage() {
 
             ws.onmessage = (ev) => {
             try {
+                // Eski bağlantıdan gelen mesajları yoksay
+                if (JSON.stringify({ symbol: symbol.toLowerCase(), interval }) !== connId) return;
                 const msg = JSON.parse(ev.data);
                 const k = msg.k;
                 if (!k) return;
@@ -372,7 +376,7 @@ export default function ChartsPage() {
         return () => {
             closed = true;
             if (retryTimer) clearTimeout(retryTimer);
-            ws?.close();
+            if (ws) { ws.onmessage = null; ws.close(); }
         };
     }, [symbol, interval]);
 
@@ -819,6 +823,7 @@ export default function ChartsPage() {
     }, [showPositions, showStopTakeProfit, positions, symbol, bars, interval]);
 
     // BB-MFI stratejisinin backend ile aynı dip koşulunu marker olarak göster.
+    // SlingShot dahil tüm strateji indikatörleri için marker render edilir.
 
     useEffect(() => {
         const series = candleRef.current;
@@ -828,29 +833,44 @@ export default function ChartsPage() {
         utBotMarkersRef.current?.setMarkers([]);
         utBotMarkersRef.current = null;
 
-        const stratInsts = instances.filter((i) => i.registryId in strategySignalFns);
-        if (!stratInsts.length || bars.length === 0) return;
+        // SlingShot ve diğer strateji indikatörlerini topla
+        const slingShotInsts = instances.filter((i) => i.registryId === "sling_shot");
+        const otherStratInsts = instances.filter((i) => i.registryId in strategySignalFns && i.registryId !== "sling_shot");
+        if ((!slingShotInsts.length && !otherStratInsts.length) || bars.length === 0) return;
 
         try {
             const markers = createSeriesMarkers(series, []);
             utBotMarkersRef.current = markers;
             const all: { time: UTCTimestamp; position: "belowBar" | "aboveBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string; size: number }[] = [];
-            for (const inst of stratInsts) {
-                const fn = strategySignalFns[inst.registryId];
-                const colors = strategyColors[inst.registryId];
-                const label = strategyLabels[inst.registryId];
-                const signals = spotExecutionSignals(bars, fn(bars, inst.params));
-                for (const s of signals) {
-                    all.push({
-                        time: s.time as UTCTimestamp,
-                        position: s.type === "buy" ? "belowBar" : "aboveBar",
-                        color: s.type === "buy" ? colors.buy : colors.sell,
-                        shape: s.type === "buy" ? "arrowUp" : "arrowDown",
-                        text: s.type === "buy" ? `${label} BUY` : `${label} SELL`,
-                        size: 1
-                    });
+
+            // Sinyal toplama yardımcı fonksiyonu
+            const collectSignals = (instList: typeof instances, useSpotExec: boolean) => {
+                for (const inst of instList) {
+                    const fn = strategySignalFns[inst.registryId];
+                    const colors = strategyColors[inst.registryId];
+                    const label = strategyLabels[inst.registryId];
+                    const raw = fn(bars, inst.params);
+                    const signals = useSpotExec ? spotExecutionSignals(bars, raw) : raw;
+                    for (const s of signals) {
+                        all.push({
+                            time: s.time as UTCTimestamp,
+                            position: s.type === "buy" ? "belowBar" : "aboveBar",
+                            color: s.type === "buy" ? colors.buy : colors.sell,
+                            shape: s.type === "buy" ? "arrowUp" : "arrowDown",
+                            text: s.type === "buy" ? `${label} BUY` : `${label} SELL`,
+                            size: 1
+                        });
+                    }
                 }
-            }
+            };
+
+            // SlingShot için doğrudan sinyal kullan (spot execution değil)
+            collectSignals(slingShotInsts, false);
+            // Diğer stratejiler için spot execution modeli
+            collectSignals(otherStratInsts, true);
+
+            // Zamana göre sırla ve marker'ları ayarla
+            all.sort((a, b) => a.time - b.time);
             markers.setMarkers(all);
         } catch { /* marker hatası sessiz geç */ }
     }, [instances, bars, symbol]);

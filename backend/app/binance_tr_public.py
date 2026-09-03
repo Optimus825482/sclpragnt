@@ -153,7 +153,7 @@ def _ticker_params(symbols: list | None) -> dict:
     quoted = ",".join(f'"{s}"' for s in symbols[:50])
     return {"symbols": f"[{quoted}]"}
 async def ticker_24h(symbols: list | None = None):
-    return await asyncio.to_thread(_get_json, "/api/v3/ticker/24hr", {})
+    return await asyncio.to_thread(_get_json, "/api/v3/ticker/24hr", _ticker_params(symbols))
 
 # Web'deki https://www.binance.tr/en/markets/overview?tab=top-gaining listesiyle
 # aynı kaynak: /api/v3/ticker/24hr, priceChangePercent'e göre azalan sıralama.

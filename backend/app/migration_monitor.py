@@ -28,9 +28,6 @@ state = {
     "logs": [{"time": time.time(), "level": "info",
                "message": "SQLite desteği kaldırıldı; PostgreSQL tek veritabanıdır."}],
 }
-lock = None
-
-
 def _log(message, level="info"):
     state.setdefault("logs", []).append({"time": time.time(), "level": level, "message": message})
     state["logs"] = state["logs"][-200:]

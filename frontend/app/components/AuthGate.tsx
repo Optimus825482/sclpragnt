@@ -44,8 +44,18 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     setBusy(true);
-    try { await apiRequest(`${API_BASE}/api/auth/logout`, { method: "POST" }); }
-    finally { setStatus((current) => current ? { ...current, authenticated: false } : current); setBusy(false); }
+    try {
+      await apiRequest(`${API_BASE}/api/auth/logout`, { method: "POST" });
+    } finally {
+      // Logout sonrası sunucudan gerçek durumu al — ağ hatasında eski durumu korumak için
+      try {
+        const next = await refresh();
+        setStatus(next);
+      } catch {
+        setStatus((current) => current ? { ...current, authenticated: false } : current);
+      }
+      setBusy(false);
+    }
   };
 
   const authValue = useMemo(

@@ -20,6 +20,9 @@ logger = logging.getLogger("scalper.api_common")
 _radar_snapshot = {"generated_at": 0.0, "items": {}}
 _radar_response_cache = {"generated_at": 0.0, "result": None}
 
+# deque maxlen ile bounded ama async-safe değil — concurrent await noktalarında
+# tutarsız davranabilir. logging modülü thread-safe olduğu için print logları
+# yerine structured logging kullanılmalıdır.
 _strategy_scan_logs = deque(maxlen=5000)
 
 _background_tasks = set()

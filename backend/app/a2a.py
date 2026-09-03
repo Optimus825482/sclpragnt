@@ -57,11 +57,11 @@ async def deliver(message: dict) -> dict:
             "X-A2A-Signature": signature(body, secret),
             "X-A2A-Message-Id": message["message_id"],
         })
-        with security.safe_provider_open(request, timeout=10) as response:
-            return int(response.status)
+        response = await security.safe_provider_open(request, timeout=10)
+        return int(response.status)
 
     try:
-        status = await asyncio.to_thread(send)
+        status = await send()
         delivered = 200 <= status < 300
         return {"delivered": delivered, "status_code": status, "queued": not delivered}
     except Exception as exc:

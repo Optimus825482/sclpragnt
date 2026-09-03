@@ -390,6 +390,51 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
     return signals;
 };
 
+    // SlingShot System: EMA50/EMA11 trend takip sistemi
+    // Conservative Entry: trend yönünde EMA11'e dönüş sonrası kırılım
+    // Aggressive Entry: trend yönünde EMA11'e pullback (potansiyel giriş)
+    const slingShotSignals = (bars: Bar[], params: Record<string, any>) => {
+        const slowPeriod = Math.max(5, Math.round(params.slowPeriod ?? 50));
+        const fastPeriod = Math.max(2, Math.round(params.fastPeriod ?? 11));
+        const useConservative = params.conservative ?? true;
+        const signals: { time: number; type: "buy" | "sell" }[] = [];
+        if (bars.length < slowPeriod + 2) return signals;
+        const closes = bars.map((bar) => bar.close);
+        const ema = (values: number[], period: number) => {
+            const k = 2 / (period + 1);
+            let ema = values[0];
+            for (let i = 1; i < values.length; i++) {
+                ema = values[i] * k + ema * (1 - k);
+            }
+            return ema;
+        };
+        for (let i = slowPeriod; i < bars.length; i++) {
+            const slice = closes.slice(0, i + 1);
+            const prevSlice = closes.slice(0, i);
+            const emaSlow = ema(slice, slowPeriod);
+            const emaFast = ema(slice, fastPeriod);
+            const prevEmaFast = ema(prevSlice, fastPeriod);
+            const close = closes[i];
+            const prevClose = closes[i - 1];
+            if (useConservative) {
+                // Conservative: önceki bar EMA11 altı/üstü, şimdi kırılım
+                if (emaFast > emaSlow && prevClose <= prevEmaFast && close > emaFast) {
+                    signals.push({ time: bars[i].time, type: "buy" });
+                } else if (emaFast < emaSlow && prevClose >= prevEmaFast && close < emaFast) {
+                    signals.push({ time: bars[i].time, type: "sell" });
+                }
+            } else {
+                // Aggressive: trend yönünde EMA11'e pullback
+                if (emaFast > emaSlow && close < emaFast) {
+                    signals.push({ time: bars[i].time, type: "buy" });
+                } else if (emaFast < emaSlow && close > emaFast) {
+                    signals.push({ time: bars[i].time, type: "sell" });
+                }
+            }
+        }
+        return signals;
+    };
+
     const bbMfiSignals = (bars: Bar[], params: Record<string, any>) => {
         const bbPeriod = Math.max(5, Math.round(params.bbPeriod ?? 21));
         const bbStdDev = Number(params.bbStdDev ?? 2);
@@ -431,10 +476,16 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
             const high = Math.max(...bars.slice(i - 20, i).map((b) => b.high));
             const low = Math.min(...bars.slice(i - 20, i).map((b) => b.low));
             const ret5 = c / bars[i - 5].close - 1;
+            const volAvg = bars.slice(i - 20, i).reduce((s, b) => s + b.volume, 0) / 20;
+            // Her strateji için benzersiz sinyal mantığı
             const buy = kind === "ema_vwap" ? c > mean && bars[i - 1].close <= mean
-                : kind === "breakout" ? c > high && bars[i].volume > (bars.slice(i - 20, i).reduce((s, b) => s + b.volume, 0) / 20) * 1.5
+                : kind === "bb_squeeze_orderflow" ? c > high && bars[i].volume > volAvg * 1.5 && bars[i - 1].close < c
                 : kind === "orderflow" ? bars[i - 2].close < bars[i - 1].close && bars[i - 1].close < c
                 : kind === "momentum" ? ret5 > 0.003 && c > mean
+                : kind === "keltner_breakout" ? c > high && ret5 > 0.002
+                : kind === "chop_trend" ? ret5 > 0.004 && c > mean && bars[i].volume > volAvg * 1.2
+                : kind === "donchian_breakout" ? c > high && bars[i].volume > volAvg * 1.3
+                : kind === "mean_reversion" ? c < low && ret5 < -0.001
                 : c < low;
             if (buy) out.push({ time: bars[i].time, type: "buy" });
         }
@@ -448,25 +499,28 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
         cmo_crsi: cmoCrsiSignals,
         bb_mfi_mean_reversion: bbMfiSignals,
         ema_vwap_pullback: (bars) => extendedStrategySignals(bars, "ema_vwap"),
-        bb_squeeze_orderflow: (bars) => extendedStrategySignals(bars, "breakout"),
+        bb_squeeze_orderflow: (bars) => extendedStrategySignals(bars, "bb_squeeze_orderflow"),
         orderflow: (bars) => extendedStrategySignals(bars, "orderflow"),
         momentum: (bars) => extendedStrategySignals(bars, "momentum"),
         vwap_mean_reversion: (bars) => extendedStrategySignals(bars, "mean_reversion"),
-        keltner_breakout: (bars) => extendedStrategySignals(bars, "breakout"),
-        chop_trend_filter: (bars) => extendedStrategySignals(bars, "momentum"),
-        donchian_breakout: (bars) => extendedStrategySignals(bars, "breakout"),
+        keltner_breakout: (bars) => extendedStrategySignals(bars, "keltner_breakout"),
+        chop_trend_filter: (bars) => extendedStrategySignals(bars, "chop_trend"),
+        donchian_breakout: (bars) => extendedStrategySignals(bars, "donchian_breakout"),
+        sling_shot: slingShotSignals,
     };
     export const strategyColors: Record<string, { buy: string; sell: string }> = {
         ut_bot: { buy: "#22c55e", sell: "#ef4444" }, bb_squeeze: { buy: "#f97316", sell: "#ef4444" }, ema_pullback: { buy: "#38bdf8", sell: "#ef4444" }, vwap_macd: { buy: "#c084fc", sell: "#ef4444" }, cmo_crsi: { buy: "#eab308", sell: "#ef4444" },
         bb_mfi_mean_reversion: { buy: "#10b981", sell: "#ef4444" },
         ema_vwap_pullback: { buy: "#22c55e", sell: "#ef4444" }, bb_squeeze_orderflow: { buy: "#f97316", sell: "#ef4444" }, orderflow: { buy: "#38bdf8", sell: "#ef4444" }, momentum: { buy: "#eab308", sell: "#ef4444" }, vwap_mean_reversion: { buy: "#c084fc", sell: "#ef4444" },
         keltner_breakout: { buy: "#fb7185", sell: "#ef4444" }, chop_trend_filter: { buy: "#a3e635", sell: "#ef4444" }, donchian_breakout: { buy: "#60a5fa", sell: "#ef4444" },
+        sling_shot: { buy: "#39FF14", sell: "#ef4444" },
     };
     export const strategyLabels: Record<string, string> = {
         ut_bot: "UT", bb_squeeze: "BB SQ", ema_pullback: "EMA PB", vwap_macd: "VWAP MACD", cmo_crsi: "CMO CRSI",
         bb_mfi_mean_reversion: "BB+MFI",
         ema_vwap_pullback: "EMA+VWAP", bb_squeeze_orderflow: "BB+FLOW", orderflow: "FLOW", momentum: "MTF MOM", vwap_mean_reversion: "VWAP MR",
         keltner_breakout: "KELT", chop_trend_filter: "CHOP", donchian_breakout: "DONCH",
+        sling_shot: "SlingShot",
     };
 
     // Grafik sinyallerini spot yürütme modeline dönüştür:

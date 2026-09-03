@@ -28,13 +28,35 @@ def _atr(highs, lows, closes, period=14):
     return float(np.mean(np.maximum(h - l, np.maximum(abs(h - prev), abs(l - prev)))))
 
 def _macd(closes, fast=12, slow=26, signal=9):
-    if len(closes) < slow + signal: return None
-    line = _ema(closes, fast) - _ema(closes, slow)
-    values = []
-    for i in range(slow, len(closes) + 1):
-        values.append(_ema(closes[:i], fast) - _ema(closes[:i], slow))
-    sig = _ema(values, signal)
-    return {"line": float(line), "signal": float(sig), "histogram": float(line - sig)} if sig is not None else None
+    """MACD hesapla — O(n) optimizasyon: _ema_series kullanır, her adımda baştan hesaplamaz."""
+    if len(closes) < slow + signal:
+        return None
+    closes_arr = np.asarray(closes, dtype=float)
+    ema_fast = _ema_series(closes_arr, fast)
+    ema_slow = _ema_series(closes_arr, slow)
+    # MACD line: ema_fast - ema_slow (sadece geçerli indeksler)
+    macd_line_full = []
+    for i in range(len(closes_arr)):
+        if ema_fast[i] is not None and ema_slow[i] is not None:
+            macd_line_full.append(ema_fast[i] - ema_slow[i])
+        else:
+            macd_line_full.append(None)
+    # MACD line serisinin son geçerli değeri
+    line = None
+    for i in range(len(macd_line_full) - 1, -1, -1):
+        if macd_line_full[i] is not None:
+            line = float(macd_line_full[i])
+            break
+    if line is None:
+        return None
+    # Signal line: MACD line'ın signal periyotlu EMA'sı
+    macd_valid = [v for v in macd_line_full if v is not None]
+    if len(macd_valid) < signal:
+        return None
+    sig = _ema(macd_valid, signal)
+    if sig is None:
+        return None
+    return {"line": line, "signal": float(sig), "histogram": float(line - sig)}
 
 def _bollinger(closes, period=20, std_mult=2.0):
     if len(closes) < period: return None

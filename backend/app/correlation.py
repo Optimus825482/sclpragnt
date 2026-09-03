@@ -79,8 +79,11 @@ class CorrelationMonitor:
         if time.time() - self._last_run >= interval_sec:
             try:
                 await self.refresh(market, symbols=symbols)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Sessizce yutma — logla ki stale data tespit edilebilsin
+                import logging
+                logger = logging.getLogger("scalper.correlation")
+                logger.warning(f"Correlation refresh hatası (stale data kalabilir): {exc}")
         return self._last_run
 
 
