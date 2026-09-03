@@ -44,8 +44,11 @@ export type RadarAlertItem = {
   score?: number;
   target_pct?: number;
   price?: number;
+  expected_price?: number;
   mode?: string;
   triggered_at?: number;
+  detected_at?: number;
+  horizon_minutes?: number;
   auto_paper_trade?: { status?: string; error?: string } | null;
 };
 
@@ -58,11 +61,13 @@ const fmtPrice = (value: number | undefined, symbol?: string) => {
 export default function RadarAlertModal() {
   const [item, setItem] = useState<RadarAlertItem | null>(null);
   const [queue, setQueue] = useState<RadarAlertItem[]>([]);
+  const [kind, setKind] = useState<"radar" | "alarm">("radar");
   const busyRef = useRef(false);
 
-  const showNext = useCallback((next: RadarAlertItem | null) => {
+  const showNext = useCallback((next: RadarAlertItem | null, nextKind: "radar" | "alarm" = "radar") => {
     if (next) {
       playRadarAlertSound();
+      setKind(nextKind);
       setItem(next);
       busyRef.current = true;
     } else {
@@ -80,19 +85,22 @@ export default function RadarAlertModal() {
   }, [item, queue, showNext]);
 
   const onLiveMessage = useCallback((message: { type: string; data?: unknown }) => {
-    if (message.type !== "alert") return;
-    const data = (message.data || {}) as RadarAlertItem;
+    if (message.type !== "monitoring_alert" && message.type !== "alert") return;
+    const raw = (message.data || {}) as RadarAlertItem;
+    const isRadar = message.type === "monitoring_alert";
+    // monitoring_alert: {symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,...}
     const entry: RadarAlertItem = {
-      ...data,
-      id: data.id ?? (data as any).event_key ?? `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      symbol: data.symbol,
-      message: data.message || data.reason || "Yeni radar bildirimi",
-      triggered_at: data.triggered_at || Date.now() / 1000,
+      ...raw,
+      id: raw.id ?? (raw as any).event_key ?? `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      symbol: raw.symbol,
+      message: raw.message || raw.reason || (isRadar ? "Yeni radar fırsatı" : "Yeni alarm"),
+      title: raw.title,
+      triggered_at: raw.triggered_at ?? raw.detected_at ?? Date.now() / 1000,
     };
     if (busyRef.current) {
       setQueue((current) => [...current, entry].slice(-5));
     } else {
-      showNext(entry);
+      showNext(entry, isRadar ? "radar" : "alarm");
     }
   }, [showNext]);
 
@@ -100,15 +108,16 @@ export default function RadarAlertModal() {
 
   const close = () => showNext(null);
 
+  if (!item) return null;
+
   return (
     <div className="fixed inset-0 z-[120] grid place-items-center bg-black/75 p-4" onClick={close} role="alertdialog" aria-modal="true" aria-labelledby="radar-alert-title">
-      {item ? (
-        <section className="w-full max-w-md overflow-hidden rounded-xl border border-neon-green/40 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <section className="w-full max-w-md overflow-hidden rounded-xl border border-neon-green/40 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-between border-b border-bunker-800 bg-neon-green/5 px-5 py-4">
             <div className="flex items-center gap-2">
               <span className="text-xl">🚨</span>
               <div>
-                <p className="eyebrow text-neon-green/80">RADAR BİLDİRİMİ</p>
+                <p className="eyebrow text-neon-green/80">{kind === "radar" ? "RADAR BİLDİRİMİ" : "ALARM BİLDİRİMİ"}</p>
                 <h2 id="radar-alert-title" className="font-mono text-lg font-bold text-white">
                   {item.symbol ? <SymbolLink symbol={item.symbol} className="text-neon-green hover:text-white" /> : "YENİ ALARM"}
                 </h2>
@@ -165,7 +174,6 @@ export default function RadarAlertModal() {
             </div>
           </div>
         </section>
-      ) : null}
     </div>
   );
 }
