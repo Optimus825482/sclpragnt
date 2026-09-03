@@ -351,3 +351,30 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at DOUBLE PRECISION NOT NULL
 );
 CREATE INDEX IF NOT EXISTS users_username_idx ON users(username);
+
+-- Chart-page ML price forecasts (2026-09-03). Model-only (no LLM); measured
+-- from closed M1 candles when the horizon elapses; evaluated rows feed the ML
+-- training journal.
+CREATE TABLE IF NOT EXISTS chart_forecasts (
+  id BIGSERIAL PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  timeframe TEXT NOT NULL,
+  horizon_minutes INTEGER NOT NULL,
+  entry_price DOUBLE PRECISION NOT NULL,
+  target_pct DOUBLE PRECISION NOT NULL,
+  target_price DOUBLE PRECISION,
+  hit_probability DOUBLE PRECISION,
+  model TEXT,
+  created_at DOUBLE PRECISION NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  evaluated_at DOUBLE PRECISION,
+  outcome_price DOUBLE PRECISION,
+  outcome_return_pct DOUBLE PRECISION,
+  outcome_direction TEXT,
+  direction_correct BOOLEAN,
+  max_favorable_pct DOUBLE PRECISION,
+  max_adverse_pct DOUBLE PRECISION,
+  outcome_details JSONB
+);
+CREATE INDEX IF NOT EXISTS chart_forecasts_symbol_time_idx ON chart_forecasts(symbol, created_at DESC);
+CREATE INDEX IF NOT EXISTS chart_forecasts_status_created_idx ON chart_forecasts(status, created_at);

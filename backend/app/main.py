@@ -70,6 +70,7 @@ from app.api_common import (  # noqa: F401
     _json_safe_positions, _fresh_public_price, _llm_guard_block_reason, correlation_monitor,
     _radar_snapshot, _radar_response_cache)
 from app.routers import a2a as a2a_routes, backtest as backtest_routes, llm_chat as llm_chat_routes
+from app.routers import chart_forecast as chart_forecast_routes
 from app.routers import maintenance as maintenance_routes, reports as reports_routes
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
 from app.routers.maintenance import (  # noqa: F401
@@ -87,6 +88,7 @@ from app.routers.runtime import (  # noqa: F401
     bootstrap_symbol_activity, symbol_activity_loop, llm_replenish_after_close, llm_idle_trigger_loop,
     _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status)
 from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop  # noqa: F401
+from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
 
 try:
     import edge_tts
@@ -105,6 +107,7 @@ app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials
 app.include_router(maintenance_routes.router)
 app.include_router(a2a_routes.router)
 app.include_router(llm_chat_routes.router)
+app.include_router(chart_forecast_routes.router)
 app.include_router(system_routes.router)
 app.include_router(reports_routes.router)
 app.include_router(velocity_routes.router)
@@ -489,6 +492,7 @@ async def startup_services():
     _start_background(strategy_loop(), "strategy-loop")
     _start_background(ma_cascade_shadow_loop(), "ma-cascade-shadow")
     _start_background(llm_forecast_evaluation_loop(), "llm-forecast-evaluator")
+    _start_background(chart_forecast_evaluation_loop(), "chart-forecast-evaluator")
     _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
     _start_background(chat_prediction_auto_trade_loop(), "chat-prediction-auto-trade")
     _start_background(velocity_learning_loop(), "velocity-learner")
@@ -1369,6 +1373,18 @@ async def legacy_trade_cleanup_apply(payload: dict = None):
         _trade_repair.update({"status":"error", "phase":"error", "progress":100, "message":str(exc)})
         _repair_log("error", str(exc))
         raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/chart/_clear-indicators")
+async def clear_all_chart_indicators():
+    """Tüm sembollerin kayıtlı indikatör yerleşimlerini temizler (server-side toplu temizlik).
+
+    Amaç: kullanıcı ayarlardaki butonla tek seferde TÜM sembollerin eski indikatör
+    yerleşimlerini atar; varsayılan SlingShot (frontend fallback) kalır. Yıkıcı,
+    onay ister.
+    """
+    cleared = await database.clear_all_chart_indicators()
+    return {"ok": True, "cleared_symbols": cleared, "message": "Tüm indikatör yerleşimleri temizlendi"}
+
 
 @app.get("/api/chart/{symbol}")
 async def get_chart_settings(symbol: str):

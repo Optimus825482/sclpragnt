@@ -20,7 +20,7 @@ import {
     uid, clamp, LS_SYMBOL, LS_INTERVAL, LS_INDICATORS, LS_PANE_HEIGHTS, LS_DISPLAY_SETTINGS, API,
     paneMinimumHeight, preferredChartHeight, computePaneLayout,
     formatPrice, chartPriceFormat, loadPersisted,
-    DEFAULT_STYLE, DEFAULT_INSTANCES, loadIndicators,
+    DEFAULT_STYLE, DEFAULT_INSTANCES, DEFAULT_SLING_SHOT, loadIndicators,
     strategyLabelFor, macdHistogramColor,
     type DisplaySettings, type EditTarget, type LivePortfolio, type PortfolioMetrics, type TimeframeTrend,
 } from "./chartShared";
@@ -52,6 +52,9 @@ export default function ChartsPage() {
     const [showPatterns, setShowPatterns] = useState(false);
     const [showStrategySignals, setShowStrategySignals] = useState(false);
     const [showPressure, setShowPressure] = useState(true);
+    const [forecast, setForecast] = useState<any>(null);
+    const [forecastHistory, setForecastHistory] = useState<any>(null);
+    const [forecastLoading, setForecastLoading] = useState(false);
     const [m5Bars, setM5Bars] = useState<Bar[]>([]);
     const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
@@ -164,7 +167,7 @@ export default function ChartsPage() {
         const chart = createChart(containerRef.current, {
             width: containerRef.current.clientWidth,
             height: chartHeightRef.current,
-            layout: { background: { color: "transparent" }, textColor: "#6b7280", fontFamily: "JetBrains Mono, monospace" },
+            layout: { background: { color: "#000000" }, textColor: "#6b7280", fontFamily: "JetBrains Mono, monospace" },
             grid: {
                 vertLines: { color: "rgba(55, 65, 81, 0.2)" },
                 horzLines: { color: "rgba(55, 65, 81, 0.2)" }
@@ -279,7 +282,41 @@ export default function ChartsPage() {
         return () => { cancelled = true; };
     }, [symbol]);
 
-    // canlı mum güncelleme: Binance WebSocket'ten seçili sembolün kline'ını dinle
+    // Üst tahmin paneli: ML fiyat tahmini (LLM yok) + sembol tahmin geçmişi.
+    // Sembol/TF değişince taze çek; yenile butonu fresh=1 ile yeni tahmin üretir.
+    const loadForecast = useCallback(async (fresh: boolean) => {
+        if (!symbol) { setForecast(null); return; }
+        setForecastLoading(true);
+        try {
+            const res = await apiRequest(`${API}/${encodeURIComponent(symbol)}/forecast`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ timeframe: interval, fresh })
+            });
+            const data = await res.json();
+            if (res.ok) setForecast(data);
+        } catch {
+            setForecast(null);
+        } finally {
+            setForecastLoading(false);
+        }
+    }, [symbol, interval]);
+
+    const loadForecastHistory = useCallback(async () => {
+        if (!symbol) { setForecastHistory(null); return; }
+        try {
+            const res = await apiRequest(`${API}/${encodeURIComponent(symbol)}/forecast-history`);
+            const data = await res.json();
+            if (res.ok) setForecastHistory(data);
+        } catch {
+            setForecastHistory(null);
+        }
+    }, [symbol]);
+
+    useEffect(() => {
+        loadForecast(false);
+        loadForecastHistory();
+    }, [loadForecast, loadForecastHistory]);
     useEffect(() => {
         let ws: WebSocket | null = null;
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -911,6 +948,33 @@ export default function ChartsPage() {
         localStorage.setItem(LS_INDICATORS, JSON.stringify(next));
     };
 
+    const [clearingIndicators, setClearingIndicators] = useState(false);
+    const [clearMsg, setClearMsg] = useState<{ ok: boolean; text: string } | null>(null);
+    // Server-side toplu temizlik: TÜM sembollerin eski indikatör yerleşimlerini atar.
+    const clearAllIndicators = async () => {
+        if (!confirm("Tüm sembollerin kayıtlı indikatör yerleşimleri temizlensin mi? (varsayılan SlingShot kalır)")) return;
+        setClearingIndicators(true);
+        setClearMsg(null);
+        try {
+            const res = await apiRequest(`${API}/_clear-indicators`, { method: "POST" });
+            const data = await res.json();
+            if (res.ok) {
+                setClearMsg({ ok: true, text: `✓ ${data?.message ?? "temizlendi"}` });
+                // aktif sembolü varsayılana düşür
+                const def = [DEFAULT_SLING_SHOT];
+                setInstances(def);
+                localStorage.setItem(LS_INDICATORS, JSON.stringify(def));
+                await loadFromDb(symbol);
+            } else {
+                setClearMsg({ ok: false, text: data?.message || "temizlik hatası" });
+            }
+        } catch {
+            setClearMsg({ ok: false, text: "bağlantı hatası" });
+        } finally {
+            setClearingIndicators(false);
+        }
+    };
+
     const changeSymbol = (s: string) => {
         setSymbol(s);
         localStorage.setItem(LS_SYMBOL, JSON.stringify(s));
@@ -959,6 +1023,11 @@ export default function ChartsPage() {
                 const filteredIndicators = filterIndicatorInstances(st.indicators as IndicatorInstance[], strategy);
                 setInstances(filteredIndicators);
                 localStorage.setItem(LS_INDICATORS, JSON.stringify(filteredIndicators));
+            } else if (st.indicators != null) {
+                // DB'de hiç indikatör yoksa (temizlenmiş) varsayılan SlingShot
+                const def = [DEFAULT_SLING_SHOT];
+                setInstances(def);
+                localStorage.setItem(LS_INDICATORS, JSON.stringify(def));
             }
             if (st.paneHeights) {
                 paneHeightsRef.current = st.paneHeights;
@@ -1174,6 +1243,19 @@ export default function ChartsPage() {
                             </button>
                         ))}
                     </div>
+                    <div className="border-t border-bunker-800 p-3">
+                        <button
+                            type="button"
+                            onClick={clearAllIndicators}
+                            disabled={clearingIndicators}
+                            className="w-full rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 font-mono text-xs font-bold text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-50"
+                        >
+                            {clearingIndicators ? "TEMİZLENİYOR..." : "TÜM SEMBOL İNDİKATÖRLERİNİ TEMİZLE"}
+                        </button>
+                        {clearMsg && (
+                            <p className={`mt-2 text-center font-mono text-[11px] ${clearMsg.ok ? "text-neon-green" : "text-red-400"}`}>{clearMsg.text}</p>
+                        )}
+                    </div>
                 </section>
             </div>}
 
@@ -1181,6 +1263,51 @@ export default function ChartsPage() {
                     <div className="mb-1.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider"><span className={pressure < 0 ? "text-red-400" : "text-bunker-muted"}>SATICI %{Math.max(0, 50 - pressure / 2).toFixed(0)}</span><span className="text-bunker-muted">BASINÇ · 0</span><span className={pressure >= 0 ? "text-neon-green" : "text-bunker-muted"}>ALICI %{Math.max(0, 50 + pressure / 2).toFixed(0)}</span></div>
                     <div className="relative h-2 overflow-hidden rounded-full bg-bunker-800"><div className="absolute inset-y-0 left-1/2 w-px bg-white/60" /><div className={`absolute top-0 h-full transition-[width] duration-150 ease-out ${pressure >= 0 ? "left-1/2 bg-neon-green" : "right-1/2 bg-red-400"}`} style={{ width: `${Math.abs(pressure) / 2}%` }} /></div>
                 </section>}
+
+            {/* Üst tahmin paneli: ML model çıktısı (LLM yok) + geçmiş başarı + yenile */}
+            <section className="rounded-xl border border-bunker-800 bg-bunker-950/95 px-3 py-2.5 sm:px-4" aria-label="ML fiyat tahmini">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="eyebrow">ML TAHMİN · {symbol}</p>
+                        <div className="flex items-center gap-2">
+                            {forecast?.cache?.hit && forecast.cache.age_sec != null && (
+                                <span className="font-mono text-[10px] text-bunker-muted">cache {forecast.cache.age_sec}s</span>
+                            )}
+                            <button
+                                onClick={() => loadForecast(true)}
+                                disabled={forecastLoading}
+                                className="inline-flex items-center gap-1 rounded-lg border border-bunker-700 px-2 py-1 font-mono text-[11px] text-bunker-muted hover:text-white disabled:opacity-50"
+                                title="Yeni tahmin üret"
+                            >⟳</button>
+                        </div>
+                    </div>
+                    {forecastLoading ? (
+                        <p className="mt-2 font-mono text-xs text-neon-green animate-pulse">hedef hesaplanıyor...</p>
+                    ) : forecast?.forecasts?.length ? (
+                        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            {forecast.forecasts.map((f: any) => (
+                                <div key={f.horizon_minutes} className="rounded-lg border border-bunker-800 bg-bunker-900/60 p-2">
+                                    <div className="flex items-center justify-between font-mono text-[10px] text-bunker-muted uppercase">
+                                        <span>{f.horizon_minutes}dk hedef</span>
+                                        <span>{f.hit_probability != null ? `%${(f.hit_probability * 100).toFixed(0)} olasılık` : ""}</span>
+                                    </div>
+                                    <div className="mt-1 flex items-center gap-3">
+                                        <span className="font-mono text-sm font-bold text-neon-green">{f.target_pct != null ? `+%${f.target_pct.toFixed(2)}` : "—"}</span>
+                                        <span className="font-mono text-sm text-white">{f.target_price != null ? formatPrice(f.target_price) : "—"}</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    ) : (
+                        <p className="mt-2 font-mono text-xs text-bunker-muted">tahmin yok (model eğitilmedi / veri yok)</p>
+                    )}
+                    {forecastHistory && (forecastHistory.evaluated ?? 0) > 0 && (
+                        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-bunker-muted border-t border-bunker-800 pt-2">
+                            <span>ölçülen: <b className="text-white">{forecastHistory.evaluated}</b></span>
+                            <span>yön doğruluğu: <b className={forecastHistory.direction_correct_rate != null && forecastHistory.direction_correct_rate >= 0.5 ? "text-neon-green" : "text-red-400"}>%{(forecastHistory.direction_correct_rate ?? 0) * 100}</b></span>
+                            <span>hedef dokunma: <b className="text-neon-yellow">%{((forecastHistory.target_hit_rate ?? 0) * 100).toFixed(0)}</b></span>
+                        </div>
+                    )}
+                </section>
 
             <div className="chart-card card bg-bunker-950 p-0 overflow-hidden relative">
                 {loading && (
