@@ -12,6 +12,7 @@ from app.api_common import log_user_action
 from app.state import market
 from app.routers.velocity import detect_velocity_candidates
 from app.alerting import deliver_web_push
+from app.ws_runtime import ws_manager
 
 logger = logging.getLogger("scalper.monitoring")
 router = APIRouter()
@@ -196,6 +197,12 @@ async def _notify(candidates_list, settings) -> list:
     elif notified and quiet:
         logger.info("Monitoring: sessiz saatlerde %d bildirim ertelendi (push yok)", len(notified))
     if notified:
+        # Uygulama açıkken radar bildirimini uygulama içi onay modalı + ses ile
+        # göster: sessiz saatlerde push atlanır ama WS mesajı yine de iletilir.
+        try:
+            await ws_manager.broadcast({"type": "monitoring_alert", "data": notified[-1]})
+        except Exception as exc:
+            logger.warning("Monitoring WS broadcast hatası: %s", exc)
         _monitoring_state["history"] = (notified + _monitoring_state["history"])[:HISTORY_LIMIT]
         await _record_history(notified)
     return notified

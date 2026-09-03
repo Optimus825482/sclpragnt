@@ -17,6 +17,7 @@ export default function NotificationPermissionModal({ active = false }: { active
     if (!("Notification" in window) || !("serviceWorker" in navigator)) return;
     if (window.matchMedia?.("(display-mode: standalone)").matches) return; // Kurulu PWA: push zaten ayarlı olabilir
     if (Notification.permission === "granted") return; // izin zaten verilmiş
+    if (Notification.permission === "denied") return; // kalıcı red — tekrar sorma, ekranı karartma
     try {
       if (localStorage.getItem(STORAGE_KEY)) return;
     } catch {
