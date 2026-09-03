@@ -2371,6 +2371,50 @@ async def list_chart_forecasts(symbol: str, limit: int = 50) -> list[dict]:
     return await _run_db(op)
 
 
+async def list_chart_forecasts_paginated(symbol: str | None = None, limit: int = 50, offset: int = 0, status: str | None = None) -> list[dict]:
+    """Rapor sayfası için pagination'lı tahmin listesi."""
+    def op(conn):
+        clauses, values = [], []
+        if symbol:
+            clauses.append("symbol=%s")
+            values.append(str(symbol).upper())
+        if status:
+            clauses.append("status=%s")
+            values.append(str(status))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.extend([max(1, min(int(limit), 200)), max(0, int(offset))])
+        rows = conn.execute(
+            f"SELECT * FROM chart_forecasts{where} ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            values).fetchall()
+        return [_chart_forecast_row(r) for r in rows if r is not None]
+    return await _run_db(op)
+
+
+async def count_chart_forecasts(symbol: str | None = None, status: str | None = None) -> int:
+    """Pagination için toplam kayıt sayısı."""
+    def op(conn):
+        clauses, values = [], []
+        if symbol:
+            clauses.append("symbol=%s")
+            values.append(str(symbol).upper())
+        if status:
+            clauses.append("status=%s")
+            values.append(str(status))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        row = conn.execute(f"SELECT COUNT(*) FROM chart_forecasts{where}", values).fetchone()
+        return int(row[0]) if row else 0
+    return await _run_db(op)
+
+
+async def list_chart_forecasts_all(limit: int = 500) -> list[dict]:
+    def op(conn):
+        rows = conn.execute(
+            "SELECT * FROM chart_forecasts ORDER BY created_at DESC LIMIT %s",
+            (int(limit),)).fetchall()
+        return [_chart_forecast_row(r) for r in rows if r is not None]
+    return await _run_db(op)
+
+
 async def get_pending_chart_forecasts(limit: int = 200) -> list[dict]:
     now = time.time()
     def op(conn):

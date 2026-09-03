@@ -136,10 +136,10 @@ async def create_chart_forecast(symbol: str, payload: dict | None = None):
 
 
 @router.get("/{symbol}/forecast-history")
-async def chart_forecast_history(symbol: str):
+async def chart_forecast_history(symbol: str, limit: int = 200):
     """Sembolün değerlendirilmiş tahminlerinin başarı özeti + son kayıtlar."""
     sym = str(symbol).upper()
-    rows = await database.list_chart_forecasts(sym, limit=200)
+    rows = await database.list_chart_forecasts(sym, limit=limit)
     evaluated = [r for r in rows if r["status"] == "evaluated" and r["direction_correct"] is not None]
     total = len(rows)
     correct = sum(1 for r in evaluated if r["direction_correct"])
@@ -150,7 +150,8 @@ async def chart_forecast_history(symbol: str):
         {"id": r["id"], "horizon_minutes": r["horizon_minutes"], "target_pct": r["target_pct"],
          "entry_price": r["entry_price"], "direction_correct": r["direction_correct"],
          "max_favorable_pct": r.get("max_favorable_pct"), "created_at": r["created_at"],
-         "status": r["status"], "hit_probability": r.get("hit_probability")}
+         "status": r["status"], "hit_probability": r.get("hit_probability"),
+         "timeframe": r.get("timeframe")}
         for r in rows[:20]
     ]
     return {
@@ -158,6 +159,63 @@ async def chart_forecast_history(symbol: str):
         "direction_correct_rate": round(correct / len(evaluated), 4) if evaluated else None,
         "target_hit_rate": round(hit / len(evaluated), 4) if evaluated else None,
         "recent": recent,
+    }
+
+
+@router.get("/forecasts")
+async def chart_forecasts_list(symbol: str = "", limit: int = 50, offset: int = 0, status: str = ""):
+    """Tüm sembollerin ML fiyat tahminleri — rapor sayfası için pagination'lı liste."""
+    rows = await database.list_chart_forecasts_paginated(
+        symbol=symbol or None, limit=limit, offset=offset, status=status or None
+    )
+    total = await database.count_chart_forecasts(symbol or None, status or None)
+    return {"forecasts": rows, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/forecasts/summary")
+async def chart_forecasts_summary(symbol: str = ""):
+    """Sembol bazlı ML tahmin başarı metrikleri — rapor özet kartları için."""
+    sym = str(symbol).upper() if symbol else None
+    rows = await database.list_chart_forecasts(sym, limit=500) if sym else await database.list_chart_forecasts_all(limit=500)
+    total = len(rows)
+    evaluated = [r for r in rows if r["status"] == "evaluated" and r["direction_correct"] is not None]
+    correct = sum(1 for r in evaluated if r["direction_correct"])
+    hit = sum(1 for r in evaluated
+              if r.get("max_favorable_pct") is not None and r.get("target_pct")
+              and r["max_favorable_pct"] >= r["target_pct"])
+    # Sembol bazlı başarı
+    by_symbol: dict[str, dict] = {}
+    for r in rows:
+        s = r.get("symbol", "?")
+        if s not in by_symbol:
+            by_symbol[s] = {"total": 0, "evaluated": 0, "correct": 0, "hit": 0}
+        by_symbol[s]["total"] += 1
+        if r["status"] == "evaluated" and r["direction_correct"] is not None:
+            by_symbol[s]["evaluated"] += 1
+            if r["direction_correct"]:
+                by_symbol[s]["correct"] += 1
+            if r.get("max_favorable_pct") is not None and r.get("target_pct") and r["max_favorable_pct"] >= r["target_pct"]:
+                by_symbol[s]["hit"] += 1
+    symbol_stats = []
+    for s, stats in by_symbol.items():
+        symbol_stats.append({
+            "symbol": s,
+            "total": stats["total"],
+            "evaluated": stats["evaluated"],
+            "correct": stats["correct"],
+            "hit": stats["hit"],
+            "accuracy": round(stats["correct"] / stats["evaluated"], 4) if stats["evaluated"] else None,
+            "hit_rate": round(stats["hit"] / stats["evaluated"], 4) if stats["evaluated"] else None,
+        })
+    symbol_stats.sort(key=lambda x: x["total"], reverse=True)
+    return {
+        "total": total,
+        "evaluated": len(evaluated),
+        "correct": correct,
+        "hit": hit,
+        "accuracy": round(correct / len(evaluated), 4) if evaluated else None,
+        "hit_rate": round(hit / len(evaluated), 4) if evaluated else None,
+        "by_symbol": symbol_stats,
     }
 
 
