@@ -247,7 +247,18 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
 }
 
 export default function ChatPage() {
-  const { username } = useAuth();
+  const { username, role } = useAuth();
+  if (role && role !== "admin") {
+    return (
+      <main className="page-shell">
+        <div className="card mt-10 flex flex-col items-center gap-4 border-neon-red/30 bg-neon-red/5 px-6 py-12 text-center">
+          <p className="eyebrow">YETKİSİZ ERİŞİM</p>
+          <h1 className="font-mono text-xl font-bold text-white">Chat merkezi yalnız sistem yöneticisine açıktır</h1>
+          <a href="/" className="ui-button ui-button-primary">ANA SAYFAYA DÖN</a>
+        </div>
+      </main>
+    );
+  }
   const [messages, setMessages] = useState<Message[]>(starter);
   const [input, setInput] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);

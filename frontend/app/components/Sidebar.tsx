@@ -20,6 +20,7 @@ const MENU_ADMIN = [
     { href: "/audit-logs", label: "Olay Kayıtları", icon: "🛡", desc: "Giriş ve kullanıcı hareketleri" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" },
     { href: "/database", label: "Veritabanı", icon: "🗄️", desc: "Tablo verileri, CSV/SQL indirme" },
+    { href: "/chat", label: "Chat", icon: "💬", desc: "LLM chat merkezi (admin)" },
 ];
 const formatNotificationDate = (value: unknown) => {
     const numeric = Number(value);
