@@ -107,6 +107,25 @@ button, a { touch-action: manipulation; }
 .chat-conversation-actions { display:flex; align-items:center; justify-content:flex-end; gap:.6rem; margin:0 0 .5rem; }
 .chat-scan-buttons { display:flex; flex-wrap:wrap; gap:.5rem; margin:0 0 .6rem; }
 .chat-scan-buttons .ui-button { min-height:2.4rem; padding:.55rem .85rem; font-size:.68rem; }
+.upside-scout-loading { display:flex; align-items:center; gap:.5rem; }
+.upside-scout-spinner { width:14px; height:14px; border:2px solid rgba(58,255,23,0.3); border-top-color:#3AFF17; border-radius:50%; animation:upside-spin 0.8s linear infinite; }
+.upside-scout-text { color:#3AFF17; font-weight:600; letter-spacing:.04em; }
+.upside-scout-dots { display:inline-flex; gap:1px; color:#3AFF17; font-weight:700; }
+.upside-scout-dots span { animation:upside-bounce 1.4s infinite; }
+.upside-scout-dots span:nth-child(2) { animation-delay:0.2s; }
+.upside-scout-dots span:nth-child(3) { animation-delay:0.4s; }
+@keyframes upside-spin { to { transform:rotate(360deg); } }
+@keyframes upside-bounce { 0%,80%,100% { opacity:0.3; transform:translateY(0); } 40% { opacity:1; transform:translateY(-3px); } }
+
+/* Monitoring Radar Animation */
+.monitoring-radar { position:relative; width:120px; height:120px; border-radius:50%; background:radial-gradient(circle, rgba(58,255,23,0.08) 0%, transparent 70%); border:2px solid rgba(58,255,23,0.3); overflow:hidden; }
+.monitoring-radar-sweep { position:absolute; top:50%; left:50%; width:50%; height:2px; background:linear-gradient(90deg, #3AFF17, transparent); transform-origin:left center; animation:radar-sweep 2s linear infinite; }
+.monitoring-radar-ring { position:absolute; border-radius:50%; border:1px solid rgba(58,255,23,0.15); }
+.monitoring-radar-ring-1 { inset:10%; }
+.monitoring-radar-ring-2 { inset:25%; }
+.monitoring-radar-ring-3 { inset:40%; }
+.monitoring-radar-center { position:absolute; top:50%; left:50%; width:6px; height:6px; background:#3AFF17; border-radius:50%; transform:translate(-50%,-50%); box-shadow:0 0 12px #3AFF17; }
+@keyframes radar-sweep { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
 .chat-context-meter { color:#94a3b8; font:600 .65rem/1 ui-monospace,monospace; letter-spacing:.04em; }
 .chat-context-meter.warning { color:#fde68a; }
 .chat-context-meter.critical { color:#fda4af; }
