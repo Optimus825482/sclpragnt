@@ -9,13 +9,13 @@ import SymbolLink from "./SymbolLink";
 import { useAuth } from "../lib/auth";
 
 const MENU_BASE = [
+    { href: "/reports", label: "Raporlar", icon: "📋", desc: "Sinyal ve işlem raporları" },
     { href: "/monitoring", label: "Radar", icon: "📡", desc: "Otonom izleme ve hız avcısı" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
     { href: "/profile", label: "Profil", icon: "👤", desc: "Hesap ve şifre" },
 ];
 // Admin-only menü öğeleri: normal kullanıcılar göremez.
 const MENU_ADMIN = [
-    { href: "/reports", label: "Raporlar", icon: "📋", desc: "Bildirim raporu" },
     { href: "/users", label: "Kullanıcı Yönetimi", icon: "👥", desc: "Kullanıcı ekle/düzenle/sil" },
     { href: "/audit-logs", label: "Olay Kayıtları", icon: "🛡", desc: "Giriş ve kullanıcı hareketleri" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" },
@@ -174,3 +174,4 @@ export default function Sidebar() {
         </>
     );
 }
+
