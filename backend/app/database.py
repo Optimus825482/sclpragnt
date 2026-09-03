@@ -1949,6 +1949,55 @@ async def list_push_subscriptions():
     return await _run_db(op)
 
 
+async def save_monitoring_notifications(entries):
+    """Monitoring bildirim geçmişini kalıcı kaydet (server-side scan loop'tan).
+
+    entries: sözlük listesi — symbol, message, title, score, target_pct,
+    price, expected_price, horizon_minutes, mode, detected_at, sent_via_push.
+    """
+    if not entries:
+        return 0
+    now = time.time()
+    def op(conn):
+        for e in entries:
+            conn.execute(
+                "INSERT INTO monitoring_notifications"
+                "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(e.get("symbol") or "?"),
+                    str(e.get("message") or ""),
+                    str(e.get("title") or "") or None,
+                    e.get("score"), e.get("target_pct"), e.get("price"), e.get("expected_price"),
+                    e.get("horizon_minutes"), e.get("mode"),
+                    float(e.get("detected_at") or now),
+                    bool(e.get("sent_via_push", True)),
+                    now,
+                ),
+            )
+        conn.commit()
+        return len(entries)
+    return await _run_db(op)
+
+
+async def list_monitoring_notifications(limit=50):
+    """En son monitoring bildirimlerini döndür (yeni -> eski)."""
+    def op(conn):
+        rows = conn.execute(
+            "SELECT symbol,message,title,score,target_pct,price,expected_price,"
+            "horizon_minutes,mode,detected_at,sent_via_push FROM monitoring_notifications"
+            " ORDER BY detected_at DESC LIMIT ?", (int(limit),)
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["detected_at"] = _epoch_value(item.get("detected_at"))
+            item["id"] = None
+            result.append(item)
+        return result
+    return await _run_db(op)
+
+
 async def get_chart_settings(symbol):
     def op(conn):
         row = conn.execute("SELECT data FROM chart_settings WHERE symbol=?", (symbol,)).fetchone()

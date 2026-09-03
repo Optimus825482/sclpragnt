@@ -3,7 +3,7 @@ from urllib.error import HTTPError
 from urllib.request import Request
 from cryptography.fernet import Fernet
 from app import database
-from app.security import safe_provider_open, validate_provider_url
+from app.security import safe_provider_open, validate_provider_url, _validate_provider_url_sync
 
 # Sentinel returned by _json_load_lenient when no recovery strategy works;
 # a real ``None`` payload is distinguishable from "undecodable".
@@ -361,7 +361,7 @@ async def embedding(text, model_id=None):
     if model.get("model_type", "chat") != "embedding":
         return {"status": "error", "error": "Aktif model embedding modeli değil"}
     payload = {"model": model["name"], "input": text}
-    base_url = validate_provider_url(cfg["provider"]["base_url"])
+    base_url = _validate_provider_url_sync(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/embeddings") else base_url + "/embeddings"
     async def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")

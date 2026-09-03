@@ -8,6 +8,7 @@ import { streamChat } from "../lib/streamChat";
 import { useLiveMessages } from "../lib/liveSocket";
 import Link from "next/link";
 import { Badge, Button, Card } from "../components/ui";
+import { useAuth } from "../lib/auth";
 
 type ScoutCandidate = {
   symbol: string;
@@ -246,6 +247,7 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
 }
 
 export default function ChatPage() {
+  const { username } = useAuth();
   const [messages, setMessages] = useState<Message[]>(starter);
   const [input, setInput] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -508,6 +510,7 @@ export default function ChatPage() {
           active_tools: activeTools,
           active_skills: activeSkills,
           session_id: sessionId,
+          username: username, // LLM'in kullanıcıya adıyla hitap etmesi için
         },
         {
           signal: controller.signal,

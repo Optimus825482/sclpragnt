@@ -38,13 +38,16 @@ def _rule_value(rule, market, ticker):
     return (last_price / closes[-2] - 1.0) * 100.0
 
 
-async def deliver_web_push(message):
+async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=None):
     vapid_private, subject = os.getenv("VAPID_PRIVATE_KEY", "").strip(), os.getenv("VAPID_SUBJECT", "mailto:alerts@example.com").strip()
     if not vapid_private: return {"ok": False, "skipped": True, "reason": "vapid_not_configured"}
     try:
         from pywebpush import webpush
         subscriptions = await database.list_push_subscriptions()
-        payload = json.dumps({"title": "Scalper Agent alarmı", "body": message, "url": "/alerts"})
+        payload_obj = {"title": title or "Scalper Agent alarmı", "body": message, "url": url or "/alerts"}
+        if tag: payload_obj["tag"] = tag
+        if extra: payload_obj.update(extra)
+        payload = json.dumps(payload_obj)
         for subscription in subscriptions:
             await asyncio.to_thread(webpush, subscription_info=subscription, data=payload, vapid_private_key=vapid_private, vapid_claims={"sub": subject})
         return {"ok": True, "count": len(subscriptions)}

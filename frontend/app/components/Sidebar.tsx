@@ -12,6 +12,7 @@ const MENU_BASE = [
     { href: "/chat", label: "Chat", icon: "✦", desc: "LLM sohbet merkezi" },
     { href: "/", label: "Scalping", icon: "⚡", desc: "Portföy, performans ve canlı işlem akışı" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
+    { href: "/monitoring", label: "Radar", icon: "📡", desc: "Otonom izleme ve hız avcısı" },
 ];
 // Admin-only menü öğeleri: normal kullanıcılar göremez.
 const MENU_ADMIN = [
@@ -123,11 +124,12 @@ export default function Sidebar() {
 
             <div className="p-4 border-t border-bunker-800">
                 {username && (
-                    <p className="mb-2 flex items-center gap-1.5 font-mono text-[11px] text-bunker-muted">
+                    <Link href="/profile" title="Profili düzenle (şifre güncelle)" className="mb-2 flex items-center gap-1.5 rounded-lg border border-transparent px-1 py-1 font-mono text-[11px] text-bunker-muted transition-colors hover:border-bunker-700 hover:bg-bunker-800/60 hover:text-white">
                         <span className="w-1.5 h-1.5 rounded-full bg-neon-green" />
                         <span className="truncate">{username}</span>
                         <span className={`rounded px-1.5 py-0.5 font-mono text-[9px] ${isAdmin ? "border border-neon-green/50 text-neon-green" : "border border-bunker-600 text-bunker-muted"}`}>{isAdmin ? "ADMIN" : "USER"}</span>
-                    </p>
+                        <span className="ml-auto text-[10px] opacity-60">⚙</span>
+                    </Link>
                 )}
                 <Button variant={installEvent ? "primary" : "secondary"} onClick={install} disabled={!installEvent} className="w-full mb-4">⬇ {installEvent ? "UYGULAMA OLARAK YÜKLE" : "YÜKLEME İÇİN TARAYICI MENÜSÜ"}</Button>
                 <p className="eyebrow">SİSTEM DURUMU</p>

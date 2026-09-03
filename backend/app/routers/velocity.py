@@ -105,13 +105,16 @@ VELOCITY_PROFILES = {
 }
 
 
-async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5):
+async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5,
+                                     extra_symbols: list | None = None):
     """Belirli ufukta (5dk/15dk) en az hedef % (2/3) yükselme potansiyeli taşıyan en hızlı 3 aday.
 
     v2 — forensics kalibrasyonu: Bollinger genişliği + ATR + (RSI iki ucu) +
     yapısal teyit (LinReg/Aroon) + aşırı uç elme (MFI/RSI). Her aday
     'trend_devam' veya 'v_donusu' moduyla etiketlenir.
     Yalnızca kapanmış 1m mumlar; tahmin/garanti değildir, paper-only.
+    extra_symbols: top-gainer havuzuna ek olarak zorunlu taranacak semboller
+    (monitoring izleme listesi — daha sık analiz).
     """
     profile = VELOCITY_PROFILES.get(horizon_minutes) or VELOCITY_PROFILES[5]
     target_pct = float(profile["target_pct"])
@@ -124,6 +127,12 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     pool = [item["symbol"] for item in gainer_rows]
     if not pool:
         pool = [str(s).replace("_", "").upper() for s in config.SYMBOLS][:20]
+    if extra_symbols:
+        _pool_set = set(pool)
+        for sym in extra_symbols[:10]:
+            if sym and sym not in _pool_set:
+                pool.append(sym)
+                _pool_set.add(sym)
     sem = asyncio.Semaphore(6)
 
     async def scan_one(symbol: str) -> dict | None:
@@ -693,7 +702,6 @@ async def velocity_status():
         "sl_pct": config.VELOCITY_AUTO_SL_PCT,
         "reentry_hard_stop_block_sec": config.VELOCITY_HARD_STOP_REENTRY_BLOCK_SEC,
         "reentry_cooldown_bars": config.VELOCITY_REENTRY_COOLDOWN_BARS,
-        "min_atr_capacity_ratio": config.VELOCITY_MIN_ATR_CAPACITY_RATIO,
         "last_scan_at": _velocity_auto_state.get("last_scan_at"),
         "last_m5_close_ms": _velocity_auto_state.get("last_m5_close_ms"),
         "total_opened": _velocity_auto_state.get("total_opened", 0),

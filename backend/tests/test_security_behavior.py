@@ -15,7 +15,9 @@ class SecurityBehavior(unittest.TestCase):
             token = security.create_session_token(60)
             self.assertTrue(security.verify_session_token(token))
             self.assertFalse(security.verify_session_token(token + "x"))
-            expired = security.create_session_token(-1)
+            # Negatif ttl_seconds token'ı üretildiği anda geçersiz kılar.
+            # (Konumsal -1 username'e gider; ttl anahtar kelimeyle verilmeli.)
+            expired = security.create_session_token(ttl_seconds=-1)
             self.assertFalse(security.verify_session_token(expired))
 
     def test_login_rate_limit_clears_after_success(self):
@@ -34,14 +36,14 @@ class SecurityBehavior(unittest.TestCase):
         with patch.dict(os.environ, {"LLM_ALLOW_PRIVATE_PROVIDER": "0"}), \
              patch("app.security.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("127.0.0.1", 443))]):
             with self.assertRaisesRegex(ValueError, "özel/yerel"):
-                security.validate_provider_url("https://provider.example/v1")
+                security._validate_provider_url_sync("https://provider.example/v1")
 
     def test_plain_http_provider_is_rejected_by_default(self):
         from app import security
 
         with patch.dict(os.environ, {"LLM_ALLOW_PRIVATE_PROVIDER": "0"}):
             with self.assertRaisesRegex(ValueError, "HTTPS"):
-                security.validate_provider_url("http://provider.example/v1")
+                security._validate_provider_url_sync("http://provider.example/v1")
 
     def test_provider_redirects_are_rejected_before_forwarding_credentials(self):
         from app.security import _ValidatedRedirectHandler
@@ -54,7 +56,7 @@ class SecurityBehavior(unittest.TestCase):
 
         with patch.dict(os.environ, {"LLM_ALLOW_PRIVATE_PROVIDER": "1"}), \
              patch("app.security.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("127.0.0.1", 8080))]):
-            self.assertEqual(security.validate_provider_url("http://127.0.0.1:8080/v1"), "http://127.0.0.1:8080/v1")
+            self.assertEqual(security._validate_provider_url_sync("http://127.0.0.1:8080/v1"), "http://127.0.0.1:8080/v1")
 
     def test_a2a_route_requires_configured_secret(self):
         app_dir = Path(__file__).resolve().parent.parent / "app"
