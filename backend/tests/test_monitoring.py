@@ -202,7 +202,8 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(database, "set_llm_setting", side_effect=fake_set):
             await monitoring.update_monitoring_settings(
                 {"enabled": True, "min_score": 2.5, "min_target_pct": 4.0,
-                 "quiet_hours_start": None, "quiet_hours_end": None})
+                 "quiet_hours_start": None, "quiet_hours_end": None},
+                request=None)
         import json
         parsed = json.loads(saved["monitoring_notification_settings"])
         self.assertEqual(parsed["min_score"], 2.5)

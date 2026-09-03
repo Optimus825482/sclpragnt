@@ -141,3 +141,49 @@ def _main_pg_pool():
     """Live asyncpg pool accessor; the pool is created by app startup."""
     from app import main
     return main._pg_pool
+
+
+def _client_ip(request) -> str | None:
+    """Caller IP: trusted nginx X-Real-IP first, raw socket host as fallback."""
+    if request is None:
+        return None
+    trusted = (request.headers.get("X-Real-IP") or "").strip() if request.headers else ""
+    if trusted:
+        return trusted
+    try:
+        if request.client is not None and request.client.host:
+            return str(request.client.host)
+    except Exception:
+        pass
+    return None
+
+
+def client_context(request) -> dict:
+    """IP + device fingerprint for audit rows. Never raises; best effort."""
+    try:
+        ip = _client_ip(request)
+        user_agent = (request.headers.get("user-agent") or "").strip()[:512] if request.headers else ""
+        accept_language = (request.headers.get("accept-language") or "").strip()[:256] if request.headers else ""
+        return {"ip": ip, "user_agent": user_agent or None, "accept_language": accept_language or None}
+    except Exception:
+        return {"ip": None, "user_agent": None, "accept_language": None}
+
+
+async def log_user_action(actor_username: str | None, actor_role: str | None, category: str, action: str,
+                          *, target: str | None = None, details: dict | None = None,
+                          request=None) -> None:
+    """Append one audit row without ever breaking the caller's main flow.
+
+    Logging is best-effort: a DB hiccup must not fail a login, config save or
+    manual close. The synchronous database call runs in its own thread via the
+    shared _run_db executor; awaiting here is cheap and preserves ordering.
+    """
+    ctx = client_context(request)
+    try:
+        await database.save_audit_log(
+            actor_username, actor_role, category, action,
+            target=target, details=details or {},
+            ip=ctx.get("ip"), user_agent=ctx.get("user_agent"),
+            accept_language=ctx.get("accept_language"))
+    except Exception as exc:  # noqa: BLE001 - audit must never break the action
+        logger.warning("audit kaydı yazılamadı (%s/%s): %s", category, action, exc)

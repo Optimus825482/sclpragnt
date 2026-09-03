@@ -400,3 +400,26 @@ CREATE TABLE IF NOT EXISTS monitoring_notifications (
 );
 CREATE INDEX IF NOT EXISTS monitoring_notifications_detected_idx ON monitoring_notifications(detected_at DESC);
 CREATE INDEX IF NOT EXISTS monitoring_notifications_symbol_idx ON monitoring_notifications(symbol, detected_at DESC);
+
+-- Audit trail for user-triggered actions (2026-09-03). Records who did what
+-- and when (login/logout, password changes, config saves, manual trade
+-- closes, alert changes, monitoring resets) together with the caller's IP
+-- and device fingerprint. Autonomous bot loops are NOT logged here — they
+-- already persist in decision_logs/trades/monitoring_notifications. Never
+-- cleared by reset_trading_data; an admin-only DELETE prunes history.
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGSERIAL PRIMARY KEY,
+  actor_username TEXT,
+  actor_role TEXT,
+  category TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target TEXT,
+  details JSONB,
+  ip TEXT,
+  user_agent TEXT,
+  accept_language TEXT,
+  created_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_actor_idx ON audit_logs(actor_username, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_category_idx ON audit_logs(category, created_at DESC);

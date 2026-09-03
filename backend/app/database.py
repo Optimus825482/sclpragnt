@@ -2487,3 +2487,90 @@ async def mark_chart_forecast_evaluated(forecast_id: int, outcome: dict) -> bool
         conn.commit()
         return cur.rowcount > 0
     return await _run_db(op)
+
+
+# ---------------------------------------------------------------------------
+# Audit trail (2026-09-03): user-triggered actions with caller fingerprint.
+# Autonomous bot loops are intentionally NOT recorded here (they persist in
+# decision_logs/trades/monitoring_notifications already). Rows survive
+# reset_trading_data; an admin-only DELETE prunes old history.
+# ---------------------------------------------------------------------------
+def _audit_row(row) -> dict | None:
+    if row is None:
+        return None
+    return {"id": int(row["id"]), "actor_username": row["actor_username"], "actor_role": row["actor_role"],
+            "category": row["category"], "action": row["action"], "target": row["target"],
+            "details": row["details"] if row["details"] is not None else {},
+            "ip": row["ip"], "user_agent": row["user_agent"], "accept_language": row["accept_language"],
+            "created_at": float(row["created_at"] or 0)}
+
+
+async def save_audit_log(actor_username: str | None, actor_role: str | None, category: str, action: str,
+                         *, target: str | None = None, details: dict | None = None,
+                         ip: str | None = None, user_agent: str | None = None,
+                         accept_language: str | None = None) -> dict | None:
+    """Append one audit row. Never raises transport/logic errors to the caller
+    beyond the normal DB layer — callers should wrap with log_user_action."""
+    now = time.time()
+    def op(conn):
+        row = conn.execute(
+            "INSERT INTO audit_logs(actor_username,actor_role,category,action,target,details,ip,user_agent,"
+            "accept_language,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+            ((actor_username or "").strip() or None, (actor_role or "").strip().lower() or None,
+             str(category).strip().lower() or "general", str(action).strip().upper() or "ACTION",
+             (target or "").strip() or None,
+             _json_safe_dumps(details or {}, ensure_ascii=False, default=str),
+             (ip or "").strip()[:128] or None, (user_agent or "").strip()[:512] or None,
+             (accept_language or "").strip()[:256] or None, now)).fetchone()
+        conn.commit()
+        return _audit_row(row)
+    return await _run_db(op)
+
+
+def _audit_filters(actor: str | None, category: str | None, action: str | None, q: str | None):
+    """WHERE cümlesi + değerler; kullanıcı girdisi yalnız parametre olarak geçer."""
+    clauses, values = [], []
+    if (actor or "").strip():
+        clauses.append("actor_username=%s"); values.append(str(actor).strip().lower())
+    if (category or "").strip():
+        clauses.append("category=%s"); values.append(str(category).strip().lower())
+    if (action or "").strip():
+        clauses.append("action=%s"); values.append(str(action).strip().upper())
+    if (q or "").strip():
+        needle = f"%{str(q).strip()}%"
+        clauses.append("(actor_username ILIKE %s OR action ILIKE %s OR target ILIKE %s OR details::text ILIKE %s)")
+        values.extend([needle, needle, needle, needle])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, values
+
+
+async def list_audit_logs(limit: int = 100, offset: int = 0, *, actor: str | None = None,
+                          category: str | None = None, action: str | None = None,
+                          q: str | None = None) -> list[dict]:
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    where, values = _audit_filters(actor, category, action, q)
+    def op(conn):
+        rows = conn.execute(
+            f"SELECT * FROM audit_logs {where} ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s",
+            tuple(values) + (limit, offset)).fetchall()
+        return [_audit_row(r) for r in rows if r is not None]
+    return await _run_db(op)
+
+
+async def count_audit_logs(*, actor: str | None = None, category: str | None = None,
+                           action: str | None = None, q: str | None = None) -> int:
+    where, values = _audit_filters(actor, category, action, q)
+    def op(conn):
+        row = conn.execute(f"SELECT COUNT(*) AS n FROM audit_logs {where}", tuple(values)).fetchone()
+        return int(row["n"]) if row else 0
+    return await _run_db(op)
+
+
+async def delete_audit_logs_before(before_ts: float) -> int:
+    """Old audit rows silinir (admin temizliği). before_ts epoch saniyedir."""
+    def op(conn):
+        cur = conn.execute("DELETE FROM audit_logs WHERE created_at < %s", (float(before_ts),))
+        conn.commit()
+        return cur.rowcount
+    return await _run_db(op)

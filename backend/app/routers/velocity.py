@@ -281,6 +281,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "aroon_up": round(aroon_up, 0) if aroon_up is not None else None,
                     "aroon_down": round(aroon_down, 0) if aroon_down is not None else None,
                     "horizon_minutes": horizon_minutes,
+                    "target_pct": target_pct,
                     "ret3_pct": round(ret3, 3),
                     "velocity_score": velocity_score, "passes": passes,
                     "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
