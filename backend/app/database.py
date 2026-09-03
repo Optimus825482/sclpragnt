@@ -1954,6 +1954,35 @@ async def save_chart_settings(symbol, data):
 
     await _run_db(op)
 
+
+async def clear_all_chart_indicators():
+    """Tüm sembollerin kayıtlı indikatör yerleşimlerini temizler (server-side toplu temizlik).
+
+    Her chart_settings satırının data JSON'ından 'indicators' anahtarını düşer.
+    Silinen indikatörler değil, yalnızca YERLEŞİM listesidir; sinyal/pozisyon
+    verisi etkilenmez. Temizlenen satırlar önümüzdeki açılışta varsayılan
+    SlingShot ile döner (frontend boş indicator -> default uygular).
+    Dosya sayısı: satır sayısı döner.
+    """
+    def op(conn):
+        if _postgres_enabled():
+            # NOT: `data ? 'indicators'` kullanma — _PostgresCompat '?'->'%s'
+            # çevirir, jsonb varlık operatörünü bozar. Fonksiyon formu güvenli.
+            cur = conn.execute(
+                "UPDATE chart_settings SET data = data - 'indicators' "
+                "WHERE jsonb_exists(data, 'indicators')")
+            conn.commit()
+            return cur.rowcount
+        # SQLite yedeği (JSON1 key kaldırma via json_remove)
+        cur = conn.execute(
+            "UPDATE chart_settings SET data = json_remove(data, '$.indicators') "
+            "WHERE data LIKE '%indicators%'")
+        conn.commit()
+        return cur.rowcount
+
+    return await _run_db(op)
+
+
 async def save_backtest(result):
     """Backtest sonucunu kaydet, kayıt id'sini döndür."""
     def op(conn):
@@ -2270,4 +2299,85 @@ async def count_users() -> int:
     def op(conn):
         row = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
         return int(row["n"]) if row else 0
+    return await _run_db(op)
+
+
+# ---------------------------------------------------------------------------
+# Chart-page ML forecasts (2026-09-03)
+# ---------------------------------------------------------------------------
+def _chart_forecast_row(row) -> dict | None:
+    if row is None:
+        return None
+    return {"id": int(row["id"]), "symbol": row["symbol"], "timeframe": row["timeframe"],
+            "horizon_minutes": int(row["horizon_minutes"]), "entry_price": float(row["entry_price"] or 0),
+            "target_pct": float(row["target_pct"] or 0), "target_price": float(row["target_price"]) if row["target_price"] is not None else None,
+            "hit_probability": float(row["hit_probability"]) if row["hit_probability"] is not None else None,
+            "model": row.get("model"), "created_at": float(row["created_at"] or 0),
+            "status": row["status"], "evaluated_at": float(row["evaluated_at"]) if row.get("evaluated_at") is not None else None,
+            "outcome_price": float(row["outcome_price"]) if row.get("outcome_price") is not None else None,
+            "outcome_return_pct": float(row["outcome_return_pct"]) if row.get("outcome_return_pct") is not None else None,
+            "outcome_direction": row.get("outcome_direction"),
+            "direction_correct": bool(row["direction_correct"]) if row.get("direction_correct") is not None else None,
+            "max_favorable_pct": float(row["max_favorable_pct"]) if row.get("max_favorable_pct") is not None else None,
+            "max_adverse_pct": float(row["max_adverse_pct"]) if row.get("max_adverse_pct") is not None else None,
+            "outcome_details": row.get("outcome_details")}
+
+
+async def save_chart_forecast(symbol, timeframe, horizon_minutes, entry_price, target_pct, target_price,
+                              hit_probability=None, model=None) -> dict:
+    now = time.time()
+    def op(conn):
+        row = conn.execute(
+            "INSERT INTO chart_forecasts(symbol,timeframe,horizon_minutes,entry_price,target_pct,target_price,"
+            "hit_probability,model,created_at,status) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending') RETURNING *",
+            (str(symbol).upper(), str(timeframe), int(horizon_minutes), float(entry_price), float(target_pct),
+             float(target_price) if target_price is not None else None,
+             float(hit_probability) if hit_probability is not None else None, model, now)).fetchone()
+        conn.commit()
+        return _chart_forecast_row(row)
+    return await _run_db(op)
+
+
+async def get_recent_chart_forecast(symbol: str, timeframe: str, within_sec: float = 300) -> dict | None:
+    """Son N saniye içinde üretilmiş tahmini döndürür (paylaşılan/cache'li tahmin)."""
+    cutoff = time.time() - float(within_sec)
+    def op(conn):
+        row = conn.execute(
+            "SELECT * FROM chart_forecasts WHERE symbol=%s AND timeframe=%s AND created_at>=%s "
+            "ORDER BY created_at DESC LIMIT 1", (str(symbol).upper(), str(timeframe), cutoff)).fetchone()
+        return _chart_forecast_row(row)
+    return await _run_db(op)
+
+
+async def list_chart_forecasts(symbol: str, limit: int = 50) -> list[dict]:
+    def op(conn):
+        rows = conn.execute(
+            "SELECT * FROM chart_forecasts WHERE symbol=%s ORDER BY created_at DESC LIMIT %s",
+            (str(symbol).upper(), int(limit))).fetchall()
+        return [_chart_forecast_row(r) for r in rows if r is not None]
+    return await _run_db(op)
+
+
+async def get_pending_chart_forecasts(limit: int = 200) -> list[dict]:
+    now = time.time()
+    def op(conn):
+        rows = conn.execute(
+            "SELECT * FROM chart_forecasts WHERE status='pending' AND created_at + (horizon_minutes*60) <= %s "
+            "ORDER BY created_at LIMIT %s", (now, int(limit))).fetchall()
+        return [_chart_forecast_row(r) for r in rows if r is not None]
+    return await _run_db(op)
+
+
+async def mark_chart_forecast_evaluated(forecast_id: int, outcome: dict) -> bool:
+    def op(conn):
+        cur = conn.execute(
+            "UPDATE chart_forecasts SET status='evaluated', evaluated_at=%s, outcome_price=%s, outcome_return_pct=%s, "
+            "outcome_direction=%s, direction_correct=%s, max_favorable_pct=%s, max_adverse_pct=%s, outcome_details=%s "
+            "WHERE id=%s AND status='pending'",
+            (outcome.get("evaluated_at"), outcome.get("outcome_price"), outcome.get("outcome_return_pct"),
+             outcome.get("outcome_direction"), outcome.get("direction_correct"),
+             outcome.get("max_favorable_pct"), outcome.get("max_adverse_pct"),
+             _json_safe_dumps(outcome.get("outcome_details") or {}, ensure_ascii=False, default=str), int(forecast_id)))
+        conn.commit()
+        return cur.rowcount > 0
     return await _run_db(op)

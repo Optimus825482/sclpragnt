@@ -1,0 +1,18 @@
+# Build context küçült: deploy süresini ciddi uzatan yerel dev artefaktları.
+venv
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+scalper_db_v4.sqlite*
+*.log
+.env
+.env.*
+.git
+.gitignore
+Dockerfile
+.dockerignore
+docker-compose*.yml
+# Yerel analiz/rapor çıktıları (kök JSON'lar) build context'ine girmesin.
+/*.json

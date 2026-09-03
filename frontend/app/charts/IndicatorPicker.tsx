@@ -228,9 +228,45 @@ export const STRATEGY_ENTRIES = [
     SIMPLE_STRATEGY_ENTRY("donchian_breakout", "Donchian Breakout", "Donchian"),
 ];
 
+const emaSeries = (bars: any[], period: number, color: string) => {
+    const closes = bars.map((bar: any) => Number(bar.close));
+    const out: { time: number; value: number | null; color?: string }[] = [];
+    const k = 2 / (period + 1);
+    let ema: number | null = null;
+    for (let i = 0; i < bars.length; i++) {
+        const t = Number(bars[i].time);
+        const c = closes[i];
+        ema = ema === null ? c : (c - ema) * k + ema;
+        out.push({ time: t, value: Number.isFinite(ema) ? ema : null, color });
+    }
+    return out;
+};
+
+// SlingShot: yalnız EMA50 (lime) + EMA11 (red) çizgileri — üçgen/marker YOK.
+// Varsayılan grafik indikatörü; kullanıcı kendi ekledikçe yerini alır.
+export const SLING_SHOT_ENTRY: RegistryEntry = {
+    id: "sling_shot",
+    name: "SlingShot (EMA50/EMA11)",
+    shortName: "SlingShot",
+    category: "Trend",
+    group: "custom",
+    overlay: true,
+    inputConfig: [],
+    calculate: (bars: any[], params: any) => {
+        return {
+            metadata: { overlay: true },
+            plots: {
+                plot0: emaSeries(bars, 50, "#39FF14"),
+                plot1: emaSeries(bars, 11, "#ef4444"),
+            },
+        };
+    },
+};
+
 // Uygulama içi özel kayıtlar da paket registry'siyle aynı kaynaktan seçilebilmeli.
 // Aksi halde picker'da görünen ancak grafik renderer'ında bulunamayan indikatörler oluşuyordu.
 export const CUSTOM_INDICATOR_ENTRIES: RegistryEntry[] = [
+    SLING_SHOT_ENTRY,
     UT_BOT_ENTRY,
     BB_SQUEEZE_ENTRY,
     EMA_PULLBACK_ENTRY,

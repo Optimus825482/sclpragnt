@@ -139,10 +139,22 @@ export const DEFAULT_INSTANCES: IndicatorInstance[] = [];
 
 export type EditTarget = { entry: RegistryEntry; editUid?: string };
 
+// Varsayılan indikatör: SlingShot — yalnız EMA50/EMA11 çizgileri (üçgen yok).
+// Kullanıcı kendi indikatörlerini ekledikçe kayıt bunun yerini alır.
+export const DEFAULT_SLING_SHOT: IndicatorInstance = {
+    uid: "sling_shot-default",
+    registryId: "sling_shot",
+    name: "SlingShot (EMA50/EMA11)",
+    overlay: true,
+    params: {},
+    style: { ...DEFAULT_STYLE, colors: ["#39FF14", "#ef4444"] },
+};
+
 export const loadIndicators = (): IndicatorInstance[] => {
     const raw = loadPersisted<IndicatorInstance[]>(LS_INDICATORS, DEFAULT_INSTANCES);
-    // eski format migrasyonu: style alanı yoksa varsayılan ekle
-    return raw.map((i) => (i.style ? i : { ...i, style: DEFAULT_STYLE }));
+    const mapped = raw.map((i) => (i.style ? i : { ...i, style: DEFAULT_STYLE }));
+    // hiç kayıtlı indikatör yoksa varsayılan SlingShot ile aç
+    return mapped.length ? mapped : [DEFAULT_SLING_SHOT];
 };
 
 export const STRATEGY_LABEL_TR: Record<string, string> = {
