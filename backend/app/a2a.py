@@ -11,7 +11,7 @@ import json
 import os
 import time
 import uuid
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from . import security
 
@@ -50,7 +50,7 @@ async def deliver(message: dict) -> dict:
         return {"delivered": False, "queued": True, "reason": "A2A_SHARED_SECRET yapilandirilmamis"}
     body = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode()
 
-    def send():
+    async def send():
         request = Request(url, data=body, method="POST", headers={
             "Content-Type": "application/json",
             "User-Agent": "scalper-a2a/1.0",
