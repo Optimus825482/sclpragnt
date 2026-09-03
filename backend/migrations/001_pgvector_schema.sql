@@ -91,6 +91,10 @@ CREATE TABLE IF NOT EXISTS velocity_candidates (
 CREATE INDEX IF NOT EXISTS idx_velocity_candidates_due ON velocity_candidates(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_velocity_candidates_symbol ON velocity_candidates(symbol, created_at DESC);
 
+-- Mevcut (pre-ML) tabloyu da idempotent sekilde ML hedef sutunlarina tasi.
+ALTER TABLE velocity_candidates ADD COLUMN IF NOT EXISTS ml_target_pct DOUBLE PRECISION;
+ALTER TABLE velocity_candidates ADD COLUMN IF NOT EXISTS ml_hit_probability DOUBLE PRECISION;
+
 -- Sembol bazlı adaptif hedef öğrenme (2026-09-03): Her sembol için başarı/başarısız
 -- sayısı tutulur, hedef otomatik ayarlanır. ML tahmin + adaptif durum harmanlanır.
 CREATE TABLE IF NOT EXISTS symbol_target_state (
