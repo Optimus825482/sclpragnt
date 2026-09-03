@@ -844,11 +844,15 @@ export default function ChartsPage() {
             const all: { time: UTCTimestamp; position: "belowBar" | "aboveBar"; color: string; shape: "arrowUp" | "arrowDown"; text: string; size: number }[] = [];
 
             // Sinyal toplama yardımcı fonksiyonu
-            const collectSignals = (instList: typeof instances, useSpotExec: boolean) => {
+            // useShortText=true ise "B"/"S" harfleri kullanılır (TradingView SlingShot stili)
+            const collectSignals = (instList: typeof instances, useSpotExec: boolean, useShortText: boolean) => {
                 for (const inst of instList) {
                     const fn = strategySignalFns[inst.registryId];
                     const colors = strategyColors[inst.registryId];
                     const label = strategyLabels[inst.registryId];
+                    // showSignals parametresi false isa sinyal gösterme
+                    const showSignals = inst.params.showSignals !== false;
+                    if (!showSignals) continue;
                     const raw = fn(bars, inst.params);
                     const signals = useSpotExec ? spotExecutionSignals(bars, raw) : raw;
                     for (const s of signals) {
@@ -857,17 +861,19 @@ export default function ChartsPage() {
                             position: s.type === "buy" ? "belowBar" : "aboveBar",
                             color: s.type === "buy" ? colors.buy : colors.sell,
                             shape: s.type === "buy" ? "arrowUp" : "arrowDown",
-                            text: s.type === "buy" ? `${label} BUY` : `${label} SELL`,
+                            text: useShortText
+                                ? (s.type === "buy" ? "B" : "S")
+                                : (s.type === "buy" ? `${label} BUY` : `${label} SELL`),
                             size: 1
                         });
                     }
                 }
             };
 
-            // SlingShot için doğrudan sinyal kullan (spot execution değil)
-            collectSignals(slingShotInsts, false);
+            // SlingShot için doğrudan sinyal kullan (spot execution değil, kısa B/S metin)
+            collectSignals(slingShotInsts, false, true);
             // Diğer stratejiler için spot execution modeli
-            collectSignals(otherStratInsts, true);
+            collectSignals(otherStratInsts, true, false);
 
             // Zamana göre sırla ve marker'ları ayarla
             all.sort((a, b) => a.time - b.time);

@@ -242,7 +242,9 @@ const emaSeries = (bars: any[], period: number, color: string) => {
     return out;
 };
 
-// SlingShot System: EMA50 (yeşil) + EMA11 (kırmızı) trend takip sistemi.
+// SlingShot System: TradingView'daki CM_SlingShotSystem'in aynısı.
+// Tek çizgi (EMA50) — trend yönüne göre yeşil (yükseliş) veya kırmızı (düşüş).
+// Buy/Sell sinyalleri "B"/"S" harfleri ile gösterilir.
 // Conservative entry: trend yönünde EMA11'e dönüş sonrası kırılım.
 // Aggressive entry: trend yönünde EMA11'e pullback (potansiyel giriş uyarısı).
 // Varsayılan grafik indikatörü; kullanıcı kendi ekledikçe yerini alır.
@@ -257,11 +259,12 @@ export const SLING_SHOT_ENTRY: RegistryEntry = {
         { id: "slowPeriod", type: "number", title: "Yavaş EMA (Trend)", defval: 50, min: 5, step: 1 },
         { id: "fastPeriod", type: "number", title: "Hızlı EMA (Sinyal)", defval: 11, min: 2, step: 1 },
         { id: "conservative", type: "bool", title: "Konservatif Giriş (Kırılım)", defval: true },
+        { id: "showSignals", type: "bool", title: "B/S Sinyallerini Göster", defval: true },
     ],
     calculate: (bars: any[], params: any) => {
         const slowPeriod = Math.max(5, Math.round(params.slowPeriod ?? 50));
         const fastPeriod = Math.max(2, Math.round(params.fastPeriod ?? 11));
-        // Renk trend yönüne göre değişir: yeşil = yükseliş, kırmızı = düşüş
+        // Tek çizgi: Slow EMA, trend yönüne göre renk değiştirir
         const slowPlot = emaSeries(bars, slowPeriod, "#39FF14");
         const fastPlot = emaSeries(bars, fastPeriod, "#ef4444");
         // Trend yönüne göre slow EMA rengini değiştir
@@ -276,7 +279,6 @@ export const SLING_SHOT_ENTRY: RegistryEntry = {
             metadata: { overlay: true },
             plots: {
                 plot0: coloredSlow,
-                plot1: fastPlot,
             },
         };
     },
