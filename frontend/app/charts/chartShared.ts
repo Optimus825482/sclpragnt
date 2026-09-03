@@ -139,15 +139,15 @@ export const DEFAULT_INSTANCES: IndicatorInstance[] = [];
 
 export type EditTarget = { entry: RegistryEntry; editUid?: string };
 
-// Varsayılan indikatör: SlingShot — yalnız EMA50/EMA11 çizgileri (üçgen yok).
+// Varsayılan indikatör: Rational Quadratic Kernel — tek çizgi, trende göre renk değiştirir.
 // Kullanıcı kendi indikatörlerini ekledikçe kayıt bunun yerini alır.
 export const DEFAULT_SLING_SHOT: IndicatorInstance = {
     uid: "sling_shot-default",
     registryId: "sling_shot",
-    name: "SlingShot (EMA50/EMA11)",
+    name: "Rational Quadratic Kernel",
     overlay: true,
     params: {},
-    style: { ...DEFAULT_STYLE, colors: ["#39FF14", "#ef4444"] },
+    style: { ...DEFAULT_STYLE, colors: ["#3AFF17", "#FD1707"] },
 };
 
 export const loadIndicators = (): IndicatorInstance[] => {
