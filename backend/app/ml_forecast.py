@@ -178,7 +178,7 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
         if horizon not in HORIZONS:
             continue
         mfe = float(row["max_favorable_pct"])
-        X.append([snap.get("ret3_pct"), snap.get("ret3_pct"), snap.get("ret3_pct"),
+        X.append([snap.get("ret1_pct"), snap.get("ret3_pct"), snap.get("ret5_pct"),
                   (snap.get("atr_pct") or 0) / 100 if snap.get("atr_pct") is not None else None,
                   (snap.get("bb_width_pct") or 0) / 100 if snap.get("bb_width_pct") is not None else None,
                   snap.get("rsi"), snap.get("mfi"), None,
@@ -314,7 +314,7 @@ def predict_target(symbol: str, features: dict[str, Any], horizon: int = 5) -> d
     if sym not in artifact["symbol_codes"]:
         return None
     row = [
-        features.get("ret3_pct"), features.get("ret3_pct"), features.get("ret3_pct"),
+        features.get("ret1_pct"), features.get("ret3_pct"), features.get("ret5_pct"),
         (features.get("atr_pct") or 0) / 100 if features.get("atr_pct") is not None else None,
         (features.get("bb_width_pct") or 0) / 100 if features.get("bb_width_pct") is not None else None,
         features.get("rsi"), features.get("mfi"), None,

@@ -51,24 +51,36 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
-def create_session_token(username: str = "admin", role: str = "admin", ttl_seconds=43200):
+def create_session_token(username: str = "admin", role: str = "admin", ttl_seconds=43200, client_fingerprint: str = ""):
+    """Session token oluşturur. İsteğe bağlı client_fingerprint (IP+UA hash) ile token'ı cihaza baglar."""
     secret = os.getenv("SCALPER_SESSION_SECRET", "").encode()
     if not secret:
         raise RuntimeError("SCALPER_SESSION_SECRET tanımlı değil")
+    fp_hash = hashlib.sha256(str(client_fingerprint or "").encode()).hexdigest()[:16] if client_fingerprint else ""
     payload = _b64(json.dumps({"sub": str(username).lower(), "role": str(role).lower(),
-                               "exp": int(time.time()) + int(ttl_seconds)}, separators=(",", ":")).encode())
+                               "exp": int(time.time()) + int(ttl_seconds),
+                               "fp": fp_hash}, separators=(",", ":")).encode())
     signature = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
     return f"{payload}.{signature}"
 
 
-def verify_session_token(token):
+def verify_session_token(token, client_fingerprint: str = ""):
+    """Token'ı doğrular. client_fingerprint varsa, token'ın bağlı olduğu cihazla eşleşmesini kontrol eder."""
     try:
         payload, signature = str(token or "").split(".", 1)
         secret = os.getenv("SCALPER_SESSION_SECRET", "").encode()
         expected = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
         data = json.loads(_unb64(payload))
-        return bool(secret and hmac.compare_digest(signature, expected)
-                    and int(data.get("exp", 0)) > time.time())
+        if not (secret and hmac.compare_digest(signature, expected)
+                and int(data.get("exp", 0)) > time.time()):
+            return False
+        # Fingerprint varsa eşleşmayı kontrol et
+        stored_fp = str(data.get("fp", ""))
+        if stored_fp:
+            expected_fp = hashlib.sha256(str(client_fingerprint or "").encode()).hexdigest()[:16]
+            if not hmac.compare_digest(stored_fp, expected_fp):
+                return False
+        return True
     except (ValueError, TypeError, json.JSONDecodeError):
         return False
 
@@ -133,7 +145,8 @@ def request_user(headers, cookies=None, query_token=None):
     return session_user(token)
 
 
-def validate_provider_url(base_url):
+async def validate_provider_url(base_url):
+    """Provider URL'sini doğrular — DNS bloklamasını async olarak çalıştırır."""
     parsed = urlparse(str(base_url or "").strip())
     allow_private = os.getenv("LLM_ALLOW_PRIVATE_PROVIDER", "0") == "1"
     if parsed.scheme not in ({"https", "http"} if allow_private else {"https"}):
@@ -141,7 +154,12 @@ def validate_provider_url(base_url):
     if not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Provider URL geçerli bir host içermeli ve kimlik bilgisi taşımamalı")
     try:
-        addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
+        # DNS bloklamasını executor'da çalıştır — event loop'u bloke etme
+        loop = asyncio.get_running_loop()
+        addresses = await loop.run_in_executor(
+            None,
+            lambda: {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
+        )
     except socket.gaierror as exc:
         raise ValueError("Provider host çözümlenemedi") from exc
     for address in addresses:
@@ -157,6 +175,8 @@ class _ValidatedRedirectHandler(HTTPRedirectHandler):
         raise HTTPError(newurl, code, "LLM provider redirects are forbidden", headers, fp)
 
 
-def safe_provider_open(request, timeout):
-    validate_provider_url(request.full_url)
-    return build_opener(_ValidatedRedirectHandler()).open(request, timeout=timeout)
+async def safe_provider_open(request, timeout):
+    """Provider URL'sini async doğrulama ile açarak event loop'u bloke etmez."""
+    await validate_provider_url(request.full_url)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: build_opener(_ValidatedRedirectHandler()).open(request, timeout=timeout))

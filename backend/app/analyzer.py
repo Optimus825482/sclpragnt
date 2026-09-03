@@ -20,6 +20,9 @@ class ScalpAnalyzer:
         self._timeout_block_until = {}
         self._hard_stop_block_until = {}
         self._open_position_lock = asyncio.Lock()
+        # Genel state senkronizasyon kilidi — positions, cooldown, timeout, hard_stop
+        # gibi paylaşılan mutable yapılara erişimi serileştirir.
+        self._state_lock = asyncio.Lock()
         self.pending_orders = []
 
     def max_open_positions(self):
@@ -260,6 +263,7 @@ class ScalpAnalyzer:
         return len(times) - 1 if times else len(kline.get("closes", [])) - 1
 
     def _reentry_block_reason(self, symbol, timeframe):
+        """NOT: Bu metot çağrıldığında çağıranın `_state_lock` içinde olması gerekir."""
         now = time.time()
         for store, reason in (
             (self._timeout_block_until, "timeout_reentry_block"),
@@ -289,14 +293,20 @@ class ScalpAnalyzer:
         return float(np.mean(trs))
 
     def heikin_ashi(self, kline):
-        # HA mumlarını döndür: (open, high, low, close) listeleri — uzunluk azalır
+        """HA mumlarını döndür: (open, high, low, close) listeleri.
+
+        Düzeltme: Önceki versiyonda `ha_open[i]` son iterasyonda IndexError
+        veriyordu — ha_open listesi her iterasyonda bir sonraki değeri
+        hesaplamalı, böylece ha_open[i] her zaman mevcut olur.
+        """
         opens = kline.get("opens", [])
         highs = kline.get("highs", [])
         lows = kline.get("lows", [])
         closes = kline.get("closes", [])
         n = len(closes)
-        if n == 0: return [], [], [], []
-        ha_open = [(opens[0] + closes[0]) / 2]  # İlk HA open doğru hesaplanmalı
+        if n == 0:
+            return [], [], [], []
+        ha_open = [(opens[0] + closes[0]) / 2]
         ha_close = []
         ha_high = []
         ha_low = []
@@ -306,9 +316,9 @@ class ScalpAnalyzer:
             o = ha_open[i]
             ha_high.append(max(highs[i], o, c))
             ha_low.append(min(lows[i], o, c))
-            if i < n - 1:
-                ha_open.append((o + c) / 2)
-        return ha_open, ha_high, ha_low, ha_close
+            # Sonraki HA open'ı şimdi hesapla (bir sonraki iterasyonda kullanılacak)
+            ha_open.append((o + c) / 2)
+        return ha_open[:-1], ha_high, ha_low, ha_close
 
     def ut_bot_signal(self, kline):
         """UT Bot trailing stop sinyali. Döner: "buy"/"sell"/None"""

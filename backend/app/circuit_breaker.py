@@ -51,10 +51,11 @@ class StrategyCircuitBreaker:
     def status(self) -> dict:
         return {name: dict(info) for name, info in self._paused.items()}
 
-    def resume(self, strategy: str) -> bool:
-        """Human-approved resume; nothing auto-unpauses."""
+    async def resume(self, strategy: str) -> bool:
+        """Human-approved resume; nothing auto-unpauses. Persists state to DB."""
         if strategy in self._paused:
             self._paused.pop(strategy, None)
+            await self._persist()
             return True
         return False
 

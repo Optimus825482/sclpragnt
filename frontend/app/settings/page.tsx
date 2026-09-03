@@ -388,19 +388,26 @@ function SettingsPageInner() {
     }
   };
 
-  const saveLlmProvider = () => llmRequest(
-    `${API_BASE}/api/llm/providers`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: llmForm.name.trim(),
-        base_url: llmForm.base_url.trim(),
-        api_key: llmForm.api_key,
-      }),
-    },
-    "Provider kaydedildi",
-  );
+  const saveLlmProvider = async () => {
+    // API key'i gönder ve hemen state'ten temizle (bellek sızıntısını önle)
+    const apiKeyToSend = llmForm.api_key;
+    llmForm.api_key = ""; // State'ten temizle
+    await llmRequest(
+      `${API_BASE}/api/llm/providers`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: llmForm.name.trim(),
+          base_url: llmForm.base_url.trim(),
+          api_key: apiKeyToSend,
+        }),
+      },
+      "Provider kaydedildi",
+    );
+    // Başarısız olsa da key'i bellekte tutmamak için state'i sıfırla
+    setLlmForm(prev => ({ ...prev, api_key: "" }));
+  };
 
   const [mlStatus, setMlStatus] = useState<any>(null);
   const [mlTraining, setMlTraining] = useState(false);

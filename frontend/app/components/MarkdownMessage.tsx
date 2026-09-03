@@ -20,8 +20,10 @@ function cleanProviderMarkdown(value: string) {
       return !(previous && next);
     })
     .join("\n")
-    .replace(/([!?;:])(?=[\p{L}])/gu, "$1 ")
-    .replace(/\. (?=[\p{L}])/gu, ". ");
+    // ReDoS önlemi: Unicode property escape (\p{L}) yerine basit [a-zA-Z] kullan
+    // (Türkçe karakterler için karakter sınıfı genişletildi)
+    .replace(/([!?;:])(?=[a-zA-ZçğıöüşÇĞİÖÜŞ])/g, "$1 ")
+    .replace(/\. (?=[a-zA-ZçğıöüşÇĞİÖÜŞ])/g, ". ");
 }
 
 function MarkdownMessage({ content }: { content: string }) {

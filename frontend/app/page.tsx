@@ -193,8 +193,20 @@ export default function Home() {
   }, [restPositions, portfolio]);
 
   // Performans istatistikleri: kapanmış işlemler + bugün
+  // dayStart'ı ref olarak sakla — gece yarısı geçişlerinde doğru gün sınırını koru
+  const dayStartRef = useRef(Math.floor(new Date().setHours(0, 0, 0, 0) / 1000));
+  useEffect(() => {
+    // Her dakika gün sınırını kontrol et — gece yarısı geşişini yakala
+    const interval = setInterval(() => {
+      const newDayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
+      if (newDayStart !== dayStartRef.current) {
+        dayStartRef.current = newDayStart;
+      }
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, []);
   const stats = useMemo(() => {
-    const dayStart = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return Math.floor(d.getTime() / 1000); })();
+    const dayStart = dayStartRef.current;
     const closed = trades.filter((t) => Number(t.exit_time || 0) > 0);
     const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
     const netPnl = closed.reduce((a, t) => a + (t.pnl ?? 0), 0);

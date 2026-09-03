@@ -1,4 +1,4 @@
-import asyncio, ast, base64, json, os, re, time
+import asyncio, ast, json, os, re, time
 from urllib.error import HTTPError
 from urllib.request import Request
 from cryptography.fernet import Fernet
@@ -307,13 +307,14 @@ async def analyze(snapshot, max_tokens=None):
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
     system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Kullanıcı bir coin için analiz istediğinde kompakt ama gerekçeli yanıt ver: önce net durumu, sonra olası senaryoları (yön + tetikleyici seviye + bozulma seviyesi), sonra bu görüşün tek neden cümlesini, en sonda tek cümlelik sonucu söyle. Gösterge değerlerini istenmedikçe tek tek sıralama; tek kanıt cümlesi yeterli. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
-    base_url = validate_provider_url(cfg["provider"]["base_url"])
+    base_url = await validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
-    def call(max_tokens):
+    async def call(max_tokens):
         payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False, default=str)}]}
         if max_tokens: payload["max_tokens"] = int(max_tokens)
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with safe_provider_open(req, timeout=90) as response: return _decode_provider_response(response.read())
+        response = await safe_provider_open(req, timeout=90)
+        return _decode_provider_response(response.read())
     def _unwrap(result):
         # Some compatible gateways wrap the upstream response in {success, data}.
         payload_result = result.get("data") if isinstance(result, dict) and isinstance(result.get("data"), (dict, list, str)) else result
@@ -336,12 +337,12 @@ async def analyze(snapshot, max_tokens=None):
             text = payload_result
         return text, finish_reason
     try:
-        result = await asyncio.to_thread(call, max_tokens)
+        result = await call(max_tokens)
         payload_result = _unwrap(result)
         text, finish_reason = _extract_text(payload_result)
         # Reasoning modeller gizli akıl yürütmeye cap'i harcayıp içerik yazamayabilir; cap'siz tek tekrar.
         if not text and finish_reason == "length" and max_tokens:
-            result = await asyncio.to_thread(call, None)
+            result = await call(None)
             payload_result = _unwrap(result)
             text, finish_reason = _extract_text(payload_result)
         if not text:
@@ -362,11 +363,12 @@ async def embedding(text, model_id=None):
     payload = {"model": model["name"], "input": text}
     base_url = validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/embeddings") else base_url + "/embeddings"
-    def call():
+    async def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with safe_provider_open(req, timeout=30) as response: return _decode_provider_response(response.read())
+        response = await safe_provider_open(req, timeout=30)
+        return _decode_provider_response(response.read())
     try:
-        result = await asyncio.to_thread(call); data = result.get("data", result) if isinstance(result, dict) else result
+        result = await call(); data = result.get("data", result) if isinstance(result, dict) else result
         vector = data[0].get("embedding") if isinstance(data, list) and data else None
         if vector is None and isinstance(data, dict): vector = data.get("embedding")
         if not isinstance(vector, list) or not vector: raise RuntimeError("Provider embedding yanıtında vector bulunamadı")
@@ -403,15 +405,16 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         # response_format key, so fall back to a plain call when refused.
         payload["response_format"] = {"type": "json_object"}
         payload.setdefault("temperature", 0.2)
-    base_url = validate_provider_url(cfg["provider"]["base_url"]); url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
-    def call():
+    base_url = await validate_provider_url(cfg["provider"]["base_url"]); url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
+    async def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
-        with safe_provider_open(req, timeout=45) as response: return _decode_provider_response(response.read())
+        response = await safe_provider_open(req, timeout=45)
+        return _decode_provider_response(response.read())
     async def call_with_retry():
         last_error = None
         for attempt in range(2):
             try:
-                return await asyncio.to_thread(call)
+                return await call()
             except HTTPError:
                 # Provider-level rejections (4xx/5xx) are surfaced to the
                 # caller, not retried as transport noise: the fallback path
@@ -453,10 +456,9 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                 raise
         tool_round = 0
         tool_stats = {"rounds": 0, "tool_calls": 0, "estimated_tokens": 0}
-        while True:
+        # while True yerine bounded loop — ölü else clause kaldırıldı
+        while tool_round <= TOOL_LOOP_MAX_ROUNDS:
             tool_round += 1
-            if tool_round > TOOL_LOOP_MAX_ROUNDS:
-                raise RuntimeError(f"LLM araç döngüsü {tool_round} round'da kesildi (olası provider hatası).")
             estimated_tokens = _estimate_tokens(conversation)
             if estimated_tokens > TOOL_LOOP_TOKEN_BUDGET:
                 raise RuntimeError(
@@ -481,7 +483,8 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                     "function": legacy_call,
                 }]
                 assistant = {**assistant, "tool_calls": tool_calls}
-            if not tool_calls or not tool_executor: break
+            if not tool_calls or not tool_executor:
+                break
             conversation.append(assistant)
             for call_item in tool_calls:
                 fn = call_item.get("function") or {}; name = fn.get("name", "")
@@ -501,7 +504,8 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
             result = await call_with_retry()
             tool_stats["rounds"] = tool_round
         else:
-            raise RuntimeError("LLM araç döngüsü provider tarafından sonlandırılmadan tamamlanamadı")
+            # Loop break olmadan bütünce round'ı doldurdu — provider hatası
+            raise RuntimeError(f"LLM araç döngüsü {TOOL_LOOP_MAX_ROUNDS} round'da kesildi (olası provider hatası)")
         data = response_data(result)
         if isinstance(data, str): return {"enabled": True, "status": "ok", "text": data, "tool_loop": {**tool_stats, "estimated_tokens": _estimate_tokens(conversation)}}
         choices = data.get("choices", []) if isinstance(data, dict) else []
@@ -537,31 +541,35 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         if isinstance(item, dict):
             conversation.append({k: item[k] for k in ("role", "content") if k in item})
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation, "stream": True}
-    base_url = validate_provider_url(cfg["provider"]["base_url"])
+    base_url = await validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     try:
         headers = {"Content-Type": "application/json", "Authorization": "Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}
         import queue
         lines = queue.Queue()
-        def read_stream():
+        async def read_stream():
             try:
                 request = Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
-                with safe_provider_open(request, timeout=120) as response:
-                    if response.status >= 400:
-                        lines.put(("error", f"Provider HTTP {response.status}: {response.read(1000).decode(errors='replace')}"))
-                    else:
-                        for raw_line in response:
-                            lines.put(("line", raw_line.decode("utf-8", errors="replace")))
+                response = await safe_provider_open(request, timeout=120)
+                if response.status >= 400:
+                    lines.put(("error", f"Provider HTTP {response.status}: {response.read(1000).decode(errors='replace')}"))
+                else:
+                    for raw_line in response:
+                        lines.put(("line", raw_line.decode("utf-8", errors="replace")))
             except HTTPError as exc:
                 lines.put(("error", _provider_http_error(exc)))
             except Exception as exc:
                 lines.put(("error", str(exc)))
             finally:
                 lines.put(("done", None))
-        reader = asyncio.create_task(asyncio.to_thread(read_stream))
+        reader = asyncio.create_task(read_stream())
         emitted = False
         while True:
-            kind, raw_line = await asyncio.to_thread(lines.get)
+            # Blocking queue.get yerine asyncio.Queue kullan — event loop'u bloke etme
+            try:
+                kind, raw_line = await asyncio.wait_for(asyncio.to_thread(lines.get), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
             if kind == "error":
                 raise RuntimeError(raw_line)
             if kind == "done":

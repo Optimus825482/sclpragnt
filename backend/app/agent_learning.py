@@ -142,11 +142,14 @@ def evaluate_paper_trade_outcome(trade):
     adverse = trade.get("max_adverse_pct")
     favorable = trade.get("max_favorable_pct")
     reason = str(trade.get("reason") or "")
+    entry_action = trade.get("entry_action")
     checks = {
         "net_pnl_recorded": trade.get("pnl") is not None,
         "entry_exit_recorded": trade.get("entry_price") is not None and trade.get("exit_price") is not None,
         "commission_recorded": trade.get("commission") is not None,
-        "opened_only_on_signal": str(trade.get("entry_action") or "BUY_SIGNAL") == "BUY_SIGNAL",
+        # entry_action yoksa başarısızlık say — metrik inflasyonunu önler
+        "opened_only_on_signal": entry_action is not None and str(entry_action) == "BUY_SIGNAL",
+        "entry_action_recorded": entry_action is not None,
         "not_blocked_as_trade": "BUY_BLOCKED" not in reason,
     }
     return {"outcome": "profit" if pnl > 0 else "loss" if pnl < 0 else "flat",

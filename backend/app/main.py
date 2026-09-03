@@ -439,7 +439,12 @@ async def _ensure_admin_user():
     """Admin kullanıcıyı DB'ye tohumla (yoksa). Şifre: SCALPER_ADMIN_PASSWORD env'i."""
     if await database.count_users() > 0:
         return
-    password = os.getenv("SCALPER_ADMIN_PASSWORD", "").strip() or "518518Erkan"
+    password = os.getenv("SCALPER_ADMIN_PASSWORD", "").strip()
+    if not password:
+        raise RuntimeError(
+            "SCALPER_ADMIN_PASSWORD ortam değişkeni tanımlı değil. "
+            "Admin kullanıcı oluşturulamaz. Lütfen .env dosyasında güçlü bir şifre tanımlayın."
+        )
     await database.create_user("admin", security.hash_password(password), role="admin", is_active=True)
     print("[Auth] admin kullanıcı oluşturuldu (şifre env'den)", flush=True)
 
@@ -638,7 +643,7 @@ async def strategy_breaker_resume(payload: dict = None):
     strategy = str((payload or {}).get("strategy") or "").strip()
     if not strategy:
         raise HTTPException(status_code=400, detail="strategy gerekli")
-    if not strategy_breaker.resume(strategy):
+    if not await strategy_breaker.resume(strategy):
         raise HTTPException(status_code=404, detail=f"{strategy} duraklatılmamış")
     await database.save_signal({"symbol": "*", "action": "STRATEGY_RESUMED",
                                 "reason": f"{strategy} manuel olarak devam ettirildi",

@@ -56,6 +56,7 @@ PARAM_FIELDS = {
 # Analyzer stratejileri mevcut global config'i okuduğu için backtest config değişimini serileştir.
 _CONFIG_LOCK = threading.RLock()
 _KLINE_CACHE: dict[tuple[str, str, int, int | None], dict[str, list[float]]] = {}
+_KLINE_CACHE_MAX_SIZE = 500  # Memory leak önleme: cache boyut sınırı
 
 
 def _fetch_klines(symbol: str, interval: str, days_back: int, end_time_ms: int | None = None) -> dict[str, list[float]]:
@@ -69,7 +70,12 @@ def _fetch_klines(symbol: str, interval: str, days_back: int, end_time_ms: int |
     cached = _KLINE_CACHE.get(cache_key)
     if cached:
         return {key: list(values) for key, values in cached.items()}
-    # Backtests are reproducible: they read only the persisted historical table.
+    # Cache boyut sınırı aşıldında en eski girdiyi temizle (LRU benzeri)
+    if len(_KLINE_CACHE) >= _KLINE_CACHE_MAX_SIZE:
+        oldest_key = next(iter(_KLINE_CACHE), None)
+        if oldest_key is not None:
+            del _KLINE_CACHE[oldest_key]
+    # Backtests are reproducible: they read only the persisted public history table.
     now_ms = int(time.time() * 1000)
     end_ms = min(requested_end_ms, now_ms) if requested_end_ms is not None else now_ms
     start_ms = end_ms - int(days_back) * 86400 * 1000
@@ -77,8 +83,6 @@ def _fetch_klines(symbol: str, interval: str, days_back: int, end_time_ms: int |
     rows = [[r["open_time"], r["open"], r["high"], r["low"], r["close"], r["volume"], r["close_time"]] for r in cached_rows]
     if not rows:
         raise ValueError(f"{symbol} {interval} için historical_candles tablosunda veri yok; önce veri toplama çalıştırılmalı")
-    if not rows:
-        raise ValueError(f"{symbol} için tarihsel veri bulunamadı")
     result = {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": [], "times": []}
     seen_times = set()
     for row in rows:
