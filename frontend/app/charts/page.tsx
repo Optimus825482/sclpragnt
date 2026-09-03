@@ -519,28 +519,66 @@ export default function ChartsPage() {
                 // çizgi başına stil: lineWidths yoksa tüm çizgiler lineWidth kullanır
                 const widthFor = (pi: number) =>
                     (style.lineWidths?.[pi] ?? style.lineWidth) as 1 | 2 | 3 | 4;
-                const arr = plots.map((plot, pi) => {
-                    const lastPoint = [...plot].reverse().find((p) => p.value != null && !Number.isNaN(p.value));
-                    const s = chart.addSeries(LineSeries, {
-                        color: style.colors[pi] || PALETTE[pi % PALETTE.length],
-                        lineWidth: widthFor(pi),
-                        priceLineVisible: style.showPriceLine,
-                        lastValueVisible: style.showPriceLine
-                    });
-                    const data = plot
-                        .filter((p) => p.value != null && !Number.isNaN(p.value))
-                        .map((p) => ({ time: p.time as UTCTimestamp, value: p.value as number }));
-                    s.setData(data);
-                    if (lastPoint && style.showPriceLine) {
-                        s.applyOptions({ priceLineVisible: true, lastValueVisible: true });
-                        try {
-                            (s as any).setData(data);
-                        } catch {
-                            // ignore
+                const arr: ISeriesApi<"Line">[] = [];
+                // Kernel çizgisi için segment bazlı renk değişimi
+                const isKernel = inst.registryId === "sling_shot";
+                if (isKernel && plots.length > 0) {
+                    // Her renk değişiminde yeni bir segment oluştur
+                    const plot = plots[0];
+                    let currentSegment: { time: number; value: number }[] = [];
+                    let currentColor: string = style.colors[0] || PALETTE[0];
+                    const segments: { color: string; data: { time: number; value: number }[] }[] = [];
+                    for (const point of plot) {
+                        if (point.value == null || Number.isNaN(point.value)) continue;
+                        const pointColor: string = (point as any).color || style.colors[0] || PALETTE[0];
+                        if (pointColor !== currentColor) {
+                            // Renk değişti — mevcut segmenti kaydet, yenisini başlat
+                            if (currentSegment.length > 0) segments.push({ color: currentColor, data: [...currentSegment] });
+                            currentColor = pointColor;
+                            currentSegment = [{ time: point.time, value: point.value }];
+                        } else {
+                            currentSegment.push({ time: point.time, value: point.value });
                         }
                     }
-                    return s;
-                });
+                    if (currentSegment.length > 0) {
+                        segments.push({ color: currentColor, data: currentSegment });
+                    }
+                    // Her segmenti ayrı bir seri olarak çiz
+                    for (const seg of segments) {
+                        const s = chart.addSeries(LineSeries, {
+                            color: seg.color,
+                            lineWidth: widthFor(0),
+                            priceLineVisible: false,
+                            lastValueVisible: false,
+                        });
+                        s.setData(seg.data.map((d) => ({ time: d.time as UTCTimestamp, value: d.value })));
+                        arr.push(s);
+                    }
+                } else {
+                    // Normal indikatörler için standart çizim
+                    arr.push(...plots.map((plot, pi) => {
+                        const lastPoint = [...plot].reverse().find((p) => p.value != null && !Number.isNaN(p.value));
+                        const s = chart.addSeries(LineSeries, {
+                            color: style.colors[pi] || PALETTE[pi % PALETTE.length],
+                            lineWidth: widthFor(pi),
+                            priceLineVisible: style.showPriceLine,
+                            lastValueVisible: style.showPriceLine
+                        });
+                        const data = plot
+                            .filter((p) => p.value != null && !Number.isNaN(p.value))
+                            .map((p) => ({ time: p.time as UTCTimestamp, value: p.value as number }));
+                        s.setData(data);
+                        if (lastPoint && style.showPriceLine) {
+                            s.applyOptions({ priceLineVisible: true, lastValueVisible: true });
+                            try {
+                                (s as any).setData(data);
+                            } catch {
+                                // ignore
+                            }
+                        }
+                        return s;
+                    }));
+                }
                 overlaySeries.current.set(inst.uid, arr);
             } else {
                 instPanes.set(inst.uid, paneIdx);
@@ -1135,49 +1173,6 @@ export default function ChartsPage() {
                     </h1>
                     <p className="eyebrow mt-1">Binance public API · son 200 mum</p>
                 </div>
-                <div className="chart-toolbar w-full lg:w-auto flex flex-wrap items-center gap-2 sm:gap-3">
-                    <select
-                        value={symbol}
-                        onChange={(e) => changeSymbol(e.target.value)}
-                        className="chart-symbol-select bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
-                    >
-                        {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                    <button
-                        type="button"
-                        onClick={() => setAnalysisOpen(true)}
-                        className="px-3 py-2 rounded-lg border border-yellow-400/50 bg-yellow-400/10 font-mono text-xs text-yellow-300 hover:bg-yellow-400/20"
-                    >
-                        🔬 ANALİZ
-                    </button>
-                    <div className="chart-intervals max-w-full overflow-x-auto flex rounded-lg border border-bunker-700">
-                        {INTERVALS.map((i) => (
-                            <button
-                                key={i.v}
-                                onClick={() => changeInterval(i.v)}
-                                className={`chart-interval-button px-3 py-2 font-mono text-xs transition-colors ${interval === i.v ? "bg-neon-green/15 text-neon-green" : "bg-bunker-900 text-bunker-muted hover:text-white"}`}
-                            >
-                                {i.l}
-                            </button>
-                        ))}
-                    </div>
-                    <button
-                        onClick={() => setPicking(true)}
-                        className="order-first lg:order-none px-4 py-2 min-h-10 rounded-lg border border-neon-green/40 bg-neon-green/10 font-mono text-sm text-neon-green hover:bg-neon-green/20 active:scale-[0.98] transition-transform"
-                    >
-                        + İNDİKATÖR
-                    </button>
-                    <button
-                        onClick={saveToDb}
-                        disabled={saveState === "saving"}
-                        className={`px-4 py-2 rounded-lg border font-mono text-sm transition-colors ${saveState === "saved"
-                            ? "border-neon-green bg-neon-green/20 text-neon-green"
-                            : "border-neon-yellow/40 bg-neon-yellow/10 text-neon-yellow hover:bg-neon-yellow/20"
-                            }`}
-                    >
-                        {saveState === "saving" ? "KAYDEDİLİYOR..." : saveState === "saved" ? "✓ KAYDEDİLDİ" : "KAYDET"}
-                    </button>
-                </div>
             </header>
 
             <section aria-label="Portföy özeti" className="grid grid-cols-2 gap-2 rounded-xl border border-bunker-800 bg-bunker-950/80 p-3 sm:grid-cols-5">
@@ -1200,31 +1195,96 @@ export default function ChartsPage() {
                 })}
             </section>
 
-            <button
-                onClick={() => setPicking(true)}
-                aria-label="İndikatör ekle"
-                className="lg:hidden fixed bottom-5 right-4 z-40 min-h-12 px-4 rounded-full border border-neon-green/50 bg-bunker-950/95 text-neon-green shadow-[0_8px_30px_rgba(16,185,129,0.2)] backdrop-blur font-mono text-sm font-bold active:scale-95 transition-transform"
-            >
-                ＋ İNDİKATÖR
-            </button>
-
-            {instances.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2">
-                    <span className="eyebrow">AKTİF:</span>
-                    {instances.map((o) => (
-                        <span
-                            key={o.uid}
-                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono text-xs ${o.overlay
-                                ? "border-neon-yellow/30 bg-neon-yellow/10 text-neon-yellow"
-                                : "border-neon-green/30 bg-neon-green/10 text-neon-green"
-                                }`}
+            {/* Sembol seçimi, analiz ve zaman dilimi — grafiğin hemen üstünde */}
+            <div className="chart-toolbar flex flex-wrap items-center gap-2 sm:gap-3">
+                <select
+                    value={symbol}
+                    onChange={(e) => changeSymbol(e.target.value)}
+                    aria-label="Sembol seç"
+                    className="chart-symbol-select bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+                >
+                    {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <button
+                    type="button"
+                    onClick={() => setAnalysisOpen(true)}
+                    className="px-3 py-2 rounded-lg border border-yellow-400/50 bg-yellow-400/10 font-mono text-xs text-yellow-300 hover:bg-yellow-400/20"
+                    title="Sembol analizi"
+                >
+                    🔬 ANALİZ
+                </button>
+                <div className="chart-intervals max-w-full overflow-x-auto flex rounded-lg border border-bunker-700">
+                    {INTERVALS.map((i) => (
+                        <button
+                            key={i.v}
+                            onClick={() => changeInterval(i.v)}
+                            className={`chart-interval-button px-3 py-2 font-mono text-xs transition-colors ${interval === i.v ? "bg-neon-green/15 text-neon-green" : "bg-bunker-900 text-bunker-muted hover:text-white"}`}
                         >
-                            {o.name}
-                            <button onClick={() => removeIndicator(o.uid)} className="hover:text-white">✕</button>
-                        </span>
+                            {i.l}
+                        </button>
                     ))}
                 </div>
-            )}
+                <button
+                    onClick={() => setPicking(true)}
+                    className="px-4 py-2 min-h-10 rounded-lg border border-neon-green/40 bg-neon-green/10 font-mono text-sm text-neon-green hover:bg-neon-green/20 active:scale-[0.98] transition-transform"
+                    title="Standart indikatör ekle"
+                >
+                    + İNDİKATÖR
+                </button>
+                <button
+                    onClick={saveToDb}
+                    disabled={saveState === "saving"}
+                    className={`px-4 py-2 rounded-lg border font-mono text-sm transition-colors ${saveState === "saved"
+                        ? "border-neon-green bg-neon-green/20 text-neon-green"
+                        : "border-neon-yellow/40 bg-neon-yellow/10 text-neon-yellow hover:bg-neon-yellow/20"
+                        }`}
+                >
+                    {saveState === "saving" ? "KAYDEDİLİYOR..." : saveState === "saved" ? "✓ KAYDEDİLDİ" : "KAYDET"}
+                </button>
+            </div>
+
+            {/* Aktif indikatörler + hacim + ekle — grafiğin hemen üstünde */}
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="eyebrow">AKTİF:</span>
+                {instances.length === 0 && (
+                    <span className="font-mono text-[11px] text-bunker-muted">hiçbiri</span>
+                )}
+                {instances.map((o) => (
+                    <span
+                        key={o.uid}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono text-xs ${o.overlay
+                            ? "border-neon-yellow/30 bg-neon-yellow/10 text-neon-yellow"
+                            : "border-neon-green/30 bg-neon-green/10 text-neon-green"
+                            }`}
+                    >
+                        {o.name}
+                        <button onClick={() => removeIndicator(o.uid)} className="hover:text-white">✕</button>
+                    </span>
+                ))}
+                <span className="mx-1 h-5 w-px bg-bunker-800" aria-hidden="true" />
+                {/* Hacim aç/kapa — grafiğin üst kısmında, artı butonunun yanında */}
+                <button
+                    type="button"
+                    role="switch"
+                    aria-checked={volumeVisible}
+                    onClick={() => setVolumeVisible((v) => !v)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono text-xs transition-colors ${volumeVisible
+                        ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
+                        : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"
+                        }`}
+                    title="Hacim panelini aç/kapat"
+                >
+                    <span className="text-[11px]">◧</span> HACİM {volumeVisible ? "AÇIK" : "KAPALI"}
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setPicking(true)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-bunker-700 bg-bunker-900 px-2 py-1 font-mono text-xs text-bunker-muted transition-colors hover:text-neon-green"
+                    title="İndikatör ekle"
+                >
+                    ＋ EKLE
+                </button>
+            </div>
 
             {analysisOpen && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 sm:p-6" onClick={() => setAnalysisOpen(false)}>
                 <section className="w-full max-w-7xl h-[92vh] overflow-hidden rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="symbol-analysis-modal-title">
@@ -1285,11 +1345,6 @@ export default function ChartsPage() {
                 </section>
             </div>}
 
-            {showPressure && <section className="rounded-xl border border-bunker-800 bg-bunker-950/95 px-3 py-2.5 sm:px-4" aria-label="Alıcı satıcı basıncı">
-                    <div className="mb-1.5 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider"><span className={pressure < 0 ? "text-red-400" : "text-bunker-muted"}>SATICI %{Math.max(0, 50 - pressure / 2).toFixed(0)}</span><span className="text-bunker-muted">BASINÇ · 0</span><span className={pressure >= 0 ? "text-neon-green" : "text-bunker-muted"}>ALICI %{Math.max(0, 50 + pressure / 2).toFixed(0)}</span></div>
-                    <div className="relative h-2 overflow-hidden rounded-full bg-bunker-800"><div className="absolute inset-y-0 left-1/2 w-px bg-white/60" /><div className={`absolute top-0 h-full transition-[width] duration-150 ease-out ${pressure >= 0 ? "left-1/2 bg-neon-green" : "right-1/2 bg-red-400"}`} style={{ width: `${Math.abs(pressure) / 2}%` }} /></div>
-                </section>}
-
             {/* Üst tahmin paneli: ML model çıktısı (LLM yok) + geçmiş başarı + yenile */}
             <section className="rounded-xl border border-bunker-800 bg-bunker-950/95 px-3 py-2.5 sm:px-4" aria-label="ML fiyat tahmini">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1342,6 +1397,20 @@ export default function ChartsPage() {
                     </div>
                 )}
                 <div ref={containerRef} className="w-full" />
+                {/* Alıcı/satıcı basınç bandı — grafiğin hemen altı, gösterge şeridinin üstü */}
+                {showPressure && (
+                    <div className="border-t border-bunker-800 bg-bunker-950 px-3 py-2 sm:px-4">
+                        <div className="mb-1 flex items-center justify-between font-mono text-[10px] uppercase tracking-wider">
+                            <span className={pressure < 0 ? "text-red-400" : "text-bunker-muted"}>SATICI %{Math.max(0, 50 - pressure / 2).toFixed(0)}</span>
+                            <span className="text-bunker-muted">BASINÇ</span>
+                            <span className={pressure >= 0 ? "text-neon-green" : "text-bunker-muted"}>ALICI %{Math.max(0, 50 + pressure / 2).toFixed(0)}</span>
+                        </div>
+                        <div className="relative h-2 overflow-hidden rounded-full bg-bunker-800">
+                            <div className="absolute inset-y-0 left-1/2 w-px bg-white/60" />
+                            <div className={`absolute top-0 h-full transition-[width] duration-150 ease-out ${pressure >= 0 ? "left-1/2 bg-neon-green" : "right-1/2 bg-red-400"}`} style={{ width: `${Math.abs(pressure) / 2}%` }} />
+                        </div>
+                    </div>
+                )}
                 {/* gösterge şeridi: grafiğin altına sabitlenmiş, seçili TF'den canlı hesaplanan değerler */}
                 <div className="grid grid-cols-3 divide-x divide-bunker-800 border-t border-bunker-800 bg-bunker-950">
                     {([

@@ -24,6 +24,21 @@ type NotificationSettings = {
   quiet_hours_end: string | null;
 };
 
+type PushNotif = {
+  id?: number | null;
+  symbol: string;
+  title?: string | null;
+  message: string;
+  score?: number | null;
+  target_pct?: number | null;
+  price?: number | null;
+  expected_price?: number | null;
+  horizon_minutes?: number | null;
+  mode?: string | null;
+  detected_at: number | null;
+  sent_via_push?: boolean;
+};
+
 type MonitoringState = {
   last_scan_at: number | null;
   scan_count: number;
@@ -31,7 +46,7 @@ type MonitoringState = {
   watchlist: Candidate[];
 };
 
-const SCAN_INTERVAL_MS = 60_000; // 60 saniye
+const SCAN_INTERVAL_MS = 30_000; // 30 saniye — izleme listesi daha sık analiz
 
 export default function MonitoringPage() {
   const [state, setState] = useState<MonitoringState>({
@@ -42,8 +57,12 @@ export default function MonitoringPage() {
   });
   const [scanning, setScanning] = useState(false);
   const [radarAngle, setRadarAngle] = useState(0);
-  const [notifications, setNotifications] = useState<{ id: number; message: string; time: number }[]>([]);
+  const [countdown, setCountdown] = useState(0);
+  const [notifications, setNotifications] = useState<PushNotif[]>([]);
+  const [history, setHistory] = useState<PushNotif[]>([]);
   const [notifPermission, setNotifPermission] = useState<NotificationPermission>("default");
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushError, setPushError] = useState<string | null>(null);
   const [settings, setSettings] = useState<NotificationSettings>({
     enabled: true,
     min_score: 1.0,
@@ -52,31 +71,53 @@ export default function MonitoringPage() {
     quiet_hours_end: null,
   });
   const [showSettings, setShowSettings] = useState(false);
+  const [loopActive, setLoopActive] = useState(false);
   const scanTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const radarTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const notifIdRef = useRef(0);
+  const countdownRef = useRef(0);
 
-  // Request notification permission
-  const requestNotificationPermission = useCallback(async () => {
-    if (!("Notification" in window)) return;
-    const perm = await Notification.requestPermission();
-    setNotifPermission(perm);
-  }, []);
-
-  // Send browser notification
-  const sendBrowserNotification = useCallback((title: string, body: string) => {
-    if (!("Notification" in window) || Notification.permission !== "granted") return;
+  // Request notification permission + subscribe for Web Push (PWA closed still delivers)
+  const enablePush = useCallback(async () => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setPushError("Bu tarayıcı Web Push desteklemiyor.");
+      return;
+    }
     try {
-      new Notification(title, { body, icon: "/icon.png", tag: "scalper-monitoring" });
-    } catch {
-      // Notification API not supported
+      const perm = await Notification.requestPermission();
+      setNotifPermission(perm);
+      if (perm !== "granted") {
+        setPushError("Bildirim izni verilmedi. Tarayıcı ayarlarından açabilirsiniz.");
+        return;
+      }
+      const key = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      if (!key) {
+        setPushError("VAPID public key yapılandırılmamış.");
+        return;
+      }
+      const registration = await navigator.serviceWorker.ready;
+      const padded = key.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (key.length % 4)) % 4);
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: Uint8Array.from(atob(padded), (c) => c.charCodeAt(0)),
+        });
+      }
+      await apiRequest(`${API_BASE}/api/alerts/push-subscription`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(subscription.toJSON()),
+      });
+      setPushEnabled(true);
+      setPushError(null);
+    } catch (error) {
+      setPushError(error instanceof Error ? error.message : "Push kurulamadı");
     }
   }, []);
 
-  // Add in-app notification
-  const addNotification = useCallback((message: string) => {
-    const id = ++notifIdRef.current;
-    setNotifications((prev) => [{ id, message, time: Date.now() }, ...prev].slice(0, 50));
+  // Send in-app notification
+  const addNotification = useCallback((n: PushNotif) => {
+    setNotifications((prev) => [n, ...prev].slice(0, 60));
   }, []);
 
   // Load settings from DB
@@ -112,7 +153,7 @@ export default function MonitoringPage() {
     }
   }, []);
 
-  // Run scan
+  // Run scan (UI manual / periodic)
   const runScan = useCallback(async () => {
     setScanning(true);
     try {
@@ -125,6 +166,7 @@ export default function MonitoringPage() {
           candidates: data.candidates || [],
           watchlist: data.watchlist || [],
         });
+        if (data.loop_active !== undefined) setLoopActive(!!data.loop_active);
         // Update settings from response
         if (data.settings) {
           setSettings({
@@ -135,12 +177,11 @@ export default function MonitoringPage() {
             quiet_hours_end: data.settings.quiet_hours_end ?? null,
           });
         }
-        // Notify for new candidates
-        if (data.new_notifications > 0) {
-          for (const c of data.candidates || []) {
-            const msg = `🎯 ${c.symbol} | Skor: ${c.velocity_score?.toFixed(1)} | Hedef: +${c.target_pct}% | Anlık: ${c.price?.toFixed(6)} TRY`;
-            addNotification(msg);
-            sendBrowserNotification("Scalper Agent - Yeni Aday!", msg);
+        // In-app notification for new candidate notifications (server may also push)
+        if (data.new_notifications > 0 && (data.notifications || []).length > 0) {
+          for (const n of data.notifications || []) {
+            if (!n || !n.symbol) continue;
+            addNotification(n);
           }
         }
       }
@@ -149,12 +190,35 @@ export default function MonitoringPage() {
     } finally {
       setScanning(false);
     }
-  }, [addNotification, sendBrowserNotification]);
+  }, [addNotification]);
 
-  // Initial load + periodic scan
+  // Load notification history from DB
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/notifications`, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        const merged: PushNotif[] = [];
+        const seen = new Set<string>();
+        for (const n of [...(data.history || []), ...(data.session || [])]) {
+          if (!n || !n.symbol) continue;
+          const key = `${n.symbol}:${n.detected_at}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(n);
+        }
+        merged.sort((a, b) => (b.detected_at ?? 0) - (a.detected_at ?? 0));
+        setHistory(merged.slice(0, 60));
+      }
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  // Initial load + periodic scan + radar animation
   useEffect(() => {
     loadSettings();
-    // Load initial state
+    loadHistory();
     apiRequest(`${API_BASE}/api/monitoring/state`, { cache: "no-store" })
       .then((r) => r.json())
       .then((data) => {
@@ -164,28 +228,60 @@ export default function MonitoringPage() {
           candidates: data.candidates || [],
           watchlist: data.watchlist || [],
         });
+        if (data.loop_active !== undefined) setLoopActive(!!data.loop_active);
+        setHistory((prev) => {
+          const merged = [...(data.history || []), ...prev];
+          const seen = new Set<string>();
+          const out: PushNotif[] = [];
+          for (const n of merged) {
+            if (!n || !n.symbol) continue;
+            const key = `${n.symbol}:${n.detected_at}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(n);
+          }
+          return out.sort((a, b) => (b.detected_at ?? 0) - (a.detected_at ?? 0)).slice(0, 60);
+        });
       })
       .catch(() => {});
 
-    // Start periodic scan
+    // Periodic scan (server loop runs anyway; UI refreshes faster for watchlist re-analysis)
     scanTimerRef.current = setInterval(runScan, SCAN_INTERVAL_MS);
-    // Radar animation
     radarTimerRef.current = setInterval(() => {
       setRadarAngle((a) => (a + 3) % 360);
     }, 50);
+    // Countdown to next scan
+    countdownRef.current = Math.round(SCAN_INTERVAL_MS / 1000);
+    const cd = setInterval(() => {
+      countdownRef.current -= 1;
+      if (countdownRef.current <= 0) countdownRef.current = Math.round(SCAN_INTERVAL_MS / 1000);
+      setCountdown(countdownRef.current);
+    }, 1000);
 
-    // Check notification permission
     if ("Notification" in window) setNotifPermission(Notification.permission);
+    // Detect existing push subscription
+    if ("serviceWorker" in navigator && "PushManager" in window) {
+      navigator.serviceWorker.ready
+        .then((reg) => reg.pushManager.getSubscription())
+        .then((sub) => setPushEnabled(!!sub))
+        .catch(() => {});
+    }
 
     return () => {
       if (scanTimerRef.current) clearInterval(scanTimerRef.current);
       if (radarTimerRef.current) clearInterval(radarTimerRef.current);
+      clearInterval(cd);
     };
-  }, [runScan, loadSettings]);
+  }, [runScan, loadSettings, loadHistory]);
 
   const formatTime = (ts: number | null) => {
     if (!ts) return "—";
     return new Date(ts * 1000).toLocaleTimeString("tr-TR");
+  };
+
+  const formatFullTime = (ts: number | null) => {
+    if (!ts) return "—";
+    return new Date(ts * 1000).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   };
 
   const getScoreColor = (score: number) => {
@@ -194,19 +290,34 @@ export default function MonitoringPage() {
     return "text-neon-red";
   };
 
+  const displayedNotifs = notifications.length > 0 ? notifications : history;
+
   return (
     <main className="page-shell">
       <div className="page-heading flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="eyebrow text-neon-green">OTONOM İZLEME</p>
+          <p className="eyebrow text-neon-green">OTONOM İZLEME · RADAR</p>
           <h1>Monitoring</h1>
-          <p className="text-bunker-muted">%2+ yükselme potansiyeli olan sembolleri otomatik tarar, uygun olanlar için bildirim gönderir.</p>
+          <p className="text-bunker-muted">
+            %2+ yükselme potansiyeli olan sembolleri belirli aralıklarla tarar; uygun olanları izlemeye alır,
+            uygun bulunanlar için sesli + yazılı bildirim gönderir.
+          </p>
         </div>
-        <div className="flex gap-2">
-          {notifPermission !== "granted" && (
-            <button onClick={requestNotificationPermission} className="ui-button">
-              🔔 Bildirimleri Aç
+        <div className="flex gap-2 flex-wrap">
+          {!pushEnabled && notifPermission !== "granted" && (
+            <button onClick={enablePush} className="ui-button">
+              🔔 Bildirimleri Aç (Kapalıyken de)
             </button>
+          )}
+          {!pushEnabled && notifPermission === "granted" && (
+            <button onClick={enablePush} className="ui-button">
+              📲 Push Aboneliği Kur
+            </button>
+          )}
+          {pushEnabled && (
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-neon-green/40 bg-neon-green/10 text-xs font-mono text-neon-green">
+              ✓ PWA bildirimleri açık
+            </span>
           )}
           <button onClick={() => setShowSettings(!showSettings)} className="ui-button">
             ⚙️ Ayarlar
@@ -219,27 +330,38 @@ export default function MonitoringPage() {
 
       {/* Notification Permission Banner */}
       {notifPermission === "default" && (
-        <div className="card border-yellow-400/30 bg-yellow-400/5 flex items-center justify-between">
+        <div className="card border-yellow-400/30 bg-yellow-400/5 flex flex-wrap items-center justify-between gap-2">
           <div>
             <p className="font-mono text-sm text-yellow-300">📱 Bildirim İzni Gerekli</p>
-            <p className="text-xs text-bunker-muted mt-1">Mobil ve masaüstü bildirimleri almak için izin verin. Uygulama kapalıyken bile bildirim gönderilir.</p>
+            <p className="text-xs text-bunker-muted mt-1">
+              Mobil ve masaüstü bildirimleri almak için izin verin. İzin verdiğinizde PWA kurulursa uygulama
+              kapalıyken bile (Web Push) bildirim gönderilir.
+            </p>
           </div>
-          <button onClick={requestNotificationPermission} className="ui-button ui-button-primary shrink-0">
-            İzin Ver
+          <button onClick={enablePush} className="ui-button ui-button-primary shrink-0">
+            İzin Ver ve Abone Ol
           </button>
         </div>
       )}
       {notifPermission === "denied" && (
         <div className="card border-neon-red/30 bg-neon-red/5">
           <p className="font-mono text-sm text-neon-red">🚨 Bildirim İzni Reddedildi</p>
-          <p className="text-xs text-bunker-muted mt-1">Tarayıcı ayarlarından bildirim izni verebilirsiniz. Uygulama kapalıyken bildirim alınamaz.</p>
+          <p className="text-xs text-bunker-muted mt-1">
+            Tarayıcı ayarlarından bildirim izni verebilirsiniz. Kapalıyken bildirim için PWA + Web Push gerekir.
+          </p>
+        </div>
+      )}
+      {pushError && (
+        <div className="card border-yellow-400/30 bg-yellow-400/5">
+          <p className="font-mono text-sm text-yellow-300">⚠️ Push Durumu</p>
+          <p className="text-xs text-bunker-muted mt-1">{pushError}</p>
         </div>
       )}
 
       {/* Settings Panel */}
       {showSettings && (
         <div className="card border-neon-green/20">
-          <p className="eyebrow text-neon-green">BİLDİRİM AYARLARI</p>
+          <p className="eyebrow text-neon-green">BİLDİRİM AYARLARI (VERİTABANINA KAYDEDİLİR)</p>
           <div className="mt-4 space-y-4">
             {/* Enable/Disable */}
             <div className="flex items-center justify-between">
@@ -313,7 +435,10 @@ export default function MonitoringPage() {
                 />
               </div>
             </div>
-            <p className="text-xs text-bunker-muted">Sessiz saatlerde bildirim gönderilmez (PWA kapalıyça da geçerli).</p>
+            <p className="text-xs text-bunker-muted">
+              Sessiz saatlerde bildirim gönderilmez (sunucu tarafında da uygulanır). Ayarlar veritabanına kaydedilir
+              ve tarama + bildirim, uygulama kapalıyken sunucudan devam eder.
+            </p>
           </div>
         </div>
       )}
@@ -329,28 +454,30 @@ export default function MonitoringPage() {
           <p className="mt-2 font-mono text-lg text-white">{state.scan_count}</p>
         </div>
         <div className="card">
-          <p className="eyebrow">Adaylar</p>
-          <p className="mt-2 font-mono text-lg text-neon-green">{state.candidates.length}</p>
+          <p className="eyebrow">Sonraki Tarama</p>
+          <p className="mt-2 font-mono text-lg text-neon-green">{countdown}sn</p>
         </div>
         <div className="card">
-          <p className="eyebrow">İzleme Listesi</p>
-          <p className="mt-2 font-mono text-lg text-yellow-300">{state.watchlist.length}</p>
+          <p className="eyebrow">Sunucu Döngüsü</p>
+          <p className={`mt-2 font-mono text-lg ${loopActive ? "text-neon-green" : "text-yellow-300"}`}>
+            {loopActive ? "AKTİF" : "—"}
+          </p>
         </div>
       </div>
 
-      {/* Radar Animation */}
-      {scanning && (
-        <div className="card flex flex-col items-center justify-center py-8">
-          <div className="monitoring-radar">
-            <div className="monitoring-radar-sweep" style={{ transform: `rotate(${radarAngle}deg)` }} />
-            <div className="monitoring-radar-ring monitoring-radar-ring-1" />
-            <div className="monitoring-radar-ring monitoring-radar-ring-2" />
-            <div className="monitoring-radar-ring monitoring-radar-ring-3" />
-            <div className="monitoring-radar-center" />
-          </div>
-          <p className="mt-4 font-mono text-sm text-neon-green animate-pulse">SEMBOLLER TARANIYOR…</p>
+      {/* Radar Animation — always visible during scans */}
+      <div className="card flex flex-col items-center justify-center py-8">
+        <div className="monitoring-radar">
+          <div className="monitoring-radar-sweep" style={{ transform: `rotate(${radarAngle}deg)` }} />
+          <div className="monitoring-radar-ring monitoring-radar-ring-1" />
+          <div className="monitoring-radar-ring monitoring-radar-ring-2" />
+          <div className="monitoring-radar-ring monitoring-radar-ring-3" />
+          <div className="monitoring-radar-center" />
         </div>
-      )}
+        <p className="mt-4 font-mono text-sm text-neon-green animate-pulse">
+          {scanning ? "SEMBOLLER TARANIYOR…" : "BELİRLİ ARALIKLARLA TARANIYOR — RADAR AKTİF"}
+        </p>
+      </div>
 
       {/* Candidates List */}
       <section className="card">
@@ -406,8 +533,8 @@ export default function MonitoringPage() {
       {/* Watchlist */}
       <section className="card">
         <div className="flex justify-between items-center">
-          <p className="eyebrow text-yellow-300">👁 İZME LİSTESİ ({state.watchlist.length})</p>
-          <span className="text-xs text-bunker-muted">Daha sık analiz edilir</span>
+          <p className="eyebrow text-yellow-300">👁 İZLEME LİSTESİ ({state.watchlist.length})</p>
+          <span className="text-xs text-bunker-muted">Her tarama turunda daha sık yeniden analiz edilir</span>
         </div>
         {state.watchlist.length === 0 ? (
           <p className="mt-3 text-bunker-muted">İzleme listesi boş.</p>
@@ -444,28 +571,56 @@ export default function MonitoringPage() {
       </section>
 
       {/* Notifications */}
-      {notifications.length > 0 && (
+      {displayedNotifs.length > 0 && (
         <section className="card">
           <div className="flex justify-between items-center">
-            <p className="eyebrow text-neon-green">🔔 BİLDİRİMLER</p>
-            <button
-              onClick={() => setNotifications([])}
-              className="text-xs text-bunker-muted hover:text-white"
-            >
-              Tümünü Temizle
-            </button>
+            <p className="eyebrow text-neon-green">🔔 BİLDİRİMLER ({displayedNotifs.length})</p>
+            <div className="flex gap-2 items-center">
+              {pushEnabled && notifPermission === "granted" && (
+                <button
+                  onClick={async () => {
+                    // Test push: sunucuya monitoring bildirimi gönder (kendi cihazına)
+                    try {
+                      await apiRequest(`${API_BASE}/api/monitoring/scan`, { cache: "no-store" });
+                    } catch {
+                      // ignore
+                    }
+                  }}
+                  className="text-xs text-bunker-muted hover:text-white"
+                  title="Yeni tarama çalıştır"
+                >
+                  ⟳ Tazele
+                </button>
+              )}
+              <button onClick={() => setNotifications([])} className="text-xs text-bunker-muted hover:text-white">
+                Oturumu Temizle
+              </button>
+            </div>
           </div>
-          <div className="mt-3 space-y-2 max-h-60 overflow-y-auto">
-            {notifications.map((n) => (
-              <div key={n.id} className="flex items-start gap-2 p-2 rounded-lg bg-neon-green/5 border border-neon-green/20">
+          <div className="mt-3 space-y-2 max-h-96 overflow-y-auto">
+            {(notifications.length > 0 ? notifications : history).map((n, i) => (
+              <div key={n.symbol + ":" + (n.detected_at ?? i)} className="flex items-start gap-2 p-2 rounded-lg bg-neon-green/5 border border-neon-green/20">
                 <span className="text-neon-green mt-0.5">●</span>
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs text-white font-mono truncate">{n.message}</p>
-                  <p className="text-[10px] text-bunker-muted mt-0.5">{new Date(n.time).toLocaleTimeString("tr-TR")}</p>
+                  <p className="text-xs text-white font-mono truncate">{n.message || n.title}</p>
+                  <p className="text-[10px] text-bunker-muted mt-0.5">
+                    {formatFullTime(n.detected_at)}
+                    {n.sent_via_push === false ? " · push kapalı (sunucuda kayıtlı)" : " · push ile gönderildi"}
+                  </p>
                 </div>
               </div>
             ))}
           </div>
+        </section>
+      )}
+
+      {/* Recent history from DB */}
+      {notifications.length === 0 && history.length === 0 && state.candidates.length === 0 && (
+        <section className="card">
+          <p className="text-bunker-muted">
+            Henüz bildirim yok. Semboller belirli aralıklarla taranıyor; skor ve % hedef eşiğini geçen uygun
+            adaylar burada ve bildirim olarak görünür.
+          </p>
         </section>
       )}
     </main>

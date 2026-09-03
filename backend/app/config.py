@@ -309,12 +309,6 @@ class Config:
     # LLM paper-entry gate: an entry is blocked when the live top-of-book spread
     # exceeds this percent (thin-orderbook protection for low-price TRY pairs).
     LLM_MAX_ENTRY_SPREAD_PCT = float(os.getenv("LLM_MAX_ENTRY_SPREAD_PCT", "1.0"))
-    # Target distance must be at least this multiple of recent ATR noise for
-    # an entry to be worth taking (S1 cost-aware quality gates).
-    MIN_TARGET_ATR_CAPACITY_RATIO = max(0.1, float(os.getenv("MIN_TARGET_ATR_CAPACITY_RATIO", "1.0")))
-    VELOCITY_MIN_ATR_CAPACITY_RATIO = max(
-        0.1, float(os.getenv("VELOCITY_MIN_ATR_CAPACITY_RATIO", "0.50"))
-    )
     # S6 volatility-based sizing: equal-risk scaling around this ATR% baseline.
     VOLATILITY_SIZING_ENABLED = os.getenv("VOLATILITY_SIZING_ENABLED", "true").lower() == "true"
     VOLATILITY_BASELINE_ATR_PCT = max(0.0005, float(os.getenv("VOLATILITY_BASELINE_ATR_PCT", "0.006")))

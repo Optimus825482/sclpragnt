@@ -378,3 +378,25 @@ CREATE TABLE IF NOT EXISTS chart_forecasts (
 );
 CREATE INDEX IF NOT EXISTS chart_forecasts_symbol_time_idx ON chart_forecasts(symbol, created_at DESC);
 CREATE INDEX IF NOT EXISTS chart_forecasts_status_created_idx ON chart_forecasts(status, created_at);
+
+-- Monitoring page notification history (2026-09-03). The server-side scan
+-- loop persists every delivered (or quiet-hours deferred) candidate
+-- notification so history survives restarts and is visible even when the
+-- PWA is closed. Follows the paper-only double precision epoch convention.
+CREATE TABLE IF NOT EXISTS monitoring_notifications (
+  id BIGSERIAL PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  message TEXT NOT NULL,
+  title TEXT,
+  score DOUBLE PRECISION,
+  target_pct DOUBLE PRECISION,
+  price DOUBLE PRECISION,
+  expected_price DOUBLE PRECISION,
+  horizon_minutes INTEGER,
+  mode TEXT,
+  detected_at DOUBLE PRECISION NOT NULL,
+  sent_via_push BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS monitoring_notifications_detected_idx ON monitoring_notifications(detected_at DESC);
+CREATE INDEX IF NOT EXISTS monitoring_notifications_symbol_idx ON monitoring_notifications(symbol, detected_at DESC);

@@ -5,6 +5,7 @@ import { API_BASE, apiRequest, fetchAllPages } from "./lib/api";
 import { useLiveMessages, useLiveStatus } from "./lib/liveSocket";
 import SymbolLink from "./components/SymbolLink";
 import AlertPanel from "./components/AlertPanel";
+import { useAuth } from "./lib/auth";
 
 type Position = {
   symbol: string;
@@ -74,6 +75,7 @@ function pnlText(pct: number) {
 }
 
 export default function Home() {
+  const { username } = useAuth();
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
@@ -238,7 +240,11 @@ export default function Home() {
       <header className="mb-2 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="font-mono text-xl font-bold tracking-tight">
-            PORTFÖY & <span className="text-neon-green">SCALPING</span>
+            {username ? (
+              <>Hoş geldin, <span className="text-neon-green">{username.charAt(0).toUpperCase() + username.slice(1)}</span> 👋</>
+            ) : (
+              <>PORTFÖY & <span className="text-neon-green">SCALPING</span></>
+            )}
           </h1>
           <p className="eyebrow mt-1">Sermaye durumu · işlem başarısı · canlı işlem akışı</p>
         </div>

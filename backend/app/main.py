@@ -208,6 +208,45 @@ async def auth_status(request: Request):
             "role": (user or {}).get("role")}
 
 
+@app.get("/api/profile")
+async def profile_current(request: Request):
+    """Oturumdaki kullanıcının profil bilgisi (şifre hash'i hariç)."""
+    principal = _session_user(request)
+    if not principal:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    user = await database.get_user_by_username(principal.get("username") or "")
+    if not user:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    return {"ok": True, "user": _public_user(user), "paper_only": True}
+
+
+@app.put("/api/profile/password")
+async def profile_update_password(payload: dict, request: Request):
+    """Oturumdaki kullanıcı kendi şifresini günceller (mevcut şifre doğrulanır).
+
+    Varsayılan env-admin (DB kaydı olmayan 'admin') şifresini bu uçtan
+    değiştiremez; onun için DB kullanıcısı oluşturulmalı (admin create user).
+    """
+    principal = _session_user(request)
+    if not principal:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    current_password = str(payload.get("current_password") or "")
+    new_password = str(payload.get("new_password") or "")
+    if len(new_password) < 6:
+        raise HTTPException(status_code=422, detail="Yeni şifre en az 6 karakter olmalı")
+    user = await database.get_user_by_username(principal.get("username") or "")
+    if not user:
+        # DB kaydı olmayan env-admin: profil şifresi değiştirilemez
+        raise HTTPException(status_code=409, detail="Bu kullanıcı için profil şifre değişikliği desteklenmiyor (env yöneticisi)")
+    if not security.verify_password(current_password, user.get("password_hash") or ""):
+        raise HTTPException(status_code=403, detail="Mevcut şifre hatalı")
+    updated = await database.update_user(int(user["id"]), password_hash=security.hash_password(new_password))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    return {"ok": True, "message": "Şifre güncellendi", "paper_only": True}
+
+
+
 @app.post("/api/auth/login")
 async def auth_login(payload: dict, response: Response, request: Request):
     if not security.auth_configured():
@@ -518,6 +557,15 @@ async def startup_services():
     _start_background(correlation_refresh_loop(), "correlation-refresh")
     _start_background(ws_broadcast_loop(), "ws-broadcast")
     _start_background(alert_loop(), "alert-engine")
+    _start_background(monitoring_start_loop(), "monitoring-start")
+
+async def monitoring_start_loop():
+    """Monitoring tarama döngüsünü arka planda başlat (idempotent wrapper)."""
+    try:
+        monitoring.start_monitoring_loop()
+    except Exception as exc:
+        print(f"[Monitoring] döngü başlatılamadı: {exc}", flush=True)
+
 
 async def shutdown_services():
     market.stop()
@@ -1706,7 +1754,7 @@ async def add_llm_provider(payload: dict):
     base_url = str(payload.get("base_url", "")).strip()
     key = str(payload.get("api_key", "")).strip()
     if not name: raise HTTPException(status_code=400, detail="Provider adı gerekli")
-    try: base_url = security.validate_provider_url(base_url)
+    try: base_url = security._validate_provider_url_sync(base_url)
     except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not key: raise HTTPException(status_code=400, detail="API key gerekli")
     try:
@@ -1772,7 +1820,7 @@ async def add_llm_skill(payload: dict):
 async def update_llm_provider(provider_id: int, payload: dict):
     name, base_url, key = str(payload.get("name", "")).strip(), str(payload.get("base_url", "")).strip(), str(payload.get("api_key", "")).strip()
     if not name: raise HTTPException(status_code=400, detail="Provider adı gerekli")
-    try: base_url = security.validate_provider_url(base_url)
+    try: base_url = security._validate_provider_url_sync(base_url)
     except ValueError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
     try: await database.update_llm_provider(provider_id, name, base_url, llm_analysis.encrypt_key(key) if key else None); return {"ok": True}
     except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
@@ -2052,24 +2100,59 @@ def _backup_headers() -> dict:
             "Content-Disposition": f'attachment; filename="scalperagent-postgres-{time.strftime("%Y%m%d-%H%M%S")}.dump"'}
 
 
+async def _create_postgres_backup():
+    """Create a validated PostgreSQL custom-format backup (streamed helper).
+
+    pg_dump çıktısını akıtırken ilk 5 baytın PGDMP imzasını doğrular;
+    geçersiz üretimde HTTPException fırlatır. Dönüş: (async generator,
+    headers sözlüğü).
+    """
+    database_url = _require_postgres_target()
+    headers={"X-Backup-Format": "postgresql-custom", "X-Backup-Verified": "PGDMP"}
+    headers["Content-Disposition"] = f'attachment; filename="scalperagent-postgres-{time.strftime("%Y%m%d-%H%M%S")}.dump"'
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "pg_dump", "--format=custom", "--no-owner", "--no-acl", database_url,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail="PostgreSQL yedek aracı pg_dump backend imajında kurulu değil") from exc
+    first = await proc.stdout.read(5)
+    if first != b"PGDMP":
+        proc.kill()
+        stderr = (await proc.stderr.read() or b"")[-2000:].decode("utf-8", "replace")
+        raise HTTPException(status_code=502, detail=stderr or "pg_dump geçerli PostgreSQL custom-format çıktısı üretmedi")
+
+    async def _stream():
+        yield first
+        try:
+            while True:
+                chunk = await proc.stdout.read(256 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+            returncode = await proc.wait()
+            if returncode != 0:
+                stderr = (await proc.stderr.read() or b"")[-2000:].decode("utf-8", "replace")
+                logger.error("pg_dump akışı hatalı bitti (rc=%s): %s", returncode, stderr)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+
+    return _stream(), headers
+
+
 @app.get("/api/backup")
 async def download_backup():
     """Download a PostgreSQL custom-format dump (streamed while pg_dump runs)."""
-    return StreamingResponse(
-        _pg_dump_stream(_require_postgres_target()),
-        media_type="application/octet-stream",
-        headers=_backup_headers(),
-    )
+    stream, headers = await _create_postgres_backup()
+    return StreamingResponse(stream, media_type="application/octet-stream", headers=headers)
 
 
 @app.get("/api/postgres/backup")
 async def download_postgres_backup():
     """Explicit alias for clients that use the PostgreSQL-specific route."""
-    return StreamingResponse(
-        _pg_dump_stream(_require_postgres_target()),
-        media_type="application/octet-stream",
-        headers=_backup_headers(),
-    )
+    stream, headers = await _create_postgres_backup()
+    return StreamingResponse(stream, media_type="application/octet-stream", headers=headers)
 
 @app.post("/api/postgres/restore")
 async def restore_postgres_backup(payload: dict = None):

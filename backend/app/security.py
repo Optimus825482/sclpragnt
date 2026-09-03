@@ -53,13 +53,22 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 def create_session_token(username: str = "admin", role: str = "admin", ttl_seconds=43200, client_fingerprint: str = ""):
-    """Session token oluşturur. İsteğe bağlı client_fingerprint (IP+UA hash) ile token'ı cihaza baglar."""
+    """Session token oluşturur. İsteğe bağlı client_fingerprint (IP+UA hash) ile token'ı cihaza baglar.
+
+    Negatif ttl_seconds, iptal/test senaryoları için exp'yi geçmişe atar ve
+    token üretildiği anda geçersiz olur.
+    """
     secret = os.getenv("SCALPER_SESSION_SECRET", "").encode()
     if not secret:
         raise RuntimeError("SCALPER_SESSION_SECRET tanımlı değil")
     fp_hash = hashlib.sha256(str(client_fingerprint or "").encode()).hexdigest()[:16] if client_fingerprint else ""
+    ttl = int(ttl_seconds)
+    # Negatif/geçersiz ttl: iptal/test senaryoları — token üretildiği anda
+    # geçersiz olsun (exp = 0). Epoch + negatif ttl hâlâ geleceğe işaret
+    # ettiği için doğrudan 0'a sabitlemek gerekir.
+    exp = (int(time.time()) + ttl) if ttl >= 0 else 0
     payload = _b64(json.dumps({"sub": str(username).lower(), "role": str(role).lower(),
-                               "exp": int(time.time()) + int(ttl_seconds),
+                               "exp": exp,
                                "fp": fp_hash}, separators=(",", ":")).encode())
     signature = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
     return f"{payload}.{signature}"
@@ -146,8 +155,12 @@ def request_user(headers, cookies=None, query_token=None):
     return session_user(token)
 
 
-async def validate_provider_url(base_url):
-    """Provider URL'sini doğrular — DNS bloklamasını async olarak çalıştırır."""
+def _validate_provider_url_sync(base_url):
+    """Provider URL'sini senkron doğrular (DNS çözümlemesi dahil).
+
+    Hem doğrudan (LLM config doğrulama, testler) hem async sarmalayıcı
+    tarafından kullanılır. Geri dönüş: normalize edilmiş base_url.
+    """
     parsed = urlparse(str(base_url or "").strip())
     allow_private = os.getenv("LLM_ALLOW_PRIVATE_PROVIDER", "0") == "1"
     if parsed.scheme not in ({"https", "http"} if allow_private else {"https"}):
@@ -155,12 +168,9 @@ async def validate_provider_url(base_url):
     if not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Provider URL geçerli bir host içermeli ve kimlik bilgisi taşımamalı")
     try:
-        # DNS bloklamasını executor'da çalıştır — event loop'u bloke etme
-        loop = asyncio.get_running_loop()
-        addresses = await loop.run_in_executor(
-            None,
-            lambda: {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
-        )
+        # DNS bloklaması — senkron çekirdek; async çağıranlar executor kullanır.
+        addresses = {item[4][0] for item in socket.getaddrinfo(
+            parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
     except socket.gaierror as exc:
         raise ValueError("Provider host çözümlenemedi") from exc
     for address in addresses:
@@ -169,6 +179,12 @@ async def validate_provider_url(base_url):
                                   or ip.is_reserved or ip.is_unspecified):
             raise ValueError("Provider URL özel/yerel ağ adresine yönlenemez")
     return parsed.geturl().rstrip("/")
+
+
+async def validate_provider_url(base_url):
+    """Provider URL'sini doğrular — DNS bloklamasını async olarak çalıştırır."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _validate_provider_url_sync, base_url)
 
 
 class _ValidatedRedirectHandler(HTTPRedirectHandler):
