@@ -245,8 +245,6 @@ const emaSeries = (bars: any[], period: number, color: string) => {
 // SlingShot System: TradingView'daki CM_SlingShotSystem'in aynısı.
 // Tek çizgi (EMA50) — trend yönüne göre yeşil (yükseliş) veya kırmızı (düşüş).
 // Buy/Sell sinyalleri "B"/"S" harfleri ile gösterilir.
-// Conservative entry: trend yönünde EMA11'e dönüş sonrası kırılım.
-// Aggressive entry: trend yönünde EMA11'e pullback (potansiyel giriş uyarısı).
 // Varsayılan grafik indikatörü; kullanıcı kendi ekledikçe yerini alır.
 export const SLING_SHOT_ENTRY: RegistryEntry = {
     id: "sling_shot",
@@ -264,21 +262,39 @@ export const SLING_SHOT_ENTRY: RegistryEntry = {
     calculate: (bars: any[], params: any) => {
         const slowPeriod = Math.max(5, Math.round(params.slowPeriod ?? 50));
         const fastPeriod = Math.max(2, Math.round(params.fastPeriod ?? 11));
-        // Tek çizgi: Slow EMA, trend yönüne göre renk değiştirir
-        const slowPlot = emaSeries(bars, slowPeriod, "#39FF14");
-        const fastPlot = emaSeries(bars, fastPeriod, "#ef4444");
-        // Trend yönüne göre slow EMA rengini değiştir
-        const coloredSlow = slowPlot.map((point, idx) => {
-            if (point.value == null) return point;
-            const fastPoint = fastPlot[idx];
-            if (fastPoint?.value == null) return point;
-            const isBullish = fastPoint.value >= point.value;
-            return { ...point, color: isBullish ? "#39FF14" : "#ef4444" };
-        });
+        const closes = bars.map((bar: any) => Number(bar.close));
+        // İki ayrı seri: yeşil (yükseliş) ve kırmızı (düşüş)
+        const greenPlot: { time: number; value: number | null }[] = [];
+        const redPlot: { time: number; value: number | null }[] = [];
+        const kSlow = 2 / (slowPeriod + 1);
+        const kFast = 2 / (fastPeriod + 1);
+        let emaSlow: number | null = null;
+        let emaFast: number | null = null;
+        for (let i = 0; i < bars.length; i++) {
+            const c = closes[i];
+            const t = Number(bars[i].time);
+            emaSlow = emaSlow === null ? c : (c - emaSlow) * kSlow + emaSlow;
+            emaFast = emaFast === null ? c : (c - emaFast) * kFast + emaFast;
+            const v = emaSlow != null && Number.isFinite(emaSlow) ? emaSlow : null;
+            // Trend yönüne göre uygun seriye ekle (diğerine null)
+            if (v != null && emaFast != null && emaFast >= emaSlow) {
+                // Yükseliş trendi: yeşil
+                greenPlot.push({ time: t, value: v });
+                redPlot.push({ time: t, value: null });
+            } else if (v != null && emaFast != null) {
+                // Düşüş trendi: kırmızı
+                greenPlot.push({ time: t, value: null });
+                redPlot.push({ time: t, value: v });
+            } else {
+                greenPlot.push({ time: t, value: null });
+                redPlot.push({ time: t, value: null });
+            }
+        }
         return {
             metadata: { overlay: true },
             plots: {
-                plot0: coloredSlow,
+                plot0: greenPlot, // Yükseliş (yeşil)
+                plot1: redPlot,   // Düşüş (kırmızı)
             },
         };
     },
