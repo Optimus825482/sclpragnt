@@ -20,6 +20,7 @@ from app import calibration as calibration_service
 from app.binance_tr_public import top_gainers, ticker_24h
 from app.embedding_worker import worker as embedding_worker
 from app.memory_service import build_document
+from app import ml_forecast
 from app.ws_runtime import ws_manager
 from app.api_common import _llm_guard_block_reason
 
@@ -117,7 +118,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     (monitoring izleme listesi — daha sık analiz).
     """
     profile = VELOCITY_PROFILES.get(horizon_minutes) or VELOCITY_PROFILES[5]
-    target_pct = float(profile["target_pct"])
+    base_target_pct = float(profile["target_pct"])
     now_ms = int(time.time() * 1000)
     try:
         gainer_rows = await top_gainers(config.VELOCITY_POOL_SIZE)
@@ -187,6 +188,14 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # yoksa global varsayılan kullanılır.
             prof_key = "5m" if horizon_minutes == 5 else "15m"
             prof_atr = _velocity_profile_atr.get(prof_key) or VELOCITY_MIN_ATR_PCT
+            # Sembol bazlı adaptif hedef: geçmiş başarıya göre ayarlanmış hedefi kullan
+            adaptive_target = base_target_pct
+            try:
+                state = await database.get_symbol_target_state(symbol)
+                if state:
+                    adaptive_target = max(0.5, min(10.0, float(state.get("target_pct") or base_target_pct)))
+            except Exception:
+                adaptive_target = base_target_pct
             passes = (exhausted is None and
                       atr_pct >= prof_atr and
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
@@ -273,6 +282,29 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 logger.warning("velocity m1/m3 leading hesabı: %s", exc)
                 m1_atr_prev = m3_atr_prev = None
                 leading_ok = False
+            # --- ML tahmin: sembol bazlı adaptif hedef/süre ---
+            ml_target = None
+            ml_hit_prob = None
+            try:
+                ml_features = {
+                    "ret1_pct": None, "ret3_pct": ret3 / 100 if ret3 is not None else None,
+                    "ret5_pct": None,
+                    "atr_pct": atr_pct, "bb_width_pct": bb_width,
+                    "rsi": rsi, "mfi": mfi, "linreg_slope10_pct": slope,
+                    "aroon_up": aroon_up, "aroon_down": aroon_down,
+                }
+                ml_pred = ml_forecast.predict_target(symbol, ml_features, horizon=horizon_minutes)
+                if ml_pred:
+                    ml_target = float(ml_pred.get("target_pct") or 0)
+                    ml_hit_prob = float(ml_pred.get("hit_probability") or 0)
+            except Exception as exc:
+                logger.debug("velocity ML tahmin hatası %s: %s", symbol, exc)
+            # Hedef kararı: ML tahmini varsa onu kullan (sembol bazlı + horizon);
+            # yoksa adaptif (geçmiş başarıya göre ayarlanmış) hedefi kullan.
+            if ml_target is not None and ml_target > 0:
+                effective_target = max(0.5, ml_target)
+            else:
+                effective_target = max(0.5, adaptive_target)
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
@@ -281,7 +313,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "aroon_up": round(aroon_up, 0) if aroon_up is not None else None,
                     "aroon_down": round(aroon_down, 0) if aroon_down is not None else None,
                     "horizon_minutes": horizon_minutes,
-                    "target_pct": target_pct,
+                    "target_pct": round(effective_target, 3),
+                    "ml_target_pct": round(ml_target, 3) if ml_target is not None and ml_target > 0 else None,
+                    "ml_hit_probability": round(ml_hit_prob, 3) if ml_hit_prob is not None else None,
                     "ret3_pct": round(ret3, 3),
                     "velocity_score": velocity_score, "passes": passes,
                     "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
@@ -316,7 +350,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
         journal_rows = [{
             "candidate_id": f"{candidate_id_prefix}-{r['symbol']}",
             "created_at": now_ms / 1000, "symbol": r["symbol"], "price": r["price"],
-            "target_pct": target_pct, "atr_pct": r["atr_pct"], "volume_ratio": 0.0,
+            "target_pct": r.get("target_pct") or base_target_pct, "atr_pct": r["atr_pct"], "volume_ratio": 0.0,
             "ret3_pct": r["ret3_pct"], "velocity_score": r["velocity_score"],
             "passes": r["passes"], "rank": r.get("rank"),
             "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
@@ -343,8 +377,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     live_stats = await database.get_velocity_calibration_stats()
     live_hit_pct = (float(live_stats.get("passing_touched_count") or 0) /
                     float(live_stats.get("passing_count") or 0) * 100) if live_stats.get("passing_count") else None
-    return {"generated_at": now_ms / 1000, "target": f"min %{target_pct:g} move in {horizon_minutes} minutes",
-            "horizon_minutes": horizon_minutes, "target_pct": target_pct,
+    return {"generated_at": now_ms / 1000, "target": f"min %{base_target_pct:g} move in {horizon_minutes} minutes",
+            "horizon_minutes": horizon_minutes, "target_pct": base_target_pct,
             "pool_source": "binance_tr_top_gaining_tab", "symbols_scanned": len(pool),
             "version": "v2-forensics-2026-08-29",
             "filter": {"min_atr_pct": VELOCITY_MIN_ATR_PCT,

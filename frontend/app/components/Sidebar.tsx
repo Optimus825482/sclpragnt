@@ -9,14 +9,13 @@ import SymbolLink from "./SymbolLink";
 import { useAuth } from "../lib/auth";
 
 const MENU_BASE = [
-    { href: "/chat", label: "Chat", icon: "✦", desc: "LLM sohbet merkezi" },
-    { href: "/", label: "Scalping", icon: "⚡", desc: "Portföy, performans ve canlı işlem akışı" },
-    { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
     { href: "/monitoring", label: "Radar", icon: "📡", desc: "Otonom izleme ve hız avcısı" },
+    { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
+    { href: "/profile", label: "Profil", icon: "👤", desc: "Hesap ve şifre" },
 ];
 // Admin-only menü öğeleri: normal kullanıcılar göremez.
 const MENU_ADMIN = [
-    { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
+    { href: "/reports", label: "Raporlar", icon: "📋", desc: "Bildirim raporu" },
     { href: "/users", label: "Kullanıcı Yönetimi", icon: "👥", desc: "Kullanıcı ekle/düzenle/sil" },
     { href: "/audit-logs", label: "Olay Kayıtları", icon: "🛡", desc: "Giriş ve kullanıcı hareketleri" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" },
@@ -48,7 +47,7 @@ export default function Sidebar() {
     useLiveMessages(onLiveMessage);
     useEffect(() => {
         if ("serviceWorker" in navigator) {
-            if (process.env.NODE_ENV === "production") navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+            if (process.env.NODE_ENV === "production") navigator.serviceWorker.register("/sw.js?v=13").catch(() => undefined);
             else navigator.serviceWorker.getRegistrations().then((registrations) => registrations.forEach((registration) => registration.unregister()));
         }
         const handler = (event: Event) => { event.preventDefault(); setInstallEvent(event); };
@@ -156,6 +155,9 @@ export default function Sidebar() {
                     {health ? `${String(health.status || "bilinmiyor").toUpperCase()} · WS ${liveStatus === "open" ? "BAĞLI" : "KAPALI"}` : "BAĞLANTI BEKLENİYOR"}
                 </p>
                 <p className="font-mono text-[11px] text-bunker-muted mt-1">Paylaşılan güvenli canlı kanal</p>
+                <p className="mt-2 font-mono text-[9px] text-bunker-muted/60" title="Build ID — eğer güncelleme sonrası bu değişmişse yeni sürüm yüklenmiştir">
+                  ● v{typeof window !== "undefined" ? (document.documentElement.dataset.buildId || process.env.NEXT_PUBLIC_BUILD_ID || "dev") : (process.env.NEXT_PUBLIC_BUILD_ID || "dev")}
+                </p>
             </div>
         </aside>
         {notificationsOpen && <div className="fixed inset-0 z-[100] grid place-items-center bg-black/75 p-4" onClick={() => setNotificationsOpen(false)}>

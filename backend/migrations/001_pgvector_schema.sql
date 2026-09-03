@@ -81,6 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_prediction_insights_lookup ON chat_predictio
 CREATE TABLE IF NOT EXISTS velocity_candidates (
   candidate_id TEXT PRIMARY KEY, created_at DOUBLE PRECISION NOT NULL,
   symbol TEXT NOT NULL, price DOUBLE PRECISION NOT NULL, target_pct DOUBLE PRECISION NOT NULL,
+  ml_target_pct DOUBLE PRECISION, ml_hit_probability DOUBLE PRECISION,
   atr_pct DOUBLE PRECISION NOT NULL, volume_ratio DOUBLE PRECISION NOT NULL, ret3_pct DOUBLE PRECISION NOT NULL,
   velocity_score DOUBLE PRECISION NOT NULL, passes BOOLEAN NOT NULL,
   rank INTEGER, status TEXT NOT NULL DEFAULT 'pending',
@@ -89,6 +90,19 @@ CREATE TABLE IF NOT EXISTS velocity_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_velocity_candidates_due ON velocity_candidates(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_velocity_candidates_symbol ON velocity_candidates(symbol, created_at DESC);
+
+-- Sembol bazlı adaptif hedef öğrenme (2026-09-03): Her sembol için başarı/başarısız
+-- sayısı tutulur, hedef otomatik ayarlanır. ML tahmin + adaptif durum harmanlanır.
+CREATE TABLE IF NOT EXISTS symbol_target_state (
+  symbol TEXT PRIMARY KEY,
+  target_pct DOUBLE PRECISION NOT NULL DEFAULT 2.0,
+  horizon_minutes INTEGER NOT NULL DEFAULT 5,
+  success_count INTEGER NOT NULL DEFAULT 0,
+  fail_count INTEGER NOT NULL DEFAULT 0,
+  total_count INTEGER NOT NULL DEFAULT 0,
+  last_adjusted_at DOUBLE PRECISION NOT NULL DEFAULT 0,
+  created_at DOUBLE PRECISION NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS microstructure_snapshots (id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, captured_at DOUBLE PRECISION NOT NULL, bid_price DOUBLE PRECISION, ask_price DOUBLE PRECISION, bid_qty DOUBLE PRECISION, ask_qty DOUBLE PRECISION, spread_pct DOUBLE PRECISION, depth_try DOUBLE PRECISION, orderflow_imbalance DOUBLE PRECISION, source TEXT NOT NULL DEFAULT 'binance_tr_public_ws', updated_at DOUBLE PRECISION, UNIQUE(symbol, captured_at));
 CREATE INDEX IF NOT EXISTS microstructure_snapshots_lookup_idx ON microstructure_snapshots(symbol, captured_at DESC);
 CREATE INDEX IF NOT EXISTS microstructure_snapshots_captured_idx ON microstructure_snapshots(captured_at);

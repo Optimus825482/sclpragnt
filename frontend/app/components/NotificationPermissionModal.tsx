@@ -14,6 +14,9 @@ export default function NotificationPermissionModal({ active = false }: { active
 
   useEffect(() => {
     if (typeof window === "undefined" || !active) return;
+    // Mobilde kurulum akışını MobileWelcomeModal yönetir; bu modal yalnız masaüstü.
+    const mobile = /android|iphone|ipad|ipod|mobile|iemobile/i.test(navigator.userAgent || "");
+    if (mobile) return;
     if (!("Notification" in window) || !("serviceWorker" in navigator)) return;
     if (window.matchMedia?.("(display-mode: standalone)").matches) return; // Kurulu PWA: push zaten ayarlı olabilir
     if (Notification.permission === "granted") return; // izin zaten verilmiş

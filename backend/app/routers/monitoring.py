@@ -23,9 +23,10 @@ _monitoring_state = {
     "last_candidates": [],
     "last_watchlist": [],
     "scan_count": 0,
-    "notified_symbols": {},       # symbol -> ilk bildirim zamanı (epoch)
+    "notified_symbols": {},       # symbol -> son bildirim zamanı (epoch)
     "watchlist_seen_at": {},      # symbol -> izlemeye alınma zamanı
     "history": [],                # son bildirim geçmişi (yeni -> eski)
+    "pending_targets": {},        # symbol -> {"expected": float, "horizon_minutes": int, "set_at": epoch}
 }
 
 # Sunucu tarafı döngü aralıkları: genel tarama 60 sn; izleme listesindeki
@@ -146,8 +147,13 @@ async def _record_history(entries):
 async def _notify(candidates_list, settings) -> list:
     """Eşikleri geçen YENİ adaylar için bildirim üret ve web push gönder.
 
-    Aynı sembol için 5 dk soğuma uygulanır; sessiz saatlerde push gönderilmez
-    ama aday yine kayda alınır.
+    Aynı sembol için iki katmanlı engelleme:
+      1) NOTIFY_COOLDOWN_SEC (5 dk) — kısa vadeli spam koruması.
+      2) Beklenen fiyata ulaşana kadar aynı sembol tekrar bildirilmez
+         (_pending_targets). Fiyat hedefe ulaşınca veya ufuk süresi
+         (horizon_minutes + 2 dk tolerans) dolarsa sembol serbest kalır,
+         yeni hedefle tekrar bildirilebilir.
+    Sessiz saatlerde push gönderilmez ama aday yine kayda alınır.
     """
     if not settings.get("enabled", True):
         return []
@@ -159,18 +165,36 @@ async def _notify(candidates_list, settings) -> list:
     for c in candidates_list:
         sym = c.get("symbol", "")
         score = float(c.get("velocity_score", 0) or 0)
-        target = float(c.get("target_pct", 2.0) or 0)
+        target = float(c.get("ml_target_pct") or c.get("target_pct") or 2.0)
         if not sym or score < min_score or target < min_target_pct:
             continue
+        # Kısa vadeli soğuma
         last_sent = _monitoring_state["notified_symbols"].get(sym)
         if last_sent and now - last_sent < NOTIFY_COOLDOWN_SEC:
             continue
+        # Beklenen fiyata ulaşana kadar aynı sembolü tekrar bildirme
+        pending = _monitoring_state["pending_targets"].get(sym)
+        if pending:
+            # Ufuk süresi + 2 dk tolerans dolduysa eski hedefi serbest bırak
+            horizon_ms = int(pending.get("horizon_minutes", 5) + 2) * 60
+            if now - float(pending.get("set_at", 0)) < horizon_ms:
+                continue
+            # Tolerans dolmuş: eski hedefi temizle, yeni hedefe izin ver
+            _monitoring_state["pending_targets"].pop(sym, None)
         notif = _build_notification(sym, c, settings)
         notif["quiet_hours"] = quiet
         notified.append(notif)
         _monitoring_state["notified_symbols"][sym] = now
+        # Hedef fiyatı kaydet: fiyat bu değere ulaşana kadar tekrar bildirilmez
+        expected_price = float(notif.get("expected_price") or 0)
+        horizon_minutes = int(c.get("horizon_minutes") or 5)
+        if expected_price > 0:
+            _monitoring_state["pending_targets"][sym] = {
+                "expected": expected_price,
+                "horizon_minutes": horizon_minutes,
+                "set_at": now,
+            }
         if len(_monitoring_state["notified_symbols"]) > 500:
-            # Eski kayıtları kırp (sözlük büyümesin)
             for k in sorted(_monitoring_state["notified_symbols"], key=_monitoring_state["notified_symbols"].get)[:-250]:
                 _monitoring_state["notified_symbols"].pop(k, None)
     if notified and not quiet:
@@ -206,6 +230,36 @@ async def _notify(candidates_list, settings) -> list:
         _monitoring_state["history"] = (notified + _monitoring_state["history"])[:HISTORY_LIMIT]
         await _record_history(notified)
     return notified
+
+
+def _check_pending_targets():
+    """Beklenen fiyata ulaşan sembolleri tespit et ve pending listesinden çıkar.
+
+    Her tarama turunda çağrılır: aday listesindeki sembollerin anlık fiyatı,
+    kayıtlı expected_price'a eşit veya üstüyse hedefe ulaşılmış sayılır.
+    Ufuk süresi + 2 mk tolerans dolduysa da temizlenir (timeout).
+    """
+    pending = _monitoring_state.get("pending_targets")
+    if not pending:
+        return
+    now = time.time()
+    resolved = []
+    for sym, info in list(pending.items()):
+        horizon_ms = int(info.get("horizon_minutes", 5) + 2) * 60
+        set_at = float(info.get("set_at", 0))
+        expired = now - set_at >= horizon_ms
+        price = None
+        try:
+            ticker = market.get_ticker(sym) if market else None
+            price = float(ticker.get("last_price") or 0) if ticker else None
+        except Exception:
+            price = None
+        expected = float(info.get("expected") or 0)
+        hit = price is not None and price > 0 and expected > 0 and price >= expected
+        if expired or hit:
+            resolved.append(sym)
+    for sym in resolved:
+        _monitoring_state["pending_targets"].pop(sym, None)
 
 
 async def _run_scan() -> dict:
@@ -249,6 +303,9 @@ async def _run_scan() -> dict:
 
     candidates_list = sorted(all_candidates.values(), key=lambda x: x.get("velocity_score", 0), reverse=True)
     watchlist_list = sorted(all_watchlist.values(), key=lambda x: x.get("velocity_score", 0), reverse=True)
+
+    # Beklenen fiyata ulaşan veya süresi dolan sembolleri serbest bırak
+    _check_pending_targets()
 
     settings = await get_user_notification_settings()
     new_notifications = await _notify(candidates_list, settings)
@@ -302,6 +359,58 @@ async def monitoring_state():
         "loop_active": _loop_task is not None and not _loop_task.done(),
         "next_scan_in_sec": None,
     }
+
+
+@router.get("/api/reports/notifications")
+async def report_notifications(limit: int = 200):
+    """Bildirim raporu: her aday için beklenen fiyat ile gerçekleşen piyasa fiyatını karşılaştırır.
+
+    Başarı durumu expected_price'a göre hesaplanır:
+    - fark <= %0.2  : TAMAMEN BAŞARILI (hedefe ulaşmış)
+    - fark <= %1.0  : BAŞARILI    (hedefe yaklaşmış)
+    - fark <= %3.0  : KISMİ       (hareket başlamış)
+    - diğer         : BAŞARISIZ   (hedefe ulaşamamış / karşı yöne gitmiş)
+    """
+    rows = await database.list_monitoring_notifications(max(1, min(int(limit), 500)))
+    result = []
+    for row in rows:
+        symbol = row.get("symbol")
+        price = float(row.get("price") or 0)
+        expected = float(row.get("expected_price") or 0)
+        target_pct = float(row.get("target_pct") or 0)
+        expected_from_price = price * (1 + target_pct / 100) if price > 0 and target_pct > 0 else None
+        expected_used = expected if expected > 0 else expected_from_price
+        detected_at = float(row.get("detected_at") or 0)
+        diff_pct = None
+        status = "BEKLENİYOR"
+        if expected_used and expected_used > 0 and price > 0:
+            diff_pct = ((expected_used - price) / price) * 100
+            abs_diff = abs(diff_pct)
+            if abs_diff <= 0.2:
+                status = "TAMAMEN BAŞARILI"
+            elif abs_diff <= 1.0:
+                status = "BAŞARILI"
+            elif abs_diff <= 3.0:
+                status = "KISMİ"
+            else:
+                status = "BAŞARISIZ"
+        result.append({
+            "id": row.get("id"),
+            "symbol": symbol,
+            "message": row.get("message"),
+            "title": row.get("title"),
+            "score": row.get("score"),
+            "target_pct": target_pct,
+            "price": price,
+            "expected_price": expected_used,
+            "diff_pct": round(diff_pct, 3) if diff_pct is not None else None,
+            "status": status,
+            "mode": row.get("mode"),
+            "horizon_minutes": row.get("horizon_minutes"),
+            "detected_at": detected_at,
+            "sent_via_push": row.get("sent_via_push"),
+        })
+    return {"paper_only": True, "notifications": result, "total": len(result)}
 
 
 @router.post("/api/monitoring/reset-notifications")

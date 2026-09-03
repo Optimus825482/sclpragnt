@@ -1539,14 +1539,18 @@ async def save_velocity_candidates(rows):
         return 0
     def op(conn):
         sql = """INSERT INTO velocity_candidates
-            (candidate_id,created_at,symbol,price,target_pct,atr_pct,volume_ratio,ret3_pct,
+            (candidate_id,created_at,symbol,price,target_pct,ml_target_pct,ml_hit_probability,
+             atr_pct,volume_ratio,ret3_pct,
              velocity_score,passes,rank,status,outcome_details)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(candidate_id) DO NOTHING"""
         values = []
         for row in rows:
             vals = [row["candidate_id"], float(row["created_at"]), str(row["symbol"]).upper(),
-                    float(row["price"]), float(row["target_pct"]), float(row["atr_pct"]),
+                    float(row["price"]), float(row["target_pct"]),
+                    float(row["ml_target_pct"]) if row.get("ml_target_pct") is not None else None,
+                    float(row["ml_hit_probability"]) if row.get("ml_hit_probability") is not None else None,
+                    float(row["atr_pct"]),
                     float(row["volume_ratio"]), float(row["ret3_pct"]), float(row["velocity_score"]),
                     bool(row.get("passes")), row.get("rank"), "pending"]
             # M5 desen + M1/M3 öncü ATR durumunu outcome_details'e göm (kolon mevcut).
@@ -1984,7 +1988,7 @@ async def list_monitoring_notifications(limit=50):
     """En son monitoring bildirimlerini döndür (yeni -> eski)."""
     def op(conn):
         rows = conn.execute(
-            "SELECT symbol,message,title,score,target_pct,price,expected_price,"
+            "SELECT id,symbol,message,title,score,target_pct,price,expected_price,"
             "horizon_minutes,mode,detected_at,sent_via_push FROM monitoring_notifications"
             " ORDER BY detected_at DESC LIMIT ?", (int(limit),)
         ).fetchall()
@@ -1992,7 +1996,6 @@ async def list_monitoring_notifications(limit=50):
         for row in rows:
             item = dict(row)
             item["detected_at"] = _epoch_value(item.get("detected_at"))
-            item["id"] = None
             result.append(item)
         return result
     return await _run_db(op)
@@ -2573,4 +2576,68 @@ async def delete_audit_logs_before(before_ts: float) -> int:
         cur = conn.execute("DELETE FROM audit_logs WHERE created_at < %s", (float(before_ts),))
         conn.commit()
         return cur.rowcount
+    return await _run_db(op)
+
+
+# ---------------------------------------------------------------------------
+# Sembol bazlı adaptif hedef öğrenme (2026-09-03): Her sembol için başarı/başarısız
+# sayısı tutulur, hedef otomatik ayarlanır. ML tahmin + adaptif durum harmanlanır.
+# ---------------------------------------------------------------------------
+async def get_symbol_target_state(symbol: str) -> dict:
+    """Sembol için adaptif hedef durumu döndürür (yoksa varsayılan oluşturur)."""
+    sym = str(symbol or "").strip().upper()
+    now = time.time()
+    def op(conn):
+        row = conn.execute("SELECT * FROM symbol_target_state WHERE symbol=%s", (sym,)).fetchone()
+        if row is None:
+            conn.execute("INSERT INTO symbol_target_state(symbol,target_pct,horizon_minutes,success_count,fail_count,total_count,last_adjusted_at,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
+                         (sym, 2.0, 5, 0, 0, 0, now, now))
+            conn.commit()
+            return {"symbol": sym, "target_pct": 2.0, "horizon_minutes": 5, "success_count": 0, "fail_count": 0, "total_count": 0, "last_adjusted_at": now, "created_at": now}
+        return {"symbol": sym, "target_pct": float(row["target_pct"] or 2.0), "horizon_minutes": int(row["horizon_minutes"] or 5),
+                "success_count": int(row["success_count"] or 0), "fail_count": int(row["fail_count"] or 0),
+                "total_count": int(row["total_count"] or 0), "last_adjusted_at": float(row["last_adjusted_at"] or 0), "created_at": float(row["created_at"] or 0)}
+    return await _run_db(op)
+
+
+async def record_symbol_target_outcome(symbol: str, success: bool, achieved_pct: float = 0.0) -> dict:
+    """Sembol için bir tahmin sonucu kaydeder ve adaptif hedefi ayarlar.
+
+    Başarılıysa hedefi yükseltmeye başla (daha iddialı), başarısızsa düşür.
+    achieved_pct: gerçekleşen yükseliş yüzdesi (pozitif = hedefe yaklaşmış).
+    """
+    sym = str(symbol or "").strip().upper()
+    now = time.time()
+    state = await get_symbol_target_state(sym)
+    success_count = int(state["success_count"]) + (1 if success else 0)
+    fail_count = int(state["fail_count"]) + (0 if success else 1)
+    total_count = success_count + fail_count
+    current_target = float(state["target_pct"])
+    current_horizon = int(state["horizon_minutes"])
+    # Adaptif ayar: başarı oranı %60+ ise hedefi artır, %40- ise azalt
+    success_rate = success_count / total_count if total_count > 0 else 0.5
+    new_target = current_target
+    new_horizon = current_horizon
+    if total_count >= 3:
+        if success_rate >= 0.6:
+            new_target = min(10.0, current_target + 0.5)
+            new_horizon = min(15, current_horizon + 5)
+        elif success_rate <= 0.4:
+            new_target = max(1.0, current_target - 0.5)
+            new_horizon = max(5, current_horizon - 5)
+    def op(conn):
+        conn.execute("UPDATE symbol_target_state SET target_pct=%s, horizon_minutes=%s, success_count=%s, fail_count=%s, total_count=%s, last_adjusted_at=%s WHERE symbol=%s",
+                     (new_target, new_horizon, success_count, fail_count, total_count, now, sym))
+        conn.commit()
+    await _run_db(op)
+    return {"symbol": sym, "target_pct": new_target, "horizon_minutes": new_horizon, "success_count": success_count, "fail_count": fail_count, "total_count": total_count, "success_rate": round(success_rate, 3)}
+
+
+async def get_all_symbol_target_states() -> list[dict]:
+    """Tüm sembol hedef durumlarını döndürür (raporlama için)."""
+    def op(conn):
+        rows = conn.execute("SELECT * FROM symbol_target_state ORDER BY total_count DESC, symbol").fetchall()
+        return [{"symbol": r["symbol"], "target_pct": float(r["target_pct"] or 2.0), "horizon_minutes": int(r["horizon_minutes"] or 5),
+                 "success_count": int(r["success_count"] or 0), "fail_count": int(r["fail_count"] or 0),
+                 "total_count": int(r["total_count"] or 0), "last_adjusted_at": float(r["last_adjusted_at"] or 0)} for r in rows]
     return await _run_db(op)
