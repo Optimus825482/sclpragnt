@@ -280,7 +280,7 @@ export default function Home() {
               <p>
                 En iyi aday: <b className="font-mono text-white">{scanResult.best_candidate.symbol}</b> · skor{" "}
                 <b className="text-neon-green">{scanResult.best_candidate.velocity_score}</b> · mod{" "}
-                {scanResult.best_candidate.mode === "v_donusu" ? "V-dönüşü" : "trend-devam"} · ATR %{scanResult.best_candidate.atr_pct} · RSI {scanResult.best_candidate.rsi} · MFI {scanResult.best_candidate.mfi}
+                {scanResult.best_candidate.mode === "v_donusu" ? "V-dönüşü" : scanResult.best_candidate.mode === "notr" ? "nötr" : "trend-devam"} · ATR %{scanResult.best_candidate.atr_pct} · RSI {scanResult.best_candidate.rsi} · MFI {scanResult.best_candidate.mfi}
               </p>
               <p>
                 <span className="text-bunker-muted">M5 momentum deseni:</span>{" "}

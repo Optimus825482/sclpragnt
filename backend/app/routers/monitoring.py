@@ -165,7 +165,9 @@ async def _notify(candidates_list, settings) -> list:
     for c in candidates_list:
         sym = c.get("symbol", "")
         score = float(c.get("velocity_score", 0) or 0)
-        target = float(c.get("ml_target_pct") or c.get("target_pct") or 2.0)
+        # Filtre, radarın ölçülen (base) hedefi olan target_pct üzerinden yapılır;
+        # ML tahmini (ml_target_pct) hedefi ezemez; yalnız gösterim/sıralamada kullanılır.
+        target = float(c.get('target_pct') or 2.0)
         if not sym or score < min_score or target < min_target_pct:
             continue
         # Kısa vadeli soğuma
