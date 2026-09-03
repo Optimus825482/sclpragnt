@@ -172,7 +172,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             if rsi is None:
                 return None
             mode = "trend_devam" if rsi >= VELOCITY_TREND_RSI_MIN else \
-                   "v_donusu" if rsi <= VELOCITY_REVERSAL_RSI_MAX else None
+                   "v_donusu" if rsi <= VELOCITY_REVERSAL_RSI_MAX else "notr"
             struct_ok = (slope is not None and slope >= VELOCITY_STRUCT_SLOPE_PCT) or \
                         (aroon_up is not None and aroon_up >= 50)
             # Aşırı uç elme: zaten fırlamış/tükenmiş semboller geri çekilme
@@ -196,6 +196,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     adaptive_target = max(0.5, min(10.0, float(state.get("target_pct") or base_target_pct)))
             except Exception:
                 adaptive_target = base_target_pct
+            # notr modu (RSI 35-60) da aday olabilir: yalnızca yapısal teyit (struct_ok) aranir.
             passes = (exhausted is None and
                       atr_pct >= prof_atr and
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
@@ -299,12 +300,12 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     ml_hit_prob = float(ml_pred.get("hit_probability") or 0)
             except Exception as exc:
                 logger.debug("velocity ML tahmin hatası %s: %s", symbol, exc)
-            # Hedef kararı: ML tahmini varsa onu kullan (sembol bazlı + horizon);
-            # yoksa adaptif (geçmiş başarıya göre ayarlanmış) hedefi kullan.
-            if ml_target is not None and ml_target > 0:
-                effective_target = max(0.5, ml_target)
-            else:
-                effective_target = max(0.5, adaptive_target)
+            # Hedef karari: adayin olcülen hedefi SABIT BASE hedeftir (%2 / %3).
+            # ML ve adaptif sembol durumu hedefi ezmez; yalniz tahmin/olasilik olarak
+            # ayri alanlarda tasinir (UI/rapor gosterimi ve siralama icin). Aksi halde
+            # quantile modelinin dusuk ciktisi (%0.3-0.6) %2 hedefi silip bildirim
+            # filtresinden gecemeyen adaylar uretiyordu (2026-09-03 teshis).
+            effective_target = float(base_target_pct)
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
@@ -332,7 +333,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     candidates.sort(key=lambda r: r["velocity_score"], reverse=True)
     for rank, candidate in enumerate(candidates[:limit], 1):
         candidate["rank"] = rank
-    watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= 0.8]
+    # Izleme listesi: geçmeyen ama kayda deger hareket sinyali olanlar (skor >= 0.6).
+    watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= 0.6]
     watchlist.sort(key=lambda r: r["velocity_score"], reverse=True)
     # Journal: geçenler + izleme listesi kaydedilir; ufuk süresi dolunca
     # kapanmış M1 mumlarla gerçek dokunuş ölçülüp eşikler kalibre edilir.
@@ -536,6 +538,14 @@ async def velocity_learning_loop():
                     details={"window_bars": len(window), "entry": entry, "target_pct": candidate["target_pct"]})
                 if ok:
                     measured += 1
+                    # Sembol bazli adaptif hedef ogrenmesini gercek olcümle guncelle;
+                    # hedefe dokunulduysa basari, dokunulmadiysa basarisiz kaydedilir;
+                    # boylece symbol_target_state hep 0/0 kalmaz (2026-09-03 teshis).
+                    try:
+                        await database.record_symbol_target_outcome(
+                            symbol, success=touched, achieved_pct=round(mfe_pct, 3))
+                    except Exception as exc:
+                        logger.warning('velocity hedef durumu guncellenemedi %s: %s', symbol, exc)
                     # LLM hafıza katmanına kanıt olarak yaz (postmortem döngüsü okur)
                     await embedding_worker.enqueue_persistent(build_document(
                         layer="symbol", scope=f"velocity-outcome:{symbol}", symbol=symbol,
@@ -571,6 +581,11 @@ async def velocity_learning_loop():
             if expired:
                 logger.info("velocity: %s ölü pending kayıt expired işaretlendi", expired)
             _velocity_learning_state.update({"last_run_at": time.time(), "last_error": None})
+            # Kalp atışı: ölçüm döngüsünün canlı olduğunu llm_settings'e yaz (rapor/izleme).
+            try:
+                await database.set_llm_setting('velocity_learner_last_heartbeat', str(time.time()))
+            except Exception:
+                pass
         except asyncio.CancelledError:
             raise
         except Exception as exc:

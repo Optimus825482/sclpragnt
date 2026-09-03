@@ -51,7 +51,7 @@ const scoreColor = (score: number) => {
 };
 
 const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) => {
-  const targetPct = Number(c.ml_target_pct) > 0 ? Number(c.ml_target_pct) : Number(c.target_pct);
+  const targetPct = Number(c.target_pct) > 0 ? Number(c.target_pct) : Number(c.ml_target_pct);
   const price = Number(c.price);
   const validTarget = Number.isFinite(targetPct) && targetPct > 0 && Number.isFinite(price) && price > 0;
   const expected = validTarget ? price * (1 + targetPct / 100) : null;
@@ -72,7 +72,7 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
             <p className={`mt-1 font-mono text-lg font-bold ${scoreColor(Number(c.velocity_score) || 0)}`}>{(Number(c.velocity_score) || 0).toFixed(1)}</p>
           </div>
           <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 text-center">
-            <p className="eyebrow">HEDEF {mlActive ? <span className="text-[9px] text-bunker-muted">(ML)</span> : null}</p>
+            <p className="eyebrow">HEDEF (5/15dk)</p>
             <p className="mt-1 font-mono text-lg font-bold text-neon-green">{validTarget ? `+%${targetPct.toFixed(1)}` : "—"}</p>
           </div>
           <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
@@ -95,8 +95,8 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
           </div>
         </div>
         <div className="flex justify-between border-t border-bunker-800 px-5 py-3">
-          <span className={`rounded px-2 py-0.5 text-xs font-mono ${c.mode === "trend_devam" ? "bg-neon-green/15 text-neon-green" : "bg-yellow-400/15 text-yellow-300"}`}>
-            {c.mode === "trend_devam" ? "TREND" : "V-DÖNÜŞÜ"}
+          <span className={`rounded px-2 py-0.5 text-xs font-mono ${c.mode === "trend_devam" ? "bg-neon-green/15 text-neon-green" : c.mode === "v_donusu" ? "bg-yellow-400/15 text-yellow-300" : "bg-sky-400/15 text-sky-300"}`}>
+            {c.mode === "trend_devam" ? "TREND" : c.mode === "v_donusu" ? "V-DÖNÜŞÜ" : "NÖTR"}
           </span>
           <div className="flex gap-2">
             <a href={`/charts?symbol=${c.symbol}`} className="ui-button ui-button-secondary">GRAFİK</a>
@@ -221,7 +221,7 @@ export default function MonitoringPage() {
         ) : (
           <div className="mt-3 space-y-2">
             {state.candidates.map((c, i) => {
-              const targetPct = Number(c.ml_target_pct) > 0 ? Number(c.ml_target_pct) : Number(c.target_pct);
+              const targetPct = Number(c.target_pct) > 0 ? Number(c.target_pct) : Number(c.ml_target_pct);
               const validTarget = Number.isFinite(targetPct) && targetPct > 0;
               const mlActive = Number(c.ml_target_pct) > 0 && c.ml_hit_probability != null;
               return (
