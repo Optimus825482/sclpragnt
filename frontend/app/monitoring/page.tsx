@@ -505,22 +505,26 @@ export default function MonitoringPage() {
               </thead>
               <tbody>
                 {state.candidates.map((c, i) => {
-                  const expected = c.price * (1 + c.target_pct / 100);
+                  const targetPct = Number(c.target_pct);
+                  const validTarget = Number.isFinite(targetPct) && targetPct > 0;
+                  const price = Number(c.price);
+                  const expected = validTarget && Number.isFinite(price) && price > 0 ? price * (1 + targetPct / 100) : null;
+                  const modeLabel = c.mode === "trend_devam" ? "TREND" : "V-DÖNÜŞÜ";
                   return (
                     <tr key={c.symbol} className="border-l-2 border-l-neon-green/30">
                       <td className="text-bunker-muted">{i + 1}</td>
                       <td><SymbolLink symbol={c.symbol} className="text-white hover:text-neon-green" /></td>
                       <td className={`font-bold ${getScoreColor(c.velocity_score)}`}>{c.velocity_score?.toFixed(1)}</td>
-                      <td className="text-neon-green">+{c.target_pct}%</td>
-                      <td>{c.atr_pct?.toFixed(2)}%</td>
-                      <td>{c.price?.toLocaleString("tr-TR", { maximumFractionDigits: 6 })}</td>
-                      <td className="text-neon-green">{expected?.toLocaleString("tr-TR", { maximumFractionDigits: 6 })}</td>
+                      <td className="text-neon-green">{validTarget ? `+%${targetPct.toFixed(1)}` : "—"}</td>
+                      <td>{c.atr_pct != null ? `${Number(c.atr_pct).toFixed(2)}%` : "—"}</td>
+                      <td>{Number.isFinite(price) && price > 0 ? price.toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
+                      <td className="text-neon-green">{expected != null ? expected.toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
                       <td>
                         <span className={`px-2 py-0.5 rounded text-xs font-mono ${c.mode === "trend_devam" ? "bg-neon-green/15 text-neon-green" : "bg-yellow-400/15 text-yellow-300"}`}>
-                          {c.mode === "trend_devam" ? "TREND" : "V-DÖNÜŞÜ"}
+                          {modeLabel}
                         </span>
                       </td>
-                      <td className="text-bunker-muted">{c.horizon_minutes}dk</td>
+                      <td className="text-bunker-muted">{c.horizon_minutes ? `${c.horizon_minutes}dk` : "—"}</td>
                     </tr>
                   );
                 })}

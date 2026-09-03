@@ -18,6 +18,7 @@ const MENU_BASE = [
 const MENU_ADMIN = [
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Performans analizi" },
     { href: "/users", label: "Kullanıcı Yönetimi", icon: "👥", desc: "Kullanıcı ekle/düzenle/sil" },
+    { href: "/audit-logs", label: "Olay Kayıtları", icon: "🛡", desc: "Giriş ve kullanıcı hareketleri" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" },
 ];
 const formatNotificationDate = (value: unknown) => {
@@ -32,6 +33,7 @@ export default function Sidebar() {
     const isAdmin = role === "admin";
     const [open, setOpen] = useState(false);
     const [installEvent, setInstallEvent] = useState<any>(null);
+    const [installed, setInstalled] = useState(false);
     const [notifications, setNotifications] = useState<any[]>([]);
     const [unread, setUnread] = useState(0);
     const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -51,7 +53,12 @@ export default function Sidebar() {
         }
         const handler = (event: Event) => { event.preventDefault(); setInstallEvent(event); };
         window.addEventListener("beforeinstallprompt", handler);
-        return () => window.removeEventListener("beforeinstallprompt", handler);
+        const installedHandler = () => setInstalled(true);
+        window.addEventListener("appinstalled", installedHandler);
+        return () => {
+            window.removeEventListener("beforeinstallprompt", handler);
+            window.removeEventListener("appinstalled", installedHandler);
+        };
     }, []);
     useEffect(() => setOpen(false), [pathname]);
     useEffect(() => {
@@ -66,6 +73,7 @@ export default function Sidebar() {
         const timer = window.setInterval(load, 10_000);
         return () => window.clearInterval(timer);
     }, []);
+    const isStandalone = typeof window !== "undefined" && (window.matchMedia?.("(display-mode: standalone)").matches || (window.navigator as any)?.standalone === true);
     const install = async () => {
         if (!installEvent) return;
         await installEvent.prompt();
@@ -132,6 +140,16 @@ export default function Sidebar() {
                     </Link>
                 )}
                 <Button variant={installEvent ? "primary" : "secondary"} onClick={install} disabled={!installEvent} className="w-full mb-4">⬇ {installEvent ? "UYGULAMA OLARAK YÜKLE" : "YÜKLEME İÇİN TARAYICI MENÜSÜ"}</Button>
+                {!installed && !installEvent && !isStandalone && (
+                    <div className="mb-4 rounded-lg border border-bunker-700 bg-bunker-900/70 p-3">
+                        <p className="font-mono text-xs font-bold text-white">📱 UYGULAMA OLARAK YÜKLE</p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-bunker-muted">
+                            {/iPad|iPhone|iPod/.test(navigator.userAgent)
+                                ? "Tarayıcıda Paylaş (⎋) → “Ana Ekrana Ekle” ile kurun."
+                                : "Butonu kullanarak uygulamayı cihazınıza kurun."}
+                        </p>
+                    </div>
+                )}
                 <p className="eyebrow">SİSTEM DURUMU</p>
                 <p className={`font-mono text-xs mt-2 flex items-center gap-1.5 ${health?.status === "ok" && liveStatus === "open" ? "text-neon-green" : "text-yellow-300"}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${health?.status === "ok" && liveStatus === "open" ? "bg-neon-green animate-pulse" : "bg-yellow-300"}`} />

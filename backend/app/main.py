@@ -68,7 +68,7 @@ from app.state import market, analyzer  # noqa: F401  (shared singletons)
 from app.api_common import (  # noqa: F401
     _start_background, _background_tasks, _record_strategy_scan_log, _strategy_scan_logs,
     _json_safe_positions, _fresh_public_price, _llm_guard_block_reason, correlation_monitor,
-    _radar_snapshot, _radar_response_cache)
+    _radar_snapshot, _radar_response_cache, log_user_action, client_context)
 from app.routers import a2a as a2a_routes, backtest as backtest_routes, llm_chat as llm_chat_routes
 from app.routers import chart_forecast as chart_forecast_routes
 from app.routers import maintenance as maintenance_routes, reports as reports_routes
@@ -243,6 +243,8 @@ async def profile_update_password(payload: dict, request: Request):
     updated = await database.update_user(int(user["id"]), password_hash=security.hash_password(new_password))
     if not updated:
         raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    await log_user_action(principal.get("username"), principal.get("role"), "user", "PASSWORD_CHANGE",
+                          target=principal.get("username"), details={"via": "profile"}, request=request)
     return {"ok": True, "message": "Şifre güncellendi", "paper_only": True}
 
 
@@ -254,6 +256,9 @@ async def auth_login(payload: dict, response: Response, request: Request):
     trusted_edge_ip = request.headers.get("X-Real-IP", "").strip()
     client_key = trusted_edge_ip or (request.client.host if request.client else "unknown")
     if not security.login_allowed(client_key):
+        await log_user_action(None, None, "auth", "LOGIN_BLOCKED",
+                              target=str(payload.get("username") or "").strip().lower() or None,
+                              details={"reason": "too_many_attempts"}, request=request)
         raise HTTPException(status_code=429, detail="Çok fazla başarısız giriş; 5 dakika sonra tekrar deneyin")
     username = str(payload.get("username") or "").strip().lower()
     password = str(payload.get("password") or "")
@@ -276,8 +281,12 @@ async def auth_login(payload: dict, response: Response, request: Request):
             user = {"username": "admin", "role": "admin", "is_active": True}
     security.record_login_result(client_key, matched)
     if not matched or user is None:
+        await log_user_action(username, None, "auth", "LOGIN_FAILED",
+                              target=username, details={"reason": "bad_credentials"}, request=request)
         raise HTTPException(status_code=401, detail="Kullanıcı adı veya şifre hatalı")
     role = str(user.get("role") or "user").lower()
+    await log_user_action((user.get("username") or username).lower(), role, "auth", "LOGIN_SUCCESS",
+                          target=(user.get("username") or username).lower(), request=request)
     response.set_cookie(security.SESSION_COOKIE,
                         security.create_session_token(username=user.get("username") or username, role=role),
                         httponly=True,
@@ -287,7 +296,10 @@ async def auth_login(payload: dict, response: Response, request: Request):
 
 
 @app.post("/api/auth/logout")
-async def auth_logout(response: Response):
+async def auth_logout(request: Request, response: Response):
+    principal = _session_user(request)
+    await log_user_action((principal or {}).get("username"), (principal or {}).get("role"),
+                          "auth", "LOGOUT", request=request)
     response.delete_cookie(security.SESSION_COOKIE, path="/")
     return {"ok": True}
 
@@ -307,7 +319,7 @@ async def admin_list_users(request: Request):
 
 @app.post("/api/admin/users")
 async def admin_create_user(payload: dict, request: Request):
-    _require_admin(request)
+    admin = _require_admin(request)
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
     if not username or len(username) < 3 or len(username) > 32:
@@ -324,6 +336,9 @@ async def admin_create_user(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail="Rol 'admin' veya 'user' olmalı")
     user = await database.create_user(username, security.hash_password(password), role=role,
                                       is_active=bool(payload.get("is_active", True)))
+    await log_user_action(admin.get("username"), "admin", "user", "USER_CREATE",
+                          target=(user or {}).get("username") or username.lower(),
+                          details={"role": role, "is_active": bool(payload.get("is_active", True))}, request=request)
     return {"ok": True, "user": _public_user(user)}
 
 
@@ -360,6 +375,9 @@ async def admin_update_user(user_id: int, payload: dict, request: Request):
     if "is_active" in payload:
         kwargs["is_active"] = bool(payload.get("is_active", True))
     user = await database.update_user(user_id, **kwargs)
+    await log_user_action(admin.get("username"), "admin", "user", "USER_UPDATE",
+                          target=(existing.get("username") or str(user_id)),
+                          details={"changed": sorted(kwargs.keys()), "new_username": kwargs.get("username")}, request=request)
     return {"ok": True, "user": _public_user(user)}
 
 
@@ -376,7 +394,35 @@ async def admin_delete_user(user_id: int, request: Request):
         if len(admins) <= 1:
             raise HTTPException(status_code=422, detail="Son admin silinemez")
     await database.delete_user(user_id)
+    await log_user_action(admin.get("username"), "admin", "user", "USER_DELETE",
+                          target=existing.get("username") or str(user_id),
+                          details={"role": existing.get("role")}, request=request)
     return {"ok": True, "deleted": user_id}
+
+
+@app.get("/api/admin/audit-logs")
+async def admin_list_audit_logs(request: Request, limit: int = 100, offset: int = 0,
+                                actor: str | None = None, category: str | None = None,
+                                action: str | None = None, q: str | None = None):
+    """Admin-only olay kayıtları (kim, ne zaman, ne yaptı, IP, cihaz)."""
+    _require_admin(request)
+    logs = await database.list_audit_logs(limit, offset, actor=actor, category=category,
+                                          action=action, q=q)
+    total = await database.count_audit_logs(actor=actor, category=category, action=action, q=q)
+    return {"ok": True, "logs": logs, "total": total, "limit": len(logs), "offset": offset}
+
+
+@app.delete("/api/admin/audit-logs")
+async def admin_delete_audit_logs(payload: dict = None, request: Request = None):
+    """Eski olay kayıtlarını siler (varsayılan: 30 günden eski). before_ts epoch saniyedir."""
+    admin = _require_admin(request)
+    before_ts = float((payload or {}).get("before_ts") or 0)
+    if not before_ts or before_ts > time.time():
+        before_ts = time.time() - 30 * 86400
+    deleted = await database.delete_audit_logs_before(before_ts)
+    await log_user_action(admin.get("username"), "admin", "user", "AUDIT_LOG_PURGE",
+                          details={"before_ts": before_ts, "deleted": deleted}, request=request)
+    return {"ok": True, "deleted": deleted}
 
 _pg_pool = None
 _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": None, "logs": [], "preview": None, "result": None}
@@ -701,7 +747,7 @@ async def strategy_breaker_resume(payload: dict = None):
     return {"ok": True, "strategy": strategy, "resumed": True, "paper_only": True}
 
 @app.post("/api/alerts")
-async def create_alert(payload: dict):
+async def create_alert(payload: dict, request: Request):
     required = ["symbol", "operator", "threshold"]
     if any(key not in payload for key in required): raise HTTPException(400, "symbol, operator ve threshold gerekli")
     if str(payload.get("rule_type", "price")) not in {"price", "percent"}: raise HTTPException(400, "Desteklenmeyen alarm türü")
@@ -716,14 +762,25 @@ async def create_alert(payload: dict):
     if cooldown is not None and (not isinstance(cooldown, (int, float)) or cooldown < 0):
         raise HTTPException(400, "cooldown_seconds negatif olmayan bir sayı olmalıdır")
     rule_id = await database.create_alert_rule({**payload, "created_by": payload.get("created_by", "user")})
+    actor = _session_username(request)
+    await log_user_action(actor, None, "alert", "ALERT_CREATE",
+                          target=str(payload.get("symbol") or "").upper() or None,
+                          details={"rule_id": rule_id, "operator": payload.get("operator"),
+                                   "threshold": payload.get("threshold"), "rule_type": payload.get("rule_type", "price")},
+                          request=request)
     return {"ok": True, "id": rule_id, "paper_only": True}
 
 @app.patch("/api/alerts/{alert_id}")
-async def update_alert(alert_id: int, payload: dict):
+async def update_alert(alert_id: int, payload: dict, request: Request):
+    actor = _session_username(request)
+    await log_user_action(actor, None, "alert", "ALERT_UPDATE",
+                          target=str(alert_id), details={"changed_keys": sorted(payload.keys())}, request=request)
     return {"ok": True, "alert": await database.update_alert_rule(alert_id, payload), "paper_only": True}
 
 @app.delete("/api/alerts/{alert_id}")
-async def delete_alert(alert_id: int):
+async def delete_alert(alert_id: int, request: Request):
+    actor = _session_username(request)
+    await log_user_action(actor, None, "alert", "ALERT_DELETE", target=str(alert_id), request=request)
     return {"ok": await database.delete_alert_rule(alert_id), "paper_only": True}
 
 @app.post("/api/alerts/push-subscription")
@@ -1193,11 +1250,22 @@ async def execute_gainers_radar():
     return await gainers_radar(execute=True)
 
 
+def _session_username(request) -> str | None:
+    """Aktif oturumdaki kullanıcı adı (kayıt için); None ise kayıt atlanır."""
+    if request is None:
+        return None
+    try:
+        user = security.request_user(request.headers, request.cookies)
+    except Exception:
+        return None
+    return (user or {}).get("username")
+
+
 @app.put("/api/config")
-async def update_config(payload: dict):
+async def update_config(payload: dict, request: Request):
     """Persist runtime settings while always preserving the JSON API contract."""
     try:
-        return await _apply_config_update(payload)
+        return await _apply_config_update(payload, request)
     except (TypeError, ValueError) as exc:
         return JSONResponse(
             status_code=422,
@@ -1228,7 +1296,7 @@ async def update_config(payload: dict):
         )
 
 
-async def _apply_config_update(payload: dict):
+async def _apply_config_update(payload: dict, request: Request = None):
     payload = dict(payload or {})
     previous_symbols = set(config.SYMBOLS)
     for key, attr in CONFIG_FIELDS.items():
@@ -1357,6 +1425,12 @@ async def _apply_config_update(payload: dict):
     updated = await get_config()
     if "symbols" in payload and invalid:
         updated["removed_invalid_symbols"] = invalid
+    actor = _session_username(request)
+    await log_user_action(actor, None, "config", "CONFIG_UPDATE",
+                          target=actor,
+                          details={"changed_keys": sorted(k for k in payload if k in CONFIG_FIELDS or k in {"symbols", "ut_symbols"}),
+                                   "universe_changed": universe_changed},
+                          request=request)
     return updated
 
 @app.post("/api/portfolio/reconcile")
@@ -1628,20 +1702,26 @@ async def llm_entry_policy():
     }
 
 @app.put("/api/llm/paper-trading")
-async def set_llm_paper_trading(payload: dict):
+async def set_llm_paper_trading(payload: dict, request: Request):
     enabled = bool(payload.get("enabled"))
     await database.set_llm_setting("llm_paper_trade_enabled", "1" if enabled else "0")
+    actor = _session_username(request)
+    await log_user_action(actor, None, "trade", "PAPER_TRADING_TOGGLE",
+                          target=actor, details={"setting": "llm_paper_trade_enabled", "enabled": enabled}, request=request)
     return {"ok": True, "paper_trade_enabled": enabled, "real_trading": False}
 
 @app.put("/api/llm/auto-paper-trading")
-async def set_llm_auto_paper_trading(payload: dict):
+async def set_llm_auto_paper_trading(payload: dict, request: Request):
     enabled = bool(payload.get("enabled"))
     await database.set_llm_setting("llm_auto_paper_enabled", "1" if enabled else "0")
+    actor = _session_username(request)
+    await log_user_action(actor, None, "trade", "PAPER_TRADING_TOGGLE",
+                          target=actor, details={"setting": "llm_auto_paper_enabled", "enabled": enabled}, request=request)
     return {"ok": True, "auto_paper_enabled": enabled, "trigger": "after_each_closed_position_or_10m_idle_with_balance_over_100_try", "paper_only": True}
 
 
 @app.post("/api/llm/paper-trade")
-async def llm_open_paper_trade(payload: dict):
+async def llm_open_paper_trade(payload: dict, request: Request = None):
     if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
         raise HTTPException(status_code=403, detail="LLM paper işlem açma yetkisi ayarlardan kapalı")
     symbol = str(payload.get("symbol", "")).replace("_", "").upper()
@@ -1743,6 +1823,13 @@ async def llm_open_paper_trade(payload: dict):
             continue
         signal = await analyzer.open_position(symbol, float(ticker["last_price"]), "LONG", "LLM_PAPER", order_value, stop_loss_pct, take_profit_pct, hold_seconds)
         if signal and str(signal.get("action", "")).upper() == "BUY_SIGNAL":
+            actor = _session_username(request)
+            await log_user_action(actor, None, "trade", "PAPER_TRADE_OPEN",
+                                  target=symbol,
+                                  details={"strategy": "LLM_PAPER", "order_value_try": order_value,
+                                           "stop_loss_pct": stop_loss_pct, "take_profit_pct": take_profit_pct,
+                                           "trade_id": signal.get("trade_id")},
+                                  request=request)
             await ws_manager.broadcast({"type": "signal", "data": signal})
             return {"ok": True, "paper_only": True, "real_trading": False, "signal": signal, "plan": {"order_value_try": order_value, "stop_loss_pct": stop_loss_pct, "take_profit_pct": take_profit_pct, "max_hold_seconds": hold_seconds}, "research_attempts": blocked}
         blocked.append({"symbol": symbol, "reason": (signal or {}).get("reason", "risk_or_position_limit")})
@@ -1874,7 +1961,7 @@ async def market_snapshot_scan(payload: dict = None):
     return await scan_market_snapshots(payload or {})
 
 @app.post("/api/strategy/manual-scan")
-async def manual_strategy_scan():
+async def manual_strategy_scan(request: Request):
     """Kullanıcının açık talebiyle aktif stratejiyi ayarlı tüm sembollerde çalıştırır.
 
     Manuel kontrol, otomatik giriş döngüsündeki aktivite ön elemesini aşar;
@@ -1927,6 +2014,15 @@ async def manual_strategy_scan():
             errors += 1
             print(f"[Strategy manual] {symbol} değerlendirme hatası: {exc}")
             _record_strategy_scan_log("manual", symbol, "ERROR", error=str(exc), scan_id=scan_id, activity_status=activity_status)
+    # Manuel tarama: sadece kullanıcı tetikli olduğundan audit'e yaz.
+    actor = _session_username(request)
+    await log_user_action(
+        actor, None, "trade", "MANUAL_SCAN",
+        target=actor,
+        details={"scan_id": scan_id, "symbols_checked": checked,
+                 "evaluated": evaluated, "errors": errors,
+                 "signals": len(signals)},
+        request=request)
     return {"ok": True, "status": "completed", "strategy": config.ACTIVE_STRATEGY,
             "symbols_checked": checked, "active_symbols": checked,
             "universe_size": len(config.SYMBOLS), "passive_overridden": passive_overridden,
@@ -1986,7 +2082,7 @@ async def market_snapshot_upside_candidates_5m(limit: int = 10):
     return await detect_5m_upside_candidates({"limit": limit})
 
 @app.post("/api/positions/{symbol}/close")
-async def close_position_manual(symbol: str):
+async def close_position_manual(symbol: str, request: Request):
     """Açık pozisyonu manuel kapat (komisyon + işlem geçmişi dahil)."""
     symbol = symbol.replace("_", "").upper()
     price, ticker = await _fresh_public_price(symbol)
@@ -1995,6 +2091,12 @@ async def close_position_manual(symbol: str):
     sig = await analyzer.close_position(symbol.upper(), price, "manual_close")
     if not sig:
         return {"ok": False, "message": f"{symbol} için açık pozisyon yok"}
+    actor = _session_username(request)
+    await log_user_action(actor, None, "trade", "POSITION_CLOSE_MANUAL",
+                          target=symbol,
+                          details={"reason": "manual_close", "price": price,
+                                   "trade_id": sig.get("trade_id")},
+                          request=request)
     await ws_manager.broadcast({"type": "signal", "data": sig})
     if str(sig.get("strategy", "")).upper() != "LLM_PAPER":
         asyncio.create_task(llm_replenish_after_close())

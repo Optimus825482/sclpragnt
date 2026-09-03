@@ -120,7 +120,7 @@ class ConfigApiBehavior(unittest.IsolatedAsyncioTestCase):
     async def test_config_validation_failure_is_a_json_response(self):
         from app.main import update_config
 
-        response = await update_config({"max_open_positions": 501})
+        response = await update_config({"max_open_positions": 501}, request=None)
 
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.media_type, "application/json")
@@ -131,7 +131,7 @@ class ConfigApiBehavior(unittest.IsolatedAsyncioTestCase):
         from app.main import update_config
 
         with patch("app.main._apply_config_update", new=AsyncMock(side_effect=RuntimeError("exchangeInfo unavailable"))):
-            response = await update_config({"symbols": ["BTCTRY"]})
+            response = await update_config({"symbols": ["BTCTRY"]}, request=None)
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.media_type, "application/json")

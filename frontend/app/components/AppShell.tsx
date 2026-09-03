@@ -3,6 +3,7 @@
 import { usePathname, useSearchParams } from "next/navigation";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
+import RadarAlertModal from "./RadarAlertModal";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -12,5 +13,5 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   if (embeddedAnalysis) {
     return <main className="min-h-screen overflow-y-auto"><div className="content-shell">{children}</div></main>;
   }
-  return <div className="flex min-h-screen"><Sidebar /><main className="flex-1 min-w-0 min-h-screen overflow-y-auto"><TopBar /><div className="content-shell">{children}</div></main></div>;
+  return <div className="flex min-h-screen"><Sidebar /><main className="flex-1 min-w-0 min-h-screen overflow-y-auto"><TopBar /><div className="content-shell">{children}</div></main><RadarAlertModal /></div>;
 }

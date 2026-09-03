@@ -4,10 +4,11 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.config import config
 from app import database
+from app.api_common import log_user_action
 from app.state import market
 from app.routers.velocity import detect_velocity_candidates
 from app.alerting import deliver_web_push
@@ -80,7 +81,7 @@ async def get_monitoring_settings():
 
 
 @router.put("/api/monitoring/settings")
-async def update_monitoring_settings(payload: dict):
+async def update_monitoring_settings(payload: dict, request: Request):
     """Bildirim ayarlarını güncelle ve DB'ye kaydet."""
     settings = {
         "enabled": bool(payload.get("enabled", True)),
@@ -90,6 +91,9 @@ async def update_monitoring_settings(payload: dict):
         "quiet_hours_end": payload.get("quiet_hours_end", None),
     }
     await database.set_llm_setting("monitoring_notification_settings", json.dumps(settings))
+    await log_user_action(None, None, "monitoring", "MONITORING_SETTINGS_UPDATE",
+                          details={"settings": {k: v for k, v in settings.items() if k != "enabled"}},
+                          request=request)
     return {"paper_only": True, "ok": True, **settings}
 
 
@@ -294,9 +298,11 @@ async def monitoring_state():
 
 
 @router.post("/api/monitoring/reset-notifications")
-async def reset_monitoring_notifications():
+async def reset_monitoring_notifications(request: Request):
     """Clear notified symbols list (allows re-notification)."""
     _monitoring_state["notified_symbols"].clear()
+    await log_user_action(None, None, "monitoring", "MONITORING_NOTIFICATIONS_RESET",
+                          details={}, request=request)
     return {"ok": True, "message": "Bildirim sıfırlandı"}
 
 
