@@ -604,14 +604,6 @@ class ScalpAnalyzer:
                         + qty_value * config.COMMISSION_PCT / max(float(pos.get("quantity") or 1), 1e-9)
                     pos["system_stop_price"] = max(system_stop, lock_stop)
                     system_stop = pos["system_stop_price"]
-            # Zaman sınırı (yalnızca otonom hız avcısı, planlı yol değil):
-            # kâr kilidi devreye girmemişse bile 30dk sonunda kapanıştan çık —
-            # pump sonrası kâr erimesini önler (backtest: hold30 kazananı).
-            if pos.get("strategy") == "CHAT_PREDICTION" and config.VELOCITY_MAX_HOLD_MIN > 0 and \
-                    bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
-                entry_time = float(pos.get("entry_time") or 0)
-                if entry_time and (time.time() - entry_time) >= config.VELOCITY_MAX_HOLD_MIN * 60:
-                    return await self.close_position(symbol, price, "velocity_max_hold")
             # Pump Monitor break-even: once the trade has proven itself with a
             # >= trigger MFE move, the stop moves to entry so a proven winner
             # can never round-trip into a full loss (56 historical trades lost
