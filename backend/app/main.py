@@ -311,6 +311,181 @@ def _public_user(user: dict) -> dict:
     return {k: v for k, v in (user or {}).items() if k != "password_hash"}
 
 
+
+# ---------------------------------------------------------------------------
+# Admin Veritabanı sayfası (2026-09-04): tablo listesi, satır verisi, CSV/SQL export.
+# Yalnızca admin rolü. PostgreSQL şeması public.
+# ---------------------------------------------------------------------------
+_DB_TABLE_DESCRIPTIONS = {
+    "a2a_messages": "A2A ajanlar arası mesaj kuyruğu",
+    "agent_eval_cases": "Ajan değerlendirme test senaryoları",
+    "agent_eval_runs": "Ajan değerlendirme koşu kayıtları",
+    "agent_evaluations": "Ajan çıktı değerlendirme sonuçları",
+    "agent_experiences": "Ajan deneyim kayıtları (self-learning)",
+    "agent_trace_events": "Ajan izleme (trace) olayları",
+    "agent_traces": "Ajan işlem izleri",
+    "alert_events": "Uyarı tetiklenme olayları",
+    "alert_rules": "Uyarı kuralları",
+    "analysis_snapshots": "Analiz anlık görüntüleri (regime/confluence)",
+    "audit_logs": "Güvenlik ve kullanıcı hareket kayıtları",
+    "backtests": "Backtest koşu sonuçları",
+    "chart_forecasts": "Chart tahmin journal'ı",
+    "chart_settings": "Chart indikatör ayarları (sembol bazlı)",
+    "chat_messages": "Chat mesaj geçmişi",
+    "chat_prediction_insights": "Chat tahmin öğrenme içgörüleri",
+    "chat_predictions": "Chat tahmin kayıtları",
+    "decision_logs": "Strateji karar günlüğü",
+    "embedding_jobs": "Embedding iş kuyruğu",
+    "historical_candles": "Geçmiş mum verisi",
+    "historical_feature_snapshots": "Geçmiş özellik anlık görüntüleri",
+    "llm_forecast_lessons": "LLM tahmin dersleri (aktif/candidate)",
+    "llm_forecasts": "LLM tahmin journal'ı",
+    "llm_models": "LLM model tanımları",
+    "llm_providers": "LLM sağlayıcıları (API anahtarları şifreli)",
+    "llm_settings": "LLM ayar anahtar-değer deposu",
+    "llm_skills": "LLM uzmanlık talimatları",
+    "llm_symbol_guards": "Sembol koruma/cooldown kayıtları",
+    "llm_tool_logs": "LLM araç çağrı günlüğü",
+    "memory_documents": "Hafıza belgeleri",
+    "memory_embeddings": "Hafıza vektör embedding'leri",
+    "memory_relations": "Hafıza ilişki grafiği",
+    "memory_retrieval_logs": "Hafıza getirme günlüğü",
+    "microstructure_snapshots": "Mikro yapı (orderbook/akış) anlık görüntüleri",
+    "migration_meta": "Şema migrasyon durumu",
+    "ml_model_artifacts": "ML model artifact meta verisi",
+    "monitoring_notifications": "Radar bildirim geçmişi",
+    "notification_channels": "Bildirim kanal tanımları",
+    "paper_orders": "Paper emir kayıtları",
+    "positions": "Açık pozisyonlar",
+    "push_subscriptions": "Web push abonelikleri",
+    "replay_klines": "Replay/analiz için geçici mum verisi",
+    "research_patterns": "Desen araştırma bulguları",
+    "research_runs": "Araştırma koşu kayıtları",
+    "signals": "Sinyal günlüğü",
+    "symbol_target_state": "Sembol bazlı adaptif hedef durumu",
+    "trades": "Kapanan işlemler (paper)",
+    "trading_instincts": "Öğrenilmiş işlem içgüdüleri",
+    "users": "Kullanıcı hesapları",
+    "velocity_candidates": "Hız avcısı aday journal'ı",
+    "virtual_wallet": "Paper cüzdan bakiyeleri",
+}
+
+
+@app.get("/api/admin/db/tables")
+async def admin_db_tables(request: Request):
+    """Admin: tüm public tabloları + satır sayısı + açıklamayı listeler."""
+    _require_admin(request)
+
+    def op(conn):
+        rows = conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name"
+        ).fetchall()
+        return [dict(row) if isinstance(row, dict) else {"table_name": row[0]} for row in rows]
+
+    tables = await database._run_db(op)
+    result = []
+    for t in tables:
+        name = str(t["table_name"])
+        try:
+            count = await database._run_db(lambda conn, n=name: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0])
+        except Exception:
+            count = None
+        result.append({"table": name, "rows": count,
+                       "description": _DB_TABLE_DESCRIPTIONS.get(name, "")})
+    return {"paper_only": True, "tables": result}
+
+
+@app.get("/api/admin/db/table")
+async def admin_db_table_rows(request: Request, table: str = "", page: int = 1, page_size: int = 50):
+    """Admin: seçili tablonun verilerini sayfalı döndürür."""
+    _require_admin(request)
+    name = str(table or "").strip()
+    if not name or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        raise HTTPException(status_code=422, detail="Geçersiz tablo adı")
+    page = max(1, int(page))
+    page_size = max(1, min(int(page_size), 500))
+    offset = (page - 1) * page_size
+
+    def op(conn):
+        total = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        rows = conn.execute(f'SELECT * FROM "{name}" ORDER BY 1 DESC LIMIT %s OFFSET %s',
+                            (page_size, offset)).fetchall()
+        cols = [d[0] for d in (conn.execute(f'SELECT * FROM "{name}" LIMIT 0')).description]
+        return {"total": int(total), "columns": cols,
+                "rows": [dict(r) if isinstance(r, dict) else dict(zip(cols, r)) for r in rows]}
+
+    try:
+        return {"paper_only": True, "table": name, "page": page,
+                "page_size": page_size, **await database._run_db(op)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Tablo okunamadı: {exc}")
+
+
+@app.get("/api/admin/db/table/export")
+async def admin_db_table_export(request: Request, table: str = "", format: str = "csv"):
+    """Admin: tablo verisini CSV veya SQL (INSERT) olarak indirir."""
+    _require_admin(request)
+    name = str(table or "").strip()
+    if not name or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        raise HTTPException(status_code=422, detail="Geçersiz tablo adı")
+    fmt = str(format or "csv").lower()
+    if fmt not in {"csv", "sql"}:
+        raise HTTPException(status_code=422, detail="format csv veya sql olmalı")
+
+    def op(conn):
+        rows = conn.execute(f'SELECT * FROM "{name}"').fetchall()
+        cols = [d[0] for d in (conn.execute(f'SELECT * FROM "{name}" LIMIT 0')).description]
+        return {"columns": cols,
+                "rows": [dict(r) if isinstance(r, dict) else dict(zip(cols, r)) for r in rows]}
+
+    try:
+        data = await database._run_db(op)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Tablo okunamadı: {exc}")
+    cols, rows = data["columns"], data["rows"]
+
+    if fmt == "csv":
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            clean = {}
+            for k, v in r.items():
+                if isinstance(v, (dict, list)):
+                    v = json.dumps(v, ensure_ascii=False, default=str)
+                clean[k] = v
+            writer.writerow(clean)
+        content = buf.getvalue()
+        media = "text/csv; charset=utf-8"
+        filename = f"{name}.csv"
+    else:
+        lines = [f"-- {name} export {datetime.now(timezone.utc).isoformat()}"]
+        for r in rows:
+            vals = []
+            for col in cols:
+                v = r.get(col)
+                if v is None:
+                    vals.append("NULL")
+                elif isinstance(v, (dict, list)):
+                    vals.append("'" + json.dumps(v, ensure_ascii=False, default=str).replace("'", "''") + "'")
+                elif isinstance(v, bool):
+                    vals.append("TRUE" if v else "FALSE")
+                elif isinstance(v, (int, float)):
+                    vals.append(str(v))
+                else:
+                    vals.append("'" + str(v).replace("'", "''") + "'")
+            lines.append(f'INSERT INTO "{name}" ("{'" ,"'.join(cols)}") VALUES ({", ".join(vals)});')
+        content = "\n".join(lines)
+        media = "application/sql; charset=utf-8"
+        filename = f"{name}.sql"
+
+    return Response(content=content, media_type=media, headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(len(content.encode("utf-8"))),
+    })
+
+
 @app.get("/api/admin/users")
 async def admin_list_users(request: Request):
     _require_admin(request)
