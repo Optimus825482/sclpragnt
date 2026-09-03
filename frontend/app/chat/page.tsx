@@ -667,7 +667,15 @@ export default function ChatPage() {
           </div>
           <div className="chat-scan-buttons" role="toolbar" aria-label="Yükseliş analizi">
             <Button variant="secondary" className="chat-scan-button-wide" onClick={runUpsideScout} disabled={upsideScoutBusy || busy}>
-              {upsideScoutBusy ? "LLM ANALİZ EDİYOR…" : "🎯 EN HIZLI YÜKSELİŞ ANALİZİ (5DK+15DK)"}
+              {upsideScoutBusy ? (
+                <span className="upside-scout-loading">
+                  <span className="upside-scout-spinner" />
+                  <span className="upside-scout-text">EN HIZLI YÜKSELİŞ KEŞFEDİLİYOR</span>
+                  <span className="upside-scout-dots"><span>.</span><span>.</span><span>.</span></span>
+                </span>
+              ) : (
+                "🎯 EN HIZLI YÜKSELİŞ ANALİZİ (5DK+15DK)"
+              )}
             </Button>
           </div>
           {contextTone !== "normal" && (
