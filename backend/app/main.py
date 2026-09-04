@@ -1477,6 +1477,25 @@ async def save_chart_settings(symbol: str, payload: dict):
     await database.save_chart_settings(symbol, payload)
     return {"symbol": symbol, "saved": True}
 
+@app.patch("/api/chart/{symbol}/display")
+async def patch_chart_display(symbol: str, payload: dict):
+    """Görünüm tercihlerini merge ederek kaydeder (tam değiştirme DEĞİL).
+
+    Grafik sayfasındaki toggle'lar anlık DB'ye yazılır; localStorage'a
+    bağımlılık kaldırıldı (2026-09-04). Yalnız gönderilen display alanları
+    güncellenir; indikatör/interval/paneHeights dokunulmaz.
+    """
+    existing = await database.get_chart_settings(symbol) or {}
+    display = dict(existing.get("display") or {})
+    incoming = payload.get("display") or {}
+    if not isinstance(incoming, dict) or not incoming:
+        raise HTTPException(400, "display alanı gerekli")
+    for k, v in incoming.items():
+        display[str(k)] = v
+    existing["display"] = display
+    await database.save_chart_settings(symbol, existing)
+    return {"symbol": symbol, "saved": True, "display": display}
+
 @app.get("/api/positions")
 async def get_positions():
     positions = []
