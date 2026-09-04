@@ -275,8 +275,9 @@ class RegressionContracts(unittest.TestCase):
 
     def test_default_skill_uses_postgres_boolean_literal(self):
         source = (ROOT / "app" / "database.py").read_text()
+        # 2026-09-04: veri katmanı postgres-only; SQLite literal'i kalmamalı.
         self.assertIn('enabled_literal = "TRUE"', source)
-        self.assertIn('enabled_literal = "1"', source)
+        self.assertNotIn('enabled_literal = "1"', source)
         self.assertIn('VALUES(?,?,{enabled_literal},?)', source)
 
     def test_postgres_migration_retries_transient_connection_failures(self):

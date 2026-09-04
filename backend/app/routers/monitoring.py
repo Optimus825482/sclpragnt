@@ -8,7 +8,7 @@ from fastapi import APIRouter, Request
 
 from app.config import config
 from app import database
-from app.api_common import log_user_action
+from app.api_common import log_user_action, _background_tasks
 from app.state import market, analyzer
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
@@ -760,6 +760,7 @@ def start_monitoring_loop() -> bool:
     if _loop_task is not None and not _loop_task.done():
         return False
     _loop_task = asyncio.create_task(monitoring_background_loop(), name="monitoring-scan-loop")
+    _background_tasks.add(_loop_task)
     return True
 
 
@@ -767,4 +768,5 @@ def stop_monitoring_loop():
     global _loop_task
     if _loop_task is not None:
         _loop_task.cancel()
+        _background_tasks.discard(_loop_task)
         _loop_task = None
