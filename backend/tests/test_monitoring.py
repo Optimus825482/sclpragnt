@@ -343,13 +343,15 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         async def fake_pending(sym):
             return dict(row)
 
-        with patch.object(database, "get_pending_monitoring_notification", side_effect=fake_pending):
+        with patch.object(database, "get_pending_monitoring_notification", side_effect=fake_pending),              patch.object(monitoring.market, "get_ticker", return_value={"last_price": 102.5}):
             result = await monitoring.monitoring_active_notification("BTCTRY")
         self.assertTrue(result["active"])
         self.assertEqual(result["score"], 62.5)
         self.assertAlmostEqual(result["target_gain_pct"], 2.0, places=2)
         self.assertGreater(result["remaining_sec"], 0)
         self.assertLessEqual(result["remaining_sec"], (5 + 2) * 60)
+        self.assertEqual(result["current_price"], 102.5)
+        self.assertTrue(result["target_hit"])
 
     async def test_active_notification_expired_returns_inactive(self):
         """Ufuk + tolerans dolmuş bildirim: active=False (grafik paneli söner)."""
@@ -398,7 +400,8 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=existing),              patch.object(monitoring.database, "update_monitoring_notification", side_effect=fake_update),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring, "_record_history", return_value=None):
-            candidates = [{"symbol": "GOODTRY", "velocity_score": 4.0, "target_pct": 5.0, "price": 12.0}]
+            candidates = [{"symbol": "GOODTRY", "velocity_score": 4.0, "target_pct": 5.0, "price": 12.0,
+                           "horizon_minutes": 15}]
             result = await monitoring._notify(candidates, settings)
         self.assertTrue(result and result[0].get("updated"))
         self.assertEqual(captured["id"], 42)
@@ -407,6 +410,30 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["price"], 10.0)
         self.assertAlmostEqual(captured["expected_price"], 10.5, places=6)
         self.assertAlmostEqual(captured["target_pct"], 5.0, places=6)
+        # Ufuk daralmasin: yeni tarama 15dk getirdiyse kayit 15dk olur (5 kalmaz)
+        self.assertEqual(captured["horizon_minutes"], 15)
+
+    async def test_notify_update_never_shrinks_horizon(self):
+        """Kisa ufuklu yeni tarama (5dk), uzun ufuklu bildirimi (15dk) KISALTAMAZ:
+        panel SON ufuk suresi dolana kadar takipte kalir (2026-09-04)."""
+        from app.routers import monitoring
+
+        settings = {"enabled": True, "min_score": 2.0, "min_target_pct": 0,
+                    "quiet_hours_start": None, "quiet_hours_end": None}
+        existing = {"id": 7, "symbol": "LONGTRY", "score": 6.0, "target_pct": 2.0,
+                    "price": 20.0, "expected_price": 20.4, "horizon_minutes": 15,
+                    "detected_at": time.time() - 60}
+        captured = {}
+
+        async def fake_update(notif_id, **kwargs):
+            captured.update(kwargs)
+            return True
+
+        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=existing),              patch.object(monitoring.database, "update_monitoring_notification", side_effect=fake_update),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring, "_record_history", return_value=None):
+            candidates = [{"symbol": "LONGTRY", "velocity_score": 4.0, "target_pct": 3.0,
+                           "price": 21.0, "horizon_minutes": 5}]
+            await monitoring._notify(candidates, settings)
+        self.assertEqual(captured["horizon_minutes"], 15)
 
 
 if __name__ == "__main__":
