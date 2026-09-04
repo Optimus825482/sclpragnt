@@ -413,10 +413,16 @@ CREATE TABLE IF NOT EXISTS monitoring_notifications (
   mode TEXT,
   detected_at DOUBLE PRECISION NOT NULL,
   sent_via_push BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at DOUBLE PRECISION NOT NULL
+  created_at DOUBLE PRECISION NOT NULL,
+  ml_target_pct DOUBLE PRECISION,
+  ml_hit_probability DOUBLE PRECISION
 );
 CREATE INDEX IF NOT EXISTS monitoring_notifications_detected_idx ON monitoring_notifications(detected_at DESC);
 CREATE INDEX IF NOT EXISTS monitoring_notifications_symbol_idx ON monitoring_notifications(symbol, detected_at DESC);
+
+-- Mevcut (pre-ML) tabloyu da idempotent sekilde ML hedef sutunlarina tasi.
+ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS ml_target_pct DOUBLE PRECISION;
+ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS ml_hit_probability DOUBLE PRECISION;
 
 -- Audit trail for user-triggered actions (2026-09-03). Records who did what
 -- and when (login/logout, password changes, config saves, manual trade
