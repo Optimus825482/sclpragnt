@@ -616,13 +616,16 @@ async def report_notifications(limit: int = 200, day: str = None):
     """Radar bildirim raporu - gercek kapannis M1 olcmueye dayali basari.
     day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
 
-    Global admin eşiği (min_score) altındaki bildirimler NE gösterilir NE
-    başarı hesabına katılır (2026-09-04 kullanıcı kararı) — düşük skorlu
-    gürültü başarı oranını yanıltmasın.
+    Global admin eşiği (etkin: min_score + RISK_OFF çarpanı) altındaki
+    bildirimler NE gösterilir NE başarı hesabına katılır (2026-09-04 kullanıcı
+    kararı) — düşük skorlu gürültü başarı oranını yanıltmasın.
     """
     limit = max(1, min(int(limit), 500))
     settings = await get_user_notification_settings()
-    min_score = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
+    # Tek eşik ilkesi (2026-09-04 kullanıcı kararı): raporlar da radar/bildirim/
+    # otonom taramayla AYNI etkin eşiği kullanır (admin min_score + RISK_OFF
+    # çarpanı) — ekranda gösterilen sayı ile fiilen uygulanan sayı birebir aynıdır.
+    min_score = _effective_min_score(settings)
     rows = await database.get_monitoring_velocity_matches(limit=limit, day=day)
     # Eşik filtresi panel (0-100) skoru üzerinden; eski ham kayıtlar tek kez
     # normalize edilir (bkz. _stored_panel_score).

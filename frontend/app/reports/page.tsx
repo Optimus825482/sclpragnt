@@ -750,12 +750,13 @@ function UserRadarTab() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Global admin eşiği: bu sekmedeki liste backend'de zaten bu eşiğe göre
-  // filtrelenir; eşik değeri burada bilgi amaçlı gösterilir (2026-09-04).
+  // Global admin eşiği (etkin: RISK_OFF çarpanı dahil): bu sekmedeki liste
+  // backend'de zaten bu eşiğe göre filtrelenir; eşik değeri burada bilgi
+  // amaçlı gösterilir (2026-09-04).
   useEffect(() => {
     apiRequest(`${API_BASE}/api/monitoring/settings`, { cache: "no-store" })
       .then((r) => r.json())
-      .then((d) => setMinScore(d.min_score != null ? Number(d.min_score) : null))
+      .then((d) => setMinScore(d.effective_min_score != null ? Number(d.effective_min_score) : (d.min_score != null ? Number(d.min_score) : null)))
       .catch(() => undefined);
   }, []);
 
@@ -874,7 +875,7 @@ function UserRadarTab() {
           <p className="eyebrow text-neon-green">RADAR TESPITLERI ({filtered.length})</p>
           {minScore != null && (
             <p className="mt-0.5 font-mono text-[10px] text-bunker-muted">
-              Global bildirim eşiği: SKOR ≥ {Math.round(minScore)} · Yalnızca bu eşiği geçen bildirimler listelenir ve başarı hesabına katılır (ayar: Ayarlar sayfası, admin).
+              Global bildirim eşiği: SKOR ≥ {Math.round(minScore)} · Yalnızca bu eşiği geçen bildirimler listelenir ve başarı hesabına katılır (ayar: Monitoring sayfası, admin).
             </p>
           )}
           <div className="flex items-center gap-2">
