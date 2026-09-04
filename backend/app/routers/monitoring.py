@@ -112,6 +112,18 @@ def _in_quiet_hours(settings) -> bool:
     return (cur >= a and cur < b) if a < b else (cur >= a or cur < b)
 
 
+def _effective_min_score(settings) -> float:
+    """O an gerçekten uygulanan eşik: admin min_score + RISK_OFF rejim çarpanı.
+
+    Admin ayarı bozulmadan riskli piyasada daha seçici davranılır; bu değer
+    admin ekranında etkin eşik olarak gösterilir (2026-09-04).
+    """
+    base = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
+    if _monitoring_state.get("risk_off"):
+        base *= float(config.MONITORING_RISK_OFF_SCORE_MULT)
+    return round(min(100.0, base), 1)
+
+
 async def get_user_notification_settings() -> dict:
     """Global bildirim ayarlarını DB'den oku (admin ayarı — tüm kullanıcıları etkiler).
 
@@ -137,7 +149,10 @@ async def get_user_notification_settings() -> dict:
 async def get_monitoring_settings():
     """Global bildirim ayarlarını döndür (okuma tüm kullanıcıya açık)."""
     settings = await get_user_notification_settings()
-    return {"paper_only": True, "scope": "global_admin", **settings}
+    return {"paper_only": True, "scope": "global_admin",
+            "risk_off": bool(_monitoring_state["risk_off"]),
+            "effective_min_score": _effective_min_score(settings),
+            **settings}
 
 
 @router.put("/api/monitoring/settings")
@@ -146,22 +161,32 @@ async def update_monitoring_settings(payload: dict, request: Request):
 
     Admin tarafından yapılan değişiklik tüm kullanıcıları ve arka plan
     döngüsünü anında etkiler (kullanıcı-başı ayar kaldırıldı, 2026-09-04).
+    Merge semantiği: yalnızca gönderilen alanlar güncellenir; diğer alanlar
+    (min_target_pct, quiet_hours, enabled) korunur — aksi halde eşiği kaydeden
+    her istek diğer ayarları varsayılana sıfırlıyordu (2026-09-04 teşhis).
     """
     from app.main import _require_admin
     _require_admin(request)
+    existing = await get_user_notification_settings()
+    editable = ("enabled", "min_score", "min_target_pct",
+                "quiet_hours_start", "quiet_hours_end")
+    merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
     settings = {
-        "enabled": bool(payload.get("enabled", True)),
-        "min_score": float(payload.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT)),
-        "min_target_pct": float(payload.get("min_target_pct", 2.0)),
-        "quiet_hours_start": payload.get("quiet_hours_start", None),
-        "quiet_hours_end": payload.get("quiet_hours_end", None),
+        "enabled": bool(merged.get("enabled", True)),
+        "min_score": max(0.0, min(100.0, float(merged.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT)))),
+        "min_target_pct": max(0.0, float(merged.get("min_target_pct", 2.0))),
+        "quiet_hours_start": merged.get("quiet_hours_start", None),
+        "quiet_hours_end": merged.get("quiet_hours_end", None),
     }
     await database.set_llm_setting("monitoring_notification_settings", json.dumps(settings))
     await log_user_action(None, None, "monitoring", "MONITORING_SETTINGS_UPDATE",
                           details={"settings": {k: v for k, v in settings.items() if k != "enabled"},
                                    "scope": "global_admin"},
                           request=request)
-    return {"paper_only": True, "ok": True, "scope": "global_admin", **settings}
+    return {"paper_only": True, "ok": True, "scope": "global_admin",
+            "risk_off": bool(_monitoring_state["risk_off"]),
+            "effective_min_score": _effective_min_score(settings),
+            **settings}
 
 
 def _build_notification(sym, c, settings) -> dict:
@@ -203,6 +228,27 @@ def _build_notification(sym, c, settings) -> dict:
             "min_target_pct": settings.get("min_target_pct"),
         },
     }
+
+
+def _stored_panel_score(row: dict) -> float:
+    """DB'deki score değerini panel (0-100) ölçeğine getirir.
+
+    MONITORING_SCORE_NORM_SINCE sonrası kayıtlar zaten panel skorudur ve
+    aynen kullanılır; öncesindeki kayıtlar ham velocity_score olduğundan tek
+    kez normalize edilir. Kayda kaydı geçen skora tekrar normalize uygulamak
+    (çift dönüşüm) eşiği fiilen 0.4×min_score'a indirdiği için düzeltildi
+    (2026-09-04 teşhis).
+    """
+    try:
+        detected = float(row.get("detected_at") or 0)
+    except (TypeError, ValueError):
+        detected = 0.0
+    if detected and detected < float(config.MONITORING_SCORE_NORM_SINCE):
+        return normalize_score(row.get("score"))
+    try:
+        return float(row.get("score") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 async def _record_history(entries):
@@ -427,6 +473,9 @@ async def _run_scan() -> dict:
             for h, r in profs.items()
         }
         row["upside_rank"] = round(upside_rank_score(row, touch_rates), 2)
+        # Panel (0-100) skoru: arayüz ve liste filtresi ham velocity_score yerine
+        # bunu gösterir; admin eşiği bu ölçekte kurgulanmış (2026-09-04).
+        row["panel_score"] = normalize_score(row.get("velocity_score", 0))
         return row
 
     # Birleştir: sembol başına en yüksek upside_rank'li kayıt kalır
@@ -483,7 +532,15 @@ async def _run_scan() -> dict:
     except Exception:
         pass  # rejim hesaplanamazsa normal eşik (fail-open)
 
-    candidates_list = sorted(filtered_candidates.values(), key=lambda x: x.get("upside_rank", 0), reverse=True)
+    settings = await get_user_notification_settings()
+    effective_min_score = _effective_min_score(settings)
+    # Admin eşiği (etkin: RISK_OFF çarpanı dahil) altındaki adaylar listede
+    # GÖSTERILMEZ (2026-09-04 kullanıcı kararı). _notify aynı eşiği zaten
+    # uyguladığından bildirim davranışı değişmez; yalnız radar listesi temiz kalır.
+    candidates_list = sorted(
+        (c for c in filtered_candidates.values()
+         if float(c.get("panel_score", 0) or 0) >= effective_min_score),
+        key=lambda x: x.get("upside_rank", 0), reverse=True)
     watchlist_list = sorted(all_watchlist.values(), key=lambda x: x.get("upside_rank", 0), reverse=True)
 
     # Bu turdaki aday kümesi: eşik altında kalan sembollerin debounce sayacı sıfırlanır
@@ -495,7 +552,6 @@ async def _run_scan() -> dict:
     # Beklenen fiyata ulaşan veya süresi dolan sembolleri serbest bırak
     _check_pending_targets()
 
-    settings = await get_user_notification_settings()
     new_notifications = await _notify(candidates_list, settings)
 
     _monitoring_state["last_scan_at"] = now
@@ -526,6 +582,8 @@ async def monitoring_scan():
             "notifications": result["new_notifications"],
             "history": _monitoring_state["history"][:20],
             "settings": result["settings"],
+            "risk_off": bool(_monitoring_state["risk_off"]),
+            "effective_min_score": _effective_min_score(result["settings"]),
             "loop_active": _loop_task is not None and not _loop_task.done(),
         }
     except Exception as exc:
@@ -547,6 +605,7 @@ async def monitoring_state():
         "settings": settings,
         "scope": "global_admin",
         "risk_off": _monitoring_state["risk_off"],
+        "effective_min_score": _effective_min_score(settings),
         "loop_active": _loop_task is not None and not _loop_task.done(),
         "next_scan_in_sec": None,
     }
@@ -565,12 +624,10 @@ async def report_notifications(limit: int = 200, day: str = None):
     settings = await get_user_notification_settings()
     min_score = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
     rows = await database.get_monitoring_velocity_matches(limit=limit, day=day)
-    # Eşik filtresi: skor alanı bildirim anındaki panel (0-100) skorudur.
-    # 2026-09-04 teşhisi öncesi eski kayıtlar ham velocity_score ile yazılmıştı
-    # (çok daha düşük); normalize_score her iki ölçeği aynı panele oturtur —
-    # aksi halde eski gürültü/eşik tutarsızlığı oluşur.
+    # Eşik filtresi panel (0-100) skoru üzerinden; eski ham kayıtlar tek kez
+    # normalize edilir (bkz. _stored_panel_score).
     rows = [r for r in rows
-            if normalize_score(r.get("score")) >= min_score]
+            if _stored_panel_score(r) >= min_score]
     now = time.time()
     result = []
     for row in rows:
@@ -602,7 +659,9 @@ async def report_notifications(limit: int = 200, day: str = None):
             "symbol": symbol,
             "message": row.get("message"),
             "title": row.get("title"),
-            "score": row.get("score"),
+            # Panel (0-100) skoru: eski ham kayıtlar da aynı ölçeğe çevrilerek
+            # tabloda tek ölçek gösterilir (2026-09-04).
+            "score": _stored_panel_score(row),
             "target_pct": target_pct,
             "price": price,
             "expected_price": row.get("expected_price"),
@@ -627,8 +686,8 @@ async def report_notifications(limit: int = 200, day: str = None):
                     "success_rate": (success / evaluated * 100) if evaluated else None}
     all_rows = await database.get_monitoring_velocity_matches(limit=1000, day=None)
     # Genel başarı da aynı global eşiğe tabi (gürültü oranları dışarıda kalır);
-    # eski kayıtlar için normalize_score uygulanır (bkz. günlük filtre).
-    all_rows = [r for r in all_rows if normalize_score(r.get("score")) >= min_score]
+    # eski kayıtlar için tek kez normalize uygulanır (bkz. _stored_panel_score).
+    all_rows = [r for r in all_rows if _stored_panel_score(r) >= min_score]
     all_evaluated = 0
     all_success = 0
     for r in all_rows:
