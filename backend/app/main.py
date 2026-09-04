@@ -52,7 +52,6 @@ from app.embedding_worker import worker as embedding_worker, trade_document, sig
 from app.memory_service import build_document
 from app import memory_service
 from app import migration_monitor
-from app import a2a
 from app import alerting
 from app import security
 from app import pattern_research
@@ -69,14 +68,13 @@ from app.api_common import (  # noqa: F401
     _start_background, _background_tasks, _record_strategy_scan_log, _strategy_scan_logs,
     _json_safe_positions, _fresh_public_price, _llm_guard_block_reason, correlation_monitor,
     _radar_snapshot, _radar_response_cache, log_user_action, client_context)
-from app.routers import a2a as a2a_routes, backtest as backtest_routes, llm_chat as llm_chat_routes
+from app.routers import backtest as backtest_routes, llm_chat as llm_chat_routes
 from app.routers import chart_forecast as chart_forecast_routes
 from app.routers import maintenance as maintenance_routes, reports as reports_routes
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
 from app.routers.maintenance import (  # noqa: F401
     backfill_symbol_history, backfill_missing_active_history, history_candle_loop, _run_strategy_replay,
     _strategy_replay_jobs, microstructure_snapshot_loop)
-from app.routers.a2a import a2a_inbox_loop, a2a_outbox_loop  # noqa: F401
 from app.routers.llm_chat import (  # noqa: F401
     llm_forecast_evaluation_loop, chat_prediction_learning_loop, chat_prediction_auto_trade_loop,
     llm_position_manager_loop, _price_watch_symbol, _llm_entry_quality_gate,
@@ -103,10 +101,9 @@ cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://l
 # broadened. The API only needs the methods below.
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_credentials=True,
                    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-                   allow_headers=["Authorization", "Content-Type", "X-Real-IP", "X-A2A-Signature"])
+                   allow_headers=["Authorization", "Content-Type", "X-Real-IP"])
 
 app.include_router(maintenance_routes.router)
-app.include_router(a2a_routes.router)
 app.include_router(llm_chat_routes.router)
 app.include_router(chart_forecast_routes.router)
 app.include_router(system_routes.router)
@@ -169,13 +166,8 @@ async def edge_tts_audio(payload: dict):
 
 @app.middleware("http")
 async def require_admin_session(request: Request, call_next):
-    public_paths = {"/health", "/api/auth/status", "/api/auth/login", "/.well-known/a2a-agent-card.json"}
+    public_paths = {"/health", "/api/auth/status", "/api/auth/login"}
     if request.method == "OPTIONS" or request.url.path in public_paths:
-        return await call_next(request)
-    # Relay-to-agent delivery has its own HMAC verification at the route.
-    if (request.method == "POST" and request.url.path == "/api/a2a/messages"
-            and os.getenv("A2A_SHARED_SECRET", "").strip()
-            and request.headers.get("X-A2A-Signature")):
         return await call_next(request)
     if not security.auth_configured():
         return JSONResponse({"detail": "Yönetici kimlik doğrulaması yapılandırılmamış"}, status_code=503)
@@ -317,7 +309,6 @@ def _public_user(user: dict) -> dict:
 # Yalnızca admin rolü. PostgreSQL şeması public.
 # ---------------------------------------------------------------------------
 _DB_TABLE_DESCRIPTIONS = {
-    "a2a_messages": "A2A ajanlar arası mesaj kuyruğu",
     "agent_eval_cases": "Ajan değerlendirme test senaryoları",
     "agent_eval_runs": "Ajan değerlendirme koşu kayıtları",
     "agent_evaluations": "Ajan çıktı değerlendirme sonuçları",
@@ -769,8 +760,6 @@ async def startup_services():
     _start_background(top_gainers_refresh_loop(), "top-gainers-monitor")
     _start_background(symbol_activity_loop(), "symbol-activity")
     _start_background(llm_idle_trigger_loop(), "llm-idle-trigger")
-    _start_background(a2a_inbox_loop(), "a2a-inbox")
-    _start_background(a2a_outbox_loop(), "a2a-outbox")
     _start_background(llm_position_manager_loop(), "llm-position-manager")
     _start_background(learning_promotion_loop(), "learning-promotion")
     _start_background(retention_loop(), "retention")

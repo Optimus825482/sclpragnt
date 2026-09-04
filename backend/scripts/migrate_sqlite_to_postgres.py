@@ -7,7 +7,7 @@ import argparse, asyncio, hashlib, json, os, sqlite3
 from pathlib import Path
 import asyncpg
 
-TABLES = ("positions", "trades", "signals", "decision_logs", "llm_tool_logs", "a2a_messages", "llm_symbol_guards", "virtual_wallet", "chart_settings", "llm_providers", "llm_models", "llm_skills", "llm_settings", "backtests")
+TABLES = ("positions", "trades", "signals", "decision_logs", "llm_tool_logs", "llm_symbol_guards", "virtual_wallet", "chart_settings", "llm_providers", "llm_models", "llm_skills", "llm_settings", "backtests")
 JSON_COLUMNS = {"entry_context", "metadata", "arguments", "payload", "evidence", "data", "params", "trades"}
 
 def sha256(path):

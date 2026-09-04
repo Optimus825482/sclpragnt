@@ -454,7 +454,7 @@ class RegressionContracts(unittest.TestCase):
 
     def test_compose_has_bounded_shutdown_and_postgres_startup_grace(self):
         source = (ROOT.parent / "docker-compose.yaml").read_text()
-        self.assertGreaterEqual(source.count("stop_grace_period:"), 5)
+        self.assertGreaterEqual(source.count("stop_grace_period:"), 4)
         postgres = source[source.index("  postgres:"):source.index("  backend:")]
         self.assertIn("start_period: 30s", postgres)
         self.assertIn("retries: 12", postgres)

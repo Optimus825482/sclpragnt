@@ -1,8 +1,5 @@
 import os
-import sqlite3
-import time
 import unittest
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from urllib.error import HTTPError
 
@@ -57,33 +54,6 @@ class SecurityBehavior(unittest.TestCase):
         with patch.dict(os.environ, {"LLM_ALLOW_PRIVATE_PROVIDER": "1"}), \
              patch("app.security.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("127.0.0.1", 8080))]):
             self.assertEqual(security._validate_provider_url_sync("http://127.0.0.1:8080/v1"), "http://127.0.0.1:8080/v1")
-
-    def test_a2a_route_requires_configured_secret(self):
-        app_dir = Path(__file__).resolve().parent.parent / "app"
-        route_source = (app_dir / "routers" / "a2a.py").read_text(encoding="utf-8")
-        main_source = (app_dir / "main.py").read_text(encoding="utf-8")
-        self.assertIn('if not secret:\n        raise HTTPException(status_code=503', route_source)
-        self.assertIn('and os.getenv("A2A_SHARED_SECRET", "").strip()', main_source)
-
-
-class A2AReplayBehavior(unittest.IsolatedAsyncioTestCase):
-    async def test_inbound_message_id_is_inserted_only_once(self):
-        from app import database
-
-        conn = sqlite3.connect(":memory:")
-        self.addCleanup(conn.close)
-        conn.execute("""CREATE TABLE a2a_messages(message_id TEXT PRIMARY KEY, correlation_id TEXT,
-          direction TEXT, message_type TEXT, sender TEXT, recipient TEXT, status TEXT, payload TEXT,
-          created_at REAL, delivered_at REAL, acknowledged_at REAL, last_error TEXT, attempts INTEGER)""")
-        async def run(operation): return operation(conn)
-        message = {"message_id": "m1", "type": "research_result", "from": "peer", "to": "scalper",
-                   "created_at": time.time(), "paper_only": True}
-        with patch("app.database._run_db", new=run):
-            first = await database.save_a2a_message(message, direction="inbound", status="received", insert_only=True)
-            second = await database.save_a2a_message(message, direction="inbound", status="received", insert_only=True)
-        self.assertTrue(first)
-        self.assertFalse(second)
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM a2a_messages").fetchone()[0], 1)
 
 
 class ConfigApiBehavior(unittest.IsolatedAsyncioTestCase):
