@@ -205,13 +205,27 @@ async def ensure_default_scalper_skill():
     return await _run_db(op)
 
 async def reset_trading_data():
-    """Paper cüzdanı 10.000 TL'ye sıfırla ve bir reset_at zaman damgası koy.
+    """Paper cüzdanı 10.000 TL'ye sıfırla, tüm açık pozisyonları kapat ve reset_at damgası koy.
 
-    Eski trade/pozisyon/sinyal kayıtları SİLİNMEZ — yalnızca reset_at anından
-    sonraki işlemler aggregasyon/rapor hesaplamalarına katılır.
+    - Açık auto_paper_trades'ler 'closed' yapılır (exit_reason='reset')
+    - positions tablosu temizlenir
+    - virtual_wallet 10.000 TL yapılır
+    - portfolio_reset_at zaman damgası llm_settings'e yazılır
+    - Eski kapanmış trade/sinyal/kayıtlar SİLİNMEZ — reset_at anından
+      sonraki işlemler aggregasyon/rapor hesaplamalarına katılır.
     """
     now = time.time()
     def op(conn):
+        # Açık otonom paper pozisyonlarını kapat
+        conn.execute(
+            "UPDATE auto_paper_trades SET status='closed', exit_time=?, exit_reason='reset', updated_at=? "
+            "WHERE status='open'", (now, now))
+        # Ana pozisyon tablosunu temizle
+        conn.execute("DELETE FROM positions")
+        # Sinyal/karar loglarını temizle (reset_at öncesi kullanılmasın)
+        conn.execute("DELETE FROM signals WHERE strategy='AUTO_PAPER'")
+        conn.execute("DELETE FROM decision_logs WHERE strategy='AUTO_PAPER'")
+        # Cüzdanı sıfırla
         conn.execute("DELETE FROM virtual_wallet")
         conn.execute("INSERT INTO virtual_wallet (asset, amount) VALUES ('TRY', ?)", (config.INITIAL_BALANCE_TRY,))
         conn.execute("INSERT INTO llm_settings(key,value) VALUES('portfolio_reset_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(now),))

@@ -585,15 +585,36 @@ async def velocity_learning_loop():
         try:
             pending = await database.get_pending_velocity_candidates(limit=200)
             measured = 0
-            for candidate in pending:
+            # N+1 önlemi: her pending aday için SIRAYLA fetch_klines çağırmak
+            # (200 aday × 1 REST = tur başına 200 istek) yerine semaphore'lu
+            # paralel çekim yapıyoruz. Rate limit + gecikme düşer. 2026-09-05.
+            sem = asyncio.Semaphore(10)
+            fetch_results: dict[str, list | None] = {}
+
+            async def _fetch_one(candidate: dict):
                 symbol = candidate["symbol"]
                 created_ms = int(float(candidate["created_at"]) * 1000)
                 horizon = 15 if "15dk-%3" in str(candidate.get("candidate_id", "")) else 5
                 due_ms = created_ms + horizon * 60_000
                 try:
-                    rows = await fetch_klines(symbol, "1m", horizon + 12, created_ms, due_ms + 65_000)
+                    async with sem:
+                        rows = await fetch_klines(symbol, "1m", horizon + 12, created_ms, due_ms + 65_000)
+                    fetch_results[candidate["candidate_id"]] = rows
                 except Exception:
+                    fetch_results[candidate["candidate_id"]] = None
+
+            if pending:
+                await asyncio.gather(*(_fetch_one(c) for c in pending))
+
+            for candidate in pending:
+                candidate_id = str(candidate.get("candidate_id", ""))
+                rows = fetch_results.get(candidate_id)
+                if not rows:
                     continue
+                symbol = candidate["symbol"]
+                created_ms = int(float(candidate["created_at"]) * 1000)
+                horizon = 15 if "15dk-%3" in candidate_id else 5
+                due_ms = created_ms + horizon * 60_000
                 # Tarama anı bir M1 mumun ortasına denk gelebilir; o mum atak
                 # öncesi sayılır ve pencereye tam ufuk kadar mum sığmayabilir.
                 # Pencere süresi dolduysa ufuk × %60 mum yeterli — aksi halde

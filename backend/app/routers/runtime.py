@@ -57,6 +57,38 @@ _radar_lock = asyncio.Lock()
 _top_gainers_lock = asyncio.Lock()
 _ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
 
+# ws_broadcast_loop her saniye çalışır; realized_pnl ve TRY bakiyesi yalnız
+# trade kapanışında değişir. Her saniye DB'ye gitmek (tek bağlantı + global
+# lock altında) tüm diğer DB işlerini yavaşlatıyordu — 3 sn TTL cache yeterli
+# (kapanış sonrası en geç 3 sn içinde ekran güncellenir). 2026-09-05.
+_WALLET_TTL_SEC = 3.0
+_realized_pnl_cache = {"value": None, "at": 0.0}
+_try_balance_cache = {"value": None, "at": 0.0}
+
+
+async def _cached_realized_pnl() -> float:
+    now = time.time()
+    if _realized_pnl_cache["value"] is not None and now - _realized_pnl_cache["at"] < _WALLET_TTL_SEC:
+        return _realized_pnl_cache["value"]
+    value = await database.get_realized_pnl()
+    _realized_pnl_cache.update(value=value, at=now)
+    return value
+
+
+async def _cached_try_balance() -> float:
+    now = time.time()
+    if _try_balance_cache["value"] is not None and now - _try_balance_cache["at"] < _WALLET_TTL_SEC:
+        return _try_balance_cache["value"]
+    value = await database.get_wallet_balance("TRY")
+    _try_balance_cache.update(value=value, at=now)
+    return value
+
+
+def invalidate_wallet_caches():
+    """Trade kapanışı/açılışı sonrası önbelleği sıfırla (anında doğru bakiye)."""
+    _realized_pnl_cache.update(value=None, at=0.0)
+    _try_balance_cache.update(value=None, at=0.0)
+
 
 async def ws_broadcast_loop():
     while True:
@@ -71,7 +103,7 @@ async def ws_broadcast_loop():
                 _ws_snapshot_cache["generated_at"] = time.time()
                 await ws_manager.broadcast({"type": "tickers", "data": _ws_snapshot_cache["tickers"]})
 
-                try_bal = await database.get_wallet_balance("TRY")
+                try_bal = await _cached_try_balance()
                 total_value = try_bal
                 open_positions = []
                 for sym, pos in analyzer.positions.items():
@@ -103,7 +135,7 @@ async def ws_broadcast_loop():
                         "last_plan_reason": (pos.get("entry_context") or {}).get("last_plan_reason"),
                     })
                 open_positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
-                realized_pnl = await database.get_realized_pnl()
+                realized_pnl = await _cached_realized_pnl()
                 unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
 
                 # Otonom paper pozisyonlarını da ekle

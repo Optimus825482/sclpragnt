@@ -46,6 +46,9 @@ class MarketData:
         self.symbols = [s.lower() for s in symbols]
         self.timeframes = self._all_timeframes()
         self.klines = defaultdict(lambda: defaultdict(_empty_history))
+        # avg_volume önbelleği: 5m volumes listesi yeni mum kapanana dek değişmez;
+        # her saniye 70+ sembol için numpy mean yeniden hesaplamak gereksizdi.
+        self._avg_volume_cache: dict[tuple[str, str], tuple[float, float]] = {}
         self.tickers = {}
         self.ticker_24h = {}
         self.orderflow = defaultdict(lambda: {
@@ -747,9 +750,25 @@ class MarketData:
 
     def get_avg_volume(self, symbol, tf=None):
         tf = tf or "5m"
-        history = self.klines.get(tf, {}).get(symbol.upper(), {})
+        key = (str(symbol).upper(), tf)
+        history = self.klines.get(tf, {}).get(key[0], {})
         volumes = history.get("volumes", [])
-        return float(np.mean(volumes)) if volumes else 0.0
+        if not volumes:
+            self._avg_volume_cache.pop(key, None)
+            return 0.0
+        # Liste uzunluğu + son mum zamanı değişmediyse önbellekten dön (1 sn'lik
+        # broadcast döngüsünde 70+ numpy mean çağrısını önler).
+        last_open = history.get("open_times", [None])[-1] if history.get("open_times") else None
+        cache_key = (len(volumes), last_open)
+        cached = self._avg_volume_cache.get(key)
+        if cached and cached[0] == cache_key:
+            return cached[1]
+        value = float(np.mean(volumes))
+        # Sınırlı önbellek: 512 girişten fazlasını tutma (sembol churn'ünde şişmesin)
+        if len(self._avg_volume_cache) > 512:
+            self._avg_volume_cache.clear()
+        self._avg_volume_cache[key] = (cache_key, value)
+        return value
 
     def get_ut_kline(self, symbol, tf=None):
         tf = tf or "5m"
