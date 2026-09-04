@@ -118,6 +118,9 @@ function SettingsPageInner() {
   const [parityBackfillOpen, setParityBackfillOpen] = useState(false);
   const [parityBackfill, setParityBackfill] = useState<any>({ status: "idle", progress: 0, logs: [] });
   const [startingParityBackfill, setStartingParityBackfill] = useState(false);
+  const [mlBackfillOpen, setMlBackfillOpen] = useState(false);
+  const [mlBackfill, setMlBackfill] = useState<any>({ status: "idle", progress: 0, logs: [] });
+  const [startingMlBackfill, setStartingMlBackfill] = useState(false);
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
@@ -167,6 +170,16 @@ function SettingsPageInner() {
     const timer = window.setInterval(load, 1500);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [parityBackfillOpen]);
+
+  useEffect(() => {
+    if (!mlBackfillOpen) return;
+    let cancelled = false;
+    const load = () => apiRequest(`${API_BASE}/api/velocity-ml-backfill/status`, { cache: "no-store" })
+      .then((r) => r.json()).then((d) => { if (!cancelled) setMlBackfill(d); }).catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 1500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [mlBackfillOpen]);
 
   useEffect(() => {
     if (activeTab !== "scan-logs") return;
@@ -354,6 +367,20 @@ function SettingsPageInner() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Replay-parity backfill başlatılamadı");
     } finally { setStartingParityBackfill(false); }
+  };
+
+  const startVelocityMlBackfill = async () => {
+    if (!window.confirm("ML kolonları boş velocity adayları geçmiş 1m mumlardan gölge ML tahminiyle doldurulacak. İşlem, PnL ve pozisyonlar değişmeyecek; yalnız rapor/kalibrasyon verisi. Devam edilsin mi?")) return;
+    setStartingMlBackfill(true);
+    try {
+      const response = await apiRequest(`${API_BASE}/api/velocity-ml-backfill/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "ML geri doldurma başlatılamadı");
+      setMlBackfillOpen(true);
+      setMlBackfill(body);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ML geri doldurma başlatılamadı");
+    } finally { setStartingMlBackfill(false); }
   };
 
   const downloadParityTradeCsv = async () => {
@@ -797,6 +824,19 @@ function SettingsPageInner() {
             </div>
           </div>
 
+          <div className={`card border-emerald-400/30 bg-emerald-400/5 ${activeTab !== "app" ? "hidden" : ""}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <p className="eyebrow text-emerald-300">ML HEDEF GERİ DOLDURMA</p>
+                <p className="font-mono text-sm text-white mt-2">Boş ML kolonlarını geçmiş 1m mumlardan gölge tahminle doldur</p>
+                <p className="text-xs text-bunker-muted mt-1">velocity_candidates.ml_hit_probability / ml_target_pct. Mevcut ML modeliyle gölge; işlem/PnL/pozisyon değişmez. Rapor ve kalibrasyon verisi için.</p>
+              </div>
+              <button onClick={startVelocityMlBackfill} disabled={startingMlBackfill || mlBackfill.status === "running"} className="shrink-0 px-4 py-2 rounded-lg border border-emerald-400/50 bg-emerald-400/10 text-emerald-300 hover:bg-emerald-400/20 font-mono text-xs disabled:opacity-50">
+                {startingMlBackfill || mlBackfill.status === "running" ? "GERİ DOLDURULUYOR..." : "ML GERİ DOLDUR"}
+              </button>
+            </div>
+          </div>
+
           <div className={`card bg-bunker-950 ${activeTab !== "strategies" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
               <p className="eyebrow">İŞLEM VE RİSK YÖNETİMİ</p>
@@ -968,6 +1008,19 @@ function SettingsPageInner() {
             <div className="max-h-[36vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(parityBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(parityBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
             {parityBackfill.status === "complete" && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border border-neon-green/30 bg-neon-green/5 p-3"><p className="font-mono text-xs text-neon-green">Backfill tamamlandı. Tüm kapalı işlem ayrıntılarını indirip bu sohbete yükleyebilirsiniz.</p><button onClick={downloadParityTradeCsv} className="shrink-0 rounded-lg border border-neon-green/50 bg-neon-green/10 px-3 py-2 font-mono text-xs text-neon-green hover:bg-neon-green/20">TÜM İŞLEM CSV&apos;SİNİ İNDİR</button></div>}
             <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend&apos;de devam eder. CSV yalnızca kapalı paper işlemlerini; tam giriş bağlamı, teknik ve MTF JSON alanlarıyla içerir.</p>
+          </div>
+        </div>
+      )}
+      {mlBackfillOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 p-4 flex items-center justify-center" onClick={() => setMlBackfillOpen(false)}>
+          <div className="card bg-bunker-950 w-full max-w-3xl max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-bunker-800 pb-3 mb-4"><div><p className="eyebrow text-emerald-300">ML HEDEF GERİ DOLDURMA</p><p className="font-mono text-sm text-white mt-1">{mlBackfill.message || "Hazırlanıyor..."}</p></div><button onClick={() => setMlBackfillOpen(false)} className="text-bunker-muted hover:text-white">✕</button></div>
+            <div className="grid grid-cols-4 gap-3 mb-4 text-xs font-mono"><div><span className="text-bunker-muted">DURUM</span><p className="text-emerald-300 mt-1">{String(mlBackfill.status || "idle").toUpperCase()}</p></div><div><span className="text-bunker-muted">İLERLEME</span><p className="text-white mt-1">{mlBackfill.completed ?? 0}/{mlBackfill.total ?? 0} · %{mlBackfill.progress ?? 0}</p></div><div><span className="text-bunker-muted">GÜNCELLENEN</span><p className="text-neon-green mt-1">{mlBackfill.updated ?? 0}</p></div><div><span className="text-bunker-muted">ATLANAN</span><p className="text-yellow-300 mt-1">{mlBackfill.skipped ?? 0}</p></div></div>
+            <div className="h-2 rounded bg-bunker-800 mb-4"><div className="h-2 rounded bg-emerald-400 transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(mlBackfill.progress || 0)))}%` }} /></div>
+            {mlBackfill.current_symbol && <p className="font-mono text-xs text-emerald-300 mb-3">İşlenen: {mlBackfill.current_symbol}</p>}
+            <div className="max-h-[44vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(mlBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(mlBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
+            {mlBackfill.status === "complete" && mlBackfill.result && <div className="mt-4 rounded border border-neon-green/30 bg-neon-green/5 p-3 font-mono text-xs text-neon-green">Tamamlandı · güncellenen={mlBackfill.result.updated ?? 0} atlanan={mlBackfill.result.skipped ?? 0} sembol={mlBackfill.result.symbols ?? 0} · gölge (mevcut model)</div>}
+            <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend&apos;de arka planda devam eder; tekrar açarak son durumu görebilirsiniz. İşlem, PnL ve pozisyonlar değişmez.</p>
           </div>
         </div>
       )}

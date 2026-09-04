@@ -1,5 +1,7 @@
 """Backfill/replay-parity/strategy-replay maintenance jobs and routes."""
 import asyncio
+import bisect
+import math
 import time
 import logging
 from datetime import datetime, timezone
@@ -11,6 +13,9 @@ import csv
 import json
 from fastapi.responses import Response
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _ema
+from app.ml_forecast import predict_target
+from app.routers.velocity import (_velocity_ml_feature_dict,
+                                  _velocity_horizon_from_candidate_id)
 
 from app.config import config
 from app import database
@@ -26,6 +31,10 @@ _historical_mtf_backfill = {"status": "idle", "phase": "idle", "progress": 0, "c
 _historical_mtf_backfill_task = None
 _replay_parity_backfill = {"status": "idle", "phase": "idle", "progress": 0, "completed": 0, "total": 0, "message": None, "logs": [], "result": None, "started_at": None, "finished_at": None}
 _replay_parity_backfill_task = None
+_velocity_ml_backfill = {"status": "idle", "phase": "idle", "progress": 0, "completed": 0, "total": 0,
+                         "updated": 0, "skipped": 0, "current_symbol": None, "message": None,
+                         "logs": [], "result": None, "started_at": None, "finished_at": None}
+_velocity_ml_backfill_task = None
 
 _strategy_replay_jobs = {}
 _symbol_history_backfills = set()
@@ -411,6 +420,142 @@ async def start_replay_parity_backfill():
     if _replay_parity_backfill.get("status") == "running":
         return {"ok": True, "already_running": True, "paper_only": True, **_replay_parity_backfill}
     _replay_parity_backfill_task = asyncio.create_task(_run_replay_parity_backfill(), name="replay-parity-backfill")
+    return {"ok": True, "status": "queued", "paper_only": True}
+
+
+def _velocity_ml_backfill_log(level: str, message: str):
+    _velocity_ml_backfill["logs"].append({"timestamp": time.time(), "level": level, "message": message})
+    _velocity_ml_backfill["logs"] = _velocity_ml_backfill["logs"][-500:]
+
+
+async def _run_velocity_ml_backfill(options: dict | None = None):
+    """velocity_candidates'in boş ML kolonlarını geçmiş 1m mumlardan geri doldurur.
+
+    Her aday satırı için tarama anındaki 60'lık 1m penceresi geçmiş klines'ten
+    kurulur, scan_one ile aynı özellikler hesaplanır ve MEVCUT ML modeliyle
+    gölge tahmin üretilip satıra yazılır. Yalnız rapor/kalibrasyon verisi;
+    işlem, PnL ve pozisyon etkisi yoktur. Model o günkü değil bugünkü
+    artifacts olduğundan sonuç 'gölge' niteliğindedir.
+    """
+    options = options or {}
+    days = max(0, int(options.get("days") or 0))
+    state = _velocity_ml_backfill
+    state.update({"status": "running", "phase": "scan", "progress": 0, "completed": 0, "total": 0,
+                  "updated": 0, "skipped": 0, "current_symbol": None,
+                  "message": "ML kolonları boş adaylar taranıyor", "logs": [],
+                  "result": None, "started_at": time.time(), "finished_at": None})
+    _velocity_ml_backfill_log("info", "ML geri doldurma başladı; geçmiş 1m mumlardan özellik hesaplanıp mevcut modelle gölge tahmin yazılacak. İşlem/PnL değişmez.")
+    try:
+        rows = await database.get_velocity_candidates_missing_ml()
+        if days > 0:
+            cutoff = time.time() - days * 86400
+            rows = [r for r in rows if float(r["created_at"]) >= cutoff]
+        if not rows:
+            state.update({"status": "complete", "phase": "complete", "progress": 100,
+                          "message": "Doldurulacak satır yok", "finished_at": time.time()})
+            _velocity_ml_backfill_log("success", "Doldurulacak boş ML satırı bulunamadı.")
+            return
+        by_symbol: dict[str, list] = {}
+        for r in rows:
+            by_symbol.setdefault(str(r["symbol"]).upper(), []).append(r)
+        total = len(rows)
+        state.update({"phase": "predict", "total": total,
+                      "message": f"{len(by_symbol)} sembol / {total} satır işlenecek"})
+        updated = skipped = done = 0
+        for index, (sym, sym_rows) in enumerate(sorted(by_symbol.items()), 1):
+            state["current_symbol"] = sym
+            sym_rows.sort(key=lambda r: float(r["created_at"]))
+            first_created = float(sym_rows[0]["created_at"])
+            last_created = float(sym_rows[-1]["created_at"])
+            days_back = max(1, math.ceil((time.time() - first_created) / 86400) + 1)
+            try:
+                candles = await historical_klines(sym, "1m", days_back,
+                                                  end_time_ms=int((last_created + 120) * 1000))
+            except Exception as exc:
+                skipped += len(sym_rows); done += len(sym_rows)
+                _velocity_ml_backfill_log("error", f"{sym}: geçmiş mumlar alınamadı | {type(exc).__name__}: {exc}")
+                _advance_ml_backfill_progress(state, done, total, updated, skipped)
+                await asyncio.sleep(0.1)
+                continue
+            if not candles:
+                skipped += len(sym_rows); done += len(sym_rows)
+                _velocity_ml_backfill_log("warning", f"{sym}: geçmiş mum verisi yok, {len(sym_rows)} satır atlandı")
+                _advance_ml_backfill_progress(state, done, total, updated, skipped)
+                continue
+            open_times = [int(c[0]) for c in candles]
+            closes = [float(c[4]) for c in candles]
+            highs = [float(c[2]) for c in candles]
+            lows = [float(c[3]) for c in candles]
+            vols = [float(c[5]) for c in candles]
+            updates = []
+            for r in sym_rows:
+                cid = r["candidate_id"]
+                created_ms = int(float(r["created_at"]) * 1000)
+                # Tarama anındaki görünüm: open_time <= tespit anı olan son 60 mum.
+                end_idx = bisect.bisect_right(open_times, created_ms)
+                if end_idx < 30:
+                    skipped += 1
+                    continue
+                start_idx = max(0, end_idx - 60)
+                features = _velocity_ml_feature_dict(closes[start_idx:end_idx],
+                                                     highs[start_idx:end_idx],
+                                                     lows[start_idx:end_idx],
+                                                     vols[start_idx:end_idx])
+                horizon = _velocity_horizon_from_candidate_id(cid)
+                try:
+                    pred = predict_target(sym, features, horizon)
+                except Exception:
+                    pred = None
+                if not pred:
+                    skipped += 1
+                    continue
+                updates.append({"candidate_id": cid,
+                                "ml_target_pct": float(pred["target_pct"]),
+                                "ml_hit_probability": float(pred["hit_probability"])})
+            if updates:
+                try:
+                    updated += await database.set_velocity_candidates_ml(updates)
+                except Exception as exc:
+                    skipped += len(updates)
+                    _velocity_ml_backfill_log("error", f"{sym}: DB güncellemesi başarısız | {type(exc).__name__}: {exc}")
+            done += len(sym_rows)
+            _advance_ml_backfill_progress(state, done, total, updated, skipped, sym=sym)
+            if index % 25 == 0 or index == len(by_symbol):
+                _velocity_ml_backfill_log("info", f"İlerleme: {done}/{total} satır | güncellenen={updated} atlanan={skipped}")
+            await asyncio.sleep(0.1)
+        result = {"total": total, "updated": updated, "skipped": skipped,
+                  "symbols": len(by_symbol), "days_filter": days or None,
+                  "paper_only": True, "model_mode": "current-artifact-shadow"}
+        state.update({"status": "complete", "phase": "complete", "progress": 100,
+                      "completed": done, "updated": updated, "skipped": skipped,
+                      "message": "ML geri doldurma tamamlandı", "result": result,
+                      "current_symbol": None, "finished_at": time.time()})
+        _velocity_ml_backfill_log("success", f"Tamamlandı | güncellenen={updated} atlanan={skipped} toplam={total}")
+    except Exception as exc:
+        state.update({"status": "error", "phase": "error",
+                      "message": f"{type(exc).__name__}: {exc}", "finished_at": time.time()})
+        _velocity_ml_backfill_log("error", f"Backfill durdu | {type(exc).__name__}: {exc}")
+
+
+def _advance_ml_backfill_progress(state, done, total, updated, skipped, sym=None):
+    state.update({"completed": done, "updated": updated, "skipped": skipped,
+                  "progress": round(done / max(1, total) * 100, 1),
+                  "message": f"{done}/{total} satır | güncellenen={updated} atlanan={skipped}"
+                  + (f" | {sym}" if sym else "")})
+
+
+@router.get("/api/velocity-ml-backfill/status")
+async def velocity_ml_backfill_status():
+    return {"ok": True, "paper_only": True, **_velocity_ml_backfill}
+
+
+@router.post("/api/velocity-ml-backfill/start")
+async def start_velocity_ml_backfill(payload: dict = None):
+    global _velocity_ml_backfill_task
+    if _velocity_ml_backfill.get("status") == "running":
+        return {"ok": True, "already_running": True, "paper_only": True, **_velocity_ml_backfill}
+    _velocity_ml_backfill_task = asyncio.create_task(_run_velocity_ml_backfill(payload or {}),
+                                                     name="velocity-ml-backfill")
     return {"ok": True, "status": "queued", "paper_only": True}
 
 
