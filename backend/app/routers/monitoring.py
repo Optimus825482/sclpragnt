@@ -9,8 +9,9 @@ from fastapi import APIRouter, Request
 from app.config import config
 from app import database
 from app.api_common import log_user_action
-from app.state import market
-from app.routers.velocity import detect_velocity_candidates
+from app.state import market, analyzer
+from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
+                                  _journal_touch_rates)
 from app.alerting import deliver_web_push
 from app.ws_runtime import ws_manager
 
@@ -27,6 +28,8 @@ _monitoring_state = {
     "watchlist_seen_at": {},      # symbol -> izlemeye alınma zamanı
     "history": [],                # son bildirim geçmişi (yeni -> eski)
     "pending_targets": {},        # symbol -> {"expected": float, "horizon_minutes": int, "set_at": epoch}
+    "candidate_streak": {},       # symbol -> ardışık aday tarama sayısı (debounce)
+    "risk_off": False,            # piyasa rejimi RISK_OFF bayrağı (etkin eşiği yükseltir)
 }
 
 # Sunucu tarafı döngü aralıkları: genel tarama 60 sn; izleme listesindeki
@@ -38,6 +41,38 @@ WATCHLIST_RESCAN_SEC = 30.0
 HISTORY_LIMIT = 60
 NOTIFY_COOLDOWN_SEC = 300.0  # aynı sembol için tekrar bildirim engeli (5 dk)
 _loop_task = None
+
+# Runtime state DB kalıcılığı: restart sonrası pending_targets / debounce
+# sayacı / bildirim cooldown kaybolmasın diye her tarama sonunda JSON olarak
+# yazılır, loop başlarken geri yüklenir (2026-09-04, hibrit sistem).
+_STATE_SETTING_KEY = "monitoring_runtime_state"
+
+
+async def _persist_runtime_state() -> None:
+    try:
+        payload = {
+            "pending_targets": _monitoring_state["pending_targets"],
+            "notified_symbols": _monitoring_state["notified_symbols"],
+            "watchlist_seen_at": _monitoring_state["watchlist_seen_at"],
+            "candidate_streak": _monitoring_state["candidate_streak"],
+        }
+        await database.set_llm_setting(_STATE_SETTING_KEY, json.dumps(payload, default=str))
+    except Exception as exc:
+        logger.debug("monitoring state kalıcılaştırılamadı: %s", exc)
+
+
+async def restore_runtime_state() -> None:
+    """DB'den runtime state'i geri yükler (monitoring_background_loop başlangıcında)."""
+    try:
+        raw = await database.get_llm_setting(_STATE_SETTING_KEY, "{}")
+        payload = json.loads(raw or "{}")
+        if isinstance(payload, dict):
+            _monitoring_state["pending_targets"] = payload.get("pending_targets") or {}
+            _monitoring_state["notified_symbols"] = payload.get("notified_symbols") or {}
+            _monitoring_state["watchlist_seen_at"] = payload.get("watchlist_seen_at") or {}
+            _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
+    except Exception as exc:
+        logger.debug("monitoring state geri yüklenemedi: %s", exc)
 
 
 def _in_quiet_hours(settings) -> bool:
@@ -60,43 +95,55 @@ def _in_quiet_hours(settings) -> bool:
 
 
 async def get_user_notification_settings() -> dict:
-    """Kullanıcı bildirim ayarlarını DB'den oku."""
+    """Global bildirim ayarlarını DB'den oku (admin ayarı — tüm kullanıcıları etkiler).
+
+    min_score varsayılanı config.MONITORING_MIN_SCORE_DEFAULT (50): radar verisi
+    04.09.2026 — skor >=50 altı kovalar gürültü, üstü nitelikli.
+    """
     try:
         settings_json = await database.get_llm_setting("monitoring_notification_settings", "{}")
         settings = json.loads(settings_json or "{}")
         return {
             "enabled": settings.get("enabled", True),
-            "min_score": float(settings.get("min_score", 1.0)),
+            "min_score": float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT)),
             "min_target_pct": float(settings.get("min_target_pct", 2.0)),
             "quiet_hours_start": settings.get("quiet_hours_start", None),
             "quiet_hours_end": settings.get("quiet_hours_end", None),
         }
     except Exception:
-        return {"enabled": True, "min_score": 1.0, "min_target_pct": 2.0, "quiet_hours_start": None, "quiet_hours_end": None}
+        return {"enabled": True, "min_score": config.MONITORING_MIN_SCORE_DEFAULT,
+                "min_target_pct": 2.0, "quiet_hours_start": None, "quiet_hours_end": None}
 
 
 @router.get("/api/monitoring/settings")
 async def get_monitoring_settings():
-    """Bildirim ayarlarını döndür."""
+    """Global bildirim ayarlarını döndür (okuma tüm kullanıcıya açık)."""
     settings = await get_user_notification_settings()
-    return {"paper_only": True, **settings}
+    return {"paper_only": True, "scope": "global_admin", **settings}
 
 
 @router.put("/api/monitoring/settings")
 async def update_monitoring_settings(payload: dict, request: Request):
-    """Bildirim ayarlarını güncelle ve DB'ye kaydet."""
+    """Global bildirim ayarlarını güncelle — YALNIZ admin.
+
+    Admin tarafından yapılan değişiklik tüm kullanıcıları ve arka plan
+    döngüsünü anında etkiler (kullanıcı-başı ayar kaldırıldı, 2026-09-04).
+    """
+    from app.main import _require_admin
+    _require_admin(request)
     settings = {
         "enabled": bool(payload.get("enabled", True)),
-        "min_score": float(payload.get("min_score", 1.0)),
+        "min_score": float(payload.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT)),
         "min_target_pct": float(payload.get("min_target_pct", 2.0)),
         "quiet_hours_start": payload.get("quiet_hours_start", None),
         "quiet_hours_end": payload.get("quiet_hours_end", None),
     }
     await database.set_llm_setting("monitoring_notification_settings", json.dumps(settings))
     await log_user_action(None, None, "monitoring", "MONITORING_SETTINGS_UPDATE",
-                          details={"settings": {k: v for k, v in settings.items() if k != "enabled"}},
+                          details={"settings": {k: v for k, v in settings.items() if k != "enabled"},
+                                   "scope": "global_admin"},
                           request=request)
-    return {"paper_only": True, "ok": True, **settings}
+    return {"paper_only": True, "ok": True, "scope": "global_admin", **settings}
 
 
 def _build_notification(sym, c, settings) -> dict:
@@ -158,18 +205,24 @@ async def _notify(candidates_list, settings) -> list:
     """
     if not settings.get("enabled", True):
         return []
-    min_score = settings.get("min_score", 1.0)
-    min_target_pct = settings.get("min_target_pct", 2.0)
+    # Etkin eşik: admin min_score + RISK_OFF rejim çarpanı (ayarı bozmadan
+    # riskli piyasada daha seçici davranır).
+    min_score = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
+    if _monitoring_state.get("risk_off"):
+        min_score *= float(config.MONITORING_RISK_OFF_SCORE_MULT)
     quiet = _in_quiet_hours(settings)
     now = time.time()
     notified = []
     update_entries = []  # Güncellenecek mevcut bildirimler
     new_entries = []     # Yeni bildirimler
     for c in candidates_list:
-        sym = c.get("symbol", "")
+        sym = str(c.get("symbol", "") or "").upper()
+        # Eşik ve fast-lane HAM velocity_score üzerinden (rapor "skor" kolonu
+        # ve kullanıcının 50/70 bantları bu ölçek); upside_rank yalnızca
+        # SIRALAMA anahtarıdır (dk-başı yükseliş × kalite × mikro-yapı).
         score = float(c.get("velocity_score", 0) or 0)
         target = float(c.get("target_pct") or 2.0)
-        if not sym or score < min_score or target < min_target_pct:
+        if not sym or score < min_score:
             continue
         # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
         # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
@@ -199,6 +252,15 @@ async def _notify(candidates_list, settings) -> list:
             update_entries.append(notif)
             notified.append(notif)
             continue
+        # Debounce: fast-lane altındaki adaylar N ardışık taramada aday kalmalı
+        # (tek-tarama gürültüsünü keser). Yüksek skor hızlı pump'ta gelir —
+        # fast-lane (>= MONITORING_FAST_LANE_SCORE) beklemeden geçer.
+        streak = int(_monitoring_state["candidate_streak"].get(sym, 0)) + 1
+        fast_lane = score >= float(config.MONITORING_FAST_LANE_SCORE)
+        if not fast_lane and streak < config.MONITORING_DEBOUNCE_SCANS:
+            _monitoring_state["candidate_streak"][sym] = streak
+            continue
+        _monitoring_state["candidate_streak"][sym] = streak
         # Kısa vadeli soğama
         last_sent = _monitoring_state["notified_symbols"].get(sym)
         if last_sent and now - last_sent < NOTIFY_COOLDOWN_SEC:
@@ -215,6 +277,7 @@ async def _notify(candidates_list, settings) -> list:
         new_entries.append(notif)
         notified.append(notif)
         _monitoring_state["notified_symbols"][sym] = now
+        _monitoring_state["candidate_streak"].pop(sym, None)
         expected_price = float(notif.get("expected_price") or 0)
         horizon_minutes = int(c.get("horizon_minutes") or 5)
         if expected_price > 0:
@@ -293,11 +356,16 @@ def _check_pending_targets():
 
 
 async def _run_scan() -> dict:
-    """Tek tarama turu: 5dk + 15dk velocity taramalarını birleştirir.
+    """Tek tarama turu: 5dk + 15dk velocity taramalarını hibrit sıralamayla birleştirir.
 
     İzleme listesindeki semboller her turda top-gainer havuzuna zorunlu olarak
     eklenir (extra_symbols) — böylece izleme listesi "daha sık analiz edilen"
     listede kalır ve terfi/düşme kararı her turda tazelenir.
+
+    Hibrit (2026-09-04): sembol başına chat upside-scout ile AYNI sıralama
+    anahtarı (upside_rank = dk-başı hedef × hız skoru × kalite × mikro-yapı)
+    kullanılır; açık pozisyonlu semboller aday listesinden elenir; her adayın
+    5dk+15dk çift profili saklanır. RISK_OFF rejimde etkin eşik yükseltilir.
     """
     watch_symbols = sorted({w.get("symbol") for w in (_monitoring_state["last_watchlist"] or []) if w.get("symbol")})
     scan5 = await detect_velocity_candidates({"limit": 10}, horizon_minutes=5, extra_symbols=watch_symbols)
@@ -308,18 +376,58 @@ async def _run_scan() -> dict:
     watchlist5 = scan5.get("watchlist", [])
     watchlist15 = scan15.get("watchlist", [])
 
-    # Birleştir: sembol başına en yüksek skorlu kayıt kalır
+    # Sıralama anahtarı: chat upside-scout ile ortak (journal touch oranları +
+    # mikro-yapı çarpanı satırların içinde hazır: upside_rank_score hesaplar).
+    touch_rates = await _journal_touch_rates()
+
+    # Çift profil: sembol -> {"5": satır, "15": satır} (aday + izleme havuzundan)
+    profiles_by_symbol: dict[str, dict[int, dict]] = {}
+    for row in candidates5 + watchlist5:
+        profiles_by_symbol.setdefault(str(row.get("symbol") or "").upper(), {})[5] = row
+    for row in candidates15 + watchlist15:
+        profiles_by_symbol.setdefault(str(row.get("symbol") or "").upper(), {})[15] = row
+
+    def _with_profiles(row: dict) -> dict:
+        sym = str(row.get("symbol") or "").upper()
+        profs = profiles_by_symbol.get(sym) or {}
+        row["profiles"] = {
+            str(h): {"horizon_minutes": h,
+                     "target_pct": r.get("target_pct"),
+                     "velocity_score": r.get("velocity_score"),
+                     "upside_rank": round(upside_rank_score(r, touch_rates), 2),
+                     "passes": bool(r.get("passes")),
+                     "rsi": r.get("rsi"), "mfi": r.get("mfi"), "atr_pct": r.get("atr_pct"),
+                     "m5_pattern_ok": r.get("m5_pattern_ok"), "leading_ok": r.get("leading_ok")}
+            for h, r in profs.items()
+        }
+        row["upside_rank"] = round(upside_rank_score(row, touch_rates), 2)
+        return row
+
+    # Birleştir: sembol başına en yüksek upside_rank'li kayıt kalır
     all_candidates = {}
     for c in candidates5 + candidates15:
-        sym = c.get("symbol", "")
-        if sym and (sym not in all_candidates or c.get("velocity_score", 0) > all_candidates[sym].get("velocity_score", 0)):
+        sym = str(c.get("symbol") or "").upper()
+        if not sym:
+            continue
+        _with_profiles(c)
+        if sym not in all_candidates or c.get("upside_rank", 0) > all_candidates[sym].get("upside_rank", 0):
             all_candidates[sym] = c
 
     all_watchlist = {}
     for w in watchlist5 + watchlist15:
-        sym = w.get("symbol", "")
-        if sym and (sym not in all_watchlist or w.get("velocity_score", 0) > all_watchlist[sym].get("velocity_score", 0)):
+        sym = str(w.get("symbol") or "").upper()
+        if not sym:
+            continue
+        _with_profiles(w)
+        if sym in all_candidates:  # aday olan izleme listesinde kalmasın
+            continue
+        if sym not in all_watchlist or w.get("upside_rank", 0) > all_watchlist[sym].get("upside_rank", 0):
             all_watchlist[sym] = w
+
+    # Açık pozisyonlu semboller bildirim adayı olmaz (bot zaten yönetiyor;
+    # izleme listesinde görüntülenmeye devam edebilir).
+    open_symbols = {str(s or "").upper() for s in (analyzer.positions or {})}
+    filtered_candidates = {sym: c for sym, c in all_candidates.items() if sym not in open_symbols}
 
     # Aday olanlar izleme listesinden çıkar (zaten geçti)
     for sym in all_candidates:
@@ -331,8 +439,29 @@ async def _run_scan() -> dict:
     for sym in all_watchlist:
         _monitoring_state["watchlist_seen_at"].setdefault(sym, now)
 
-    candidates_list = sorted(all_candidates.values(), key=lambda x: x.get("velocity_score", 0), reverse=True)
-    watchlist_list = sorted(all_watchlist.values(), key=lambda x: x.get("velocity_score", 0), reverse=True)
+    # Rejim: RISK_OFF bayrağı — hafif yerel ölçüm (BTC/ETH günlük trend + 5m katılımı).
+    # Pahalı snapshot taraması çağrılmaz; fail-open: hesaplanamazsa normal eşik.
+    try:
+        risk_score = 0
+        for ref in ("BTC_TRY", "ETH_TRY"):
+            bars = market.get_ut_kline(ref.lower().replace("_", ""), "1h")
+            closes = bars.get("closes") or []
+            if len(closes) >= 25:
+                ema25 = sum(closes[-25:]) / 25
+                if closes[-1] >= ema25:
+                    risk_score += 1
+        _monitoring_state["risk_off"] = risk_score == 0  # hiçbir referans EMA25 üstünde değilse riskli
+    except Exception:
+        pass  # rejim hesaplanamazsa normal eşik (fail-open)
+
+    candidates_list = sorted(filtered_candidates.values(), key=lambda x: x.get("upside_rank", 0), reverse=True)
+    watchlist_list = sorted(all_watchlist.values(), key=lambda x: x.get("upside_rank", 0), reverse=True)
+
+    # Bu turdaki aday kümesi: eşik altında kalan sembollerin debounce sayacı sıfırlanır
+    current_candidate_syms = set(filtered_candidates)
+    for sym in list(_monitoring_state["candidate_streak"]):
+        if sym not in current_candidate_syms:
+            _monitoring_state["candidate_streak"].pop(sym, None)
 
     # Beklenen fiyata ulaşan veya süresi dolan sembolleri serbest bırak
     _check_pending_targets()
@@ -344,6 +473,7 @@ async def _run_scan() -> dict:
     _monitoring_state["last_candidates"] = candidates_list
     _monitoring_state["last_watchlist"] = watchlist_list
     _monitoring_state["scan_count"] += 1
+    await _persist_runtime_state()
     return {
         "settings": settings,
         "candidates": candidates_list,
@@ -386,6 +516,8 @@ async def monitoring_state():
         "watchlist": _monitoring_state["last_watchlist"],
         "history": _monitoring_state["history"][:20],
         "settings": settings,
+        "scope": "global_admin",
+        "risk_off": _monitoring_state["risk_off"],
         "loop_active": _loop_task is not None and not _loop_task.done(),
         "next_scan_in_sec": None,
     }
@@ -395,9 +527,18 @@ async def monitoring_state():
 async def report_notifications(limit: int = 200, day: str = None):
     """Radar bildirim raporu - gercek kapannis M1 olcmueye dayali basari.
     day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
+
+    Global admin eşiği (min_score) altındaki bildirimler NE gösterilir NE
+    başarı hesabına katılır (2026-09-04 kullanıcı kararı) — düşük skorlu
+    gürültü başarı oranını yanıltmasın.
     """
     limit = max(1, min(int(limit), 500))
+    settings = await get_user_notification_settings()
+    min_score = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
     rows = await database.get_monitoring_velocity_matches(limit=limit, day=day)
+    # Eşik filtresi: skor alanı bildirim anındaki upside_rank/velocity_score.
+    rows = [r for r in rows
+            if float(r.get("score") or 0) >= min_score]
     now = time.time()
     result = []
     for row in rows:
@@ -453,6 +594,8 @@ async def report_notifications(limit: int = 200, day: str = None):
                     "success_count": success,
                     "success_rate": (success / evaluated * 100) if evaluated else None}
     all_rows = await database.get_monitoring_velocity_matches(limit=1000, day=None)
+    # Genel başarı da aynı global eşiğe tabi (gürültü oranları dışarıda kalır).
+    all_rows = [r for r in all_rows if float(r.get("score") or 0) >= min_score]
     all_evaluated = 0
     all_success = 0
     for r in all_rows:
@@ -498,6 +641,7 @@ async def monitoring_background_loop():
     bildirimlerini sürdürür. İzleme listesi her turda yeniden analiz edilir;
     yeni aday çıktığında kısa aralıkla tekrar değerlendirilir."""
     logger.info("Monitoring arka plan taraması başladı (tur=%ss, izleme=%ss)", SCAN_INTERVAL_SEC, WATCHLIST_RESCAN_SEC)
+    await restore_runtime_state()
     # Başlangıçta market verisi hazır olsun diye ilk tura küçük gecikme
     await asyncio.sleep(20)
     while True:
