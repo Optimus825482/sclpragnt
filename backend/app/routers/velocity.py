@@ -99,6 +99,38 @@ def _velocity_aroon(highs, lows=None, n=25):
     return {"up": up, "down": down}
 
 
+def _velocity_ml_feature_dict(closes, highs, lows, vols):
+    """Kapanmış 1m serisinden ML özellik sözlüğü — scan_one'daki hesabın birebir kopyası.
+
+    Geriye dönük ML backfill (maintenance) geçmiş mumlardan bu fonksiyonla
+    özellik üretir; scan_one'daki ML bloğu değişirse burası da senkron kalmalı
+    (ret3_pct kesir olarak girer, atr/bb/slope yüzde — predict_target sözleşmesi).
+    """
+    price = closes[-1] if closes else 0.0
+    trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j - 1]), abs(lows[j] - closes[j - 1]))
+           for j in range(max(1, len(closes) - 15), len(closes))]
+    atr_pct = (sum(trs) / len(trs)) / price * 100 if trs and price else 0.0
+    ret3 = (closes[-1] / closes[-4] - 1) * 100 if len(closes) >= 4 else 0.0
+    aroon = _velocity_aroon(highs, lows)
+    return {
+        "ret1_pct": None,
+        "ret3_pct": ret3 / 100 if ret3 is not None else None,
+        "ret5_pct": None,
+        "atr_pct": atr_pct,
+        "bb_width_pct": _velocity_bollinger_width(closes),
+        "rsi": _velocity_rsi(closes),
+        "mfi": _velocity_mfi(highs, lows, closes, vols),
+        "linreg_slope10_pct": _velocity_linreg_slope(closes),
+        "aroon_up": aroon["up"] if aroon else None,
+        "aroon_down": aroon["down"] if aroon else None,
+    }
+
+
+def _velocity_horizon_from_candidate_id(candidate_id: str) -> int:
+    """'vel-5dk-%2-...' / 'vel-15dk-%3-...' adından ufuk dakikasını çıkarır."""
+    return 15 if str(candidate_id or "").startswith("vel-15dk") else 5
+
+
 VELOCITY_PROFILES = {
     # horizon_minutes: {target_pct, ölçüm penceresi, journal profile etiketi}
     5: {"target_pct": 2.0, "label": "5dk-%2"},
@@ -363,6 +395,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             "target_pct": r.get("target_pct") or base_target_pct, "atr_pct": r["atr_pct"], "volume_ratio": 0.0,
             "ret3_pct": r["ret3_pct"], "velocity_score": r["velocity_score"],
             "passes": r["passes"], "rank": r.get("rank"),
+            "ml_target_pct": r.get("ml_target_pct"),
+            "ml_hit_probability": r.get("ml_hit_probability"),
             "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
             "leading_ok": r.get("leading_ok"),
         } for r in (candidates[:limit] + watchlist[:5])]

@@ -1672,7 +1672,9 @@ async def save_velocity_candidates(rows):
             # filtre istatistiklerinin birikmesi için outcome_details'e gömülür.
             if row.get("microstructure"):
                 extra["microstructure"] = row["microstructure"]
-            vals.append(_json_safe_dumps(extra) if extra else None)
+            # outcome_details NOT NULL: extrasız satır '{}' alır; tek boş satır
+            # tüm journal batch'ini düşürmesin.
+            vals.append(_json_safe_dumps(extra) if extra else "{}")
             values.append(vals)
         conn.executemany(sql, values); conn.commit(); return len(values)
     return await _run_db(op)
@@ -1718,6 +1720,35 @@ async def delete_velocity_candidates(candidate_ids):
         conn.execute(f"DELETE FROM velocity_candidates WHERE candidate_id IN ({placeholders})", ids)
         deleted = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else len(ids)
         conn.commit(); return int(deleted)
+    return await _run_db(op)
+
+
+async def get_velocity_candidates_missing_ml(limit: int = 200000):
+    """ML kolonları boş velocity adayları — geriye dönük ML backfill için."""
+    def op(conn):
+        rows = conn.execute("""SELECT candidate_id, symbol, created_at FROM velocity_candidates
+            WHERE ml_hit_probability IS NULL OR ml_target_pct IS NULL
+            ORDER BY created_at ASC LIMIT ?""",
+            (max(1, min(int(limit), 200000)),)).fetchall()
+        return [dict(r) for r in rows]
+    return await _run_db(op)
+
+
+async def set_velocity_candidates_ml(updates):
+    """Backfill: adayların ML kolonlarını doldurur; yalnız hâlâ boş olanlar güncellenir."""
+    updates = [u for u in (updates or []) if u.get("candidate_id")]
+    if not updates:
+        return 0
+    def op(conn):
+        written = 0
+        for u in updates:
+            cur = conn.execute("""UPDATE velocity_candidates SET ml_target_pct=?, ml_hit_probability=?
+                WHERE candidate_id=? AND ml_hit_probability IS NULL""",
+                (float(u["ml_target_pct"]) if u.get("ml_target_pct") is not None else None,
+                 float(u["ml_hit_probability"]) if u.get("ml_hit_probability") is not None else None,
+                 u["candidate_id"]))
+            written += int(getattr(cur, "rowcount", 0) or 0)
+        conn.commit(); return written
     return await _run_db(op)
 
 
