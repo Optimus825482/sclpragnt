@@ -916,7 +916,7 @@ function UserRadarTab() {
                     <SortHeader label="Skor" field="score" />
                     <SortHeader label="ML Olasilik" field="ml_hit_probability" />
                     <SortHeader label="Ufuk" field="horizon_minutes" />
-                    <SortHeader label="Sonuc" field="mfe_pct" />
+                    <SortHeader label="Sonuc (Max MFE)" field="mfe_pct" />
                     <th>Durum</th>
                   </tr>
                 </thead>
