@@ -20,7 +20,6 @@ CREATE INDEX IF NOT EXISTS idx_trades_exit_symbol_strategy ON trades(exit_time D
 CREATE INDEX IF NOT EXISTS idx_signals_time_symbol_action ON signals(timestamp DESC, symbol, action);
 CREATE INDEX IF NOT EXISTS idx_decisions_time_symbol_strategy ON decision_logs(timestamp DESC, symbol, strategy);
 CREATE TABLE IF NOT EXISTS llm_tool_logs (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION NOT NULL, scope TEXT, tool_name TEXT, arguments JSONB, result_summary TEXT, duration_ms DOUBLE PRECISION, success BOOLEAN);
-CREATE TABLE IF NOT EXISTS a2a_messages (message_id TEXT PRIMARY KEY, correlation_id TEXT, direction TEXT NOT NULL, message_type TEXT NOT NULL, sender TEXT, recipient TEXT, status TEXT NOT NULL DEFAULT 'queued', payload JSONB NOT NULL, created_at DOUBLE PRECISION NOT NULL, delivered_at DOUBLE PRECISION, acknowledged_at DOUBLE PRECISION, last_error TEXT, attempts INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS llm_symbol_guards (symbol TEXT PRIMARY KEY, guard_type TEXT NOT NULL DEFAULT 'cooldown', status TEXT NOT NULL DEFAULT 'active', blocked_until DOUBLE PRECISION, reason TEXT, evidence JSONB, revision INTEGER NOT NULL DEFAULT 1, created_at DOUBLE PRECISION NOT NULL, updated_at DOUBLE PRECISION NOT NULL);
 CREATE TABLE IF NOT EXISTS virtual_wallet (asset TEXT PRIMARY KEY, amount DOUBLE PRECISION);
 CREATE TABLE IF NOT EXISTS chart_settings (symbol TEXT PRIMARY KEY, data JSONB NOT NULL);

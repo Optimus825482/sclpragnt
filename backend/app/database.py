@@ -2227,18 +2227,11 @@ async def clear_all_chart_indicators():
     Dosya sayısı: satır sayısı döner.
     """
     def op(conn):
-        if _postgres_enabled():
-            # NOT: `data ? 'indicators'` kullanma — _PostgresCompat '?'->'%s'
-            # çevirir, jsonb varlık operatörünü bozar. Fonksiyon formu güvenli.
-            cur = conn.execute(
-                "UPDATE chart_settings SET data = data - 'indicators' "
-                "WHERE jsonb_exists(data, 'indicators')")
-            conn.commit()
-            return cur.rowcount
-        # SQLite yedeği (JSON1 key kaldırma via json_remove)
+        # NOT: `data ? 'indicators'` kullanma — _PostgresCompat '?'->'%s'
+        # çevirir, jsonb varlık operatörünü bozar. Fonksiyon formu güvenli.
         cur = conn.execute(
-            "UPDATE chart_settings SET data = json_remove(data, '$.indicators') "
-            "WHERE data LIKE '%indicators%'")
+            "UPDATE chart_settings SET data = data - 'indicators' "
+            "WHERE jsonb_exists(data, 'indicators')")
         conn.commit()
         return cur.rowcount
 
