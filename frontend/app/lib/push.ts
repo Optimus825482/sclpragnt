@@ -12,8 +12,12 @@ export type BrowserKind = "chrome" | "safari" | "other";
 export function detectBrowser(): BrowserKind {
   if (typeof window === "undefined") return "other";
   const ua = navigator.userAgent || "";
-  // Chrome (Chromium tabanlı tüm Android tarayıcılar dahil) — Safari/iOS hariç.
-  if (/chrome|crios|edg|chromium/i.test(ua) && !/safari/i.test(ua)) return "chrome";
+  // ÖNEMLİ: Android Chrome UA'sı "…Chrome/120.0 Safari/537.36" ile biter —
+  // "safari" alt dizesi içerdiği için basit !/safari/ kontrolü Chrome'u yanlış
+  // "safari" sanar. Sıralama önemli: önce Chromium tabanlı olanları yakala.
+  //   CriOS  → iOS Chrome (Chromium ama iOS kuralları geçerli → safari grubu)
+  if (/crios/i.test(ua)) return "safari"; // iOS Chrome: Web Push kısıtları Safari gibi
+  if (/chrome|chromium|edg|edge|opr/i.test(ua)) return "chrome";
   if (/safari|iphone|ipad|ipod/i.test(ua)) return "safari";
   return "other";
 }
@@ -41,6 +45,26 @@ export function pushSupported(): { ok: boolean; reason?: string } {
   return { ok: true };
 }
 
+/** VAPID public key'i (URL-safe base64) Uint8Array'e çevir + doğrula. */
+export function vapidKeyToBytes(): { ok: true; bytes: Uint8Array<ArrayBuffer> } | { ok: false; reason: string } {
+  const key = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+  if (!key) return { ok: false, reason: "vapid_yok" };
+  try {
+    const clean = key.trim().replace(/-/g, "+").replace(/_/g, "/");
+    const padded = clean + "=".repeat((4 - (clean.length % 4)) % 4);
+    const raw = atob(padded);
+    // P-256 noktası: 65 bayt (0x04 || X || Y). Farklı boyut → geçersiz anahtar.
+    if (raw.length !== 65) {
+      return { ok: false, reason: "vapid_key_gecersiz_boyut" };
+    }
+    const bytes = new Uint8Array(65);
+    for (let i = 0; i < 65; i++) bytes[i] = raw.charCodeAt(i);
+    return { ok: true, bytes };
+  } catch {
+    return { ok: false, reason: "vapid_key_gecersiz" };
+  }
+}
+
 /**
  * Abonelik var mı kontrol et; yoksa oluşturup backend'e kaydeder.
  * Dönen: { ok: boolean; reason?: string; subscription?: PushSubscription }
@@ -49,21 +73,23 @@ export async function ensurePushSubscription(): Promise<{ ok: boolean; reason?: 
   const support = pushSupported();
   if (!support.ok) return { ok: false, reason: support.reason };
 
+  const keyBytes = vapidKeyToBytes();
+  if (!keyBytes.ok) {
+    return { ok: false, reason: keyBytes.reason };
+  }
+
   if (typeof Notification !== "undefined" && Notification.permission !== "granted") {
     const permission = await Notification.requestPermission();
     if (permission !== "granted") return { ok: false, reason: "izin_verilmedi" };
   }
 
   try {
-    const key = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY as string;
     const registration = await navigator.serviceWorker.ready;
-    const padded =
-      key.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (key.length % 4)) % 4);
     let subscription = await registration.pushManager.getSubscription();
     if (!subscription) {
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: Uint8Array.from(atob(padded), (c) => c.charCodeAt(0)),
+        applicationServerKey: keyBytes.bytes,
       });
     }
     // Backend'e kaydet (idempotent: ON CONFLICT DO UPDATE)
