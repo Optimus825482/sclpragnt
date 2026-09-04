@@ -1165,6 +1165,17 @@ export default function ChartsPage() {
     const zoneLabel = (value: number | null, oversold: number, overbought: number) =>
         value == null ? "VERİ YOK" : value <= oversold ? "AŞIRI SATIM" : value >= overbought ? "AŞIRI ALIM" : "NÖTR";
 
+    // Radar bildirimi canlı takip: WS mumunun son kapanışı (15sn'lik endpoint
+    // ticker'ından taze); hedef kontrolü hem endpoint hem istemci tarafından
+    // anlık yapılır — panel SON ufuk dolana kadar kalır, hedefe ulaşıldığında
+    // durum rozeti belirir.
+    const monitorLivePrice = monitorNotif?.active
+        ? (bars.length ? (Number(bars[bars.length - 1].close) || Number(monitorNotif.current_price) || 0) : (Number(monitorNotif.current_price) || 0))
+        : 0;
+    const monitorExpected = monitorNotif?.active ? Number(monitorNotif.expected_price) || 0 : 0;
+    const monitorTargetHit = Boolean(monitorNotif?.active && monitorNotif.target_hit) ||
+        (monitorLivePrice > 0 && monitorExpected > 0 && monitorLivePrice >= monitorExpected);
+
     return (
         <div className="max-w-7xl mx-auto space-y-5">
             <header className="chart-page-header flex flex-wrap items-center justify-between gap-4">
@@ -1350,7 +1361,12 @@ export default function ChartsPage() {
             {monitorNotif?.active && (
                 <section className="rounded-xl border border-neon-green/40 bg-neon-green/5 px-3 py-2.5 sm:px-4" aria-label="Radar bildirimi">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="eyebrow text-neon-green">RADAR BİLDİRİMİ · {symbol}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <p className="eyebrow text-neon-green">RADAR BİLDİRİMİ · {symbol}</p>
+                            {monitorTargetHit && (
+                                <span className="rounded border border-neon-green/50 bg-neon-green/15 px-1.5 py-0.5 font-mono text-[9px] font-bold text-neon-green animate-pulse">✓ HEDEFE ULAŞILDI</span>
+                            )}
+                        </div>
                         <button
                             type="button"
                             role="switch"
@@ -1390,8 +1406,15 @@ export default function ChartsPage() {
                             <p className="mt-1 font-mono text-sm font-bold text-sky-300">{monitorNotif.horizon_minutes ? `${monitorNotif.horizon_minutes}dk` : "—"}</p>
                         </div>
                     </div>
-                    <div className="mt-2 flex items-center justify-between border-t border-neon-green/20 pt-2">
-                        <span className="font-mono text-[11px] text-bunker-muted">ufuk dolmasına kalan (bildirim: {fmtClock(monitorNotif.detected_at)})</span>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-neon-green/20 pt-2">
+                        {monitorTargetHit ? (
+                            <span className="font-mono text-xs font-bold text-neon-green">✓ HEDEFE ULAŞILDI</span>
+                        ) : (
+                            <span className="font-mono text-[11px] text-bunker-muted">ufuk dolmasına kalan (bildirim: {fmtClock(monitorNotif.detected_at)})</span>
+                        )}
+                        <span className="font-mono text-[11px] text-bunker-muted">
+                            canlı: <b className={monitorTargetHit ? "text-neon-green" : "text-white"}>{monitorLivePrice > 0 ? formatPrice(monitorLivePrice) : "—"}</b>
+                        </span>
                         <span className={`font-mono text-lg font-bold tabular-nums ${monitorRemainingSec != null && monitorRemainingSec <= 60 ? "text-yellow-300 animate-pulse" : "text-neon-green"}`}>
                             {monitorRemainingSec != null
                                 ? `${Math.floor(monitorRemainingSec / 60)}:${String(monitorRemainingSec % 60).padStart(2, "0")}`

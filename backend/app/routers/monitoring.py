@@ -306,13 +306,16 @@ async def _notify(candidates_list, settings) -> list:
             # hedefi aynen takip edebilir (grafik cizgileri de bu iki seviyeyi
             # gosterir).
             first_price = float(existing_pending.get("price") or 0) or float(c.get("price", 0) or 0)
+            # Ufuk daralmasın: bildirim SON ufuk süresi dolana kadar takipte kalır;
+            # 5dk taraması 15dk bildirimin penceresini kısaltamaz (2026-09-04).
+            horizon_keep = max(int(existing_pending.get("horizon_minutes") or 0), horizon_min)
             await database.update_monitoring_notification(
                 existing_pending["id"],
                 score=score,
                 target_pct=target,
                 price=first_price,
                 expected_price=first_price * (1 + target / 100),
-                horizon_minutes=horizon_min,
+                horizon_minutes=horizon_keep,
                 mode=c.get("mode"),
                 ml_target_pct=c.get("ml_target_pct"),
                 ml_hit_probability=c.get("ml_hit_probability"),
@@ -620,8 +623,9 @@ async def monitoring_active_notification(symbol: str):
     """Sembol için ufku dolmamış (BEKLIYOR) son radar bildirimi — grafik sayfası paneli.
 
     Bildirim anındaki fiyat, hedef fiyat, hedef artış, skor ve ufuk bilgisini
-    geri sayım için expires_at ile birlikte döndürür; ufuk + 2dk tolerans
-    dolunca active=False döner (panel ve grafik çizgileri söner).
+    geri sayım için expires_at ile birlikte döndürür. Panel SON ufuk süresi
+    dolana kadar görünür kalır (sembol adaylıktan düşse bile); canlı fiyat ve
+    target_hit ile "HEDEFE ULAŞILDI" durumu da döner.
     """
     sym = str(symbol or "").upper().strip()
     if not sym:
@@ -642,6 +646,17 @@ async def monitoring_active_notification(symbol: str):
     price = float(row.get("price") or 0)
     expected = float(row.get("expected_price") or 0)
     target_pct = float(row.get("target_pct") or 0)
+    # Canlı fiyat (ticker): hedef kontrolü _check_pending_targets ile aynı
+    # ölçütle — panel ufuk dolana kadar kalır, hedefe ulaşıldıysa durum döner.
+    current_price = None
+    try:
+        ticker = market.get_ticker(sym) if market else None
+        current_price = float(ticker.get("last_price") or 0) if ticker else None
+        if not current_price or current_price <= 0:
+            current_price = None
+    except Exception:
+        current_price = None
+    target_hit = bool(current_price and expected > 0 and current_price >= expected)
     return {
         "symbol": sym,
         "active": True,
@@ -655,6 +670,8 @@ async def monitoring_active_notification(symbol: str):
         "expires_at": expires_at,
         "remaining_sec": max(0, int(expires_at - now)),
         "mode": row.get("mode"),
+        "current_price": current_price,
+        "target_hit": target_hit,
     }
 
 
