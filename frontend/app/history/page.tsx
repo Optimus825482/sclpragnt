@@ -20,12 +20,10 @@ type Trade = {
 };
 
 const STRATEGY_LABEL: Record<string, string> = {
-    EMA_VWAP_PULLBACK: "EMA + VWAP Pullback",
-    BB_SQUEEZE_ORDERFLOW: "BB Squeeze + Order-Flow",
-    ORDERFLOW: "Order-Flow Imbalance",
-    MOMENTUM: "MTF Momentum Ranking",
-    VWAP_MEAN_REVERSION: "VWAP Mean Reversion",
-    BB_MFI_MEAN_REVERSION: "BB + MFI Mean Reversion",
+    VELOCITY: "Hız Avcısı",
+    CHAT_PREDICTION: "Hız Avcısı (Otonom)",
+    LLM_PAPER: "LLM Paper",
+    GAINER_RADAR: "Gainer Radar",
 };
 
 export default function HistoryPage() {

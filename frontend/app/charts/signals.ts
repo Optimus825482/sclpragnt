@@ -86,110 +86,6 @@ export const strongCandlestickPatterns = (bars: Bar[]): PatternMarker[] => {
     return out.slice(-80);
 };
 
-// UT Bot sinyalleri: Pine Script'teki xATRTrailingStop + crossover mantığı
-// Döner: { time, type: "buy"|"sell" }[] — marker olarak çizilir
-export const utBotSignals = (bars: Bar[], params: Record<string, any>): { time: number; type: "buy" | "sell" }[] => {
-    if (bars.length < 20) return [];
-    const keyValue = params.keyValue ?? 1;
-    const atrPeriod = Math.max(2, Math.round(params.atrPeriod ?? 11));
-    const useHA = !!params.heikinAshi;
-
-    // ATR hesapla (Wilder değil, basit ortalama — backend ile uyumlu)
-    const closes = bars.map((b) => b.close);
-    const highs = bars.map((b) => b.high);
-    const lows = bars.map((b) => b.low);
-    const atr = (i: number): number => {
-        if (i < atrPeriod) return 0;
-        let sum = 0;
-        for (let j = i - atrPeriod + 1; j <= i; j++) {
-            const tr = Math.max(
-                highs[j] - lows[j],
-                Math.abs(highs[j] - closes[j - 1]),
-                Math.abs(lows[j] - closes[j - 1])
-            );
-            sum += tr;
-        }
-        return sum / atrPeriod;
-    };
-
-    // Heikin Ashi mumları (opsiyonel)
-    let src = closes;
-    if (useHA) {
-        const haClose = bars.map((b) => (b.open + b.high + b.low + b.close) / 4);
-        src = haClose;
-    }
-
-    const nLoss = keyValue * atr(bars.length - 1);
-    const stop: number[] = [];
-    const pos: number[] = [];
-    for (let i = 0; i < bars.length; i++) {
-        const s = src[i];
-        const prevStop = i > 0 ? stop[i - 1] : 0;
-        const prevSrc = i > 0 ? src[i - 1] : 0;
-        if (i === 0) {
-            stop.push(s - nLoss);
-            pos.push(0);
-            continue;
-        }
-        let st: number;
-        if (s > prevStop && prevSrc > prevStop) st = Math.max(prevStop, s - nLoss);
-        else if (s < prevStop && prevSrc < prevStop) st = Math.min(prevStop, s + nLoss);
-        else if (s > prevStop) st = s - nLoss;
-        else st = s + nLoss;
-        stop.push(st);
-        let p: number;
-        if (prevSrc < stop[i - 1] && s > stop[i - 1]) p = 1;
-        else if (prevSrc > stop[i - 1] && s < stop[i - 1]) p = -1;
-        else p = pos[i - 1];
-        pos.push(p);
-    }
-
-    // crossover: ema(src,1) = src — buy/sell sadece stop kırılımında
-    const signals: { time: number; type: "buy" | "sell" }[] = [];
-    for (let i = 1; i < bars.length; i++) {
-        const above = src[i] > stop[i] && src[i - 1] <= stop[i - 1];
-        const below = src[i] < stop[i] && src[i - 1] >= stop[i - 1];
-        if (above) signals.push({ time: bars[i].time, type: "buy" });
-        else if (below) signals.push({ time: bars[i].time, type: "sell" });
-    }
-    return signals;
-};
-
-// BB Squeeze sinyalleri: band daralması + hacim patlaması → kırılım yönünde buy/sell
-export const bbSqueezeSignals = (bars: Bar[], params: Record<string, any>): { time: number; type: "buy" | "sell" }[] => {
-    const lookback = Math.max(10, Math.round(params.lookback ?? 20));
-    const period = Math.max(5, Math.round(params.period ?? 20));
-    const stdDev = params.stdDev ?? 2;
-    const volMult = params.volMult ?? 1.5;
-    if (bars.length < lookback + period) return [];
-
-    const closes = bars.map((b) => b.close);
-    const volumes = bars.map((b) => b.volume);
-    const bb = (i: number) => {
-        const slice = closes.slice(i - period + 1, i + 1);
-        const sma = slice.reduce((a, b) => a + b, 0) / period;
-        const std = Math.sqrt(slice.reduce((a, b) => a + (b - sma) ** 2, 0) / period);
-        return { upper: sma + std * stdDev, lower: sma - std * stdDev, bandwidth: (2 * std * stdDev) / sma };
-    };
-
-    const signals: { time: number; type: "buy" | "sell" }[] = [];
-    for (let i = lookback; i < bars.length; i++) {
-        const cur = bb(i);
-        // geçmiş bandwidth'lerin minimumu
-        let minBw = Infinity;
-        for (let j = i - lookback + 1; j < i; j++) {
-            if (j >= period) minBw = Math.min(minBw, bb(j).bandwidth);
-        }
-        if (minBw === Infinity) continue;
-        const isSqueeze = cur.bandwidth <= minBw * 1.1;
-        const avgVol = volumes.slice(i - 10, i).reduce((a, b) => a + b, 0) / Math.min(10, i);
-        const volSpike = volumes[i] > avgVol * volMult;
-        if (isSqueeze && volSpike && closes[i] > cur.upper) signals.push({ time: bars[i].time, type: "buy" });
-        else if (isSqueeze && volSpike && closes[i] < cur.lower) signals.push({ time: bars[i].time, type: "sell" });
-    }
-    return signals;
-};
-
 // EMA hesaplama (backend ile aynı: ağırlıklı konvolüsyon)
 export const ema = (values: number[], period: number): number | null => {
     if (values.length < period) return null;
@@ -443,91 +339,18 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
         return signals;
     };
 
-    const bbMfiSignals = (bars: Bar[], params: Record<string, any>) => {
-        const bbPeriod = Math.max(5, Math.round(params.bbPeriod ?? 21));
-        const bbStdDev = Number(params.bbStdDev ?? 2);
-        const mfiPeriod = Math.max(2, Math.round(params.mfiPeriod ?? 16));
-        const mfiThreshold = Number(params.mfiThreshold ?? 59);
-        const signals: { time: number; type: "buy" | "sell" }[] = [];
-        for (let i = Math.max(bbPeriod - 1, mfiPeriod); i < bars.length; i++) {
-            const closeWindow = bars.slice(i - bbPeriod + 1, i + 1).map((bar) => bar.close);
-            const mean = closeWindow.reduce((sum, value) => sum + value, 0) / closeWindow.length;
-            const variance = closeWindow.reduce((sum, value) => sum + (value - mean) ** 2, 0) / closeWindow.length;
-            const lower = mean - Math.sqrt(variance) * bbStdDev;
-            const upper = mean + Math.sqrt(variance) * bbStdDev;
-            let positive = 0;
-            let negative = 0;
-            for (let j = i - mfiPeriod + 1; j <= i; j++) {
-                const current = (bars[j].high + bars[j].low + bars[j].close) / 3;
-                const previous = (bars[j - 1].high + bars[j - 1].low + bars[j - 1].close) / 3;
-                const flow = current * bars[j].volume;
-                if (current > previous) positive += flow;
-                else if (current < previous) negative += flow;
-            }
-            const mfi = negative ? 100 - 100 / (1 + positive / negative) : 100;
-            const rsiChanges = bars.slice(i - 13, i + 1).map((bar, index, window) => index ? bar.close - window[index - 1].close : 0).slice(1);
-            const gains = rsiChanges.reduce((sum, value) => sum + Math.max(value, 0), 0);
-            const losses = rsiChanges.reduce((sum, value) => sum + Math.max(-value, 0), 0);
-            const rsi = losses ? 100 - 100 / (1 + gains / losses) : 100;
-            if (bars[i].close < lower && mfi < mfiThreshold) signals.push({ time: bars[i].time, type: "buy" });
-            else if (bars[i].close > upper && rsi > 69 && mfi > 69) signals.push({ time: bars[i].time, type: "sell" });
-        }
-        return signals;
-    };
-
-    // Strateji buy/sell marker'ları: instances'ta strateji indikatörü varsa seçili TF'ye göre hesapla ve çiz
-    const extendedStrategySignals = (bars: Bar[], kind: string) => {
-        const out: { time: number; type: "buy" | "sell" }[] = [];
-        for (let i = 50; i < bars.length; i++) {
-            const c = bars[i].close;
-            const mean = bars.slice(i - 20, i).reduce((s, b) => s + b.close, 0) / 20;
-            const high = Math.max(...bars.slice(i - 20, i).map((b) => b.high));
-            const low = Math.min(...bars.slice(i - 20, i).map((b) => b.low));
-            const ret5 = c / bars[i - 5].close - 1;
-            const volAvg = bars.slice(i - 20, i).reduce((s, b) => s + b.volume, 0) / 20;
-            // Her strateji için benzersiz sinyal mantığı
-            const buy = kind === "ema_vwap" ? c > mean && bars[i - 1].close <= mean
-                : kind === "bb_squeeze_orderflow" ? c > high && bars[i].volume > volAvg * 1.5 && bars[i - 1].close < c
-                : kind === "orderflow" ? bars[i - 2].close < bars[i - 1].close && bars[i - 1].close < c
-                : kind === "momentum" ? ret5 > 0.003 && c > mean
-                : kind === "keltner_breakout" ? c > high && ret5 > 0.002
-                : kind === "chop_trend" ? ret5 > 0.004 && c > mean && bars[i].volume > volAvg * 1.2
-                : kind === "donchian_breakout" ? c > high && bars[i].volume > volAvg * 1.3
-                : kind === "mean_reversion" ? c < low && ret5 < -0.001
-                : c < low;
-            if (buy) out.push({ time: bars[i].time, type: "buy" });
-        }
-        return out;
-    };
     export const strategySignalFns: Record<string, (bars: Bar[], params: Record<string, any>) => { time: number; type: "buy" | "sell" }[]> = {
-        ut_bot: utBotSignals,
-        bb_squeeze: bbSqueezeSignals,
         ema_pullback: emaPullbackSignals,
         vwap_macd: vwapMacdSignals,
         cmo_crsi: cmoCrsiSignals,
-        bb_mfi_mean_reversion: bbMfiSignals,
-        ema_vwap_pullback: (bars) => extendedStrategySignals(bars, "ema_vwap"),
-        bb_squeeze_orderflow: (bars) => extendedStrategySignals(bars, "bb_squeeze_orderflow"),
-        orderflow: (bars) => extendedStrategySignals(bars, "orderflow"),
-        momentum: (bars) => extendedStrategySignals(bars, "momentum"),
-        vwap_mean_reversion: (bars) => extendedStrategySignals(bars, "mean_reversion"),
-        keltner_breakout: (bars) => extendedStrategySignals(bars, "keltner_breakout"),
-        chop_trend_filter: (bars) => extendedStrategySignals(bars, "chop_trend"),
-        donchian_breakout: (bars) => extendedStrategySignals(bars, "donchian_breakout"),
         sling_shot: slingShotSignals,
     };
     export const strategyColors: Record<string, { buy: string; sell: string }> = {
-        ut_bot: { buy: "#22c55e", sell: "#ef4444" }, bb_squeeze: { buy: "#f97316", sell: "#ef4444" }, ema_pullback: { buy: "#38bdf8", sell: "#ef4444" }, vwap_macd: { buy: "#c084fc", sell: "#ef4444" }, cmo_crsi: { buy: "#eab308", sell: "#ef4444" },
-        bb_mfi_mean_reversion: { buy: "#10b981", sell: "#ef4444" },
-        ema_vwap_pullback: { buy: "#22c55e", sell: "#ef4444" }, bb_squeeze_orderflow: { buy: "#f97316", sell: "#ef4444" }, orderflow: { buy: "#38bdf8", sell: "#ef4444" }, momentum: { buy: "#eab308", sell: "#ef4444" }, vwap_mean_reversion: { buy: "#c084fc", sell: "#ef4444" },
-        keltner_breakout: { buy: "#fb7185", sell: "#ef4444" }, chop_trend_filter: { buy: "#a3e635", sell: "#ef4444" }, donchian_breakout: { buy: "#60a5fa", sell: "#ef4444" },
+        ema_pullback: { buy: "#38bdf8", sell: "#ef4444" }, vwap_macd: { buy: "#c084fc", sell: "#ef4444" }, cmo_crsi: { buy: "#eab308", sell: "#ef4444" },
         sling_shot: { buy: "#39FF14", sell: "#ef4444" },
     };
     export const strategyLabels: Record<string, string> = {
-        ut_bot: "UT", bb_squeeze: "BB SQ", ema_pullback: "EMA PB", vwap_macd: "VWAP MACD", cmo_crsi: "CMO CRSI",
-        bb_mfi_mean_reversion: "BB+MFI",
-        ema_vwap_pullback: "EMA+VWAP", bb_squeeze_orderflow: "BB+FLOW", orderflow: "FLOW", momentum: "MTF MOM", vwap_mean_reversion: "VWAP MR",
-        keltner_breakout: "KELT", chop_trend_filter: "CHOP", donchian_breakout: "DONCH",
+        ema_pullback: "EMA PB", vwap_macd: "VWAP MACD", cmo_crsi: "CMO CRSI",
         sling_shot: "SlingShot",
     };
 

@@ -49,28 +49,6 @@ class Config:
         60, int(os.getenv("VELOCITY_HARD_STOP_REENTRY_BLOCK_SEC", str(15 * 60)))
     )
     MAX_POSITION_LAYERS = 1
-    ACTIVE_STRATEGY = os.getenv("ACTIVE_STRATEGY", "BB_MFI_MEAN_REVERSION")
-    ACTIVE_STRATEGY_TIMEFRAME = os.getenv("ACTIVE_STRATEGY_TIMEFRAME", "5m")
-    # Yeni giriş/piramitleme sinyalleri tüm aktif sembollerde 5 dakikada bir
-    # değerlendirilir; açık pozisyonların stop/TP yönetimi ayrı hızlı döngüdedir.
-    STRATEGY_ENTRY_SCAN_INTERVAL_SEC = max(60, int(os.getenv("STRATEGY_ENTRY_SCAN_INTERVAL_SEC", "300")))
-    # Research-only monitor for the user-defined 1m SMA(7/25/99) cascade.
-    # It records observations only and is intentionally not an entry strategy.
-    SMA_CASCADE_SHADOW_ENABLED = os.getenv("SMA_CASCADE_SHADOW_ENABLED", "true").lower() == "true"
-    SMA_CASCADE_MAX_SEQUENCE_MINUTES = max(1, int(os.getenv("SMA_CASCADE_MAX_SEQUENCE_MINUTES", "10")))
-    SMA_CASCADE_BREAKOUT_WINDOW_MINUTES = max(1, int(os.getenv("SMA_CASCADE_BREAKOUT_WINDOW_MINUTES", "30")))
-    SMA_CASCADE_OUTCOME_WINDOW_MINUTES = max(1, int(os.getenv("SMA_CASCADE_OUTCOME_WINDOW_MINUTES", "30")))
-    # Source-aligned M3 Fisher / M5 Kernel observer.  It records candidates
-    # for active symbols on closed M1 bars and deliberately cannot trade.
-    # User-authorized forward paper strategy. It shares the virtual wallet and
-    # portfolio history, while retaining only the supplied Fisher/Kernel exit.
-    # Fisher stratejisi sistemden kaldırıldı; eski açık pozisyonlar için
-    # katastrofik düşüş stop'u korumaya devam eder.
-    FISHER_EMERGENCY_STOP_PCT = max(0.5, float(os.getenv("FISHER_EMERGENCY_STOP_PCT", "3.0")))
-    # Saat bazlı replay'de bu bantlar ortalama -%1.4..-%2.8 PnL üretti
-    # (likidite ölü / gürültü yüksek). Varsayılan: 03-06 ve 18-20 kapalı.
-    # Virgülle ayrılmış saat listesi; boş = filtre yok.
-    FISHER_ENTRY_BLOCKED_HOURS = [int(h) for h in os.getenv("FISHER_ENTRY_BLOCKED_HOURS", "3,4,5,18,19").split(",") if h.strip().isdigit()]
     # LLM market commentary is a journaled, paper-only forecast.  These
     # horizons never authorize an order or mutate strategy parameters.
     LLM_FORECAST_HORIZONS_MINUTES = (5, 15, 60, 240)
@@ -281,29 +259,6 @@ class Config:
     SYMBOL_ACTIVITY_STATUS = {}
     # Radar yalnızca gözlem/ranking yüzeyidir; otomatik pozisyon açmaz.
     GAINER_RADAR_AUTO_TRADE = False
-    # Pump Monitor is a separate, paper-only continuation strategy.  It never
-    # changes the active BB-MFI strategy and is capped independently.
-    PUMP_MONITOR_ENABLED = os.getenv("PUMP_MONITOR_ENABLED", "true").lower() == "true"
-    PUMP_MONITOR_AUTO_TRADE = os.getenv("PUMP_MONITOR_AUTO_TRADE", "true").lower() == "true"
-    PUMP_MONITOR_MAX_OPEN_POSITIONS = max(1, int(os.getenv("PUMP_MONITOR_MAX_OPEN_POSITIONS", "3")))
-    PUMP_MONITOR_MIN_SCORE = max(3, min(4, int(os.getenv("PUMP_MONITOR_MIN_SCORE", "3"))))
-    PUMP_MONITOR_REQUIRE_M15_BULLISH = os.getenv("PUMP_MONITOR_REQUIRE_M15_BULLISH", "true").lower() == "true"
-    # 2026-08-25 trade-history analysis (292 trades, -1680 TRY net):
-    # volume_ratio > 2.0 entries alone lost -1029 TRY (chasing an already-
-    # detonated pump); 56 stops had seen >= +0.5% MFE first (-1536 TRY); and
-    # 48% of stops never saw +0.3% at all (failed pump confirmations). These
-    # knobs are derived from that dataset and stay paper-only.
-    PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO = max(0.0, float(os.getenv("PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO", "2.0")))
-    PUMP_MONITOR_BREAK_EVEN_ENABLED = os.getenv("PUMP_MONITOR_BREAK_EVEN_ENABLED", "true").lower() == "true"
-    # 0.3% beat 0.5% in the 48h real-kline replay (work/pump_replay_engine.py):
-    # -1353 vs -1690 TRY with VR<=2.0. Keep the tighter trigger.
-    PUMP_MONITOR_BREAK_EVEN_TRIGGER_PCT = max(0.05, float(os.getenv("PUMP_MONITOR_BREAK_EVEN_TRIGGER_PCT", "0.3"))) / 100.0
-    # Fast-fail did NOT earn its keep in the 48h replay (early exits cut
-    # trades that later hit ATR trailing). Disabled by default; enable via
-    # env only after a longer-window replay supports it.
-    PUMP_MONITOR_FAST_FAIL_ENABLED = os.getenv("PUMP_MONITOR_FAST_FAIL_ENABLED", "false").lower() == "true"
-    PUMP_MONITOR_FAST_FAIL_SEC = max(60, int(os.getenv("PUMP_MONITOR_FAST_FAIL_SEC", "900")))
-    PUMP_MONITOR_FAST_FAIL_MIN_PROGRESS_PCT = max(0.05, float(os.getenv("PUMP_MONITOR_FAST_FAIL_MIN_PROGRESS_PCT", "0.3"))) / 100.0
     # LLM yalnızca kullanıcının açık "işlem aç" talebiyle çalışabilir.
     LLM_AUTO_OPEN_ENABLED = False
     GAINER_RADAR_MIN_SCORE = 65
@@ -372,107 +327,5 @@ class Config:
         return (cls.COMMISSION_PCT * 2
                 + cls.ESTIMATED_SLIPPAGE_PCT * 2
                 + cls.MIN_EXPECTED_NET_PNL_TRY / value)
-
-    # Live giriş evreni: BB-MFI stratejisi ve açıkça etkinleştirilen LLM paper akışı.
-    # Gainer Radar yalnızca tarama/sıralama yüzeyidir ve pozisyon açmaz.
-    UT_ENABLED = False
-    UT_SYMBOLS = os.getenv("UT_SYMBOLS", "").split(",") if os.getenv("UT_SYMBOLS") else SYMBOLS
-    UT_KEY_VALUE = 1.0
-    UT_ATR_PERIOD = 11
-    UT_HEIKIN_ASHI = True
-    UT_TIMEFRAME = os.getenv("UT_TIMEFRAME", "5m")
-
-    # Ek stratejiler (ayrı ayrı aç/kapat)
-    BB_SQUEEZE_ENABLED = False
-    EMA_PULLBACK_ENABLED = False
-    VWAP_MACD_ENABLED = False
-    CMO_CRSI_ENABLED = False
-    OVERSOLD_TREND_REENTRY_ENABLED = False
-    ADAPTIVE_VOLATILITY_TREND_ENABLED = False
-    REGIME_GATE_LOW_TURNOVER_ENABLED = False
-    OVERSOLD_TREND_REENTRY_RSI_MAX = float(os.getenv("OVERSOLD_TREND_REENTRY_RSI_MAX", "40"))
-    EMA_VWAP_ENABLED = False
-    BREAKOUT_ENABLED = False
-    ORDERFLOW_ENABLED = False
-    MOMENTUM_ENABLED = False
-    MOMENTUM_COST_AWARE_ENABLED = False
-    MEAN_REVERSION_ENABLED = True
-    KELTNER_ENABLED = False
-    CHOP_ENABLED = False
-    DONCHIAN_ENABLED = False
-
-    # Canlı strateji eşikleri (Ayarlar > Stratejiler üzerinden güncellenebilir)
-    ORDERFLOW_MIN_IMBALANCE = 0.10
-    MOMENTUM_SHORT_LOOKBACK = 5
-    MOMENTUM_LONG_LOOKBACK = 21
-    MOMENTUM_MIN_RETURN_PCT = 0.003
-    MOMENTUM_MIN_VOLUME_RATIO = 1.0
-    MOMENTUM_REQUIRE_MTF_ALIGNMENT = True
-    MOMENTUM_MIN_ADX = float(os.getenv("MOMENTUM_MIN_ADX", "18"))
-    MOMENTUM_COST_AWARE_MIN_RETURN_PCT = float(os.getenv("MOMENTUM_COST_AWARE_MIN_RETURN_PCT", "0.004"))
-    MOMENTUM_COST_AWARE_MIN_VOLUME_RATIO = float(os.getenv("MOMENTUM_COST_AWARE_MIN_VOLUME_RATIO", "1.2"))
-    MOMENTUM_COST_AWARE_MIN_ADX = float(os.getenv("MOMENTUM_COST_AWARE_MIN_ADX", "22"))
-    # MTF Momentum için volatilite kapasitesi filtresi (ADR).
-    ADR_FILTER_ENABLED = True
-    ADR_PERIOD = 14
-    ADR_MIN_PCT = 0.02
-    ADR_MAX_UTILIZATION_PCT = 0.80
-    ADR_MIN_REMAINING_PCT = 0.01
-    KELTNER_EMA_PERIOD = 20
-    KELTNER_ATR_PERIOD = 20
-    KELTNER_ATR_MULTIPLIER = 1.8
-    KELTNER_VOLUME_MULTIPLIER = 1.5
-    KELTNER_REQUIRE_MTF_ALIGNMENT = True
-    KELTNER_REQUIRE_RETEST = True
-    # VWAP + EMA trend/pullback stratejisi: maliyet sonrası daha seçici giriş.
-    EMA_VWAP_MIN_VOLUME_RATIO = float(os.getenv("EMA_VWAP_MIN_VOLUME_RATIO", "1.0"))
-    EMA_VWAP_MIN_ADX = float(os.getenv("EMA_VWAP_MIN_ADX", "18"))
-    EMA_VWAP_REQUIRE_MTF_ALIGNMENT = True
-    CHOP_PERIOD = 14
-    CHOP_MAX_VALUE = float(os.getenv("CHOP_MAX_VALUE", "45"))
-    CHOP_MIN_RSI = float(os.getenv("CHOP_MIN_RSI", "52"))
-    DONCHIAN_LOOKBACK = 20
-    DONCHIAN_VOLUME_MULTIPLIER = 1.15
-
-    # Her stratejinin kendi timeframe'i
-    BB_SQUEEZE_TIMEFRAME = os.getenv("BB_SQUEEZE_TIMEFRAME", "5m")
-    EMA_PULLBACK_TIMEFRAME = os.getenv("EMA_PULLBACK_TIMEFRAME", "15m")
-    VWAP_MACD_TIMEFRAME = os.getenv("VWAP_MACD_TIMEFRAME", "5m")
-    CMO_CRSI_TIMEFRAME = os.getenv("CMO_CRSI_TIMEFRAME", "5m")
-    OVERSOLD_TREND_REENTRY_TIMEFRAME = os.getenv("OVERSOLD_TREND_REENTRY_TIMEFRAME", "5m")
-    ADAPTIVE_VOLATILITY_TREND_TIMEFRAME = os.getenv("ADAPTIVE_VOLATILITY_TREND_TIMEFRAME", "15m")
-    ADAPTIVE_VOLATILITY_MIN_ATR_PCT = float(os.getenv("ADAPTIVE_VOLATILITY_MIN_ATR_PCT", "0.0015"))
-    ADAPTIVE_VOLATILITY_MAX_ATR_PCT = float(os.getenv("ADAPTIVE_VOLATILITY_MAX_ATR_PCT", "0.012"))
-    ADAPTIVE_VOLATILITY_MIN_ADX = float(os.getenv("ADAPTIVE_VOLATILITY_MIN_ADX", "20"))
-    REGIME_GATE_LOW_TURNOVER_TIMEFRAME = os.getenv("REGIME_GATE_LOW_TURNOVER_TIMEFRAME", "1h")
-    REGIME_GATE_MIN_ADX = float(os.getenv("REGIME_GATE_MIN_ADX", "25"))
-    REGIME_GATE_MIN_RETURN_PCT = float(os.getenv("REGIME_GATE_MIN_RETURN_PCT", "0.01"))
-    REGIME_GATE_MIN_VOLUME_RATIO = float(os.getenv("REGIME_GATE_MIN_VOLUME_RATIO", "1.1"))
-    EMA_VWAP_TIMEFRAME = os.getenv("EMA_VWAP_TIMEFRAME", "5m")
-    BREAKOUT_TIMEFRAME = os.getenv("BREAKOUT_TIMEFRAME", "5m")
-    ORDERFLOW_TIMEFRAME = os.getenv("ORDERFLOW_TIMEFRAME", "1m")
-    MOMENTUM_TIMEFRAME = os.getenv("MOMENTUM_TIMEFRAME", "5m")
-    ADR_TIMEFRAME = "1d"
-    MEAN_REVERSION_TIMEFRAME = os.getenv("MEAN_REVERSION_TIMEFRAME", "5m")
-    KELTNER_TIMEFRAME = os.getenv("KELTNER_TIMEFRAME", "5m")
-    CHOP_TIMEFRAME = os.getenv("CHOP_TIMEFRAME", "5m")
-    DONCHIAN_TIMEFRAME = os.getenv("DONCHIAN_TIMEFRAME", "5m")
-
-    # BB Squeeze parametreleri
-    SQUEEZE_LOOKBACK = 20
-    BB_PERIOD = 20
-    BB_STD_DEV = 2.0
-
-    # EMA Pullback parametreleri
-    EMA_SHORT = 9
-    EMA_MID = 21
-    EMA_TREND = 50
-    RSI_PERIOD = 14
-
-    # VWAP + MACD parametreleri
-    VWAP_PERIOD = 20
-    MACD_FAST = 12
-    MACD_SLOW = 26
-    MACD_SIGNAL = 9
 
 config = Config()

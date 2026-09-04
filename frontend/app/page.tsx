@@ -43,19 +43,10 @@ type Trade = {
 type Signal = { id?: number; symbol: string; action: string; price?: number; reason?: string; timestamp?: number; strategy?: string };
 
 const STRATEGY_LABEL: Record<string, string> = {
-  EMA_VWAP_PULLBACK: "EMA + VWAP Pullback",
-  BB_SQUEEZE_ORDERFLOW: "BB Squeeze + Order-Flow",
-  ORDERFLOW: "Order-Flow Imbalance",
-  MOMENTUM: "MTF Momentum Ranking",
-  VWAP_MEAN_REVERSION: "VWAP Mean Reversion",
-  KELTNER_BREAKOUT: "Keltner Breakout",
-  CHOP_TREND_FILTER: "CHOP Trend Filter",
-  DONCHIAN_BREAKOUT: "Donchian Breakout",
-  LLM_PAPER: "LLM Paper",
-  PUMP_MONITOR: "Pump Monitor",
+  VELOCITY: "Hız Avcısı",
   CHAT_PREDICTION: "Hız Avcısı (Otonom)",
-  FISHER_M3_KERNEL_M5_EXACT_PAPER: "Fisher M3 + Kernel M5",
-  BB_MFI_MEAN_REVERSION: "BB + MFI Mean Reversion",
+  LLM_PAPER: "LLM Paper",
+  GAINER_RADAR: "Gainer Radar",
 };
 const money = (v?: number | null) =>
   v == null ? "0,00" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });

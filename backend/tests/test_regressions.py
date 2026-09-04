@@ -76,71 +76,7 @@ class RegressionContracts(unittest.TestCase):
         self.assertEqual(pine_profile("v3")["stop_pct"], 0.08882)
         self.assertEqual(pine_profile("v3")["tp_pct"], 0.02317)
 
-    def test_bb_mfi_v1_signal_contract(self):
-        from app.analyzer import ScalpAnalyzer
 
-        analyzer = ScalpAnalyzer(None)
-        def kline(last):
-            closes = [100.0] * 20 + [last]
-            return {"closes": closes, "highs": closes, "lows": closes, "volumes": [100.0] * len(closes)}
-
-        def dip_kline():
-            # A real dip candle: close sits above 55% of the bar range
-            # (BB_MFI_DIP_MIN_CLOSE_POSITION) yet below the BB lower band.
-            closes = [100.0] * 20 + [84.0]
-            highs = [100.0] * 20 + [95.0]
-            lows = [100.0] * 20 + [70.0]
-            return {"closes": closes, "highs": highs, "lows": lows, "volumes": [100.0] * len(closes)}
-
-        with patch("app.analyzer.config.BB_MFI_PINE_VERSION", "v1"), \
-             patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
-             patch.object(analyzer, "calculate_rsi", return_value=80.0):
-            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline(120.0)), "sell")
-            # The buy leg must respect the dip-confirmation filter: a flat
-            # candle (close at bar low, zero range → close_position 0) is
-            # blocked; a confirmed dip candle passes.
-            self.assertIsNone(analyzer.strategy_bb_mfi_mean_reversion(kline(80.0)))
-            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(dip_kline()), "buy")
-
-    def test_bb_mfi_v3_requires_mfi_for_entry_and_exit(self):
-        from app.analyzer import ScalpAnalyzer
-
-        analyzer = ScalpAnalyzer(None)
-        closes = [100.0] * 21
-        kline = {"closes": closes, "highs": closes, "lows": closes, "volumes": [100.0] * len(closes)}
-        with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
-             patch.object(analyzer, "calculate_rsi", return_value=70.0), \
-             patch("app.analyzer.config.BB_MFI_DIP_CONFIRMATION_ENABLED", False), \
-             patch("app.analyzer._mfi", return_value=58.0):
-            kline["closes"][-1] = 80.0
-            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline), "buy")
-            kline["closes"][-1] = 120.0
-            self.assertIsNone(analyzer.strategy_bb_mfi_mean_reversion(kline))
-        with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
-             patch.object(analyzer, "calculate_rsi", return_value=70.0), \
-             patch("app.analyzer.config.BB_MFI_DIP_CONFIRMATION_ENABLED", False), \
-             patch("app.analyzer._mfi", return_value=70.0):
-            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline), "sell")
-
-    def test_bb_mfi_dip_confirmation_blocks_unrecovered_signal_candle(self):
-        from app.analyzer import ScalpAnalyzer
-
-        analyzer = ScalpAnalyzer(None)
-        kline = {
-            "closes": [100.0] * 20 + [80.0],
-            "highs": [101.0] * 20 + [100.0],
-            "lows": [99.0] * 20 + [70.0],
-            "volumes": [100.0] * 21,
-        }
-        with patch.object(analyzer, "calculate_bollinger_bands", return_value={"lower": 90.0, "upper": 110.0}), \
-             patch.object(analyzer, "calculate_rsi", return_value=70.0), \
-             patch("app.analyzer.config.BB_MFI_PINE_VERSION", "v3"), \
-             patch("app.analyzer.config.BB_MFI_DIP_CONFIRMATION_ENABLED", True), \
-             patch("app.analyzer.config.BB_MFI_DIP_MIN_CLOSE_POSITION", 0.55), \
-             patch("app.analyzer._mfi", return_value=58.0):
-            self.assertIsNone(analyzer.strategy_bb_mfi_mean_reversion(kline))
-            kline["closes"][-1] = 88.0  # (88 - 70) / (100 - 70) = 60%
-            self.assertEqual(analyzer.strategy_bb_mfi_mean_reversion(kline), "buy")
 
     def test_portfolio_replay_reads_normalized_historical_candles(self):
         from scripts.run_portfolio_backtest import rows_to_series
@@ -214,43 +150,8 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("12 virgül 18", spoken)
         self.assertNotIn("😀", spoken)
 
-    def test_bb_mfi_v3_backtest_has_signal_exit_and_pine_sizing(self):
-        source = (ROOT / "app" / "backtest.py").read_text()
-        self.assertIn('"bb_mfi_v3_signal_exit"', source)
-        self.assertIn('config.MAX_POSITION_LAYERS = max(1, int(pyramiding_layers))', source)
-        self.assertIn('order_pct if order_pct is not None else config.ORDER_PCT', source)
 
-    def test_bb_mfi_metric_overrides_are_isolated_backtest_params(self):
-        from app.backtest import PARAM_FIELDS
-        self.assertEqual(PARAM_FIELDS["bb_mfi_bb_period"], "BB_MFI_BB_PERIOD")
-        self.assertEqual(PARAM_FIELDS["bb_mfi_exit_mfi_min"], "BB_MFI_EXIT_MFI_MIN")
-        self.assertEqual(PARAM_FIELDS["bb_mfi_rsi_period"], "BB_MFI_RSI_PERIOD")
-        self.assertEqual(PARAM_FIELDS["bb_mfi_v2_rsi_upper_level"], "BB_MFI_V2_RSI_UPPER_LEVEL")
-        self.assertEqual(PARAM_FIELDS["bb_mfi_stop_loss_pct"], "BB_MFI_STOP_LOSS_PCT")
 
-    def test_bb_mfi_entry_confirmation_settings_are_exposed(self):
-        from app.main import BOOL_FIELDS, CONFIG_FIELDS
-        self.assertEqual(CONFIG_FIELDS["bb_mfi_entry_volume_ratio_min"], "BB_MFI_ENTRY_VOLUME_RATIO_MIN")
-        self.assertEqual(CONFIG_FIELDS["bb_mfi_dip_min_close_position"], "BB_MFI_DIP_MIN_CLOSE_POSITION")
-        self.assertEqual(CONFIG_FIELDS["bb_mfi_entry_mfi_reversal_min_delta"], "BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA")
-        self.assertIn("bb_mfi_dip_confirmation_enabled", BOOL_FIELDS)
-        self.assertIn("bb_mfi_entry_mfi_reversal_enabled", BOOL_FIELDS)
-
-    def test_bb_mfi_v3_signal_exit_fills_at_next_bar_open(self):
-        from app import backtest
-
-        data = {key: [100.0] * 24 for key in ("opens", "highs", "lows", "closes", "volumes")}
-        data["opens"][22] = 101.0
-        data["times"] = list(range(24))
-
-        def signal(_self, kline, _symbol=None):
-            return "buy" if len(kline["closes"]) == 21 else "sell" if len(kline["closes"]) == 22 else None
-
-        with patch.object(backtest, "_fetch_klines", return_value=data), \
-             patch.object(backtest.ScalpAnalyzer, "strategy_bb_mfi_mean_reversion", signal):
-            result = backtest._run_single("BTCTRY", "5m", 1, "BB_MFI_MEAN_REVERSION", {}, 500.0, 0.01, 0.01, 0.0)
-        self.assertEqual(result["trades"][0]["reason"], "bb_mfi_v3_signal_exit")
-        self.assertEqual(result["trades"][0]["exit_time"], 22)
     def test_backtest_fill_model_charges_round_trip_costs(self):
         from app.backtest import _close_trade
 
@@ -319,23 +220,6 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("negative_orderflow", reasons)
         self.assertIn("symbol_loss_streak", reasons)
 
-    def test_bb_mfi_entry_context_blocks_unready_and_unconfirmed_bearish_entries(self):
-        from app.analyzer import ScalpAnalyzer
-
-        unready = ScalpAnalyzer._bb_mfi_entry_context_block_reason({"data_ready": False}, {})
-        self.assertEqual(unready, "technical_data_not_ready")
-
-        kline = {
-            "closes": [100.0] * 18,
-            "highs": [101.0] * 18,
-            "lows": [99.0] * 18,
-            "volumes": [10.0] * 18,
-        }
-        bearish = {"data_ready": True, "trend": {"alignment": "bearish"}}
-        self.assertEqual(
-            ScalpAnalyzer._bb_mfi_entry_context_block_reason(bearish, kline),
-            "bearish_reversal_candle_unconfirmed",
-        )
 
     def test_llm_system_prompt_has_trade_manager_rules(self):
         source = (ROOT / "app" / "llm_analysis.py").read_text()
@@ -347,11 +231,6 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('@app.get("/api/llm/entry-policy")', source)
         self.assertIn('"policy_version": "scalper-trade-manager-v2"', source)
 
-    def test_llm_close_does_not_schedule_immediate_replenishment(self):
-        source = _backend_sources()
-        self.assertGreaterEqual(source.count('if str(sig.get("strategy", "")).upper() != "LLM_PAPER":'), 2)
-        self.assertIn('llm_guard = await database.get_llm_symbol_guard(symbol)', source)
-        self.assertIn('guard_reason = _llm_guard_block_reason(llm_guard)', source)
 
     def test_llm_reentry_cooldown_is_shorter_after_profit(self):
         source = (ROOT / "app" / "analyzer.py").read_text()
@@ -443,14 +322,6 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('source": "binance_tr_public_24h_ticker"', source)
         self.assertIn('known_try = set(await trading_symbols("TRY"))', source)
 
-    def test_dynamic_top_gainer_settings_are_runtime_configurable(self):
-        from app.main import BOOL_FIELDS, CONFIG_FIELDS, INT_FIELDS
-        self.assertEqual(CONFIG_FIELDS["top_gainers_auto_activate"], "TOP_GAINERS_AUTO_ACTIVATE")
-        self.assertEqual(CONFIG_FIELDS["top_gainers_limit"], "TOP_GAINERS_LIMIT")
-        self.assertEqual(CONFIG_FIELDS["top_gainers_refresh_sec"], "TOP_GAINERS_REFRESH_SEC")
-        self.assertIn("top_gainers_auto_activate", BOOL_FIELDS)
-        self.assertIn("top_gainers_limit", INT_FIELDS)
-        self.assertIn("top_gainers_refresh_sec", INT_FIELDS)
 
     def test_compose_has_bounded_shutdown_and_postgres_startup_grace(self):
         source = (ROOT.parent / "docker-compose.yaml").read_text()
@@ -481,95 +352,10 @@ class RegressionContracts(unittest.TestCase):
         self.assertNotIn("config.SYMBOLS = universe", refresh_source)
         self.assertIn("configured paper-trading scan universe", refresh_source)
 
-    def test_scan_logs_have_one_auditable_scan_id_path_for_each_symbol(self):
-        source = _backend_sources()
-        self.assertIn('scan_id = f"automatic-{int(time.time() * 1000)}"', source)
-        self.assertIn('scan_id = f"manual-{uuid.uuid4().hex[:12]}"', source)
-        self.assertIn('"MIGRATION_BLOCKED"', source)
-        self.assertIn('item.get("scan_id") == scan_id', source)
-
-    def test_manual_scan_evaluates_passive_configured_symbols(self):
-        source = (ROOT / "app" / "main.py").read_text()
-        start = source.index('async def manual_strategy_scan(request: Request):')
-        end = source.index('\n@app.get("/api/strategy/scan-logs")', start)
-        manual_source = source[start:end]
-        self.assertIn('passive_overridden += 1', manual_source)
-        self.assertNotIn('_record_strategy_scan_log("manual", symbol, "PASSIVE"', manual_source)
-        self.assertIn('ticker.get("last_price")', manual_source)
-        self.assertIn('activity_status=activity_status', manual_source)
-        self.assertIn('log_user_action', manual_source)
-
-    def test_strategy_replay_uses_configured_symbols_and_public_history_fallback(self):
-        source = (ROOT / "app" / "routers" / "maintenance.py").read_text()
-        start = source.index('async def _run_strategy_replay(')
-        end = len(source)
-        replay_source = source[start:end]
-        self.assertIn('symbols = [s.upper() for s in config.SYMBOLS]', replay_source)
-        self.assertNotIn('config.SYMBOLS if s not in config.PASSIVE_SYMBOLS', replay_source)
-        self.assertIn('fetch_klines(symbol, "5m", limit=400)', replay_source)
-        self.assertIn('int(row.get("close_time") or 0) <= now_ms', replay_source)
-        self.assertNotIn('await database.upsert_market_candles', replay_source)
-        self.assertIn('"BUY_SIGNAL" if strategy_fn(kline, symbol) == "buy" else "NO_SIGNAL"', replay_source)
-        self.assertIn('Aktif tarama sembol listesi boş', replay_source)
 
 
 class StrategyReplayBehavior(unittest.IsolatedAsyncioTestCase):
-    async def test_replay_checks_only_latest_closed_candles_without_mutating_state(self):
-        from app import main
 
-        now_ms = int(__import__("time").time() * 1000)
-        closed_rows = [{
-            "symbol": "BTC_TRY", "timeframe": "5m", "open_time": now_ms - (23 - index) * 300_000,
-            "close_time": now_ms - (22 - index) * 300_000, "open": 100 + index,
-            "high": 101 + index, "low": 99 + index, "close": 100 + index,
-            "volume": 10 + index,
-        } for index in range(22)]
-        incomplete_row = {**closed_rows[-1], "open_time": now_ms - 60_000, "close_time": now_ms + 240_000, "close": 999999}
-        strategy_lengths = []
-
-        def fake_strategy(kline, _symbol):
-            strategy_lengths.append(len(kline["closes"]))
-            return "buy" if len(kline["closes"]) == 22 else None
-
-        async def no_mutation(*_args, **_kwargs):
-            self.fail("Signal replay must not persist candles or mutate strategy state")
-
-        previous_symbols = main.config.SYMBOLS
-        previous_strategy = main.config.ACTIVE_STRATEGY
-        previous_positions = dict(main.analyzer.positions)
-        main.config.SYMBOLS = ["BTC_TRY"]
-        main.config.ACTIVE_STRATEGY = "BB_MFI_MEAN_REVERSION"
-        main._strategy_replay_jobs["closed-candle-test"] = {
-            "job_id": "closed-candle-test", "status": "queued", "strategy": main.config.ACTIVE_STRATEGY,
-            "timeframe": "5m", "candle_count": 2, "completed": 0, "total": 0, "results": [], "logs": [],
-        }
-        try:
-            with patch.object(main.database, "get_market_candles", AsyncMock(return_value=closed_rows + [incomplete_row])), \
-                 patch.object(main.database, "upsert_market_candles", no_mutation), \
-                 patch.object(main, "fetch_klines", AsyncMock()) , \
-                 patch.object(main.analyzer, "strategy_bb_mfi_mean_reversion", fake_strategy):
-                await main._run_strategy_replay("closed-candle-test", 2)
-        finally:
-            main.config.SYMBOLS = previous_symbols
-            main.config.ACTIVE_STRATEGY = previous_strategy
-
-        job = main._strategy_replay_jobs.pop("closed-candle-test")
-        self.assertEqual(job["status"], "completed")
-        self.assertEqual(job["completed"], 2)
-        self.assertEqual(job["total"], 2)
-        self.assertEqual(strategy_lengths, [21, 22])
-        self.assertEqual([result["close"] for result in job["results"]], [120.0, 121.0])
-        self.assertEqual([result["action"] for result in job["results"]], ["NO_SIGNAL", "BUY_SIGNAL"])
-        self.assertEqual(main.analyzer.positions, previous_positions)
-
-    async def test_replay_endpoint_rejects_candle_counts_outside_one_to_twenty(self):
-        from app.main import start_strategy_replay
-        from fastapi import HTTPException
-
-        for candle_count in (0, 21, "not-a-number"):
-            with self.assertRaises(HTTPException) as raised:
-                await start_strategy_replay({"candle_count": candle_count})
-            self.assertEqual(raised.exception.status_code, 422)
 
     def test_llm_market_scan_uses_fast_hot_cache_defaults(self):
         source = _backend_sources()
@@ -602,14 +388,6 @@ class StrategyReplayBehavior(unittest.IsolatedAsyncioTestCase):
         manager = ConnectionManager()
         self.assertEqual(manager.active_connections, [])
 
-    def test_live_strategy_reads_ram_market_klines_not_historical_database(self):
-        source = (ROOT / "app" / "analyzer.py").read_text()
-        combined = _backend_sources()
-        # Live evaluation receives the in-memory MarketData cache. Historical
-        # PostgreSQL reads belong to replay/backtest paths only.
-        self.assertGreaterEqual(source.count("self.market.get_ut_kline(symbol, tf)"), 1)
-        self.assertIn("trigger=5m_candle_close", _backend_sources())
-        self.assertIn("await database.get_market_candles(symbol, \"5m\")", _backend_sources())
 
     def test_get_trades_contract_supports_filter_and_offset(self):
         from app import database

@@ -30,22 +30,6 @@ class ScalpAnalyzer:
         configured = int(config.MAX_OPEN_POSITIONS)
         return float("inf") if configured <= 0 else configured
 
-    @staticmethod
-    def _bb_mfi_layers_net_profitable(position, price):
-        """Every stored pyramid layer must clear round-trip fees at this price."""
-        layers = position.get("entry_layers") or []
-        if not layers:
-            return False
-        for layer in layers:
-            quantity = float(layer.get("quantity") or 0)
-            entry = float(layer.get("entry_price") or 0)
-            if quantity <= 0 or entry <= 0:
-                return False
-            proceeds = quantity * float(price) * (1 - config.COMMISSION_PCT)
-            cost = quantity * entry * (1 + config.COMMISSION_PCT)
-            if proceeds <= cost:
-                return False
-        return True
 
     async def load_state(self):
         self.positions = await database.load_positions()
@@ -292,89 +276,6 @@ class ScalpAnalyzer:
             trs.append(tr)
         return float(np.mean(trs))
 
-    def heikin_ashi(self, kline):
-        """HA mumlarını döndür: (open, high, low, close) listeleri.
-
-        Düzeltme: Önceki versiyonda `ha_open[i]` son iterasyonda IndexError
-        veriyordu — ha_open listesi her iterasyonda bir sonraki değeri
-        hesaplamalı, böylece ha_open[i] her zaman mevcut olur.
-        """
-        opens = kline.get("opens", [])
-        highs = kline.get("highs", [])
-        lows = kline.get("lows", [])
-        closes = kline.get("closes", [])
-        n = len(closes)
-        if n == 0:
-            return [], [], [], []
-        ha_open = [(opens[0] + closes[0]) / 2]
-        ha_close = []
-        ha_high = []
-        ha_low = []
-        for i in range(n):
-            c = (opens[i] + highs[i] + lows[i] + closes[i]) / 4
-            ha_close.append(c)
-            o = ha_open[i]
-            ha_high.append(max(highs[i], o, c))
-            ha_low.append(min(lows[i], o, c))
-            # Sonraki HA open'ı şimdi hesapla (bir sonraki iterasyonda kullanılacak)
-            ha_open.append((o + c) / 2)
-        return ha_open[:-1], ha_high, ha_low, ha_close
-
-    def ut_bot_signal(self, kline):
-        """UT Bot trailing stop sinyali. Döner: "buy"/"sell"/None"""
-        closes = kline.get("closes", [])
-        if len(closes) < config.UT_ATR_PERIOD + 5:
-            return None
-
-        if config.UT_HEIKIN_ASHI:
-            _, _, _, src = self.heikin_ashi(kline)
-        else:
-            src = closes
-
-        atr = self.calculate_atr(kline, config.UT_ATR_PERIOD)
-        if not atr: return None
-        n_loss = config.UT_KEY_VALUE * atr
-
-        # xATRTrailingStop serisi
-        stop = [0.0] * len(src)
-        for i in range(len(src)):
-            s = src[i]
-            prev_prev = stop[i-1] if i > 0 else 0.0
-            if i == 0:
-                stop[i] = s - n_loss
-                continue
-            prev_src = src[i-1]
-            if s > prev_prev and prev_src > prev_prev:
-                stop[i] = max(prev_prev, s - n_loss)
-            elif s < prev_prev and prev_src < prev_prev:
-                stop[i] = min(prev_prev, s + n_loss)
-            elif s > prev_prev:
-                stop[i] = s - n_loss
-            else:
-                stop[i] = s + n_loss
-
-        # pos serisi
-        pos = [0] * len(src)
-        for i in range(1, len(src)):
-            prev_src = src[i-1]
-            prev_stop = stop[i-1]
-            s = src[i]
-            if prev_src < prev_stop and s > prev_stop:
-                pos[i] = 1
-            elif prev_src > prev_stop and s < prev_stop:
-                pos[i] = -1
-            else:
-                pos[i] = pos[i-1]
-
-        # ema(src,1) = src — crossover mantığı: önceki bar stop'un altında, şimdi üstünde
-        above = src[-1] > stop[-1] and src[-2] <= stop[-2] if len(src) > 1 else False
-        below = src[-1] < stop[-1] and src[-2] >= stop[-2] if len(src) > 1 else False
-        buy = src[-1] > stop[-1] and above
-        sell = src[-1] < stop[-1] and below
-
-        if buy: return "buy"
-        if sell: return "sell"
-        return None
 
     def calculate_ema(self, prices, period):
         if len(prices) < period: return None
@@ -457,51 +358,18 @@ class ScalpAnalyzer:
         return 100 * (sum_gains - sum_losses) / (sum_gains + sum_losses)
 
     # --- EK STRATEJİLER ---
-    def strategy_bollinger_squeeze(self, kline):
-        closes = kline.get("closes", [])
-        volumes = kline.get("volumes", [])
-        if len(closes) < config.SQUEEZE_LOOKBACK: return None
-        price = closes[-1]
-        current_vol = volumes[-1]
-        avg_vol = np.mean(volumes[-10:])
-        bb = self.calculate_bollinger_bands(closes, config.BB_PERIOD, config.BB_STD_DEV)
-        if not bb: return None
-        historical_bws = []
-        for i in range(2, config.SQUEEZE_LOOKBACK + 1):
-            if len(closes) >= config.BB_PERIOD + i:
-                # Dilde i bar geriye gidip öncesindeki BB_PERIOD'lik pencereye bak.
-                hist_bb = self.calculate_bollinger_bands(closes[-i-config.BB_PERIOD+1:-i+1], config.BB_PERIOD, config.BB_STD_DEV)
-                if hist_bb: historical_bws.append(hist_bb["bandwidth"])
-        if not historical_bws: return None
-        min_bw = min(historical_bws)
-        is_squeeze = bb["bandwidth"] <= min_bw * 1.1
-        is_volume_spike = current_vol > avg_vol * 1.5
-
-        if is_squeeze and is_volume_spike and price > bb["upper"]: return "buy"
-        if is_squeeze and is_volume_spike and price < bb["lower"]: return "sell"
-        return None
-
     # --- POZİSYON TAKİBİ (açık pozisyon varsa stratejiye göre) ---
     def _strategy_tf(self, strat_name):
-        """Stratejinin takip ettiği timeframe."""
+        """Stratejinin takip ettiği timeframe.
+
+        Klasik stratejiler kaldırıldı; yalnızca hâlâ açık olabilecek
+        pozisyon etiketleri (LLM_PAPER, CHAT_PREDICTION) ve geçmiş
+        legacy etiketler için varsayılan '5m' dönüyor.
+        """
         return {
-            "UT": config.UT_TIMEFRAME,
-            "BB_Squeeze": config.BB_SQUEEZE_TIMEFRAME,
-            "EMA_Pullback": config.EMA_PULLBACK_TIMEFRAME,
-            "VWAP_MACD": config.VWAP_MACD_TIMEFRAME,
-            "CMO_CRSI_Dip": config.CMO_CRSI_TIMEFRAME,
-            "EMA_VWAP_PULLBACK": config.EMA_VWAP_TIMEFRAME,
-            "BB_SQUEEZE_ORDERFLOW": config.BB_SQUEEZE_TIMEFRAME,
-            "ORDERFLOW": config.ORDERFLOW_TIMEFRAME,
-            "MOMENTUM": config.MOMENTUM_TIMEFRAME,
-            "KELTNER_BREAKOUT": config.KELTNER_TIMEFRAME,
-            "CHOP_TREND_FILTER": config.CHOP_TIMEFRAME,
-            "DONCHIAN_BREAKOUT": config.DONCHIAN_TIMEFRAME,
-            "BB_MFI_MEAN_REVERSION": config.ACTIVE_STRATEGY_TIMEFRAME,
-            "PUMP_MONITOR": "5m",
-            "FISHER_M3_KERNEL_M5_EXACT_PAPER": "1m",
+            "LLM_PAPER": "5m",
             "CHAT_PREDICTION": "1m",
-        }.get(strat_name, config.UT_TIMEFRAME)
+        }.get(strat_name, "5m")
 
     async def _manage_open_position(self, symbol, price, strat_name):
         tf = self._strategy_tf(strat_name)
@@ -547,23 +415,10 @@ class ScalpAnalyzer:
         # or legacy max-hold policies to these positions.
         if pos and pos.get("strategy") == "LLM_PAPER":
             return None
-        # Fisher exits are defined only by the supplied M3 crossover above 2.
-        # Its dedicated closed-M1 loop owns the next-open fill; generic
-        # stop/target/trailing rules must not alter the source-exact contract.
-        # Exception: a catastrophic drawdown stop — 62 of 268 historical
-        # trades bled to -11% waiting for an exit cross that never came.
-        if pos and pos.get("strategy") == "FISHER_M3_KERNEL_M5_EXACT_PAPER":
-            fisher_entry = float(pos.get("entry_price") or price)
-            emergency = fisher_entry * (1 - config.FISHER_EMERGENCY_STOP_PCT / 100.0)
-            if price <= emergency:
-                return await self.close_position(symbol, price, "fisher_emergency_stop")
-            return None
         if pos and pos.get("strategy") != "LLM_PAPER":
             entry = float(pos.get("entry_price") or price)
             if pos.get("strategy") == "CHAT_PREDICTION":
                 fallback_stop_pct = config.VELOCITY_AUTO_SL_PCT / 100.0
-            elif pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
-                fallback_stop_pct = config.BB_MFI_STOP_LOSS_PCT
             else:
                 fallback_stop_pct = config.HARD_STOP_LOSS_PCT
             system_stop = float(pos.get("system_stop_price") or pos.get("stop_price") or entry * (1 - fallback_stop_pct))
@@ -604,24 +459,10 @@ class ScalpAnalyzer:
                         + qty_value * config.COMMISSION_PCT / max(float(pos.get("quantity") or 1), 1e-9)
                     pos["system_stop_price"] = max(system_stop, lock_stop)
                     system_stop = pos["system_stop_price"]
-            # Pump Monitor break-even: once the trade has proven itself with a
-            # >= trigger MFE move, the stop moves to entry so a proven winner
-            # can never round-trip into a full loss (56 historical trades lost
-            # -1536 TRY this way).
-            if (pos.get("strategy") == "PUMP_MONITOR" and config.PUMP_MONITOR_BREAK_EVEN_ENABLED
-                    and not pos.get("pump_break_even_armed")):
-                trigger = entry * (1 + config.PUMP_MONITOR_BREAK_EVEN_TRIGGER_PCT)
-                if pos.get("max_price", entry) >= trigger:
-                    pos["pump_break_even_armed"] = True
-                    new_stop = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
-                    pos["system_stop_price"] = max(system_stop, new_stop)
-                    system_stop = pos["system_stop_price"]
-            if pos.get("strategy") != "BB_MFI_MEAN_REVERSION" and price <= system_stop:
+            if price <= system_stop:
                 # Kâr kilidi stop'u bir trailing değil, kârı koruyan sabit bir
                 # zemindir; normal stop-loss çıkışı olarak işlenir.
-                return await self.close_position(
-                    symbol, price,
-                    "pump_break_even_stop" if pos.get("pump_break_even_armed") else "system_stop_loss")
+                return await self.close_position(symbol, price, "system_stop_loss")
             if pos.get("strategy") == "CHAT_PREDICTION":
                 # Replay planı ve otonom hız avcısı çıkışları: sabit plan TP
                 # (hedef fiyat) ve max-hold. TP girişte
@@ -642,45 +483,10 @@ class ScalpAnalyzer:
                     elapsed_hold = max(0.0, time.time() - float(pos.get("entry_time") or time.time()))
                     if elapsed_hold >= plan_hold:
                         return await self.close_position(symbol, price, "chat_plan_max_hold")
-            # BB-MFI canlıda backtest ile aynı karar kurallarını kullanır;
-            # gerçekleşen fill, teyit sonrası mevcut canlı ticker fiyatıdır.
-            if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
-                if price <= system_stop:
-                    return await self.close_position(symbol, price, "bb_mfi_stop_loss")
-                # Existing paper positions opened before the v3 repair may
-                # not have persisted target fields; apply the selected v3
-                # target immediately instead of leaving them unmanaged.
-                target = float(pos.get("system_take_profit_price") or pos.get("take_profit") or
-                               entry * (1 + config.BB_MFI_TAKE_PROFIT_PCT))
-                if target and price >= target:
-                    return await self.close_position(symbol, price, "bb_mfi_take_profit")
-                # MarketData retains closed candles only.  Evaluate the Pine
-                # close signal once for each newly-confirmed strategy candle;
-                # live paper closes at the next available ticker price.
-                closed_at = int(kline.get("last_closed_at_ms") or 0)
-                if (closed_at and pos.get("bb_mfi_exit_evaluated_at") != closed_at and
-                        self._bb_mfi_sell_signal_confirmed(kline, symbol)):
-                    pos["bb_mfi_exit_evaluated_at"] = closed_at
-                    return await self.close_position(
-                        symbol, price,
-                        f"bb_mfi_{config.BB_MFI_PINE_VERSION}_signal_exit_confirm{config.BB_MFI_SELL_SIGNAL_CONFIRM_BARS}",
-                    )
-                if closed_at:
-                    pos["bb_mfi_exit_evaluated_at"] = closed_at
-                return None
         if pos:
             elapsed = max(0.0, time.time() - pos.get("entry_time", time.time()))
             entry = pos.get("entry_price", price)
             max_progress = max(0.0, (pos.get("max_price", entry) - entry) / entry) if entry else 0.0
-            # Pump Monitor fast-fail: a pump-continuation entry that has not
-            # moved within the first minutes is a failed confirmation, not a
-            # hold candidate (48% of historical stops never saw +0.3%).
-            # Disabled by default: the 48h replay showed early exits cutting
-            # trades that later reached ATR trailing.
-            if (pos.get("strategy") == "PUMP_MONITOR" and config.PUMP_MONITOR_FAST_FAIL_ENABLED and
-                    elapsed >= config.PUMP_MONITOR_FAST_FAIL_SEC and
-                    max_progress < config.PUMP_MONITOR_FAST_FAIL_MIN_PROGRESS_PCT):
-                return await self.close_position(symbol, price, "pump_fast_fail_no_progress")
             if elapsed >= config.EARLY_FAILURE_SEC and max_progress < config.EARLY_FAILURE_MIN_PROGRESS_PCT:
                 return await self.close_position(symbol, price, "early_failure_no_progress")
             if elapsed >= config.STALE_POSITION_SEC and max_progress < config.STALE_POSITION_MIN_PROGRESS_PCT:
@@ -703,8 +509,6 @@ class ScalpAnalyzer:
             system_target = pos.get("system_take_profit_price") or pos.get("take_profit")
             if system_target and price >= float(system_target):
                 pos["system_target_reached"] = True
-                if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
-                    return await self.close_position(symbol, price, "bb_mfi_take_profit")
         return None
 
     def llm_position_context(self, symbol, price=None):
@@ -812,362 +616,21 @@ class ScalpAnalyzer:
         baseline = float(np.mean(volumes[-lookback - 1:-1]))
         return float(volumes[-1] / baseline) if baseline > 0 else None
 
-    def _mtf_bullish(self, symbol, timeframe):
-        """Require a bullish EMA structure on the next higher loaded timeframe."""
-        if not symbol or not self.market:
-            return True
-        higher = {"1m": "5m", "5m": "15m", "15m": "1h", "1h": "4h", "4h": "1d"}.get(timeframe)
-        if not higher:
-            return True
-        kline = self.market.get_ut_kline(symbol, higher)
-        closes = kline.get("closes", [])
-        if len(closes) < 55:
-            return False
-        e9 = self.calculate_ema(closes, config.EMA_SHORT)
-        e21 = self.calculate_ema(closes, config.EMA_MID)
-        e50 = self.calculate_ema(closes, config.EMA_TREND)
-        return all(value is not None for value in (e9, e21, e50)) and e9 > e21 > e50 and closes[-1] > e21
 
-    def strategy_ema_vwap(self, kline, symbol=None):
-        closes, highs, lows, volumes = kline.get("closes", []), kline.get("highs", []), kline.get("lows", []), kline.get("volumes", [])
-        if len(closes) < 55: return None
-        e9, e21, e50 = self.calculate_ema(closes, config.EMA_SHORT), self.calculate_ema(closes, config.EMA_MID), self.calculate_ema(closes, config.EMA_TREND)
-        typical = (np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3
-        vol = np.array(volumes[-20:]); vwap = float(np.sum(typical * vol) / np.sum(vol)) if np.sum(vol) else None
-        if None in (e9, e21, e50, vwap): return None
-        adx_result = _adx(highs, lows, closes)
-        adx_value = adx_result.get("adx") if adx_result else None
-        adx_ok = adx_value is not None and adx_value >= config.EMA_VWAP_MIN_ADX
-        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
-        volume_ratio = self._volume_ratio(kline)
-        volume_ok = volume_ratio is not None and volume_ratio >= config.EMA_VWAP_MIN_VOLUME_RATIO
-        mtf_ok = self._mtf_bullish(symbol, config.EMA_VWAP_TIMEFRAME) if config.EMA_VWAP_REQUIRE_MTF_ALIGNMENT else True
-        # Tek mumluk crossover yerine son 3 mum içinde EMA21'e gerçek pullback
-        # arıyoruz; böylece strateji yalnızca 1 kez değil, yeni kurulumlarda tekrar
-        # sinyal üretebilir. Kapanış EMA21 üzerine dönerken trend ve VWAP korunmalı.
-        recent_lows = lows[-4:-1]
-        touched_ema = any(low <= e21 * 1.002 for low in recent_lows)
-        bullish_reclaim = closes[-1] > closes[-2] and closes[-1] > e21
-        if e9 > e21 > e50 and adx_ok and closes[-1] > vwap and touched_ema and bullish_reclaim and flow_ok and volume_ok and mtf_ok: return "buy"
-        return None
 
-    def strategy_orderflow(self, kline, symbol=None):
-        closes = kline.get("closes", [])
-        if len(closes) < 5: return None
-        if symbol:
-            flow_ok, imbalance = self._flow_filter(symbol)
-        else:
-            imbalance = self.calculate_orderflow_proxy(kline) or 0
-            flow_ok = imbalance >= config.ORDERFLOW_MIN_IMBALANCE
-        if flow_ok and closes[-1] > closes[-2] > closes[-3]: return "buy"
-        return None
 
-    def strategy_momentum(self, kline, symbol=None):
-        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
-        if len(closes) < 30: return None
-        short = config.MOMENTUM_SHORT_LOOKBACK; long = config.MOMENTUM_LONG_LOOKBACK
-        if len(closes) <= long: return None
-        r1 = closes[-1] / closes[-short - 1] - 1; r2 = closes[-1] / closes[-long] - 1
-        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
-        volume_ratio = self._volume_ratio(kline)
-        volume_ok = volume_ratio is not None and volume_ratio >= config.MOMENTUM_MIN_VOLUME_RATIO
-        mtf_ok = self._mtf_bullish(symbol, config.MOMENTUM_TIMEFRAME) if config.MOMENTUM_REQUIRE_MTF_ALIGNMENT else True
-        adx = _adx(highs, lows, closes).get("adx") if len(closes) >= 30 else None
-        adx_ok = adx is not None and adx >= config.MOMENTUM_MIN_ADX
-        if r1 > config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 and flow_ok and volume_ok and mtf_ok and adx_ok: return "buy"
-        return None
 
-    def strategy_momentum_cost_aware(self, kline, symbol=None):
-        """Lower-turnover momentum variant with stricter cost-aware confirmation."""
-        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
-        if len(closes) < 55: return None
-        short, long = config.MOMENTUM_SHORT_LOOKBACK, config.MOMENTUM_LONG_LOOKBACK
-        r1 = closes[-1] / closes[-short - 1] - 1; r2 = closes[-1] / closes[-long] - 1
-        volume_ratio = self._volume_ratio(kline)
-        adx = _adx(highs, lows, closes).get("adx")
-        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
-        mtf_ok = self._mtf_bullish(symbol, config.MOMENTUM_TIMEFRAME)
-        if (r1 >= config.MOMENTUM_COST_AWARE_MIN_RETURN_PCT and r2 > 0 and
-                volume_ratio is not None and volume_ratio >= config.MOMENTUM_COST_AWARE_MIN_VOLUME_RATIO and
-                adx is not None and adx >= config.MOMENTUM_COST_AWARE_MIN_ADX and flow_ok and mtf_ok):
-            return "buy"
-        return None
 
-    def strategy_momentum_scored(self, kline, symbol=None):
-        """Quality-gated momentum entry; score is explainable and no-lookahead."""
-        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", []); volumes = kline.get("volumes", [])
-        if len(closes) < 55: return None
-        short, long = config.MOMENTUM_SHORT_LOOKBACK, config.MOMENTUM_LONG_LOOKBACK
-        r1 = closes[-1] / closes[-short - 1] - 1; r2 = closes[-1] / closes[-long] - 1
-        volume_ratio = self._volume_ratio(kline) or 0
-        adx = (_adx(highs, lows, closes) or {}).get("adx") or 0
-        ema9 = self.calculate_ema(closes, 9); ema21 = self.calculate_ema(closes, 21); ema50 = self.calculate_ema(closes, 50)
-        rsi = self.calculate_rsi(closes, 14) or 0; cmo = self.calculate_cmo(closes, 9) or 0
-        macd = _macd(closes) or {}; hist = macd.get("histogram") or 0
-        typical = [(h + l + c) / 3 for h, l, c in zip(highs[-20:], lows[-20:], closes[-20:])]
-        vv = sum(volumes[-20:]); vwap = sum(p * v for p, v in zip(typical, volumes[-20:])) / vv if vv else closes[-1]
-        score = 0
-        score += 2 if ema9 and ema21 and ema50 and ema9 > ema21 > ema50 else 0
-        score += 1 if r1 >= config.MOMENTUM_MIN_RETURN_PCT and r2 > 0 else 0
-        score += 2 if volume_ratio >= 1.2 else 1 if volume_ratio >= 1.0 else 0
-        score += 1 if adx >= max(20, config.MOMENTUM_MIN_ADX) else 0
-        score += 1 if hist > 0 else 0
-        score += 1 if 48 <= rsi <= 72 else 0
-        score += 1 if cmo > 0 else 0
-        score += 1 if closes[-1] > vwap else 0
-        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else (True, 0)
-        return "buy" if score >= 7 and flow_ok else None
 
-    def strategy_momentum_scored_v2(self, kline, symbol=None):
-        """Experimental scored entry with candle-quality and extension gates."""
-        if self.strategy_momentum_scored(kline, symbol) != "buy":
-            return None
-        opens = kline.get("opens", []); highs = kline.get("highs", []); lows = kline.get("lows", []); closes = kline.get("closes", [])
-        if len(closes) < 55:
-            return None
-        candle_range = max(highs[-1] - lows[-1], 1e-12)
-        close_location = (closes[-1] - lows[-1]) / candle_range
-        ema21 = self.calculate_ema(closes, 21)
-        atr = self.calculate_atr(kline, 14) or closes[-1] * 0.01
-        extension = (closes[-1] - ema21) / closes[-1] if ema21 else 1
-        # Experimental extra component: strong close, but avoid a late chase.
-        return "buy" if closes[-1] > opens[-1] and close_location >= 0.65 and extension <= 2 * atr / closes[-1] else None
 
-    def strategy_oversold_trend_reentry(self, kline, symbol=None):
-        """Long re-entry candidate: oversold oscillators with bullish EMA structure."""
-        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
-        if len(closes) < 55: return None
-        rsi = self.calculate_rsi(closes, config.RSI_PERIOD)
-        cmo = self.calculate_cmo(closes, 9)
-        stoch = _stochastic(highs, lows, closes)
-        ema9 = self.calculate_ema(closes, 9); ema21 = self.calculate_ema(closes, 21)
-        if (rsi is not None and cmo is not None and stoch and ema9 is not None and ema21 is not None and
-                cmo < 0 and stoch.get("k") is not None and stoch["k"] < 40 and rsi < config.OVERSOLD_TREND_REENTRY_RSI_MAX and ema9 > ema21):
-            return "buy"
-        return None
 
-    def strategy_adaptive_volatility_trend(self, kline, symbol=None):
-        """15m trend entry gated by a usable ATR regime and 4h EMA alignment."""
-        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
-        if len(closes) < 55 or not closes[-1]: return None
-        ema9 = self.calculate_ema(closes, 9); ema21 = self.calculate_ema(closes, 21); ema50 = self.calculate_ema(closes, 50)
-        adx_value = _adx(highs, lows, closes).get("adx")
-        atr = self.calculate_atr(kline, 14); atr_pct = atr / closes[-1] if atr else None
-        higher_ok = True
-        if symbol and self.market:
-            higher = self.market.get_ut_kline(symbol, "4h")
-            hc = higher.get("closes", [])
-            if len(hc) < 55: higher_ok = False
-            else:
-                he9 = self.calculate_ema(hc, 9); he21 = self.calculate_ema(hc, 21); he50 = self.calculate_ema(hc, 50)
-                higher_ok = all(v is not None for v in (he9, he21, he50)) and he9 > he21 > he50 and hc[-1] > he21
-        if (all(v is not None for v in (ema9, ema21, ema50, adx_value, atr_pct)) and
-                ema9 > ema21 > ema50 and adx_value >= config.ADAPTIVE_VOLATILITY_MIN_ADX and
-                config.ADAPTIVE_VOLATILITY_MIN_ATR_PCT <= atr_pct <= config.ADAPTIVE_VOLATILITY_MAX_ATR_PCT and higher_ok):
-            return "buy"
-        return None
 
-    def strategy_regime_gate_low_turnover(self, kline, symbol=None):
-        """Low-turnover 1h trend entry; trades only a confirmed trend regime."""
-        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", []); volumes = kline.get("volumes", [])
-        if len(closes) < 55 or len(volumes) < 21: return None
-        ema9 = self.calculate_ema(closes, 9); ema21 = self.calculate_ema(closes, 21); ema50 = self.calculate_ema(closes, 50)
-        adx_value = _adx(highs, lows, closes).get("adx"); return_21 = closes[-1] / closes[-22] - 1 if closes[-22] else 0
-        volume_ratio = self._volume_ratio(kline); higher_ok = True
-        if symbol and self.market:
-            higher = self.market.get_ut_kline(symbol, "4h"); hc = higher.get("closes", [])
-            if len(hc) < 55: higher_ok = False
-            else:
-                he9 = self.calculate_ema(hc, 9); he21 = self.calculate_ema(hc, 21); he50 = self.calculate_ema(hc, 50)
-                higher_ok = all(v is not None for v in (he9, he21, he50)) and he9 > he21 > he50 and hc[-1] > he21
-        if (all(v is not None for v in (ema9, ema21, ema50, adx_value, volume_ratio)) and ema9 > ema21 > ema50 and
-                adx_value >= config.REGIME_GATE_MIN_ADX and return_21 >= config.REGIME_GATE_MIN_RETURN_PCT and
-                volume_ratio >= config.REGIME_GATE_MIN_VOLUME_RATIO and higher_ok): return "buy"
-        return None
 
-    def adr_status(self, symbol, price):
-        """Return ADR capacity for a momentum entry without using future data."""
-        if not config.ADR_FILTER_ENABLED:
-            return True, {"enabled": False}
-        daily = self.market.klines.get(config.ADR_TIMEFRAME, {}).get(symbol.upper(), {})
-        highs, lows, closes, opens = (daily.get(k, []) for k in ("highs", "lows", "closes", "opens"))
-        period = config.ADR_PERIOD
-        if len(closes) < period + 1 or len(opens) < 1:
-            return True, {"enabled": True, "ready": False, "reason": "warming_up"}
-        # Exclude the current incomplete daily candle from ADR history.
-        hist_highs, hist_lows, hist_closes = highs[-period-1:-1], lows[-period-1:-1], closes[-period-1:-1]
-        ranges = [(h - l) / c for h, l, c in zip(hist_highs, hist_lows, hist_closes) if c > 0]
-        if len(ranges) < period:
-            return True, {"enabled": True, "ready": False, "reason": "warming_up"}
-        adr_pct = float(np.mean(ranges))
-        today_open = float(opens[-1])
-        if today_open <= 0:
-            return True, {"enabled": True, "ready": False, "reason": "invalid_open"}
-        current_range_pct = max(price, today_open) / min(price, today_open) - 1 if price > 0 else 0.0
-        remaining_pct = adr_pct - current_range_pct
-        utilization = current_range_pct / adr_pct if adr_pct > 0 else 1.0
-        checks = {
-            "minimum_adr": adr_pct >= config.ADR_MIN_PCT,
-            "remaining_capacity": remaining_pct >= config.ADR_MIN_REMAINING_PCT,
-            "not_overextended": utilization <= config.ADR_MAX_UTILIZATION_PCT,
-        }
-        return all(checks.values()), {
-            "enabled": True, "ready": True, "adr_pct": adr_pct,
-            "current_range_pct": current_range_pct, "remaining_pct": remaining_pct,
-            "utilization": utilization, "checks": checks,
-        }
 
-    def strategy_mean_reversion(self, kline, symbol=None):
-        closes = kline.get("closes", [])
-        if len(closes) < 110: return None
-        bb = self.calculate_bollinger_bands(closes, config.BB_PERIOD, config.BB_STD_DEV); crsi = self.calculate_crsi(closes)
-        flow_ok, imbalance = self._optional_flow_filter(symbol) if symbol else (True, 0)
-        if bb and crsi is not None and closes[-1] < bb["lower"] and crsi < 30 and imbalance >= 0 and flow_ok: return "buy"
-        return None
 
-    def strategy_bb_mfi_mean_reversion(self, kline, symbol=None):
-        """Deterministic Flawless Victory profile selected for live paper flow."""
-        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
-        volumes = kline.get("volumes", [])
-        version = config.BB_MFI_PINE_VERSION
-        if version not in {"v1", "v2", "v3"}:
-            raise ValueError("BB_MFI_PINE_VERSION v1, v2 veya v3 olmalıdır")
-        min_history = max(config.BB_MFI_BB_PERIOD, config.BB_MFI_RSI_PERIOD + 1,
-                          config.BB_MFI_MFI_PERIOD + 1 if version == "v3" else 0)
-        if len(closes) < min_history or len(highs) < min_history or len(lows) < min_history or len(volumes) < min_history:
-            return None
-        bb = self.calculate_bollinger_bands(closes, period=config.BB_MFI_BB_PERIOD, std_dev=config.BB_MFI_BB_STD_DEV)
-        rsi = self.calculate_rsi(closes, period=config.BB_MFI_RSI_PERIOD)
-        if not bb or rsi is None:
-            return None
-        average_volume = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else 0.0
-        volume_ratio = volumes[-1] / average_volume if average_volume else 0.0
-        dip_range = highs[-1] - lows[-1]
-        close_position = (closes[-1] - lows[-1]) / dip_range if dip_range > 0 else 0.0
-        entry_volume_ok = volume_ratio >= config.BB_MFI_ENTRY_VOLUME_RATIO_MIN
-        dip_confirmed = (not config.BB_MFI_DIP_CONFIRMATION_ENABLED or
-                         close_position >= config.BB_MFI_DIP_MIN_CLOSE_POSITION)
-        if version == "v3":
-            mfi = _mfi(highs, lows, closes, volumes, config.BB_MFI_MFI_PERIOD)
-            if mfi is None:
-                return None
-            previous_mfi = _mfi(highs[:-1], lows[:-1], closes[:-1], volumes[:-1], config.BB_MFI_MFI_PERIOD)
-            mfi_reversal_ok = (not config.BB_MFI_ENTRY_MFI_REVERSAL_ENABLED or
-                               (previous_mfi is not None and mfi >= previous_mfi + config.BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA))
-            mfi_slowdown_ok = (config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP < 0 or
-                               (previous_mfi is not None and mfi >= previous_mfi - config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP))
-            bear_pressure = self._bb_mfi_bear_pressure(kline)
-            if closes[-1] < bb["lower"] and mfi < config.BB_MFI_ENTRY_MFI_MAX and entry_volume_ok and dip_confirmed and mfi_reversal_ok and mfi_slowdown_ok and not bear_pressure:
-                return "buy"
-            if (closes[-1] > bb["upper"] and rsi > config.BB_MFI_EXIT_RSI_MIN and
-                    mfi > config.BB_MFI_EXIT_MFI_MIN):
-                return "sell"
-            return None
-        lower = config.BB_MFI_V1_RSI_LOWER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_LOWER_LEVEL
-        upper = config.BB_MFI_V1_RSI_UPPER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_UPPER_LEVEL
-        if closes[-1] < bb["lower"] and rsi > lower and entry_volume_ok and dip_confirmed:
-            return "buy"
-        if closes[-1] > bb["upper"] and rsi > upper:
-            return "sell"
-        return None
 
-    def _bb_mfi_sell_signal_confirmed(self, kline, symbol=None):
-        """Check consecutive closed M5 SELL signals without persisted state.
 
-        Market data retains completed candles.  Recalculating each required
-        trailing signal from that history makes a restart unable to erase a
-        partial confirmation sequence.
-        """
-        required = config.BB_MFI_SELL_SIGNAL_CONFIRM_BARS
-        closes = kline.get("closes", [])
-        if len(closes) < required:
-            return False
-        for offset in range(required):
-            end = len(closes) - offset
-            signal_kline = dict(kline)
-            for field in ("closes", "highs", "lows", "volumes"):
-                signal_kline[field] = (kline.get(field) or [])[:end]
-            if self.strategy_bb_mfi_mean_reversion(signal_kline, symbol) != "sell":
-                return False
-        return True
 
-    @staticmethod
-    def _bb_mfi_entry_context_block_reason(technical, kline):
-        """Return a deterministic BB/MFI entry block reason, if any.
-
-        Bearish EMA alignment is not an absolute ban for a mean-reversion
-        strategy. It must, however, show both a candle recovery and an MFI
-        reversal. Every input uses the current or an already-closed prior bar.
-        """
-        if not isinstance(technical, dict) or not technical.get("data_ready"):
-            return "technical_data_not_ready" if config.BB_MFI_REQUIRE_DATA_READY else None
-
-        alignment = str((technical.get("trend") or {}).get("alignment") or "").lower()
-        if alignment != "bearish" or not config.BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION:
-            return None
-
-        closes = kline.get("closes", []) if isinstance(kline, dict) else []
-        highs = kline.get("highs", []) if isinstance(kline, dict) else []
-        lows = kline.get("lows", []) if isinstance(kline, dict) else []
-        volumes = kline.get("volumes", []) if isinstance(kline, dict) else []
-        if min(len(closes), len(highs), len(lows), len(volumes)) < config.BB_MFI_MFI_PERIOD + 2:
-            return "bearish_reversal_data_insufficient"
-
-        candle_range = highs[-1] - lows[-1]
-        close_position = (closes[-1] - lows[-1]) / candle_range if candle_range > 0 else 0.0
-        current_mfi = _mfi(highs, lows, closes, volumes, config.BB_MFI_MFI_PERIOD)
-        previous_mfi = _mfi(highs[:-1], lows[:-1], closes[:-1], volumes[:-1], config.BB_MFI_MFI_PERIOD)
-        mfi_reversal = (
-            current_mfi is not None and previous_mfi is not None and
-            current_mfi >= previous_mfi + config.BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA
-        )
-        if close_position < config.BB_MFI_BEARISH_MIN_CLOSE_POSITION:
-            return "bearish_reversal_candle_unconfirmed"
-        if not mfi_reversal:
-            return "bearish_reversal_mfi_unconfirmed"
-        return None
-
-    @staticmethod
-    def _bb_mfi_bear_pressure(kline):
-        """Causal M5 selloff gate for V3 long entries; disabled only by config."""
-        if not config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED:
-            return False
-        closes = kline.get("closes", []); highs = kline.get("highs", []); lows = kline.get("lows", [])
-        if len(closes) < 13:
-            return False
-        directional = _adx(highs, lows, closes) or {}
-        adx, plus_di, minus_di = directional.get("adx"), directional.get("plus_di"), directional.get("minus_di")
-        if not all(isinstance(value, (int, float)) for value in (adx, plus_di, minus_di)):
-            return False
-        return_1h = closes[-1] / closes[-13] - 1 if closes[-13] else 0.0
-        return_15m = closes[-1] / closes[-4] - 1 if closes[-4] else 0.0
-        return (adx >= config.BB_MFI_BEAR_PRESSURE_MIN_ADX and
-                minus_di - plus_di >= config.BB_MFI_BEAR_PRESSURE_MIN_DI_GAP and
-                return_1h <= -config.BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT / 100 and
-                return_15m <= -config.BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT / 100)
-
-    def strategy_bb_squeeze_orderflow(self, kline, symbol=None):
-        if symbol:
-            flow_ok, _ = self._flow_filter(symbol)
-        else:
-            flow_ok = (self.calculate_orderflow_proxy(kline) or 0) >= 0.10
-        return "buy" if flow_ok and self.strategy_bollinger_squeeze(kline) == "buy" else None
-
-    def strategy_keltner_breakout(self, kline, symbol=None):
-        closes, highs, lows, volumes = [kline.get(k, []) for k in ("closes", "highs", "lows", "volumes")]
-        if len(closes) < 30: return None
-        ema = self.calculate_ema(closes, config.KELTNER_EMA_PERIOD); atr = self.calculate_atr(kline, config.KELTNER_ATR_PERIOD)
-        avg_vol = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else 0
-        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0.05, 0)
-        mtf_ok = self._mtf_bullish(symbol, config.KELTNER_TIMEFRAME) if config.KELTNER_REQUIRE_MTF_ALIGNMENT else True
-        previous = {key: values[:-1] for key, values in kline.items() if isinstance(values, list)}
-        prev_ema = self.calculate_ema(previous.get("closes", []), config.KELTNER_EMA_PERIOD)
-        prev_atr = self.calculate_atr(previous, config.KELTNER_ATR_PERIOD)
-        upper = ema + config.KELTNER_ATR_MULTIPLIER * atr if ema is not None and atr else None
-        was_below_band = prev_ema is not None and prev_atr is not None and closes[-2] <= prev_ema + config.KELTNER_ATR_MULTIPLIER * prev_atr
-        retest_ok = not config.KELTNER_REQUIRE_RETEST or (upper is not None and lows[-1] <= upper * 1.001 and closes[-1] > upper)
-        if ema is not None and atr and was_below_band and retest_ok and volumes[-1] >= avg_vol * config.KELTNER_VOLUME_MULTIPLIER and flow_ok and mtf_ok: return "buy"
-        return None
 
     def calculate_chop(self, kline, period=14):
         highs, lows, closes = kline.get("highs", []), kline.get("lows", []), kline.get("closes", [])
@@ -1176,110 +639,24 @@ class ScalpAnalyzer:
         hi, lo = max(highs[-period:]), min(lows[-period:]); span = hi - lo
         return 100 * np.log10(sum(tr) / span) / np.log10(period) if span > 0 else 100.0
 
-    def strategy_chop_trend(self, kline, symbol=None):
-        closes = kline.get("closes", [])
-        if len(closes) < 30: return None
-        chop = self.calculate_chop(kline, config.CHOP_PERIOD); rsi = self.calculate_rsi(closes, config.RSI_PERIOD)
-        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0, 0)
-        if chop is not None and chop < config.CHOP_MAX_VALUE and rsi is not None and rsi > config.CHOP_MIN_RSI and closes[-1] > closes[-2] and flow_ok: return "buy"
-        return None
-
-    def strategy_donchian_breakout(self, kline, symbol=None):
-        closes, volumes = kline.get("closes", []), kline.get("volumes", [])
-        lookback = config.DONCHIAN_LOOKBACK
-        if len(closes) < lookback + 2: return None
-        upper = max(closes[-lookback-1:-1]); avg_vol = float(np.mean(volumes[-lookback-1:-1]))
-        flow_ok, _ = self._optional_flow_filter(symbol) if symbol else ((self.calculate_orderflow_proxy(kline) or 0) >= 0, 0)
-        if closes[-1] > upper and volumes[-1] >= avg_vol * config.DONCHIAN_VOLUME_MULTIPLIER and flow_ok: return "buy"
-        return None
-
     async def evaluate(self, symbol, ticker, allow_entry=True):
+        """Açık pozisyon yönetimi.
+
+        Klasik strateji motoru (EMA_VWAP, BB_SQUEEZE, ORDERFLOW, MOMENTUM,
+        KELTNER, CHOP, DONCHIAN, BB_MFI, UT) 2026-09-04'te kaldırıldı —
+        sistem yalnızca velocity/monitoring (CHAT_PREDICTION) ve LLM paper
+        yollarını kullanıyor. Bu metot artık YENİ GİRİŞ TARAMASI yapmaz;
+        yalnızca açık pozisyonları (stop/TP/trailing/timeout) yönetir.
+        """
         signals = []
         price = ticker["last_price"]
         await self._evaluate_pending_orders(symbol, price)
 
-        # Açık spot pozisyonu time-decay hedef, hard stop ve timeout ile yönet.
         if symbol in self.positions:
             strat = self.positions[symbol].get("strategy")
-            # UT stratejisi de artık _manage_open_position'a girer
-            sig = await self._manage_open_position(symbol, price, strat or "EMA_VWAP_PULLBACK")
-            if sig: signals.append(sig)
-            if sig: return signals
-            # Pozisyon yönetimi her çağrıda devam eder; yeni katman yalnızca
-            # periyodik giriş taraması sırasında değerlendirilebilir.
-            if not allow_entry:
-                return signals
-            # Pozisyon yalnızca kendisini açan stratejinin sinyaliyle yönetilir.
-            strategy_specs = [
-                (config.EMA_VWAP_ENABLED, "EMA_VWAP_PULLBACK", self.strategy_ema_vwap, config.EMA_VWAP_TIMEFRAME),
-                (config.BB_SQUEEZE_ENABLED, "BB_SQUEEZE_ORDERFLOW", self.strategy_bb_squeeze_orderflow, config.BB_SQUEEZE_TIMEFRAME),
-                (config.ORDERFLOW_ENABLED, "ORDERFLOW", self.strategy_orderflow, config.ORDERFLOW_TIMEFRAME),
-                (config.MOMENTUM_ENABLED, "MOMENTUM", self.strategy_momentum, config.MOMENTUM_TIMEFRAME),
-                (config.MOMENTUM_COST_AWARE_ENABLED, "MOMENTUM_COST_AWARE", self.strategy_momentum_cost_aware, config.MOMENTUM_TIMEFRAME),
-                (config.OVERSOLD_TREND_REENTRY_ENABLED, "OVERSOLD_TREND_REENTRY", self.strategy_oversold_trend_reentry, config.OVERSOLD_TREND_REENTRY_TIMEFRAME),
-                (config.ADAPTIVE_VOLATILITY_TREND_ENABLED, "ADAPTIVE_VOLATILITY_TREND", self.strategy_adaptive_volatility_trend, config.ADAPTIVE_VOLATILITY_TREND_TIMEFRAME),
-                (config.REGIME_GATE_LOW_TURNOVER_ENABLED, "REGIME_GATE_LOW_TURNOVER", self.strategy_regime_gate_low_turnover, config.REGIME_GATE_LOW_TURNOVER_TIMEFRAME),
-                (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
-                (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),
-                (config.DONCHIAN_ENABLED, "DONCHIAN_BREAKOUT", self.strategy_donchian_breakout, config.DONCHIAN_TIMEFRAME),
-                (config.MEAN_REVERSION_ENABLED, "BB_MFI_MEAN_REVERSION", self.strategy_bb_mfi_mean_reversion, config.ACTIVE_STRATEGY_TIMEFRAME),
-            ]
-            selected = next((item for item in strategy_specs if item[1] == strat and item[0]), None)
-            if selected:
-                _, name, fn, tf = selected
-                strategy_kline = self.market.get_ut_kline(symbol, tf)
-                result = fn(strategy_kline, symbol)
-                if result == "sell" and config.EXIT_ON_OPPOSITE_SIGNAL:
-                    return [await self.close_position(symbol, price, "opposite_signal")]
-                if result == "buy" and strat == "BB_MFI_MEAN_REVERSION":
-                    max_layers = int(config.SYMBOL_PYRAMIDING_LAYERS.get(symbol, config.PYRAMIDING_LAYERS))
-                    if self.positions[symbol].get("layers", 1) < max_layers:
-                        added = await self.open_position(symbol, price, "LONG", strat)
-                        if added: signals.append(added)
-                # Spotta aynı sembole tekrar katman ekleme yok: tek sembol = tek pozisyon.
-                # Yalnızca seçili BB-MFI stratejisinde ayarlanmış katman sınırına kadar ekleme yapılır.
-            return signals
-
-        if not allow_entry:
-            return signals
-
-        # Açık pozisyon yok: aktif stratejileri sırayla değerlendir
-        eval_order = [
-            (config.EMA_VWAP_ENABLED, "EMA_VWAP_PULLBACK", self.strategy_ema_vwap, config.EMA_VWAP_TIMEFRAME),
-            (config.BB_SQUEEZE_ENABLED, "BB_SQUEEZE_ORDERFLOW", self.strategy_bb_squeeze_orderflow, config.BB_SQUEEZE_TIMEFRAME),
-            (config.ORDERFLOW_ENABLED, "ORDERFLOW", self.strategy_orderflow, config.ORDERFLOW_TIMEFRAME),
-            (config.MOMENTUM_ENABLED, "MOMENTUM", self.strategy_momentum, config.MOMENTUM_TIMEFRAME),
-            (config.MOMENTUM_COST_AWARE_ENABLED, "MOMENTUM_COST_AWARE", self.strategy_momentum_cost_aware, config.MOMENTUM_TIMEFRAME),
-            (config.OVERSOLD_TREND_REENTRY_ENABLED, "OVERSOLD_TREND_REENTRY", self.strategy_oversold_trend_reentry, config.OVERSOLD_TREND_REENTRY_TIMEFRAME),
-            (config.ADAPTIVE_VOLATILITY_TREND_ENABLED, "ADAPTIVE_VOLATILITY_TREND", self.strategy_adaptive_volatility_trend, config.ADAPTIVE_VOLATILITY_TREND_TIMEFRAME),
-            (config.REGIME_GATE_LOW_TURNOVER_ENABLED, "REGIME_GATE_LOW_TURNOVER", self.strategy_regime_gate_low_turnover, config.REGIME_GATE_LOW_TURNOVER_TIMEFRAME),
-            (config.KELTNER_ENABLED, "KELTNER_BREAKOUT", self.strategy_keltner_breakout, config.KELTNER_TIMEFRAME),
-            (config.CHOP_ENABLED, "CHOP_TREND_FILTER", self.strategy_chop_trend, config.CHOP_TIMEFRAME),
-                (config.DONCHIAN_ENABLED, "DONCHIAN_BREAKOUT", self.strategy_donchian_breakout, config.DONCHIAN_TIMEFRAME),
-                (config.MEAN_REVERSION_ENABLED, "BB_MFI_MEAN_REVERSION", self.strategy_bb_mfi_mean_reversion, config.ACTIVE_STRATEGY_TIMEFRAME),
-        ]
-        for enabled, name, fn, tf in eval_order:
-            if not enabled: continue
-            kline = self.market.get_ut_kline(symbol, tf)
-            length_key = (symbol, name)
-            current_length = len(kline.get("closes", []))
-            if current_length == self._last_signal_lengths.get(length_key):
-                continue
-            self._last_signal_lengths[length_key] = current_length
-            result = fn(kline, symbol)
-            if result == "buy":
-                if name == "MOMENTUM":
-                    adr_ok, adr = self.adr_status(symbol, price)
-                    if not adr_ok:
-                        failed = [key for key, ok in adr.get("checks", {}).items() if not ok]
-                        reason = "adr_filter:" + ",".join(failed or [adr.get("reason", "unknown")])
-                        blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": price,
-                                   "reason": reason, "strategy": name, "timestamp": time.time()}
-                        await database.save_signal(blocked)
-                        return signals + [blocked]
-                sig = await self.open_position(symbol, price, "LONG", name)
-                if sig: signals.append(sig)
-                break
+            sig = await self._manage_open_position(symbol, price, strat or "CHAT_PREDICTION")
+            if sig:
+                signals.append(sig)
         return signals
 
     async def close_position(self, symbol, price, reason):
@@ -1305,7 +682,7 @@ class ScalpAnalyzer:
         try_balance = await database.get_wallet_balance("TRY")
         trade = await self._record_trade(symbol, pos, price, reason, commission)
         sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price,
-               "strategy": pos.get("strategy", "UT"), "trade_id": pos.get("trade_id"), "timestamp": time.time()}
+               "strategy": pos.get("strategy", "CHAT_PREDICTION"), "trade_id": pos.get("trade_id"), "timestamp": time.time()}
         await database.commit_close_position(symbol, symbol.replace("TRY", ""), try_balance + sell_value - commission, trade, sig)
         try:
             await agent_learning.record_paper_trade_outcome(trade)
@@ -1341,7 +718,7 @@ class ScalpAnalyzer:
                 "symbol": symbol, "action": "LLM_REENTRY_BLOCKED", "price": price,
                 "reason": guard_reason, "strategy": "LLM_PAPER", "timestamp": time.time(),
             })
-        tf = self._strategy_tf(pos.get("strategy", "UT"))
+        tf = self._strategy_tf(pos.get("strategy", "CHAT_PREDICTION"))
         current_bar = self._current_bar(symbol, tf)
         if current_bar is not None:
             cooldown_bars = (config.VELOCITY_REENTRY_COOLDOWN_BARS
@@ -1369,15 +746,6 @@ class ScalpAnalyzer:
         """Kapanan pozisyonu işlem geçmişine kaydet (komisyon dahil)."""
         entry = pos["entry_price"]
         entry_context = dict(pos.get("entry_context") or {})
-        # Positions opened before the context correction may still carry the
-        # generic spot plan.  Normalize their closed-trade audit record to the
-        # BB-MFI plan that the position manager actually enforced.
-        if pos.get("strategy") == "BB_MFI_MEAN_REVERSION":
-            entry_context.update({
-                "profit_target_pct": config.BB_MFI_TAKE_PROFIT_PCT,
-                "stop_loss_pct": config.BB_MFI_STOP_LOSS_PCT,
-                "max_hold_sec": None,
-            })
         buy_commission = (pos["quantity"] * entry) * config.COMMISSION_PCT
         total_commission = buy_commission + commission
         pnl = (exit_price - entry) * pos["quantity"] - total_commission
@@ -1386,7 +754,7 @@ class ScalpAnalyzer:
         max_favorable_pct = ((pos.get("max_price", entry) - entry) / entry) if entry else 0.0
         max_adverse_pct = ((pos.get("min_price", entry) - entry) / entry) if entry else 0.0
         return {
-            "symbol": symbol, "strategy": pos.get("strategy", "UT"),
+            "symbol": symbol, "strategy": pos.get("strategy", "CHAT_PREDICTION"),
             "trade_id": pos.get("trade_id"),
             "side": pos.get("side", "LONG"), "entry_price": entry, "exit_price": exit_price,
             "quantity": pos.get("quantity", 0.0), "pnl": pnl, "pnl_pct": pnl_pct,
@@ -1399,7 +767,7 @@ class ScalpAnalyzer:
             "hold_seconds": hold_seconds,
         }
 
-    async def open_position(self, symbol, entry_price, side="LONG", strat_name="UT", order_value=None, stop_loss_pct=None, take_profit_pct=None, max_hold_sec=None, entry_context_extra=None):
+    async def open_position(self, symbol, entry_price, side="LONG", strat_name="CHAT_PREDICTION", order_value=None, stop_loss_pct=None, take_profit_pct=None, max_hold_sec=None, entry_context_extra=None):
         # Strategy loop ve Gainer Radar aynı anda aynı sembolü tetikleyebilir.
         # Cüzdan düşümü ile pozisyon kaydı tek atomik akışta yapılmalı.
         async with self._open_position_lock:
@@ -1416,7 +784,7 @@ class ScalpAnalyzer:
             return {}
         flow = self.market.get_orderflow(symbol)
         try:
-            freshness = self.market.data_freshness(symbol, config.MOMENTUM_TIMEFRAME)
+            freshness = self.market.data_freshness(symbol, "5m")
             orderbook_stale = not freshness.get("orderbook", {}).get("fresh", False)
         except Exception:
             orderbook_stale = False
@@ -1452,15 +820,9 @@ class ScalpAnalyzer:
         if strat_name == "LLM_PAPER" and requested > 0:
             return min(requested, try_balance / (1 + config.COMMISSION_PCT))
         available_value = try_balance / (1 + config.COMMISSION_PCT)
-        if strat_name == "BB_MFI_MEAN_REVERSION":
-            # User-selected cash budgeting: each new BB-MFI layer consumes a
-            # percentage of currently available TRY, never total equity.
-            order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
-            order_value = available_value * max(0.001, min(order_pct, 1.0))
-        else:
-            order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
-            order_value = available_value * max(0.001, min(order_pct, 1.0))
-        if order_value < config.MIN_PARTIAL_ORDER_TRY and strat_name != "BB_MFI_MEAN_REVERSION":
+        order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
+        order_value = available_value * max(0.001, min(order_pct, 1.0))
+        if order_value < config.MIN_PARTIAL_ORDER_TRY:
             if available_value >= config.FALLBACK_ORDER_TRY:
                 order_value = config.FALLBACK_ORDER_TRY
             elif available_value >= config.MIN_PARTIAL_ORDER_TRY:
@@ -1484,7 +846,7 @@ class ScalpAnalyzer:
                 order_value *= scale
         return order_value
 
-    async def entry_liquidity_preflight(self, symbol, strat_name="UT", requested_order_value=None):
+    async def entry_liquidity_preflight(self, symbol, strat_name="CHAT_PREDICTION", requested_order_value=None):
         """Gate a *new* entry before strategy/LLM signal production.
 
         This creates no signal, order, or position.  A false result is an
@@ -1505,7 +867,7 @@ class ScalpAnalyzer:
             details["reason"] = self._liquidity_reason(details)
         return liquid, details
 
-    async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="UT", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None, entry_context_extra=None):
+    async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="CHAT_PREDICTION", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None, entry_context_extra=None):
         symbol = str(symbol).replace("_", "").upper()
         # Kullanıcı kararı (2026-09-03): strategy-level circuit breaker pause
         # kaldırıldı. Pause'lu strateji artık yeni pozisyon açabilir; risk
@@ -1562,40 +924,18 @@ class ScalpAnalyzer:
         if symbol not in self.positions and symbol in db_positions:
             self.positions[symbol] = db_positions[symbol]
         if symbol in self.positions:
+            # Tek sembol = tek pozisyon; katman/pyramiding yalnızca BB-MFI'ya
+            # aitti ve o stratejiyle birlikte kaldırıldı (2026-09-04).
             await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                         "reason": "position_already_open", "strategy": strat_name, "timestamp": time.time()})
-            existing = self.positions[symbol]
-            max_layers = int(config.SYMBOL_PYRAMIDING_LAYERS.get(symbol, config.PYRAMIDING_LAYERS))
-            layers = int(existing.get("layers", 1))
-            if strat_name != existing.get("strategy"):
-                return None
-            if strat_name == "BB_MFI_MEAN_REVERSION":
-                quantity = float(existing.get("quantity") or 0)
-                average_entry = float(existing.get("entry_price") or 0)
-                net_exit_value = quantity * float(entry_price) * (1 - config.COMMISSION_PCT)
-                cost_basis = quantity * average_entry * (1 + config.COMMISSION_PCT)
-                if config.BB_MFI_PYRAMID_REQUIRE_NET_PROFIT and (quantity <= 0 or net_exit_value <= cost_basis):
-                    await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                                "reason": "bb_mfi_pyramid_underwater", "strategy": strat_name,
-                                                "timestamp": time.time(), "layers": layers,
-                                                "net_unrealized_pnl_try": net_exit_value - cost_basis})
-                    return None
-                extension_allowed = (layers < max_layers + config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS and
-                                     self._bb_mfi_layers_net_profitable(existing, entry_price))
-                if layers >= max_layers and not extension_allowed:
-                    await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                                                "reason": "bb_mfi_pyramid_profit_extension_not_eligible", "strategy": strat_name,
-                                                "timestamp": time.time(), "layers": layers})
-                    return None
-            elif layers >= max_layers:
-                return None
+            return None
         else:
             if len(self.positions) >= self.max_open_positions():
                 blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                            "reason": "max_open_positions_reached", "strategy": strat_name, "timestamp": time.time()}
                 await database.save_signal(blocked)
                 return blocked
-            if strat_name not in {"LLM_PAPER", "FISHER_M3_KERNEL_M5_EXACT_PAPER"}:
+            if strat_name != "LLM_PAPER":
                 block_reason = self._reentry_block_reason(symbol, self._strategy_tf(strat_name))
                 if block_reason:
                     blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
@@ -1612,11 +952,8 @@ class ScalpAnalyzer:
         else:
             order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
             available_value = try_balance / (1 + config.COMMISSION_PCT)
-            if strat_name == "BB_MFI_MEAN_REVERSION":
-                order_value = available_value * max(0.001, min(order_pct, 1.0))
-            else:
-                order_value = available_value * max(0.001, min(order_pct, 1.0))
-            if order_value < config.MIN_PARTIAL_ORDER_TRY and strat_name != "BB_MFI_MEAN_REVERSION":
+            order_value = available_value * max(0.001, min(order_pct, 1.0))
+            if order_value < config.MIN_PARTIAL_ORDER_TRY:
                 # Küçük yüzde tutarı yüzünden kullanılabilir bakiye boşta
                 # kalmasın: önce 250 TL kademeli tutarı, son aşamada ise
                 # minimumun üzerindeki tüm kalan bakiyeyi kullan.
@@ -1624,7 +961,7 @@ class ScalpAnalyzer:
                     order_value = config.FALLBACK_ORDER_TRY
                 elif available_value >= config.MIN_PARTIAL_ORDER_TRY:
                     order_value = available_value
-                elif strat_name != "BB_MFI_MEAN_REVERSION":
+                else:
                     await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                                                 "reason": "insufficient_balance_for_minimum_order", "strategy": strat_name, "timestamp": time.time()})
                     return None
@@ -1684,7 +1021,7 @@ class ScalpAnalyzer:
                               "liquidity": details}
                 print(f"[Likidite] {symbol} giriş ön-koşulu sağlanmadı: {reason}")
                 return ineligible
-            target_pct = config.BB_MFI_TAKE_PROFIT_PCT if strat_name == "BB_MFI_MEAN_REVERSION" else config.SPOT_PROFIT_TARGET_PCT
+            target_pct = config.SPOT_PROFIT_TARGET_PCT
             target_value = order_value * (1 + target_pct)
             expected_gross = order_value * target_pct
             expected_fees = (order_value + target_value) * config.COMMISSION_PCT
@@ -1703,7 +1040,6 @@ class ScalpAnalyzer:
                                             "reason": "expected_net_below_floor", "strategy": strat_name,
                                             "timestamp": time.time()})
                 return ineligible
-        is_bb_mfi = strat_name == "BB_MFI_MEAN_REVERSION"
         if strat_name == "CHAT_PREDICTION":
             # İki giriş yolu, iki çıkış planı:
             # - Chat tahmin otomatı (replay planı TP %0.8 / SL %0.5 / 900 sn):
@@ -1728,21 +1064,15 @@ class ScalpAnalyzer:
         else:
             planned_take_profit_pct = (
                 float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
-                else (None if strat_name == "LLM_PAPER" else
-                      (config.BB_MFI_TAKE_PROFIT_PCT if is_bb_mfi else config.SPOT_PROFIT_TARGET_PCT))
+                else None if strat_name == "LLM_PAPER" else config.SPOT_PROFIT_TARGET_PCT
             )
             planned_stop_loss_pct = (
                 float(requested_stop_pct) if strat_name == "LLM_PAPER" and requested_stop_pct is not None
-                else (None if strat_name == "LLM_PAPER" else
-                      (config.BB_MFI_STOP_LOSS_PCT if is_bb_mfi else config.HARD_STOP_LOSS_PCT))
+                else None if strat_name == "LLM_PAPER" else config.HARD_STOP_LOSS_PCT
             )
-            # BB-MFI exits through its fixed stop/target or a confirmed sell
-            # signal; the generic max-hold setting is not an active exit for
-            # this strategy.
             planned_max_hold_sec = (
                 int(requested_hold_sec) if strat_name == "LLM_PAPER" and requested_hold_sec is not None
-                else (None if strat_name in {"LLM_PAPER", "BB_MFI_MEAN_REVERSION"}
-                      else config.MAX_POSITION_HOLD_SEC)
+                else None if strat_name == "LLM_PAPER" else config.MAX_POSITION_HOLD_SEC
             )
         entry_context = {"strategy_revision": config.STRATEGY_REVISION,
                          "liquidity": details if self.market else {},
@@ -1753,10 +1083,6 @@ class ScalpAnalyzer:
                          "profit_target_pct": planned_take_profit_pct,
                          "stop_loss_pct": planned_stop_loss_pct,
                          "max_hold_sec": planned_max_hold_sec,
-                         "sell_signal_confirm_bars": config.BB_MFI_SELL_SIGNAL_CONFIRM_BARS if is_bb_mfi else None,
-                         "bear_pressure_filter_enabled": config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED,
-                         "pyramid_require_net_profit": config.BB_MFI_PYRAMID_REQUIRE_NET_PROFIT,
-                         "pyramid_profit_extension_layers": config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS,
                          "order_value_try": order_value,
                          "partial_order": order_value < config.DEFAULT_ORDER_USDT}
         # Observation only: preserve the exact symbol-activity context used at
@@ -1808,62 +1134,35 @@ class ScalpAnalyzer:
                 mtf_snapshots[timeframe] = snapshot
             entry_context["technical"]["mtf_snapshots"] = mtf_snapshots
             entry_context["technical"]["mtf_timeframes"] = list(mtf_snapshots)
-            if strat_name == "BB_MFI_MEAN_REVERSION":
-                block_reason = self._bb_mfi_entry_context_block_reason(
-                    entry_context["technical"], symbol_klines[technical_tf]
-                )
-                if block_reason:
-                    blocked = {
-                        "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
-                        "reason": block_reason, "strategy": strat_name, "timestamp": time.time(),
-                        "technical": entry_context["technical"],
-                    }
-                    await database.save_signal(blocked)
-                    return blocked
         quantity = order_value / entry_price
         commission = order_value * config.COMMISSION_PCT
 
         next_cash = try_balance - order_value - commission
 
-        existing = self.positions.get(symbol)
-        if existing:
-            layer_entry_price = float(entry_price)
-            total_qty = existing["quantity"] + quantity
-            entry_price = ((existing["entry_price"] * existing["quantity"]) + (entry_price * quantity)) / total_qty
-            pos = {**existing, "entry_price": entry_price, "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)), "quantity": total_qty, "layers": existing.get("layers", 1) + 1}
-            pos.setdefault("entry_layers", []).append({"entry_price": layer_entry_price, "quantity": quantity})
-            if strat_name == "BB_MFI_MEAN_REVERSION":
-                pos["system_stop_price"] = entry_price * (1 - config.BB_MFI_STOP_LOSS_PCT)
-                pos["system_take_profit_price"] = entry_price * (1 + config.BB_MFI_TAKE_PROFIT_PCT)
-                pos["stop_price"] = pos["system_stop_price"]
-                pos["take_profit"] = pos["system_take_profit_price"]
-        else:
-            pos = {
+        # Pyramid/katman açılımı BB-MFI ile kaldırıldı: zaten açık pozisyon
+        # yukarıda BUY_BLOCKED ile reddedilir; burada her zaman yeni pozisyon.
+        pos = {
             "side": "LONG",  # Binance TR Spot olduğu için her zaman LONG
             "entry_price": entry_price,
-                "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)),
-                "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1,
-                "trade_id": uuid.uuid4().hex,
-                "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context,
-                "entry_layers": [{"entry_price": float(entry_price), "quantity": quantity}]
-            }
-            if strat_name != "LLM_PAPER":
+            "spot_profit_target": entry_price * (1 + (float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)),
+            "quantity": quantity, "entry_time": time.time(), "strategy": strat_name, "layers": 1,
+            "trade_id": uuid.uuid4().hex,
+            "max_price": entry_price, "min_price": entry_price, "entry_context": entry_context,
+            "entry_layers": [{"entry_price": float(entry_price), "quantity": quantity}]
+        }
+        if strat_name != "LLM_PAPER":
                 technical_tf = self._strategy_tf(strat_name)
                 system_kline = self.market.get_ut_kline(symbol, technical_tf) if self.market else None
                 atr = self.calculate_atr(system_kline, config.SYSTEM_ATR_PERIOD) if system_kline else None
                 if strat_name == "CHAT_PREDICTION":
                     # Replay planındaki SL (%0.5) burada gerçek stop olur.
+                    # CHAT_PREDICTION stop'u ATR'ye göre genişletilmez: plan
+                    # yüzdesi birebir uygulanır (stop = giriş × (1 - SL%)).
                     strategy_stop_pct = planned_stop_loss_pct
-                elif strat_name == "BB_MFI_MEAN_REVERSION":
-                    strategy_stop_pct = config.BB_MFI_STOP_LOSS_PCT
-                else:
-                    strategy_stop_pct = config.HARD_STOP_LOSS_PCT
-                # CHAT_PREDICTION stop'u ATR'ye göre genişletilmez: plan
-                # yüzdesi birebir uygulanır (stop = giriş × (1 - SL%)).
-                if strat_name == "CHAT_PREDICTION":
                     stop_distance = entry_price * strategy_stop_pct
                 else:
-                    stop_distance = entry_price * strategy_stop_pct if strat_name == "BB_MFI_MEAN_REVERSION" else max(
+                    strategy_stop_pct = config.HARD_STOP_LOSS_PCT
+                    stop_distance = max(
                         entry_price * strategy_stop_pct,
                         float(atr or 0) * config.SYSTEM_INITIAL_STOP_ATR_MULTIPLIER,
                     )
@@ -1888,14 +1187,14 @@ class ScalpAnalyzer:
                     if planned_max_hold_sec is not None:
                         pos["velocity_max_hold_sec"] = planned_max_hold_sec
                 else:
-                    pos["system_take_profit_price"] = entry_price * (1 + config.BB_MFI_TAKE_PROFIT_PCT) if strat_name == "BB_MFI_MEAN_REVERSION" else entry_price + stop_distance * config.SYSTEM_RISK_REWARD
+                    pos["system_take_profit_price"] = entry_price + stop_distance * config.SYSTEM_RISK_REWARD
                 pos["stop_price"] = pos["system_stop_price"]
                 pos["take_profit"] = pos.get("system_take_profit_price")
                 pos["system_atr"] = float(atr or 0)
                 pos["system_risk_reward"] = config.SYSTEM_RISK_REWARD
                 pos["system_exit_model"] = ("chat_replay_plan" if planned_take_profit_pct is not None
                                             else "velocity_no_plan") if strat_name == "CHAT_PREDICTION" else "atr_trailing_after_rr_target"
-            if strat_name == "LLM_PAPER":
+        if strat_name == "LLM_PAPER":
                 if requested_stop_pct is not None:
                     pos["llm_stop_price"] = entry_price * (1 - max(0.0001, float(requested_stop_pct)))
                 if requested_tp_pct is not None:

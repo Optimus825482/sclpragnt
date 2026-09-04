@@ -6,7 +6,7 @@ import time
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 import io
 import csv
@@ -20,7 +20,7 @@ from app.routers.velocity import (_velocity_ml_feature_dict,
 from app.config import config
 from app import database
 from app.state import market, analyzer
-from app.api_common import _start_background, _record_strategy_scan_log
+from app.api_common import _start_background
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols
 
 logger = logging.getLogger("scalper.maintenance")
@@ -36,28 +36,14 @@ _velocity_ml_backfill = {"status": "idle", "phase": "idle", "progress": 0, "comp
                          "logs": [], "result": None, "started_at": None, "finished_at": None}
 _velocity_ml_backfill_task = None
 
-_strategy_replay_jobs = {}
 _symbol_history_backfills = set()
 
 def _replay_parity_config_snapshot():
     """Return only decision-relevant, JSON-safe settings for a scan record."""
     fields = (
-        "ACTIVE_STRATEGY", "ACTIVE_STRATEGY_TIMEFRAME", "ORDER_PCT",
-        "MAX_OPEN_POSITIONS", "PYRAMIDING_LAYERS", "COMMISSION_PCT",
+        "ORDER_PCT",
+        "MAX_OPEN_POSITIONS", "COMMISSION_PCT",
         "ESTIMATED_SLIPPAGE_PCT", "HARD_STOP_LOSS_PCT",
-        "BB_MFI_PINE_VERSION", "BB_MFI_BB_PERIOD", "BB_MFI_BB_STD_DEV",
-        "BB_MFI_MFI_PERIOD", "BB_MFI_RSI_PERIOD", "BB_MFI_ENTRY_MFI_MAX",
-        "BB_MFI_EXIT_RSI_MIN", "BB_MFI_EXIT_MFI_MIN",
-        "BB_MFI_SELL_SIGNAL_CONFIRM_BARS",
-        "BB_MFI_DIP_CONFIRMATION_ENABLED", "BB_MFI_DIP_MIN_CLOSE_POSITION",
-        "BB_MFI_ENTRY_MFI_REVERSAL_ENABLED", "BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA",
-        "BB_MFI_BEAR_PRESSURE_FILTER_ENABLED", "BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION",
-        "BB_MFI_PYRAMID_REQUIRE_NET_PROFIT", "BB_MFI_STOP_LOSS_PCT", "BB_MFI_TAKE_PROFIT_PCT",
-        "PUMP_MONITOR_ENABLED", "PUMP_MONITOR_AUTO_TRADE", "PUMP_MONITOR_MIN_SCORE",
-        "PUMP_MONITOR_MAX_OPEN_POSITIONS", "PUMP_MONITOR_REQUIRE_M15_BULLISH",
-        "PUMP_MONITOR_BREAK_EVEN_ENABLED", "PUMP_MONITOR_BREAK_EVEN_TRIGGER_PCT",
-        "PUMP_MONITOR_MAX_ENTRY_VOLUME_RATIO", "PUMP_MONITOR_FAST_FAIL_SEC",
-        "PUMP_MONITOR_FAST_FAIL_MIN_PROGRESS_PCT",
         "TOP_GAINERS_AUTO_ACTIVATE", "TOP_GAINERS_LIMIT", "TOP_GAINERS_REFRESH_SEC",
         "SYMBOL_ACTIVITY_FILTER_ENABLED", "SYMBOL_ACTIVITY_MIN_QUOTE_VOLUME_TRY",
         "SYMBOL_ACTIVITY_MIN_RANGE_15M_PCT", "SYMBOL_ACTIVITY_MIN_ATR_PCT",
@@ -85,7 +71,7 @@ def _replay_parity_candle_evidence(symbol: str, timeframe: str):
 async def _persist_replay_parity_observation(entry: dict):
     """Persist one scan outcome with enough context for later decision matching."""
     symbol = str(entry.get("symbol") or "").upper()
-    timeframe = str(entry.get("timeframe") or config.ACTIVE_STRATEGY_TIMEFRAME)
+    timeframe = str(entry.get("timeframe") or "5m")
     try:
         metadata = {
             "schema": "replay-parity-v1",
@@ -366,14 +352,16 @@ async def historical_mtf_backfill_status():
 
 
 @router.post("/api/historical-mtf-backfill/start")
-async def start_historical_mtf_backfill(payload: dict = None):
+async def start_historical_mtf_backfill(payload: dict = None, request: Request = None):
+    from app.main import _require_admin
+    _require_admin(request)
     global _historical_mtf_backfill_task
     if _historical_mtf_backfill.get("status") == "running":
         return {"ok": True, "already_running": True, "paper_only": True, **_historical_mtf_backfill}
     options = payload or {}
     if options.get("force") is True and options.get("confirm") is not True:
         raise HTTPException(status_code=400, detail="force backfill için confirm=true gerekli")
-    _historical_mtf_backfill_task = asyncio.create_task(_run_historical_mtf_backfill(options), name="historical-mtf-backfill")
+    _historical_mtf_backfill_task = _start_background(_run_historical_mtf_backfill(options), "historical-mtf-backfill", single_pass=True)
     return {"ok": True, "status": "queued", "paper_only": True}
 
 
@@ -415,11 +403,13 @@ async def replay_parity_backfill_status():
 
 
 @router.post("/api/replay-parity-backfill/start")
-async def start_replay_parity_backfill():
+async def start_replay_parity_backfill(request: Request = None):
+    from app.main import _require_admin
+    _require_admin(request)
     global _replay_parity_backfill_task
     if _replay_parity_backfill.get("status") == "running":
         return {"ok": True, "already_running": True, "paper_only": True, **_replay_parity_backfill}
-    _replay_parity_backfill_task = asyncio.create_task(_run_replay_parity_backfill(), name="replay-parity-backfill")
+    _replay_parity_backfill_task = _start_background(_run_replay_parity_backfill(), "replay-parity-backfill", single_pass=True)
     return {"ok": True, "status": "queued", "paper_only": True}
 
 
@@ -550,12 +540,13 @@ async def velocity_ml_backfill_status():
 
 
 @router.post("/api/velocity-ml-backfill/start")
-async def start_velocity_ml_backfill(payload: dict = None):
+async def start_velocity_ml_backfill(payload: dict = None, request: Request = None):
+    from app.main import _require_admin
+    _require_admin(request)
     global _velocity_ml_backfill_task
     if _velocity_ml_backfill.get("status") == "running":
         return {"ok": True, "already_running": True, "paper_only": True, **_velocity_ml_backfill}
-    _velocity_ml_backfill_task = asyncio.create_task(_run_velocity_ml_backfill(payload or {}),
-                                                     name="velocity-ml-backfill")
+    _velocity_ml_backfill_task = _start_background(_run_velocity_ml_backfill(payload or {}), "velocity-ml-backfill", single_pass=True)
     return {"ok": True, "status": "queued", "paper_only": True}
 
 
@@ -611,82 +602,3 @@ async def backfill_missing_active_history():
     print("[History] başlangıç historical kontrolü tamamlandı", flush=True)
 
 
-async def _run_strategy_replay(job_id: str, candle_count: int = 6):
-    """Evaluate the latest closed 5m candles without mutating strategy state."""
-    job = _strategy_replay_jobs[job_id]
-    # Replay salt-okunur bir tarihsel denetimdir; otomatik giriş döngüsündeki
-    # PASSIVE ön elemesi burada kullanılmaz. Aksi halde aktivite filtresi tüm
-    # ayarlı sembolleri dışarıda bırakıp replay'i symbols=0 ile başlatabilir.
-    symbols = [s.upper() for s in config.SYMBOLS]
-    job.update(status="running", total=0, completed=0, results=[])
-    job["logs"].append({"level": "info", "message": f"Denetim başladı | strategy={config.ACTIVE_STRATEGY} timeframe=5m closed_candles={candle_count} symbols={len(symbols)}"})
-    strategy_fn = analyzer.strategy_bb_mfi_mean_reversion if config.ACTIVE_STRATEGY == "BB_MFI_MEAN_REVERSION" else analyzer.strategy_mean_reversion
-    try:
-        async def load(symbol):
-            rows = await database.get_market_candles(symbol, "5m")
-            now_ms = int(time.time() * 1000)
-            # Only completed candles may be evaluated.  The live in-progress
-            # 5m candle would otherwise make a historical replay non-repeatable.
-            rows = [row for row in rows if int(row.get("close_time") or 0) <= now_ms]
-            # The cache is preferred.  If it cannot provide the warm-up window,
-            # use the public endpoint for this read-only job; do not persist or
-            # otherwise mutate market/strategy state from the replay path.
-            if len(rows) < 20 + candle_count:
-                raw = await fetch_klines(symbol, "5m", limit=400)
-                public_rows = []
-                for item in raw or []:
-                    if len(item) < 6:
-                        continue
-                    close_time = int(item[6]) if len(item) > 6 else int(item[0])
-                    if close_time > now_ms:
-                        continue
-                    public_rows.append({
-                        "symbol": symbol, "timeframe": "5m", "open_time": int(item[0]),
-                        "close_time": close_time, "open": float(item[1]), "high": float(item[2]),
-                        "low": float(item[3]), "close": float(item[4]), "volume": float(item[5]),
-                        "quote_volume": float(item[7]) if len(item) > 7 else None,
-                        "trade_count": int(item[8]) if len(item) > 8 else None,
-                        "source": "binance_tr_public_replay", "fetched_at": now_ms,
-                    })
-                rows = public_rows
-            return symbol, rows[-400:]
-        loaded = await asyncio.gather(*(load(symbol) for symbol in symbols), return_exceptions=True)
-        usable = [(symbol, rows) for item in loaded if not isinstance(item, Exception) for symbol, rows in [item] if len(rows) >= candle_count]
-        missing = sorted(set(symbols) - {symbol for symbol, _ in usable})
-        if not symbols:
-            raise ValueError("Aktif tarama sembol listesi boş; Ayarlar > Semboller bölümünden en az bir sembol seçilmeli")
-        if not usable:
-            raise ValueError("historical_candles içinde kullanılabilir 5m veri yok")
-        job["total"] = len(usable) * candle_count
-        if missing:
-            job["logs"].append({"level": "warning", "message": f"Verisi bulunamayan semboller atlandı | missing={len(missing)} | örnek={', '.join(missing[:12])}"})
-        job["results"] = []
-        for candle_index in range(candle_count):
-            signals = 0
-            evaluated = 0
-            for symbol, rows in usable:
-                prefix = rows[:len(rows) - candle_count + candle_index + 1]
-                fields = {"opens": "open", "highs": "high", "lows": "low", "closes": "close", "volumes": "volume"}
-                kline = {key: [float(row[db_key]) for row in prefix] for key, db_key in fields.items()}
-                candle = prefix[-1]
-                close_time = int(candle["close_time"])
-                label = datetime.fromtimestamp(close_time / 1000, tz=timezone.utc).astimezone().strftime("%d.%m %H:%M")
-                if len(kline["closes"]) < 21:
-                    action = "WARMUP"
-                else:
-                    evaluated += 1
-                    action = "BUY_SIGNAL" if strategy_fn(kline, symbol) == "buy" else "NO_SIGNAL"
-                if action == "BUY_SIGNAL":
-                    signals += 1
-                job["results"].append({
-                    "symbol": symbol, "candle_number": candle_index + 1,
-                    "timestamp": close_time / 1000, "close": kline["closes"][-1],
-                    "action": action,
-                })
-                job["completed"] += 1
-            job["logs"].append({"level": "summary", "message": f"Mum {candle_index + 1}/{candle_count} tamamlandı | evaluated={evaluated} signals={signals} no_signal={evaluated - signals}"})
-        job.update(status="completed", finished_at=time.time())
-        job["logs"].append({"level": "success", "message": "Denetim tamamlandı; canlı portföy ve strateji durumu değiştirilmedi."})
-    except Exception as exc:
-        job.update(status="error", error=str(exc), finished_at=time.time())
-        job["logs"].append({"level": "error", "message": f"Replay hatası: {exc}"})

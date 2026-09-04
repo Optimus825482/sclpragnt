@@ -42,7 +42,6 @@ from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, ru
 CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook, top_gainers
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
-from app.sma_cascade_shadow import SmaCascadeShadow
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import ml_forecast
 from app import chat_prediction_learning
@@ -65,7 +64,7 @@ except ImportError:
     asyncpg = None
 from app.state import market, analyzer  # noqa: F401  (shared singletons)
 from app.api_common import (  # noqa: F401
-    _start_background, _background_tasks, _record_strategy_scan_log, _strategy_scan_logs,
+    _start_background, _background_tasks,
     _json_safe_positions, _fresh_public_price, _llm_guard_block_reason, correlation_monitor,
     _radar_snapshot, _radar_response_cache, log_user_action, client_context)
 from app.routers import backtest as backtest_routes, llm_chat as llm_chat_routes
@@ -73,15 +72,14 @@ from app.routers import chart_forecast as chart_forecast_routes
 from app.routers import maintenance as maintenance_routes, reports as reports_routes
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
 from app.routers.maintenance import (  # noqa: F401
-    backfill_symbol_history, backfill_missing_active_history, history_candle_loop, _run_strategy_replay,
-    _strategy_replay_jobs, microstructure_snapshot_loop)
+    backfill_symbol_history, backfill_missing_active_history, history_candle_loop, microstructure_snapshot_loop)
 from app.routers.llm_chat import (  # noqa: F401
     llm_forecast_evaluation_loop, chat_prediction_learning_loop, chat_prediction_auto_trade_loop,
     llm_position_manager_loop, _price_watch_symbol, _llm_entry_quality_gate,
     _parse_forecast_response, _complete_forecast_text, scan_market_snapshots,
     deep_analyze_symbol, detect_15m_upside_candidates, detect_5m_upside_candidates)
 from app.routers.runtime import (  # noqa: F401
-    ws_broadcast_loop, alert_loop, strategy_loop, ma_cascade_shadow_loop, radar_loop,
+    ws_broadcast_loop, alert_loop, strategy_loop, radar_loop,
     refresh_top_gainer_symbols, top_gainers_refresh_loop, refresh_symbol_activity,
     bootstrap_symbol_activity, symbol_activity_loop, llm_replenish_after_close, llm_idle_trigger_loop,
     _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status)
@@ -724,7 +722,7 @@ async def startup_services():
             for key, attr in CONFIG_FIELDS.items():
                 if key in persisted: setattr(config, attr, persisted[key])
             if persisted.get("symbols"):
-                config.SYMBOLS = list(persisted["symbols"]); config.UT_SYMBOLS = list(config.SYMBOLS)
+                config.SYMBOLS = list(persisted["symbols"])
         except Exception as exc:
             print(f"[Config] Kalıcı ayarlar yüklenemedi: {exc}")
     await analyzer.load_state()
@@ -739,8 +737,6 @@ async def startup_services():
     # Strategy loop yalnızca tüm timeframe geçmişi ve REST ticker'ları hazır
     # olduktan sonra başlasın; aksi halde ilk tarama tüm sembolleri stale sayar.
     priority_timeframes = list(dict.fromkeys([
-        config.ACTIVE_STRATEGY_TIMEFRAME, config.MOMENTUM_TIMEFRAME,
-        config.ORDERFLOW_TIMEFRAME, "1m", "15m", "1h",
     ]))
     await market.fetch_historical_data(priority_timeframes)
     print(f"[MarketData] öncelikli strateji verisi hazır | timeframes={priority_timeframes} tickers={len(market.tickers)}", flush=True)
@@ -749,7 +745,6 @@ async def startup_services():
     _start_background(market.connect(skip_history=True), "market-connect")
     _start_background(microstructure_snapshot_loop(), "microstructure-snapshot")
     _start_background(strategy_loop(), "strategy-loop")
-    _start_background(ma_cascade_shadow_loop(), "ma-cascade-shadow")
     _start_background(llm_forecast_evaluation_loop(), "llm-forecast-evaluator")
     _start_background(chart_forecast_evaluation_loop(), "chart-forecast-evaluator")
     _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
@@ -782,6 +777,10 @@ async def shutdown_services():
     market.stop()
     try:
         await microflow.stop()
+    except Exception:
+        pass
+    try:
+        monitoring.stop_monitoring_loop()
     except Exception:
         pass
     tasks = list(_background_tasks)
@@ -964,117 +963,24 @@ CONFIG_FIELDS = {
     "min_orderbook_depth_multiplier": "MIN_ORDERBOOK_DEPTH_MULTIPLIER",
     "liquidity_filter_enabled": "LIQUIDITY_FILTER_ENABLED",
     "default_order_usdt": "DEFAULT_ORDER_USDT",
-    "active_strategy": "ACTIVE_STRATEGY",
-    "active_strategy_timeframe": "ACTIVE_STRATEGY_TIMEFRAME",
     "order_pct": "ORDER_PCT",
-    "pyramiding_layers": "PYRAMIDING_LAYERS",
-    "bb_mfi_pine_version": "BB_MFI_PINE_VERSION",
-    "bb_mfi_stop_loss_pct": "BB_MFI_STOP_LOSS_PCT",
-    "bb_mfi_take_profit_pct": "BB_MFI_TAKE_PROFIT_PCT",
-    "bb_mfi_bb_period": "BB_MFI_BB_PERIOD",
-    "bb_mfi_bb_std_dev": "BB_MFI_BB_STD_DEV",
-    "bb_mfi_mfi_period": "BB_MFI_MFI_PERIOD",
-    "bb_mfi_rsi_period": "BB_MFI_RSI_PERIOD",
-    "bb_mfi_v1_rsi_lower_level": "BB_MFI_V1_RSI_LOWER_LEVEL",
-    "bb_mfi_v1_rsi_upper_level": "BB_MFI_V1_RSI_UPPER_LEVEL",
-    "bb_mfi_v2_rsi_lower_level": "BB_MFI_V2_RSI_LOWER_LEVEL",
-    "bb_mfi_v2_rsi_upper_level": "BB_MFI_V2_RSI_UPPER_LEVEL",
-    "bb_mfi_entry_mfi_max": "BB_MFI_ENTRY_MFI_MAX",
-    "bb_mfi_entry_volume_ratio_min": "BB_MFI_ENTRY_VOLUME_RATIO_MIN",
-    "bb_mfi_dip_confirmation_enabled": "BB_MFI_DIP_CONFIRMATION_ENABLED",
-    "bb_mfi_dip_min_close_position": "BB_MFI_DIP_MIN_CLOSE_POSITION",
-    "bb_mfi_entry_mfi_reversal_enabled": "BB_MFI_ENTRY_MFI_REVERSAL_ENABLED",
-    "bb_mfi_entry_mfi_reversal_min_delta": "BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA",
-    "bb_mfi_exit_rsi_min": "BB_MFI_EXIT_RSI_MIN",
-    "bb_mfi_exit_mfi_min": "BB_MFI_EXIT_MFI_MIN",
-    "bb_mfi_sell_signal_confirm_bars": "BB_MFI_SELL_SIGNAL_CONFIRM_BARS",
-    "bb_mfi_bear_pressure_filter_enabled": "BB_MFI_BEAR_PRESSURE_FILTER_ENABLED",
-    "bb_mfi_bear_pressure_min_adx": "BB_MFI_BEAR_PRESSURE_MIN_ADX",
-    "bb_mfi_bear_pressure_min_di_gap": "BB_MFI_BEAR_PRESSURE_MIN_DI_GAP",
-    "bb_mfi_bear_pressure_min_return_1h_pct": "BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT",
-    "bb_mfi_bear_pressure_min_return_15m_pct": "BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT",
-    "bb_mfi_require_data_ready": "BB_MFI_REQUIRE_DATA_READY",
-    "bb_mfi_bearish_require_reversal_confirmation": "BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION",
-    "bb_mfi_bearish_min_close_position": "BB_MFI_BEARISH_MIN_CLOSE_POSITION",
-    "bb_mfi_bearish_min_mfi_reversal_delta": "BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA",
-    "bb_mfi_pyramid_require_net_profit": "BB_MFI_PYRAMID_REQUIRE_NET_PROFIT",
-    "bb_mfi_pyramid_profit_extension_layers": "BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS",
     "symbol_activity_m1_flat_filter_enabled": "SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED",
     "symbol_activity_m1_flat_max_range_pct": "SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT",
     "symbol_activity_m1_flat_5m_max_count": "SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT",
     "symbol_activity_m1_flat_30m_max_count": "SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT",
     "symbol_order_pct": "SYMBOL_ORDER_PCT",
-    "symbol_pyramiding_layers": "SYMBOL_PYRAMIDING_LAYERS",
     "max_open_positions": "MAX_OPEN_POSITIONS",
     "take_profit_pct": "SPOT_PROFIT_TARGET_PCT",
     "hard_stop_loss_pct": "HARD_STOP_LOSS_PCT",
     "cooldown_bars": "COOLDOWN_BARS",
-    "orderflow_min_imbalance": "ORDERFLOW_MIN_IMBALANCE",
-    "momentum_short_lookback": "MOMENTUM_SHORT_LOOKBACK",
-    "momentum_long_lookback": "MOMENTUM_LONG_LOOKBACK",
-    "momentum_min_return_pct": "MOMENTUM_MIN_RETURN_PCT",
-    "momentum_min_volume_ratio": "MOMENTUM_MIN_VOLUME_RATIO",
-    "momentum_require_mtf_alignment": "MOMENTUM_REQUIRE_MTF_ALIGNMENT",
-    "adr_filter_enabled": "ADR_FILTER_ENABLED",
-    "adr_period": "ADR_PERIOD",
-    "adr_min_pct": "ADR_MIN_PCT",
-    "adr_max_utilization_pct": "ADR_MAX_UTILIZATION_PCT",
-    "adr_min_remaining_pct": "ADR_MIN_REMAINING_PCT",
-    "keltner_ema_period": "KELTNER_EMA_PERIOD",
-    "keltner_atr_period": "KELTNER_ATR_PERIOD",
-    "keltner_atr_multiplier": "KELTNER_ATR_MULTIPLIER",
-    "keltner_volume_multiplier": "KELTNER_VOLUME_MULTIPLIER",
-    "keltner_require_mtf_alignment": "KELTNER_REQUIRE_MTF_ALIGNMENT",
-    "ema_vwap_min_volume_ratio": "EMA_VWAP_MIN_VOLUME_RATIO",
-    "ema_vwap_min_adx": "EMA_VWAP_MIN_ADX",
-    "ema_vwap_require_mtf_alignment": "EMA_VWAP_REQUIRE_MTF_ALIGNMENT",
-    "chop_period": "CHOP_PERIOD",
-    "chop_max_value": "CHOP_MAX_VALUE",
-    "chop_min_rsi": "CHOP_MIN_RSI",
-    "donchian_lookback": "DONCHIAN_LOOKBACK",
-    "donchian_volume_multiplier": "DONCHIAN_VOLUME_MULTIPLIER",
-    "ut_enabled": "UT_ENABLED",
-    "ut_key_value": "UT_KEY_VALUE",
-    "ut_atr_period": "UT_ATR_PERIOD",
-    "ut_heikin_ashi": "UT_HEIKIN_ASHI",
-    "ut_timeframe": "UT_TIMEFRAME",
-    "bb_squeeze_enabled": "BB_SQUEEZE_ENABLED",
-    "ema_pullback_enabled": "EMA_PULLBACK_ENABLED",
-    "vwap_macd_enabled": "VWAP_MACD_ENABLED",
-    "cmo_crsi_enabled": "CMO_CRSI_ENABLED",
-    "ema_vwap_enabled": "EMA_VWAP_ENABLED",
-    "breakout_enabled": "BREAKOUT_ENABLED",
-    "orderflow_enabled": "ORDERFLOW_ENABLED",
-    "momentum_enabled": "MOMENTUM_ENABLED",
-    "mean_reversion_enabled": "MEAN_REVERSION_ENABLED",
-    "keltner_enabled": "KELTNER_ENABLED", "chop_enabled": "CHOP_ENABLED", "donchian_enabled": "DONCHIAN_ENABLED",
-    "bb_squeeze_timeframe": "BB_SQUEEZE_TIMEFRAME",
-    "ema_pullback_timeframe": "EMA_PULLBACK_TIMEFRAME",
-    "vwap_macd_timeframe": "VWAP_MACD_TIMEFRAME",
-    "cmo_crsi_timeframe": "CMO_CRSI_TIMEFRAME",
-    "ema_vwap_timeframe": "EMA_VWAP_TIMEFRAME",
-    "breakout_timeframe": "BREAKOUT_TIMEFRAME",
-    "orderflow_timeframe": "ORDERFLOW_TIMEFRAME",
-    "momentum_timeframe": "MOMENTUM_TIMEFRAME",
-    "mean_reversion_timeframe": "MEAN_REVERSION_TIMEFRAME",
-    "keltner_timeframe": "KELTNER_TIMEFRAME", "chop_timeframe": "CHOP_TIMEFRAME", "donchian_timeframe": "DONCHIAN_TIMEFRAME",
-    "squeeze_lookback": "SQUEEZE_LOOKBACK",
-    "bb_period": "BB_PERIOD",
-    "bb_std_dev": "BB_STD_DEV",
-    "ema_short": "EMA_SHORT",
-    "ema_mid": "EMA_MID",
-    "ema_trend": "EMA_TREND",
-    "rsi_period": "RSI_PERIOD",
-    "vwap_period": "VWAP_PERIOD",
-    "macd_fast": "MACD_FAST",
-    "macd_slow": "MACD_SLOW",
-    "macd_signal": "MACD_SIGNAL",
 }
 
-BOOL_FIELDS = {"top_gainers_auto_activate", "liquidity_filter_enabled", "adr_filter_enabled", "ut_enabled", "ut_heikin_ashi", "bb_squeeze_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "ema_vwap_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "mean_reversion_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled", "momentum_require_mtf_alignment", "keltner_require_mtf_alignment", "ema_vwap_require_mtf_alignment", "bb_mfi_bear_pressure_filter_enabled", "bb_mfi_require_data_ready", "bb_mfi_bearish_require_reversal_confirmation", "bb_mfi_pyramid_require_net_profit", "bb_mfi_dip_confirmation_enabled", "bb_mfi_entry_mfi_reversal_enabled", "symbol_activity_m1_flat_filter_enabled"}
-DISABLED_LIVE_STRATEGY_FIELDS = {"ut_enabled", "ema_pullback_enabled", "vwap_macd_enabled", "cmo_crsi_enabled", "breakout_enabled", "orderflow_enabled", "momentum_enabled", "ema_vwap_enabled", "bb_squeeze_enabled", "keltner_enabled", "chop_enabled", "donchian_enabled"}
-INT_FIELDS = {"top_gainers_limit", "top_gainers_refresh_sec", "gainer_radar_min_score", "max_open_positions", "adr_period", "cooldown_bars", "momentum_short_lookback", "momentum_long_lookback", "keltner_ema_period", "keltner_atr_period", "chop_period", "donchian_lookback", "squeeze_lookback", "bb_period", "ema_short", "ema_mid", "ema_trend", "rsi_period", "vwap_period", "macd_fast", "macd_slow", "macd_signal", "ut_atr_period", "pyramiding_layers", "bb_mfi_bb_period", "bb_mfi_mfi_period", "bb_mfi_rsi_period", "bb_mfi_sell_signal_confirm_bars", "bb_mfi_pyramid_profit_extension_layers", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
-STR_FIELDS = {"active_strategy", "active_strategy_timeframe", "bb_mfi_pine_version", "ut_timeframe", "bb_squeeze_timeframe", "ema_pullback_timeframe", "vwap_macd_timeframe", "cmo_crsi_timeframe", "ema_vwap_timeframe", "breakout_timeframe", "orderflow_timeframe", "momentum_timeframe", "mean_reversion_timeframe", "keltner_timeframe", "chop_timeframe", "donchian_timeframe"}
+
+
+BOOL_FIELDS = {"top_gainers_auto_activate", "liquidity_filter_enabled", "symbol_activity_m1_flat_filter_enabled"}
+DISABLED_LIVE_STRATEGY_FIELDS = set()
+INT_FIELDS = {"top_gainers_limit", "top_gainers_refresh_sec", "gainer_radar_min_score", "max_open_positions", "cooldown_bars", "symbol_activity_m1_flat_5m_max_count", "symbol_activity_m1_flat_30m_max_count"}
+STR_FIELDS = set()
 
 
 @app.get("/api/config")
@@ -1084,7 +990,6 @@ async def get_config():
         "top_gainers_limit": config.TOP_GAINERS_LIMIT,
         "top_gainers_refresh_sec": config.TOP_GAINERS_REFRESH_SEC,
         "gainer_radar_min_score": config.GAINER_RADAR_MIN_SCORE,
-        "pump_monitor_require_m15_bullish": config.PUMP_MONITOR_REQUIRE_M15_BULLISH,
         "symbols": config.SYMBOLS,
         "min_notional": config.MIN_NOTIONAL,
         "min_24h_quote_volume_try": config.MIN_24H_QUOTE_VOLUME_TRY,
@@ -1093,43 +998,8 @@ async def get_config():
         "min_orderbook_depth_multiplier": config.MIN_ORDERBOOK_DEPTH_MULTIPLIER,
         "liquidity_filter_enabled": config.LIQUIDITY_FILTER_ENABLED,
         "default_order_usdt": config.DEFAULT_ORDER_USDT,
-        "active_strategy": config.ACTIVE_STRATEGY,
-        "active_strategy_timeframe": config.ACTIVE_STRATEGY_TIMEFRAME,
         "order_pct": config.ORDER_PCT,
-        "pyramiding_layers": config.PYRAMIDING_LAYERS,
-        "bb_mfi_pine_version": config.BB_MFI_PINE_VERSION,
         "symbol_order_pct": config.SYMBOL_ORDER_PCT,
-        "symbol_pyramiding_layers": config.SYMBOL_PYRAMIDING_LAYERS,
-        "bb_mfi_stop_loss_pct": config.BB_MFI_STOP_LOSS_PCT,
-        "bb_mfi_take_profit_pct": config.BB_MFI_TAKE_PROFIT_PCT,
-        "bb_mfi_bb_period": config.BB_MFI_BB_PERIOD,
-        "bb_mfi_bb_std_dev": config.BB_MFI_BB_STD_DEV,
-        "bb_mfi_mfi_period": config.BB_MFI_MFI_PERIOD,
-        "bb_mfi_rsi_period": config.BB_MFI_RSI_PERIOD,
-        "bb_mfi_v1_rsi_lower_level": config.BB_MFI_V1_RSI_LOWER_LEVEL,
-        "bb_mfi_v1_rsi_upper_level": config.BB_MFI_V1_RSI_UPPER_LEVEL,
-        "bb_mfi_v2_rsi_lower_level": config.BB_MFI_V2_RSI_LOWER_LEVEL,
-        "bb_mfi_v2_rsi_upper_level": config.BB_MFI_V2_RSI_UPPER_LEVEL,
-        "bb_mfi_entry_mfi_max": config.BB_MFI_ENTRY_MFI_MAX,
-        "bb_mfi_entry_volume_ratio_min": config.BB_MFI_ENTRY_VOLUME_RATIO_MIN,
-        "bb_mfi_dip_confirmation_enabled": config.BB_MFI_DIP_CONFIRMATION_ENABLED,
-        "bb_mfi_dip_min_close_position": config.BB_MFI_DIP_MIN_CLOSE_POSITION,
-        "bb_mfi_entry_mfi_reversal_enabled": config.BB_MFI_ENTRY_MFI_REVERSAL_ENABLED,
-        "bb_mfi_entry_mfi_reversal_min_delta": config.BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA,
-        "bb_mfi_exit_rsi_min": config.BB_MFI_EXIT_RSI_MIN,
-        "bb_mfi_exit_mfi_min": config.BB_MFI_EXIT_MFI_MIN,
-        "bb_mfi_sell_signal_confirm_bars": config.BB_MFI_SELL_SIGNAL_CONFIRM_BARS,
-        "bb_mfi_bear_pressure_filter_enabled": config.BB_MFI_BEAR_PRESSURE_FILTER_ENABLED,
-        "bb_mfi_bear_pressure_min_adx": config.BB_MFI_BEAR_PRESSURE_MIN_ADX,
-        "bb_mfi_bear_pressure_min_di_gap": config.BB_MFI_BEAR_PRESSURE_MIN_DI_GAP,
-        "bb_mfi_bear_pressure_min_return_1h_pct": config.BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT,
-        "bb_mfi_bear_pressure_min_return_15m_pct": config.BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT,
-        "bb_mfi_require_data_ready": config.BB_MFI_REQUIRE_DATA_READY,
-        "bb_mfi_bearish_require_reversal_confirmation": config.BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION,
-        "bb_mfi_bearish_min_close_position": config.BB_MFI_BEARISH_MIN_CLOSE_POSITION,
-        "bb_mfi_bearish_min_mfi_reversal_delta": config.BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA,
-        "bb_mfi_pyramid_require_net_profit": config.BB_MFI_PYRAMID_REQUIRE_NET_PROFIT,
-        "bb_mfi_pyramid_profit_extension_layers": config.BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS,
         "symbol_activity_m1_flat_filter_enabled": config.SYMBOL_ACTIVITY_M1_FLAT_FILTER_ENABLED,
         "symbol_activity_m1_flat_max_range_pct": config.SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT,
         "symbol_activity_m1_flat_5m_max_count": config.SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT,
@@ -1137,65 +1007,8 @@ async def get_config():
         "max_open_positions": int(config.MAX_OPEN_POSITIONS),
         "hard_stop_loss_pct": config.HARD_STOP_LOSS_PCT,
         "cooldown_bars": config.COOLDOWN_BARS,
-        "orderflow_min_imbalance": config.ORDERFLOW_MIN_IMBALANCE,
-        "momentum_short_lookback": config.MOMENTUM_SHORT_LOOKBACK,
-        "momentum_long_lookback": config.MOMENTUM_LONG_LOOKBACK,
-        "momentum_min_return_pct": config.MOMENTUM_MIN_RETURN_PCT,
-        "momentum_min_volume_ratio": config.MOMENTUM_MIN_VOLUME_RATIO,
-        "momentum_require_mtf_alignment": config.MOMENTUM_REQUIRE_MTF_ALIGNMENT,
-        "adr_filter_enabled": config.ADR_FILTER_ENABLED,
-        "adr_period": config.ADR_PERIOD,
-        "adr_min_pct": config.ADR_MIN_PCT,
-        "adr_max_utilization_pct": config.ADR_MAX_UTILIZATION_PCT,
-        "adr_min_remaining_pct": config.ADR_MIN_REMAINING_PCT,
-        "keltner_ema_period": config.KELTNER_EMA_PERIOD,
-        "keltner_atr_period": config.KELTNER_ATR_PERIOD,
-        "keltner_atr_multiplier": config.KELTNER_ATR_MULTIPLIER,
-        "keltner_volume_multiplier": config.KELTNER_VOLUME_MULTIPLIER,
-        "keltner_require_mtf_alignment": config.KELTNER_REQUIRE_MTF_ALIGNMENT,
-        "ema_vwap_min_volume_ratio": config.EMA_VWAP_MIN_VOLUME_RATIO,
-        "ema_vwap_min_adx": config.EMA_VWAP_MIN_ADX,
-        "ema_vwap_require_mtf_alignment": config.EMA_VWAP_REQUIRE_MTF_ALIGNMENT,
-        "chop_period": config.CHOP_PERIOD,
-        "chop_max_value": config.CHOP_MAX_VALUE,
-        "chop_min_rsi": config.CHOP_MIN_RSI,
-        "donchian_lookback": config.DONCHIAN_LOOKBACK,
-        "donchian_volume_multiplier": config.DONCHIAN_VOLUME_MULTIPLIER,
         "take_profit_pct": config.SPOT_PROFIT_TARGET_PCT,
         "trailing_stop_pct": 0.0,
-        "ut_enabled": config.UT_ENABLED,
-        "ut_symbols": config.UT_SYMBOLS,
-        "ut_key_value": config.UT_KEY_VALUE,
-        "ut_atr_period": config.UT_ATR_PERIOD,
-        "ut_heikin_ashi": config.UT_HEIKIN_ASHI,
-        "ut_timeframe": config.UT_TIMEFRAME,
-        "bb_squeeze_enabled": config.BB_SQUEEZE_ENABLED,
-        "ema_pullback_enabled": config.EMA_PULLBACK_ENABLED,
-        "vwap_macd_enabled": config.VWAP_MACD_ENABLED,
-        "cmo_crsi_enabled": config.CMO_CRSI_ENABLED,
-        "ema_vwap_enabled": config.EMA_VWAP_ENABLED, "breakout_enabled": config.BREAKOUT_ENABLED,
-        "orderflow_enabled": config.ORDERFLOW_ENABLED, "momentum_enabled": config.MOMENTUM_ENABLED,
-        "mean_reversion_enabled": config.MEAN_REVERSION_ENABLED,
-        "keltner_enabled": config.KELTNER_ENABLED, "chop_enabled": config.CHOP_ENABLED, "donchian_enabled": config.DONCHIAN_ENABLED,
-        "bb_squeeze_timeframe": config.BB_SQUEEZE_TIMEFRAME,
-        "ema_pullback_timeframe": config.EMA_PULLBACK_TIMEFRAME,
-        "vwap_macd_timeframe": config.VWAP_MACD_TIMEFRAME,
-        "cmo_crsi_timeframe": config.CMO_CRSI_TIMEFRAME,
-        "ema_vwap_timeframe": config.EMA_VWAP_TIMEFRAME, "breakout_timeframe": config.BREAKOUT_TIMEFRAME,
-        "orderflow_timeframe": config.ORDERFLOW_TIMEFRAME, "momentum_timeframe": config.MOMENTUM_TIMEFRAME,
-        "mean_reversion_timeframe": config.MEAN_REVERSION_TIMEFRAME,
-        "keltner_timeframe": config.KELTNER_TIMEFRAME, "chop_timeframe": config.CHOP_TIMEFRAME, "donchian_timeframe": config.DONCHIAN_TIMEFRAME,
-        "squeeze_lookback": config.SQUEEZE_LOOKBACK,
-        "bb_period": config.BB_PERIOD,
-        "bb_std_dev": config.BB_STD_DEV,
-        "ema_short": config.EMA_SHORT,
-        "ema_mid": config.EMA_MID,
-        "ema_trend": config.EMA_TREND,
-        "rsi_period": config.RSI_PERIOD,
-        "vwap_period": config.VWAP_PERIOD,
-        "macd_fast": config.MACD_FAST,
-        "macd_slow": config.MACD_SLOW,
-        "macd_signal": config.MACD_SIGNAL,
         "initial_balance_try": config.INITIAL_BALANCE_TRY,
         "mode": "paper",
         "market_data": "public",
@@ -1258,7 +1071,6 @@ async def _gainers_radar_uncached(execute: bool = False):
         for _, _, symbol in sorted(gainer_candidates, reverse=True)[:10]:
             if symbol not in config.SYMBOLS:
                 config.SYMBOLS.append(symbol)
-                config.UT_SYMBOLS = list(config.SYMBOLS)
                 if symbol.lower() not in market.symbols:
                     market.symbols.append(symbol.lower())
                     market.reconnect_requested = True
@@ -1344,8 +1156,8 @@ async def _gainers_radar_uncached(execute: bool = False):
             if ticker and symbol not in analyzer.positions:
                 bars = market.get_ut_kline(symbol, "5m")
                 closes = bars.get("closes", [])
-                macd, macd_signal, hist = radar_analyzer.calculate_macd(closes, config.MACD_FAST, config.MACD_SLOW, config.MACD_SIGNAL) if len(closes) >= 35 else (None, None, None)
                 rsi = radar_analyzer.calculate_rsi(closes, 14) if closes else None
+                macd, macd_signal, hist = radar_analyzer.calculate_macd(closes, 12, 26, 9) if closes else (None, None, None)
                 if macd is not None and hist is not None and macd > macd_signal and hist > 0 and rsi is not None and rsi < 70:
                     eligible, _ = await analyzer.entry_liquidity_preflight(symbol, "GAINER_RADAR")
                     if not eligible:
@@ -1467,18 +1279,14 @@ async def _apply_config_update(payload: dict, request: Request = None):
     for key, attr in CONFIG_FIELDS.items():
         if key in payload:
             val = payload[key]
-            if key in {"symbol_order_pct", "symbol_pyramiding_layers"}:
+            if key == "symbol_order_pct":
                 if not isinstance(val, dict):
                     raise ValueError(f"{key} nesne olmalıdır")
                 cleaned = {}
                 for symbol, raw in val.items():
                     name = str(symbol).replace("_", "").upper()
-                    if key == "symbol_order_pct":
-                        number = float(raw)
-                        if not 0 < number <= 1: raise ValueError(f"{name} işlem yüzdesi 0 ile 1 arasında olmalıdır")
-                    else:
-                        number = int(raw)
-                        if not 1 <= number <= 10: raise ValueError(f"{name} piramitleme 1 ile 10 arasında olmalıdır")
+                    number = float(raw)
+                    if not 0 < number <= 1: raise ValueError(f"{name} işlem yüzdesi 0 ile 1 arasında olmalıdır")
                     cleaned[name] = number
                 setattr(config, attr, cleaned)
                 continue
@@ -1496,48 +1304,26 @@ async def _apply_config_update(payload: dict, request: Request = None):
                     raise ValueError("top_gainers_limit 1 ile 50 arasında olmalıdır")
                 if key == "top_gainers_refresh_sec" and not 60 <= number <= 3600:
                     raise ValueError("top_gainers_refresh_sec 60 ile 3600 saniye arasında olmalıdır")
-                if key == "adr_period" and not 5 <= number <= 60:
-                    raise ValueError("adr_period 5 ile 60 arasında olmalıdır")
                 if key == "max_open_positions" and not 0 <= number <= 500:
                     raise ValueError("max_open_positions 0 (sınırsız) ile 500 arasında olmalıdır")
                 if key == "gainer_radar_min_score" and not 0 <= number <= 100:
                     raise ValueError("gainer_radar_min_score 0 ile 100 arasında olmalıdır")
-                if key == "pump_monitor_min_score" and not 3 <= number <= 4:
-                    raise ValueError("pump_monitor_min_score 3 veya 4 olmalıdır")
-                if key == "pump_monitor_max_open_positions" and not 1 <= number <= 20:
-                    raise ValueError("pump_monitor_max_open_positions 1 ile 20 arasında olmalıdır")
-                if key == "pyramiding_layers" and not 1 <= number <= 10:
-                    raise ValueError("pyramiding_layers 1 ile 10 arasında olmalıdır")
-                if key == "bb_mfi_sell_signal_confirm_bars" and not 1 <= number <= 5:
-                    raise ValueError("BB-MFI satış teyidi 1 ile 5 mum arasında olmalıdır")
                 if key == "symbol_activity_m1_flat_5m_max_count" and not 1 <= number <= 5:
                     raise ValueError("5 dk düz M1 mum eşiği 1 ile 5 arasında olmalıdır")
                 if key == "symbol_activity_m1_flat_30m_max_count" and not 1 <= number <= 30:
                     raise ValueError("30 dk düz M1 mum eşiği 1 ile 30 arasında olmalıdır")
                 setattr(config, attr, number)
             elif key in STR_FIELDS:
-                if key == "bb_mfi_pine_version" and str(val).lower() not in {"v1", "v2", "v3"}:
-                    raise ValueError("bb_mfi_pine_version v1, v2 veya v3 olmalıdır")
-                setattr(config, attr, str(val).lower() if key == "bb_mfi_pine_version" else str(val))
-                if key == "active_strategy":
-                    if str(val).upper() != "BB_MFI_MEAN_REVERSION":
-                        raise ValueError("Bu canlı akışta yalnızca BB_MFI_MEAN_REVERSION aktif edilebilir")
-                    config.MEAN_REVERSION_ENABLED = True
+                setattr(config, attr, str(val))
             else:
                 number = float(val)
                 if key in {"min_notional", "default_order_usdt", "min_24h_quote_volume_try", "high_liquidity_bypass_volume_try", "min_volume_ratio", "min_orderbook_depth_multiplier"} and number <= 0:
                     raise ValueError(f"{key} pozitif olmalıdır")
-                if key in {"hard_stop_loss_pct", "take_profit_pct", "trailing_stop_pct", "adr_min_pct", "adr_max_utilization_pct", "adr_min_remaining_pct"} and not 0 < number < 1:
-                    raise ValueError(f"{key} 0 ile 1 arasında olmalıdır")
                 if key == "order_pct" and not 0 < number <= 1:
                     raise ValueError("order_pct 0 ile 1 arasında olmalıdır")
-                if key == "pump_monitor_high_confidence_volume_ratio" and not 0 <= number <= 10:
-                    raise ValueError("pump_monitor_high_confidence_volume_ratio 0 ile 10 arasında olmalıdır")
                 if key == "symbol_activity_m1_flat_max_range_pct" and not 0 <= number <= 5:
                     raise ValueError("M1 düz mum maksimum aralığı yüzde 0 ile 5 arasında olmalıdır")
                 setattr(config, attr, number)
-    if "ut_symbols" in payload:
-        config.UT_SYMBOLS = payload["ut_symbols"]
     if "symbols" in payload:
         symbols = sorted({str(s).replace("_", "").upper() for s in payload["symbols"] if str(s).strip()})
         allowed = set(await trading_symbols("TRY"))
@@ -1553,16 +1339,13 @@ async def _apply_config_update(payload: dict, request: Request = None):
                 raise ValueError(f"Binance TR'de işlemde olan TRY sembolü kalmadı: {', '.join(invalid)}")
             raise ValueError("En az bir aktif sembol seçilmelidir")
         payload["symbols"] = symbols
-        payload["ut_symbols"] = symbols
         config.SYMBOLS = symbols
-        config.UT_SYMBOLS = symbols
         # Per-symbol overrides for delisted/BREAK pairs cannot affect a
         # future scan or a later save.
         config.SYMBOL_ORDER_PCT = {symbol: value for symbol, value in config.SYMBOL_ORDER_PCT.items() if symbol in symbols}
-        config.SYMBOL_PYRAMIDING_LAYERS = {symbol: value for symbol, value in config.SYMBOL_PYRAMIDING_LAYERS.items() if symbol in symbols}
         market.symbols = [s.lower() for s in symbols]
         for symbol in sorted(set(symbols) - previous_symbols):
-            asyncio.create_task(backfill_symbol_history(symbol), name=f"history-backfill-{symbol}")
+            _start_background(backfill_symbol_history(symbol), f"history-backfill-{symbol}", single_pass=True)
     # Only a symbol/timeframe change requires a full WS reconnect + REST
     # re-warm; an unrelated toggle (e.g. a bool) must not halt trading with
     # hundreds of blocking fetches and a stale-ticker gap.
@@ -1581,25 +1364,25 @@ async def _apply_config_update(payload: dict, request: Request = None):
     existing = await database.get_llm_setting("runtime_config", "{}")
     try: persisted = json.loads(existing or "{}")
     except json.JSONDecodeError: persisted = {}
-    persisted.update({key: value for key, value in payload.items() if key in CONFIG_FIELDS or key in {"symbols", "ut_symbols"}})
     await database.set_llm_setting("runtime_config", json.dumps(persisted, ensure_ascii=False))
     if config.TOP_GAINERS_AUTO_ACTIVATE and any(
         key in payload for key in ("top_gainers_auto_activate", "top_gainers_limit", "top_gainers_refresh_sec")
     ):
-        asyncio.create_task(refresh_top_gainer_symbols(), name="top-gainers-config-refresh")
+        _start_background(refresh_top_gainer_symbols(), "top-gainers-config-refresh", single_pass=True)
     updated = await get_config()
     if "symbols" in payload and invalid:
         updated["removed_invalid_symbols"] = invalid
     actor = _session_username(request)
     await log_user_action(actor, None, "config", "CONFIG_UPDATE",
                           target=actor,
-                          details={"changed_keys": sorted(k for k in payload if k in CONFIG_FIELDS or k in {"symbols", "ut_symbols"}),
+                          details={"changed_keys": sorted(k for k in payload if k in CONFIG_FIELDS or k == "symbols"),
                                    "universe_changed": universe_changed},
                           request=request)
     return updated
 
 @app.post("/api/portfolio/reconcile")
-async def reconcile_portfolio(payload: dict = None):
+async def reconcile_portfolio(payload: dict = None, request: Request = None):
+    _require_admin(request)
     if not (payload or {}).get("confirm", False):
         return {"status": "preview", **await database.preview_portfolio_reconcile()}
     result = await database.reconcile_portfolio()
@@ -1627,7 +1410,8 @@ async def trade_repair_preview():
     return {"ok":True, **_trade_repair}
 
 @app.post("/api/trade-repair/apply")
-async def trade_repair_apply(payload: dict = None):
+async def trade_repair_apply(payload: dict = None, request: Request = None):
+    _require_admin(request)
     body = payload or {}
     if body.get("confirm") is not True:
         raise HTTPException(status_code=400, detail="Onarım için confirm=true gerekli")
@@ -1650,7 +1434,8 @@ async def legacy_trade_cleanup_preview():
     return {"records": await database.preview_legacy_trade_cleanup(), "requires_confirmation": True}
 
 @app.post("/api/trade-repair/legacy-cleanup")
-async def legacy_trade_cleanup_apply(payload: dict = None):
+async def legacy_trade_cleanup_apply(payload: dict = None, request: Request = None):
+    _require_admin(request)
     body = payload or {}
     ids = body.get("trade_ids") or []
     if body.get("confirm") is not True:
@@ -1752,7 +1537,6 @@ async def get_positions():
 @app.get("/api/symbol-analysis/{symbol}")
 async def symbol_analysis(symbol: str, timeframe: str = ""):
     sym = symbol.upper()
-    requested_timeframe = timeframe if timeframe in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"} else config.MOMENTUM_TIMEFRAME
     ticker = market.get_ticker(sym)
     # The analysis page can request a valid market that was not warm when the
     # process started (or whose websocket stream briefly missed an event).
@@ -2125,114 +1909,6 @@ async def market_snapshot_scan(payload: dict = None):
     """Tüm etkin sembolleri salt-okunur biçimde tarar; canlı portföyü değiştirmez."""
     return await scan_market_snapshots(payload or {})
 
-@app.post("/api/strategy/manual-scan")
-async def manual_strategy_scan(request: Request):
-    """Kullanıcının açık talebiyle aktif stratejiyi ayarlı tüm sembollerde çalıştırır.
-
-    Manuel kontrol, otomatik giriş döngüsündeki aktivite ön elemesini aşar;
-    ancak likidite ön-koşulunu strateji değerlendirmesinden önce uygular.
-    """
-    scan_id = f"manual-{uuid.uuid4().hex[:12]}"
-    if migration_monitor.state["status"] == "running":
-        logs = [_record_strategy_scan_log("manual", symbol, "MIGRATION_BLOCKED", scan_id=scan_id) for symbol in list(config.SYMBOLS)]
-        return {"ok": False, "status": "blocked", "reason": "migration_running", "signals": [], "scan_id": scan_id, "scan_logs": logs}
-    signals = []
-    checked = 0
-    passive_overridden = 0
-    fresh_ticker = 0
-    stale_ticker = 0
-    evaluated = 0
-    errors = 0
-    started = time.time()
-    for symbol in list(config.SYMBOLS):
-        activity_status = "PASSIVE" if symbol in config.PASSIVE_SYMBOLS and symbol not in analyzer.positions else None
-        if activity_status:
-            passive_overridden += 1
-        checked += 1
-        ticker = market.get_ticker(symbol)
-        if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
-            stale_ticker += 1
-            _record_strategy_scan_log("manual", symbol, "STALE_TICKER", scan_id=scan_id, activity_status=activity_status)
-            continue
-        fresh_ticker += 1
-        try:
-            if symbol not in analyzer.positions:
-                eligible, eligibility = await analyzer.entry_liquidity_preflight(symbol, config.ACTIVE_STRATEGY)
-                if not eligible:
-                    _record_strategy_scan_log(
-                        "manual", symbol, "ENTRY_INELIGIBLE", price=ticker.get("last_price"),
-                        reason=eligibility.get("reason", "entry_ineligible"),
-                        timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id,
-                        activity_status=activity_status, liquidity=eligibility,
-                    )
-                    continue
-            evaluated += 1
-            symbol_signals = await analyzer.evaluate(symbol, ticker, allow_entry=True)
-            if not symbol_signals:
-                _record_strategy_scan_log("manual", symbol, "NO_SIGNAL", price=ticker.get("last_price"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id, activity_status=activity_status)
-            for signal in symbol_signals:
-                signals.append(signal)
-                _record_strategy_scan_log("manual", symbol, str(signal.get("action", "SIGNAL")), price=signal.get("price", ticker.get("last_price")), reason=signal.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id, activity_status=activity_status)
-                if str(signal.get("action", "")) != "ENTRY_INELIGIBLE":
-                    await ws_manager.broadcast({"type": "signal", "data": signal})
-        except Exception as exc:
-            errors += 1
-            print(f"[Strategy manual] {symbol} değerlendirme hatası: {exc}")
-            _record_strategy_scan_log("manual", symbol, "ERROR", error=str(exc), scan_id=scan_id, activity_status=activity_status)
-    # Manuel tarama: sadece kullanıcı tetikli olduğundan audit'e yaz.
-    actor = _session_username(request)
-    await log_user_action(
-        actor, None, "trade", "MANUAL_SCAN",
-        target=actor,
-        details={"scan_id": scan_id, "symbols_checked": checked,
-                 "evaluated": evaluated, "errors": errors,
-                 "signals": len(signals)},
-        request=request)
-    return {"ok": True, "status": "completed", "strategy": config.ACTIVE_STRATEGY,
-            "symbols_checked": checked, "active_symbols": checked,
-            "universe_size": len(config.SYMBOLS), "passive_overridden": passive_overridden,
-            "fresh_ticker": fresh_ticker, "stale_ticker": stale_ticker,
-            "evaluated": evaluated, "errors": errors,
-            "signals": signals,
-            "scan_id": scan_id,
-            "scan_logs": [item for item in _strategy_scan_logs if item["scan_type"] == "manual" and item.get("scan_id") == scan_id],
-            "elapsed_seconds": round(time.time() - started, 2),
-            "warning": "Ticker verisi hazır değil; teknik değerlendirme yapılmadı" if evaluated == 0 else None,
-            "paper_only": True}
-
-@app.get("/api/strategy/scan-logs")
-async def strategy_scan_logs(limit: int = 250, scan_type: str = ""):
-    """Return recent per-symbol scan evidence for the Settings audit panel."""
-    safe_limit = max(1, min(int(limit), 1000))
-    logs = list(_strategy_scan_logs)
-    if scan_type in {"automatic", "manual", "pump_monitor"}:
-        logs = [item for item in logs if item["scan_type"] == scan_type]
-    return {"ok": True, "logs": logs[:safe_limit], "total": len(logs), "paper_only": True}
-
-@app.post("/api/strategy/replay")
-async def start_strategy_replay(payload: dict = None):
-    """Start a read-only closed-5m candle strategy check and return a pollable job."""
-    payload = payload or {}
-    try:
-        candle_count = int(payload.get("candle_count", 6))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail="candle_count 1 ile 20 arasında bir tam sayı olmalı")
-    if not 1 <= candle_count <= 20:
-        raise HTTPException(status_code=422, detail="candle_count 1 ile 20 arasında olmalı")
-    job_id = uuid.uuid4().hex[:12]
-    _strategy_replay_jobs[job_id] = {"job_id": job_id, "status": "queued", "strategy": config.ACTIVE_STRATEGY,
-                                     "timeframe": "5m", "candle_count": candle_count, "completed": 0, "total": 0,
-                                     "results": [], "logs": [], "started_at": time.time()}
-    asyncio.create_task(_run_strategy_replay(job_id, candle_count), name=f"strategy-replay-{job_id}")
-    return {"ok": True, "job_id": job_id, "status": "queued", "paper_only": True}
-
-@app.get("/api/strategy/replay/{job_id}")
-async def strategy_replay_status(job_id: str):
-    job = _strategy_replay_jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Replay işi bulunamadı")
-    return {"ok": True, **job}
-
 @app.get("/api/market-snapshot/{symbol}/deep")
 async def market_snapshot_deep(symbol: str, timeframe: str = "5m"):
     """Tek sembol için LLM'e sunulacak güncel derin snapshot'ı döndürür."""
@@ -2264,7 +1940,7 @@ async def close_position_manual(symbol: str, request: Request):
                           request=request)
     await ws_manager.broadcast({"type": "signal", "data": sig})
     if str(sig.get("strategy", "")).upper() != "LLM_PAPER":
-        asyncio.create_task(llm_replenish_after_close())
+        _start_background(llm_replenish_after_close(), "llm-replenish-after-close", single_pass=True)
     return {"ok": True, "message": f"{symbol} kapatıldı @ {price:.2f}", "signal": sig}
 
 @app.get("/api/trades")
@@ -2422,7 +2098,8 @@ async def download_postgres_backup():
     return StreamingResponse(stream, media_type="application/octet-stream", headers=headers)
 
 @app.post("/api/postgres/restore")
-async def restore_postgres_backup(payload: dict = None):
+async def restore_postgres_backup(payload: dict = None, request: Request = None):
+    _require_admin(request)
     body = payload or {}; raw_path = str(body.get("path", ""))
     if body.get("confirmation") != "RESTORE_POSTGRES": raise HTTPException(status_code=400, detail="RESTORE_POSTGRES onayı gerekli")
     if not os.getenv("DATABASE_URL"): raise HTTPException(status_code=400, detail="DATABASE_URL gerekli")
@@ -2449,7 +2126,8 @@ async def restore_postgres_backup(payload: dict = None):
     return {"ok": True, "message": "PostgreSQL backup geri yüklendi; backend yeniden başlatılması önerilir"}
 
 @app.post("/api/memory/reset")
-async def reset_memory():
+async def reset_memory(request: Request = None):
+    _require_admin(request)
     if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
     async with _pg_pool.acquire() as conn:
         await conn.execute("TRUNCATE memory_retrieval_logs, memory_embeddings, memory_documents RESTART IDENTITY")
@@ -2494,7 +2172,8 @@ async def get_agent_eval_cases():
         return {"cases": [], "error": str(exc)}
 
 @app.post("/api/llm/evals/run")
-async def run_agent_golden_evals(payload: dict = None):
+async def run_agent_golden_evals(payload: dict = None, request: Request = None):
+    _require_admin(request)
     """Run the versioned golden cases against the configured LLM and persist results."""
     if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL eval backend aktif değil")
     cases_response = await get_agent_eval_cases()
@@ -2549,55 +2228,6 @@ async def promote_agent_instincts(payload: dict = None):
     if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL learning backend aktif değil")
     return await promote_validated_instincts(_pg_pool, dry_run=not bool((payload or {}).get("apply")))
 
-@app.get("/api/strategies/stats")
-async def get_strategy_stats():
-    """Her stratejinin başarı istatistikleri (işlem sayısı, kazanma oranı, PnL)."""
-    trades = await database.get_trades(limit=None)
-    stats = {}
-    for t in trades:
-        s = stats.setdefault(t["strategy"], {"trades": 0, "wins": 0, "pnl": 0.0, "commission": 0.0,
-                                               "gross_profit": 0.0, "gross_loss": 0.0})
-        s["trades"] += 1
-        pnl = t["pnl"] or 0.0
-        s["pnl"] += pnl
-        s["commission"] += t["commission"] or 0.0
-        if pnl > 0:
-            s["wins"] += 1
-            s["gross_profit"] += pnl
-        elif pnl < 0:
-            s["gross_loss"] += abs(pnl)
-    for s in stats.values():
-        s["win_rate"] = (s["wins"] / s["trades"] * 100) if s["trades"] else 0.0
-        s["profit_factor"] = (s["gross_profit"] / s["gross_loss"]) if s["gross_loss"] else None
-    active = [config.ACTIVE_STRATEGY]
-    if config.PUMP_MONITOR_ENABLED and config.PUMP_MONITOR_AUTO_TRADE:
-        active.append("PUMP_MONITOR")
-    return {"stats": stats, "active": list(dict.fromkeys(active))}
-
-@app.get("/api/strategies/comparison")
-async def strategy_comparison():
-    trades = await database.get_trades(limit=None)
-    grouped = {}
-    for trade in trades:
-        name = trade.get("strategy") or "Bilinmeyen"
-        item = grouped.setdefault(name, {"strategy": name, "trades": 0, "wins": 0, "losses": 0, "net_pnl": 0.0, "commission": 0.0, "hold_seconds": 0.0, "timeouts": 0, "gross_wins": 0.0, "gross_losses": 0.0})
-        pnl = float(trade.get("pnl") or 0.0)
-        item["trades"] += 1; item["net_pnl"] += pnl
-        item["commission"] += float(trade.get("commission") or 0.0)
-        item["hold_seconds"] += float(trade.get("hold_seconds") or 0.0)
-        item["wins"] += int(pnl > 0); item["losses"] += int(pnl <= 0)
-        item["gross_wins"] += max(0.0, pnl); item["gross_losses"] += min(0.0, pnl)
-        reason = str(trade.get("reason") or "").lower()
-        item["timeouts"] += int(any(token in reason for token in ("time", "timeout", "max_hold", "early_failure", "stale_position")))
-    for item in grouped.values():
-        n = item["trades"]
-        item["win_rate"] = item["wins"] / n * 100 if n else 0.0
-        item["avg_pnl"] = item["net_pnl"] / n if n else 0.0
-        item["avg_hold_seconds"] = item["hold_seconds"] / n if n else 0.0
-        item["profit_factor"] = item["gross_wins"] / abs(item["gross_losses"]) if item["gross_losses"] else None
-        del item["hold_seconds"], item["gross_wins"], item["gross_losses"]
-    return {"strategies": sorted(grouped.values(), key=lambda x: x["net_pnl"], reverse=True)}
-
 @app.get("/api/risk/summary")
 async def risk_summary():
     trades = await database.get_trades(limit=None)
@@ -2615,7 +2245,8 @@ async def risk_summary():
             "risk_flags": {"consecutive_loss_streak": losses >= 3, "daily_loss": today_pnl < 0}}
 
 @app.post("/api/reset")
-async def reset_all():
+async def reset_all(request: Request = None):
+    _require_admin(request)
     """Eski paper-trading/strateji geçmişini sil, ayarları koru ve cüzdanı sıfırla."""
     analyzer.positions.clear()
     analyzer.pending_orders.clear()
@@ -2641,6 +2272,24 @@ async def reset_all():
 llm_chat_routes.llm_open_paper_trade = llm_open_paper_trade
 llm_chat_routes.symbol_analysis = symbol_analysis
 llm_chat_routes.get_config = get_config
+async def get_strategy_stats():
+    """LLM aracı: strateji bazlı işlem istatistikleri (kayıt olan stratejiler)."""
+    trades = await database.get_trades(limit=None)
+    stats = {}
+    for t in trades:
+        name = str(t.get("strategy") or "Bilinmeyen")
+        row = stats.setdefault(name, {"strategy": name, "trades": 0, "wins": 0, "pnl": 0.0, "commission": 0.0})
+        pnl = float(t.get("pnl") or 0.0)
+        row["trades"] += 1
+        row["pnl"] += pnl
+        row["commission"] += float(t.get("commission") or 0.0)
+        if pnl > 0:
+            row["wins"] += 1
+    for row in stats.values():
+        row["win_rate"] = (row["wins"] / row["trades"] * 100) if row["trades"] else 0.0
+    return {"stats": stats, "active": ["CHAT_PREDICTION", "LLM_PAPER"]}
+
+
 llm_chat_routes.get_strategy_stats = get_strategy_stats
 runtime_routes.llm_open_paper_trade = llm_open_paper_trade
 runtime_routes.gainers_radar = gainers_radar
