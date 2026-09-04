@@ -99,15 +99,15 @@ function OverviewTab() {
           <p className="eyebrow text-neon-green">RADAR BİLDİRİM BAŞARI KIRILIMI</p>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <StatCard label="TAMAMEN BAŞARILI" value={String(breakdown.counts?.["TAMAMEN BAŞARILI"] || 0)} tone="text-neon-green" />
-            <StatCard label="BAŞARILI" value={String(breakdown.counts?.BAŞARILI || 0)} tone="text-neon-green" />
-            <StatCard label="KISMİ" value={String(breakdown.counts?.KISMİ || 0)} tone="text-yellow-300" />
-            <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.BAŞARISIZ || 0)} tone="text-neon-red" />
-            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.BEKLİYOR || 0) + (breakdown.counts?.ÖLÇÜLEMEDİ || 0))} sub={`ölçülemedi ${breakdown.counts?.ÖLÇÜLEMEDİ || 0}`} />
+            <StatCard label="BAŞARILI" value={String(breakdown.counts?.BASARILI || 0)} tone="text-neon-green" />
+            <StatCard label="KISMİ" value={String(breakdown.counts?.KISMI || 0)} tone="text-yellow-300" />
+            <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.BASARISIZ || 0)} tone="text-neon-red" />
+            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.BEKLIYOR || 0) + (breakdown.counts?.OLCULEMEDI || 0))} sub={`ölçülemedi ${breakdown.counts?.OLCULEMEDI || 0}`} />
             <StatCard label="GENEL BAŞARI" value={breakdown.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"} tone={breakdown.success_rate != null && breakdown.success_rate >= 50 ? "text-neon-green" : "text-yellow-300"}
               sub={`${breakdown.success_count}/${breakdown.evaluated} ölçülen`} />
           </div>
           <p className="mt-2 font-mono text-[10px] text-bunker-muted">
-            Başarı, kapanmış M1 mumlarıyla ölçülen gerçek MFE ve hedef dokunuşuna dayanır; ufku dolmayan/ölçülemeyen kayıtlar BEKLİYOR sayılır.
+            Başarı, kapanmış M1 mumlarıyla ölçülen gerçek MFE ve hedef dokunuşuna dayanır; ufku dolmayan/ölçülemeyen kayıtlar BEKLIYOR sayılır.
           </p>
         </section>
       )}
@@ -183,11 +183,11 @@ function OverviewTab() {
                     <td className="font-mono text-xs text-white">{n.mfe_pct != null ? `%${Number(n.mfe_pct).toFixed(2)}` : "—"}</td>
                     <td>
                       {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">TAMAMEN</Badge>
-                        : n.status === "BAŞARILI" ? <Badge tone="ok">BAŞARILI</Badge>
-                        : n.status === "KISMİ" ? <Badge tone="warn">KISMİ</Badge>
-                        : n.status === "BAŞARISIZ" ? <Badge tone="bad">BAŞARISIZ</Badge>
-                        : n.status === "ÖLÇÜLEMEDİ" ? <Badge tone="warn">ÖLÇÜLEMEDİ</Badge>
-                        : <Badge>BEKLİYOR</Badge>}
+                        : n.status === "BAŞARILI" ? <Badge tone="ok">BASARILI</Badge>
+                        : n.status === "KISMİ" ? <Badge tone="warn">KISMI</Badge>
+                        : n.status === "BAŞARISIZ" ? <Badge tone="bad">BASARISIZ</Badge>
+                        : n.status === "OLCULEMEDI" ? <Badge tone="warn">OLCULEMEDI</Badge>
+                        : <Badge>BEKLIYOR</Badge>}
                     </td>
                   </tr>
                 ))}
@@ -560,7 +560,7 @@ function LlmTab() {
                   <td>
                     {r.status === "evaluated"
                       ? (r.direction_correct ? <Badge tone="ok">DOĞRU</Badge> : <Badge tone="bad">YANLIŞ</Badge>)
-                      : <Badge>BEKLİYOR</Badge>}
+                      : <Badge>BEKLIYOR</Badge>}
                   </td>
                 </tr>
               ))}
@@ -734,85 +734,231 @@ function SelfLearningTab() {
   );
 }
 
-/* ---- Kullanıcı: Radar Tespitleri sekmesi ---- */
+/* ---- Kullanıcı: Radar Tespitleri sekmesi (DataTable) ---- */
 function UserRadarTab() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [breakdown, setBreakdown] = useState<any>(null);
+  const [overall, setOverall] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [day, setDay] = useState<string>(() => {
+    const d = new Date();
+    return d.toISOString().slice(0, 10);
+  });
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<string>("detected_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 50;
 
   const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
-      const ntRes = await apiRequest(`${API_BASE}/api/reports/notifications?limit=50`, { cache: "no-store" });
+      const params = new URLSearchParams();
+      params.set("limit", "1000");
+      params.set("day", day);
+      const ntRes = await apiRequest(`${API_BASE}/api/reports/notifications?${params}`, { cache: "no-store" });
       const nt = await ntRes.json();
       if (ntRes.ok) {
         setNotifications(nt.notifications || []);
         setBreakdown(nt.breakdown || null);
+        setOverall(nt.overall || null);
+      } else {
+        setError(nt.detail || "Radar tespitleri alinamadi");
       }
     } catch {
-      setError("Radar tespitleri alınamadı");
+      setError("Radar tespitleri alinamadi");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [day]);
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return <section className="card text-bunker-muted">Radar tespitleri yükleniyor…</section>;
+  const toggleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
+    setPage(0);
+  };
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toUpperCase();
+    let rows = notifications;
+    if (q) {
+      rows = rows.filter((n: any) =>
+        String(n.symbol || "").toUpperCase().includes(q) ||
+        String(n.mode || "").toUpperCase().includes(q) ||
+        String(n.status || "").toUpperCase().includes(q)
+      );
+    }
+    const dir = sortDir === "asc" ? 1 : -1;
+    const sorted = [...rows].sort((a: any, b: any) => {
+      let av: any = a[sortKey];
+      let bv: any = b[sortKey];
+      if (sortKey === "date" || sortKey === "time") {
+        av = a.detected_at;
+        bv = b.detected_at;
+      }
+      if (av == null) av = "";
+      if (bv == null) bv = "";
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+      return String(av).localeCompare(String(bv), "tr-TR") * dir;
+    });
+    return sorted;
+  }, [notifications, search, sortKey, sortDir]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  const SortHeader = ({ label, field }: { label: string; field: string }) => (
+    <th
+      className="cursor-pointer select-none"
+      onClick={() => toggleSort(field)}
+      title="Siralama icin tiklayin"
+    >
+      <span className="inline-flex items-center gap-1">
+        {label}
+        {sortKey === field ? (
+          <span className="text-neon-green">{sortDir === "asc" ? "▲" : "▼"}</span>
+        ) : (
+          <span className="text-bunker-600">⇅</span>
+        )}
+      </span>
+    </th>
+  );
+
+  if (loading) return <section className="card text-bunker-muted">Radar tespitleri yukleniyor...</section>;
   if (error) return <section className="card border-neon-red/40 text-neon-red">{error}</section>;
 
   return (
     <div className="space-y-5">
+      {/* Tarih secici + Genel basari */}
+      <section className="card">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="eyebrow text-neon-green">RAPOR TARIHI</p>
+            <input
+              type="date"
+              value={day}
+              onChange={(e) => { setDay(e.target.value); setPage(0); }}
+              className="input mt-2 w-auto font-mono text-sm"
+            />
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <StatCard
+              label="SECILEN GUN BASARI"
+              value={breakdown?.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"}
+              tone={breakdown?.success_rate != null && breakdown.success_rate >= 50 ? "text-neon-green" : "text-yellow-300"}
+              sub={breakdown ? `${breakdown.success_count}/${breakdown.evaluated} olculen` : ""}
+            />
+            <StatCard
+              label="SISTEM GENEL BASARI"
+              value={overall?.success_rate != null ? `%${overall.success_rate.toFixed(1)}` : "—"}
+              tone={overall?.success_rate != null && overall.success_rate >= 50 ? "text-neon-green" : "text-yellow-300"}
+              sub={overall ? `${overall.success_count}/${overall.evaluated} olculen` : ""}
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* Secilen gun basari kirilimi */}
       {breakdown && (
         <section className="card">
-          <p className="eyebrow text-neon-green">TESPİT BAŞARI KIRILIMI</p>
+          <p className="eyebrow text-neon-green">GUNLUK BASARI KIRILIMI</p>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <StatCard label="TAMAMEN" value={String(breakdown.counts?.["TAMAMEN BAŞARILI"] || 0)} tone="text-neon-green" />
-            <StatCard label="BAŞARILI" value={String(breakdown.counts?.BAŞARILI || 0)} tone="text-neon-green" />
-            <StatCard label="KISMİ" value={String(breakdown.counts?.KISMİ || 0)} tone="text-yellow-300" />
-            <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.BAŞARISIZ || 0)} tone="text-neon-red" />
-            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.BEKLİYOR || 0) + (breakdown.counts?.ÖLÇÜLEMEDİ || 0))} sub={`ölçülemedi ${breakdown.counts?.ÖLÇÜLEMEDİ || 0}`} />
-            <StatCard label="GENEL BAŞARI" value={breakdown.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"} tone="text-sky-300"
-              sub={`${breakdown.success_count}/${breakdown.evaluated} ölçülen`} />
+            <StatCard label="BAŞARILI" value={String(breakdown.counts?.BASARILI || 0)} tone="text-neon-green" />
+            <StatCard label="KISMİ" value={String(breakdown.counts?.KISMI || 0)} tone="text-yellow-300" />
+            <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.BASARISIZ || 0)} tone="text-neon-red" />
+            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.BEKLIYOR || 0) + (breakdown.counts?.OLCULEMEDI || 0))} sub={`olculemedi ${breakdown.counts?.OLCULEMEDI || 0}`} />
+            <StatCard label="GENEL BASARI" value={breakdown.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"} tone="text-sky-300"
+              sub={`${breakdown.success_count}/${breakdown.evaluated} olculen`} />
           </div>
           <p className="mt-2 font-mono text-[10px] text-bunker-muted">
-            Başarı, kapanmış M1 mumlarıyla ölçülen gerçek MFE ve hedef dokunuşuna dayanır.
+            Basari, kapannis M1 mumlariyla olculen gercek MFE ve hedef dokunusuna dayanir.
           </p>
         </section>
       )}
 
+      {/* DataTable */}
       <section className="card">
-        <div className="flex items-center justify-between">
-          <p className="eyebrow text-neon-green">RADAR TESPİTLERİ ({notifications.length})</p>
-          <button onClick={load} className="ui-button ui-button-secondary">⟳ Tazele</button>
-        </div>
-        {notifications.length === 0 ? (
-          <p className="mt-3 text-sm text-bunker-muted">Henüz radar tespiti yok.</p>
-        ) : (
-          <div className="mt-3 table-scroll">
-            <table className="data-table">
-              <thead><tr><th>Zaman</th><th>Sembol</th><th>Mod</th><th>Hedef</th><th>Ölçülen MFE</th><th>Durum</th></tr></thead>
-              <tbody>
-                {notifications.map((n: any) => (
-                  <tr key={`${n.id}-${n.symbol}-${n.detected_at}`}>
-                    <td className="font-mono text-xs text-bunker-muted">{fmtDt(n.detected_at)}</td>
-                    <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
-                    <td className="font-mono text-xs text-bunker-muted">{n.mode || "—"}</td>
-                    <td className="font-mono text-xs text-neon-green">{n.target_pct ? `+%${Number(n.target_pct).toFixed(1)}` : "—"}</td>
-                    <td className="font-mono text-xs text-white">{n.mfe_pct != null ? `%${Number(n.mfe_pct).toFixed(2)}` : "—"}</td>
-                    <td>
-                      {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">TAMAMEN</Badge>
-                        : n.status === "BAŞARILI" ? <Badge tone="ok">BAŞARILI</Badge>
-                        : n.status === "KISMİ" ? <Badge tone="warn">KISMİ</Badge>
-                        : n.status === "BAŞARISIZ" ? <Badge tone="bad">BAŞARISIZ</Badge>
-                        : n.status === "ÖLÇÜLEMEDİ" ? <Badge tone="warn">ÖLÇÜLEMEDİ</Badge>
-                        : <Badge>BEKLİYOR</Badge>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="eyebrow text-neon-green">RADAR TESPITLERI ({filtered.length})</p>
+          <div className="flex items-center gap-2">
+            <input
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+              placeholder="Sembol, mod, durum ara..."
+              className="input w-56 font-mono text-sm"
+            />
+            <button onClick={load} className="ui-button ui-button-secondary">⟳ Tazele</button>
           </div>
+        </div>
+        {pageRows.length === 0 ? (
+          <p className="mt-3 text-sm text-bunker-muted">Eslesen tespit yok.</p>
+        ) : (
+          <>
+            <div className="mt-3 table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <SortHeader label="Tarih" field="date" />
+                    <SortHeader label="Saat" field="time" />
+                    <SortHeader label="Sembol" field="symbol" />
+                    <SortHeader label="Anlik Fiyat" field="price" />
+                    <SortHeader label="Hedef %" field="target_pct" />
+                    <SortHeader label="Skor" field="score" />
+                    <SortHeader label="ML Olasilik" field="ml_hit_probability" />
+                    <SortHeader label="Ufuk" field="horizon_minutes" />
+                    <th>Durum</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageRows.map((n: any) => {
+                    const dt = new Date(n.detected_at * 1000);
+                    const dateStr = dt.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric" });
+                    const timeStr = dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+                    return (
+                      <tr key={`${n.id}-${n.symbol}-${n.detected_at}`}>
+                        <td className="font-mono text-xs text-bunker-muted">{dateStr}</td>
+                        <td className="font-mono text-xs text-bunker-muted">{timeStr}</td>
+                        <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
+                        <td className="font-mono text-xs text-white">{n.price != null ? Number(n.price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
+                        <td className="font-mono text-xs text-neon-green">{n.target_pct ? `+%${Number(n.target_pct).toFixed(1)}` : "—"}</td>
+                        <td className="font-mono text-xs text-white">{n.score != null ? Number(n.score).toFixed(2) : "—"}</td>
+                        <td className="font-mono text-xs text-white">{n.ml_hit_probability != null ? `%${(Number(n.ml_hit_probability) * 100).toFixed(0)}` : "—"}</td>
+                        <td className="font-mono text-xs text-bunker-muted">{n.horizon_minutes ? `${n.horizon_minutes}dk` : "—"}</td>
+                        <td>
+                          {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">TAMAMEN</Badge>
+                            : n.status === "BAŞARILI" ? <Badge tone="ok">BASARILI</Badge>
+                            : n.status === "KISMİ" ? <Badge tone="warn">KISMI</Badge>
+                            : n.status === "BAŞARISIZ" ? <Badge tone="bad">BASARISIZ</Badge>
+                            : n.status === "OLCULEMEDI" ? <Badge tone="warn">OLCULEMEDI</Badge>
+                            : <Badge>BEKLIYOR</Badge>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="font-mono text-xs text-bunker-muted">
+                {filtered.length} kayit · Sayfa {page + 1}/{totalPages}
+              </p>
+              <div className="flex items-center gap-1">
+                <button disabled={page <= 0} onClick={() => setPage(0)} className="ui-button ui-button-secondary disabled:opacity-40">« Ilk</button>
+                <button disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))} className="ui-button ui-button-secondary disabled:opacity-40">‹ Onceki</button>
+                <button disabled={page >= totalPages - 1} onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} className="ui-button ui-button-secondary disabled:opacity-40">Sonraki ›</button>
+                <button disabled={page >= totalPages - 1} onClick={() => setPage(totalPages - 1)} className="ui-button ui-button-secondary disabled:opacity-40">Son »</button>
+              </div>
+            </div>
+          </>
         )}
       </section>
     </div>
@@ -969,5 +1115,4 @@ export default function ReportsPage() {
       </main>
   );
 }
-
 

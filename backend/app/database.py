@@ -2091,61 +2091,75 @@ async def save_monitoring_notifications(entries):
 
 
 
-async def get_monitoring_velocity_matches(limit: int = 200):
-    """Bildirimleri aynı andaki velocity adayıyla eşleştir (salt okunur).
+async def get_monitoring_velocity_matches(limit: int = 200, day: str | None = None):
+    """Bildirimleri ayni andaki velocity adayiyla eslestir (salt okunur).
 
-    monitoring_notifications ve velocity_candidates aynı tarama turunda
-    üretilir: bildirimin tespit anı (detected_at) ile velocity adayının
-    kayıt anı (created_at) <= 60 saniye fark ve hedef % eşleşmesi aranır.
-    Velocity adayı değerlendirildiyse gerçek M1 kapanış ölçümü (mfe_pct,
-    touched_target) kullanılır; değilse bekliyor kabul edilir.
+    monitoring_notifications ve velocity_candidates ayni tarama turunda
+    uretilir: bildirimin tespit ani (detected_at) ile velocity adayinin
+    kayit ani (created_at) <= 60 saniye fark ve hedef % eslesmesi aranir.
+    Velocity adayi degerlendirildiyse gercek M1 kapanis olcmue (mfe_pct,
+    touched_target) kullanilir; degilse bekliyor kabul edilir.
+
+    day: 'YYYY-MM-DD' formatinda gun filtresi (opsiyonel).
     """
+    from datetime import datetime, timezone, timedelta
     def op(conn):
-        notif_rows = conn.execute(
+        base_sql = (
             "SELECT id, symbol, mode, score, target_pct, price, expected_price,"
             " horizon_minutes, detected_at, sent_via_push, message, title"
-            " FROM monitoring_notifications ORDER BY detected_at DESC LIMIT ?",
-            (max(1, min(int(limit), 1000)),)).fetchall()
+            " FROM monitoring_notifications"
+        )
+        params: list = []
+        if day:
+            day_start = datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=timezone(timedelta(hours=3)))
+            day_end = day_start + timedelta(days=1)
+            base_sql += " WHERE detected_at >= %s AND detected_at < %s"
+            params.extend([day_start.timestamp(), day_end.timestamp()])
+        base_sql += " ORDER BY detected_at DESC LIMIT %s"
+        params.append(max(1, min(int(limit), 1000)))
+        notif_rows = conn.execute(base_sql, params).fetchall()
         matches = []
         for n in notif_rows:
             item = dict(n)
-            symbol = str(item.get("symbol") or "").upper()
-            detected = float(item.get("detected_at") or 0)
-            target = float(item.get("target_pct") or 0)
+            symbol = str(item.get('symbol') or '').upper()
+            detected = float(item.get('detected_at') or 0)
+            target = float(item.get('target_pct') or 0)
             best = None
             if symbol and detected > 0:
                 cands = conn.execute(
                     """SELECT candidate_id, symbol, target_pct, passes, status,
-                              mfe_pct, touched_target, created_at, ml_target_pct
+                              mfe_pct, touched_target, created_at, ml_target_pct,
+                              ml_hit_probability
                        FROM velocity_candidates
-                       WHERE symbol=? AND ABS(created_at - ?) <= 60
-                       ORDER BY ABS(created_at - ?) LIMIT 4""",
-                    (symbol, detected, detected)).fetchall()
+                       WHERE symbol=%s AND ABS(created_at - %s) <= 60
+                       ORDER BY ABS(created_at - %s) LIMIT 4"""
+                    ,(symbol, detected, detected)).fetchall()
                 for c in cands:
                     row = dict(c)
-                    if target > 0 and abs(float(row.get("target_pct") or 0) - target) < 0.01:
+                    if target > 0 and abs(float(row.get('target_pct') or 0) - target) < 0.01:
                         best = row
                         break
                 if best is None and cands:
                     best = dict(cands[0])
             if best:
-                item["candidate_id"] = best.get("candidate_id")
-                item["candidate_status"] = best.get("status")
-                item["mfe_pct"] = best.get("mfe_pct")
-                item["touched_target"] = bool(best.get("touched_target")) if best.get("touched_target") is not None else None
-                item["candidate_target_pct"] = best.get("target_pct")
-                item["candidate_passes"] = bool(best.get("passes")) if best.get("passes") is not None else None
+                item['candidate_id'] = best.get('candidate_id')
+                item['candidate_status'] = best.get('status')
+                item['mfe_pct'] = best.get('mfe_pct')
+                item['touched_target'] = bool(best.get('touched_target')) if best.get('touched_target') is not None else None
+                item['candidate_target_pct'] = best.get('target_pct')
+                item['candidate_passes'] = bool(best.get('passes')) if best.get('passes') is not None else None
+                item['ml_hit_probability'] = float(best['ml_hit_probability']) if best.get('ml_hit_probability') is not None else None
             else:
-                item["candidate_id"] = None
-                item["candidate_status"] = None
-                item["mfe_pct"] = None
-                item["touched_target"] = None
-                item["candidate_target_pct"] = None
-                item["candidate_passes"] = None
+                item['candidate_id'] = None
+                item['candidate_status'] = None
+                item['mfe_pct'] = None
+                item['touched_target'] = None
+                item['candidate_target_pct'] = None
+                item['candidate_passes'] = None
+                item['ml_hit_probability'] = None
             matches.append(item)
         return matches
     return await _run_db(op)
-
 async def list_monitoring_notifications(limit=50):
     """En son monitoring bildirimlerini döndür (yeni -> eski)."""
     def op(conn):
@@ -2803,4 +2817,3 @@ async def get_all_symbol_target_states() -> list[dict]:
                  "success_count": int(r["success_count"] or 0), "fail_count": int(r["fail_count"] or 0),
                  "total_count": int(r["total_count"] or 0), "last_adjusted_at": float(r["last_adjusted_at"] or 0)} for r in rows]
     return await _run_db(op)
-
