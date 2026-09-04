@@ -331,6 +331,54 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
             except Exception as e:
                 self.assertIn("403", str(e))
 
+    async def test_active_notification_returns_pending(self):
+        """Ufku dolmamış bildirim: panel alanları + geri sayım pozitif."""
+        from app.routers import monitoring
+        from app import database
+
+        row = {"id": 1, "symbol": "BTCTRY", "score": 62.5, "target_pct": 2.0,
+               "price": 100.0, "expected_price": 102.0, "horizon_minutes": 5,
+               "detected_at": time.time() - 60, "mode": "trend_devam"}
+
+        async def fake_pending(sym):
+            return dict(row)
+
+        with patch.object(database, "get_pending_monitoring_notification", side_effect=fake_pending):
+            result = await monitoring.monitoring_active_notification("BTCTRY")
+        self.assertTrue(result["active"])
+        self.assertEqual(result["score"], 62.5)
+        self.assertAlmostEqual(result["target_gain_pct"], 2.0, places=2)
+        self.assertGreater(result["remaining_sec"], 0)
+        self.assertLessEqual(result["remaining_sec"], (5 + 2) * 60)
+
+    async def test_active_notification_expired_returns_inactive(self):
+        """Ufuk + tolerans dolmuş bildirim: active=False (grafik paneli söner)."""
+        from app.routers import monitoring
+        from app import database
+
+        row = {"id": 1, "symbol": "ETHTRY", "score": 70.0, "target_pct": 2.0,
+               "price": 50.0, "expected_price": 51.0, "horizon_minutes": 5,
+               "detected_at": time.time() - (5 + 3) * 60, "mode": None}
+
+        async def fake_pending(sym):
+            return dict(row)
+
+        with patch.object(database, "get_pending_monitoring_notification", side_effect=fake_pending):
+            result = await monitoring.monitoring_active_notification("ETHTRY")
+        self.assertFalse(result["active"])
+
+    async def test_active_notification_no_row_returns_inactive(self):
+        """Bildirim hiç yokken active=False döner (hata fırlatmaz)."""
+        from app.routers import monitoring
+        from app import database
+
+        async def fake_pending(sym):
+            return None
+
+        with patch.object(database, "get_pending_monitoring_notification", side_effect=fake_pending):
+            result = await monitoring.monitoring_active_notification("XYZTRY")
+        self.assertFalse(result["active"])
+
 
 if __name__ == "__main__":
     unittest.main()

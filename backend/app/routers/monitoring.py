@@ -609,6 +609,49 @@ async def monitoring_state():
     }
 
 
+@router.get("/api/monitoring/active-notification/{symbol}")
+async def monitoring_active_notification(symbol: str):
+    """Sembol için ufku dolmamış (BEKLIYOR) son radar bildirimi — grafik sayfası paneli.
+
+    Bildirim anındaki fiyat, hedef fiyat, hedef artış, skor ve ufuk bilgisini
+    geri sayım için expires_at ile birlikte döndürür; ufuk + 2dk tolerans
+    dolunca active=False döner (panel ve grafik çizgileri söner).
+    """
+    sym = str(symbol or "").upper().strip()
+    if not sym:
+        return {"symbol": sym, "active": False}
+    try:
+        row = await database.get_pending_monitoring_notification(sym)
+    except Exception as exc:
+        logger.warning("aktif bildirim okunamadı %s: %s", sym, exc)
+        row = None
+    if not row:
+        return {"symbol": sym, "active": False}
+    detected_at = float(row.get("detected_at") or 0)
+    horizon = int(row.get("horizon_minutes") or 0)
+    expires_at = detected_at + (horizon + 2) * 60
+    now = time.time()
+    if not detected_at or now >= expires_at:
+        return {"symbol": sym, "active": False}
+    price = float(row.get("price") or 0)
+    expected = float(row.get("expected_price") or 0)
+    target_pct = float(row.get("target_pct") or 0)
+    return {
+        "symbol": sym,
+        "active": True,
+        "score": row.get("score"),
+        "target_pct": target_pct,
+        "price": price,
+        "expected_price": expected,
+        "target_gain_pct": round((expected / price - 1) * 100, 3) if price > 0 and expected > 0 else target_pct,
+        "detected_at": detected_at,
+        "horizon_minutes": horizon,
+        "expires_at": expires_at,
+        "remaining_sec": max(0, int(expires_at - now)),
+        "mode": row.get("mode"),
+    }
+
+
 @router.get("/api/reports/notifications")
 async def report_notifications(limit: int = 200, day: str = None):
     """Radar bildirim raporu - gercek kapannis M1 olcmueye dayali basari.

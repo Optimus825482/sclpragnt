@@ -56,11 +56,17 @@ export default function ChartsPage() {
     const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
+    // Radar bildirimi paneli: sembol için ufku dolmamış son monitoring bildirimi
+    // (fiyat/hedef/skor/ufuk + geri sayım) ve grafik çizgisi göstergesi.
+    const [monitorNotif, setMonitorNotif] = useState<any | null>(null);
+    const [monitorRemainingSec, setMonitorRemainingSec] = useState<number | null>(null);
+    const [showMonitoringLines, setShowMonitoringLines] = useState(true);
     const [livePortfolio, setLivePortfolio] = useState<LivePortfolio | null>(null);
     const [portfolioMetrics, setPortfolioMetrics] = useState<PortfolioMetrics | null>(null);
     const [timeframeTrends, setTimeframeTrends] = useState<TimeframeTrend[]>([]);
     const chartHeightRef = useRef(TOTAL_HEIGHT);
     const positionLinesRef = useRef<Map<string, IPriceLine[]>>(new Map());
+    const monitorLinesRef = useRef<IPriceLine[]>([]);
     const positionMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const utBotMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const patternMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
@@ -92,19 +98,20 @@ export default function ChartsPage() {
     useEffect(() => {
         const settings = loadPersisted<DisplaySettings>(LS_DISPLAY_SETTINGS, {
             showPositions: false, showStopTakeProfit: false, showPatterns: false,
-            showPressure: true
+            showPressure: true, showMonitoringLines: true
         });
         setShowPositions(settings.showPositions);
         setShowStopTakeProfit(settings.showStopTakeProfit);
         setShowPatterns(settings.showPatterns);
         setShowPressure(settings.showPressure !== false);
+        setShowMonitoringLines(settings.showMonitoringLines !== false);
     }, []);
 
     useEffect(() => {
         try {
-            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showPressure } satisfies DisplaySettings));
+            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings));
         } catch { /* görüntü ayarı yalnızca yerelde saklanır */ }
-    }, [showPositions, showStopTakeProfit, showPatterns, showPressure]);
+    }, [showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines]);
 
     // Sembol rozeti /charts?symbol=...&timeframe=5m ile istemci içi
     // yönlendirme yapar. Sayfa unmount olmadığı için URL değişimini ayrıca
@@ -291,6 +298,36 @@ export default function ChartsPage() {
         loadForecast(false);
         loadForecastHistory();
     }, [loadForecast, loadForecastHistory]);
+
+    // Radar bildirimi: sembol için ufku dolmamış son monitoring bildirimi.
+    // 15 sn'de bir yenilenir; ufuk dolduğunda backend active=False döner ve
+    // panel + grafik çizgileri kendiliğinden söner.
+    const loadMonitorNotif = useCallback(async () => {
+        if (!symbol) return;
+        try {
+            const res = await apiRequest(`${API_BASE}/api/monitoring/active-notification/${encodeURIComponent(symbol)}`, { cache: "no-store" });
+            const data = await res.json();
+            setMonitorNotif(res.ok && data?.active ? data : null);
+        } catch {
+            setMonitorNotif(null);
+        }
+    }, [symbol]);
+    useEffect(() => {
+        setMonitorNotif(null);
+        setMonitorRemainingSec(null);
+        loadMonitorNotif();
+        const t = setInterval(loadMonitorNotif, 15_000);
+        return () => clearInterval(t);
+    }, [loadMonitorNotif]);
+
+    // Ufuk geri sayımı: expires_at'e kalan saniye, saniyelik tık.
+    useEffect(() => {
+        if (!monitorNotif?.active || !monitorNotif?.expires_at) { setMonitorRemainingSec(null); return; }
+        const tick = () => setMonitorRemainingSec(Math.max(0, Math.floor(monitorNotif.expires_at - Date.now() / 1000)));
+        tick();
+        const t = setInterval(tick, 1000);
+        return () => clearInterval(t);
+    }, [monitorNotif]);
     useEffect(() => {
         let ws: WebSocket | null = null;
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -834,6 +871,31 @@ export default function ChartsPage() {
         } catch { /* marker zamanı veri aralığında değilse sessiz geç */ }
     }, [showPositions, showStopTakeProfit, positions, symbol, bars, interval]);
 
+    // Radar bildirimi çizgileri: bildirim anındaki fiyat + hedef fiyat,
+    // "Grafikte göster" açıkken çizilir; ufuk dolunca (active=false) söner.
+    useEffect(() => {
+        const series = candleRef.current;
+        if (!series) return;
+        monitorLinesRef.current.forEach((l) => {
+            try { series.removePriceLine(l); } catch { }
+        });
+        monitorLinesRef.current = [];
+        if (!showMonitoringLines || !monitorNotif?.active) return;
+        const addMonitorLine = (price: number, color: string, title: string) => {
+            if (price == null || price <= 0) return;
+            try {
+                monitorLinesRef.current.push(series.createPriceLine({
+                    price, color, lineWidth: 1, lineStyle: 2,
+                    axisLabelVisible: true, title
+                }));
+            } catch { }
+        };
+        const notifPrice = Number(monitorNotif.price);
+        const targetPrice = Number(monitorNotif.expected_price);
+        addMonitorLine(notifPrice, "#eab308", `BİLDİRİM ${formatPrice(notifPrice)}`);
+        addMonitorLine(targetPrice, "#22c55e", `HEDEF ${formatPrice(targetPrice)}`);
+    }, [showMonitoringLines, monitorNotif, bars]);
+
     // Eklenen strateji kategorisi indikatörlerin (EMA Pullback, VWAP+MACD, CMO+CRSI,
     // SlingShot) buy/sell sinyalleri marker olarak gösterilir.
 
@@ -995,7 +1057,7 @@ export default function ChartsPage() {
             indicators: instances,
             paneHeights: paneHeightsRef.current,
             volumeVisible,
-            display: { showPositions, showStopTakeProfit, showPatterns, showPressure } satisfies DisplaySettings
+            display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings
         };
         try {
             await apiRequest(`${API}/${symbol}`, {
@@ -1039,6 +1101,7 @@ export default function ChartsPage() {
             if (typeof st.display?.showStopTakeProfit === "boolean") setShowStopTakeProfit(st.display.showStopTakeProfit);
             if (typeof st.display?.showPatterns === "boolean") setShowPatterns(st.display.showPatterns);
             if (typeof st.display?.showPressure === "boolean") setShowPressure(st.display.showPressure);
+            if (typeof st.display?.showMonitoringLines === "boolean") setShowMonitoringLines(st.display.showMonitoringLines);
         } catch { /* backend yoksa localStorage kullan */ }
     };
 
@@ -1094,6 +1157,8 @@ export default function ChartsPage() {
         return value.toLocaleString("tr-TR", { maximumFractionDigits: 0 });
     };
     const num1 = (value: number | null) => value == null ? "—" : value.toLocaleString("tr-TR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    // radar bildirim zamanı (unix sn) -> saat:dakika:saniye
+    const fmtClock = (ts: number | null | undefined) => (ts ? new Date(ts * 1000).toLocaleTimeString("tr-TR") : "—");
     // RSI/MFI bölge etiketi: aşırı bölgelerde renk değişir, nötrde beyaz kalır.
     const zoneClass = (value: number | null, oversold: number, overbought: number) =>
         value == null ? "text-bunker-muted" : value <= oversold ? "text-neon-green" : value >= overbought ? "text-red-400" : "text-white";
@@ -1280,7 +1345,65 @@ export default function ChartsPage() {
                 </section>
             </div>}
 
-            {/* Üst tahmin paneli: ML model çıktısı (LLM yok) + geçmiş başarı + yenile */}
+            {/* Üst bildirim paneli: sembol için ufku dolmamış radar bildirimi varken
+                ML tahmininin yerine geçer; geri sayım ve grafik çizgisi toggle'ı içerir */}
+            {monitorNotif?.active && (
+                <section className="rounded-xl border border-neon-green/40 bg-neon-green/5 px-3 py-2.5 sm:px-4" aria-label="Radar bildirimi">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="eyebrow text-neon-green">RADAR BİLDİRİMİ · {symbol}</p>
+                        <button
+                            type="button"
+                            role="switch"
+                            aria-checked={showMonitoringLines}
+                            onClick={() => setShowMonitoringLines((v) => !v)}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono text-xs transition-colors ${showMonitoringLines
+                                ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
+                                : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"
+                                }`}
+                            title="Bildirim anındaki fiyat ve hedef çizgilerini grafikte göster/gizle"
+                        >
+                            <span className={`relative inline-flex h-3.5 w-7 shrink-0 rounded-full transition-colors ${showMonitoringLines ? "bg-neon-green" : "bg-bunker-700"}`} aria-hidden="true">
+                                <span className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white shadow transition-transform ${showMonitoringLines ? "translate-x-4" : "translate-x-0.5"}`} />
+                            </span>
+                            GRAFİKTE GÖSTER {showMonitoringLines ? "AÇIK" : "KAPALI"}
+                        </button>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                        <div className="rounded-lg border border-yellow-400/30 bg-yellow-400/5 p-2 text-center">
+                            <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Anlık (bildirim)</p>
+                            <p className="mt-1 font-mono text-sm font-bold text-yellow-300">{Number(monitorNotif.price) > 0 ? formatPrice(Number(monitorNotif.price)) : "—"}</p>
+                        </div>
+                        <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 p-2 text-center">
+                            <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Hedef</p>
+                            <p className="mt-1 font-mono text-sm font-bold text-neon-green">{Number(monitorNotif.expected_price) > 0 ? formatPrice(Number(monitorNotif.expected_price)) : "—"}</p>
+                        </div>
+                        <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 p-2 text-center">
+                            <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Hedef artış</p>
+                            <p className="mt-1 font-mono text-sm font-bold text-neon-green">+{(Number(monitorNotif.target_gain_pct) || Number(monitorNotif.target_pct) || 0).toFixed(1)}%</p>
+                        </div>
+                        <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 p-2 text-center">
+                            <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Skor</p>
+                            <p className={`mt-1 font-mono text-sm font-bold ${(Number(monitorNotif.score) || 0) >= 50 ? "text-neon-green" : "text-yellow-300"}`}>{monitorNotif.score != null ? Number(monitorNotif.score).toFixed(1) : "—"}</p>
+                        </div>
+                        <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-2 text-center">
+                            <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Ufuk</p>
+                            <p className="mt-1 font-mono text-sm font-bold text-sky-300">{monitorNotif.horizon_minutes ? `${monitorNotif.horizon_minutes}dk` : "—"}</p>
+                        </div>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between border-t border-neon-green/20 pt-2">
+                        <span className="font-mono text-[11px] text-bunker-muted">ufuk dolmasına kalan (bildirim: {fmtClock(monitorNotif.detected_at)})</span>
+                        <span className={`font-mono text-lg font-bold tabular-nums ${monitorRemainingSec != null && monitorRemainingSec <= 60 ? "text-yellow-300 animate-pulse" : "text-neon-green"}`}>
+                            {monitorRemainingSec != null
+                                ? `${Math.floor(monitorRemainingSec / 60)}:${String(monitorRemainingSec % 60).padStart(2, "0")}`
+                                : "—"}
+                        </span>
+                    </div>
+                </section>
+            )}
+
+            {/* Üst tahmin paneli: ML model çıktısı (LLM yok) + geçmiş başarı + yenile —
+                aktif radar bildirimi yokken gösterilir */}
+            {!monitorNotif?.active && (
             <section className="rounded-xl border border-bunker-800 bg-bunker-950/95 px-3 py-2.5 sm:px-4" aria-label="ML fiyat tahmini">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="eyebrow">ML TAHMİN · {symbol}</p>
@@ -1324,6 +1447,7 @@ export default function ChartsPage() {
                         </div>
                     )}
                 </section>
+            )}
 
             <div className="chart-card card bg-bunker-950 p-0 overflow-hidden relative">
                 {loading && (

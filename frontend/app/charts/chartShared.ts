@@ -111,7 +111,7 @@ export const chartPriceFormat = (value: number) => {
     return { type: "price" as const, precision, minMove: Number(`1e-${precision}`) };
 };
 
-export type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showPressure: boolean };
+export type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showPressure: boolean; showMonitoringLines: boolean };
 export type LivePortfolio = { total_value?: number; unrealized_pnl?: number };
 export type PortfolioMetrics = { closed_trades: number; winning_trades: number; net_pnl: number; win_rate: number };
 export type TimeframeTrend = { timeframe: string; alignment: "bullish" | "bearish" | "mixed" | "unknown"; data_ready: boolean };
