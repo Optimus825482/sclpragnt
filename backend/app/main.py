@@ -1949,9 +1949,9 @@ async def llm_open_paper_trade(payload: dict, request: Request = None):
         ticker = market.get_ticker(symbol)
         if not ticker or not ticker.get("last_price"):
             try:
-                latest = await fetch_klines(symbol, "1m", 2)
-                if latest:
-                    ticker = {"symbol": symbol, "last_price": float(latest[-1][4]), "timestamp": time.time() * 1000, "source": "binance_tr_public_rest"}
+                price, ticker = await _fresh_public_price(symbol)
+                if price is not None:
+                    ticker = {"symbol": symbol, "last_price": price, "timestamp": time.time() * 1000, "source": (ticker or {}).get("source", "binance_tr_public_rest")}
             except Exception as exc:
                 blocked.append({"symbol": symbol, "reason": f"price_unavailable:{exc}"})
         if not ticker or not ticker.get("last_price"):

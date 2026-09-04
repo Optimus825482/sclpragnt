@@ -45,7 +45,7 @@ class VelocityTPOpenTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(velocity, "_velocity_rest_liquidity_ok", AsyncMock(return_value=(True, {}))), \
                  patch.object(velocity, "_hydrate_market_cache_for", AsyncMock(return_value=None)), \
                  patch.object(velocity, "_journal_touch_rates", AsyncMock(return_value={})), \
-                 patch.object(velocity, "fetch_klines", AsyncMock(return_value=[[0, 0, 101, 99, 100.0, 1000]])):
+                 patch.object(velocity, "_fresh_public_price", AsyncMock(return_value=(100.0, {"symbol": "TESTTRY", "source": "test"}))):
                 result = await velocity._open_velocity_position(_candidate())
         self.assertEqual(result["status"], "PAPER_OPENED")
         self.assertEqual(captured["take_profit_pct"], 0.02)  # target_pct 2.0 → 0.02

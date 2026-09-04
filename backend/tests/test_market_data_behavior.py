@@ -191,6 +191,76 @@ class MarketDataCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["rest"]["last_error"], "rest unavailable")
         self.assertEqual(status["ws"]["last_error"], "ws unavailable")
 
+    def test_bookticker_scalar_payload_updates_orderflow(self):
+        from app.market_data import MarketData
+
+        market = MarketData(["BTCTRY"])
+        market._process_ws_message({
+            "stream": "btctry@bookTicker",
+            "data": {"u": 1, "s": "BTCTRY", "b": "100", "B": "2", "a": "101", "A": "3"},
+        })
+        flow = market.get_orderflow("BTCTRY")
+        self.assertEqual(flow["bid_price"], 100.0)
+        self.assertEqual(flow["ask_price"], 101.0)
+        self.assertEqual(flow["bid_qty"], 2.0)
+        self.assertEqual(flow["ask_qty"], 3.0)
+        self.assertAlmostEqual(flow["spread_pct"], 1.0)
+
+    def test_24hr_ticker_and_mini_ticker_update_price_cache(self):
+        from app.market_data import MarketData
+
+        market = MarketData(["BTCTRY"])
+        market._process_ws_message({
+            "stream": "btctry@ticker",
+            "data": {"e": "24hrTicker", "E": 1000, "s": "BTCTRY", "c": "102.5"},
+        })
+        self.assertEqual(market.get_ticker("BTCTRY")["last_price"], 102.5)
+        self.assertEqual(market.get_ticker("BTCTRY")["source"], "binance_tr_public_ws:ticker")
+
+        market._process_ws_message({
+            "stream": "btctry@miniTicker",
+            "data": {"e": "24hrMiniTicker", "E": 2000, "s": "BTCTRY", "c": "103.0"},
+        })
+        self.assertEqual(market.get_ticker("BTCTRY")["last_price"], 103.0)
+
+    def test_server_shutdown_requests_reconnect(self):
+        from app.market_data import MarketData
+
+        market = MarketData(["BTCTRY"])
+        market.reconnect_requested = False
+        market._process_ws_message({
+            "stream": "!serverShutdown",
+            "data": {"e": "serverShutdown", "E": 1},
+        })
+        self.assertTrue(market.reconnect_requested)
+
+    def test_ws_groups_include_ticker_stream_and_rotate_host(self):
+        from app.market_data import MarketData
+
+        market = MarketData(["BTCTRY"])
+        plan = market._build_ws_groups(1)[0]
+        self.assertIn("btctry@ticker", plan["url"])
+        self.assertIn("btctry@kline_", plan["url"])
+        first_base = plan["base"]
+        market.ws_host_index = 1
+        second = market._build_ws_groups(2)[0]
+        self.assertNotEqual(second["base"], first_base)
+
+    def test_ws_groups_keep_streams_below_binance_ws_limit(self):
+        from app.market_data import MarketData
+
+        symbols = [f"SYM{i}TRY" for i in range(40)]
+        market = MarketData(symbols)
+        plans = market._build_ws_groups(1)
+        self.assertGreaterEqual(len(plans), 2)
+        for plan in plans:
+            # Tek bir WS bağlantısındaki stream sayısı Binance limitinin (1024)
+            # çok altında kalmalı; 180 kendi_CONFIG değeri yalnız
+            # streams_per_symbol*için kullanılır.
+            stream_count = plan["url"].count("@")
+            self.assertLessEqual(stream_count, 1024)
+            self.assertTrue(plan["url"].startswith(plan["base"]))
+
 
 class WebsocketRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_broadcast_fans_out_concurrently_and_removes_failures(self):

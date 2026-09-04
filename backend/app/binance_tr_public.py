@@ -10,7 +10,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 REST_BASE = "https://api.binance.me"
+# WS birincil ve yedek hostlar. Birincil (stream-cloud.binance.tr) canlı
+# Binance TR market-data yayınıdır; bağlantı kurulamazsa stream.binance.me
+# (dokümantasyondaki genel spot market-data yayını) denenir.
 WS_BASE = "wss://stream-cloud.binance.tr"
+WS_BASES = ("wss://stream-cloud.binance.tr", "wss://stream.binance.me")
 
 
 REST_TIMEOUT_SEC = 15
@@ -123,25 +127,50 @@ async def trading_symbols(quote_asset: str = "TRY"):
         if item.get("status") == "TRADING" and item.get("quoteAsset") == quote_asset.upper()
     })
 
+def _default_filters():
+    """Güncel Binance TR exchangeInfo filtre şeması.
+
+    Eski MIN_NOTIONAL filtre adı kaldırılmıştır; minimum işlem tutarı artık
+    NOTIONAL altında döner. Yalnız gerçekten ilgili filtreler tutulur, tüm
+    alanlar her zaman mevcut olmayabilir (ör. MARKET_LOT_SIZE yalnız market
+    emri olan sembollerde bulunur).
+    """
+    return {
+        "min_price": None, "tick_size": None,
+        "min_qty": None, "step_size": None,
+        "min_notional": None, "max_notional": None,
+        "market_min_qty": None, "market_step_size": None,
+    }
+
+
 async def trading_symbols_with_filters(quote_asset: str = "TRY"):
-    """TRADING statüsündeki sembolleri, PRICE_FILTER / LOT_SIZE / MIN_NOTIONAL limitleriyle birlikte döndürür."""
+    """TRADING sembollerini güncel PRICE/LOT/NOTIONAL/MARKET_LOT_SIZE limitleriyle döndürür."""
     payload = await asyncio.to_thread(_get_json, "/api/v3/exchangeInfo", {})
     result = {}
     for item in payload.get("symbols", []):
         if item.get("status") != "TRADING" or item.get("quoteAsset") != quote_asset.upper():
             continue
         sym = str(item["symbol"]).upper()
-        filters = {}
+        filters = _default_filters()
         for f in item.get("filters", []):
             ft = f.get("filterType")
             if ft == "PRICE_FILTER":
-                filters["min_price"] = float(f.get("minPrice", 0))
-                filters["tick_size"] = float(f.get("tickSize", 0.01))
+                filters["min_price"] = float(f.get("minPrice") or 0)
+                filters["tick_size"] = float(f.get("tickSize") or 0.01)
             elif ft == "LOT_SIZE":
-                filters["min_qty"] = float(f.get("minQty", 0))
-                filters["step_size"] = float(f.get("stepSize", 0))
-            elif ft == "MIN_NOTIONAL":
-                filters["min_notional"] = float(f.get("minNotional", 10.0))
+                filters["min_qty"] = float(f.get("minQty") or 0)
+                filters["step_size"] = float(f.get("stepSize") or 0)
+            elif ft in ("NOTIONAL", "MIN_NOTIONAL"):
+                filters["min_notional"] = float(f.get("minNotional") or f.get("notional") or 0)
+                filters["max_notional"] = float(f.get("maxNotional") or 0) or None
+            elif ft == "MARKET_LOT_SIZE":
+                filters["market_min_qty"] = float(f.get("minQty") or 0)
+                filters["market_step_size"] = float(f.get("stepSize") or 0)
+            elif ft == "PERCENT_PRICE_BY_SIDE":
+                filters["bid_multiplier_up"] = float(f.get("bidMultiplierUp") or 0)
+                filters["ask_multiplier_down"] = float(f.get("askMultiplierDown") or 0)
+            elif ft == "TRAILING_DELTA":
+                filters["trailing_delta_min"] = float(f.get("minTrailingAboveDelta") or 0)
         result[sym] = filters
     return result
 
@@ -155,13 +184,24 @@ def _ticker_params(symbols: list | None) -> dict:
 async def ticker_24h(symbols: list | None = None):
     return await asyncio.to_thread(_get_json, "/api/v3/ticker/24hr", _ticker_params(symbols))
 
+
+async def ticker_price(symbols: list | None = None):
+    """Son fiyat listesi (symbols verilmezse tüm semboller). Weight: 2-4."""
+    return await asyncio.to_thread(_get_json, "/api/v3/ticker/price", _ticker_params(symbols))
+
+
+async def book_tickers(symbols: list | None = None):
+    """Tüm (veya seçili) semboller için best-bid/ask. Weight: 2-4."""
+    return await asyncio.to_thread(_get_json, "/api/v3/ticker/bookTicker", _ticker_params(symbols))
+
 # Web'deki https://www.binance.tr/en/markets/overview?tab=top-gaining listesiyle
 # aynı kaynak: /api/v3/ticker/24hr, priceChangePercent'e göre azalan sıralama.
 # quoteVolume tabanlı minimum hacim, ince/alakasız çiftleri elemek içindir.
 MIN_TOP_GAINER_QUOTE_VOLUME_TRY = 5_000_000.0
 
 async def top_gainers(symbol_count: int = 20, *, quote_asset: str = "TRY",
-                      min_quote_volume: float | None = None):
+                      min_quote_volume: float | None = None,
+                      _ticker_rows: list | None = None):
     """Top-gaining TRY pairs, 24h change descending, volume-filtered.
 
     Mirrors the website's top-gaining tab; the returned rows keep
@@ -169,8 +209,12 @@ async def top_gainers(symbol_count: int = 20, *, quote_asset: str = "TRY",
     Delisted/suspended symbols are excluded: the 24h ticker still lists
     dead pairs with stale closes (BAKETRY kept trading data a year after
     delisting), so the pool is intersected with current TRADING symbols.
+
+    ``_ticker_rows`` zaten elinde tüm 24h satırları olan çağıranların ikinci
+    kez weight:80 istek atmasını önler.
     """
-    rows, info = await asyncio.gather(ticker_24h(), trading_symbols(quote_asset))
+    rows = list(_ticker_rows) if _ticker_rows else await ticker_24h()
+    info = await trading_symbols(quote_asset)
     trading = set(info)
     floor = (MIN_TOP_GAINER_QUOTE_VOLUME_TRY if min_quote_volume is None
              else float(min_quote_volume))

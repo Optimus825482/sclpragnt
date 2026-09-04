@@ -19,7 +19,7 @@ from app.routers.a2a import (publish_a2a_event, LLM_POSITION_CONTEXT_TOOL, LLM_U
                             LLM_CLOSE_POSITION_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
                             LLM_LIST_SYMBOL_GUARDS_TOOL)
 from app.routers.maintenance import backfill_symbol_history
-from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, top_gainers, orderbook
+from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, top_gainers, orderbook, ticker_price
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.market_intelligence import (estimate_local_regime, execution_quality, symbol_safety,
                                      cost_aware_trade_metrics, microstructure_snapshot, symbol_outcome_profile,
@@ -226,12 +226,15 @@ def _price_watch_stream(symbol: str, body: dict, trace_id: str):
                     last_market_timestamp = market_timestamp
                 if price is None:
                     # SSE istemcisine önbellekteki aynı değeri döndürmek yerine,
-                    # upstream WebSocket sessizse public M1 mumunun canlı close
-                    # değerini yeniden oku.
-                    latest = await fetch_klines(symbol, "1m", 2)
-                    if latest:
-                        price = float(latest[-1][4])
-                        ticker = {"source": "binance_tr_public_rest_live_close"}
+                    # upstream WebSocket sessizse /ticker/price ile güncel fiyatı oku.
+                    try:
+                        fresh = await ticker_price([symbol])
+                        row = next((r for r in fresh if str(r.get("symbol", "")).upper() == symbol), None)
+                        price = float((row or {}).get("price") or 0) or None
+                    except Exception:
+                        price = None
+                    if price is not None:
+                        ticker = {"source": "binance_tr_public_rest_ticker_price"}
                 if price is None:
                     yield f"event: watch_status\ndata: {json.dumps({'symbol': symbol, 'status': 'data_unavailable', 'timestamp': time.time()}, ensure_ascii=False)}\n\n"
                 else:
@@ -1349,9 +1352,12 @@ async def _chat_auto_trade_open(cue: dict) -> dict:
     ticker = market.get_ticker(symbol)
     if not ticker or not ticker.get("last_price"):
         try:
-            latest = await fetch_klines(symbol, "1m", 2)
-            if latest:
-                ticker = {"symbol": symbol, "last_price": float(latest[-1][4]), "timestamp": time.time() * 1000}
+            fresh = await ticker_price([symbol])
+            row = next((r for r in fresh if str(r.get("symbol", "")).upper() == symbol), None)
+            price = float((row or {}).get("price") or 0) or None
+            if price is not None:
+                ticker = {"symbol": symbol, "last_price": price, "timestamp": time.time() * 1000,
+                          "source": "binance_tr_public_rest_ticker_price"}
         except Exception:
             pass
     if not ticker or not ticker.get("last_price"):
