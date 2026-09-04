@@ -143,8 +143,6 @@ class Config:
     MONITORING_FAST_LANE_SCORE = float(os.getenv("MONITORING_FAST_LANE_SCORE", "70"))
     # Debounce: fast-lane altı aday N ardışık taramada aday kalırsa bildirilir.
     MONITORING_DEBOUNCE_SCANS = max(1, int(os.getenv("MONITORING_DEBOUNCE_SCANS", "2")))
-    # Piyasa rejimi RISK_OFF iken etkin eşik bu çarpanla yükseltilir.
-    MONITORING_RISK_OFF_SCORE_MULT = float(os.getenv("MONITORING_RISK_OFF_SCORE_MULT", "1.5"))
     # Bu andan itibaren monitoring bildirim skoru panel (0-100) ölçeğinde yazılır
     # (06d6a4d, 2026-09-04 18:11 +03). Öncesindeki kayıtlar ham velocity_score'tur;
     # rapor filtresi eski kayıtları tek kez normalize eder. Çift normalize uygulamak
@@ -158,10 +156,15 @@ class Config:
     MONITORING_TARGET_ADAPTIVE = os.getenv("MONITORING_TARGET_ADAPTIVE", "true").lower() == "true"
     MONITORING_TARGET_PCT_MIN = float(os.getenv("MONITORING_TARGET_PCT_MIN", "1.5"))
     MONITORING_TARGET_PCT_MAX = float(os.getenv("MONITORING_TARGET_PCT_MAX", "6.0"))
-    # Mikro-yapı sıralama çarpanları (kapı değil, yalnızca aday sıralaması):
-    # whale dağıtım sinyali adayı düşürür; pozitif CVD akışı öne çıkarır.
-    MONITORING_MICRO_DISTRIBUTION_MULT = float(os.getenv("MONITORING_MICRO_DISTRIBUTION_MULT", "0.5"))
-    MONITORING_MICRO_CVD_POSITIVE_MULT = float(os.getenv("MONITORING_MICRO_CVD_POSITIVE_MULT", "1.1"))
+    # Mikro-yapı sıralama çarpanları (kapı değil, yalnızca aday sıralaması).
+    # 2026-09-05 journal analizi (n≈52k evaluated): whale dağıtım/mixed sinyalli
+    # GEÇEN adayların dokunuş oranı (%21.9/%20.7) accumulation'dan (%20.7) düşük
+    # DEĞİL; no_whale en düşük (%14.8). Bu yüzden dağıtım cezası kaldırıldı —
+    # whale aktivitesi OLAN semboller nötr/bonus, hiç whale olmayan hafif ceza alır.
+    MONITORING_MICRO_WHALE_MULT = float(os.getenv("MONITORING_MICRO_WHALE_MULT", "1.05"))
+    MONITORING_MICRO_NO_WHALE_MULT = float(os.getenv("MONITORING_MICRO_NO_WHALE_MULT", "0.9"))
+    # CVD işareti dokunuşu anlamlı ayırmıyor (negatif %14.4 vs pozitif %15.0) → nötr.
+    MONITORING_MICRO_CVD_POSITIVE_MULT = float(os.getenv("MONITORING_MICRO_CVD_POSITIVE_MULT", "1.0"))
     # Mikro-yapı giriş filtreleri (2026-08-31, microflow verisiyle):
     # 1) Whale dağıtım filtresi: son whale'ler dağıtım ağırlıklıysa (fiyat etkisi
     #    analizi) girişi engelle — "sahte kırılım" elemesi. Varsayılan OFF:

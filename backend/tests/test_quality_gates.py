@@ -10,7 +10,7 @@ class CostAwareGateTests(unittest.TestCase):
         # the configured floor.
         import pathlib
 
-        src = pathlib.Path(__file__).resolve().parents[1].joinpath("app", "analyzer.py").read_text()
+        src = pathlib.Path(__file__).resolve().parents[1].joinpath("app", "analyzer.py").read_text(encoding="utf-8")
         self.assertIn("expected_net_below_floor", src)
         self.assertIn("MIN_EXPECTED_NET_PNL_TRY", src)
 
@@ -76,7 +76,7 @@ class StrategyCircuitBreakerTests(unittest.TestCase):
         # sonrası rolling-expectancy değerlendirmesi için çağrılır.
         import pathlib
 
-        src = pathlib.Path(__file__).resolve().parents[1].joinpath("app", "analyzer.py").read_text()
+        src = pathlib.Path(__file__).resolve().parents[1].joinpath("app", "analyzer.py").read_text(encoding="utf-8")
         self.assertNotIn("strategy_circuit_breaker_paused", src)
         self.assertIn("strategy_breaker.evaluate_after_close", src)
 

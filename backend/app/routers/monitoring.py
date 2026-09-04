@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 
 from fastapi import APIRouter, Request
 
@@ -33,14 +34,15 @@ _monitoring_state = {
 }
 
 # Sunucu tarafı döngü aralıkları: genel tarama 60 sn; izleme listesindeki
-# semboller her turda zorunlu havuza eklenip yeniden analiz edilir ve aday
-# kümesi değiştiyse kısa aralıkla yeniden değerlendirilir. Böylece PWA kapalı
-# olsa bile tarama ve bildirim sunucudan devam eder.
+# semboller her turda zorunlu havuza eklenip yeniden analiz edilir. Böylece
+# PWA kapalı olsa bile tarama ve bildirim sunucudan devam eder.
 SCAN_INTERVAL_SEC = 60.0
-WATCHLIST_RESCAN_SEC = 30.0
 HISTORY_LIMIT = 60
 NOTIFY_COOLDOWN_SEC = 300.0  # aynı sembol için tekrar bildirim engeli (5 dk)
 _loop_task = None
+# Manuel (/api/monitoring/scan) ile arka plan döngüsü aynı anda taramasın diye
+# ortak kilit — çift tarama/çift journal/state yarışını önler (2026-09-04).
+_scan_lock = asyncio.Lock()
 
 # Runtime state DB kalıcılığı: restart sonrası pending_targets / debounce
 # sayacı / bildirim cooldown kaybolmasın diye her tarama sonunda JSON olarak
@@ -189,6 +191,66 @@ async def update_monitoring_settings(payload: dict, request: Request):
             **settings}
 
 
+# Otonom paper trade (monitoring bildiriminden tetiklenen, 2026-09-04)
+# NOT: Sessiz saatte ertelenen push'lar bu kuyrukta tutulur; sessiz saat
+# bitince monitoring_background_loop tarafından boşaltılıp gerçek push gönderilir.
+# (Öncesinde "ertelenen" bildirim asla push edilmiyordu ve DB'ye yanlışlıkla
+# sent_via_push=True yazılıyordu — 2026-09-05 düzeltmesi.)
+_deferred_push = deque(maxlen=100)
+
+async def _send_push(notif: dict) -> bool:
+    """Tek bildirimi web push ile gönder; başarı durumunu döndür."""
+    try:
+        await deliver_web_push(
+            notif["message"],
+            title=notif["title"],
+            url=notif["url"],
+            tag=notif["tag"],
+            extra={
+                "symbol": notif["symbol"],
+                "score": notif["score"],
+                "target_pct": notif["target_pct"],
+                "price": notif["price"],
+                "expected_price": notif["expected_price"],
+                "detected_at": notif["detected_at"],
+                "horizon_minutes": notif["horizon_minutes"],
+                "source": "monitoring",
+            },
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Monitoring push failed for %s: %s", notif["symbol"], exc)
+        return False
+
+
+async def _flush_deferred_push():
+    """Sessiz saat bittiyse ertelenen push kuyruğunu boşalt."""
+    if not _deferred_push:
+        return
+    settings = await get_user_notification_settings()
+    if _in_quiet_hours(settings):
+        return  # hâlâ sessiz saatteyiz
+    sent = 0
+    while _deferred_push:
+        notif = _deferred_push.popleft()
+        ok = await _send_push(notif)
+        if ok:
+            sent += 1
+            # Ertelenen push gerçekten gönderildi → DB etiketini düzelt
+            nid = notif.get("id")
+            if nid:
+                try:
+                    await database.mark_monitoring_push_sent(nid)
+                except Exception as exc:
+                    logger.warning("push etiketi güncellenemedi %s: %s", nid, exc)
+        else:
+            # Gönderilemedi; bir sonraki fırsatta tekrar dene (kuyruk sonuna ekle)
+            _deferred_push.append(notif)
+            break
+    if sent:
+        logger.info("Monitoring: sessiz saat bitti, %d ertelenen push gönderildi", sent)
+
+
 def _build_notification(sym, c, settings) -> dict:
     """Zengin bildirim içeriği: sembol, tespit zamanı, %potansiyel, anlık ve beklenen fiyat."""
     score = normalize_score(c.get("velocity_score", 0))
@@ -277,6 +339,15 @@ async def _notify(candidates_list, settings) -> list:
     notified = []
     update_entries = []  # Güncellenecek mevcut bildirimler
     new_entries = []     # Yeni bildirimler
+    # N+1 önlemi: aday sembollerinin BEKLİYOR kayıtlarını tek toplu sorguyla çek
+    # (2026-09-05). Eşik altı adaylar pending kontrolüne girmez; yine de tüm
+    # aday setini sorgulamak tek DB round-trip'idir.
+    try:
+        pending_by_symbol = await database.get_pending_monitoring_notifications(
+            [str(c.get("symbol", "") or "").upper() for c in candidates_list])
+    except Exception as exc:
+        logger.warning("monitoring pending toplu sorgu hatası: %s", exc)
+        pending_by_symbol = {}
     for c in candidates_list:
         sym = str(c.get("symbol", "") or "").upper()
         # Eşik ve fast-lane PANEL (0-100) skoru üzerinden: admin min_score/fast_lane
@@ -293,7 +364,7 @@ async def _notify(candidates_list, settings) -> list:
         # ayni kayit guncellenir. (monitoring_notifications'ta status kolonu yok;
         # bekliyor tanimi okuma tarafindaki window_closed ile ayni olmalidir.)
         horizon_min = int(c.get("horizon_minutes", 5) or 5)
-        existing_pending = await database.get_pending_monitoring_notification(sym)
+        existing_pending = pending_by_symbol.get(sym)
         if existing_pending and (
             now - float(existing_pending.get("detected_at") or 0)
             < (int(existing_pending.get("horizon_minutes") or horizon_min) + 2) * 60
@@ -365,8 +436,11 @@ async def _notify(candidates_list, settings) -> list:
         if len(_monitoring_state["notified_symbols"]) > 500:
             for k in sorted(_monitoring_state["notified_symbols"], key=_monitoring_state["notified_symbols"].get)[:-250]:
                 _monitoring_state["notified_symbols"].pop(k, None)
-    # Yeni bildirimleri DB'ye kaydet
+    # Yeni bildirimleri DB'ye kaydet — sessiz saatte push GÖNDERİLMEYECEK
+    # bildirimler için sent_via_push=False yazılır (yanlış etiket düzeltmesi).
     if new_entries:
+        for n in new_entries:
+            n["sent_via_push"] = not quiet
         await database.save_monitoring_notifications(new_entries)
     # Sessiz saat bilgisi bildirim nesnesine işaretlenir (UI geçmişte görür).
     for n in notified:
@@ -376,27 +450,12 @@ async def _notify(candidates_list, settings) -> list:
     new_notifs = [n for n in notified if not n.get("updated")]
     if new_notifs and not quiet:
         for notif in new_notifs:
-            try:
-                await deliver_web_push(
-                    notif["message"],
-                    title=notif["title"],
-                    url=notif["url"],
-                    tag=notif["tag"],
-                    extra={
-                        "symbol": notif["symbol"],
-                        "score": notif["score"],
-                        "target_pct": notif["target_pct"],
-                        "price": notif["price"],
-                        "expected_price": notif["expected_price"],
-                        "detected_at": notif["detected_at"],
-                        "horizon_minutes": notif["horizon_minutes"],
-                        "source": "monitoring",
-                    },
-                )
-            except Exception as exc:
-                logger.warning("Monitoring push failed for %s: %s", notif["symbol"], exc)
+            await _send_push(notif)
     elif new_notifs and quiet:
-        logger.info("Monitoring: sessiz saatlerde %d bildirim ertelendi (push yok)", len(new_notifs))
+        # Sessiz saat: push'u ertele — saat bitince _flush_deferred_push gönderir.
+        logger.info("Monitoring: sessiz saatlerde %d bildirim push kuyruğuna alındı", len(new_notifs))
+        for notif in new_notifs:
+            _deferred_push.append(notif)
     # Otonom Paper Trade: her yeni bildirimde pozisyon açmayı dene
     try:
         from app.routers.auto_paper import try_open_from_notification
@@ -553,9 +612,10 @@ async def _run_scan() -> dict:
 
     settings = await get_user_notification_settings()
     effective_min_score = _effective_min_score(settings)
-    # Admin eşiği (etkin: RISK_OFF çarpanı dahil) altındaki adaylar listede
-    # GÖSTERILMEZ (2026-09-04 kullanıcı kararı). _notify aynı eşiği zaten
-    # uyguladığından bildirim davranışı değişmez; yalnız radar listesi temiz kalır.
+    # Admin eşiği altındaki adaylar listede GÖSTERILMEZ (2026-09-04 kullanıcı
+    # kararı; RISK_OFF çarpanı kaldırıldı — _effective_min_score aynen uygulanır).
+    # _notify aynı eşiği zaten uyguladığından bildirim davranışı değişmez; yalnız
+    # radar listesi temiz kalır.
     candidates_list = sorted(
         (c for c in filtered_candidates.values()
          if float(c.get("panel_score", 0) or 0) >= effective_min_score),
@@ -590,7 +650,8 @@ async def _run_scan() -> dict:
 async def monitoring_scan():
     """Run a fresh scan for 5m and 15m velocity candidates (manual/UI tetiklemeli)."""
     try:
-        result = await _run_scan()
+        async with _scan_lock:
+            result = await _run_scan()
         return {
             "paper_only": True,
             "scan_at": _monitoring_state["last_scan_at"],
@@ -614,6 +675,10 @@ async def monitoring_scan():
 async def monitoring_state():
     """Get current monitoring state (last scan results + notification history)."""
     settings = await get_user_notification_settings()
+    last_scan = _monitoring_state.get("last_scan_at")
+    next_in = None
+    if last_scan:
+        next_in = max(0, int(SCAN_INTERVAL_SEC - (time.time() - float(last_scan))))
     return {
         "paper_only": True,
         "last_scan_at": _monitoring_state["last_scan_at"],
@@ -626,7 +691,7 @@ async def monitoring_state():
         "risk_off": _monitoring_state["risk_off"],
         "effective_min_score": _effective_min_score(settings),
         "loop_active": _loop_task is not None and not _loop_task.done(),
-        "next_scan_in_sec": None,
+        "next_scan_in_sec": next_in,
     }
 
 
@@ -692,15 +757,15 @@ async def report_notifications(limit: int = 200, day: str = None):
     """Radar bildirim raporu - gercek kapannis M1 olcmueye dayali basari.
     day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
 
-    Global admin eşiği (etkin: min_score + RISK_OFF çarpanı) altındaki
-    bildirimler NE gösterilir NE başarı hesabına katılır (2026-09-04 kullanıcı
-    kararı) — düşük skorlu gürültü başarı oranını yanıltmasın.
+    Global admin eşiği altındaki bildirimler NE gösterilir NE başarı hesabına
+    katılır (2026-09-04 kullanıcı kararı; RISK_OFF çarpanı kaldırıldı) — düşük
+    skorlu gürültü başarı oranını yanıltmasın.
     """
     limit = max(1, min(int(limit), 500))
     settings = await get_user_notification_settings()
     # Tek eşik ilkesi (2026-09-04 kullanıcı kararı): raporlar da radar/bildirim/
-    # otonom taramayla AYNI etkin eşiği kullanır (admin min_score + RISK_OFF
-    # çarpanı) — ekranda gösterilen sayı ile fiilen uygulanan sayı birebir aynıdır.
+    # otonom taramayla AYNI etkin eşiği kullanır (admin min_score — RISK_OFF
+    # çarpanı kaldırıldı) — ekranda gösterilen sayı fiilen uygulananla aynıdır.
     min_score = _effective_min_score(settings)
     rows = await database.get_monitoring_velocity_matches(limit=limit, day=day)
     # Eşik filtresi panel (0-100) skoru üzerinden; eski ham kayıtlar tek kez
@@ -817,19 +882,27 @@ async def monitoring_background_loop():
     """Sunucu tarafı sürekli tarama: PWA kapalıyken bile taramayı ve push
     bildirimlerini sürdürür. İzleme listesi her turda yeniden analiz edilir;
     yeni aday çıktığında kısa aralıkla tekrar değerlendirilir."""
-    logger.info("Monitoring arka plan taraması başladı (tur=%ss, izleme=%ss)", SCAN_INTERVAL_SEC, WATCHLIST_RESCAN_SEC)
+    logger.info("Monitoring arka plan taraması başladı (tur=%ss)", SCAN_INTERVAL_SEC)
     await restore_runtime_state()
     # Başlangıçta market verisi hazır olsun diye ilk tura küçük gecikme
     await asyncio.sleep(20)
     while True:
         try:
-            await _run_scan()
+            async with _scan_lock:
+                await _run_scan()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("monitoring loop turu başarısız: %s", exc)
             await asyncio.sleep(SCAN_INTERVAL_SEC)
             continue
+        # Sessiz saat bittiyse ertelenen push'ları gönder (scan kilidinden bağımsız)
+        try:
+            await _flush_deferred_push()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("monitoring ertelenen push gönderimi: %s", exc)
         await asyncio.sleep(SCAN_INTERVAL_SEC)
 
 

@@ -6,7 +6,14 @@ Mimari:
 Her bildirim oluştuğunda monitoring.py'deki _notify() fonksiyonunun sonunda bu
 modül çağrılır. Açılan pozisyonlar yalnızca auto_paper_trades tablosunda
 izlenir; SL/TP/breakeven yönetimi ayrı bir background loop'la yapılır.
-positions/trades tablosuna DOKUNULMAZ.
+positions/trades tablosuna DOKUNULMAZ (signals/decision_logs'a gözlem amaçlı
+yazılır).
+
+Muhasebe: açılışta wallet'tan order_value*(1+komisyon) düşülür; kapanışta
+exit_notional*(1-komisyon) iade edilir. Kaydedilen pnl = round-trip net =
+gross - (entry+exit) komisyon; pnl_pct aynı tabandan türetilir. Açılış ve
+kapanış database.open_auto_paper_trade / close_auto_paper_trade içinde tek
+transaction'dır (advisory lock ile yarış koruması).
 """
 import asyncio
 import json
@@ -46,10 +53,11 @@ async def try_open_from_notification(notification: dict) -> dict | None:
     """Bir monitoring bildirimi geldiğinde otonom paper pozisyonu aç.
     
     Kurallar:
-      - Sembolde açık pozisyon yoksa serbest TL bakiyesinin %35'i ile pozisyon aç.
-      - SL: %3 (entry_price * 0.97)
+      - Sembolde açık pozisyon yoksa serbest TL bakiyesinin %balance_pct'i ile pozisyon aç.
+      - SL: settings'teki stop_loss_pct (varsayılan %3)
       - TP: bildirimdeki hedef (notification_target_pct üzerinden)
       - Sembolde zaten açık auto_paper pozisyonu varsa TP güncelle (hedef takibi)
+      - Aynı bildirim daha önce işlendiyse (kapanış sonrası yeniden açma) açma
     """
     try:
         settings = await get_auto_paper_settings()
@@ -63,6 +71,8 @@ async def try_open_from_notification(notification: dict) -> dict | None:
         score = float(notification.get("score") or 0)
         min_score = float(settings.get("min_score", config.AUTO_PAPER_MIN_SCORE_DEFAULT))
         if score < min_score:
+            logger.info("auto_paper %s: skor %.1f < min_score %.1f — açılmadı",
+                        symbol, score, min_score)
             return None
 
         # Mevcut fiyat
@@ -73,6 +83,13 @@ async def try_open_from_notification(notification: dict) -> dict | None:
         if current_price <= 0:
             return None
 
+        notification_id = notification.get("id")
+        # Aynı bildirim daha önce bir trade'e dönüştüyse (kapanmış olsa bile) açma.
+        if notification_id is not None:
+            prior_trade = await database.get_recent_auto_paper_trade_by_notification(notification_id)
+            if prior_trade:
+                return None
+
         # Mevcut açık auto_paper pozisyonunu kontrol et
         open_trade = await database.get_open_auto_paper_trade(symbol)
 
@@ -80,7 +97,7 @@ async def try_open_from_notification(notification: dict) -> dict | None:
             # Açık pozisyon var → TP güncelle (bildirim hedefini takip et)
             return await _update_existing_trade(open_trade, notification, current_price)
         else:
-            # Yeni pozisyon aç
+            # Yeni pozisyon aç (atomik; DB tarafında çift-açılış kontrolü de var)
             return await _open_new_trade(symbol, notification, current_price, settings)
     except Exception as exc:
         logger.exception("auto_paper try_open: %s", exc)
@@ -88,7 +105,7 @@ async def try_open_from_notification(notification: dict) -> dict | None:
 
 
 async def _open_new_trade(symbol: str, notification: dict, current_price: float, settings: dict) -> dict | None:
-    """Yeni otonom paper pozisyonu aç — yalnızca auto_paper_trades tablosuna kaydedilir."""
+    """Yeni otonom paper pozisyonu aç — atomik DB işlemi (open_auto_paper_trade)."""
     try:
         balance_pct = float(settings.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)) / 100.0
         min_order = float(settings.get("min_order_try", config.AUTO_PAPER_MIN_ORDER_TRY))
@@ -117,12 +134,13 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         take_profit_price = current_price * (1 + target_pct / 100)
         stop_loss_price = current_price * (1 - sl_pct)
         now = time.time()
+        notification_id = notification.get("id")
 
         trade_data = {
             "symbol": symbol,
             "side": "LONG",
             "status": "open",
-            "notification_id": notification.get("id"),
+            "notification_id": notification_id,
             "entry_price": current_price,
             "quantity": quantity,
             "order_value_try": net_order_value,
@@ -136,25 +154,34 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             "created_at": now,
             "updated_at": now,
         }
-        trade = await database.save_auto_paper_trade(trade_data)
-        if not trade:
-            return None
-
-        # Wallet'tan düş
-        new_balance = balance - net_order_value - (net_order_value * commission_pct)
-        await database.update_wallet_balance("TRY", max(0, new_balance))
-
-        # Sinyal kaydet
-        await database.save_signal({
+        signal = {
             "timestamp": now,
             "symbol": symbol,
             "action": "BUY_SIGNAL",
             "price": current_price,
             "reason": f"AUTO_PAPER skor {notification.get('score', 0):.1f} hedef +%{target_pct:.1f} TP={take_profit_price:.6f} SL={stop_loss_price:.6f}",
             "strategy": "AUTO_PAPER",
-            "trade_id": f"auto_paper-{trade['id']}",
-        })
+            "trade_id": None,  # insert sonrası id bilinir; DB'de dolduramayız, reason yeterli
+        }
+        trade, status = await database.open_auto_paper_trade(trade_data, signal)
 
+        if status == "already_open":
+            # Arada başka bir çağrı açmış — onu güncellemeyi dene
+            open_trade = await database.get_open_auto_paper_trade(symbol)
+            if open_trade:
+                return await _update_existing_trade(open_trade, notification, current_price)
+            return None
+        if status == "already_traded":
+            logger.info("auto_paper %s: bildirim %s zaten işlendi — açılmadı", symbol, notification_id)
+            return None
+        if status == "insufficient_balance":
+            logger.info("auto_paper %s: transaction'da bakiye yetersiz", symbol)
+            return None
+        if not trade or status != "opened":
+            return None
+
+        trade_id = trade["id"]
+        # trade_id'yi sinyale geri yazamayız (transaction kapandı); id'yi state'te tut
         _AUTO_PAPER_STATE["total_opened"] += 1
 
         await _broadcast_trade({
@@ -162,14 +189,14 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             "entry": current_price, "take_profit": take_profit_price,
             "stop_loss": stop_loss_price, "quantity": quantity,
             "order_value": net_order_value, "score": notification.get("score"),
-            "target_pct": target_pct, "trade_id": trade["id"],
+            "target_pct": target_pct, "trade_id": trade_id,
         })
 
         logger.info("auto_paper %s: AÇILDI miktar=%.4f giriş=%.6f TP=%.6f SL=%.6f değer=%.2fTRY skor=%.1f",
                     symbol, quantity, current_price, take_profit_price, stop_loss_price,
                     net_order_value, notification.get("score"))
 
-        return {"status": "opened", "trade_id": trade["id"], "symbol": symbol}
+        return {"status": "opened", "trade_id": trade_id, "symbol": symbol}
 
     except Exception as exc:
         logger.exception("auto_paper %s açılış hatası: %s", symbol, exc)
@@ -210,7 +237,7 @@ async def auto_paper_management_loop():
 
     - TP'ye ulaşıldıysa kapat (kâr)
     - SL'ye ulaşıldıysa kapat (zarar)
-    - +%1,5 kâra geçtiyse (breakeven_trigger_pct) stop'u maliyet üstüne çek
+    - +breakeven_trigger_pct kâra geçtiyse stop'u maliyet üstüne çek
     """
     logger.info("auto_paper yönetim döngüsü başladı")
     await asyncio.sleep(30)
@@ -231,16 +258,20 @@ async def _check_open_positions():
         return
 
     now = time.time()
+    # Breakeven eşiğini turlar arasında bir kez yükle (her trade için DB'ye gitme)
+    settings = await get_auto_paper_settings()
+    breakeven_trigger_pct = float(settings.get("breakeven_trigger_pct", config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT))
+
     for trade in trades:
         try:
-            await _manage_single_trade(trade, now)
+            await _manage_single_trade(trade, now, breakeven_trigger_pct)
         except Exception as exc:
             logger.warning("auto_paper %s yönetim: %s", trade.get("symbol"), exc)
 
     _AUTO_PAPER_STATE["last_check_at"] = now
 
 
-async def _manage_single_trade(trade: dict, now: float):
+async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: float = 1.5):
     """Tek bir auto_paper pozisyonunu yönet: TP/SL/breakeven."""
     symbol = str(trade.get("symbol") or "").upper()
     trade_id = int(trade["id"])
@@ -249,7 +280,6 @@ async def _manage_single_trade(trade: dict, now: float):
     take_profit = float(trade["take_profit"]) if trade.get("take_profit") else None
     quantity = float(trade["quantity"])
     commission_pct = config.COMMISSION_PCT
-    entry_commission = entry_price * quantity * commission_pct
 
     # Güncel fiyat
     ticker = market.get_ticker(symbol)
@@ -263,28 +293,23 @@ async def _manage_single_trade(trade: dict, now: float):
         await database.update_auto_paper_peak(trade_id, peak_price)
 
     # TP kontrolü
-    if take_profit and current_price >= take_profit:
-        gross_pnl = (current_price - entry_price) * quantity
-        net_pnl = gross_pnl - entry_commission
-        net_pnl_pct = (net_pnl / (entry_price * quantity) * 100) if entry_price and quantity else 0
-        await _close_trade(trade_id, symbol, current_price, now, "take_profit_unreachable" if take_profit is None else "take_profit", net_pnl, net_pnl_pct)
+    if take_profit is not None and current_price >= take_profit:
+        await _close_trade(trade_id, symbol, current_price, now, "take_profit")
         return
 
     # SL kontrolü
-    if stop_loss and current_price <= stop_loss:
-        gross_pnl = (current_price - entry_price) * quantity
-        net_pnl = gross_pnl - entry_commission
-        net_pnl_pct = (net_pnl / (entry_price * quantity) * 100) if entry_price and quantity else 0
-        await _close_trade(trade_id, symbol, current_price, now, "stop_loss", net_pnl, net_pnl_pct)
+    if stop_loss is not None and current_price <= stop_loss:
+        await _close_trade(trade_id, symbol, current_price, now, "stop_loss")
         return
 
-    # Breakeven kontrolü: +%1.5 kâra geçtiyse stop'u maliyet üstüne çek
+    # Breakeven kontrolü: +breakeven_trigger_pct kâra geçtiyse stop'u maliyet üstüne çek
     breakeven_activated = bool(trade.get("breakeven_activated", False))
     gross_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
 
-    if not breakeven_activated and gross_pnl_pct >= 1.5:
-        # Breakeven stop: komisyon dahil net zararı önle
-        breakeven_price = entry_price * (1 + commission_pct)  # gidiş komisyonu karşıla
+    if not breakeven_activated and gross_pnl_pct >= breakeven_trigger_pct:
+        # Breakeven stop: gidiş+dönüş komisyonunu karşıla (net zararı önle).
+        # İade edilen exit*(1-c) == harcanan entry*(1+c) → exit = entry*(1+c)/(1-c)
+        breakeven_price = entry_price * (1 + commission_pct) / (1 - commission_pct)
         await database.update_auto_paper_breakeven(trade_id, True, breakeven_price)
         logger.info("auto_paper %s: breakeven aktif stop=%.6f", symbol, breakeven_price)
 
@@ -292,15 +317,11 @@ async def _manage_single_trade(trade: dict, now: float):
     elif breakeven_activated:
         breakeven_stop = float(trade.get("breakeven_stop") or entry_price)
         if current_price <= breakeven_stop:
-            gross_pnl = (current_price - entry_price) * quantity
-            net_pnl = gross_pnl - entry_commission
-            net_pnl_pct = (net_pnl / (entry_price * quantity) * 100) if entry_price and quantity else 0
-            await _close_trade(trade_id, symbol, current_price, now, "breakeven_stop", net_pnl, net_pnl_pct)
+            await _close_trade(trade_id, symbol, current_price, now, "breakeven_stop")
 
 
-async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float,
-                       reason: str, net_pnl: float, net_pnl_pct: float):
-    """Auto paper pozisyonunu kapat ve wallet'a iade et."""
+async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float, reason: str):
+    """Auto paper pozisyonunu kapat ve wallet'a iade et (atomik DB işlemi)."""
     try:
         trade = await database.get_auto_paper_trade(trade_id)
         if not trade or trade.get("status") != "open":
@@ -314,27 +335,16 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
         total_commission = entry_commission + exit_commission
         gross_pnl = (exit_price - entry_price) * quantity
         pnl = gross_pnl - total_commission
+        invested = entry_price * quantity
+        pnl_pct = (pnl / invested * 100) if invested else 0.0
         hold_seconds = now - float(trade["entry_time"])
 
-        # DB'yi güncelle
-        await database.close_auto_paper_trade(trade_id, exit_price, now, pnl, net_pnl_pct, total_commission, reason)
-
-        # Wallet'a iade (pozisyon değeri + kar/zarar)
-        exit_notional = exit_price * quantity
-        proceed = exit_notional * (1 - commission_pct)
-        current_balance = await database.get_wallet_balance("TRY")
-        await database.update_wallet_balance("TRY", current_balance + proceed)
-
-        # Sinyal kaydet
-        await database.save_signal({
-            "timestamp": now,
-            "symbol": symbol,
-            "action": "CLOSE_LONG",
-            "price": exit_price,
-            "reason": f"AUTO_PAPER_{reason.upper()} | PnL={pnl:.2f}TRY",
-            "strategy": "AUTO_PAPER",
-            "trade_id": f"auto_paper-{trade_id}",
-        })
+        # DB güncelle + wallet iadesi + sinyal tek transaction'da
+        closed = await database.close_auto_paper_trade(
+            trade_id, exit_price, now, pnl, pnl_pct, total_commission, reason)
+        if not closed:
+            logger.warning("auto_paper %s: kapanış başarısız (zaten kapalı?)", symbol)
+            return
 
         _AUTO_PAPER_STATE["total_closed"] += 1
         _AUTO_PAPER_STATE["total_pnl"] += pnl
@@ -350,7 +360,7 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
         })
 
         logger.info("auto_paper %s: KAPANDI (%s) çıkış=%.6f PnL=%.2fTRY (%+.2f%%) süre=%.0fs",
-                    symbol, reason, exit_price, pnl, net_pnl_pct, hold_seconds)
+                    symbol, reason, exit_price, pnl, pnl_pct, hold_seconds)
 
     except Exception as exc:
         logger.exception("auto_paper %s kapatma: %s", symbol, exc)
@@ -430,9 +440,14 @@ async def update_settings_endpoint(payload: dict, request: Request):
 # ---------------------------------------------------------------------------
 @router.get("/api/auto-paper/trades")
 async def list_trades_endpoint(status: str | None = None, limit: int = 100):
-    """Otonom paper trade kayıtlarını listele."""
+    """Otonom paper trade kayıtlarını listele. Açık pozisyonlara güncel fiyat eklenir."""
     limit = max(1, min(int(limit), 500))
     trades = await database.list_auto_paper_trades(status=status or None, limit=limit)
+    # Açık pozisyonlar için güncel ticker fiyatını ekle (frontend PnL hesabı için)
+    for t in trades:
+        if t.get("status") == "open":
+            ticker = market.get_ticker(str(t.get("symbol") or "").upper())
+            t["current_price"] = float(ticker.get("last_price") or 0) if ticker else None
     return {"paper_only": True, "trades": trades, "total": len(trades)}
 
 
@@ -468,6 +483,18 @@ async def get_stats_endpoint():
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
+def reset_state():
+    """In-memory sayaçları sıfırla (admin reset sonrası restart beklemeden)."""
+    _AUTO_PAPER_STATE.update({
+        "total_opened": 0,
+        "total_closed": 0,
+        "total_pnl": 0.0,
+        "winning_trades": 0,
+        "losing_trades": 0,
+        "last_check_at": None,
+    })
+
+
 def start_auto_paper_loop() -> bool:
     """Arka plan döngüsünü bir kez başlat."""
     global _loop_task

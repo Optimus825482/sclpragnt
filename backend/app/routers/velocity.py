@@ -758,12 +758,14 @@ async def delete_velocity_candidate(candidate_id: str, request: Request = None):
 
 
 @router.post("/api/reports/velocity/{candidate_id}/remeasure")
-async def remeasure_velocity_candidate(candidate_id: str):
+async def remeasure_velocity_candidate(candidate_id: str, request: Request = None):
     """Journal satırını kapanmış M1 mumlarla yeniden ölçer.
 
     Eski/yanlış ölçülmüş kayıtlar için: pencere (created → created+5dk)
     yeniden hesaplanır, MFE ve dokunuş journal'a tekrar yazılır.
     """
+    from app.main import _require_admin
+    _require_admin(request)
     rows = await database.get_velocity_candidates(limit=200)
     candidate = next((r for r in rows if r["candidate_id"] == candidate_id), None)
     if not candidate:
@@ -1148,37 +1150,44 @@ def _quality_multiplier(touch_rate: float | None) -> float:
 # ---- Hibrit sıralama yardımcıları (2026-09-04; chat upside-scout + monitoring ortak) ----
 
 def upside_rank_score(candidate: dict, touch_rates: dict[str, float] | None = None) -> float:
-    """Dakika başına beklenen yükseliş × hız skoru × sembol kalite çarpanı.
+    """Dakika başına beklenen yükseliş × hız skoru × kalite × mikro-yapı çarpanı.
 
     Chat upside-scout ile monitoring bildirim sıralamasının ortak anahtarı:
     'en kısa sürede en fazla yükselme' amacını sayısallaştırır. Hedef olarak
     aday satırındaki gerçek target_pct kullanılır (skor-bantlı dinamik hedef
     scan_one içinde uygulanır); satırda yoksa profil baz hedefine döner.
+    Mikro-yapı çarpanı (whale aktivitesi) yalnız aday nesnesinde microstructure
+    varsa uygulanır — yoksa nötr 1.0.
     """
     horizon = int(candidate.get("horizon_minutes") or 15)
     target = float(candidate.get("target_pct") or 0) or (2.0 if horizon <= 5 else 3.0)
     upside_rate = target / max(1, horizon)
     sym = str(candidate.get("symbol") or "").upper()
     rates = touch_rates or {}
-    return upside_rate * float(candidate.get("velocity_score") or 0) * _quality_multiplier(rates.get(sym))
+    micro = candidate.get("microstructure") if isinstance(candidate.get("microstructure"), dict) else None
+    return (upside_rate * float(candidate.get("velocity_score") or 0)
+            * _quality_multiplier(rates.get(sym))
+            * micro_structure_multiplier(micro))
 
 
 def micro_structure_multiplier(micro: dict | None) -> float:
     """Mikro-yapı sinyaline göre sıralama çarpanı (kapı değil, önceliklendirme).
 
-    whale dağıtım/mixed sinyali 'sahte kırılım' riskini işaretler → çarpan aşağı;
-    pozitif CVD (net agresif alış) çarpanı yukarı çeker. Veri yoksa nötr 1.0.
+    2026-09-05 journal analizi (n≈52k evaluated): whale aktivitesi OLAN
+    sembollerin dokunuş oranı daha yüksek (no_whale %14.8 vs whale'li %15-16;
+    GEÇEN adaylarda no_whale %14.8 vs whale'li %19-22). Bu yüzden whale
+    varlığı hafif bonus, hiç whale olmayan hafif ceza alır; whale 'verdict'i
+    (accumulation/distribution/mixed) ayrım yapmaz. CVD işareti anlamlı
+    ayırmadığından nötr. Veri yoksa nötr 1.0 (fail-open).
     """
     if not micro:
         return 1.0
-    mult = 1.0
     verdict = str(micro.get("whale_verdict") or "").lower()
-    if verdict in {"distribution", "mixed"}:
-        mult *= float(config.MONITORING_MICRO_DISTRIBUTION_MULT)
-    cvd = micro.get("cvd_try")
-    if isinstance(cvd, (int, float)) and cvd > 0:
-        mult *= float(config.MONITORING_MICRO_CVD_POSITIVE_MULT)
-    return mult
+    if verdict == "no_whale":
+        return float(config.MONITORING_MICRO_NO_WHALE_MULT)
+    if verdict in {"accumulation", "distribution", "mixed", "neutral"}:
+        return float(config.MONITORING_MICRO_WHALE_MULT)
+    return 1.0
 
 
 def dynamic_target_pct(score: float, base_target_pct: float,

@@ -56,7 +56,7 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn("failed_breakout", source)
 
     def test_market_analysis_avoids_repetitive_disclaimer_language(self):
-        llm_source = (ROOT / "app" / "llm_analysis.py").read_text()
+        llm_source = (ROOT / "app" / "llm_analysis.py").read_text(encoding="utf-8")
         main_source = _backend_sources()
         self.assertIn("tekrarlayan sorumluluk uyarıları ekleme", llm_source)
         self.assertIn("kullanıcı istemedikçe sorumluluk veya garanti uyarısı yazma", main_source)
@@ -112,7 +112,7 @@ class RegressionContracts(unittest.TestCase):
         self.assertEqual(loaded[0][1]["closes"], [102.0])
 
     def test_portfolio_replay_historical_cache_and_mtm_cost_contracts(self):
-        source = (ROOT / "scripts" / "run_portfolio_backtest.py").read_text()
+        source = (ROOT / "scripts" / "run_portfolio_backtest.py").read_text(encoding="utf-8")
         self.assertIn('args.data_source == "historical-db"', source)
         self.assertIn('"historical_cached_requested_symbols"', source)
         self.assertIn("liquidation_fill = mark_price", source)
@@ -129,12 +129,12 @@ class RegressionContracts(unittest.TestCase):
         self.assertFalse(arm_profit_lock(position, 101.0, 0.005, 0.0035))
 
     def test_portfolio_replay_supports_an_experimental_risk_stop(self):
-        source = (ROOT / "scripts" / "run_portfolio_backtest.py").read_text()
+        source = (ROOT / "scripts" / "run_portfolio_backtest.py").read_text(encoding="utf-8")
         self.assertIn("args.risk_stop_pct is not None", source)
         self.assertIn('"risk_stop_pct": stop_pct', source)
 
     def test_alert_trigger_uses_a_boolean_false_for_postgres(self):
-        source = (ROOT / "app" / "database.py").read_text()
+        source = (ROOT / "app" / "database.py").read_text(encoding="utf-8")
         # Postgres-only backend: alert rearm must use a real SQL boolean.
         self.assertIn('armed_false = "FALSE"', source)
         self.assertIn("ELSE {armed_false} END", source)
@@ -168,19 +168,19 @@ class RegressionContracts(unittest.TestCase):
         from app.config import config
 
         self.assertGreater(config.BACKTEST_ASSUMED_SPREAD_PCT, 0)
-        source = (ROOT / "app" / "backtest.py").read_text()
+        source = (ROOT / "app" / "backtest.py").read_text(encoding="utf-8")
         self.assertIn('"microstructure_model"', source)
         self.assertIn('"cost_model"', source)
 
     def test_custom_exit_policy_is_not_forced_to_use_tp_sl(self):
-        source = (ROOT / "app" / "backtest.py").read_text()
+        source = (ROOT / "app" / "backtest.py").read_text(encoding="utf-8")
         self.assertIn('"conditions_only"', source)
         self.assertIn('"custom_exit_condition"', source)
         self.assertIn('"custom_trailing_stop"', source)
         self.assertIn('"custom_max_hold"', source)
 
     def test_llm_exit_creates_symbol_reentry_lock(self):
-        source = (ROOT / "app" / "analyzer.py").read_text()
+        source = (ROOT / "app" / "analyzer.py").read_text(encoding="utf-8")
         self.assertIn("LLM_REENTRY_COOLDOWN_SEC", source)
         self.assertIn("LLM_REENTRY_MIN_MOVE_PCT", source)
         self.assertIn("rearm_required_pct", source)
@@ -222,26 +222,26 @@ class RegressionContracts(unittest.TestCase):
 
 
     def test_llm_system_prompt_has_trade_manager_rules(self):
-        source = (ROOT / "app" / "llm_analysis.py").read_text()
+        source = (ROOT / "app" / "llm_analysis.py").read_text(encoding="utf-8")
         self.assertIn("TRADE_MANAGER_RULES", source)
         self.assertIn("cooldown ve sembolün dinamik re-arm", source)
 
     def test_entry_policy_endpoint_exposes_auditable_contract(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn('@app.get("/api/llm/entry-policy")', source)
         self.assertIn('"policy_version": "scalper-trade-manager-v2"', source)
 
 
     def test_llm_reentry_cooldown_is_shorter_after_profit(self):
-        source = (ROOT / "app" / "analyzer.py").read_text()
-        config_source = (ROOT / "app" / "config.py").read_text()
+        source = (ROOT / "app" / "analyzer.py").read_text(encoding="utf-8")
+        config_source = (ROOT / "app" / "config.py").read_text(encoding="utf-8")
         self.assertIn('LLM_PROFIT_REENTRY_COOLDOWN_SEC', source)
         self.assertIn('float(trade.get("pnl") or 0.0) > 0', source)
         self.assertIn('str(5 * 60)', config_source)
         self.assertIn('str(30 * 60)', config_source)
 
     def test_alert_can_trigger_gated_paper_entry(self):
-        source = (ROOT / "app" / "alerting.py").read_text()
+        source = (ROOT / "app" / "alerting.py").read_text(encoding="utf-8")
         main_source = _backend_sources()
         self.assertIn('on_paper_trigger=None', source)
         self.assertIn('"auto_paper_trade" in channels', source)
@@ -250,11 +250,11 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('"auto_paper_trade"', main_source)
 
     def test_health_defaults_to_postgres(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn('os.getenv("DB_BACKEND", "postgres")', source)
 
     def test_postgres_backup_is_custom_format_and_validated(self):
-        source = (ROOT / "app" / "main.py").read_text()
+        source = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn('async def _create_postgres_backup()', source)
         self.assertIn('"--format=custom"', source)
         self.assertIn('"--no-acl"', source)
@@ -268,26 +268,26 @@ class RegressionContracts(unittest.TestCase):
         self.assertIn('Sunucunun ürettiği dosya geçerli PostgreSQL custom-format yedeği değil', source)
 
     def test_production_entrypoint_is_postgres_only(self):
-        source = (ROOT / "entrypoint.sh").read_text()
+        source = (ROOT / "entrypoint.sh").read_text(encoding="utf-8")
         self.assertIn('${DB_BACKEND:-postgres}', source)
         self.assertIn('DATABASE_URL', source)
         self.assertIn('exit 1', source)
 
     def test_default_skill_uses_postgres_boolean_literal(self):
-        source = (ROOT / "app" / "database.py").read_text()
+        source = (ROOT / "app" / "database.py").read_text(encoding="utf-8")
         # 2026-09-04: veri katmanı postgres-only; SQLite literal'i kalmamalı.
         self.assertIn('enabled_literal = "TRUE"', source)
         self.assertNotIn('enabled_literal = "1"', source)
         self.assertIn('VALUES(?,?,{enabled_literal},?)', source)
 
     def test_postgres_migration_retries_transient_connection_failures(self):
-        source = (ROOT / "scripts" / "run_postgres_migration.py").read_text()
+        source = (ROOT / "scripts" / "run_postgres_migration.py").read_text(encoding="utf-8")
         self.assertIn('for attempt in range(1, 13)', source)
         self.assertIn('await asyncio.sleep(5)', source)
         self.assertIn('PostgreSQL migration bağlantısı kurulamadı', source)
 
     def test_compose_forces_postgres_backend(self):
-        source = (ROOT.parent / "docker-compose.yaml").read_text()
+        source = (ROOT.parent / "docker-compose.yaml").read_text(encoding="utf-8")
         self.assertIn("DB_BACKEND: postgres", source)
 
     def test_compose_passes_runtime_strategy_and_llm_configuration(self):
@@ -325,14 +325,14 @@ class RegressionContracts(unittest.TestCase):
 
 
     def test_compose_has_bounded_shutdown_and_postgres_startup_grace(self):
-        source = (ROOT.parent / "docker-compose.yaml").read_text()
+        source = (ROOT.parent / "docker-compose.yaml").read_text(encoding="utf-8")
         self.assertGreaterEqual(source.count("stop_grace_period:"), 4)
         postgres = source[source.index("  postgres:"):source.index("  backend:")]
         self.assertIn("start_period: 30s", postgres)
         self.assertIn("retries: 12", postgres)
 
     def test_symbol_activity_is_enforced_at_the_writer_boundary(self):
-        source = (ROOT / "app" / "analyzer.py").read_text()
+        source = (ROOT / "app" / "analyzer.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         opening = next(
             node for node in ast.walk(tree)
@@ -360,7 +360,7 @@ class StrategyReplayBehavior(unittest.IsolatedAsyncioTestCase):
 
     def test_llm_market_scan_uses_fast_hot_cache_defaults(self):
         source = _backend_sources()
-        config_source = (ROOT / "app" / "config.py").read_text()
+        config_source = (ROOT / "app" / "config.py").read_text(encoding="utf-8")
         self.assertIn('["5m", "15m", "1h"]', source)
         self.assertIn('LLM_MARKET_SCAN_CACHE_SEC', config_source)
         self.assertIn('"scan_mode": "fast_hot_cache"', source)
