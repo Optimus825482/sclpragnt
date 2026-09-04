@@ -1586,6 +1586,33 @@ async def get_positions():
                 "last_plan_updated_at": None, "error": str(exc),
             })
     positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
+    # Otonom paper pozisyonlarını da ekle
+    try:
+        auto_trades = await database.list_auto_paper_trades(status="open")
+        for t in auto_trades:
+            sym = str(t.get("symbol") or "").upper()
+            entry = float(t.get("entry_price") or 0)
+            qty = float(t.get("quantity") or 0)
+            ticker = market.get_ticker(sym)
+            current = float(ticker.get("last_price") or entry) if ticker else entry
+            gross = (current - entry) * qty
+            entry_c = entry * qty * config.COMMISSION_PCT
+            pnl_try = gross - entry_c
+            pnl_pct = (pnl_try / (entry * qty) * 100) if (entry and qty) else 0.0
+            positions.append({
+                "symbol": sym, "side": "LONG", "strategy": "AUTO_PAPER",
+                "entry": entry, "current": current,
+                "pnl_pct": round(pnl_pct, 4), "pnl_try": round(pnl_try, 4),
+                "quantity": qty, "entry_time": t.get("entry_time"),
+                "stop": t.get("stop_loss"), "take_profit": t.get("take_profit"),
+                "breakeven_activated": bool(t.get("breakeven_activated")),
+                "auto_paper_id": t.get("id"),
+                "notification_score": t.get("notification_score"),
+                "notification_target_pct": t.get("notification_target_pct"),
+            })
+    except Exception:
+        pass
+    positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
     # Canlı sunucuda pozisyon alanlarından biri NaN/±Infinity olduğunda
     # json.dumps "Out of range float values are not JSON compliant" ile TÜM
     # yanıtı 500'e düşürüyordu ve açık pozisyon paneli boşalıyordu. NaN/Inf

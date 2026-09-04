@@ -105,13 +105,41 @@ async def ws_broadcast_loop():
                 open_positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
                 realized_pnl = await database.get_realized_pnl()
                 unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
-                # pnl_try above already nets each position's entry commission;
-                # subtracting it again here double-counted open fees.
+
+                # Otonom paper pozisyonlarını da ekle
+                auto_trades = await database.list_auto_paper_trades(status="open")
+                auto_positions = []
+                ap_unrealized = 0.0
+                for t in auto_trades:
+                    sym = str(t.get("symbol") or "").upper()
+                    entry = float(t["entry_price"])
+                    qty = float(t["quantity"])
+                    ticker = market.get_ticker(sym)
+                    current = float(ticker.get("last_price") or entry) if ticker else entry
+                    gross = (current - entry) * qty
+                    pnl = gross - (entry * qty * config.COMMISSION_PCT)
+                    pnl_pct = (pnl / (entry * qty) * 100) if entry and qty else 0
+                    ap_unrealized += pnl
+                    auto_positions.append({
+                        "symbol": sym, "entry": entry, "current": current,
+                        "pnl_pct": round(pnl_pct, 4), "pnl_try": round(pnl, 4),
+                        "value": current * qty, "entry_time": t.get("entry_time"),
+                        "quantity": qty, "side": "LONG", "stop": t.get("stop_loss"),
+                        "take_profit": t.get("take_profit"), "strategy": "AUTO_PAPER",
+                        "breakeven_activated": bool(t.get("breakeven_activated")),
+                        "notification_score": t.get("notification_score"),
+                        "notification_target_pct": t.get("notification_target_pct"),
+                        "auto_paper_id": t.get("id"),
+                    })
+                total_value += sum(float(a["value"]) for a in auto_positions)
+                unrealized_pnl += ap_unrealized
+
                 reconciliation_expected = config.INITIAL_BALANCE_TRY + realized_pnl + unrealized_pnl
                 reconciliation_delta = total_value - reconciliation_expected
                 _ws_snapshot_cache["portfolio"] = {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
                                                     "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
-                                                    "reconciliation_delta": reconciliation_delta, "positions": open_positions}
+                                                    "reconciliation_delta": reconciliation_delta, "positions": open_positions,
+                                                    "auto_paper_positions": auto_positions}
                 # NaN/±Infinity tek bir WS portfolio mesajını da tüketicilerde
                 # bozabilir; /api/positions ile aynı güvenlik uygulanır.
                 await ws_manager.broadcast({"type": "portfolio", "data": _json_safe_positions(_ws_snapshot_cache["portfolio"])})

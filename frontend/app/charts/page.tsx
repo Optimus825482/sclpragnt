@@ -1129,7 +1129,6 @@ export default function ChartsPage() {
 
     const openPnl = livePortfolio?.unrealized_pnl ?? positions.reduce((total, position) => total + Number(position.pnl_try || 0), 0);
     const netPnl = portfolioMetrics?.net_pnl ?? 0;
-    const winRate = portfolioMetrics?.win_rate ?? 0;
     const money = (value: number) => `₺${value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const pnlClass = (value: number) => value >= 0 ? "text-neon-green" : "text-red-400";
     const pressure = (() => {
@@ -1190,11 +1189,12 @@ export default function ChartsPage() {
                 </div>
             </header>
 
-            <section aria-label="Portföy özeti" className="grid grid-cols-2 gap-2 rounded-xl border border-bunker-800 bg-bunker-950/80 p-3 sm:grid-cols-5">
+            <section aria-label="Portföy özeti" className="grid grid-cols-2 gap-2 rounded-xl border border-bunker-800 bg-bunker-950/80 p-3 sm:grid-cols-6">
                 <div className="min-w-0"><p className="eyebrow">TOPLAM PORTFÖY</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.total_value == null ? "—" : money(livePortfolio.total_value)}</p></div>
+                <div className="min-w-0"><p className="eyebrow">SERBEST TL</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.try == null ? "—" : money(livePortfolio.try)}</p></div>
                 <div className="min-w-0"><p className="eyebrow">AÇIK PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(openPnl)}`}>{openPnl >= 0 ? "+" : ""}{money(openPnl)}</p></div>
+                <div className="min-w-0"><p className="eyebrow">POZİSYON</p><p className="mt-1 font-mono text-sm font-bold text-white">{positions.length}</p></div>
                 <div className="min-w-0"><p className="eyebrow">KAPANAN İŞLEM</p><p className="mt-1 font-mono text-sm font-bold text-white">{portfolioMetrics?.closed_trades ?? "—"}</p></div>
-                <div className="min-w-0"><p className="eyebrow">BAŞARI</p><p className="mt-1 font-mono text-sm font-bold text-white">%{winRate.toFixed(1)}</p></div>
                 <div className="min-w-0 col-span-2 sm:col-span-1"><p className="eyebrow">NET PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(netPnl)}`}>{netPnl >= 0 ? "+" : ""}{money(netPnl)}</p></div>
             </section>
 

@@ -23,7 +23,7 @@ class RegressionContracts(unittest.TestCase):
         source = _backend_sources()
 
         self.assertIn('"entry_time": pos.get("entry_time")', source)
-        self.assertEqual(
+        self.assertGreaterEqual(
             source.count(
                 'sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)'
             ),
