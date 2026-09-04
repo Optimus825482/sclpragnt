@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { API_BASE, apiRequest } from "../lib/api";
+import { useEffect, useState } from "react";
+import { ensurePushSubscription } from "../lib/push";
 
 const STORAGE_KEY = "scalper:notification-permission-asked";
 
-/** Login sonrası bir kez gösterilir: Radar bildirimlerini açmak için izin ister.
- *  `active` true olduğunda (oturum açıldı) görünür; localStorage ile bir kez sorulur. */
+/** Masaüstü tarayıcılar için: Radar bildirimlerini açmak için izin ister.
+ *  Mobil cihazlarda PushOnboardingModal yönetir; bu modal yalnız masaüstü.
+ *  İzin verilmiş olsa bile backend'de abonelik yoksa tekrar sorar. */
 export default function NotificationPermissionModal({ active = false }: { active?: boolean }) {
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -14,13 +15,10 @@ export default function NotificationPermissionModal({ active = false }: { active
 
   useEffect(() => {
     if (typeof window === "undefined" || !active) return;
-    // Mobilde kurulum akışını MobileWelcomeModal yönetir; bu modal yalnız masaüstü.
     const mobile = /android|iphone|ipad|ipod|mobile|iemobile/i.test(navigator.userAgent || "");
-    if (mobile) return;
+    if (mobile) return; // mobilde PushOnboardingModal çalışır
     if (!("Notification" in window) || !("serviceWorker" in navigator)) return;
-    if (window.matchMedia?.("(display-mode: standalone)").matches) return; // Kurulu PWA: push zaten ayarlı olabilir
-    if (Notification.permission === "granted") return; // izin zaten verilmiş
-    if (Notification.permission === "denied") return; // kalıcı red — tekrar sorma, ekranı karartma
+    if (Notification.permission === "denied") return; // kalıcı red — tekrar sorma
     try {
       if (localStorage.getItem(STORAGE_KEY)) return;
     } catch {
@@ -33,28 +31,20 @@ export default function NotificationPermissionModal({ active = false }: { active
   const enable = async () => {
     setBusy(true); setError("");
     try {
-      if (!("Notification" in window)) throw new Error("Bu tarayıcı bildirim desteklemiyor");
-      if (!("PushManager" in window)) throw new Error("Bu tarayıcı Web Push desteklemiyor");
-      const key = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      if (!key) throw new Error("VAPID public key yapılandırılmamış");
-      if (Notification.permission !== "granted") {
-        const permission = await Notification.requestPermission();
-        if (permission !== "granted") throw new Error("Bildirim izni verilmedi. Radar fırsatlarını kaçırmamak için izni tarayıcı ayarlarından açabilirsiniz.");
+      const result = await ensurePushSubscription();
+      if (!result.ok) {
+        if (result.reason === "izin_verilmedi") {
+          try { localStorage.setItem(STORAGE_KEY, "1"); } catch { /* yoksay */ }
+          throw new Error("Bildirim izni verilmedi. Fırsatları kaçırmamak için izni tarayıcı ayarlarından açabilirsiniz.");
+        }
+        if (result.reason === "push_yok" || result.reason === "vapid_yok") {
+          throw new Error("Bu tarayıcı/sürüm Web Push desteklemiyor — Chrome ile açmayı deneyin.");
+        }
+        if (result.reason === "service_worker_yok") {
+          throw new Error("Service Worker desteklenmiyor — güncel bir tarayıcı kullanın.");
+        }
+        throw new Error("Bildirimler etkinleştirilemedi");
       }
-      const registration = await navigator.serviceWorker.ready;
-      const padded = key.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - key.length % 4) % 4);
-      let subscription = await registration.pushManager.getSubscription();
-      if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: Uint8Array.from(atob(padded), (c) => c.charCodeAt(0)),
-        });
-      }
-      await apiRequest(`${API_BASE}/api/alerts/push-subscription`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(subscription.toJSON()),
-      });
       try { localStorage.setItem(STORAGE_KEY, "1"); } catch { /* yoksay */ }
       setVisible(false);
     } catch (reason) {
@@ -64,8 +54,14 @@ export default function NotificationPermissionModal({ active = false }: { active
     }
   };
 
-  const dismiss = () => {
+  // "BİR DAHA GÖSTERME" — kalıcı kapat
+  const dismissForever = () => {
     try { localStorage.setItem(STORAGE_KEY, "1"); } catch { /* yoksay */ }
+    setVisible(false);
+  };
+
+  // "SONRA" — anlık kapat, bir dahaki oturumda tekrar sorulabilir
+  const dismissNow = () => {
     setVisible(false);
   };
 
@@ -89,9 +85,14 @@ export default function NotificationPermissionModal({ active = false }: { active
           </p>
           {error && <p role="alert" className="rounded-lg border border-neon-red/40 bg-neon-red/10 px-3 py-2 text-sm text-neon-red">{error}</p>}
           <div className="flex justify-end gap-2 pt-1">
-            <button type="button" onClick={dismiss} className="ui-button ui-button-secondary">SONRA</button>
+            <button type="button" onClick={dismissNow} className="ui-button ui-button-secondary">SONRA</button>
             <button type="button" onClick={enable} disabled={busy} className="ui-button ui-button-primary">
               {busy ? "ETKİNLEŞTİRİLİYOR…" : "BİLDİRİMLERİ AÇ"}
+            </button>
+          </div>
+          <div className="text-center">
+            <button type="button" onClick={dismissForever} className="font-mono text-[11px] text-bunker-muted/70 underline-offset-2 hover:text-bunker-muted hover:underline">
+              BİR DAHA GÖSTERME
             </button>
           </div>
         </div>
