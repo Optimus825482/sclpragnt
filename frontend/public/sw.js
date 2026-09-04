@@ -2,7 +2,7 @@
 // discard stale cached responses. The HTML document itself is network-first:
 // Next.js emits content-hashed /_next/static/*.js|css filenames, so a fresh
 // HTML response always references the newest assets and cache-busts itself.
-const CACHE = "scalper-agent-v4-shell-13";
+const CACHE = "scalper-agent-v4-shell-14";
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", function (event) {
@@ -24,14 +24,28 @@ self.addEventListener("activate", function (event) {
 self.addEventListener("push", function (event) {
   var data = {};
   try { data = event.data ? event.data.json() : {}; } catch (_) { data = { title: "Scalper Agent", body: event.data ? event.data.text() : "Yeni alarm" }; }
-  event.waitUntil(self.registration.showNotification(data.title || "Scalper Agent alarmı", {
-    body: data.body || data.message || "Yeni market alarmı",
+
+  // PWA kapalý olsa bile sesli bildirim: Android/Chrome ses dosyasý destekler,
+  // iOS Safari vibrate ile destekler; her ikisini birden saðlýyoruz.
+  var notifOpts = {
+    body: data.body || data.message || "Yeni market alarmý",
     icon: "/icon.svg",
     badge: "/icon.svg",
-    vibrate: [180, 80, 180, 80, 280],
+    vibrate: [300, 150, 300, 150, 500, 150, 300],
     tag: data.tag || "scalper-alert",
+    requireInteraction: true,
+    renotify: true,
+    silent: false,
     data: { url: data.url || "/alerts" }
-  }));
+  };
+  // Android/Chrome: ses dosyasý (sound alaný)
+  if (data.sound) notifOpts.sound = data.sound;
+  // ML olaslýk varsa baþlýða ekle
+  if (data.ml_hit_probability != null) {
+    var prob = Math.round(Number(data.ml_hit_probability) * 100);
+    notifOpts.body = "[ML %" + prob + "] " + (notifOpts.body || "");
+  }
+  event.waitUntil(self.registration.showNotification(data.title || "Scalper Agent alarmý", notifOpts));
 });
 
 self.addEventListener("notificationclick", function (event) {

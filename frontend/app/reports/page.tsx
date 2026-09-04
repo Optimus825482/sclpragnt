@@ -99,10 +99,10 @@ function OverviewTab() {
           <p className="eyebrow text-neon-green">RADAR BİLDİRİM BAŞARI KIRILIMI</p>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <StatCard label="TAMAMEN BAŞARILI" value={String(breakdown.counts?.["TAMAMEN BAŞARILI"] || 0)} tone="text-neon-green" />
-            <StatCard label="BAŞARILI" value={String(breakdown.counts?.BASARILI || 0)} tone="text-neon-green" />
-            <StatCard label="KISMİ" value={String(breakdown.counts?.KISMI || 0)} tone="text-yellow-300" />
-            <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.BASARISIZ || 0)} tone="text-neon-red" />
-            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.BEKLIYOR || 0) + (breakdown.counts?.OLCULEMEDI || 0))} sub={`ölçülemedi ${breakdown.counts?.OLCULEMEDI || 0}`} />
+            <StatCard label="BAŞARILI" value={String(breakdown.counts?.["BAŞARILI"] || 0)} tone="text-neon-green" />
+            <StatCard label="KISMİ" value={String(breakdown.counts?.["KISMİ"] || 0)} tone="text-yellow-300" />
+            <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.["BAŞARISIZ"] || 0)} tone="text-neon-red" />
+            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.["BEKLİYOR"] || 0) + (breakdown.counts?.["ÖLÇÜLEMEDİ"] || 0))} sub={`ölçülemedi ${breakdown.counts?.["ÖLÇÜLEMEDİ"] || 0}`} />
             <StatCard label="GENEL BAŞARI" value={breakdown.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"} tone={breakdown.success_rate != null && breakdown.success_rate >= 50 ? "text-neon-green" : "text-yellow-300"}
               sub={`${breakdown.success_count}/${breakdown.evaluated} ölçülen`} />
           </div>
@@ -186,7 +186,7 @@ function OverviewTab() {
                         : n.status === "BAŞARILI" ? <Badge tone="ok">BASARILI</Badge>
                         : n.status === "KISMİ" ? <Badge tone="warn">KISMI</Badge>
                         : n.status === "BAŞARISIZ" ? <Badge tone="bad">BASARISIZ</Badge>
-                        : n.status === "OLCULEMEDI" ? <Badge tone="warn">OLCULEMEDI</Badge>
+                        : n.status === "ÖLÇÜLEMEDİ" ? <Badge tone="warn">OLCULEMEDI</Badge>
                         : <Badge>BEKLIYOR</Badge>}
                     </td>
                   </tr>
@@ -937,7 +937,13 @@ function UserRadarTab() {
                         <td className="font-mono text-xs text-neon-green">{n.expected_price != null ? Number(n.expected_price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
                         <td className="font-mono text-xs text-neon-green">{tgtPct != null ? `+%${tgtPct.toFixed(1)}` : "—"}</td>
                         <td className="font-mono text-xs text-white">{n.score != null ? Number(n.score).toFixed(2) : "—"}</td>
-                        <td className="font-mono text-xs text-white">{n.ml_hit_probability != null ? `%${(Number(n.ml_hit_probability) * 100).toFixed(0)}` : "—"}</td>
+                        <td>
+                          {n.ml_hit_probability != null ? (
+                            <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${Number(n.ml_hit_probability) >= 0.6 ? 'border-neon-green/40 bg-neon-green/10 text-neon-green' : Number(n.ml_hit_probability) >= 0.45 ? 'border-yellow-300/40 bg-yellow-300/10 text-yellow-300' : 'border-neon-red/40 bg-neon-red/10 text-neon-red'}`}>
+                              %{(Number(n.ml_hit_probability) * 100).toFixed(0)}
+                            </span>
+                          ) : "—"}
+                        </td>
                         <td className="font-mono text-xs text-bunker-muted">{n.horizon_minutes ? `${n.horizon_minutes}dk` : "—"}</td>
                         <td className={`font-mono text-xs ${mfeTone}`}>{mfePct != null ? `%${mfePct.toFixed(2)}` : "—"}</td>
                         <td>

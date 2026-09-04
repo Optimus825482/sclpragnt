@@ -111,14 +111,16 @@ def _build_notification(sym, c, settings) -> dict:
     expected_price = current_price * (1 + target / 100) if current_price > 0 else 0.0
     detected_at = time.time()
     horizon = int(c.get("horizon_minutes", 5) or 5)
+    ml_prob = c.get("ml_hit_probability")
+    ml_pct_str = f" | ML %{ml_prob * 100:.0f}" if ml_prob is not None else ""
     message = (
-        f"🎯 {sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk) | "
+        f"🎯 {sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str} | "
         f"Anlık: {current_price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
     )
     return {
         "symbol": sym,
         "message": message,
-        "title": f"🎯 {sym} +%{target:g} potansiyel",
+        "title": f"🎯 {sym} +%{target:g} potansiyel{ml_pct_str}",
         "url": f"/charts?symbol={sym}",
         "tag": f"monitoring-{sym}",
         "detected_at": detected_at,
@@ -129,6 +131,8 @@ def _build_notification(sym, c, settings) -> dict:
         "horizon_minutes": horizon,
         "mode": c.get("mode"),
         "horizon": horizon,
+        "ml_hit_probability": ml_prob,
+        "ml_target_pct": c.get("ml_target_pct"),
         "settings_applied": {
             "min_score": settings.get("min_score"),
             "min_target_pct": settings.get("min_target_pct"),
@@ -167,18 +171,24 @@ async def _notify(candidates_list, settings) -> list:
         target = float(c.get("target_pct") or 2.0)
         if not sym or score < min_score or target < min_target_pct:
             continue
-        # Bu sembol için sonuçlanmamış bildirim var mı kontrol et
+        # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
+        # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
+        # ayni kayit guncellenir. (monitoring_notifications'ta status kolonu yok;
+        # bekliyor tanimi okuma tarafindaki window_closed ile ayni olmalidir.)
+        horizon_min = int(c.get("horizon_minutes", 5) or 5)
         existing_pending = await database.get_pending_monitoring_notification(sym)
-        if existing_pending:
-            # Mevcut BEKLİYOR bildirimi güncelle
+        if existing_pending and (
+            now - float(existing_pending.get("detected_at") or 0)
+            < (int(existing_pending.get("horizon_minutes") or horizon_min) + 2) * 60
+        ):
+            # Mevcut BEKLIYOR bildirimi guncelle (detected_at korunur)
             await database.update_monitoring_notification(
                 existing_pending["id"],
                 score=score,
                 target_pct=target,
                 price=float(c.get("price", 0) or 0),
                 expected_price=float(c.get("price", 0) or 0) * (1 + target / 100),
-                detected_at=now,
-                horizon_minutes=int(c.get("horizon_minutes", 5) or 5),
+                horizon_minutes=horizon_min,
                 mode=c.get("mode"),
             )
             # Eski kayitlar kalir - sinyal tarihcesi icin
@@ -219,9 +229,11 @@ async def _notify(candidates_list, settings) -> list:
     # Yeni bildirimleri DB'ye kaydet
     if new_entries:
         await database.save_monitoring_notifications(new_entries)
-    # Push bildirimleri
-    if notified and not quiet:
-        for notif in notified:
+    # Push bildirimleri — sadece YENI bildirimler (guncellemeler her turda
+    # tetiklenmesin diye spam korumasi)
+    new_notifs = [n for n in notified if not n.get("updated")]
+    if new_notifs and not quiet:
+        for notif in new_notifs:
             try:
                 await deliver_web_push(
                     notif["message"],
@@ -241,11 +253,11 @@ async def _notify(candidates_list, settings) -> list:
                 )
             except Exception as exc:
                 logger.warning("Monitoring push failed for %s: %s", notif["symbol"], exc)
-    elif notified and quiet:
-        logger.info("Monitoring: sessiz saatlerde %d bildirim ertelendi (push yok)", len(notified))
-    if notified:
+    elif new_notifs and quiet:
+        logger.info("Monitoring: sessiz saatlerde %d bildirim ertelendi (push yok)", len(new_notifs))
+    if new_notifs:
         try:
-            await ws_manager.broadcast({"type": "monitoring_alert", "data": notified[-1]})
+            await ws_manager.broadcast({"type": "monitoring_alert", "data": new_notifs[-1]})
         except Exception as exc:
             logger.warning("Monitoring WS broadcast hatasi: %s", exc)
         _monitoring_state["history"] = (notified + _monitoring_state["history"])[:HISTORY_LIMIT]
@@ -401,17 +413,17 @@ async def report_notifications(limit: int = 200, day: str = None):
         window_closed = bool(detected_at and horizon and (now - detected_at) >= (horizon + 2) * 60)
         if candidate_status == "evaluated" and mfe_pct is not None:
             if touched:
-                status = "TAMAMEN BASARILI"
+                status = "TAMAMEN BAŞARILI"
             elif target_pct > 0 and mfe_pct >= target_pct * 0.5:
-                status = "BASARILI"
+                status = "BAŞARILI"
             elif mfe_pct > 0:
-                status = "KISMI"
+                status = "KISMİ"
             else:
-                status = "BASARISIZ"
+                status = "BAŞARISIZ"
         elif candidate_status == "pending" and not window_closed:
-            status = "BEKLIYOR"
+            status = "BEKLİYOR"
         else:
-            status = "OLCULEMEDI" if window_closed else "BEKLIYOR"
+            status = "ÖLÇÜLEMEDİ" if window_closed else "BEKLİYOR"
         result.append({
             "id": row.get("id"),
             "symbol": symbol,
@@ -431,12 +443,12 @@ async def report_notifications(limit: int = 200, day: str = None):
             "candidate_id": row.get("candidate_id"),
             "ml_hit_probability": row.get("ml_hit_probability"),
         })
-    counts = {"TAMAMEN BASARILI": 0, "BASARILI": 0, "KISMI": 0,
-              "BASARISIZ": 0, "BEKLIYOR": 0, "OLCULEMEDI": 0}
+    counts = {"TAMAMEN BAŞARILI": 0, "BAŞARILI": 0, "KISMİ": 0,
+              "BAŞARISIZ": 0, "BEKLİYOR": 0, "ÖLÇÜLEMEDİ": 0}
     for item in result:
         counts[item["status"]] = counts.get(item["status"], 0) + 1
-    evaluated = sum(counts[k] for k in ("TAMAMEN BASARILI", "BASARILI", "KISMI", "BASARISIZ"))
-    success = counts["TAMAMEN BASARILI"] + counts["BASARILI"]
+    evaluated = sum(counts[k] for k in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ"))
+    success = counts["TAMAMEN BAŞARILI"] + counts["BAŞARILI"]
     day_breakdown = {"counts": counts, "evaluated": evaluated,
                     "success_count": success,
                     "success_rate": (success / evaluated * 100) if evaluated else None}

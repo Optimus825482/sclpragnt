@@ -2190,15 +2190,17 @@ async def get_pending_monitoring_notification(symbol: str) -> dict | None:
 
 async def update_monitoring_notification(
     notif_id: int, score: float, target_pct: float, price: float,
-    expected_price: float, detected_at: float, horizon_minutes: int, mode: str | None,
+    expected_price: float, horizon_minutes: int, mode: str | None,
 ) -> bool:
+    # detected_at bilerek guncellenmez: orijinal tespit ani korunmazsa
+    # velocity adayiyla (<=60 sn) eslesme bozulur ve M1 olcmu yapilamaz.
     def op(conn):
         conn.execute(
             "UPDATE monitoring_notifications SET "
             "score=%s, target_pct=%s, price=%s, expected_price=%s, "
-            "detected_at=%s, horizon_minutes=%s, mode=%s "
+            "horizon_minutes=%s, mode=%s "
             "WHERE id=%s",
-            (score, target_pct, price, expected_price, detected_at, horizon_minutes, mode, notif_id)
+            (score, target_pct, price, expected_price, horizon_minutes, mode, notif_id)
         )
         conn.commit()
         return True
