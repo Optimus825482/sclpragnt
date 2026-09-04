@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import math
 import os
 import threading
@@ -11,6 +12,8 @@ from datetime import datetime, timezone
 import psycopg
 
 from app.config import config
+
+logger = logging.getLogger("scalper.database")
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 _DB_LOCK = threading.Lock()
@@ -348,7 +351,13 @@ async def preview_trade_repair():
         missing_trade_ids = [dict(r) for r in conn.execute("SELECT id,symbol,entry_time FROM trades WHERE trade_id IS NULL OR trade_id='' ORDER BY id").fetchall()]
         missing_position_ids = [dict(r) for r in conn.execute("SELECT symbol,entry_time FROM positions WHERE trade_id IS NULL OR trade_id='' ORDER BY entry_time").fetchall()]
         trades = conn.execute("SELECT id,symbol,strategy,entry_time,exit_time,trade_id FROM trades ORDER BY exit_time").fetchall()
-        close_logs = conn.execute("SELECT id,symbol,timestamp,strategy FROM decision_logs WHERE decision='CLOSE_LONG' ORDER BY timestamp").fetchall()
+        # AUTO_PAPER kapanışları bağımsız tabloda izlendiği için repair denetiminde
+        # "eşleşmemiş kapanış" sayılmaz (sahte uyarı üretmesin).
+        close_logs = conn.execute(
+            "SELECT id,symbol,timestamp,strategy FROM decision_logs "
+            "WHERE decision='CLOSE_LONG' AND (strategy IS NULL OR strategy='' OR strategy<>'AUTO_PAPER') "
+            "ORDER BY timestamp"
+        ).fetchall()
         unmatched_closes = []
         for log in close_logs:
             matches = [t for t in trades if t[1] == log[1] and t[4] is not None and abs(float(t[4]) - float(log[2] or 0)) <= 30]
@@ -1963,17 +1972,20 @@ async def save_monitoring_notifications(entries):
     entries: sözlük listesi — symbol, message, title, score, target_pct,
     price, expected_price, horizon_minutes, mode, detected_at, sent_via_push,
     ml_target_pct, ml_hit_probability (opsiyonel; 2026-09-04 eklendi).
+    Girdilerde 'id' yoksa kaydedilen satırın id'si entry'e eklenir (ertelenen
+    push'un sonradan etiketlenmesi için; 2026-09-05).
     """
     if not entries:
         return 0
     now = time.time()
     def op(conn):
+        saved = 0
         for e in entries:
-            conn.execute(
+            row = conn.execute(
                 "INSERT INTO monitoring_notifications"
                 "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at,"
                 "ml_target_pct,ml_hit_probability)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                 (
                     str(e.get("symbol") or "?"),
                     str(e.get("message") or ""),
@@ -1985,9 +1997,30 @@ async def save_monitoring_notifications(entries):
                     now,
                     e.get("ml_target_pct"), e.get("ml_hit_probability"),
                 ),
-            )
+            ).fetchone()
+            if row is not None and e.get("id") is None:
+                e["id"] = row[0]
+            saved += 1
         conn.commit()
-        return len(entries)
+        return saved
+    return await _run_db(op)
+
+
+async def mark_monitoring_push_sent(notification_id):
+    """Ertelenen push gerçekten gönderildiğinde DB etiketini True'ya çevir.
+
+    Sessiz saatte push kuyruğuna alınan bildirimler sent_via_push=False ile
+    kaydedilir; saat bitip push ulaşınca bu fonksiyon etiketi düzeltir
+    (2026-09-05: öncesinde 'ertelenen' bildirim DB'de yanlışlıkla
+    sent_via_push=True görünüyordu).
+    """
+    def op(conn):
+        conn.execute(
+            "UPDATE monitoring_notifications SET sent_via_push=TRUE WHERE id=?",
+            (notification_id,)
+        )
+        conn.commit()
+        return True
     return await _run_db(op)
 
 
@@ -2040,8 +2073,12 @@ async def get_monitoring_velocity_matches(limit: int = 200, day: str | None = No
                     if target > 0 and abs(float(row.get('target_pct') or 0) - target) < 0.01:
                         best = row
                         break
-                if best is None and cands:
-                    best = dict(cands[0])
+                if best is None:
+                    # Hedef % eşleşmesi yok: yanlış MFE/dokunuş etiketi üretmemek
+                    # için fallback eşleşmeyi KULLANMA — kayıt "eslesme_yok" kalır.
+                    # (Öncesinde cands[0]'a düşüp %2 bildirim %3 adayla eşleşiyordu;
+                    # rapor BAŞARILI/BAŞARISIZ'ı hatalı işaretliyordu. 2026-09-05.)
+                    best = None
             if best:
                 item['candidate_id'] = best.get('candidate_id')
                 item['candidate_status'] = best.get('status')
@@ -2049,6 +2086,7 @@ async def get_monitoring_velocity_matches(limit: int = 200, day: str | None = No
                 item['touched_target'] = bool(best.get('touched_target')) if best.get('touched_target') is not None else None
                 item['candidate_target_pct'] = best.get('target_pct')
                 item['candidate_passes'] = bool(best.get('passes')) if best.get('passes') is not None else None
+                item['target_match'] = True
                 item['ml_hit_probability'] = float(best['ml_hit_probability']) if best.get('ml_hit_probability') is not None else None
             else:
                 item['candidate_id'] = None
@@ -2057,6 +2095,7 @@ async def get_monitoring_velocity_matches(limit: int = 200, day: str | None = No
                 item['touched_target'] = None
                 item['candidate_target_pct'] = None
                 item['candidate_passes'] = None
+                item['target_match'] = False
                 item['ml_hit_probability'] = None
             matches.append(item)
         return matches
@@ -2085,6 +2124,39 @@ async def get_pending_monitoring_notification(symbol: str) -> dict | None:
         latest["old_ids"] = old_ids
         latest["total_pending"] = len(rows)
         return latest
+    return await _run_db(op)
+
+
+async def get_pending_monitoring_notifications(symbols: list[str]) -> dict[str, dict]:
+    """Birden fazla sembol icin sonuclanmamis (BEKLIYOR) bildirimlerini tek
+    sorguyla getir (N+1 onlemi; 2026-09-05). Her sembol icin en yeni kaydi
+    sembol -> kayit seklinde dondurur.
+    """
+    syms = [str(s).upper() for s in symbols if str(s).strip()]
+    if not syms:
+        return {}
+    def op(conn):
+        placeholders = ",".join(["%s"] * len(syms))
+        rows = conn.execute(
+            "SELECT id, symbol, score, target_pct, price, expected_price, "
+            "horizon_minutes, detected_at, mode "
+            "FROM monitoring_notifications "
+            f"WHERE symbol IN ({placeholders}) "
+            "ORDER BY detected_at DESC",
+            syms
+        ).fetchall()
+        result: dict[str, dict] = {}
+        for row in rows:
+            sym = str(row[1] or "").upper()
+            if sym not in result:
+                latest = dict(row)
+                latest["old_ids"] = []
+                latest["total_pending"] = 0
+                result[sym] = latest
+            else:
+                result[sym]["old_ids"].append(row[0])
+                result[sym]["total_pending"] += 1
+        return result
     return await _run_db(op)
 
 
@@ -2757,7 +2829,7 @@ async def get_all_symbol_target_states() -> list[dict]:
 # Otonom Paper Trade (2026-09-04): monitoring bildiriminden tetiklenen pozisyonlar
 # ---------------------------------------------------------------------------
 async def save_auto_paper_trade(trade: dict) -> dict | None:
-    """Yeni otonom paper trade kaydı oluştur."""
+    """Yeni otonom paper trade kaydı oluştur (salt INSERT; atomik akış için open_auto_paper_trade kullan)."""
     def op(conn):
         row = conn.execute(
             """INSERT INTO auto_paper_trades
@@ -2778,12 +2850,114 @@ async def save_auto_paper_trade(trade: dict) -> dict | None:
     return await _run_db(op)
 
 
+async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None, str]:
+    """Atomik otonom paper açılışı: kilit + churn/pozisyon kontrolü + wallet düşümü + sinyal.
+
+    Tek transaction içinde:
+      1. Sembol adına advisory lock alır (eşzamanlı açılış yarışını önler)
+      2. Sembolde zaten açık auto_paper pozisyonu varsa işlemez (open_trade döner)
+      3. notification_id daha önce işlendiyse (geçmişte aynı bildirimle trade kapandıysa)
+         yeniden açılışı engeller (churn koruması)
+      4. Yeterli bakiye kontrolü + wallet düşümü
+      5. auto_paper_trades INSERT + signals/decision_logs kaydı tek commit'te
+
+    Dönen tuple: (trade_row veya None, durum) — durum:
+      "opened" | "already_open" | "already_traded" | "insufficient_balance" | "error"
+    """
+    symbol = str(trade["symbol"]).upper()
+    notification_id = trade.get("notification_id")
+
+    def op(conn):
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"auto_paper_open_{symbol}",))
+        # Açık pozisyon kontrolü
+        open_row = conn.execute(
+            "SELECT * FROM auto_paper_trades WHERE symbol=? AND status='open' ORDER BY entry_time DESC LIMIT 1",
+            (symbol,)
+        ).fetchone()
+        if open_row:
+            return (dict(open_row), "already_open")
+        # Ana positions tablosunda da aynı sembol açıksa çakışmayı önle
+        main_pos = conn.execute(
+            "SELECT 1 FROM positions WHERE symbol=?",
+            (symbol,)
+        ).fetchone()
+        if main_pos:
+            return (None, "already_open")
+        # Aynı bildirim daha önce işlendi mi? (churn: SL/TP kapanışı sonrası yeniden açma)
+        if notification_id is not None:
+            prior = conn.execute(
+                "SELECT COUNT(*) FROM auto_paper_trades WHERE notification_id=?",
+                (notification_id,)
+            ).fetchone()
+            if prior and int(prior[0] or 0) > 0:
+                return (None, "already_traded")
+        # Bakiye kontrolü + düşüm
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", ("TRY",)).fetchone()
+        current_cash = float(cash_row[0] if cash_row else 0.0)
+        order_value = float(trade.get("order_value_try") or 0)
+        commission_pct = config.COMMISSION_PCT
+        debit = order_value * (1 + commission_pct)
+        if order_value <= 0 or current_cash + 1e-9 < debit:
+            return (None, "insufficient_balance")
+        next_cash = current_cash - debit
+        conn.execute(
+            "INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount",
+            ("TRY", next_cash)
+        )
+        row = conn.execute(
+            """INSERT INTO auto_paper_trades
+               (symbol, side, status, notification_id, entry_price, quantity, order_value_try,
+                stop_loss, take_profit, peak_price, entry_time,
+                notification_score, notification_target_pct, notification_expected_price,
+                created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+            (symbol, trade.get("side", "LONG"), "open",
+             notification_id, trade["entry_price"], trade["quantity"],
+             order_value, trade.get("stop_loss"), trade.get("take_profit"),
+             trade.get("peak_price", trade["entry_price"]), trade["entry_time"],
+             trade.get("notification_score"), trade.get("notification_target_pct"),
+             trade.get("notification_expected_price"), trade["created_at"], trade["updated_at"])
+        ).fetchone()
+        if signal:
+            trade_id_val = row["id"] if row else None
+            conn.execute(
+                "INSERT INTO signals(timestamp,symbol,action,price,reason,strategy,trade_id) VALUES(?,?,?,?,?,?,?)",
+                (signal.get("timestamp") or trade["entry_time"], symbol, signal.get("action"), signal.get("price"),
+                 signal.get("reason"), signal.get("strategy"),
+                 signal.get("trade_id") or (f"auto_paper-{trade_id_val}" if trade_id_val else None))
+            )
+            conn.execute(
+                "INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)",
+                (signal.get("timestamp") or trade["entry_time"], symbol, signal.get("strategy"), signal.get("action"),
+                 signal.get("reason"), signal.get("price"), _json_safe_dumps(signal, default=str))
+            )
+        conn.commit()
+        return (dict(row) if row else None, "opened")
+
+    try:
+        return await _run_db(op)
+    except Exception as exc:
+        logger.exception("open_auto_paper_trade %s: %s", symbol, exc)
+        return (None, "error")
+
+
 async def get_open_auto_paper_trade(symbol: str) -> dict | None:
     """Sembol için açık otonom paper trade varsa döndür."""
     def op(conn):
         row = conn.execute(
             "SELECT * FROM auto_paper_trades WHERE symbol=? AND status='open' ORDER BY entry_time DESC LIMIT 1",
             (str(symbol).upper(),)
+        ).fetchone()
+        return dict(row) if row else None
+    return await _run_db(op)
+
+
+async def get_recent_auto_paper_trade_by_notification(notification_id) -> dict | None:
+    """Belirli bir bildirim için daha önce açılmış auto paper trade varsa döndür."""
+    def op(conn):
+        row = conn.execute(
+            "SELECT * FROM auto_paper_trades WHERE notification_id=? ORDER BY entry_time DESC LIMIT 1",
+            (notification_id,)
         ).fetchone()
         return dict(row) if row else None
     return await _run_db(op)
@@ -2858,13 +3032,44 @@ async def update_auto_paper_peak(trade_id: int, peak_price: float) -> bool:
 
 async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: float,
                                  pnl: float, pnl_pct: float, commission: float, reason: str) -> bool:
-    """Auto paper pozisyonunu kapat."""
+    """Auto paper pozisyonunu kapat VE wallet'a iade et (atomik).
+
+    Tek transaction içinde pozisyon 'closed' yapılır, çıkış notional'ı
+    (exit*(1-commission)) wallet'a eklenir ve CLOSE sinyali yazılır.
+    Arada hata olursa her şey geri alınır — para iadesiz 'closed' kayıt kalmaz.
+    """
     def op(conn):
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"auto_paper_close_{trade_id}",))
+        row = conn.execute(
+            "SELECT * FROM auto_paper_trades WHERE id=? AND status='open' FOR UPDATE",
+            (trade_id,)
+        ).fetchone()
+        if not row:
+            return False
+        trade = dict(row)
+        symbol = str(trade["symbol"]).upper()
+        quantity = float(trade["quantity"])
+        commission_pct = config.COMMISSION_PCT
         conn.execute(
             """UPDATE auto_paper_trades SET status='closed', exit_price=?, exit_time=?,
                pnl=?, pnl_pct=?, commission=?, exit_reason=?, updated_at=?
                WHERE id=? AND status='open'""",
             (exit_price, exit_time, pnl, pnl_pct, commission, reason, time.time(), trade_id)
+        )
+        # Wallet'a iade: pozisyon değeri + kar/zarar (çıkış komisyonu düşülür)
+        exit_notional = exit_price * quantity
+        proceed = exit_notional * (1 - commission_pct)
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", ("TRY",)).fetchone()
+        current_cash = float(cash_row[0] if cash_row else 0.0)
+        conn.execute(
+            "INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount",
+            ("TRY", current_cash + proceed)
+        )
+        now = exit_time or time.time()
+        conn.execute(
+            "INSERT INTO signals(timestamp,symbol,action,price,reason,strategy,trade_id) VALUES(?,?,?,?,?,?,?)",
+            (now, symbol, "CLOSE_LONG", exit_price,
+             f"AUTO_PAPER_{reason.upper()} | PnL={pnl:.2f}TRY", "AUTO_PAPER", f"auto_paper-{trade_id}")
         )
         conn.commit()
         return True

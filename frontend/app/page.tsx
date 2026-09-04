@@ -391,7 +391,7 @@ export default function Home() {
                 <tbody>
                   {autoPaperTrades.map((t) => {
                     const entry = Number(t.entry_price);
-                    const current = restPositions.find(p => p.symbol === t.symbol)?.current || entry;
+                    const current = Number(t.current_price) > 0 ? Number(t.current_price) : entry;
                     const pnl = (current - entry) * Number(t.quantity);
                     const pnlPct = entry > 0 ? ((current - entry) / entry * 100) : 0;
                     return (

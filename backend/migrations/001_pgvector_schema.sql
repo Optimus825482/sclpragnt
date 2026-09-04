@@ -479,3 +479,7 @@ CREATE TABLE IF NOT EXISTS auto_paper_trades (
 );
 CREATE INDEX IF NOT EXISTS auto_paper_trades_status_idx ON auto_paper_trades(status, entry_time DESC);
 CREATE INDEX IF NOT EXISTS auto_paper_trades_symbol_status_idx ON auto_paper_trades(symbol, status);
+-- Sembol başına tek açık pozisyon garantisi (aynı anda yalnız bir 'open' olabilir).
+-- Mevcut veride ihlal varsa oluşturulamaz; temizlik sonrası uygulanır.
+CREATE UNIQUE INDEX IF NOT EXISTS auto_paper_trades_one_open_per_symbol
+  ON auto_paper_trades(symbol) WHERE status='open';

@@ -9,6 +9,7 @@ import SymbolLink from "./SymbolLink";
 import { useAuth } from "../lib/auth";
 
 const MENU_BASE = [
+    { href: "/portfolio", label: "Portföy", icon: "💼", desc: "Canlı portföy ve otonom işlem takibi" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Sinyal ve işlem raporları" },
     { href: "/monitoring", label: "Radar", icon: "📡", desc: "Otonom izleme ve hız avcısı" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },

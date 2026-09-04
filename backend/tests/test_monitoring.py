@@ -399,7 +399,7 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
             captured.update(kwargs)
             return True
 
-        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=existing),              patch.object(monitoring.database, "update_monitoring_notification", side_effect=fake_update),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring, "_record_history", return_value=None):
+        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notifications", new_callable=AsyncMock, return_value={"GOODTRY": existing}),              patch.object(monitoring.database, "update_monitoring_notification", side_effect=fake_update),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring, "_record_history", return_value=None):
             candidates = [{"symbol": "GOODTRY", "velocity_score": 4.0, "target_pct": 5.0, "price": 12.0,
                            "horizon_minutes": 15}]
             result = await monitoring._notify(candidates, settings)
@@ -429,7 +429,7 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
             captured.update(kwargs)
             return True
 
-        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=existing),              patch.object(monitoring.database, "update_monitoring_notification", side_effect=fake_update),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring, "_record_history", return_value=None):
+        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notifications", new_callable=AsyncMock, return_value={"LONGTRY": existing}),              patch.object(monitoring.database, "update_monitoring_notification", side_effect=fake_update),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring, "_record_history", return_value=None):
             candidates = [{"symbol": "LONGTRY", "velocity_score": 4.0, "target_pct": 3.0,
                            "price": 21.0, "horizon_minutes": 5}]
             await monitoring._notify(candidates, settings)

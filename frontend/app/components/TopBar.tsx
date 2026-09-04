@@ -1,7 +1,7 @@
 "use client";
 import { usePathname } from "next/navigation";
 
-const labels: Record<string, string> = { "/": "Canlı terminal", "/chat": "Chat merkezi", "/portfolio": "Portföy yönetimi", "/reports": "Raporlar", "/memory": "LLM hafızası", "/backtest": "Backtest", "/charts": "Grafik", "/symbol-analysis": "Sembol analizi", "/settings": "Ayarlar" };
+const labels: Record<string, string> = { "/": "Canlı terminal", "/chat": "Chat merkezi", "/portfolio": "Portföy izleme", "/reports": "Raporlar", "/memory": "LLM hafızası", "/backtest": "Backtest", "/charts": "Grafik", "/symbol-analysis": "Sembol analizi", "/settings": "Ayarlar" };
 
 export default function TopBar() {
   const pathname = usePathname();

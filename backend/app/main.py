@@ -83,7 +83,7 @@ from app.routers.runtime import (  # noqa: F401
     refresh_top_gainer_symbols, top_gainers_refresh_loop, refresh_symbol_activity,
     bootstrap_symbol_activity, symbol_activity_loop, llm_replenish_after_close, llm_idle_trigger_loop,
     _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status)
-from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop  # noqa: F401
+from app.routers.velocity import velocity_learning_loop  # noqa: F401
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
 from app.routers import monitoring  # noqa: F401
 
@@ -754,7 +754,6 @@ async def startup_services():
     _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
     _start_background(chat_prediction_auto_trade_loop(), "chat-prediction-auto-trade")
     _start_background(velocity_learning_loop(), "velocity-learner")
-    _start_background(autonomous_velocity_loop(), "velocity-auto-trader")
     _start_background(radar_loop(), "radar-loop")
     _start_background(top_gainers_refresh_loop(), "top-gainers-monitor")
     _start_background(symbol_activity_loop(), "symbol-activity")
@@ -793,6 +792,10 @@ async def shutdown_services():
         pass
     try:
         monitoring.stop_monitoring_loop()
+    except Exception:
+        pass
+    try:
+        auto_paper_routes.stop_auto_paper_loop()
     except Exception:
         pass
     tasks = list(_background_tasks)
@@ -1420,6 +1423,12 @@ async def reset_auto_paper_trading(payload: dict = None, request: Request = None
         return {"status": "preview", "message": "10.000 TL bakiye ile sıfırlama yapılacak; tüm eski trade/pozisyon/bildirim kayıtları silinecek."}
     result = await database.reset_trading_data()
     analyzer.positions.clear()
+    # In-memory auto_paper sayaçlarını da sıfırla (restart beklemeden güncel görünüm)
+    try:
+        from app.routers.auto_paper import reset_state
+        reset_state()
+    except Exception:
+        pass
     await log_user_action(_session_username(request), None, "auto_paper", "AUTO_PAPER_RESET",
                           details={"deleted": result}, request=request)
     return {"status": "ok", "result": result}
@@ -2134,15 +2143,17 @@ async def _create_postgres_backup():
 
 
 @app.get("/api/backup")
-async def download_backup():
+async def download_backup(request: Request = None):
     """Download a PostgreSQL custom-format dump (streamed while pg_dump runs)."""
+    _require_admin(request)
     stream, headers = await _create_postgres_backup()
     return StreamingResponse(stream, media_type="application/octet-stream", headers=headers)
 
 
 @app.get("/api/postgres/backup")
-async def download_postgres_backup():
+async def download_postgres_backup(request: Request = None):
     """Explicit alias for clients that use the PostgreSQL-specific route."""
+    _require_admin(request)
     stream, headers = await _create_postgres_backup()
     return StreamingResponse(stream, media_type="application/octet-stream", headers=headers)
 
