@@ -100,19 +100,22 @@ export default function Home() {
   // güncel anlık değerlerle üzerine yazılır. Böylece WS kopukken bile açık
   // pozisyonlar listede görünür (eskiden tablo yalnızca WS'e bağlıydı ve
   // bağlantı kopunca "Açık pozisyon yok" yanıltıcı metni gösteriyordu).
+  // Sekme arka plandayken poll atlanır (görünmeyen sekmede ağ/CPU israfı).
   useEffect(() => {
-    loadRestPositions();
-    loadAutoPaperTrades();
-    const timer = window.setInterval(() => {
+    const load = () => {
+      if (document.hidden) return;
       loadRestPositions();
       loadAutoPaperTrades();
-    }, 15000);
+    };
+    load();
+    const timer = window.setInterval(load, 15000);
     return () => window.clearInterval(timer);
   }, [loadRestPositions, loadAutoPaperTrades]);
 
   useEffect(() => {
     let cancelled = false;
     const tick = () => {
+      if (document.hidden) return;
       apiRequest(`${API_BASE}/api/velocity/status`, { cache: "no-store" })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((d) => { if (!cancelled) setVelocityStatus(d); })
