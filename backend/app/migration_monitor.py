@@ -12,7 +12,7 @@ import time
 # cover. Kept as the canonical list so migration/verification contracts stay
 # testable even though the live app is PostgreSQL-only.
 TABLES = ("positions", "trades", "signals", "decision_logs", "llm_tool_logs",
-          "a2a_messages", "llm_symbol_guards", "virtual_wallet", "chart_settings",
+          "llm_symbol_guards", "virtual_wallet", "chart_settings",
           "llm_providers", "llm_models", "llm_skills", "llm_settings", "backtests")
 
 state = {

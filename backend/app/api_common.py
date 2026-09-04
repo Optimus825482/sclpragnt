@@ -30,7 +30,7 @@ _background_tasks = set()
 def _start_background(coro, name):
     """Başlat ve supervisors manual da olsa, hata ile biterse sınırlı geri alımla yeniden başlat.
 
-    Uzun ömürlü background döngüleri (strategy, radar, broadcast, a2a, ...) iç
+    Uzun ömürlü background döngüleri (strategy, radar, broadcast, ...) iç
     try/except ile kendi hatalarını yutacak şekilde yazılır. Yine de beklenmeyen
     bir istisna düşürülürse görev, CancelledError dışındaki hatalarda sonlu bir
     geri alımla (backoff) yeniden oluşturulur; böylece tek seferlik görevlerin

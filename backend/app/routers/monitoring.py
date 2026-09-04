@@ -48,6 +48,24 @@ _loop_task = None
 _STATE_SETTING_KEY = "monitoring_runtime_state"
 
 
+def normalize_score(raw_score: float) -> float:
+    """Ham velocity_score'u 0-100 panel ölçeğine çevirir.
+
+    velocity_score çarpım (ATR×BB×struct×ML×leading) olduğundan 0-200+ aralığında
+    değişir (üretim: çoğu 0-30). Admin bildirim eşikleri (min_score=50, fast-lane=70)
+    0-100 paneline göre kurgulanmış; doğrudan ham skorla karşılaştırmak sistemi pratikte
+    devre dışı bırakıyordu (2026-09-04 teşhis). MONITORING_SCORE_NORM_CAP üstü doyurulur.
+    """
+    try:
+        raw = float(raw_score or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    cap = float(config.MONITORING_SCORE_NORM_CAP)
+    if cap <= 0:
+        return round(raw, 1)
+    return round(100.0 * min(1.0, raw / cap), 1)
+
+
 async def _persist_runtime_state() -> None:
     try:
         payload = {
@@ -148,7 +166,7 @@ async def update_monitoring_settings(payload: dict, request: Request):
 
 def _build_notification(sym, c, settings) -> dict:
     """Zengin bildirim içeriği: sembol, tespit zamanı, %potansiyel, anlık ve beklenen fiyat."""
-    score = float(c.get("velocity_score", 0) or 0)
+    score = normalize_score(c.get("velocity_score", 0))
     target = float(c.get("target_pct", 2.0) or 0)
     price = float(c.get("price", 0) or 0)
     ticker = market.get_ticker(sym)
@@ -217,12 +235,14 @@ async def _notify(candidates_list, settings) -> list:
     new_entries = []     # Yeni bildirimler
     for c in candidates_list:
         sym = str(c.get("symbol", "") or "").upper()
-        # Eşik ve fast-lane HAM velocity_score üzerinden (rapor "skor" kolonu
-        # ve kullanıcının 50/70 bantları bu ölçek); upside_rank yalnızca
+        # Eşik ve fast-lane PANEL (0-100) skoru üzerinden: admin min_score/fast_lane
+        # 0-100 ölçekte kurgulanmış. Ham velocity_score 0-200+ aralığında olduğundan
+        # normalize_score'a geçilir (2026-09-04 teşhis). upside_rank yalnızca
         # SIRALAMA anahtarıdır (dk-başı yükseliş × kalite × mikro-yapı).
-        score = float(c.get("velocity_score", 0) or 0)
+        score = normalize_score(c.get("velocity_score", 0))
         target = float(c.get("target_pct") or 2.0)
-        if not sym or score < min_score:
+        min_target = float(settings.get("min_target_pct") or 0)
+        if not sym or score < min_score or (min_target > 0 and target < min_target):
             continue
         # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
         # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
@@ -234,7 +254,8 @@ async def _notify(candidates_list, settings) -> list:
             now - float(existing_pending.get("detected_at") or 0)
             < (int(existing_pending.get("horizon_minutes") or horizon_min) + 2) * 60
         ):
-            # Mevcut BEKLIYOR bildirimi guncelle (detected_at korunur)
+            # Mevcut BEKLIYOR bildirimi guncelle (detected_at korunur); ML alanlari
+            # da guncellenir (aksi halde guncelleme yolunda kaybolurdu, 2026-09-04).
             await database.update_monitoring_notification(
                 existing_pending["id"],
                 score=score,
@@ -243,6 +264,8 @@ async def _notify(candidates_list, settings) -> list:
                 expected_price=float(c.get("price", 0) or 0) * (1 + target / 100),
                 horizon_minutes=horizon_min,
                 mode=c.get("mode"),
+                ml_target_pct=c.get("ml_target_pct"),
+                ml_hit_probability=c.get("ml_hit_probability"),
             )
             # Eski kayitlar kalir - sinyal tarihcesi icin
             # Bildirim olarak da ekle (push için)
@@ -292,6 +315,9 @@ async def _notify(candidates_list, settings) -> list:
     # Yeni bildirimleri DB'ye kaydet
     if new_entries:
         await database.save_monitoring_notifications(new_entries)
+    # Sessiz saat bilgisi bildirim nesnesine işaretlenir (UI geçmişte görür).
+    for n in notified:
+        n["quiet_hours"] = bool(quiet)
     # Push bildirimleri — sadece YENI bildirimler (guncellemeler her turda
     # tetiklenmesin diye spam korumasi)
     new_notifs = [n for n in notified if not n.get("updated")]
@@ -439,8 +465,10 @@ async def _run_scan() -> dict:
     for sym in all_watchlist:
         _monitoring_state["watchlist_seen_at"].setdefault(sym, now)
 
-    # Rejim: RISK_OFF bayrağı — hafif yerel ölçüm (BTC/ETH günlük trend + 5m katılımı).
+    # Rejim: RISK_OFF bayrağı — hafif yerel ölçüm (BTC/ETH 1h trend + 5m katılımı).
     # Pahalı snapshot taraması çağrılmaz; fail-open: hesaplanamazsa normal eşik.
+    # Yorum (2026-09-04): risk_off=True => piyasa riskli kabul edilir ve _notify
+    # etkin eşiği RISK_OFF_SCORE_MULT ile yükseltir (riskliyken daha seçici).
     try:
         risk_score = 0
         for ref in ("BTC_TRY", "ETH_TRY"):
@@ -448,9 +476,10 @@ async def _run_scan() -> dict:
             closes = bars.get("closes") or []
             if len(closes) >= 25:
                 ema25 = sum(closes[-25:]) / 25
+                # Fiyat EMA25 üstündeyse yapıcı/pozitif rejim katkısı; altındaysa zayıflık.
                 if closes[-1] >= ema25:
                     risk_score += 1
-        _monitoring_state["risk_off"] = risk_score == 0  # hiçbir referans EMA25 üstünde değilse riskli
+        _monitoring_state["risk_off"] = risk_score == 0  # hicbir referans EMA25 ustunde degilse riskli
     except Exception:
         pass  # rejim hesaplanamazsa normal eşik (fail-open)
 
@@ -536,9 +565,12 @@ async def report_notifications(limit: int = 200, day: str = None):
     settings = await get_user_notification_settings()
     min_score = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
     rows = await database.get_monitoring_velocity_matches(limit=limit, day=day)
-    # Eşik filtresi: skor alanı bildirim anındaki upside_rank/velocity_score.
+    # Eşik filtresi: skor alanı bildirim anındaki panel (0-100) skorudur.
+    # 2026-09-04 teşhisi öncesi eski kayıtlar ham velocity_score ile yazılmıştı
+    # (çok daha düşük); normalize_score her iki ölçeği aynı panele oturtur —
+    # aksi halde eski gürültü/eşik tutarsızlığı oluşur.
     rows = [r for r in rows
-            if float(r.get("score") or 0) >= min_score]
+            if normalize_score(r.get("score")) >= min_score]
     now = time.time()
     result = []
     for row in rows:
@@ -594,8 +626,9 @@ async def report_notifications(limit: int = 200, day: str = None):
                     "success_count": success,
                     "success_rate": (success / evaluated * 100) if evaluated else None}
     all_rows = await database.get_monitoring_velocity_matches(limit=1000, day=None)
-    # Genel başarı da aynı global eşiğe tabi (gürültü oranları dışarıda kalır).
-    all_rows = [r for r in all_rows if float(r.get("score") or 0) >= min_score]
+    # Genel başarı da aynı global eşiğe tabi (gürültü oranları dışarıda kalır);
+    # eski kayıtlar için normalize_score uygulanır (bkz. günlük filtre).
+    all_rows = [r for r in all_rows if normalize_score(r.get("score")) >= min_score]
     all_evaluated = 0
     all_success = 0
     for r in all_rows:
@@ -618,7 +651,13 @@ async def report_notifications(limit: int = 200, day: str = None):
 
 @router.post("/api/monitoring/reset-notifications")
 async def reset_monitoring_notifications(request: Request):
-    """Clear notified symbols list (allows re-notification)."""
+    """Clear notified symbols list (allows re-notification) — YALNIZ admin.
+
+    Reset sonrasi ayni semboller yeniden bildirilebilir; spam korumasini
+    atlatabilmek isteyen her kimlik yetkili olmamalidir (2026-09-04).
+    """
+    from app.main import _require_admin
+    _require_admin(request)
     _monitoring_state["notified_symbols"].clear()
     await log_user_action(None, None, "monitoring", "MONITORING_NOTIFICATIONS_RESET",
                           details={}, request=request)

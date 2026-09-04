@@ -69,9 +69,6 @@ class _PostgresCompat:
         if was_ignore and "ON CONFLICT" not in sql.upper(): sql += " ON CONFLICT DO NOTHING"
         sql = re.sub(r"INSERT OR REPLACE INTO positions", "INSERT INTO positions", sql, flags=re.I)
         sql = re.sub(r"INSERT OR REPLACE INTO llm_skills", "INSERT INTO llm_skills", sql, flags=re.I)
-        sql = re.sub(r"INSERT OR REPLACE INTO a2a_messages", "INSERT INTO a2a_messages", sql, flags=re.I)
-        if "INSERT INTO A2A_MESSAGES" in sql.upper() and "ON CONFLICT" not in sql.upper():
-            sql += " ON CONFLICT(message_id) DO UPDATE SET correlation_id=EXCLUDED.correlation_id,direction=EXCLUDED.direction,message_type=EXCLUDED.message_type,sender=EXCLUDED.sender,recipient=EXCLUDED.recipient,status=EXCLUDED.status,payload=EXCLUDED.payload,created_at=EXCLUDED.created_at,delivered_at=EXCLUDED.delivered_at,acknowledged_at=EXCLUDED.acknowledged_at,last_error=EXCLUDED.last_error,attempts=EXCLUDED.attempts"
         if "INSERT INTO llm_skills" in sql.upper() and "ON CONFLICT" not in sql.upper(): sql += " ON CONFLICT(name) DO UPDATE SET instructions=EXCLUDED.instructions,enabled=EXCLUDED.enabled,created_at=EXCLUDED.created_at"
         if "INSERT INTO positions" in sql.upper() and "ON CONFLICT" not in sql.upper():
             sql += " ON CONFLICT(symbol) DO UPDATE SET side=EXCLUDED.side,entry_price=EXCLUDED.entry_price,stop_price=EXCLUDED.stop_price,take_profit=EXCLUDED.take_profit,peak_price=EXCLUDED.peak_price,breakeven_hit=EXCLUDED.breakeven_hit,quantity=EXCLUDED.quantity,entry_time=EXCLUDED.entry_time,strategy=EXCLUDED.strategy,entry_context=EXCLUDED.entry_context,trade_id=EXCLUDED.trade_id"
@@ -274,7 +271,7 @@ async def reset_trading_data():
     """
     # Sabit tablo allowlist — SQL enjeksiyonunu önler
     _RESET_ALLOWED_TABLES = frozenset({
-        "alert_events", "alert_rules", "paper_orders", "a2a_messages",
+        "alert_events", "alert_rules", "paper_orders",
         "llm_tool_logs", "llm_symbol_guards", "decision_logs", "signals",
         "trades", "positions", "backtests", "analysis_snapshots",
         "microstructure_snapshots",
@@ -285,7 +282,6 @@ async def reset_trading_data():
             "alert_events",
             "alert_rules",
             "paper_orders",
-            "a2a_messages",
             "llm_tool_logs",
             "llm_symbol_guards",
             "decision_logs",
@@ -1907,64 +1903,6 @@ async def get_llm_tool_logs(limit=500):
     return await _run_db(op)
 
 
-async def save_a2a_message(message, direction="outbound", status="queued", error=None, insert_only=False):
-    def op(conn):
-        if insert_only:
-            cursor = conn.execute("""INSERT INTO a2a_messages
-                (message_id,correlation_id,direction,message_type,sender,recipient,status,payload,created_at,delivered_at,acknowledged_at,last_error,attempts)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0) ON CONFLICT(message_id) DO NOTHING""",
-                (message.get("message_id"), message.get("correlation_id"), direction, message.get("type"),
-                 message.get("from"), message.get("to"), status, _json_safe_dumps(message, ensure_ascii=False, default=str),
-                 message.get("created_at") or time.time(), time.time() if status == "delivered" else None,
-                 time.time() if status == "acknowledged" else None, error))
-            conn.commit()
-            return cursor.rowcount > 0
-        conn.execute("""INSERT OR REPLACE INTO a2a_messages
-            (message_id,correlation_id,direction,message_type,sender,recipient,status,payload,created_at,delivered_at,acknowledged_at,last_error,attempts)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,COALESCE((SELECT attempts FROM a2a_messages WHERE message_id=?),0))""",
-            (message.get("message_id"), message.get("correlation_id"), direction, message.get("type"),
-             message.get("from"), message.get("to"), status, _json_safe_dumps(message, ensure_ascii=False, default=str),
-             message.get("created_at") or time.time(), time.time() if status == "delivered" else None,
-             time.time() if status == "acknowledged" else None, error, message.get("message_id")))
-        conn.commit()
-        return True
-    return await _run_db(op)
-
-
-async def get_a2a_messages(limit=100, status=None):
-    def op(conn):
-        params = [max(1, min(int(limit), 500))]
-        where = ""
-        if status:
-            where = " WHERE status=?"
-            params.insert(0, str(status))
-        rows = conn.execute(f"SELECT * FROM a2a_messages{where} ORDER BY created_at DESC LIMIT ?", params).fetchall()
-        result = [dict(row) for row in rows]
-        for row in result:
-            row["payload"] = _json_value(row.get("payload"), {})
-        return result
-    return await _run_db(op)
-
-
-async def acknowledge_a2a_message(message_id):
-    def op(conn):
-        cur = conn.execute("UPDATE a2a_messages SET status='acknowledged', acknowledged_at=? WHERE message_id=?", (time.time(), str(message_id)))
-        conn.commit()
-        return cur.rowcount > 0
-    return await _run_db(op)
-
-
-async def update_a2a_message_status(message_id, status, payload=None):
-    def op(conn):
-        if payload is None:
-            cur = conn.execute("UPDATE a2a_messages SET status=?, acknowledged_at=? WHERE message_id=?", (status, time.time() if status == "acknowledged" else None, str(message_id)))
-        else:
-            cur = conn.execute("UPDATE a2a_messages SET status=?, payload=?, acknowledged_at=? WHERE message_id=?", (status, _json_safe_dumps(payload, ensure_ascii=False, default=str), time.time() if status == "acknowledged" else None, str(message_id)))
-        conn.commit()
-        return cur.rowcount > 0
-    return await _run_db(op)
-
-
 async def upsert_llm_symbol_guard(symbol, guard_type="cooldown", status="active", blocked_until=None, reason=None, evidence=None):
     symbol = str(symbol).replace("_", "").upper()
     now = time.time()
@@ -2094,7 +2032,8 @@ async def save_monitoring_notifications(entries):
     """Monitoring bildirim geçmişini kalıcı kaydet (server-side scan loop'tan).
 
     entries: sözlük listesi — symbol, message, title, score, target_pct,
-    price, expected_price, horizon_minutes, mode, detected_at, sent_via_push.
+    price, expected_price, horizon_minutes, mode, detected_at, sent_via_push,
+    ml_target_pct, ml_hit_probability (opsiyonel; 2026-09-04 eklendi).
     """
     if not entries:
         return 0
@@ -2103,8 +2042,9 @@ async def save_monitoring_notifications(entries):
         for e in entries:
             conn.execute(
                 "INSERT INTO monitoring_notifications"
-                "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at,"
+                "ml_target_pct,ml_hit_probability)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(e.get("symbol") or "?"),
                     str(e.get("message") or ""),
@@ -2114,6 +2054,7 @@ async def save_monitoring_notifications(entries):
                     float(e.get("detected_at") or now),
                     bool(e.get("sent_via_push", True)),
                     now,
+                    e.get("ml_target_pct"), e.get("ml_hit_probability"),
                 ),
             )
         conn.commit()
@@ -2222,16 +2163,19 @@ async def get_pending_monitoring_notification(symbol: str) -> dict | None:
 async def update_monitoring_notification(
     notif_id: int, score: float, target_pct: float, price: float,
     expected_price: float, horizon_minutes: int, mode: str | None,
+    ml_target_pct: float | None = None, ml_hit_probability: float | None = None,
 ) -> bool:
     # detected_at bilerek guncellenmez: orijinal tespit ani korunmazsa
     # velocity adayiyla (<=60 sn) eslesme bozulur ve M1 olcmu yapilamaz.
+    # ML alanlari da guncellenir (2026-09-04; aksi halde guncelleme yolunda kaybolurdu).
     def op(conn):
         conn.execute(
             "UPDATE monitoring_notifications SET "
             "score=%s, target_pct=%s, price=%s, expected_price=%s, "
-            "horizon_minutes=%s, mode=%s "
+            "horizon_minutes=%s, mode=%s, ml_target_pct=%s, ml_hit_probability=%s "
             "WHERE id=%s",
-            (score, target_pct, price, expected_price, horizon_minutes, mode, notif_id)
+            (score, target_pct, price, expected_price, horizon_minutes, mode,
+             ml_target_pct, ml_hit_probability, notif_id)
         )
         conn.commit()
         return True

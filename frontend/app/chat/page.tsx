@@ -133,7 +133,6 @@ const TOOL_GROUPS = [
       "remove_llm_symbol_guard",
       "list_llm_symbol_guards",
       "request_codex_research",
-      "get_a2a_messages",
       "get_order_status",
       "cancel_paper_order",
       "modify_paper_order",

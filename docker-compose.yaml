@@ -34,8 +34,6 @@ services:
       LIVE_TRADING: "false"
       USE_TESTNET: "false"
       CORS_ORIGINS: https://scalper.erkanerdem.online
-      A2A_RELAY_URL: ${A2A_RELAY_URL:-}
-      A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:?A2A_SHARED_SECRET must be set}
       SCALPER_ADMIN_PASSWORD: ${SCALPER_ADMIN_PASSWORD:?SCALPER_ADMIN_PASSWORD must be set}
       SCALPER_SESSION_SECRET: ${SCALPER_SESSION_SECRET:?SCALPER_SESSION_SECRET must be set}
       SCALPER_COOKIE_SECURE: "1"
@@ -59,31 +57,6 @@ services:
       interval: 15s
       timeout: 5s
       retries: 20
-  a2a-relay:
-    build:
-      context: ./a2a-relay
-    restart: unless-stopped
-    stop_grace_period: 5s
-    environment:
-      PORT: "8010"
-      A2A_SHARED_SECRET: ${A2A_SHARED_SECRET:?A2A_SHARED_SECRET must be set}
-      A2A_PEER_URL: ${A2A_PEER_URL:-}
-      SCALPER_A2A_URL: ${SCALPER_A2A_URL:-}
-      A2A_BACKEND_URL: http://backend:8004/api/a2a/messages
-    depends_on:
-      backend:
-        # Coolify has a short compose-command timeout. The relay can start
-        # before backend history hydration completes and will retry delivery.
-        condition: service_started
-    volumes:
-      - scalper_a2a_relay:/data
-    expose:
-      - "8010"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health', timeout=3)"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
 
   frontend:
     build:
@@ -111,11 +84,9 @@ services:
     depends_on:
       - frontend
       - backend
-      - a2a-relay
     expose:
       - "80"
 
 volumes:
   scalper_data:
   scalper_postgres_data:
-  scalper_a2a_relay:

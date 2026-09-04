@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class MigrationContracts(unittest.TestCase):
-    def test_all_durable_a2a_tables_are_migrated(self):
+    def test_all_durable_tables_are_migrated(self):
         from app import migration_monitor
 
         spec = importlib.util.spec_from_file_location(
@@ -19,7 +19,7 @@ class MigrationContracts(unittest.TestCase):
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        required = {"a2a_messages", "llm_symbol_guards"}
+        required = {"llm_symbol_guards"}
         self.assertTrue(required.issubset(migration_monitor.TABLES))
         self.assertTrue(required.issubset(module.TABLES))
 
@@ -27,10 +27,10 @@ class MigrationContracts(unittest.TestCase):
         from app.migration_monitor import compare_counts
 
         errors = compare_counts(
-            {"a2a_messages": 4, "llm_symbol_guards": 2},
-            {"a2a_messages": 3, "llm_symbol_guards": 2},
+            {"llm_symbol_guards": 4},
+            {"llm_symbol_guards": 3},
         )
-        self.assertEqual(errors, ["a2a_messages: hedef satır sayısı uyuşmuyor (3/4)"])
+        self.assertEqual(errors, ["llm_symbol_guards: hedef satır sayısı uyuşmuyor (3/4)"])
 
 
 class EmbeddingWorkerContracts(unittest.IsolatedAsyncioTestCase):
@@ -162,71 +162,6 @@ class WalkForwardContracts(unittest.IsolatedAsyncioTestCase):
         slow = [analyzer.strategy_bb_mfi_mean_reversion({key: values[:index + 1] for key, values in data.items()}, "TESTTRY")
                 for index in range(len(closes))]
         self.assertEqual(fast, slow)
-
-
-class A2AContracts(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        spec = importlib.util.spec_from_file_location(
-            "a2a_relay_server", ROOT.parent / "a2a-relay" / "server.py"
-        )
-        cls.relay = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.relay)
-
-    def test_relay_routes_scalper_recipient_to_backend(self):
-        with patch.object(self.relay, "BACKEND_URL", "http://backend/api/a2a/messages"), \
-             patch.object(self.relay, "PEER_URL", "https://peer/messages"):
-            self.assertEqual(
-                self.relay.route_target({"to": "scalper-server-llm"}),
-                "http://backend/api/a2a/messages",
-            )
-            self.assertEqual(
-                self.relay.route_target({"to": "codex-agent"}),
-                "https://peer/messages",
-            )
-
-    def test_relay_maps_management_routes_to_backend_a2a_api(self):
-        with patch.object(self.relay, "BACKEND_URL", "http://backend:8004/api/a2a/messages"):
-            self.assertEqual(
-                self.relay.backend_route_url("/api/a2a/messages/abc/ack?source=relay"),
-                "http://backend:8004/api/a2a/messages/abc/ack?source=relay",
-            )
-            self.assertEqual(
-                self.relay.backend_route_url("/api/a2a/emit"),
-                "http://backend:8004/api/a2a/emit",
-            )
-
-    def test_gateway_keeps_browser_a2a_management_on_authenticated_backend(self):
-        nginx = (ROOT.parent / "nginx" / "default.conf").read_text(encoding="utf-8")
-        exact = nginx.split("location = /api/a2a/messages", 1)[1].split("}", 1)[0]
-        prefix = nginx.split("location /api/a2a/", 1)[1].split("}", 1)[0]
-        self.assertIn("proxy_pass http://backend:8004", exact)
-        self.assertIn("proxy_pass http://backend:8004", prefix)
-
-    def test_signature_contract_is_constant_time_and_header_named(self):
-        from app import a2a
-
-        body = b'{"paper_only":true}'
-        signed = a2a.signature(body, "secret")
-        with patch.object(self.relay, "SECRET", "secret"):
-            self.assertTrue(self.relay.valid_signature(body, signed))
-        source = (ROOT / "app" / "a2a.py").read_text(encoding="utf-8")
-        self.assertIn('"X-A2A-Signature"', source)
-
-    def test_non_success_delivery_remains_queued(self):
-        from app import a2a
-
-        message = a2a.make_message(
-            sender="scalper-server-llm", recipient="codex-agent",
-            message_type="diagnostic", payload={},
-        )
-        with patch.dict("os.environ", {
-            "A2A_RELAY_URL": "https://relay.invalid/api/a2a/messages",
-            "A2A_SHARED_SECRET": "secret",
-        }), patch("app.a2a.asyncio.to_thread", AsyncMock(return_value=503)):
-            result = asyncio.run(a2a.deliver(message))
-        self.assertFalse(result["delivered"])
-        self.assertTrue(result["queued"])
 
 
 if __name__ == "__main__":

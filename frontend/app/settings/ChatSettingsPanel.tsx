@@ -5,7 +5,7 @@ import { API_BASE, apiRequest } from "../lib/api";
 const TOOL_GROUPS: [string, string[]][] = [
   ["Veri", ["get_strategy_config", "get_strategy_stats", "get_trades", "get_signals", "get_decision_logs", "query_database", "read_only_sql", "search_memory"]],
   ["Araştırma", ["run_backtest", "run_custom_backtest", "run_backtest_robustness", "get_backtest_history", "scan_market_snapshots", "detect_15m_upside_candidates", "deep_analyze_symbol", "get_data_quality", "get_microstructure_snapshot", "get_regime_snapshot", "calculate_trade_economics", "get_symbol_outcome_profile", "run_walk_forward", "run_execution_stress_test", "run_parameter_sensitivity", "run_holdout_test", "run_statistical_validation", "get_backtest_data_quality", "activate_coin", "place_paper_order", "open_llm_paper_trade"]],
-  ["Canlı kontrol", ["create_market_alert", "update_market_alert", "remove_market_alert", "list_market_alerts", "get_llm_open_position", "update_llm_position_plan", "close_llm_position", "set_llm_symbol_guard", "remove_llm_symbol_guard", "list_llm_symbol_guards", "request_codex_research", "get_a2a_messages", "get_order_status", "cancel_paper_order", "modify_paper_order", "reconcile_portfolio", "deactivate_coin"]],
+  ["Canlı kontrol", ["create_market_alert", "update_market_alert", "remove_market_alert", "list_market_alerts", "get_llm_open_position", "update_llm_position_plan", "close_llm_position", "set_llm_symbol_guard", "remove_llm_symbol_guard", "list_llm_symbol_guards", "request_codex_research", "get_order_status", "cancel_paper_order", "modify_paper_order", "reconcile_portfolio", "deactivate_coin"]],
 ];
 const ALL_TOOLS = TOOL_GROUPS.flatMap(([, names]) => names);
 

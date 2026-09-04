@@ -4,7 +4,7 @@ import pathlib
 import sys
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -12,10 +12,18 @@ if str(ROOT) not in sys.path:
 
 
 class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
+    def _reset_state(self):
+        from app.routers import monitoring
+        monitoring._monitoring_state["notified_symbols"] = {}
+        monitoring._monitoring_state["candidate_streak"] = {}
+        monitoring._monitoring_state["pending_targets"] = {}
+        monitoring._monitoring_state["risk_off"] = False
+
     async def test_notify_respects_min_score_and_min_target(self):
         """Eşik altı adaylar bildirilmemeli; eşiği geçenler bildirilmeli."""
         from app.routers import monitoring
 
+        self._reset_state()
         settings = {"enabled": True, "min_score": 2.0, "min_target_pct": 2.0,
                     "quiet_hours_start": None, "quiet_hours_end": None}
         candidates = [
@@ -23,10 +31,15 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
             {"symbol": "LOWTARGETTRY", "velocity_score": 2.5, "target_pct": 0.5, "price": 1.0},
             {"symbol": "GOODTRY", "velocity_score": 2.5, "target_pct": 3.0, "price": 10.0},
         ]
-        monitoring._monitoring_state["notified_symbols"] = {}
-        with patch.object(monitoring, "deliver_web_push", return_value={"ok": True}) as push, \
-             patch.object(monitoring, "_record_history", return_value=None):
+        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0), \
+             patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
+             patch.object(monitoring, "deliver_web_push", return_value={"ok": True}) as push, \
+             patch.object(monitoring, "_record_history", return_value=None), \
+             patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
             result = await monitoring._notify(candidates, settings)
+        # normalize_score(2.5, cap=40) = 6.25; min_score=2.0 → GOODTRY passes.
+        # LOWTRY normalize(0.5)=1.25 < 2.0 → filtered.
+        # LOWTARGETTRY normalize(2.5)=6.25 >= 2.0 but target=0.5 < min_target=2.0 → filtered.
         self.assertEqual([n["symbol"] for n in result], ["GOODTRY"])
         self.assertEqual(push.call_count, 1)
         notif = result[0]
@@ -39,6 +52,7 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
     async def test_notify_disabled_returns_empty(self):
         from app.routers import monitoring
 
+        self._reset_state()
         settings = {"enabled": False, "min_score": 0.5, "min_target_pct": 0.5,
                     "quiet_hours_start": None, "quiet_hours_end": None}
         candidates = [{"symbol": "XTRY", "velocity_score": 9.0, "target_pct": 9.0, "price": 1.0}]
@@ -48,9 +62,10 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         push.assert_not_called()
 
     async def test_notify_quiet_hours_defers_push_but_records(self):
-        """Sessiz saatlerde push gönderilmez; aday kayda alınır ve geçmişe yazılır."""
+        """Sessiz saatlerde push gönderilmez; aday DB'ye kaydedilir (kalıcılık)."""
         from app.routers import monitoring
 
+        self._reset_state()
         now = time.time()
         lt = time.localtime(now)
         # Gece yarısına yakın bir "şu an" oluştur (23:50) — sessiz aralık 22:00-06:00
@@ -60,25 +75,29 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
             settings = {"enabled": True, "min_score": 1.0, "min_target_pct": 1.0,
                         "quiet_hours_start": quiet_start, "quiet_hours_end": quiet_end}
             candidates = [{"symbol": "QUIETTRY", "velocity_score": 5.0, "target_pct": 5.0, "price": 2.0}]
-            monitoring._monitoring_state["notified_symbols"] = {}
-            with patch.object(monitoring, "deliver_web_push") as push, \
-                 patch.object(monitoring, "_record_history") as record:
+            with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0) as save_mock, \
+                 patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
+                 patch.object(monitoring, "deliver_web_push") as push, \
+                 patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
                 result = await monitoring._notify(candidates, settings)
         self.assertEqual(len(result), 1)
-        self.assertTrue(result[0]["quiet_hours"])
+        self.assertTrue(result[0].get("quiet_hours"))
         push.assert_not_called()
-        record.assert_called_once()
+        save_mock.assert_called_once()  # sessiz saatte DB kaydı (push değil) yapılır
 
     async def test_notify_cooldown_prevents_resend(self):
         """Aynı sembol 5 dk içinde tekrar bildirilmemeli."""
         from app.routers import monitoring
 
+        self._reset_state()
         settings = {"enabled": True, "min_score": 0.5, "min_target_pct": 0.5,
                     "quiet_hours_start": None, "quiet_hours_end": None}
         candidates = [{"symbol": "COOLTRY", "velocity_score": 5.0, "target_pct": 5.0, "price": 1.0}]
-        monitoring._monitoring_state["notified_symbols"] = {}
-        with patch.object(monitoring, "deliver_web_push", return_value={"ok": True}), \
-             patch.object(monitoring, "_record_history", return_value=None):
+        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0), \
+             patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
+             patch.object(monitoring, "deliver_web_push", return_value={"ok": True}), \
+             patch.object(monitoring, "_record_history", return_value=None), \
+             patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
             first = await monitoring._notify(candidates, settings)
             second = await monitoring._notify(candidates, settings)
         self.assertEqual(len(first), 1)
@@ -97,6 +116,35 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
             for k in sorted(st, key=st.get)[:-250]:
                 st.pop(k, None)
         self.assertLessEqual(len(st), 500)
+
+    async def test_normalize_score_maps_velocity_to_panel(self):
+        """normalize_score velocity_score'u 0-100 paneline çevirir."""
+        from app.routers import monitoring
+        # cap=40 varsayılan; velocity 40+ → 100, velocity 20 → 50, velocity 0 → 0
+        self.assertAlmostEqual(monitoring.normalize_score(40), 100.0)
+        self.assertAlmostEqual(monitoring.normalize_score(20), 50.0)
+        self.assertAlmostEqual(monitoring.normalize_score(0), 0.0)
+        self.assertAlmostEqual(monitoring.normalize_score(80), 100.0)  # capped
+        self.assertAlmostEqual(monitoring.normalize_score(10), 25.0)
+
+    async def test_min_target_filter_blocks_low_target(self):
+        """min_target_pct不足の候補は通知されない"""
+        from app.routers import monitoring
+
+        self._reset_state()
+        settings = {"enabled": True, "min_score": 0.0, "min_target_pct": 3.0,
+                    "quiet_hours_start": None, "quiet_hours_end": None}
+        candidates = [
+            {"symbol": "LOWTRY", "velocity_score": 10.0, "target_pct": 1.5, "price": 1.0},
+            {"symbol": "GOODTRY", "velocity_score": 10.0, "target_pct": 4.0, "price": 1.0},
+        ]
+        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0), \
+             patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
+             patch.object(monitoring, "deliver_web_push", return_value={"ok": True}), \
+             patch.object(monitoring, "_record_history", return_value=None), \
+             patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
+            result = await monitoring._notify(candidates, settings)
+        self.assertEqual([n["symbol"] for n in result], ["GOODTRY"])
 
 
 class MonitoringHelpersTests(unittest.IsolatedAsyncioTestCase):
@@ -174,6 +222,24 @@ class MonitoringHelpersTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Beklenen", n["message"])
         self.assertIn("12.500000", n["message"])
 
+    def test_build_notification_uses_normalized_score(self):
+        """_build_notification normalize_score ile panel skoru üretmeli."""
+        from app.routers import monitoring
+        from app.state import market
+
+        class FakeMarket:
+            def get_ticker(self, sym):
+                return {"last_price": "1.0"}
+
+        with patch.object(market, "get_ticker", FakeMarket().get_ticker):
+            n = monitoring._build_notification(
+                "TESTTRY", {"velocity_score": 20.0, "target_pct": 3.0, "price": 1.0,
+                           "horizon_minutes": 5, "mode": "trend_devam"},
+                {"min_score": 1.0, "min_target_pct": 0.5},
+            )
+        # normalize_score(20, cap=40) = 50.0
+        self.assertAlmostEqual(n["score"], 50.0, places=1)
+
 
 class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_settings_get_returns_db_values(self):
@@ -193,13 +259,16 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_settings_put_saves_db(self):
         from app.routers import monitoring
         from app import database
+        from app import security
 
         saved = {}
 
         async def fake_set(key, value):
             saved[key] = value
 
-        with patch.object(database, "set_llm_setting", side_effect=fake_set):
+        # Mock _require_admin'ı pasif hale getir
+        with patch.object(database, "set_llm_setting", side_effect=fake_set), \
+             patch("app.main._require_admin", return_value=None):
             await monitoring.update_monitoring_settings(
                 {"enabled": True, "min_score": 2.5, "min_target_pct": 4.0,
                  "quiet_hours_start": None, "quiet_hours_end": None},
@@ -208,6 +277,18 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         parsed = json.loads(saved["monitoring_notification_settings"])
         self.assertEqual(parsed["min_score"], 2.5)
         self.assertEqual(parsed["min_target_pct"], 4.0)
+
+    async def test_reset_notifications_requires_admin(self):
+        """reset-notifications admin olmadan çalışmaz."""
+        from app.routers import monitoring
+
+        monitoring._monitoring_state["notified_symbols"] = {"TEST": time.time()}
+        with patch("app.main._require_admin", side_effect=Exception("403")):
+            try:
+                await monitoring.reset_monitoring_notifications(request=None)
+                self.fail("Should have raised")
+            except Exception as e:
+                self.assertIn("403", str(e))
 
 
 if __name__ == "__main__":
