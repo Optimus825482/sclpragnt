@@ -79,6 +79,7 @@ export default function Home() {
   // AÇIK POZİSYONLAR tablosu güvenilir kaynak: REST /api/positions
   // (WS portfolio mesajı koparsa panel boş kalmasın diye REST'ten beslenir)
   const [restPositions, setRestPositions] = useState<Position[]>([]);
+  const [autoPaperTrades, setAutoPaperTrades] = useState<any[]>([]);
   const liveStatus = useLiveStatus();
 
   const loadRestPositions = useCallback(() => {
@@ -88,15 +89,26 @@ export default function Home() {
       .catch(() => undefined);
   }, []);
 
+  const loadAutoPaperTrades = useCallback(() => {
+    apiRequest(`${API_BASE}/api/auto-paper/trades?status=open`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => { setAutoPaperTrades(d.trades || []); })
+      .catch(() => undefined);
+  }, []);
+
   // REST 15 sn'de bir taban veriyi tazeler; WS portfolio mesajı geldiğinde
   // güncel anlık değerlerle üzerine yazılır. Böylece WS kopukken bile açık
   // pozisyonlar listede görünür (eskiden tablo yalnızca WS'e bağlıydı ve
   // bağlantı kopunca "Açık pozisyon yok" yanıltıcı metni gösteriyordu).
   useEffect(() => {
     loadRestPositions();
-    const timer = window.setInterval(loadRestPositions, 15000);
+    loadAutoPaperTrades();
+    const timer = window.setInterval(() => {
+      loadRestPositions();
+      loadAutoPaperTrades();
+    }, 15000);
     return () => window.clearInterval(timer);
-  }, [loadRestPositions]);
+  }, [loadRestPositions, loadAutoPaperTrades]);
 
   useEffect(() => {
     let cancelled = false;
@@ -364,6 +376,41 @@ export default function Home() {
             </table>
           </div>
         </section>
+        {autoPaperTrades.length > 0 && (
+          <section className="ui-card">
+            <div className="ui-section-header">
+              <div>
+                <p className="eyebrow">OTONOM PAPER POZİSYONLAR</p>
+                <p className="ui-section-description">Monitoring bildiriminden tetiklenen bağımsız pozisyonlar</p>
+              </div>
+              <span className="font-mono text-xs text-bunker-muted">{autoPaperTrades.length} pozisyon</span>
+            </div>
+            <div className="table-scroll mt-3">
+              <table className="data-table">
+                <thead><tr><th>Sembol</th><th>Giriş</th><th>Güncel</th><th>TP</th><th>SL</th><th>PnL</th><th>%</th></tr></thead>
+                <tbody>
+                  {autoPaperTrades.map((t) => {
+                    const entry = Number(t.entry_price);
+                    const current = restPositions.find(p => p.symbol === t.symbol)?.current || entry;
+                    const pnl = (current - entry) * Number(t.quantity);
+                    const pnlPct = entry > 0 ? ((current - entry) / entry * 100) : 0;
+                    return (
+                      <tr key={t.id}>
+                        <td><SymbolLink symbol={t.symbol} className="text-white hover:text-neon-green" /></td>
+                        <td className="font-mono text-xs">{entry.toFixed(6)}</td>
+                        <td className="font-mono text-xs">{current.toFixed(6)}</td>
+                        <td className="font-mono text-xs text-neon-green">{Number(t.take_profit || 0).toFixed(6)}</td>
+                        <td className="font-mono text-xs text-neon-red">{Number(t.stop_loss || 0).toFixed(6)}</td>
+                        <td className={pnlTone(pnl)}>₺{money(pnl)}</td>
+                        <td className={pnlTone(pnlPct)}>{pnlText(pnlPct)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
         <section className="ui-card">
           <div className="ui-section-header"><div><p className="eyebrow">STRATEJİ PERFORMANSI</p><p className="ui-section-description">Kapanmış paper işlemler, komisyon sonrası net sonuç.</p></div><span className="font-mono text-xs text-bunker-muted">{trades.length} işlem</span></div>
           <div className="table-scroll mt-3">
