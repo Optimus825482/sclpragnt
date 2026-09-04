@@ -3,21 +3,21 @@ import json
 import logging
 import math
 import os
-import threading
 import time
 import tempfile
 import re
 from datetime import datetime, timezone
-
-import psycopg
 
 from app.config import config
 
 logger = logging.getLogger("scalper.database")
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
-_DB_LOCK = threading.Lock()
-_PG_CONN = None
+# Bağlantı havuzu: tek global bağlantı + global lock yerine psycopg_pool.
+# Pool eşzamanlı bağlantılar verir; transaction bütünlüğü çok-statement'lı
+# op'larda (commit_open_position vb.) pg_advisory_xact_lock ile sağlanır.
+# Lazy açılır (open=False); ilk _execute'te açılır. 2026-09-05 (K1).
+_PG_POOL = None
 # Transport-level errors that mean the cached connection itself is dead
 # (server restart, idle timeout, socket drop). On these the connection is
 # closed and rebuilt on the next operation instead of poisoning every call.
@@ -94,7 +94,10 @@ class _PostgresCompat:
         cur = self.conn.cursor(); cur.executemany(sql, params); return cur
     def commit(self): self.conn.commit()
     def rollback(self): self.conn.rollback()
-    def close(self): self.conn.close()
+    # Pool bağlantılarını asla elle kapatma — `with pool.connection()` çıkınca
+    # bağlantı otomatik pool'a döner. close() no-op'tur (eski tek-bağlantı
+    # deseninden kalma çağrılar pool'u bozmasın diye). 2026-09-05.
+    def close(self): pass
 
 class _HybridRow(dict):
     def __getitem__(self, key):
@@ -128,13 +131,22 @@ def _db_datetime_value(value):
 
 
 def _get_connection():
-    global _PG_CONN
-    if _PG_CONN is None:
+    """Pool'dan bir bağlantı al (context manager olarak kullanılır)."""
+    global _PG_POOL
+    if _PG_POOL is None:
         try:
-            _PG_CONN = _PostgresCompat(psycopg.connect(os.environ["DATABASE_URL"], row_factory=_hybrid_row_factory))
+            from psycopg_pool import ConnectionPool
+            _PG_POOL = ConnectionPool(
+                os.environ["DATABASE_URL"],
+                min_size=1,
+                max_size=8,
+                open=False,
+                kwargs={"row_factory": _hybrid_row_factory},
+            )
+            _PG_POOL.open()
         except Exception as exc:
-            raise RuntimeError(f"PostgreSQL bağlantısı kurulamadı: {exc}") from exc
-    return _PG_CONN
+            raise RuntimeError(f"PostgreSQL havuzu kurulamadı: {exc}") from exc
+    return _PG_POOL
 
 
 async def _run_db(operation):
@@ -143,30 +155,22 @@ async def _run_db(operation):
 
 
 def _execute(operation):
-    with _DB_LOCK:
-        conn = _get_connection()
-        try:
+    """Pool'dan bağlantı al, _PostgresCompat ile sar, op'u çalıştır.
+
+    Bağlantı context manager ile pool'a geri verilir (kapanmaz). Transaction
+    bütünlüğü op içindeki manuel commit/rollback + advisory lock ile sağlanır.
+    """
+    pool = _get_connection()
+    try:
+        with pool.connection() as raw_conn:
+            conn = _PostgresCompat(raw_conn)
             return operation(conn)
-        except _PG_FATAL_ERRORS as exc:
-            # The cached connection is unusable; drop it so the next
-            # operation reconnects instead of failing forever.
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            try:
-                conn.close()
-            except Exception:
-                pass
-            global _PG_CONN
-            _PG_CONN = None
-            raise RuntimeError(f"PostgreSQL bağlantısı koptu, yeniden kurulacak: {exc}") from exc
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            raise
+    except _PG_FATAL_ERRORS as exc:
+        # Havuz bozuk bağlantıyı otomatik kapatıp yenisiyle devam eder; manuel
+        # close pool'u bozabileceği için yapılmaz. Sadece hata yükseltilir.
+        raise RuntimeError(f"PostgreSQL bağlantısı koptu, yeniden kurulacak: {exc}") from exc
+    except Exception:
+        raise
 
 
 async def init_db():
@@ -2452,13 +2456,15 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7):
 
 
 async def close_db():
-    def op(conn):
-        conn.commit()
-        conn.close()
-
-    await _run_db(op)
-    global _PG_CONN
-    _PG_CONN = None
+    """Havuzu kapat (shutdown). Havuz None ise sorun değil."""
+    global _PG_POOL
+    pool = _PG_POOL
+    _PG_POOL = None
+    if pool is not None:
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, pool.close)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

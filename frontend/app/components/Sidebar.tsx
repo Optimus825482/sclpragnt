@@ -70,7 +70,12 @@ export default function Sidebar() {
         load();
     }, []);
     useEffect(() => {
-        const load = () => apiFetch("/api/system/health").then(setHealth).catch(() => setHealth(null));
+        const load = () => {
+            // Sekme arka plandayken health poll'unu atla — her sayfada her 10 sn'de
+            // çalışan bu istek, görünmeyen sekmelerde ağ/CPU israfıydı.
+            if (document.hidden) return;
+            apiFetch("/api/system/health").then(setHealth).catch(() => setHealth(null));
+        };
         load();
         const timer = window.setInterval(load, 10_000);
         return () => window.clearInterval(timer);

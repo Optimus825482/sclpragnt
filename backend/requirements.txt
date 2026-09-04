@@ -9,6 +9,7 @@ cryptography==50.0.0
 pywebpush==2.4.0
 asyncpg==0.31.0
 psycopg[binary]==3.3.4
+psycopg-pool==3.3.1
 edge-tts==7.2.7
 scikit-learn==1.6.1
 joblib==1.4.2

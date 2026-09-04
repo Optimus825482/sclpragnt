@@ -175,19 +175,18 @@ export default function PortfolioPage() {
       .catch(() => undefined);
   }, []);
 
-  const loadAutoPaper = useCallback(() => {
-    loadAutoPaperOpen();
-    loadAutoPaperDetail();
-  }, [loadAutoPaperOpen, loadAutoPaperDetail]);
-
   useEffect(() => {
-    loadMain();
-    loadAutoPaper();
+    // Sekme arka plandayken poll'ları atla (görünmeyen sekmede REST israfı).
+    const hidden = () => document.hidden;
+    const openPoll = () => { if (!hidden()) loadMain(); };
+    const detailPoll = () => { if (!hidden()) loadAutoPaperDetail(); };
+    openPoll();
+    loadAutoPaperDetail();
     // Açık pozisyonlar 5 sn'de bir (WS kopukken canlı kalsın), detay 15 sn'de bir.
-    const openTimer = window.setInterval(loadMain, 5_000);
-    const detailTimer = window.setInterval(loadAutoPaperDetail, 15_000);
+    const openTimer = window.setInterval(openPoll, 5_000);
+    const detailTimer = window.setInterval(detailPoll, 15_000);
     return () => { window.clearInterval(openTimer); window.clearInterval(detailTimer); };
-  }, [loadMain, loadAutoPaper, loadAutoPaperDetail]);
+  }, [loadMain, loadAutoPaperDetail]);
 
   // auto_paper_trade WS olayı seri gelebilir (açılış+kapanış) — her olayda
   // 3 REST atmamak için 800 ms debounce ile açık pozisyon listesini tazele.

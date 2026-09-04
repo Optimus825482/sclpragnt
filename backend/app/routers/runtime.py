@@ -831,7 +831,8 @@ async def refresh_symbol_activity():
     active_count = sum(1 for item in statuses.values() if item["status"] == "ACTIVE")
     warming_count = sum(1 for item in statuses.values() if item["status"] == "WARMING")
     
-    # Debug: Yeni kapsamlı analiz sonuçlarını logla
+    # Debug: Yeni kapsamlı analiz sonuçlarını logla (üretimde DEBUG seviyesinde
+    # — her turda tüm semboller için print INFO'ya düşüyordu, log kirliliği).
     for symbol, status in sorted(statuses.items()):
         comp = status.get("comprehensive_passive", {})
         if comp.get("m1", {}).get("ready") and comp.get("m5", {}).get("ready"):
@@ -839,11 +840,14 @@ async def refresh_symbol_activity():
             m5 = comp.get("m5", {})
             m1_real = m1.get("real_candle_count", 0)
             m5_real = m5.get("real_candle_count", 0)
-            print(f"[Activity Debug] {symbol}: passive={comp.get('is_passive')} | "
-                  f"M1: real={m1_real}/10 vr={m1.get('volume_ratio',0):.2f} flat={m1.get('flat_ratio',0):.0%} move={m1.get('avg_candle_move_pct',0):.4f}% | "
-                  f"M5: real={m5_real}/5 vr={m5.get('volume_ratio',0):.2f} flat={m5.get('flat_ratio',0):.0%} move={m5.get('avg_candle_move_pct',0):.4f}%", flush=True)
-    
-    print(f"[Activity] universe={len(universe)} ACTIVE={active_count} PASSIVE={len(config.PASSIVE_SYMBOLS)} WARMING={warming_count}", flush=True)
+            logger.debug(
+                "[Activity Debug] %s: passive=%s | M1: real=%s/10 vr=%.2f flat=%.0f%% move=%.4f%% | M5: real=%s/5 vr=%.2f flat=%.0f%% move=%.4f%%",
+                symbol, comp.get('is_passive'), m1_real, m1.get('volume_ratio', 0), (m1.get('flat_ratio', 0) or 0) * 100,
+                m1.get('avg_candle_move_pct', 0), m5_real, m5.get('volume_ratio', 0), (m5.get('flat_ratio', 0) or 0) * 100,
+                m5.get('avg_candle_move_pct', 0))
+
+    logger.info("[Activity] universe=%s ACTIVE=%s PASSIVE=%s WARMING=%s",
+                len(universe), active_count, len(config.PASSIVE_SYMBOLS), warming_count)
     return {"ok": True, "statuses": statuses, "active_count": active_count,
             "passive_count": len(config.PASSIVE_SYMBOLS), "warming_count": warming_count}
 

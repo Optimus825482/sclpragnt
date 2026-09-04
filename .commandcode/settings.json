@@ -22,7 +22,10 @@
       "Shell(python C:\\Users\\erkan\\AppData\\Local\\Temp\\commandcode\\D--scalperagent-v4\\f85a287b-fc44-4917-9616-cbbb08502f3e\\scratchpad\\micro_analyze.py)",
       "Shell(python -c import py_compile; [py_compile.compile(f, doraise=True) for f in ['app/database.py','app/routers/monitoring.py','app/routers/velocity.py','app/config.py','app/main.py','app/routers/auto_paper.py']]; print('SYNTAX OK'))",
       "Shell(cd /d D:\\scalperagent_v4\\backend && python -c \"from app.config import config; print('config OK')\" 2>&1; python -c \"import ast; ast.parse(open('app/routers/velocity.py', encoding='utf-8').read()); print('velocity parse OK')\")",
-      "Shell(netstat -ano 2>nul | findstr \":3004 :8004\" | findstr LISTENING)"
+      "Shell(netstat -ano 2>nul | findstr \":3004 :8004\" | findstr LISTENING)",
+      "Shell(findstr /n \"psycopg\" D:\\scalperagent_v4\\backend\\requirements.txt D:\\scalperagent_v4\\backend\\pyproject.toml 2>nul)",
+      "Shell(python -c import py_compile; py_compile.compile('app/database.py', doraise=True); print('SYNTAX OK'))",
+      "Shell(python -c import py_compile; [py_compile.compile(f, doraise=True) for f in ['app/database.py','app/routers/runtime.py','app/routers/velocity.py','app/market_data.py']]; print('BACKEND SYNTAX OK'))"
     ],
     "deny": [],
     "defaultMode": "default"
