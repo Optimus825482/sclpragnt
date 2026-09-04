@@ -44,7 +44,12 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
     try:
         from pywebpush import webpush
         subscriptions = await database.list_push_subscriptions()
-        payload_obj = {"title": title or "Scalper Agent alarmı", "body": message, "url": url or "/alerts"}
+        payload_obj = {
+            "title": title or "Scalper Agent alarmı",
+            "body": message,
+            "url": url or "/alerts",
+            "sound": "/alarm.wav",
+        }
         if tag: payload_obj["tag"] = tag
         if extra: payload_obj.update(extra)
         payload = json.dumps(payload_obj)
