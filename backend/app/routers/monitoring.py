@@ -300,12 +300,18 @@ async def _notify(candidates_list, settings) -> list:
         ):
             # Mevcut BEKLIYOR bildirimi guncelle (detected_at korunur); ML alanlari
             # da guncellenir (aksi halde guncelleme yolunda kaybolurdu, 2026-09-04).
+            # Giris fiyati ILK bildirim anindaki fiyat olarak SABIT kalir (2026-09-04
+            # kullanici karari): hedef fiyati son taramanin hedef yuzdesiyle ILK
+            # giris fiyatindan yeniden hesaplanir — kullanici ilk giris + guncel
+            # hedefi aynen takip edebilir (grafik cizgileri de bu iki seviyeyi
+            # gosterir).
+            first_price = float(existing_pending.get("price") or 0) or float(c.get("price", 0) or 0)
             await database.update_monitoring_notification(
                 existing_pending["id"],
                 score=score,
                 target_pct=target,
-                price=float(c.get("price", 0) or 0),
-                expected_price=float(c.get("price", 0) or 0) * (1 + target / 100),
+                price=first_price,
+                expected_price=first_price * (1 + target / 100),
                 horizon_minutes=horizon_min,
                 mode=c.get("mode"),
                 ml_target_pct=c.get("ml_target_pct"),

@@ -379,6 +379,35 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
             result = await monitoring.monitoring_active_notification("XYZTRY")
         self.assertFalse(result["active"])
 
+    async def test_notify_update_keeps_first_price_reanchors_target(self):
+        """Aktif bildirim güncellenirken giriş fiyatı İLK bildirimdekiler sabit kalır;
+        hedef fiyat son taramanın hedef yüzdesiyle İLK girişten yeniden hesaplanır
+        (2026-09-04 kullanıcı kararı: grafik giriş çizgisi sabit, hedef çizgisi güncel)."""
+        from app.routers import monitoring
+
+        settings = {"enabled": True, "min_score": 2.0, "min_target_pct": 0,
+                    "quiet_hours_start": None, "quiet_hours_end": None}
+        existing = {"id": 42, "symbol": "GOODTRY", "score": 6.0, "target_pct": 2.0,
+                    "price": 10.0, "expected_price": 10.2, "horizon_minutes": 5,
+                    "detected_at": time.time() - 30}
+        captured = {}
+
+        async def fake_update(notif_id, **kwargs):
+            captured["id"] = notif_id
+            captured.update(kwargs)
+            return True
+
+        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=existing),              patch.object(monitoring.database, "update_monitoring_notification", side_effect=fake_update),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring, "_record_history", return_value=None):
+            candidates = [{"symbol": "GOODTRY", "velocity_score": 4.0, "target_pct": 5.0, "price": 12.0}]
+            result = await monitoring._notify(candidates, settings)
+        self.assertTrue(result and result[0].get("updated"))
+        self.assertEqual(captured["id"], 42)
+        # Giriş fiyatı ilk bildirimdeki 10.0 olarak sabit; yeni hedef %5 ile
+        # İLK girişten hesaplanır: 10.0 * 1.05 = 10.5 (yeni anlık 12.0 ile DEĞİL).
+        self.assertEqual(captured["price"], 10.0)
+        self.assertAlmostEqual(captured["expected_price"], 10.5, places=6)
+        self.assertAlmostEqual(captured["target_pct"], 5.0, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
