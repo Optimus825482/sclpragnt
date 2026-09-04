@@ -145,15 +145,12 @@ async def _record_history(entries):
 
 
 async def _notify(candidates_list, settings) -> list:
-    """Eşikleri geçen YENİ adaylar için bildirim üret ve web push gönder.
+    """Eşikleri geçen adaylar için bildirim üret ve web push gönder.
 
-    Aynı sembol için iki katmanlı engelleme:
-      1) NOTIFY_COOLDOWN_SEC (5 dk) — kısa vadeli spam koruması.
-      2) Beklenen fiyata ulaşana kadar aynı sembol tekrar bildirilmez
-         (_pending_targets). Fiyat hedefe ulaşınca veya ufuk süresi
-         (horizon_minutes + 2 dk tolerans) dolarsa sembol serbest kalır,
-         yeni hedefle tekrar bildirilebilir.
-    Sessiz saatlerde push gönderilmez ama aday yine kayda alınır.
+    Aynı sembol için sonuçlanmamış (BEKLİYOR) bildirim varsa yeni bildirim
+    oluşturulmaz; mevcut bildirim güncellenir (hedef, skor, fiyat).
+    Sadece önceki bildirim sonuçlanmışsa (TAMAMEN/BASARISIZ) veya ufuk süresi
+    dolmuşsa yeni bildirim oluşturulur.
     """
     if not settings.get("enabled", True):
         return []
@@ -162,32 +159,52 @@ async def _notify(candidates_list, settings) -> list:
     quiet = _in_quiet_hours(settings)
     now = time.time()
     notified = []
+    update_entries = []  # Güncellenecek mevcut bildirimler
+    new_entries = []     # Yeni bildirimler
     for c in candidates_list:
         sym = c.get("symbol", "")
         score = float(c.get("velocity_score", 0) or 0)
-        # Filtre, radarın ölçülen (base) hedefi olan target_pct üzerinden yapılır;
-        # ML tahmini (ml_target_pct) hedefi ezemez; yalnız gösterim/sıralamada kullanılır.
-        target = float(c.get('target_pct') or 2.0)
+        target = float(c.get("target_pct") or 2.0)
         if not sym or score < min_score or target < min_target_pct:
             continue
-        # Kısa vadeli soğuma
+        # Bu sembol için sonuçlanmamış bildirim var mı kontrol et
+        existing_pending = await database.get_pending_monitoring_notification(sym)
+        if existing_pending:
+            # Mevcut BEKLİYOR bildirimi güncelle
+            await database.update_monitoring_notification(
+                existing_pending["id"],
+                score=score,
+                target_pct=target,
+                price=float(c.get("price", 0) or 0),
+                expected_price=float(c.get("price", 0) or 0) * (1 + target / 100),
+                detected_at=now,
+                horizon_minutes=int(c.get("horizon_minutes", 5) or 5),
+                mode=c.get("mode"),
+            )
+            # Eski kayitlar kalir - sinyal tarihcesi icin
+            # Bildirim olarak da ekle (push için)
+            notif = _build_notification(sym, c, settings)
+            notif["id"] = existing_pending["id"]
+            notif["updated"] = True
+            update_entries.append(notif)
+            notified.append(notif)
+            continue
+        # Kısa vadeli soğama
         last_sent = _monitoring_state["notified_symbols"].get(sym)
         if last_sent and now - last_sent < NOTIFY_COOLDOWN_SEC:
             continue
         # Beklenen fiyata ulaşana kadar aynı sembolü tekrar bildirme
         pending = _monitoring_state["pending_targets"].get(sym)
         if pending:
-            # Ufuk süresi + 2 dk tolerans dolduysa eski hedefi serbest bırak
             horizon_ms = int(pending.get("horizon_minutes", 5) + 2) * 60
             if now - float(pending.get("set_at", 0)) < horizon_ms:
                 continue
-            # Tolerans dolmuş: eski hedefi temizle, yeni hedefe izin ver
             _monitoring_state["pending_targets"].pop(sym, None)
         notif = _build_notification(sym, c, settings)
-        notif["quiet_hours"] = quiet
+        notif["updated"] = False
+        new_entries.append(notif)
         notified.append(notif)
         _monitoring_state["notified_symbols"][sym] = now
-        # Hedef fiyatı kaydet: fiyat bu değere ulaşana kadar tekrar bildirilmez
         expected_price = float(notif.get("expected_price") or 0)
         horizon_minutes = int(c.get("horizon_minutes") or 5)
         if expected_price > 0:
@@ -199,6 +216,10 @@ async def _notify(candidates_list, settings) -> list:
         if len(_monitoring_state["notified_symbols"]) > 500:
             for k in sorted(_monitoring_state["notified_symbols"], key=_monitoring_state["notified_symbols"].get)[:-250]:
                 _monitoring_state["notified_symbols"].pop(k, None)
+    # Yeni bildirimleri DB'ye kaydet
+    if new_entries:
+        await database.save_monitoring_notifications(new_entries)
+    # Push bildirimleri
     if notified and not quiet:
         for notif in notified:
             try:
@@ -223,17 +244,12 @@ async def _notify(candidates_list, settings) -> list:
     elif notified and quiet:
         logger.info("Monitoring: sessiz saatlerde %d bildirim ertelendi (push yok)", len(notified))
     if notified:
-        # Uygulama açıkken radar bildirimini uygulama içi onay modalı + ses ile
-        # göster: sessiz saatlerde push atlanır ama WS mesajı yine de iletilir.
         try:
             await ws_manager.broadcast({"type": "monitoring_alert", "data": notified[-1]})
         except Exception as exc:
-            logger.warning("Monitoring WS broadcast hatası: %s", exc)
+            logger.warning("Monitoring WS broadcast hatasi: %s", exc)
         _monitoring_state["history"] = (notified + _monitoring_state["history"])[:HISTORY_LIMIT]
-        await _record_history(notified)
     return notified
-
-
 def _check_pending_targets():
     """Beklenen fiyata ulaşan sembolleri tespit et ve pending listesinden çıkar.
 
