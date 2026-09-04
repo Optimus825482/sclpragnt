@@ -161,10 +161,20 @@ export default function MonitoringPage() {
   const [riskOff, setRiskOff] = useState(false);
   const [effectiveMinScore, setEffectiveMinScore] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
-  // Eşik artık global admin ayarı: kullanıcı yalnız GÖRÜR, değiştiremez.
+  // Eşik artık global admin ayarı: herkese UYGULANAN (etkin) değer gösterilir;
+  // admin bu sayfadan değiştirebilir (2026-09-04 kullanıcı kararı).
   const [settings, setSettings] = useState<NotificationSettings>({ enabled: true, min_score: 50, min_target_pct: 2.0, quiet_hours_start: null, quiet_hours_end: null });
   const [selected, setSelected] = useState<Candidate | null>(null);
   const scanTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [minScoreInput, setMinScoreInput] = useState<string>("50");
+  const [minScoreDirty, setMinScoreDirty] = useState(false);
+  const [savingMinScore, setSavingMinScore] = useState(false);
+
+  // Admin girişteyken 30sn'lik tarama döngüsü inputu ezmesin: yalnız
+  // düzenlenmemişken (dirty değilken) ayar değeriyle senkronlanır.
+  useEffect(() => {
+    if (!minScoreDirty) setMinScoreInput(String(Math.round(settings.min_score)));
+  }, [settings.min_score, minScoreDirty]);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -177,6 +187,23 @@ export default function MonitoringPage() {
       }
     } catch { /* varsayılan */ }
   }, []);
+
+  const saveMinScore = useCallback(async () => {
+    const val = Number(minScoreInput);
+    if (!Number.isFinite(val) || val < 0 || val > 100) return;
+    setSavingMinScore(true);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ min_score: val }),
+      });
+      if (res.ok) {
+        setMinScoreDirty(false);
+        await loadSettings();
+      }
+    } catch { /* sessiz */ } finally { setSavingMinScore(false); }
+  }, [minScoreInput, loadSettings]);
 
   const runScan = useCallback(async () => {
     setScanning(true);
@@ -219,14 +246,34 @@ export default function MonitoringPage() {
           <h1 className="font-mono text-2xl font-bold text-white">Otonom İzleme</h1>
           <p className="mt-1 text-sm text-bunker-muted">Yüksek potansiyelli sembolleri tarar, uygun olanları bildirir.</p>
         </div>
-        <div className="flex gap-2 flex-wrap">
-          {/* Etkin eşik yalnız admin ekranında gösterilir: RISK_OFF rejiminde
-              admin eşiği 1.5× çarpanla uygulanır, kullanıcı bunu görmez. */}
-          <span className="ui-button ui-button-secondary pointer-events-none" title={isAdmin && riskOff ? `Riskli rejim: admin eşiği ${Math.round(settings.min_score)} × 1.5 = ${effThreshold}` : "Bildirim eşiği sistem yöneticisi tarafından ayarlanır (global)"}>
-            {isAdmin && riskOff
-              ? `⚖️ EŞİK: SKOR ≥ ${effThreshold} · RISK-OFF (≥${Math.round(settings.min_score)}×1.5) · GLOBAL`
-              : `⚖️ EŞİK: SKOR ≥ ${Math.round(settings.min_score)} · GLOBAL`}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Herkese UYGULANAN (etkin) eşik gösterilir: radar listesi, bildirim,
+              raporlar ve otonom tarama hep bu tek değeri kullanır. RISK-OFF
+              rejiminde admin taban eşiği 1.5× çarpanla uygulanır. */}
+          <span className="ui-button ui-button-secondary pointer-events-none" title={riskOff ? `Riskli rejim (RISK-OFF): admin taban eşiği ${Math.round(settings.min_score)} × 1.5 çarpanıyla uygulanıyor` : "Radar, bildirim ve raporlarda uygulanan global eşik"}>
+            ⚖️ EŞİK: SKOR ≥ {effThreshold} · GLOBAL{riskOff ? " · RISK-OFF" : ""}
           </span>
+          {isAdmin && (
+            <>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={minScoreInput}
+                onChange={(e) => { setMinScoreInput(e.target.value); setMinScoreDirty(true); }}
+                title="Admin taban eşiği (RISK-OFF rejiminde 1.5× çarpanla uygulanır)"
+                className="w-20 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
+              />
+              <button
+                onClick={saveMinScore}
+                disabled={savingMinScore || !minScoreDirty || !minScoreInput || Number(minScoreInput) < 0 || Number(minScoreInput) > 100}
+                className="ui-button ui-button-primary"
+              >
+                {savingMinScore ? "KAYDEDİLİYOR…" : "EŞİĞİ KAYDET"}
+              </button>
+            </>
+          )}
           <button onClick={runScan} disabled={scanning} className="ui-button ui-button-primary">{scanning ? "TARANIYOR…" : "ŞİMDİ TARA"}</button>
         </div>
       </div>
