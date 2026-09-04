@@ -150,11 +150,17 @@ export default function PortfolioPage() {
       .catch(() => undefined);
   }, []);
 
-  const loadAutoPaper = useCallback(() => {
+  // Sık değişen: yalnız açık pozisyonlar (WS auto_paper_trade sonrası anında
+  // tazelenir — tek REST, 4 istek yerine).
+  const loadAutoPaperOpen = useCallback(() => {
     apiRequest(`${API_BASE}/api/auto-paper/trades?status=open&limit=50`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setApTrades(d.trades || []))
       .catch(() => undefined);
+  }, []);
+
+  // Yavaş değişen: istatistik + son kapananlar + ayarlar (yalnız periyodik poll)
+  const loadAutoPaperDetail = useCallback(() => {
     apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=8`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setApRecent(d.trades || []))
@@ -169,32 +175,49 @@ export default function PortfolioPage() {
       .catch(() => undefined);
   }, []);
 
+  const loadAutoPaper = useCallback(() => {
+    loadAutoPaperOpen();
+    loadAutoPaperDetail();
+  }, [loadAutoPaperOpen, loadAutoPaperDetail]);
+
   useEffect(() => {
     loadMain();
     loadAutoPaper();
-    const timer = window.setInterval(() => { loadMain(); loadAutoPaper(); }, 10_000);
-    return () => window.clearInterval(timer);
-  }, [loadMain, loadAutoPaper]);
+    // Açık pozisyonlar 5 sn'de bir (WS kopukken canlı kalsın), detay 15 sn'de bir.
+    const openTimer = window.setInterval(loadMain, 5_000);
+    const detailTimer = window.setInterval(loadAutoPaperDetail, 15_000);
+    return () => { window.clearInterval(openTimer); window.clearInterval(detailTimer); };
+  }, [loadMain, loadAutoPaper, loadAutoPaperDetail]);
 
-  // Canlı olaylar: WS portfolio her sn gelir; auto_paper_trade açılış/kapanış
-  // anında bildirir → REST'i bekletmeden tabloları tazele.
+  // auto_paper_trade WS olayı seri gelebilir (açılış+kapanış) — her olayda
+  // 3 REST atmamak için 800 ms debounce ile açık pozisyon listesini tazele.
+  const debouncedRefresh = useMemo(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    return () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { loadAutoPaperOpen(); loadMain(); }, 800);
+    };
+  }, [loadAutoPaperOpen, loadMain]);
+
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "portfolio") setPortfolio(message.data);
     if (message.type === "auto_paper_trade") {
       const d = message.data || {};
       const action = d.action === "OPENED" ? "açıldı" : d.action === "CLOSED" ? "kapatıldı" : "güncellendi";
       setLastEvent({ text: `${d.symbol} ${action}`, at: Date.now() });
-      // Hızlı yama: liste tazelenene kadar kullanıcıya anlık geri bildirim
-      loadAutoPaper();
+      // Açık pozisyonlar + ana pozisyonlar kısa debounce ile tazelenir
+      // (seri WS olayında 3+ REST atmamak için); istatistikler 15 sn poll'a kalır.
+      debouncedRefresh();
     }
     if (["signal", "trade_updated", "reset"].includes(message.type)) loadMain();
-  }, [loadAutoPaper, loadMain]);
+  }, [debouncedRefresh, loadMain]);
   useLiveMessages(onLiveMessage);
 
   const onReset = useCallback(() => {
     loadMain();
-    loadAutoPaper();
-  }, [loadMain, loadAutoPaper]);
+    loadAutoPaperOpen();
+    loadAutoPaperDetail();
+  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail]);
 
   // Ana pozisyonları birleştir: WS anlık değeri REST'ten önceliklidir.
   const displayMain = useMemo(() => {

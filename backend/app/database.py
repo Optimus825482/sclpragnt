@@ -205,47 +205,40 @@ async def ensure_default_scalper_skill():
     return await _run_db(op)
 
 async def reset_trading_data():
-    """Eski paper-trading/strateji geçmişini temizle ve cüzdanı sıfırla.
+    """Paper cüzdanı 10.000 TL'ye sıfırla ve bir reset_at zaman damgası koy.
 
-    Strateji, sembol ve LLM ayarları korunur. Tarihsel piyasa cache'i de
-    silinmez; böylece yeni strateji hemen aynı veriyle çalışabilir.
+    Eski trade/pozisyon/sinyal kayıtları SİLİNMEZ — yalnızca reset_at anından
+    sonraki işlemler aggregasyon/rapor hesaplamalarına katılır.
     """
-    # Sabit tablo allowlist — SQL enjeksiyonunu önler
-    _RESET_ALLOWED_TABLES = frozenset({
-        "alert_events", "alert_rules", "paper_orders",
-        "llm_tool_logs", "llm_symbol_guards", "decision_logs", "signals",
-        "trades", "positions", "backtests", "analysis_snapshots",
-        "microstructure_snapshots", "auto_paper_trades",
-    })
+    now = time.time()
     def op(conn):
-        # Bağımlı kayıtları önce temizle (özellikle alert/paper order tabloları).
-        tables = (
-            "alert_events",
-            "alert_rules",
-            "paper_orders",
-            "llm_tool_logs",
-            "llm_symbol_guards",
-            "decision_logs",
-            "signals",
-            "trades",
-            "positions",
-            "backtests",
-            "analysis_snapshots", "microstructure_snapshots",
-            "auto_paper_trades",
-        )
-        deleted = {}
-        for table in tables:
-            if table not in _RESET_ALLOWED_TABLES:
-                continue  # Güvenlik: izin verilmeyen tablo atla
-            cursor = conn.execute(f"DELETE FROM {table}")
-            deleted[table] = cursor.rowcount
         conn.execute("DELETE FROM virtual_wallet")
         conn.execute("INSERT INTO virtual_wallet (asset, amount) VALUES ('TRY', ?)", (config.INITIAL_BALANCE_TRY,))
+        conn.execute("INSERT INTO llm_settings(key,value) VALUES('portfolio_reset_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(now),))
         conn.commit()
-        deleted["virtual_wallet"] = 1
-        return deleted
-
+        return {"reset_at": now, "wallet": config.INITIAL_BALANCE_TRY}
     return await _run_db(op)
+
+
+async def get_reset_cutoff() -> float:
+    """Portföy sıfırlama zaman damgasını döndürür (yoksa 0 = filtre yok)."""
+    def op(conn):
+        return _get_reset_cutoff_sync(conn)
+    return await _run_db(op)
+
+
+def _get_reset_cutoff_sync(conn) -> float:
+    """Senkron (conn ile) sürüm — _run_db içindeki op()'lardan çağrılır."""
+    try:
+        row = conn.execute("SELECT value FROM llm_settings WHERE key='portfolio_reset_at'").fetchone()
+        if row:
+            try:
+                return float(row[0])
+            except (TypeError, ValueError):
+                return 0.0
+    except Exception:
+        pass
+    return 0.0
 
 async def get_wallet_balance(asset="USDT"):
     def op(conn):
@@ -653,7 +646,9 @@ async def save_trade(trade):
 
 async def get_trades(limit: int | None = 100, offset: int = 0, symbol: str | None = None, strategy: str | None = None):
     def op(conn):
+        cutoff = _get_reset_cutoff_sync(conn)
         clauses, values = [], []
+        if cutoff: clauses.append("exit_time > ?"); values.append(cutoff)
         if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
         if strategy: clauses.append("strategy=?"); values.append(strategy)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
@@ -663,7 +658,6 @@ async def get_trades(limit: int | None = 100, offset: int = 0, symbol: str | Non
             values.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
             rows = conn.execute(f"SELECT * FROM trades{where} ORDER BY exit_time DESC LIMIT ? OFFSET ?", values).fetchall()
         return [dict(r) for r in rows]
-
     return await _run_db(op)
 
 
@@ -737,7 +731,9 @@ async def apply_historical_mtf_backfill(target_type, target_id, symbol, trade_id
 
 async def get_trade_count(symbol: str | None = None, strategy: str | None = None):
     def op(conn):
+        cutoff = _get_reset_cutoff_sync(conn)
         clauses, values = [], []
+        if cutoff: clauses.append("exit_time > ?"); values.append(cutoff)
         if symbol: clauses.append("symbol=?"); values.append(symbol.upper())
         if strategy: clauses.append("strategy=?"); values.append(strategy)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
@@ -746,15 +742,14 @@ async def get_trade_count(symbol: str | None = None, strategy: str | None = None
 
 
 async def get_portfolio_trade_metrics():
-    """Return aggregate closed-trade metrics without loading the trade ledger."""
+    """Return aggregate closed-trade metrics (reset_at sonrasi)."""
     def op(conn):
-        row = conn.execute("""
-            SELECT
-                COUNT(*) AS closed_trades,
-                COALESCE(SUM(pnl), 0) AS net_pnl,
-                COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning_trades
-            FROM trades
-        """).fetchone()
+        cutoff = _get_reset_cutoff_sync(conn)
+        where = ' WHERE exit_time > %s' if cutoff else ''
+        params = (cutoff,) if cutoff else ()
+        row = conn.execute("SELECT COUNT(*) AS closed_trades, COALESCE(SUM(pnl), 0) AS net_pnl, "
+            "COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning_trades "
+            "FROM trades" + where, params).fetchone()
         closed_trades = int(row["closed_trades"] or 0)
         winning_trades = int(row["winning_trades"] or 0)
         return {
@@ -791,39 +786,35 @@ async def upsert_microstructure_snapshots(rows):
 
 async def get_realized_pnl():
     def op(conn):
-        row = conn.execute("SELECT COALESCE(SUM(pnl), 0) AS pnl FROM trades").fetchone()
+        cutoff = _get_reset_cutoff_sync(conn)
+        where = ' WHERE exit_time > %s' if cutoff else ''
+        params = (cutoff,) if cutoff else ()
+        row = conn.execute("SELECT COALESCE(SUM(pnl), 0) AS pnl FROM trades" + where, params).fetchone()
         return float(row["pnl"] or 0.0)
-
     return await _run_db(op)
 
 async def get_report_trade_breakdown():
-    """Salt-okunur admin raporu: strateji/sembol bazlı kapanmış işlem özetleri.
-
-    Yalnızca trades tablosunu okur; hiçbir strateji parametresini veya pozisyonu
-    değiştirmez. Geciken ticaretleri 'BEKLİYOR' statüsü gibi yorumlamaz; verilen
-    her rakam kapanmış paper işlemlerden gelir.
-    """
+    """Salt-okunur admin raporu: strateji/sembol bazlı kapanmış işlem özetleri (reset_at sonrasi)."""
     def op(conn):
+        cutoff = _get_reset_cutoff_sync(conn)
+        where = ' WHERE exit_time > %s' if cutoff else ''
+        params = (cutoff,) if cutoff else ()
         strategies = conn.execute(
-            """SELECT strategy,
-                  COUNT(*) AS trade_count,
-                  COALESCE(SUM(pnl), 0) AS net_pnl,
-                  COALESCE(SUM(commission), 0) AS commission,
-                  COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning,
-                  COALESCE(AVG(max_favorable_pct), 0) AS avg_max_favorable,
-                  COALESCE(AVG(max_adverse_pct), 0) AS avg_max_adverse
-               FROM trades GROUP BY strategy ORDER BY net_pnl DESC""").fetchall()
+            "SELECT strategy, COUNT(*) AS trade_count, COALESCE(SUM(pnl), 0) AS net_pnl, "
+            "COALESCE(SUM(commission), 0) AS commission, "
+            "COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning, "
+            "COALESCE(AVG(max_favorable_pct), 0) AS avg_max_favorable, "
+            "COALESCE(AVG(max_adverse_pct), 0) AS avg_max_adverse "
+            "FROM trades" + where + " GROUP BY strategy ORDER BY net_pnl DESC", params).fetchall()
         symbols = conn.execute(
-            """SELECT symbol,
-                  COUNT(*) AS trade_count,
-                  COALESCE(SUM(pnl), 0) AS net_pnl,
-                  COALESCE(SUM(commission), 0) AS commission,
-                  COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning,
-                  COALESCE(AVG(max_favorable_pct), 0) AS avg_mfe_pct,
-                  COALESCE(AVG(max_adverse_pct), 0) AS avg_dd_pct,
-                  COALESCE(MIN(exit_time), 0) AS first_seen,
-                  COALESCE(MAX(exit_time), 0) AS last_seen
-               FROM trades GROUP BY symbol ORDER BY net_pnl DESC""").fetchall()
+            "SELECT symbol, COUNT(*) AS trade_count, COALESCE(SUM(pnl), 0) AS net_pnl, "
+            "COALESCE(SUM(commission), 0) AS commission, "
+            "COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning, "
+            "COALESCE(AVG(max_favorable_pct), 0) AS avg_mfe_pct, "
+            "COALESCE(AVG(max_adverse_pct), 0) AS avg_dd_pct, "
+            "COALESCE(MIN(exit_time), 0) AS first_seen, "
+            "COALESCE(MAX(exit_time), 0) AS last_seen "
+            "FROM trades" + where + " GROUP BY symbol ORDER BY net_pnl DESC", params).fetchall()
         by_symbol = []
         for row in symbols:
             item = dict(row)
@@ -831,13 +822,13 @@ async def get_report_trade_breakdown():
             wins = int(item.get("winning") or 0)
             item["win_rate"] = round((wins / total) * 100, 2) if total else 0.0
             by_symbol.append(item)
-        stats_row = conn.execute("""SELECT COUNT(*) AS trade_count,
-              COALESCE(SUM(pnl), 0) AS net_pnl,
-              COALESCE(SUM(commission), 0) AS commission,
-              COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning,
-              COALESCE(AVG(max_favorable_pct), 0) AS avg_max_favorable,
-              COALESCE(AVG(max_adverse_pct), 0) AS avg_max_adverse
-            FROM trades""").fetchone()
+        stats_row = conn.execute(
+            "SELECT COUNT(*) AS trade_count, COALESCE(SUM(pnl), 0) AS net_pnl, "
+            "COALESCE(SUM(commission), 0) AS commission, "
+            "COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) > 0 THEN 1 ELSE 0 END), 0) AS winning, "
+            "COALESCE(AVG(max_favorable_pct), 0) AS avg_max_favorable, "
+            "COALESCE(AVG(max_adverse_pct), 0) AS avg_max_adverse "
+            "FROM trades" + where, params).fetchone()
         overall = dict(stats_row)
         strategy_rows = []
         for row in strategies:
@@ -851,17 +842,13 @@ async def get_report_trade_breakdown():
 
 
 async def get_report_autonomous_log(limit: int = 200, offset: int = 0, symbol: str = "", strategy: str = ""):
-    """Geçmiş otonom işlem akışı: sinyaller + karar logları (salt okunur).
-
-    Otonom döngüler tarafindan üretilen tüm kararlar bu tablolarda saklanir.
-    Bu fonksiyon yalnızca yönetici raporunda listelenmek üzere okur; hiçbir
-    yazma veya pozisyon değişikliği yapmaz. Sinyal tablosu işlem açma/kapama,
-    decision_logs ise her tarama kararını içerir.
-    """
+    """Geçmiş otonom işlem akışı: sinyaller + karar logları (reset_at sonrasi)."""
     limit = max(1, min(int(limit) or 200, 500))
     offset = max(0, int(offset) or 0)
     def op(conn):
+        cutoff = _get_reset_cutoff_sync(conn)
         clauses, values = [], []
+        if cutoff: clauses.append("timestamp > ?"); values.append(cutoff)
         if symbol: clauses.append("symbol=?"); values.append(str(symbol).upper())
         if strategy: clauses.append("strategy=?"); values.append(strategy)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""

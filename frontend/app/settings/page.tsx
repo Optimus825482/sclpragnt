@@ -254,7 +254,7 @@ function SettingsPageInner() {
   });
 
   const resetTradingData = async () => {
-    if (!window.confirm("Tüm eski işlemler, sinyaller, karar logları, backtestler, snapshotlar, açık emirler ve sanal cüzdan silinecek. Strateji/LLM ayarları ve piyasa verileri korunacak. Cüzdan 10.000 TL ile başlayacak. Devam edilsin mi?")) return;
+    if (!window.confirm("Tüm eski işlemler, sinyaller, karar logları, backtestler, snapshotlar silinecek. Cüzdan 10.000 TL ile başlayacak. Devam edilsin mi?")) return;
     setResetting(true);
     setError(null);
     setResetDone(false);
@@ -922,7 +922,7 @@ function AutoPaperSettingsPanel() {
   };
 
   const resetData = async () => {
-    if (!window.confirm("ESKİ TÜM TRADE/PORTFÖY VERİLERİ SİLİNECEK! Cüzdan 10.000 TL olarak sıfırlanacak. Devam etmek istiyor musunuz?")) return;
+    if (!window.confirm("Portföy 10.000 TL'ye sıfırlanacak. Eski işlem kayıtları korunur ancak raporlara/hesaplamalara katılmaz. Devam etmek istiyor musunuz?")) return;
     setResetting(true);
     try {
       const res = await apiRequest(`${API_BASE}/api/auto-paper/reset`, {

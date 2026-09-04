@@ -1412,15 +1412,16 @@ async def reconcile_portfolio(payload: dict = None, request: Request = None):
 
 @app.post("/api/auto-paper/reset")
 async def reset_auto_paper_trading(payload: dict = None, request: Request = None):
-    """Otonom paper trade verilerini sıfırla, cüzdanı 10.000 TL'ye çek.
+    """Portföyü 10.000 TL'ye sıfırla, bir reset_at zaman damgası koy.
     
-    Eski otonom trade kayıtları raporlarda gösterilmez.
+    Eski işlem kayıtları SİLİNMEZ — yalnızca reset_at anından sonraki
+    işlemler rapor/hesaplamalara katılır.
     Yalnız admin kullanıcısı.
     """
     _require_admin(request)
     from app.main import _session_username
     if not (payload or {}).get("confirm", False):
-        return {"status": "preview", "message": "10.000 TL bakiye ile sıfırlama yapılacak; tüm eski trade/pozisyon/bildirim kayıtları silinecek."}
+        return {"status": "preview", "message": "10.000 TL bakiye ile sıfırlama; eski kayıtlar korunur ama raporlara katılmaz."}
     result = await database.reset_trading_data()
     analyzer.positions.clear()
     # In-memory auto_paper sayaçlarını da sıfırla (restart beklemeden güncel görünüm)
@@ -1430,8 +1431,8 @@ async def reset_auto_paper_trading(payload: dict = None, request: Request = None
     except Exception:
         pass
     await log_user_action(_session_username(request), None, "auto_paper", "AUTO_PAPER_RESET",
-                          details={"deleted": result}, request=request)
-    return {"status": "ok", "result": result}
+                          details={"reset_at": result.get("reset_at")}, request=request)
+    return {"status": "ok", "reset_at": result.get("reset_at"), "wallet": result.get("wallet")}
 
 @app.get("/api/trade-repair/status")
 async def trade_repair_status():

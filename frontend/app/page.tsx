@@ -145,11 +145,21 @@ export default function Home() {
       .then((result) => setTrades(result.rows))
       .catch(() => undefined);
   }, []);
+  // Sinyal akışında her mesajda trades REST zinciri atmamak için debounce.
+  // Kapanış/sinyal sıklığı düşükken 1 sn'lik gecikme hissedilmez; yüksek
+  // frekansta backend yükünü ciddi azaltır (fetchAllPages sayfa sayfa gider).
+  const debouncedLoadTrades = useMemo(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    return () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(loadTrades, 1000);
+    };
+  }, [loadTrades]);
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "portfolio") setPortfolio(message.data);
     if (message.type === "signal") setSignals((current) => [...current, message.data].slice(-120));
-    if (["signal", "trade_updated", "reset"].includes(message.type)) loadTrades();
-  }, [loadTrades]);
+    if (["signal", "trade_updated", "reset"].includes(message.type)) debouncedLoadTrades();
+  }, [debouncedLoadTrades]);
   useLiveMessages(onLiveMessage);
 
   useEffect(() => {
@@ -161,7 +171,14 @@ export default function Home() {
   }, [loadTrades]);
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    // Yalnız kullanıcı sinyal logunun altına yakınken otomatik kaydır —
+    // smooth scroll her sinyalde reflow yaratıyordu (yüksek frekanslı akış).
+    const el = logEndRef.current;
+    if (!el) return;
+    const parent = el.parentElement;
+    if (!parent) return;
+    const nearBottom = parent.scrollHeight - parent.scrollTop - parent.clientHeight < 120;
+    if (nearBottom) el.scrollIntoView({ behavior: "auto", block: "nearest" });
   }, [signals]);
 
   const closePosition = async (symbol: string) => {
