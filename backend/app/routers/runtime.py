@@ -21,6 +21,7 @@ from app.analyzer import ScalpAnalyzer
 from app.api_common import (_json_safe_positions, correlation_monitor,
                             _radar_snapshot, _radar_response_cache)
 from app.correlation import cluster_exposure
+from app.technical_analysis import _atr, _bollinger, _cci, _ema, _mfi, _sma
 
 
 async def correlation_refresh_loop():
