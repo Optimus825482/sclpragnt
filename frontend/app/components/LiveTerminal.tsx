@@ -114,7 +114,7 @@ export default function LiveTerminal() {
                 <div className="mt-2 text-xs text-right text-bunker-muted font-mono">
                   PnL: <span className={pnlColor(safeNumber(p.pnl_pct))}>{(p.pnl_try ?? 0) >= 0 ? "+" : ""}₺{formatTL(p.pnl_try)}</span> · {pctText(p.pnl_pct)}
                 </div>
-                <div className="mt-1 text-xs text-bunker-muted font-mono">Sinyal: {p.strategy === "PUMP_MONITOR" ? `Pump Monitor · skor ${p.entry_context?.signal_context?.score ?? "—"}/4` : (p.strategy || "UT")}</div>
+                <div className="mt-1 text-xs text-bunker-muted font-mono">Sinyal: {p.strategy || "—"}</div>
                 <div className="mt-1 text-xs text-right text-bunker-muted font-mono">
                   Değer: ₺{p.value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>

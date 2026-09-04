@@ -61,15 +61,13 @@ class ConfigApiBehavior(unittest.IsolatedAsyncioTestCase):
         from app import main
 
         original = {
-            "symbols": list(main.config.SYMBOLS), "ut_symbols": list(main.config.UT_SYMBOLS),
+            "symbols": list(main.config.SYMBOLS),
             "order_pct": dict(main.config.SYMBOL_ORDER_PCT),
-            "layers": dict(main.config.SYMBOL_PYRAMIDING_LAYERS), "market_symbols": list(main.market.symbols),
+            "market_symbols": list(main.market.symbols),
         }
         try:
             main.config.SYMBOLS = ["HEMITRY", "ACXTRY", "VICTRY"]
-            main.config.UT_SYMBOLS = list(main.config.SYMBOLS)
             main.config.SYMBOL_ORDER_PCT = {"HEMITRY": 0.1, "ACXTRY": 0.2}
-            main.config.SYMBOL_PYRAMIDING_LAYERS = {"HEMITRY": 2, "VICTRY": 3}
             with patch("app.main.trading_symbols", new=AsyncMock(return_value=["HEMITRY"])), \
                  patch.object(main.market, "fetch_historical_data", new=AsyncMock()), \
                  patch("app.main.database.get_llm_setting", new=AsyncMock(return_value="{}")), \
@@ -79,12 +77,9 @@ class ConfigApiBehavior(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(main.config.SYMBOLS, ["HEMITRY"])
             self.assertEqual(result["removed_invalid_symbols"], ["ACXTRY", "VICTRY"])
             self.assertEqual(main.config.SYMBOL_ORDER_PCT, {"HEMITRY": 0.1})
-            self.assertEqual(main.config.SYMBOL_PYRAMIDING_LAYERS, {"HEMITRY": 2})
         finally:
             main.config.SYMBOLS = original["symbols"]
-            main.config.UT_SYMBOLS = original["ut_symbols"]
             main.config.SYMBOL_ORDER_PCT = original["order_pct"]
-            main.config.SYMBOL_PYRAMIDING_LAYERS = original["layers"]
             main.market.symbols = original["market_symbols"]
 
     async def test_config_validation_failure_is_a_json_response(self):

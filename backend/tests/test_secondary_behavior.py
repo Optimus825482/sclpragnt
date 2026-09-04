@@ -149,20 +149,3 @@ class WalkForwardContracts(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["trades"])
         self.assertGreaterEqual(result["trades"][0]["entry_time"], 11)
 
-    def test_fast_bb_mfi_signal_series_matches_strategy_bar_by_bar(self):
-        from app.analyzer import ScalpAnalyzer
-        from app.backtest import _bb_mfi_signal_series
-
-        closes = [100.0 + ((index % 17) - 8) * 0.31 + index * 0.012 for index in range(120)]
-        data = {"closes": closes, "opens": [value - 0.08 for value in closes],
-                "highs": [value + 0.4 for value in closes], "lows": [value - 0.5 for value in closes],
-                "volumes": [100 + (index % 11) * 9 for index in range(120)], "times": list(range(120))}
-        analyzer = ScalpAnalyzer(None)
-        fast = _bb_mfi_signal_series(data, analyzer)
-        slow = [analyzer.strategy_bb_mfi_mean_reversion({key: values[:index + 1] for key, values in data.items()}, "TESTTRY")
-                for index in range(len(closes))]
-        self.assertEqual(fast, slow)
-
-
-if __name__ == "__main__":
-    unittest.main()

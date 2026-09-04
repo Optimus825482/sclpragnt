@@ -106,23 +106,7 @@ class MarketData:
         self.WS_URL = f"{WS_BASE}/stream?streams={{}}"
 
     def _all_timeframes(self):
-        return sorted(set([
-            "1m", "3m", "5m", "15m", "30m", "1h", "4h",
-            config.UT_TIMEFRAME,
-            config.BB_SQUEEZE_TIMEFRAME,
-            config.EMA_PULLBACK_TIMEFRAME,
-            config.VWAP_MACD_TIMEFRAME,
-            config.CMO_CRSI_TIMEFRAME,
-            config.EMA_VWAP_TIMEFRAME,
-            config.BREAKOUT_TIMEFRAME,
-            config.ORDERFLOW_TIMEFRAME,
-            config.MOMENTUM_TIMEFRAME,
-            config.ADR_TIMEFRAME,
-            config.MEAN_REVERSION_TIMEFRAME,
-            config.KELTNER_TIMEFRAME,
-            config.CHOP_TIMEFRAME,
-            config.DONCHIAN_TIMEFRAME,
-        ]))
+        return sorted(set(["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]))
 
     @staticmethod
     def _closed_history(rows, tf: str, now_ms: int):
@@ -734,7 +718,7 @@ class MarketData:
                 "source": ticker.get("source")}
 
     def kline_freshness(self, symbol, tf=None):
-        tf = tf or config.UT_TIMEFRAME
+        tf = tf or "5m"
         history = self.klines.get(tf, {}).get(symbol.upper(), {})
         closed_at_ms = float(history.get("last_closed_at_ms", 0) or 0)
         age = time.time() - closed_at_ms / 1000 if closed_at_ms else float("inf")
@@ -762,13 +746,13 @@ class MarketData:
         }
 
     def get_avg_volume(self, symbol, tf=None):
-        tf = tf or config.UT_TIMEFRAME
+        tf = tf or "5m"
         history = self.klines.get(tf, {}).get(symbol.upper(), {})
         volumes = history.get("volumes", [])
         return float(np.mean(volumes)) if volumes else 0.0
 
     def get_ut_kline(self, symbol, tf=None):
-        tf = tf or config.UT_TIMEFRAME
+        tf = tf or "5m"
         return self.klines.get(tf, {}).get(symbol.upper(), _empty_history())
 
     def _process_orderbook(self, data):
@@ -983,7 +967,7 @@ class MarketData:
         if not config.LIQUIDITY_FILTER_ENABLED:
             return True, {"disabled": True}
         ticker = self.get_ticker(symbol) or {}
-        tf = config.MOMENTUM_TIMEFRAME
+        tf = "5m"
         history = self.klines.get(tf, {}).get(symbol, {})
         volumes = history.get("volumes", [])
         current = volumes[-1] if volumes else 0.0

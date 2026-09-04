@@ -17,41 +17,9 @@ from app.technical_analysis import (
 from app.binance_tr_public import historical_klines
 from app.config import config
 
-_ORIGINAL_BB_MFI_STRATEGY = ScalpAnalyzer.strategy_bb_mfi_mean_reversion
+STRATEGIES: dict[str, tuple[str, str, str]] = {}
 
-STRATEGIES = {
-    "EMA_VWAP_PULLBACK": ("EMA_VWAP_ENABLED", "EMA_VWAP_TIMEFRAME", "strategy_ema_vwap"),
-    "BB_SQUEEZE_ORDERFLOW": ("BB_SQUEEZE_ENABLED", "BB_SQUEEZE_TIMEFRAME", "strategy_bb_squeeze_orderflow"),
-    "ORDERFLOW": ("ORDERFLOW_ENABLED", "ORDERFLOW_TIMEFRAME", "strategy_orderflow"),
-    "MOMENTUM": ("MOMENTUM_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum"),
-    "MOMENTUM_SCORED": ("MOMENTUM_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum_scored"),
-    "MOMENTUM_SCORED_V2": ("MOMENTUM_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum_scored_v2"),
-    "MOMENTUM_COST_AWARE": ("MOMENTUM_COST_AWARE_ENABLED", "MOMENTUM_TIMEFRAME", "strategy_momentum_cost_aware"),
-    "OVERSOLD_TREND_REENTRY": ("OVERSOLD_TREND_REENTRY_ENABLED", "OVERSOLD_TREND_REENTRY_TIMEFRAME", "strategy_oversold_trend_reentry"),
-    "ADAPTIVE_VOLATILITY_TREND": ("ADAPTIVE_VOLATILITY_TREND_ENABLED", "ADAPTIVE_VOLATILITY_TREND_TIMEFRAME", "strategy_adaptive_volatility_trend"),
-    "REGIME_GATE_LOW_TURNOVER": ("REGIME_GATE_LOW_TURNOVER_ENABLED", "REGIME_GATE_LOW_TURNOVER_TIMEFRAME", "strategy_regime_gate_low_turnover"),
-    "VWAP_MEAN_REVERSION": ("MEAN_REVERSION_ENABLED", "MEAN_REVERSION_TIMEFRAME", "strategy_mean_reversion"),
-    "BB_MFI_MEAN_REVERSION": ("MEAN_REVERSION_ENABLED", "MEAN_REVERSION_TIMEFRAME", "strategy_bb_mfi_mean_reversion"),
-    "KELTNER_BREAKOUT": ("KELTNER_ENABLED", "KELTNER_TIMEFRAME", "strategy_keltner_breakout"),
-    "CHOP_TREND_FILTER": ("CHOP_ENABLED", "CHOP_TIMEFRAME", "strategy_chop_trend"),
-    "DONCHIAN_BREAKOUT": ("DONCHIAN_ENABLED", "DONCHIAN_TIMEFRAME", "strategy_donchian_breakout"),
-}
-
-PARAM_FIELDS = {
-    "ut_key_value": "UT_KEY_VALUE", "ut_atr_period": "UT_ATR_PERIOD",
-    "ut_heikin_ashi": "UT_HEIKIN_ASHI", "squeeze_lookback": "SQUEEZE_LOOKBACK",
-    "bb_period": "BB_PERIOD", "bb_std_dev": "BB_STD_DEV", "ema_short": "EMA_SHORT",
-    "ema_mid": "EMA_MID", "ema_trend": "EMA_TREND", "rsi_period": "RSI_PERIOD",
-    "vwap_period": "VWAP_PERIOD", "macd_fast": "MACD_FAST", "macd_slow": "MACD_SLOW",
-    "macd_signal": "MACD_SIGNAL",
-    "bb_mfi_bb_period": "BB_MFI_BB_PERIOD", "bb_mfi_bb_std_dev": "BB_MFI_BB_STD_DEV",
-    "bb_mfi_mfi_period": "BB_MFI_MFI_PERIOD", "bb_mfi_entry_mfi_max": "BB_MFI_ENTRY_MFI_MAX",
-    "bb_mfi_exit_rsi_min": "BB_MFI_EXIT_RSI_MIN", "bb_mfi_exit_mfi_min": "BB_MFI_EXIT_MFI_MIN",
-    "bb_mfi_rsi_period": "BB_MFI_RSI_PERIOD",
-    "bb_mfi_v1_rsi_lower_level": "BB_MFI_V1_RSI_LOWER_LEVEL", "bb_mfi_v1_rsi_upper_level": "BB_MFI_V1_RSI_UPPER_LEVEL",
-    "bb_mfi_v2_rsi_lower_level": "BB_MFI_V2_RSI_LOWER_LEVEL", "bb_mfi_v2_rsi_upper_level": "BB_MFI_V2_RSI_UPPER_LEVEL",
-    "bb_mfi_stop_loss_pct": "BB_MFI_STOP_LOSS_PCT", "bb_mfi_take_profit_pct": "BB_MFI_TAKE_PROFIT_PCT",
-}
+PARAM_FIELDS: dict[str, str] = {}
 
 # Analyzer stratejileri mevcut global config'i okuduğu için backtest config değişimini serileştir.
 _CONFIG_LOCK = threading.RLock()
@@ -437,71 +405,6 @@ async def run_custom_walk_forward(symbol: str, interval: str, definition: dict,
             "warning": "Parametre eğitimi veya seçimi yapılmadı. Warm-up yalnız geçmiş gösterge bağlamıdır; işlem yalnız OOS test döneminde açılabilir. Sonuç kârlılık garantisi değildir."}
 
 
-def _bb_mfi_signal_series(data: dict[str, list[float]], analyzer: ScalpAnalyzer) -> list[str | None]:
-    """Produce Pine-v3 BB/MFI decisions once per closed candle.
-
-    The generic strategy path used to recompute RSI from bar zero for every
-    candle.  Wilder RSI is recursive, so retaining its rolling state yields
-    the same value without changing the strategy contract or using future
-    candles.  This helper is used only by the deterministic backtest path.
-    """
-    closes, highs, lows, volumes = (data[key] for key in ("closes", "highs", "lows", "volumes"))
-    size = len(closes); signals: list[str | None] = [None] * size
-    period = config.BB_MFI_RSI_PERIOD
-    rsi_values: list[float | None] = [None] * size
-    if size > period:
-        gains = [max(0.0, closes[i] - closes[i - 1]) for i in range(1, size)]
-        losses = [max(0.0, closes[i - 1] - closes[i]) for i in range(1, size)]
-        avg_gain = sum(gains[:period]) / period; avg_loss = sum(losses[:period]) / period
-        for index in range(period, size):
-            if index > period:
-                avg_gain = (avg_gain * (period - 1) + gains[index - 1]) / period
-                avg_loss = (avg_loss * (period - 1) + losses[index - 1]) / period
-            rsi_values[index] = 100.0 if avg_loss == 0 else 100 - (100 / (1 + avg_gain / avg_loss))
-
-    version = config.BB_MFI_PINE_VERSION
-    min_history = max(config.BB_MFI_BB_PERIOD, period + 1,
-                      config.BB_MFI_MFI_PERIOD + 1 if version == "v3" else 0)
-    for index in range(min_history - 1, size):
-        close = closes[index]; bb_values = closes[index - config.BB_MFI_BB_PERIOD + 1:index + 1]
-        middle = sum(bb_values) / len(bb_values)
-        variance = sum((value - middle) ** 2 for value in bb_values) / len(bb_values)
-        lower_band = middle - math.sqrt(variance) * config.BB_MFI_BB_STD_DEV
-        upper_band = middle + math.sqrt(variance) * config.BB_MFI_BB_STD_DEV
-        rsi = rsi_values[index]
-        if rsi is None:
-            continue
-        average_volume = sum(volumes[index - 20:index]) / 20 if index >= 20 else 0.0
-        volume_ratio = volumes[index] / average_volume if average_volume else 0.0
-        candle_range = highs[index] - lows[index]
-        close_position = (close - lows[index]) / candle_range if candle_range > 0 else 0.0
-        entry_volume_ok = volume_ratio >= config.BB_MFI_ENTRY_VOLUME_RATIO_MIN
-        dip_confirmed = (not config.BB_MFI_DIP_CONFIRMATION_ENABLED or close_position >= config.BB_MFI_DIP_MIN_CLOSE_POSITION)
-        if version == "v3":
-            start = index - config.BB_MFI_MFI_PERIOD
-            mfi = _mfi(highs[start:index + 1], lows[start:index + 1], closes[start:index + 1], volumes[start:index + 1], config.BB_MFI_MFI_PERIOD)
-            previous_mfi = (_mfi(highs[start - 1:index], lows[start - 1:index], closes[start - 1:index], volumes[start - 1:index], config.BB_MFI_MFI_PERIOD)
-                            if index >= config.BB_MFI_MFI_PERIOD + 1 else None)
-            mfi_reversal_ok = (not config.BB_MFI_ENTRY_MFI_REVERSAL_ENABLED or
-                               (previous_mfi is not None and mfi is not None and mfi >= previous_mfi + config.BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA))
-            mfi_slowdown_ok = (config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP < 0 or
-                               (previous_mfi is not None and mfi is not None and mfi >= previous_mfi - config.BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP))
-            bear_start = max(0, index - 28)
-            bear_pressure = analyzer._bb_mfi_bear_pressure({"closes": closes[bear_start:index + 1], "highs": highs[bear_start:index + 1], "lows": lows[bear_start:index + 1], "volumes": volumes[bear_start:index + 1]})
-            if close < lower_band and mfi is not None and mfi < config.BB_MFI_ENTRY_MFI_MAX and entry_volume_ok and dip_confirmed and mfi_reversal_ok and mfi_slowdown_ok and not bear_pressure:
-                signals[index] = "buy"
-            elif close > upper_band and rsi > config.BB_MFI_EXIT_RSI_MIN and mfi is not None and mfi > config.BB_MFI_EXIT_MFI_MIN:
-                signals[index] = "sell"
-        else:
-            lower = config.BB_MFI_V1_RSI_LOWER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_LOWER_LEVEL
-            upper = config.BB_MFI_V1_RSI_UPPER_LEVEL if version == "v1" else config.BB_MFI_V2_RSI_UPPER_LEVEL
-            if close < lower_band and rsi > lower and entry_volume_ok and dip_confirmed:
-                signals[index] = "buy"
-            elif close > upper_band and rsi > upper:
-                signals[index] = "sell"
-    return signals
-
-
 def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_pct, tp_pct, trail_pct,
                 start_ts=None, end_ts=None, spread_pct=0.0, slippage_pct=None, exit_profile=None,
                 pyramiding_layers=3, order_pct=None, entry_filter=None):
@@ -538,18 +441,12 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                 "state_based": {"stages": [(0.006, 0.20, 0.0010), (0.012, 0.20, 0.0040)], "trail_pct": 0.0090, "atr_mult": 1.0},
             }
             profile = profiles.get(str(exit_profile or "").lower())
-            fixed_tv_exit = strategy == "BB_MFI_MEAN_REVERSION"
-            if fixed_tv_exit:
-                # Defaults mirror Pine v3, while this isolated run may use
-                # an explicit user experiment without touching live config.
-                config.MAX_POSITION_LAYERS = max(1, int(pyramiding_layers))
-                order_pct = float(order_pct if order_pct is not None else config.ORDER_PCT)
-                # UI/API defaults come from live configuration, but params are
-                # applied only inside this lock and never mutate live settings.
-                stop_pct = float(params.get("bb_mfi_stop_loss_pct", stop_pct if stop_pct is not None else config.BB_MFI_STOP_LOSS_PCT))
-                tp_pct = float(params.get("bb_mfi_take_profit_pct", tp_pct if tp_pct is not None else config.BB_MFI_TAKE_PROFIT_PCT))
+            if strategy not in STRATEGIES:
+                raise ValueError(f"Bilinmeyen veya kaldırılmış strateji: {strategy}. Klasik stratejiler 2026-09-04'te sistemden çıkarıldı; yalnızca custom backtest kaldı.")
             analyzer = ScalpAnalyzer(None)
             fn = getattr(analyzer, STRATEGIES[strategy][2])
+            fixed_tv_exit = False
+            use_fast_bb_mfi = False
             balance = config.INITIAL_BALANCE_TRY
             first_target_pct = float(tp_pct if tp_pct is not None else config.SPOT_PROFIT_TARGET_PCT)
             equity_peak = balance
@@ -560,11 +457,8 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
             open_at_end = False
             unrealized_pnl = 0.0
             last_eval_i = None
-            use_fast_bb_mfi = fixed_tv_exit and getattr(fn, "__func__", fn) is _ORIGINAL_BB_MFI_STRATEGY
-            cached_signals = _bb_mfi_signal_series(data, analyzer) if use_fast_bb_mfi else None
-
             def strategy_signal(index, window):
-                return cached_signals[index] if cached_signals is not None else fn(window, symbol)
+                return fn(window, symbol)
             entry_filter = list(entry_filter or [])
             entry_filter_stats = {"checked": 0, "allowed": 0, "blocked": 0}
 
@@ -587,7 +481,7 @@ def _run_single(symbol, interval, days_back, strategy, params, order_size, stop_
                 # BB/MFI signals above are exact precomputed values. ATR and
                 # the research-only filter use bounded causal lookbacks, so
                 # copying the full history on every bar is unnecessary.
-                window_start = max(0, i - 249) if use_fast_bb_mfi else 0
+                window_start = 0
                 if position:
                     window = {key: values[window_start:i + 1] for key, values in data.items()}
                     elapsed = max(0, data["times"][i] - position["entry_time"])

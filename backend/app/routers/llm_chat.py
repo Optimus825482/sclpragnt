@@ -516,7 +516,7 @@ async def chat_prediction_learning_loop():
 async def symbol_llm_context(symbol: str, preferred_timeframe: str = ""):
     """Build a fresh, read-only multi-timeframe tool context for the LLM."""
     supported = ("1m", "5m", "15m", "30m", "1h", "4h", "1d")
-    preferred = preferred_timeframe if preferred_timeframe in supported else config.MOMENTUM_TIMEFRAME
+    preferred = preferred_timeframe if preferred_timeframe in supported else "5m"
     snapshots = {}
     results = await asyncio.gather(*(symbol_analysis(symbol, tf) for tf in supported), return_exceptions=True)
     for tf, snapshot in zip(supported, results):
@@ -1254,14 +1254,7 @@ async def scan_market_snapshots(args: dict | None = None):
         results.sort(key=lambda row: row["score"], reverse=True)
     limit = cache_key[2]
     bullish = [row for row in results if row["score"] >= 2 and str(row.get("trend_direction", "")).lower() not in {"bearish", "mixed"}]
-    strategy_contract = {
-        "strategy": config.ACTIVE_STRATEGY,
-        "timeframe": config.ACTIVE_STRATEGY_TIMEFRAME,
-        "entry_basis": ["BB(20, 1.0) alt bandın altında kapanış", "MFI(14) < 60"],
-        "allowed_execution_filters": ["likidite", "orderbook_depth", "volume_ratio", "negative_orderflow"],
-        "ignored_for_signal_decision": ["RSI aşırı alım yorumu", "MTF uyumu", "genel momentum sıralaması", "CMO", "CRSI", "LLM entry quality gate"],
-        "instruction": "Bu sözleşme dışındaki indikatörleri BUY/NO_SIGNAL kararına filtre olarak katma. Veri eksikse unknown de; değer uydurma."
-    } if config.ACTIVE_STRATEGY == "BB_MFI_MEAN_REVERSION" else {"strategy": config.ACTIVE_STRATEGY, "timeframe": config.ACTIVE_STRATEGY_TIMEFRAME}
+    strategy_contract = {"strategy": "CHAT_PREDICTION", "timeframe": "1m"}
     result = {"generated_at": time.time(), "symbols_scanned": len(symbols), "symbols_skipped_open": sorted(open_symbols & set(requested_symbols)), "timeframes": timeframes,
             "bullish_candidates": bullish[:limit], "ranked": results[:limit],
             "strategy_contract": strategy_contract,
@@ -1270,7 +1263,7 @@ async def scan_market_snapshots(args: dict | None = None):
             "paper_only": True, "live_portfolio_changed": False,
             "data_policy": "Binance TR public market data; missing values remain unknown. Contract/wallet safety is not inferred.",
             "scan_mode": "fast_hot_cache",
-            "strategy_constrained": config.ACTIVE_STRATEGY == "BB_MFI_MEAN_REVERSION",
+            "strategy_constrained": False,
             "cache": {"hit": False, "ttl_sec": config.LLM_MARKET_SCAN_CACHE_SEC}}
     _llm_market_scan_cache[cache_key] = {"generated_at": result["generated_at"], "result": result}
     return result
@@ -1983,7 +1976,6 @@ async def deactivate_coin(args: dict):
     if symbol in analyzer.positions:
         return {"ok": False, "symbol": symbol, "error": "Açık pozisyon varken coin pasifleştirilemez", "new_entries_blocked": True}
     config.SYMBOLS = [item for item in config.SYMBOLS if item != symbol]
-    config.UT_SYMBOLS = list(config.SYMBOLS)
     market.symbols = [item for item in market.symbols if item.upper() != symbol]
     await database.set_llm_setting("active_symbols", json.dumps(config.SYMBOLS, ensure_ascii=False))
     return {"ok": True, "symbol": symbol, "active": False, "paper_only": True}
@@ -2440,7 +2432,7 @@ async def strategies_llm_chat(payload: dict = None):
                 config.UT_SYMBOLS = list(dict.fromkeys(config.SYMBOLS))
                 if symbol.lower() not in market.symbols:
                     market.symbols.append(symbol.lower()); market.reconnect_requested = True
-                asyncio.create_task(backfill_symbol_history(symbol), name=f"history-backfill-{symbol}")
+                _start_background(backfill_symbol_history(symbol), f"history-backfill-{symbol}", single_pass=True)
                 return {"ok": True, "symbol": symbol, "active": True, "paper_only": True, "message": f"{symbol} analiz evrenine eklendi"}
             if name == "place_paper_order":
                 return await analyzer.place_paper_order(args)

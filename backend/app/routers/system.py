@@ -4,7 +4,7 @@ import os
 import time
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database
@@ -31,7 +31,7 @@ _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 
 @router.get("/health")
 async def health():
-    snapshots = {symbol: market.data_freshness(symbol, config.ACTIVE_STRATEGY_TIMEFRAME)
+    snapshots = {symbol: market.data_freshness(symbol, "5m")
                  for symbol in market.symbols}
     ready = [value for value in snapshots.values()
              if value["ticker"]["fresh"] and value["kline"]["fresh"]]
@@ -68,7 +68,7 @@ async def system_health():
     except Exception as exc:
         llm_active = False
         llm_error = f"{type(exc).__name__}: {exc}"
-    freshness = {symbol: market.data_freshness(symbol, config.ACTIVE_STRATEGY_TIMEFRAME)
+    freshness = {symbol: market.data_freshness(symbol, "5m")
                  for symbol in market.symbols}
     fresh_count = sum(1 for value in freshness.values()
                       if value["ticker"]["fresh"] and value["kline"]["fresh"])
@@ -90,7 +90,9 @@ async def memory_status():
     return {"enabled": bool(_main_pg_pool()), "backend": os.getenv("DB_BACKEND", "postgres"), "worker": embedding_worker.snapshot(), "persistent": persistent, "backfill": dict(_embedding_backfill), "repair": dict(_embedding_repair), "message": None if _main_pg_pool() else "PostgreSQL memory backend aktif değil"}
 
 @router.post("/api/memory/backfill")
-async def memory_backfill():
+async def memory_backfill(request: Request = None):
+    from app.main import _require_admin
+    _require_admin(request)
     if not _main_pg_pool(): raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
     if _embedding_backfill["status"] == "running": return {"ok": False, **_embedding_backfill}
     _embedding_backfill.update({"status": "running", "queued": 0, "message": "Kayıtlar embedding kuyruğuna alınıyor"})
@@ -108,12 +110,14 @@ async def memory_backfill():
             _embedding_backfill.update({"status": "completed", "queued": queued, "message": "Embedding kuyruğu hazır; worker kayıtları işliyor"})
         except Exception as exc:
             _embedding_backfill.update({"status": "error", "message": str(exc)})
-    asyncio.create_task(enqueue_existing(), name="embedding-backfill")
+    _start_background(enqueue_existing(), "embedding-backfill", single_pass=True)
     return {"ok": True, **_embedding_backfill}
 
 @router.post("/api/memory/repair-historical")
-async def repair_historical_memory():
+async def repair_historical_memory(request: Request = None):
     """Rebuild historical trade memory without inventing unavailable market data."""
+    from app.main import _require_admin
+    _require_admin(request)
     if not _main_pg_pool(): raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
     if _embedding_repair["status"] == "running": return {"ok": False, **_embedding_repair}
     _embedding_repair.update({"status": "running", "queued": 0, "message": "Tarihsel snapshot'lar onarılıyor"})
@@ -157,7 +161,7 @@ async def repair_historical_memory():
             _embedding_repair.update({"status": "completed", "queued": queued, "message": "Eksik tarihsel likidite alanları tahmin edilmeden yeniden embedding kuyruğuna alındı"})
         except Exception as exc:
             _embedding_repair.update({"status": "error", "message": str(exc)})
-    asyncio.create_task(repair(), name="historical-memory-repair")
+    _start_background(repair(), "historical-memory-repair", single_pass=True)
     return {"ok": True, **_embedding_repair}
 
 @router.get("/api/migration/status")
@@ -165,7 +169,9 @@ async def migration_status():
     return dict(migration_monitor.state)
 
 @router.post("/api/migration/start")
-async def migration_start(payload: dict = None):
+async def migration_start(payload: dict = None, request: Request = None):
+    from app.main import _require_admin
+    _require_admin(request)
     body = payload or {}
     source = str(body.get("source") or os.getenv("MIGRATION_SOURCE_PATH") or "legacy-pasif")
     if migration_monitor.state["status"] == "running": return {"ok": False, "message": "Migration zaten çalışıyor"}
@@ -174,7 +180,7 @@ async def migration_start(payload: dict = None):
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url: raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
     migration_monitor.state.update({"source":info, "status":"queued", "phase":"queued", "progress":0, "message":"Migration kuyruğa alındı"})
-    asyncio.create_task(migration_monitor.run(source, database_url), name="legacy-migration-check")
+    _start_background(migration_monitor.run(source, database_url), "legacy-migration-check", single_pass=True)
     return {"ok":True, "source":info}
 
 @router.post("/api/memory/retrieve")

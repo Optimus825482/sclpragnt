@@ -25,7 +25,7 @@ import {
     type DisplaySettings, type EditTarget, type LivePortfolio, type PortfolioMetrics, type TimeframeTrend,
 } from "./chartShared";
 import {
-    strongCandlestickPatterns, patternDescriptions, utBotSignals, bbSqueezeSignals, emaPullbackSignals,
+    strongCandlestickPatterns, patternDescriptions, emaPullbackSignals,
     vwapMacdSignals, cmoCrsiSignals, rsiLast, mfiLast, obvLast, spotExecutionSignals,
     strategySignalFns, strategyColors, strategyLabels, type Bar, type PatternMarker,
 } from "./signals";
@@ -38,7 +38,6 @@ export default function ChartsPage() {
     const [symbols, setSymbols] = useState<string[]>(FALLBACK_SYMBOLS);
     const [analysisOpen, setAnalysisOpen] = useState(false);
     const [interval, setTf] = useState<string>("5m");
-    const [activeStrategy, setActiveStrategy] = useState<string>("BB_MFI_MEAN_REVERSION");
     const [loading, setLoading] = useState(true);
     const [bars, setBars] = useState<Bar[]>([]);
     const [instances, setInstances] = useState<IndicatorInstance[]>(DEFAULT_INSTANCES);
@@ -50,12 +49,10 @@ export default function ChartsPage() {
     const [showPositions, setShowPositions] = useState(false);
     const [showStopTakeProfit, setShowStopTakeProfit] = useState(false);
     const [showPatterns, setShowPatterns] = useState(false);
-    const [showStrategySignals, setShowStrategySignals] = useState(false);
     const [showPressure, setShowPressure] = useState(true);
     const [forecast, setForecast] = useState<any>(null);
     const [forecastHistory, setForecastHistory] = useState<any>(null);
     const [forecastLoading, setForecastLoading] = useState(false);
-    const [m5Bars, setM5Bars] = useState<Bar[]>([]);
     const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
@@ -67,8 +64,6 @@ export default function ChartsPage() {
     const positionMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const utBotMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
     const patternMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
-    const activeStrategyMarkersRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null);
-    const [visibleRange, setVisibleRange] = useState<{ from: number; to: number } | null>(null);
 
     // localStorage yükleme: hydration uyumluluğu için client tarafında yap
     useEffect(() => {
@@ -82,14 +77,12 @@ export default function ChartsPage() {
             const available = [...new Set([...active, ...(querySymbol ? [querySymbol] : [])])].sort((a, b) => a.localeCompare(b));
             setSymbols(available);
             setSymbol((current) => available.includes(current) ? current : active[0]);
-            const configuredStrategy = String(d.active_strategy || "BB_MFI_MEAN_REVERSION").toUpperCase();
-            setActiveStrategy(configuredStrategy);
-            setInstances(filterIndicatorInstances(loadIndicators(), configuredStrategy));
-            loadFromDb(savedSymbol, configuredStrategy);
+            setInstances(filterIndicatorInstances(loadIndicators()));
+            loadFromDb(savedSymbol);
         }).catch(() => {
             setSymbols(FALLBACK_SYMBOLS);
-            setInstances(filterIndicatorInstances(loadIndicators(), "BB_MFI_MEAN_REVERSION"));
-            loadFromDb(savedSymbol, "BB_MFI_MEAN_REVERSION");
+            setInstances(filterIndicatorInstances(loadIndicators()));
+            loadFromDb(savedSymbol);
         });
     // İlk yüklemede query değeri kullanılır; sonraki Link yönlendirmeleri
     // aşağıdaki effect tarafından state'e aktarılır.
@@ -98,21 +91,20 @@ export default function ChartsPage() {
 
     useEffect(() => {
         const settings = loadPersisted<DisplaySettings>(LS_DISPLAY_SETTINGS, {
-            showPositions: false, showStopTakeProfit: false, showPatterns: false, showStrategySignals: false,
+            showPositions: false, showStopTakeProfit: false, showPatterns: false,
             showPressure: true
         });
         setShowPositions(settings.showPositions);
         setShowStopTakeProfit(settings.showStopTakeProfit);
         setShowPatterns(settings.showPatterns);
-        setShowStrategySignals(!!settings.showStrategySignals);
         setShowPressure(settings.showPressure !== false);
     }, []);
 
     useEffect(() => {
         try {
-            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure } satisfies DisplaySettings));
+            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showPressure } satisfies DisplaySettings));
         } catch { /* görüntü ayarı yalnızca yerelde saklanır */ }
-    }, [showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure]);
+    }, [showPositions, showStopTakeProfit, showPatterns, showPressure]);
 
     // Sembol rozeti /charts?symbol=...&timeframe=5m ile istemci içi
     // yönlendirme yapar. Sayfa unmount olmadığı için URL değişimini ayrıca
@@ -129,7 +121,7 @@ export default function ChartsPage() {
         setTf(targetTimeframe);
         localStorage.setItem(LS_SYMBOL, JSON.stringify(requestedSymbol));
         localStorage.setItem(LS_INTERVAL, JSON.stringify(targetTimeframe));
-        loadFromDb(requestedSymbol, activeStrategy, targetTimeframe);
+        loadFromDb(requestedSymbol, targetTimeframe);
         // loadFromDb is intentionally invoked only when the route query changes.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [searchParams]);
@@ -185,8 +177,6 @@ export default function ChartsPage() {
         });
         chartRef.current = chart;
         candleRef.current = series;
-        const onVisibleRangeChange = (range: { from: number; to: number } | null) => setVisibleRange(range);
-        chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
 
         // pane yüksekliklerini izle: kullanıcı sürükleyince localStorage'a yaz (key bazlı)
         const saveTimer = setInterval(() => {
@@ -230,7 +220,6 @@ export default function ChartsPage() {
         return () => {
             clearInterval(saveTimer);
             ro.disconnect();
-            chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange);
             chart.remove();
             chartRef.current = null;
             candleRef.current = null;
@@ -266,21 +255,6 @@ export default function ChartsPage() {
         load();
         return () => { cancelled = true; };
     }, [symbol, interval]);
-
-    // Strateji işaretleri görüntülenen periyottan bağımsız olarak M5 kaynağından
-    // hesaplanır. Böylece 1s/4s görünümde de aynı M5 strateji ayarı korunur.
-    useEffect(() => {
-        let cancelled = false;
-        apiRequest(`${API_BASE}/api/market-klines/${symbol}?interval=5m&limit=500`)
-            .then((res) => res.json())
-            .then((payload) => {
-                if (cancelled) return;
-                setM5Bars((payload.candles || []).map((k: number[]) => ({
-                    time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5]
-                })));
-            }).catch(() => { if (!cancelled) setM5Bars([]); });
-        return () => { cancelled = true; };
-    }, [symbol]);
 
     // Üst tahmin paneli: ML fiyat tahmini (LLM yok) + sembol tahmin geçmişi.
     // Sembol/TF değişince taze çek; yenile butonu fresh=1 ile yeni tahmin üretir.
@@ -860,8 +834,8 @@ export default function ChartsPage() {
         } catch { /* marker zamanı veri aralığında değilse sessiz geç */ }
     }, [showPositions, showStopTakeProfit, positions, symbol, bars, interval]);
 
-    // BB-MFI stratejisinin backend ile aynı dip koşulunu marker olarak göster.
-    // SlingShot dahil tüm strateji indikatörleri için marker render edilir.
+    // Eklenen strateji kategorisi indikatörlerin (EMA Pullback, VWAP+MACD, CMO+CRSI,
+    // SlingShot) buy/sell sinyalleri marker olarak gösterilir.
 
     useEffect(() => {
         const series = candleRef.current;
@@ -918,43 +892,6 @@ export default function ChartsPage() {
             markers.setMarkers(all);
         } catch { /* marker hatası sessiz geç */ }
     }, [instances, bars, symbol]);
-
-    // Aktif stratejinin M5 sinyalleri, seçili grafik periyoduna yuvarlanarak
-    // her görünümde gösterilir; hesap kaynağı daima M5 kalır.
-    useEffect(() => {
-        activeStrategyMarkersRef.current?.setMarkers([]);
-        activeStrategyMarkersRef.current = null;
-        if (!showStrategySignals || !bars.length || !m5Bars.length || !candleRef.current) return;
-        const strategyKey = activeStrategy.toLowerCase();
-        const signalFn = strategySignalFns[strategyKey];
-        if (!signalFn) return;
-        const range = visibleRange || { from: 0, to: bars.length - 1 };
-        const firstVisibleIndex = Math.max(0, Math.floor(range.from));
-        const lastVisibleIndex = Math.min(bars.length - 1, Math.ceil(range.to));
-        // İşaretin tam olarak görüntülenen muma ait olması için sinyalleri
-        // indeks aralığı üzerinden daraltıyoruz; strateji ise gerekli ısınma
-        // geçmişini koruyarak tüm M5 serisinde değerlendirilir.
-        const visibleTimes = new Set(bars.slice(firstVisibleIndex, lastVisibleIndex + 1).map((bar) => bar.time));
-        const targetSeconds = (INTERVAL_MS[interval] || 300_000) / 1000;
-        const mapped = new Map<number, { time: number; type: "buy" | "sell" }>();
-        signalFn(m5Bars.slice(0, -1), {}).forEach((signal) => {
-            const targetTime = Math.floor(signal.time / targetSeconds) * targetSeconds;
-            if (visibleTimes.has(targetTime)) mapped.set(targetTime, { ...signal, time: targetTime });
-        });
-        const signals = [...mapped.values()];
-        try {
-            const markers = createSeriesMarkers(candleRef.current, []);
-            activeStrategyMarkersRef.current = markers;
-            markers.setMarkers(signals.map((signal) => ({
-                time: signal.time as UTCTimestamp,
-                position: signal.type === "buy" ? "belowBar" as const : "aboveBar" as const,
-                color: signal.type === "buy" ? "#2563eb" : "#f97316",
-                shape: signal.type === "buy" ? "circle" as const : "circle" as const,
-                text: signal.type === "buy" ? "M5 B" : "M5 S",
-                size: 1,
-            })));
-        } catch { /* görünür zaman aralığı değişirken marker dışarıda kalabilir */ }
-    }, [showStrategySignals, interval, activeStrategy, bars, m5Bars, visibleRange]);
 
     // Güçlü mum formasyonlarını seçili timeframe üzerinde marker olarak göster.
     useEffect(() => {
@@ -1058,7 +995,7 @@ export default function ChartsPage() {
             indicators: instances,
             paneHeights: paneHeightsRef.current,
             volumeVisible,
-            display: { showPositions, showStopTakeProfit, showPatterns, showStrategySignals, showPressure } satisfies DisplaySettings
+            display: { showPositions, showStopTakeProfit, showPatterns, showPressure } satisfies DisplaySettings
         };
         try {
             await apiRequest(`${API}/${symbol}`, {
@@ -1074,7 +1011,7 @@ export default function ChartsPage() {
     };
 
     // veritabanından sembol ayarlarını yükle — varsa localStorage'ı ezer (DB daha güncel)
-    const loadFromDb = async (s: string, strategy = activeStrategy, forcedInterval?: string) => {
+    const loadFromDb = async (s: string, forcedInterval?: string) => {
         try {
             const res = await apiRequest(`${API}/${s}`);
             const data = await res.json();
@@ -1084,7 +1021,7 @@ export default function ChartsPage() {
             setTf(resolvedInterval);
             localStorage.setItem(LS_INTERVAL, JSON.stringify(resolvedInterval));
             if (st.indicators?.length) {
-                const filteredIndicators = filterIndicatorInstances(st.indicators as IndicatorInstance[], strategy);
+                const filteredIndicators = filterIndicatorInstances(st.indicators as IndicatorInstance[]);
                 setInstances(filteredIndicators);
                 localStorage.setItem(LS_INDICATORS, JSON.stringify(filteredIndicators));
             } else if (st.indicators != null) {
@@ -1101,7 +1038,6 @@ export default function ChartsPage() {
             if (typeof st.display?.showPositions === "boolean") setShowPositions(st.display.showPositions);
             if (typeof st.display?.showStopTakeProfit === "boolean") setShowStopTakeProfit(st.display.showStopTakeProfit);
             if (typeof st.display?.showPatterns === "boolean") setShowPatterns(st.display.showPatterns);
-            if (typeof st.display?.showStrategySignals === "boolean") setShowStrategySignals(st.display.showStrategySignals);
             if (typeof st.display?.showPressure === "boolean") setShowPressure(st.display.showPressure);
         } catch { /* backend yoksa localStorage kullan */ }
     };
@@ -1312,7 +1248,6 @@ export default function ChartsPage() {
                             { checked: showStopTakeProfit, setChecked: setShowStopTakeProfit, title: "SL / TP", description: "Kayıtlı hedef ve stop seviyeleri." },
                             { checked: showPatterns, setChecked: setShowPatterns, title: "Formasyonlar", description: "Teyitli mum formasyonları." },
                             { checked: showPressure, setChecked: setShowPressure, title: "Alıcı / satıcı basıncı", description: "Merkez-sıfırlı canlı basınç bandı." },
-                            { checked: showStrategySignals, setChecked: setShowStrategySignals, title: "M5 strateji sinyalleri", description: "Tüm zaman dilimlerinde M5 kaynaklı işaretler." },
                         ].map((setting) => (
                             <button
                                 key={setting.title}
@@ -1572,7 +1507,7 @@ export default function ChartsPage() {
                 <SymbolLink symbol={symbol} className="text-bunker-muted hover:text-neon-green" /> · {interval} periyodu · mumlar UTC — bot 1m kline kullanır, analiz zaman dilimiyle birebir uyumlu
             </p>
 
-            {picking && <IndicatorPicker activeStrategy={activeStrategy} onSelect={(e) => { setPicking(false); setEditTarget({ entry: e }); }} onClose={() => setPicking(false)} />}
+            {picking && <IndicatorPicker onSelect={(e) => { setPicking(false); setEditTarget({ entry: e }); }} onClose={() => setPicking(false)} />}
             {editTarget && (
                 <IndicatorSettings
                     entry={editTarget.entry}

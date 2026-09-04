@@ -10,40 +10,11 @@ type Config = {
   removed_invalid_symbols?: string[];
   min_notional: number;
   default_order_usdt: number;
-  active_strategy: string;
-  active_strategy_timeframe: string;
   order_pct: number;
-  pyramiding_layers: number;
-  bb_mfi_pine_version: string;
-  bb_mfi_stop_loss_pct: number;
-  bb_mfi_take_profit_pct: number;
-  bb_mfi_bb_period: number;
-  bb_mfi_bb_std_dev: number;
-  bb_mfi_mfi_period: number;
-  bb_mfi_rsi_period: number;
-  bb_mfi_v1_rsi_lower_level: number;
-  bb_mfi_v1_rsi_upper_level: number;
-  bb_mfi_v2_rsi_lower_level: number;
-  bb_mfi_v2_rsi_upper_level: number;
-  bb_mfi_entry_mfi_max: number;
-  bb_mfi_entry_volume_ratio_min: number;
-  bb_mfi_dip_confirmation_enabled: boolean;
-  bb_mfi_dip_min_close_position: number;
-  bb_mfi_entry_mfi_reversal_enabled: boolean;
-  bb_mfi_entry_mfi_reversal_min_delta: number;
-  bb_mfi_exit_rsi_min: number;
-  bb_mfi_exit_mfi_min: number;
-  bb_mfi_sell_signal_confirm_bars: number;
-  bb_mfi_require_data_ready: boolean;
-  bb_mfi_bearish_require_reversal_confirmation: boolean;
-  bb_mfi_bearish_min_close_position: number;
-  bb_mfi_bearish_min_mfi_reversal_delta: number;
   symbol_activity_m1_flat_filter_enabled: boolean;
   symbol_activity_m1_flat_max_range_pct: number;
   symbol_activity_m1_flat_5m_max_count: number;
   symbol_activity_m1_flat_30m_max_count: number;
-  symbol_order_pct: Record<string, number>;
-  symbol_pyramiding_layers: Record<string, number>;
   min_24h_quote_volume_try: number;
   high_liquidity_bypass_volume_try: number;
   min_volume_ratio: number;
@@ -53,11 +24,6 @@ type Config = {
   cooldown_bars: number;
   take_profit_pct: number;
   trailing_stop_pct: number;
-  ut_enabled: boolean;
-  ut_symbols: string[];
-  ut_key_value: number;
-  ut_atr_period: number;
-  ut_heikin_ashi: boolean;
   initial_balance_try: number;
   mode: string;
   market_data: string;
@@ -65,17 +31,6 @@ type Config = {
   top_gainers_auto_activate: boolean;
   top_gainers_limit: number;
   top_gainers_refresh_sec: number;
-  pump_monitor_enabled: boolean;
-  pump_monitor_auto_trade: boolean;
-  pump_monitor_max_open_positions: number;
-  pump_monitor_min_score: number;
-  pump_monitor_require_m15_bullish: boolean;
-  pump_monitor_high_confidence_volume_ratio: number;
-  adr_filter_enabled: boolean;
-  adr_period: number;
-  adr_min_pct: number;
-  adr_max_utilization_pct: number;
-  adr_min_remaining_pct: number;
 };
 
 import ChatSettingsPanel from "./ChatSettingsPanel";
@@ -86,7 +41,7 @@ export default function SettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "chat" | "scan-logs" | "system-health">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "chat" | "system-health">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -111,8 +66,6 @@ function SettingsPageInner() {
   const [savingMonitoringMinScore, setSavingMonitoringMinScore] = useState(false);
   const [backfillDone, setBackfillDone] = useState(false);
   const [repairingMemory, setRepairingMemory] = useState(false);
-  const [scanLogs, setScanLogs] = useState<any[]>([]);
-  const [scanLogFilter, setScanLogFilter] = useState<"all" | "automatic" | "manual">("all");
   const [activity, setActivity] = useState<Record<string, any>>({});
   const [activityFilter, setActivityFilter] = useState<"all" | "ACTIVE" | "PASSIVE" | "WARMING">("all");
   const [refreshingActivity, setRefreshingActivity] = useState(false);
@@ -194,16 +147,6 @@ function SettingsPageInner() {
     const timer = window.setInterval(load, 1500);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [mlBackfillOpen]);
-
-  useEffect(() => {
-    if (activeTab !== "scan-logs") return;
-    let cancelled = false;
-    const load = () => apiRequest(`${API_BASE}/api/strategy/scan-logs?limit=1000${scanLogFilter === "all" ? "" : `&scan_type=${scanLogFilter}`}`)
-      .then((r) => r.json()).then((d) => { if (!cancelled) setScanLogs(d.logs || []); }).catch(() => undefined);
-    load();
-    const timer = window.setInterval(load, 5000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [activeTab, scanLogFilter]);
 
   useEffect(() => {
     const load = () => apiRequest(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()).then((d) => setActivity(d.statuses || {})).catch(() => undefined);
@@ -571,7 +514,6 @@ function SettingsPageInner() {
             ["strategies", "Strateji Ayarları", "📈"],
             ["llm", "LLM / Provider", "🤖"],
             ["chat", "Chat Ayarları", "✦"],
-            ["scan-logs", "Tarama Logları", "🧾"],
             ["system-health", "Sistem Sağlığı", "🩺"],
           ] as const).map(([key, label, icon]) => (
             <button key={key} onClick={() => setActiveTab(key)} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${activeTab === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>
@@ -588,23 +530,6 @@ function SettingsPageInner() {
           </div>
           <div className={`${activeTab !== "chat" ? "hidden" : ""}`}>
             <ChatSettingsPanel />
-          </div>
-          <div className={`card bg-bunker-950 ${activeTab !== "scan-logs" ? "hidden" : ""}`}>
-            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-              <div>
-                <p className="eyebrow text-neon-green">SEMBOL BAZLI TARAMA KANITI</p>
-                <p className="text-xs text-bunker-muted mt-1">Otomatik 5m kapanış taraması ve manuel kontrolün her sembol için sonucu. Son kayıtlar RAM&apos;de sınırlı tutulur.</p>
-              </div>
-              <select value={scanLogFilter} onChange={(e) => setScanLogFilter(e.target.value as typeof scanLogFilter)} className="input w-auto">
-                <option value="all">Tümü</option><option value="automatic">Otomatik tarama</option><option value="manual">Manuel tarama</option>
-              </select>
-            </div>
-            <div className="max-h-[65vh] overflow-auto rounded-lg border border-bunker-800">
-              <table className="w-full text-left font-mono text-[11px]"><thead className="sticky top-0 bg-bunker-900 text-bunker-muted"><tr><th className="px-3 py-2">ZAMAN</th><th className="px-3 py-2">TÜR</th><th className="px-3 py-2">SEMBOL</th><th className="px-3 py-2">SONUÇ</th><th className="px-3 py-2">FİYAT</th><th className="px-3 py-2">NEDEN</th></tr></thead><tbody>
-                {scanLogs.map((log, index) => <tr key={`${log.timestamp}-${log.symbol}-${index}`} className="border-t border-bunker-800/70"><td className="px-3 py-2 text-bunker-muted">{new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR")}</td><td className="px-3 py-2 text-sky-300">{log.scan_type === "manual" ? "MANUEL" : "OTOMATİK"}</td><td className="px-3 py-2"><SymbolLink symbol={log.symbol} className="text-white hover:text-neon-green" /></td><td className={`px-3 py-2 ${String(log.status).includes("SIGNAL") ? "text-neon-green" : String(log.status).includes("ERROR") ? "text-red-300" : "text-yellow-300"}`}>{log.status}</td><td className="px-3 py-2 text-bunker-muted">{log.price ?? "—"}</td><td className="px-3 py-2 text-bunker-muted">{log.reason || log.error || "—"}</td></tr>)}
-                {!scanLogs.length && <tr><td colSpan={6} className="px-3 py-8 text-center text-bunker-muted">Henüz tarama kaydı yok. Otomatik veya manuel tarama çalıştığında burada görünecek.</td></tr>}
-              </tbody></table>
-            </div>
           </div>
           <div className={`card bg-bunker-950 ${activeTab !== "symbols" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
@@ -670,53 +595,14 @@ function SettingsPageInner() {
 
           <div className={`card bg-bunker-950 ${activeTab !== "app" ? "hidden" : ""}`}>
             <div className="border-b border-bunker-800 pb-5 mb-5">
-              <p className="eyebrow text-neon-green">CANLI STRATEJİ / POZİSYON BOYUTU</p>
-              <p className="text-xs text-bunker-muted mt-1">Yeni strateji paper canlı akışında kullanılır. Varsayılan başlangıç: bakiye %10 ve en fazla 2 katman.</p>
+              <p className="eyebrow text-neon-green">POZİSYON BOYUTU</p>
+              <p className="text-xs text-bunker-muted mt-1">Yeni paper işlemde kullanılacak bakiye oranı.</p>
               <div className="grid sm:grid-cols-3 gap-3 mt-3">
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Strateji</span><select value={draft.active_strategy || "BB_MFI_MEAN_REVERSION"} onChange={e => setDraft(d => ({ ...d, active_strategy: e.target.value }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white"><option value="BB_MFI_MEAN_REVERSION">BB + MFI Mean Reversion</option></select></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Timeframe</span><select value={draft.active_strategy_timeframe || "5m"} onChange={e => setDraft(d => ({ ...d, active_strategy_timeframe: e.target.value }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white"><option>5m</option><option>1m</option><option>15m</option></select></label>
                 <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Global işlem yüzdesi</span><input type="number" min={0.1} max={100} step={0.5} value={num(draft.order_pct) * 100} onChange={e => setDraft(d => ({ ...d, order_pct: Number(e.target.value) / 100 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Global piramitleme</span><input type="number" min={1} max={10} step={1} value={num(draft.pyramiding_layers)} onChange={e => setDraft(d => ({ ...d, pyramiding_layers: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-neon-green">Pine profil</span><select value={draft.bb_mfi_pine_version || "v3"} onChange={e => setDraft(d => ({ ...d, bb_mfi_pine_version: e.target.value }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white"><option value="v3">v3 · MFI + TP/SL</option><option value="v2">v2 · RSI + TP/SL</option><option value="v1">v1 · RSI, TP/SL yok</option></select></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">BB-MFI stop (%)</span><input type="number" min={0.1} max={99} step={0.1} value={num(draft.bb_mfi_stop_loss_pct) * 100} onChange={e => setDraft(d => ({ ...d, bb_mfi_stop_loss_pct: Number(e.target.value) / 100 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">BB-MFI hedef (%)</span><input type="number" min={0.1} max={99} step={0.1} value={num(draft.bb_mfi_take_profit_pct) * 100} onChange={e => setDraft(d => ({ ...d, bb_mfi_take_profit_pct: Number(e.target.value) / 100 }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">BB periyodu</span><input type="number" min={5} max={200} step={1} value={num(draft.bb_mfi_bb_period)} onChange={e => setDraft(d => ({ ...d, bb_mfi_bb_period: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">BB std. sapma</span><input type="number" min={0.1} max={10} step={0.1} value={num(draft.bb_mfi_bb_std_dev)} onChange={e => setDraft(d => ({ ...d, bb_mfi_bb_std_dev: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">MFI periyodu</span><input type="number" min={2} max={100} step={1} value={num(draft.bb_mfi_mfi_period)} onChange={e => setDraft(d => ({ ...d, bb_mfi_mfi_period: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">RSI periyodu</span><input type="number" min={2} max={100} step={1} value={num(draft.bb_mfi_rsi_period)} onChange={e => setDraft(d => ({ ...d, bb_mfi_rsi_period: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">v1 RSI alt seviye</span><input type="number" min={1} max={99} step={1} value={num(draft.bb_mfi_v1_rsi_lower_level)} onChange={e => setDraft(d => ({ ...d, bb_mfi_v1_rsi_lower_level: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">v1 RSI üst seviye</span><input type="number" min={1} max={99} step={1} value={num(draft.bb_mfi_v1_rsi_upper_level)} onChange={e => setDraft(d => ({ ...d, bb_mfi_v1_rsi_upper_level: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">v2 RSI alt seviye</span><input type="number" min={1} max={99} step={1} value={num(draft.bb_mfi_v2_rsi_lower_level)} onChange={e => setDraft(d => ({ ...d, bb_mfi_v2_rsi_lower_level: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">v2 RSI üst seviye</span><input type="number" min={1} max={99} step={1} value={num(draft.bb_mfi_v2_rsi_upper_level)} onChange={e => setDraft(d => ({ ...d, bb_mfi_v2_rsi_upper_level: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">v3 MFI alt seviye (giriş)</span><input type="number" min={1} max={99} step={1} value={num(draft.bb_mfi_entry_mfi_max)} onChange={e => setDraft(d => ({ ...d, bb_mfi_entry_mfi_max: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-neon-green">Giriş minimum hacim oranı</span><input type="number" min={0} max={10} step={0.1} value={num(draft.bb_mfi_entry_volume_ratio_min)} onChange={e => setDraft(d => ({ ...d, bb_mfi_entry_volume_ratio_min: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2 flex items-center justify-between gap-3"><span className="font-mono text-xs text-neon-green">Dipten dönüş onayı (paper)</span><input type="checkbox" checked={Boolean(draft.bb_mfi_dip_confirmation_enabled)} onChange={e => setDraft(d => ({ ...d, bb_mfi_dip_confirmation_enabled: e.target.checked }))} /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Dip mumunda minimum kapanış konumu</span><input type="number" min={0} max={1} step={0.05} value={num(draft.bb_mfi_dip_min_close_position)} onChange={e => setDraft(d => ({ ...d, bb_mfi_dip_min_close_position: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2 flex items-center justify-between gap-3"><span className="font-mono text-xs text-neon-green">MFI dönüş onayı</span><input type="checkbox" checked={Boolean(draft.bb_mfi_entry_mfi_reversal_enabled)} onChange={e => setDraft(d => ({ ...d, bb_mfi_entry_mfi_reversal_enabled: e.target.checked }))} /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Minimum MFI toparlanması</span><input type="number" min={0} max={20} step={0.1} value={num(draft.bb_mfi_entry_mfi_reversal_min_delta)} onChange={e => setDraft(d => ({ ...d, bb_mfi_entry_mfi_reversal_min_delta: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">v3 RSI üst seviye (çıkış)</span><input type="number" min={1} max={99} step={1} value={num(draft.bb_mfi_exit_rsi_min)} onChange={e => setDraft(d => ({ ...d, bb_mfi_exit_rsi_min: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">v3 MFI üst seviye (çıkış)</span><input type="number" min={1} max={99} step={1} value={num(draft.bb_mfi_exit_mfi_min)} onChange={e => setDraft(d => ({ ...d, bb_mfi_exit_mfi_min: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-neon-green">Satış sinyali M5 teyidi (paper)</span><input type="number" min={1} max={5} step={1} value={num(draft.bb_mfi_sell_signal_confirm_bars)} onChange={e => setDraft(d => ({ ...d, bb_mfi_sell_signal_confirm_bars: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2 flex items-center justify-between gap-3"><span className="font-mono text-xs text-bunker-muted">Teknik veri hazır zorunlu</span><input type="checkbox" checked={Boolean(draft.bb_mfi_require_data_ready)} onChange={e => setDraft(d => ({ ...d, bb_mfi_require_data_ready: e.target.checked }))} /></label>
-                <label className="rounded-lg border border-neon-yellow/40 bg-bunker-900 px-3 py-2 flex items-center justify-between gap-3"><span className="font-mono text-xs text-neon-yellow">Bearish dönüş onayı</span><input type="checkbox" checked={Boolean(draft.bb_mfi_bearish_require_reversal_confirmation)} onChange={e => setDraft(d => ({ ...d, bb_mfi_bearish_require_reversal_confirmation: e.target.checked }))} /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Bearish mum kapanış konumu</span><input type="number" min={0.5} max={1} step={0.05} value={num(draft.bb_mfi_bearish_min_close_position)} onChange={e => setDraft(d => ({ ...d, bb_mfi_bearish_min_close_position: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-                <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Bearish minimum MFI toparlanması</span><input type="number" min={0} max={20} step={0.5} value={num(draft.bb_mfi_bearish_min_mfi_reversal_delta)} onChange={e => setDraft(d => ({ ...d, bb_mfi_bearish_min_mfi_reversal_delta: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
                 <label className="rounded-lg border border-neon-yellow/40 bg-bunker-900 px-3 py-2 flex items-center justify-between gap-3"><span className="font-mono text-xs text-neon-yellow">M1 düz mum pasif filtresi</span><input type="checkbox" checked={Boolean(draft.symbol_activity_m1_flat_filter_enabled)} onChange={e => setDraft(d => ({ ...d, symbol_activity_m1_flat_filter_enabled: e.target.checked }))} /></label>
                 <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">Düz mum max. H-L aralığı (%)</span><input type="number" min={0} max={5} step={0.001} value={num(draft.symbol_activity_m1_flat_max_range_pct)} onChange={e => setDraft(d => ({ ...d, symbol_activity_m1_flat_max_range_pct: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
                 <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">5 dk düz M1 pasifleştirme eşiği</span><input type="number" min={1} max={5} step={1} value={num(draft.symbol_activity_m1_flat_5m_max_count)} onChange={e => setDraft(d => ({ ...d, symbol_activity_m1_flat_5m_max_count: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
                 <label className="rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">30 dk düz M1 pasifleştirme eşiği</span><input type="number" min={1} max={30} step={1} value={num(draft.symbol_activity_m1_flat_30m_max_count)} onChange={e => setDraft(d => ({ ...d, symbol_activity_m1_flat_30m_max_count: Number(e.target.value) }))} className="mt-1 w-full bg-bunker-950 border border-bunker-700 rounded px-2 py-1.5 font-mono text-xs text-white" /></label>
-              </div>
-              <p className="eyebrow mt-4">SEMBOL BAZLI OVERRIDE · BOŞSA GLOBAL DEĞER KULLANILIR</p>
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-2">{(draft.symbols || []).map(symbol => <div key={symbol} className="settings-symbol-row flex items-center gap-2 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><SymbolLink symbol={symbol} className="font-mono text-xs text-white hover:text-neon-green flex-1" /><input aria-label={`${symbol} işlem yüzdesi`} type="number" min={0.1} max={100} step={0.5} placeholder={`${num(draft.order_pct) * 100}%`} value={draft.symbol_order_pct?.[symbol] == null ? "" : Number(draft.symbol_order_pct[symbol] * 100)} onChange={e => setDraft(d => ({ ...d, symbol_order_pct: { ...(d.symbol_order_pct || {}), [symbol]: e.target.value === "" ? undefined as any : Number(e.target.value) / 100 } }))} className="w-20 bg-bunker-950 border border-bunker-700 rounded px-2 py-1 font-mono text-[11px] text-white" /><input aria-label={`${symbol} piramitleme`} type="number" min={1} max={10} step={1} placeholder={String(draft.pyramiding_layers || 2)} value={draft.symbol_pyramiding_layers?.[symbol] ?? ""} onChange={e => setDraft(d => ({ ...d, symbol_pyramiding_layers: { ...(d.symbol_pyramiding_layers || {}), [symbol]: e.target.value === "" ? undefined as any : Number(e.target.value) } }))} className="w-14 bg-bunker-950 border border-bunker-700 rounded px-2 py-1 font-mono text-[11px] text-white" /></div>)}</div>
-            </div>
-            <div className="mt-5 border-t border-bunker-800 pt-4">
-              <p className="eyebrow text-neon-green">PUMP MONITOR · PAPER EK STRATEJİ</p>
-              <p className="mt-1 text-xs text-bunker-muted">BB-MFI stratejisini değiştirmez. M5 erken teşhis ve M15 bağlamıyla ayrı paper pozisyon açar; gerçek borsa emri oluşturmaz.</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-neon-green">İzlemeyi etkinleştir</span><input type="checkbox" checked={Boolean(draft.pump_monitor_enabled)} onChange={(e) => setDraft((d) => ({ ...d, pump_monitor_enabled: e.target.checked }))} /></label>
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-neon-green/40 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-neon-green">Uygun adayda paper aç</span><input type="checkbox" checked={Boolean(draft.pump_monitor_auto_trade)} onChange={(e) => setDraft((d) => ({ ...d, pump_monitor_auto_trade: e.target.checked }))} /></label>
-                {([ ["pump_monitor_min_score", "Minimum skor", 3, 4, 1], ["pump_monitor_max_open_positions", "Maks. açık Pump", 1, 20, 1], ["pump_monitor_high_confidence_volume_ratio", "Yüksek güven hacmi", 0, 10, 0.1] ] as const).map(([key, label, min, max, step]) => <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">{label}</span><input type="number" min={min} max={max} step={step} value={num((draft as any)[key])} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-20 rounded border border-bunker-700 bg-bunker-950 px-2 py-1.5 text-right font-mono text-xs text-white" /></label>)}
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">M15 bullish zorunlu</span><input type="checkbox" checked={Boolean(draft.pump_monitor_require_m15_bullish)} onChange={(e) => setDraft((d) => ({ ...d, pump_monitor_require_m15_bullish: e.target.checked }))} /></label>
               </div>
             </div>
             <div className="flex items-center justify-between gap-4">
@@ -753,15 +639,6 @@ function SettingsPageInner() {
                 ))}
               </div>
               <p className="text-[11px] text-bunker-muted mt-2 font-mono">Önerilen: 1.000.000 TL · 0,3x · 5x</p>
-            </div>
-            <div className="mt-5 border-t border-bunker-800 pt-4">
-              <p className="eyebrow">MTF MOMENTUM · ADR FİLTRESİ</p>
-              <p className="text-xs text-bunker-muted mt-1">Yalnızca MTF Momentum girişlerinde, sembolün günlük hareket kapasitesi ve gün içi aşırı uzama kontrol edilir.</p>
-              <div className="grid sm:grid-cols-2 gap-3 mt-3">
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">ADR filtresi</span><input type="checkbox" checked={Boolean(draft.adr_filter_enabled)} onChange={(e) => setDraft((d) => ({ ...d, adr_filter_enabled: e.target.checked }))} /></label>
-                {([ ["adr_period", "ADR periyodu (gün)", 1], ["adr_min_pct", "Minimum ADR (%)", 0.1], ["adr_max_utilization_pct", "Maksimum kullanım (%)", 0.01], ["adr_min_remaining_pct", "Minimum kalan hareket (%)", 0.1] ] as const).map(([key, label, step]) => <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2"><span className="font-mono text-xs text-bunker-muted">{label}</span><input type="number" min={0} step={step} value={key === "adr_period" ? num((draft as any)[key]) : num((draft as any)[key]) * 100} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value === "" ? NaN : key === "adr_period" ? Number(e.target.value) : Number(e.target.value) / 100 }))} className="w-32 bg-bunker-950 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right outline-none focus:border-neon-green/50" /></label>)}
-              </div>
-              <p className="text-[11px] text-bunker-muted mt-2 font-mono">Başlangıç: 14 gün · minimum ADR %2 · gün içi kullanım en fazla %80 · kalan kapasite en az %1</p>
             </div>
           </div>
           <div className={`space-y-4 ${activeTab !== "llm" ? "hidden" : ""}`}>
@@ -845,7 +722,7 @@ function SettingsPageInner() {
               <div>
                 <p className="eyebrow text-purple-300">GEÇMİŞ MTF SNAPSHOT BACKFILL</p>
                 <p className="font-mono text-sm text-white mt-2">Eski işlem girişlerini M1/M5/M15/H1/H4 ile zenginleştir</p>
-                <p className="text-xs text-bunker-muted mt-1">Binance TR public history kullanılır. PnL, bakiye ve işlem sonucu değişmez; likidite/orderflow geçmiş için unknown kalır.</p>
+                <p className="text-xs text-bunker-muted mt-1">Binance TR public history kullanılır. PnL, bakiye ve işlem sonucu değişmez; geçmişte kaydedilmeyen likidite bağlamı unknown kalır.</p>
               </div>
               <button onClick={startHistoricalMtfBackfill} disabled={startingMtfBackfill || mtfBackfill.status === "running"} className="shrink-0 px-4 py-2 rounded-lg border border-purple-400/50 bg-purple-400/10 text-purple-300 hover:bg-purple-400/20 font-mono text-xs">
                 {startingMtfBackfill || mtfBackfill.status === "running" ? "BACKFILL ÇALIŞIYOR..." : "MTF BACKFILL BAŞLAT"}
@@ -947,74 +824,6 @@ function SettingsPageInner() {
                   onChange={(e) => setDraft((d) => ({ ...d, take_profit_pct: (e.target.value === "" ? NaN : Number(e.target.value)) / 100 }))}
                   className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
                 />
-              </div>
-              <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
-                <div className="min-w-0">
-                  <p className="font-mono text-sm text-white">Key Value (a)</p>
-                  <p className="text-xs text-bunker-muted mt-0.5">Hassasiyet - ATR çarpanı</p>
-                </div>
-                <input
-                  type="number"
-                  step={0.1}
-                  min={0.1}
-                  value={num(draft.ut_key_value)}
-                  onChange={(e) => setDraft((d) => ({ ...d, ut_key_value: e.target.value === "" ? NaN : Number(e.target.value) }))}
-                  className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
-                />
-              </div>
-              <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
-                <div className="min-w-0">
-                  <p className="font-mono text-sm text-white">ATR Periyodu (c)</p>
-                  <p className="text-xs text-bunker-muted mt-0.5">ATR hesaplama uzunluğu</p>
-                </div>
-                <input
-                  type="number"
-                  step={1}
-                  min={2}
-                  value={num(draft.ut_atr_period)}
-                  onChange={(e) => setDraft((d) => ({ ...d, ut_atr_period: e.target.value === "" ? NaN : Number(e.target.value) }))}
-                  className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
-                />
-              </div>
-              <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
-                <div className="min-w-0">
-                  <p className="font-mono text-sm text-white">Heikin Ashi Mumları</p>
-                  <p className="text-xs text-bunker-muted mt-0.5">Sinyalleri HA mumlarından al</p>
-                </div>
-                <button
-                  onClick={() => setDraft((d) => ({ ...d, ut_heikin_ashi: !d.ut_heikin_ashi }))}
-                  className={`px-3 py-1.5 rounded-lg border font-mono text-xs transition-colors ${draft.ut_heikin_ashi
-                    ? "border-neon-green/60 bg-neon-green/20 text-neon-green"
-                    : "border-bunker-700 bg-bunker-900 text-bunker-muted"
-                    }`}
-                >
-                  {draft.ut_heikin_ashi ? "AÇIK" : "KAPALI"}
-                </button>
-              </div>
-              <div className="hidden">
-                <p className="font-mono text-sm text-white mb-2">AKTİF SEMBOLLER</p>
-                <div className="flex flex-wrap gap-2">
-                  {cfg.symbols.map((s) => {
-                    const active = (draft.ut_symbols || []).includes(s);
-                    return (
-                      <button
-                        key={s}
-                        onClick={() => setDraft((d) => ({
-                          ...d,
-                          ut_symbols: active
-                            ? (d.ut_symbols || []).filter((x) => x !== s)
-                            : [...(d.ut_symbols || []), s]
-                        }))}
-                        className={`px-3 py-1.5 rounded-lg border font-mono text-xs transition-colors ${active
-                          ? "border-neon-green/60 bg-neon-green/20 text-neon-green"
-                          : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"
-                          }`}
-                      >
-                        {s}
-                      </button>
-                    );
-                  })}
-                </div>
               </div>
             </div>
           </div>

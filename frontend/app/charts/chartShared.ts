@@ -111,7 +111,7 @@ export const chartPriceFormat = (value: number) => {
     return { type: "price" as const, precision, minMove: Number(`1e-${precision}`) };
 };
 
-export type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showStrategySignals: boolean; showPressure: boolean };
+export type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showPressure: boolean };
 export type LivePortfolio = { total_value?: number; unrealized_pnl?: number };
 export type PortfolioMetrics = { closed_trades: number; winning_trades: number; net_pnl: number; win_rate: number };
 export type TimeframeTrend = { timeframe: string; alignment: "bullish" | "bearish" | "mixed" | "unknown"; data_ready: boolean };
@@ -158,26 +158,18 @@ export const loadIndicators = (): IndicatorInstance[] => {
 };
 
 export const STRATEGY_LABEL_TR: Record<string, string> = {
+    VELOCITY: "Hız Avcısı",
     CHAT_PREDICTION: "🚀 Hız Avcısı (Otonom)",
-    PUMP_MONITOR: "Pump Monitor",
     LLM_PAPER: "LLM Paper",
-    FISHER_M3_KERNEL_M5_EXACT_PAPER: "Fisher M3 + Kernel M5",
-    BB_MFI_MEAN_REVERSION: "BB + MFI Mean Reversion",
-    EMA_VWAP_PULLBACK: "EMA + VWAP Pullback",
-    MOMENTUM: "MTF Momentum",
-    UT: "UT",
+    GAINER_RADAR: "Gainer Radar",
 };
 
 export function strategyLabelFor(p: { strategy?: string; entry_context?: any }) {
-    const strat = String(p.strategy || "UT").toUpperCase();
+    const strat = String(p.strategy || "").toUpperCase();
     if (strat === "CHAT_PREDICTION") {
         const score = (p.entry_context as any)?.velocity_score;
         const mode = (p.entry_context as any)?.mode === "v_donusu" ? "V-dönüşü" : "Trend-devam";
         return `🚀 Hız Avcısı${score != null ? ` · skor ${score}` : ""} · ${mode}`;
     }
-    if (strat === "PUMP_MONITOR") {
-        const score = (p.entry_context as any)?.signal_context?.score;
-        return `Pump Monitor · skor ${score ?? "—"}/4`;
-    }
-    return STRATEGY_LABEL_TR[strat] || p.strategy || "UT";
+    return STRATEGY_LABEL_TR[strat] || p.strategy || "—";
 }

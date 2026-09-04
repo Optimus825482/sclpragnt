@@ -18,13 +18,10 @@ const fmtDt = (ts: number | null) => {
 const rl = (v: number | null | undefined) => (v == null ? 0 : v);
 
 const STRATEGY_META: Record<string, string> = {
-  BB_MFI_MEAN_REVERSION: "BB+MFI Dönüş",
-  FISHER_M3_KERNEL_M5_EXACT_PAPER: "Fisher M3 + Kernel",
   VELOCITY: "Hız Avcısı",
   CHAT_PREDICTION: "Hız Avcısı (Otonom)",
-  PUMP_MONITOR: "Pump Monitor",
   LLM_PAPER: "LLM Paper",
-  SMA_CASCADE_SHADOW: "SMA Cascade",
+  GAINER_RADAR: "Gainer Radar",
 };
 const strategyLabel = (s?: string | null) => STRATEGY_META[s?.toUpperCase() || ""] || s || "Diğer";
 const pnlTone = (v: number | null | undefined) => (rl(v) >= 0 ? "text-neon-green" : "text-neon-red");
@@ -81,7 +78,6 @@ function OverviewTab() {
 
   const o = overview?.overall || {};
   const strategies = overview?.strategies || [];
-  const decisions = overview?.decision_summary || [];
   const wins = rl(o.winning);
   const total = rl(o.trade_count);
   const winRate = total > 0 ? (wins / total) * 100 : null;
@@ -112,57 +108,34 @@ function OverviewTab() {
         </section>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <section className="card">
-          <div className="flex justify-between">
-            <p className="eyebrow text-neon-green">STRATEJİ PERFORMANSI</p>
-            <span className="font-mono text-xs text-bunker-muted">{strategies.length} strateji</span>
+      <section className="card">
+        <div className="flex justify-between">
+          <p className="eyebrow text-neon-green">STRATEJİ PERFORMANSI</p>
+          <span className="font-mono text-xs text-bunker-muted">{strategies.length} strateji</span>
+        </div>
+        {strategies.length === 0 ? (
+          <p className="mt-3 text-sm text-bunker-muted">Henüz kapanmış işlem yok.</p>
+        ) : (
+          <div className="mt-3 table-scroll">
+            <table className="data-table">
+              <thead><tr><th>Strateji</th><th>İşlem</th><th>Başarı</th><th>Net PnL</th><th>Ort. MFE</th><th>Ort. DD</th></tr></thead>
+              <tbody>
+                {strategies.map((s: any) => (
+                  <tr key={s.strategy}>
+                    <td className="font-mono text-xs text-white">{strategyLabel(s.strategy)}</td>
+                    <td>{s.trade_count}</td>
+                    <td className="font-mono text-xs text-white">%{Number(s.win_rate || 0).toFixed(1)}</td>
+                    <td className={`font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
+                    <td className="font-mono text-xs text-bunker-muted">{pct(rl(s.avg_max_favorable))}</td>
+                    <td className="font-mono text-xs text-bunker-muted">{pct(rl(s.avg_max_adverse))}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-          {strategies.length === 0 ? (
-            <p className="mt-3 text-sm text-bunker-muted">Henüz kapanmış işlem yok.</p>
-          ) : (
-            <div className="mt-3 table-scroll">
-              <table className="data-table">
-                <thead><tr><th>Strateji</th><th>İşlem</th><th>Başarı</th><th>Net PnL</th><th>Ort. MFE</th><th>Ort. DD</th></tr></thead>
-                <tbody>
-                  {strategies.map((s: any) => (
-                    <tr key={s.strategy}>
-                      <td className="font-mono text-xs text-white">{strategyLabel(s.strategy)}</td>
-                      <td>{s.trade_count}</td>
-                      <td className="font-mono text-xs text-white">%{Number(s.win_rate || 0).toFixed(1)}</td>
-                      <td className={`font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
-                      <td className="font-mono text-xs text-bunker-muted">{pct(rl(s.avg_max_favorable))}</td>
-                      <td className="font-mono text-xs text-bunker-muted">{pct(rl(s.avg_max_adverse))}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-        <section className="card">
-          <p className="eyebrow text-neon-green">KARAR DAĞILIMI</p>
-          {decisions.length === 0 ? (
-            <p className="mt-3 text-sm text-bunker-muted">Henüz karar kaydı yok.</p>
-          ) : (
-            <div className="mt-3 table-scroll">
-              <table className="data-table">
-                <thead><tr><th>Strateji</th><th>Karar</th><th>Sayı</th><th>Son</th></tr></thead>
-                <tbody>
-                  {decisions.map((d: any) => (
-                    <tr key={`${d.strategy}-${d.decision}`}>
-                      <td className="font-mono text-xs text-white">{strategyLabel(d.strategy)}</td>
-                      <td className="font-mono text-xs text-bunker-muted">{d.decision}</td>
-                      <td className="font-mono text-xs">{d.count}</td>
-                      <td className="font-mono text-xs text-bunker-muted">{fmtDt(d.last_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </div>      <section className="card">
+        )}
+      </section>
+      <section className="card">
         <div className="flex items-center justify-between">
           <p className="eyebrow text-neon-green">SON RADAR BİLDİRİMLERİ</p>
           <button onClick={load} className="ui-button ui-button-secondary">⟳ Tazele</button>
@@ -1008,7 +981,7 @@ function UserPositionsTab() {
       ]);
       const [pos, tr] = await Promise.all([posRes.json(), trRes.json()]);
       if (posRes.ok) setPositions(pos.positions || []);
-      if (trRes.ok) setTrades((tr.trades || []).filter((t: any) => /CHAT_PREDICTION|VELOCITY|PUMP_MONITOR|LLM_PAPER/.test(String(t.strategy || "").toUpperCase())));
+      if (trRes.ok) setTrades((tr.trades || []).filter((t: any) => /CHAT_PREDICTION|VELOCITY|LLM_PAPER/.test(String(t.strategy || "").toUpperCase())));
     } catch {
       setError("Pozisyon verisi alınamadı");
     } finally {

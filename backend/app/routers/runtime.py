@@ -8,11 +8,9 @@ from datetime import datetime, timedelta, timezone
 from app.config import config
 from app import database
 from app.state import market, analyzer
-from app.api_common import _start_background, _record_strategy_scan_log
+from app.api_common import _start_background
 from app.circuit_breaker import breaker as strategy_breaker
-from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, top_gainers
-from app.sma_cascade_shadow import SmaCascadeShadow
 from app.ws_runtime import ws_manager
 from app import alerting
 from app import memory_service
@@ -58,8 +56,6 @@ _radar_lock = asyncio.Lock()
 _top_gainers_lock = asyncio.Lock()
 _ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
 
-_pump_monitor_snapshot = {"generated_at": 0.0, "items": {}, "last_execution": []}
-_pump_monitor_seen_candles = {}
 
 async def ws_broadcast_loop():
     while True:
@@ -149,107 +145,36 @@ async def auto_open_from_alert(rule, event):
     return {"status": "opened" if signal.get("action") == "BUY_SIGNAL" else "blocked",
             "symbol": rule.get("symbol"), "signal": signal, "details": result, "paper_only": True}
 
-def _pump_monitor_snapshot_for(symbol: str, timeframe: str, price: float, order_value: float):
-    """Return a completed-candle technical snapshot from the hot public cache."""
-    bars = market.get_ut_kline(symbol, timeframe) or {}
-    daily = market.get_ut_kline(symbol, "1d") or {}
-    return calculate_snapshot(
-        symbol, price, {timeframe: bars, "1d": daily}, market.get_orderflow(symbol),
-        market.ticker_24h.get(symbol, 0), order_value, timeframe,
-    )
-
-
 async def strategy_loop():
+    """Açık pozisyon yönetimi döngüsü.
+
+    Klasik stratejiler kaldırıldığından (2026-09-04) yeni giriş taraması
+    yapılmaz; döngü yalnızca analyzer.evaluate üzerinden açık pozisyonların
+    stop/TP/trailing/timeout yönetimini sürdürür. Velocity (CHAT_PREDICTION)
+    ve LLM_PAPER pozisyonları da bu yolla kapanır.
+    """
     await asyncio.sleep(5)
-    # Entry checks are aligned to the exchange 5m candle boundary, not to
-    # the process start time or a drifting sleep interval. Position
-    # management continues every loop between candle closes.
-    scan_interval = max(60, int(config.STRATEGY_ENTRY_SCAN_INTERVAL_SEC))
-    last_entry_candle = int(time.time() // scan_interval)
     while True:
-        current_candle = int(time.time() // scan_interval)
-        entry_scan_due = current_candle != last_entry_candle
-        scan_checked = scan_fresh = scan_stale = scan_evaluated = scan_no_signal = scan_errors = scan_passive = scan_ineligible = 0
-        scan_buy = scan_blocked = 0
-        scan_id = f"automatic-{int(time.time() * 1000)}" if entry_scan_due else None
-        if entry_scan_due:
-            print(f"[Strategy] giriş taraması başladı | symbols={len(config.SYMBOLS)} trigger=5m_candle_close", flush=True)
-        for sym in config.SYMBOLS:
-            if sym in config.PASSIVE_SYMBOLS and sym not in analyzer.positions:
-                scan_passive += 1
-                if entry_scan_due:
-                    _record_strategy_scan_log("automatic", sym, "PASSIVE", scan_id=scan_id)
-                continue
-            scan_checked += 1
-            if migration_monitor.state["status"] == "running":
-                if entry_scan_due:
-                    _record_strategy_scan_log("automatic", sym, "MIGRATION_BLOCKED", scan_id=scan_id)
-                await asyncio.sleep(0.1)
-                continue
-            ticker = market.get_ticker(sym)
-            if not ticker or (time.time() - (ticker.get("timestamp", 0) / 1000)) > config.MAX_TICKER_AGE_SEC:
-                scan_stale += 1
-                if entry_scan_due:
-                    _record_strategy_scan_log("automatic", sym, "STALE_TICKER", scan_id=scan_id)
-                continue
-            kline_freshness = market.kline_freshness(sym, config.ACTIVE_STRATEGY_TIMEFRAME)
-            allow_entry = entry_scan_due and bool(kline_freshness.get("fresh"))
-            if entry_scan_due and not allow_entry:
-                scan_stale += 1
-                _record_strategy_scan_log("automatic", sym, "STALE_KLINE", scan_id=scan_id,
-                                          timeframe=config.ACTIVE_STRATEGY_TIMEFRAME,
-                                          age_sec=kline_freshness.get("age_sec"))
-            if allow_entry and sym not in analyzer.positions:
-                eligible, eligibility = await analyzer.entry_liquidity_preflight(sym, config.ACTIVE_STRATEGY)
-                if not eligible:
-                    scan_ineligible += 1
-                    allow_entry = False
-                    _record_strategy_scan_log(
-                        "automatic", sym, "ENTRY_INELIGIBLE", price=ticker.get("last_price"),
-                        reason=eligibility.get("reason", "entry_ineligible"),
-                        timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id,
-                        liquidity=eligibility,
-                    )
-            scan_fresh += 1
-            try:
-                if allow_entry:
-                    scan_evaluated += 1
-                signals = await analyzer.evaluate(sym, ticker, allow_entry=allow_entry)
-                if allow_entry and not signals:
-                    scan_no_signal += 1
-                    _record_strategy_scan_log("automatic", sym, "NO_SIGNAL", price=ticker.get("price"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id)
-            except Exception as exc:
-                scan_errors += 1
-                # Tek bir sembolün DB/strateji hatası bütün strategy loop'u düşürmemeli.
-                print(f"[Strategy] {sym} değerlendirme hatası: {exc}")
-                if entry_scan_due:
-                    _record_strategy_scan_log("automatic", sym, "ERROR", error=str(exc), scan_id=scan_id)
-                continue
-            for sig in signals:
-                action = str(sig.get("action", ""))
-                if action == "BUY_SIGNAL": scan_buy += 1
-                elif action == "BUY_BLOCKED": scan_blocked += 1
-                print(f"[Sinyal] {sig}")
-                _record_strategy_scan_log("automatic", sym, str(sig.get("action", "SIGNAL")), price=sig.get("price", ticker.get("last_price")), reason=sig.get("reason"), timeframe=config.ACTIVE_STRATEGY_TIMEFRAME, scan_id=scan_id)
-                if action != "ENTRY_INELIGIBLE":
+        try:
+            for sym in list(analyzer.positions.keys()):
+                ticker = market.get_ticker(sym)
+                if not ticker or not ticker.get("last_price"):
+                    continue
+                try:
+                    signals = await analyzer.evaluate(sym, ticker, allow_entry=False)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    print(f"[Strategy] {sym} pozisyon yönetimi hatası: {exc}")
+                    continue
+                for sig in signals:
+                    print(f"[Sinyal] {sig}")
                     await ws_manager.broadcast({"type": "signal", "data": sig})
-                if str(sig.get("action", "")).startswith("CLOSE"):
-                    await ws_manager.broadcast({"type": "trade_updated", "data": {"symbol": sig.get("symbol"), "reason": sig.get("reason")}})
-                    # An LLM close is a risk decision, not an instruction to
-                    # immediately buy again. Let the symbol guard settle and
-                    # wait for a later idle research cycle.
-                    if str(sig.get("strategy", "")).upper() != "LLM_PAPER":
-                        pass
-        if entry_scan_due:
-            last_entry_candle = current_candle
-            print("[Strategy] giriş taraması tamamlandı", flush=True)
-            print(
-                f"[Strategy] scan summary | checked={scan_checked} passive={scan_passive} "
-                f"fresh={scan_fresh} stale={scan_stale} evaluated={scan_evaluated} "
-                f"no_signal={scan_no_signal} ineligible={scan_ineligible} buy={scan_buy} blocked={scan_blocked} errors={scan_errors}",
-                flush=True,
-            )
-        await asyncio.sleep(2)
+                    if str(sig.get("action", "")).startswith("CLOSE"):
+                        await ws_manager.broadcast({"type": "trade_updated", "data": {"symbol": sig.get("symbol"), "reason": sig.get("reason")}})
+        except asyncio.CancelledError:
+            raise
+        await asyncio.sleep(5)
 
 
 def _ma_cascade_observation_context(symbol: str, event: dict) -> dict:
@@ -280,35 +205,6 @@ def _ma_cascade_observation_context(symbol: str, event: dict) -> dict:
         "freshness": market.data_freshness(symbol, "1m"),
         "radar": radar,
     }
-
-
-async def ma_cascade_shadow_loop():
-    """Persist closed-candle MA observations; it never calls the trade executor."""
-    observer = SmaCascadeShadow(
-        config.SMA_CASCADE_MAX_SEQUENCE_MINUTES,
-        config.SMA_CASCADE_BREAKOUT_WINDOW_MINUTES,
-        config.SMA_CASCADE_OUTCOME_WINDOW_MINUTES,
-    )
-    await asyncio.sleep(10)
-    while True:
-        try:
-            if config.SMA_CASCADE_SHADOW_ENABLED and migration_monitor.state["status"] != "running":
-                for symbol in list(config.SYMBOLS):
-                    for event in observer.process(symbol, market.get_ut_kline(symbol, "1m")):
-                        metadata = _ma_cascade_observation_context(symbol, event)
-                        decision = str(event["type"]).upper()
-                        await database.save_decision_log({
-                            "timestamp": time.time(), "symbol": symbol, "strategy": "SMA_CASCADE_SHADOW",
-                            "decision": decision, "reason": "closed_1m_observation_only",
-                            "price": event.get("price"), "metadata": metadata,
-                        })
-                        _record_strategy_scan_log("ma_cascade_shadow", symbol, decision,
-                                                  price=event.get("price"), event_id=event.get("event_id"))
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.exception("MA cascade shadow monitor error: %s", exc)
-        await asyncio.sleep(5)
 
 
 async def radar_loop():

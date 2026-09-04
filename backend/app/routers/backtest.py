@@ -4,7 +4,7 @@ import json
 import time
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database
@@ -152,6 +152,8 @@ async def backtest_robustness(payload: dict):
         return {"ok": False, "error": str(exc), "paper_only": True}
 
 @router.delete("/api/backtests/{run_id}")
-async def backtest_delete(run_id: int):
+async def backtest_delete(run_id: int, request: Request = None):
+    from app.main import _require_admin
+    _require_admin(request)
     await database.delete_backtest(run_id)
     return {"ok": True}

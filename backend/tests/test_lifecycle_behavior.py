@@ -86,63 +86,6 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         save_signal.assert_awaited_once()
         commit.assert_not_awaited()
 
-    async def test_automatic_scan_records_entry_ineligible_before_strategy_evaluation(self):
-        """A failed liquidity preflight is an audit result, never a signal."""
-        from app import main
-        from app.routers import runtime as strategy_runtime
-
-        class _Clock:
-            def __init__(self):
-                self.calls = 0
-
-            def time(self):
-                self.calls += 1
-                # The first value initializes the loop; the second starts an
-                # entry scan.  Keep every later read on that same scan tick.
-                return 0.0 if self.calls == 1 else 61.0
-
-        ticker = {"symbol": "BTCTRY", "last_price": 100.0, "timestamp": 61_000}
-        market = SimpleNamespace(
-            get_ticker=Mock(return_value=ticker),
-            kline_freshness=Mock(return_value={"fresh": True, "age_sec": 0.0}),
-        )
-        analyzer = SimpleNamespace(
-            positions={},
-            entry_liquidity_preflight=AsyncMock(
-                return_value=(False, {"reason": "entry_ineligible:spread", "checks": {"spread": False}})
-            ),
-            evaluate=AsyncMock(return_value=[]),
-        )
-        scan_log = Mock()
-        ws_manager = SimpleNamespace(broadcast=AsyncMock())
-
-        sleep_calls = 0
-
-        async def stop_after_first_cycle(_seconds):
-            nonlocal sleep_calls
-            sleep_calls += 1
-            if sleep_calls > 1:
-                raise asyncio.CancelledError()
-
-        with patch.object(strategy_runtime, "time", _Clock()), \
-             patch.object(strategy_runtime, "market", market), \
-             patch.object(strategy_runtime, "analyzer", analyzer), \
-             patch.object(strategy_runtime, "ws_manager", ws_manager), \
-             patch.object(strategy_runtime, "_record_strategy_scan_log", scan_log), \
-             patch.object(strategy_runtime, "migration_monitor", SimpleNamespace(state={"status": "idle"})), \
-             patch.object(strategy_runtime.asyncio, "sleep", new=stop_after_first_cycle), \
-             patch.object(main.config, "SYMBOLS", ["BTCTRY"]), \
-             patch.object(main.config, "PASSIVE_SYMBOLS", set()), \
-             patch.object(main.config, "STRATEGY_ENTRY_SCAN_INTERVAL_SEC", 60):
-            with self.assertRaises(asyncio.CancelledError):
-                await strategy_runtime.strategy_loop()
-
-        analyzer.entry_liquidity_preflight.assert_awaited_once_with("BTCTRY", main.config.ACTIVE_STRATEGY)
-        analyzer.evaluate.assert_awaited_once_with("BTCTRY", ticker, allow_entry=False)
-        ws_manager.broadcast.assert_not_awaited()
-        statuses = [call.args[2] for call in scan_log.call_args_list]
-        self.assertIn("ENTRY_INELIGIBLE", statuses)
-        self.assertNotIn("BUY_BLOCKED", statuses)
 
     async def test_opening_liquidity_race_is_entry_ineligible_not_buy_blocked(self):
         """The final writer-side liquidity recheck remains a non-signal guard."""
@@ -165,46 +108,6 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         commit.assert_not_awaited()
         saved.assert_not_awaited()
 
-    async def test_bb_mfi_trade_context_uses_its_actual_exit_plan(self):
-        """CSV/exported context must not report generic spot TP/SL for BB-MFI."""
-        from app.analyzer import ScalpAnalyzer
-        from app.config import config
-
-        analyzer = ScalpAnalyzer(None)
-        commit = AsyncMock()
-        with patch("app.analyzer.database.load_positions", new=AsyncMock(return_value={})), \
-             patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=10_000.0)), \
-             patch("app.analyzer.database.commit_open_position", new=commit):
-            result = await analyzer.open_position("BTCTRY", 100.0, "LONG", "BB_MFI_MEAN_REVERSION")
-
-        self.assertEqual(result["action"], "BUY_SIGNAL")
-        persisted_position = commit.await_args.args[4]
-        context = persisted_position["entry_context"]
-        self.assertEqual(context["profit_target_pct"], config.BB_MFI_TAKE_PROFIT_PCT)
-        self.assertEqual(context["stop_loss_pct"], config.BB_MFI_STOP_LOSS_PCT)
-        self.assertIsNone(context["max_hold_sec"])
-
-    async def test_bb_mfi_close_normalizes_a_legacy_context_plan(self):
-        from app.analyzer import ScalpAnalyzer
-        from app.config import config
-
-        trade = await ScalpAnalyzer(None)._record_trade(
-            "BTCTRY",
-            {
-                "entry_price": 100.0,
-                "quantity": 1.0,
-                "entry_time": time.time(),
-                "strategy": "BB_MFI_MEAN_REVERSION",
-                "entry_context": {"profit_target_pct": 0.01, "stop_loss_pct": 0.012, "max_hold_sec": 14_400},
-            },
-            101.0,
-            "bb_mfi_v3_signal_exit",
-            0.3,
-        )
-
-        self.assertEqual(trade["entry_context"]["profit_target_pct"], config.BB_MFI_TAKE_PROFIT_PCT)
-        self.assertEqual(trade["entry_context"]["stop_loss_pct"], config.BB_MFI_STOP_LOSS_PCT)
-        self.assertIsNone(trade["entry_context"]["max_hold_sec"])
 
     async def test_bb_mfi_preflight_uses_remaining_cash_sizing_as_opening(self):
         from app.analyzer import ScalpAnalyzer
@@ -223,19 +126,6 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(details["order_value_try"], 2000.0 / 1.0015 * 0.10, places=6)
         market.liquidity_status.assert_called_once_with("BTCTRY", 2000.0 / 1.0015 * 0.10)
 
-    async def test_bb_mfi_preflight_does_not_expand_remaining_cash_percentage(self):
-        from app.analyzer import ScalpAnalyzer
-
-        market = _Market()
-        market.liquidity_status = Mock(return_value=(True, {"checks": {"spread": True}}))
-        analyzer = ScalpAnalyzer(market)
-        with patch("app.analyzer.database.get_wallet_balance", new=AsyncMock(return_value=500.0)):
-            eligible, details = await analyzer.entry_liquidity_preflight("BTCTRY", "BB_MFI_MEAN_REVERSION")
-
-        self.assertTrue(eligible)
-        self.assertEqual(details["skipped"], "order_value_below_minimum")
-        self.assertAlmostEqual(details["order_value_try"], 500.0 / 1.0015 * 0.10, places=6)
-        market.liquidity_status.assert_not_called()
 
     async def test_market_order_client_request_id_is_durable(self):
         from app.analyzer import ScalpAnalyzer
