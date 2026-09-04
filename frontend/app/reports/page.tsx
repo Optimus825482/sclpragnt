@@ -872,10 +872,10 @@ function UserRadarTab() {
           <p className="eyebrow text-neon-green">GUNLUK BASARI KIRILIMI</p>
           <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <StatCard label="TAMAMEN" value={String(breakdown.counts?.["TAMAMEN BAŞARILI"] || 0)} tone="text-neon-green" />
-            <StatCard label="BAŞARILI" value={String(breakdown.counts?.BASARILI || 0)} tone="text-neon-green" />
-            <StatCard label="KISMİ" value={String(breakdown.counts?.KISMI || 0)} tone="text-yellow-300" />
-            <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.BASARISIZ || 0)} tone="text-neon-red" />
-            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.BEKLIYOR || 0) + (breakdown.counts?.OLCULEMEDI || 0))} sub={`olculemedi ${breakdown.counts?.OLCULEMEDI || 0}`} />
+            <StatCard label="BASARILI" value={String(breakdown.counts?.["BAŞARILI"] || 0)} tone="text-neon-green" />
+            <StatCard label="KISMI" value={String(breakdown.counts?.["KISMİ"] || 0)} tone="text-yellow-300" />
+            <StatCard label="BASARISIZ" value={String(breakdown.counts?.["BAŞARISIZ"] || 0)} tone="text-neon-red" />
+            <StatCard label="BEKLIYOR" value={String((breakdown.counts?.["BEKLİYOR"] || 0) + (breakdown.counts?.["ÖLÇÜLEMEDİ"] || 0))} sub={`olculemedi ${breakdown.counts?.["ÖLÇÜLEMEDİ"] || 0}`} />
             <StatCard label="GENEL BASARI" value={breakdown.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"} tone="text-sky-300"
               sub={`${breakdown.success_count}/${breakdown.evaluated} olculen`} />
           </div>
@@ -911,10 +911,12 @@ function UserRadarTab() {
                     <SortHeader label="Saat" field="time" />
                     <SortHeader label="Sembol" field="symbol" />
                     <SortHeader label="Anlik Fiyat" field="price" />
+                    <SortHeader label="Hedef Fiyat" field="expected_price" />
                     <SortHeader label="Hedef %" field="target_pct" />
                     <SortHeader label="Skor" field="score" />
                     <SortHeader label="ML Olasilik" field="ml_hit_probability" />
                     <SortHeader label="Ufuk" field="horizon_minutes" />
+                    <SortHeader label="Sonuc" field="mfe_pct" />
                     <th>Durum</th>
                   </tr>
                 </thead>
@@ -923,22 +925,27 @@ function UserRadarTab() {
                     const dt = new Date(n.detected_at * 1000);
                     const dateStr = dt.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric" });
                     const timeStr = dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+                    const mfePct = n.mfe_pct != null ? Number(n.mfe_pct) : null;
+                    const tgtPct = n.target_pct != null ? Number(n.target_pct) : null;
+                    const mfeTone = mfePct != null ? (mfePct >= 0 ? "text-neon-green" : "text-neon-red") : "text-bunker-muted";
                     return (
                       <tr key={`${n.id}-${n.symbol}-${n.detected_at}`}>
                         <td className="font-mono text-xs text-bunker-muted">{dateStr}</td>
                         <td className="font-mono text-xs text-bunker-muted">{timeStr}</td>
                         <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                         <td className="font-mono text-xs text-white">{n.price != null ? Number(n.price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
-                        <td className="font-mono text-xs text-neon-green">{n.target_pct ? `+%${Number(n.target_pct).toFixed(1)}` : "—"}</td>
+                        <td className="font-mono text-xs text-neon-green">{n.expected_price != null ? Number(n.expected_price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
+                        <td className="font-mono text-xs text-neon-green">{tgtPct != null ? `+%${tgtPct.toFixed(1)}` : "—"}</td>
                         <td className="font-mono text-xs text-white">{n.score != null ? Number(n.score).toFixed(2) : "—"}</td>
                         <td className="font-mono text-xs text-white">{n.ml_hit_probability != null ? `%${(Number(n.ml_hit_probability) * 100).toFixed(0)}` : "—"}</td>
                         <td className="font-mono text-xs text-bunker-muted">{n.horizon_minutes ? `${n.horizon_minutes}dk` : "—"}</td>
+                        <td className={`font-mono text-xs ${mfeTone}`}>{mfePct != null ? `%${mfePct.toFixed(2)}` : "—"}</td>
                         <td>
                           {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">TAMAMEN</Badge>
                             : n.status === "BAŞARILI" ? <Badge tone="ok">BASARILI</Badge>
                             : n.status === "KISMİ" ? <Badge tone="warn">KISMI</Badge>
                             : n.status === "BAŞARISIZ" ? <Badge tone="bad">BASARISIZ</Badge>
-                            : n.status === "OLCULEMEDI" ? <Badge tone="warn">OLCULEMEDI</Badge>
+                            : n.status === "ÖLÇÜLEMEDİ" ? <Badge tone="warn">OLCULEMEDI</Badge>
                             : <Badge>BEKLIYOR</Badge>}
                         </td>
                       </tr>
