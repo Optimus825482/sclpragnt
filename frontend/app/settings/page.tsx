@@ -80,6 +80,7 @@ type Config = {
 
 import ChatSettingsPanel from "./ChatSettingsPanel";
 import RequireAdmin from "../components/RequireAdmin";
+import { useAuth } from "../lib/auth";
 
 export default function SettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
@@ -103,6 +104,11 @@ function SettingsPageInner() {
   const [llmForm, setLlmForm] = useState({ name: "OpenAI Compatible", base_url: "", api_key: "", provider_id: "", model: "", model_type: "chat", dimensions: "", skill: "", instructions: "" });
   const [llmMessage, setLlmMessage] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
+  const { role } = useAuth();
+  const isAdmin = role === "admin";
+  const [monitoringMinScore, setMonitoringMinScore] = useState<number | null>(null);
+  const [monitoringMinScoreInput, setMonitoringMinScoreInput] = useState<string>("50");
+  const [savingMonitoringMinScore, setSavingMonitoringMinScore] = useState(false);
   const [backfillDone, setBackfillDone] = useState(false);
   const [repairingMemory, setRepairingMemory] = useState(false);
   const [scanLogs, setScanLogs] = useState<any[]>([]);
@@ -137,6 +143,14 @@ function SettingsPageInner() {
       .then((d) => setMarketSymbols(d.symbols || []))
       .catch(() => setError("Binance TR sembolleri alınamadı"));
     apiRequest(`${API_BASE}/api/llm/config`).then((r) => r.json()).then(setLlm).catch(() => undefined);
+    apiRequest(`${API_BASE}/api/monitoring/settings`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        const ms = d.min_score ?? 50;
+        setMonitoringMinScore(ms);
+        setMonitoringMinScoreInput(String(Math.round(ms)));
+      })
+      .catch(() => undefined);
     loadMlStatus();
   }, []);
 
@@ -207,6 +221,24 @@ function SettingsPageInner() {
       setActivity(data.statuses || {});
     } catch (err) { setError(err instanceof Error ? err.message : "Aktivasyon kontrolü başarısız"); }
     finally { setRefreshingActivity(false); }
+  };
+
+  const saveMonitoringMinScore = async () => {
+    const val = Number(monitoringMinScoreInput);
+    if (!Number.isFinite(val) || val < 0 || val > 100) { setError("Monitoring min skor 0-100 arası olmalı"); return; }
+    setSavingMonitoringMinScore(true);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ min_score: val }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Kaydetme başarısız");
+      setMonitoringMinScore(data.min_score ?? val);
+      setMonitoringMinScoreInput(String(Math.round(data.min_score ?? val)));
+    } catch (err) { setError(err instanceof Error ? err.message : "Monitoring eşiği kaydedilemedi"); }
+    finally { setSavingMonitoringMinScore(false); }
   };
 
   const refreshTopGainers = async () => {
@@ -693,6 +725,16 @@ function SettingsPageInner() {
                 <p className="text-xs text-bunker-muted mt-1">Radar şu anda yalnızca gözlem ve sıralama yapar; otomatik paper işlem açmaz. Önerilen başlangıç: 50.</p>
               </div>
               <input type="number" min={0} max={100} step={1} value={num(draft.gainer_radar_min_score)} onChange={(e) => setDraft((d) => ({ ...d, gainer_radar_min_score: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none" />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="eyebrow">MONİTORİNG MİNİMUM SKOR</p>
+                <p className="text-xs text-bunker-muted mt-1">Bildirim gönderme eşiği (global). Bu değerin altındaki adaylar bildirilmez ve raporlara katılmaz. Mevcut: {monitoringMinScore ?? "—"}.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <input type="number" min={0} max={100} step={1} value={monitoringMinScoreInput} onChange={(e) => setMonitoringMinScoreInput(e.target.value === "" ? "" : String(Number(e.target.value)))} className="w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none" />
+                <button type="button" onClick={saveMonitoringMinScore} disabled={savingMonitoringMinScore || !isAdmin} className="ui-button ui-button-primary px-3 py-1.5 text-xs disabled:opacity-50">{savingMonitoringMinScore ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
+              </div>
             </div>
             <div className="mt-5 border-t border-bunker-800 pt-4">
               <p className="eyebrow">LİKİDİTE FİLTRESİ</p>
