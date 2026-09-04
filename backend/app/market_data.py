@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 import numpy as np
 import websockets
 
-from app.binance_tr_public import WS_BASE, klines as fetch_klines, ticker_24h
+from app.binance_tr_public import WS_BASE, WS_BASES, klines as fetch_klines, ticker_24h, book_tickers
 from app.config import config
 from app.market_intelligence import whale_activity_from_tape
 
@@ -94,6 +94,12 @@ class MarketData:
 
         self.reconnect_requested = False
         self.connection_generation = 0
+        # Dokümantasyona göre sunucu bağlantıyı 24 saatte bir kapatır ve
+        # serverShutdown olayı gönderir. Kod bunu fark edip bilinçli şekilde
+        # yeni nesil başlatır; böylece saatlerce sessiz kalan tek soket kalmaz.
+        self.ws_connected_at = 0.0
+        self.ws_max_lifetime_sec = 24 * 3600
+        self.ws_host_index = 0
         self._rest_refresh_task = None
         self._connect_owner_task = None
         self._ws_tasks = set()
@@ -390,6 +396,38 @@ class MarketData:
             self.rest_last_error = str(exc)
             self.last_error = self.ws_last_error or self.rest_last_error
             print(f"[MarketData] 24h ticker yenileme hatası: {exc}", flush=True)
+        # WS top-of-book taze değilse (sessiz/ölü soket) REST bookTicker tek
+        # istekle best-bid/ask yedeği sağlar; böylece likidite kapısı WS
+        # kesintisinde bile güncel spread/derinlik görebilir.
+        try:
+            rows_book = await book_tickers([str(symbol).upper() for symbol in self.symbols])
+            book_now = time.time()
+            for row in rows_book or []:
+                if not isinstance(row, dict):
+                    continue
+                symbol = str(row.get("symbol", "")).upper()
+                try:
+                    bid = float(row.get("b") or 0)
+                    ask = float(row.get("a") or 0)
+                    bid_qty = float(row.get("B") or 0)
+                    ask_qty = float(row.get("A") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if bid <= 0 or ask <= 0:
+                    continue
+                flow = self.orderflow.get(symbol)
+                flow_age = float((flow or {}).get("updated_at") or 0)
+                if flow_age and (book_now - flow_age) <= self.ORDERBOOK_MAX_AGE_SEC:
+                    continue  # WS hâlâ taze; üzerine yazma.
+                self.orderflow[symbol].update({
+                    "bid_price": bid, "ask_price": ask,
+                    "bid_qty": bid_qty, "ask_qty": ask_qty,
+                    "spread_pct": ((ask - bid) / bid * 100) if bid else None,
+                    "updated_at": book_now,
+                    "source": "binance_tr_public_rest_bookTicker",
+                })
+        except Exception as exc:
+            print(f"[MarketData] bookTicker yenileme hatası: {exc}", flush=True)
 
     async def _rest_refresh_loop(self):
         try:
@@ -411,8 +449,13 @@ class MarketData:
         """Create a fresh immutable connection plan for this generation."""
         symbols = list(dict.fromkeys(str(symbol).replace("_", "").lower() for symbol in self.symbols))
         timeframes = list(self.timeframes)
-        streams_per_symbol = len(timeframes) + 2  # klines + depth + aggregate trades
+        # kline + depth5 + aggTrade + bookTicker + ticker
+        streams_per_symbol = len(timeframes) + 4
+        # Stream sayısı dokümantasyondaki 1024 bağlantı limitinin çok altında
+        # tutulur; host rotasyonu generation bazında yapılır.
         group_size = max(1, self.WS_MAX_STREAMS_PER_CONNECTION // streams_per_symbol)
+        bases = list(WS_BASES or (WS_BASE,))
+        base = bases[self.ws_host_index % len(bases)]
         plans = []
         for index in range(0, len(symbols), group_size):
             group = symbols[index:index + group_size]
@@ -421,13 +464,15 @@ class MarketData:
                 + [f"{symbol}@depth5@100ms" for symbol in group]
                 + [f"{symbol}@aggTrade" for symbol in group]
                 + [f"{symbol}@bookTicker" for symbol in group]
+                + [f"{symbol}@ticker" for symbol in group]
             )
             plans.append({
                 "group_id": index // group_size + 1,
                 "generation": generation,
                 "symbols": tuple(group),
                 "timeframes": tuple(timeframes),
-                "url": self.WS_URL.format(streams),
+                "base": base,
+                "url": f"{base}/stream?streams={streams}",
             })
         return plans
 
@@ -441,6 +486,8 @@ class MarketData:
                     f"symbols={len(plan['symbols'])} timeframes={len(plan['timeframes'])}", flush=True,
                 )
                 async with websockets.connect(plan["url"], ping_interval=20, ping_timeout=20, close_timeout=5) as ws:
+                    self.ws_connected_at = time.time()
+                    print(f"[MarketData] WS bağlandı generation={generation} grup={group_id} base={plan.get('base')}", flush=True)
                     async for message in ws:
                         if (not self.running or generation != self.connection_generation
                                 or self.reconnect_requested):
@@ -452,6 +499,9 @@ class MarketData:
                 self.ws_last_error = str(exc)
                 self.last_error = self.ws_last_error or self.rest_last_error
                 print(f"[MarketData] WS Hata generation={generation} grup={group_id}: {exc}", flush=True)
+                # Bağlantı hatasında bir sonraki nesil diğer hostu denesin.
+                bases = list(WS_BASES or (WS_BASE,))
+                self.ws_host_index = (self.ws_host_index + 1) % len(bases)
                 # Candles may have closed while the socket was down; splice
                 # the missing range back in before fresh bars resume.
                 asyncio.create_task(self.repair_history_gaps(symbols=plan["symbols"], timeframes=plan["timeframes"]),
@@ -484,6 +534,10 @@ class MarketData:
                 if not plans:
                     await asyncio.sleep(0.25)
                     continue
+                # 24 saatlik sunucu bağlantı ömrü dolduysa yeni nesil başlat.
+                if self.ws_connected_at and (time.time() - self.ws_connected_at) >= self.ws_max_lifetime_sec:
+                    print("[MarketData] WS 24s ömrü doldu; yeni nesil başlatılıyor", flush=True)
+                    self.reconnect_requested = True
                 group_tasks = {
                     asyncio.create_task(
                         self._run_ws_group(plan),
@@ -532,11 +586,66 @@ class MarketData:
         stream = str(payload.get("stream") or "")
         if stream and not data.get("s") and not data.get("symbol"):
             data = {**data, "_stream": stream}
+        # bookTicker stream'i (b/B/a/A skaler) orderbook olarak işlenir.
+        if stream.endswith("@bookTicker") or str(data.get("e") or "") == "bookTicker":
+            self._process_orderbook(data)
+            self._mark_ws_event()
+            return
+        # Sunucu kapanışı: Binance dokümantasyonuna göre sunucu 24 saatte bir
+        # serverShutdown olayı gönderip bağlantıyı kapatır; yeni nesil hemen
+        # açılmalı.
+        if str(data.get("e") or "").lower() == "servershutdown":
+            print("[MarketData] serverShutdown alındı; yeni nesil başlatılıyor", flush=True)
+            self.reconnect_requested = True
+            return
+        # Bireysel bookTicker event'i (b/B/a/A skaler): depth yoksa dahi
+        # orderbook olarak işlenir.
+        if str(data.get("e") or "") == "bookTicker":
+            self._process_orderbook(data)
+            self._mark_ws_event()
+            return
+        # Event adına göre de ticker/miniTicker işle (raw stream veya stream
+        # alanı olmayan mesajlar için).
+        if str(data.get("e") or "") in {"24hrTicker", "24hrMiniTicker"}:
+            symbol = str(data.get("s") or "").upper()
+            price = float(data.get("c") or 0)
+            if symbol and price and price > 0:
+                tickers = dict(self.tickers)
+                tickers[symbol] = {
+                    "symbol": symbol,
+                    "last_price": price,
+                    "timestamp": int(data.get("E", time.time() * 1000) or time.time() * 1000),
+                    "source": "binance_tr_public_ws:ticker",
+                }
+                self.tickers = tickers
+                self._mark_ws_event()
+            return
+        if not stream:
+            self._process_kline(data)
+            return
+        # Bireysel ticker/miniTicker stream'leri kline şemasına uymaz; bunlar
+        # doğrudan canlı fiyat önbelleğine işlenir.
+        sig = stream.split("@")
+        if len(sig) == 2 and sig[1] in {"ticker", "miniTicker"} and isinstance(data, dict):
+            symbol = str(data.get("s") or sig[0] or "").upper()
+            price = float(data.get("c") or data.get("wrap") or 0)
+            if symbol and price and price > 0:
+                tickers = dict(self.tickers)
+                tickers[symbol] = {
+                    "symbol": symbol,
+                    "last_price": price,
+                    "timestamp": int(data.get("E", time.time() * 1000) or time.time() * 1000),
+                    "source": f"binance_tr_public_ws:{sig[1]}",
+                }
+                self.tickers = tickers
+                self._mark_ws_event()
+            return
         self._process_kline(data)
 
     def _process_kline(self, kline_data):
         event = kline_data.get("e")
-        if event in {"depthUpdate", "depth"} or "bids" in kline_data or isinstance(kline_data.get("b"), list):
+        if event in {"depthUpdate", "depth", "bookTicker"} or "bids" in kline_data \
+                or (isinstance(kline_data.get("b"), list) and isinstance(kline_data.get("a"), list)):
             self._process_orderbook(kline_data)
             self._mark_ws_event()
             return
@@ -667,17 +776,29 @@ class MarketData:
         symbol = str(data.get("s") or data.get("symbol") or stream_symbol or "").upper()
         bids = data.get("bids", data.get("b", []))
         asks = data.get("asks", data.get("a", []))
-        if not symbol or not isinstance(bids, list) or not isinstance(asks, list) or not bids or not asks:
+        # Bireysel bookTicker (b/B/a/A alanları skaler) burada işlenir.
+        if isinstance(bids, list) and not bids and isinstance(asks, list) and not asks:
             return
-        try:
-            top_bids = bids[:5]
-            top_asks = asks[:5]
-            bid_qty = sum(float(row[1]) for row in top_bids)
-            ask_qty = sum(float(row[1]) for row in top_asks)
-            bid = float(top_bids[0][0])
-            ask = float(top_asks[0][0])
-        except (TypeError, ValueError, IndexError):
+        if not symbol:
             return
+        if isinstance(bids, list) and isinstance(asks, list) and bids and asks:
+            try:
+                top_bids = bids[:5]
+                top_asks = asks[:5]
+                bid_qty = sum(float(row[1]) for row in top_bids)
+                ask_qty = sum(float(row[1]) for row in top_asks)
+                bid = float(top_bids[0][0])
+                ask = float(top_asks[0][0])
+            except (TypeError, ValueError, IndexError):
+                return
+        else:
+            try:
+                bid = float(data.get("b", 0) or 0)
+                ask = float(data.get("a", 0) or 0)
+                bid_qty = float(data.get("B", 0) or 0)
+                ask_qty = float(data.get("A", 0) or 0)
+            except (TypeError, ValueError):
+                return
         received_at = float(data.get("received_at", 0) or time.time())
         flow = self.orderflow[symbol]
         flow.update({

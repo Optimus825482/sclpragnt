@@ -12,7 +12,7 @@ from app.config import config
 from app import database
 from app.state import market, analyzer
 from app.api_common import _start_background, _fresh_public_price
-from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook
+from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook, ticker_price
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.market_intelligence import microstructure_snapshot
 from app.microflow import microflow
@@ -847,8 +847,9 @@ async def get_velocity_live_tracking():
             window = []
         # güncel fiyat: pencere içindeyse en son kapanmış mum, pencere bittiyse son fiyat
         try:
-            fresh = await fetch_klines(symbol, "1m", 2)
-            current_price = float(fresh[-1][4]) if fresh else None
+            fresh = await ticker_price([symbol])
+            row = next((r for r in fresh if str(r.get("symbol", "")).upper() == symbol), None)
+            current_price = float((row or {}).get("price") or 0) or None
         except Exception:
             current_price = None
         elapsed_sec = int((now_ms - created_ms) / 1000)
@@ -908,6 +909,20 @@ _velocity_auto_state = {"last_scan_at": None, "last_error": None, "opened": [],
                                       "microflow_yok": 0}}
 
 
+async def _velocity_24h_quote_volume(symbol: str) -> float | None:
+    """Sembolün 24s quoteVolume'unu döndürür (cache öncelikli, tek istek)."""
+    cached = float((market.ticker_24h or {}).get(str(symbol).upper(), 0) or 0)
+    if cached > 0:
+        return cached
+    try:
+        rows24 = await ticker_24h([symbol])
+        return next((float(r.get("quoteVolume", 0) or 0) for r in rows24
+                     if str(r.get("symbol", "")).upper() == symbol), None)
+    except Exception as exc:
+        logger.warning("24h quoteVolume %s: %s", symbol, exc)
+        return None
+
+
 async def _velocity_rest_liquidity_ok(symbol: str, order_value: float) -> tuple[bool, str | None]:
     """Hız avcısı için REST tabanlı likidite kapısı.
 
@@ -935,8 +950,11 @@ async def _velocity_rest_liquidity_ok(symbol: str, order_value: float) -> tuple[
     except Exception as exc:
         return False, f"orderbook_hata:{type(exc).__name__}"
     try:
-        gainers = await top_gainers(50)
-        qv = next((float(g["quoteVolume"]) for g in gainers if g["symbol"] == symbol), None)
+        rows24 = await ticker_24h([symbol])
+        qv = next((float(r.get("quoteVolume", 0) or 0) for r in rows24
+                   if str(r.get("symbol", "")).upper() == symbol), None)
+        if qv is None:
+            qv = await _velocity_24h_quote_volume(symbol)
         if qv is not None and qv < config.MIN_24H_QUOTE_VOLUME_TRY:
             return False, f"24s_hacim_dusuk:{qv:.0f}TRY"
     except Exception:
@@ -953,7 +971,7 @@ async def _hydrate_market_cache_for(symbol: str):
     1m kline geçmişini ve orderbook akışını önbelleğe işler.
     """
     try:
-        rows = await ticker_24h()
+        rows = await ticker_24h([symbol])
         row = next((r for r in rows if str(r.get("symbol", "")).upper() == symbol), None)
         if row:
             qv = float(row.get("quoteVolume", 0) or 0)
@@ -1091,8 +1109,7 @@ async def _open_velocity_position(candidate: dict) -> dict:
     if guard_reason:
         return {"symbol": symbol, "status": "SKIPPED", "reason": guard_reason}
     try:
-        latest = await fetch_klines(symbol, "1m", 2)
-        price = float(latest[-1][4]) if latest else None
+        price, _ = await _fresh_public_price(symbol)
     except Exception:
         price = None
     if not price:
