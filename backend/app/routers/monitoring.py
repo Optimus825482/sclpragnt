@@ -113,14 +113,14 @@ def _in_quiet_hours(settings) -> bool:
 
 
 def _effective_min_score(settings) -> float:
-    """O an gerçekten uygulanan eşik: admin min_score + RISK_OFF rejim çarpanı.
+    """O an gerçekten uygulanan eşik: doğrudan admin min_score.
 
-    Admin ayarı bozulmadan riskli piyasada daha seçici davranılır; bu değer
-    admin ekranında etkin eşik olarak gösterilir (2026-09-04).
+    RISK_OFF 1.5× gizli çarpanı kaldırıldı (2026-09-04 kullanıcı kararı):
+    admin'in girdiği değer radar listesi, bildirim, otonom tarama ve raporlarda
+    aynen uygulanır — ekranda gösterilen sayı ile fiilen uygulanan sayı her
+    koşulda birebir aynıdır.
     """
     base = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
-    if _monitoring_state.get("risk_off"):
-        base *= float(config.MONITORING_RISK_OFF_SCORE_MULT)
     return round(min(100.0, base), 1)
 
 
@@ -269,11 +269,9 @@ async def _notify(candidates_list, settings) -> list:
     """
     if not settings.get("enabled", True):
         return []
-    # Etkin eşik: admin min_score + RISK_OFF rejim çarpanı (ayarı bozmadan
-    # riskli piyasada daha seçici davranır).
-    min_score = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
-    if _monitoring_state.get("risk_off"):
-        min_score *= float(config.MONITORING_RISK_OFF_SCORE_MULT)
+    # Tek eşik: admin min_score aynen uygulanır (RISK_OFF çarpanı kaldırıldı,
+    # 2026-09-04 kullanıcı kararı — tek kaynak _effective_min_score).
+    min_score = _effective_min_score(settings)
     quiet = _in_quiet_hours(settings)
     now = time.time()
     notified = []
@@ -468,6 +466,7 @@ async def _run_scan() -> dict:
                      "velocity_score": r.get("velocity_score"),
                      "upside_rank": round(upside_rank_score(r, touch_rates), 2),
                      "passes": bool(r.get("passes")),
+                     "block_reason": r.get("block_reason"),
                      "rsi": r.get("rsi"), "mfi": r.get("mfi"), "atr_pct": r.get("atr_pct"),
                      "m5_pattern_ok": r.get("m5_pattern_ok"), "leading_ok": r.get("leading_ok")}
             for h, r in profs.items()
@@ -515,9 +514,8 @@ async def _run_scan() -> dict:
         _monitoring_state["watchlist_seen_at"].setdefault(sym, now)
 
     # Rejim: RISK_OFF bayrağı — hafif yerel ölçüm (BTC/ETH 1h trend + 5m katılımı).
-    # Pahalı snapshot taraması çağrılmaz; fail-open: hesaplanamazsa normal eşik.
-    # Yorum (2026-09-04): risk_off=True => piyasa riskli kabul edilir ve _notify
-    # etkin eşiği RISK_OFF_SCORE_MULT ile yükseltir (riskliyken daha seçici).
+    # 2026-09-04: bayrağın eşikle ilişkisi kaldırıldı (çarpan yok); yalnızca
+    # gözlem amaçlı API'de raporlanmaya devam eder.
     try:
         risk_score = 0
         for ref in ("BTC_TRY", "ETH_TRY"):
