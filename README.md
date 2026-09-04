@@ -37,7 +37,6 @@ Eski 7.000+ satırlık `app/main.py` monoliti FastAPI `APIRouter` modüllerine b
 | `app/routers/llm_chat.py` | LLM sohbet, market tarama, chat auto-trade |
 | `app/routers/velocity.py` | Hız Avcısı (velocity) aday takibi ve otonom paper girişler |
 | `app/routers/maintenance.py` | Backfill, replay-parity, strateji replay işleri |
-| `app/routers/a2a.py` | Agent-to-agent mesajlaşma döngüleri ve rotaları |
 | `app/routers/system.py` | Sağlık, memory, migration sistem rotaları |
 | `app/routers/reports.py` | Salt-okunur rapor endpoint'leri |
 | `app/routers/backtest.py` | Backtest çalıştırma/robustness rotaları |
