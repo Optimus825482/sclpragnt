@@ -2160,6 +2160,50 @@ async def get_monitoring_velocity_matches(limit: int = 200, day: str | None = No
             matches.append(item)
         return matches
     return await _run_db(op)
+
+
+async def get_pending_monitoring_notification(symbol: str) -> dict | None:
+    """Sembol icin sonuclanmamis (BEKLIYOR) bildirimlerini getir.
+    
+    En yeni bildirim ve toplam BEKLIYOR sayisi doner.
+    Eski bildirimler icin ID'ler de doner (silinmek uzere).
+    """
+    def op(conn):
+        rows = conn.execute(
+            "SELECT id, symbol, score, target_pct, price, expected_price, "
+            "horizon_minutes, detected_at, mode "
+            "FROM monitoring_notifications "
+            "WHERE symbol=%s "
+            "ORDER BY detected_at DESC",
+            (str(symbol).upper(),)
+        ).fetchall()
+        if not rows:
+            return None
+        latest = dict(rows[0])
+        old_ids = [row[0] for row in rows[1:]]  # En yeni haric tum ID'ler
+        latest["old_ids"] = old_ids
+        latest["total_pending"] = len(rows)
+        return latest
+    return await _run_db(op)
+
+
+
+async def update_monitoring_notification(
+    notif_id: int, score: float, target_pct: float, price: float,
+    expected_price: float, detected_at: float, horizon_minutes: int, mode: str | None,
+) -> bool:
+    def op(conn):
+        conn.execute(
+            "UPDATE monitoring_notifications SET "
+            "score=%s, target_pct=%s, price=%s, expected_price=%s, "
+            "detected_at=%s, horizon_minutes=%s, mode=%s "
+            "WHERE id=%s",
+            (score, target_pct, price, expected_price, detected_at, horizon_minutes, mode, notif_id)
+        )
+        conn.commit()
+        return True
+    return await _run_db(op)
+
 async def list_monitoring_notifications(limit=50):
     """En son monitoring bildirimlerini döndür (yeni -> eski)."""
     def op(conn):
