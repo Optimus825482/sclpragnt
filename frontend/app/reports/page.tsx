@@ -746,6 +746,7 @@ function UserRadarTab() {
     return d.toISOString().slice(0, 10);
   });
   const [search, setSearch] = useState("");
+  const [minScore, setMinScore] = useState<number | null>(null);
   const [sortKey, setSortKey] = useState<string>("detected_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(0);
@@ -775,6 +776,15 @@ function UserRadarTab() {
   }, [day]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Global admin eşiği: bu sekmedeki liste backend'de zaten bu eşiğe göre
+  // filtrelenir; eşik değeri burada bilgi amaçlı gösterilir (2026-09-04).
+  useEffect(() => {
+    apiRequest(`${API_BASE}/api/monitoring/settings`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setMinScore(d.min_score != null ? Number(d.min_score) : null))
+      .catch(() => undefined);
+  }, []);
 
   const toggleSort = (key: string) => {
     if (sortKey === key) {
@@ -889,6 +899,11 @@ function UserRadarTab() {
       <section className="card">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="eyebrow text-neon-green">RADAR TESPITLERI ({filtered.length})</p>
+          {minScore != null && (
+            <p className="mt-0.5 font-mono text-[10px] text-bunker-muted">
+              Global bildirim eşiği: SKOR ≥ {Math.round(minScore)} · Yalnızca bu eşiği geçen bildirimler listelenir ve başarı hesabına katılır (ayar: Ayarlar sayfası, admin).
+            </p>
+          )}
           <div className="flex items-center gap-2">
             <input
               value={search}

@@ -278,6 +278,47 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(parsed["min_score"], 2.5)
         self.assertEqual(parsed["min_target_pct"], 4.0)
 
+    async def test_settings_put_merges_partial_payload(self):
+        """Sadece min_score gönderildiğinde diğer ayarlar korunmalı (merge).
+
+        Önceki tam-değiştir davranışında eşiği kaydeden her istek
+        min_target_pct/quiet_hours/enabled'ı varsayılana sıfırlıyordu
+        (2026-09-04 teşhis).
+        """
+        from app.routers import monitoring
+        from app import database
+
+        saved = {}
+
+        async def fake_get(key, default=None):
+            return '{"enabled": false, "min_score": 60, "min_target_pct": 3.5, "quiet_hours_start": "23:00", "quiet_hours_end": "07:00"}'
+
+        async def fake_set(key, value):
+            saved[key] = value
+
+        with patch.object(database, "get_llm_setting", side_effect=fake_get), \
+             patch.object(database, "set_llm_setting", side_effect=fake_set), \
+             patch("app.main._require_admin", return_value=None):
+            result = await monitoring.update_monitoring_settings({"min_score": 80}, request=None)
+        import json
+        parsed = json.loads(saved["monitoring_notification_settings"])
+        self.assertEqual(parsed["min_score"], 80)
+        self.assertEqual(parsed["min_target_pct"], 3.5)
+        self.assertEqual(parsed["enabled"], False)
+        self.assertEqual(parsed["quiet_hours_start"], "23:00")
+        self.assertEqual(result["min_score"], 80)
+
+    async def test_stored_panel_score_scale_aware(self):
+        """Eski ham kayıtlar tek kez normalize edilir; yeni panel kayıtları aynen kalır."""
+        from app.routers import monitoring
+
+        # Eski kayıt (cutoff öncesi): ham 20 -> normalize(20)=50
+        old_row = {"score": 20, "detected_at": 1788534693 - 1}
+        self.assertAlmostEqual(monitoring._stored_panel_score(old_row), 50.0, places=1)
+        # Yeni kayıt (cutoff sonrası): panel skoru dokunulmaz — çift normalize edilmez
+        new_row = {"score": 55, "detected_at": 1788534693 + 1}
+        self.assertAlmostEqual(monitoring._stored_panel_score(new_row), 55.0, places=1)
+
     async def test_reset_notifications_requires_admin(self):
         """reset-notifications admin olmadan çalışmaz."""
         from app.routers import monitoring

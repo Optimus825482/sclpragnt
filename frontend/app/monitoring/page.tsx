@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
 
 type NotificationSettings = {
@@ -23,6 +24,7 @@ type ProfileInfo = {
 type Candidate = {
   symbol: string;
   velocity_score: number;
+  panel_score?: number | null;
   upside_rank?: number | null;
   target_pct: number;
   price: number;
@@ -42,6 +44,10 @@ type MonitoringState = {
 };
 
 const SCAN_INTERVAL_MS = 30_000;
+// Backend normalize_score cap'ı (MONITORING_SCORE_NORM_CAP): ham velocity_score
+// bu değere bölünüp 0-100 panel ölçeğine çevrilir. Backend artık panel_score
+// alanını gönderir; eski yanıt.cache'leri için burada da hesaplanır.
+const SCORE_NORM_CAP = 40;
 
 const fmtTime = (ts: number | null) => {
   if (!ts) return "—";
@@ -54,9 +60,18 @@ const fmtPrice = (value: number | undefined, symbol?: string) => {
   return Number(value).toLocaleString("tr-TR", { maximumFractionDigits: digits });
 };
 
+// Panel (0-100) ölçeği: admin eşiği ve bildirim skoru bu ölçekte; ham
+// velocity_score (0-200+) arayüzde artık gösterilmez (2026-09-04).
+const panelScore = (c: { panel_score?: number | null; velocity_score?: number | null }) => {
+  const p = Number(c.panel_score);
+  if (Number.isFinite(p) && c.panel_score != null) return p;
+  const raw = Number(c.velocity_score) || 0;
+  return Math.round(100 * Math.min(1, raw / SCORE_NORM_CAP) * 10) / 10;
+};
+
 const scoreColor = (score: number) => {
-  if (score >= 4.0) return "text-neon-green";
-  if (score >= 2.0) return "text-yellow-300";
+  if (score >= 70) return "text-neon-green";
+  if (score >= 50) return "text-yellow-300";
   return "text-neon-red";
 };
 
@@ -79,7 +94,7 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
         <div className="grid grid-cols-2 gap-3 p-5">
           <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
             <p className="eyebrow">SKOR</p>
-            <p className={`mt-1 font-mono text-lg font-bold ${scoreColor(Number(c.velocity_score) || 0)}`}>{(Number(c.velocity_score) || 0).toFixed(1)}</p>
+            <p className={`mt-1 font-mono text-lg font-bold ${scoreColor(panelScore(c))}`}>{panelScore(c).toFixed(1)}</p>
           </div>
           <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 px-3 py-2 text-center">
             <p className="eyebrow text-sky-300">UPSIDE SIRA</p>
@@ -118,7 +133,7 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
                 <div key={p.horizon_minutes} className={`flex items-center justify-between rounded border px-2.5 py-1.5 font-mono text-[11px] ${p.passes ? "border-neon-green/30 bg-neon-green/5" : "border-bunker-800 bg-bunker-900/40"}`}>
                   <span className="font-bold text-white">{p.horizon_minutes}dk</span>
                   <span className="text-bunker-muted">hedef <b className="text-neon-green">+%{Number(p.target_pct ?? 0).toFixed(1)}</b></span>
-                  <span className="text-bunker-muted">skor <b className="text-white">{Number(p.velocity_score ?? 0).toFixed(1)}</b></span>
+                  <span className="text-bunker-muted">skor <b className="text-white">{panelScore({ velocity_score: p.velocity_score }).toFixed(1)}</b></span>
                   <span className={p.passes ? "text-neon-green" : "text-bunker-muted"}>{p.passes ? "GEÇTİ" : "İZLE"}</span>
                 </div>
               ))}
@@ -140,7 +155,11 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
 };
 
 export default function MonitoringPage() {
+  const { role } = useAuth();
+  const isAdmin = role === "admin";
   const [state, setState] = useState<MonitoringState>({ last_scan_at: null, scan_count: 0, candidates: [], watchlist: [] });
+  const [riskOff, setRiskOff] = useState(false);
+  const [effectiveMinScore, setEffectiveMinScore] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
   // Eşik artık global admin ayarı: kullanıcı yalnız GÖRÜR, değiştiremez.
   const [settings, setSettings] = useState<NotificationSettings>({ enabled: true, min_score: 50, min_target_pct: 2.0, quiet_hours_start: null, quiet_hours_end: null });
@@ -153,6 +172,8 @@ export default function MonitoringPage() {
       if (res.ok) {
         const data = await res.json();
         setSettings({ enabled: data.enabled ?? true, min_score: data.min_score ?? 50, min_target_pct: data.min_target_pct ?? 2.0, quiet_hours_start: data.quiet_hours_start ?? null, quiet_hours_end: data.quiet_hours_end ?? null });
+        setRiskOff(Boolean(data.risk_off));
+        setEffectiveMinScore(data.effective_min_score != null ? Number(data.effective_min_score) : null);
       }
     } catch { /* varsayılan */ }
   }, []);
@@ -165,6 +186,8 @@ export default function MonitoringPage() {
         const data = await res.json();
         setState({ last_scan_at: data.scan_at, scan_count: data.scan_count, candidates: data.candidates || [], watchlist: data.watchlist || [] });
         if (data.settings) setSettings({ enabled: data.settings.enabled ?? true, min_score: data.settings.min_score ?? 50, min_target_pct: data.settings.min_target_pct ?? 2.0, quiet_hours_start: data.settings.quiet_hours_start ?? null, quiet_hours_end: data.settings.quiet_hours_end ?? null });
+        setRiskOff(Boolean(data.risk_off));
+        setEffectiveMinScore(data.effective_min_score != null ? Number(data.effective_min_score) : null);
       }
     } catch { /* sessiz */ } finally { setScanning(false); }
   }, []);
@@ -174,10 +197,19 @@ export default function MonitoringPage() {
     apiRequest(`${API_BASE}/api/monitoring/state`, { cache: "no-store" }).then((r) => r.json()).then((data) => {
       setState({ last_scan_at: data.last_scan_at, scan_count: data.scan_count, candidates: data.candidates || [], watchlist: data.watchlist || [] });
       if (data.settings) setSettings({ enabled: data.settings.enabled ?? true, min_score: data.settings.min_score ?? 50, min_target_pct: data.settings.min_target_pct ?? 2.0, quiet_hours_start: data.settings.quiet_hours_start ?? null, quiet_hours_end: data.settings.quiet_hours_end ?? null });
+      setRiskOff(Boolean(data.risk_off));
+      setEffectiveMinScore(data.effective_min_score != null ? Number(data.effective_min_score) : null);
     }).catch(() => {});
     scanTimerRef.current = setInterval(runScan, SCAN_INTERVAL_MS);
     return () => { if (scanTimerRef.current) clearInterval(scanTimerRef.current); };
   }, [runScan, loadSettings]);
+
+  // Etkin eşik: RISK_OFF rejiminde admin eşiği 1.5× uygulanır (backend ile aynı).
+  const effThreshold = effectiveMinScore != null
+    ? effectiveMinScore
+    : Math.min(100, Math.round(settings.min_score * (riskOff ? 1.5 : 1)));
+  // Eşik altı adaylar listede gizlenir (backend de filtreler; bu ikinci emniyet).
+  const visibleCandidates = state.candidates.filter((c) => panelScore(c) >= effThreshold);
 
   return (
     <main className="page-shell">
@@ -188,8 +220,12 @@ export default function MonitoringPage() {
           <p className="mt-1 text-sm text-bunker-muted">Yüksek potansiyelli sembolleri tarar, uygun olanları bildirir.</p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <span className="ui-button ui-button-secondary pointer-events-none" title="Bildirim eşiği sistem yöneticisi tarafından ayarlanır (global)">
-            ⚖️ EŞİK: SKOR ≥ {Math.round(settings.min_score)} · GLOBAL
+          {/* Etkin eşik yalnız admin ekranında gösterilir: RISK_OFF rejiminde
+              admin eşiği 1.5× çarpanla uygulanır, kullanıcı bunu görmez. */}
+          <span className="ui-button ui-button-secondary pointer-events-none" title={isAdmin && riskOff ? `Riskli rejim: admin eşiği ${Math.round(settings.min_score)} × 1.5 = ${effThreshold}` : "Bildirim eşiği sistem yöneticisi tarafından ayarlanır (global)"}>
+            {isAdmin && riskOff
+              ? `⚖️ EŞİK: SKOR ≥ ${effThreshold} · RISK-OFF (≥${Math.round(settings.min_score)}×1.5) · GLOBAL`
+              : `⚖️ EŞİK: SKOR ≥ ${Math.round(settings.min_score)} · GLOBAL`}
           </span>
           <button onClick={runScan} disabled={scanning} className="ui-button ui-button-primary">{scanning ? "TARANIYOR…" : "ŞİMDİ TARA"}</button>
         </div>
@@ -201,16 +237,16 @@ export default function MonitoringPage() {
       <div className="grid grid-cols-3 gap-3">
         <div className="card"><p className="eyebrow">Son Tarama</p><p className="mt-2 font-mono text-lg text-white">{fmtTime(state.last_scan_at)}</p></div>
         <div className="card"><p className="eyebrow">Tarama Sayısı</p><p className="mt-2 font-mono text-lg text-white">{state.scan_count}</p></div>
-        <div className="card"><p className="eyebrow">Aday Sayısı</p><p className="mt-2 font-mono text-lg text-neon-green">{state.candidates.length}</p></div>
+        <div className="card"><p className="eyebrow">Aday Sayısı</p><p className="mt-2 font-mono text-lg text-neon-green">{visibleCandidates.length}</p></div>
       </div>
 
       <section className="card">
-        <p className="eyebrow text-neon-green">🎯 UYGUN ADAYLAR ({state.candidates.length})</p>
-        {state.candidates.length === 0 ? (
-          <p className="mt-3 text-sm text-bunker-muted">Henüz uygun aday yok. Tarama devam ediyor…</p>
+        <p className="eyebrow text-neon-green">🎯 UYGUN ADAYLAR ({visibleCandidates.length})</p>
+        {visibleCandidates.length === 0 ? (
+          <p className="mt-3 text-sm text-bunker-muted">Eşiği geçen aday yok (eşik: skor ≥ {effThreshold}). Tarama devam ediyor…</p>
         ) : (
           <div className="mt-3 space-y-2">
-            {state.candidates.map((c, i) => {
+            {visibleCandidates.map((c, i) => {
               const targetPct = Number(c.target_pct) > 0 ? Number(c.target_pct) : Number(c.ml_target_pct);
               const validTarget = Number.isFinite(targetPct) && targetPct > 0;
               const mlActive = Number(c.ml_target_pct) > 0 && c.ml_hit_probability != null;
@@ -228,7 +264,7 @@ export default function MonitoringPage() {
                     </div>
                     <div className="text-right">
                       <p className="font-mono text-xs text-bunker-muted">SKOR</p>
-                      <p className={`font-mono text-sm font-bold ${scoreColor(Number(c.velocity_score) || 0)}`}>{(Number(c.velocity_score) || 0).toFixed(1)}</p>
+                      <p className={`font-mono text-sm font-bold ${scoreColor(panelScore(c))}`}>{panelScore(c).toFixed(1)}</p>
                     </div>
                     <div className="text-right">
                       <p className="font-mono text-xs text-bunker-muted">HEDEF</p>
@@ -252,7 +288,7 @@ export default function MonitoringPage() {
                 <span className="font-mono text-sm font-bold text-white">{w.symbol}</span>
                 <span className="flex items-center gap-3">
                   <span className="font-mono text-xs text-sky-300" title="Upside sıra">{(Number(w.upside_rank) || 0).toFixed(1)}</span>
-                  <span className={`font-mono text-sm font-bold ${scoreColor(Number(w.velocity_score) || 0)}`}>{(Number(w.velocity_score) || 0).toFixed(1)}</span>
+                  <span className={`font-mono text-sm font-bold ${scoreColor(panelScore(w))}`}>{panelScore(w).toFixed(1)}</span>
                 </span>
               </button>
             ))}

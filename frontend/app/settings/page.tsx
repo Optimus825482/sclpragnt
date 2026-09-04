@@ -729,7 +729,7 @@ function SettingsPageInner() {
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="eyebrow">MONİTORİNG MİNİMUM SKOR</p>
-                <p className="text-xs text-bunker-muted mt-1">Bildirim gönderme eşiği (global). Bu değerin altındaki adaylar bildirilmez ve raporlara katılmaz. Mevcut: {monitoringMinScore ?? "—"}.</p>
+                <p className="text-xs text-bunker-muted mt-1">Bildirim gönderme eşiği (0-100 panel skoru, global). Bu değerin altındaki adaylar bildirilmez, radar listesinde gösterilmez ve raporlara katılmaz. Riskli (RISK-OFF) rejimde eşik 1.5× uygulanır ve etkin değer monitoring sayfasında gösterilir. Mevcut: {monitoringMinScore ?? "—"}.</p>
               </div>
               <div className="flex items-center gap-2">
                 <input type="number" min={0} max={100} step={1} value={monitoringMinScoreInput} onChange={(e) => setMonitoringMinScoreInput(e.target.value === "" ? "" : String(Number(e.target.value)))} className="w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none" />

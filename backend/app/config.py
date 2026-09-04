@@ -167,6 +167,11 @@ class Config:
     MONITORING_DEBOUNCE_SCANS = max(1, int(os.getenv("MONITORING_DEBOUNCE_SCANS", "2")))
     # Piyasa rejimi RISK_OFF iken etkin eşik bu çarpanla yükseltilir.
     MONITORING_RISK_OFF_SCORE_MULT = float(os.getenv("MONITORING_RISK_OFF_SCORE_MULT", "1.5"))
+    # Bu andan itibaren monitoring bildirim skoru panel (0-100) ölçeğinde yazılır
+    # (06d6a4d, 2026-09-04 18:11 +03). Öncesindeki kayıtlar ham velocity_score'tur;
+    # rapor filtresi eski kayıtları tek kez normalize eder. Çift normalize uygulamak
+    # eşiği fiilen 2.5× gevşetiyordu (panel 50 -> etkin 20), 2026-09-04 teşhis.
+    MONITORING_SCORE_NORM_SINCE = float(os.getenv("MONITORING_SCORE_NORM_SINCE", "1788534693"))
     # Skor-bantlı dinamik hedef: "skor_esigi:hedef_pct" çiftleri virgülle; yüksekten
     # düşüğe ilk eşleşen bant hedefi belirler (0 dönerse profil baz hedefi kalır).
     MONITORING_TARGET_SCORE_TIERS = os.getenv("MONITORING_TARGET_SCORE_TIERS", "70:4.0,50:3.0")
