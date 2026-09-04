@@ -6,7 +6,7 @@ import time
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database
@@ -732,8 +732,10 @@ async def get_velocity_report(limit: int = 60):
 
 
 @router.delete("/api/reports/velocity/{candidate_id}")
-async def delete_velocity_candidate(candidate_id: str):
+async def delete_velocity_candidate(candidate_id: str, request: Request = None):
     """Journal temizliği: geçersiz/ölü sembol kaydını raporlardan kaldırır."""
+    from app.main import _require_admin
+    _require_admin(request)
     deleted = await database.delete_velocity_candidates([candidate_id])
     if not deleted:
         raise HTTPException(status_code=404, detail="Kayıt bulunamadı")
@@ -783,9 +785,11 @@ async def remeasure_velocity_candidate(candidate_id: str):
 
 
 @router.post("/api/reports/velocity/remeasure-all")
-async def remeasure_all_velocity():
+async def remeasure_all_velocity(request: Request = None):
     """Journal'daki tüm ölçülmüş kayıtları yeniden ölçer (sunucu saati/veri
     tutarsızlıklarını topluca gidermek için)."""
+    from app.main import _require_admin
+    _require_admin(request)
     rows = await database.get_velocity_candidates(limit=300)
     remeasured, failed = 0, []
     for candidate in rows:

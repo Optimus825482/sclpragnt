@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 from app.config import config
 from app import database
 from app.state import market, analyzer
-from app.api_common import (_start_background, _record_strategy_scan_log, _fresh_public_price, _main_pg_pool, _llm_guard_block_reason)
+from app.api_common import (_start_background, _fresh_public_price, _main_pg_pool, _llm_guard_block_reason)
 from app.routers.llm_position_tools import (LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL,
                             LLM_CLOSE_POSITION_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
                             LLM_LIST_SYMBOL_GUARDS_TOOL)

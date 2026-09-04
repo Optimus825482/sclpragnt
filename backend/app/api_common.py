@@ -8,7 +8,6 @@ from app.config import config
 from app import database
 from app.correlation import cluster_exposure
 from app.binance_tr_public import orderbook, ticker_price
-from collections import deque
 from app.binance_tr_public import klines as fetch_klines
 from app.state import market, analyzer
 
@@ -23,20 +22,29 @@ _radar_response_cache = {"generated_at": 0.0, "result": None}
 # deque maxlen ile bounded ama async-safe değil — concurrent await noktalarında
 # tutarsız davranabilir. logging modülü thread-safe olduğu için print logları
 # yerine structured logging kullanılmalıdır.
-_strategy_scan_logs = deque(maxlen=5000)
 
 _background_tasks = set()
+# Her background görev için kalıcı restart sayacı — _respawn içinde tekrar
+# _start_background çağrıldığında sıfırlanmaması için modül seviyesinde tutulur.
+_restart_counters: dict[str, int] = {}
+# Tek seferlik (single-pass) görev isimleri seti: bunlar tamamlandığında
+# yeniden başlatılmırlar, sıfırlama görev bitiminde yapılır.
+_single_pass_tasks: set[str] = set()
 
-def _start_background(coro, name):
-    """Başlat ve supervisors manual da olsa, hata ile biterse sınırlı geri alımla yeniden başlat.
+def _start_background(coro, name, single_pass=False):
+    """Başlat ve supervisor, hata ile biterse sınırlı geri alımla yeniden başlat.
 
     Uzun ömürlü background döngüleri (strategy, radar, broadcast, ...) iç
     try/except ile kendi hatalarını yutacak şekilde yazılır. Yine de beklenmeyen
     bir istisna düşürülürse görev, CancelledError dışındaki hatalarda sonlu bir
     geri alımla (backoff) yeniden oluşturulur; böylece tek seferlik görevlerin
     doğal tamamlanması yeniden başlatılmaz.
+
+    single_pass=True olan görevler bittiğinde restart sayacı sıfırlanır ve
+    yeniden başlatılmaz.
     """
-    restart_attempt = {"count": 0}
+    if single_pass:
+        _single_pass_tasks.add(name)
 
     def _restart_if_failed(task):
         _background_tasks.discard(task)
@@ -44,53 +52,30 @@ def _start_background(coro, name):
             return
         exc = task.exception()
         if not exc:
-            # normal tamamlama (single-pass görevleri); yeniden başlatma yok.
-            restart_attempt["count"] = 0
+            # Normal tamamlama: tek seferlik görev ise sayacı sıfırla, değilse de sıfırla.
+            _restart_counters.pop(name, None)
             return
         # Beklenmeyen hata: sonlu geri alımla yeniden başlat.
-        restart_attempt["count"] += 1
-        delay = min(2 * restart_attempt["count"], 30)
-        logger.error("background görev '%s' hata ile düştü (%s); %.0fs sonra yeniden deneniyor.",
-                     name, exc, delay, exc_info=True)
+        if name in _single_pass_tasks:
+            _single_pass_tasks.discard(name)
+            _restart_counters.pop(name, None)
+            logger.warning("tek seferlik görev '%s' hata ile düştü, yeniden başlatılmıyor: %s", name, exc, exc_info=True)
+            return
+        current = _restart_counters.get(name, 0) + 1
+        _restart_counters[name] = current
+        delay = min(2 * current, 30)
+        logger.error("background görev '%s' hata ile düştü (%s); deneme %d, %.0fs sonra yeniden deneniyor.",
+                     name, exc, current, delay, exc_info=True)
         async def _respawn():
             await asyncio.sleep(delay)
             _start_background(coro, name)
-        asyncio.create_task(_respawn(), name=f"{name}-respawn")
+        respawn_task = asyncio.create_task(_respawn(), name=f"{name}-respawn")
+        _background_tasks.add(respawn_task)
 
     task = asyncio.create_task(coro, name=name)
     _background_tasks.add(task)
     task.add_done_callback(_restart_if_failed)
     return task
-
-def _record_strategy_scan_log(scan_type: str, symbol: str, status: str, **details):
-    """Keep a bounded UI log and durable replay-parity evidence.
-
-    The durable record is observational only.  It does not alter an entry,
-    exit, portfolio balance, or strategy setting; it gives a later replay the
-    exact decision context that public historical candles cannot otherwise
-    reconstruct (universe, M1 activity and current portfolio state).
-    """
-    entry = {
-        "timestamp": time.time(),
-        "scan_type": scan_type,
-        "symbol": symbol,
-        "status": status,
-        **details,
-    }
-    _strategy_scan_logs.appendleft(entry)
-    if scan_type in {"automatic", "manual", "pump_monitor"}:
-        try:
-            from app.routers.maintenance import _persist_replay_parity_observation
-            asyncio.get_running_loop().create_task(
-                _persist_replay_parity_observation(dict(entry)),
-                name=f"replay-parity-{scan_type}-{symbol}",
-            )
-        except RuntimeError:
-            # This helper is also used by a few synchronous tests before the
-            # application event loop exists.  The bounded in-memory log still
-            # remains available in that case.
-            pass
-    return entry
 
 async def _fresh_public_price(symbol: str):
     """Return a fresh public price, repairing stale websocket state via REST.

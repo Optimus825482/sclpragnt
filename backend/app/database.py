@@ -104,8 +104,6 @@ def _hybrid_row_factory(cursor):
     names = [col.name for col in cursor.description]
     return lambda values: _HybridRow(zip(names, values))
 
-def _postgres_enabled(): return True
-
 def _db_timestamp():
     return datetime.now(timezone.utc)
 
@@ -193,11 +191,8 @@ async def init_db():
 async def ensure_default_scalper_skill():
     """Keep the built-in trade manager visible in the active database skill registry."""
     def op(conn):
-        if _postgres_enabled():
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_skills_name ON llm_skills(name)")
-            enabled_literal = "TRUE"
-        else:
-            enabled_literal = "1"
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_skills_name ON llm_skills(name)")
+        enabled_literal = "TRUE"
         conn.execute(
             f"INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,{enabled_literal},?) "
             "ON CONFLICT(name) DO NOTHING",
@@ -205,63 +200,6 @@ async def ensure_default_scalper_skill():
         )
         conn.commit()
     return await _run_db(op)
-
-def _backfill_position_strategy(conn):
-    """strategy NULL olan açık pozisyonlara UT ata (eski kayıtlar)."""
-    conn.execute("UPDATE positions SET strategy='UT' WHERE strategy IS NULL")
-
-def _recalculate_wallet(conn):
-    """TRY bakiyesini trades + açık pozisyonlardan yeniden hesapla (komisyon dahil)."""
-    start = config.INITIAL_BALANCE_TRY
-    spent = conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM trades").fetchone()[0]
-    comm = conn.execute("SELECT COALESCE(SUM(commission),0) FROM trades").fetchone()[0]
-    received = conn.execute("SELECT COALESCE(SUM(exit_price*quantity),0) FROM trades").fetchone()[0]
-    open_cost = conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0]
-    open_entry_commission = open_cost * config.COMMISSION_PCT
-    try_balance = start - spent - comm + received - open_cost - open_entry_commission
-    conn.execute("UPDATE virtual_wallet SET amount=? WHERE asset='TRY'", (try_balance,))
-
-def _backfill_commission(conn):
-    """commission NULL olan eski kayıtlara geriye dönük komisyon hesapla."""
-    rows = conn.execute(
-        "SELECT * FROM trades WHERE commission IS NULL"
-    ).fetchall()
-    for t in rows:
-        buy_notional = t["entry_price"] * t["quantity"]
-        sell_notional = t["exit_price"] * t["quantity"]
-        commission = (buy_notional + sell_notional) * config.COMMISSION_PCT
-        pnl = t["pnl"] - commission
-        pnl_pct = (pnl / buy_notional) * 100 if buy_notional else 0.0
-        conn.execute(
-            "UPDATE trades SET commission=?, pnl=?, pnl_pct=? WHERE id=?",
-            (commission, pnl, pnl_pct, t["id"])
-        )
-
-def _migrate_old_trades(conn):
-    """trades tablosu oluşmadan önce kapanan işlemleri signals'tan geriye dönük aktar."""
-    if conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] > 0:
-        return  # zaten aktarılmış
-    closes = conn.execute(
-        "SELECT * FROM signals WHERE action LIKE 'CLOSE%' ORDER BY timestamp ASC"
-    ).fetchall()
-    for c in closes:
-        sym = c["symbol"]
-        # aynı sembolün en son BUY/SELL sinyalini giriş olarak bul
-        entry = conn.execute(
-            "SELECT * FROM signals WHERE symbol=? AND action IN ('BUY_SIGNAL','SELL_SIGNAL') AND timestamp < ? ORDER BY timestamp DESC LIMIT 1",
-            (sym, c["timestamp"])
-        ).fetchone()
-        if not entry:
-            continue
-        side = "LONG" if entry["action"] == "BUY_SIGNAL" else "SHORT"
-        qty = config.DEFAULT_ORDER_USDT / entry["price"] if entry["price"] else 0.0
-        pnl = (c["price"] - entry["price"]) * qty
-        pnl_pct = ((c["price"] - entry["price"]) / entry["price"]) * 100 if entry["price"] else 0.0
-        conn.execute(
-            "INSERT INTO trades (symbol, strategy, side, entry_price, exit_price, quantity, pnl, pnl_pct, entry_time, exit_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (sym, "UT", side, entry["price"], c["price"], qty, pnl, pnl_pct, entry["timestamp"], c["timestamp"])
-        )
-
 
 async def reset_trading_data():
     """Eski paper-trading/strateji geçmişini temizle ve cüzdanı sıfırla.
@@ -517,27 +455,21 @@ async def save_llm_provider(name, base_url, encrypted_key):
     def op(conn):
         sql = "INSERT INTO llm_providers(name,base_url,api_key_encrypted,created_at,updated_at) VALUES(?,?,?,?,?)"
         params = (name,base_url,encrypted_key,now,now)
-        if _postgres_enabled():
-            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
-        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
+        row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
     return await _run_db(op)
 
 async def save_llm_model(provider_id, name, temperature, model_type="chat", dimensions=None, embedding_metric="cosine"):
     def op(conn):
         sql = "INSERT INTO llm_models(provider_id,name,temperature,model_type,dimensions,embedding_metric,created_at) VALUES(?,?,?,?,?,?,?)"
         params = (provider_id,name,temperature,model_type,dimensions,embedding_metric,time.time())
-        if _postgres_enabled():
-            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
-        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
+        row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
     return await _run_db(op)
 
 async def save_llm_skill(name, instructions):
     def op(conn):
         sql = "INSERT OR REPLACE INTO llm_skills(name,instructions,enabled,created_at) VALUES(?,?,1,?)"
         params = (name,instructions,time.time())
-        if _postgres_enabled():
-            conn.execute(sql, params); row = conn.execute("SELECT id FROM llm_skills WHERE name=?", (name,)).fetchone(); conn.commit(); return row[0]
-        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
+        conn.execute(sql, params); row = conn.execute("SELECT id FROM llm_skills WHERE name=?", (name,)).fetchone(); conn.commit(); return row[0]
     return await _run_db(op)
 
 async def update_llm_provider(provider_id, name, base_url, encrypted_key=None):
@@ -1113,15 +1045,13 @@ async def backfill_replay_parity_observations(limit: int = 20_000, apply: bool =
 async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, sig):
     """Atomically persist wallet balances, position and opening decision."""
     def op(conn):
-        if _postgres_enabled():
-            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
-        row_lock = " FOR UPDATE" if _postgres_enabled() else ""
-        existing = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + row_lock, (symbol,)).fetchone()
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
+        existing = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + " FOR UPDATE", (symbol,)).fetchone()
         if not existing:
             open_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] or 0)
             if int(config.MAX_OPEN_POSITIONS) > 0 and open_count >= int(config.MAX_OPEN_POSITIONS):
                 raise RuntimeError("max_open_positions_reached")
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + row_lock, ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + " FOR UPDATE", ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else config.INITIAL_BALANCE_TRY)
         debit = float(asset_amount or 0) * float(sig.get("price") or pos.get("entry_price") or 0) * (1 + config.COMMISSION_PCT)
         if debit <= 0 or current_cash + 1e-9 < debit:
@@ -1155,13 +1085,11 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
 async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     """Atomically persist close proceeds, trade, position deletion and signal."""
     def op(conn):
-        if _postgres_enabled():
-            conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
-        row_lock = " FOR UPDATE" if _postgres_enabled() else ""
-        position_row = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + row_lock, (symbol,)).fetchone()
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
+        position_row = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + " FOR UPDATE", (symbol,)).fetchone()
         if not position_row:
             raise RuntimeError("paper_position_not_found")
-        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + row_lock, ("TRY",)).fetchone()
+        cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + " FOR UPDATE", ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
         exit_notional = float(trade.get("exit_price") or 0) * float(trade.get("quantity") or 0)
         next_cash = current_cash + exit_notional * (1 - config.COMMISSION_PCT)
@@ -1714,7 +1642,7 @@ async def delete_velocity_candidates(candidate_ids):
     def op(conn):
         placeholders = ",".join("?" for _ in ids)
         conn.execute(f"DELETE FROM velocity_candidates WHERE candidate_id IN ({placeholders})", ids)
-        deleted = conn.execute("SELECT changes()").fetchone()[0] if not _postgres_enabled() else len(ids)
+        deleted = len(ids)
         conn.commit(); return int(deleted)
     return await _run_db(op)
 
@@ -2252,12 +2180,7 @@ async def save_backtest(result):
              result.get("losses"), result.get("win_rate"), result.get("max_drawdown_pct"), result.get("order_size"),
              result.get("stop_loss_pct"), result.get("take_profit_pct"),
              result.get("trailing_stop_pct"), _json_safe_dumps(result.get("trades", [])))
-        if _postgres_enabled():
-            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
-        cur = conn.execute(sql, params)
-        conn.commit()
-        return cur.lastrowid
-
+        row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
     return await _run_db(op)
 
 async def upsert_market_candles(rows):
@@ -2346,9 +2269,7 @@ async def save_research_run(result):
                   _json_safe_dumps(result.get("symbols", [])), _json_safe_dumps(result.get("timeframes", [])),
                   _json_safe_dumps(result.get("parameters", {}), default=str), _json_safe_dumps(result.get("result", {}), default=str),
                   result.get("status", "completed"), 1)
-        if _postgres_enabled():
-            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
-        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
+        row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
     return await _run_db(op)
 
 async def get_research_runs(limit=20, run_type=None):
@@ -2376,9 +2297,7 @@ async def save_research_pattern(item):
                   _json_safe_dumps(item.get("symbols", [])), _json_safe_dumps(item.get("timeframes", [])),
                   _json_safe_dumps(item.get("definition", {}), default=str), _json_safe_dumps(item.get("evidence", {}), default=str),
                   item.get("status", "candidate"), item.get("confidence", 0.3), item.get("source_run_id"))
-        if _postgres_enabled():
-            row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
-        cur = conn.execute(sql, params); conn.commit(); return cur.lastrowid
+        row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
     return await _run_db(op)
 
 async def get_research_patterns(status=None, timeframe=None, limit=30):

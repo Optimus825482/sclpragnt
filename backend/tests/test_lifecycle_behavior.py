@@ -1,6 +1,5 @@
 import asyncio
 import os
-import sqlite3
 import time
 import unittest
 from types import SimpleNamespace
@@ -263,45 +262,6 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
 
 
 class RestartPersistenceBehavior(unittest.IsolatedAsyncioTestCase):
-    async def test_database_writer_enforces_limit_and_debits_current_cash(self):
-        from app import database
-        from app.config import config
-
-        conn = sqlite3.connect(":memory:")
-        self.addCleanup(conn.close)
-        conn.executescript("""
-            CREATE TABLE virtual_wallet(asset TEXT PRIMARY KEY, amount REAL);
-            INSERT INTO virtual_wallet VALUES ('TRY', 10000);
-            CREATE TABLE positions(symbol TEXT PRIMARY KEY, side TEXT, entry_price REAL, stop_price REAL,
-              take_profit REAL, peak_price REAL, breakeven_hit INTEGER, quantity REAL, entry_time REAL,
-              strategy TEXT, entry_context TEXT, trade_id TEXT);
-            CREATE TABLE signals(id INTEGER PRIMARY KEY, timestamp REAL, symbol TEXT, action TEXT, price REAL,
-              reason TEXT, strategy TEXT, trade_id TEXT);
-            CREATE TABLE decision_logs(id INTEGER PRIMARY KEY, timestamp REAL, symbol TEXT, strategy TEXT,
-              decision TEXT, reason TEXT, price REAL, metadata TEXT);
-            CREATE TABLE analysis_snapshots(id INTEGER PRIMARY KEY, symbol TEXT, timeframe TEXT, captured_at REAL,
-              source TEXT, methodology_version TEXT, regime TEXT, regime_confidence REAL, confluence_score REAL,
-              payload TEXT, trade_id TEXT);
-        """)
-
-        async def run(operation):
-            return operation(conn)
-
-        pos = {"side": "LONG", "entry_price": 100.0, "quantity": 1.0, "entry_time": 1.0,
-               "strategy": "LLM_PAPER", "entry_context": {}, "trade_id": "t1"}
-        sig = {"timestamp": 1.0, "symbol": "BTCTRY", "action": "BUY_SIGNAL", "price": 100.0,
-               "reason": "position_opened", "strategy": "LLM_PAPER", "trade_id": "t1"}
-        # The op layer emits Postgres advisory locks; this test emulates the
-        # SQLite dialect contract, so disable the Postgres branch explicitly.
-        with patch.object(config, "MAX_OPEN_POSITIONS", 1), \
-                patch("app.database._postgres_enabled", return_value=False), \
-                patch("app.database._run_db", new=run):
-            await database.commit_open_position("BTCTRY", "BTC", 0.0, 1.0, pos, sig)
-            cash = conn.execute("SELECT amount FROM virtual_wallet WHERE asset='TRY'").fetchone()[0]
-            self.assertLess(cash, 9900.0)
-            with self.assertRaisesRegex(RuntimeError, "max_open_positions_reached"):
-                await database.commit_open_position("ETHTRY", "ETH", 0.0, 1.0,
-                    {**pos, "trade_id": "t2"}, {**sig, "symbol": "ETHTRY", "trade_id": "t2"})
 
     async def test_load_positions_does_not_invent_llm_exit_plan(self):
         from app import database
