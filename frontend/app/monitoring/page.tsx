@@ -19,6 +19,7 @@ type ProfileInfo = {
   velocity_score: number | null;
   upside_rank: number | null;
   passes: boolean;
+  block_reason?: string | null;
 };
 
 type Candidate = {
@@ -33,6 +34,7 @@ type Candidate = {
   horizon_minutes: number;
   ml_target_pct: number | null;
   ml_hit_probability: number | null;
+  block_reason?: string | null;
   profiles?: Record<string, ProfileInfo>;
 };
 
@@ -75,6 +77,18 @@ const scoreColor = (score: number) => {
   return "text-neon-red";
 };
 
+// İzleme listesindeki sembolün aday olamama sebebi (velocity.py block_reason).
+const blockReasonLabel = (reason?: string | null) => {
+  if (!reason) return null;
+  if (reason.startsWith("mfi_asiri_alim")) return "MFI aşırı alım";
+  if (reason.startsWith("mfi_asiri_satim")) return "MFI aşırı satım";
+  if (reason.startsWith("rsi_asiri_alim")) return "RSI aşırı alım";
+  if (reason.startsWith("atr_yetersiz")) return "ATR yetersiz";
+  if (reason.startsWith("bb_genisligi_yetersiz") || reason === "bb_verisi_yok") return "BB dar";
+  if (reason === "yapisal_teyit_yok") return "Yapısal teyit yok";
+  return "Kriter sağlanmadı";
+};
+
 const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) => {
   const targetPct = Number(c.target_pct) > 0 ? Number(c.target_pct) : Number(c.ml_target_pct);
   const price = Number(c.price);
@@ -95,12 +109,6 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
           <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
             <p className="eyebrow">SKOR</p>
             <p className={`mt-1 font-mono text-lg font-bold ${scoreColor(panelScore(c))}`}>{panelScore(c).toFixed(1)}</p>
-          </div>
-          <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 px-3 py-2 text-center">
-            <p className="eyebrow text-sky-300">UPSIDE SIRA</p>
-            <p className="mt-1 font-mono text-lg font-bold text-sky-300" title="Dakika başına yükseliş × hız × sembol kalitesi × mikro-yapı">
-              {(Number(c.upside_rank) || 0).toFixed(1)}
-            </p>
           </div>
           <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 text-center">
             <p className="eyebrow">HEDEF (5/15dk)</p>
@@ -134,7 +142,7 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
                   <span className="font-bold text-white">{p.horizon_minutes}dk</span>
                   <span className="text-bunker-muted">hedef <b className="text-neon-green">+%{Number(p.target_pct ?? 0).toFixed(1)}</b></span>
                   <span className="text-bunker-muted">skor <b className="text-white">{panelScore({ velocity_score: p.velocity_score }).toFixed(1)}</b></span>
-                  <span className={p.passes ? "text-neon-green" : "text-bunker-muted"}>{p.passes ? "GEÇTİ" : "İZLE"}</span>
+                  <span className={p.passes ? "text-neon-green" : "text-neon-red"}>{p.passes ? "GEÇTİ" : (blockReasonLabel(p.block_reason) ?? "İZLE")}</span>
                 </div>
               ))}
             </div>
@@ -158,7 +166,6 @@ export default function MonitoringPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
   const [state, setState] = useState<MonitoringState>({ last_scan_at: null, scan_count: 0, candidates: [], watchlist: [] });
-  const [riskOff, setRiskOff] = useState(false);
   const [effectiveMinScore, setEffectiveMinScore] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
   // Eşik artık global admin ayarı: herkese UYGULANAN (etkin) değer gösterilir;
@@ -182,7 +189,6 @@ export default function MonitoringPage() {
       if (res.ok) {
         const data = await res.json();
         setSettings({ enabled: data.enabled ?? true, min_score: data.min_score ?? 50, min_target_pct: data.min_target_pct ?? 2.0, quiet_hours_start: data.quiet_hours_start ?? null, quiet_hours_end: data.quiet_hours_end ?? null });
-        setRiskOff(Boolean(data.risk_off));
         setEffectiveMinScore(data.effective_min_score != null ? Number(data.effective_min_score) : null);
       }
     } catch { /* varsayılan */ }
@@ -213,7 +219,6 @@ export default function MonitoringPage() {
         const data = await res.json();
         setState({ last_scan_at: data.scan_at, scan_count: data.scan_count, candidates: data.candidates || [], watchlist: data.watchlist || [] });
         if (data.settings) setSettings({ enabled: data.settings.enabled ?? true, min_score: data.settings.min_score ?? 50, min_target_pct: data.settings.min_target_pct ?? 2.0, quiet_hours_start: data.settings.quiet_hours_start ?? null, quiet_hours_end: data.settings.quiet_hours_end ?? null });
-        setRiskOff(Boolean(data.risk_off));
         setEffectiveMinScore(data.effective_min_score != null ? Number(data.effective_min_score) : null);
       }
     } catch { /* sessiz */ } finally { setScanning(false); }
@@ -224,17 +229,16 @@ export default function MonitoringPage() {
     apiRequest(`${API_BASE}/api/monitoring/state`, { cache: "no-store" }).then((r) => r.json()).then((data) => {
       setState({ last_scan_at: data.last_scan_at, scan_count: data.scan_count, candidates: data.candidates || [], watchlist: data.watchlist || [] });
       if (data.settings) setSettings({ enabled: data.settings.enabled ?? true, min_score: data.settings.min_score ?? 50, min_target_pct: data.settings.min_target_pct ?? 2.0, quiet_hours_start: data.settings.quiet_hours_start ?? null, quiet_hours_end: data.settings.quiet_hours_end ?? null });
-      setRiskOff(Boolean(data.risk_off));
       setEffectiveMinScore(data.effective_min_score != null ? Number(data.effective_min_score) : null);
     }).catch(() => {});
     scanTimerRef.current = setInterval(runScan, SCAN_INTERVAL_MS);
     return () => { if (scanTimerRef.current) clearInterval(scanTimerRef.current); };
   }, [runScan, loadSettings]);
 
-  // Etkin eşik: RISK_OFF rejiminde admin eşiği 1.5× uygulanır (backend ile aynı).
+  // Tek eşik (2026-09-04): backend'in gönderdiği etkin değer; yoksa admin ayarı.
   const effThreshold = effectiveMinScore != null
     ? effectiveMinScore
-    : Math.min(100, Math.round(settings.min_score * (riskOff ? 1.5 : 1)));
+    : Math.min(100, Math.round(settings.min_score));
   // Eşik altı adaylar listede gizlenir (backend de filtreler; bu ikinci emniyet).
   const visibleCandidates = state.candidates.filter((c) => panelScore(c) >= effThreshold);
 
@@ -247,11 +251,10 @@ export default function MonitoringPage() {
           <p className="mt-1 text-sm text-bunker-muted">Yüksek potansiyelli sembolleri tarar, uygun olanları bildirir.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Herkese UYGULANAN (etkin) eşik gösterilir: radar listesi, bildirim,
-              raporlar ve otonom tarama hep bu tek değeri kullanır. RISK-OFF
-              rejiminde admin taban eşiği 1.5× çarpanla uygulanır. */}
-          <span className="ui-button ui-button-secondary pointer-events-none" title={riskOff ? `Riskli rejim (RISK-OFF): admin taban eşiği ${Math.round(settings.min_score)} × 1.5 çarpanıyla uygulanıyor` : "Radar, bildirim ve raporlarda uygulanan global eşik"}>
-            ⚖️ EŞİK: SKOR ≥ {effThreshold} · GLOBAL{riskOff ? " · RISK-OFF" : ""}
+          {/* Tek eşik (2026-09-04): RISK_OFF çarpanı kaldırıldı; admin'in
+              girdiği değer her yerde aynen uygulanır ve gösterilir. */}
+          <span className="ui-button ui-button-secondary pointer-events-none" title="Radar, bildirim ve raporlarda uygulanan global eşik">
+            ⚖️ EŞİK: SKOR ≥ {effThreshold} · GLOBAL
           </span>
           {isAdmin && (
             <>
@@ -262,7 +265,7 @@ export default function MonitoringPage() {
                 step={1}
                 value={minScoreInput}
                 onChange={(e) => { setMinScoreInput(e.target.value); setMinScoreDirty(true); }}
-                title="Admin taban eşiği (RISK-OFF rejiminde 1.5× çarpanla uygulanır)"
+                title="Admin eşiği: radar listesi, bildirim, rapor ve otonom taramada aynen uygulanır"
                 className="w-20 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
               />
               <button
@@ -306,10 +309,6 @@ export default function MonitoringPage() {
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="text-right">
-                      <p className="font-mono text-xs text-bunker-muted">UPSIDE</p>
-                      <p className="font-mono text-sm font-bold text-sky-300" title="Dakika başına yükseliş × hız × sembol kalitesi">{(Number(c.upside_rank) || 0).toFixed(1)}</p>
-                    </div>
-                    <div className="text-right">
                       <p className="font-mono text-xs text-bunker-muted">SKOR</p>
                       <p className={`font-mono text-sm font-bold ${scoreColor(panelScore(c))}`}>{panelScore(c).toFixed(1)}</p>
                     </div>
@@ -330,15 +329,18 @@ export default function MonitoringPage() {
         <section className="card">
           <p className="eyebrow text-yellow-300">👁 İZLEME LİSTESİ ({state.watchlist.length})</p>
           <div className="mt-3 space-y-2">
-            {state.watchlist.map((w) => (
-              <button key={w.symbol} type="button" onClick={() => setSelected(w)} className="flex w-full items-center justify-between rounded-lg border border-bunker-800 bg-bunker-900/40 px-4 py-2.5 text-left transition-colors hover:border-yellow-400/40">
-                <span className="font-mono text-sm font-bold text-white">{w.symbol}</span>
-                <span className="flex items-center gap-3">
-                  <span className="font-mono text-xs text-sky-300" title="Upside sıra">{(Number(w.upside_rank) || 0).toFixed(1)}</span>
-                  <span className={`font-mono text-sm font-bold ${scoreColor(panelScore(w))}`}>{panelScore(w).toFixed(1)}</span>
-                </span>
-              </button>
-            ))}
+            {state.watchlist.map((w) => {
+              const reason = blockReasonLabel(w.block_reason);
+              return (
+                <button key={w.symbol} type="button" onClick={() => setSelected(w)} className="flex w-full items-center justify-between rounded-lg border border-bunker-800 bg-bunker-900/40 px-4 py-2.5 text-left transition-colors hover:border-yellow-400/40">
+                  <span className="font-mono text-sm font-bold text-white">{w.symbol}</span>
+                  <span className="flex items-center gap-3">
+                    {reason && <span className="rounded border border-neon-red/30 bg-neon-red/10 px-1.5 py-0.5 font-mono text-[9px] text-neon-red" title="Eşik skoru geçse bile aday kriterlerine takılan yön">{reason}</span>}
+                    <span className={`font-mono text-sm font-bold ${scoreColor(panelScore(w))}`}>{panelScore(w).toFixed(1)}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </section>
       )}

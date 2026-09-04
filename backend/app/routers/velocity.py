@@ -226,6 +226,20 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
                       mode is not None and
                       (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)))
+            # Elme sebebi: izleme listesindeki sembol yüksek skorla görünsede
+            # hangi kapıya takıldığını arayüz gösterebilsin (2026-09-04).
+            block_reason = None
+            if not passes:
+                if exhausted:
+                    block_reason = exhausted  # örn. mfi_asiri_alim:85
+                elif atr_pct < prof_atr:
+                    block_reason = f"atr_yetersiz:{atr_pct:.2f}%<{prof_atr:.2f}%"
+                elif bb_width is None or bb_width < VELOCITY_MIN_BB_WIDTH_PCT:
+                    block_reason = f"bb_genisligi_yetersiz:{bb_width:.2f}%" if bb_width else "bb_verisi_yok"
+                elif not (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)):
+                    block_reason = "yapisal_teyit_yok"
+                else:
+                    block_reason = "diger"
             # velocity skoru: bileşen oranlarının geometrik ortalaması benzeri çarpım
             bb_ratio = (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0
             struct_ratio = max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
@@ -366,6 +380,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "ml_hit_probability": round(ml_hit_prob, 3) if ml_hit_prob is not None else None,
                     "ret3_pct": round(ret3, 3),
                     "velocity_score": velocity_score, "passes": passes,
+                    "block_reason": block_reason,
                     "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
                     "m1_atr_prev": round(m1_atr_prev, 3) if m1_atr_prev is not None else None,
                     "m3_atr_prev": round(m3_atr_prev, 3) if m3_atr_prev is not None else None,
