@@ -17,7 +17,7 @@ const IndicatorSettings = dynamic(() => import("./IndicatorSettings"), { ssr: fa
 import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "./types";
 import {
     FALLBACK_SYMBOLS, INTERVALS, INTERVAL_MS, PALETTE, TOTAL_HEIGHT, MAIN_MIN,
-    uid, clamp, LS_SYMBOL, LS_INTERVAL, LS_INDICATORS, LS_PANE_HEIGHTS, LS_DISPLAY_SETTINGS, API,
+    uid, clamp, LS_SYMBOL, LS_INTERVAL, LS_INDICATORS, LS_PANE_HEIGHTS, API,
     paneMinimumHeight, preferredChartHeight, computePaneLayout,
     formatPrice, chartPriceFormat, loadPersisted,
     DEFAULT_STYLE, DEFAULT_INSTANCES, DEFAULT_SLING_SHOT, loadIndicators,
@@ -61,6 +61,7 @@ export default function ChartsPage() {
     const [monitorNotif, setMonitorNotif] = useState<any | null>(null);
     const [monitorRemainingSec, setMonitorRemainingSec] = useState<number | null>(null);
     const [showMonitoringLines, setShowMonitoringLines] = useState(true);
+    const [monitorDisplayReady, setMonitorDisplayReady] = useState(false); // DB display yüklendi mi (ilk yazımda sıfırları ezmesin)
     const [livePortfolio, setLivePortfolio] = useState<LivePortfolio | null>(null);
     const [portfolioMetrics, setPortfolioMetrics] = useState<PortfolioMetrics | null>(null);
     const [timeframeTrends, setTimeframeTrends] = useState<TimeframeTrend[]>([]);
@@ -95,23 +96,22 @@ export default function ChartsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    useEffect(() => {
-        const settings = loadPersisted<DisplaySettings>(LS_DISPLAY_SETTINGS, {
-            showPositions: false, showStopTakeProfit: false, showPatterns: false,
-            showPressure: true, showMonitoringLines: true
-        });
-        setShowPositions(settings.showPositions);
-        setShowStopTakeProfit(settings.showStopTakeProfit);
-        setShowPatterns(settings.showPatterns);
-        setShowPressure(settings.showPressure !== false);
-        setShowMonitoringLines(settings.showMonitoringLines !== false);
-    }, []);
+    // Görünüm tercihleri artık localStorage'dan YÜKLENMEZ: kaynak DB'dir
+    // (loadFromDb display bloklarını uygular). Bu effectin rolü bitti —
+    // monitorDisplayReady loadFromDb'de true yapilir.
 
+    // Görünüm tercihleri DB'de (sembol bazlı) saklanır: toggle değişince anlık
+    // PATCH ile yazılır — localStorage/cache eski değer göstermez (2026-09-04).
     useEffect(() => {
+        if (!symbol || !monitorDisplayReady) return;
         try {
-            localStorage.setItem(LS_DISPLAY_SETTINGS, JSON.stringify({ showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings));
-        } catch { /* görüntü ayarı yalnızca yerelde saklanır */ }
-    }, [showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines]);
+            apiRequest(`${API}/${encodeURIComponent(symbol)}/display`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings }),
+            }).catch(() => undefined);
+        } catch { /* otomatik kayıt hatası görünmez */ }
+    }, [symbol, showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines, monitorDisplayReady]);
 
     // Sembol rozeti /charts?symbol=...&timeframe=5m ile istemci içi
     // yönlendirme yapar. Sayfa unmount olmadığı için URL değişimini ayrıca
@@ -1072,13 +1072,14 @@ export default function ChartsPage() {
         }
     };
 
-    // veritabanından sembol ayarlarını yükle — varsa localStorage'ı ezer (DB daha güncel)
+    // veritabanından sembol ayarlarını yükle — kaynak DB'dir (localStorage değil)
     const loadFromDb = async (s: string, forcedInterval?: string) => {
         try {
             const res = await apiRequest(`${API}/${s}`);
             const data = await res.json();
             const st = data?.settings;
-            if (!st) return;
+            // Kayıt yoksa da display yazımına hazırız: ilk toggle DB'ye PATCH ile gider.
+            if (!st) { setMonitorDisplayReady(true); return; }
             const resolvedInterval = forcedInterval || st.interval || "5m";
             setTf(resolvedInterval);
             localStorage.setItem(LS_INTERVAL, JSON.stringify(resolvedInterval));
@@ -1102,7 +1103,9 @@ export default function ChartsPage() {
             if (typeof st.display?.showPatterns === "boolean") setShowPatterns(st.display.showPatterns);
             if (typeof st.display?.showPressure === "boolean") setShowPressure(st.display.showPressure);
             if (typeof st.display?.showMonitoringLines === "boolean") setShowMonitoringLines(st.display.showMonitoringLines);
-        } catch { /* backend yoksa localStorage kullan */ }
+            // DB display yüklendi: toggle-anlık PATCH artık güvenle yazabilir
+            setMonitorDisplayReady(true);
+        } catch { /* backend yoksa varsayılanlar kalır */ }
     };
 
     const [closingSymbol, setClosingSymbol] = useState<string | null>(null);
