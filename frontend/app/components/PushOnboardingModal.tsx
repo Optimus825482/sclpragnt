@@ -29,6 +29,7 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [installHelp, setInstallHelp] = useState(false); // beforeinstallprompt yoksa talimat göster
   const installPromptRef = useRef<any>(null);
 
   // beforeinstallprompt'u yakala (Android/Chrome native kurulum)
@@ -97,10 +98,12 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
       if (installPromptRef.current) {
         await installPromptRef.current.prompt();
         installPromptRef.current = null;
+        setStep("notify");
+      } else {
+        // beforeinstallprompt tetiklenmedi (Chrome kriterleri tam karşılanmıyor
+        // veya event daha önce tüketildi). Kullanıcıya menü talimatını göster.
+        setInstallHelp(true);
       }
-      // Kurulum tamamlandı/atlandı → bildirim izni adımına geç
-      // (iOS'ta kullanıcı Paylaş ile kendi kurar; geri gelince izin istenir)
-      setStep("notify");
     } catch {
       setError("Kurulum başlatılamadı.");
     } finally {
@@ -120,7 +123,11 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
           dismissForever();
           return;
         }
-        if (result.reason === "push_yok" || result.reason === "vapid_yok") {
+        if (result.reason === "vapid_yok") {
+          setError("Sunucu bildirim anahtarı yapılandırılmamış. Sistem yöneticisine VAPID anahtarının tanımlı olduğunu doğrulatın.");
+        } else if (result.reason === "vapid_key_gecersiz" || result.reason === "vapid_key_gecersiz_boyut") {
+          setError("Bildirim anahtarı geçersiz. Sistem yöneticisi VAPID public key'i yeniden üretip yapılandırmalı.");
+        } else if (result.reason === "push_yok" || result.reason === "service_worker_yok") {
           setError("Bu tarayıcı/sürüm Web Push desteklemiyor — Chrome ile açmayı deneyin.");
         } else {
           setError(`Bildirimler etkinleştirilemedi: ${result.reason}`);
@@ -181,11 +188,25 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
               </div>
             </div>
             <div className="space-y-3 p-5">
-              <p className="text-sm leading-relaxed text-bunker-muted">
-                {isIOS
-                  ? "Safari'de Paylaş (⎋) → “Ana Ekrana Ekle” ile uygulamayı kur. Bildirimler yalnız kurulu uygulamada çalışır."
-                  : "Uygulamayı cihazına kurduğunda bildirimler kapalıyken bile çalışır ve hızlı erişim sağlarsın."}
-              </p>
+              {installHelp ? (
+                <div className="space-y-2 rounded-lg border border-sky-400/30 bg-sky-400/5 p-3">
+                  <p className="text-sm font-bold text-sky-300">Tarayıcı menüsünden kurulum</p>
+                  <p className="text-sm leading-relaxed text-bunker-muted">
+                    Chrome&apos;da sağ üstteki <strong className="text-white">⋮ (üç nokta) menüsü</strong> →
+                    <strong className="text-white"> “Uygulamayı yükle”</strong> veya{" "}
+                    <strong className="text-white">“Ana ekrana ekle”</strong> seçeneğine dokun.
+                  </p>
+                  <p className="text-xs text-bunker-muted">
+                    Kurulum tamamlanınca uygulamayı ana ekrandan aç — bildirim izni orada sorulacak.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-sm leading-relaxed text-bunker-muted">
+                  {isIOS
+                    ? "Safari'de Paylaş (⎋) → “Ana Ekrana Ekle” ile uygulamayı kur. Bildirimler yalnız kurulu uygulamada çalışır."
+                    : "Uygulamayı cihazına kurduğunda bildirimler kapalıyken bile çalışır ve hızlı erişim sağlarsın."}
+                </p>
+              )}
               {error && <p role="alert" className="rounded-lg border border-neon-red/40 bg-neon-red/10 px-3 py-2 text-sm text-neon-red">{error}</p>}
               <div className="flex justify-end gap-2 pt-1">
                 <button type="button" onClick={() => setStep("notify")} className="ui-button ui-button-secondary">SONRA</button>
@@ -193,7 +214,7 @@ export default function PushOnboardingModal({ active = false }: { active?: boole
                   <button type="button" onClick={() => setStep("notify")} className="ui-button ui-button-primary">ANLADIM</button>
                 ) : (
                   <button type="button" onClick={installPwa} disabled={busy} className="ui-button ui-button-primary">
-                    {busy ? "KURULUYOR…" : "📲 UYGULAMA OLARAK YÜKLE"}
+                    {busy ? "KURULUYOR…" : installHelp ? "KURDUM, DEVAM ET" : "📲 UYGULAMA OLARAK YÜKLE"}
                   </button>
                 )}
               </div>
