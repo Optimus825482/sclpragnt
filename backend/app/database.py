@@ -212,7 +212,7 @@ async def reset_trading_data():
         "alert_events", "alert_rules", "paper_orders",
         "llm_tool_logs", "llm_symbol_guards", "decision_logs", "signals",
         "trades", "positions", "backtests", "analysis_snapshots",
-        "microstructure_snapshots",
+        "microstructure_snapshots", "auto_paper_trades",
     })
     def op(conn):
         # Bağımlı kayıtları önce temizle (özellikle alert/paper order tabloları).
@@ -228,6 +228,7 @@ async def reset_trading_data():
             "positions",
             "backtests",
             "analysis_snapshots", "microstructure_snapshots",
+            "auto_paper_trades",
         )
         deleted = {}
         for table in tables:
@@ -2749,4 +2750,122 @@ async def get_all_symbol_target_states() -> list[dict]:
         return [{"symbol": r["symbol"], "target_pct": float(r["target_pct"] or 2.0), "horizon_minutes": int(r["horizon_minutes"] or 5),
                  "success_count": int(r["success_count"] or 0), "fail_count": int(r["fail_count"] or 0),
                  "total_count": int(r["total_count"] or 0), "last_adjusted_at": float(r["last_adjusted_at"] or 0)} for r in rows]
+    return await _run_db(op)
+
+
+# ---------------------------------------------------------------------------
+# Otonom Paper Trade (2026-09-04): monitoring bildiriminden tetiklenen pozisyonlar
+# ---------------------------------------------------------------------------
+async def save_auto_paper_trade(trade: dict) -> dict | None:
+    """Yeni otonom paper trade kaydı oluştur."""
+    def op(conn):
+        row = conn.execute(
+            """INSERT INTO auto_paper_trades
+               (symbol, side, status, notification_id, entry_price, quantity, order_value_try,
+                stop_loss, take_profit, peak_price, entry_time,
+                notification_score, notification_target_pct, notification_expected_price,
+                created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+            (str(trade["symbol"]).upper(), trade.get("side", "LONG"), "open",
+             trade.get("notification_id"), trade["entry_price"], trade["quantity"],
+             trade["order_value_try"], trade.get("stop_loss"), trade.get("take_profit"),
+             trade.get("peak_price", trade["entry_price"]), trade["entry_time"],
+             trade.get("notification_score"), trade.get("notification_target_pct"),
+             trade.get("notification_expected_price"), trade["created_at"], trade["updated_at"])
+        ).fetchone()
+        conn.commit()
+        return dict(row) if row else None
+    return await _run_db(op)
+
+
+async def get_open_auto_paper_trade(symbol: str) -> dict | None:
+    """Sembol için açık otonom paper trade varsa döndür."""
+    def op(conn):
+        row = conn.execute(
+            "SELECT * FROM auto_paper_trades WHERE symbol=? AND status='open' ORDER BY entry_time DESC LIMIT 1",
+            (str(symbol).upper(),)
+        ).fetchone()
+        return dict(row) if row else None
+    return await _run_db(op)
+
+
+async def get_auto_paper_trade(trade_id: int) -> dict | None:
+    """ID ile otonom paper trade getir."""
+    def op(conn):
+        row = conn.execute("SELECT * FROM auto_paper_trades WHERE id=?", (trade_id,)).fetchone()
+        return dict(row) if row else None
+    return await _run_db(op)
+
+
+async def list_auto_paper_trades(status: str | None = None, limit: int = 100) -> list[dict]:
+    """Otonom paper trade'leri listele (yeni -> eski)."""
+    def op(conn):
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM auto_paper_trades WHERE status=? ORDER BY entry_time DESC LIMIT ?",
+                (status, max(1, min(int(limit), 10000)))
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM auto_paper_trades ORDER BY entry_time DESC LIMIT ?",
+                (max(1, min(int(limit), 10000)),)
+            ).fetchall()
+        return [dict(r) for r in rows]
+    return await _run_db(op)
+
+
+async def update_auto_paper_trade_tp(trade_id: int, new_tp: float, score: float | None = None, target_pct: float | None = None) -> bool:
+    """Açık pozisyonun TP'sini güncelle (bildirim hedef takibi)."""
+    def op(conn):
+        if score is not None and target_pct is not None:
+            conn.execute(
+                "UPDATE auto_paper_trades SET take_profit=?, notification_score=?, notification_target_pct=?, updated_at=? WHERE id=? AND status='open'",
+                (new_tp, score, target_pct, time.time(), trade_id)
+            )
+        else:
+            conn.execute(
+                "UPDATE auto_paper_trades SET take_profit=?, updated_at=? WHERE id=? AND status='open'",
+                (new_tp, time.time(), trade_id)
+            )
+        conn.commit()
+        return True
+    return await _run_db(op)
+
+
+async def update_auto_paper_breakeven(trade_id: int, activated: bool, breakeven_stop: float | None = None) -> bool:
+    """Breakeven korumasını güncelle."""
+    def op(conn):
+        conn.execute(
+            "UPDATE auto_paper_trades SET breakeven_activated=?, breakeven_stop=?, updated_at=? WHERE id=? AND status='open'",
+            (activated, breakeven_stop, time.time(), trade_id)
+        )
+        conn.commit()
+        return True
+    return await _run_db(op)
+
+
+async def update_auto_paper_peak(trade_id: int, peak_price: float) -> bool:
+    """Peak fiyatı güncelle."""
+    def op(conn):
+        conn.execute(
+            "UPDATE auto_paper_trades SET peak_price=?, updated_at=? WHERE id=? AND status='open' AND peak_price < ?",
+            (peak_price, time.time(), trade_id, peak_price)
+        )
+        conn.commit()
+        return True
+    return await _run_db(op)
+
+
+async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: float,
+                                 pnl: float, pnl_pct: float, commission: float, reason: str) -> bool:
+    """Auto paper pozisyonunu kapat."""
+    def op(conn):
+        conn.execute(
+            """UPDATE auto_paper_trades SET status='closed', exit_price=?, exit_time=?,
+               pnl=?, pnl_pct=?, commission=?, exit_reason=?, updated_at=?
+               WHERE id=? AND status='open'""",
+            (exit_price, exit_time, pnl, pnl_pct, commission, reason, time.time(), trade_id)
+        )
+        conn.commit()
+        return True
     return await _run_db(op)

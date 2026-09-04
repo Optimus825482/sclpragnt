@@ -446,3 +446,36 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS audit_logs_actor_idx ON audit_logs(actor_username, created_at DESC);
 CREATE INDEX IF NOT EXISTS audit_logs_category_idx ON audit_logs(category, created_at DESC);
+
+-- Otonom paper trade (monitoring bildiriminden tetiklenen, 2026-09-04).
+-- Ana positions/trades tablosundan bagimsiz; yalnizca bildirim -> pozisyon akisini kaydeder.
+CREATE TABLE IF NOT EXISTS auto_paper_trades (
+  id BIGSERIAL PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL DEFAULT 'LONG',
+  status TEXT NOT NULL DEFAULT 'open',
+  notification_id BIGINT,
+  entry_price DOUBLE PRECISION NOT NULL,
+  quantity DOUBLE PRECISION NOT NULL,
+  order_value_try DOUBLE PRECISION NOT NULL,
+  stop_loss DOUBLE PRECISION,
+  take_profit DOUBLE PRECISION,
+  peak_price DOUBLE PRECISION,
+  entry_time DOUBLE PRECISION NOT NULL,
+  exit_price DOUBLE PRECISION,
+  exit_time DOUBLE PRECISION,
+  pnl DOUBLE PRECISION,
+  pnl_pct DOUBLE PRECISION,
+  commission DOUBLE PRECISION,
+  exit_reason TEXT,
+  breakeven_activated BOOLEAN NOT NULL DEFAULT FALSE,
+  breakeven_stop DOUBLE PRECISION,
+  notification_score DOUBLE PRECISION,
+  notification_target_pct DOUBLE PRECISION,
+  notification_expected_price DOUBLE PRECISION,
+  last_checked_at DOUBLE PRECISION,
+  created_at DOUBLE PRECISION NOT NULL,
+  updated_at DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS auto_paper_trades_status_idx ON auto_paper_trades(status, entry_time DESC);
+CREATE INDEX IF NOT EXISTS auto_paper_trades_symbol_status_idx ON auto_paper_trades(symbol, status);

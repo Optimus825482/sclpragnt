@@ -41,7 +41,7 @@ export default function SettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "chat" | "system-health">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "system-health">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -514,6 +514,7 @@ function SettingsPageInner() {
             ["strategies", "Strateji Ayarları", "📈"],
             ["llm", "LLM / Provider", "🤖"],
             ["chat", "Chat Ayarları", "✦"],
+            ["auto-paper", "Otonom Paper", "🤖"],
             ["system-health", "Sistem Sağlığı", "🩺"],
           ] as const).map(([key, label, icon]) => (
             <button key={key} onClick={() => setActiveTab(key)} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${activeTab === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>
@@ -530,6 +531,9 @@ function SettingsPageInner() {
           </div>
           <div className={`${activeTab !== "chat" ? "hidden" : ""}`}>
             <ChatSettingsPanel />
+          </div>
+          <div className={`${activeTab !== "auto-paper" ? "hidden" : ""}`}>
+            <AutoPaperSettingsPanel />
           </div>
           <div className={`card bg-bunker-950 ${activeTab !== "symbols" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
@@ -875,6 +879,149 @@ function SettingsPageInner() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function AutoPaperSettingsPanel() {
+  const [settings, setSettings] = useState<any>(null);
+  const [stats, setStats] = useState<any>(null);
+  const [draft, setDraft] = useState<any>({});
+  const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const [sRes, stRes] = await Promise.all([
+        apiRequest(`${API_BASE}/api/auto-paper/settings`),
+        apiRequest(`${API_BASE}/api/auto-paper/stats`),
+      ]);
+      if (sRes.ok) { const d = await sRes.json(); setSettings(d.settings); setDraft(d.settings); }
+      if (stRes.ok) { const d = await stRes.json(); setStats(d.stats); }
+    } catch { setError("Veri alınamadı"); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setSaving(true); setError(null); setSaved(false);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/auto-paper/settings`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draft),
+      });
+      if (!res.ok) { const b = await res.json(); throw new Error(b.detail || "Kayıt hatası"); }
+      const d = await res.json();
+      setSettings(d.settings);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (e) { setError(e instanceof Error ? e.message : "Bilinmeyen hata"); }
+    finally { setSaving(false); }
+  };
+
+  const resetData = async () => {
+    if (!window.confirm("ESKİ TÜM TRADE/PORTFÖY VERİLERİ SİLİNECEK! Cüzdan 10.000 TL olarak sıfırlanacak. Devam etmek istiyor musunuz?")) return;
+    setResetting(true);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/auto-paper/reset`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      if (!res.ok) throw new Error("Sıfırlama başarısız");
+      setResetting(false);
+      window.location.reload();
+    } catch (e) { setError(e instanceof Error ? e.message : "Sıfırlama hatası"); setResetting(false); }
+  };
+
+  const set = (key: string, value: any) => setDraft((prev: any) => ({ ...prev, [key]: value }));
+
+  return (
+    <div className="card bg-bunker-950">
+      <p className="eyebrow mb-4">OTONOM PAPER TRADE AYARLARI</p>
+      {error && <p className="text-neon-red text-xs mb-3">{error}</p>}
+      {saved && <p className="text-neon-green text-xs mb-3">✅ Kaydedildi</p>}
+
+      {stats && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+          <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
+            <p className="eyebrow">Toplam</p>
+            <p className="text-lg font-mono text-white">{stats.total}</p>
+          </div>
+          <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
+            <p className="eyebrow">Açık</p>
+            <p className="text-lg font-mono text-yellow-300">{stats.open}</p>
+          </div>
+          <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
+            <p className="eyebrow">Kapanmış</p>
+            <p className="text-lg font-mono text-white">{stats.closed}</p>
+          </div>
+          <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
+            <p className="eyebrow">Başarı</p>
+            <p className={`text-lg font-mono ${stats.win_rate >= 50 ? "text-neon-green" : "text-neon-red"}`}>%{stats.win_rate}</p>
+          </div>
+          <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
+            <p className="eyebrow">Net PnL</p>
+            <p className={`text-lg font-mono ${stats.total_pnl_try >= 0 ? "text-neon-green" : "text-neon-red"}`}>{stats.total_pnl_try >= 0 ? "+" : ""}{stats.total_pnl_try.toFixed(2)}₺</p>
+          </div>
+          <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
+            <p className="eyebrow">Kazanan</p>
+            <p className="text-lg font-mono text-neon-green">{stats.winning}</p>
+          </div>
+          <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
+            <p className="eyebrow">Kaybeden</p>
+            <p className="text-lg font-mono text-neon-red">{stats.losing}</p>
+          </div>
+          <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
+            <p className="eyebrow">Ort. PnL</p>
+            <p className={`text-lg font-mono ${stats.avg_pnl_try >= 0 ? "text-neon-green" : "text-neon-red"}`}>{stats.avg_pnl_try >= 0 ? "+" : ""}{stats.avg_pnl_try.toFixed(2)}₺</p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Aktif</label>
+          <select value={draft.enabled ? "1" : "0"} onChange={(e) => set("enabled", e.target.value === "1")} className="input">
+            <option value="1">Açık</option>
+            <option value="0">Kapalı</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Minimum Skor (0-100)</label>
+          <input type="number" min="0" max="100" value={draft.min_score ?? 50} onChange={(e) => set("min_score", Number(e.target.value))} className="input" />
+        </div>
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Bakiye Yüzdesi (%)</label>
+          <input type="number" min="1" max="100" value={draft.balance_pct ?? 35} onChange={(e) => set("balance_pct", Number(e.target.value))} className="input" />
+        </div>
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Stop Loss (%)</label>
+          <input type="number" min="0.1" max="20" step="0.1" value={draft.stop_loss_pct ?? 3} onChange={(e) => set("stop_loss_pct", Number(e.target.value))} className="input" />
+        </div>
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Varsayılan Hedef (%)</label>
+          <input type="number" min="0.5" max="20" step="0.1" value={draft.default_target_pct ?? 2} onChange={(e) => set("default_target_pct", Number(e.target.value))} className="input" />
+        </div>
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Minimum Emir (TRY)</label>
+          <input type="number" min="10" value={draft.min_order_try ?? 50} onChange={(e) => set("min_order_try", Number(e.target.value))} className="input" />
+        </div>
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Breakeven Tetikleme (%)</label>
+          <input type="number" min="0.5" max="10" step="0.1" value={draft.breakeven_trigger_pct ?? 1.5} onChange={(e) => set("breakeven_trigger_pct", Number(e.target.value))} className="input" />
+        </div>
+      </div>
+
+      <div className="flex gap-3 mt-6">
+        <button onClick={save} disabled={saving} className="px-5 py-2 rounded-lg border border-neon-green/50 text-neon-green font-mono text-xs hover:bg-neon-green/10 disabled:opacity-50">
+          {saving ? "KAYDEDİLİYOR..." : "KAYDET"}
+        </button>
+        <button onClick={resetData} disabled={resetting} className="px-5 py-2 rounded-lg border border-neon-red/50 text-neon-red font-mono text-xs hover:bg-neon-red/10 disabled:opacity-50">
+          {resetting ? "SIFIRLANIYOR..." : "TÜM VERİYİ SIFIRLA"}
+        </button>
+      </div>
     </div>
   );
 }

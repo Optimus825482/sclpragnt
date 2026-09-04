@@ -110,6 +110,9 @@ app.include_router(velocity_routes.router)
 app.include_router(monitoring.router)
 app.include_router(backtest_routes.router)
 
+from app.routers import auto_paper as auto_paper_routes
+app.include_router(auto_paper_routes.router)
+
 
 _TTS_VOICE = "tr-TR-EmelNeural"
 _TTS_EMOJI = re.compile("[\\U00010000-\\U0010ffff]")
@@ -354,6 +357,7 @@ _DB_TABLE_DESCRIPTIONS = {
     "symbol_target_state": "Sembol bazlı adaptif hedef durumu",
     "trades": "Kapanan işlemler (paper)",
     "trading_instincts": "Öğrenilmiş işlem içgüdüleri",
+    "auto_paper_trades": "Otonom paper trade (bildirimden tetiklenen)",
     "users": "Kullanıcı hesapları",
     "velocity_candidates": "Hız avcısı aday journal'ı",
     "virtual_wallet": "Paper cüzdan bakiyeleri",
@@ -764,6 +768,7 @@ async def startup_services():
     _start_background(ws_broadcast_loop(), "ws-broadcast")
     _start_background(alert_loop(), "alert-engine")
     _start_background(monitoring_start_loop(), "monitoring-start")
+    _start_background(auto_paper_start_loop(), "auto-paper-start")
 
 async def monitoring_start_loop():
     """Monitoring tarama döngüsünü arka planda başlat (idempotent wrapper)."""
@@ -771,6 +776,13 @@ async def monitoring_start_loop():
         monitoring.start_monitoring_loop()
     except Exception as exc:
         print(f"[Monitoring] döngü başlatılamadı: {exc}", flush=True)
+
+async def auto_paper_start_loop():
+    """Otonom paper trade yönetim döngüsünü arka planda başlat."""
+    try:
+        auto_paper_routes.start_auto_paper_loop()
+    except Exception as exc:
+        print(f"[AutoPaper] döngü başlatılamadı: {exc}", flush=True)
 
 
 async def shutdown_services():
@@ -1393,6 +1405,24 @@ async def reconcile_portfolio(payload: dict = None, request: Request = None):
         analyzer.positions.pop(str(item.get("symbol", "")).upper(), None)
     await ws_manager.broadcast({"type": "portfolio_reconciled", "data": result})
     return {"status": "ok", **result}
+
+
+@app.post("/api/auto-paper/reset")
+async def reset_auto_paper_trading(payload: dict = None, request: Request = None):
+    """Otonom paper trade verilerini sıfırla, cüzdanı 10.000 TL'ye çek.
+    
+    Eski otonom trade kayıtları raporlarda gösterilmez.
+    Yalnız admin kullanıcısı.
+    """
+    _require_admin(request)
+    from app.main import _session_username
+    if not (payload or {}).get("confirm", False):
+        return {"status": "preview", "message": "10.000 TL bakiye ile sıfırlama yapılacak; tüm eski trade/pozisyon/bildirim kayıtları silinecek."}
+    result = await database.reset_trading_data()
+    analyzer.positions.clear()
+    await log_user_action(_session_username(request), None, "auto_paper", "AUTO_PAPER_RESET",
+                          details={"deleted": result}, request=request)
+    return {"status": "ok", "result": result}
 
 @app.get("/api/trade-repair/status")
 async def trade_repair_status():

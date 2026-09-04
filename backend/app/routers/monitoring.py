@@ -397,6 +397,18 @@ async def _notify(candidates_list, settings) -> list:
                 logger.warning("Monitoring push failed for %s: %s", notif["symbol"], exc)
     elif new_notifs and quiet:
         logger.info("Monitoring: sessiz saatlerde %d bildirim ertelendi (push yok)", len(new_notifs))
+    # Otonom Paper Trade: her yeni bildirimde pozisyon açmayı dene
+    try:
+        from app.routers.auto_paper import try_open_from_notification
+        for notif in new_entries + [n for n in update_entries if n.get("updated")]:
+            try:
+                await try_open_from_notification(notif)
+            except Exception as exc:
+                logger.debug("auto_paper %s denemesi: %s", notif.get("symbol"), exc)
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.warning("auto_paper toplu deneme hatası: %s", exc)
     if new_notifs:
         try:
             await ws_manager.broadcast({"type": "monitoring_alert", "data": new_notifs[-1]})

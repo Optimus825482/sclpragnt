@@ -51,18 +51,21 @@ function OverviewTab() {
   const [overview, setOverview] = useState<any>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [breakdown, setBreakdown] = useState<any>(null);
+  const [autoPaperStats, setAutoPaperStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
     try {
-      const [ovRes, ntRes] = await Promise.all([
+      const [ovRes, ntRes, apRes] = await Promise.all([
         apiRequest(`${API_BASE}/api/reports/overview`, { cache: "no-store" }),
         apiRequest(`${API_BASE}/api/reports/notifications?limit=50`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/auto-paper/stats`, { cache: "no-store" }),
       ]);
-      const [ov, nt] = await Promise.all([ovRes.json(), ntRes.json()]);
+      const [ov, nt, ap] = await Promise.all([ovRes.json(), ntRes.json(), apRes.json()]);
       if (ovRes.ok) setOverview(ov);
       if (ntRes.ok) { setNotifications(nt.notifications || []); setBreakdown(nt.breakdown || null); }
+      if (apRes.ok) setAutoPaperStats(ap.stats || null);
       if (!ovRes.ok) setError(ov.detail || "Özet alınamadı");
     } catch {
       setError("Rapor verisi alınamadı");
@@ -104,6 +107,23 @@ function OverviewTab() {
           </div>
           <p className="mt-2 font-mono text-[10px] text-bunker-muted">
             Başarı, kapanmış M1 mumlarıyla ölçülen gerçek MFE ve hedef dokunuşuna dayanır; ufku dolmayan/ölçülemeyen kayıtlar BEKLIYOR sayılır.
+          </p>
+        </section>
+      )}
+
+      {autoPaperStats && (
+        <section className="card">
+          <p className="eyebrow text-neon-green">OTONOM PAPER TRADE PERFORMANSI</p>
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+            <StatCard label="Toplam İşlem" value={String(autoPaperStats.total)} />
+            <StatCard label="Açık" value={String(autoPaperStats.open)} tone="text-yellow-300" />
+            <StatCard label="Kapanmış" value={String(autoPaperStats.closed)} />
+            <StatCard label="Net PnL" value={money(autoPaperStats.total_pnl_try)} tone={pnlTone(autoPaperStats.total_pnl_try)} />
+            <StatCard label="Başarı Oranı" value={autoPaperStats.win_rate != null ? `%${autoPaperStats.win_rate.toFixed(1)}` : "—"} tone={autoPaperStats.win_rate >= 50 ? "text-neon-green" : "text-yellow-300"} />
+            <StatCard label="Kazan/Kaybet" value={`${autoPaperStats.winning}/${autoPaperStats.losing}`} />
+          </div>
+          <p className="mt-2 font-mono text-[10px] text-bunker-muted">
+            Otonom sistem: monitoring bildirimi → %{autoPaperStats.total_invested_try > 0 ? (autoPaperStats.total_invested_try / (autoPaperStats.total || 1) * 1).toFixed(0) : "35"} bakiye ile pozisyon açılır, TP/SL/breakeven otomatik yönetilir.
           </p>
         </section>
       )}
