@@ -5,6 +5,7 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { AuthContext } from "../lib/auth";
 import NotificationPermissionModal from "./NotificationPermissionModal";
 import PushOnboardingModal from "./PushOnboardingModal";
+import DisclaimerModal from "./DisclaimerModal";
 import { isMobileDevice } from "../lib/push";
 
 type AuthStatus = { configured: boolean; authenticated: boolean; username?: string | null; role?: string | null };
@@ -85,6 +86,8 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     <AuthContext.Provider value={authValue}>
       <button type="button" onClick={logout} disabled={busy} className="fixed bottom-4 right-4 z-[90] rounded-lg border border-bunker-700 bg-bunker-950/90 px-3 py-2 font-mono text-[11px] text-bunker-muted shadow-lg hover:border-neon-red/50 hover:text-neon-red">OTURUMU KAPAT</button>
       {children}
+      {/* Admin hariç tüm kullanıcılara girişte sorumluluk reddi (z-[200] en üstte) */}
+      <DisclaimerModal />
       {/* Mobil: tarayıcı uyarısı + kurulum + bildirim izni akışı (PushOnboardingModal).
           Masaüstü: NotificationPermissionModal eski akışı korur. */}
       {isMobileDevice() ? (
