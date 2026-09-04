@@ -147,6 +147,32 @@ class Config:
     # (2026-09-03, kullanıcı kararı); journal dokunuş oranı _rank_score'u besler.
     VELOCITY_SYMBOL_QUALITY_JOURNAL_MIN_EVALUATED = max(1, int(os.getenv("VELOCITY_SYMBOL_QUALITY_JOURNAL_MIN_EVALUATED", "3")))
     VELOCITY_SYMBOL_QUALITY_JOURNAL_MAX_AVG_MFE_PCT = float(os.getenv("VELOCITY_SYMBOL_QUALITY_JOURNAL_MAX_AVG_MFE_PCT", "1.0"))
+    # ---- Hibrit monitoring sıralaması (2026-09-04) ----
+    # Chat upside-scout'un dakika-normalize sıralaması + sembol kalite çarpanı
+    # monitoring'e taşındı (LLM'siz). Aşağıdaki eşikler kullanıcının 04.09.2026
+    # radar verisine dayanır: skor >=70 kovasında ort. MFE ~%5.2 (hedef %3'ün
+    # üstünde), skor <10 kovasında başarı %19 (gürültü).
+    # Global bildirim eşiği: admin tek değer ayarlar, tüm kullanıcılar etkilenir.
+    MONITORING_MIN_SCORE_DEFAULT = float(os.getenv("MONITORING_MIN_SCORE_DEFAULT", "50"))
+    # Hızlı şerit: bu skor üstü adaylar debounce beklemeden anında bildirilir
+    # (yüksek skor hızlı pump'larda gelir; bekleme fırsatı kaçırır).
+    MONITORING_FAST_LANE_SCORE = float(os.getenv("MONITORING_FAST_LANE_SCORE", "70"))
+    # Debounce: fast-lane altı aday N ardışık taramada aday kalırsa bildirilir.
+    MONITORING_DEBOUNCE_SCANS = max(1, int(os.getenv("MONITORING_DEBOUNCE_SCANS", "2")))
+    # Piyasa rejimi RISK_OFF iken etkin eşik bu çarpanla yükseltilir.
+    MONITORING_RISK_OFF_SCORE_MULT = float(os.getenv("MONITORING_RISK_OFF_SCORE_MULT", "1.5"))
+    # Skor-bantlı dinamik hedef: "skor_esigi:hedef_pct" çiftleri virgülle; yüksekten
+    # düşüğe ilk eşleşen bant hedefi belirler (0 dönerse profil baz hedefi kalır).
+    MONITORING_TARGET_SCORE_TIERS = os.getenv("MONITORING_TARGET_SCORE_TIERS", "70:4.0,50:3.0")
+    # Dinamik hedef sınırları ve adaptif esnetme: sembolün journal'dan öğrenilmiş
+    # (get_symbol_target_state) hedefi daha yüksekse hedef buraya kadar yükseltilir.
+    MONITORING_TARGET_ADAPTIVE = os.getenv("MONITORING_TARGET_ADAPTIVE", "true").lower() == "true"
+    MONITORING_TARGET_PCT_MIN = float(os.getenv("MONITORING_TARGET_PCT_MIN", "1.5"))
+    MONITORING_TARGET_PCT_MAX = float(os.getenv("MONITORING_TARGET_PCT_MAX", "6.0"))
+    # Mikro-yapı sıralama çarpanları (kapı değil, yalnızca aday sıralaması):
+    # whale dağıtım sinyali adayı düşürür; pozitif CVD akışı öne çıkarır.
+    MONITORING_MICRO_DISTRIBUTION_MULT = float(os.getenv("MONITORING_MICRO_DISTRIBUTION_MULT", "0.5"))
+    MONITORING_MICRO_CVD_POSITIVE_MULT = float(os.getenv("MONITORING_MICRO_CVD_POSITIVE_MULT", "1.1"))
     # Mikro-yapı giriş filtreleri (2026-08-31, microflow verisiyle):
     # 1) Whale dağıtım filtresi: son whale'ler dağıtım ağırlıklıysa (fiyat etkisi
     #    analizi) girişi engelle — "sahte kırılım" elemesi. Varsayılan OFF:

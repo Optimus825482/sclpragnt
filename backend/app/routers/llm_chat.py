@@ -27,7 +27,8 @@ from app.market_intelligence import (estimate_local_regime, execution_quality, s
 from app.microflow import microflow
 from app.self_learning import build_learning_context
 from app.routers.velocity import (detect_velocity_candidates, _velocity_journal_quality,
-                                  _journal_touch_rates, _quality_multiplier, _rank_score)
+                                  _journal_touch_rates, _quality_multiplier, _rank_score,
+                                  upside_rank_score)
 from app.market_data import MarketData
 from app.analyzer import ScalpAnalyzer
 from app.circuit_breaker import breaker as strategy_breaker
@@ -728,16 +729,13 @@ def _upside_target_pct(horizon_minutes: int) -> float:
 
 
 def _upside_rank_score(candidate: dict, touch_rates: dict[str, float]) -> float:
-    """Dakika başına beklenen yükseliş × hız skoru × sembol kalite çarpanı.
+    """velocity.upside_rank_score'a delege eder (ortak hibrit sıralama anahtarı).
 
     Kullanıcı amacı: 'en kısa sürede en fazla yükselme potansiyeli'. Hedef
-    profili (5dk-%2, 15dk-%3) dakikaya normalize edilir; hız skoru adayı
-    güçlendirir, journal dokunuş oranı sembol kalitesini öğrenerek çarpar.
+    profili dakikaya normalize edilir; hız skoru adayı güçlendirir, journal
+    dokunuş oranı sembol kalitesini öğrenerek çarpar.
     """
-    horizon = int(candidate.get("horizon_minutes") or 15)
-    upside_rate = _upside_target_pct(horizon) / max(1, horizon)
-    sym = str(candidate.get("symbol") or "").upper()
-    return upside_rate * float(candidate.get("velocity_score") or 0) * _quality_multiplier(touch_rates.get(sym))
+    return upside_rank_score(candidate, touch_rates)
 
 
 async def _upside_scout_impl():

@@ -220,14 +220,6 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # yoksa global varsayılan kullanılır.
             prof_key = "5m" if horizon_minutes == 5 else "15m"
             prof_atr = _velocity_profile_atr.get(prof_key) or VELOCITY_MIN_ATR_PCT
-            # Sembol bazlı adaptif hedef: geçmiş başarıya göre ayarlanmış hedefi kullan
-            adaptive_target = base_target_pct
-            try:
-                state = await database.get_symbol_target_state(symbol)
-                if state:
-                    adaptive_target = max(0.5, min(10.0, float(state.get("target_pct") or base_target_pct)))
-            except Exception:
-                adaptive_target = base_target_pct
             # notr modu (RSI 35-60) da aday olabilir: yalnızca yapısal teyit (struct_ok) aranir.
             passes = (exhausted is None and
                       atr_pct >= prof_atr and
@@ -332,14 +324,29 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     ml_hit_prob = float(ml_pred.get("hit_probability") or 0)
             except Exception as exc:
                 logger.debug("velocity ML tahmin hatası %s: %s", symbol, exc)
-            # Hedef kurali: EN AZ base hedef (5dk:%2 / 15dk:%3); ML tahmini daha
-            # iddiyaliysa (base'in ustu) o kullanilir. Dusuk tahminler alt siniri
-            # asamaz; boylece "en az %2/%3" garantisi ile kalitesiz dusuk hedef
-            # bildirilmemis olur. ML yoksa/base'in altindaysa base hedef kalir.
-            if ml_target is not None and ml_target > 0:
-                effective_target = max(float(base_target_pct), ml_target)
-            else:
-                effective_target = float(base_target_pct)
+            # Hedef kurali: EN AZ base hedef (5dk:%2 / 15dk:%3). Uzerine üc katman:
+            # 1) ML tahmini daha iddialıysa o kullanılır (düşük tahminler asamaz).
+            # 2) Skor-bantlı dinamik hedef: yüksek skorlu adaylarda hedef esnetilir
+            #    (04.09 radar verisi: skor >=70 kovasında ort. MFE ~%5.2, hedef %3
+            #    yetersiz kalıyordu).
+            # 3) Journal'dan öğrenilen sembol hedefi (get_symbol_target_state):
+            #    yalnızca yukarı çeker (adaptif esnetme, MONITORING_TARGET_ADAPTIVE).
+            # Sonuç MONITORING_TARGET_PCT_MIN/MAX'a kelepçelenir; monitoring bildirimi
+            # VE bot TP (open_velocity_position) bu hedefi kullanır.
+            learned_target = None
+            if config.MONITORING_TARGET_ADAPTIVE:
+                try:
+                    state = await database.get_symbol_target_state(symbol)
+                    if state:
+                        val = float(state.get("target_pct") or 0)
+                        learned_target = val if val > 0 else None
+                except Exception:
+                    learned_target = None
+            effective_target = dynamic_target_pct(
+                float(velocity_score), float(base_target_pct),
+                learned_pct=learned_target,
+                ml_pct=ml_target if (ml_target is not None and ml_target > 0) else None,
+            )
             # ML siralama bonusu: ML base'in ustunde tahmin ettiginde aday
             # siralamada one cikar. Dusuk tahminler adayi ezmez (bonus=1.0).
             ml_bonus = 1.0
@@ -369,13 +376,32 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
 
     results = await asyncio.gather(*(scan_one(s) for s in pool))
     limit = max(1, min(int((args or {}).get("limit", 3)), 10))
+    # Mikro-yapı anlık görüntüsü: aday satırına eklenir (sıralama çarpanı +
+    # journal kaydı aynı kaynaktan beslenir; başarısızlık sıralamayı düşürmez).
+    def _micro_for(r: dict) -> dict | None:
+        try:
+            micro = microflow.get_snapshot(price=r["price"])
+            flow = (micro.get("trade_flow") or {})
+            activity = (flow.get("whale_activity") or {})
+            return {"whale_verdict": activity.get("verdict"),
+                    "whale_count": activity.get("whale_count"),
+                    "cvd_try": flow.get("cvd_try"),
+                    "trade_rate_per_min": flow.get("trade_rate_per_min")}
+        except Exception:
+            return None
+    for r in results:
+        if r:
+            r["microstructure"] = _micro_for(r)
+            r["micro_mult"] = round(micro_structure_multiplier(r["microstructure"]), 3)
     candidates = [r for r in results if r and r["passes"]]
-    candidates.sort(key=lambda r: r["velocity_score"], reverse=True)
+    # Sıralama: ham skor × mikro-yapı çarpanı (kalite çarpanı burada DEĞİL;
+    # upside_rank_score içinde uygulanır — monitoring/ortak sıralama anahtarı).
+    candidates.sort(key=lambda r: r["velocity_score"] * r["micro_mult"], reverse=True)
     for rank, candidate in enumerate(candidates[:limit], 1):
         candidate["rank"] = rank
     # Izleme listesi: geçmeyen ama kayda deger hareket sinyali olanlar (skor >= 0.6).
     watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= 0.6]
-    watchlist.sort(key=lambda r: r["velocity_score"], reverse=True)
+    watchlist.sort(key=lambda r: r["velocity_score"] * r["micro_mult"], reverse=True)
     # Journal: geçenler + izleme listesi kaydedilir; ufuk süresi dolunca
     # kapanmış M1 mumlarla gerçek dokunuş ölçülüp eşikler kalibre edilir.
     candidate_id_prefix = f"vel-{profile['label']}-{int(now_ms)}"
@@ -400,21 +426,13 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
             "leading_ok": r.get("leading_ok"),
         } for r in (candidates[:limit] + watchlist[:5])]
-        # Adaylar için mikro yapı (whale dağıtım sinyali, CVD) journal'a eklenir;
-        # filtreler kapalıyken dahi ileride canlı istatistik üretmek için kaydedilir.
+        # Mikro yapı (whale dağıtım sinyali, CVD) aday satırından journal'a
+        # taşınır; filtreler kapalıyken dahi ileride canlı istatistik üretmek
+        # için kaydedilir.
         for row in journal_rows:
-            try:
-                micro = microflow.get_snapshot(price=row["price"])
-                flow = (micro.get("trade_flow") or {})
-                activity = (flow.get("whale_activity") or {})
-                row["microstructure"] = {
-                    "whale_verdict": activity.get("verdict"),
-                    "whale_count": activity.get("whale_count"),
-                    "cvd_try": flow.get("cvd_try"),
-                    "trade_rate_per_min": flow.get("trade_rate_per_min"),
-                }
-            except Exception:
-                pass
+            src = next((r for r in candidates + watchlist if r["symbol"] == row["symbol"]), None)
+            if src and src.get("microstructure"):
+                row["microstructure"] = src["microstructure"]
         await database.save_velocity_candidates(journal_rows)
     except Exception as exc:
         logger.warning("velocity journal hatası: %s", exc)
@@ -1106,6 +1124,72 @@ def _quality_multiplier(touch_rate: float | None) -> float:
     if touch_rate < 0.05:
         return 0.4
     return 0.7
+
+
+# ---- Hibrit sıralama yardımcıları (2026-09-04; chat upside-scout + monitoring ortak) ----
+
+def upside_rank_score(candidate: dict, touch_rates: dict[str, float] | None = None) -> float:
+    """Dakika başına beklenen yükseliş × hız skoru × sembol kalite çarpanı.
+
+    Chat upside-scout ile monitoring bildirim sıralamasının ortak anahtarı:
+    'en kısa sürede en fazla yükselme' amacını sayısallaştırır. Hedef olarak
+    aday satırındaki gerçek target_pct kullanılır (skor-bantlı dinamik hedef
+    scan_one içinde uygulanır); satırda yoksa profil baz hedefine döner.
+    """
+    horizon = int(candidate.get("horizon_minutes") or 15)
+    target = float(candidate.get("target_pct") or 0) or (2.0 if horizon <= 5 else 3.0)
+    upside_rate = target / max(1, horizon)
+    sym = str(candidate.get("symbol") or "").upper()
+    rates = touch_rates or {}
+    return upside_rate * float(candidate.get("velocity_score") or 0) * _quality_multiplier(rates.get(sym))
+
+
+def micro_structure_multiplier(micro: dict | None) -> float:
+    """Mikro-yapı sinyaline göre sıralama çarpanı (kapı değil, önceliklendirme).
+
+    whale dağıtım/mixed sinyali 'sahte kırılım' riskini işaretler → çarpan aşağı;
+    pozitif CVD (net agresif alış) çarpanı yukarı çeker. Veri yoksa nötr 1.0.
+    """
+    if not micro:
+        return 1.0
+    mult = 1.0
+    verdict = str(micro.get("whale_verdict") or "").lower()
+    if verdict in {"distribution", "mixed"}:
+        mult *= float(config.MONITORING_MICRO_DISTRIBUTION_MULT)
+    cvd = micro.get("cvd_try")
+    if isinstance(cvd, (int, float)) and cvd > 0:
+        mult *= float(config.MONITORING_MICRO_CVD_POSITIVE_MULT)
+    return mult
+
+
+def dynamic_target_pct(score: float, base_target_pct: float,
+                       learned_pct: float | None = None,
+                       ml_pct: float | None = None) -> float:
+    """Skor bantlı dinamik hedef: yüksek skorlu adaylarda hedef esnetilir.
+
+    Bantlar config.MONITORING_TARGET_SCORE_TIERS ('skor:hedef' çiftleri, yüksekten
+    düşüğe). Journal'dan öğrenilen sembol hedefi (learned_pct) ve ML tahmini
+    (ml_pct) yalnızca yukarı çekebilir; sonuç MIN/MAX'a kelepçelenir. Skor hiçbir
+    banda uymuyorsa profil baz hedefi korunur (düşük skor davranışı değişmez).
+    """
+    target = float(base_target_pct)
+    for pair in str(config.MONITORING_TARGET_SCORE_TIERS or "").split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        try:
+            min_score_s, pct_s = pair.split(":", 1)
+            if float(score) >= float(min_score_s):
+                target = max(target, float(pct_s))
+                break  # bantlar yüksekten düşüğe tanımlı
+        except ValueError:
+            continue
+    if learned_pct and float(learned_pct) > target:
+        target = float(learned_pct)
+    if ml_pct and float(ml_pct) > 0 and float(ml_pct) > target:
+        target = float(ml_pct)
+    return round(max(config.MONITORING_TARGET_PCT_MIN,
+                     min(config.MONITORING_TARGET_PCT_MAX, target)), 3)
 
 
 def _rank_score(candidate: dict, touch_rates: dict[str, float]) -> float:
