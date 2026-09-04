@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "powershell",
+      "Shell(findstr:*)",
+      "Shell(python -c import py_compile; py_compile.compile('app/main.py', doraise=True); print('main.py OK'))",
+      "Shell(python -c import py_compile; py_compile.compile('app/database.py', doraise=True); print('database.py OK'))",
+      "Shell(python -c import py_compile; py_compile.compile('app/api_common.py', doraise=True); py_compile.compile('app/routers/monitoring.py', doraise=True); py_compile.compile('app/routers/maintenance.py', doraise=True); py_compile.compile('app/routers/system.py', doraise=True); py_compile.compile('app/routers/velocity.py', doraise=True); py_compile.compile('app/routers/backtest.py', doraise=True); py_compile.compile('app/routers/llm_chat.py', doraise=True); print('ALL OK'))",
+      "Shell(python -c from app.routers import monitoring, maintenance, system, velocity, backtest, llm_chat; print('imports OK'))"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
