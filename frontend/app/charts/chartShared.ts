@@ -112,7 +112,7 @@ export const chartPriceFormat = (value: number) => {
 };
 
 export type DisplaySettings = { showPositions: boolean; showStopTakeProfit: boolean; showPatterns: boolean; showPressure: boolean; showMonitoringLines: boolean };
-export type LivePortfolio = { total_value?: number; unrealized_pnl?: number };
+export type LivePortfolio = { total_value?: number; unrealized_pnl?: number; try?: number; realized_pnl?: number; auto_paper_positions?: any[] };
 export type PortfolioMetrics = { closed_trades: number; winning_trades: number; net_pnl: number; win_rate: number };
 export type TimeframeTrend = { timeframe: string; alignment: "bullish" | "bearish" | "mixed" | "unknown"; data_ready: boolean };
 
@@ -162,6 +162,7 @@ export const STRATEGY_LABEL_TR: Record<string, string> = {
     CHAT_PREDICTION: "🚀 Hız Avcısı (Otonom)",
     LLM_PAPER: "LLM Paper",
     GAINER_RADAR: "Gainer Radar",
+    AUTO_PAPER: "🤖 Otonom Paper",
 };
 
 export function strategyLabelFor(p: { strategy?: string; entry_context?: any }) {
