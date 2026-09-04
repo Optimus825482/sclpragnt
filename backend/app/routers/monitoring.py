@@ -364,26 +364,12 @@ async def monitoring_state():
 
 
 @router.get("/api/reports/notifications")
-async def report_notifications(limit: int = 200):
-    """Radar bildirim raporu — gerçek kapanmış M1 ölçümüne dayalı başarı.
-
-    Bildirim, oluşturulduğu tarama turundaki velocity adayıyla eşleştirilir
-    (<=60 sn ve hedef % eşleşmesi). Velocity learning loop, ufuk süresi
-    dolunca kapanmış M1 mumlarından gerçek MFE ve hedef dokunuşunu ölçer:
-
-    - aday evaluated + touched_target : TAMAMEN BAŞARILI (hedefe ulaşıldı)
-    - aday evaluated + MFE >= hedef*0.5 : BAŞARILI (hedefe yaklaşıldı)
-    - aday evaluated + MFE > 0         : KISMİ (hareket başladı)
-    - aday evaluated + diğer           : BAŞARISIZ (hedefe ulaşamadı)
-    - aday pending                     : BEKLİYOR (ölçüm sürüyor)
-    - eşleşen velocity adayı yok       : ÖLÇÜLEMEDİ (kayıt öncesi/eski kayıt)
-
-    Eski hesap (expected_price - price) / price, kayıtlı expected_price
-    zaten hedef kadarlık artış içerdiğinden her zaman sabit hedef %'sini
-    veriyordu ve gerçek piyasa sonucunu hiç ölçmüyordu; bu sürüm düzeltir.
+async def report_notifications(limit: int = 200, day: str = None):
+    """Radar bildirim raporu - gercek kapannis M1 olcmueye dayali basari.
+    day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
     """
     limit = max(1, min(int(limit), 500))
-    rows = await database.get_monitoring_velocity_matches(limit=limit)
+    rows = await database.get_monitoring_velocity_matches(limit=limit, day=day)
     now = time.time()
     result = []
     for row in rows:
@@ -399,17 +385,17 @@ async def report_notifications(limit: int = 200):
         window_closed = bool(detected_at and horizon and (now - detected_at) >= (horizon + 2) * 60)
         if candidate_status == "evaluated" and mfe_pct is not None:
             if touched:
-                status = "TAMAMEN BAŞARILI"
+                status = "TAMAMEN BASARILI"
             elif target_pct > 0 and mfe_pct >= target_pct * 0.5:
-                status = "BAŞARILI"
+                status = "BASARILI"
             elif mfe_pct > 0:
-                status = "KISMİ"
+                status = "KISMI"
             else:
-                status = "BAŞARISIZ"
+                status = "BASARISIZ"
         elif candidate_status == "pending" and not window_closed:
-            status = "BEKLİYOR"
+            status = "BEKLIYOR"
         else:
-            status = "ÖLÇÜLEMEDİ" if window_closed else "BEKLİYOR"
+            status = "OLCULEMEDI" if window_closed else "BEKLIYOR"
         result.append({
             "id": row.get("id"),
             "symbol": symbol,
@@ -427,18 +413,37 @@ async def report_notifications(limit: int = 200):
             "detected_at": detected_at,
             "sent_via_push": row.get("sent_via_push"),
             "candidate_id": row.get("candidate_id"),
+            "ml_hit_probability": row.get("ml_hit_probability"),
         })
-    counts = {"TAMAMEN BAŞARILI": 0, "BAŞARILI": 0, "KISMİ": 0,
-              "BAŞARISIZ": 0, "BEKLİYOR": 0, "ÖLÇÜLEMEDİ": 0}
+    counts = {"TAMAMEN BASARILI": 0, "BASARILI": 0, "KISMI": 0,
+              "BASARISIZ": 0, "BEKLIYOR": 0, "OLCULEMEDI": 0}
     for item in result:
         counts[item["status"]] = counts.get(item["status"], 0) + 1
-    evaluated = sum(counts[k] for k in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ"))
-    success = counts["TAMAMEN BAŞARILI"] + counts["BAŞARILI"]
+    evaluated = sum(counts[k] for k in ("TAMAMEN BASARILI", "BASARILI", "KISMI", "BASARISIZ"))
+    success = counts["TAMAMEN BASARILI"] + counts["BASARILI"]
+    day_breakdown = {"counts": counts, "evaluated": evaluated,
+                    "success_count": success,
+                    "success_rate": (success / evaluated * 100) if evaluated else None}
+    all_rows = await database.get_monitoring_velocity_matches(limit=1000, day=None)
+    all_evaluated = 0
+    all_success = 0
+    for r in all_rows:
+        mfe_val = r.get("mfe_pct")
+        mfe_f = float(mfe_val) if mfe_val is not None else None
+        tch = r.get("touched_target")
+        cand_st = str(r.get("candidate_status") or "")
+        tgt = float(r.get("target_pct") or 0)
+        if cand_st == "evaluated" and mfe_f is not None:
+            all_evaluated += 1
+            if tch or mfe_f >= tgt * 0.5:
+                all_success += 1
+    overall_breakdown = {
+        "evaluated": all_evaluated,
+        "success_count": all_success,
+        "success_rate": (all_success / all_evaluated * 100) if all_evaluated else None,
+    }
     return {"paper_only": True, "notifications": result, "total": len(result),
-            "breakdown": {"counts": counts, "evaluated": evaluated,
-                          "success_count": success,
-                          "success_rate": (success / evaluated * 100) if evaluated else None}}
-
+            "breakdown": day_breakdown, "overall": overall_breakdown}
 
 @router.post("/api/monitoring/reset-notifications")
 async def reset_monitoring_notifications(request: Request):
