@@ -59,6 +59,7 @@ export default function ChartsPage() {
     const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
+    const [autoPaperPositions, setAutoPaperPositions] = useState<any[]>([]);
     // Radar bildirimi paneli: sembol için ufku dolmamış son monitoring bildirimi
     // (fiyat/hedef/skor/ufuk + geri sayım) ve grafik çizgisi göstergesi.
     const [monitorNotif, setMonitorNotif] = useState<any | null>(null);
@@ -412,11 +413,47 @@ export default function ChartsPage() {
         } catch { /* backend yoksa sessiz geç; mevcut liste korunur */ }
     }, []);
 
+    const fetchAutoPaper = useCallback(async () => {
+        try {
+            const res = await apiRequest(`${API_BASE}/api/auto-paper/trades?status=open`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (Array.isArray(data?.trades)) setAutoPaperPositions(data.trades);
+        } catch { /* sessiz */ }
+    }, []);
+
+    // Ana + otonom pozisyonları birleştir (sembol çakışması yok — farklı tablolar)
+    const allPositions = useMemo(() => {
+        const result = [...positions];
+        for (const ap of autoPaperPositions) {
+            const entry = Number(ap.entry_price || 0);
+            const current = Number(ap.current_price) > 0 ? Number(ap.current_price) : entry;
+            const pnl = (current - entry) * Number(ap.quantity || 0);
+            const pnlPct = entry > 0 ? ((current - entry) / entry) * 100 : 0;
+            result.push({
+                symbol: ap.symbol,
+                entry,
+                current,
+                pnl_pct: pnlPct,
+                pnl_try: pnl,
+                quantity: ap.quantity,
+                entry_time: ap.entry_time,
+                strategy: "AUTO_PAPER",
+                take_profit: ap.take_profit,
+                stop_loss: ap.stop_loss,
+                _auto_paper_id: ap.id,
+            });
+        }
+        return result.sort((a, b) => Number(b.entry_time || 0) - Number(a.entry_time || 0));
+    }, [positions, autoPaperPositions]);
+
     useEffect(() => {
         fetchPositions();
+        fetchAutoPaper();
         const t = setInterval(fetchPositions, 30_000);
-        return () => clearInterval(t);
-    }, [fetchPositions]);
+        const ap = setInterval(fetchAutoPaper, 30_000);
+        return () => { clearInterval(t); clearInterval(ap); };
+    }, [fetchPositions, fetchAutoPaper]);
 
     const loadPortfolioSummary = useCallback(async () => {
         try {
@@ -1130,7 +1167,7 @@ export default function ChartsPage() {
         }
     };
 
-    const openPnl = livePortfolio?.unrealized_pnl ?? positions.reduce((total, position) => total + Number(position.pnl_try || 0), 0);
+    const openPnl = livePortfolio?.unrealized_pnl ?? allPositions.reduce((total, position) => total + Number(position.pnl_try || 0), 0);
     const netPnl = portfolioMetrics?.net_pnl ?? 0;
     const money = (value: number) => `₺${value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const pnlClass = (value: number) => value >= 0 ? "text-neon-green" : "text-red-400";
@@ -1196,7 +1233,7 @@ export default function ChartsPage() {
                 <div className="min-w-0"><p className="eyebrow">TOPLAM PORTFÖY</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.total_value == null ? "—" : money(livePortfolio.total_value)}</p></div>
                 <div className="min-w-0"><p className="eyebrow">SERBEST TL</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.try == null ? "—" : money(livePortfolio.try)}</p></div>
                 <div className="min-w-0"><p className="eyebrow">AÇIK PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(openPnl)}`}>{openPnl >= 0 ? "+" : ""}{money(openPnl)}</p></div>
-                <div className="min-w-0"><p className="eyebrow">POZİSYON</p><p className="mt-1 font-mono text-sm font-bold text-white">{positions.length}</p></div>
+                <div className="min-w-0"><p className="eyebrow">POZİSYON</p><p className="mt-1 font-mono text-sm font-bold text-white">{allPositions.length}</p></div>
                 <div className="min-w-0"><p className="eyebrow">KAPANAN İŞLEM</p><p className="mt-1 font-mono text-sm font-bold text-white">{portfolioMetrics?.closed_trades ?? "—"}</p></div>
                 <div className="min-w-0 col-span-2 sm:col-span-1"><p className="eyebrow">NET PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(netPnl)}`}>{netPnl >= 0 ? "+" : ""}{money(netPnl)}</p></div>
             </section>
@@ -1560,7 +1597,7 @@ export default function ChartsPage() {
             <div className="card bg-bunker-950 border border-bunker-800">
                 <div className="flex items-center justify-between px-4 py-2 border-b border-bunker-800">
                     <h2 className="font-mono text-sm font-bold text-neon-green">AÇIK POZİSYONLAR</h2>
-                    <span className="font-mono text-xs text-bunker-muted">{positions.length} pozisyon</span>
+                    <span className="font-mono text-xs text-bunker-muted">{allPositions.length} pozisyon</span>
                 </div>
                 <div className="hidden md:block overflow-x-auto">
                     <table className="w-full text-sm font-mono">
@@ -1576,12 +1613,12 @@ export default function ChartsPage() {
                             </tr>
                         </thead>
                         <tbody>
-                            {positions.length === 0 ? (
+                            {allPositions.length === 0 ? (
                                 <tr>
                                     <td colSpan={7} className="px-4 py-5 text-center text-bunker-muted">Açık pozisyon yok</td>
                                 </tr>
                             ) : (
-                                positions.map((p) => {
+                                allPositions.map((p) => {
                                     const pnl = p.pnl_pct ?? 0;
                                     const pnlTry = p.pnl_try ?? 0;
                                     const time = p.entry_time
@@ -1624,10 +1661,10 @@ export default function ChartsPage() {
                 </div>
                 {/* Mobil: 680px'lik yatay kaydırmalı tablo yerine kart listesi */}
                 <div className="md:hidden divide-y divide-bunker-800/50">
-                    {positions.length === 0 ? (
+                    {allPositions.length === 0 ? (
                         <p className="px-4 py-5 text-center text-bunker-muted text-sm">Açık pozisyon yok</p>
                     ) : (
-                        positions.map((p) => {
+                        allPositions.map((p) => {
                             const pnl = p.pnl_pct ?? 0;
                             const pnlTry = p.pnl_try ?? 0;
                             const time = p.entry_time

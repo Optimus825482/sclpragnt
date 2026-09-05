@@ -264,44 +264,43 @@ async def get_chat_prediction_replay(lookback_hours: int = 6, horizons: str = "5
 
 @router.get("/api/reports/overview")
 async def get_report_overview():
-    """Admin Rapor Merkezi Özet sekmesi: kapanmış işlem, strateji ve karar özeti.
-
-    Salt okunur; yalnızca trades/signals/decision_logs/monitoring_notifications
-    üzerinden kümeleme yapar. Hiçbir strateji parametresini veya pozisyonu
-    değiştirmez, paper-only kuralını korur.
+    """Admin Rapor Merkezi Özet sekmesi: yalnız AUTO_PAPER (monitoring bildiriminden
+    tetiklenen otonom) işlem verilerini gösterir. Diğer stratejiler (LLM_PAPER,
+    GAINER_RADAR, CHAT_PREDICTION, VELOCITY) bu raporda yer almaz — 2026-09-06.
     """
     breakdown = await database.get_report_trade_breakdown()
     decision_summary = await database.get_report_decision_summary()
-    open_positions = []
+    # Yalnızca AUTO_PAPER stratejisi — monitoring bildirimleriyle tetiklenen otonom işlemler
+    ap_strategies = [s for s in breakdown.get("strategies", []) if str(s.get("strategy") or "").upper() == "AUTO_PAPER"]
+    ap_overall = ap_strategies[0] if ap_strategies else {}
     try:
-        for sym, pos in analyzer.positions.items():
-            open_positions.append({
-                "symbol": sym,
-                "strategy": pos.get("strategy", "UT"),
-                "side": pos.get("side", "LONG"),
-                "entry": pos.get("entry_price"),
-                "entry_time": pos.get("entry_time"),
-                "quantity": pos.get("quantity"),
-                "stop": pos.get("stop_price"),
-                "take_profit": pos.get("take_profit"),
-            })
+        from app.routers.auto_paper import get_stats_endpoint
+        ap_data = await get_stats_endpoint()
+        ap_stats = (ap_data or {}).get("stats")
     except Exception:
-        pass
+        ap_stats = None
     try:
         balance = await database.get_wallet_balance("TRY")
     except Exception:
         balance = None
     now = time.time()
-    overall = dict(breakdown.get("overall") or {})
-    overall["open_positions"] = len(open_positions)
-    overall["try_balance"] = balance
+    # total_pnl zaten auto_paper_trades'te komisyon sonrası net değerdir
+    total_pnl = (ap_stats or {}).get("total_pnl_try", 0) or 0
+    overall = {
+        "trade_count": (ap_stats or {}).get("closed", 0) or 0,
+        "net_pnl": round(total_pnl, 2),
+        "winning": (ap_stats or {}).get("winning", 0) or 0,
+        "commission": 0,  # auto_paper_trades komisyonu ayrı kolonda, özet için ihmal
+        "open_positions": (ap_stats or {}).get("open", 0) or 0,
+        "try_balance": balance or 0,
+    }
     return {
         "paper_only": True,
         "generated_at": now,
         "overall": overall,
-        "strategies": breakdown.get("strategies", []),
+        "strategies": ap_strategies,
         "decision_summary": decision_summary[:40],
-        "open_positions": open_positions,
+        "open_positions": [],
     }
 
 
