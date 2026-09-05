@@ -1696,12 +1696,12 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
                 market.orderflow[sym] = flow
         except Exception as exc:
             flow["rest_error"] = str(exc)
-    snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, flow, market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, requested_timeframe)
+    snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, flow, market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, tf)
     snapshot["analysis_build"] = "rest-fallback-v4"
     # Sembol davranış profili ve range→trend geçiş sinyali; yalnız anlık
     # snapshot alanlarından türetilir, yeni ağ çağrısı yapmaz.
     try:
-        snapshot["symbol_behavior"] = symbol_behavior_profile(snapshot, market.klines.get(requested_timeframe, {}).get(sym, {}))
+        snapshot["symbol_behavior"] = symbol_behavior_profile(snapshot, market.klines.get(tf, {}).get(sym, {}))
         snapshot["regime_transition"] = regime_transition_signal(snapshot)
     except Exception:
         pass
