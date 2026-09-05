@@ -422,10 +422,17 @@ export default function ChartsPage() {
         } catch { /* sessiz */ }
     }, []);
 
-    // Ana + otonom pozisyonları birleştir (sembol çakışması yok — farklı tablolar)
+    // Ana + otonom pozisyonları birleştir. Otonom pozisyonlar YALNIZ
+    // autoPaperPositions'tan gelir: /api/positions ve WS portfolio da AUTO_PAPER
+    // satırları taşıyabildiğinden (farklı zamanlarda) aynı pozisyon iki kez
+    // listeleniyordu — burada filtrelenir.
     const allPositions = useMemo(() => {
-        const result = [...positions];
+        const result = positions.filter((p) => String(p.strategy || "").toUpperCase() !== "AUTO_PAPER");
+        const seenIds = new Set<number>();
         for (const ap of autoPaperPositions) {
+            const id = Number(ap.id || 0);
+            if (id && seenIds.has(id)) continue;
+            if (id) seenIds.add(id);
             const entry = Number(ap.entry_price || 0);
             const current = Number(ap.current_price) > 0 ? Number(ap.current_price) : entry;
             const pnl = (current - entry) * Number(ap.quantity || 0);
@@ -1149,15 +1156,20 @@ export default function ChartsPage() {
     };
 
     const [closingSymbol, setClosingSymbol] = useState<string | null>(null);
-    const closePositionManually = async (sym: string) => {
+    const closePositionManually = async (sym: string, autoPaperId?: number) => {
         if (closingSymbol) return;
         setClosingSymbol(sym);
         try {
-            const res = await apiRequest(`${API_BASE}/api/positions/${encodeURIComponent(sym)}/close`, { method: "POST" });
+            // Otonom pozisyonlar analyzer'da değil auto_paper_trades'te yaşar;
+            // kapatma kendi endpoint'ine gider.
+            const url = autoPaperId
+                ? `${API_BASE}/api/auto-paper/trades/${autoPaperId}/close`
+                : `${API_BASE}/api/positions/${encodeURIComponent(sym)}/close`;
+            const res = await apiRequest(url, { method: "POST" });
             const data = await res.json();
-            if (!res.ok || !data.ok) throw new Error(data?.message || "kapatma başarısız");
+            if (!res.ok || !data.ok) throw new Error(data?.message || data?.detail || "kapatma başarısız");
             // pozisyon listesi WS "signal" yayınıyla da tazelenir; burada emin olmak için çek
-            await fetchPositions();
+            await Promise.all([fetchPositions(), fetchAutoPaper()]);
             loadPortfolioSummary();
         } catch (err: any) {
             console.error("manuel kapatma hatası:", err);
@@ -1641,7 +1653,7 @@ export default function ChartsPage() {
                                             <td className="px-3 py-2 text-right">
                                                 <button
                                                     type="button"
-                                                    onClick={() => closePositionManually(p.symbol)}
+                                                    onClick={() => closePositionManually(p.symbol, p._auto_paper_id)}
                                                     disabled={closingSymbol != null}
                                                     title={`${p.symbol} pozisyonunu güncel fiyatla kapat`}
                                                     className={`min-h-9 px-3 rounded-lg border font-mono text-xs transition-colors ${closingSymbol === p.symbol
@@ -1690,7 +1702,7 @@ export default function ChartsPage() {
                                     </div>
                                     <button
                                         type="button"
-                                        onClick={() => closePositionManually(p.symbol)}
+                                        onClick={() => closePositionManually(p.symbol, p._auto_paper_id)}
                                         disabled={closingSymbol != null}
                                         title={`${p.symbol} pozisyonunu güncel fiyatla kapat`}
                                         className={`shrink-0 min-h-11 px-3 rounded-lg border font-mono text-xs transition-colors ${closingSymbol === p.symbol

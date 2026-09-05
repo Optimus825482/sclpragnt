@@ -221,7 +221,15 @@ export default function PortfolioPage() {
   useEffect(() => {
     // Sekme arka plandayken poll'ları atla (görünmeyen sekmede REST israfı).
     const hidden = () => document.hidden;
-    const openPoll = () => { if (!hidden()) loadMain(); };
+    const openPoll = () => {
+      if (!hidden()) {
+        loadMain();
+        // Açık otonom pozisyonlar da REST'ten tazelenmeli: yalnız WS
+        // auto_paper_trade olayına kalırlarsa sayfa yüklendikten sonra açılan
+        // olaylar kaçırılınca liste sonsuza kadar boş kalıyordu.
+        loadAutoPaperOpen();
+      }
+    };
     const detailPoll = () => { if (!hidden()) loadAutoPaperDetail(); };
     openPoll();
     loadAutoPaperDetail();
@@ -232,7 +240,7 @@ export default function PortfolioPage() {
     const detailTimer = window.setInterval(detailPoll, 15_000);
     const decisionTimer = window.setInterval(() => { if (!hidden()) loadDecisions(); }, 30_000);
     return () => { window.clearInterval(openTimer); window.clearInterval(detailTimer); window.clearInterval(decisionTimer); };
-  }, [loadMain, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
+  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
 
   // WS bağlantısı yoksa portföy özetini REST'ten tazele (15 sn).
   useEffect(() => {

@@ -21,13 +21,24 @@ import logging
 import time
 import math
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
-from app import database
+from app import database, security
 from app.api_common import log_user_action, _background_tasks
 from app.state import market
 from app.ws_runtime import ws_manager
+
+
+def _session_username(request: Request) -> str | None:
+    """Aktif oturumdaki kullanıcı adı (audit log için); None ise kayıt atlanır."""
+    if request is None:
+        return None
+    try:
+        user = security.request_user(request.headers, request.cookies)
+    except Exception:
+        return None
+    return (user or {}).get("username")
 
 logger = logging.getLogger("scalper.auto_paper")
 router = APIRouter()
@@ -477,6 +488,29 @@ async def get_stats_endpoint():
         "stats": stats,
         "state": dict(_AUTO_PAPER_STATE),
     }
+
+
+@router.post("/api/auto-paper/trades/{trade_id}/close")
+async def close_auto_paper_endpoint(trade_id: int, request: Request):
+    """Açık otonom paper pozisyonunu manuel kapat (admin-only, paper-only).
+
+    Piyasa fiyatından kapanır; muhasebe close_auto_paper_trade içinde
+    (komisyon + wallet iadesi + CLOSE sinyali) atomiktir.
+    """
+    from app.main import _require_admin
+    _require_admin(request)
+    trade = await database.get_auto_paper_trade(trade_id)
+    if not trade or trade.get("status") != "open":
+        raise HTTPException(404, "Açık otonom pozisyon bulunamadı")
+    symbol = str(trade.get("symbol") or "").upper()
+    ticker = market.get_ticker(symbol) or {}
+    price = float(ticker.get("last_price") or 0)
+    if price <= 0:
+        raise HTTPException(502, f"{symbol} için güncel fiyat bulunamadı")
+    await _close_trade(trade_id, symbol, price, time.time(), "manual_close")
+    await log_user_action(_session_username(request), None, "trade", "AUTO_PAPER_CLOSE_MANUAL",
+                          target=symbol, details={"trade_id": trade_id, "exit_price": price}, request=request)
+    return {"ok": True, "message": f"{symbol} kapatıldı @ {price:.6f}", "trade_id": trade_id}
 
 
 # ---------------------------------------------------------------------------
