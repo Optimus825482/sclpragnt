@@ -470,29 +470,11 @@ async def list_trades_endpoint(status: str | None = None, limit: int = 100, offs
 
 @router.get("/api/auto-paper/stats")
 async def get_stats_endpoint():
-    """Otonom paper trade istatistikleri."""
-    trades = await database.list_auto_paper_trades(status=None, limit=10000)
-    open_trades = [t for t in trades if t.get("status") == "open"]
-    closed_trades = [t for t in trades if t.get("status") == "closed"]
-    total_pnl = sum(float(t.get("pnl") or 0) for t in closed_trades)
-    winning = sum(1 for t in closed_trades if float(t.get("pnl") or 0) > 0)
-    losing = sum(1 for t in closed_trades if float(t.get("pnl") or 0) <= 0)
-    total_invested = sum(float(t.get("order_value_try") or 0) for t in closed_trades)
-    win_rate = (winning / len(closed_trades) * 100) if closed_trades else 0
-
+    """Otonom paper trade istatistikleri (reset_at sonrasi; reset kapanışları hariç)."""
+    stats = await database.get_auto_paper_stats()
     return {
         "paper_only": True,
-        "stats": {
-            "total": len(trades),
-            "open": len(open_trades),
-            "closed": len(closed_trades),
-            "winning": winning,
-            "losing": losing,
-            "win_rate": round(win_rate, 1),
-            "total_pnl_try": round(total_pnl, 2),
-            "total_invested_try": round(total_invested, 2),
-            "avg_pnl_try": round(total_pnl / len(closed_trades), 2) if closed_trades else 0,
-        },
+        "stats": stats,
         "state": dict(_AUTO_PAPER_STATE),
     }
 
