@@ -2677,5 +2677,14 @@ async def strategies_llm_chat(payload: dict = None):
                               action="Yanıtı göndermeden önce deterministic evaluator ile doğrula.", confidence=0.35,
                               experience_id=experience_id)
     await _persist_chat_memory(messages, layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=session_id)
+    # Son yanıtı ayrı kaydet: kullanıcı sayfadan ayrılıp döndüğünde cevabı
+    # görebilsin (streaming kesilince chat_memory'e yazılmamış oluyor).
+    try:
+        assistant_msgs = [m for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("content")]
+        if assistant_msgs:
+            last_assistant = assistant_msgs[-1]["content"]
+            await database.set_llm_setting(f"chat_last_response:{session_id}", last_assistant)
+    except Exception as exc:
+        logger.debug("chat last_response kaydedilemedi: %s", exc)
     await finish_trace(_main_pg_pool(), trace_id, "completed" if result.get("status") == "ok" else "error")
     return result

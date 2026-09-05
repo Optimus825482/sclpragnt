@@ -1728,6 +1728,18 @@ async def save_llm_chat_settings(payload: dict):
     await database.set_llm_setting("chat_settings", json.dumps(settings, ensure_ascii=False))
     return {"ok": True, **settings}
 
+@app.get("/api/llm/chat/last-response")
+async def get_chat_last_response(session_id: str = "default"):
+    """Kullanıcı chat sayfasına döndüğünde bekleyen son yanıtı getirir (tek kullanımlık)."""
+    try:
+        raw = await database.get_llm_setting(f"chat_last_response:{session_id}", "")
+        if raw:
+            await database.set_llm_setting(f"chat_last_response:{session_id}", "")  # tüket
+            return {"response": raw}
+    except Exception:
+        pass
+    return {"response": None}
+
 @app.get("/api/llm/learning")
 async def llm_learning():
     """Expose the descriptive closed-trade learning summary for audit/UI."""
