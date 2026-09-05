@@ -1746,6 +1746,8 @@ async def get_chat_last_response(session_id: str = "default"):
 
 BINANCE_API_KEY_SETTING = "binance_api_key_encrypted"
 BINANCE_SECRET_SETTING = "binance_api_secret_encrypted"
+# Varlık -> (cache bitiş zamanı, {"avg_price": float, "quote": "TRY"|"USDT"})
+_binance_cost_cache: dict[str, tuple[float, dict]] = {}
 
 @app.get("/api/binance/settings")
 async def get_binance_settings(request: Request):
@@ -1838,21 +1840,75 @@ async def binance_positions(request: Request):
             logger.warning("Binance TR fiyat listesi alınamadı (kısmi): %s", exc)
 
     usdt_try = price_by_symbol.get("USDTTRY", 0.0)
+    now_ts = time.time()
     for h in held:
         asset = h["asset"]
         if asset == "TRY":
             price_try = 1.0
+            symbol_concat = None
         elif price_by_symbol.get(f"{asset}TRY"):
             price_try = price_by_symbol[f"{asset}TRY"]
+            symbol_concat = f"{asset}TRY"
         elif price_by_symbol.get(f"{asset}USDT") and usdt_try:
             price_try = price_by_symbol[f"{asset}USDT"] * usdt_try
+            symbol_concat = f"{asset}USDT"
         else:
             price_try = None
+            symbol_concat = None
         h["price_try"] = price_try
         h["value_try"] = round(h["total"] * price_try, 2) if price_try is not None else None
+        # Ağırlıklı ortalama alım maliyeti (işlem geçmişindeki alışların VWAP'ı,
+        # 60 sn cache'li). TRY çifti yoksa USDT maliyeti USDTTRY ile TRY'ye çevrilir.
+        avg_cost_try = None
+        if asset != "TRY" and symbol_concat:
+            cost = _avg_buy_cost(api_key, api_secret, asset, symbol_concat, now_ts)
+            if cost and cost.get("avg_price"):
+                quote = cost.get("quote")
+                if quote == "TRY":
+                    avg_cost_try = cost["avg_price"]
+                elif quote == "USDT" and usdt_try:
+                    avg_cost_try = cost["avg_price"] * usdt_try
+        h["avg_cost_try"] = round(avg_cost_try, 8) if avg_cost_try else None
+        if avg_cost_try and price_try:
+            pnl_try = (price_try - avg_cost_try) * h["total"]
+            h["pnl_try"] = round(pnl_try, 2)
+            h["pnl_pct"] = round((price_try - avg_cost_try) / avg_cost_try * 100, 2)
+        else:
+            h["pnl_try"] = None
+            h["pnl_pct"] = None
         holdings.append(h)
     holdings.sort(key=lambda h: (h["value_try"] is None, -(h["value_try"] or 0)))
     return {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
+
+
+def _avg_buy_cost(api_key: str, api_secret: str, asset: str, symbol_concat: str, now: float) -> dict | None:
+    """Varlığın işlem geçmişindeki alışların ağırlıklı ortalaması (60 sn cache).
+
+    Son 1000 fill üzerinden hesaplanır; geçmiş satışlar maliyetten düşülmez —
+    kaba maliyet göstergesidir, muhasebe değildir.
+    """
+    cached = _binance_cost_cache.get(asset)
+    if cached and cached[0] > now:
+        return cached[1]
+    info: dict = {"avg_price": None, "quote": "TRY" if symbol_concat.endswith("TRY") else "USDT"}
+    try:
+        trades = get_trade_history(api_key, api_secret, symbol_concat, None, None, 1000, 0)
+        spent = 0.0
+        qty = 0.0
+        for t in trades if isinstance(trades, list) else []:
+            if not t.get("isBuyer"):
+                continue
+            t_qty = float(t.get("qty") or 0)
+            t_price = float(t.get("price") or 0)
+            if t_qty > 0 and t_price > 0:
+                spent += t_price * t_qty
+                qty += t_qty
+        if qty > 0:
+            info["avg_price"] = spent / qty
+    except Exception as exc:
+        logger.warning("Binance TR alım geçmişi okunamadı (%s): %s", asset, exc)
+    _binance_cost_cache[asset] = (now + 60.0, info)
+    return info
 
 @app.post("/api/binance/sell")
 async def binance_sell(payload: dict, request: Request):

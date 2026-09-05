@@ -12,6 +12,9 @@ type Holding = {
   total: number;
   price_try: number | null;
   value_try: number | null;
+  avg_cost_try?: number | null;
+  pnl_try?: number | null;
+  pnl_pct?: number | null;
 };
 
 type Trade = {
@@ -303,30 +306,40 @@ export default function BinanceTrPage() {
             ) : (
               <div className="table-scroll mt-3">
                 <table className="data-table">
-                  <thead><tr><th>Sembol</th><th>Miktar</th><th>Kilitli</th><th>TRY Fiyat</th><th>TRY Deger</th><th></th></tr></thead>
+                  <thead><tr><th>Sembol</th><th>Miktar</th><th>Kilitli</th><th>Alım Maliyeti</th><th>Güncel Fiyat</th><th>Anlık K/Z</th><th>TRY Deger</th><th></th></tr></thead>
                   <tbody>
-                    {visibleHoldings.map((h) => (
-                      <tr key={h.asset}>
-                        <td><span className="font-mono font-bold text-white">{h.asset}</span></td>
-                        <td className="font-mono text-xs">{fmtPrice(h.free, 6)}</td>
-                        <td className="font-mono text-xs text-bunker-muted">{h.locked > 0 ? fmtPrice(h.locked, 6) : "—"}</td>
-                        <td className="font-mono text-xs text-bunker-muted">{h.price_try != null ? fmtPrice(h.price_try, h.price_try < 1 ? 6 : 2) : "—"}</td>
-                        <td className={`font-mono text-xs font-bold ${h.value_try != null ? "text-white" : "text-bunker-muted"}`}>
-                          {h.value_try != null ? `₺${fmtPrice(h.value_try)}` : "fiyat yok"}
-                        </td>
-                        <td className="text-right">
-                          <button
-                            type="button"
-                            onClick={() => openSell(h)}
-                            disabled={h.free <= 0 || h.asset === "TRY" || h.price_try == null}
-                            title={h.asset === "TRY" ? "TRY satılamaz" : h.price_try == null ? "Piyasa fiyatı bulunamadı" : h.free <= 0 ? "Boşta bakiye yok" : "Piyasa fiyatından sat"}
-                            className="rounded border border-neon-red/50 bg-neon-red/10 px-2.5 py-1 font-mono text-[11px] font-bold text-neon-red transition-colors hover:bg-neon-red/20 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            SAT
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {visibleHoldings.map((h) => {
+                      const pnlToneCls = h.pnl_try == null ? "" : h.pnl_try >= 0 ? "text-neon-green" : "text-neon-red";
+                      return (
+                        <tr key={h.asset}>
+                          <td><span className="font-mono font-bold text-white">{h.asset}</span></td>
+                          <td className="font-mono text-xs">{fmtPrice(h.free, 6)}</td>
+                          <td className="font-mono text-xs text-bunker-muted">{h.locked > 0 ? fmtPrice(h.locked, 6) : "—"}</td>
+                          <td className="font-mono text-xs text-bunker-muted">{h.avg_cost_try != null ? `₺${fmtPrice(h.avg_cost_try, h.avg_cost_try < 1 ? 6 : 2)}` : "—"}</td>
+                          <td className="font-mono text-xs text-white">{h.price_try != null ? `₺${fmtPrice(h.price_try, h.price_try < 1 ? 6 : 2)}` : "—"}</td>
+                          <td className={`font-mono text-xs font-bold ${pnlToneCls}`}>
+                            {h.pnl_try != null ? `₺${h.pnl_try >= 0 ? "+" : "−"}${fmtPrice(Math.abs(h.pnl_try))}` : "—"}
+                            {h.pnl_pct != null ? (
+                              <span className="ml-1 font-normal">({h.pnl_pct >= 0 ? "+" : "−"}%{fmtPrice(Math.abs(h.pnl_pct), 2)})</span>
+                            ) : null}
+                          </td>
+                          <td className={`font-mono text-xs font-bold ${h.value_try != null ? "text-white" : "text-bunker-muted"}`}>
+                            {h.value_try != null ? `₺${fmtPrice(h.value_try)}` : "fiyat yok"}
+                          </td>
+                          <td className="text-right">
+                            <button
+                              type="button"
+                              onClick={() => openSell(h)}
+                              disabled={h.free <= 0 || h.asset === "TRY" || h.price_try == null}
+                              title={h.asset === "TRY" ? "TRY satılamaz" : h.price_try == null ? "Piyasa fiyatı bulunamadı" : h.free <= 0 ? "Boşta bakiye yok" : "Piyasa fiyatından sat"}
+                              className="rounded border border-neon-red/50 bg-neon-red/10 px-2.5 py-1 font-mono text-[11px] font-bold text-neon-red transition-colors hover:bg-neon-red/20 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              SAT
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
