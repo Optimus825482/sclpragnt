@@ -1643,15 +1643,12 @@ async def get_positions():
 @app.get("/api/symbol-analysis/{symbol}")
 async def symbol_analysis(symbol: str, timeframe: str = ""):
     sym = symbol.upper()
+    tf = str(timeframe or "5m")  # parametre timeframe, kodda requested_timeframe değil — düzeltildi (2026-09-06)
     ticker = market.get_ticker(sym)
-    # The analysis page can request a valid market that was not warm when the
-    # process started (or whose websocket stream briefly missed an event).
-    # Hydrate that symbol from the public REST API instead of reporting it as
-    # unknown. This remains read-only and paper-trading safe.
-    primary_history = market.klines.get(requested_timeframe, {}).get(sym, {})
+    primary_history = market.klines.get(tf, {}).get(sym, {})
     history_ready = len(primary_history.get("closes", [])) >= 55
     analysis_klines = {
-        requested_timeframe: primary_history,
+        tf: primary_history,
         "1d": market.klines.get("1d", {}).get(sym, {}),
     }
     if not ticker or not history_ready:
@@ -1659,7 +1656,7 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
             available = set(await trading_symbols("TRY"))
             if sym not in available:
                 return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": "Sembol Binance TR'de işlem görmüyor"}
-            rows = await fetch_klines(sym, requested_timeframe, limit=300)
+            rows = await fetch_klines(sym, tf, limit=300)
             if rows and len(rows) >= 55:
                 hydrated = {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
                 for row in rows:
@@ -1668,9 +1665,9 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
                     hydrated["lows"].append(float(row[3]))
                     hydrated["closes"].append(float(row[4]))
                     hydrated["volumes"].append(float(row[5]))
-                market.klines[requested_timeframe][sym] = hydrated
+                market.klines[tf][sym] = hydrated
                 analysis_klines = {
-                    requested_timeframe: hydrated,
+                    tf: hydrated,
                     "1d": market.klines.get("1d", {}).get(sym, {}),
                 }
                 last_price = float(rows[-1][4])
@@ -1678,7 +1675,7 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
                 market.tickers[sym] = ticker
             else:
                 count = len(rows) if rows else 0
-                return {"symbol": sym, "analysis_build": "rest-fallback-v4", "timeframes": {requested_timeframe: {"candles": count, "required": 55}}, "data_ready": False, "error": "Teknik analiz için yeterli mum verisi alınamadı"}
+                return {"symbol": sym, "analysis_build": "rest-fallback-v4", "timeframes": {tf: {"candles": count, "required": 55}}, "data_ready": False, "error": "Teknik analiz için yeterli mum verisi alınamadı"}
         except Exception as exc:
             return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": f"Sembol verisi alınamadı: {exc}"}
     if not ticker:

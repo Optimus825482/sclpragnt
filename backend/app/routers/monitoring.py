@@ -143,15 +143,17 @@ def _effective_min_score(settings) -> float:
 async def get_user_notification_settings() -> dict:
     """Global bildirim ayarlarını DB'den oku (admin ayarı — tüm kullanıcıları etkiler).
 
-    min_score varsayılanı config.MONITORING_MIN_SCORE_DEFAULT (50): radar verisi
-    04.09.2026 — skor >=50 altı kovalar gürültü, üstü nitelikli.
+    min_score varsayılanı config.MONITORING_MIN_SCORE_DEFAULT (20): radar verisi
+    06.09.2026 — eski 50 eşiği velocity_score 0-30 aralığıyla uyumsuzdu, tüm
+    adayları eliyordu. Mevcut DB'de 50 kayıtlıysa otomatik 20'ye düşürülür.
     """
     try:
         settings_json = await database.get_llm_setting("monitoring_notification_settings", "{}")
         settings = json.loads(settings_json or "{}")
+        min_score = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
         return {
             "enabled": settings.get("enabled", True),
-            "min_score": float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT)),
+            "min_score": min_score,
             "min_target_pct": float(settings.get("min_target_pct", 2.0)),
             "quiet_hours_start": settings.get("quiet_hours_start", None),
             "quiet_hours_end": settings.get("quiet_hours_end", None),

@@ -139,7 +139,7 @@ VELOCITY_PROFILES = {
 
 
 async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5,
-                                     extra_symbols: list | None = None):
+                                      extra_symbols: list | None = None):
     """Belirli ufukta (5dk/15dk) en az hedef % (2/3) yükselme potansiyeli taşıyan en hızlı 3 aday.
 
     v2 — forensics kalibrasyonu: Bollinger genişliği + ATR + (RSI iki ucu) +
@@ -157,11 +157,17 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     except Exception as exc:
         logger.warning("velocity scan: top_gainers hatası: %s", exc)
         gainer_rows = []
+    # Havuz: top_gainers + config.SYMBOLS (aktif semboller) + extra_symbols.
+    # 24h değişimi düşük olsa bile aktif semboller her turda taranır (kısa vadeli
+    # momentumu yakalamak için, 2026-09-06). Ayrıca kullanıcının izleme listesi
+    # (extra_symbols) zorunlu eklenir.
     pool = [item["symbol"] for item in gainer_rows]
-    if not pool:
-        pool = [str(s).replace("_", "").upper() for s in config.SYMBOLS][:20]
+    _pool_set = set(pool)
+    for sym in (str(s).upper() for s in config.SYMBOLS):
+        if sym not in _pool_set:
+            pool.append(sym)
+            _pool_set.add(sym)
     if extra_symbols:
-        _pool_set = set(pool)
         for sym in extra_symbols[:10]:
             if sym and sym not in _pool_set:
                 pool.append(sym)
@@ -244,10 +250,14 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             bb_ratio = (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0
             struct_ratio = max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
                                (aroon_up or 0) / 50.0)
+            # NOT (2026-09-06): ret3 (3 mum) kısa düzeltmelerde negatife dönüp
+            # skoru çökertiyordu. ret5 (5 mum, daha kararlı) da hesaplanıp ikisinin
+            # maksimumu kullanılır — böylece kısa geri çekilme momentum skorunu öldürmez.
+            ret5 = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0.0
             velocity_score = round((atr_pct / prof_atr) *
                                     bb_ratio *
                                     max(0.2, min(3.0, struct_ratio)) *
-                                    (1.0 + max(0.0, ret3) / 2.0), 2)
+                                    (1.0 + max(0.0, ret3, ret5) / 2.0), 2)
             # ---- M5 momentum+volatilite deseni (7g replay: %66.8 başarı) ----
             # g0: en son kapanan M5 mumu; g1: ondan önceki; g2: iki önceki aralık.
             # Eşikler config.VELOCITY_PATTERN_* (24s/72s/7g doğrulandı).

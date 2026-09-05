@@ -132,11 +132,13 @@ class Config:
     # üstünde), skor <10 kovasında başarı %19 (gürültü).
     # Global bildirim eşiği: admin tek değer ayarlar, tüm kullanıcılar etkilenir.
     MONITORING_MIN_SCORE_DEFAULT = float(os.getenv("MONITORING_MIN_SCORE_DEFAULT", "50"))
-    # velocity_score 0-~200+ aralığında ham çarpım; admin eşikleri (50/70) 0-100
-    # panel ölçeğine göre kurgulanmış. Kullanıcı tarafı _notify'ta ham velocity_score
+    # velocity_score 0-~200+ aralığında ham çarpım; admin eşikleri 0-100 panel
+    # ölçeğine göre kurgulanmış. Kullanıcı tarafı _notify'ta ham velocity_score
     # ile min_score karşılaştırdığı için pratikte aday asla eşiği geçemiyordu (2026-09-04
     # teşhis — üretim verisi: velocity_score çoğu 0-30). Bu cap normalize_score'u besler:
     # velocity_score >= cap -> panel skoru 100. Cap=40 -> velocity 20 => 50, 28 => 70.
+    # NOT (2026-09-06): velocity_score formülü tipik orta-kuvvetli sinyal için 5-15 arası
+    # üretir. Default eşik 50 iken panel skoru (12-38) asla geçemez. Eşik 20'ye çekildi.
     MONITORING_SCORE_NORM_CAP = float(os.getenv("MONITORING_SCORE_NORM_CAP", "40"))
     # Hızlı şerit: bu skor üstü adaylar debounce beklemeden anında bildirilir
     # (yüksek skor hızlı pump'larda gelir; bekleme fırsatı kaçırır).
