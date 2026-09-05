@@ -51,6 +51,7 @@ function OverviewTab() {
   const [overview, setOverview] = useState<any>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [breakdown, setBreakdown] = useState<any>(null);
+  const [overall, setOverall] = useState<any>(null);
   const [autoPaperStats, setAutoPaperStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -59,12 +60,12 @@ function OverviewTab() {
     try {
       const [ovRes, ntRes, apRes] = await Promise.all([
         apiRequest(`${API_BASE}/api/reports/overview`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/reports/notifications?limit=50`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/reports/notifications?limit=200`, { cache: "no-store" }),
         apiRequest(`${API_BASE}/api/auto-paper/stats`, { cache: "no-store" }),
       ]);
       const [ov, nt, ap] = await Promise.all([ovRes.json(), ntRes.json(), apRes.json()]);
       if (ovRes.ok) setOverview(ov);
-      if (ntRes.ok) { setNotifications(nt.notifications || []); setBreakdown(nt.breakdown || null); }
+      if (ntRes.ok) { setNotifications(nt.notifications || []); setBreakdown(nt.breakdown || null); setOverall(nt.overall || null); }
       if (apRes.ok) setAutoPaperStats(ap.stats || null);
       if (!ovRes.ok) setError(ov.detail || "Özet alınamadı");
     } catch {
@@ -80,10 +81,13 @@ function OverviewTab() {
   if (error && !overview) return <section className="card border-neon-red/40 text-neon-red">{error}</section>;
 
   const o = overview?.overall || {};
-  const strategies = overview?.strategies || [];
+  const symbols = overview?.symbols || [];
   const wins = rl(o.winning);
   const total = rl(o.trade_count);
   const winRate = total > 0 ? (wins / total) * 100 : null;
+  const avgOrderTry = autoPaperStats && autoPaperStats.closed > 0
+    ? (autoPaperStats.total_invested_try || 0) / autoPaperStats.closed
+    : null;
 
   return (
     <div className="space-y-5">
@@ -102,8 +106,8 @@ function OverviewTab() {
             <StatCard label="KISMİ" value={String(breakdown.counts?.["KISMİ"] || 0)} tone="text-yellow-300" />
             <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.["BAŞARISIZ"] || 0)} tone="text-neon-red" />
             <StatCard label="BEKLİYOR" value={String((breakdown.counts?.["BEKLİYOR"] || 0) + (breakdown.counts?.["ÖLÇÜLEMEDİ"] || 0))} sub={`ölçülemedi ${breakdown.counts?.["ÖLÇÜLEMEDİ"] || 0}`} />
-            <StatCard label="GENEL BAŞARI" value={breakdown.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"} tone={breakdown.success_rate != null && breakdown.success_rate >= 50 ? "text-neon-green" : "text-yellow-300"}
-              sub={`${breakdown.success_count}/${breakdown.evaluated} ölçülen`} />
+            <StatCard label="GENEL BAŞARI" value={overall?.success_rate != null ? `%${overall.success_rate.toFixed(1)}` : "—"} tone={overall?.success_rate != null && overall.success_rate >= 50 ? "text-neon-green" : "text-yellow-300"}
+              sub={overall ? `${overall.success_count}/${overall.evaluated} ölçülen (tüm zamanlar)` : ""} />
           </div>
           <p className="mt-2 font-mono text-[10px] text-bunker-muted">
             Başarı, kapanmış M1 mumlarıyla ölçülen gerçek MFE ve hedef dokunuşuna dayanır; ufku dolmayan/ölçülemeyen kayıtlar BEKLIYOR sayılır.
@@ -123,31 +127,30 @@ function OverviewTab() {
             <StatCard label="Kazan/Kaybet" value={`${autoPaperStats.winning}/${autoPaperStats.losing}`} />
           </div>
           <p className="mt-2 font-mono text-[10px] text-bunker-muted">
-            Otonom sistem: monitoring bildirimi → %{autoPaperStats.total_invested_try > 0 ? (autoPaperStats.total_invested_try / (autoPaperStats.total || 1) * 1).toFixed(0) : "35"} bakiye ile pozisyon açılır, TP/SL/breakeven otomatik yönetilir.
+            Otonom sistem: monitoring bildirimi → {avgOrderTry != null ? `ortalama ₺${avgOrderTry.toFixed(0)} işlem` : "bildirim başına"} açılır, TP/SL/breakeven otomatik yönetilir.
           </p>
         </section>
       )}
 
       <section className="card">
         <div className="flex justify-between">
-          <p className="eyebrow text-neon-green">STRATEJİ PERFORMANSI</p>
-          <span className="font-mono text-xs text-bunker-muted">{strategies.length} strateji</span>
+          <p className="eyebrow text-neon-green">SEMBOL PERFORMANSI</p>
+          <span className="font-mono text-xs text-bunker-muted">{symbols.length} sembol</span>
         </div>
-        {strategies.length === 0 ? (
-          <p className="mt-3 text-sm text-bunker-muted">Henüz kapanmış işlem yok.</p>
+        {symbols.length === 0 ? (
+          <p className="mt-3 text-sm text-bunker-muted">Henüz kapanmış otonom işlem yok.</p>
         ) : (
           <div className="mt-3 table-scroll">
             <table className="data-table">
-              <thead><tr><th>Strateji</th><th>İşlem</th><th>Başarı</th><th>Net PnL</th><th>Ort. MFE</th><th>Ort. DD</th></tr></thead>
+              <thead><tr><th>Sembol</th><th>İşlem</th><th>Başarı</th><th>Net PnL</th><th>Komisyon</th></tr></thead>
               <tbody>
-                {strategies.filter((s: any) => !/CHAT_PREDICTION|VELOCITY/.test(String(s.strategy || "").toUpperCase())).map((s: any) => (
-                  <tr key={s.strategy}>
-                    <td className="font-mono text-xs text-white">{strategyLabel(s.strategy)}</td>
+                {symbols.map((s: any) => (
+                  <tr key={s.symbol}>
+                    <td><SymbolLink symbol={s.symbol} className="font-mono text-xs text-white hover:text-neon-green" /></td>
                     <td>{s.trade_count}</td>
                     <td className="font-mono text-xs text-white">%{Number(s.win_rate || 0).toFixed(1)}</td>
                     <td className={`font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
-                    <td className="font-mono text-xs text-bunker-muted">{pct(rl(s.avg_max_favorable))}</td>
-                    <td className="font-mono text-xs text-bunker-muted">{pct(rl(s.avg_max_adverse))}</td>
+                    <td className="font-mono text-xs text-bunker-muted">{money(s.commission)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1001,7 +1004,9 @@ function UserPositionsTab() {
         apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=50`, { cache: "no-store" }),
       ]);
       const [pos, ap] = await Promise.all([posRes.json(), apRes.json()]);
-      if (posRes.ok) setPositions(pos.positions || []);
+      // Başlık "OTONOM": /api/positions tüm stratejileri döndürür, yalnız
+      // AUTO_PAPER satırlarını al (LLM_PAPER vb. karışmasın).
+      if (posRes.ok) setPositions((pos.positions || []).filter((p: any) => String(p.strategy || "").toUpperCase() === "AUTO_PAPER"));
       // Otonom işlemler auto_paper_trades tablosunda; trades tablosunda değil.
       if (apRes.ok) setTrades(ap.trades || []);
     } catch {
