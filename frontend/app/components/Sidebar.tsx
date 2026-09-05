@@ -20,6 +20,7 @@ const MENU_ADMIN = [
     { href: "/users", label: "Kullanıcı Yönetimi", icon: "👥", desc: "Kullanıcı ekle/düzenle/sil" },
     { href: "/audit-logs", label: "Olay Kayıtları", icon: "🛡", desc: "Giriş ve kullanıcı hareketleri" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" },
+    { href: "/binance-tr", label: "Binance TR", icon: "🏛️", desc: "Canlı bakiye ve işlemler" },
     { href: "/database", label: "Veritabanı", icon: "🗄️", desc: "Tablo verileri, CSV/SQL indirme" },
     { href: "/chat", label: "Chat", icon: "💬", desc: "LLM chat merkezi (admin)" },
 ];

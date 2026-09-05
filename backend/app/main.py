@@ -47,6 +47,7 @@ from app import ml_forecast
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app import llm_analysis
+from app.binance_tr_private import get_account_balance, get_open_orders, get_trade_history
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
 from app import memory_service
@@ -1736,6 +1737,79 @@ async def get_chat_last_response(session_id: str = "default"):
     except Exception:
         pass
     return {"response": None}
+
+
+# ---------------------------------------------------------------------------
+# Binance TR Admin Panel (salt okunur)
+# ---------------------------------------------------------------------------
+
+BINANCE_API_KEY_SETTING = "binance_api_key_encrypted"
+BINANCE_SECRET_SETTING = "binance_api_secret_encrypted"
+
+@app.get("/api/binance/settings")
+async def get_binance_settings(request: Request):
+    """Admin'in kayıtlı Binance API key bilgisi var mı döndür (key'in kendisi asla dönmez)."""
+    _require_admin(request)
+    enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+    return {"configured": bool(enc_key)}
+
+@app.post("/api/binance/settings")
+async def save_binance_settings(payload: dict, request: Request):
+    """Binance API key/secret'ı Fernet şifreleyip kaydet (admin-only)."""
+    _require_admin(request)
+    api_key = str(payload.get("api_key") or "").strip()
+    api_secret = str(payload.get("api_secret") or "").strip()
+    if not api_key or not api_secret:
+        raise HTTPException(status_code=422, detail="API key ve secret gerekli")
+    await database.set_llm_setting(BINANCE_API_KEY_SETTING, llm_analysis.encrypt_key(api_key))
+    await database.set_llm_setting(BINANCE_SECRET_SETTING, llm_analysis.encrypt_key(api_secret))
+    return {"ok": True, "configured": True}
+
+async def _decrypt_binance_creds(request) -> tuple[str, str]:
+    """Şifreli Binance key/secret'ı çöz, yoksa hata fırlat."""
+    _require_admin(request)
+    enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+    enc_secret = await database.get_llm_setting(BINANCE_SECRET_SETTING, "")
+    if not enc_key or not enc_secret:
+        raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış")
+    return llm_analysis.decrypt_key(enc_key), llm_analysis.decrypt_key(enc_secret)
+
+@app.get("/api/binance/account")
+async def binance_account(request: Request):
+    """Binance TR hesap bakiyesi (salt okunur, admin-only)."""
+    api_key, api_secret = _decrypt_binance_creds(request)
+    try:
+        balances = get_account_balance(api_key, api_secret)
+        non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
+        return {"balances": non_zero}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+
+@app.get("/api/binance/positions")
+async def binance_positions(request: Request):
+    """Binance TR açık emirler/pozisyonlar (salt okunur, admin-only)."""
+    api_key, api_secret = _decrypt_binance_creds(request)
+    try:
+        orders = get_open_orders(api_key, api_secret)
+        return {"orders": orders}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR pozisyon bilgisi alınamadı: {exc}")
+
+@app.get("/api/binance/trades")
+async def binance_trades(request: Request, symbol: str = "",
+                         start_time: int = 0, end_time: int = 0,
+                         limit: int = 100, offset: int = 0):
+    """Binance TR geçmiş işlemler (salt okunur, admin-only, pagination)."""
+    api_key, api_secret = _decrypt_binance_creds(request)
+    if not symbol:
+        return {"trades": [], "symbol_required": True}
+    try:
+        trades = get_trade_history(api_key, api_secret, symbol.upper(),
+                                   start_time or None, end_time or None,
+                                   limit, offset)
+        return {"trades": trades, "count": len(trades)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR işlem geçmişi alınamadı: {exc}")
 
 @app.get("/api/llm/learning")
 async def llm_learning():
