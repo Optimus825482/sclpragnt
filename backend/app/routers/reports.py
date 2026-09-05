@@ -268,29 +268,21 @@ async def get_report_overview():
     tetiklenen otonom) işlem verilerini gösterir. Diğer stratejiler (LLM_PAPER,
     GAINER_RADAR, CHAT_PREDICTION, VELOCITY) bu raporda yer almaz — 2026-09-06.
     """
-    breakdown = await database.get_report_trade_breakdown()
     decision_summary = await database.get_report_decision_summary()
-    # Yalnızca AUTO_PAPER stratejisi — monitoring bildirimleriyle tetiklenen otonom işlemler
-    ap_strategies = [s for s in breakdown.get("strategies", []) if str(s.get("strategy") or "").upper() == "AUTO_PAPER"]
-    ap_overall = ap_strategies[0] if ap_strategies else {}
-    try:
-        from app.routers.auto_paper import get_stats_endpoint
-        ap_data = await get_stats_endpoint()
-        ap_stats = (ap_data or {}).get("stats")
-    except Exception:
-        ap_stats = None
+    ap_stats = await database.get_auto_paper_stats()
+    symbols = await database.get_auto_paper_symbol_breakdown()
     try:
         balance = await database.get_wallet_balance("TRY")
     except Exception:
         balance = None
     now = time.time()
-    # total_pnl zaten auto_paper_trades'te komisyon sonrası net değerdir
     total_pnl = (ap_stats or {}).get("total_pnl_try", 0) or 0
+    total_commission = round(sum(float(s.get("commission") or 0) for s in symbols), 2)
     overall = {
         "trade_count": (ap_stats or {}).get("closed", 0) or 0,
         "net_pnl": round(total_pnl, 2),
         "winning": (ap_stats or {}).get("winning", 0) or 0,
-        "commission": 0,  # auto_paper_trades komisyonu ayrı kolonda, özet için ihmal
+        "commission": total_commission,
         "open_positions": (ap_stats or {}).get("open", 0) or 0,
         "try_balance": balance or 0,
     }
@@ -298,7 +290,7 @@ async def get_report_overview():
         "paper_only": True,
         "generated_at": now,
         "overall": overall,
-        "strategies": ap_strategies,
+        "symbols": symbols,
         "decision_summary": decision_summary[:40],
         "open_positions": [],
     }

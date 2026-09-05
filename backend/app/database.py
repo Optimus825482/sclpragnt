@@ -3116,6 +3116,35 @@ async def get_auto_paper_stats() -> dict:
     return await _run_db(op)
 
 
+async def get_auto_paper_symbol_breakdown() -> list[dict]:
+    """Otonom paper trade sembol bazlı özet (reset_at sonrasi, reset kapanışları hariç)."""
+    def op(conn):
+        cutoff = _get_reset_cutoff_sync(conn)
+        where = "WHERE status='closed' AND COALESCE(exit_reason,'') <> 'reset'"
+        params: list = []
+        if cutoff:
+            where += " AND exit_time > ?"
+            params.append(cutoff)
+        rows = conn.execute(
+            f"""SELECT symbol, COUNT(*) AS trade_count,
+                       COALESCE(SUM(CASE WHEN COALESCE(pnl,0) > 0 THEN 1 ELSE 0 END),0) AS winning,
+                       COALESCE(SUM(COALESCE(pnl,0)),0) AS net_pnl,
+                       COALESCE(SUM(COALESCE(commission,0)),0) AS commission
+                FROM auto_paper_trades {where}
+                GROUP BY symbol ORDER BY net_pnl DESC""",
+            params,
+        ).fetchall()
+        out = []
+        for r in rows:
+            item = dict(r)
+            total = int(item.get("trade_count") or 0)
+            wins = int(item.get("winning") or 0)
+            item["win_rate"] = round(wins / total * 100, 1) if total else 0.0
+            out.append(item)
+        return out
+    return await _run_db(op)
+
+
 async def update_auto_paper_trade_tp(trade_id: int, new_tp: float, score: float | None = None, target_pct: float | None = None) -> bool:
     """Açık pozisyonun TP'sini güncelle (bildirim hedef takibi)."""
     def op(conn):

@@ -1,6 +1,7 @@
 """Monitoring page tests: notification thresholds, quiet hours, cooldown,
 cooldown pruning, rich push payload and DB history helpers."""
 import pathlib
+import os
 import sys
 import time
 import unittest
@@ -31,8 +32,9 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
             {"symbol": "LOWTARGETTRY", "velocity_score": 2.5, "target_pct": 0.5, "price": 1.0},
             {"symbol": "GOODTRY", "velocity_score": 2.5, "target_pct": 3.0, "price": 10.0},
         ]
-        with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0), \
-             patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
+        with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "test-key"}), \
+             patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0), \
+             patch.object(monitoring.database, "get_pending_monitoring_notifications", new_callable=AsyncMock, return_value={}), \
              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}) as push, \
              patch.object(monitoring, "_record_history", return_value=None), \
              patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):

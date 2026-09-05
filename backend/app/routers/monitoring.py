@@ -96,15 +96,11 @@ async def restore_runtime_state() -> None:
             _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
             _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
             _monitoring_state["history"] = (payload.get("history") or [])[:HISTORY_LIMIT]
-            # Restart sonrasi pending_targets'in set_at'i geçmiş epoch'ta kalır →
-            # hemen timeout olup bildirim kaybına yol açar. Şimdiki zamanla değiştir
-            # (hesaplanan expected_price ve horizon_minutes korunur).
-            pending = payload.get("pending_targets") or {}
-            now = time.time()
-            for sym, info in pending.items():
-                if isinstance(info, dict):
-                    info["set_at"] = now
-            _monitoring_state["pending_targets"] = pending
+            # pending_targets set_at'i OLDUĞU GİBİ geri yüklenir: restart arasında
+            # süre dolan bloklar _check_pending_targets tarafından hemen
+            # serbest bırakılır. set_at'i şimdiye çekmek bloğu restart başına
+            # bir kez daha silahlandırıyor ve meşru bildirimleri geciktiriyordu.
+            _monitoring_state["pending_targets"] = payload.get("pending_targets") or {}
     except Exception as exc:
         logger.debug("monitoring state geri yüklenemedi: %s", exc)
 
@@ -792,7 +788,7 @@ async def report_notifications(limit: int = 200, day: str = None):
     katılır (2026-09-04 kullanıcı kararı; RISK_OFF çarpanı kaldırıldı) — düşük
     skorlu gürültü başarı oranını yanıltmasın.
     """
-    limit = max(1, min(int(limit), 500))
+    limit = max(1, min(int(limit), 1000))
     settings = await get_user_notification_settings()
     # Tek eşik ilkesi (2026-09-04 kullanıcı kararı): raporlar da radar/bildirim/
     # otonom taramayla AYNI etkin eşiği kullanır (admin min_score — RISK_OFF
