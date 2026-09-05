@@ -73,17 +73,12 @@ export default function BinanceTrPage() {
   const [sellBusy, setSellBusy] = useState(false);
   const [sellMsg, setSellMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const [symbol, setSymbol] = useState("BTCUSDT");
-  const [startDate, setStartDate] = useState(() =>
-    new Date().toISOString().slice(0, 10)
-  );
-  const [endDate, setEndDate] = useState(() =>
+  const [tradeDay, setTradeDay] = useState(() =>
     new Date().toISOString().slice(0, 10)
   );
   const [trades, setTrades] = useState<Trade[]>([]);
   const [trLoading, setTrLoading] = useState(false);
-  const [page, setPage] = useState(0);
-  const PER_PAGE = 50;
+  const [trMeta, setTrMeta] = useState<{ count: number; symbols_scanned: number } | null>(null);
 
   const check = useCallback(async () => {
     try {
@@ -132,22 +127,23 @@ export default function BinanceTrPage() {
     return () => { clearInterval(a); clearInterval(o); };
   }, [configured, loadAcct, loadOrd]);
 
-  const loadTrades = useCallback(async (p: number) => {
+  const loadTrades = useCallback(async () => {
     setTrLoading(true);
     try {
-      const st = startDate ? new Date(startDate + "T00:00:00Z").getTime() : 0;
-      const et = endDate ? new Date(endDate + "T23:59:59Z").getTime() : 0;
-      const offset = p * PER_PAGE;
       const r = await apiRequest(
-        API_BASE + "/api/binance/trades?symbol=" + encodeURIComponent(symbol) + "&start_time=" + st + "&end_time=" + et + "&limit=" + PER_PAGE + "&offset=" + offset,
+        API_BASE + "/api/binance/trades-day?date=" + encodeURIComponent(tradeDay),
         { cache: "no-store" }
       );
-      if (r.ok) setTrades((await r.json()).trades || []);
+      if (r.ok) {
+        const d = await r.json();
+        setTrades(d.trades || []);
+        setTrMeta({ count: d.count || 0, symbols_scanned: d.symbols_scanned || 0 });
+      }
     } catch { /* */ }
     finally { setTrLoading(false); }
-  }, [symbol, startDate, endDate]);
+  }, [tradeDay]);
 
-  useEffect(() => { if (configured && symbol) loadTrades(page); }, [configured, symbol, page, loadTrades]);
+  useEffect(() => { if (configured && tradeDay) loadTrades(); }, [configured, tradeDay, loadTrades]);
 
   const saveKeys = async () => {
     if (!apiKey.trim() || !apiSecret.trim()) return;
@@ -389,59 +385,49 @@ export default function BinanceTrPage() {
             <div className="ui-section-header">
               <div>
                 <p className="eyebrow text-neon-green">GECMIS ISLEMLER</p>
-                <h2 className="font-mono text-lg font-bold text-white">Islem Gecmisi</h2>
+                <h2 className="font-mono text-lg font-bold text-white">Günün İşlemleri</h2>
               </div>
+              {trLoading && <span className="font-mono text-[10px] text-bunker-muted animate-pulse">Taranıyor...</span>}
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              <select value={symbol} onChange={(e) => { setSymbol(e.target.value); setPage(0); }} className="input w-32 font-mono text-sm">
-                {KNOWN_SYMBOLS.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
               <label>
-                <span className="font-mono text-[10px] text-bunker-muted mr-1">Baslangic</span>
-                <input type="date" value={startDate} onChange={(e) => { setStartDate(e.target.value); setPage(0); }} className="input font-mono text-xs" />
+                <span className="font-mono text-[10px] text-bunker-muted mr-1">Gün</span>
+                <input type="date" value={tradeDay} onChange={(e) => setTradeDay(e.target.value)} className="input font-mono text-xs" />
               </label>
-              <label>
-                <span className="font-mono text-[10px] text-bunker-muted mr-1">Bitis</span>
-                <input type="date" value={endDate} onChange={(e) => { setEndDate(e.target.value); setPage(0); }} className="input font-mono text-xs" />
-              </label>
+              <button type="button" onClick={loadTrades} disabled={trLoading}
+                className="ui-button ui-button-secondary disabled:opacity-40">⟳ Tazele</button>
+              {trMeta && !trLoading && (
+                <span className="font-mono text-[10px] text-bunker-muted">
+                  {trMeta.count} işlem · {trMeta.symbols_scanned} sembol tarandı
+                </span>
+              )}
             </div>
             {trades.length === 0 && !trLoading ? (
               <div className="mt-3 rounded-lg border border-dashed border-bunker-700 bg-bunker-900/40 px-4 py-6 text-center text-sm text-bunker-muted">
-                Bu tarih araliginda islem yok.
+                Bu günde işlem yok.
               </div>
             ) : (
               <div className="table-scroll mt-3">
                 <table className="data-table">
-                  <thead><tr><th>Zaman</th><th>Sembol</th><th>Yon</th><th>Fiyat</th><th>Miktar</th><th>Toplam</th><th>Komisyon</th></tr></thead>
+                  <thead><tr><th>Zaman</th><th>Sembol</th><th>Yön</th><th>Fiyat</th><th>Miktar</th><th>Toplam</th><th>Komisyon</th></tr></thead>
                   <tbody>
                     {trades.map((t) => (
-                      <tr key={t.id}>
+                      <tr key={`${t.id}-${t.symbol}`}>
                         <td className="font-mono text-xs text-bunker-muted">{fmtTime(t.time)}</td>
                         <td><span className="font-mono font-bold text-white">{t.symbol}</span></td>
                         <td className={"font-mono text-xs font-bold " + (t.isBuyer ? "text-neon-green" : "text-neon-red")}>
                           {t.isBuyer ? "ALIS" : "SATIS"}
                         </td>
-                        <td className="font-mono text-xs">{fmtPrice(t.price)}</td>
-                        <td className="font-mono text-xs">{fmtPrice(t.qty)}</td>
-                        <td className="font-mono text-xs">{fmtPrice(t.quoteQty)}</td>
-                        <td className="font-mono text-xs text-bunker-muted">{fmtPrice(t.commission)}</td>
+                        <td className="font-mono text-xs">{fmtPrice(t.price, Number(t.price) < 1 ? 6 : 2)}</td>
+                        <td className="font-mono text-xs">{fmtPrice(t.qty, 6)}</td>
+                        <td className="font-mono text-xs">{fmtPrice(t.quoteQty, Number(t.quoteQty) < 1 ? 6 : 2)}</td>
+                        <td className="font-mono text-xs text-bunker-muted">{fmtPrice(t.commission, 6)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             )}
-            <div className="mt-4 flex items-center justify-between border-t border-bunker-800 px-4 py-3">
-              <button type="button" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}
-                className="rounded border border-bunker-700 px-3 py-1.5 font-mono text-xs text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green disabled:cursor-not-allowed disabled:opacity-40">
-                ONCEKI
-              </button>
-              <span className="font-mono text-xs text-bunker-muted">Sayfa {page + 1}</span>
-              <button type="button" disabled={trades.length < PER_PAGE} onClick={() => setPage((p) => p + 1)}
-                className="rounded border border-bunker-700 px-3 py-1.5 font-mono text-xs text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green disabled:cursor-not-allowed disabled:opacity-40">
-                SONRAKI
-              </button>
-            </div>
           </section>
         </>
       )}
