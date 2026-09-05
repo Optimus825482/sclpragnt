@@ -241,6 +241,11 @@ async def profile_update_password(payload: dict, request: Request):
     return {"ok": True, "message": "Şifre güncellendi", "paper_only": True}
 
 
+@app.get("/api/dashboard/summary")
+async def dashboard_summary():
+    """Ana sayfa dashboard özeti (salt okunur): bugünün sinyalleri, otonom işlem durumu, portföy."""
+    return {"paper_only": True, **await database.get_dashboard_summary()}
+
 
 @app.post("/api/auth/login")
 async def auth_login(payload: dict, response: Response, request: Request):

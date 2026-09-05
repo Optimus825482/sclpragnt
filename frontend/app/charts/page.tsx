@@ -4,6 +4,7 @@ import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
+import { useUiMode } from "../lib/ui-mode";
 import SymbolLink from "../components/SymbolLink";
 import {
     createChart, createSeriesMarkers, CandlestickSeries, LineSeries, HistogramSeries,
@@ -39,6 +40,8 @@ export default function ChartsPage() {
     const [analysisOpen, setAnalysisOpen] = useState(false);
     const [interval, setTf] = useState<string>("5m");
     const [loading, setLoading] = useState(true);
+    const [mode] = useUiMode();
+    const isAdvanced = mode === "advanced";
     const [bars, setBars] = useState<Bar[]>([]);
     const [instances, setInstances] = useState<IndicatorInstance[]>(DEFAULT_INSTANCES);
     const [picking, setPicking] = useState(false);
@@ -1211,6 +1214,19 @@ export default function ChartsPage() {
             </section>
 
             {/* Sembol seçimi, analiz ve zaman dilimi — grafiğin hemen üstünde */}
+            {!isAdvanced && (
+              <div className="flex items-center gap-2">
+                <select
+                    value={symbol}
+                    onChange={(e) => changeSymbol(e.target.value)}
+                    aria-label="Sembol seç"
+                    className="chart-symbol-select bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-2 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+                >
+                    {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+            )}
+            {isAdvanced && (
             <div className="chart-toolbar flex flex-wrap items-center gap-2 sm:gap-3">
                 <select
                     value={symbol}
@@ -1257,6 +1273,7 @@ export default function ChartsPage() {
                     {saveState === "saving" ? "KAYDEDİLİYOR..." : saveState === "saved" ? "✓ KAYDEDİLDİ" : "KAYDET"}
                 </button>
             </div>
+            )}
 
             {/* Aktif indikatörler + hacim + ekle — grafiğin hemen üstünde */}
             <div className="flex flex-wrap items-center gap-2">

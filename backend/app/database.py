@@ -859,6 +859,74 @@ async def get_report_trade_breakdown():
     return await _run_db(op)
 
 
+async def get_dashboard_summary() -> dict:
+    """Ana sayfa dashboard özeti: bugünün sinyalleri, otonom işlem durumu, portföy.
+
+    Tek fonksiyonda 3 veri grubu döner → frontend tek REST çağrısıyla dashboard'u
+    doldurabilir.
+    """
+    def op(conn):
+        day_start = _day_start_epoch()
+        cutoff = _get_reset_cutoff_sync(conn)
+        reset_where = " AND timestamp > %s" if cutoff else ""
+        reset_params = (cutoff,) if cutoff else ()
+
+        # Bugün üretilen sinyaller: BUY_SIGNAL (giriş) + CLOSE_* (çıkış) ayrımı
+        sig_rows = conn.execute(
+            "SELECT action FROM signals"
+            " WHERE timestamp >= %s" + reset_where,
+            (day_start,) + reset_params
+        ).fetchall()
+        buy_count = sum(1 for r in sig_rows if str(r[0] or "") == "BUY_SIGNAL")
+        close_count = sum(1 for r in sig_rows if str(r[0] or "").startswith("CLOSE"))
+        signals_today = {"total": len(sig_rows), "buy_signals": buy_count, "close_signals": close_count}
+
+        # Bugün kapanan otonom işlemler
+        ap_rows = conn.execute(
+            "SELECT pnl FROM auto_paper_trades"
+            " WHERE status='closed' AND exit_time >= %s",
+            (day_start,)
+        ).fetchall()
+        ap_count = len(ap_rows)
+        ap_pnl = sum(float(r[0] or 0) for r in ap_rows)
+        auto_paper_today = {
+            "trades": ap_count,
+            "pnl": round(ap_pnl, 2),
+            "winning": sum(1 for r in ap_rows if float(r[0] or 0) > 0),
+            "losing": sum(1 for r in ap_rows if float(r[0] or 0) <= 0),
+        }
+
+        # Portföy: bakiye + açık pozisyon sayısı
+        cash_row = conn.execute(
+            "SELECT amount FROM virtual_wallet WHERE asset='TRY'"
+        ).fetchone()
+        balance = float(cash_row[0]) if cash_row else 0.0
+        pos_rows = conn.execute(
+            "SELECT entry_price, quantity FROM positions"
+        ).fetchall()
+        open_count = len(pos_rows)
+        pos_value = sum(float(r[0] or 0) * float(r[1] or 0) for r in pos_rows)
+        total_value = balance + pos_value
+        portfolio = {
+            "balance": round(balance, 2),
+            "open_positions": open_count,
+            "total_value": round(total_value, 2),
+        }
+
+        return {
+            "signals_today": signals_today,
+            "auto_paper_today": auto_paper_today,
+            "portfolio": portfolio,
+        }
+    return await _run_db(op)
+
+
+def _day_start_epoch() -> float:
+    """Bugünün başlangıcını (00:00:00 UTC) epoch float olarak döndür."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
 async def get_report_autonomous_log(limit: int = 200, offset: int = 0, symbol: str = "", strategy: str = ""):
     """Geçmiş otonom işlem akışı: sinyaller + karar logları (reset_at sonrasi)."""
     limit = max(1, min(int(limit) or 200, 500))

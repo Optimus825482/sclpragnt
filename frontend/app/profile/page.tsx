@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { getUiMode, setUiMode } from "../lib/ui-mode";
 
 type Notice = { kind: "ok" | "err"; text: string } | null;
 
@@ -157,6 +158,27 @@ export default function ProfilePage() {
           <a href="/" className="ui-button justify-center text-center">⚡ Scalping Ana Sayfa</a>
           <a href="/monitoring" className="ui-button justify-center text-center">📡 Monitoring Radar</a>
           <a href="/reports" className="ui-button justify-center text-center">📋 Performans</a>
+        </div>
+      </section>
+
+      {/* Kullanıcı tercihleri */}
+      <section className="card mt-4">
+        <p className="eyebrow text-neon-green">KULLANICI TERCİHLERİ</p>
+        <div className="mt-4 space-y-4">
+          <label className="flex items-center justify-between rounded-lg border border-bunker-700 bg-bunker-900/50 p-3">
+            <div>
+              <p className="font-mono text-sm font-bold text-white">Arayüz Modu</p>
+              <p className="font-mono text-[11px] text-bunker-muted">Basit modda temel metrikler gösterilir, gelişmiş modda tüm kontroller</p>
+            </div>
+            <select
+              value={getUiMode()}
+              onChange={(e) => { setUiMode(e.target.value as "simple" | "advanced"); window.location.reload(); }}
+              className="rounded border border-bunker-700 bg-bunker-950 px-3 py-2 font-mono text-sm text-white"
+            >
+              <option value="simple">🔵 Basit</option>
+              <option value="advanced">⚙ Gelişmiş</option>
+            </select>
+          </label>
         </div>
       </section>
     </main>
