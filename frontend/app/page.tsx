@@ -1,267 +1,98 @@
 "use client";
 
+/**
+ * Ana Sayfa — Mobil öncelikli dashboard.
+ * Hoş geldin mesajı + bugünün sinyal/success/otonom/PnL özeti + portföy bakiyesi.
+ * Basit modda (ui-mode) yalnızca temel metrikler + son aktivite.
+ * Gelişmiş modda (varsayılan) otonom pozisyonlar + strateji performansı eklenir.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, apiRequest, fetchAllPages } from "./lib/api";
-import { useLiveMessages, useLiveStatus } from "./lib/liveSocket";
-import SymbolLink from "./components/SymbolLink";
-import AlertPanel from "./components/AlertPanel";
+import { API_BASE, apiRequest } from "./lib/api";
 import { useAuth } from "./lib/auth";
+import { useLiveMessages as useLiveSocketMessages, useLiveStatus } from "./lib/liveSocket";
+import { useUiMode } from "./lib/ui-mode";
 
-type Position = {
-  symbol: string;
-  side?: string;
-  entry: number;
-  current: number;
-  pnl_pct: number;
-  pnl_try?: number;
-  value: number;
-  quantity?: number;
-  entry_time?: number;
-  strategy?: string;
+/* ============== TİPLER ============== */
+type DashboardSummary = {
+  signals_today: { total: number; buy_signals: number; close_signals: number };
+  auto_paper_today: { trades: number; pnl: number; winning: number; losing: number };
+  portfolio: { balance: number; open_positions: number; total_value: number };
 };
-type Portfolio = {
-  try: number;
-  total_value: number;
-  realized_pnl?: number;
-  unrealized_pnl?: number;
-  positions: Position[];
+type AutoPaperTrade = {
+  id: number; symbol: string; entry_price: number; current_price?: number | null;
+  quantity: number; take_profit?: number | null; stop_loss?: number | null;
 };
-type Trade = {
-  id: number;
-  symbol: string;
-  strategy: string;
-  entry_price: number;
-  exit_price: number;
-  pnl: number;
-  pnl_pct?: number;
-  commission?: number;
-  hold_seconds?: number;
-  exit_time?: number;
-  entry_time?: number;
-  reason?: string;
-};
-type Signal = { id?: number; symbol: string; action: string; price?: number; reason?: string; timestamp?: number; strategy?: string };
+type LiveSignal = { id?: number; symbol: string; action: string; price?: number; reason?: string; timestamp?: number };
 
-const STRATEGY_LABEL: Record<string, string> = {
-  VELOCITY: "Hız Avcısı",
-  CHAT_PREDICTION: "Hız Avcısı (Otonom)",
-  LLM_PAPER: "LLM Paper",
-  GAINER_RADAR: "Gainer Radar",
-};
+/* ============== YARDIMCILAR ============== */
 const money = (v?: number | null) =>
   v == null ? "0,00" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const signedMoney = (v?: number | null) =>
+  v == null ? "—" : `${v < 0 ? "-" : ""}${Math.abs(v).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtTime = (ts?: number | null) => {
+  if (!ts) return "";
+  return new Date(ts * 1000).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+};
 
-function MetricCard({ label, value, tone = "" }: { label: string; value: string | number; tone?: string }) {
+function MetricCard({ label, value, hint, tone = "" }: { label: string; value: string; hint?: string; tone?: string }) {
   return (
     <div className="ui-card ui-stat-card">
       <p className="eyebrow">{label}</p>
       <p className={`ui-stat-value ${tone}`}>{value}</p>
+      {hint && <p className="ui-stat-detail">{hint}</p>}
     </div>
   );
 }
 
-function pnlText(pct: number) {
-  const v = Number.isFinite(pct) ? pct : 0;
-  return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
-}
-
+/* ============== SAYFA ============== */
 export default function Home() {
   const { username } = useAuth();
-  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [signals, setSignals] = useState<Signal[]>([]);
-  const [closing, setClosing] = useState<string | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [alertsOpen, setAlertsOpen] = useState(false);
-  const [scanBusy, setScanBusy] = useState(false);
-  const [scanResult, setScanResult] = useState<any>(null);
-  const [velocityStatus, setVelocityStatus] = useState<any>(null);
-  // AÇIK POZİSYONLAR tablosu güvenilir kaynak: REST /api/positions
-  // (WS portfolio mesajı koparsa panel boş kalmasın diye REST'ten beslenir)
-  const [restPositions, setRestPositions] = useState<Position[]>([]);
-  const [autoPaperTrades, setAutoPaperTrades] = useState<any[]>([]);
   const liveStatus = useLiveStatus();
+  const [mode, toggleMode] = useUiMode();
+  const isAdvanced = mode === "advanced";
 
-  const loadRestPositions = useCallback(() => {
-    apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => { setRestPositions(d.positions || []); })
+  // Dashboard verisi
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [autoPaperOpen, setAutoPaperOpen] = useState<AutoPaperTrade[]>([]);
+  const [liveSignals, setLiveSignals] = useState<LiveSignal[]>([]);
+
+  // Yükle
+  const load = useCallback(() => {
+    if (document.hidden) return;
+    apiRequest(`${API_BASE}/api/dashboard/summary`, { cache: "no-store" })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => setSummary(d))
       .catch(() => undefined);
-  }, []);
-
-  const loadAutoPaperTrades = useCallback(() => {
     apiRequest(`${API_BASE}/api/auto-paper/trades?status=open`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => { setAutoPaperTrades(d.trades || []); })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => setAutoPaperOpen(d.trades || []))
+      .catch(() => undefined);
+    apiRequest(`${API_BASE}/api/signals?limit=30`, { cache: "no-store" })
+      .then((r) => r.ok ? r.json() : Promise.reject())
+      .then((d) => setLiveSignals((d.signals || []).slice(-10).reverse()))
       .catch(() => undefined);
   }, []);
 
-  // REST 15 sn'de bir taban veriyi tazeler; WS portfolio mesajı geldiğinde
-  // güncel anlık değerlerle üzerine yazılır. Böylece WS kopukken bile açık
-  // pozisyonlar listede görünür (eskiden tablo yalnızca WS'e bağlıydı ve
-  // bağlantı kopunca "Açık pozisyon yok" yanıltıcı metni gösteriyordu).
-  // Sekme arka plandayken poll atlanır (görünmeyen sekmede ağ/CPU israfı).
-  useEffect(() => {
-    const load = () => {
-      if (document.hidden) return;
-      loadRestPositions();
-      loadAutoPaperTrades();
-    };
-    load();
-    const timer = window.setInterval(load, 15000);
-    return () => window.clearInterval(timer);
-  }, [loadRestPositions, loadAutoPaperTrades]);
+  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      if (document.hidden) return;
-      apiRequest(`${API_BASE}/api/velocity/status`, { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-        .then((d) => { if (!cancelled) setVelocityStatus(d); })
-        .catch(() => undefined);
-    };
-    tick();
-    const timer = window.setInterval(tick, 10000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, []);
-
-  const runManualVelocityScan = async () => {
-    if (scanBusy) return;
-    setScanBusy(true);
-    setScanResult(null);
-    try {
-      const response = await apiRequest(`${API_BASE}/api/velocity/manual-scan`, { method: "POST" });
-      const data = await response.json();
-      if (!response.ok || !data.ok) throw new Error(data.detail || "Tarama başarısız");
-      setScanResult(data);
-    } catch (e) {
-      setScanResult({ error: e instanceof Error ? e.message : "Tarama hatası" });
-    } finally {
-      setScanBusy(false);
+  // WS
+  useLiveSocketMessages(useCallback((msg: any) => {
+    if (msg.type === "signal") {
+      setLiveSignals((prev) => [msg.data, ...prev].slice(0, 10));
+      setAutoPaperOpen([]); // debounce beklemeden tazeleme; 15sn poll'a kalır
     }
-  };
-  const logEndRef = useRef<HTMLDivElement | null>(null);
+  }, []));
 
-  const loadTrades = useCallback(() => {
-    fetchAllPages<Trade>("/api/trades", "trades")
-      .then((result) => setTrades(result.rows))
-      .catch(() => undefined);
-  }, []);
-  // Sinyal akışında her mesajda trades REST zinciri atmamak için debounce.
-  // Kapanış/sinyal sıklığı düşükken 1 sn'lik gecikme hissedilmez; yüksek
-  // frekansta backend yükünü ciddi azaltır (fetchAllPages sayfa sayfa gider).
-  const debouncedLoadTrades = useMemo(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    return () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(loadTrades, 1000);
-    };
-  }, [loadTrades]);
-  const onLiveMessage = useCallback((message: any) => {
-    if (message.type === "portfolio") setPortfolio(message.data);
-    if (message.type === "signal") setSignals((current) => [...current, message.data].slice(-120));
-    if (["signal", "trade_updated", "reset"].includes(message.type)) debouncedLoadTrades();
-  }, [debouncedLoadTrades]);
-  useLiveMessages(onLiveMessage);
-
-  useEffect(() => {
-    loadTrades();
-    apiRequest(`${API_BASE}/api/signals?limit=100`)
-      .then((response) => response.json())
-      .then((data) => setSignals((data.signals || []).slice(0, 100).reverse()))
-      .catch(() => undefined);
-  }, [loadTrades]);
-
-  useEffect(() => {
-    // Yalnız kullanıcı sinyal logunun altına yakınken otomatik kaydır —
-    // smooth scroll her sinyalde reflow yaratıyordu (yüksek frekanslı akış).
-    const el = logEndRef.current;
-    if (!el) return;
-    const parent = el.parentElement;
-    if (!parent) return;
-    const nearBottom = parent.scrollHeight - parent.scrollTop - parent.clientHeight < 120;
-    if (nearBottom) el.scrollIntoView({ behavior: "auto", block: "nearest" });
-  }, [signals]);
-
-  const closePosition = async (symbol: string) => {
-    if (!window.confirm(`${symbol} pozisyonu güncel fiyatla kapatılsın mı?`)) return;
-    setClosing(symbol);
-    setMsg(null);
-    try {
-      const response = await apiRequest(`${API_BASE}/api/positions/${symbol}/close`, { method: "POST" });
-      const data = await response.json();
-      setMsg(data.message || (data.ok ? "Pozisyon kapatıldı." : "Pozisyon kapatılamadı."));
-      loadRestPositions();
-    } catch {
-      setMsg("Pozisyon kapatılamadı.");
-    } finally {
-      setClosing(null);
-    }
-  };
-
-  // Tablo kaynağı: REST tabanlı liste + WS portfolio'dan güncel kalemler.
-  // WS kalemi varsa REST kalemini ezer (anlık PnL taze olur); WS yoksa REST
-  // listesi tek başına görünür kalır. Aynı sembol için güncel entry_time
-  // sahip olan kazanır (manuel kapatma/açılış sonrası tutarlılık).
-  const displayPositions = useMemo(() => {
-    const bySymbol = new Map<string, Position>();
-    for (const p of restPositions) bySymbol.set(p.symbol, p);
-    for (const p of portfolio?.positions || []) {
-      const existing = bySymbol.get(p.symbol);
-      if (!existing || Number(p.entry_time || 0) >= Number(existing.entry_time || 0)) {
-        bySymbol.set(p.symbol, p);
-      }
-    }
-    return [...bySymbol.values()].sort((a, b) =>
-      Number(b.entry_time || 0) - Number(a.entry_time || 0));
-  }, [restPositions, portfolio]);
-
-  // Performans istatistikleri: kapanmış işlemler + bugün
-  // dayStart'ı ref olarak sakla — gece yarısı geçişlerinde doğru gün sınırını koru
-  const dayStartRef = useRef(Math.floor(new Date().setHours(0, 0, 0, 0) / 1000));
-  useEffect(() => {
-    // Her dakika gün sınırını kontrol et — gece yarısı geşişini yakala
-    const interval = setInterval(() => {
-      const newDayStart = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
-      if (newDayStart !== dayStartRef.current) {
-        dayStartRef.current = newDayStart;
-      }
-    }, 60_000);
-    return () => clearInterval(interval);
-  }, []);
-  const stats = useMemo(() => {
-    const dayStart = dayStartRef.current;
-    const closed = trades.filter((t) => Number(t.exit_time || 0) > 0);
-    const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
-    const netPnl = closed.reduce((a, t) => a + (t.pnl ?? 0), 0);
-    const commission = closed.reduce((a, t) => a + (t.commission ?? 0), 0);
-    const today = closed.filter((t) => Number(t.exit_time || 0) >= dayStart);
-    const todayPnl = today.reduce((a, t) => a + (t.pnl ?? 0), 0);
-    const openPnl = displayPositions.reduce((a, p) => a + (p.pnl_try ?? 0), 0);
-    return {
-      closedCount: closed.length, wins, winRate: closed.length ? wins / closed.length * 100 : null,
-      netPnl, commission, todayCount: today.length, todayPnl, openPnl,
-    };
-  }, [trades, displayPositions]);
-
-  const strategyStats = useMemo(() => {
-    const map = new Map<string, { count: number; wins: number; pnl: number }>();
-    for (const t of trades) {
-      if (Number(t.exit_time || 0) <= 0) continue;
-      const s = map.get(t.strategy) || { count: 0, wins: 0, pnl: 0 };
-      s.count += 1; s.pnl += t.pnl ?? 0; if ((t.pnl ?? 0) > 0) s.wins += 1;
-      map.set(t.strategy, s);
-    }
-    return [...map.entries()].sort((a, b) => b[1].pnl - a[1].pnl);
-  }, [trades]);
-
-  const pnlTone = (v: number) => v >= 0 ? "ui-tone-positive" : "ui-tone-negative";
+  const s = summary;
+  const pnlTone = s && s.auto_paper_today.pnl >= 0 ? "text-neon-green" : "text-neon-red";
+  const apPnl = s?.auto_paper_today.pnl ?? 0;
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6">
-      <header className="mb-2 flex flex-wrap items-start justify-between gap-3">
+    <div className="mx-auto max-w-7xl space-y-5">
+      {/* Üst: Hoş geldin + canlı + mod toggle */}
+      <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
+          <p className="eyebrow">CANLI DASHBOARD</p>
           <h1 className="font-mono text-xl font-bold tracking-tight">
             {username ? (
               <>Hoş geldin, <span className="text-neon-green">{username.charAt(0).toUpperCase() + username.slice(1)}</span> 👋</>
@@ -269,212 +100,104 @@ export default function Home() {
               <>PORTFÖY & <span className="text-neon-green">SCALPING</span></>
             )}
           </h1>
-          <p className="eyebrow mt-1">Sermaye durumu · işlem başarısı · canlı işlem akışı</p>
         </div>
-        <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
-          <button onClick={runManualVelocityScan} disabled={scanBusy} className="ui-button ui-button-primary disabled:cursor-wait disabled:opacity-60">
-            {scanBusy ? "⚡ TARANIYOR…" : "🚀 MANUEL HIZ TARAMASI"}
+        <div className="flex items-center gap-2">
+          <span className={`rounded border px-2 py-1 font-mono text-[10px] ${liveStatus === "open" ? "border-neon-green/40 bg-neon-green/10 text-neon-green" : "border-yellow-300/40 bg-yellow-300/10 text-yellow-300"}`}>
+            {liveStatus === "open" ? "● CANLI" : "○ BAĞLANTI KESİK"}
+          </span>
+          <button onClick={toggleMode} className="rounded border border-bunker-700 px-2 py-1 font-mono text-[10px] text-bunker-muted hover:border-neon-green/40 hover:text-neon-green" title={`Şu an: ${isAdvanced ? "Gelişmiş" : "Basit"} mod`}>
+            {isAdvanced ? "⚙ GELİŞMİŞ" : "🔵 BASİT"}
           </button>
-          <button onClick={() => setAlertsOpen(true)} className="ui-button ui-button-secondary">🔔 ALARMLAR</button>
         </div>
       </header>
-      {msg && <div className="rounded-lg border px-3 py-2 text-xs font-mono border-neon-green/30 text-bunker-muted">{msg}</div>}
-      {velocityStatus && (
-        <div className="rounded-lg border border-bunker-700 bg-bunker-900/60 px-3 py-2 text-[11px] font-mono text-bunker-muted flex flex-wrap gap-x-4 gap-y-1">
-          <span>⏱ Son otonom tarama: <b className={velocityStatus.last_scan_at ? (Math.floor(Date.now()/1000) - (velocityStatus.last_scan_at ?? 0) < 360 ? "text-neon-green" : "text-yellow-300") : "text-bunker-muted"}>{velocityStatus.last_scan_at ? new Date((velocityStatus.last_scan_at ?? 0)*1000).toLocaleTimeString("tr-TR") : "—"}</b></span>
-          <span>📊 Son M5 kapanış: <b>{velocityStatus.last_m5_close_ms ? new Date((velocityStatus.last_m5_close_ms ?? 0)).toLocaleTimeString("tr-TR") : "—"}</b></span>
-          <span>🎯 Havuz: <b>{velocityStatus.pool_size}</b> sembol</span>
-          <span>🧩 Desen filtresi: <b className={velocityStatus.pattern_filter_enabled ? "text-neon-green" : "text-yellow-300"}>{velocityStatus.pattern_filter_enabled ? "AÇIK" : "KAPALI"}</b></span>
-          <span>🛑 Stop: <b>%{velocityStatus.sl_pct}</b></span>
-          <span>🟢 Otonom: <b className={velocityStatus.auto_enabled ? "text-neon-green" : "text-bunker-muted"}>{velocityStatus.auto_enabled ? "AÇIK" : "KAPALI"}</b></span>
-        </div>
-      )}
 
-      {scanResult && (
-        <div className="card space-y-3 border-sky-400/30 bg-sky-400/5">
-          <div className="flex items-center justify-between">
-            <p className="eyebrow text-sky-300">MANUEL HIZ AVCISI SONUCU</p>
-            <span className="font-mono text-[10px] text-bunker-muted">{scanResult.best_candidate ? new Date().toLocaleTimeString("tr-TR") : ""}</span>
-          </div>
-          {scanResult.error && <p className="text-xs text-neon-red">{scanResult.error}</p>}
-          {scanResult.message && <p className="text-xs text-yellow-300">{scanResult.message}</p>}
-          {scanResult.best_candidate && (
-            <div className="text-xs space-y-1">
-              <p>
-                En iyi aday: <b className="font-mono text-white">{scanResult.best_candidate.symbol}</b> · skor{" "}
-                <b className="text-neon-green">{scanResult.best_candidate.velocity_score}</b> · mod{" "}
-                {scanResult.best_candidate.mode === "v_donusu" ? "V-dönüşü" : scanResult.best_candidate.mode === "notr" ? "nötr" : "trend-devam"} · ATR %{scanResult.best_candidate.atr_pct} · RSI {scanResult.best_candidate.rsi} · MFI {scanResult.best_candidate.mfi}
-              </p>
-              <p>
-                <span className="text-bunker-muted">M5 momentum deseni:</span>{" "}
-                {scanResult.best_candidate.m5_pattern_ok
-                  ? <b className="text-neon-green">✓ UYGUN (6/6)</b>
-                  : <b className="text-red-400">✗ GEÇMEDİ</b>}{" "}
-                <span className="text-[10px] text-bunker-muted">
-                  {scanResult.best_candidate.m5_pattern
-                    ? Object.entries(scanResult.best_candidate.m5_pattern)
-                        .filter(([, v]) => v === false)
-                        .map(([k]) => k.replace("g0_", "").replace("g1_", "").replace("g2_", ""))
-                        .join(", ") || "tümü sağlandı"
-                    : "veri yok"}
-                </span>
-              </p>
-              <p className={scanResult.opened ? "text-neon-green font-bold" : "text-yellow-300"}>
-                {scanResult.opened
-                  ? `✓ PAPER POZİSYON AÇILDI · ${scanResult.outcome.order_value_try} TL · stop %${scanResult.outcome.stop_loss_pct}`
-                  : `İşlem açılmadı: ${scanResult.outcome?.reason || scanResult.outcome?.status || "bilinmiyor"}`}
-              </p>
-            </div>
-          )}
-          {scanResult.scan5?.candidates?.length > 0 && (
-            <div>
-              <p className="eyebrow mb-1">5 DK %2 GEÇENLER</p>
-              <div className="flex flex-wrap gap-1.5">
-                {scanResult.scan5.candidates.map((c: any) => (
-                  <span key={c.symbol} className="rounded border border-neon-green/40 bg-neon-green/5 px-2 py-0.5 font-mono text-[10px] text-neon-green">{c.symbol} · skor {c.velocity_score}</span>
-                ))}
-              </div>
-            </div>
-          )}
-          {scanResult.scan15?.candidates?.length > 0 && (
-            <div>
-              <p className="eyebrow mb-1">15 DK %3 GEÇENLER</p>
-              <div className="flex flex-wrap gap-1.5">
-                {scanResult.scan15.candidates.map((c: any) => (
-                  <span key={c.symbol} className="rounded border border-sky-400/40 bg-sky-400/5 px-2 py-0.5 font-mono text-[10px] text-sky-300">{c.symbol} · skor {c.velocity_score}</span>
-                ))}
-              </div>
-            </div>
-          )}
-          <p className="text-[10px] text-bunker-muted">Uygun aday bulunursa otonom döngüyle aynı risk kapılarından geçirilip serbest TL'nin %50'si ile paper pozisyon açılır (stop %1.5, break-even → +%1'de ATR trailing).</p>
-        </div>
-      )}
-
-      {/* ÜST: Dinamik portföy bilgileri */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <MetricCard label="TOPLAM DEĞER" value={`₺${money(portfolio?.total_value)}`} />
-        <MetricCard label="MEVCUT TL" value={`₺${money(portfolio?.try)}`} tone="ui-tone-positive" />
-        <MetricCard label="AÇIK POZİSYON" value={displayPositions.length} />
-        <MetricCard label="AÇIK PnL" value={`₺${money(stats.openPnl)}`} tone={pnlTone(stats.openPnl)} />
-        <MetricCard label="GERÇEKLEŞEN PnL" value={`₺${money(portfolio?.realized_pnl ?? stats.netPnl)}`} tone={pnlTone(portfolio?.realized_pnl ?? stats.netPnl)} />
+      {/* 4 kart: 2 sütun mobil, 4 sütun masaüstü */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <MetricCard label="BUGÜN SİNYAL" value={String(s?.signals_today.total ?? "…")} hint={`${s?.signals_today.buy_signals ?? 0} giriş · ${s?.signals_today.close_signals ?? 0} çıkış`} />
+        <MetricCard label="OTONOM İŞLEM" value={`${s?.auto_paper_today.trades ?? 0} · ₺${signedMoney(apPnl)}`} tone={s ? pnlTone : ""} hint={`${s?.auto_paper_today.winning ?? 0} kazanç · ${s?.auto_paper_today.losing ?? 0} kayıp`} />
+        <MetricCard label="PORTFÖY" value={`₺${money(s?.portfolio.total_value)}`} hint={`₺${money(s?.portfolio.balance)} serbest`} />
+        <MetricCard label="AÇIK POZİSYON" value={String(s?.portfolio.open_positions ?? 0)} hint={s?.portfolio.open_positions ? "pozisyon var" : "yok"} />
       </div>
 
-      {/* ORTA: Kapanmış/açık işlem başarı kartları */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
-        <MetricCard label="KAPANMIŞ İŞLEM" value={stats.closedCount} />
-        <MetricCard label="BAŞARI ORANI" value={stats.winRate != null ? `%${stats.winRate.toFixed(1)}` : "—"} tone={stats.winRate != null && stats.winRate >= 50 ? "ui-tone-positive" : "ui-tone-negative"} />
-        <MetricCard label="NET PnL" value={`₺${money(stats.netPnl)}`} tone={pnlTone(stats.netPnl)} />
-        <MetricCard label="BUGÜN İŞLEM" value={stats.todayCount} />
-        <MetricCard label="BUGÜN PnL" value={`₺${money(stats.todayPnl)}`} tone={pnlTone(stats.todayPnl)} />
-        <MetricCard label="KOMİSYON" value={`₺${money(stats.commission)}`} />
-      </div>
-
-      {/* Açık pozisyonlar + strateji performansı yan yana */}
-      <div className="grid lg:grid-cols-2 gap-6">
-        <section className="ui-card portfolio-table-card">
+      {/* Otonom açık pozisyonlar (yalnız varsa) */}
+      {autoPaperOpen.length > 0 && (
+        <section className="card">
           <div className="ui-section-header">
-            <div>
-              <p className="eyebrow">AÇIK POZİSYONLAR</p>
-              <p className="ui-section-description">Anlık değerler ve paper pozisyon yönetimi</p>
-            </div>
+            <div><p className="eyebrow text-neon-green">🤖 OTONOM POZİSYONLAR</p></div>
+            <span className="font-mono text-xs text-bunker-muted">{autoPaperOpen.length} pozisyon</span>
           </div>
-          <div className="table-scroll mt-3">
-            <table className="data-table">
-              <thead><tr><th>Sembol</th><th>Strateji</th><th>PnL</th><th>%</th><th>İşlem</th></tr></thead>
-              <tbody>
-                {displayPositions.map((p) => (
-                  <tr key={p.symbol}>
-                    <td><SymbolLink symbol={p.symbol} className="text-white hover:text-neon-green" /></td>
-                    <td className="text-xs">{STRATEGY_LABEL[p.strategy || ""] || p.strategy || "—"}</td>
-                    <td className={pnlTone(p.pnl_try ?? 0)}>₺{money(p.pnl_try ?? 0)}</td>
-                    <td className={pnlTone(p.pnl_pct)}>{pnlText(p.pnl_pct)}</td>
-                    <td><button onClick={() => closePosition(p.symbol)} disabled={closing !== null} className="rounded border border-red-400/50 bg-red-400/10 px-2 py-1 font-mono text-[10px] text-red-300 disabled:opacity-50">{closing === p.symbol ? "…" : "KAPAT"}</button></td>
-                  </tr>
-                ))}
-                {!displayPositions.length && <tr><td colSpan={5} className="py-6 text-center text-bunker-muted">{liveStatus === "open" ? "Açık pozisyon yok; otonom hız avcısı yeni fırsat arıyor." : "Pozisyon verisi alınamıyor — bağlantı durumu: " + liveStatus}</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </section>
-        {autoPaperTrades.length > 0 && (
-          <section className="ui-card">
-            <div className="ui-section-header">
-              <div>
-                <p className="eyebrow">OTONOM PAPER POZİSYONLAR</p>
-                <p className="ui-section-description">Monitoring bildiriminden tetiklenen bağımsız pozisyonlar</p>
-              </div>
-              <span className="font-mono text-xs text-bunker-muted">{autoPaperTrades.length} pozisyon</span>
-            </div>
-            <div className="table-scroll mt-3">
-              <table className="data-table">
-                <thead><tr><th>Sembol</th><th>Giriş</th><th>Güncel</th><th>TP</th><th>SL</th><th>PnL</th><th>%</th></tr></thead>
-                <tbody>
-                  {autoPaperTrades.map((t) => {
-                    const entry = Number(t.entry_price);
-                    const current = Number(t.current_price) > 0 ? Number(t.current_price) : entry;
-                    const pnl = (current - entry) * Number(t.quantity);
-                    const pnlPct = entry > 0 ? ((current - entry) / entry * 100) : 0;
-                    return (
-                      <tr key={t.id}>
-                        <td><SymbolLink symbol={t.symbol} className="text-white hover:text-neon-green" /></td>
-                        <td className="font-mono text-xs">{entry.toFixed(6)}</td>
-                        <td className="font-mono text-xs">{current.toFixed(6)}</td>
-                        <td className="font-mono text-xs text-neon-green">{Number(t.take_profit || 0).toFixed(6)}</td>
-                        <td className="font-mono text-xs text-neon-red">{Number(t.stop_loss || 0).toFixed(6)}</td>
-                        <td className={pnlTone(pnl)}>₺{money(pnl)}</td>
-                        <td className={pnlTone(pnlPct)}>{pnlText(pnlPct)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-        <section className="ui-card">
-          <div className="ui-section-header"><div><p className="eyebrow">STRATEJİ PERFORMANSI</p><p className="ui-section-description">Kapanmış paper işlemler, komisyon sonrası net sonuç.</p></div><span className="font-mono text-xs text-bunker-muted">{trades.length} işlem</span></div>
-          <div className="table-scroll mt-3">
-            <table className="data-table">
-              <thead><tr><th>Strateji</th><th>İşlem</th><th>Başarı</th><th>Net PnL</th></tr></thead>
-              <tbody>
-                {strategyStats.map(([name, stat]) => (
-                  <tr key={name}>
-                    <td className="text-xs">{STRATEGY_LABEL[name] || name}</td>
-                    <td>{stat.count}</td>
-                    <td className={stat.wins / stat.count >= .5 ? "ui-tone-positive" : "ui-tone-negative"}>%{(stat.wins / stat.count * 100).toFixed(1)}</td>
-                    <td className={pnlTone(stat.pnl)}>₺{money(stat.pnl)}</td>
-                  </tr>
-                ))}
-                {!strategyStats.length && <tr><td colSpan={4} className="py-6 text-center text-bunker-muted">Kapanmış işlem verisi bekleniyor.</td></tr>}
-              </tbody>
-            </table>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {autoPaperOpen.map((t) => {
+              const entry = Number(t.entry_price);
+              const current = Number(t.current_price) > 0 ? Number(t.current_price) : entry;
+              const pnl = (current - entry) * Number(t.quantity);
+              const pnlPct = entry > 0 ? ((current - entry) / entry * 100) : 0;
+              return (
+                <div key={t.id} className="rounded-lg border border-bunker-700 bg-bunker-900/60 p-3">
+                  <p className="font-mono font-bold text-white">{t.symbol}</p>
+                  <p className={`mt-1 font-mono text-sm ${pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                    {pnl >= 0 ? "+" : ""}{pnlPct.toFixed(2)}% · ₺{signedMoney(pnl)}
+                  </p>
+                  <p className="mt-0.5 font-mono text-[10px] text-bunker-muted">
+                    TP {Number(t.take_profit || 0).toFixed(2)} · SL {Number(t.stop_loss || 0).toFixed(2)}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         </section>
-      </div>
+      )}
 
-      {/* ALT: Dinamik log ekranı */}
+      {/* Gelişmiş mod: strateji performansı */}
+      {isAdvanced && (
+        <section className="card">
+          <div className="ui-section-header">
+            <div><p className="eyebrow">📊 STRATEJİ PERFORMANSI</p></div>
+            <a href="/reports" className="font-mono text-[11px] text-bunker-muted hover:text-neon-green underline-offset-2 underline">{">"} Raporlar</a>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-3">
+            <APStatCard label="Bugün sinyal" value={String(s?.signals_today.total ?? 0)} />
+            <APStatCard label="Otonom işlem" value={String(s?.auto_paper_today.trades ?? 0)} sub={s ? `₺${signedMoney(apPnl)}` : ""} />
+            <APStatCard label="Serbest TL" value={`₺${money(s?.portfolio.balance)}`} />
+            <APStatCard label="Toplam Değer" value={`₺${money(s?.portfolio.total_value)}`} />
+          </div>
+        </section>
+      )}
+
+      {/* Son aktivite akışı (mobilde 4-5 satır) */}
       <section className="card bg-bunker-950 p-0 overflow-hidden">
-        <div className="p-4 border-b border-bunker-800 flex justify-between items-center">
-          <p className="eyebrow">CANLI İŞLEM AKIŞI (DİNAMİK LOG)</p>
-          {liveStatus === "open"
-            ? <span className="text-xs text-neon-green font-mono animate-pulse">● LIVE</span>
-            : <span className="text-xs font-mono text-yellow-300">{liveStatus === "connecting" ? "○ BAĞLANIYOR" : "○ BAĞLANTI YOK"}</span>}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-bunker-800">
+          <p className="eyebrow">SON AKTİVİTE</p>
+          {liveStatus === "open" && <span className="font-mono text-[10px] text-neon-green animate-pulse">● LİVE</span>}
         </div>
-        <div className="p-4 font-mono text-sm h-72 overflow-y-auto">
-          {signals.length === 0 && <p className="text-bunker-muted">$ Otonom hız avcısı çalışıyor, sinyal bekleniyor…</p>}
-          {signals.map((s, i) => (
-            <div key={s.id ?? `${s.timestamp}-${s.symbol}-${s.action}-${i}`} className={`trade-log-row py-1 ${s.action === "BUY_BLOCKED" ? "text-sky-400" : s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
-              <span className="text-bunker-muted">[{s.timestamp ? new Date(s.timestamp * 1000).toLocaleTimeString("tr-TR") : "--"}]</span>{" "}
-              <span className="font-bold">{s.action}</span>{" "}
-              <SymbolLink symbol={s.symbol} className="font-bold text-current hover:text-white" /> {s.price ? `@ ₺${s.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : ""}{" "}
-              {s.reason && <span className="text-bunker-muted text-xs">· {s.reason}</span>}
+        <div className="px-4 py-3 font-mono text-sm max-h-40 overflow-y-auto">
+          {liveSignals.length === 0 && <p className="text-bunker-muted">Sinyal bekleniyor…</p>}
+          {liveSignals.slice(0, isAdvanced ? 8 : 4).map((s, i) => (
+            <div key={s.id ?? i} className={`py-1 text-xs ${s.action === "BUY_BLOCKED" ? "text-sky-400" : s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
+              <span className="text-bunker-muted">[{fmtTime(s.timestamp)}]</span>{" "}
+              <b>{s.action}</b>{" "}
+              <span className="text-white">{s.symbol}</span>
+              {s.price ? ` @ ₺${Number(s.price).toLocaleString("tr-TR", { maximumFractionDigits: 2 })}` : ""}
+              {s.reason && <span className="text-bunker-muted ml-1">· {s.reason}</span>}
             </div>
           ))}
-          <div ref={logEndRef} />
         </div>
+        {(liveSignals.length > 4 || isAdvanced) && (
+          <div className="border-t border-bunker-800 px-4 py-2 text-center">
+            <a href="/reports" className="font-mono text-[10px] text-bunker-muted hover:text-neon-green underline-offset-2 underline">Tümünü gör →</a>
+          </div>
+        )}
       </section>
+    </div>
+  );
+}
 
-      {alertsOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4" onClick={() => setAlertsOpen(false)}><div className="max-h-[90dvh] w-full max-w-6xl overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl" onClick={event => event.stopPropagation()}><div className="mb-3 flex justify-end"><button onClick={() => setAlertsOpen(false)} className="text-bunker-muted hover:text-white" aria-label="Alarm modalını kapat">✕ KAPAT</button></div><AlertPanel modal /></div></div>}
+function APStatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="flex-1 rounded-lg border border-bunker-800 bg-bunker-900/50 px-3 py-2 min-w-[100px]">
+      <p className="font-mono text-[10px] text-bunker-muted">{label}</p>
+      <p className="font-mono text-sm font-bold text-white">{value}</p>
+      {sub && <p className="font-mono text-[10px] text-bunker-muted">{sub}</p>}
     </div>
   );
 }
