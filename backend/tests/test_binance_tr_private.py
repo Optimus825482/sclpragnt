@@ -140,3 +140,40 @@ def test_open_orders_falls_back_to_symbol_sweep():
         orders = btp.get_open_orders("k", "s")
     assert len(orders) == 1
     assert orders[0]["symbol"] == "ADA_USDT"
+
+
+def test_fmt_quantity_trims_trailing_zeros():
+    assert btp._fmt_quantity(0.10000000) == "0.1"
+    assert btp._fmt_quantity(1.0) == "1"
+    assert btp._fmt_quantity(0.12345678) == "0.12345678"
+
+
+def test_place_market_sell_sends_side_1_type_2():
+    with mock.patch.object(btp, "_signed_request", return_value={"orderId": "42"}) as sr:
+        result = btp.place_market_sell("k", "s", "BTC_USDT", 0.16)
+    args = sr.call_args
+    assert args[0][0] == "POST"
+    assert args[0][1] == "/open/v1/orders"
+    params = args[0][2]
+    assert params["symbol"] == "BTC_USDT"
+    assert params["side"] == 1
+    assert params["type"] == 2
+    assert params["quantity"] == "0.16"
+    assert result == {"order_id": "42", "symbol": "BTC_USDT", "quantity": "0.16"}
+
+
+def test_get_symbol_filters_parses_lot_size():
+    def fake_http(url, headers=None):
+        assert "common/symbols" in url
+        return {"code": 0, "msg": "success",
+                "data": {"list": [{"symbol": "BTC_USDT", "quoteAsset": "USDT",
+                                   "filters": [{"filterType": "LOT_SIZE", "stepSize": "0.00010000", "minQty": "0.00010000"},
+                                               {"filterType": "NOTIONAL", "minNotional": "10"}]}]}}
+
+    btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0, "filters": {}})
+    with mock.patch.object(btp, "_http_get_json", side_effect=fake_http):
+        filters = btp.get_symbol_filters("k", "s", "BTC_USDT")
+    assert filters["step_size"] == 0.0001
+    assert filters["min_qty"] == 0.0001
+    assert filters["min_notional"] == 10
+    assert filters["quote_asset"] == "USDT"
