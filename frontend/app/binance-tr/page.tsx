@@ -5,14 +5,13 @@ import { API_BASE, apiRequest } from "../lib/api";
 
 type Balance = { asset: string; free: string; locked: string };
 
-type OpenOrder = {
-  symbol: string;
-  orderId: number;
-  price: string;
-  origQty: string;
-  side: string;
-  time: number;
-  status: string;
+type Holding = {
+  asset: string;
+  free: number;
+  locked: number;
+  total: number;
+  price_try: number | null;
+  value_try: number | null;
 };
 
 type Trade = {
@@ -61,7 +60,7 @@ export default function BinanceTrPage() {
   const [acctLoading, setAcctLoading] = useState(false);
   const [acctError, setAcctError] = useState("");
 
-  const [orders, setOrders] = useState<OpenOrder[]>([]);
+  const [holdings, setHoldings] = useState<Holding[]>([]);
   const [ordLoading, setOrdLoading] = useState(false);
 
   const [symbol, setSymbol] = useState("BTCUSDT");
@@ -109,7 +108,7 @@ export default function BinanceTrPage() {
     setOrdLoading(true);
     try {
       const r = await apiRequest(`${API_BASE}/api/binance/positions`, { cache: "no-store" });
-      if (r.ok) setOrders((await r.json()).orders || []);
+      if (r.ok) setHoldings((await r.json()).holdings || []);
     } catch { /* */ }
     finally { setOrdLoading(false); }
   }, []);
@@ -237,26 +236,27 @@ export default function BinanceTrPage() {
           <section className="card mt-5">
             <div className="ui-section-header">
               <div>
-                <p className="eyebrow text-neon-green">ACIK EMIRLER / POZISYON</p>
-                <h2 className="font-mono text-lg font-bold text-white">Anlik Durum</h2>
+                <p className="eyebrow text-neon-green">SEMBOL BAKİYELERİ</p>
+                <h2 className="font-mono text-lg font-bold text-white">Varlıklar ve TRY Değerleri</h2>
               </div>
               {ordLoading && <span className="font-mono text-[10px] text-bunker-muted animate-pulse">Yukleniyor...</span>}
             </div>
-            {orders.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-bunker-700 bg-bunker-900/40 px-4 py-6 text-center text-sm text-bunker-muted">Acik emir yok.</div>
+            {holdings.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-bunker-700 bg-bunker-900/40 px-4 py-6 text-center text-sm text-bunker-muted">Gosterilecek varlik yok.</div>
             ) : (
               <div className="table-scroll mt-3">
                 <table className="data-table">
-                  <thead><tr><th>Sembol</th><th>Taraf</th><th>Fiyat</th><th>Miktar</th><th>Durum</th><th>Zaman</th></tr></thead>
+                  <thead><tr><th>Sembol</th><th>Miktar</th><th>Kilitli</th><th>TRY Fiyat</th><th>TRY Deger</th></tr></thead>
                   <tbody>
-                    {orders.map((o) => (
-                      <tr key={o.orderId}>
-                        <td><span className="font-mono font-bold text-white">{o.symbol}</span></td>
-                        <td className={"font-mono text-xs " + (o.side === "BUY" ? "text-neon-green" : "text-neon-red")}>{o.side}</td>
-                        <td className="font-mono text-xs">{fmtPrice(o.price)}</td>
-                        <td className="font-mono text-xs">{fmtPrice(o.origQty)}</td>
-                        <td className="font-mono text-xs">{o.status}</td>
-                        <td className="font-mono text-xs text-bunker-muted">{fmtTime(o.time)}</td>
+                    {holdings.map((h) => (
+                      <tr key={h.asset}>
+                        <td><span className="font-mono font-bold text-white">{h.asset}</span></td>
+                        <td className="font-mono text-xs">{fmtPrice(h.free, 6)}</td>
+                        <td className="font-mono text-xs text-bunker-muted">{h.locked > 0 ? fmtPrice(h.locked, 6) : "—"}</td>
+                        <td className="font-mono text-xs text-bunker-muted">{h.price_try != null ? fmtPrice(h.price_try, h.price_try < 1 ? 6 : 2) : "—"}</td>
+                        <td className={`font-mono text-xs font-bold ${h.value_try != null ? "text-white" : "text-bunker-muted"}`}>
+                          {h.value_try != null ? `₺${fmtPrice(h.value_try)}` : "fiyat yok"}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

@@ -41,13 +41,14 @@ from app import database
 from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, run_execution_stress, run_parameter_sensitivity, run_holdout_test, run_statistical_validation, get_backtest_data_quality, CUSTOM_IDENTIFIER_SCHEMA, CUSTOM_INDICATORS
 CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook, top_gainers
+from app import binance_tr_public
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.forecast_learning import normalize_direction, evaluate_forecast, derive_lessons
 from app import ml_forecast
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app import llm_analysis
-from app.binance_tr_private import get_account_balance, get_open_orders, get_trade_history
+from app.binance_tr_private import get_account_balance, get_trade_history
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
 from app import memory_service
@@ -1793,13 +1794,65 @@ async def binance_account(request: Request):
 
 @app.get("/api/binance/positions")
 async def binance_positions(request: Request):
-    """Binance TR açık emirler/pozisyonlar (salt okunur, admin-only)."""
+    """Binance TR sembol bakiyeleri + TRY değerleri (salt okunur, admin-only).
+
+    "Pozisyon" burada açık emir değil, hesaptaki varlıklardır: her non-zero
+    varlık için TRY piyasa fiyatı ({ASSET}TRY çifti, yoksa {ASSET}USDT × USDTTRY)
+    bulunup TRY değeri hesaplanır.
+    """
     api_key, api_secret = await _decrypt_binance_creds(request)
     try:
-        orders = get_open_orders(api_key, api_secret)
-        return {"orders": orders}
+        balances = get_account_balance(api_key, api_secret)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Binance TR pozisyon bilgisi alınamadı: {exc}")
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+    holdings: list[dict] = []
+    held = []
+    for b in balances:
+        free = float(b.get("free", 0) or 0)
+        locked = float(b.get("locked", 0) or 0)
+        total = free + locked
+        if total <= 0:
+            continue
+        asset = str(b.get("asset") or "").upper()
+        if not asset:
+            continue
+        held.append({"asset": asset, "free": free, "locked": locked, "total": total})
+
+    # Fiyat tablosu: her varlık için önce TRY, sonra USDT çiftini sor (≤50/istek).
+    candidates: list[str] = []
+    for h in held:
+        if h["asset"] != "TRY":
+            candidates.extend([f"{h['asset']}TRY", f"{h['asset']}USDT"])
+    if any(h["asset"] == "USDT" for h in held):
+        candidates.append("USDTTRY")
+    price_by_symbol: dict[str, float] = {}
+    for i in range(0, len(candidates), 50):
+        try:
+            rows = await binance_tr_public.ticker_price(candidates[i:i + 50])
+            for row in rows if isinstance(rows, list) else []:
+                try:
+                    price_by_symbol[str(row.get("symbol") or "").upper()] = float(row.get("price") or 0)
+                except (TypeError, ValueError):
+                    continue
+        except Exception as exc:
+            logger.warning("Binance TR fiyat listesi alınamadı (kısmi): %s", exc)
+
+    usdt_try = price_by_symbol.get("USDTTRY", 0.0)
+    for h in held:
+        asset = h["asset"]
+        if asset == "TRY":
+            price_try = 1.0
+        elif price_by_symbol.get(f"{asset}TRY"):
+            price_try = price_by_symbol[f"{asset}TRY"]
+        elif price_by_symbol.get(f"{asset}USDT") and usdt_try:
+            price_try = price_by_symbol[f"{asset}USDT"] * usdt_try
+        else:
+            price_try = None
+        h["price_try"] = price_try
+        h["value_try"] = round(h["total"] * price_try, 2) if price_try is not None else None
+        holdings.append(h)
+    holdings.sort(key=lambda h: (h["value_try"] is None, -(h["value_try"] or 0)))
+    return {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
 
 @app.get("/api/binance/trades")
 async def binance_trades(request: Request, symbol: str = "",
