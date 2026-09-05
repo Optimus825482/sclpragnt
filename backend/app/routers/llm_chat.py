@@ -94,6 +94,11 @@ LLM_RECONCILE_TOOL = {"type":"function","function":{"name":"reconcile_portfolio"
 LLM_DEACTIVATE_TOOL = {"type":"function","function":{"name":"deactivate_coin","description":"Açık pozisyon yoksa coin'i yeni analiz/giriş evreninden çıkarır; gerçek işlem yapmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
 LLM_READONLY_SQL_TOOL = {"type":"function","function":{"name":"read_only_sql","description":"İleri seviye salt-okunur veritabanı incelemesi. Yalnızca tek SELECT veya WITH...SELECT sorgusu çalıştırır; yazma/DDL komutları ve izin verilmeyen tablolar reddedilir. Sadece gerektiğinde kullan.","parameters":{"type":"object","properties":{"sql":{"type":"string","description":"Tek bir SELECT veya WITH...SELECT sorgusu"},"limit":{"type":"integer"}},"required":["sql"]}}}
 
+# Yeni tool'lar (2026-09-06): otonom paper, dashboard, monitoring
+LLM_AUTO_PAPER_TOOL = {"type":"function","function":{"name":"get_auto_paper_status","description":"Otonom paper trade sisteminin durumunu getirir: açık pozisyonlar (giriş/güncel/TP/SL/PnL), bugün kapanan işlem sayısı ve PnL, toplam istatistikler (başarı oranı, net PnL). Salt okunur; işlem açmaz.","parameters":{"type":"object","properties":{"include_trades":{"type":"integer","description":"son N kapanan işlem"}},"required":[]}}}
+LLM_DASHBOARD_TOOL = {"type":"function","function":{"name":"get_dashboard_summary","description":"Bugünün sinyal istatistiklerini (üretilen BUY_SIGNAL/CLOSE sayısı), otonom işlem özetini ve portföy durumunu (bakiye, açık pozisyon, toplam değer) tek çağrıda getirir. Salt okunur.","parameters":{"type":"object","properties":{},"required":[]}}}
+LLM_MONITORING_TOOL = {"type":"function","function":{"name":"get_monitoring_status","description":"Monitoring radar tarama sisteminin anlık durumunu getirir: son tarama zamanı, sıradaki aday sayısı, bildirim geçmişi ve tarama havuzu büyüklüğü. Salt okunur.","parameters":{"type":"object","properties":{},"required":[]}}}
+
 
 def _safe_session_id(value):
     """Keep session scopes bounded and free of control characters/path-like data."""
@@ -1971,6 +1976,40 @@ async def validate_trade_plan(args: dict):
             "take_profit_pct": target, "entry_price": entry_price or None,
             "economics": economics, "paper_only": True}
 
+async def get_auto_paper_status_tool(args: dict):
+    """Otonom paper durumu: açık pozisyonlar + bugün kapananlar + istatistikler."""
+    include = max(0, min(int(args.get("include_trades", 0)), 50))
+    open_trades = await database.list_auto_paper_trades(status="open")
+    # Güncel fiyat ekle
+    for t in open_trades:
+        try:
+            ticker = market.get_ticker(str(t["symbol"]))
+            t["current_price"] = float(ticker.get("last_price") or 0) if ticker else None
+        except Exception:
+            t["current_price"] = None
+    stats = await database.get_auto_paper_stats()
+    recent = await database.list_auto_paper_trades(status="closed", limit=include) if include else []
+    return {"paper_only": True, "open_positions": open_trades, "stats": stats,
+            "recent_closed": recent}
+
+async def get_dashboard_summary_tool():
+    """Dashboard özeti — database.get_dashboard_summary() sarmalayıcısı."""
+    return {"paper_only": True, **await database.get_dashboard_summary()}
+
+async def get_monitoring_status_tool():
+    """Monitoring radar durumu — salt okunur anlık durum."""
+    try:
+        from app.routers.monitoring import _monitoring_state
+        return {"paper_only": True, "monitoring": {
+            "last_scan_at": _monitoring_state.get("last_scan_at"),
+            "last_scan_duration": _monitoring_state.get("last_scan_duration"),
+            "pool_size": _monitoring_state.get("pool_size", 0),
+            "notified_count": len(_monitoring_state.get("notified_symbols", {})),
+            "pending_targets": len(_monitoring_state.get("pending_targets", {})),
+        }}
+    except Exception as exc:
+        return {"paper_only": True, "monitoring": {"error": str(exc)}}
+
 async def deactivate_coin(args: dict):
     symbol = str(args.get("symbol") or "").replace("_", "").upper()
     if symbol in analyzer.positions:
@@ -2073,7 +2112,8 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
                   LLM_WALK_FORWARD_TOOL,
                   LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL,
-                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL])
+                  LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
+                  LLM_AUTO_PAPER_TOOL, LLM_DASHBOARD_TOOL, LLM_MONITORING_TOOL])
     for tool in tools:
         if tool.get("function", {}).get("name") == "run_custom_backtest":
             tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını backtest eder. Her koşul {indicator, op, value} biçimindedir; desteklenen identifier şeması sonuçta ve açıklamada verilir. Kategoriler: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda veri yoksa null/0 üretir; bu değerleri zorunlu gate olarak kullanmadan önce veri kaynağını dikkate al. Python çalıştırmaz, paper-only'dir." + CUSTOM_EXIT_POLICY_GUIDANCE
@@ -2256,6 +2296,9 @@ def _tool_activity_summary(name: str, args: dict) -> str:
     if name == "set_llm_symbol_guard" or name == "remove_llm_symbol_guard": return f"{symbol} sembol kısıtı yönetiliyor"
     if name == "activate_coin": return f"{symbol} analiz evrenine ekleniyor"
     if name == "deactivate_coin": return f"{symbol} evrenden çıkarılıyor"
+    if name == "get_auto_paper_status": return "Otonom paper durumu inceleniyor"
+    if name == "get_dashboard_summary": return "Dashboard özeti hesaplanıyor"
+    if name == "get_monitoring_status": return "Monitoring radar durumu alınıyor"
     if name == "place_paper_order": return f"{symbol} paper emri oluşturuluyor"
     if name == "cancel_paper_order": return "Paper emir iptal ediliyor"
     if name == "get_order_status": return "Emir durumu kontrol ediliyor"
@@ -2406,6 +2449,9 @@ async def strategies_llm_chat(payload: dict = None):
                 rows = analyzer.list_paper_orders(args.get("symbol"), args.get("status"))
                 if args.get("order_id"): rows = [row for row in rows if row.get("order_id") == str(args["order_id"])]
                 return {"count": len(rows), "orders": rows, "paper_only": True}
+            if name == "get_auto_paper_status": return await get_auto_paper_status_tool(args)
+            if name == "get_dashboard_summary": return await get_dashboard_summary_tool()
+            if name == "get_monitoring_status": return await get_monitoring_status_tool()
             if name == "cancel_paper_order": return await analyzer.cancel_paper_order(args.get("order_id"))
             if name == "modify_paper_order": return await analyzer.modify_paper_order(args.get("order_id"), args.get("changes"))
             if name == "reconcile_portfolio": return await reconcile_portfolio_state()
@@ -2576,6 +2622,7 @@ async def strategies_llm_chat(payload: dict = None):
         LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL,
         LLM_DEACTIVATE_TOOL, LLM_READONLY_SQL_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
         LLM_LIST_SYMBOL_GUARDS_TOOL,
+        LLM_AUTO_PAPER_TOOL, LLM_DASHBOARD_TOOL, LLM_MONITORING_TOOL,
     ])
     # Provider'lara aynı isimli function iki kez gönderilmesini engelle.
     unique_tools = {}
