@@ -142,6 +142,13 @@ export default function PortfolioPage() {
   const [apRecent, setApRecent] = useState<AutoPaperTrade[]>([]);
   const [apSettings, setApSettings] = useState<any>(null);
   const [lastEvent, setLastEvent] = useState<{ text: string; at: number } | null>(null);
+  // Kapanan otonom işlemler: pagination'lı tam geçmiş (sayfa altı tablo)
+  const [apHistory, setApHistory] = useState<AutoPaperTrade[]>([]);
+  const [apHistoryPage, setApHistoryPage] = useState(0);
+  const AP_HISTORY_PAGE_SIZE = 20;
+  // Otonom karar akışı (decision_logs, strategy=AUTO_PAPER)
+  const [decisions, setDecisions] = useState<any[]>([]);
+  const [decisionsExpanded, setDecisionsExpanded] = useState(false);
 
   const loadMain = useCallback(() => {
     apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" })
@@ -175,6 +182,23 @@ export default function PortfolioPage() {
       .catch(() => undefined);
   }, []);
 
+  // Kapanan otonom işlemler geçmişi — pagination'lı (sayfa başına 20)
+  const loadAutoPaperHistory = useCallback((page: number) => {
+    const offset = page * AP_HISTORY_PAGE_SIZE;
+    apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=${AP_HISTORY_PAGE_SIZE}&offset=${offset}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => setApHistory(d.trades || []))
+      .catch(() => undefined);
+  }, []);
+
+  // Otonom karar akışı — decision_logs, strategy=AUTO_PAPER, en yeni 50
+  const loadDecisions = useCallback(() => {
+    apiRequest(`${API_BASE}/api/decisions?strategy=AUTO_PAPER&limit=50`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => setDecisions(d.decisions || []))
+      .catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     // Sekme arka plandayken poll'ları atla (görünmeyen sekmede REST israfı).
     const hidden = () => document.hidden;
@@ -182,11 +206,14 @@ export default function PortfolioPage() {
     const detailPoll = () => { if (!hidden()) loadAutoPaperDetail(); };
     openPoll();
     loadAutoPaperDetail();
+    loadAutoPaperHistory(apHistoryPage);
+    loadDecisions();
     // Açık pozisyonlar 5 sn'de bir (WS kopukken canlı kalsın), detay 15 sn'de bir.
     const openTimer = window.setInterval(openPoll, 5_000);
     const detailTimer = window.setInterval(detailPoll, 15_000);
-    return () => { window.clearInterval(openTimer); window.clearInterval(detailTimer); };
-  }, [loadMain, loadAutoPaperDetail]);
+    const decisionTimer = window.setInterval(() => { if (!hidden()) loadDecisions(); }, 30_000);
+    return () => { window.clearInterval(openTimer); window.clearInterval(detailTimer); window.clearInterval(decisionTimer); };
+  }, [loadMain, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
 
   // auto_paper_trade WS olayı seri gelebilir (açılış+kapanış) — her olayda
   // 3 REST atmamak için 800 ms debounce ile açık pozisyon listesini tazele.
@@ -194,9 +221,9 @@ export default function PortfolioPage() {
     let timer: ReturnType<typeof setTimeout> | null = null;
     return () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => { loadAutoPaperOpen(); loadMain(); }, 800);
+      timer = setTimeout(() => { loadAutoPaperOpen(); loadMain(); loadAutoPaperHistory(apHistoryPage); loadDecisions(); }, 800);
     };
-  }, [loadAutoPaperOpen, loadMain]);
+  }, [loadAutoPaperOpen, loadMain, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
 
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "portfolio") setPortfolio(message.data);
@@ -216,7 +243,9 @@ export default function PortfolioPage() {
     loadMain();
     loadAutoPaperOpen();
     loadAutoPaperDetail();
-  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail]);
+    loadAutoPaperHistory(apHistoryPage);
+    loadDecisions();
+  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
 
   // Ana pozisyonları birleştir: WS anlık değeri REST'ten önceliklidir.
   const displayMain = useMemo(() => {
@@ -427,6 +456,121 @@ export default function PortfolioPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+      </section>
+
+      {/* ---- Otonom Karar Akışı ---- */}
+      <section className="card mt-5">
+        <div className="ui-section-header">
+          <div>
+            <p className="eyebrow text-neon-green">🧭 OTONOM KARAR AKIŞI</p>
+            <h2 className="font-mono text-lg font-bold text-white">Sistemin Karar Günlüğü</h2>
+            <p className="ui-section-description">
+              Otonom sistemin açık/kapat kararları — zaman, sembol, eylem, fiyat ve gerekçe.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDecisionsExpanded((v) => !v)}
+            className="rounded border border-bunker-700 px-2 py-1 font-mono text-[11px] text-bunker-muted hover:border-neon-green/40 hover:text-neon-green"
+          >
+            {decisionsExpanded ? "DARALT" : `TÜMÜ (${decisions.length})`}
+          </button>
+          <span className="font-mono text-xs text-bunker-muted">{decisions.length} kayıt</span>
+        </div>
+        {decisions.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-bunker-700 bg-bunker-900/40 px-4 py-6 text-center text-sm text-bunker-muted">
+            Henüz karar kaydı yok.
+          </div>
+        ) : (
+          <div className="table-scroll mt-3">
+            <table className="data-table">
+              <thead>
+                <tr><th>Zaman</th><th>Sembol</th><th>Eylem</th><th>Fiyat</th><th>Strateji</th><th>Neden</th></tr>
+              </thead>
+              <tbody>
+                {(decisionsExpanded ? decisions : decisions.slice(0, 5)).map((d) => (
+                  <tr key={d.id}>
+                    <td className="font-mono text-xs text-bunker-muted">{fmtDay(d.timestamp)}</td>
+                    <td><SymbolLink symbol={d.symbol} className="font-bold text-white hover:text-neon-green" /></td>
+                    <td className={`font-mono text-xs font-bold ${String(d.decision).startsWith("CLOSE") ? "text-neon-red" : "text-neon-green"}`}>
+                      {String(d.decision || "—")}
+                    </td>
+                    <td className="font-mono text-xs">{Number(d.price || 0).toFixed(6)}</td>
+                    <td className="text-xs">{STRATEGY_LABEL[d.strategy || ""] || d.strategy || "—"}</td>
+                    <td className="max-w-md truncate text-xs text-bunker-muted" title={d.reason}>{d.reason || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* ---- Kapanan otonom işlemler — pagination'lı tam geçmiş ---- */}
+      <section className="card mt-5">
+        <div className="ui-section-header">
+          <div>
+            <p className="eyebrow text-neon-green">📜 KAPANAN OTONOM İŞLEMLER</p>
+            <h2 className="font-mono text-lg font-bold text-white">İşlem Geçmişi</h2>
+            <p className="ui-section-description">Tüm kapanan otonom işlemler — güne göre, sayfalı liste.</p>
+          </div>
+        </div>
+        {apHistory.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-bunker-700 bg-bunker-900/40 px-4 py-6 text-center text-sm text-bunker-muted">
+            Henüz kapanan otonom işlem yok.
+          </div>
+        ) : (
+          <div className="table-scroll mt-3">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Sembol</th><th>Giriş Zamanı</th><th>Giriş</th><th>Çıkış</th>
+                  <th>K/Z</th><th>%</th><th>Sebep</th><th>Süre</th>
+                </tr>
+              </thead>
+              <tbody>
+                {apHistory.map((t) => {
+                  const pnl = Number(t.pnl || 0);
+                  const holdMin = t.entry_time && t.exit_time ? Math.max(0, Math.round((Number(t.exit_time) - Number(t.entry_time)) / 60)) : null;
+                  return (
+                    <tr key={t.id}>
+                      <td><SymbolLink symbol={t.symbol} className="font-bold text-white hover:text-neon-green" /></td>
+                      <td className="font-mono text-xs text-bunker-muted">{fmtDay(t.entry_time)}</td>
+                      <td className="font-mono text-xs">{Number(t.entry_price || 0).toFixed(6)}</td>
+                      <td className="font-mono text-xs">{Number(t.exit_price || 0).toFixed(6)}</td>
+                      <td className={`font-mono text-xs font-bold ${tone(pnl)}`}>₺{signedMoney(pnl)}</td>
+                      <td className={`font-mono text-xs ${tone(pnl)}`}>{pctText(Number(t.pnl_pct || 0))}</td>
+                      <td className="text-xs">{REASON_LABEL[t.exit_reason || ""] || t.exit_reason || "—"}</td>
+                      <td className="font-mono text-xs text-bunker-muted">{holdMin != null ? `${holdMin} dk` : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {/* Pagination */}
+        {apHistory.length > 0 && (
+          <div className="flex items-center justify-between border-t border-bunker-800 px-4 py-3">
+            <button
+              type="button"
+              disabled={apHistoryPage === 0}
+              onClick={() => setApHistoryPage((p) => Math.max(0, p - 1))}
+              className="rounded border border-bunker-700 px-3 py-1.5 font-mono text-xs text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              ← ÖNCEKİ
+            </button>
+            <span className="font-mono text-xs text-bunker-muted">Sayfa {apHistoryPage + 1}</span>
+            <button
+              type="button"
+              disabled={apHistory.length < AP_HISTORY_PAGE_SIZE}
+              onClick={() => setApHistoryPage((p) => p + 1)}
+              className="rounded border border-bunker-700 px-3 py-1.5 font-mono text-xs text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              SONRAKİ →
+            </button>
           </div>
         )}
       </section>
