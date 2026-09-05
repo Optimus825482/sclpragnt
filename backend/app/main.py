@@ -964,7 +964,22 @@ async def delete_alert(alert_id: int, request: Request):
 
 @app.post("/api/alerts/push-subscription")
 async def save_alert_push_subscription(payload: dict):
-    return {"ok": await database.save_push_subscription(payload), "paper_only": True}
+    """Web Push aboneliğini kaydet (frontend PushSubscription.toJSON()).
+
+    body: { endpoint, expirationTime?, keys?: {p256dh, auth} }
+    Hata durumunda 500 yerine {ok:false, detail} döner; frontend hatayı gösterir.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="gecersiz payload")
+    endpoint = str(payload.get("endpoint") or "").strip()
+    if not endpoint:
+        raise HTTPException(status_code=422, detail="push subscription endpoint gerekli")
+    try:
+        saved = await database.save_push_subscription(payload)
+        return {"ok": saved, "paper_only": True}
+    except Exception as exc:
+        logger.warning("push subscription kaydedilemedi %s: %s", endpoint, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"push kayit hatasi: {type(exc).__name__}")
 
 CONFIG_FIELDS = {
     "top_gainers_auto_activate": "TOP_GAINERS_AUTO_ACTIVATE",

@@ -302,22 +302,38 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         await _close_trade(trade_id, symbol, current_price, now, "stop_loss")
         return
 
-    # Breakeven kontrolü: +breakeven_trigger_pct kâra geçtiyse stop'u maliyet üstüne çek
+    # Breakeven kontrolü (trailing + dinamik komisyon + buffer).
+    # Kullanıcı isteği: "breakeven stop'a dinamik komisyon ekle + fiyat yükseldikten
+    # sonra devreye gir". Tasarım:
+    #   - Net taban (floor): entry*(1 + 2*komisyon + buffer) → bu fiyattan satış,
+    #     komisyonlar sonrası daima POZİTİF net verir (sıfırda değil).
+    #   - Trailing: fiyat yükselirken stop, zirvenin BREAKEVEN_TRAIL_GAP_PCT
+    #     gerisinden takip eder; zirveden sonra düşüşte kâr kilitlenir.
+    #   - Stop, güncel fiyatın üstüne çıkarsa (trigger komisyondan küçükse)
+    #     hemen kapanmasın: aktivasyon ertelenir, fiyat biraz daha yükselir.
     breakeven_activated = bool(trade.get("breakeven_activated", False))
     gross_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
+    breakeven_buffer_pct = 0.05
+    BREAKEVEN_TRAIL_GAP_PCT = 0.60
+    # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
+    # kontrolü arasında gecikme olmasın.
+    current_breakeven_stop = float(trade.get("breakeven_stop") or 0)
 
-    if not breakeven_activated and gross_pnl_pct >= breakeven_trigger_pct:
-        # Breakeven stop: gidiş+dönüş komisyonunu karşıla (net zararı önle).
-        # İade edilen exit*(1-c) == harcanan entry*(1+c) → exit = entry*(1+c)/(1-c)
-        breakeven_price = entry_price * (1 + commission_pct) / (1 - commission_pct)
-        await database.update_auto_paper_breakeven(trade_id, True, breakeven_price)
-        logger.info("auto_paper %s: breakeven aktif stop=%.6f", symbol, breakeven_price)
+    if gross_pnl_pct >= breakeven_trigger_pct:
+        net_floor = entry_price * (1 + 2 * commission_pct + breakeven_buffer_pct / 100)
+        trail_stop = peak_price * (1 - BREAKEVEN_TRAIL_GAP_PCT / 100)
+        new_breakeven = max(net_floor, trail_stop)
+        applied_breakeven = max(new_breakeven, current_breakeven_stop)
+        if applied_breakeven < current_price:
+            if not breakeven_activated or applied_breakeven > current_breakeven_stop:
+                await database.update_auto_paper_breakeven(trade_id, True, applied_breakeven)
+                current_breakeven_stop = applied_breakeven
+                logger.info("auto_paper %s: breakeven stop=%.6f (gross=%+.2f%%)", symbol, applied_breakeven, gross_pnl_pct)
+        breakeven_activated = True
 
-    # Breakeven stop koruması
-    elif breakeven_activated:
-        breakeven_stop = float(trade.get("breakeven_stop") or entry_price)
-        if current_price <= breakeven_stop:
-            await _close_trade(trade_id, symbol, current_price, now, "breakeven_stop")
+    # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil)
+    if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
+        await _close_trade(trade_id, symbol, current_price, now, "breakeven_stop")
 
 
 async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float, reason: str):
@@ -439,10 +455,11 @@ async def update_settings_endpoint(payload: dict, request: Request):
 # Trades API
 # ---------------------------------------------------------------------------
 @router.get("/api/auto-paper/trades")
-async def list_trades_endpoint(status: str | None = None, limit: int = 100):
+async def list_trades_endpoint(status: str | None = None, limit: int = 100, offset: int = 0):
     """Otonom paper trade kayıtlarını listele. Açık pozisyonlara güncel fiyat eklenir."""
     limit = max(1, min(int(limit), 500))
-    trades = await database.list_auto_paper_trades(status=status or None, limit=limit)
+    offset = max(0, int(offset))
+    trades = await database.list_auto_paper_trades(status=status or None, limit=limit, offset=offset)
     # Açık pozisyonlar için güncel ticker fiyatını ekle (frontend PnL hesabı için)
     for t in trades:
         if t.get("status") == "open":

@@ -996,13 +996,14 @@ function UserPositionsTab() {
 
   const load = useCallback(async () => {
     try {
-      const [posRes, trRes] = await Promise.all([
+      const [posRes, apRes] = await Promise.all([
         apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/trades?limit=50`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=50`, { cache: "no-store" }),
       ]);
-      const [pos, tr] = await Promise.all([posRes.json(), trRes.json()]);
+      const [pos, ap] = await Promise.all([posRes.json(), apRes.json()]);
       if (posRes.ok) setPositions(pos.positions || []);
-      if (trRes.ok) setTrades((tr.trades || []).filter((t: any) => /CHAT_PREDICTION|VELOCITY|LLM_PAPER/.test(String(t.strategy || "").toUpperCase())));
+      // Otonom işlemler auto_paper_trades tablosunda; trades tablosunda değil.
+      if (apRes.ok) setTrades(ap.trades || []);
     } catch {
       setError("Pozisyon verisi alınamadı");
     } finally {

@@ -1960,10 +1960,21 @@ async def get_alert_events(limit=100):
     return await _run_db(op)
 
 async def save_push_subscription(subscription):
-    now = time.time(); endpoint = str(subscription.get("endpoint") or "")
+    """Web push aboneliğini kaydet/güncelle.
+
+    NOT (2026-09-06): Postgres şeması TIMESTAMPTZ + JSONB kullanır; epoch float
+    ve düz string yazımı psycopg'de hata veriyordu (push-subscription 500).
+    Timestamp için now(), JSONB için ::jsonb cast kullanılır.
+    """
+    endpoint = str(subscription.get("endpoint") or "")
     if not endpoint: raise ValueError("push subscription endpoint gerekli")
     def op(conn):
-        conn.execute("INSERT INTO push_subscriptions(endpoint,subscription,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET subscription=excluded.subscription,updated_at=excluded.updated_at", (endpoint, _json_safe_dumps(subscription), now, now)); conn.commit(); return True
+        conn.execute(
+            "INSERT INTO push_subscriptions(endpoint,subscription,created_at,updated_at) "
+            "VALUES(?::text,?::jsonb,now(),now()) "
+            "ON CONFLICT(endpoint) DO UPDATE SET subscription=excluded.subscription,updated_at=now()",
+            (endpoint, _json_safe_dumps(subscription)),
+        ); conn.commit(); return True
     return await _run_db(op)
 
 async def list_push_subscriptions():
@@ -2978,18 +2989,18 @@ async def get_auto_paper_trade(trade_id: int) -> dict | None:
     return await _run_db(op)
 
 
-async def list_auto_paper_trades(status: str | None = None, limit: int = 100) -> list[dict]:
-    """Otonom paper trade'leri listele (yeni -> eski)."""
+async def list_auto_paper_trades(status: str | None = None, limit: int = 100, offset: int = 0) -> list[dict]:
+    """Otonom paper trade'leri listele (yeni -> eski). offset pagination destekler."""
     def op(conn):
         if status:
             rows = conn.execute(
-                "SELECT * FROM auto_paper_trades WHERE status=? ORDER BY entry_time DESC LIMIT ?",
-                (status, max(1, min(int(limit), 10000)))
+                "SELECT * FROM auto_paper_trades WHERE status=? ORDER BY entry_time DESC LIMIT ? OFFSET ?",
+                (status, max(1, min(int(limit), 10000)), max(0, int(offset)))
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM auto_paper_trades ORDER BY entry_time DESC LIMIT ?",
-                (max(1, min(int(limit), 10000)),)
+                "SELECT * FROM auto_paper_trades ORDER BY entry_time DESC LIMIT ? OFFSET ?",
+                (max(1, min(int(limit), 10000)), max(0, int(offset)))
             ).fetchall()
         return [dict(r) for r in rows]
     return await _run_db(op)
