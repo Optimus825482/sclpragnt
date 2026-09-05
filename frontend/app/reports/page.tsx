@@ -140,7 +140,7 @@ function OverviewTab() {
             <table className="data-table">
               <thead><tr><th>Strateji</th><th>İşlem</th><th>Başarı</th><th>Net PnL</th><th>Ort. MFE</th><th>Ort. DD</th></tr></thead>
               <tbody>
-                {strategies.map((s: any) => (
+                {strategies.filter((s: any) => !/CHAT_PREDICTION|VELOCITY/.test(String(s.strategy || "").toUpperCase())).map((s: any) => (
                   <tr key={s.strategy}>
                     <td className="font-mono text-xs text-white">{strategyLabel(s.strategy)}</td>
                     <td>{s.trade_count}</td>
