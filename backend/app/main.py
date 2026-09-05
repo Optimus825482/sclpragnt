@@ -1772,7 +1772,13 @@ async def _decrypt_binance_creds(request) -> tuple[str, str]:
     enc_secret = await database.get_llm_setting(BINANCE_SECRET_SETTING, "")
     if not enc_key or not enc_secret:
         raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış")
-    return llm_analysis.decrypt_key(enc_key), llm_analysis.decrypt_key(enc_secret)
+    try:
+        api_key = llm_analysis.decrypt_key(enc_key)
+        api_secret = llm_analysis.decrypt_key(enc_secret)
+        return api_key, api_secret
+    except Exception as exc:
+        logger.error("Binance API key çözülemedi: %s — LLM_ENCRYPTION_KEY ortam değişkenini kontrol et", exc)
+        raise HTTPException(status_code=502, detail=f"Binance API anahtarları çözülemedi. LLM_ENCRYPTION_KEY uyumsuz olabilir: {type(exc).__name__}")
 
 @app.get("/api/binance/account")
 async def binance_account(request: Request):
