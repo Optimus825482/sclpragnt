@@ -1783,7 +1783,7 @@ async def _decrypt_binance_creds(request) -> tuple[str, str]:
 @app.get("/api/binance/account")
 async def binance_account(request: Request):
     """Binance TR hesap bakiyesi (salt okunur, admin-only)."""
-    api_key, api_secret = _decrypt_binance_creds(request)
+    api_key, api_secret = await _decrypt_binance_creds(request)
     try:
         balances = get_account_balance(api_key, api_secret)
         non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
@@ -1794,7 +1794,7 @@ async def binance_account(request: Request):
 @app.get("/api/binance/positions")
 async def binance_positions(request: Request):
     """Binance TR açık emirler/pozisyonlar (salt okunur, admin-only)."""
-    api_key, api_secret = _decrypt_binance_creds(request)
+    api_key, api_secret = await _decrypt_binance_creds(request)
     try:
         orders = get_open_orders(api_key, api_secret)
         return {"orders": orders}
@@ -1806,7 +1806,7 @@ async def binance_trades(request: Request, symbol: str = "",
                          start_time: int = 0, end_time: int = 0,
                          limit: int = 100, offset: int = 0):
     """Binance TR geçmiş işlemler (salt okunur, admin-only, pagination)."""
-    api_key, api_secret = _decrypt_binance_creds(request)
+    api_key, api_secret = await _decrypt_binance_creds(request)
     if not symbol:
         return {"trades": [], "symbol_required": True}
     try:
