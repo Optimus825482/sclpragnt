@@ -4,19 +4,22 @@
 skipped and are listed below with reasons so you can move them manually.
 Nothing in your original setup was modified.
 
-Totals: 4 imported, 0 already present, 0 not supported, 0 failed.
+Totals: 3 imported, 2 already present, 0 not supported, 0 failed.
 
-## Claude Code
+## Codex
 
-- [Imported] skill context7-mcp
-  - from: C:\Users\erkan/.claude/skills/context7-mcp
-  - to: C:\Users\erkan/.commandcode/skills/context7-mcp
-- [Imported] skill security-audit
-  - from: C:\Users\erkan/.claude/skills/security-audit
-  - to: C:\Users\erkan/.commandcode/skills/security-audit
-- [Imported] memory User memory
-  - from: C:\Users\erkan/.claude/CLAUDE.md
+- [Already present (kept yours)] memory User memory
+  - from: C:\Users\erkan/.codex/AGENTS.md
   - to: C:\Users\erkan/.commandcode/AGENTS.md
-- [Imported] mcp-server context7
-  - from: C:\Users\erkan/.claude.json
+- [Imported] mcp-server node_repl
+  - from: C:\Users\erkan/.codex/config.toml
+  - to: C:\Users\erkan/.commandcode/mcp.json
+- [Imported] mcp-server jcodemunch
+  - from: C:\Users\erkan/.codex/config.toml
+  - to: C:\Users\erkan/.commandcode/mcp.json
+- [Imported] mcp-server postgresql
+  - from: C:\Users\erkan/.codex/config.toml
+  - to: C:\Users\erkan/.commandcode/mcp.json
+- [Already present (kept yours)] mcp-server context7
+  - from: C:\Users\erkan/.codex/config.toml
   - to: C:\Users\erkan/.commandcode/mcp.json
