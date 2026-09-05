@@ -48,7 +48,7 @@ from app import ml_forecast
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app import llm_analysis
-from app.binance_tr_private import get_account_balance, get_trade_history
+from app.binance_tr_private import get_account_balance, get_trade_history, get_symbol_filters, place_market_sell
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
 from app import memory_service
@@ -1853,6 +1853,64 @@ async def binance_positions(request: Request):
         holdings.append(h)
     holdings.sort(key=lambda h: (h["value_try"] is None, -(h["value_try"] or 0)))
     return {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
+
+@app.post("/api/binance/sell")
+async def binance_sell(payload: dict, request: Request):
+    """Kullanıcı onaylı MARKET SELL (admin-only, gerçek emir).
+
+    Gövde: {"asset": "BTC", "quantity": 0.01 | null}. quantity yok/boşsa
+    varlığın satılabilir (free) tamamı satılır. Miktar sembolün LOT_SIZE
+    stepSize'ına aşağı yuvarlanır; min lot altı reddedilir. Sembol sırasıyla
+    {ASSET}_TRY, {ASSET}_USDT çiftlerinden mevcut olanıdır.
+    """
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    asset = str(payload.get("asset") or "").upper().strip()
+    if not asset or asset == "TRY":
+        raise HTTPException(status_code=422, detail="Geçersiz varlık")
+    try:
+        balances = get_account_balance(api_key, api_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+    row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
+    free = float(row.get("free", 0) or 0) if row else 0.0
+    if free <= 0:
+        raise HTTPException(status_code=422, detail=f"{asset} için satılabilir (boşta) bakiye yok")
+
+    requested = payload.get("quantity")
+    try:
+        qty = free if requested in (None, "", "all") else float(requested)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Geçersiz miktar")
+    if not (qty > 0):
+        raise HTTPException(status_code=422, detail="Geçersiz miktar")
+    qty = min(qty, free)
+
+    symbol_u, filters = None, None
+    for quote in ("TRY", "USDT"):
+        cand = f"{asset}_{quote}"
+        f = get_symbol_filters(api_key, api_secret, cand)
+        if f:
+            symbol_u, filters = cand, f
+            break
+    if not symbol_u:
+        raise HTTPException(status_code=422, detail=f"{asset} için satış çifti bulunamadı (TRY/USDT)")
+
+    step = float((filters or {}).get("step_size") or 0)
+    min_qty = float((filters or {}).get("min_qty") or 0)
+    if step > 0:
+        qty = math.floor(qty / step) * step
+    qty = float(f"{qty:.8f}")
+    if qty <= 0 or qty < min_qty:
+        raise HTTPException(status_code=422, detail=f"Miktar minimum lotun altında (min {min_qty or 'bilinmiyor'})")
+
+    try:
+        result = place_market_sell(api_key, api_secret, symbol_u, qty)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Satış emri gönderilemedi: {exc}")
+    await log_user_action(_session_username(request), None, "trade", "BINANCE_TR_SELL",
+                          target=asset, details={"asset": asset, **result}, request=request)
+    return {"ok": True, **result}
+
 
 @app.get("/api/binance/trades")
 async def binance_trades(request: Request, symbol: str = "",

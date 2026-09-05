@@ -1,4 +1,4 @@
-"""Binance TR private (authenticated, read-only) REST adapter.
+"""Binance TR private (authenticated) REST adapter.
 
 https://www.binance.tr/apidocs/ dokümanına göre:
 - Base URL: https://www.binance.tr (signed istekler /open/v1/... altında)
@@ -6,7 +6,9 @@ https://www.binance.tr/apidocs/ dokümanına göre:
 - Cevap zarfı: {"code": 0, "msg": "...", "data": ...} — code != 0 hata demektir
 - Semboller private endpoint'lerde alt çizgili (BTC_USDT), public/market data'da bitişik (BTCUSDT)
 
-Paper-only felsefesi: asla emir gönderme, çekim veya trade yapma (yalnız GET).
+Okuma uçları salt-okunurdur; emir gönderimi yalnızca place_market_sell ile
+yapılır (admin panelindeki kullanıcı onaylı satış akışı için). Asla otomatik
+emir göndermeyin; alış/çekim/acil emir yoktur.
 """
 import hashlib
 import hmac
@@ -26,7 +28,7 @@ RECV_WINDOW_MS = 5000
 _SYMBOLS_CACHE_TTL_SEC = 6 * 3600
 _OPEN_ORDERS_CACHE_TTL_SEC = 30
 
-_symbols_cache: dict = {"symbols": [], "underscore_by_concat": {}, "expires": 0.0}
+_symbols_cache: dict = {"symbols": [], "underscore_by_concat": {}, "expires": 0.0, "filters": {}}
 _symbols_lock = threading.Lock()
 _open_orders_cache: dict = {"orders": [], "expires": 0.0}
 _open_orders_lock = threading.Lock()
@@ -51,9 +53,21 @@ def _http_get_json(url: str, headers: dict | None = None) -> dict | list:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _http_post_json(url: str, headers: dict | None = None) -> dict | list:
+    """Boş gövdeli POST — tüm parametreler query string'te (doküman: kabul edilir)."""
+    req = Request(url, headers=headers or {}, method="POST", data=b"")
+    with urlopen(req, timeout=REST_TIMEOUT_SEC) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def _signed_request(method: str, path: str, params: dict | None,
                     api_key: str, api_secret: str) -> dict | list:
-    """HMAC-SHA256 imzalı Binance TR isteği (yalnız okuma, emir yok)."""
+    """HMAC-SHA256 imzalı Binance TR isteği.
+
+    Parametreler (recvWindow+timestamp+signature dahil) query string'te
+    taşınır; POST için gövde boştur — dokümana göre toplam imza alanı
+    "query string + body" olduğundan bu kombinasyon geçerlidir.
+    """
     params = dict(params or {})
     params["recvWindow"] = RECV_WINDOW_MS
     params["timestamp"] = int(time.time() * 1000)
@@ -61,7 +75,9 @@ def _signed_request(method: str, path: str, params: dict | None,
     signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
     query += f"&signature={signature}"
     url = f"{REST_BASE}{path}?{query}"
-    return _unwrap(_http_get_json(url, headers={"X-MBX-APIKEY": api_key}))
+    headers = {"X-MBX-APIKEY": api_key}
+    payload = _http_post_json(url, headers) if method.upper() == "POST" else _http_get_json(url, headers)
+    return _unwrap(payload)
 
 
 def _to_underscore_symbol(symbol: str) -> str:
@@ -99,12 +115,58 @@ def _load_symbol_list(api_key: str, api_secret: str) -> None:
     symbols = [r.get("symbol", "") for r in rows if r.get("symbol")]
     with _symbols_lock:
         underscore_by_concat = {s.replace("_", ""): s for s in symbols}
+        filters = {}
+        for r in rows:
+            sym = r.get("symbol")
+            if not sym:
+                continue
+            entry = {"quote_asset": str(r.get("quoteAsset") or "").upper()}
+            for f in r.get("filters", []) or []:
+                ft = f.get("filterType")
+                if ft == "LOT_SIZE":
+                    entry["step_size"] = float(f.get("stepSize") or 0)
+                    entry["min_qty"] = float(f.get("minQty") or 0)
+                elif ft == "NOTIONAL":
+                    entry["min_notional"] = float(f.get("minNotional") or f.get("notional") or 0)
+            filters[sym] = entry
         _symbols_cache.update({
             "symbols": symbols,
             "underscore_by_concat": underscore_by_concat,
+            "filters": filters,
             "expires": now + _SYMBOLS_CACHE_TTL_SEC,
         })
         logger.info("Binance TR sembol listesi güncellendi: %d sembol", len(symbols))
+
+
+def get_symbol_filters(api_key: str, api_secret: str, symbol_underscore: str) -> dict | None:
+    """Sembol filtreleri (LOT_SIZE/NOTIONAL, quoteAsset) — 6 sn cache'li liste."""
+    _load_symbol_list(api_key, api_secret)
+    with _symbols_lock:
+        return _symbols_cache["filters"].get(symbol_underscore)
+
+
+def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, quantity: float) -> dict:
+    """MARKET SELL emri gönderir (POST /open/v1/orders; side=1, type=2).
+
+    Kullanıcı onayı UI katmanında alınır; bu fonksiyon doğrudan emir gönderir.
+    Cevap: {"order_id": ..., "symbol": ..., "quantity": ...}.
+    """
+    params = {
+        "symbol": symbol_underscore,
+        "side": 1,       # doküman: 0=BUY, 1=SELL
+        "type": 2,       # doküman: 2=MARKET (satış için quantity zorunlu)
+        "quantity": _fmt_quantity(quantity),
+    }
+    data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret)
+    order_id = data.get("orderId") if isinstance(data, dict) else None
+    logger.info("Binance TR MARKET SELL gönderildi: %s qty=%s orderId=%s", symbol_underscore, quantity, order_id)
+    return {"order_id": str(order_id) if order_id is not None else None,
+            "symbol": symbol_underscore, "quantity": params["quantity"]}
+
+
+def _fmt_quantity(q: float) -> str:
+    """Miktarı 8 basamağa sabitle (API ondalık string ister; bilimsel gösterim yok)."""
+    return f"{q:.8f}".rstrip("0").rstrip(".")
 
 
 def get_account_balance(api_key: str, api_secret: str) -> list[dict]:
