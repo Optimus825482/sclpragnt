@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 from collections import deque
 
@@ -75,6 +76,8 @@ async def _persist_runtime_state() -> None:
             "notified_symbols": _monitoring_state["notified_symbols"],
             "watchlist_seen_at": _monitoring_state["watchlist_seen_at"],
             "candidate_streak": _monitoring_state["candidate_streak"],
+            "risk_off": bool(_monitoring_state["risk_off"]),
+            "history": _monitoring_state["history"][:100],
         }
         await database.set_llm_setting(_STATE_SETTING_KEY, json.dumps(payload, default=str))
     except Exception as exc:
@@ -91,6 +94,17 @@ async def restore_runtime_state() -> None:
             _monitoring_state["notified_symbols"] = payload.get("notified_symbols") or {}
             _monitoring_state["watchlist_seen_at"] = payload.get("watchlist_seen_at") or {}
             _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
+            _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
+            _monitoring_state["history"] = (payload.get("history") or [])[:HISTORY_LIMIT]
+            # Restart sonrasi pending_targets'in set_at'i geçmiş epoch'ta kalır →
+            # hemen timeout olup bildirim kaybına yol açar. Şimdiki zamanla değiştir
+            # (hesaplanan expected_price ve horizon_minutes korunur).
+            pending = payload.get("pending_targets") or {}
+            now = time.time()
+            for sym, info in pending.items():
+                if isinstance(info, dict):
+                    info["set_at"] = now
+            _monitoring_state["pending_targets"] = pending
     except Exception as exc:
         logger.debug("monitoring state geri yüklenemedi: %s", exc)
 
@@ -398,6 +412,8 @@ async def _notify(candidates_list, settings) -> list:
             notif["updated"] = True
             update_entries.append(notif)
             notified.append(notif)
+            # Güncellenen bildirimin streak'i temizlenir (bildirim zaten aktif)
+            _monitoring_state["candidate_streak"].pop(sym, None)
             continue
         # Debounce: fast-lane altındaki adaylar N ardışık taramada aday kalmalı
         # (tek-tarama gürültüsünü keser). Yüksek skor hızlı pump'ta gelir —
@@ -446,20 +462,33 @@ async def _notify(candidates_list, settings) -> list:
     for n in notified:
         n["quiet_hours"] = bool(quiet)
     # Push bildirimleri — sadece YENI bildirimler (guncellemeler her turda
-    # tetiklenmesin diye spam korumasi)
+    # tetiklenmesin diye spam korumasi).
+    # VAPID anahtarı yoksa push hiç denenmez ve bildirim kaydına işlenir
+    # (kullanıcı push gelmediğini anlayabilir).
+    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
     new_notifs = [n for n in notified if not n.get("updated")]
-    if new_notifs and not quiet:
+    if new_notifs and not quiet and vapid_configured:
         for notif in new_notifs:
-            await _send_push(notif)
+            ok = await _send_push(notif)
+            notif["push_success"] = ok
+            if not ok:
+                logger.warning("Monitoring push gönderilemedi (VAPID yapılandırılmamış olabilir): %s", notif.get("symbol"))
+    elif new_notifs and not quiet:
+        # VAPID yok: push atlanır, bildirim kaydına işlenir
+        logger.info("Monitoring push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d bildirim)", len(new_notifs))
+        for notif in new_notifs:
+            notif["push_success"] = False
     elif new_notifs and quiet:
         # Sessiz saat: push'u ertele — saat bitince _flush_deferred_push gönderir.
         logger.info("Monitoring: sessiz saatlerde %d bildirim push kuyruğuna alındı", len(new_notifs))
         for notif in new_notifs:
             _deferred_push.append(notif)
-    # Otonom Paper Trade: her yeni bildirimde pozisyon açmayı dene
+    # Otonom Paper Trade: sadece YENI bildirimlerde (güncellemelerde pozisyon
+    # zaten açık veya hiç açılmamış; güncelleme her turda tetiklenir — gereksiz
+    # sorgu + hesaplamayı önlemek için yok sayılır, 2026-09-06).
     try:
         from app.routers.auto_paper import try_open_from_notification
-        for notif in new_entries + [n for n in update_entries if n.get("updated")]:
+        for notif in new_entries:
             try:
                 await try_open_from_notification(notif)
             except Exception as exc:

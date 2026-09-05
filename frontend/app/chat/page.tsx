@@ -433,6 +433,31 @@ export default function ChatPage() {
     const timer = window.setInterval(load, 5000);
     return () => window.clearInterval(timer);
   }, []);
+  // Sayfa görünür olduğunda bekleyen son yanıtı kontrol et (başka sekmeden
+  // dönünce streaming bitmiş olabilir; yanıt kaybolmasın).
+  useEffect(() => {
+    const checkLastResponse = () => {
+      const sid = localStorage.getItem(CHAT_SESSION_KEY) || "";
+      if (!sid) return;
+      apiRequest(`${API_BASE}/api/llm/chat/last-response?session_id=${encodeURIComponent(sid)}`, { cache: "no-store" })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data && data.response) {
+            setMessages((prev) => {
+              // Aynı yanıt zaten varsa ekleme
+              if (prev.length > 1 && prev[prev.length - 1].role === "assistant" && prev[prev.length - 1].content === data.response) return prev;
+              return [...prev, { role: "assistant" as const, content: data.response }];
+            });
+          }
+        })
+        .catch(() => undefined);
+    };
+    // Sayfa ilk yüklendiğinde + görünürlük değişiminde kontrol et
+    checkLastResponse();
+    const handler = () => { if (!document.hidden) checkLastResponse(); };
+    document.addEventListener("visibilitychange", handler);
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, []);
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (
