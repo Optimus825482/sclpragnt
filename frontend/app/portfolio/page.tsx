@@ -104,6 +104,7 @@ const REASON_LABEL: Record<string, string> = {
   take_profit: "Hedefe ulaştı",
   stop_loss: "Stop",
   breakeven_stop: "Başabaş koruması",
+  reset: "Portföy sıfırlama",
 };
 
 function MetricCard({ label, value, toneClass = "", hint }: { label: string; value: React.ReactNode; toneClass?: string; hint?: string }) {
@@ -191,12 +192,30 @@ export default function PortfolioPage() {
       .catch(() => undefined);
   }, []);
 
-  // Otonom karar akışı — decision_logs, strategy=AUTO_PAPER, en yeni 50
-  const loadDecisions = useCallback(() => {
-    apiRequest(`${API_BASE}/api/decisions?strategy=AUTO_PAPER&limit=50`, { cache: "no-store" })
+  // Otonom karar akışı — decision_logs, strategy=AUTO_PAPER, en yeni `limit`
+  const loadDecisions = useCallback((limit = 50) => {
+    apiRequest(`${API_BASE}/api/decisions?strategy=AUTO_PAPER&limit=${limit}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setDecisions(d.decisions || []))
       .catch(() => undefined);
+  }, []);
+
+  // WS kopukken portföy başlığı boş kalmasın: /api/portfolio/summary REST
+  // yedeği (WS 'portfolio' mesajı geldiğinde canlı veri üzerine yazar).
+  const loadPortfolioFallback = useCallback(async () => {
+    try {
+      const r = await apiRequest(`${API_BASE}/api/portfolio/summary`, { cache: "no-store" });
+      if (!r.ok) return;
+      const d = await r.json();
+      const snap = d.portfolio || {};
+      setPortfolio({
+        try: Number(snap.try || 0),
+        total_value: Number(snap.total_value || 0),
+        realized_pnl: Number(snap.realized_pnl || 0),
+        unrealized_pnl: snap.unrealized_pnl != null ? Number(snap.unrealized_pnl) : undefined,
+        positions: Array.isArray(snap.positions) ? snap.positions : [],
+      });
+    } catch { /* */ }
   }, []);
 
   useEffect(() => {
@@ -215,6 +234,14 @@ export default function PortfolioPage() {
     return () => { window.clearInterval(openTimer); window.clearInterval(detailTimer); window.clearInterval(decisionTimer); };
   }, [loadMain, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
 
+  // WS bağlantısı yoksa portföy özetini REST'ten tazele (15 sn).
+  useEffect(() => {
+    if (liveStatus === "open") return;
+    if (!document.hidden) loadPortfolioFallback();
+    const t = window.setInterval(() => { if (!document.hidden) loadPortfolioFallback(); }, 15_000);
+    return () => window.clearInterval(t);
+  }, [liveStatus, loadPortfolioFallback]);
+
   // auto_paper_trade WS olayı seri gelebilir (açılış+kapanış) — her olayda
   // 3 REST atmamak için 800 ms debounce ile açık pozisyon listesini tazele.
   const debouncedRefresh = useMemo(() => {
@@ -224,6 +251,14 @@ export default function PortfolioPage() {
       timer = setTimeout(() => { loadAutoPaperOpen(); loadMain(); loadAutoPaperHistory(apHistoryPage); loadDecisions(); }, 800);
     };
   }, [loadAutoPaperOpen, loadMain, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
+
+  const onReset = useCallback(() => {
+    loadMain();
+    loadAutoPaperOpen();
+    loadAutoPaperDetail();
+    loadAutoPaperHistory(apHistoryPage);
+    loadDecisions();
+  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
 
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "portfolio") setPortfolio(message.data);
@@ -235,27 +270,32 @@ export default function PortfolioPage() {
       // (seri WS olayında 3+ REST atmamak için); istatistikler 15 sn poll'a kalır.
       debouncedRefresh();
     }
-    if (["signal", "trade_updated", "reset"].includes(message.type)) loadMain();
-  }, [debouncedRefresh, loadMain]);
+    if (message.type === "reset") {
+      // Portföy sıfırlaması: tüm bölümleri anında tazele (15-30 sn poll'a kalma).
+      onReset();
+    } else if (["signal", "trade_updated"].includes(message.type)) {
+      loadMain();
+    }
+  }, [debouncedRefresh, loadMain, onReset]);
   useLiveMessages(onLiveMessage);
 
-  const onReset = useCallback(() => {
-    loadMain();
-    loadAutoPaperOpen();
-    loadAutoPaperDetail();
-    loadAutoPaperHistory(apHistoryPage);
-    loadDecisions();
-  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
-
   // Ana pozisyonları birleştir: WS anlık değeri REST'ten önceliklidir.
+  // AUTO_PAPER satırları hariçtir — otonom pozisyonlar yukarıdaki kendi
+  // bölümünde gösterilir ve metriklerde ayrı toplanır (çift sayım olmasın).
+  const isAutoPaper = (p: MainPosition) => String(p.strategy || "").toUpperCase() === "AUTO_PAPER";
   const displayMain = useMemo(() => {
     const bySymbol = new Map<string, MainPosition>();
-    for (const p of mainPositions) bySymbol.set(p.symbol, p);
+    for (const p of mainPositions) {
+      if (isAutoPaper(p)) continue;
+      bySymbol.set(p.symbol, p);
+    }
     for (const p of portfolio?.positions || []) {
+      if (isAutoPaper(p)) continue;
       const existing = bySymbol.get(p.symbol);
       if (!existing || Number(p.entry_time || 0) >= Number(existing.entry_time || 0)) bySymbol.set(p.symbol, p);
     }
     return [...bySymbol.values()].sort((a, b) => Number(b.entry_time || 0) - Number(a.entry_time || 0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mainPositions, portfolio]);
 
   // Açık auto-paper PnL (canlı ticker ile)
@@ -271,19 +311,11 @@ export default function PortfolioPage() {
   const totalOpen = displayMain.length + apTrades.length;
   const totalOpenPnl = openMainPnl + apOpenPnl;
 
-  // Toplam değer: WS total_value (ana) + auto-paper açık pozisyonların güncel
-  // değeri. Auto-paper açılışında para wallet'tan düşüldüğü için WS try zaten
-  // auto-paper sermayesini içermez; pozisyonların anlık değerini (qty×fiyat)
-  // ekleyerek bütünü göster.
-  const apOpenValue = useMemo(() => {
-    return apTrades.reduce((sum, t) => {
-      const qty = Number(t.quantity || 0);
-      const price = Number(t.current_price) > 0 ? Number(t.current_price) : Number(t.entry_price || 0);
-      return sum + qty * price;
-    }, 0);
-  }, [apTrades]);
-
-  const totalValue = (portfolio?.total_value ?? 0) + apOpenValue;
+  // Toplam değer: WS/summary total_value (ana + otonom açık pozisyon değerleri
+  // dahil — backend toplamı zaten otonom pozisyonları katıyor), ayrıca
+  // apOpenValue eklenmez (çift sayım olmasın). WS kopukken summary fallback'i
+  // aynı alanı REST'ten besler.
+  const totalValue = portfolio?.total_value ?? 0;
   const freeTry = portfolio?.try ?? 0;
   const realizedTotal = (portfolio?.realized_pnl ?? 0) + (apStats?.total_pnl_try ?? 0);
 
@@ -472,7 +504,11 @@ export default function PortfolioPage() {
           </div>
           <button
             type="button"
-            onClick={() => setDecisionsExpanded((v) => !v)}
+            onClick={() => {
+              const next = !decisionsExpanded;
+              setDecisionsExpanded(next);
+              if (next) loadDecisions(200);
+            }}
             className="rounded border border-bunker-700 px-2 py-1 font-mono text-[11px] text-bunker-muted hover:border-neon-green/40 hover:text-neon-green"
           >
             {decisionsExpanded ? "DARALT" : `TÜMÜ (${decisions.length})`}

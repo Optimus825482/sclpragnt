@@ -3074,6 +3074,48 @@ async def list_auto_paper_trades(status: str | None = None, limit: int = 100, of
     return await _run_db(op)
 
 
+async def get_auto_paper_stats() -> dict:
+    """Otonom paper trade istatistikleri (reset_at sonrasi, SQL agregatı).
+
+    Portföy reseti sırasında pnl'siz kapatılan 'reset' satırları hariçtir;
+    böylece reset sonrasi win_rate/net PnL eski verilerle kirletilmez.
+    """
+    def op(conn):
+        cutoff = _get_reset_cutoff_sync(conn)
+        closed_where = "WHERE status='closed' AND COALESCE(exit_reason,'') <> 'reset'"
+        closed_params: list = []
+        if cutoff:
+            closed_where += " AND exit_time > ?"
+            closed_params.append(cutoff)
+        row = conn.execute(
+            f"""SELECT COUNT(*) AS closed,
+                       COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) AS winning,
+                       COALESCE(SUM(CASE WHEN COALESCE(pnl, 0) <= 0 THEN 1 ELSE 0 END), 0) AS losing,
+                       COALESCE(SUM(COALESCE(pnl, 0)), 0) AS total_pnl,
+                       COALESCE(SUM(COALESCE(order_value_try, 0)), 0) AS total_invested
+                FROM auto_paper_trades {closed_where}""",
+            closed_params,
+        ).fetchone()
+        open_row = conn.execute(
+            "SELECT COUNT(*) AS open FROM auto_paper_trades WHERE status='open'"
+        ).fetchone()
+        closed = int(row["closed"] or 0)
+        winning = int(row["winning"] or 0)
+        total_pnl = float(row["total_pnl"] or 0.0)
+        return {
+            "total": closed + int(open_row["open"] or 0),
+            "open": int(open_row["open"] or 0),
+            "closed": closed,
+            "winning": winning,
+            "losing": int(row["losing"] or 0),
+            "win_rate": round(winning / closed * 100, 1) if closed else 0.0,
+            "total_pnl_try": round(total_pnl, 2),
+            "total_invested_try": round(float(row["total_invested"] or 0.0), 2),
+            "avg_pnl_try": round(total_pnl / closed, 2) if closed else 0.0,
+        }
+    return await _run_db(op)
+
+
 async def update_auto_paper_trade_tp(trade_id: int, new_tp: float, score: float | None = None, target_pct: float | None = None) -> bool:
     """Açık pozisyonun TP'sini güncelle (bildirim hedef takibi)."""
     def op(conn):
