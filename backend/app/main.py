@@ -1748,6 +1748,33 @@ BINANCE_API_KEY_SETTING = "binance_api_key_encrypted"
 BINANCE_SECRET_SETTING = "binance_api_secret_encrypted"
 # Varlık -> (cache bitiş zamanı, {"avg_price": float, "quote": "TRY"|"USDT"})
 _binance_cost_cache: dict[str, tuple[float, dict]] = {}
+# Gün -> (cache bitiş zamanı, günün işlem listesi yanıtı)
+_binance_day_trades_cache: dict[str, tuple[float, dict]] = {}
+# Hesapta görülmüş tüm varlıklar (tamamen satılmışlar dahil) — gün işlemleri
+# sorgusu bunları da tarasın diye llm_settings'te kalıcı tutulur.
+_binance_seen_assets: set[str] | None = None
+
+
+async def _load_seen_binance_assets() -> set[str]:
+    global _binance_seen_assets
+    if _binance_seen_assets is not None:
+        return _binance_seen_assets
+    try:
+        raw = await database.get_llm_setting("binance_seen_assets", "[]")
+        _binance_seen_assets = {str(a).upper() for a in json.loads(raw or "[]") if a}
+    except Exception:
+        _binance_seen_assets = set()
+    return _binance_seen_assets
+
+
+async def _save_seen_binance_assets(assets: set[str]) -> None:
+    global _binance_seen_assets
+    trimmed = {a for a in assets if a and len(a) <= 16}
+    _binance_seen_assets = trimmed
+    try:
+        await database.set_llm_setting("binance_seen_assets", json.dumps(sorted(trimmed)))
+    except Exception:
+        pass
 
 @app.get("/api/binance/settings")
 async def get_binance_settings(request: Request):
@@ -1819,6 +1846,12 @@ async def binance_positions(request: Request):
         if not asset:
             continue
         held.append({"asset": asset, "free": free, "locked": locked, "total": total})
+    # Görülen varlıkları kalıcı havuza ekle (gün işlemleri sorgusu bunları tarar)
+    if held:
+        seen = await _load_seen_binance_assets()
+        new_assets = {h["asset"] for h in held} - seen
+        if new_assets:
+            await _save_seen_binance_assets(seen | new_assets)
 
     # Fiyat tablosu: her varlık için önce TRY, sonra USDT çiftini sor (≤50/istek).
     candidates: list[str] = []
@@ -1966,6 +1999,74 @@ async def binance_sell(payload: dict, request: Request):
     await log_user_action(_session_username(request), None, "trade", "BINANCE_TR_SELL",
                           target=asset, details={"asset": asset, **result}, request=request)
     return {"ok": True, **result}
+
+
+@app.get("/api/binance/trades-day")
+async def binance_trades_day(request: Request, date: str, limit_per_symbol: int = 200):
+    """Seçilen günün (YYYY-MM-DD, TR saatine göre) TÜM alım/satım işlemleri.
+
+    Binance TR'de sembolsüz işlem geçmişi ucu yoktur; bu yüzden varlık
+    havuzundan (mevcut bakiyeler + geçmişte görülmüş varlıklar) türetilen
+    {ASSET}_TRY / {ASSET}_USDT çiftleri paralel sorgulanır. Sonuç zamana
+    göre sıralı döner; gün bazında 60 sn cache'lenir.
+    """
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    try:
+        day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone(timedelta(hours=3)))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date YYYY-MM-DD formatında olmalı")
+    day_end = day_start + timedelta(days=1)
+    start_ms = int(day_start.timestamp() * 1000)
+    end_ms = int(day_end.timestamp() * 1000)
+
+    now_ts = time.time()
+    cache = _binance_day_trades_cache.get(date)
+    if cache and cache[0] > now_ts:
+        return cache[1]
+
+    # Varlık havuzu: mevcut bakiyeler + daha önce görülmüş varlıklar
+    # (tamamen satılmış varlıkların o günkü işlemleri kaçmasın).
+    try:
+        balances = get_account_balance(api_key, api_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
+    current_assets = {str(b.get("asset") or "").upper() for b in balances
+                      if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0)}
+    known_assets = await _load_seen_binance_assets()
+    assets = sorted(current_assets | known_assets | {"USDT"})
+    await _save_seen_binance_assets(current_assets | known_assets)
+
+    # Varlık → mevcut sembol çiftleri (sıra: TRY önce)
+    sem: asyncio.Semaphore = asyncio.Semaphore(8)
+
+    async def fetch_symbol(sym_concat: str) -> list[dict]:
+        async with sem:
+            try:
+                return await asyncio.to_thread(
+                    get_trade_history, api_key, api_secret, sym_concat,
+                    start_ms, end_ms, max(1, min(limit_per_symbol, 1000)), 0)
+            except Exception as exc:
+                logger.debug("Binance TR gün işlemleri %s: %s", sym_concat, exc)
+                return []
+
+    tasks: list[asyncio.Task] = []
+    for asset in assets:
+        if asset == "TRY":
+            continue
+        for quote in ("TRY", "USDT"):
+            cand_u = f"{asset}_{quote}"
+            if get_symbol_filters(api_key, api_secret, cand_u):
+                tasks.append(asyncio.create_task(fetch_symbol(cand_u)))
+    rows: list[dict] = []
+    if tasks:
+        results = await asyncio.gather(*tasks)
+        for part in results:
+            rows.extend(part)
+    rows.sort(key=lambda t: (float(t.get("time") or 0), str(t.get("symbol") or "")))
+    payload = {"trades": rows, "count": len(rows),
+               "symbols_scanned": len(tasks), "assets": len(assets)}
+    _binance_day_trades_cache[date] = (now_ts + 60.0, payload)
+    return payload
 
 
 @app.get("/api/binance/trades")
