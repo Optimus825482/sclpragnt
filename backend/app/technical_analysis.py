@@ -79,7 +79,13 @@ def _stochastic(highs, lows, closes, period=14, smooth=3):
     for i in range(period - 1, len(closes)):
         hi, lo = max(highs[i-period+1:i+1]), min(lows[i-period+1:i+1])
         values.append((closes[i] - lo) / (hi - lo) * 100 if hi != lo else 50.0)
-    k = float(np.mean(values[-smooth:])); d = float(np.mean(values[-smooth*2:-smooth] if len(values) >= smooth*2 else values[-smooth:]))
+    k = float(np.mean(values[-smooth:]))
+    # D = SMA(K, smooth): K değerlerinin son smooth adedinin ortalaması.
+    # Kısa seride K = D (yetersiz veri), ayrı hesaplama gerekmez.
+    if len(values) >= smooth * 2:
+        d = float(np.mean(values[-smooth*2:-smooth]))
+    else:
+        d = k  # yetersiz veride D = K
     return {"k": k, "d": d}
 
 def _stoch_rsi(closes, rsi_period=14, stoch_period=14, k_period=3, d_period=3):
@@ -192,6 +198,9 @@ def _adx(highs, lows, closes, period=14):
         plus.append(up if up > down and up > 0 else 0.0); minus.append(down if down > up and down > 0 else 0.0)
     atr = np.mean(tr[-period:]); pdi = 100*np.mean(plus[-period:])/atr if atr else 0; mdi = 100*np.mean(minus[-period:])/atr if atr else 0
     dx = 100*abs(pdi-mdi)/(pdi+mdi) if pdi+mdi else 0
+    # NOT: Kanonik ADX, DX serisine period-length SMA uygular. Burada raw DX
+    # döndürülür (daha hızlı tepki verir). Klasik ADX için çağıran _sma ile
+    # smoothing ekleyebilir: _sma(dx_series, period).
     return {"adx": float(dx), "plus_di": float(pdi), "minus_di": float(mdi)}
 
 def _sma(values, period):
