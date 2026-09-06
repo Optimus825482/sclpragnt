@@ -145,7 +145,7 @@ async def chart_forecast_history(symbol: str, limit: int = 200):
     correct = sum(1 for r in evaluated if r["direction_correct"])
     hit = sum(1 for r in evaluated
               if r.get("max_favorable_pct") is not None and r.get("target_pct")
-              and r["max_favorable_pct"] >= r["target_pct"])
+              and r["max_favorable_pct"] * 100 >= r["target_pct"])
     recent = [
         {"id": r["id"], "horizon_minutes": r["horizon_minutes"], "target_pct": r["target_pct"],
          "entry_price": r["entry_price"], "direction_correct": r["direction_correct"],
@@ -182,7 +182,7 @@ async def chart_forecasts_summary(symbol: str = ""):
     correct = sum(1 for r in evaluated if r["direction_correct"])
     hit = sum(1 for r in evaluated
               if r.get("max_favorable_pct") is not None and r.get("target_pct")
-              and r["max_favorable_pct"] >= r["target_pct"])
+              and r["max_favorable_pct"] * 100 >= r["target_pct"])
     # Sembol bazlı başarı
     by_symbol: dict[str, dict] = {}
     for r in rows:
@@ -194,7 +194,7 @@ async def chart_forecasts_summary(symbol: str = ""):
             by_symbol[s]["evaluated"] += 1
             if r["direction_correct"]:
                 by_symbol[s]["correct"] += 1
-            if r.get("max_favorable_pct") is not None and r.get("target_pct") and r["max_favorable_pct"] >= r["target_pct"]:
+            if r.get("max_favorable_pct") is not None and r.get("target_pct") and r["max_favorable_pct"] * 100 >= r["target_pct"]:
                 by_symbol[s]["hit"] += 1
     symbol_stats = []
     for s, stats in by_symbol.items():

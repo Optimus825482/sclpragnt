@@ -287,17 +287,17 @@ function StatusBadge({ status, correct }: { status: string; correct: boolean | n
   return <span className="text-bunker-muted">{status}</span>;
 }
 
-function getOutcomeClass(correct: boolean | null, mfe: number | null, target: number): string {
+function getOutcomeClass(correct: boolean | null, mfe: number | null, target: number | null): string {
   if (correct === true) return "text-neon-green";
   if (correct === false) return "text-neon-red";
-  if (mfe != null && target != null && mfe >= target) return "text-neon-green";
+  if (mfe != null && target != null && mfe * 100 >= target) return "text-neon-green";
   return "text-bunker-muted";
 }
 
 function getOutcomeText(correct: boolean | null, mfe: number | null, target: number | null, ret: number | null): string {
   if (correct === true) return "DOĞRU";
   if (correct === false) return "YANLIŞ";
-  if (mfe != null && target != null && mfe >= target) return `HEDEFE ULAŞTI (%${(mfe * 100).toFixed(2)})`;
+  if (mfe != null && target != null && mfe * 100 >= target) return `HEDEFE ULAŞTI (%${(mfe * 100).toFixed(2)})`;
   if (ret != null) return `%${(ret * 100).toFixed(2)}`;
   return "—";
 }

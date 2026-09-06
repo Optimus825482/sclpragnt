@@ -82,7 +82,7 @@ from app.routers.runtime import (  # noqa: F401
     refresh_top_gainer_symbols, top_gainers_refresh_loop, refresh_symbol_activity,
     bootstrap_symbol_activity, symbol_activity_loop, llm_replenish_after_close, llm_idle_trigger_loop,
     _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status)
-from app.routers.velocity import velocity_learning_loop  # noqa: F401
+from app.routers.velocity import velocity_learning_loop, load_velocity_atr_profiles  # noqa: F401
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
 from app.routers import monitoring  # noqa: F401
 
@@ -751,6 +751,8 @@ async def startup_services():
     _start_background(chart_forecast_evaluation_loop(), "chart-forecast-evaluator")
     _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
     _start_background(chat_prediction_auto_trade_loop(), "chat-prediction-auto-trade")
+    # Velocity ATR profillerini hemen yükle (ilk scan doğru eşikle çalışsın)
+    await velocity.load_velocity_atr_profiles()
     _start_background(velocity_learning_loop(), "velocity-learner")
     _start_background(radar_loop(), "radar-loop")
     _start_background(top_gainers_refresh_loop(), "top-gainers-monitor")

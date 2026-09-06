@@ -42,8 +42,11 @@ export default function HistoryPage() {
     const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
     const wins = trades.filter((t) => t.pnl > 0).length;
     const winRate = trades.length ? (wins / trades.length) * 100 : 0;
+    const pricePrec = (v: number) => { const a = Math.abs(v); return a < 1 ? 8 : a < 100 ? 4 : a < 1000 ? 3 : 2; };
     const formatTL = (v: number) =>
-        v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: Math.max(2, pricePrec(v)) });
+    const formatSmall = (v: number | null | undefined) =>
+        v == null ? "—" : v.toLocaleString("tr-TR", { minimumFractionDigits: 0, maximumFractionDigits: pricePrec(v) });
     const fmtTime = (ts?: number) =>
         ts ? new Date(ts * 1000).toLocaleString("tr-TR", { hour12: false }) : "-";
 

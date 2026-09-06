@@ -10,6 +10,7 @@ const money = (v?: number | null) =>
 
 const num = (v?: number | null) => (v == null || !Number.isFinite(v) ? "—" : String(Number(v).toFixed(2)));
 const pct = (v?: number | null, digits = 1) => (v == null || !Number.isFinite(v) ? "—" : `%${(Number(v) * 100).toFixed(digits)}`);
+const pctPct = (v?: number | null, digits = 1) => (v == null || !Number.isFinite(v) ? "—" : `%${(Number(v)).toFixed(digits)}`);
 const fmtDt = (ts: number | null) => {
   if (!ts) return "—";
   const ms = ts < 10_000_000_000 ? ts * 1000 : ts;
@@ -404,7 +405,7 @@ function VelocityTab() {
         <StatCard label="ÖLÇÜLEN" value={String(evaluated)} />
         <StatCard label="HEDEF DOKUNAN" value={`${touched}/${evaluated}`} tone="text-neon-green" />
         <StatCard label="DOKUNUŞ ORANI" value={evaluated ? `%${((touched / evaluated) * 100).toFixed(1)}` : "—"} tone="text-sky-300"
-          sub={`ort MFE ${pct(stats.average_mfe_pct, 3)} · geçenler %${stats.passing_hit_rate != null ? (stats.passing_hit_rate * 100).toFixed(1) : "—"}`} />
+          sub={`ort MFE ${pctPct(stats.average_mfe_pct, 3)} · geçenler %${stats.passing_hit_rate != null ? (stats.passing_hit_rate * 100).toFixed(1) : "—"}`} />
       </div>
       <div className="grid gap-5 lg:grid-cols-2">
         <section className="card">

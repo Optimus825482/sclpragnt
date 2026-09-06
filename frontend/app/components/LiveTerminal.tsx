@@ -41,8 +41,9 @@ export default function LiveTerminal() {
   const pnlColor = (pnl: number) => pnl >= 0 ? "text-neon-green" : "text-neon-red";
   const openPnl = portfolio?.positions.reduce((total, position) => total + (position.pnl_try ?? 0), 0) ?? 0;
 
+  const pricePrec = (v: number) => { const a = Math.abs(v); return a < 1 ? 8 : a < 100 ? 4 : a < 1000 ? 3 : 2; };
   const formatTL = (v?: number) =>
-    v == null ? "0,00" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    v == null ? "0,00" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: Math.max(2, pricePrec(v)) });
 
   return (
     <div className="live-terminal grid lg:grid-cols-3 gap-6">
