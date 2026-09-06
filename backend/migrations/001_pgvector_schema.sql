@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS llm_providers (id BIGINT PRIMARY KEY, name TEXT NOT N
 CREATE TABLE IF NOT EXISTS llm_models (id BIGINT PRIMARY KEY, provider_id BIGINT NOT NULL, name TEXT NOT NULL, temperature DOUBLE PRECISION NOT NULL DEFAULT 0.2, model_type TEXT NOT NULL DEFAULT 'chat', dimensions INTEGER, embedding_metric TEXT NOT NULL DEFAULT 'cosine', enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at DOUBLE PRECISION NOT NULL);
 CREATE TABLE IF NOT EXISTS llm_skills (id BIGINT PRIMARY KEY, name TEXT NOT NULL, instructions TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at DOUBLE PRECISION NOT NULL);
 CREATE TABLE IF NOT EXISTS llm_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS backtests (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION, symbol TEXT, interval TEXT, strategy TEXT, params JSONB, days_back INTEGER, initial_balance DOUBLE PRECISION, final_balance DOUBLE PRECISION, net_pnl DOUBLE PRECISION, net_pnl_pct DOUBLE PRECISION, total_trades INTEGER, wins INTEGER, losses INTEGER, win_rate DOUBLE PRECISION, order_size DOUBLE PRECISION, stop_loss_pct DOUBLE PRECISION, take_profit_pct DOUBLE PRECISION, trailing_stop_pct DOUBLE PRECISION, trades JSONB, max_drawdown_pct DOUBLE PRECISION);
 CREATE TABLE IF NOT EXISTS analysis_snapshots (id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, captured_at DOUBLE PRECISION NOT NULL, source TEXT NOT NULL DEFAULT 'entry', methodology_version TEXT, regime TEXT, regime_confidence DOUBLE PRECISION, confluence_score DOUBLE PRECISION, payload JSONB NOT NULL DEFAULT '{}'::jsonb, trade_id TEXT);
 CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_symbol_time ON analysis_snapshots(symbol, captured_at DESC);
 CREATE TABLE IF NOT EXISTS llm_forecasts (
@@ -143,7 +142,7 @@ CREATE INDEX IF NOT EXISTS historical_features_lookup_idx ON historical_feature_
 DO $$
 DECLARE table_name TEXT; seq_name TEXT;
 BEGIN
-  FOREACH table_name IN ARRAY ARRAY['trades','signals','decision_logs','llm_tool_logs','llm_providers','llm_models','llm_skills','backtests'] LOOP
+  FOREACH table_name IN ARRAY ARRAY['trades','signals','decision_logs','llm_tool_logs','llm_providers','llm_models','llm_skills'] LOOP
     seq_name := table_name || '_id_seq';
     EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %I', seq_name);
     EXECUTE format('ALTER TABLE %I ALTER COLUMN id SET DEFAULT nextval(%L)', table_name, seq_name);

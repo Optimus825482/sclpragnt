@@ -1,0 +1,7 @@
+# Taste
+- Communicates in Turkish and expects responses in Turkish (frequently types in all caps). Confidence: 0.97
+- Expects honest, non-defensive status reports: explicitly asks for any remaining errors/missing/broken parts, and values the assistant candidly separating "done/verified" from "still open" rather than implying everything is finished. Confidence: 0.75
+- Is pragmatic about running/operating the stack on their own machine — expecting the assistant to verify the Python environment (which libraries and versions are actually installed, what codecs/formats those versions accept) and to run the frontend typecheck/build locally as proof before handing back steps to apply on the deployed environment. Confidence: 0.7
+- Wants the assistant to first inspect the existing system and give its own opinion/validation of proposed ideas before implementing ("önce mevcut sistemi incele, sonra değerlendir", "sen ne dersin?"; supplied a weakness/audit list and asked which items actually still need fixing). Confidence: 0.9
+- Prefers progressing in small sequential stages with confirmation between each ("sonraki aşamayla devam edelim") rather than large one-shot changes. Confidence: 0.8
+- Develops locally but runs the system LIVE in production on a server — expects changes to be made with the live deployment's stability in mind, not just local correctness ("sistem local'de geliştirmede ama sunucuda canlı olarak çalışıyor"). Confidence: 0.8

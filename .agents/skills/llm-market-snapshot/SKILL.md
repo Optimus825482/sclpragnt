@@ -25,4 +25,4 @@ Her adayda `symbol`, `selected_timeframe`, `trend_direction`, `regime`, `trend_p
 
 ## Araç güvenliği
 
-`scan_market_snapshots`, `deep_analyze_symbol`, `get_symbol_analysis`, `get_historical_klines`, `query_database` ve `read_only_sql` salt-okunurdur. Backtest araçları da canlı portföyü değiştirmez. SQL gerekiyorsa yalnızca SELECT/WITH SELECT ve dönen satırlara dayan. Araç hatasını kullanıcıdan saklama; bozuk JSON argümanını uydurmak yerine hata olarak raporla.
+`scan_market_snapshots`, `deep_analyze_symbol`, `get_symbol_analysis`, `get_historical_klines`, `query_database` ve `read_only_sql` salt-okunurdur. SQL gerekiyorsa yalnızca SELECT/WITH SELECT ve dönen satırlara dayan. Araç hatasını kullanıcıdan saklama; bozuk JSON argümanını uydurmak yerine hata olarak raporla.

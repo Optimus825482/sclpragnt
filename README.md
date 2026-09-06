@@ -39,7 +39,6 @@ Eski 7.000+ satırlık `app/main.py` monoliti FastAPI `APIRouter` modüllerine b
 | `app/routers/maintenance.py` | Backfill, replay-parity, strateji replay işleri |
 | `app/routers/system.py` | Sağlık, memory, migration sistem rotaları |
 | `app/routers/reports.py` | Salt-okunur rapor endpoint'leri |
-| `app/routers/backtest.py` | Backtest çalıştırma/robustness rotaları |
 
 Frontend'de `frontend/app/charts/` altında grafik mantığı `chartShared.ts` (format/yerleşim sabitleri) ve `signals.ts` (gösterge/strateji sinyal matematiği) olarak ayrılmıştır.
 
@@ -98,8 +97,6 @@ Kaynaklı araştırma ve uygulama eşlemesi: [`docs/SCALPER_RESEARCH_EVIDENCE.md
 - `GET /api/market-klines/{symbol}` - frontend ve backend için ortak Binance TR public candle adapter’ı
 - `GET /api/trades`, `/api/signals`, `/api/decisions` - `limit`, `offset` ve ilgili sembol/strateji filtreleriyle server-side listeleme
 - `POST /api/strategy/replay` + `GET /api/strategy/replay/{job_id}` - salt-okunur kapalı-mum karar tekrarı (`/signal-replay` sayfasının arkası)
-
-Custom backtest çıkış modeli `strategy_definition.exit_policy` ile seçilir. `mode` değerleri `conditions_only`, `conditions_plus_protection` veya `protection_only` olabilir; ayrıca `use_stop_loss`, `use_take_profit`, `use_trailing_stop`, `trailing_stop_pct`, `use_max_hold` ve `max_hold_bars` alanları desteklenir. Böylece koşullu çıkış seçildiğinde sistem zorla TP/SL uygulamaz.
 - `.well-known` - alan doğrulama dosyaları için mount
 
 ## Uyarı

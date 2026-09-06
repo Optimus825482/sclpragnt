@@ -21,7 +21,7 @@ from app.routers.maintenance import backfill_symbol_history
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, top_gainers, orderbook, ticker_price
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.market_intelligence import (estimate_local_regime, execution_quality, symbol_safety,
-                                     cost_aware_trade_metrics, microstructure_snapshot, symbol_outcome_profile,
+                                     microstructure_snapshot, symbol_outcome_profile,
                                      symbol_behavior_profile, regime_transition_signal)
 from app.microflow import microflow
 from app.self_learning import build_learning_context
@@ -49,10 +49,7 @@ from app.embedding_worker import worker as embedding_worker
 from app.memory_service import build_document
 from app import memory_service
 from app.ws_runtime import ws_manager
-from app.market_intelligence import trade_economics, walk_forward_assessment
-from app.backtest import (run_backtest, run_custom_backtest, run_walk_forward, run_execution_stress,
-                          run_parameter_sensitivity, run_holdout_test, run_statistical_validation,
-                          get_backtest_data_quality, CUSTOM_IDENTIFIER_SCHEMA, CUSTOM_INDICATORS)
+from app.market_intelligence import trade_economics
 from app import pattern_research
 from app.agent_learning import (append_event, finish_trace, new_trace_id, start_trace,
                                 evaluate_output, save_evaluation, save_experience, upsert_instinct)
@@ -75,12 +72,6 @@ LLM_REALTIME_FLOW_TOOL = {"type":"function","function":{"name":"get_realtime_flo
 LLM_SYMBOL_BEHAVIOR_TOOL = {"type":"function","function":{"name":"get_symbol_behavior","description":"Sembolün davranış profilini (hangi saatlerde hareketli, hacim/volatilite rejimi) ve range→trend geçiş sinyalini getirir; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframe":{"type":"string"}},"required":["symbol"]}}}
 LLM_SUBMINUTE_TOOL = {"type":"function","function":{"name":"get_subminute_microstructure","description":"Sembolün 1s/5s bar bazlı sub-minute mikro yapısını (ret, agresif akış, derinlik) ve whale birikim/dağıtım tespitini getirir; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"depth_limit":{"type":"integer"}},"required":["symbol"]}}}
 LLM_SLIPPAGE_TOOL = {"type":"function","function":{"name":"get_historical_slippage","description":"Sembolün tarihsel slippage dağılımını (fiyat aralığı/kademe) ve komisyon eklenmiş tahmini net maliyeti hesaplar; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"days_back":{"type":"integer"}},"required":["symbol"]}}}
-LLM_WALK_FORWARD_TOOL = {"type":"function","function":{"name":"run_walk_forward","description":"Public candle verisi üzerinde kronolojik out-of-sample fold backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"train_days":{"type":"integer"},"test_days":{"type":"integer"},"folds":{"type":"integer"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy"]}}}
-LLM_EXECUTION_STRESS_TOOL = {"type":"function","function":{"name":"run_execution_stress_test","description":"Paper-only backtesti spread, slippage ve maliyet senaryolarında tekrarlar; gerçek emir göndermez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"days_back":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
-LLM_SENSITIVITY_TOOL = {"type":"function","function":{"name":"run_parameter_sensitivity","description":"Paper-only TP/SL ve risk/ödül komşu varyantlarını karşılaştırır; tek bir parametre noktasına güvenmeyi engeller.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"days_back":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
-LLM_HOLDOUT_TOOL = {"type":"function","function":{"name":"run_holdout_test","description":"Seçimden sonra kullanılmak üzere dokunulmamış son tarih penceresinde paper-only test çalıştırır.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"train_days":{"type":"integer"},"holdout_days":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
-LLM_STATISTICAL_TOOL = {"type":"function","function":{"name":"run_statistical_validation","description":"Paper-only bootstrap, örneklem, işlem belirsizliği ve çoklu-deneme düzeltmeli screening raporu üretir; resmi kârlılık kanıtı değildir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"days_back":{"type":"integer"},"trials":{"type":"integer"},"order_size":{"type":"number"}},"required":["symbol","strategy"]}}}
-LLM_BACKTEST_DATA_TOOL = {"type":"function","function":{"name":"get_backtest_data_quality","description":"Backtest mumlarının eksik, duplicate, sıralama ve zaman boşluğu durumunu kontrol eder; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"days_back":{"type":"integer"}},"required":["symbol","interval"]}}}
 LLM_PATTERN_SCAN_TOOL = {"type":"function","function":{"name":"run_pattern_universe_research","description":"Aktif veya tüm Binance TR public sembol evreninde M1 causal ileri-sıçrama etiket araştırması çalıştırır; istenen timeframe'leri araştırma kapsamı metadata'sı olarak kaydeder ve sonraki M5/M15/H1/H4 feature/replay adımlarına girdi sağlar. Sonuç paper-only'dir; gerçek sinyal veya emir üretmez.","parameters":{"type":"object","properties":{"scope":{"type":"string","enum":["active","all"]},"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string"}},"days":{"type":"integer"},"threshold_pct":{"type":"number"},"horizon_minutes":{"type":"integer"}},"required":[]}}}
 LLM_PATTERN_RUNS_TOOL = {"type":"function","function":{"name":"get_pattern_research_runs","description":"Daha önce çalıştırılmış paper-only desen araştırma koşularını getirir.","parameters":{"type":"object","properties":{"run_type":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}
 LLM_PATTERN_SAVE_TOOL = {"type":"function","function":{"name":"save_research_pattern","description":"Backtest ve forward-test kanıtı olan bir deseni araştırma hafızasına kaydeder. Validated statüsü için OOS, forward, ücret dahil ve en az 20 gözlem kanıtı zorunludur; canlı stratejiye otomatik uygulamaz.","parameters":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"symbols_scope":{"type":"string","enum":["active","all","selected"]},"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string"}},"definition":{"type":"object"},"evidence":{"type":"object"},"status":{"type":"string","enum":["candidate","validated","deprecated"]},"confidence":{"type":"number"},"source_run_id":{"type":"integer"}},"required":["name","definition"]}}}
@@ -137,9 +128,6 @@ async def _chat_memory_context(query: str, *, symbol=None, strategy=None, limit=
         return {"enabled": True, "results": rows, "instincts": [dict(row) for row in instincts], "model_id": embedded.get("model_id")}
     except Exception as exc:
         return {"enabled": False, "results": [], "error": str(exc)}
-
-
-CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
 
 
 LLM_MARKET_SCAN_TOOL = {"type":"function","function":{"name":"scan_market_snapshots","description":"Aktif paper-trading sembollerini hızlı sıcak public market cache snapshot'larıyla tarar; varsayılan 5m/15m/1h kullanır, bullish adayları deterministik sıralar. Salt-okunur; pozisyon açmaz. Gerekirse fresh=true ile cache atlanır.","parameters":{"type":"object","properties":{"symbols":{"type":"array","items":{"type":"string"}},"timeframes":{"type":"array","items":{"type":"string","enum":["1m","5m","15m","30m","1h","4h","1d"]}},"limit":{"type":"integer"},"fresh":{"type":"boolean"}},"required":[]}}}
@@ -2109,28 +2097,19 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL,
                   LLM_ECONOMICS_TOOL, LLM_OUTCOME_PROFILE_TOOL, LLM_REALTIME_FLOW_TOOL,
                   LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
-                  LLM_WALK_FORWARD_TOOL,
-                  LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL,
                   LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
                   LLM_AUTO_PAPER_TOOL, LLM_DASHBOARD_TOOL, LLM_MONITORING_TOOL])
-    for tool in tools:
-        if tool.get("function", {}).get("name") == "run_custom_backtest":
-            tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını backtest eder. Her koşul {indicator, op, value} biçimindedir; desteklenen identifier şeması sonuçta ve açıklamada verilir. Kategoriler: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda veri yoksa null/0 üretir; bu değerleri zorunlu gate olarak kullanmadan önce veri kaynağını dikkate al. Python çalıştırmaz, paper-only'dir." + CUSTOM_EXIT_POLICY_GUIDANCE
-    tools.extend([{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Seçili sembol üzerinde public historical candles ile paper-only mevcut strateji backtesti çalıştırır; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy":{"type":"string"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"Seçili sembol üzerinde güvenli deklaratif gösterge koşullarıyla paper-only backtest çalıştırır; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Seçili sembol ve stratejiyi farklı tarih pencerelerinde ve deterministik Monte Carlo özetiyle test eder; canlı portföyü değiştirmez.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string"},"strategy":{"type":"string"},"windows":{"type":"array","items":{"type":"integer"}}},"required":["strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}}}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}])
+    tools.extend([{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}])
     # The symbol-chat route builds a second base list below; append alert and
     # research tools after that list so they are not lost when the list is
     # reassigned.
     tools.extend([LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL,
-                  LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL,
                   LLM_MARKET_SCAN_TOOL, LLM_15M_UPSIDE_TOOL, LLM_5M_UPSIDE_TOOL, LLM_DEEP_SYMBOL_TOOL,
                   LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL,
                   LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
                   LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
                   LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL])
-    for tool in tools:
-        if tool.get("function", {}).get("name") == "run_custom_backtest":
-            tool["function"]["description"] = "Deklaratif paper-only backtest. Her koşul {indicator, op, value}; identifier şeması: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + "." + CUSTOM_EXIT_POLICY_GUIDANCE
 
     async def execute_tool(name, args):
         if name == "scan_market_snapshots": return await scan_market_snapshots(args)
@@ -2149,15 +2128,6 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         if name == "get_symbol_behavior": return await get_symbol_behavior(args)
         if name == "get_subminute_microstructure": return await get_subminute_microstructure(args)
         if name == "get_historical_slippage": return await get_historical_slippage(args)
-        if name == "run_walk_forward":
-            strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
-            if strategy.upper() == "LLM_PAPER": return {"ok": False, "retryable": False, "paper_only": True, "error": "LLM_PAPER için explicit plan ve exit koşulları gerekir; run_custom_backtest kullanın."}
-            return await run_walk_forward(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), strategy, args.get("train_days", 30), args.get("test_days", 7), args.get("folds", 3), args.get("order_size", 500.0), args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
-        if name == "run_execution_stress_test": return await run_execution_stress(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 30), args.get("order_size", 500.0))
-        if name == "run_parameter_sensitivity": return await run_parameter_sensitivity(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 30), args.get("order_size", 500.0))
-        if name == "run_holdout_test": return await run_holdout_test(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("train_days", 60), args.get("holdout_days", 14), args.get("order_size", 500.0))
-        if name == "run_statistical_validation": return await run_statistical_validation(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 60), args.get("order_size", 500.0), args.get("trials", 3))
-        if name == "get_backtest_data_quality": return await get_backtest_data_quality(str(args.get("symbol") or symbol).upper(), str(args.get("interval") or "5m"), args.get("days_back", 30))
         if name == "create_market_alert":
             alert_id = await database.create_alert_rule({**args, "symbol": str(args.get("symbol") or symbol).replace("_", "").upper(), "created_by": "symbol-llm"})
             return {"ok": True, "alert_id": alert_id, "paper_only": True, "message": "Alarm oluşturuldu; canlı backend alarm worker'ı tarafından izleniyor."}
@@ -2197,43 +2167,6 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
             rows = [r for r in await database.get_trades() if str(r.get("symbol", "")).upper() == symbol.upper()]
             limited = rows[-max(1, min(int(args.get("limit", 100)), 500)):]
             return {"count": len(rows), "trades": limited}
-        if name == "run_backtest":
-            target = str(args.get("symbol") or symbol).upper()
-            interval = str(args.get("interval") or "5m")
-            days = max(1, min(int(args.get("days_back", 30)), 90))
-            strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
-            order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
-            run_id, result = await run_backtest(target, interval, days, strategy, args.get("params") or {}, order_size, float(args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT)), float(args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT)), 0.0)
-            return {"run_id": run_id, "result": result, "paper_only": True, "live_portfolio_changed": False}
-        if name == "run_custom_backtest":
-            target = str(args.get("symbol") or symbol).upper()
-            interval = str(args.get("interval") or "5m")
-            days = max(1, min(int(args.get("days_back", 30)), 90))
-            order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
-            result = await run_custom_backtest(target, interval, days, args.get("strategy_definition") or {}, order_size, args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
-            return {"result": result, "paper_only": True, "live_portfolio_changed": False, "identifier_schema": CUSTOM_IDENTIFIER_SCHEMA}
-        if name == "get_backtest_history":
-            rows = await database.get_backtests(max(1, min(int(args.get("limit", 20)), 50)))
-            return {"count": len(rows), "backtests": rows}
-        if name == "run_backtest_robustness":
-            target = str(args.get("symbol") or symbol).upper()
-            interval = str(args.get("interval") or "5m")
-            strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
-            windows = [max(7, min(int(x), 90)) for x in (args.get("windows") or [14, 30, 60])][:3]
-            runs = []; first_result = None
-            for days in windows:
-                _, result = await run_backtest(target, interval, days, strategy, {}, 500.0, config.HARD_STOP_LOSS_PCT, config.TIME_DECAY_TP_1_PCT, 0.0)
-                if first_result is None: first_result = result
-                runs.append({"days_back": days, "net_pnl": result.get("net_pnl"), "win_rate": result.get("win_rate"), "profit_factor": result.get("profit_factor"), "max_drawdown_pct": result.get("max_drawdown_pct"), "trades": result.get("total_trades"), "exit_reason_counts": result.get("exit_reason_counts")})
-            pnls = [float(t.get("pnl") or 0) for t in (first_result or {}).get("trades", [])]
-            rng = random.Random(42)
-            samples = [sum(rng.choice(pnls) for _ in pnls) for _ in range(1000)] if pnls else []
-            samples.sort()
-            return {"paper_only": True, "windows": runs,
-                    "walk_forward_assessment": walk_forward_assessment(runs),
-                    "cost_aware_metrics": cost_aware_trade_metrics((first_result or {}).get("trades", [])),
-                    "monte_carlo": {"iterations": len(samples), "p05": samples[int(len(samples) * 0.05)] if samples else None, "median": samples[len(samples) // 2] if samples else None, "p95": samples[int(len(samples) * 0.95) - 1] if samples else None},
-                    "limitations": ["Gerçek out-of-sample tarih aralığı ayrımı yoktur", "Order-book yerine candle/order-flow proxy kullanılır", "Monte Carlo trade sırasını yeniden örnekler; piyasa rejimi garantisi değildir"]}
         if name == "search_memory":
             if not _main_pg_pool(): return {"count": 0, "results": [], "message": "Memory backend aktif değil"}
             embedded = await llm_analysis.embedding(str(args.get("query", "")))
@@ -2274,11 +2207,6 @@ def _tool_activity_summary(name: str, args: dict) -> str:
     if name == "get_symbol_behavior": return f"{symbol} davranış profili ve rejim sinyali hesaplanıyor"
     if name == "get_subminute_microstructure": return f"{symbol} 1s/5s mikro yapı akışı başlatılıyor"
     if name == "get_historical_slippage": return f"{symbol} tarihsel slippage dağılımı hesaplanıyor"
-    if name == "run_backtest" or name == "run_custom_backtest": return f"{symbol or 'strateji'} backtest çalıştırılıyor · geçmiş veri işleniyor"
-    if name == "run_walk_forward": return "Walk-forward validasyonu çalıştırılıyor"
-    if name == "run_holdout_test": return "Holdout testi çalıştırılıyor"
-    if name == "run_statistical_validation": return "İstatistiksel doğrulama denemeleri koşuluyor"
-    if name == "run_execution_stress_test": return "Emir gerçekleşme stres testi koşuluyor"
     if name == "get_trades": return "Kapanmış işlem geçmişi okunuyor"
     if name == "get_signals": return "Sinyal kayıtları okunuyor"
     if name == "get_decision_logs": return "Karar logları inceleniyor"
@@ -2399,16 +2327,11 @@ async def strategies_llm_chat(payload: dict = None):
                 context["symbol_data"] = await deep_analyze_symbol({"symbol": requested, "timeframe": "5m"})
             except Exception as exc:
                 context["symbol_data"] = {"symbol": requested, "data_ready": False, "error": str(exc)}
-    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"run_backtest","description":"Public historical candles üzerinde yalnızca paper/backtest simülasyonu çalıştırır. Gerçek emir ve canlı portföy değişikliği yoktur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["1m","3m","5m","15m","30m","1h","2h","4h","1d"]},"days_back":{"type":"integer","description":"1-90 arası tarihsel gün"},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"params":{"type":"object"},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"run_custom_backtest","description":"LLM tarafından oluşturulan güvenli deklaratif gösterge koşullarını candle verisi üzerinde backtest eder; Python kodu çalıştırmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"days_back":{"type":"integer"},"strategy_definition":{"type":"object","description":"entry/exit koşulları: indicator, op, value. En fazla 8 koşul.","properties":{"entry":{"type":"array"},"exit":{"type":"array"}}},"order_size":{"type":"number"},"stop_loss_pct":{"type":"number"},"take_profit_pct":{"type":"number"}},"required":["symbol","strategy_definition"]}}}, {"type":"function","function":{"name":"run_backtest_robustness","description":"Aynı stratejiyi birden fazla tarih penceresinde çalıştırır ve trade PnL'leri üzerinde deterministik Monte Carlo dayanıklılık özeti üretir. Sonuçlar araştırma amaçlıdır; walk-forward için gerçek tarih aralığı ayrımı olmadığını açıkça belirtir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"interval":{"type":"string","enum":["5m","15m","1h","4h","1d"]},"strategy":{"type":"string","enum":["EMA_VWAP_PULLBACK","BB_SQUEEZE_ORDERFLOW","ORDERFLOW","MOMENTUM","VWAP_MEAN_REVERSION","KELTNER_BREAKOUT","CHOP_TREND_FILTER","DONCHIAN_BREAKOUT"]},"windows":{"type":"array","items":{"type":"integer"},"description":"En fazla 3 pencere; 7-90 gün"}},"required":["symbol","strategy"]}}}, {"type":"function","function":{"name":"get_backtest_history","description":"Daha önce kaydedilmiş backtest sonuçlarını getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"},"strategy":{"type":"string"},"symbol":{"type":"string"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
+    tools = [{"type":"function","function":{"name":"get_strategy_config","description":"Mevcut strateji ayarlarını getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_strategy_stats","description":"Strateji başına işlem, net PnL ve başarı istatistiklerini getirir.","parameters":{"type":"object","properties":{}}}}, {"type":"function","function":{"name":"get_trades","description":"İşlem geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_signals","description":"Sinyal geçmişini filtreleyerek getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_decision_logs","description":"BUY_BLOCKED dahil karar kayıtlarını getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Geçmiş sohbet, karar ve strateji hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"strategy":{"type":"string"},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}]
     tools.extend([LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
                   LLM_OUTCOME_PROFILE_TOOL, LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL,
-                  LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
-                  LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL,
-                  LLM_SENSITIVITY_TOOL, LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_DATA_QUALITY_TOOL,
+                  LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL, LLM_DATA_QUALITY_TOOL,
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL])
-    for tool in tools:
-        if tool.get("function", {}).get("name") == "run_custom_backtest":
-            tool["function"]["description"] = "LLM tarafından oluşturulan güvenli deklaratif koşulları backtest eder. Şema: {indicator, op, value}; identifier kategorileri: " + ", ".join(f"{key}=[{', '.join(value)}]" for key, value in CUSTOM_IDENTIFIER_SCHEMA.items()) + ". spread_pct ve liquidity_fresh tarihsel mumlarda doğrudan ölçülemez; null/0 değerini bilinmeyen olarak değerlendir. Python çalıştırmaz, paper-only'dir."
     tool_error_count = 0
     failed_tool_calls = set()
 
@@ -2434,16 +2357,6 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "get_symbol_behavior": return await get_symbol_behavior(args)
             if name == "get_subminute_microstructure": return await get_subminute_microstructure(args)
             if name == "get_historical_slippage": return await get_historical_slippage(args)
-            if name == "run_walk_forward":
-                strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
-                if strategy.upper() == "LLM_PAPER":
-                    return {"ok": False, "retryable": False, "paper_only": True, "error": "LLM_PAPER tarihsel kararlarını birebir replay edemeyen sistem walk-forward motoru kullanılamaz; explicit LLM planı için run_custom_backtest kullanın."}
-                return await run_walk_forward(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), strategy, args.get("train_days", 30), args.get("test_days", 7), args.get("folds", 3), args.get("order_size", 500.0), args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
-            if name == "run_execution_stress_test": return await run_execution_stress(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 30), args.get("order_size", 500.0))
-            if name == "run_parameter_sensitivity": return await run_parameter_sensitivity(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 30), args.get("order_size", 500.0))
-            if name == "run_holdout_test": return await run_holdout_test(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("train_days", 60), args.get("holdout_days", 14), args.get("order_size", 500.0))
-            if name == "run_statistical_validation": return await run_statistical_validation(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), str(args.get("strategy") or "EMA_VWAP_PULLBACK"), args.get("days_back", 60), args.get("order_size", 500.0), args.get("trials", 3))
-            if name == "get_backtest_data_quality": return await get_backtest_data_quality(str(args.get("symbol") or "").upper(), str(args.get("interval") or "5m"), args.get("days_back", 30))
             if name == "validate_trade_plan": return await validate_trade_plan(args)
             if name == "get_order_status":
                 rows = analyzer.list_paper_orders(args.get("symbol"), args.get("status"))
@@ -2475,7 +2388,6 @@ async def strategies_llm_chat(payload: dict = None):
                 if symbol not in known_try:
                     return {"ok": False, "symbol": symbol, "error": "Bu sembol Binance TR public TRY piyasasında aktif değil"}
                 if symbol not in config.SYMBOLS: config.SYMBOLS.append(symbol)
-                config.UT_SYMBOLS = list(dict.fromkeys(config.SYMBOLS))
                 if symbol.lower() not in market.symbols:
                     market.symbols.append(symbol.lower()); market.reconnect_requested = True
                 _start_background(backfill_symbol_history(symbol), f"history-backfill-{symbol}", single_pass=True)
@@ -2486,44 +2398,6 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "read_only_sql": return await safe_read_only_sql(args)
             if name == "get_strategy_config": return await get_config()
             if name == "get_strategy_stats": return (await get_strategy_stats()).get("stats", {})
-            if name == "run_backtest":
-                symbol = str(args.get("symbol") or "BTCTRY").upper()
-                interval = str(args.get("interval") or "5m")
-                days = max(1, min(int(args.get("days_back", 30)), 90))
-                strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
-                order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
-                run_id, result = await run_backtest(symbol, interval, days, strategy, args.get("params") or {}, order_size, float(args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT)), float(args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT)), float(args.get("trailing_stop_pct", 0.0)))
-                return {"run_id": run_id, "result": result, "paper_only": True, "live_portfolio_changed": False}
-            if name == "run_custom_backtest":
-                symbol = str(args.get("symbol") or "BTCTRY").upper(); interval = str(args.get("interval") or "5m")
-                days = max(1, min(int(args.get("days_back", 30)), 90)); order_size = max(10.0, min(float(args.get("order_size", 500.0)), config.INITIAL_BALANCE_TRY))
-                definition = args.get("strategy_definition") or {}
-                if not isinstance(definition, dict) or not isinstance(definition.get("entry"), list) or not isinstance(definition.get("exit"), list):
-                    return {"ok": False, "retryable": False, "error": "strategy_definition entry ve exit dizileri içermeli; koşullar {indicator, op, value} biçiminde olmalı", "paper_only": True}
-                try:
-                    result = await run_custom_backtest(symbol, interval, days, definition, order_size, args.get("stop_loss_pct", config.HARD_STOP_LOSS_PCT), args.get("take_profit_pct", config.TIME_DECAY_TP_1_PCT))
-                except (TypeError, ValueError) as exc:
-                    return {"ok": False, "retryable": False, "error": f"Custom backtest doğrulama hatası: {exc}", "paper_only": True}
-                except Exception as exc:
-                    return {"ok": False, "retryable": True, "error": f"Custom backtest çalıştırılamadı: {type(exc).__name__}: {exc}", "paper_only": True}
-                return {"result": result, "paper_only": True, "live_portfolio_changed": False, "exit_model": "custom_conditions_plus_explicit_tp_sl", "system_exit_rules_applied": False, "allowed_indicators": sorted(CUSTOM_INDICATORS), "identifier_schema": CUSTOM_IDENTIFIER_SCHEMA}
-            if name == "get_backtest_history":
-                limit = max(1, min(int(args.get("limit", 20)), 50))
-                rows = await database.get_backtests(limit)
-                rows = [r for r in rows if (not args.get("strategy") or r.get("strategy") == args.get("strategy")) and (not args.get("symbol") or r.get("symbol") == str(args.get("symbol")).upper())]
-                return {"count": len(rows), "backtests": rows}
-            if name == "run_backtest_robustness":
-                symbol = str(args.get("symbol") or "BTCTRY").upper(); interval = str(args.get("interval") or "5m"); strategy = str(args.get("strategy") or "EMA_VWAP_PULLBACK")
-                windows = [max(7, min(int(x), 90)) for x in (args.get("windows") or [14, 30, 60])][:3]
-                runs = []; first_result = None
-                for days in windows:
-                    _, result = await run_backtest(symbol, interval, days, strategy, {}, 500.0, config.HARD_STOP_LOSS_PCT, config.TIME_DECAY_TP_1_PCT, 0.0)
-                    if first_result is None: first_result = result
-                    runs.append({"days_back": days, "net_pnl": result.get("net_pnl"), "win_rate": result.get("win_rate"), "profit_factor": result.get("profit_factor"), "max_drawdown_pct": result.get("max_drawdown_pct"), "trades": result.get("total_trades"), "exit_reason_counts": result.get("exit_reason_counts")})
-                pnls = [float(t.get("pnl") or 0) for t in (first_result or {}).get("trades", [])]
-                rng = random.Random(42); samples = [sum(rng.choice(pnls) for _ in pnls) for _ in range(1000)] if pnls else []
-                samples.sort()
-                return {"paper_only":True,"windows":runs,"monte_carlo":{"iterations":len(samples),"p05":samples[int(len(samples)*0.05)] if samples else None,"median":samples[len(samples)//2] if samples else None,"p95":samples[int(len(samples)*0.95)-1] if samples else None},"limitations":["Gerçek out-of-sample tarih aralığı ayrımı yoktur","Order-book yerine candle/order-flow proxy kullanılır","Monte Carlo trade sırasını yeniden örnekler; piyasa rejimi garantisi değildir"]}
             if name == "get_trades":
                 rows = await database.get_trades(); strategy, symbol = args.get("strategy"), args.get("symbol")
                 rows = [r for r in rows if (not strategy or r.get("strategy") == strategy) and (not symbol or r.get("symbol") == symbol)]
@@ -2615,9 +2489,7 @@ async def strategies_llm_chat(payload: dict = None):
         LLM_DEEP_SYMBOL_TOOL,
         LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
         LLM_OUTCOME_PROFILE_TOOL, LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL,
-        LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
-        LLM_WALK_FORWARD_TOOL, LLM_EXECUTION_STRESS_TOOL, LLM_SENSITIVITY_TOOL,
-        LLM_HOLDOUT_TOOL, LLM_STATISTICAL_TOOL, LLM_BACKTEST_DATA_TOOL, LLM_VALIDATE_PLAN_TOOL,
+        LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL, LLM_VALIDATE_PLAN_TOOL,
         LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
         LLM_ORDER_STATUS_TOOL, LLM_CANCEL_ORDER_TOOL, LLM_MODIFY_ORDER_TOOL, LLM_RECONCILE_TOOL,
         LLM_DEACTIVATE_TOOL, LLM_READONLY_SQL_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,

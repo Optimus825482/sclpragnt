@@ -120,14 +120,16 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(st), 500)
 
     async def test_normalize_score_maps_velocity_to_panel(self):
-        """normalize_score velocity_score'u 0-100 paneline çevirir."""
+        """normalize_score velocity_score'u 0-100 paneline kelepçeler."""
         from app.routers import monitoring
-        # cap=40 varsayılan; velocity 40+ → 100, velocity 20 → 50, velocity 0 → 0
-        self.assertAlmostEqual(monitoring.normalize_score(40), 100.0)
-        self.assertAlmostEqual(monitoring.normalize_score(20), 50.0)
+        # Yeni formül skoru zaten 0-100 üretir; normalize_score yalnız taşmayı kırpar.
+        self.assertAlmostEqual(monitoring.normalize_score(40), 40.0)
+        self.assertAlmostEqual(monitoring.normalize_score(20), 20.0)
         self.assertAlmostEqual(monitoring.normalize_score(0), 0.0)
-        self.assertAlmostEqual(monitoring.normalize_score(80), 100.0)  # capped
-        self.assertAlmostEqual(monitoring.normalize_score(10), 25.0)
+        self.assertAlmostEqual(monitoring.normalize_score(80), 80.0)
+        self.assertAlmostEqual(monitoring.normalize_score(10), 10.0)
+        self.assertAlmostEqual(monitoring.normalize_score(150), 100.0)  # clipped
+        self.assertAlmostEqual(monitoring.normalize_score(-5), 0.0)  # clipped
 
     async def test_min_target_filter_blocks_low_target(self):
         """min_target_pct不足の候補は通知されない"""
@@ -239,8 +241,8 @@ class MonitoringHelpersTests(unittest.IsolatedAsyncioTestCase):
                            "horizon_minutes": 5, "mode": "trend_devam"},
                 {"min_score": 1.0, "min_target_pct": 0.5},
             )
-        # normalize_score(20, cap=40) = 50.0
-        self.assertAlmostEqual(n["score"], 50.0, places=1)
+        # normalize_score artık skoru 0-100'e kelepçeler; velocity_score=20 → 20
+        self.assertAlmostEqual(n["score"], 20.0, places=1)
 
 
 class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):

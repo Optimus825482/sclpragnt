@@ -14,12 +14,21 @@ def _ema(values, period):
 
 
 def _rsi(closes, period=14):
+    """Wilder-smoothed RSI over the full series (kanonik kaynak)."""
     if len(closes) < period + 1:
         return None
-    changes = np.diff(np.asarray(closes[-period - 1:], dtype=float))
-    gains = np.mean(np.maximum(changes, 0)); losses = np.mean(np.maximum(-changes, 0))
-    if losses == 0: return 100.0 if gains > 0 else 50.0
-    return float(100 - (100 / (1 + gains / losses)))
+    deltas = np.diff(np.asarray(closes, dtype=float))
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    avg_gain = float(np.mean(gains[:period]))
+    avg_loss = float(np.mean(losses[:period]))
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
+    return float(100 - (100 / (1 + rs)))
 
 
 def _atr(highs, lows, closes, period=14):

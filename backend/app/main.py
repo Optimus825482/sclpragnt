@@ -24,8 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 logger = logging.getLogger("scalper.main")
 from app.config import config
 from app.market_intelligence import (estimate_local_regime, execution_quality,
-                                     symbol_safety, cost_aware_trade_metrics,
-                                     walk_forward_assessment, trade_economics,
+                                     symbol_safety, trade_economics,
                                      microstructure_snapshot, symbol_outcome_profile,
                                      symbol_behavior_profile, regime_transition_signal)
 from app.self_learning import build_learning_context
@@ -38,8 +37,6 @@ from app.correlation import CorrelationMonitor, cluster_exposure
 from app.promotion import pipeline as promotion_pipeline
 from app import universe_registry
 from app import database
-from app.backtest import run_backtest, run_custom_backtest, run_walk_forward, run_execution_stress, run_parameter_sensitivity, run_holdout_test, run_statistical_validation, get_backtest_data_quality, CUSTOM_IDENTIFIER_SCHEMA, CUSTOM_INDICATORS
-CUSTOM_EXIT_POLICY_GUIDANCE = " exit_policy: mode=conditions_only yalnızca exit koşullarını, conditions_plus_protection koşul ve seçili korumaları, protection_only yalnızca korumaları kullanır; use_stop_loss, use_take_profit, use_trailing_stop, trailing_stop_pct, use_max_hold ve max_hold_bars alanlarıyla çıkışı seç."
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook, top_gainers
 from app import binance_tr_public
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
@@ -69,7 +66,7 @@ from app.api_common import (  # noqa: F401
     _start_background, _background_tasks,
     _json_safe_positions, _fresh_public_price, _llm_guard_block_reason, correlation_monitor,
     _radar_snapshot, _radar_response_cache, log_user_action, client_context)
-from app.routers import backtest as backtest_routes, llm_chat as llm_chat_routes
+from app.routers import llm_chat as llm_chat_routes
 from app.routers import chart_forecast as chart_forecast_routes
 from app.routers import maintenance as maintenance_routes, reports as reports_routes
 from app.routers import runtime as runtime_routes, system as system_routes, velocity as velocity_routes
@@ -110,7 +107,6 @@ app.include_router(system_routes.router)
 app.include_router(reports_routes.router)
 app.include_router(velocity_routes.router)
 app.include_router(monitoring.router)
-app.include_router(backtest_routes.router)
 
 from app.routers import auto_paper as auto_paper_routes
 app.include_router(auto_paper_routes.router)
@@ -327,7 +323,6 @@ _DB_TABLE_DESCRIPTIONS = {
     "alert_rules": "Uyarı kuralları",
     "analysis_snapshots": "Analiz anlık görüntüleri (regime/confluence)",
     "audit_logs": "Güvenlik ve kullanıcı hareket kayıtları",
-    "backtests": "Backtest koşu sonuçları",
     "chart_forecasts": "Chart tahmin journal'ı",
     "chart_settings": "Chart indikatör ayarları (sembol bazlı)",
     "chat_messages": "Chat mesaj geçmişi",
@@ -608,10 +603,6 @@ _trade_repair = {"status": "idle", "phase": "idle", "progress": 0, "message": No
 
 @app.get("/api/btc-5min-scan")
 async def btc_5min_scan():
-    raise HTTPException(status_code=410, detail="BTC_5M_ODDS_SCALPER sistemden kaldırıldı")
-
-@app.get("/api/btc-5min-backtest")
-async def btc_5min_backtest():
     raise HTTPException(status_code=410, detail="BTC_5M_ODDS_SCALPER sistemden kaldırıldı")
 
 def _repair_log(level, message):

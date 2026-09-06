@@ -246,18 +246,23 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     block_reason = "yapisal_teyit_yok"
                 else:
                     block_reason = "diger"
-            # velocity skoru: bileşen oranlarının geometrik ortalaması benzeri çarpım
-            bb_ratio = (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0
-            struct_ratio = max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
-                               (aroon_up or 0) / 50.0)
+            # velocity skoru: normalize edilmiş, sınırlı bileşen çarpımı.
+            # Her bileşen 0..1 aralığına haritalanır; böylece skor 0..100 bandında
+            # kalır ve admin eşikleri/panel skoru için ayrı bir cap yaması gerekmez.
+            bb_ratio = min(1.0, (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0)
+            struct_ratio = min(1.0, max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
+                                         (aroon_up or 0) / 50.0))
+            atr_ratio = min(1.0, (atr_pct / prof_atr) if prof_atr else 0.0)
             # NOT (2026-09-06): ret3 (3 mum) kısa düzeltmelerde negatife dönüp
             # skoru çökertiyordu. ret5 (5 mum, daha kararlı) da hesaplanıp ikisinin
             # maksimumu kullanılır — böylece kısa geri çekilme momentum skorunu öldürmez.
             ret5 = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0.0
-            velocity_score = round((atr_pct / prof_atr) *
-                                    bb_ratio *
-                                    max(0.2, min(3.0, struct_ratio)) *
-                                    (1.0 + max(0.0, ret3, ret5) / 2.0), 2)
+            # Momentum getirisi yüzdesi log-benzeri sıkıştırılıp 0..1'e kelepçelenir.
+            momentum = max(0.0, ret3, ret5)
+            momentum_ratio = min(1.0, momentum / 4.0)
+            velocity_score = round(100.0 * atr_ratio * bb_ratio
+                                   * (0.2 + 0.8 * struct_ratio)
+                                   * (0.5 + 0.5 * momentum_ratio), 2)
             # ---- M5 momentum+volatilite deseni (7g replay: %66.8 başarı) ----
             # g0: en son kapanan M5 mumu; g1: ondan önceki; g2: iki önceki aralık.
             # Eşikler config.VELOCITY_PATTERN_* (24s/72s/7g doğrulandı).
@@ -373,10 +378,11 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             )
             # ML siralama bonusu: ML base'in ustunde tahmin ettiginde aday
             # siralamada one cikar. Dusuk tahminler adayi ezmez (bonus=1.0).
+            # Skor 0-100 bandında kalması için nihai değer kelepçelenir.
             ml_bonus = 1.0
             if ml_target is not None and ml_target > base_target_pct:
                 ml_bonus = 1.0 + min(2.0, (ml_target - base_target_pct) / base_target_pct)
-            velocity_score = round(velocity_score * ml_bonus, 2)
+            velocity_score = round(min(100.0, velocity_score * ml_bonus), 2)
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
@@ -1089,10 +1095,10 @@ async def _hydrate_market_cache_for(symbol: str):
     except Exception as exc:
         logger.warning("hydrate ticker %s: %s", symbol, exc)
     try:
-        # 1m (ATR kapasite + hız hesapları) ve 5m (MOMENTUM_TIMEFRAME,
-        # preflight/recheck) ikisini de doldur; aksi halde recheck 0 bar
-        # üzerinden yanlış reddediyor.
-        for tf in ("1m", config.MOMENTUM_TIMEFRAME):
+        # 1m (ATR kapasite + hız hesapları) ve 5m (preflight/recheck)
+        # ikisini de doldur; aksi halde recheck 0 bar üzerinden yanlış
+        # reddediyor. MOMENTUM_TIMEFRAME kaldırıldı; sabit "5m" kullanılır.
+        for tf in ("1m", "5m"):
             kline_rows = await fetch_klines(symbol, tf, 120)
             if kline_rows:
                 market.klines.setdefault(tf, {})[symbol] = {

@@ -254,7 +254,7 @@ function SettingsPageInner() {
   });
 
   const resetTradingData = async () => {
-    if (!window.confirm("Tüm eski işlemler, sinyaller, karar logları, backtestler, snapshotlar silinecek. Cüzdan 10.000 TL ile başlayacak. Devam edilsin mi?")) return;
+    if (!window.confirm("Tüm eski işlemler, sinyaller, karar logları ve snapshotlar silinecek. Cüzdan 10.000 TL ile başlayacak. Devam edilsin mi?")) return;
     setResetting(true);
     setError(null);
     setResetDone(false);
@@ -659,7 +659,7 @@ function SettingsPageInner() {
               <div>
                 <p className="eyebrow text-neon-red">PAPER TRADING KAYITLARI</p>
                 <p className="font-mono text-sm text-white mt-2">Tüm eski paper-trading ve strateji geçmişini temizle</p>
-                <p className="text-xs text-bunker-muted mt-1">İşlemler, sinyaller, karar logları, backtestler ve snapshotlar silinir. Ayarlar ve piyasa cache&apos;i korunur; yeni bakiye 10.000 TL olur.</p>
+                <p className="text-xs text-bunker-muted mt-1">İşlemler, sinyaller, karar logları ve snapshotlar silinir. Ayarlar ve piyasa cache&apos;i korunur; yeni bakiye 10.000 TL olur.</p>
               </div>
               <button
                 onClick={resetTradingData}
@@ -679,7 +679,7 @@ function SettingsPageInner() {
               <div>
                 <p className="eyebrow text-neon-green">VERİTABANI YEDEĞİ</p>
                 <p className="font-mono text-sm text-white mt-2">Canlı paper-trading veritabanının tutarlı kopyasını indir</p>
-                <p className="text-xs text-bunker-muted mt-1">PostgreSQL custom-format .dump yedeği alınır. İşlemler, sinyaller, açık pozisyonlar ve backtest kayıtları dahil edilir.</p>
+                <p className="text-xs text-bunker-muted mt-1">PostgreSQL custom-format .dump yedeği alınır. İşlemler, sinyaller ve açık pozisyonlar dahil edilir.</p>
               </div>
               <button onClick={downloadBackup} disabled={backingUp} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${backupDone ? "border-neon-green/60 bg-neon-green/20 text-neon-green" : "border-neon-green/50 bg-neon-green/10 text-neon-green hover:bg-neon-green/20"}`}>
                 {backingUp ? "YEDEKLENİYOR..." : backupDone ? "✓ YEDEK İNDİRİLDİ" : "VERİTABANI YEDEĞİ AL"}

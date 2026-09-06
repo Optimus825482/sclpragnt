@@ -190,53 +190,8 @@ class Config:
     VELOCITY_PATTERN_G2_ATR = float(os.getenv("VELOCITY_PATTERN_G2_ATR", "0.5097"))
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
-    # The live BB-MFI contract defaults to the supplied Flawless Victory v3.
-    # Earlier profiles remain selectable only for reproducible comparisons.
-    BB_MFI_PINE_VERSION = os.getenv("BB_MFI_PINE_VERSION", "v3").strip().lower()
-    BB_MFI_BB_PERIOD = max(5, int(os.getenv("BB_MFI_BB_PERIOD", "21")))
-    BB_MFI_BB_STD_DEV = max(0.1, float(os.getenv("BB_MFI_BB_STD_DEV", "2.0")))
-    BB_MFI_MFI_PERIOD = max(2, int(os.getenv("BB_MFI_MFI_PERIOD", "16")))
-    BB_MFI_RSI_PERIOD = max(2, int(os.getenv("BB_MFI_RSI_PERIOD", "13")))
-    BB_MFI_V1_RSI_LOWER_LEVEL = float(os.getenv("BB_MFI_V1_RSI_LOWER_LEVEL", "30"))
-    BB_MFI_V1_RSI_UPPER_LEVEL = float(os.getenv("BB_MFI_V1_RSI_UPPER_LEVEL", "70"))
-    BB_MFI_V2_RSI_LOWER_LEVEL = float(os.getenv("BB_MFI_V2_RSI_LOWER_LEVEL", "42"))
-    BB_MFI_V2_RSI_UPPER_LEVEL = float(os.getenv("BB_MFI_V2_RSI_UPPER_LEVEL", "76"))
-    BB_MFI_ENTRY_MFI_MAX = float(os.getenv("BB_MFI_ENTRY_MFI_MAX", "59")) # MFILowerLevel3
-    BB_MFI_EXIT_RSI_MIN = float(os.getenv("BB_MFI_EXIT_RSI_MIN", "69")) # RSIUpperLevel3
-    BB_MFI_EXIT_MFI_MIN = float(os.getenv("BB_MFI_EXIT_MFI_MIN", "69")) # MFIUpperLevel3
-    # Paper candidate: ignore a single noisy exit signal and require this many
-    # consecutive completed M5 SELL signals before closing a BB-MFI position.
-    BB_MFI_SELL_SIGNAL_CONFIRM_BARS = min(5, max(1, int(os.getenv("BB_MFI_SELL_SIGNAL_CONFIRM_BARS", "2"))))
-    BB_MFI_ENTRY_VOLUME_RATIO_MIN = float(os.getenv("BB_MFI_ENTRY_VOLUME_RATIO_MIN", "0.0"))
-    # Paper replay candidate: require the completed BB/MFI signal candle to
-    # recover from its low before entering. The tested threshold remains 55%;
-    # it can still be disabled or tuned from Settings for further paper OOS.
-    BB_MFI_DIP_CONFIRMATION_ENABLED = os.getenv("BB_MFI_DIP_CONFIRMATION_ENABLED", "true").lower() == "true"
-    BB_MFI_DIP_MIN_CLOSE_POSITION = float(os.getenv("BB_MFI_DIP_MIN_CLOSE_POSITION", "0.55"))
-    BB_MFI_ENTRY_MFI_REVERSAL_ENABLED = os.getenv("BB_MFI_ENTRY_MFI_REVERSAL_ENABLED", "false").lower() == "true"
-    BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA = float(os.getenv("BB_MFI_ENTRY_MFI_REVERSAL_MIN_DELTA", "0.0"))
-    BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP = float(os.getenv("BB_MFI_ENTRY_MFI_SLOWDOWN_MAX_DROP", "-1"))
-    # Do not buy a BB/MFI dip while a fast, directional selloff is still in force.
-    BB_MFI_BEAR_PRESSURE_FILTER_ENABLED = os.getenv("BB_MFI_BEAR_PRESSURE_FILTER_ENABLED", "true").lower() == "true"
-    BB_MFI_BEAR_PRESSURE_MIN_ADX = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_ADX", "50"))
-    BB_MFI_BEAR_PRESSURE_MIN_DI_GAP = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_DI_GAP", "25"))
-    BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_RETURN_1H_PCT", "0.50"))
-    BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT = float(os.getenv("BB_MFI_BEAR_PRESSURE_MIN_RETURN_15M_PCT", "0.50"))
-    # A usable technical snapshot is mandatory for BB/MFI paper entries. In a
-    # bearish EMA stack, require a confirmed intrabar recovery and MFI reversal
-    # before buying a dip; bullish and mixed stacks retain the base setup.
-    BB_MFI_REQUIRE_DATA_READY = os.getenv("BB_MFI_REQUIRE_DATA_READY", "true").lower() == "true"
-    BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION = os.getenv("BB_MFI_BEARISH_REQUIRE_REVERSAL_CONFIRMATION", "true").lower() == "true"
-    BB_MFI_BEARISH_MIN_CLOSE_POSITION = float(os.getenv("BB_MFI_BEARISH_MIN_CLOSE_POSITION", "0.60"))
-    BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA = float(os.getenv("BB_MFI_BEARISH_MIN_MFI_REVERSAL_DELTA", "1.0"))
-    # Pyramid only into a net winner. A third layer is allowed only when each
-    # of the first two independently remains net profitable.
-    BB_MFI_PYRAMID_REQUIRE_NET_PROFIT = os.getenv("BB_MFI_PYRAMID_REQUIRE_NET_PROFIT", "true").lower() == "true"
-    BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS = max(0, int(os.getenv("BB_MFI_PYRAMID_PROFIT_EXTENSION_LAYERS", "1")))
     SYMBOL_ORDER_PCT = {}
     SYMBOL_PYRAMIDING_LAYERS = {}
-    BB_MFI_STOP_LOSS_PCT = float(os.getenv("BB_MFI_STOP_LOSS_PCT", "0.08882"))
-    BB_MFI_TAKE_PROFIT_PCT = float(os.getenv("BB_MFI_TAKE_PROFIT_PCT", "0.02317"))
     MIN_24H_QUOTE_VOLUME_TRY = 1_000_000.0
     HIGH_LIQUIDITY_BYPASS_VOLUME_TRY = 3_000_000.0
     MIN_VOLUME_RATIO = 0.3
@@ -288,7 +243,6 @@ class Config:
     # legacy TAKE_PROFIT_PCT / TRAILING_* knobs were dead configuration and
     # were removed.
     SPOT_PROFIT_TARGET_PCT = 0.01
-    TIME_DECAY_TP_1_PCT = 0.012
 
     # Klasik/sistem stratejileri için exit modeli. LLM_PAPER bu ayarları kullanmaz;
     # kendi planındaki stop, hedef ve max-hold değerleriyle yönetilir.
@@ -301,7 +255,6 @@ class Config:
     # Binance TR spot komisyonu (Bronz/Standart taker %0.15) - işlem başına
     COMMISSION_PCT = float(os.getenv("COMMISSION_PCT", "0.0015"))
     ESTIMATED_SLIPPAGE_PCT = 0.00025
-    BACKTEST_ASSUMED_SPREAD_PCT = float(os.getenv("BACKTEST_ASSUMED_SPREAD_PCT", "0.001"))
     MIN_EXPECTED_NET_PNL_TRY = 0.5
     # LLM paper-entry gate: an entry is blocked when the live top-of-book spread
     # exceeds this percent (thin-orderbook protection for low-price TRY pairs).
