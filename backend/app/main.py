@@ -752,7 +752,7 @@ async def startup_services():
     _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
     _start_background(chat_prediction_auto_trade_loop(), "chat-prediction-auto-trade")
     # Velocity ATR profillerini hemen yükle (ilk scan doğru eşikle çalışsın)
-    await velocity.load_velocity_atr_profiles()
+    await load_velocity_atr_profiles()
     _start_background(velocity_learning_loop(), "velocity-learner")
     _start_background(radar_loop(), "radar-loop")
     _start_background(top_gainers_refresh_loop(), "top-gainers-monitor")
