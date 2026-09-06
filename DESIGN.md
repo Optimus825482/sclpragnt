@@ -24,7 +24,7 @@
 
 ## Information architecture
 - Primary navigation: Sidebar navigation with a compact mobile drawer.
-- Core routes/screens: `/`, `/charts`, `/portfolio`, `/settings`, `/reports`, `/backtest`, `/signal-replay`, `/chat` and radar/analysis views.
+- Core routes/screens: `/`, `/charts`, `/portfolio`, `/settings`, `/reports`, `/chat` and radar/analysis views.
 - Content hierarchy: Current status and primary action first; evidence, tables and diagnostics below; destructive or irreversible actions require visible confirmation.
 
 ## Design principles

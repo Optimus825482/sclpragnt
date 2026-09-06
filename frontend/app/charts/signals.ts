@@ -86,17 +86,18 @@ export const strongCandlestickPatterns = (bars: Bar[]): PatternMarker[] => {
     return out.slice(-80);
 };
 
-// EMA hesaplama (backend ile aynı: ağırlıklı konvolüsyon)
+// EMA hesaplama (backend technical_analysis._ema ile aynı: Wilder smoothing)
 export const ema = (values: number[], period: number): number | null => {
     if (values.length < period) return null;
-    const weights = Array.from({ length: period }, (_, i) => Math.exp(-1 + (i / (period - 1)) * 1));
-    const wSum = weights.reduce((a, b) => a + b, 0);
-    let sum = 0;
-    for (let i = 0; i < period; i++) sum += values[values.length - period + i] * weights[i];
-    return sum / wSum;
+    const alpha = 2 / (period + 1);
+    let value = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    for (let i = period; i < values.length; i++) {
+        value = alpha * values[i] + (1 - alpha) * value;
+    }
+    return value;
 };
 
-// RSI hesaplama (backend ile aynı)
+// RSI hesaplama (backend technical_analysis._rsi ile aynı: Wilder smoothing)
 export const rsi = (values: number[], period: number): number | null => {
     if (values.length < period + 1) return null;
     let gain = 0, loss = 0;
@@ -110,7 +111,7 @@ export const rsi = (values: number[], period: number): number | null => {
         avgGain = (avgGain * (period - 1) + Math.max(d, 0)) / period;
         avgLoss = (avgLoss * (period - 1) + Math.max(-d, 0)) / period;
     }
-    if (avgLoss === 0) return 100;
+    if (avgLoss === 0) return avgGain > 0 ? 100 : 50;
     return 100 - 100 / (1 + avgGain / avgLoss);
 };
 
@@ -296,14 +297,6 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
         const signals: { time: number; type: "buy" | "sell" }[] = [];
         if (bars.length < slowPeriod + 2) return signals;
         const closes = bars.map((bar) => bar.close);
-        const ema = (values: number[], period: number) => {
-            const k = 2 / (period + 1);
-            let ema = values[0];
-            for (let i = 1; i < values.length; i++) {
-                ema = values[i] * k + ema * (1 - k);
-            }
-            return ema;
-        };
         // Son sinyal türünü takip et — alternasyon için
         let lastSignalType: "buy" | "sell" | null = null;
         for (let i = slowPeriod; i < bars.length; i++) {
@@ -312,6 +305,7 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
             const emaSlow = ema(slice, slowPeriod);
             const emaFast = ema(slice, fastPeriod);
             const prevEmaFast = ema(prevSlice, fastPeriod);
+            if (emaSlow == null || emaFast == null || prevEmaFast == null) continue;
             const close = closes[i];
             const prevClose = closes[i - 1];
             let detectedType: "buy" | "sell" | null = null;
@@ -355,7 +349,9 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
     };
 
     // Grafik sinyallerini spot yürütme modeline dönüştür:
-    // alıştan sonra yalnızca +2% hedef satış üretir; karşıt sinyal çıkış değildir.
+    // alıştan sonra yalnızca hedef satış üretir; karşıt sinyal çıkış değildir.
+    // Hedef backend'in dinamik hedef modeliyle aynı banttadır
+    // (MONITORING_TARGET_PCT_MIN=1.5, MAX=6, varsayılan profil hedefi %2-3).
     export const spotExecutionSignals = (bars: Bar[], raw: { time: number; type: "buy" | "sell" }[]) => {
         const byTime = new Map(bars.map((bar) => [bar.time, bar]));
         let entry: number | null = null;
@@ -367,7 +363,7 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
                 entry = bar.close;
                 executed.push(signal);
             } else if (entry != null) {
-                const target = entry * 1.02;
+                const target = entry * 1.03;
                 if (bar.high >= target) {
                     executed.push({ time: bar.time, type: "sell" });
                     entry = null;

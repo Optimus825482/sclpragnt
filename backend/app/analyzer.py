@@ -4,7 +4,7 @@ import json
 import numpy as np
 import uuid
 from app.config import config
-from app.technical_analysis import calculate_snapshot, _adx, _stochastic, _macd, _mfi
+from app.technical_analysis import calculate_snapshot, _adx, _stochastic, _macd, _mfi, _ema, _rsi, _crsi, _cmo
 from app.binance_tr_public import orderbook
 from app import database
 from app import agent_learning
@@ -278,84 +278,24 @@ class ScalpAnalyzer:
 
 
     def calculate_ema(self, prices, period):
-        if len(prices) < period: return None
-        # np.convolve çekirdeği ters çevirir; bu yüzden en yeni fiyatın en
-        # büyük ağırlığı alması için çekirdeği önce flip ediyoruz.
-        weights = np.exp(np.linspace(-1., 0., period))
-        weights /= weights.sum()
-        return float(np.convolve(prices, np.flip(weights), mode='valid')[-1])
+        return _ema(prices, period)
 
     def calculate_rsi(self, prices, period=14):
-        if len(prices) < period + 1: return None
-        deltas = np.diff(prices)
-        gains = np.where(deltas > 0, deltas, 0)
-        losses = np.where(deltas < 0, -deltas, 0)
-        avg_gain = np.mean(gains[:period])
-        avg_loss = np.mean(losses[:period])
-        for i in range(period, len(deltas)):
-            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        if avg_loss == 0: return 100.0
-        rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
+        return _rsi(prices, period)
 
     def calculate_crsi(self, prices, rsi_period=3, streak_period=2, rank_period=100):
         """Connors RSI: kısa RSI + streak RSI + ROC percentile rank (0-100)."""
-        if len(prices) < rank_period + rsi_period + streak_period + 2:
-            return None
-        price_rsi = self.calculate_rsi(prices, rsi_period)
-        streaks = []
-        streak = 0
-        for i in range(1, len(prices)):
-            if prices[i] > prices[i - 1]: streak = max(streak, 0) + 1
-            elif prices[i] < prices[i - 1]: streak = min(streak, 0) - 1
-            else: streak = 0
-            streaks.append(streak)
-        streak_rsi = self.calculate_rsi(streaks, streak_period)
-        roc = np.diff(prices) / np.array(prices[:-1]) * 100
-        current = roc[-1]
-        sample = roc[-rank_period:]
-        percentile = float(np.sum(sample < current) / len(sample) * 100)
-        if price_rsi is None or streak_rsi is None: return None
-        return float((price_rsi + streak_rsi + percentile) / 3)
-
-    def calculate_bollinger_bands(self, prices, period=20, std_dev: float = 2.0):
-        if len(prices) < period: return None
-        sma = np.mean(prices[-period:])
-        std = np.std(prices[-period:])
-        upper = sma + (std * std_dev)
-        lower = sma - (std * std_dev)
-        bandwidth = (upper - lower) / sma if sma != 0 else 0
-        return {"upper": upper, "middle": sma, "lower": lower, "bandwidth": bandwidth}
+        return _crsi(prices, rsi_period, streak_period, rank_period)
 
     def calculate_macd(self, prices, fast=12, slow=26, signal=9):
-        if len(prices) < slow + signal: return None, None, None
-        fast_weights = np.flip(np.exp(np.linspace(-1., 0., fast)) / np.sum(np.exp(np.linspace(-1., 0., fast))))
-        slow_weights = np.flip(np.exp(np.linspace(-1., 0., slow)) / np.sum(np.exp(np.linspace(-1., 0., slow))))
-        ema_fast = np.convolve(prices, fast_weights, mode='valid')
-        ema_slow = np.convolve(prices, slow_weights, mode='valid')
-        ema_fast = ema_fast[-len(ema_slow):]
-        macd_line = ema_fast - ema_slow
-        if len(macd_line) < signal: return None, None, None
-        sig_weights = np.flip(np.exp(np.linspace(-1., 0., signal)))
-        sig_weights /= sig_weights.sum()
-        signal_line = np.convolve(macd_line, sig_weights, mode='valid')
-        macd_line = macd_line[-len(signal_line):]
-        hist = macd_line - signal_line
-        return macd_line[-1], signal_line[-1], hist[-1]
+        result = _macd(prices, fast, slow, signal)
+        if result is None:
+            return None, None, None
+        return result["line"], result["signal"], result["histogram"]
 
     # --- YARDIMCI: Chande Momentum (CMO) Hesaplama ---
     def calculate_cmo(self, prices, period=9):
-        if len(prices) < period + 1: return None
-        deltas = np.diff(prices[-period-1:])
-        gains = np.where(deltas > 0, deltas, 0.0)
-        losses = np.where(deltas < 0, -deltas, 0.0)
-
-        sum_gains = np.sum(gains)
-        sum_losses = np.sum(losses)
-
-        if (sum_gains + sum_losses) == 0: return 0.0
-        return 100 * (sum_gains - sum_losses) / (sum_gains + sum_losses)
+        return _cmo(prices, period)
 
     # --- EK STRATEJİLER ---
     # --- POZİSYON TAKİBİ (açık pozisyon varsa stratejiye göre) ---
@@ -593,51 +533,6 @@ class ScalpAnalyzer:
         if not flow.get("bid_qty") or not flow.get("ask_qty"):
             return True, 0.0
         return self._flow_filter(symbol)
-
-    def calculate_orderflow_proxy(self, kline, lookback=20):
-        """Backtest proxy: mum kapanış konumu + gövde yönü + hacim ile baskı tahmini."""
-        opens, highs, lows = kline.get("opens", []), kline.get("highs", []), kline.get("lows", [])
-        closes, volumes = kline.get("closes", []), kline.get("volumes", [])
-        if len(closes) < lookback or len(volumes) < lookback: return None
-        pressure = []
-        for o, h, l, c, v in zip(opens[-lookback:], highs[-lookback:], lows[-lookback:], closes[-lookback:], volumes[-lookback:]):
-            span = max(h - l, 1e-12)
-            close_location = (2 * c - h - l) / span
-            body_direction = 1 if c > o else -1 if c < o else 0
-            pressure.append(v * (0.7 * close_location + 0.3 * body_direction))
-        total_volume = sum(volumes[-lookback:])
-        return max(-1.0, min(1.0, sum(pressure) / total_volume)) if total_volume else None
-
-    @staticmethod
-    def _volume_ratio(kline, lookback=20):
-        volumes = kline.get("volumes", [])
-        if len(volumes) < lookback + 1:
-            return None
-        baseline = float(np.mean(volumes[-lookback - 1:-1]))
-        return float(volumes[-1] / baseline) if baseline > 0 else None
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    def calculate_chop(self, kline, period=14):
-        highs, lows, closes = kline.get("highs", []), kline.get("lows", []), kline.get("closes", [])
-        if len(closes) < period + 1: return None
-        tr = [max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1])) for i in range(len(closes)-period, len(closes))]
-        hi, lo = max(highs[-period:]), min(lows[-period:]); span = hi - lo
-        return 100 * np.log10(sum(tr) / span) / np.log10(period) if span > 0 else 100.0
 
     async def evaluate(self, symbol, ticker, allow_entry=True):
         """Açık pozisyon yönetimi.
@@ -973,7 +868,19 @@ class ScalpAnalyzer:
                 if isinstance(entry_context_extra, dict) else 1.0
             if config.CALIBRATION_SIZING_ENABLED and calib_multiplier == 1.0:
                 try:
-                    calib_multiplier = calibration_service.multiplier_for(strat_name)
+                    # S3 bucket'ları saat + hacim rejimine göre ayrılır; hacim
+                    # oranını canlı 5m cache'ten besle. Cache eksikse unknown
+                    # bandına düşer ve nötr (1.0) kalır.
+                    calib_volume_ratio = None
+                    if self.market:
+                        k5 = self.market.get_ut_kline(symbol, "5m") or {}
+                        vols = k5.get("volumes") or []
+                        if len(vols) >= 21:
+                            base = float(np.mean(vols[-21:-1]))
+                            if base > 0:
+                                calib_volume_ratio = float(vols[-1] / base)
+                    calib_multiplier = calibration_service.multiplier_for(
+                        strat_name, volume_ratio=calib_volume_ratio)
                 except Exception:
                     calib_multiplier = 1.0
             if config.CALIBRATION_SIZING_ENABLED and calib_multiplier != 1.0:
@@ -1002,6 +909,37 @@ class ScalpAnalyzer:
         details = {}
         expected_gross = None
         expected_net = None
+        # S5 dynamic correlation cluster cap: correlation-weighted long
+        # exposure across open positions + this new entry must not breach the
+        # configured % of equity. Fails open on any error; only applies when
+        # the flag is enabled.
+        if config.CORRELATION_CAP_ENABLED and self.market:
+            try:
+                from app.correlation import cluster_exposure
+                from app.api_common import correlation_monitor
+
+                equity = try_balance + sum(
+                    float(p.get("entry_price") or 0) * float(p.get("quantity") or 0)
+                    for p in self.positions.values()
+                )
+                exposure = cluster_exposure(
+                    self.positions, symbol, order_value,
+                    correlation_monitor, "BTC", equity)
+                cap = config.MAX_CLUSTER_EXPOSURE_PCT
+                if exposure.get("exposure_pct") is not None and exposure["exposure_pct"] > cap:
+                    ineligible = {"symbol": symbol, "action": "BUY_BLOCKED",
+                                  "price": entry_price, "reason": "correlation_cluster_cap",
+                                  "strategy": strat_name, "timestamp": time.time(),
+                                  "exposure": exposure, "cap_pct": cap}
+                    await database.save_signal({
+                        "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                        "reason": "correlation_cluster_cap", "strategy": strat_name,
+                        "timestamp": time.time(), "exposure_pct": exposure.get("exposure_pct"),
+                        "cap_pct": cap})
+                    print(f"[Correlation] {symbol} giriş engellendi: küme pozlaması %{exposure.get('exposure_pct')} > %{cap}", flush=True)
+                    return ineligible
+            except Exception as exc:
+                print(f"[Correlation] S5 kapı değerlendirmesi atlandı: {exc}", flush=True)
         if self.market:
             # The final recheck covers the small race between a preflight and
             # the atomic portfolio write.  It is an eligibility outcome, never

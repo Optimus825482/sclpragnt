@@ -366,7 +366,7 @@ async def get_report_autonomous_decisions(limit: int = 100, offset: int = 0,
 
 @router.get("/api/reports/capital-lock")
 async def get_capital_lock_report():
-    """Read-only BB-MFI capital-lock outcomes; never changes positions or rules."""
+    """Read-only capital-lock outcomes; never changes positions or rules."""
     return await database.get_capital_lock_report()
 
 @router.get("/api/microstructure-snapshots/{symbol}")

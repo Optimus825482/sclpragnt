@@ -25,7 +25,9 @@
       "Shell(netstat -ano 2>nul | findstr \":3004 :8004\" | findstr LISTENING)",
       "Shell(findstr /n \"psycopg\" D:\\scalperagent_v4\\backend\\requirements.txt D:\\scalperagent_v4\\backend\\pyproject.toml 2>nul)",
       "Shell(python -c import py_compile; py_compile.compile('app/database.py', doraise=True); print('SYNTAX OK'))",
-      "Shell(python -c import py_compile; [py_compile.compile(f, doraise=True) for f in ['app/database.py','app/routers/runtime.py','app/routers/velocity.py','app/market_data.py']]; print('BACKEND SYNTAX OK'))"
+      "Shell(python -c import py_compile; [py_compile.compile(f, doraise=True) for f in ['app/database.py','app/routers/runtime.py','app/routers/velocity.py','app/market_data.py']]; print('BACKEND SYNTAX OK'))",
+      "mcp__jcodemunch__announce_model",
+      "mcp__jcodemunch__order"
     ],
     "deny": [],
     "defaultMode": "default"

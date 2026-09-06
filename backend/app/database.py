@@ -694,7 +694,7 @@ async def get_trade_export_rows():
 
 async def get_capital_lock_report(min_hold_hours: float = 4.0, max_favorable_pct: float = 0.75):
     """Read-only outcome report for positions that consumed capital without progress."""
-    trades = await get_trades(limit=None, strategy="BB_MFI_MEAN_REVERSION")
+    trades = await get_trades(limit=None)
     threshold_seconds = max(0.0, float(min_hold_hours)) * 3600
     threshold_favorable = max(0.0, float(max_favorable_pct)) / 100
     locks, snapshot_count = [], 0
@@ -1871,7 +1871,7 @@ async def read_only_query(sql: str, limit: int = 500):
         raise ValueError("Yalnızca SELECT veya WITH ... SELECT sorgularına izin verilir")
     if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|PRAGMA|COPY|GRANT|REVOKE|CALL|DO|VACUUM|ATTACH|DETACH)\b", statement, re.I):
         raise ValueError("Yazma, DDL veya yönetim komutu tespit edildi")
-    allowed = frozenset({"positions", "trades", "signals", "decision_logs", "virtual_wallet", "backtests", "analysis_snapshots", "llm_tool_logs"})
+    allowed = frozenset({"positions", "trades", "signals", "decision_logs", "virtual_wallet", "analysis_snapshots", "llm_tool_logs"})
     # FROM/JOIN sonrası tablo adlarını çıkar (alt sorguları da kontrol et)
     referenced = set(re.findall(r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_]*)", statement, re.I))
     # Alt sorgulardaki tabloları da kontrol et (nested SELECT)
@@ -2323,23 +2323,6 @@ async def clear_all_chart_indicators():
     return await _run_db(op)
 
 
-async def save_backtest(result):
-    """Backtest sonucunu kaydet, kayıt id'sini döndür."""
-    def op(conn):
-        sql = ("INSERT INTO backtests (timestamp, symbol, interval, strategy, params, days_back, "
-            "initial_balance, final_balance, net_pnl, net_pnl_pct, total_trades, wins, losses, "
-            "win_rate, max_drawdown_pct, order_size, stop_loss_pct, take_profit_pct, trailing_stop_pct, trades) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        params = (result.get("timestamp"), result.get("symbol"), result.get("interval"),
-             result.get("strategy"), _json_safe_dumps(result.get("params", {})), result.get("days_back"),
-             result.get("initial_balance"), result.get("final_balance"), result.get("net_pnl"),
-             result.get("net_pnl_pct"), result.get("total_trades"), result.get("wins"),
-             result.get("losses"), result.get("win_rate"), result.get("max_drawdown_pct"), result.get("order_size"),
-             result.get("stop_loss_pct"), result.get("take_profit_pct"),
-             result.get("trailing_stop_pct"), _json_safe_dumps(result.get("trades", [])))
-        row = conn.execute(sql + " RETURNING id", params).fetchone(); conn.commit(); return row[0]
-    return await _run_db(op)
-
 async def upsert_market_candles(rows):
     """Persist normalized public 5m candles; duplicate timestamps are idempotent."""
     if not rows: return 0
@@ -2401,22 +2384,6 @@ async def get_market_feature_snapshots(symbol, timeframe="5m", start_ms=None, en
         return out
     return await _run_db(op)
 
-async def get_backtests(limit=50):
-    """Son backtest kayıtlarını getir (en yeni önce)."""
-    def op(conn):
-        rows = conn.execute(
-            "SELECT * FROM backtests ORDER BY timestamp DESC LIMIT ?", (limit,)
-        ).fetchall()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["params"] = _json_value(d.get("params"), {})
-            d["trades"] = _json_value(d.get("trades"), [])
-            out.append(d)
-        return out
-
-    return await _run_db(op)
-
 async def save_research_run(result):
     def op(conn):
         sql = """INSERT INTO research_runs
@@ -2474,14 +2441,6 @@ async def get_research_patterns(status=None, timeframe=None, limit=30):
             out.append(item)
         return out
     return await _run_db(op)
-
-async def delete_backtest(run_id):
-    def op(conn):
-        conn.execute("DELETE FROM backtests WHERE id=?", (run_id,))
-        conn.commit()
-
-    await _run_db(op)
-
 
 async def prune_retention(days: int = 30, microstructure_days: int = 7):
     """Delete high-volume observability rows older than ``days`` days.

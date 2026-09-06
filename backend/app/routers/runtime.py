@@ -306,7 +306,6 @@ async def refresh_top_gainer_symbols():
         if not active:
             raise RuntimeError("Binance TR top-gainer TRY listesi boş döndü")
         config.SYMBOLS = active
-        config.UT_SYMBOLS = list(active)
         market.symbols = [symbol.lower() for symbol in active]
         # Newly activated symbols would otherwise wait ~4.6h on the WS alone
         # to collect enough closed 5m candles; hydrate them up front so MTF

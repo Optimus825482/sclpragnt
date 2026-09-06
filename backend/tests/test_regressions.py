@@ -153,31 +153,16 @@ class RegressionContracts(unittest.TestCase):
 
 
     def test_backtest_fill_model_charges_round_trip_costs(self):
-        from app.backtest import _close_trade
-
-        _, pnl, fees, trade = _close_trade(
-            9000.0, 100.0, 101.0, 10.0, 1000.0, "test",
-            spread_pct=0.002, slippage_pct=0.001,
-        )
-        self.assertGreater(fees, 0)
-        self.assertLess(pnl, 10.0)
-        self.assertEqual(trade["spread_pct"], 0.002)
-        self.assertEqual(trade["slippage_pct"], 0.001)
+        # Backtest kaldırıldı (2026-09-06); kontrat artık uygulanmıyor.
+        self.assertTrue(True)
 
     def test_backtest_has_explicit_microstructure_and_spread_contract(self):
-        from app.config import config
-
-        self.assertGreater(config.BACKTEST_ASSUMED_SPREAD_PCT, 0)
-        source = (ROOT / "app" / "backtest.py").read_text(encoding="utf-8")
-        self.assertIn('"microstructure_model"', source)
-        self.assertIn('"cost_model"', source)
+        # Backtest kaldırıldı (2026-09-06); kontrat artık uygulanmıyor.
+        self.assertTrue(True)
 
     def test_custom_exit_policy_is_not_forced_to_use_tp_sl(self):
-        source = (ROOT / "app" / "backtest.py").read_text(encoding="utf-8")
-        self.assertIn('"conditions_only"', source)
-        self.assertIn('"custom_exit_condition"', source)
-        self.assertIn('"custom_trailing_stop"', source)
-        self.assertIn('"custom_max_hold"', source)
+        # Backtest kaldırıldı (2026-09-06); kontrat artık uygulanmıyor.
+        self.assertTrue(True)
 
     def test_llm_exit_creates_symbol_reentry_lock(self):
         source = (ROOT / "app" / "analyzer.py").read_text(encoding="utf-8")

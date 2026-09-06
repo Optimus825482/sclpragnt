@@ -52,21 +52,18 @@ _STATE_SETTING_KEY = "monitoring_runtime_state"
 
 
 def normalize_score(raw_score: float) -> float:
-    """Ham velocity_score'u 0-100 panel ölçeğine çevirir.
+    """velocity_score zaten 0-100 bandında üretilir; yalnızca taşmayı kırpar.
 
-    velocity_score çarpım (ATR×BB×struct×ML×leading) olduğundan 0-200+ aralığında
-    değişir (üretim: çoğu 0-30). Admin bildirim eşikleri (min_score=50, fast-lane=70)
-    0-100 paneline göre kurgulanmış; doğrudan ham skorla karşılaştırmak sistemi pratikte
-    devre dışı bırakıyordu (2026-09-04 teşhis). MONITORING_SCORE_NORM_CAP üstü doyurulur.
+    2026-09-06 öncesi eski formül 0-200+ üretebiliyordu ve burada cap'e göre
+    yeniden ölçekleniyordu. Yeni formül doğrudan 0-100 ürettiği için eski
+    kayıtlar dışında ek dönüşüm gerekmez; eski kayıtlar `_stored_panel_score`
+    tarafından timestamp'e göre bir kez normalize edilir.
     """
     try:
         raw = float(raw_score or 0)
     except (TypeError, ValueError):
         return 0.0
-    cap = float(config.MONITORING_SCORE_NORM_CAP)
-    if cap <= 0:
-        return round(raw, 1)
-    return round(100.0 * min(1.0, raw / cap), 1)
+    return round(max(0.0, min(100.0, raw)), 1)
 
 
 async def _persist_runtime_state() -> None:
@@ -318,7 +315,14 @@ def _stored_panel_score(row: dict) -> float:
     except (TypeError, ValueError):
         detected = 0.0
     if detected and detected < float(config.MONITORING_SCORE_NORM_SINCE):
-        return normalize_score(row.get("score"))
+        # Eski (yeni 0-100 formülü öncesi) ham skorları cap'e göre bir kez
+        # panel ölçeğine çevir. Yeni kayıtlarda skor zaten 0-100'dür.
+        try:
+            raw = float(row.get("score") or 0)
+        except (TypeError, ValueError):
+            raw = 0.0
+        cap = float(config.MONITORING_SCORE_NORM_CAP)
+        return round(max(0.0, min(100.0, 100.0 * raw / cap)), 1) if cap > 0 else round(max(0.0, min(100.0, raw)), 1)
     try:
         return float(row.get("score") or 0)
     except (TypeError, ValueError):

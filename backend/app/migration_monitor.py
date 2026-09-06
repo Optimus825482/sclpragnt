@@ -13,7 +13,7 @@ import time
 # testable even though the live app is PostgreSQL-only.
 TABLES = ("positions", "trades", "signals", "decision_logs", "llm_tool_logs",
           "llm_symbol_guards", "virtual_wallet", "chart_settings",
-          "llm_providers", "llm_models", "llm_skills", "llm_settings", "backtests")
+          "llm_providers", "llm_models", "llm_skills", "llm_settings")
 
 state = {
     "status": "idle",
