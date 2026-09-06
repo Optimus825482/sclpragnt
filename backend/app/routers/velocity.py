@@ -583,6 +583,31 @@ async def velocity_calibrate():
     return changed, by_profile
 
 
+async def load_velocity_atr_profiles():
+    """Startup'ta kalibre edilmiş ATR eşiklerini DB'den yükler.
+    
+    velocity_learning_loop 120sn uyuduğu için ilk taramalar fabrika
+    ayarı (0.30) ile çalışıyordu. Bu fonksiyon başlangıçta hemen
+    yüklenir böylece ilk scan bile doğru eşikle çalışır.
+    """
+    global VELOCITY_MIN_ATR_PCT
+    try:
+        saved = await database.get_llm_setting("velocity_min_atr_pct", None)
+        if saved:
+            VELOCITY_MIN_ATR_PCT = round(float(saved), 2)
+        for profile in ("5m", "15m"):
+            key = f"velocity_min_atr_pct_{profile}"
+            val = await database.get_llm_setting(key, None)
+            if val:
+                _velocity_profile_atr[profile] = round(float(val), 2)
+        _velocity_learning_state["active_filters"] = {
+            "min_atr_pct": VELOCITY_MIN_ATR_PCT,
+            "profile_atr": {k: v for k, v in _velocity_profile_atr.items() if v is not None},
+        }
+    except Exception as exc:
+        logger.warning("velocity ATR profilleri başlangıçta yüklenemedi: %s", exc)
+
+
 async def velocity_learning_loop():
     """Ufku dolan hız adaylarını (5dk-%2 ve 15dk-%3) kapanmış M1 mumlarıyla
     ölç; eşikleri canlı dokunuş oranına göre ayarla; LLM'e postmortem bağlamı
@@ -590,8 +615,8 @@ async def velocity_learning_loop():
     await asyncio.sleep(120)
     global VELOCITY_MIN_ATR_PCT
     # Kalibre edilmiş eşikleri kalıcı depodan geri yükle; aksi halde her restart
-    # öğrenilen değeri fabrika ayarına (0.30) sıfırlıyordu. Hem global hem
-    # profil bazlı (5m/15m) eşikler ayrı ayrı yüklenir.
+    # öğrenilen değeri fabrika ayarına (0.30) sıfırlıyordu. load_velocity_atr_profiles
+    # startup'ta hemen yükler; buradaki yükleme yedek/güncelleme amaçlıdır.
     try:
         saved = await database.get_llm_setting("velocity_min_atr_pct", None)
         if saved:

@@ -5,7 +5,7 @@
  * sade ve net takibi. Canlı WS (portfolio + auto_paper_trade olayları) ile
  * beslenir; REST yedekleme 10 sn'de bir tazelenir.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
@@ -146,6 +146,8 @@ export default function PortfolioPage() {
   // Kapanan otonom işlemler: pagination'lı tam geçmiş (sayfa altı tablo)
   const [apHistory, setApHistory] = useState<AutoPaperTrade[]>([]);
   const [apHistoryPage, setApHistoryPage] = useState(0);
+  const apHistoryPageRef = useRef(apHistoryPage);
+  apHistoryPageRef.current = apHistoryPage;
   const AP_HISTORY_PAGE_SIZE = 20;
   // Otonom karar akışı (decision_logs, strategy=AUTO_PAPER)
   const [decisions, setDecisions] = useState<any[]>([]);
@@ -256,17 +258,19 @@ export default function PortfolioPage() {
     let timer: ReturnType<typeof setTimeout> | null = null;
     return () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => { loadAutoPaperOpen(); loadMain(); loadAutoPaperHistory(apHistoryPage); loadDecisions(); }, 800);
+      timer = setTimeout(() => { loadAutoPaperOpen(); loadMain(); loadAutoPaperHistory(apHistoryPageRef.current); loadDecisions(); }, 800);
     };
-  }, [loadAutoPaperOpen, loadMain, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadAutoPaperOpen, loadMain, loadAutoPaperHistory, loadDecisions]);
 
   const onReset = useCallback(() => {
     loadMain();
     loadAutoPaperOpen();
     loadAutoPaperDetail();
-    loadAutoPaperHistory(apHistoryPage);
+    loadAutoPaperHistory(apHistoryPageRef.current);
     loadDecisions();
-  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions]);
 
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "portfolio") setPortfolio(message.data);

@@ -31,7 +31,7 @@ _monitoring_state = {
     "history": [],                # son bildirim geçmişi (yeni -> eski)
     "pending_targets": {},        # symbol -> {"expected": float, "horizon_minutes": int, "set_at": epoch}
     "candidate_streak": {},       # symbol -> ardışık aday tarama sayısı (debounce)
-    "risk_off": False,            # piyasa rejimi RISK_OFF bayrağı (etkin eşiği yükseltir)
+    "risk_off": False,            # piyasa rejimi RISK_OFF (gözlem bayrağı, eşiği etkilemez — 2026-09-04)
 }
 
 # Sunucu tarafı döngü aralıkları: genel tarama 60 sn; izleme listesindeki
@@ -384,7 +384,6 @@ async def _notify(candidates_list, settings) -> list:
     quiet = _in_quiet_hours(settings)
     now = time.time()
     notified = []
-    update_entries = []  # Güncellenecek mevcut bildirimler
     new_entries = []     # Yeni bildirimler
     # N+1 önlemi: aday sembollerinin BEKLİYOR kayıtlarını tek toplu sorguyla çek
     # (2026-09-05). Eşik altı adaylar pending kontrolüne girmez; yine de tüm
@@ -443,7 +442,6 @@ async def _notify(candidates_list, settings) -> list:
             notif = _build_notification(sym, c, settings, first_price=first_price)
             notif["id"] = existing_pending["id"]
             notif["updated"] = True
-            update_entries.append(notif)
             notified.append(notif)
             # Güncellenen bildirimin streak'i temizlenir (bildirim zaten aktif)
             _monitoring_state["candidate_streak"].pop(sym, None)
@@ -532,7 +530,7 @@ async def _notify(candidates_list, settings) -> list:
         logger.warning("auto_paper toplu deneme hatası: %s", exc)
     if new_notifs:
         try:
-            await ws_manager.broadcast({"type": "monitoring_alert", "data": new_notifs[-1]})
+            await ws_manager.broadcast({"type": "monitoring_alert", "data": new_notifs})
         except Exception as exc:
             logger.warning("Monitoring WS broadcast hatasi: %s", exc)
         _monitoring_state["history"] = (notified + _monitoring_state["history"])[:HISTORY_LIMIT]

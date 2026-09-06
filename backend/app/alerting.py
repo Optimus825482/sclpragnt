@@ -91,7 +91,7 @@ async def evaluate_rules(market, on_paper_trigger=None):
             events.extend(await _evaluate_single_rule(market, rule, now, on_paper_trigger))
         except Exception as exc:
             print(f"[Alerts] Kural {rule.get('id')} değerlendirilemedi: {type(exc).__name__}: {exc}", flush=True)
-            await database.update_alert_rule(rule["id"], {"enabled": 0})
+            # Geçici DB/parser hatası kalıcı devre dışı bırakmamalı; yalnızca logla.
     return events
 
 
