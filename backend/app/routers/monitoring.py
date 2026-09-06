@@ -6,7 +6,7 @@ import os
 import time
 from collections import deque
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database
@@ -68,6 +68,19 @@ def normalize_score(raw_score: float) -> float:
 
 async def _persist_runtime_state() -> None:
     try:
+        # Deferred push kuyruğunu da kaydet (restart sonrası ertelenen push kaybolmasın)
+        deferred = []
+        for n in list(_deferred_push):
+            deferred.append({
+                "symbol": n.get("symbol"), "message": n.get("message"),
+                "title": n.get("title"), "url": n.get("url"), "tag": n.get("tag"),
+                "score": n.get("score"), "target_pct": n.get("target_pct"),
+                "price": n.get("price"), "expected_price": n.get("expected_price"),
+                "detected_at": n.get("detected_at"), "horizon_minutes": n.get("horizon_minutes"),
+                "mode": n.get("mode"), "id": n.get("id"),
+                "ml_hit_probability": n.get("ml_hit_probability"),
+                "ml_target_pct": n.get("ml_target_pct"),
+            })
         payload = {
             "pending_targets": _monitoring_state["pending_targets"],
             "notified_symbols": _monitoring_state["notified_symbols"],
@@ -75,6 +88,7 @@ async def _persist_runtime_state() -> None:
             "candidate_streak": _monitoring_state["candidate_streak"],
             "risk_off": bool(_monitoring_state["risk_off"]),
             "history": _monitoring_state["history"][:100],
+            "deferred_push": deferred,
         }
         await database.set_llm_setting(_STATE_SETTING_KEY, json.dumps(payload, default=str))
     except Exception as exc:
@@ -93,6 +107,11 @@ async def restore_runtime_state() -> None:
             _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
             _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
             _monitoring_state["history"] = (payload.get("history") or [])[:HISTORY_LIMIT]
+            # Ertelenen push kuyruğunu geri yükle (restart dayanıklılığı)
+            deferred = payload.get("deferred_push") or []
+            _deferred_push.clear()
+            for n in deferred:
+                _deferred_push.append(n)
             # pending_targets set_at'i OLDUĞU GİBİ geri yüklenir: restart arasında
             # süre dolan bloklar _check_pending_targets tarafından hemen
             # serbest bırakılır. set_at'i şimdiye çekmek bloğu restart başına
@@ -136,9 +155,9 @@ def _effective_min_score(settings) -> float:
 async def get_user_notification_settings() -> dict:
     """Global bildirim ayarlarını DB'den oku (admin ayarı — tüm kullanıcıları etkiler).
 
-    min_score varsayılanı config.MONITORING_MIN_SCORE_DEFAULT (20): radar verisi
-    06.09.2026 — eski 50 eşiği velocity_score 0-30 aralığıyla uyumsuzdu, tüm
-    adayları eliyordu. Mevcut DB'de 50 kayıtlıysa otomatik 20'ye düşürülür.
+    min_score varsayılanı config.MONITORING_MIN_SCORE_DEFAULT (70): yalnızca
+    yüksek güvenli adaylar bildirilir. Admin PUT ile düşürüp daha fazla
+    bildirim alabilir — değişiklik tüm kullanıcıları anında etkiler.
     """
     try:
         settings_json = await database.get_llm_setting("monitoring_notification_settings", "{}")
@@ -208,9 +227,9 @@ async def update_monitoring_settings(payload: dict, request: Request):
 _deferred_push = deque(maxlen=100)
 
 async def _send_push(notif: dict) -> bool:
-    """Tek bildirimi web push ile gönder; başarı durumunu döndür."""
+    """Tek bildirimi web push ile gönder; gerçek başarı durumunu döndür."""
     try:
-        await deliver_web_push(
+        result = await deliver_web_push(
             notif["message"],
             title=notif["title"],
             url=notif["url"],
@@ -226,9 +245,13 @@ async def _send_push(notif: dict) -> bool:
                 "source": "monitoring",
             },
         )
-        return True
+        ok = bool(result.get("ok", False))
+        if not ok:
+            reason = result.get("reason", result.get("error", "unknown"))
+            logger.warning("Monitoring push failed for %s: %s", notif["symbol"], reason)
+        return ok
     except Exception as exc:
-        logger.warning("Monitoring push failed for %s: %s", notif["symbol"], exc)
+        logger.warning("Monitoring push exception for %s: %s", notif["symbol"], exc)
         return False
 
 
@@ -260,23 +283,31 @@ async def _flush_deferred_push():
         logger.info("Monitoring: sessiz saat bitti, %d ertelenen push gönderildi", sent)
 
 
-def _build_notification(sym, c, settings) -> dict:
-    """Zengin bildirim içeriği: sembol, tespit zamanı, %potansiyel, anlık ve beklenen fiyat."""
+def _build_notification(sym, c, settings, first_price: float | None = None) -> dict:
+    """Zengin bildirim içeriği: sembol, tespit zamanı, %potansiyel, anlık ve beklenen fiyat.
+
+    first_price: mevcut BEKLİYOR bildirimin ilk tespit fiyatı (güncelleme yolunda).
+    Yoksa güncel fiyat kullanılır (yeni bildirim) — böylece API yanıtı ile DB'deki
+    expected_price her zaman tutarlı olur (2026-09-06).
+    """
     score = normalize_score(c.get("velocity_score", 0))
     target = float(c.get("target_pct", 2.0) or 0)
     price = float(c.get("price", 0) or 0)
-    ticker = market.get_ticker(sym)
-    current_price = float(ticker.get("last_price", price)) if ticker else price
-    if current_price <= 0:
-        current_price = price
-    expected_price = current_price * (1 + target / 100) if current_price > 0 else 0.0
+    if first_price is not None:
+        base_price = first_price
+    else:
+        ticker = market.get_ticker(sym)
+        base_price = float(ticker.get("last_price", price)) if ticker else price
+    if base_price <= 0:
+        base_price = price
+    expected_price = base_price * (1 + target / 100) if base_price > 0 else 0.0
     detected_at = time.time()
     horizon = int(c.get("horizon_minutes", 5) or 5)
     ml_prob = c.get("ml_hit_probability")
     ml_pct_str = f" | ML %{ml_prob * 100:.0f}" if ml_prob is not None else ""
     message = (
         f"🎯 {sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str} | "
-        f"Anlık: {current_price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
+        f"Anlık: {base_price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
     )
     return {
         "symbol": sym,
@@ -287,7 +318,7 @@ def _build_notification(sym, c, settings) -> dict:
         "detected_at": detected_at,
         "score": score,
         "target_pct": target,
-        "price": current_price,
+        "price": base_price,
         "expected_price": expected_price,
         "horizon_minutes": horizon,
         "mode": c.get("mode"),
@@ -409,7 +440,7 @@ async def _notify(candidates_list, settings) -> list:
             )
             # Eski kayitlar kalir - sinyal tarihcesi icin
             # Bildirim olarak da ekle (push için)
-            notif = _build_notification(sym, c, settings)
+            notif = _build_notification(sym, c, settings, first_price=first_price)
             notif["id"] = existing_pending["id"]
             notif["updated"] = True
             update_entries.append(notif)
@@ -678,8 +709,30 @@ async def _run_scan() -> dict:
 
 
 @router.get("/api/monitoring/scan")
-async def monitoring_scan():
-    """Run a fresh scan for 5m and 15m velocity candidates (manual/UI tetiklemeli)."""
+async def monitoring_scan(request: Request = None):
+    """Run a fresh scan for 5m and 15m velocity candidates (admin-only).
+
+    Admin çağrısı: yeni scan başlatır. Normal kullanıcı /api/monitoring/state
+    endpoint'inden son tarama sonuçlarını okur.
+    """
+    from app.main import _require_admin
+    try:
+        _require_admin(request)
+    except HTTPException:
+        # Yetkisiz kullanıcılar son tarama önbelleğini döndürür
+        settings = await get_user_notification_settings()
+        return {
+            "paper_only": True,
+            "cached": True,
+            "scan_at": _monitoring_state["last_scan_at"],
+            "scan_count": _monitoring_state["scan_count"],
+            "candidates": _monitoring_state["last_candidates"],
+            "watchlist": _monitoring_state["last_watchlist"],
+            "settings": settings,
+            "risk_off": bool(_monitoring_state["risk_off"]),
+            "effective_min_score": _effective_min_score(settings),
+            "loop_active": _loop_task is not None and not _loop_task.done(),
+        }
     try:
         async with _scan_lock:
             result = await _run_scan()

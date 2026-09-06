@@ -2049,6 +2049,17 @@ async def list_push_subscriptions():
     def op(conn): return [_json_value(row["subscription"], {}) for row in conn.execute("SELECT subscription FROM push_subscriptions").fetchall()]
     return await _run_db(op)
 
+async def remove_push_subscriptions(endpoints: list[str]):
+    """Ölü (410/404) push aboneliklerini endpoint URL'sine göre temizler."""
+    if not endpoints:
+        return 0
+    def op(conn):
+        cur = conn.executemany("DELETE FROM push_subscriptions WHERE endpoint = ?",
+                                [(ep,) for ep in endpoints])
+        conn.commit()
+        return cur.rowcount
+    return await _run_db(op)
+
 
 async def save_monitoring_notifications(entries):
     """Monitoring bildirim geçmişini kalıcı kaydet (server-side scan loop'tan).
@@ -2478,6 +2489,8 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7):
             ("embedding_jobs", "created_at"),
             ("analysis_snapshots", "captured_at"),
             ("strategy_scan_logs", "timestamp"),
+            ("velocity_candidates", "created_at"),
+            ("monitoring_notifications", "detected_at"),
         ):
             try:
                 cursor = conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff,))

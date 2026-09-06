@@ -266,6 +266,7 @@ class ScalpAnalyzer:
         return None
 
     def calculate_atr(self, kline, period=11):
+        """ATR hesapla (period=11: velocity stratejisi için daha hızlı tepki — technical_analysis._atr'den farklıdır)."""
         highs = kline.get("highs", [])
         lows = kline.get("lows", [])
         closes = kline.get("closes", [])

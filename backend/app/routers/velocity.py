@@ -44,14 +44,20 @@ VELOCITY_CALIBRATED_HIT_PCT = 19.3
 
 
 def _velocity_rsi(closes, n=14):
+    """Wilder-smoothed RSI (technical_analysis._rsi ile aynı)."""
     if len(closes) < n + 1:
         return None
-    gains = losses = 0.0
-    for i in range(len(closes) - n, len(closes)):
-        d = closes[i] - closes[i - 1]
-        if d > 0: gains += d
-        else: losses -= d
-    return 100 - 100 / (1 + gains / losses) if losses else 100.0
+    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+    gains = [max(d, 0.0) for d in deltas]
+    losses = [max(-d, 0.0) for d in deltas]
+    avg_gain = sum(gains[:n]) / n
+    avg_loss = sum(losses[:n]) / n
+    for i in range(n, len(deltas)):
+        avg_gain = (avg_gain * (n - 1) + gains[i]) / n
+        avg_loss = (avg_loss * (n - 1) + losses[i]) / n
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    return 100 - 100 / (1 + avg_gain / avg_loss)
 
 
 def _velocity_mfi(highs, lows, closes, vols, n=14):
@@ -71,7 +77,8 @@ def _velocity_bollinger_width(closes, n=20, mult=2.0):
     if len(closes) < n:
         return None
     m = sum(closes[-n:]) / n
-    sd = (sum((c - m) ** 2 for c in closes[-n:]) / n) ** 0.5
+    # Örneklem standart sapması (n-1) — finansal göstergelerde yaygın kullanım
+    sd = (sum((c - m) ** 2 for c in closes[-n:]) / (n - 1)) ** 0.5 if n > 1 else 0.0
     return (4 * sd) / m * 100 if m else None
 
 
@@ -91,11 +98,14 @@ def _velocity_aroon(highs, lows=None, n=25):
     if len(highs) < n + 1:
         return None
     win = highs[-(n + 1):]
-    up = (n - (len(win) - 1 - win.index(max(win)))) / n * 100
+    # Duplicate değerlerde son oluşumu bul (list.index ilkini döner, yanlış Aroon)
+    high_max = max(win)
+    up = max(i for i, v in enumerate(win) if v == high_max) / n * 100
     down = None
     if lows is not None and len(lows) >= n + 1:
         lwin = lows[-(n + 1):]
-        down = (n - (len(lwin) - 1 - lwin.index(min(lwin)))) / n * 100
+        low_min = min(lwin)
+        down = max(i for i, v in enumerate(lwin) if v == low_min) / n * 100
     return {"up": up, "down": down}
 
 

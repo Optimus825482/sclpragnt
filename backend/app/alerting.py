@@ -53,10 +53,33 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
         if tag: payload_obj["tag"] = tag
         if extra: payload_obj.update(extra)
         payload = json.dumps(payload_obj)
+        success_count = 0
+        dead_subscriptions = []
         for subscription in subscriptions:
-            await asyncio.to_thread(webpush, subscription_info=subscription, data=payload, vapid_private_key=vapid_private, vapid_claims={"sub": subject})
-        return {"ok": True, "count": len(subscriptions)}
-    except Exception as exc: return {"ok": False, "error": str(exc)}
+            try:
+                await asyncio.to_thread(webpush, subscription_info=subscription, data=payload,
+                                        vapid_private_key=vapid_private,
+                                        vapid_claims={"sub": subject})
+                success_count += 1
+            except Exception as sub_exc:
+                err_str = str(sub_exc).lower()
+                # 410 Gone, 404 Not Found,  expired endpoint → subscription ölü
+                if "410" in err_str or "404" in err_str or "gone" in err_str or "expired" in err_str:
+                    dead_subscriptions.append(subscription.get("endpoint", ""))
+                    logger.warning("Push: ölü abonelik tespit edildi: %s", subscription.get("endpoint", "")[:60])
+                else:
+                    logger.warning("Push: abonelik gönderim hatası: %s", sub_exc)
+        if dead_subscriptions:
+            try:
+                await database.remove_push_subscriptions(dead_subscriptions)
+                logger.info("Push: %d ölü abonelik temizlendi", len(dead_subscriptions))
+            except Exception as cleanup_exc:
+                logger.warning("Push: abonelik temizleme hatası: %s", cleanup_exc)
+        return {"ok": success_count > 0, "count": success_count, "total": len(subscriptions),
+                "dead_count": len(dead_subscriptions)}
+    except Exception as exc:
+        logger.error("Push teslimat hatası: %s", exc)
+        return {"ok": False, "error": str(exc)}
 
 
 async def evaluate_rules(market, on_paper_trigger=None):
