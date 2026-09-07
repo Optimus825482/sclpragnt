@@ -32,7 +32,7 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         candidates = [
             {"symbol": "LOWTRY", "velocity_score": 2.0, "target_pct": 5.0, "price": 1.0},
             {"symbol": "LOWTARGETTRY", "velocity_score": 5.0, "target_pct": 0.5, "price": 1.0},
-            {"symbol": "GOODTRY", "velocity_score": 5.0, "target_pct": 3.0, "price": 10.0},
+            {"symbol": "GOODTRY", "velocity_score": 50.0, "target_pct": 3.0, "price": 10.0},
         ]
         with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "test-key"}), \
              patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0), \
@@ -78,7 +78,7 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
                 (lt.tm_year, lt.tm_mon, lt.tm_mday, 23, 50, 0, lt.tm_wday, lt.tm_yday, lt.tm_isdst))):
             settings = {"enabled": True, "min_score": 1.0, "min_target_pct": 1.0,
                         "quiet_hours_start": quiet_start, "quiet_hours_end": quiet_end}
-            candidates = [{"symbol": "QUIETTRY", "velocity_score": 5.0, "target_pct": 5.0, "price": 2.0}]
+            candidates = [{"symbol": "QUIETTRY", "velocity_score": 30.0, "target_pct": 5.0, "price": 2.0}]
             with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0) as save_mock, \
                  patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
                  patch.object(monitoring, "deliver_web_push") as push, \
@@ -96,7 +96,7 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         self._reset_state()
         settings = {"enabled": True, "min_score": 0.5, "min_target_pct": 0.5,
                     "quiet_hours_start": None, "quiet_hours_end": None}
-        candidates = [{"symbol": "COOLTRY", "velocity_score": 5.0, "target_pct": 5.0, "price": 1.0}]
+        candidates = [{"symbol": "COOLTRY", "velocity_score": 15.0, "target_pct": 5.0, "price": 1.0}]
         with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0), \
              patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}), \
@@ -125,12 +125,12 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         """normalize_score velocity_score'u 0-100 paneline kelepçeler."""
         from app.routers import monitoring
         # Yeni formül skoru zaten 0-100 üretir; normalize_score yalnız taşmayı kırpar.
-        self.assertAlmostEqual(monitoring.normalize_score(40), 20.0, places=1)
-        self.assertAlmostEqual(monitoring.normalize_score(20), 10.0, places=1)
+        self.assertAlmostEqual(monitoring.normalize_score(40), 2.0, places=1)
+        self.assertAlmostEqual(monitoring.normalize_score(20), 1.0, places=1)
         self.assertAlmostEqual(monitoring.normalize_score(0), 0.0)
-        self.assertAlmostEqual(monitoring.normalize_score(80), 40.0, places=1)
-        self.assertAlmostEqual(monitoring.normalize_score(10), 5.0, places=1)
-        self.assertAlmostEqual(monitoring.normalize_score(150), 75.0, places=1)  # cap=200: 150/200*100=75
+        self.assertAlmostEqual(monitoring.normalize_score(80), 4.0, places=1)
+        self.assertAlmostEqual(monitoring.normalize_score(10), 0.5, places=1)
+        self.assertAlmostEqual(monitoring.normalize_score(150), 7.5, places=1)  # cap=2000: 150/2000*100=7.5
         self.assertAlmostEqual(monitoring.normalize_score(-5), 0.0)  # clipped
 
     async def test_min_target_filter_blocks_low_target(self):
@@ -244,7 +244,7 @@ class MonitoringHelpersTests(unittest.IsolatedAsyncioTestCase):
                 {"min_score": 1.0, "min_target_pct": 0.5},
             )
         # normalize_score artık skoru 0-100'e kelepçeler; velocity_score=20 → 20
-        self.assertAlmostEqual(n["score"], 10.0, places=1)
+        self.assertAlmostEqual(n["score"], 1.0, places=1)
 
 
 class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
@@ -328,7 +328,7 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         # Eski kayıt (cutoff öncesi): ham 20 -> normalize(20)=50
         old_row = {"score": 20, "detected_at": 1788534693 - 1}
-        self.assertAlmostEqual(monitoring._stored_panel_score(old_row), 10.0, places=1)
+        self.assertAlmostEqual(monitoring._stored_panel_score(old_row), 1.0, places=1)
         # Yeni kayıt (cutoff sonrası): panel skoru dokunulmaz — çift normalize edilmez
         new_row = {"score": 55, "detected_at": 1788534693 + 1}
         self.assertAlmostEqual(monitoring._stored_panel_score(new_row), 55.0, places=1)
@@ -414,7 +414,7 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notifications", new_callable=AsyncMock, return_value={"GOODTRY": existing}),              patch.object(monitoring.database, "update_monitoring_notification", side_effect=fake_update),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring, "_record_history", return_value=None):
-            candidates = [{"symbol": "GOODTRY", "velocity_score": 4.0, "target_pct": 5.0, "price": 12.0,
+            candidates = [{"symbol": "GOODTRY", "velocity_score": 50.0, "target_pct": 5.0, "price": 12.0,
                            "horizon_minutes": 15}]
             result = await monitoring._notify(candidates, settings)
         self.assertTrue(result and result[0].get("updated"))
@@ -444,7 +444,7 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notifications", new_callable=AsyncMock, return_value={"LONGTRY": existing}),              patch.object(monitoring.database, "update_monitoring_notification", side_effect=fake_update),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring, "_record_history", return_value=None):
-            candidates = [{"symbol": "LONGTRY", "velocity_score": 4.0, "target_pct": 3.0,
+            candidates = [{"symbol": "LONGTRY", "velocity_score": 50.0, "target_pct": 3.0,
                            "price": 21.0, "horizon_minutes": 5}]
             await monitoring._notify(candidates, settings)
         self.assertEqual(captured["horizon_minutes"], 15)
@@ -521,7 +521,7 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         settings = {"enabled": True, "min_score": 1.0, "min_target_pct": 1.0,
                     "quiet_hours_start": None, "quiet_hours_end": None}
         candidates = [
-            {"symbol": "UPDTRY", "velocity_score": 5.0, "target_pct": 3.0, "price": 10.0,
+            {"symbol": "UPDTRY", "velocity_score": 30.0, "target_pct": 3.0, "price": 10.0,
              "horizon_minutes": 5, "mode": "trend_devam"}
         ]
         # Simulate existing pending notification 
