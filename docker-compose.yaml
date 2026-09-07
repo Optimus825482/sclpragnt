@@ -117,8 +117,11 @@ services:
     healthcheck:
       # nginx'in kendi canlılığı: upstream'lere bağımlı değil. /health
       # (backend proxy'si) kullanılsaydı backend'deki her kısa tıkanıklık
-      # gateway'i unhealthy yapar, Coolify/Traefik de devreden çıkarirdi.
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:80/gateway-health || exit 1"]
+      # gateway'i unhealthy yapar, Coolify/Traefik de devreden çıkarırdı.
+      # NOT: `localhost` yerine 127.0.0.1 — /etc/hosts'ta localhost ::1'e
+      # çözümlenir; nginx yalnızca IPv4 (0.0.0.0:80) dinlediğinden wget
+      # localhost'a gidince "Connection refused" alıyordu → unhealthy → 503.
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:80/gateway-health || exit 1"]
       start_period: 10s
       interval: 30s
       timeout: 5s
