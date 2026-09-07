@@ -290,14 +290,25 @@ def _trim_tool_result(value):
         return value if not isinstance(value, str) else text
     return {"truncated": True, "original_chars": len(text), "preview": text[:limit]}
 
-def _fernet():
-    key = os.getenv("LLM_ENCRYPTION_KEY", "").strip()
+def _fernet(primary_env="LLM_ENCRYPTION_KEY", fallback_env=None):
+    key = os.getenv(primary_env, "").strip()
+    if not key and fallback_env:
+        key = os.getenv(fallback_env, "").strip()
     if not key:
-        raise RuntimeError("LLM_ENCRYPTION_KEY tanımlı değil")
+        raise RuntimeError(f"{primary_env} tanımlı değil")
     return Fernet(key.encode())
 
-def encrypt_key(value): return _fernet().encrypt(value.encode()).decode()
-def decrypt_key(value): return _fernet().decrypt(value.encode()).decode()
+def encrypt_key(value, primary_env="LLM_ENCRYPTION_KEY", fallback_env=None):
+    return _fernet(primary_env, fallback_env).encrypt(value.encode()).decode()
+
+
+def decrypt_key(value, primary_env="LLM_ENCRYPTION_KEY", fallback_env=None):
+    try:
+        return _fernet(primary_env).decrypt(value.encode()).decode()
+    except Exception:
+        if fallback_env:
+            return _fernet(fallback_env).decrypt(value.encode()).decode()
+        raise
 
 async def list_config():
     return await database.get_llm_config()

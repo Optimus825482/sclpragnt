@@ -2526,6 +2526,7 @@ def _user_row(row) -> dict | None:
         return None
     return {"id": int(row["id"]), "username": row["username"], "password_hash": row["password_hash"],
             "role": row["role"], "is_active": bool(row["is_active"]),
+            "session_version": int(row.get("session_version") or 0),
             "created_at": float(row["created_at"] or 0), "updated_at": float(row["updated_at"] or 0)}
 
 
@@ -2561,9 +2562,9 @@ async def create_user(username: str, password_hash: str, role: str = "user", is_
     now = time.time()
     def op(conn):
         cur = conn.execute(
-            "INSERT INTO users(username,password_hash,role,is_active,created_at,updated_at) "
-            "VALUES(%s,%s,%s,%s,%s,%s) RETURNING *",
-            (str(username).strip().lower(), password_hash, str(role).lower(), bool(is_active), now, now))
+            "INSERT INTO users(username,password_hash,role,is_active,session_version,created_at,updated_at) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+            (str(username).strip().lower(), password_hash, str(role).lower(), bool(is_active), 0, now, now))
         conn.commit()
         return _user_row(cur.fetchone())
     return await _run_db(op)
@@ -2584,9 +2585,23 @@ async def update_user(user_id: int, *, username: str | None = None, password_has
         if not sets:
             row = conn.execute("SELECT * FROM users WHERE id=%s", (int(user_id),)).fetchone()
             return _user_row(row)
+        sets.append("session_version=session_version+1")
         sets.append("updated_at=%s"); values.append(time.time())
         values.append(int(user_id))
         row = conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=%s RETURNING *", tuple(values)).fetchone()
+        conn.commit()
+        return _user_row(row)
+    return await _run_db(op)
+
+
+async def bump_user_session_version(user_id: int) -> dict | None:
+    """Invalidate all existing session tokens for one user."""
+    def op(conn):
+        row = conn.execute(
+            "UPDATE users SET session_version=session_version+1, updated_at=%s "
+            "WHERE id=%s RETURNING *",
+            (time.time(), int(user_id)),
+        ).fetchone()
         conn.commit()
         return _user_row(row)
     return await _run_db(op)

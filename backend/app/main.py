@@ -234,6 +234,10 @@ async def profile_update_password(payload: dict, request: Request):
     updated = await database.update_user(int(user["id"]), password_hash=security.hash_password(new_password))
     if not updated:
         raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
+    security.set_user_session_version(
+        updated.get("username") or principal.get("username") or "",
+        int(updated.get("session_version") or 0),
+    )
     await log_user_action(principal.get("username"), principal.get("role"), "user", "PASSWORD_CHANGE",
                           target=principal.get("username"), details={"via": "profile"}, request=request)
     return {"ok": True, "message": "Şifre güncellendi", "paper_only": True}
@@ -281,10 +285,13 @@ async def auth_login(payload: dict, response: Response, request: Request):
                               target=username, details={"reason": "bad_credentials"}, request=request)
         raise HTTPException(status_code=401, detail="Kullanıcı adı veya şifre hatalı")
     role = str(user.get("role") or "user").lower()
+    session_version = int(user.get("session_version") or 0)
+    security.set_user_session_version(user.get("username") or username, session_version)
     await log_user_action((user.get("username") or username).lower(), role, "auth", "LOGIN_SUCCESS",
                           target=(user.get("username") or username).lower(), request=request)
     response.set_cookie(security.SESSION_COOKIE,
-                        security.create_session_token(username=user.get("username") or username, role=role),
+                        security.create_session_token(username=user.get("username") or username, role=role,
+                                                      session_version=session_version),
                         httponly=True,
                         secure=os.getenv("SCALPER_COOKIE_SECURE", "1") == "1", samesite="strict",
                         max_age=43200, path="/")
@@ -294,6 +301,16 @@ async def auth_login(payload: dict, response: Response, request: Request):
 @app.post("/api/auth/logout")
 async def auth_logout(request: Request, response: Response):
     principal = _session_user(request)
+    if principal:
+        username = str(principal.get("username") or "").strip().lower()
+        try:
+            user = await database.get_user_by_username(username)
+            if user:
+                updated = await database.bump_user_session_version(int(user["id"]))
+                if updated:
+                    security.set_user_session_version(username, int(updated.get("session_version") or 0))
+        except Exception as exc:
+            print(f"[Auth] oturum sürümü yükseltilemedi: {exc}", flush=True)
     await log_user_action((principal or {}).get("username"), (principal or {}).get("role"),
                           "auth", "LOGOUT", request=request)
     response.delete_cookie(security.SESSION_COOKIE, path="/")
@@ -507,6 +524,7 @@ async def admin_create_user(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail="Rol 'admin' veya 'user' olmalı")
     user = await database.create_user(username, security.hash_password(password), role=role,
                                       is_active=bool(payload.get("is_active", True)))
+    security.set_user_session_version((user or {}).get("username") or username.lower(), int((user or {}).get("session_version") or 0))
     await log_user_action(admin.get("username"), "admin", "user", "USER_CREATE",
                           target=(user or {}).get("username") or username.lower(),
                           details={"role": role, "is_active": bool(payload.get("is_active", True))}, request=request)
@@ -546,6 +564,9 @@ async def admin_update_user(user_id: int, payload: dict, request: Request):
     if "is_active" in payload:
         kwargs["is_active"] = bool(payload.get("is_active", True))
     user = await database.update_user(user_id, **kwargs)
+    if user:
+        security.remove_user_session_version(existing.get("username") or "")
+        security.set_user_session_version(user.get("username") or "", int(user.get("session_version") or 0))
     await log_user_action(admin.get("username"), "admin", "user", "USER_UPDATE",
                           target=(existing.get("username") or str(user_id)),
                           details={"changed": sorted(kwargs.keys()), "new_username": kwargs.get("username")}, request=request)
@@ -565,6 +586,7 @@ async def admin_delete_user(user_id: int, request: Request):
         if len(admins) <= 1:
             raise HTTPException(status_code=422, detail="Son admin silinemez")
     await database.delete_user(user_id)
+    security.remove_user_session_version(existing.get("username") or "")
     await log_user_action(admin.get("username"), "admin", "user", "USER_DELETE",
                           target=existing.get("username") or str(user_id),
                           details={"role": existing.get("role")}, request=request)
@@ -703,9 +725,34 @@ async def _ensure_admin_user():
     print("[Auth] admin kullanıcı oluşturuldu (şifre env'den)", flush=True)
 
 
+async def startup_market_warmup():
+    """Hydrate only active paper timeframes without blocking process startup."""
+    priority_timeframes = list(config.PRIORITY_TIMEFRAMES)
+    try:
+        hydration = await market.ensure_history(
+            priority_timeframes,
+            min_candles=55,
+            candle_limit=120,
+        )
+        ready = int(hydration.get("hydrated", 0) or 0) + int(hydration.get("already_ready", 0) or 0)
+        if ready:
+            market.history_loaded = True
+        print(
+            f"[MarketData] startup warmup tamamlandı | timeframes={len(priority_timeframes)} "
+            f"ready_series={ready} errors={len(hydration.get('errors', []) or [])}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[MarketData] startup warmup hatası: {exc}", flush=True)
+
+
 async def startup_services():
     global _pg_pool
     await database.init_db()
+    try:
+        security.load_user_session_versions(await database.list_users())
+    except Exception as exc:
+        print(f"[Auth] oturum sürümleri yüklenemedi: {exc}", flush=True)
     try:
         await _ensure_admin_user()
     except Exception as exc:
@@ -736,12 +783,11 @@ async def startup_services():
             await embedding_worker.start(_pg_pool, llm_analysis.embedding)
         except Exception as exc:
             print(f"[Memory] PostgreSQL/embedding worker başlatılamadı: {exc}")
-    # Strategy loop yalnızca tüm timeframe geçmişi ve REST ticker'ları hazır
-    # olduktan sonra başlasın; aksi halde ilk tarama tüm sembolleri stale sayar.
-    priority_timeframes = list(dict.fromkeys([
-    ]))
-    await market.fetch_historical_data(priority_timeframes)
-    print(f"[MarketData] öncelikli strateji verisi hazır | timeframes={priority_timeframes} tickers={len(market.tickers)}", flush=True)
+    # Startup must bind the HTTP listener quickly. Heavy history hydration
+    # runs in the background so a slow Binance response cannot trip the
+    # container healthcheck and force a restart loop.
+    market.timeframes = list(config.PRIORITY_TIMEFRAMES)
+    _start_background(startup_market_warmup(), "startup-market-warmup")
     _start_background(backfill_missing_active_history(), "historical-backfill-active")
     _start_background(history_candle_loop(), "history-candle-loop")
     _start_background(market.connect(skip_history=True), "market-connect")
@@ -1382,12 +1428,16 @@ async def _apply_config_update(payload: dict, request: Request = None):
     universe_changed = bool(market.reconnect_requested) or (
         "symbols" in payload and
         {str(s).lower() for s in payload["symbols"]} != {str(s).lower() for s in previous_symbols})
-    market.timeframes = market._all_timeframes()
+    market.timeframes = list(config.PRIORITY_TIMEFRAMES)
     if universe_changed:
         # Apply symbol/timeframe changes immediately. Settings are runtime-only,
         # but the running websocket/cache must not continue using the old universe.
         market.reconnect_requested = True
-        await market.fetch_historical_data()
+        await market.ensure_history(
+            config.PRIORITY_TIMEFRAMES,
+            min_candles=55,
+            candle_limit=120,
+        )
     else:
         await market.repair_history_gaps()
     analyzer._last_signal_lengths.clear()
@@ -1739,6 +1789,10 @@ async def get_chat_last_response(session_id: str = "default"):
 
 BINANCE_API_KEY_SETTING = "binance_api_key_encrypted"
 BINANCE_SECRET_SETTING = "binance_api_secret_encrypted"
+
+
+def _real_sell_enabled():
+    return os.getenv("ENABLE_REAL_BINANCE_SELL", "0").strip().lower() in {"1", "true", "yes", "on"}
 # Varlık -> (cache bitiş zamanı, {"avg_price": float, "quote": "TRY"|"USDT"})
 _binance_cost_cache: dict[str, tuple[float, dict]] = {}
 # Gün -> (cache bitiş zamanı, günün işlem listesi yanıtı)
@@ -1774,18 +1828,33 @@ async def get_binance_settings(request: Request):
     """Admin'in kayıtlı Binance API key bilgisi var mı döndür (key'in kendisi asla dönmez)."""
     _require_admin(request)
     enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
-    return {"configured": bool(enc_key)}
+    return {"configured": bool(enc_key), "sell_enabled": _real_sell_enabled()}
 
 @app.post("/api/binance/settings")
 async def save_binance_settings(payload: dict, request: Request):
     """Binance API key/secret'ı Fernet şifreleyip kaydet (admin-only)."""
-    _require_admin(request)
+    admin = _require_admin(request)
     api_key = str(payload.get("api_key") or "").strip()
     api_secret = str(payload.get("api_secret") or "").strip()
     if not api_key or not api_secret:
         raise HTTPException(status_code=422, detail="API key ve secret gerekli")
-    await database.set_llm_setting(BINANCE_API_KEY_SETTING, llm_analysis.encrypt_key(api_key))
-    await database.set_llm_setting(BINANCE_SECRET_SETTING, llm_analysis.encrypt_key(api_secret))
+    await database.set_llm_setting(
+        BINANCE_API_KEY_SETTING,
+        llm_analysis.encrypt_key(api_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY"),
+    )
+    await database.set_llm_setting(
+        BINANCE_SECRET_SETTING,
+        llm_analysis.encrypt_key(api_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY"),
+    )
+    await log_user_action(
+        admin.get("username"),
+        admin.get("role"),
+        "binance",
+        "BINANCE_SETTINGS_SAVED",
+        target="binance_tr",
+        details={"api_key_configured": True, "api_secret_configured": True, "real_sell_enabled": _real_sell_enabled()},
+        request=request,
+    )
     return {"ok": True, "configured": True}
 
 async def _decrypt_binance_creds(request) -> tuple[str, str]:
@@ -1796,8 +1865,8 @@ async def _decrypt_binance_creds(request) -> tuple[str, str]:
     if not enc_key or not enc_secret:
         raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış")
     try:
-        api_key = llm_analysis.decrypt_key(enc_key)
-        api_secret = llm_analysis.decrypt_key(enc_secret)
+        api_key = llm_analysis.decrypt_key(enc_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+        api_secret = llm_analysis.decrypt_key(enc_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
         return api_key, api_secret
     except Exception as exc:
         logger.error("Binance API key çözülemedi: %s — LLM_ENCRYPTION_KEY ortam değişkenini kontrol et", exc)
@@ -1945,6 +2014,11 @@ async def binance_sell(payload: dict, request: Request):
     stepSize'ına aşağı yuvarlanır; min lot altı reddedilir. Sembol sırasıyla
     {ASSET}_TRY, {ASSET}_USDT çiftlerinden mevcut olanıdır.
     """
+    _require_admin(request)
+    if not _real_sell_enabled():
+        raise HTTPException(status_code=403, detail="Gerçek Binance satışı ENABLE_REAL_BINANCE_SELL=1 ile açık değil")
+    if str(payload.get("confirmation") or "").strip().upper() != "REAL_SELL":
+        raise HTTPException(status_code=422, detail="REAL_SELL onayı gerekli")
     api_key, api_secret = await _decrypt_binance_creds(request)
     asset = str(payload.get("asset") or "").upper().strip()
     if not asset or asset == "TRY":
@@ -2557,7 +2631,7 @@ async def download_postgres_backup(request: Request = None):
 
 @app.post("/api/postgres/restore")
 async def restore_postgres_backup(payload: dict = None, request: Request = None):
-    _require_admin(request)
+    admin = _require_admin(request)
     body = payload or {}; raw_path = str(body.get("path", ""))
     if body.get("confirmation") != "RESTORE_POSTGRES": raise HTTPException(status_code=400, detail="RESTORE_POSTGRES onayı gerekli")
     if not os.getenv("DATABASE_URL"): raise HTTPException(status_code=400, detail="DATABASE_URL gerekli")
@@ -2581,6 +2655,8 @@ async def restore_postgres_backup(payload: dict = None, request: Request = None)
         raise HTTPException(status_code=400, detail=validation.stderr[-2000:] or "Yedek dosyası pg_restore --list doğrulamasından geçemedi")
     result = await asyncio.to_thread(subprocess.run, ["pg_restore", "--clean", "--if-exists", "--no-owner", "--dbname", os.environ["DATABASE_URL"], path], capture_output=True, text=True, timeout=1200)
     if result.returncode != 0: raise HTTPException(status_code=502, detail=result.stderr[-3000:] or "pg_restore başarısız")
+    await log_user_action(admin.get("username"), admin.get("role"), "admin", "POSTGRES_RESTORE",
+                          target="postgres", details={"path": os.path.basename(path)}, request=request)
     return {"ok": True, "message": "PostgreSQL backup geri yüklendi; backend yeniden başlatılması önerilir"}
 
 @app.post("/api/memory/reset")

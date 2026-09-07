@@ -363,9 +363,11 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'user',
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  session_version INTEGER NOT NULL DEFAULT 0,
   created_at DOUBLE PRECISION NOT NULL,
   updated_at DOUBLE PRECISION NOT NULL
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS users_username_idx ON users(username);
 
 -- Chart-page ML price forecasts (2026-09-03). Model-only (no LLM); measured

@@ -19,6 +19,24 @@ SESSION_COOKIE = "scalper_session"
 _LOGIN_FAILURE_LIMIT = 512
 _login_failures = defaultdict(deque)
 _PBKDF2_ITERATIONS = 200_000
+_user_session_versions = {"admin": 0}
+
+
+def set_user_session_version(username: str, version: int):
+    _user_session_versions[str(username or "").strip().lower()] = int(version or 0)
+
+
+def remove_user_session_version(username: str):
+    _user_session_versions.pop(str(username or "").strip().lower(), None)
+
+
+def load_user_session_versions(users):
+    _user_session_versions.clear()
+    _user_session_versions["admin"] = 0
+    for user in users or []:
+        username = str(user.get("username") or "").strip().lower()
+        if username:
+            _user_session_versions[username] = int(user.get("session_version") or 0)
 
 
 def auth_configured():
@@ -52,7 +70,8 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
-def create_session_token(username: str = "admin", role: str = "admin", ttl_seconds=43200, client_fingerprint: str = ""):
+def create_session_token(username: str = "admin", role: str = "admin", ttl_seconds=43200,
+                         client_fingerprint: str = "", session_version: int | None = None):
     """Session token oluşturur. İsteğe bağlı client_fingerprint (IP+UA hash) ile token'ı cihaza baglar.
 
     Negatif ttl_seconds, iptal/test senaryoları için exp'yi geçmişe atar ve
@@ -67,9 +86,10 @@ def create_session_token(username: str = "admin", role: str = "admin", ttl_secon
     # geçersiz olsun (exp = 0). Epoch + negatif ttl hâlâ geleceğe işaret
     # ettiği için doğrudan 0'a sabitlemek gerekir.
     exp = (int(time.time()) + ttl) if ttl >= 0 else 0
+    version = int(session_version if session_version is not None else _user_session_versions.get(str(username).lower(), 0))
     payload = _b64(json.dumps({"sub": str(username).lower(), "role": str(role).lower(),
                                "exp": exp,
-                               "fp": fp_hash}, separators=(",", ":")).encode())
+                               "fp": fp_hash, "sv": version}, separators=(",", ":")).encode())
     signature = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
     return f"{payload}.{signature}"
 
@@ -81,6 +101,10 @@ def verify_session_token(token, client_fingerprint: str = ""):
         secret = os.getenv("SCALPER_SESSION_SECRET", "").encode()
         expected = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
         data = json.loads(_unb64(payload))
+        username = str(data.get("sub") or "").strip().lower()
+        expected_version = _user_session_versions.get(username)
+        if expected_version is not None and int(data.get("sv", -1)) != expected_version:
+            return False
         if not (secret and hmac.compare_digest(signature, expected)
                 and int(data.get("exp", 0)) > time.time()):
             return False
@@ -107,7 +131,8 @@ def session_user(token) -> dict | None:
             return None
         username = str(data.get("sub") or "").strip().lower()
         role = str(data.get("role") or "user").lower()
-        if not username:
+        expected_version = _user_session_versions.get(username)
+        if not username or (expected_version is not None and int(data.get("sv", -1)) != expected_version):
             return None
         return {"username": username, "role": role}
     except (ValueError, TypeError, json.JSONDecodeError):
