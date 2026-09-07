@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -179,7 +180,21 @@ async def init_db():
     def pg_op(conn):
         schema_path = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations", "001_pgvector_schema.sql"))
         with open(schema_path, encoding="utf-8") as schema_file:
-            conn.conn.execute(schema_file.read())
+            schema_sql = schema_file.read()
+        schema_sha = hashlib.sha256(schema_sql.encode("utf-8")).hexdigest()
+        # Hızlı yol: entrypoint migration'ı aynı sha'yı uyguladıysa DDL'i
+        # yeniden koşma (canlı sistemde gereksiz ACCESS EXCLUSIVE lock
+        # yarışı doğuruyordu). to_regclass ile ilk kurulum ayrımı yapılır.
+        marker = None
+        if conn.execute("SELECT to_regclass('public.llm_settings')").fetchone()[0]:
+            mrow = conn.execute("SELECT value FROM llm_settings WHERE key='schema_sha256'").fetchone()
+            marker = mrow[0] if mrow else None
+        if marker != schema_sha:
+            conn.conn.execute(schema_sql)
+            conn.execute(
+                "INSERT INTO llm_settings(key,value) VALUES('schema_sha256',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (schema_sha,))
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_skills_name ON llm_skills(name)")
         conn.execute("INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(%s,%s,TRUE,%s) "
                      "ON CONFLICT(name) DO NOTHING",

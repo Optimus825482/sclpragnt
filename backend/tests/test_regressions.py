@@ -267,9 +267,13 @@ class RegressionContracts(unittest.TestCase):
 
     def test_postgres_migration_retries_transient_connection_failures(self):
         source = (ROOT / "scripts" / "run_postgres_migration.py").read_text(encoding="utf-8")
-        self.assertIn('for attempt in range(1, 13)', source)
-        self.assertIn('await asyncio.sleep(5)', source)
-        self.assertIn('PostgreSQL migration bağlantısı kurulamadı', source)
+        self.assertIn('_MAX_ATTEMPTS = 20', source)
+        self.assertIn('for attempt in range(1, _MAX_ATTEMPTS + 1)', source)
+        self.assertIn('await asyncio.sleep(_RETRY_SLEEP_SEC)', source)
+        self.assertIn('"LockNotAvailableError"', source)
+        self.assertIn('pg_advisory_lock', source)
+        self.assertIn('schema_sha256', source)
+        self.assertIn('PostgreSQL migration bağlantı/kilit beklemesi tükendi', source)
 
     def test_compose_forces_postgres_backend(self):
         source = (ROOT.parent / "docker-compose.yaml").read_text(encoding="utf-8")
