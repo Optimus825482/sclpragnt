@@ -934,6 +934,86 @@ async def report_notifications(limit: int = 200, day: str = None):
     return {"paper_only": True, "notifications": result, "total": len(result),
             "breakdown": day_breakdown, "overall": overall_breakdown}
 
+@router.get("/api/monitoring/diagnostics")
+async def monitoring_diagnostics():
+    """Diagnostic deep-dive: compare target_pct vs actual MFE across all records.
+    
+    Returns per-symbol breakout so user can spot where the success rate is lost.
+    """
+    settings = await get_user_notification_settings()
+    min_score = _effective_min_score(settings)
+    rows = await database.get_monitoring_velocity_matches(limit=1000, day=None)
+    rows = [r for r in rows if _stored_panel_score(r) >= min_score]
+    profile_buckets: dict[str, list] = {"all": []}
+    for r in rows:
+        mfe_val = r.get("mfe_pct")
+        mfe_f = float(mfe_val) if mfe_val is not None else None
+        tgt = float(r.get("target_pct") or 0)
+        cand_st = str(r.get("candidate_status") or "")
+        if cand_st != "evaluated" or mfe_f is None:
+            continue
+        score = _stored_panel_score(r)
+        bucket = "all"
+        # Score buckets
+        if score >= 90:
+            bucket = "90-100"
+        elif score >= 80:
+            bucket = "80-90"
+        elif score >= 70:
+            bucket = "70-80"
+        elif score >= 60:
+            bucket = "60-70"
+        elif score >= 50:
+            bucket = "50-60"
+        else:
+            bucket = "0-50"
+        tch = bool(r.get("touched_target"))
+        label = "TAMAMEN" if tch else ("BASARILI" if mfe_f >= tgt * 0.5 else
+                                        ("KISMİ" if mfe_f > 0 else "BASARISIZ"))
+        entry = {"symbol": r.get("symbol"), "score": score, "target_pct": tgt,
+                 "mfe_pct": round(mfe_f, 3), "status": label, "horizon": r.get("horizon_minutes")}
+        profile_buckets.setdefault(bucket, []).append(entry)
+        profile_buckets["all"].append(entry)
+    summary = {}
+    for bk, items in profile_buckets.items():
+        n = len(items)
+        s = sum(1 for i in items if i["status"] in ("TAMAMEN", "BASARILI"))
+        avg_target = sum(i["target_pct"] for i in items) / n if n else 0
+        avg_mfe = sum(i["mfe_pct"] for i in items) / n if n else 0
+        summary[bk] = {"count": n, "success": s, "success_rate": round(s/n*100,1) if n else 0,
+                       "avg_target_pct": round(avg_target,2), "avg_mfe_pct": round(avg_mfe,2)}
+    # Per-symbol top losers
+    by_symbol = {}
+    for r in rows:
+        sym = str(r.get("symbol") or "").upper()
+        mfe_val = r.get("mfe_pct")
+        mfe_f = float(mfe_val) if mfe_val is not None else None
+        tgt = float(r.get("target_pct") or 0)
+        cand_st = str(r.get("candidate_status") or "")
+        if cand_st != "evaluated" or mfe_f is None:
+            continue
+        tch = bool(r.get("touched_target"))
+        by_symbol.setdefault(sym, {"count": 0, "success": 0, "total_mfe": 0.0, "total_target": 0.0})
+        by_symbol[sym]["count"] += 1
+        if tch or mfe_f >= tgt * 0.5:
+            by_symbol[sym]["success"] += 1
+        by_symbol[sym]["total_mfe"] += mfe_f
+        by_symbol[sym]["total_target"] += tgt
+    sym_summary = {}
+    for sym, d in sorted(by_symbol.items(), key=lambda x: x[1]["success"]/max(x[1]["count"],1)):
+        sym_summary[sym] = {"count": d["count"], "success": d["success"],
+                            "rate": round(d["success"]/d["count"]*100, 1) if d["count"] else 0,
+                            "avg_mfe": round(d["total_mfe"]/d["count"], 3) if d["count"] else 0,
+                            "avg_target": round(d["total_target"]/d["count"], 2) if d["count"] else 0}
+    return {
+        "paper_only": True,
+        "effective_min_score": min_score,
+        "overall": summary,
+        "per_symbol_worst": dict(list(sym_summary.items())[:30]),
+        "settings": settings,
+    }
+
+
 @router.post("/api/monitoring/reset-notifications")
 async def reset_monitoring_notifications(request: Request):
     """Clear notified symbols list (allows re-notification) — YALNIZ admin.
