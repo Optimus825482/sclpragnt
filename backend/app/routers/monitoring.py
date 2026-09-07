@@ -64,7 +64,7 @@ _STATE_SETTING_KEY = "monitoring_runtime_state"
 
 
 def normalize_score(raw_score: float) -> float:
-    """velocity_score 0-400+ bandina cikabilir; MONITORING_SCORE_NORM_CAP ile
+    """velocity_score 0-1000+ bandina cikabilir; MONITORING_SCORE_NORM_CAP (2000) ile
     0-100 panel olcegine haritalanir. Cap astiysa 100, astiysa dogrusal (2026-09-07).
     """
     try:

@@ -49,7 +49,7 @@ const SCAN_INTERVAL_MS = 30_000;
 // Backend normalize_score cap'ı (MONITORING_SCORE_NORM_CAP): ham velocity_score
 // bu değere bölünüp 0-100 panel ölçeğine çevrilir. Backend artık panel_score
 // alanını gönderir; eski yanıt.cache'leri için burada da hesaplanır.
-const SCORE_NORM_CAP = 200;  // 2026-09-07 sync with backend MONITORING_SCORE_NORM_CAP
+const SCORE_NORM_CAP = 2000;  // 2026-09-07 saturation kaldirildi, skor 0-1000 MONITORING_SCORE_NORM_CAP
 
 const fmtTime = (ts: number | null) => {
   if (!ts) return "—";

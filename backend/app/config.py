@@ -135,7 +135,7 @@ class Config:
     # velocity_score 0-100 bandında üretilir (formül: atr_ratio × bb_ratio × yapı × momentum).
     # Tipik orta-kuvvetli sinyal 20-60 arasıdır. Varsayılan eşik 70: yalnızca yüksek
     # güvenli adaylar bildirilir; admin PUT /api/monitoring/settings ile düşürebilir.
-    MONITORING_SCORE_NORM_CAP = float(os.getenv("MONITORING_SCORE_NORM_CAP", "200"))  # 2026-09-07: yeni skor 0-400+ araligi
+    MONITORING_SCORE_NORM_CAP = float(os.getenv("MONITORING_SCORE_NORM_CAP", "2000"))  # 2026-09-07: saturation kaldirma sonrasi tipik skor 50-2000
     # Hızlı şerit: bu skor üstü adaylar debounce beklemeden anında bildirilir
     # (yüksek skor hızlı pump'larda gelir; bekleme fırsatı kaçırır).
     MONITORING_FAST_LANE_SCORE = float(os.getenv("MONITORING_FAST_LANE_SCORE", "70"))
