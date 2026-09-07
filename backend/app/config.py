@@ -148,7 +148,7 @@ class Config:
     MONITORING_SCORE_NORM_SINCE = float(os.getenv("MONITORING_SCORE_NORM_SINCE", "1788534693"))
     # Skor-bantlı dinamik hedef: "skor_esigi:hedef_pct" çiftleri virgülle; yüksekten
     # düşüğe ilk eşleşen bant hedefi belirler (0 dönerse profil baz hedefi kalır).
-    MONITORING_TARGET_SCORE_TIERS = os.getenv("MONITORING_TARGET_SCORE_TIERS", "70:4.0,50:3.0")
+    MONITORING_TARGET_SCORE_TIERS = os.getenv("MONITORING_TARGET_SCORE_TIERS", "90:4.0,70:2.5,50:2.0")
     # Dinamik hedef sınırları ve adaptif esnetme: sembolün journal'dan öğrenilmiş
     # (get_symbol_target_state) hedefi daha yüksekse hedef buraya kadar yükseltilir.
     MONITORING_TARGET_ADAPTIVE = os.getenv("MONITORING_TARGET_ADAPTIVE", "true").lower() == "true"

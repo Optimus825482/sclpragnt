@@ -391,7 +391,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # Skor 0-100 bandında kalması için nihai değer kelepçelenir.
             ml_bonus = 1.0
             if ml_target is not None and ml_target > base_target_pct:
-                ml_bonus = 1.0 + min(2.0, (ml_target - base_target_pct) / base_target_pct)
+                ml_bonus = 1.0 + min(1.3, (ml_target - base_target_pct) / base_target_pct)
             velocity_score = round(min(100.0, velocity_score * ml_bonus), 2)
             return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
