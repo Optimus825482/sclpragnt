@@ -1,10 +1,13 @@
 """Paper-only market alert evaluation and notification delivery."""
 import asyncio
 import json
+import logging
 import os
 import time
 
 from app import database
+
+logger = logging.getLogger("scalper.alerting")
 
 
 def _matches(rule, value):
