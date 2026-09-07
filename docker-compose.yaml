@@ -115,7 +115,10 @@ services:
       - default
       - coolify
     healthcheck:
-      test: ["CMD-SHELL", "wget --spider -q http://localhost:80/health || exit 1"]
+      # nginx'in kendi canlılığı: upstream'lere bağımlı değil. /health
+      # (backend proxy'si) kullanılsaydı backend'deki her kısa tıkanıklık
+      # gateway'i unhealthy yapar, Coolify/Traefik de devreden çıkarirdi.
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:80/gateway-health || exit 1"]
       start_period: 10s
       interval: 30s
       timeout: 5s
