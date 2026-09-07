@@ -122,7 +122,10 @@ services:
     image: pgvector/pgvector:pg17-bookworm
     restart: unless-stopped
     depends_on:
-      postgres:
+      backend:
+        # Backend ancak migration'ı geçince sağlıklı olur. pg_dump tüm
+        # tablolara dakikalarca ACCESS SHARE kilit alır; migration'ın
+        # ALTER TABLE'ı ile açılış yarışını böylece kökten engelleriz.
         condition: service_healthy
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
@@ -132,6 +135,9 @@ services:
       - /bin/sh
       - -c
       - |
+        # Ilk dump oncesi ek guvenlik penceresi (deploy/migration tamamen
+        # dursun diye); sonraki donguler 86400s uyur, yarisma olmaz.
+        sleep 300
         while true; do
           ts=$$(date +%Y%m%d_%H%M%S)
           echo "[backup] $$ts basliyor"

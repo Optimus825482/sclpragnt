@@ -17,6 +17,7 @@ Uygulama tarafındaki ``database.init_db()`` aynı şemayı lock_timeout'suz
 fail-fast olmak içindi ve canlı overlap senaryosunda ters tekiyordu.
 """
 import asyncio
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ _MIGRATION_ADVISORY_KEY = 0x5343414C  # 'SCAL'
 _MAX_ATTEMPTS = 20
 _LOCK_TIMEOUT_MS = 30_000
 _RETRY_SLEEP_SEC = 10.0
+_SHA_MARKER_KEY = "schema_sha256"
 
 
 async def main():
@@ -35,6 +37,7 @@ async def main():
     if not url:
         raise SystemExit("DATABASE_URL gerekli")
     sql = (Path(__file__).resolve().parents[1] / "migrations" / "001_pgvector_schema.sql").read_text(encoding="utf-8")
+    schema_sha = hashlib.sha256(sql.encode("utf-8")).hexdigest()
     last_error = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         conn = None
@@ -50,12 +53,27 @@ async def main():
                     "lock_timeout": str(_LOCK_TIMEOUT_MS),
                 },
             )
+            # Hızlı yol: şema zaten bu dosyanın sha'sı kadar uygulanmışsa
+            # HİÇ DDL koşma. Bu olmayan durumda her restart, canlı sistemle
+            # DDL lock yarışı riskini yeniden alıyordu.
+            marker = None
+            if await conn.fetchval("SELECT to_regclass('public.llm_settings')") is not None:
+                marker = await conn.fetchval(
+                    "SELECT value FROM llm_settings WHERE key=$1", _SHA_MARKER_KEY)
+            if marker == schema_sha:
+                print("PostgreSQL şeması güncel (sha eşleşti); migration atlandı.", flush=True)
+                await conn.close()
+                return
             # Başka bir migration koşucusu (örn. paralel konteyner) varsa
             # bekleyip sıraya gir; session-level lock, transaction'lardan bağımsız.
             await conn.execute("SELECT pg_advisory_lock($1)", _MIGRATION_ADVISORY_KEY)
             try:
                 async with conn.transaction():
                     await conn.execute(sql)
+                    await conn.execute(
+                        "INSERT INTO llm_settings(key,value) VALUES($1,$2) "
+                        "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
+                        _SHA_MARKER_KEY, schema_sha)
             finally:
                 await conn.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_ADVISORY_KEY)
             print("PostgreSQL migration tamamlandı.", flush=True)
