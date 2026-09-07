@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { fmtDateTime } from "../lib/format";
 import RequireAdmin from "../components/RequireAdmin";
 
 type AuditLog = {
@@ -22,8 +23,7 @@ type Notice = { kind: "ok" | "err"; text: string } | null;
 
 const PAGE_SIZE = 50;
 
-const fmtDate = (value: number) =>
-  value ? new Date(value < 10_000_000_000 ? value * 1000 : value).toLocaleString("tr-TR") : "—";
+const fmtDate = (value: number) => (value ? fmtDateTime(value) : "—");
 
 const CATEGORY_META: Record<string, { label: string; className: string }> = {
   auth: { label: "GİRİŞ", className: "border-amber-300/50 bg-amber-300/10 text-amber-300" },

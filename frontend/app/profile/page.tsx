@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { getUiMode, setUiMode } from "../lib/ui-mode";
+import { fmtDate as fmtDateOnly } from "../lib/format";
 
 type Notice = { kind: "ok" | "err"; text: string } | null;
 
@@ -65,8 +66,7 @@ export default function ProfilePage() {
   };
 
   const displayName = username ? String(username).charAt(0).toUpperCase() + String(username).slice(1) : "Kullanıcı";
-  const fmtDate = (value: number | null) =>
-    value ? new Date(value < 10_000_000_000 ? value * 1000 : value).toLocaleDateString("tr-TR") : "—";
+  const fmtDate = (value: number | null) => (value ? fmtDateOnly(value) : "—");
 
   return (
     <main className="page-shell">

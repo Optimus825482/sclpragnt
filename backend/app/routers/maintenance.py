@@ -5,6 +5,7 @@ import math
 import time
 import logging
 from datetime import datetime, timezone
+from functools import partial
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -361,7 +362,7 @@ async def start_historical_mtf_backfill(payload: dict = None, request: Request =
     options = payload or {}
     if options.get("force") is True and options.get("confirm") is not True:
         raise HTTPException(status_code=400, detail="force backfill için confirm=true gerekli")
-    _historical_mtf_backfill_task = _start_background(_run_historical_mtf_backfill(options), "historical-mtf-backfill", single_pass=True)
+    _historical_mtf_backfill_task = _start_background(partial(_run_historical_mtf_backfill, options), "historical-mtf-backfill", single_pass=True)
     return {"ok": True, "status": "queued", "paper_only": True}
 
 
@@ -409,7 +410,7 @@ async def start_replay_parity_backfill(request: Request = None):
     global _replay_parity_backfill_task
     if _replay_parity_backfill.get("status") == "running":
         return {"ok": True, "already_running": True, "paper_only": True, **_replay_parity_backfill}
-    _replay_parity_backfill_task = _start_background(_run_replay_parity_backfill(), "replay-parity-backfill", single_pass=True)
+    _replay_parity_backfill_task = _start_background(_run_replay_parity_backfill, "replay-parity-backfill", single_pass=True)
     return {"ok": True, "status": "queued", "paper_only": True}
 
 
@@ -546,7 +547,7 @@ async def start_velocity_ml_backfill(payload: dict = None, request: Request = No
     global _velocity_ml_backfill_task
     if _velocity_ml_backfill.get("status") == "running":
         return {"ok": True, "already_running": True, "paper_only": True, **_velocity_ml_backfill}
-    _velocity_ml_backfill_task = _start_background(_run_velocity_ml_backfill(payload or {}), "velocity-ml-backfill", single_pass=True)
+    _velocity_ml_backfill_task = _start_background(partial(_run_velocity_ml_backfill, payload or {}), "velocity-ml-backfill", single_pass=True)
     return {"ok": True, "status": "queued", "paper_only": True}
 
 

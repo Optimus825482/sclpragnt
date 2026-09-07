@@ -185,14 +185,17 @@ async def init_db():
                      "ON CONFLICT(name) DO NOTHING",
                      (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS, time.time()))
         # Reconcile migrated cash with trades and open positions.
+        # Portföy reseti sonrası yeniden init, reset ÖNCESİ PnL'i cüzdana
+        # geri yüklememeli — reset cutoff'u burada da uygulanır.
         conn.execute("""UPDATE virtual_wallet SET amount=
             (SELECT COALESCE(
                 (SELECT amount FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0),
-                %s + COALESCE((SELECT SUM(pnl) FROM trades), 0)
+                %s + COALESCE((SELECT SUM(pnl) FROM trades WHERE (%s = 0) OR (exit_time > %s)), 0)
                 - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
                 - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0) * %s
             ) AS reconciled)
-        WHERE asset='TRY' AND NOT EXISTS (SELECT 1 FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0)""", (config.INITIAL_BALANCE_TRY, config.COMMISSION_PCT))
+        WHERE asset='TRY' AND NOT EXISTS (SELECT 1 FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0)""",
+            (config.INITIAL_BALANCE_TRY, _get_reset_cutoff_sync(conn), _get_reset_cutoff_sync(conn), config.COMMISSION_PCT))
         conn.conn.commit()
     await _run_db(pg_op)
 
@@ -281,7 +284,11 @@ def _chronological_overallocation_candidates(conn):
     """Return only positions whose opening event made the ledger insolvent."""
     cash = float(config.INITIAL_BALANCE_TRY)
     events = []
-    trades = conn.execute("SELECT entry_time,exit_time,entry_price,quantity,pnl FROM trades").fetchall()
+    cutoff = _get_reset_cutoff_sync(conn)
+    trades = conn.execute(
+        "SELECT entry_time,exit_time,entry_price,quantity,pnl FROM trades"
+        + (" WHERE exit_time>?" if cutoff else ""),
+        (cutoff,) if cutoff else ()).fetchall()
     for row in trades:
         cost = float(row[2] or 0) * float(row[3] or 0)
         events.append((float(row[0] or 0), 0, "debit", None, cost * (1 + config.COMMISSION_PCT)))
@@ -305,7 +312,12 @@ async def reconcile_portfolio():
     def op(conn):
         before_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", ("TRY",)).fetchone()
         before = float(before_row[0]) if before_row else 0.0
-        realized = float(conn.execute("SELECT COALESCE(SUM(pnl),0) FROM trades").fetchone()[0] or 0)
+        # Reset cutoff'u uygula: reset öncesi kapanmış işlemler cüzdana
+        # geri yüklenemez (reset_trading_data belgelendiği gibi).
+        cutoff = _get_reset_cutoff_sync(conn)
+        realized = float(conn.execute(
+            "SELECT COALESCE(SUM(pnl),0) FROM trades WHERE (?=0 OR exit_time>?)",
+            (cutoff, cutoff)).fetchone()[0] or 0)
         open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
         entry_commission = open_cost * config.COMMISSION_PCT
         after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
@@ -346,7 +358,10 @@ async def reconcile_portfolio():
 
 async def preview_portfolio_reconcile():
     def op(conn):
-        realized = float(conn.execute("SELECT COALESCE(SUM(pnl),0) FROM trades").fetchone()[0] or 0)
+        cutoff = _get_reset_cutoff_sync(conn)
+        realized = float(conn.execute(
+            "SELECT COALESCE(SUM(pnl),0) FROM trades WHERE (?=0 OR exit_time>?)",
+            (cutoff, cutoff)).fetchone()[0] or 0)
         open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
         after = config.INITIAL_BALANCE_TRY + realized - open_cost - open_cost * config.COMMISSION_PCT
         candidates = _chronological_overallocation_candidates(conn)

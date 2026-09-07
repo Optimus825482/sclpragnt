@@ -24,4 +24,17 @@ backend/*.csv
 backend/scripts/*.json
 backend/scripts/*.csv
 backend/scripts/*.log
-docs/*
+
+# docs/ versiyonlanır (policy, API referansı, araştırma raporları) — yalnızca
+# ağır veri dump'ları ve vendored üçüncü parti klonu hariç tutulur.
+docs/TradingView-Machine-Learning-GUI/
+docs/*.dump
+docs/*.sql
+docs/*.json
+docs/*.csv
+docs/*.txt
+
+# Runtime artefaktları
+backend-uvicorn.log
+.pytest_cache/
+graf_screenshot.png

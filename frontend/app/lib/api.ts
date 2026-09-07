@@ -1,8 +1,11 @@
+// Browser: localhost geliştirmede backend portu, aksi halde same-origin.
+// SSR/prerender: boş string (relative URL). Sabit "http://localhost:8004"
+// fallback'i sunucu tarafında yanlış hedefe istek atmamak için kaldırıldı.
 const browserOrigin = typeof window !== "undefined"
   ? (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
     ? "http://localhost:8004"
     : window.location.origin)
-  : "http://localhost:8004";
+  : "";
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || browserOrigin;
 export const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || API_BASE.replace(/^http/, "ws");
 
@@ -21,6 +24,28 @@ export async function apiFetch(path: string, init?: RequestInit) {
   const response = await apiRequest(`${API_BASE}${path}`, { cache: "no-store", ...init });
   if (!response.ok) throw new Error(`API ${response.status}`);
   return response.json();
+}
+
+/**
+ * JSON döndüren endpoint'ler için merkezi yardımcı: HTTP hatalarını JSON
+ * gövdesi gibi parse etmek yerine Error fırlatır. Sayfalardaki
+ * `const res = await apiRequest(...); const data = await res.json()`
+ * deseninin (res.ok kontrolü olmadan 4xx/5xx gövdesini veri sanan) yerine
+ * kullanılır. Hata mesajında backend detayı varsa taşınır.
+ */
+export async function getJSON<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  const response = await apiRequest(`${API_BASE}${path}`, { cache: "no-store", ...init });
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const body = await response.json();
+      detail = typeof body?.detail === "string" ? body.detail : "";
+    } catch {
+      /* gövde JSON olmayabilir */
+    }
+    throw new Error(detail || `API ${response.status}`);
+  }
+  return response.json() as Promise<T>;
 }
 
 type PageResponse<T> = Record<string, unknown> & {

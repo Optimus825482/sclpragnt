@@ -130,7 +130,7 @@ class ClientContextAndLoginAuditTests(unittest.IsolatedAsyncioTestCase):
         from app.main import auth_login
         from app import security
         user_row = {"username": "admin", "role": "admin", "is_active": True,
-                    "password_hash": security.hash_password("518518Erkan")}
+                    "password_hash": security.hash_password("unittest-admin-pass-01")}
         request = MagicMock()
         request.headers = {"X-Real-IP": "203.0.113.9"}
         request.client = MagicMock(host="10.0.0.5")
@@ -138,7 +138,7 @@ class ClientContextAndLoginAuditTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(sys.modules["app.main"].database, "get_user_by_username",
                           AsyncMock(return_value=user_row)), \
              patch.object(sys.modules["app.main"], "log_user_action", AsyncMock()) as audit:
-            result = await auth_login({"username": "ADMIN", "password": "518518Erkan"}, response, request)
+            result = await auth_login({"username": "ADMIN", "password": "unittest-admin-pass-01"}, response, request)
         self.assertTrue(result["ok"])
         audit.assert_awaited_once()
         args, kwargs = audit.await_args
@@ -150,7 +150,7 @@ class ClientContextAndLoginAuditTests(unittest.IsolatedAsyncioTestCase):
         from app import security
         from fastapi import HTTPException
         user_row = {"username": "admin", "role": "admin", "is_active": True,
-                    "password_hash": security.hash_password("518518Erkan")}
+                    "password_hash": security.hash_password("unittest-admin-pass-01")}
         request = MagicMock()
         request.headers = {"X-Real-IP": "203.0.113.9"}
         request.client = MagicMock(host="10.0.0.5")

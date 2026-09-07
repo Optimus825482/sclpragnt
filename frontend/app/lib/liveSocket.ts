@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { WS_URL } from "./api";
 
 export type LiveMessage<T = unknown> = { type: string; data: T };
@@ -85,5 +85,17 @@ export function useLiveStatus() {
 }
 
 export function useLiveMessages(listener: MessageListener) {
-  useEffect(() => subscribeLive(listener), [listener]);
+  // Listener bir ref'te tutulur: consumer'ın her render'da yeni bir inline
+  // fonksiyon geçmesi (memoize edilmemiş olsa bile) aboneliği koparmaz.
+  // Daha önce listener kimliği effect dependency'ydi ve chat sayfası gibi
+  // sık render eden tüketiciler WebSocket'i saniyede onlarca kez
+  // kapatıp yeniden açıyordu (streaming sırasında mesaj kaybı).
+  const listenerRef = useRef(listener);
+  useEffect(() => {
+    listenerRef.current = listener;
+  }, [listener]);
+  useEffect(
+    () => subscribeLive((message) => listenerRef.current(message)),
+    [],
+  );
 }

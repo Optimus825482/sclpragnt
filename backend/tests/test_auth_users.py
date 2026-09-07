@@ -12,16 +12,16 @@ if str(ROOT) not in sys.path:
 class SecurityUnitTests(unittest.TestCase):
     def test_hash_and_verify_roundtrip(self):
         from app import security
-        h = security.hash_password("518518Erkan")
+        h = security.hash_password("unittest-admin-pass-01")
         self.assertTrue(h.startswith(("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
                                       "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
                                       "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
                                       "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
                                       "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-", "_")))
         self.assertIn("$", h)
-        self.assertTrue(security.verify_password("518518Erkan", h))
+        self.assertTrue(security.verify_password("unittest-admin-pass-01", h))
         self.assertFalse(security.verify_password("yanlis", h))
-        self.assertFalse(security.verify_password("518518Erkan", "bozuk-format"))
+        self.assertFalse(security.verify_password("unittest-admin-pass-01", "bozuk-format"))
 
     def test_session_token_carries_username_role_case_insensitive(self):
         from app import security
@@ -41,14 +41,14 @@ class AdminUserEndpointTests(unittest.IsolatedAsyncioTestCase):
         from app import security
 
         user_row = {"username": "admin", "role": "admin", "is_active": True,
-                    "password_hash": security.hash_password("518518Erkan")}
+                    "password_hash": security.hash_password("unittest-admin-pass-01")}
         request = MagicMock()
         request.headers = {}
         request.client = MagicMock(host="1.2.3.4")
         response = MagicMock()
         with patch.object(sys.modules["app.main"].database, "get_user_by_username",
                           AsyncMock(return_value=user_row)):
-            result = await auth_login({"username": "ADMIN", "password": "518518Erkan"}, response, request)
+            result = await auth_login({"username": "ADMIN", "password": "unittest-admin-pass-01"}, response, request)
         self.assertTrue(result["ok"])
         self.assertEqual(result["role"], "admin")
         response.set_cookie.assert_called_once()
@@ -59,7 +59,7 @@ class AdminUserEndpointTests(unittest.IsolatedAsyncioTestCase):
         from fastapi import HTTPException
 
         user_row = {"username": "admin", "role": "admin", "is_active": True,
-                    "password_hash": security.hash_password("518518Erkan")}
+                    "password_hash": security.hash_password("unittest-admin-pass-01")}
         request = MagicMock()
         request.headers = {}
         request.client = MagicMock(host="1.2.3.4")

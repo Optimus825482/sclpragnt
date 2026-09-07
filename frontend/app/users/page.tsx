@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { fmtDateTime } from "../lib/format";
 import RequireAdmin from "../components/RequireAdmin";
 import { useAuth } from "../lib/auth";
 
@@ -14,10 +15,9 @@ type ManagedUser = {
   updated_at: number;
 };
 
-type Notice = { kind: "ok" | "err"; text: string } | null;
+const fmtDate = (value: number) => (value ? fmtDateTime(value) : "—");
 
-const fmtDate = (value: number) =>
-  value ? new Date(value < 10_000_000_000 ? value * 1000 : value).toLocaleString("tr-TR") : "—";
+type Notice = { kind: "ok" | "err"; text: string } | null;
 
 function UserModal({ mode, initial, onClose, onSaved }: {
   mode: "create" | "edit";

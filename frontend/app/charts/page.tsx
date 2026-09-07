@@ -83,7 +83,10 @@ export default function ChartsPage() {
         const savedInterval = querySymbol ? "5m" : loadPersisted(LS_INTERVAL, "5m");
         setSymbol(savedSymbol);
         setTf(savedInterval);
-        apiRequest(`${API_BASE}/api/config`).then((r) => r.json()).then((d) => {
+        apiRequest(`${API_BASE}/api/config`).then((r) => {
+            if (!r.ok) throw new Error(`config HTTP ${r.status}`);
+            return r.json();
+        }).then((d) => {
             const active = Array.isArray(d.symbols) && d.symbols.length ? d.symbols : FALLBACK_SYMBOLS;
             const available = [...new Set([...active, ...(querySymbol ? [querySymbol] : [])])].sort((a, b) => a.localeCompare(b));
             setSymbols(available);
@@ -244,6 +247,7 @@ export default function ChartsPage() {
         const load = async () => {
             try {
                 const res = await apiRequest(`${API_BASE}/api/market-klines/${symbol}?interval=${interval}&limit=200`);
+                if (!res.ok) throw new Error(`kline HTTP ${res.status}`);
                 const payload = await res.json();
                 const data = payload.candles || [];
                 if (cancelled || !candleRef.current) return;
@@ -339,10 +343,13 @@ export default function ChartsPage() {
         let closed = false;
         // Race condition önleme: sembol/timeframe değiştiğinde eski mesajları yoksay
         const connId = JSON.stringify({ symbol: symbol.toLowerCase(), interval });
+        // Host NEXT_PUBLIC_BINANCE_WS_BASE ile geçersiz kılınabilir (bölge/host
+        // değişikliğinde dağıtımın kod değişikliği yapmadan uyum sağlaması için).
+        const binanceWsBase = (process.env.NEXT_PUBLIC_BINANCE_WS_BASE || "wss://stream-cloud.binance.tr").replace(/\/$/, "");
         const connect = () => {
             if (closed) return;
 
-            ws = new WebSocket(`wss://stream-cloud.binance.tr/ws/${symbol.toLowerCase()}@kline_${interval}`);
+            ws = new WebSocket(`${binanceWsBase}/ws/${symbol.toLowerCase()}@kline_${interval}`);
             ws.onclose = () => {
                 if (!closed) {
                     attempt += 1;

@@ -40,7 +40,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || "Oturum açılamadı");
       const next = await refresh();
-      if (!next.authenticated) throw new Error("Oturum cookie'si doğrulanamadı. HTTP geliştirmede SCALPER_COOKIE_SECURE=0 kullanın.");
+      if (!next.authenticated) throw new Error("Oturum cookie'si doğrulanamadı.");
       setUsername(""); setPassword("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Oturum açılamadı"); }
     finally { setBusy(false); }

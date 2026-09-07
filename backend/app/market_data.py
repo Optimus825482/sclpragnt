@@ -192,6 +192,15 @@ class MarketData:
                     fresh_rows = self._closed_history(rows, timeframe, now_ms)
                     if not fresh_rows["timestamps"]:
                         return
+                    # Fetch await'i sırasında WS yeni kapanmış mumlar eklemiş
+                    # olabilir. Seriyi fetch ÖNCESİ snapshot ile değiştirmek o
+                    # mumları sessizce siler; bu yüzden await SONRASI canlı
+                    # nesneyi yeniden oku ve onunla birleştir. Yeniden okuma ile
+                    # atama arasında await yoktur, asyncio açısından atomiktir.
+                    history = (self.klines.get(timeframe, {}).get(symbol, {}) or {})
+                    timestamps = history.get("timestamps") or []
+                    if not timestamps:
+                        return
                     merged = {ts: (
                         history["opens"][index], history["highs"][index], history["lows"][index],
                         history["closes"][index], history["volumes"][index])
@@ -761,7 +770,7 @@ class MarketData:
             return 0.0
         # Liste uzunluğu + son mum zamanı değişmediyse önbellekten dön (1 sn'lik
         # broadcast döngüsünde 70+ numpy mean çağrısını önler).
-        last_open = history.get("open_times", [None])[-1] if history.get("open_times") else None
+        last_open = history.get("timestamps", [None])[-1] if history.get("timestamps") else None
         cache_key = (len(volumes), last_open)
         cached = self._avg_volume_cache.get(key)
         if cached and cached[0] == cache_key:

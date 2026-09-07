@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLiveMessages } from "../lib/liveSocket";
+import { fmtDateTime } from "../lib/format";
 import SymbolLink from "./SymbolLink";
 
 /** Kısa, keskin "radar" sesi: iki vuruşlu yüksek ton + düşük vurgu. */
@@ -161,9 +162,7 @@ export default function RadarAlertModal() {
             )}
             <div className="flex items-center justify-between pt-1">
               <p className="font-mono text-[10px] text-bunker-muted">
-                {item.triggered_at
-                  ? new Date(Number(item.triggered_at) < 10_000_000_000 ? Number(item.triggered_at) * 1000 : Number(item.triggered_at)).toLocaleString("tr-TR")
-                  : ""}
+                {item.triggered_at ? fmtDateTime(item.triggered_at) : ""}
               </p>
               <div className="flex gap-2">
                 {item.symbol && (

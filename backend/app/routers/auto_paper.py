@@ -107,9 +107,17 @@ async def try_open_from_notification(notification: dict) -> dict | None:
         if open_trade:
             # Açık pozisyon var → TP güncelle (bildirim hedefini takip et)
             return await _update_existing_trade(open_trade, notification, current_price)
-        else:
-            # Yeni pozisyon aç (atomik; DB tarafında çift-açılış kontrolü de var)
-            return await _open_new_trade(symbol, notification, current_price, settings)
+        # Global maksimum açık pozisyon sınırı (0 = sınırsız). Sınır olmadan
+        # farklı sembollerde üst üste gelen bildirimler cüzdanı hızla tüketir.
+        max_open = int(getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0))
+        if max_open > 0:
+            open_count = len(await database.list_auto_paper_trades(status="open"))
+            if open_count >= max_open:
+                logger.info("auto_paper %s: max açık pozisyon (%d/%d) — açılmadı",
+                            symbol, open_count, max_open)
+                return None
+        # Yeni pozisyon aç (atomik; DB tarafında çift-açılış kontrolü de var)
+        return await _open_new_trade(symbol, notification, current_price, settings)
     except Exception as exc:
         logger.exception("auto_paper try_open: %s", exc)
         return None
@@ -296,6 +304,11 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     ticker = market.get_ticker(symbol)
     current_price = float(ticker.get("last_price") or 0) if ticker else 0
     if current_price <= 0:
+        return
+    # Bayat fiyatla TP/SL değerlendirmesi yanlış fill fiyatı üretir; analyzer
+    # yolundaki MAX_TICKER_AGE_SEC tazelik kapısı burada da uygulanır.
+    ticker_ts = float((ticker or {}).get("timestamp") or 0)
+    if not ticker_ts or now * 1000 - ticker_ts > config.MAX_TICKER_AGE_SEC * 1000:
         return
 
     # Peak güncelle

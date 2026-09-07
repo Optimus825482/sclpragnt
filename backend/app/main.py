@@ -271,7 +271,10 @@ async def auth_login(payload: dict, response: Response, request: Request):
     except Exception:
         user = None
     if user is not None:
-        matched = bool(user.get("is_active")) and security.verify_password(password, user.get("password_hash") or "")
+        # PBKDF2 (200k iterasyon) ~100 ms sürer; event loop'u bloke etmemek
+        # için thread'e atılır (giriş denemesi başına tüm API'yi dondurmaz).
+        matched = bool(user.get("is_active")) and await asyncio.to_thread(
+            security.verify_password, password, user.get("password_hash") or "")
         if user.get("is_active") and not matched:
             matched = False
     elif username == "admin":
@@ -787,33 +790,33 @@ async def startup_services():
     # runs in the background so a slow Binance response cannot trip the
     # container healthcheck and force a restart loop.
     market.timeframes = list(config.PRIORITY_TIMEFRAMES)
-    _start_background(startup_market_warmup(), "startup-market-warmup")
-    _start_background(backfill_missing_active_history(), "historical-backfill-active")
-    _start_background(history_candle_loop(), "history-candle-loop")
-    _start_background(market.connect(skip_history=True), "market-connect")
-    _start_background(microstructure_snapshot_loop(), "microstructure-snapshot")
-    _start_background(strategy_loop(), "strategy-loop")
-    _start_background(llm_forecast_evaluation_loop(), "llm-forecast-evaluator")
-    _start_background(chart_forecast_evaluation_loop(), "chart-forecast-evaluator")
-    _start_background(chat_prediction_learning_loop(), "chat-prediction-learner")
-    _start_background(chat_prediction_auto_trade_loop(), "chat-prediction-auto-trade")
+    _start_background(startup_market_warmup, "startup-market-warmup")
+    _start_background(backfill_missing_active_history, "historical-backfill-active")
+    _start_background(history_candle_loop, "history-candle-loop")
+    _start_background(lambda: market.connect(skip_history=True), "market-connect")
+    _start_background(microstructure_snapshot_loop, "microstructure-snapshot")
+    _start_background(strategy_loop, "strategy-loop")
+    _start_background(llm_forecast_evaluation_loop, "llm-forecast-evaluator")
+    _start_background(chart_forecast_evaluation_loop, "chart-forecast-evaluator")
+    _start_background(chat_prediction_learning_loop, "chat-prediction-learner")
+    _start_background(chat_prediction_auto_trade_loop, "chat-prediction-auto-trade")
     # Velocity ATR profillerini hemen yükle (ilk scan doğru eşikle çalışsın)
     await load_velocity_atr_profiles()
-    _start_background(velocity_learning_loop(), "velocity-learner")
-    _start_background(radar_loop(), "radar-loop")
-    _start_background(top_gainers_refresh_loop(), "top-gainers-monitor")
-    _start_background(symbol_activity_loop(), "symbol-activity")
-    _start_background(llm_idle_trigger_loop(), "llm-idle-trigger")
-    _start_background(llm_position_manager_loop(), "llm-position-manager")
-    _start_background(learning_promotion_loop(), "learning-promotion")
-    _start_background(retention_loop(), "retention")
-    _start_background(ml_training_loop(), "ml_training")
-    _start_background(calibration_refresh_loop(), "calibration-refresh")
-    _start_background(correlation_refresh_loop(), "correlation-refresh")
-    _start_background(ws_broadcast_loop(), "ws-broadcast")
-    _start_background(alert_loop(), "alert-engine")
-    _start_background(monitoring_start_loop(), "monitoring-start")
-    _start_background(auto_paper_start_loop(), "auto-paper-start")
+    _start_background(velocity_learning_loop, "velocity-learner")
+    _start_background(radar_loop, "radar-loop")
+    _start_background(top_gainers_refresh_loop, "top-gainers-monitor")
+    _start_background(symbol_activity_loop, "symbol-activity")
+    _start_background(llm_idle_trigger_loop, "llm-idle-trigger")
+    _start_background(llm_position_manager_loop, "llm-position-manager")
+    _start_background(learning_promotion_loop, "learning-promotion")
+    _start_background(retention_loop, "retention")
+    _start_background(ml_training_loop, "ml_training")
+    _start_background(calibration_refresh_loop, "calibration-refresh")
+    _start_background(correlation_refresh_loop, "correlation-refresh")
+    _start_background(ws_broadcast_loop, "ws-broadcast")
+    _start_background(alert_loop, "alert-engine")
+    _start_background(monitoring_start_loop, "monitoring-start")
+    _start_background(auto_paper_start_loop, "auto-paper-start")
 
 async def monitoring_start_loop():
     """Monitoring tarama döngüsünü arka planda başlat (idempotent wrapper)."""
@@ -1421,7 +1424,7 @@ async def _apply_config_update(payload: dict, request: Request = None):
         config.SYMBOL_ORDER_PCT = {symbol: value for symbol, value in config.SYMBOL_ORDER_PCT.items() if symbol in symbols}
         market.symbols = [s.lower() for s in symbols]
         for symbol in sorted(set(symbols) - previous_symbols):
-            _start_background(backfill_symbol_history(symbol), f"history-backfill-{symbol}", single_pass=True)
+            _start_background(backfill_symbol_history, f"history-backfill-{symbol}", single_pass=True)
     # Only a symbol/timeframe change requires a full WS reconnect + REST
     # re-warm; an unrelated toggle (e.g. a bool) must not halt trading with
     # hundreds of blocking fetches and a stale-ticker gap.
@@ -1448,7 +1451,7 @@ async def _apply_config_update(payload: dict, request: Request = None):
     if config.TOP_GAINERS_AUTO_ACTIVATE and any(
         key in payload for key in ("top_gainers_auto_activate", "top_gainers_limit", "top_gainers_refresh_sec")
     ):
-        _start_background(refresh_top_gainer_symbols(), "top-gainers-config-refresh", single_pass=True)
+        _start_background(refresh_top_gainer_symbols, "top-gainers-config-refresh", single_pass=True)
     updated = await get_config()
     if "symbols" in payload and invalid:
         updated["removed_invalid_symbols"] = invalid
@@ -1877,7 +1880,7 @@ async def binance_account(request: Request):
     """Binance TR hesap bakiyesi (salt okunur, admin-only)."""
     api_key, api_secret = await _decrypt_binance_creds(request)
     try:
-        balances = get_account_balance(api_key, api_secret)
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
         non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
         return {"balances": non_zero}
     except Exception as exc:
@@ -1893,7 +1896,7 @@ async def binance_positions(request: Request):
     """
     api_key, api_secret = await _decrypt_binance_creds(request)
     try:
-        balances = get_account_balance(api_key, api_secret)
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
     holdings: list[dict] = []
@@ -1956,7 +1959,7 @@ async def binance_positions(request: Request):
         # 60 sn cache'li). TRY çifti yoksa USDT maliyeti USDTTRY ile TRY'ye çevrilir.
         avg_cost_try = None
         if asset != "TRY" and symbol_concat:
-            cost = _avg_buy_cost(api_key, api_secret, asset, symbol_concat, now_ts)
+            cost = await asyncio.to_thread(_avg_buy_cost, api_key, api_secret, asset, symbol_concat, now_ts)
             if cost and cost.get("avg_price"):
                 quote = cost.get("quote")
                 if quote == "TRY":
@@ -2024,7 +2027,7 @@ async def binance_sell(payload: dict, request: Request):
     if not asset or asset == "TRY":
         raise HTTPException(status_code=422, detail="Geçersiz varlık")
     try:
-        balances = get_account_balance(api_key, api_secret)
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
     row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
@@ -2044,7 +2047,7 @@ async def binance_sell(payload: dict, request: Request):
     symbol_u, filters = None, None
     for quote in ("TRY", "USDT"):
         cand = f"{asset}_{quote}"
-        f = get_symbol_filters(api_key, api_secret, cand)
+        f = await asyncio.to_thread(get_symbol_filters, api_key, api_secret, cand)
         if f:
             symbol_u, filters = cand, f
             break
@@ -2060,7 +2063,7 @@ async def binance_sell(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail=f"Miktar minimum lotun altında (min {min_qty or 'bilinmiyor'})")
 
     try:
-        result = place_market_sell(api_key, api_secret, symbol_u, qty)
+        result = await asyncio.to_thread(place_market_sell, api_key, api_secret, symbol_u, qty)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Satış emri gönderilemedi: {exc}")
     await log_user_action(_session_username(request), None, "trade", "BINANCE_TR_SELL",
@@ -2094,7 +2097,7 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
     # Varlık havuzu: mevcut bakiyeler + daha önce görülmüş varlıklar
     # (tamamen satılmış varlıkların o günkü işlemleri kaçmasın).
     try:
-        balances = get_account_balance(api_key, api_secret)
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
     current_assets = {str(b.get("asset") or "").upper() for b in balances
@@ -2122,7 +2125,7 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
             continue
         for quote in ("TRY", "USDT"):
             cand_u = f"{asset}_{quote}"
-            if get_symbol_filters(api_key, api_secret, cand_u):
+            if await asyncio.to_thread(get_symbol_filters, api_key, api_secret, cand_u):
                 tasks.append(asyncio.create_task(fetch_symbol(cand_u)))
     rows: list[dict] = []
     if tasks:
@@ -2145,9 +2148,9 @@ async def binance_trades(request: Request, symbol: str = "",
     if not symbol:
         return {"trades": [], "symbol_required": True}
     try:
-        trades = get_trade_history(api_key, api_secret, symbol.upper(),
-                                   start_time or None, end_time or None,
-                                   limit, offset)
+        trades = await asyncio.to_thread(get_trade_history, api_key, api_secret, symbol.upper(),
+                                         start_time or None, end_time or None,
+                                         limit, offset)
         return {"trades": trades, "count": len(trades)}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Binance TR işlem geçmişi alınamadı: {exc}")
@@ -2470,7 +2473,7 @@ async def close_position_manual(symbol: str, request: Request):
                           request=request)
     await ws_manager.broadcast({"type": "signal", "data": sig})
     if str(sig.get("strategy", "")).upper() != "LLM_PAPER":
-        _start_background(llm_replenish_after_close(), "llm-replenish-after-close", single_pass=True)
+        _start_background(llm_replenish_after_close, "llm-replenish-after-close", single_pass=True)
     return {"ok": True, "message": f"{symbol} kapatıldı @ {price:.2f}", "signal": sig}
 
 @app.get("/api/trades")
