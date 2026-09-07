@@ -1,7 +1,20 @@
 """Run the ScalperAgent PostgreSQL schema during a maintenance window.
 
-Unlike application startup, this command fails fast when another process holds a
-DDL lock and never leaves a half-applied transaction behind.
+Canlı deploy'da eski backend konteyneri hâlâ çalışıyor olabilir ve tablo
+kilitlerini tutuyor olabilir (saniyede bir koşan tarama/temizlik döngüleri).
+Bu yüzden script:
+
+1. Önce session-level ``pg_advisory_lock`` alır — eşzamanlı ikinci bir
+   migration koşucusu varsa sıraya girer (çakışan DDL yarışı olmaz).
+2. Şemayı tek idempotent transaction'da uygular (tüm ifadeler
+   ``IF NOT EXISTS``; yarım kalan transaction rollback'te temiz bırakır).
+3. ``LockNotAvailableError``'a karşı sabırlı retry yapar: eski konteyner
+   durana kadar toplam ~10+ dakika boyunca her denemede kilidi yeniden
+   bekler. Böylece deploy overlap'i restart-loop'a dönüşmez.
+
+Uygulama tarafındaki ``database.init_db()`` aynı şemayı lock_timeout'suz
+(sonsuz bekleme) çalıştırır; bu script'in kısa lock_timeout'u yalnızca
+fail-fast olmak içindi ve canlı overlap senaryosunda ters tekiyordu.
 """
 import asyncio
 import os
@@ -10,35 +23,66 @@ from pathlib import Path
 
 import asyncpg
 
+# Migration koşucularını sıraya sokan sabit advisory lock anahtarı.
+_MIGRATION_ADVISORY_KEY = 0x5343414C  # 'SCAL'
+_MAX_ATTEMPTS = 20
+_LOCK_TIMEOUT_MS = 30_000
+_RETRY_SLEEP_SEC = 10.0
+
 
 async def main():
     url = os.getenv("DATABASE_URL")
     if not url:
         raise SystemExit("DATABASE_URL gerekli")
     sql = (Path(__file__).resolve().parents[1] / "migrations" / "001_pgvector_schema.sql").read_text(encoding="utf-8")
-    conn = None
     last_error = None
-    for attempt in range(1, 13):
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        conn = None
         try:
             conn = await asyncpg.connect(
                 url,
                 timeout=10,
-                server_settings={"statement_timeout": "120000", "lock_timeout": "5000"},
+                server_settings={
+                    "statement_timeout": "120000",
+                    # Canlı backend'in kilitleri rastgele aralıklarda açılır;
+                    # 5 saniye yerine 30 saniye bekle ki tek sorgu penceresi
+                    # yetsin, kalanını retry döngüsü karşılasın.
+                    "lock_timeout": str(_LOCK_TIMEOUT_MS),
+                },
             )
-            break
+            # Başka bir migration koşucusu (örn. paralel konteyner) varsa
+            # bekleyip sıraya gir; session-level lock, transaction'lardan bağımsız.
+            await conn.execute("SELECT pg_advisory_lock($1)", _MIGRATION_ADVISORY_KEY)
+            try:
+                async with conn.transaction():
+                    await conn.execute(sql)
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_ADVISORY_KEY)
+            print("PostgreSQL migration tamamlandı.", flush=True)
+            await conn.close()
+            return
         except Exception as exc:
             last_error = exc
-            print(f"PostgreSQL bağlantısı bekleniyor ({attempt}/12): {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            if attempt < 12:
-                await asyncio.sleep(5)
-    if conn is None:
-        raise SystemExit(f"PostgreSQL migration bağlantısı kurulamadı: {last_error}")
-    try:
-        async with conn.transaction():
-            await conn.execute(sql)
-        print("PostgreSQL migration tamamlandı.")
-    finally:
-        await conn.close()
+            if conn is not None:
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
+            transient = type(exc).__name__ in {
+                "LockNotAvailableError", "DeadlockDetectedError",
+                "ConnectionDoesNotExistError", "InterfaceError", "PostgresConnectionError",
+                "CannotConnectNowError", "TooManyConnectionsError",
+            }
+            print(
+                f"PostgreSQL migration denemesi {attempt}/{_MAX_ATTEMPTS} başarısız "
+                f"({type(exc).__name__}: {exc})."
+                + (" Eski konteyner kilitleri bırakana kadar bekleniyor..." if transient else ""),
+                file=sys.stderr,
+                flush=True,
+            )
+            if attempt < _MAX_ATTEMPTS:
+                await asyncio.sleep(_RETRY_SLEEP_SEC)
+    raise SystemExit(f"PostgreSQL migration bağlantı/kilit beklemesi tükendi: {last_error}")
 
 
 if __name__ == "__main__":
