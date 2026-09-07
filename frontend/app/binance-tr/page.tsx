@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import RequireAdmin from "../components/RequireAdmin";
 
 type Balance = { asset: string; free: string; locked: string };
 
@@ -52,7 +53,12 @@ const KNOWN_SYMBOLS = [
 ];
 
 export default function BinanceTrPage() {
+  return <RequireAdmin><BinanceTrPageInner /></RequireAdmin>;
+}
+
+function BinanceTrPageInner() {
   const [configured, setConfigured] = useState(false);
+  const [sellEnabled, setSellEnabled] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
@@ -86,6 +92,7 @@ export default function BinanceTrPage() {
       if (r.ok) {
         const d = await r.json();
         setConfigured(d.configured);
+        setSellEnabled(Boolean(d.sell_enabled));
       }
     } catch { /* */ }
   }, []);
@@ -201,7 +208,7 @@ export default function BinanceTrPage() {
       const r = await apiRequest(API_BASE + "/api/binance/sell", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset: sellFor.asset, quantity: qty }),
+        body: JSON.stringify({ asset: sellFor.asset, quantity: qty, confirmation: "REAL_SELL" }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.ok) throw new Error(d.detail || `Satis emri gonderilemedi (HTTP ${r.status})`);
@@ -221,11 +228,16 @@ export default function BinanceTrPage() {
         <div>
           <p className="eyebrow text-neon-green">BINANCE TR</p>
           <h1 className="font-mono text-2xl font-bold text-white">Canli Hesap</h1>
-          <p className="mt-1 text-sm text-bunker-muted">Gerçek Binance TR bakiyesi, TRY degerleri ve islem gecmisi — satış yalnızca bu ekrandan onayla</p>
+          <p className="mt-1 text-sm text-bunker-muted">Gerçek Binance TR bakiyesi, TRY degerleri ve islem gecmisi — gerçek satış yalnızca {sellEnabled ? "bu ekrandan onayla" : "sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile açıkken"}</p>
         </div>
         <div className="flex items-center gap-2">
           {configured && !acctLoading && (
             <span className="rounded border border-neon-green/40 bg-neon-green/10 px-2 py-1 font-mono text-[10px] text-neon-green">KEY TANIMLI</span>
+          )}
+          {configured && (
+            <span className={"rounded border px-2 py-1 font-mono text-[10px] " + (sellEnabled ? "border-yellow-300/50 bg-yellow-300/10 text-yellow-300" : "border-bunker-600 bg-bunker-800 text-bunker-muted")}>
+              {sellEnabled ? "GERÇEK SATIŞ AÇIK" : "GERÇEK SATIŞ KAPALI"}
+            </span>
           )}
           <button type="button" onClick={() => setSettingsOpen(true)} className="ui-button ui-button-secondary">AYARLAR</button>
         </div>
@@ -238,7 +250,7 @@ export default function BinanceTrPage() {
               <h2 className="font-mono text-lg font-bold text-white">Binance TR API Anahtarlari</h2>
               <button type="button" onClick={() => setSettingsOpen(false)} className="text-bunker-muted hover:text-white">X</button>
             </div>
-            <p className="text-xs text-bunker-muted mb-4">Fernet sifreli kaydedilir. Satis emirleri yalnizca bu ekrandaki onay adimindan sonra gonderilir.</p>
+            <p className="text-xs text-bunker-muted mb-4">Fernet sifreli kaydedilir. Satis emirleri yalnizca {sellEnabled ? "bu ekrandaki onay adimindan sonra" : "sunucuda ENABLE_REAL_BINANCE_SELL=1 etkinse"} gonderilir.</p>
             <div className="space-y-3">
               <label>
                 <span className="eyebrow">API KEY</span>
@@ -326,11 +338,11 @@ export default function BinanceTrPage() {
                             <button
                               type="button"
                               onClick={() => openSell(h)}
-                              disabled={h.free <= 0 || h.asset === "TRY" || h.price_try == null}
-                              title={h.asset === "TRY" ? "TRY satılamaz" : h.price_try == null ? "Piyasa fiyatı bulunamadı" : h.free <= 0 ? "Boşta bakiye yok" : "Piyasa fiyatından sat"}
+                              disabled={!sellEnabled || h.free <= 0 || h.asset === "TRY" || h.price_try == null}
+                              title={!sellEnabled ? "Gerçek satış kapalı (ENABLE_REAL_BINANCE_SELL)" : h.asset === "TRY" ? "TRY satılamaz" : h.price_try == null ? "Piyasa fiyatı bulunamadı" : h.free <= 0 ? "Boşta bakiye yok" : "Piyasa fiyatından sat"}
                               className="rounded border border-neon-red/50 bg-neon-red/10 px-2.5 py-1 font-mono text-[11px] font-bold text-neon-red transition-colors hover:bg-neon-red/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                              SAT
+                              {sellEnabled ? "SAT" : "SAT (KAPALI)"}
                             </button>
                           </td>
                         </tr>
@@ -343,7 +355,7 @@ export default function BinanceTrPage() {
           </section>
 
           {/* ---- Satış onay modalı ---- */}
-          {sellFor && (
+          {sellFor && sellEnabled && (
             <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4" role="dialog" aria-modal="true">
               <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
                 <div className="flex items-center justify-between mb-4">
@@ -368,7 +380,7 @@ export default function BinanceTrPage() {
                   <p className={`mt-3 text-xs ${sellMsg.ok ? "text-neon-green" : "text-neon-red"}`}>{sellMsg.text}</p>
                 )}
                 <p className="mt-3 font-mono text-[10px] text-yellow-300/80">
-                  Dikkat: GERÇEK piyasa emri gönderilir ve iptal edilemez. Emir MARKET tipinde, sembol {sellFor.asset}_TRY yoksa {sellFor.asset}_USDT üzerinde açılır.
+                  Dikkat: GERÇEK piyasa emri gönderilir ve iptal edilemez. Emir MARKET tipinde, sembol {sellFor.asset}_TRY yoksa {sellFor.asset}_USDT üzerinde açılır. Sunucu tarafında gerçek satış {sellEnabled ? "AÇIK" : "KAPALI"}.
                 </p>
                 <div className="flex justify-end gap-2 pt-1">
                   <button type="button" onClick={() => { setSellFor(null); setSellMsg(null); }} className="ui-button ui-button-secondary">IPTAL</button>

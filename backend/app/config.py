@@ -13,6 +13,10 @@ load_dotenv(override=False)
 
 class Config:
     STRATEGY_REVISION = os.getenv("STRATEGY_REVISION", "filters-2026-08-06-adx18-keltner-retest-chop45")
+    # Startup and top-gainer hydration use only the timeframes that active
+    # paper paths consume. Other chart/research timeframes are hydrated on
+    # demand and do not need to block process startup.
+    PRIORITY_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "1d")
 
     SYMBOLS = [
     "BTCTRY", "ETHTRY", "SOLTRY",   # Ana Hacimliler (Balinalar)

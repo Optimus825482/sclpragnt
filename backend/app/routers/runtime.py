@@ -314,7 +314,7 @@ async def refresh_top_gainer_symbols():
         if new_symbols:
             try:
                 hydration = await market.ensure_history(
-                    market._all_timeframes(), min_candles=55, candle_limit=300)
+                    config.PRIORITY_TIMEFRAMES, min_candles=55, candle_limit=120)
                 print(f"[Top Gainers] {len(new_symbols)} yeni sembol hidrasyonu: "
                       f"{hydration.get('hydrated', 0)} seri dolduruldu", flush=True)
             except Exception as exc:

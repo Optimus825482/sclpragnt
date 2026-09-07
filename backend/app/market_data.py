@@ -44,7 +44,7 @@ class MarketData:
 
     def __init__(self, symbols):
         self.symbols = [s.lower() for s in symbols]
-        self.timeframes = self._all_timeframes()
+        self.timeframes = list(config.PRIORITY_TIMEFRAMES)
         self.klines = defaultdict(lambda: defaultdict(_empty_history))
         # avg_volume önbelleği: 5m volumes listesi yeni mum kapanana dek değişmez;
         # her saniye 70+ sembol için numpy mean yeniden hesaplamak gereksizdi.
@@ -304,6 +304,7 @@ class MarketData:
         ]
         self.timeframes = sorted(set(self.timeframes).union(requested))
         if not missing:
+            self.history_loaded = True
             return {"requested": len(requested) * len(symbols), "hydrated": 0,
                     "already_ready": len(requested) * len(symbols), "errors": []}
 
@@ -339,6 +340,8 @@ class MarketData:
         if errors:
             self.rest_last_error = "; ".join(errors[:5])
             self.last_error = self.ws_last_error or self.rest_last_error
+        if hydrated or (len(requested) * len(symbols) - len(errors)) > 0:
+            self.history_loaded = True
         return {"requested": len(requested) * len(symbols), "hydrated": hydrated,
                 "already_ready": len(requested) * len(symbols) - len(missing), "errors": errors[:20]}
 
