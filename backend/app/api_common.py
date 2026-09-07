@@ -31,8 +31,14 @@ _restart_counters: dict[str, int] = {}
 # yeniden başlatılmırlar, sıfırlama görev bitiminde yapılır.
 _single_pass_tasks: set[str] = set()
 
-def _start_background(coro, name, single_pass=False):
+def _start_background(coro_factory, name, single_pass=False):
     """Başlat ve supervisor, hata ile biterse sınırlı geri alımla yeniden başlat.
+
+    ``coro_factory`` bir coroutine DEĞİL, coroutine üreten sıfır argümanlı bir
+    callable olmalıdır (örn. ``strategy_loop`` veya ``lambda: market.connect(...)``).
+    Çünkü yeniden başlatma, coroutine'i yeniden üretmeyi gerektirir: tüketilmiş
+    bir coroutine nesnesi tekrar await edilemez ve respawn anında
+    ``RuntimeError: cannot reuse already awaited coroutine`` ile ölür.
 
     Uzun ömürlü background döngüleri (strategy, radar, broadcast, ...) iç
     try/except ile kendi hatalarını yutacak şekilde yazılır. Yine de beklenmeyen
@@ -43,6 +49,11 @@ def _start_background(coro, name, single_pass=False):
     single_pass=True olan görevler bittiğinde restart sayacı sıfırlanır ve
     yeniden başlatılmaz.
     """
+    if not callable(coro_factory):
+        raise TypeError(
+            f"_start_background('{name}'): coroutine değil, coroutine üreten "
+            "callable bekleniyor. Örn: _start_background(strategy_loop, 'strategy-loop')"
+        )
     if single_pass:
         _single_pass_tasks.add(name)
 
@@ -68,11 +79,11 @@ def _start_background(coro, name, single_pass=False):
                      name, exc, current, delay, exc_info=True)
         async def _respawn():
             await asyncio.sleep(delay)
-            _start_background(coro, name)
+            _start_background(coro_factory, name)
         respawn_task = asyncio.create_task(_respawn(), name=f"{name}-respawn")
         _background_tasks.add(respawn_task)
 
-    task = asyncio.create_task(coro, name=name)
+    task = asyncio.create_task(coro_factory(), name=name)
     _background_tasks.add(task)
     task.add_done_callback(_restart_if_failed)
     return task

@@ -82,10 +82,19 @@ async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=Non
         return {"ok": False, "error": str(exc)}
 
 
+# alert_loop her saniye çalışır; kural listesi saniyede bir DB'den okunmak
+# yerine 3 sn TTL ile cache'lenir (~86k sorgu/gün tasarruf). Kural ekleme/
+# silme en geç 3 sn sonra devreye girer — alert kullanımı için yeterli.
+_alert_rules_cache = {"at": 0.0, "rules": []}
+
+
 async def evaluate_rules(market, on_paper_trigger=None):
     events = []
-    rules = await database.list_alert_rules(active_only=True)
     now = time.time()
+    if now - _alert_rules_cache["at"] > 3.0:
+        _alert_rules_cache["rules"] = await database.list_alert_rules(active_only=True)
+        _alert_rules_cache["at"] = now
+    rules = _alert_rules_cache["rules"]
     for rule in rules:
         try:
             events.extend(await _evaluate_single_rule(market, rule, now, on_paper_trigger))

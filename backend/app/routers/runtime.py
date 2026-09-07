@@ -64,6 +64,20 @@ _ws_snapshot_cache = {"tickers": None, "portfolio": None, "generated_at": 0.0}
 _WALLET_TTL_SEC = 3.0
 _realized_pnl_cache = {"value": None, "at": 0.0}
 _try_balance_cache = {"value": None, "at": 0.0}
+# ws_broadcast_loop saniyede bir açık auto_paper pozisyonlarını okur; bu da
+# 3 sn TTL cache'e alınır (broadcast döngüsünün DB baskısını azaltır).
+_auto_trades_cache = {"data": [], "at": 0.0}
+
+
+async def _cached_open_auto_trades() -> list:
+    now = time.time()
+    if now - _auto_trades_cache["at"] >= _WALLET_TTL_SEC:
+        try:
+            _auto_trades_cache["data"] = await database.list_auto_paper_trades(status="open")
+        except Exception as exc:
+            logger.warning("auto_paper açık pozisyon listesi okunamadı: %s", exc)
+        _auto_trades_cache["at"] = now
+    return _auto_trades_cache["data"]
 
 
 async def _cached_realized_pnl() -> float:
@@ -88,6 +102,7 @@ def invalidate_wallet_caches():
     """Trade kapanışı/açılışı sonrası önbelleği sıfırla (anında doğru bakiye)."""
     _realized_pnl_cache.update(value=None, at=0.0)
     _try_balance_cache.update(value=None, at=0.0)
+    _auto_trades_cache.update(data=[], at=0.0)
 
 
 async def ws_broadcast_loop():
@@ -139,7 +154,7 @@ async def ws_broadcast_loop():
                 unrealized_pnl = sum(item["pnl_try"] for item in open_positions)
 
                 # Otonom paper pozisyonlarını da ekle
-                auto_trades = await database.list_auto_paper_trades(status="open")
+                auto_trades = await _cached_open_auto_trades()
                 auto_positions = []
                 ap_unrealized = 0.0
                 for t in auto_trades:
@@ -217,7 +232,14 @@ async def strategy_loop():
     await asyncio.sleep(5)
     while True:
         try:
-            for sym in list(analyzer.positions.keys()):
+            # Bekleyen (OPEN/PENDING) paper emirleri olan sembollerde pozisyon
+            # yoksa evaluate() hiç çağrılmıyordu ve emir sonsuza kadar bekle-
+            # mekteydi; LIMIT/STOP/OCO doldurma için pozisyonsuz semboller de
+            # döngüye alınır.
+            pending_symbols = {str(order.get("symbol") or "").upper()
+                               for order in list(analyzer.pending_orders)
+                               if str(order.get("status") or "").upper() in {"OPEN", "PENDING"}}
+            for sym in list(analyzer.positions.keys()) | pending_symbols:
                 ticker = market.get_ticker(sym)
                 if not ticker or not ticker.get("last_price"):
                     continue
@@ -870,9 +892,14 @@ async def bootstrap_symbol_activity():
                 rows = await fetch_klines(symbol, "5m", limit=80)
                 if not rows:
                     return
-                hist = market.klines["5m"][symbol]
-                for key, index in (("opens", 1), ("highs", 2), ("lows", 3), ("closes", 4), ("volumes", 5)):
-                    hist[key] = [float(row[index]) for row in rows]
+                # _closed_history ile aynı semantiği kullan: açık bar atılır,
+                # timestamps/last_closed_at_ms doldurulur. Bu olmadan WS
+                # _ts_index_map boş timestamps üzerinden kurulur ve
+                # timestamps↔closes dizileri kalıcı olarak kayar.
+                fresh = market._closed_history(rows, "5m", int(time.time() * 1000))
+                if not fresh["timestamps"]:
+                    return
+                market.klines["5m"][symbol] = fresh
                 market.tickers[symbol] = {"symbol": symbol, "last_price": float(rows[-1][4]), "timestamp": int(time.time() * 1000), "source": "binance_tr_public_rest"}
             except Exception as exc:
                 print(f"[Activity warmup] {symbol}: {exc}", flush=True)

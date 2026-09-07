@@ -23,6 +23,8 @@ class ScalpAnalyzer:
         # Genel state senkronizasyon kilidi — positions, cooldown, timeout, hard_stop
         # gibi paylaşılan mutable yapılara erişimi serileştirir.
         self._state_lock = asyncio.Lock()
+        # Guard persist read-modify-write serileştirmesi (reentry_guard_blocks JSON).
+        self._guard_persist_lock = asyncio.Lock()
         self.pending_orders = []
 
     def max_open_positions(self):
@@ -54,20 +56,23 @@ class ScalpAnalyzer:
 
     async def _persist_reentry_blocks(self, symbol):
         """Persist the active in-memory blocks for one symbol across restarts."""
-        try:
-            raw = await database.get_llm_setting(self._GUARD_SETTING_KEY, "{}")
-            stored = json.loads(raw or "{}")
-        except (ValueError, TypeError):
-            stored = {}
-        now = time.time()
-        stored.setdefault(symbol, {})
-        if self._timeout_block_until.get(symbol, 0) > now:
-            stored[symbol]["_timeout_block_until"] = self._timeout_block_until[symbol]
-        if self._hard_stop_block_until.get(symbol, 0) > now:
-            stored[symbol]["_hard_stop_block_until"] = self._hard_stop_block_until[symbol]
-        if not stored[symbol]:
-            stored.pop(symbol, None)
-        await database.set_llm_setting(self._GUARD_SETTING_KEY, json.dumps(stored))
+        # read-modify-write tüm ayar JSON'unu yeniden yazar; iki eşzamanlı
+        # kapanış aynı anda çalışırsa bir sembolün bloğu kaybolabilir.
+        async with self._guard_persist_lock:
+            try:
+                raw = await database.get_llm_setting(self._GUARD_SETTING_KEY, "{}")
+                stored = json.loads(raw or "{}")
+            except (ValueError, TypeError):
+                stored = {}
+            now = time.time()
+            stored.setdefault(symbol, {})
+            if self._timeout_block_until.get(symbol, 0) > now:
+                stored[symbol]["_timeout_block_until"] = self._timeout_block_until[symbol]
+            if self._hard_stop_block_until.get(symbol, 0) > now:
+                stored[symbol]["_hard_stop_block_until"] = self._hard_stop_block_until[symbol]
+            if not stored[symbol]:
+                stored.pop(symbol, None)
+            await database.set_llm_setting(self._GUARD_SETTING_KEY, json.dumps(stored))
 
     async def _idempotent_order_replay(self, duplicate):
         status = str(duplicate.get("status") or "UNKNOWN").upper()
@@ -81,7 +86,10 @@ class ScalpAnalyzer:
                                  result={"action": "BUY_SIGNAL", "trade_id": position.get("trade_id")})
                 await database.save_paper_order(duplicate)
                 status = "FILLED"
-            elif created_at and time.time() - created_at > 30:
+            elif created_at and time.time() - created_at > 120:
+                # 30 sn yerine 120 sn: açık işlem, paylaşılan kilit kuyruğunda
+                # beklerken buradan geçebilir; erken FAILED işaretlemek
+                # gerçekte var olan pozisyonu "başarısız" gösterir.
                 duplicate.update(status="FAILED", updated_at=time.time(),
                                  error="interrupted_before_terminal_persist")
                 await database.save_paper_order(duplicate)
@@ -243,7 +251,7 @@ class ScalpAnalyzer:
         if not self.market:
             return None
         kline = self.market.get_ut_kline(symbol, timeframe)
-        times = kline.get("times", [])
+        times = kline.get("timestamps", [])
         return len(times) - 1 if times else len(kline.get("closes", [])) - 1
 
     def _reentry_block_reason(self, symbol, timeframe):
@@ -666,6 +674,11 @@ class ScalpAnalyzer:
     async def open_position(self, symbol, entry_price, side="LONG", strat_name="CHAT_PREDICTION", order_value=None, stop_loss_pct=None, take_profit_pct=None, max_hold_sec=None, entry_context_extra=None):
         # Strategy loop ve Gainer Radar aynı anda aynı sembolü tetikleyebilir.
         # Cüzdan düşümü ile pozisyon kaydı tek atomik akışta yapılmalı.
+        # REST orderbook yenilemesi lock DIŞINDA yapılır: global open/close
+        # kilidi ağ I/O boyunca tutulursa tüm kapanışlar (stop-loss dahil)
+        # saniyelerce kuyruğa girer. Snapshot market.orderflow'a yazılır;
+        # lock içinde yalnızca yerel okuma yapılır.
+        await self._refresh_liquidity_snapshot(symbol)
         async with self._open_position_lock:
             return await self._open_position_unlocked(symbol, entry_price, side, strat_name, order_value, stop_loss_pct, take_profit_pct, max_hold_sec, entry_context_extra)
 
@@ -946,10 +959,12 @@ class ScalpAnalyzer:
             # the atomic portfolio write.  It is an eligibility outcome, never
             # a BUY_BLOCKED signal or notification.  CHAT_PREDICTION candidates
             # come from Top-Gainer REST scans, so their WS orderbook stream may
-            # not be subscribed yet; the snapshot is refreshed via REST and WS
-            # freshness stamps are skipped. Spread hiçbir likidite kapısında
-            # koşul değildir; derinlik ve hacim eşikleri aynen uygulanır.
-            flow = await self._refresh_liquidity_snapshot(symbol)
+            # not be subscribed yet; the REST snapshot is refreshed in
+            # open_position BEFORE the lock (a network call must never run
+            # under the shared open/close lock).  Burada yalnızca yerel
+            # orderflow okunur. Spread hiçbir likidite kapısında koşul
+            # değildir; derinlik ve hacim eşikleri aynen uygulanır.
+            flow = self.market.get_orderflow(symbol) or {}
             liquid, details = self.market.liquidity_status(
                 symbol, order_value,
                 ignore_ws_freshness=(strat_name == "CHAT_PREDICTION"))

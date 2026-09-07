@@ -3,6 +3,7 @@ import asyncio
 import os
 import time
 import logging
+from functools import partial
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -111,7 +112,7 @@ async def memory_backfill(request: Request = None):
             _embedding_backfill.update({"status": "completed", "queued": queued, "message": "Embedding kuyruğu hazır; worker kayıtları işliyor"})
         except Exception as exc:
             _embedding_backfill.update({"status": "error", "message": str(exc)})
-    _start_background(enqueue_existing(), "embedding-backfill", single_pass=True)
+    _start_background(enqueue_existing, "embedding-backfill", single_pass=True)
     return {"ok": True, **_embedding_backfill}
 
 @router.post("/api/memory/repair-historical")
@@ -162,7 +163,7 @@ async def repair_historical_memory(request: Request = None):
             _embedding_repair.update({"status": "completed", "queued": queued, "message": "Eksik tarihsel likidite alanları tahmin edilmeden yeniden embedding kuyruğuna alındı"})
         except Exception as exc:
             _embedding_repair.update({"status": "error", "message": str(exc)})
-    _start_background(repair(), "historical-memory-repair", single_pass=True)
+    _start_background(repair, "historical-memory-repair", single_pass=True)
     return {"ok": True, **_embedding_repair}
 
 @router.get("/api/migration/status")
@@ -181,7 +182,7 @@ async def migration_start(payload: dict = None, request: Request = None):
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url: raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
     migration_monitor.state.update({"source":info, "status":"queued", "phase":"queued", "progress":0, "message":"Migration kuyruğa alındı"})
-    _start_background(migration_monitor.run(source, database_url), "legacy-migration-check", single_pass=True)
+    _start_background(partial(migration_monitor.run, source, database_url), "legacy-migration-check", single_pass=True)
     return {"ok":True, "source":info}
 
 @router.post("/api/memory/retrieve")

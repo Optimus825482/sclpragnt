@@ -1,0 +1,3 @@
+# Geliştirme/test bağımlılıkları. CI ve yerel test koşuları bunları kullanır;
+# runtime bağımlılıkları requirements.txt'tedir.
+pytest==9.1.1

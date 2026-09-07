@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "./ui";
 import { apiFetch } from "../lib/api";
+import { toMs } from "../lib/format";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "./SymbolLink";
 import { useAuth } from "../lib/auth";
@@ -26,7 +27,7 @@ const MENU_ADMIN = [
 ];
 const formatNotificationDate = (value: unknown) => {
     const numeric = Number(value);
-    const date = Number.isFinite(numeric) ? new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric) : new Date(String(value || ""));
+    const date = Number.isFinite(numeric) ? new Date(toMs(numeric)) : new Date(String(value || ""));
     return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("tr-TR");
 };
 

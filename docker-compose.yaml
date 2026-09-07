@@ -1,3 +1,11 @@
+# Tüm servisler için Docker log rotasyonu (varsayılan sınırsız büyür).
+# YAML anchor'ı kullanımdan ÖNCE tanımlanmalıdır.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: pgvector/pgvector:pg17-bookworm
@@ -7,6 +15,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-scalper}
       POSTGRES_USER: ${POSTGRES_USER:-scalper}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      TZ: ${TZ:-Europe/Istanbul}
     volumes:
       - scalper_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -15,6 +24,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+    logging: *default-logging
   backend:
     build:
       context: ./backend
@@ -33,6 +43,9 @@ services:
       DB_BACKEND: postgres
       LIVE_TRADING: "false"
       USE_TESTNET: "false"
+      # TR saati: quiet-hours ve "gün" sınırları yerel zaman okuyan kod
+      # path'leriyle tutarlı olsun (konteyner varsayılanı UTC'dir).
+      TZ: ${TZ:-Europe/Istanbul}
       CORS_ORIGINS: https://scalper.erkanerdem.online
       SCALPER_ADMIN_PASSWORD: ${SCALPER_ADMIN_PASSWORD:?SCALPER_ADMIN_PASSWORD must be set}
       SCALPER_SESSION_SECRET: ${SCALPER_SESSION_SECRET:?SCALPER_SESSION_SECRET must be set}
@@ -57,6 +70,7 @@ services:
       interval: 15s
       timeout: 5s
       retries: 20
+    logging: *default-logging
 
   frontend:
     build:
@@ -74,6 +88,13 @@ services:
       NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     expose:
       - "3004"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:3004/ || exit 1"]
+      start_period: 20s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
 
   gateway:
     build:
@@ -86,6 +107,43 @@ services:
       - backend
     expose:
       - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:80/health || exit 1"]
+      start_period: 10s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+
+  # Otomatik gece yedeği: her 24 saatte bir pg_dump, 7 günden eski
+  # dump'ları siler. ./local_backups host'a bağlanır (gitignored).
+  # Restore: `cat <dump> | docker exec -i <postgres> psql -U scalper scalper`
+  db-backup:
+    image: pgvector/pgvector:pg17-bookworm
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    volumes:
+      - ./local_backups:/backups
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        while true; do
+          ts=$$(date +%Y%m%d_%H%M%S)
+          echo "[backup] $$ts basliyor"
+          if pg_dump -h postgres -U ${POSTGRES_USER:-scalper} -d ${POSTGRES_DB:-scalper} -Fc -f "/backups/scalper_$$ts.dump"; then
+            echo "[backup] $$ts tamam"
+          else
+            echo "[backup] $$ts BASARISIZ" >&2
+          fi
+          find /backups -name 'scalper_*.dump' -mtime +7 -delete
+          sleep 86400
+        done
+    logging: *default-logging
 
 volumes:
   scalper_data:

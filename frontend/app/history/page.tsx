@@ -31,6 +31,8 @@ export default function HistoryPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [complete, setComplete] = useState(true);
+    const PAGE_SIZE = 200;
+    const [page, setPage] = useState(0);
 
     useEffect(() => {
         fetchAllPages<Trade>("/api/trades", "trades")
@@ -38,6 +40,12 @@ export default function HistoryPage() {
             .catch(() => setError("İşlem geçmişi backend'den alınamadı."))
             .finally(() => setLoading(false));
     }, []);
+
+    // 10.000 satırı DOM'a basmak mobilde sayfayı donduruyordu; client-side
+    // sayfalama ile yalnızca aktif sayfa render edilir.
+    const pageCount = Math.max(1, Math.ceil(trades.length / PAGE_SIZE));
+    const safePage = Math.min(page, pageCount - 1);
+    const pageRows = trades.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
     const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
     const wins = trades.filter((t) => t.pnl > 0).length;
@@ -112,7 +120,7 @@ export default function HistoryPage() {
                             {error && (
                                 <tr><td colSpan={12} className="p-4 text-neon-red">{error}</td></tr>
                             )}
-                            {trades.map((t) => (
+                            {pageRows.map((t) => (
                                 <tr key={t.id} className="border-b border-bunker-800/50 hover:bg-bunker-800/30">
                                 <td className="p-3 font-bold"><Link href={`/charts?symbol=${encodeURIComponent(t.symbol)}&timeframe=5m`} className="text-white hover:text-neon-green">{t.symbol}</Link></td>
                                     <td className="p-3 text-neon-yellow">{STRATEGY_LABEL[t.strategy] ?? t.strategy}</td>
@@ -139,6 +147,23 @@ export default function HistoryPage() {
                         </tbody>
                     </table>
                 </div>
+                {pageCount > 1 && (
+                    <div className="flex items-center justify-between gap-3 p-3 border-t border-bunker-800">
+                        <span className="font-mono text-xs text-bunker-muted">
+                            Sayfa {safePage + 1}/{pageCount} · {trades.length} kayıt
+                        </span>
+                        <div className="flex gap-2">
+                            <button type="button" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}
+                                className="px-3 py-1.5 rounded-lg border border-bunker-700 font-mono text-xs text-white disabled:opacity-40 disabled:cursor-not-allowed">
+                                ← ÖNCEKİ
+                            </button>
+                            <button type="button" disabled={safePage >= pageCount - 1} onClick={() => setPage(safePage + 1)}
+                                className="px-3 py-1.5 rounded-lg border border-bunker-700 font-mono text-xs text-white disabled:opacity-40 disabled:cursor-not-allowed">
+                                SONRAKİ →
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );

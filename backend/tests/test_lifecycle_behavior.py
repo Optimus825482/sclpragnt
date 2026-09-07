@@ -167,7 +167,7 @@ class LifecycleBehavior(unittest.IsolatedAsyncioTestCase):
 
         analyzer = ScalpAnalyzer(_Market())
         row = {"order_id": "stale", "client_request_id": "req-stale", "symbol": "BTCTRY",
-               "status": "PROCESSING", "created_at": time.time() - 60}
+               "status": "PROCESSING", "created_at": time.time() - 200}
         save = AsyncMock()
         with patch("app.analyzer.database.get_paper_order_by_client_request_id", new=AsyncMock(return_value=row)), \
              patch("app.analyzer.database.save_paper_order", new=save):

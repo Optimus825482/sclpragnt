@@ -79,9 +79,11 @@ export default function Home() {
   useLiveSocketMessages(useCallback((msg: any) => {
     if (msg.type === "signal") {
       setLiveSignals((prev) => [msg.data, ...prev].slice(0, 10));
-      setAutoPaperOpen([]); // debounce beklemeden tazeleme; 15sn poll'a kalır
+      // Listeyi boşaltmak 15 sn'lik poll'a kadar "pozisyonlar kayboldu" görüntüsü
+      // veriyordu; yalnızca tazeleme tetikle, mevcut liste kalsın.
+      load();
     }
-  }, []));
+  }, [load]));
 
   const s = summary;
   const pnlTone = s && s.auto_paper_today.pnl >= 0 ? "text-neon-green" : "text-neon-red";

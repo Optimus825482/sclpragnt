@@ -391,9 +391,9 @@ function SettingsPageInner() {
   };
 
   const saveLlmProvider = async () => {
-    // API key'i gönder ve hemen state'ten temizle (bellek sızıntısını önle)
+    // API key'i gönder; state'teki değer immutable güncellenir (React state'ini
+    // doğrudan mutate etmek render'ı tetiklemez ve Strict Mode'da iz sürülemez).
     const apiKeyToSend = llmForm.api_key;
-    llmForm.api_key = ""; // State'ten temizle
     await llmRequest(
       `${API_BASE}/api/llm/providers`,
       {
@@ -813,10 +813,6 @@ function SettingsPageInner() {
               </div>
               <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
                 <div className="min-w-0">
-                  <div className="mb-4 flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
-                    <div className="min-w-0"><p className="font-mono text-sm text-white">Kapanış Sonrası Cooldown</p><p className="text-xs text-bunker-muted mt-0.5">Yeni girişten önce beklenecek mum sayısı</p></div>
-                    <input type="number" step={1} min={0} max={100} value={num(draft.cooldown_bars)} onChange={(e) => setDraft((d) => ({ ...d, cooldown_bars: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right outline-none" />
-                  </div>
                   <p className="font-mono text-sm text-white">Take Profit</p>
                   <p className="text-xs text-bunker-muted mt-0.5">Pozisyon bu kâr oranına ulaştığında satılır (komisyon hariç)</p>
                 </div>
@@ -828,6 +824,13 @@ function SettingsPageInner() {
                   onChange={(e) => setDraft((d) => ({ ...d, take_profit_pct: (e.target.value === "" ? NaN : Number(e.target.value)) / 100 }))}
                   className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
                 />
+              </div>
+              <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
+                <div className="min-w-0">
+                  <p className="font-mono text-sm text-white">Kapanış Sonrası Cooldown</p>
+                  <p className="text-xs text-bunker-muted mt-0.5">Yeni girişten önce beklenecek mum sayısı</p>
+                </div>
+                <input type="number" step={1} min={0} max={100} value={num(draft.cooldown_bars)} onChange={(e) => setDraft((d) => ({ ...d, cooldown_bars: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right outline-none" />
               </div>
             </div>
           </div>

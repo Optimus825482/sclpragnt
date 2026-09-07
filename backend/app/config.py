@@ -283,6 +283,9 @@ class Config:
     AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "2.0"))
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
     AUTO_PAPER_BREAKEVEN_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_TRIGGER_PCT", "1.5"))
+    # Otonom paper için global maksimum açık pozisyon sayısı (0 = sınırsız).
+    # Farklı sembollerden gelen bildirim zinciri cüzdanı tüketmesin.
+    AUTO_PAPER_MAX_OPEN_POSITIONS = max(0, int(os.getenv("AUTO_PAPER_MAX_OPEN_POSITIONS", "0")))
 
     @classmethod
     def min_net_exit_pct(cls, order_value: float | None = None) -> float:
@@ -295,3 +298,26 @@ class Config:
                 + cls.MIN_EXPECTED_NET_PNL_TRY / value)
 
 config = Config()
+
+# Güvenlik: placeholder session secret ile başlatmayı reddet. Placeholder
+# değer herkese açıktır; onunla imzalanan oturum çerezleri sahte üretilebilir.
+_PLACEHOLDER_SECRETS = {
+    "replace-with-at-least-32-random-bytes",
+    "changeme",
+    "change-me",
+}
+_session_secret = os.getenv("SCALPER_SESSION_SECRET", "").strip()
+if _session_secret and _session_secret in _PLACEHOLDER_SECRETS:
+    raise RuntimeError(
+        "SCALPER_SESSION_SECRET placeholder değeriyle başlatılamaz; "
+        "en az 32 rastgele bayt üretip .env dosyasına yazın."
+    )
+if _session_secret and len(_session_secret) < 32:
+    print("[config] UYARI: SCALPER_SESSION_SECRET 32 karakterden kısa; güçlü bir secret üretin.")
+_admin_password = os.getenv("SCALPER_ADMIN_PASSWORD", "")
+if _admin_password and (
+    len(_admin_password) < 10
+    or _admin_password.isdigit()
+    or _admin_password.lower() in {"admin", "password", "12345678", "1234567890"}
+):
+    print("[config] UYARI: SCALPER_ADMIN_PASSWORD zayıf görünüyor; rotasyon önerilir.")

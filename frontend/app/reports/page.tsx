@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
+import { toMs, localDateInput } from "../lib/format";
 
 const money = (v?: number | null) =>
   v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}₺`;
@@ -13,8 +14,7 @@ const pct = (v?: number | null, digits = 1) => (v == null || !Number.isFinite(v)
 const pctPct = (v?: number | null, digits = 1) => (v == null || !Number.isFinite(v) ? "—" : `%${(Number(v)).toFixed(digits)}`);
 const fmtDt = (ts: number | null) => {
   if (!ts) return "—";
-  const ms = ts < 10_000_000_000 ? ts * 1000 : ts;
-  return new Date(ms).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return new Date(toMs(ts)).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 };
 const rl = (v: number | null | undefined) => (v == null ? 0 : v);
 
@@ -738,10 +738,7 @@ function UserRadarTab() {
   const [overall, setOverall] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [day, setDay] = useState<string>(() => {
-    const d = new Date();
-    return d.toISOString().slice(0, 10);
-  });
+  const [day, setDay] = useState<string>(() => localDateInput());
   const [search, setSearch] = useState("");
   const [minScore, setMinScore] = useState<number | null>(null);
   const [sortKey, setSortKey] = useState<string>("detected_at");

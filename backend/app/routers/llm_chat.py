@@ -7,6 +7,7 @@ import time
 import logging
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 from fastapi import APIRouter, HTTPException
 
@@ -2390,7 +2391,7 @@ async def strategies_llm_chat(payload: dict = None):
                 if symbol not in config.SYMBOLS: config.SYMBOLS.append(symbol)
                 if symbol.lower() not in market.symbols:
                     market.symbols.append(symbol.lower()); market.reconnect_requested = True
-                _start_background(backfill_symbol_history(symbol), f"history-backfill-{symbol}", single_pass=True)
+                _start_background(partial(backfill_symbol_history, symbol), f"history-backfill-{symbol}", single_pass=True)
                 return {"ok": True, "symbol": symbol, "active": True, "paper_only": True, "message": f"{symbol} analiz evrenine eklendi"}
             if name == "place_paper_order":
                 return await analyzer.place_paper_order(args)

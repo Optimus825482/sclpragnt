@@ -3,6 +3,7 @@ import asyncio
 import time
 import logging
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 from fastapi import APIRouter, HTTPException
 
@@ -255,7 +256,7 @@ async def get_chat_prediction_replay(lookback_hours: int = 6, horizons: str = "5
             _chat_prediction_replay_state.update({"status": "running", "running": True, "started_at": time.time(),
                                                    "finished_at": None, "progress": 0, "message": "1m verileri yükleniyor…",
                                                    "result": None})
-            _start_background(_run_chat_prediction_replay(symbol_list, lookback_hours, horizon_list, step_minutes),
+            _start_background(partial(_run_chat_prediction_replay, symbol_list, lookback_hours, horizon_list, step_minutes),
                               "chat-prediction-replay")
     return {"paper_only": True, "state": dict(_chat_prediction_replay_state),
             "parameters": {"lookback_hours": lookback_hours, "horizons": horizon_list,

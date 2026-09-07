@@ -28,8 +28,21 @@ export default function LiveTerminal() {
 
   useEffect(() => {
     apiRequest(`${API_BASE}/api/signals?limit=100`)
-      .then((response) => response.json())
-      .then((data) => setSignals((data.signals || []).slice(0, 100).reverse()))
+      .then((response) => {
+        if (!response.ok) throw new Error(`signals HTTP ${response.status}`);
+        return response.json();
+      })
+      .then((data) => {
+        // WS'den erken gelen sinyalleri koru: fetch yanıtı listeyi sıfırlamak
+        // yerine mevcut WS sinyalleriyle birleşir (eski davranış, WS sinyalini
+        // siliyordu — fetch/WS yarışı).
+        setSignals((current) => {
+          const fetched = (data.signals || []).slice(0, 100).reverse();
+          const seen = new Set(fetched.map((s: Signal) => `${s.symbol}-${s.action}-${s.timestamp}`));
+          const liveOnly = current.filter((s) => !s.id && !seen.has(`${s.symbol}-${s.action}-${s.timestamp}`));
+          return [...fetched, ...liveOnly].slice(-100);
+        });
+      })
       .catch(() => undefined);
 
   }, []);
@@ -78,7 +91,7 @@ export default function LiveTerminal() {
               <div key={s.id ?? `${s.timestamp}-${s.symbol}-${s.action}-${i}`} className={`trade-log-row py-1 ${s.action === "BUY_BLOCKED" ? "text-sky-400" : s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
                 <span className="text-bunker-muted">[{s.timestamp ? new Date(s.timestamp * 1000).toLocaleTimeString("tr-TR") : "--"}]</span>{" "}
                 <span className="font-bold">{s.action}</span>{" "}
-                <SymbolLink symbol={s.symbol} className="font-bold text-current hover:text-white" /> {s.price && `@ ₺${s.price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{" "}
+                <SymbolLink symbol={s.symbol} className="font-bold text-current hover:text-white" /> {(s.price ?? 0) > 0 && `@ ₺${s.price!.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{" "}
                 <span className="text-bunker-600 text-xs">// {s.reason}</span>
               </div>
             ))}

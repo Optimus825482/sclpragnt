@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { localDateInput } from "../lib/format";
 import RequireAdmin from "../components/RequireAdmin";
 
 type Balance = { asset: string; free: string; locked: string };
@@ -79,9 +80,7 @@ function BinanceTrPageInner() {
   const [sellBusy, setSellBusy] = useState(false);
   const [sellMsg, setSellMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const [tradeDay, setTradeDay] = useState(() =>
-    new Date().toISOString().slice(0, 10)
-  );
+  const [tradeDay, setTradeDay] = useState(() => localDateInput());
   const [trades, setTrades] = useState<Trade[]>([]);
   const [trLoading, setTrLoading] = useState(false);
   const [trMeta, setTrMeta] = useState<{ count: number; symbols_scanned: number } | null>(null);
@@ -166,6 +165,9 @@ function BinanceTrPageInner() {
         const d = await r.json().catch(() => ({}));
         throw new Error(d.detail || "Kaydedilemedi");
       }
+      // Secret'ı state'te bırakma — LLM key akışıyla aynı hijyen.
+      setApiKey("");
+      setApiSecret("");
       setConfigured(true);
       setSettingsOpen(false);
       loadAcct();

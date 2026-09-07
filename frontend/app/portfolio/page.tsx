@@ -10,6 +10,7 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
 import { Button } from "../components/ui";
+import { toMs } from "../lib/format";
 
 /* ------------------------------------------------------------------ */
 /* Tipler                                                              */
@@ -89,8 +90,7 @@ const tone = (v?: number | null) => (v == null || (v ?? 0) >= 0 ? "text-neon-gre
 
 const fmtDay = (ts?: number | null) => {
   if (!ts) return "—";
-  const ms = ts < 10_000_000_000 ? ts * 1000 : ts;
-  return new Date(ms).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return new Date(toMs(ts)).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 };
 
 const STRATEGY_LABEL: Record<string, string> = {
