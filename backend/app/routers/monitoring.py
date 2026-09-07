@@ -737,6 +737,8 @@ async def monitoring_scan(request: Request = None):
         return {
             "paper_only": True,
             "cached": True,
+            "data_ready": bool(_monitoring_state.get("last_scan_at")),
+            "system_startup": _monitoring_state.get("last_scan_at") is None,
             "scan_at": _monitoring_state["last_scan_at"],
             "scan_count": _monitoring_state["scan_count"],
             "candidates": _monitoring_state["last_candidates"],
@@ -751,6 +753,8 @@ async def monitoring_scan(request: Request = None):
             result = await _run_scan()
         return {
             "paper_only": True,
+            "data_ready": True,
+            "system_startup": False,
             "scan_at": _monitoring_state["last_scan_at"],
             "scan_count": _monitoring_state["scan_count"],
             "candidates": result["candidates"],
@@ -778,6 +782,8 @@ async def monitoring_state():
         next_in = max(0, int(SCAN_INTERVAL_SEC - (time.time() - float(last_scan))))
     return {
         "paper_only": True,
+        "data_ready": bool(_monitoring_state.get("last_scan_at")),
+        "system_startup": _monitoring_state.get("last_scan_at") is None,
         "last_scan_at": _monitoring_state["last_scan_at"],
         "scan_count": _monitoring_state["scan_count"],
         "candidates": _monitoring_state["last_candidates"],
@@ -1101,6 +1107,10 @@ async def monitoring_diagnostics():
         pass
     return {
         "paper_only": True,
+        "system_startup": _monitoring_state.get("last_scan_at") is None,
+        "data_ready": bool(_monitoring_state.get("last_scan_at")),
+        "scan_count": _monitoring_state["scan_count"],
+        "last_scan_at": _monitoring_state["last_scan_at"],
         "effective_min_score": min_score,
         "overall": summary,
         "per_symbol_worst": dict(list(sym_summary.items())[:30]),
@@ -1142,12 +1152,17 @@ async def monitoring_notification_history():
 
 async def monitoring_background_loop():
     """Sunucu tarafı sürekli tarama: PWA kapalıyken bile taramayı ve push
-    bildirimlerini sürdürür. İzleme listesi her turda yeniden analiz edilir;
-    yeni aday çıktığında kısa aralıkla tekrar değerlendirilir."""
+    bildirimlerini sürdürür. Hemen başlar, 20sn beklemez. Veri hazır değilse
+    scan_one boş döner ama API her zaman yanıt verir (2026-09-07)."""
     logger.info("Monitoring arka plan taraması başladı (tur=%ss)", SCAN_INTERVAL_SEC)
     await restore_runtime_state()
-    # Başlangıçta market verisi hazır olsun diye ilk tura küçük gecikme
-    await asyncio.sleep(20)
+    # İlk taramayı hemen yap (başlangıç gecikmesi kaldırıldı 2026-09-07)
+    try:
+        async with _scan_lock:
+            async with _locked_state():
+                await _run_scan()
+    except Exception as exc:
+        logger.debug("monitoring ilk tarama (başlangıç): %s", exc)
     while True:
         try:
             async with _scan_lock:
