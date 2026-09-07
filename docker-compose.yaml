@@ -107,6 +107,13 @@ services:
       - backend
     expose:
       - "80"
+    # Traefik (coolify-proxy) yalnızca kendi ağında bulduğu konteynerlere
+    # route oluşturur. Gateway bu ağa bağlanmazsa domain router'ı hiç
+    # üretilmez → dışarıdan "no available server". External network adı
+    # Coolify kurulumunda varsayılan olarak 'coolify'dır.
+    networks:
+      - default
+      - coolify
     healthcheck:
       test: ["CMD-SHELL", "wget --spider -q http://localhost:80/health || exit 1"]
       start_period: 10s
@@ -154,3 +161,9 @@ services:
 volumes:
   scalper_data:
   scalper_postgres_data:
+
+# Coolify proxy (Traefik) ağı — compose dışında tanımlı external ağ.
+networks:
+  coolify:
+    external: true
+    name: coolify
