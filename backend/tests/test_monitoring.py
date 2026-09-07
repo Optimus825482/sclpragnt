@@ -4,6 +4,8 @@ import pathlib
 import os
 import sys
 import time
+import asyncio
+import time
 import unittest
 from unittest.mock import patch, AsyncMock
 
@@ -246,6 +248,14 @@ class MonitoringHelpersTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
+    def _reset_state(self):
+        from app.routers import monitoring
+        monitoring._monitoring_state["notified_symbols"] = {}
+        monitoring._monitoring_state["candidate_streak"] = {}
+        monitoring._monitoring_state["pending_targets"] = {}
+        monitoring._monitoring_state["risk_off"] = False
+        monitoring._deferred_push.clear()
+
     async def test_settings_get_returns_db_values(self):
         from app.routers import monitoring
         from app import database
@@ -438,6 +448,93 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
                            "price": 21.0, "horizon_minutes": 5}]
             await monitoring._notify(candidates, settings)
         self.assertEqual(captured["horizon_minutes"], 15)
+
+
+
+    async def test_locked_state_concurrent_access(self):
+        """_locked_state context manager concurrent erisimde state tutarli kalmali."""
+        from app.routers import monitoring
+        self._reset_state()
+        import asyncio
+        async def writer(key, value):
+            async with monitoring._locked_state():
+                monitoring._monitoring_state[key] = value
+                await asyncio.sleep(0.01)
+                self.assertEqual(monitoring._monitoring_state[key], value)
+        tasks = [writer(f"k{i}", f"v{i}") for i in range(10)]
+        await asyncio.gather(*tasks)
+        async with monitoring._locked_state():
+            self.assertEqual(monitoring._monitoring_state.get("k3"), "v3")
+            self.assertEqual(monitoring._monitoring_state.get("k7"), "v7")
+
+    async def test_deferred_push_queue(self):
+        """Ertelenen push kuyrugu _locked_state altinda guvenli sekilde yonetilmeli."""
+        from app.routers import monitoring
+        self._reset_state()
+        import asyncio
+        monitoring._deferred_push.clear()
+        monitoring._deferred_push.append({"symbol": "TESTTRY", "message": "test"})
+        async with monitoring._locked_state():
+            self.assertEqual(len(monitoring._deferred_push), 1)
+            item = monitoring._deferred_push.popleft()
+            self.assertEqual(item["symbol"], "TESTTRY")
+        self.assertEqual(len(monitoring._deferred_push), 0)
+
+    async def test_diagnostics_includes_ws_metrics(self):
+        """monitoring_diagnostics endpointi ws_health ve rate_limiter alanlarini icermeli."""
+        from app.routers import monitoring
+        self._reset_state()
+        settings = {"enabled": True, "min_score": 2.0, "min_target_pct": 2.0,
+                    "quiet_hours_start": None, "quiet_hours_end": None}
+       
+        monitoring._monitoring_state["last_candidates"] = [
+            {"symbol": "TESTTRY", "velocity_score": 5.0}
+        ]
+        with patch.object(monitoring.database, "get_monitoring_velocity_matches",
+                          new_callable=AsyncMock, return_value=[]):
+            result = await monitoring.monitoring_diagnostics()
+       
+        self.assertIn("ws_health", result)
+        self.assertIn("rate_limiter", result)
+        self.assertIn("freshness_sample", result)
+        self.assertEqual(result["paper_only"], True)
+
+    async def test_rate_limiter_acquire(self):
+        """_velocity_rate_acquire token azalinca beklemeli."""
+        with patch.object(asyncio, "sleep", new_callable=AsyncMock) as mock_sleep:
+            from app.routers import monitoring
+            # Import the velocity rate functions
+            import app.routers.velocity as velmod
+            # Reset token count
+            velmod._velocity_rate_tokens = 12
+            velmod._velocity_rate_last_refill = 0
+            await velmod._velocity_rate_acquire()
+            self.assertLess(velmod._velocity_rate_tokens, 12)
+            stats = velmod._rate_limit_stats()
+            self.assertIn("tokens_remaining", stats)
+            self.assertIn("burst", stats)
+
+    async def test_notify_auto_paper_skips_updates(self):
+        """Guncelleme bildirimlerinde auto_paper tetiklenmemeli (N+1 onlemi)."""
+        from app.routers import monitoring
+        self._reset_state()
+        settings = {"enabled": True, "min_score": 1.0, "min_target_pct": 1.0,
+                    "quiet_hours_start": None, "quiet_hours_end": None}
+        candidates = [
+            {"symbol": "UPDTRY", "velocity_score": 5.0, "target_pct": 3.0, "price": 10.0,
+             "horizon_minutes": 5, "mode": "trend_devam"}
+        ]
+        # Simulate existing pending notification 
+        existing = {"id": 123, "symbol": "UPDTRY", "price": 10.0, "detected_at": time.time() - 30,
+                    "horizon_minutes": 5, "score": 12.5}
+        with patch.object(monitoring.database, "save_monitoring_notifications",
+                          new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notifications",
+                          new_callable=AsyncMock, return_value={"UPDTRY": existing}),              patch.object(monitoring.database, "update_monitoring_notification",
+                          new_callable=AsyncMock, return_value=None),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
+            result = await monitoring._notify(candidates, settings)
+       
+        self.assertEqual(len(result), 1)
+        self.assertTrue(result[0].get("updated"))
 
 
 if __name__ == "__main__":

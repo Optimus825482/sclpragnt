@@ -42,6 +42,37 @@ VELOCITY_RSI_UPPER = 80.0          # RSI ≥ 80 → ele (trend-devam modunun üs
 VELOCITY_BASE_RATE_PCT = 1.97
 VELOCITY_CALIBRATED_HIT_PCT = 19.3
 
+# Binance TR rate limiter: token bucket, ~8 req/s max (conservative).
+# Her scan_one / fetch_klines / top_gainers / ticker_24h cagrisi bu
+# limiter uzerinden gecer. 2026-09-07.
+_VELOCITY_RATE_LIMIT_RPS = 8.0
+_VELOCITY_RATE_BURST = 12
+_velocity_rate_tokens = _VELOCITY_RATE_BURST
+_velocity_rate_last_refill = time.time()
+_velocity_rate_lock = asyncio.Lock()
+
+async def _velocity_rate_acquire():
+    """Token bucket rate limiter: burst kadar token kuyruga, saniyede RPS oraninda yenilenir."""
+    global _velocity_rate_tokens, _velocity_rate_last_refill
+    async with _velocity_rate_lock:
+        now = time.time()
+        elapsed = now - _velocity_rate_last_refill
+        _velocity_rate_tokens = min(_VELOCITY_RATE_BURST, _velocity_rate_tokens + elapsed * _VELOCITY_RATE_LIMIT_RPS)
+        _velocity_rate_last_refill = now
+        if _velocity_rate_tokens >= 1.0:
+            _velocity_rate_tokens -= 1.0
+            return True
+        wait = (1.0 - _velocity_rate_tokens) / _VELOCITY_RATE_LIMIT_RPS
+        await asyncio.sleep(wait + 0.05)
+        _velocity_rate_tokens = 0
+        return True
+
+def _rate_limit_stats():
+    """Anlik rate limit durumu (diagnostics icin)."""
+    return {'tokens_remaining': round(_velocity_rate_tokens, 1),
+            'burst': _VELOCITY_RATE_BURST,
+            'rps': _VELOCITY_RATE_LIMIT_RPS}
+
 
 def _velocity_rsi(closes, n=14):
     """Wilder-smoothed RSI (technical_analysis._rsi ile aynı)."""
@@ -163,6 +194,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     base_target_pct = float(profile["target_pct"])
     now_ms = int(time.time() * 1000)
     try:
+        await _velocity_rate_acquire()
         gainer_rows = await top_gainers(config.VELOCITY_POOL_SIZE)
     except Exception as exc:
         logger.warning("velocity scan: top_gainers hatası: %s", exc)
@@ -187,6 +219,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     async def scan_one(symbol: str) -> dict | None:
         async with sem:
             try:
+                await _velocity_rate_acquire()
                 rows = await fetch_klines(symbol, "1m", 60)
             except Exception:
                 return None
@@ -279,6 +312,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             m5_pattern = None
             m5_pattern_ok = None
             try:
+                await _velocity_rate_acquire()
                 m5_rows = await fetch_klines(symbol, "5m", 40)  # ~3.3 saat warmup
                 if len(m5_rows) >= 35:
                     m5_closes = [float(r[4]) for r in m5_rows]
@@ -1446,7 +1480,8 @@ async def autonomous_velocity_loop():
                 # M5 kapanış tetiklemesi: yeni kapanmış M5 mumu gelmeden tarama
                 # yapma (replay'deki ile aynı senkron; her kapanışta 1 kez tara).
                 try:
-                    m5_tick = await fetch_klines("BTCTRY", "5m", 2)
+                    m5_tick = await _velocity_rate_acquire()
+                    await fetch_klines("BTCTRY", "5m", 2)
                     if m5_tick:
                         latest_close_ms = int(m5_tick[-1][0])
                     else:
