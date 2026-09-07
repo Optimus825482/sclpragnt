@@ -16,6 +16,7 @@ from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
 from app.alerting import deliver_web_push
 from app.ws_runtime import ws_manager
+from contextlib import asynccontextmanager
 
 logger = logging.getLogger("scalper.monitoring")
 router = APIRouter()
@@ -31,7 +32,8 @@ _monitoring_state = {
     "history": [],                # son bildirim geçmişi (yeni -> eski)
     "pending_targets": {},        # symbol -> {"expected": float, "horizon_minutes": int, "set_at": epoch}
     "candidate_streak": {},       # symbol -> ardışık aday tarama sayısı (debounce)
-    "risk_off": False,            # piyasa rejimi RISK_OFF (gözlem bayrağı, eşiği etkilemez — 2026-09-04)
+    "risk_off": False,            # piyasa rejimi RISK_OFF
+    "_db_latencies": [],              # notify query gecikmeleri (diagnostics icin, 2026-09-07) (gözlem bayrağı, eşiği etkilemez — 2026-09-04)
 }
 
 # Sunucu tarafı döngü aralıkları: genel tarama 60 sn; izleme listesindeki
@@ -44,6 +46,16 @@ _loop_task = None
 # Manuel (/api/monitoring/scan) ile arka plan döngüsü aynı anda taramasın diye
 # ortak kilit — çift tarama/çift journal/state yarışını önler (2026-09-04).
 _scan_lock = asyncio.Lock()
+
+# State lock: _monitoring_state ve _deferred_push concurrent okuma/yazma
+# yarisini onler (2026-09-07).
+_state_lock = asyncio.Lock()
+
+@asynccontextmanager
+async def _locked_state():
+    """_monitoring_state ve _deferred_push guvenli erisim icin."""
+    async with _state_lock:
+        yield
 
 # Runtime state DB kalıcılığı: restart sonrası pending_targets / debounce
 # sayacı / bildirim cooldown kaybolmasın diye her tarama sonunda JSON olarak
@@ -96,29 +108,25 @@ async def _persist_runtime_state() -> None:
 
 
 async def restore_runtime_state() -> None:
-    """DB'den runtime state'i geri yükler (monitoring_background_loop başlangıcında)."""
+    """DBden runtime statei geri yukler."""
     try:
         raw = await database.get_llm_setting(_STATE_SETTING_KEY, "{}")
-        payload = json.loads(raw or "{}")
-        if isinstance(payload, dict):
-            _monitoring_state["pending_targets"] = payload.get("pending_targets") or {}
-            _monitoring_state["notified_symbols"] = payload.get("notified_symbols") or {}
-            _monitoring_state["watchlist_seen_at"] = payload.get("watchlist_seen_at") or {}
-            _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
-            _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
-            _monitoring_state["history"] = (payload.get("history") or [])[:HISTORY_LIMIT]
-            # Ertelenen push kuyruğunu geri yükle (restart dayanıklılığı)
-            deferred = payload.get("deferred_push") or []
-            _deferred_push.clear()
-            for n in deferred:
-                _deferred_push.append(n)
-            # pending_targets set_at'i OLDUĞU GİBİ geri yüklenir: restart arasında
-            # süre dolan bloklar _check_pending_targets tarafından hemen
-            # serbest bırakılır. set_at'i şimdiye çekmek bloğu restart başına
-            # bir kez daha silahlandırıyor ve meşru bildirimleri geciktiriyordu.
-            _monitoring_state["pending_targets"] = payload.get("pending_targets") or {}
+        async with _locked_state():
+            payload = json.loads(raw or "{}")
+            if isinstance(payload, dict):
+                _monitoring_state["pending_targets"] = payload.get("pending_targets") or {}
+                _monitoring_state["notified_symbols"] = payload.get("notified_symbols") or {}
+                _monitoring_state["watchlist_seen_at"] = payload.get("watchlist_seen_at") or {}
+                _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
+                _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
+                _monitoring_state["history"] = (payload.get("history") or [])[:HISTORY_LIMIT]
+                deferred = payload.get("deferred_push") or []
+                _deferred_push.clear()
+                for n in deferred:
+                    _deferred_push.append(n)
+                _monitoring_state["pending_targets"] = payload.get("pending_targets") or {}
     except Exception as exc:
-        logger.debug("monitoring state geri yüklenemedi: %s", exc)
+        logger.debug("monitoring state geri yuklenemedi: %s", exc)
 
 
 def _in_quiet_hours(settings) -> bool:
@@ -388,16 +396,22 @@ async def _notify(candidates_list, settings) -> list:
     # N+1 önlemi: aday sembollerinin BEKLİYOR kayıtlarını tek toplu sorguyla çek
     # (2026-09-05). Eşik altı adaylar pending kontrolüne girmez; yine de tüm
     # aday setini sorgulamak tek DB round-trip'idir.
+    # N+1 onlemi: aday sembollerinin BEKLIYOR kayitlarini tek toplu sorguyla cek
+    # (2026-09-05). Esik alti adaylar pending kontrolune girmez; yine de tum
+    # aday setini sorgulamak tek DB round-tripidir.
     try:
+        _t0 = time.time()
         pending_by_symbol = await database.get_pending_monitoring_notifications(
             [str(c.get("symbol", "") or "").upper() for c in candidates_list])
+        _t1 = time.time()
+        _db_lat = (_t1 - _t0) * 1000
+        _monitoring_state.setdefault("_db_latencies", []).append(_db_lat)
+        _monitoring_state["_db_latencies"] = _monitoring_state["_db_latencies"][-20:]
     except Exception as exc:
-        logger.warning("monitoring pending toplu sorgu hatası: %s", exc)
+        logger.warning("monitoring pending toplu sorgu hatasi: %s", exc)
         pending_by_symbol = {}
     for c in candidates_list:
         sym = str(c.get("symbol", "") or "").upper()
-        # Eşik ve fast-lane PANEL (0-100) skoru üzerinden: admin min_score/fast_lane
-        # 0-100 ölçekte kurgulanmış. Ham velocity_score 0-200+ aralığında olduğundan
         # normalize_score'a geçilir (2026-09-04 teşhis). upside_rank yalnızca
         # SIRALAMA anahtarıdır (dk-başı yükseliş × kalite × mikro-yapı).
         score = normalize_score(c.get("velocity_score", 0))
@@ -488,7 +502,12 @@ async def _notify(candidates_list, settings) -> list:
     if new_entries:
         for n in new_entries:
             n["sent_via_push"] = not quiet
+        _s_t0 = time.time()
         await database.save_monitoring_notifications(new_entries)
+        _s_t1 = time.time()
+        _db_lat = (_s_t1 - _s_t0) * 1000
+        _monitoring_state.setdefault("_db_latencies", []).append(_db_lat)
+        _monitoring_state["_db_latencies"] = _monitoring_state["_db_latencies"][-20:]
     # Sessiz saat bilgisi bildirim nesnesine işaretlenir (UI geçmişte görür).
     for n in notified:
         n["quiet_hours"] = bool(quiet)
@@ -1005,12 +1024,96 @@ async def monitoring_diagnostics():
                             "rate": round(d["success"]/d["count"]*100, 1) if d["count"] else 0,
                             "avg_mfe": round(d["total_mfe"]/d["count"], 3) if d["count"] else 0,
                             "avg_target": round(d["total_target"]/d["count"], 2) if d["count"] else 0}
+    # WS and rate limit metrics (2026-09-07)
+    ws_metrics = {}
+    try:
+        from app.ws_runtime import ws_manager
+        ws_metrics["active_connections"] = len(ws_manager.active_connections)
+    except Exception:
+        ws_metrics["active_connections"] = None
+    try:
+        md = market
+        ws_metrics["ws_last_event_at"] = getattr(md, "ws_last_event_at", None)
+        ws_metrics["rest_last_event_at"] = getattr(md, "rest_last_event_at", None)
+        ws_metrics["ws_last_error"] = str(getattr(md, "ws_last_error", None))[:200] if getattr(md, "ws_last_error", None) else None
+        ws_metrics["rest_last_error"] = str(getattr(md, "rest_last_error", None))[:200] if getattr(md, "rest_last_error", None) else None
+        ws_metrics["ws_connected_at"] = getattr(md, "ws_connected_at", None)
+        ws_metrics["connection_generation"] = getattr(md, "connection_generation", 0)
+        ws_metrics["reconnect_requested"] = getattr(md, "reconnect_requested", False)
+        ws_metrics["subscribed_symbols"] = len(getattr(md, "symbols", []))
+    except Exception as exc:
+        ws_metrics["error"] = str(exc)
+    rate_stats = {}
+    try:
+        from app.routers import velocity
+        rate_stats = velocity._rate_limit_stats()
+    except Exception as exc:
+        rate_stats["error"] = str(exc)
+    freshness_sample = {}
+    try:
+        for sym_item in list(_monitoring_state.get("last_candidates") or [])[:3]:
+            sym_name = str(sym_item.get("symbol", "") or "")
+            if sym_name:
+                fd = market.data_freshness(sym_name, "5m") if hasattr(market, "data_freshness") else {}
+                freshness_sample[sym_name] = fd
+    except Exception:
+        pass
+    # Memory usage: obezite tespiti (2026-09-07)
+    memory_metrics = {}
+    try:
+        import sys as _sys
+        # Klines cache boyutu: tum timeframelerdeki tum semboller icin toplam deger
+        total_klines = 0
+        total_volumes = 0
+        md = market
+        if hasattr(md, "klines"):
+            for tf_kv in md.klines.values():
+                for sym_kv in tf_kv.values():
+                    if isinstance(sym_kv, dict):
+                        klines_len = len(sym_kv.get("timestamps") or [])
+                        total_klines += klines_len
+                        total_volumes += len(sym_kv.get("volumes") or [])
+        memory_metrics["total_cached_klines"] = total_klines
+        memory_metrics["total_cached_volumes"] = total_volumes
+        if hasattr(md, "tickers"):
+            memory_metrics["ticker_count"] = len(md.tickers)
+        if hasattr(md, "ticker_24h"):
+            memory_metrics["ticker_24h_count"] = len(md.ticker_24h)
+        if hasattr(md, "orderflow"):
+            memory_metrics["orderflow_count"] = len(md.orderflow)
+        if hasattr(md, "trade_flow"):
+            memory_metrics["trade_flow_count"] = len(md.trade_flow)
+        if hasattr(md, "symbols"):
+            memory_metrics["subscribed_symbols"] = len(md.symbols)
+    except Exception as exc:
+        memory_metrics["error"] = str(exc)
+    # DB query latency: son 3 notify sorgusunun gecikmesi (2026-09-07)
+    db_latency = {}
+    try:
+        _db_latencies = _monitoring_state.get("_db_latencies", [])
+        # Her notify turu sonunda _notify latency kaydeder; burada son 3'un ortalamasi
+        recent = list(_db_latencies)[-3:] if _db_latencies else []
+        if recent:
+            db_latency["avg_notify_ms"] = round(sum(recent) / len(recent), 1)
+            db_latency["max_notify_ms"] = round(max(recent), 1)
+            db_latency["sample_count"] = len(recent)
+        else:
+            db_latency["avg_notify_ms"] = None
+            db_latency["max_notify_ms"] = None
+            db_latency["sample_count"] = 0
+    except Exception:
+        pass
     return {
         "paper_only": True,
         "effective_min_score": min_score,
         "overall": summary,
         "per_symbol_worst": dict(list(sym_summary.items())[:30]),
         "settings": settings,
+        "ws_health": ws_metrics,
+        "rate_limiter": rate_stats,
+        "freshness_sample": freshness_sample,
+        "memory_metrics": memory_metrics,
+        "db_latency": db_latency,
     }
 
 
@@ -1023,7 +1126,8 @@ async def reset_monitoring_notifications(request: Request):
     """
     from app.main import _require_admin
     _require_admin(request)
-    _monitoring_state["notified_symbols"].clear()
+    async with _locked_state():
+        _monitoring_state["notified_symbols"].clear()
     await log_user_action(None, None, "monitoring", "MONITORING_NOTIFICATIONS_RESET",
                           details={}, request=request)
     return {"ok": True, "message": "Bildirim sıfırlandı"}
@@ -1051,7 +1155,8 @@ async def monitoring_background_loop():
     while True:
         try:
             async with _scan_lock:
-                await _run_scan()
+                async with _locked_state():
+                    await _run_scan()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
