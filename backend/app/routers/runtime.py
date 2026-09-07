@@ -239,7 +239,7 @@ async def strategy_loop():
             pending_symbols = {str(order.get("symbol") or "").upper()
                                for order in list(analyzer.pending_orders)
                                if str(order.get("status") or "").upper() in {"OPEN", "PENDING"}}
-            for sym in list(analyzer.positions.keys()) | pending_symbols:
+            for sym in set(analyzer.positions.keys()) | pending_symbols:
                 ticker = market.get_ticker(sym)
                 if not ticker or not ticker.get("last_price"):
                     continue
