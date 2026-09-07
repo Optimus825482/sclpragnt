@@ -6,6 +6,7 @@ import os
 import time
 import tempfile
 import re
+import uuid
 from datetime import datetime, timezone
 
 from app.config import config
@@ -542,18 +543,23 @@ async def load_positions():
     def op(conn):
         positions = {}
         rows = conn.execute("SELECT * FROM positions").fetchall()
+        legacy_ids = []
         for row in rows:
             values = dict(row)
             context = _json_value(values.get("entry_context"), {})
             runtime = context.get("_runtime") if isinstance(context.get("_runtime"), dict) else {}
             symbol = values.get("symbol")
+            trade_id = values.get("trade_id")
+            if not trade_id:
+                trade_id = uuid.uuid4().hex
+                legacy_ids.append((symbol, trade_id))
             positions[symbol] = {
                 "side": values.get("side"), "entry_price": values.get("entry_price"), "stop_price": values.get("stop_price"),
                 "take_profit": values.get("take_profit"), "peak_price": values.get("peak_price"), "breakeven_hit": bool(values.get("breakeven_hit")),
                 "quantity": values.get("quantity"), "entry_time": values.get("entry_time"),
                 "strategy": values.get("strategy"),
                 "entry_context": context,
-                "trade_id": values.get("trade_id") or f"legacy-{symbol}-{values.get('entry_time')}",
+                "trade_id": trade_id,
                 "max_price": runtime.get("max_price", values.get("peak_price")),
                 "min_price": runtime.get("min_price", values.get("entry_price")),
                 "layers": max(1, int(runtime.get("layers") or 1)),
@@ -569,6 +575,10 @@ async def load_positions():
                     positions[symbol]["llm_take_profit_price"] = entry * (1 + float(target_pct))
                 if max_hold is not None:
                     positions[symbol]["llm_max_hold_sec"] = int(max_hold)
+        for symbol, trade_id in legacy_ids:
+            conn.execute("UPDATE positions SET trade_id=? WHERE symbol=?", (trade_id, symbol))
+        if legacy_ids:
+            conn.commit()
         return positions
 
     return await _run_db(op)
