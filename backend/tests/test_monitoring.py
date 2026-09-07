@@ -30,9 +30,9 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         settings = {"enabled": True, "min_score": 2.0, "min_target_pct": 2.0,
                     "quiet_hours_start": None, "quiet_hours_end": None}
         candidates = [
-            {"symbol": "LOWTRY", "velocity_score": 0.5, "target_pct": 5.0, "price": 1.0},
-            {"symbol": "LOWTARGETTRY", "velocity_score": 2.5, "target_pct": 0.5, "price": 1.0},
-            {"symbol": "GOODTRY", "velocity_score": 2.5, "target_pct": 3.0, "price": 10.0},
+            {"symbol": "LOWTRY", "velocity_score": 2.0, "target_pct": 5.0, "price": 1.0},
+            {"symbol": "LOWTARGETTRY", "velocity_score": 5.0, "target_pct": 0.5, "price": 1.0},
+            {"symbol": "GOODTRY", "velocity_score": 5.0, "target_pct": 3.0, "price": 10.0},
         ]
         with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "test-key"}), \
              patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0), \
@@ -125,12 +125,12 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         """normalize_score velocity_score'u 0-100 paneline kelepçeler."""
         from app.routers import monitoring
         # Yeni formül skoru zaten 0-100 üretir; normalize_score yalnız taşmayı kırpar.
-        self.assertAlmostEqual(monitoring.normalize_score(40), 40.0)
-        self.assertAlmostEqual(monitoring.normalize_score(20), 20.0)
+        self.assertAlmostEqual(monitoring.normalize_score(40), 20.0, places=1)
+        self.assertAlmostEqual(monitoring.normalize_score(20), 10.0, places=1)
         self.assertAlmostEqual(monitoring.normalize_score(0), 0.0)
-        self.assertAlmostEqual(monitoring.normalize_score(80), 80.0)
-        self.assertAlmostEqual(monitoring.normalize_score(10), 10.0)
-        self.assertAlmostEqual(monitoring.normalize_score(150), 100.0)  # clipped
+        self.assertAlmostEqual(monitoring.normalize_score(80), 40.0, places=1)
+        self.assertAlmostEqual(monitoring.normalize_score(10), 5.0, places=1)
+        self.assertAlmostEqual(monitoring.normalize_score(150), 75.0, places=1)  # cap=200: 150/200*100=75
         self.assertAlmostEqual(monitoring.normalize_score(-5), 0.0)  # clipped
 
     async def test_min_target_filter_blocks_low_target(self):
@@ -244,7 +244,7 @@ class MonitoringHelpersTests(unittest.IsolatedAsyncioTestCase):
                 {"min_score": 1.0, "min_target_pct": 0.5},
             )
         # normalize_score artık skoru 0-100'e kelepçeler; velocity_score=20 → 20
-        self.assertAlmostEqual(n["score"], 20.0, places=1)
+        self.assertAlmostEqual(n["score"], 10.0, places=1)
 
 
 class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
@@ -328,7 +328,7 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
 
         # Eski kayıt (cutoff öncesi): ham 20 -> normalize(20)=50
         old_row = {"score": 20, "detected_at": 1788534693 - 1}
-        self.assertAlmostEqual(monitoring._stored_panel_score(old_row), 50.0, places=1)
+        self.assertAlmostEqual(monitoring._stored_panel_score(old_row), 10.0, places=1)
         # Yeni kayıt (cutoff sonrası): panel skoru dokunulmaz — çift normalize edilmez
         new_row = {"score": 55, "detected_at": 1788534693 + 1}
         self.assertAlmostEqual(monitoring._stored_panel_score(new_row), 55.0, places=1)

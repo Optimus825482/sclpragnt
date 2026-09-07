@@ -64,18 +64,16 @@ _STATE_SETTING_KEY = "monitoring_runtime_state"
 
 
 def normalize_score(raw_score: float) -> float:
-    """velocity_score zaten 0-100 bandında üretilir; yalnızca taşmayı kırpar.
-
-    2026-09-06 öncesi eski formül 0-200+ üretebiliyordu ve burada cap'e göre
-    yeniden ölçekleniyordu. Yeni formül doğrudan 0-100 ürettiği için eski
-    kayıtlar dışında ek dönüşüm gerekmez; eski kayıtlar `_stored_panel_score`
-    tarafından timestamp'e göre bir kez normalize edilir.
+    """velocity_score 0-400+ bandina cikabilir; MONITORING_SCORE_NORM_CAP ile
+    0-100 panel olcegine haritalanir. Cap astiysa 100, astiysa dogrusal (2026-09-07).
     """
     try:
         raw = float(raw_score or 0)
     except (TypeError, ValueError):
         return 0.0
-    return round(max(0.0, min(100.0, raw)), 1)
+    cap = config.MONITORING_SCORE_NORM_CAP
+    return round(max(0.0, min(100.0, raw / cap * 100)), 1)
+
 
 
 async def _persist_runtime_state() -> None:
@@ -149,14 +147,12 @@ def _in_quiet_hours(settings) -> bool:
 
 
 def _effective_min_score(settings) -> float:
-    """O an gerçekten uygulanan eşik: doğrudan admin min_score.
-
-    RISK_OFF 1.5× gizli çarpanı kaldırıldı (2026-09-04 kullanıcı kararı):
-    admin'in girdiği değer radar listesi, bildirim, otonom tarama ve raporlarda
-    aynen uygulanır — ekranda gösterilen sayı ile fiilen uygulanan sayı her
-    koşulda birebir aynıdır.
+    """O an gercekten uygulanan esik: admin min_score.
+    Piyasa RISK_OFF rejimdeyse esik otomatik yukseltilir (2026-09-07).
     """
     base = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
+    if _monitoring_state.get("risk_off", False):
+        base = max(base + 20.0, 50.0)
     return round(min(100.0, base), 1)
 
 
@@ -627,7 +623,7 @@ async def _run_scan() -> dict:
                      "passes": bool(r.get("passes")),
                      "block_reason": r.get("block_reason"),
                      "rsi": r.get("rsi"), "mfi": r.get("mfi"), "atr_pct": r.get("atr_pct"),
-                     "m5_pattern_ok": r.get("m5_pattern_ok"), "leading_ok": r.get("leading_ok")}
+                     "m5_pattern_ok": r.get("m5_pattern_ok"), "leading_ok": r.get("leading_ok"), "volume_ratio": r.get("volume_ratio")}
             for h, r in profs.items()
         }
         row["upside_rank"] = round(upside_rank_score(row, touch_rates), 2)

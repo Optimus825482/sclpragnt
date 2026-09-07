@@ -274,7 +274,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                       atr_pct >= prof_atr and
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
                       mode is not None and
-                      (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)))
+                      (struct_ok or (mode == "v_donusu" and (ret3 >= 0.30 or (len(closes) >= 4 and (closes[-1] - closes[-4]) / max(closes[-4], 1) * 100 >= 0.30)))))
             # Elme sebebi: izleme listesindeki sembol yüksek skorla görünsede
             # hangi kapıya takıldığını arayüz gösterebilsin (2026-09-04).
             block_reason = None
@@ -285,27 +285,43 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     block_reason = f"atr_yetersiz:{atr_pct:.2f}%<{prof_atr:.2f}%"
                 elif bb_width is None or bb_width < VELOCITY_MIN_BB_WIDTH_PCT:
                     block_reason = f"bb_genisligi_yetersiz:{bb_width:.2f}%" if bb_width else "bb_verisi_yok"
-                elif not (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)):
+                elif not (struct_ok or (mode == "v_donusu" and (ret3 >= 0.30 or (len(closes) >= 4 and (closes[-1] - closes[-4]) / max(closes[-4], 1) * 100 >= 0.30)))):
                     block_reason = "yapisal_teyit_yok"
                 else:
                     block_reason = "diger"
             # velocity skoru: normalize edilmiş, sınırlı bileşen çarpımı.
             # Her bileşen 0..1 aralığına haritalanır; böylece skor 0..100 bandında
             # kalır ve admin eşikleri/panel skoru için ayrı bir cap yaması gerekmez.
-            bb_ratio = min(1.0, (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0)
-            struct_ratio = min(1.0, max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
-                                         (aroon_up or 0) / 50.0))
-            atr_ratio = min(1.0, (atr_pct / prof_atr) if prof_atr else 0.0)
+            # Saturation kaldirildi (2026-09-07): ratio 1.0+ gidebilir -> skor ayrimi artar
+            bb_ratio = (bb_width / VELOCITY_MIN_BB_WIDTH_PCT) if bb_width else 0.0
+            struct_ratio = max(0.0, (slope or 0) / VELOCITY_STRUCT_SLOPE_PCT,
+                                         (aroon_up or 0) / 50.0)
+            # Saturation kaldirildi (2026-09-07)
+            atr_ratio = (atr_pct / prof_atr) if prof_atr else 0.0
             # NOT (2026-09-06): ret3 (3 mum) kısa düzeltmelerde negatife dönüp
             # skoru çökertiyordu. ret5 (5 mum, daha kararlı) da hesaplanıp ikisinin
             # maksimumu kullanılır — böylece kısa geri çekilme momentum skorunu öldürmez.
             ret5 = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0.0
-            # Momentum getirisi yüzdesi log-benzeri sıkıştırılıp 0..1'e kelepçelenir.
-            momentum = max(0.0, ret3, ret5)
-            momentum_ratio = min(1.0, momentum / 4.0)
+            # V-donusu icin slope tabanli momentum (2026-09-07):
+            # ret3+ret5 pozitifse momentum devam eder; degilse son 3 bar egimi kullanilir.
+            if ret3 > 0 or ret5 > 0:
+                momentum = max(0.0, ret3, ret5)
+            else:
+                _reversal_slope = ((closes[-1] - closes[-4]) / max(closes[-4], 1)) * 100 / 3 if len(closes) >= 4 else 0.0
+                momentum = max(0.0, _reversal_slope)
+            momentum_ratio = momentum / 4.0  # cap kaldirildi (2026-09-07)
+            # Hacim teyidi: son bar hacminin son 20 bar ortalamasina orani.
+            # Dusuk hacimli pump ayrimi icin skor carpani (2026-09-07).
+            if len(vols) >= 21:
+                _avg_vol = sum(vols[-21:-1]) / 20
+                _vol_ratio = vols[-1] / _avg_vol if _avg_vol > 0 else 0.0
+            else:
+                _vol_ratio = 0.0
+            volume_ratio = _vol_ratio
             velocity_score = round(100.0 * atr_ratio * bb_ratio
                                    * (0.2 + 0.8 * struct_ratio)
-                                   * (0.5 + 0.5 * momentum_ratio), 2)
+                                   * (0.5 + 0.5 * momentum_ratio)
+                                   * (0.5 + 0.5 * min(1.0, volume_ratio / 2.0)), 2)
             # ---- M5 momentum+volatilite deseni (7g replay: %66.8 başarı) ----
             # g0: en son kapanan M5 mumu; g1: ondan önceki; g2: iki önceki aralık.
             # Eşikler config.VELOCITY_PATTERN_* (24s/72s/7g doğrulandı).
@@ -424,8 +440,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # zayıf sinyalleri eşik üstüne taşıyıp agresif hedef (%4.0) verdiriyor,
             # gerçek MFE yetişemiyordu. ML tahmini hedef belirlemede (dynamic_target_pct
             # ml_pct parametresi) hâlâ kullanılır; skoru etkilemez.
-            velocity_score = round(min(100.0, velocity_score), 2)
-            return {"symbol": symbol, "price": price, "atr_pct": round(atr_pct, 3),
+            velocity_score = round(velocity_score, 2)  # cap kaldirildi (2026-09-07)
+            return {"symbol": symbol, "price": price, "volume_ratio": round(volume_ratio, 2),
+                    "atr_pct": round(atr_pct, 3),
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
                     "mode": mode, "exhausted": exhausted,
@@ -1269,7 +1286,14 @@ def upside_rank_score(candidate: dict, touch_rates: dict[str, float] | None = No
     sym = str(candidate.get("symbol") or "").upper()
     rates = touch_rates or {}
     micro = candidate.get("microstructure") if isinstance(candidate.get("microstructure"), dict) else None
-    return (upside_rate * float(candidate.get("velocity_score") or 0)
+    # ML-target tutarliligi (2026-09-07): zayif skor + iddiali ML yanlis pozitif
+    # riski olusturmasin diye target velocity_score ile sinirli.
+    vel_score = float(candidate.get("velocity_score") or 0)
+    if vel_score < 10 and target > 4.0:
+        target = min(target, vel_score * 0.3)
+    elif vel_score < 20 and target > 5.0:
+        target = min(target, vel_score * 0.25)
+    return (upside_rate * vel_score
             * _quality_multiplier(rates.get(sym))
             * micro_structure_multiplier(micro))
 
