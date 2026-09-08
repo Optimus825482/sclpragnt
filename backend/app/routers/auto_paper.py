@@ -133,13 +133,16 @@ async def try_open_from_notification(notification: dict) -> dict | None:
                     logger.info("auto_paper %s: trailing kapanış sonrası ufuk süresi doldu — yeniden açılmadı", symbol)
                     return None
 
-                # Koşul 3: fiyat yükselme eğiliminde olmalı (son kapaniştan güncel fiyata).
-                prior_exit = float(prior_trade.get("exit_price") or 0)
-                rising = prior_exit > 0 and current_price >= prior_exit
-                if not rising:
-                    logger.info("auto_paper %s: trailing kapanış sonrası fiyat yükselme "
-                                "eğiliminde değil (%.6f <= %.6f) — yeniden açılmadı",
-                                symbol, current_price, prior_exit)
+                # Koşul 3: hedefe (take_profit) ulaşılMAMIŞ olmalı. Trailing/breakeven
+                # zaten TP'ye ulaşmadan kapanış olduğu için bu genellikle otomatik
+                # sağlanır; yine de açık kontrol edilir. (Eski "fiyat yükselme
+                # eğiliminde olmalı" koşulu, trailing çıkışında fiyat zirveden
+                # düştüğü için hep false dönüp yeniden açmayı engelliyordu.)
+                prior_tp = float(prior_trade.get("take_profit") or 0)
+                if prior_tp > 0 and current_price >= prior_tp:
+                    logger.info("auto_paper %s: trailing kapanış sonrası hedefe ulaşıldı "
+                                "(%s >= %s) — yeniden açılmadı",
+                                symbol, current_price, prior_tp)
                     return None
 
                 logger.info("auto_paper %s: trailing/breakeven kapanışı sonrası koşullar "
