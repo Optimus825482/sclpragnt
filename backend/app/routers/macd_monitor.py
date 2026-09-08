@@ -45,6 +45,14 @@ _MAX_REST_PER_PASS = 8
 # Kaç pass'ta bir koşulsuz tam yayın yapılır (UI kendini onarır)
 _FULL_BROADCAST_EVERY = 5
 
+# ADR (Ortalama Günlük Hareket): calculate_snapshot ile aynı tanım —
+# kapanmış 1d mumlarının son 14 günlük (yüksek-düşük)/kapanış ortalaması.
+_ADR_WINDOW = 15  # [-15:-1] → 14 gün
+_ADR_CACHE_TTL_SEC = 120.0
+# 0-10 normalize skorda güç dilimleri
+_STRONG_MIN = 7.0
+_WEAK_MAX = 4.0
+
 _loop_task = None
 
 # Son hesaplanan görünüm. symbols: {SYM: {"last": fiyat|None,
@@ -54,6 +62,8 @@ _SNAPSHOT: dict = {"universe": [], "symbols": {}, "generated_at": 0.0}
 _last_price_seen: dict[str, float] = {}
 # (symbol, tf) → son REST tazeleme zamanı
 _last_rest_refresh: dict[tuple[str, str], float] = {}
+# symbol → (adr_pct|None, hesap zamanı) — 1d serisi günde bir değişir; 2 dk TTL
+_adr_cache: dict[str, tuple[float | None, float]] = {}
 _dirty = False
 
 
@@ -111,6 +121,56 @@ def _compute_cell(symbol: str, tf: str):
     return {"green": bool(hist > 0), "hist": round(hist, 12)}
 
 
+def _symbol_adr_pct(symbol: str) -> float | None:
+    """Ortalama Günlük Hareket yüzdesi (calculate_snapshot ile aynı tanım).
+
+    1d kapanmış mumlar: son 14 günün (high-low)/close ortalaması × 100.
+    Günlük seri yavaş değiştiği için sonuç kısa TTL ile önbelleklenir.
+    """
+    now = time.time()
+    cached = _adr_cache.get(symbol)
+    if cached and now - cached[1] < _ADR_CACHE_TTL_SEC:
+        return cached[0]
+    pct: float | None = None
+    try:
+        daily = market.get_ut_kline(symbol, "1d")
+        dhigh = daily.get("highs") or []
+        dlow = daily.get("lows") or []
+        dclose = daily.get("closes") or []
+        if len(dclose) >= _ADR_WINDOW:
+            ranges = [
+                (high - low) / close
+                for high, low, close in zip(
+                    dhigh[-_ADR_WINDOW:-1], dlow[-_ADR_WINDOW:-1], dclose[-_ADR_WINDOW:-1]
+                )
+                if close
+            ]
+            if ranges:
+                pct = float(sum(ranges) / len(ranges) * 100.0)
+    except Exception as exc:
+        logger.debug("macd_monitor adr %s: %s", symbol, exc)
+    _adr_cache[symbol] = (pct, now)
+    return pct
+
+
+def _strength_meta(pct: float | None, lo: float | None, hi: float | None):
+    """Evren içi min-max ile 0-10 güç skoru + GÜÇLÜ/NORMAL/ZAYIF dilimi."""
+    if pct is None or lo is None or hi is None or pct <= 0:
+        return None, None
+    if hi <= lo:
+        score = 5.0
+    else:
+        score = (pct - lo) / (hi - lo) * 10.0
+    score = round(max(0.0, min(10.0, score)), 1)
+    if score >= _STRONG_MIN:
+        tier = "strong"
+    elif score < _WEAK_MAX:
+        tier = "weak"
+    else:
+        tier = "normal"
+    return score, tier
+
+
 async def _compute_pass(pass_no: int) -> dict:
     """Bir hesaplama turu: evreni tazele, değişen sembolleri yeniden hesapla.
 
@@ -166,6 +226,26 @@ async def _compute_pass(pass_no: int) -> dict:
 
     if universe_changed or recomputed:
         _dirty = True
+
+    # ADR tabanlı güç: her sembolün ortalama günlük hareketini evren içinde
+    # min-max normalize edip 0-10 skor + GÜÇLÜ/NORMAL/ZAYIF dilimi üret.
+    adr_map = {sym: _symbol_adr_pct(sym) for sym in snapshot_symbols}
+    valid = [pct for pct in adr_map.values() if pct is not None and pct > 0]
+    lo, hi = (min(valid), max(valid)) if valid else (None, None)
+    for sym, row in snapshot_symbols.items():
+        pct = adr_map.get(sym)
+        score, tier = _strength_meta(pct, lo, hi)
+        updated = {
+            "adr_pct": round(pct, 3) if pct is not None else None,
+            "strength": score,
+            "tier": tier,
+        }
+        if (row.get("adr_pct"), row.get("strength"), row.get("tier")) != (
+            updated["adr_pct"], updated["strength"], updated["tier"]
+        ):
+            _dirty = True
+        row.update(updated)
+
     _SNAPSHOT.update({
         "universe": universe,
         "symbols": snapshot_symbols,
