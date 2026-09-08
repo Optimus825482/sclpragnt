@@ -354,6 +354,54 @@ class MarketData:
         return {"requested": len(requested) * len(symbols), "hydrated": hydrated,
                 "already_ready": len(requested) * len(symbols) - len(missing), "errors": errors[:20]}
 
+    async def refresh_series(self, symbol: str, timeframe: str, limit: int = 150) -> bool:
+        """Tek bir symbol+timeframe serisini REST ile tazele ve cache'e birleştir.
+
+        WS aboneliği olmayan zaman dilimleri (örn. 3m/30m) için kullanılır;
+        MACD monitor gibi tüketiciler kapalı mumları bu yolla canlı tutar.
+        Mevcut cache'teki mumlar korunur (fetch ile WS'in eklediği mumlar
+        kaybolmaz), seri timestamp bazında birleştirilir.
+        """
+        sym = str(symbol or "").upper()
+        tf = str(timeframe or "")
+        try:
+            rows = await fetch_klines(symbol.lower(), tf, limit=max(2, int(limit)))
+            fresh = self._closed_history(rows, tf, int(time.time() * 1000))
+            history = self.klines.get(tf, {}).get(sym) or _empty_history()
+            timestamps = history.get("timestamps") or []
+            if not fresh["timestamps"] and not timestamps:
+                return False
+            merged = {
+                ts: (history["opens"][index], history["highs"][index],
+                     history["lows"][index], history["closes"][index],
+                     history["volumes"][index])
+                for index, ts in enumerate(timestamps)
+            }
+            for index, ts in enumerate(fresh["timestamps"]):
+                merged[ts] = (fresh["opens"][index], fresh["highs"][index],
+                              fresh["lows"][index], fresh["closes"][index],
+                              fresh["volumes"][index])
+            ordered = sorted(merged)[-self.MAX_HISTORY_CANDLES:]
+            result = _empty_history()
+            for ts in ordered:
+                opened, high, low, close, volume = merged[ts]
+                result["timestamps"].append(ts)
+                result["opens"].append(opened)
+                result["highs"].append(high)
+                result["lows"].append(low)
+                result["closes"].append(close)
+                result["volumes"].append(volume)
+            result["last_closed_at_ms"] = max(
+                int(history.get("last_closed_at_ms") or 0),
+                int(fresh.get("last_closed_at_ms") or 0))
+            result["updated_at"] = time.time()
+            result["source"] = "binance_tr_public_rest_refresh"
+            self.klines[tf][sym] = result
+            return bool(result["closes"])
+        except Exception as exc:
+            print(f"[MarketData] refresh_series hatası | symbol={sym} timeframe={tf} error={exc}", flush=True)
+            return False
+
     async def refresh_24h_tickers(self):
         try:
             rows = await ticker_24h([s.upper() for s in self.symbols])

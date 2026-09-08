@@ -24,6 +24,7 @@ const MENU_ADMIN = [
     { href: "/binance-tr", label: "Binance TR", icon: "🏛️", desc: "Canlı bakiye ve işlemler" },
     { href: "/database", label: "Veritabanı", icon: "🗄️", desc: "Tablo verileri, CSV/SQL indirme" },
     { href: "/chat", label: "Chat", icon: "💬", desc: "LLM chat merkezi (admin)" },
+    { href: "/macd-monitor", label: "MACD Monitor", icon: "📊", desc: "M1–H1 MACD histogram yönü" },
 ];
 const formatNotificationDate = (value: unknown) => {
     const numeric = Number(value);
