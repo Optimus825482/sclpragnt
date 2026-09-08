@@ -109,7 +109,9 @@ app.include_router(velocity_routes.router)
 app.include_router(monitoring.router)
 
 from app.routers import auto_paper as auto_paper_routes
+from app.routers import macd_monitor as macd_monitor_routes
 app.include_router(auto_paper_routes.router)
+app.include_router(macd_monitor_routes.router)
 
 
 _TTS_VOICE = "tr-TR-EmelNeural"
@@ -817,6 +819,7 @@ async def startup_services():
     _start_background(alert_loop, "alert-engine")
     _start_background(monitoring_start_loop, "monitoring-start")
     _start_background(auto_paper_start_loop, "auto-paper-start")
+    _start_background(macd_monitor_start_loop, "macd-monitor")
 
 async def monitoring_start_loop():
     """Monitoring tarama döngüsünü arka planda başlat (idempotent wrapper)."""
@@ -831,6 +834,13 @@ async def auto_paper_start_loop():
         auto_paper_routes.start_auto_paper_loop()
     except Exception as exc:
         print(f"[AutoPaper] döngü başlatılamadı: {exc}", flush=True)
+
+async def macd_monitor_start_loop():
+    """MACD MONITOR hesaplama/yayın döngüsünü arka planda başlat."""
+    try:
+        macd_monitor_routes.start_macd_monitor_loop()
+    except Exception as exc:
+        print(f"[MACDMonitor] döngü başlatılamadı: {exc}", flush=True)
 
 
 async def shutdown_services():
