@@ -1036,6 +1036,16 @@ function AutoPaperSettingsPanel() {
             </div>
           </div>
         </div>
+        <div className="md:col-span-2 border-t border-bunker-800 pt-3">
+          <label className="text-xs font-mono text-neon-green block mb-2">TRAILING/BREAKEVEN SONRASI YENİDEN AÇ</label>
+          <p className="text-xs text-bunker-muted mb-3">Trailing veya breakeven ile kapanan pozisyonda; fiyat hâlâ bildirim seviyesinin üzerindeyse, ufuk süresi dolmadıysa ve fiyat yükselme eğilimindeyse aynı sembole yeniden işlem açılır. Varsayılan AÇIK.</p>
+          <div className="max-w-xs">
+            <select value={draft.reopen_after_protect_close ? "1" : "0"} onChange={(e) => set("reopen_after_protect_close", e.target.value === "1")} className="input">
+              <option value="1">Açık</option>
+              <option value="0">Kapalı</option>
+            </select>
+          </div>
+        </div>
       </div>
 
       <div className="flex gap-3 mt-6">
