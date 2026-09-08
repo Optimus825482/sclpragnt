@@ -27,7 +27,8 @@
       "Shell(python -c import py_compile; py_compile.compile('app/database.py', doraise=True); print('SYNTAX OK'))",
       "Shell(python -c import py_compile; [py_compile.compile(f, doraise=True) for f in ['app/database.py','app/routers/runtime.py','app/routers/velocity.py','app/market_data.py']]; print('BACKEND SYNTAX OK'))",
       "mcp__jcodemunch__announce_model",
-      "mcp__jcodemunch__order"
+      "mcp__jcodemunch__order",
+      "mcp__jcodemunch__menu"
     ],
     "deny": [],
     "defaultMode": "default"

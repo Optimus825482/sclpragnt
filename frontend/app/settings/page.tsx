@@ -1017,7 +1017,7 @@ function AutoPaperSettingsPanel() {
         </div>
         <div className="md:col-span-2 border-t border-bunker-800 pt-3">
           <label className="text-xs font-mono text-neon-green block mb-2">TRAILING STOP MODÜLÜ</label>
-          <p className="text-xs text-bunker-muted mb-3">Pozisyon %trigger kadar kâra geçince fiyatı %gap geriden takip eder; fiyat bu seviyeye düşerse pozisyon otomatik kapanır. Varsayılan AÇIK.</p>
+          <p className="text-xs text-bunker-muted mb-3">Pozisyon %trigger kadar kâra geçince fiyatı %gap geriden takip eder; fiyat bu seviyeye düşerse pozisyon otomatik kapanır. Trailing devreye girdikten sonra take-profit uygulanmaz — çıkışı trailing stop yönetir. Varsayılan AÇIK.</p>
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
               <label className="text-xs font-mono text-bunker-muted block mb-1">Modül</label>
@@ -1038,7 +1038,7 @@ function AutoPaperSettingsPanel() {
         </div>
         <div className="md:col-span-2 border-t border-bunker-800 pt-3">
           <label className="text-xs font-mono text-neon-green block mb-2">TRAILING/BREAKEVEN SONRASI YENİDEN AÇ</label>
-          <p className="text-xs text-bunker-muted mb-3">Trailing veya breakeven ile kapanan pozisyonda; fiyat hâlâ bildirim seviyesinin üzerindeyse, ufuk süresi dolmadıysa ve fiyat yükselme eğilimindeyse aynı sembole yeniden işlem açılır. Varsayılan AÇIK.</p>
+          <p className="text-xs text-bunker-muted mb-3">Trailing veya breakeven ile kapanan pozisyonda; sembol İzleme sayfasının "Uygun Adaylar" listesinde kaldığı sürece aynı sembole yeniden işlem açılır. Adaylıktan düşerse yeniden açılmaz. Varsayılan AÇIK.</p>
           <div className="max-w-xs">
             <select value={draft.reopen_after_protect_close ? "1" : "0"} onChange={(e) => set("reopen_after_protect_close", e.target.value === "1")} className="input">
               <option value="1">Açık</option>
