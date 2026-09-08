@@ -471,6 +471,8 @@ CREATE TABLE IF NOT EXISTS auto_paper_trades (
   exit_reason TEXT,
   breakeven_activated BOOLEAN NOT NULL DEFAULT FALSE,
   breakeven_stop DOUBLE PRECISION,
+  trailing_activated BOOLEAN NOT NULL DEFAULT FALSE,
+  trailing_stop DOUBLE PRECISION,
   notification_score DOUBLE PRECISION,
   notification_target_pct DOUBLE PRECISION,
   notification_expected_price DOUBLE PRECISION,
@@ -484,3 +486,9 @@ CREATE INDEX IF NOT EXISTS auto_paper_trades_symbol_status_idx ON auto_paper_tra
 -- Mevcut veride ihlal varsa oluşturulamaz; temizlik sonrası uygulanır.
 CREATE UNIQUE INDEX IF NOT EXISTS auto_paper_trades_one_open_per_symbol
   ON auto_paper_trades(symbol) WHERE status='open';
+
+-- Trailing stop modülü (2026-09-08). Önceki deploy'larda bu kolonlar yoktu;
+-- mevcut tabloya idempotent ekleme (şema sha'sı değiştiği için CREATE TABLE
+-- üstte yeniden koşar, ADD COLUMN burada zaten oluşturulmuş şemalar için güvence).
+ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS trailing_activated BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS trailing_stop DOUBLE PRECISION;

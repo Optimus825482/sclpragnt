@@ -3214,6 +3214,19 @@ async def update_auto_paper_peak(trade_id: int, peak_price: float) -> bool:
     return await _run_db(op)
 
 
+async def update_auto_paper_trailing(trade_id: int, activated: bool, trailing_stop: float | None = None) -> bool:
+    """Trailing stop korumasını güncelle (sadece fiyat yukarı hareket edince yazılır)."""
+    def op(conn):
+        conn.execute(
+            "UPDATE auto_paper_trades SET trailing_activated=?, trailing_stop=?, updated_at=? "
+            "WHERE id=? AND status='open'",
+            (activated, trailing_stop, time.time(), trade_id)
+        )
+        conn.commit()
+        return True
+    return await _run_db(op)
+
+
 async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: float,
                                  pnl: float, pnl_pct: float, commission: float, reason: str) -> bool:
     """Auto paper pozisyonunu kapat VE wallet'a iade et (atomik).
