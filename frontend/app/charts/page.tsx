@@ -464,8 +464,11 @@ export default function ChartsPage() {
     useEffect(() => {
         fetchPositions();
         fetchAutoPaper();
-        const t = setInterval(fetchPositions, 30_000);
-        const ap = setInterval(fetchAutoPaper, 30_000);
+        // /api/positions her istekte GÜNCEL piyasa fiyatıyla PnL hesaplar;
+        // WS (portfolio) kopsa bile açık pozisyonlar tablosu canlı kalsın.
+        // 3 sn poll + WS data birlikte tabloyu gerçek zamanlı tutar.
+        const t = setInterval(fetchPositions, 3_000);
+        const ap = setInterval(fetchAutoPaper, 3_000);
         return () => { clearInterval(t); clearInterval(ap); };
     }, [fetchPositions, fetchAutoPaper]);
 
@@ -503,10 +506,27 @@ export default function ChartsPage() {
     useLiveMessages(useCallback((message: any) => {
         if (message.type === "portfolio") {
             setLivePortfolio(message.data as LivePortfolio);
-            // WS portfolio'da positions alanı eksikse mevcut REST listesini
-            // boşaltma; alan varsa (dizi) güncelle.
+            // Backend WS portfolio mesajı hem `positions` (ana paper) hem
+            // `auto_paper_positions` (otonom) alanlarını taşır. Her saniye
+            // yeni bir nesne geldiğinden (current/pnl_try WS tarafında
+            // hesaplanır) bu iki set ile açık pozisyonlar tablosu gerçek
+            // zamanlı güncel fiyat/PnL göstermeye başlar. Alanlar dizi
+            // değilse mevcut REST listesini boşaltmayız.
             if (Array.isArray(message.data?.positions)) {
                 setPositions(message.data.positions);
+            }
+            if (Array.isArray(message.data?.auto_paper_positions) && message.data.auto_paper_positions.length >= 0) {
+                const ap = message.data.auto_paper_positions.map((t: any) => ({
+                    id: Number(t.auto_paper_id || 0),
+                    symbol: t.symbol,
+                    entry_price: Number(t.entry || 0),
+                    current_price: Number(t.current || 0),
+                    quantity: Number(t.quantity || 0),
+                    take_profit: t.take_profit,
+                    stop_loss: t.stop,
+                    entry_time: t.entry_time,
+                }));
+                if (ap.some((a: any) => a.id > 0)) setAutoPaperPositions(ap);
             }
         }
         if (["trade_updated", "signal", "reset"].includes(message.type)) loadPortfolioSummary();
