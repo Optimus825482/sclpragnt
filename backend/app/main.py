@@ -1980,10 +1980,15 @@ async def binance_positions(request: Request):
 
 
 def _avg_buy_cost(api_key: str, api_secret: str, asset: str, symbol_concat: str, now: float) -> dict | None:
-    """Varlığın işlem geçmişindeki alışların ağırlıklı ortalaması (60 sn cache).
+    """Elde tutulan miktarın ortalama alış maliyeti (FIFO, 60 sn cache).
 
-    Son 1000 fill üzerinden hesaplanır; geçmiş satışlar maliyetten düşülmez —
-    kaba maliyet göstergesidir, muhasebe değildir.
+    Önceki sürüm son 1000 fill'in TÜM alışlarının VWAP'ını hesaplıyordu;
+    bu, "yüksekte sat → yüksekte tekrar al" senaryosunda maliyeti suni olarak
+    aşağı çekiyor ve güncel fiyatla karşılaştırılınca kârı yanlış (şişkin)
+    gösteriyordu. Bizim için muhasebe olarak doğru olan, satılan kısmı en eski
+    alıştan düşüp ELDE KALAN bakiye için gerçek ortalama maliyeti bulmaktır
+    (FIFO envanter yaklaşımı). Kaba gösterge değil: bu, o günkü gerçek pozisyon
+    maliyetini güncel fiyatla birlikte doğru PnL üretir.
     """
     cached = _binance_cost_cache.get(asset)
     if cached and cached[0] > now:
@@ -1991,18 +1996,35 @@ def _avg_buy_cost(api_key: str, api_secret: str, asset: str, symbol_concat: str,
     info: dict = {"avg_price": None, "quote": "TRY" if symbol_concat.endswith("TRY") else "USDT"}
     try:
         trades = get_trade_history(api_key, api_secret, symbol_concat, None, None, 1000, 0)
-        spent = 0.0
-        qty = 0.0
+        # FIFO kuyruğu: (fiyat, miktar). Sıralı alışlar eklenir, satışlar kuyruğun
+        # başından (en eski alıştan) düşülür. Kalan bakiye ve kalan alışların
+        # toplam maliyeti, elde tutulan kısmın gerçek ortalama maliyetini verir.
+        fifo: list[tuple[float, float]] = []
         for t in trades if isinstance(trades, list) else []:
-            if not t.get("isBuyer"):
+            try:
+                t_qty = float(t.get("qty") or 0)
+                t_price = float(t.get("price") or 0)
+            except (TypeError, ValueError):
                 continue
-            t_qty = float(t.get("qty") or 0)
-            t_price = float(t.get("price") or 0)
-            if t_qty > 0 and t_price > 0:
-                spent += t_price * t_qty
-                qty += t_qty
-        if qty > 0:
-            info["avg_price"] = spent / qty
+            if t_qty <= 0 or t_price <= 0:
+                continue
+            if t.get("isBuyer"):
+                fifo.append((t_price, t_qty))
+            else:
+                remaining = t_qty
+                while remaining > 1e-12 and fifo:
+                    _, held_qty = fifo[0]
+                    if held_qty <= remaining:
+                        remaining -= held_qty
+                        fifo.pop(0)
+                    else:
+                        fifo[0] = (fifo[0][0], held_qty - remaining)
+                        remaining = 0.0
+        held_qty = sum(q for _, q in fifo)
+        if held_qty > 1e-12:
+            held_cost = sum(p * q for p, q in fifo)
+            info["avg_price"] = held_cost / held_qty
+            info["held_quantity"] = held_qty
     except Exception as exc:
         logger.warning("Binance TR alım geçmişi okunamadı (%s): %s", asset, exc)
     _binance_cost_cache[asset] = (now + 60.0, info)
@@ -2132,7 +2154,8 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
         results = await asyncio.gather(*tasks)
         for part in results:
             rows.extend(part)
-    rows.sort(key=lambda t: (float(t.get("time") or 0), str(t.get("symbol") or "")))
+    # En yeni işlemler en üstte (azalan: önce en son alım/satım).
+    rows.sort(key=lambda t: (float(t.get("time") or 0), str(t.get("symbol") or "")), reverse=True)
     payload = {"trades": rows, "count": len(rows),
                "symbols_scanned": len(tasks), "assets": len(assets)}
     _binance_day_trades_cache[date] = (now_ts + 60.0, payload)
