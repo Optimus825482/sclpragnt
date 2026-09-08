@@ -1,6 +1,7 @@
 """MACD MONITOR — aktif sembollerin çoklu zaman dilimi MACD histogram yönü.
 
-Admin-only "MACD MONITOR" sayfası için arka plan döngüsü + snapshot API.
+"MACD MONITOR" sayfası + monitoring sayfasının "YÜKSELİŞ EĞİLİMİ ADAYLARI"
+bölümü için arka plan döngüsü + snapshot API.
 
 Tasarım:
   - Evren: activity taramasında ACTIVE olan semboller + açık pozisyonlar
@@ -21,7 +22,7 @@ import asyncio
 import logging
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 
 from app.config import config
 from app import database
@@ -276,11 +277,14 @@ async def macd_monitor_loop():
         await asyncio.sleep(LOOP_SEC)
 
 
-@router.get("/api/admin/macd-monitor")
-async def get_macd_monitor(request: Request = None):
-    """MACD MONITOR snapshot'ı (admin-only; REST ilk yükleme/yedek)."""
-    from app.main import _require_admin
-    _require_admin(request)
+@router.get("/api/macd-monitor")
+async def get_macd_monitor():
+    """MACD MONITOR snapshot'ı (REST ilk yükleme/yedek).
+
+    Veri yalnızca public market verisinden türetilir (kapanış fiyatları +
+    MACD/ADR); monitoring sayfasındaki "YÜKSELİŞ EĞİLİMİ ADAYLARI" bölümü
+    de bu ucu kullandığından admin kısıtı YOKTUR.
+    """
     try:
         payload = await _compute_pass(0)
     except Exception as exc:
