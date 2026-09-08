@@ -283,6 +283,12 @@ class Config:
     AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "2.0"))
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
     AUTO_PAPER_BREAKEVEN_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_TRIGGER_PCT", "1.5"))
+    # Trailing stop modülü (kâr takibi): pozisyon trailing_trigger_pct kadar
+    # kara geçince aktifleşir ve fiyatı trailing_gap_pct geriden takip eder.
+    # Varsayılan AÇIK; trailing_enabled=false ile kapatılabilir.
+    AUTO_PAPER_TRAILING_ENABLED = os.getenv("AUTO_PAPER_TRAILING_ENABLED", "true").lower() == "true"
+    AUTO_PAPER_TRAILING_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_TRAILING_TRIGGER_PCT", "2.0"))
+    AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "0.8"))
     # Otonom paper için global maksimum açık pozisyon sayısı (0 = sınırsız).
     # Farklı sembollerden gelen bildirim zinciri cüzdanı tüketmesin.
     AUTO_PAPER_MAX_OPEN_POSITIONS = max(0, int(os.getenv("AUTO_PAPER_MAX_OPEN_POSITIONS", "0")))

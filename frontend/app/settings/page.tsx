@@ -1015,6 +1015,27 @@ function AutoPaperSettingsPanel() {
           <label className="text-xs font-mono text-bunker-muted block mb-1">Breakeven Tetikleme (%)</label>
           <input type="number" min="0.5" max="10" step="0.1" value={draft.breakeven_trigger_pct ?? 1.5} onChange={(e) => set("breakeven_trigger_pct", Number(e.target.value))} className="input" />
         </div>
+        <div className="md:col-span-2 border-t border-bunker-800 pt-3">
+          <label className="text-xs font-mono text-neon-green block mb-2">TRAILING STOP MODÜLÜ</label>
+          <p className="text-xs text-bunker-muted mb-3">Pozisyon %trigger kadar kâra geçince fiyatı %gap geriden takip eder; fiyat bu seviyeye düşerse pozisyon otomatik kapanır. Varsayılan AÇIK.</p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <label className="text-xs font-mono text-bunker-muted block mb-1">Modül</label>
+              <select value={draft.trailing_enabled ? "1" : "0"} onChange={(e) => set("trailing_enabled", e.target.value === "1")} className="input">
+                <option value="1">Açık</option>
+                <option value="0">Kapalı</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-mono text-bunker-muted block mb-1">Kâr Tetikleme (%)</label>
+              <input type="number" min="0.5" max="20" step="0.1" value={draft.trailing_trigger_pct ?? 2} onChange={(e) => set("trailing_trigger_pct", Number(e.target.value))} className="input" />
+            </div>
+            <div>
+              <label className="text-xs font-mono text-bunker-muted block mb-1">Takip Mesafesi (%)</label>
+              <input type="number" min="0.1" max="10" step="0.1" value={draft.trailing_gap_pct ?? 0.8} onChange={(e) => set("trailing_gap_pct", Number(e.target.value))} className="input" />
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="flex gap-3 mt-6">

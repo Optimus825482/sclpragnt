@@ -283,15 +283,15 @@ async def _check_open_positions():
 
     for trade in trades:
         try:
-            await _manage_single_trade(trade, now, breakeven_trigger_pct)
+            await _manage_single_trade(trade, now, breakeven_trigger_pct, settings)
         except Exception as exc:
             logger.warning("auto_paper %s yönetim: %s", trade.get("symbol"), exc)
 
     _AUTO_PAPER_STATE["last_check_at"] = now
 
 
-async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: float = 1.5):
-    """Tek bir auto_paper pozisyonunu yönet: TP/SL/breakeven."""
+async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: float = 1.5, settings: dict | None = None):
+    """Tek bir auto_paper pozisyonunu yönet: TP/SL/breakeven/trailing."""
     symbol = str(trade.get("symbol") or "").upper()
     trade_id = int(trade["id"])
     entry_price = float(trade["entry_price"])
@@ -358,6 +358,38 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil)
     if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
         await _close_trade(trade_id, symbol, current_price, now, "breakeven_stop")
+        return
+
+    # Trailing stop modülü (kullanıcı isteği 2026-09-08): %trailing_trigger_pct
+    # kara geçince fiyatı %trailing_gap_pct geriden takip eder. Varsayılan AÇIK;
+    # ayarlardan kapatılabilir (trailing_enabled=false).
+    trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED))
+    if trailing_enabled:
+        trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT))
+        trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT))
+        trailing_activated = bool(trade.get("trailing_activated", False))
+        current_trailing_stop = float(trade.get("trailing_stop") or 0)
+
+        # Aktif değilse ve kâr trigger eşiğine ulaşıldıysa trailing'i devreye al.
+        if not trailing_activated and gross_pnl_pct >= trailing_trigger_pct:
+            trailing_activated = True
+
+        if trailing_activated:
+            # Zirvenin %gap gerisinden stop; yalnızca yukarı güncellenir (fiyat
+            # yükseldikçe takip eder, düşerken eski stopta kalır).
+            new_trailing = peak_price * (1 - trailing_gap_pct / 100)
+            # İlk aktivasyonda stop güncel fiyatın altında kalmalı (anında kapanma olmasın).
+            if not bool(trade.get("trailing_activated", False)) and new_trailing >= current_price:
+                new_trailing = current_price * (1 - trailing_gap_pct / 100)
+            applied_trailing = max(new_trailing, current_trailing_stop)
+            if applied_trailing > current_trailing_stop:
+                await database.update_auto_paper_trailing(trade_id, True, applied_trailing)
+                current_trailing_stop = applied_trailing
+                logger.info("auto_paper %s: trailing stop=%.6f (gross=%+.2f%%)", symbol, applied_trailing, gross_pnl_pct)
+
+        # Trailing stop koruması: aktifse ve fiyat stopa düştüyse kapat.
+        if trailing_activated and current_trailing_stop > 0 and current_price <= current_trailing_stop:
+            await _close_trade(trade_id, symbol, current_price, now, "trailing_stop")
 
 
 async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float, reason: str):
@@ -426,6 +458,9 @@ async def get_default_settings() -> dict:
         "default_target_pct": config.AUTO_PAPER_DEFAULT_TARGET_PCT,
         "min_order_try": config.AUTO_PAPER_MIN_ORDER_TRY,
         "breakeven_trigger_pct": config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT,
+        "trailing_enabled": config.AUTO_PAPER_TRAILING_ENABLED,
+        "trailing_trigger_pct": config.AUTO_PAPER_TRAILING_TRIGGER_PCT,
+        "trailing_gap_pct": config.AUTO_PAPER_TRAILING_GAP_PCT,
     }
 
 
@@ -455,7 +490,8 @@ async def update_settings_endpoint(payload: dict, request: Request):
     _require_admin(request)
 
     editable = ("enabled", "min_score", "balance_pct", "stop_loss_pct",
-                "default_target_pct", "min_order_try", "breakeven_trigger_pct")
+                "default_target_pct", "min_order_try", "breakeven_trigger_pct",
+                "trailing_enabled", "trailing_trigger_pct", "trailing_gap_pct")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
 
@@ -467,6 +503,9 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "default_target_pct": max(0.5, min(20.0, float(merged.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT)))),
         "min_order_try": max(10.0, float(merged.get("min_order_try", config.AUTO_PAPER_MIN_ORDER_TRY))),
         "breakeven_trigger_pct": max(0.5, min(10.0, float(merged.get("breakeven_trigger_pct", config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT)))),
+        "trailing_enabled": bool(merged.get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED)),
+        "trailing_trigger_pct": max(0.5, min(20.0, float(merged.get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT)))),
+        "trailing_gap_pct": max(0.1, min(10.0, float(merged.get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT)))),
     }
 
     await database.set_llm_setting("auto_paper_settings", json.dumps(settings))
