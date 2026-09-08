@@ -156,6 +156,20 @@ def _effective_min_score(settings) -> float:
     return round(min(100.0, base), 1)
 
 
+def get_cached_radar_candidate(symbol: str) -> dict | None:
+    """Son taramanın 'uygun adaylar' listesinden sembolün aday kaydını döndür.
+
+    auto_paper, trailing/breakeven kapanışı sonrası yeniden açma kararını bu
+    listeye dayandırır: sembol panelde (son taramada) göründüğü sürece fırsat
+    canlı kabul edilir; listeden düşmüşse None döner.
+    """
+    sym = str(symbol or "").upper()
+    for c in _monitoring_state.get("last_candidates") or []:
+        if str(c.get("symbol") or "").upper() == sym:
+            return c
+    return None
+
+
 async def get_user_notification_settings() -> dict:
     """Global bildirim ayarlarını DB'den oku (admin ayarı — tüm kullanıcıları etkiler).
 

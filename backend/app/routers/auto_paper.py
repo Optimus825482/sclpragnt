@@ -364,8 +364,19 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     if peak_price > float(trade.get("peak_price") or entry_price):
         await database.update_auto_paper_peak(trade_id, peak_price)
 
-    # TP kontrolü
-    if take_profit is not None and current_price >= take_profit:
+    # Trailing devredeyse TP UYGULANMAZ: çıkışı tamamen trailing stop yönetir
+    # (kullanıcı isteği 2026-09-08). "Devrede" = ayar açık VE (önceden aktifleşmiş
+    # VEYA bu turda tetik eşiği aşılmış). Tetik eşiği TP'ye eşit ya da altındayken
+    # bile TP'nin trailing'den ÖNCE kapanmaması için tetik hesabı TP kontrolünden
+    # önce yapılır.
+    trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED))
+    trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT))
+    gross_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
+    trailing_activated = bool(trade.get("trailing_activated", False))
+    trailing_devrede = trailing_enabled and (trailing_activated or gross_pnl_pct >= trailing_trigger_pct)
+
+    # TP kontrolü — yalnızca trailing devrede DEĞİLKEN uygulanır.
+    if not trailing_devrede and take_profit is not None and current_price >= take_profit:
         await _close_trade(trade_id, symbol, current_price, now, "take_profit")
         return
 
@@ -482,8 +493,66 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
         logger.info("auto_paper %s: KAPANDI (%s) çıkış=%.6f PnL=%.2fTRY (%+.2f%%) süre=%.0fs",
                     symbol, reason, exit_price, pnl, pnl_pct, hold_seconds)
 
+        # Kâr koruma (trailing/breakeven) kapanışı: sembol monitoring sayfasının
+        # "uygun adaylar" listesinde kaldığı sürece aynı sembole yeniden aç.
+        if reason in ("trailing_stop", "breakeven_stop"):
+            await _maybe_reopen_after_protect_close(symbol)
+
     except Exception as exc:
         logger.exception("auto_paper %s kapatma: %s", symbol, exc)
+
+
+async def _maybe_reopen_after_protect_close(symbol: str) -> None:
+    """Trailing/breakeven kapanışı sonrası yeniden açma denemesi.
+
+    Kural (kullanıcı isteği 2026-09-08): sembol monitoring sayfasının "uygun
+    adaylar" listesinde (son tarama sonucunda) kaldığı sürece kâr koruma
+    çıkışının ardından aynı sembole yeniden pozisyon açılır. Sembol listeden
+    düşmüşse veya reopen_after_protect_close ayarı kapalıysa açılmaz.
+    """
+    try:
+        settings = await get_auto_paper_settings()
+        if not bool(settings.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)):
+            return
+
+        # monitoring'i tembel içe aktar (çevrimsel import riski olmasın).
+        from app.routers import monitoring as monitoring_mod
+        cand = monitoring_mod.get_cached_radar_candidate(symbol)
+        if not cand:
+            logger.info("auto_paper %s: koruma kapanışı sonrası radar 'uygun adaylar' "
+                        "listesinde değil — yeniden açılmadı", symbol)
+            return
+
+        panel = float(cand.get("panel_score") or 0)
+        if panel <= 0:
+            try:
+                panel = float(monitoring_mod.normalize_score(cand.get("velocity_score") or 0))
+            except Exception:
+                panel = 0.0
+        if panel <= 0:
+            return
+
+        price = float(cand.get("price") or 0)
+        target_pct = float(cand.get("target_pct") or 0)
+        notif = {
+            "symbol": symbol,
+            "score": panel,
+            "price": price,
+            "target_pct": target_pct,
+            "expected_price": (float(cand.get("expected_price") or 0)
+                               or (price * (1 + target_pct / 100) if price > 0 else 0)),
+            "detected_at": time.time(),
+            "horizon_minutes": int(cand.get("horizon_minutes") or 5),
+            "mode": cand.get("mode"),
+            "ml_hit_probability": cand.get("ml_hit_probability"),
+            "ml_target_pct": cand.get("ml_target_pct"),
+        }
+        result = await try_open_from_notification(notif)
+        if result:
+            logger.info("auto_paper %s: koruma kapanışı sonrası radar adayı olarak "
+                        "yeniden işlem açıldı/güncellendi (%s)", symbol, result.get("status"))
+    except Exception as exc:
+        logger.debug("auto_paper %s koruma kapanışı sonrası yeniden açma: %s", symbol, exc)
 
 
 async def _broadcast_trade(data: dict):
