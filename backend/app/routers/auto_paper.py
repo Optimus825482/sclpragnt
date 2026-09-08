@@ -95,11 +95,56 @@ async def try_open_from_notification(notification: dict) -> dict | None:
             return None
 
         notification_id = notification.get("id")
-        # Aynı bildirim daha önce bir trade'e dönüştüyse (kapanmış olsa bile) açma.
+        # Aynı bildirim daha önce bir trade'e dönüştüyse: trailing/breakeven ile
+        # kapandıysa ve fiyat hâlâ bildirim fiyatının ÜZERİNDEYSE + ufuk süresi
+        # dolmadıysa + fiyat yükselme eğilimindeyse YENİDEN açmaya izin ver.
+        # (Böylece kâr kilidi/trailing çıkışı sonrası aynı fırsat devam ediyorsa
+        # kaçırılmaz; diğer kapanış nedenleri (take_profit/stop_loss/reset) tekrar
+        # açılışı engeller.)
+        now = time.time()
         if notification_id is not None:
             prior_trade = await database.get_recent_auto_paper_trade_by_notification(notification_id)
             if prior_trade:
-                return None
+                # "Trailing/breakeven sonrası yeniden açma" kapalıysa eski davranış:
+                # aynı bildirimle asla tekrar açma.
+                if not bool(settings.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)):
+                    return None
+
+                # Kapanış biçimi nedir?
+                exit_reason = str(prior_trade.get("exit_reason") or "").lower()
+                trailing_kapanis = exit_reason in {"trailing_stop", "breakeven_stop"}
+                if not trailing_kapanis:
+                    # TP/SL/reset ile kapandıysa aynı bildirimle tekrar açma.
+                    return None
+
+                # Koşul 1: güncel fiyat bildirim fiyatının üzerinde olmalı.
+                notif_price = float(notification.get("price") or 0)
+                if notif_price <= 0 or current_price <= notif_price:
+                    logger.info("auto_paper %s: trailing kapanış sonrası fiyat bildirim "
+                                "fiyatının altında (%s <= %s) — yeniden açılmadı",
+                                symbol, current_price, notif_price)
+                    return None
+
+                # Koşul 2: ufuk süresi henüz dolmamalı (bildirim detected_at + horizon).
+                detected_at = float(notification.get("detected_at") or 0)
+                horizon_min = float(notification.get("horizon_minutes") or 0)
+                ufuk_bitti = bool(detected_at and horizon_min and (detected_at + horizon_min * 60) < now)
+                if ufuk_bitti:
+                    logger.info("auto_paper %s: trailing kapanış sonrası ufuk süresi doldu — yeniden açılmadı", symbol)
+                    return None
+
+                # Koşul 3: fiyat yükselme eğiliminde olmalı (son kapaniştan güncel fiyata).
+                prior_exit = float(prior_trade.get("exit_price") or 0)
+                rising = prior_exit > 0 and current_price >= prior_exit
+                if not rising:
+                    logger.info("auto_paper %s: trailing kapanış sonrası fiyat yükselme "
+                                "eğiliminde değil (%.6f <= %.6f) — yeniden açılmadı",
+                                symbol, current_price, prior_exit)
+                    return None
+
+                logger.info("auto_paper %s: trailing/breakeven kapanışı sonrası koşullar "
+                            "sağlanıyor (%s) — aynı bildirimle yeniden işlem açılıyor",
+                            symbol, exit_reason)
 
         # Mevcut açık auto_paper pozisyonunu kontrol et
         open_trade = await database.get_open_auto_paper_trade(symbol)
@@ -461,6 +506,7 @@ async def get_default_settings() -> dict:
         "trailing_enabled": config.AUTO_PAPER_TRAILING_ENABLED,
         "trailing_trigger_pct": config.AUTO_PAPER_TRAILING_TRIGGER_PCT,
         "trailing_gap_pct": config.AUTO_PAPER_TRAILING_GAP_PCT,
+        "reopen_after_protect_close": config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE,
     }
 
 
@@ -491,7 +537,8 @@ async def update_settings_endpoint(payload: dict, request: Request):
 
     editable = ("enabled", "min_score", "balance_pct", "stop_loss_pct",
                 "default_target_pct", "min_order_try", "breakeven_trigger_pct",
-                "trailing_enabled", "trailing_trigger_pct", "trailing_gap_pct")
+                "trailing_enabled", "trailing_trigger_pct", "trailing_gap_pct",
+                "reopen_after_protect_close")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
 
@@ -506,6 +553,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "trailing_enabled": bool(merged.get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED)),
         "trailing_trigger_pct": max(0.5, min(20.0, float(merged.get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT)))),
         "trailing_gap_pct": max(0.1, min(10.0, float(merged.get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT)))),
+        "reopen_after_protect_close": bool(merged.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)),
     }
 
     await database.set_llm_setting("auto_paper_settings", json.dumps(settings))
