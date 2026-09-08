@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE, apiRequest } from "../lib/api";
+import { API_BASE, apiFetch, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
+import { useLiveMessages } from "../lib/liveSocket";
 
 type NotificationSettings = {
   enabled: boolean;
@@ -50,6 +51,45 @@ const SCAN_INTERVAL_MS = 30_000;
 // bu değere bölünüp 0-100 panel ölçeğine çevrilir. Backend artık panel_score
 // alanını gönderir; eski yanıt.cache'leri için burada da hesaplanır.
 const SCORE_NORM_CAP = 2000;  // 2026-09-07 saturation kaldirildi, skor 0-1000 MONITORING_SCORE_NORM_CAP
+
+// YÜKSELİŞ EĞİLİMİ ADAYLARI: MACD MONITOR GÜÇ skoru (ADR, 0-10) eşiği ve
+// en az 5/6 zaman diliminde yeşil histogram şartı (MACD MONITOR sayfasıyla
+// aynı veri kaynağından; /api/macd-monitor).
+const RISING_MIN_STRENGTH = 9.8;
+const RISING_MIN_GREEN = 5;
+const MACD_TFS = ["1m", "3m", "5m", "15m", "30m", "1h"];
+const MACD_TF_SHORT: Record<string, string> = { "1m": "1M", "3m": "3M", "5m": "5M", "15m": "15M", "30m": "30M", "1h": "1H" };
+
+type RisingCandidate = {
+  symbol: string;
+  strength: number;
+  green: number;
+  dots: (boolean | null)[];
+};
+
+// Snapshot'tan eşiği geçen sembolleri çıkar (GÜÇ ≥ 9.8 VE en az 5/6 yeşil).
+const extractRisingCandidates = (payload: any): RisingCandidate[] => {
+  const symbols = payload?.symbols || {};
+  const universe = Array.isArray(payload?.universe) && payload.universe.length
+    ? payload.universe
+    : Object.keys(symbols);
+  const list: RisingCandidate[] = [];
+  for (const sym of universe) {
+    const row = symbols[sym] || {};
+    const tfs = row.tfs || {};
+    const dots = MACD_TFS.map((tf) => {
+      const cell = tfs[tf];
+      return cell ? Boolean(cell.green) : null;
+    });
+    const green = dots.filter((value) => value === true).length;
+    const strength = Number(row.strength);
+    if (!Number.isFinite(strength) || strength < RISING_MIN_STRENGTH) continue;
+    if (green < RISING_MIN_GREEN) continue;
+    list.push({ symbol: sym, strength, green, dots });
+  }
+  list.sort((a, b) => b.strength - a.strength || b.green - a.green);
+  return list;
+};
 
 const fmtTime = (ts: number | null) => {
   if (!ts) return "—";
@@ -177,6 +217,24 @@ export default function MonitoringPage() {
   const [minScoreDirty, setMinScoreDirty] = useState(false);
   const [savingMinScore, setSavingMinScore] = useState(false);
 
+  // YÜKSELİŞ EĞİLİMİ ADAYLARI (MACD MONITOR beslemesi): REST 15 sn poll +
+  // WS macd_monitor mesajıyla anlık tazeleme.
+  const [rising, setRising] = useState<RisingCandidate[]>([]);
+  const loadRising = useCallback(() => {
+    apiFetch("/api/macd-monitor")
+      .then((data) => setRising(extractRisingCandidates(data)))
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    loadRising();
+    const timer = window.setInterval(loadRising, 15_000);
+    return () => window.clearInterval(timer);
+  }, [loadRising]);
+  const onLiveMessage = useCallback((message: any) => {
+    if (message.type === "macd_monitor" && message.data) setRising(extractRisingCandidates(message.data));
+  }, []);
+  useLiveMessages(onLiveMessage);
+
   // Admin girişteyken 30sn'lik tarama döngüsü inputu ezmesin: yalnız
   // düzenlenmemişken (dirty değilken) ayar değeriyle senkronlanır.
   useEffect(() => {
@@ -289,6 +347,47 @@ export default function MonitoringPage() {
         <div className="card"><p className="eyebrow">Tarama Sayısı</p><p className="mt-2 font-mono text-lg text-white">{state.scan_count}</p></div>
         <div className="card"><p className="eyebrow">Aday Sayısı</p><p className="mt-2 font-mono text-lg text-neon-green">{visibleCandidates.length}</p></div>
       </div>
+
+      {rising.length > 0 && (
+        <section className="card border-neon-green/30">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="eyebrow text-neon-green">📈 YÜKSELİŞ EĞİLİMİ ADAYLARI ({rising.length})</p>
+            <a href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-neon-green">
+              MACD MONITOR&apos;DE GÖR →
+            </a>
+          </div>
+          <p className="mt-1 text-xs text-bunker-muted">
+            GÜÇ ≥ {RISING_MIN_STRENGTH} (ADR 0-10) ve en az {RISING_MIN_GREEN}/6 zaman diliminde MACD histogramı yeşil olan semboller — en güçlü yükseliş adayları.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {rising.map((item) => (
+              <a
+                key={item.symbol}
+                href={`/charts?symbol=${encodeURIComponent(item.symbol)}`}
+                className="group rounded-lg border border-neon-green/40 bg-neon-green/10 px-3 py-2 transition-colors hover:border-neon-green/70 hover:bg-neon-green/15"
+                title={`${item.symbol} grafiğini aç · GÜÇ ${item.strength.toFixed(1)} · ${item.green}/${item.dots.filter((d) => d !== null).length} yeşil`}
+              >
+                <span className="flex items-center gap-2 font-mono text-sm font-bold text-white">
+                  {item.symbol}
+                  <span className="rounded border border-neon-green/60 bg-neon-green/20 px-1.5 py-0.5 font-mono text-[10px] font-bold text-neon-green">
+                    GÜÇ {item.strength.toFixed(1)}
+                  </span>
+                  <span className="font-mono text-[10px] text-bunker-muted">{item.green}/6</span>
+                </span>
+                <span className="mt-1.5 flex gap-0.5">
+                  {item.dots.map((value, index) => (
+                    <span
+                      key={MACD_TFS[index]}
+                      title={`${MACD_TF_SHORT[MACD_TFS[index]]}: ${value === true ? "yeşil" : value === false ? "kırmızı" : "veri yok"}`}
+                      className={`h-1.5 w-4 rounded-sm ${value === true ? "bg-neon-green" : value === false ? "bg-neon-red" : "bg-bunker-700"}`}
+                    />
+                  ))}
+                </span>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <p className="eyebrow text-neon-green">🎯 UYGUN ADAYLAR ({visibleCandidates.length})</p>

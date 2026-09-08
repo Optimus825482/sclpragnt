@@ -79,7 +79,7 @@ export default function MacdMonitorPage() {
   const liveStatus = useLiveStatus();
 
   const loadSnapshot = useCallback(() => {
-    apiFetch("/api/admin/macd-monitor")
+    apiFetch("/api/macd-monitor")
       .then((data) => {
         setSnapshot(data as Snapshot);
         setError(null);
