@@ -18,7 +18,14 @@ const TF_LABELS: Record<string, string> = { "1m": "1M", "3m": "3M", "5m": "5M", 
 const POLL_MS = 30_000;
 
 type MacdCell = { green: boolean; hist: number };
-type SymbolMacd = { last: number | null; tfs: Record<string, MacdCell | null> };
+type MacdTier = "strong" | "normal" | "weak";
+type SymbolMacd = {
+  last: number | null;
+  tfs: Record<string, MacdCell | null>;
+  adr_pct?: number | null;
+  strength?: number | null;
+  tier?: MacdTier | null;
+};
 type Snapshot = {
   universe: string[];
   symbols: Record<string, SymbolMacd>;
@@ -44,6 +51,22 @@ const histShort = (hist: number) => {
   if (abs === 0) return "0";
   if (abs >= 0.0001) return hist.toFixed(4);
   return hist.toExponential(2);
+};
+
+const TIER_LABEL: Record<string, string> = { strong: "GÜÇLÜ", normal: "NORMAL", weak: "ZAYIF" };
+
+// Yeşil ok tonu: ADR gücü GÜÇLÜ ise dolu/koyu, ZAYIF ise soluk. Kırmızı oklar
+// yön baskısı olduğundan güç tonlamasına girmez.
+const arrowShade = (tier: MacdTier | null | undefined) => {
+  if (tier === "strong") return "border-neon-green/60 bg-neon-green/25 text-neon-green";
+  if (tier === "weak") return "border-neon-green/30 bg-neon-green/5 text-neon-green/80";
+  return "border-neon-green/40 bg-neon-green/10 text-neon-green";
+};
+
+const strengthChip = (tier: MacdTier | null | undefined) => {
+  if (tier === "strong") return "border-neon-green/50 bg-neon-green/15 text-neon-green";
+  if (tier === "weak") return "border-bunker-600 bg-bunker-900 text-bunker-muted";
+  return "border-yellow-300/50 bg-yellow-300/10 text-yellow-300";
 };
 
 export default function MacdMonitorPage() {
@@ -94,7 +117,15 @@ export default function MacdMonitorPage() {
         const row = symbols[symbol];
         const tfsMap = row?.tfs || {};
         const greenCount = tfs.reduce((sum, tf) => sum + (tfsMap[tf]?.green ? 1 : 0), 0);
-        return { symbol, last: row?.last ?? null, tfsMap, greenCount };
+        return {
+          symbol,
+          last: row?.last ?? null,
+          tfsMap,
+          greenCount,
+          adrPct: row?.adr_pct ?? null,
+          strength: row?.strength ?? null,
+          tier: row?.tier ?? null,
+        };
       })
       .filter((r) => !onlyGreen || r.greenCount === tfs.length);
 
@@ -202,6 +233,7 @@ export default function MacdMonitorPage() {
                       <th key={tf} className="px-3 py-2 text-center">{TF_LABELS[tf]}</th>
                     ))}
                     <th className="px-3 py-2 text-center" title={`${tfs.length} zaman diliminde yeşil sayısı`}>YEŞİL</th>
+                    <th className="px-3 py-2 text-center" title="Ortalama Günlük Hareket (ADR) — sembolün günlük hareket kapasitesi; evren içinde 0-10 normalize edilmiş güç">GÜÇ · 0-10</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -219,9 +251,7 @@ export default function MacdMonitorPage() {
                               <span
                                 title={`histogram: ${histShort(cell.hist)}`}
                                 className={`inline-flex min-w-[2.25rem] items-center justify-center rounded-md border px-2 py-1 text-xs font-bold ${
-                                  cell.green
-                                    ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
-                                    : "border-neon-red/40 bg-neon-red/10 text-neon-red"
+                                  cell.green ? arrowShade(row.tier) : "border-neon-red/40 bg-neon-red/10 text-neon-red"
                                 }`}
                               >
                                 {cell.green ? "▲" : "▼"}
@@ -245,6 +275,19 @@ export default function MacdMonitorPage() {
                           {tfs.length > 0 ? `${row.greenCount}/${tfs.length}` : "—"}
                         </span>
                       </td>
+                      <td className="px-3 py-2 text-center">
+                        {row.strength != null && row.tier ? (
+                          <span
+                            title={`ADR %${row.adrPct != null ? row.adrPct.toFixed(2) : "—"} · günlük hareket kapasitesi; evren içinde 0-10 normalize`}
+                            className={`inline-flex items-center justify-center gap-1 rounded-md border px-2 py-1 text-xs font-bold ${strengthChip(row.tier)}`}
+                          >
+                            {row.strength.toFixed(1)}
+                            <span className="hidden lg:inline text-[9px] tracking-wide">{TIER_LABEL[row.tier]}</span>
+                          </span>
+                        ) : (
+                          <span className="text-bunker-muted/60" title="ADR verisi yok (1d seri ısınana kadar)">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -253,6 +296,13 @@ export default function MacdMonitorPage() {
           </div>
           <p className="mt-3 font-mono text-[10px] text-bunker-muted/70">
             Hesaplama: kapanmış mum serisine canlı fiyat eklenerek MACD (12, 26, 9). M3/M30 serileri REST ile aralıklı tazelenir.
+          </p>
+          <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-bunker-muted/70">
+            <span>▲ yeşil tonu → ADR gücü:</span>
+            <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-4 rounded border border-neon-green/60 bg-neon-green/25" /> GÜÇLÜ</span>
+            <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-4 rounded border border-neon-green/40 bg-neon-green/10" /> NORMAL</span>
+            <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-4 rounded border border-neon-green/30 bg-neon-green/5" /> ZAYIF</span>
+            <span className="text-bunker-muted/50">· GÜÇ: son 14 günlük ortalama günlük hareket (ADR %), mevcut evren içinde 0-10 normalize.</span>
           </p>
         </div>
       </main>
