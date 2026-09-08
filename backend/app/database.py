@@ -2526,10 +2526,7 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7):
                 break
         for table, column in (
             ("llm_tool_logs", "timestamp"),
-            ("embedding_jobs", "created_at"),
             ("analysis_snapshots", "captured_at"),
-            ("strategy_scan_logs", "timestamp"),
-            ("velocity_candidates", "created_at"),
             ("monitoring_notifications", "detected_at"),
         ):
             try:
@@ -2541,6 +2538,24 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7):
                 # must not abort the remaining sweeps.
                 conn.rollback()
                 deleted[table] = 0
+        # embedding_jobs.created_at TIMESTAMPTZ'dir (epoch double değil); yıkama
+        # sorgusu epoch cutoff ile karşılaştırmak için EXTRACT(EPOCH) kullanır.
+        try:
+            cursor = conn.execute("DELETE FROM embedding_jobs WHERE EXTRACT(EPOCH FROM created_at) < ?", (cutoff,))
+            conn.commit()
+            deleted["embedding_jobs"] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        except Exception:
+            conn.rollback()
+            deleted["embedding_jobs"] = 0
+        # strategy_scan_logs şemada bulunmuyor; velocity_candidates'ı doğru
+        # tablo adıyla ele al. Yoksa sessizce geç.
+        try:
+            cursor = conn.execute("DELETE FROM velocity_candidates WHERE created_at < ?", (cutoff,))
+            conn.commit()
+            deleted["velocity_candidates"] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        except Exception:
+            conn.rollback()
+            deleted["velocity_candidates"] = 0
         return deleted
 
     return await _run_db(op)
