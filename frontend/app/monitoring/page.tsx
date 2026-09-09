@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiFetch, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
@@ -90,6 +90,47 @@ const extractRisingCandidates = (payload: any): RisingCandidate[] => {
   }
   list.sort((a, b) => b.strength - a.strength || b.green - a.green);
   return list;
+};
+
+// SIRÇRAMA ADAYLARI: sıçrama skoru (0-100) ≥ eşik — kırılım/squeeze/hacim/agresör.
+const JUMP_MIN = 60;
+type JumpSig = { break?: boolean | null; state?: string | null; vol?: boolean | null };
+type JumpCand = { symbol: string; jump: number; m5: JumpSig | null; m15: JumpSig | null; cvd: { buy_dominant?: boolean; buy_ratio?: number | null; whale_net?: number | null } | null };
+const extractJumpCandidates = (payload: any): JumpCand[] => {
+  const symbols = payload?.symbols || {};
+  const universe = Array.isArray(payload?.universe) && payload.universe.length
+    ? payload.universe
+    : Object.keys(symbols);
+  const list: JumpCand[] = [];
+  for (const sym of universe) {
+    const row = symbols[sym] || {};
+    const jump = Number(row?.jump);
+    if (!Number.isFinite(jump) || jump < JUMP_MIN) continue;
+    list.push({
+      symbol: sym,
+      jump,
+      m5: row?.sigs?.["5m"] || null,
+      m15: row?.sigs?.["15m"] || null,
+      cvd: row?.cvd || null,
+    });
+  }
+  list.sort((a, b) => b.jump - a.jump);
+  return list;
+};
+
+const jumpFlagIcons = (cand: JumpCand) => {
+  const icons: { icon: string; title: string }[] = [];
+  const push = (icon: string, title: string) => icons.push({ icon, title });
+  if (cand.m5?.break) push("🚀", "M5: 20-bar yüksek kırılımı");
+  if (cand.m15?.break) push("🚀", "M15: 20-bar yüksek kırılımı");
+  if (cand.m5?.state === "expand") push("⚡", "M5: volatilite genişlemesi");
+  if (cand.m15?.state === "expand") push("⚡", "M15: volatilite genişlemesi");
+  if (cand.m5?.state === "squeeze") push("🧲", "M5: sıkışma — yay hazır");
+  if (cand.m15?.state === "squeeze") push("🧲", "M15: sıkışma — yay hazır");
+  if (cand.m5?.vol) push("🔥", "M5: hacim patlaması");
+  if (cand.m15?.vol) push("🔥", "M15: hacim patlaması");
+  if (cand.cvd?.buy_dominant) push("🐋", `Alıcı agresör baskın (oran ${Number(cand.cvd.buy_ratio ?? 0).toFixed(2)}${cand.cvd.whale_net ? ` · balina ${cand.cvd.whale_net > 0 ? "+" : ""}${cand.cvd.whale_net}` : ""})`);
+  return icons;
 };
 
 const fmtTime = (ts: number | null) => {
@@ -218,23 +259,25 @@ export default function MonitoringPage() {
   const [minScoreDirty, setMinScoreDirty] = useState(false);
   const [savingMinScore, setSavingMinScore] = useState(false);
 
-  // YÜKSELİŞ EĞİLİMİ ADAYLARI (MACD MONITOR beslemesi): REST 15 sn poll +
-  // WS macd_monitor mesajıyla anlık tazeleme.
-  const [rising, setRising] = useState<RisingCandidate[]>([]);
-  const loadRising = useCallback(() => {
+  // YÜKSELİŞ/SIRÇRAMA ADAYLARI (MACD MONITOR beslemesi): REST 15 sn poll +
+  // WS macd_monitor mesajıyla anlık tazeleme; iki panel aynı payload'dan türer.
+  const [macdData, setMacdData] = useState<any>(null);
+  const loadMacd = useCallback(() => {
     apiFetch("/api/macd-monitor")
-      .then((data) => setRising(extractRisingCandidates(data)))
+      .then(setMacdData)
       .catch(() => undefined);
   }, []);
   useEffect(() => {
-    loadRising();
-    const timer = window.setInterval(loadRising, 15_000);
+    loadMacd();
+    const timer = window.setInterval(loadMacd, 15_000);
     return () => window.clearInterval(timer);
-  }, [loadRising]);
+  }, [loadMacd]);
   const onLiveMessage = useCallback((message: any) => {
-    if (message.type === "macd_monitor" && message.data) setRising(extractRisingCandidates(message.data));
+    if (message.type === "macd_monitor" && message.data) setMacdData(message.data);
   }, []);
   useLiveMessages(onLiveMessage);
+  const rising = useMemo(() => extractRisingCandidates(macdData), [macdData]);
+  const jumpers = useMemo(() => extractJumpCandidates(macdData), [macdData]);
 
   // Admin girişteyken 30sn'lik tarama döngüsü inputu ezmesin: yalnız
   // düzenlenmemişken (dirty değilken) ayar değeriyle senkronlanır.
@@ -386,6 +429,47 @@ export default function MonitoringPage() {
                 </span>
               </a>
             ))}
+          </div>
+        </section>
+      )}
+
+      {jumpers.length > 0 && (
+        <section className="card border-yellow-400/30">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="eyebrow text-yellow-300">🚀 SIRÇRAMA ADAYLARI ({jumpers.length})</p>
+            <a href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-yellow-300">
+              MACD MONITOR&apos;DE GÖR →
+            </a>
+          </div>
+          <p className="mt-1 text-xs text-bunker-muted">
+            Sıçrama skoru ≥ {JUMP_MIN}/100: trend gücü + MACD yeşil + M5/M15 kırılım, volatilite genişlemesi, hacim ve alıcı agresör teyidi. Eşiği geçenler WS/push ile bildirilir.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {jumpers.map((item) => {
+              const icons = jumpFlagIcons(item);
+              return (
+                <a
+                  key={item.symbol}
+                  href={`/charts?symbol=${encodeURIComponent(item.symbol)}`}
+                  className="group rounded-lg border border-yellow-400/40 bg-yellow-400/10 px-3 py-2 transition-colors hover:border-yellow-300/70 hover:bg-yellow-400/15"
+                  title={`${item.symbol} grafiğini aç · SIRÇRAMA ${item.jump}/100`}
+                >
+                  <span className="flex items-center gap-2 font-mono text-sm font-bold text-white">
+                    {item.symbol}
+                    <span className="rounded border border-yellow-300/60 bg-yellow-400/20 px-1.5 py-0.5 font-mono text-[10px] font-bold text-yellow-300">
+                      {item.jump}/100
+                    </span>
+                    {icons.length > 0 && (
+                      <span className="flex gap-0.5 text-[11px] leading-none">
+                        {icons.map((entry, index) => (
+                          <span key={`${entry.icon}-${index}`} title={entry.title}>{entry.icon}</span>
+                        ))}
+                      </span>
+                    )}
+                  </span>
+                </a>
+              );
+            })}
           </div>
         </section>
       )}

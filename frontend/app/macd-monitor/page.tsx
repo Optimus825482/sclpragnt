@@ -19,6 +19,8 @@ const POLL_MS = 30_000;
 
 type MacdCell = { green: boolean; hist: number };
 type MacdTier = "strong" | "normal" | "weak";
+type TfSignals = { break: boolean | null; state: string | null; vol: boolean | null };
+type CvdInfo = { fresh?: boolean; buy_ratio?: number | null; whale_net?: number | null; buy_dominant?: boolean };
 type SymbolMacd = {
   last: number | null;
   tfs: Record<string, MacdCell | null>;
@@ -26,7 +28,11 @@ type SymbolMacd = {
   speed?: number | null;
   strength?: number | null;
   tier?: MacdTier | null;
+  jump?: number | null;
+  sigs?: { "5m"?: TfSignals | null; "15m"?: TfSignals | null };
+  cvd?: CvdInfo | null;
 };
+const JUMP_MIN = 60;
 type Snapshot = {
   universe: string[];
   symbols: Record<string, SymbolMacd>;
@@ -70,6 +76,28 @@ const strengthChip = (tier: MacdTier | null | undefined) => {
   return "border-yellow-300/50 bg-yellow-300/10 text-yellow-300";
 };
 
+const jumpChip = (jump: number) =>
+  jump >= JUMP_MIN
+    ? "border-neon-green/60 bg-neon-green/20 text-neon-green"
+    : jump >= 40
+      ? "border-yellow-300/50 bg-yellow-300/10 text-yellow-300"
+      : "border-bunker-600 bg-bunker-900 text-bunker-muted";
+
+const jumpIcons = (m5: TfSignals | null | undefined, m15: TfSignals | null | undefined, cvd: CvdInfo | null | undefined) => {
+  const icons: { icon: string; title: string }[] = [];
+  const push = (icon: string, title: string) => icons.push({ icon, title });
+  if (m5?.break) push("🚀", "M5: 20-bar yüksek kırılımı");
+  if (m15?.break) push("🚀", "M15: 20-bar yüksek kırılımı");
+  if (m5?.state === "expand") push("⚡", "M5: volatilite genişlemesi");
+  if (m15?.state === "expand") push("⚡", "M15: volatilite genişlemesi");
+  if (m5?.state === "squeeze") push("🧲", "M5: sıkışma — yay hazır");
+  if (m15?.state === "squeeze") push("🧲", "M15: sıkışma — yay hazır");
+  if (m5?.vol) push("🔥", "M5: hacim patlaması (>1.5× ort.)");
+  if (m15?.vol) push("🔥", "M15: hacim patlaması (>1.5× ort.)");
+  if (cvd?.buy_dominant) push("🐋", `Agresör alıcı baskın (oran ${Number(cvd.buy_ratio ?? 0).toFixed(2)}${cvd.whale_net ? ` · balina ${cvd.whale_net > 0 ? "+" : ""}${cvd.whale_net}` : ""})`);
+  return icons.slice(0, 6);
+};
+
 export default function MacdMonitorPage() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -77,6 +105,7 @@ export default function MacdMonitorPage() {
   const [query, setQuery] = useState("");
   const [onlyGreen, setOnlyGreen] = useState(false);
   const [sortAlpha, setSortAlpha] = useState(false);
+  const [lastAlert, setLastAlert] = useState<{ symbol: string; score: number; at: number } | null>(null);
   const liveStatus = useLiveStatus();
 
   const loadSnapshot = useCallback(() => {
@@ -97,6 +126,9 @@ export default function MacdMonitorPage() {
 
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "macd_monitor" && message.data) setSnapshot(message.data);
+    if (message.type === "macd_monitor_alert" && message.data?.symbol) {
+      setLastAlert({ symbol: message.data.symbol, score: Number(message.data.score) || 0, at: Date.now() / 1000 });
+    }
   }, []);
   useLiveMessages(onLiveMessage);
 
@@ -127,6 +159,9 @@ export default function MacdMonitorPage() {
           speed: row?.speed ?? null,
           strength: row?.strength ?? null,
           tier: row?.tier ?? null,
+          sigs: row?.sigs ?? null,
+          cvd: row?.cvd ?? null,
+          jump: row?.jump ?? null,
         };
       })
       .filter((r) => !onlyGreen || r.greenCount === tfs.length);
@@ -145,6 +180,13 @@ export default function MacdMonitorPage() {
       (symbol) => tfs.length > 0 && tfs.every((tf) => symbols[symbol]?.tfs?.[tf]?.green),
     ).length;
   }, [snapshot, tfs]);
+
+  const jumpCount = useMemo(() => {
+    const symbols = snapshot?.symbols || {};
+    return (snapshot?.universe?.length ? snapshot.universe : Object.keys(symbols)).filter(
+      (symbol) => Number(symbols[symbol]?.jump) >= JUMP_MIN,
+    ).length;
+  }, [snapshot]);
 
   const universeCount = snapshot?.universe?.length || Object.keys(snapshot?.symbols || {}).length;
   const stale = liveStatus === "open" && snapshot?.generated_at
@@ -168,7 +210,16 @@ export default function MacdMonitorPage() {
           </div>
         </div>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {lastAlert && (
+          <div className="mt-3 flex items-center gap-2 rounded-lg border border-yellow-400/50 bg-yellow-400/10 px-3 py-2 font-mono text-xs text-yellow-300">
+            <span>🚀 SIRÇRAMA ALARMI</span>
+            <b className="text-white">{lastAlert.symbol}</b>
+            <span>skor {lastAlert.score}/100</span>
+            <span className="text-yellow-300/70">· {fmtTime(lastAlert.at)}</span>
+          </div>
+        )}
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="card">
             <p className="eyebrow">AKTİF SEMBOL</p>
             <p className="mt-1 font-mono text-2xl font-bold text-white">{universeCount}</p>
@@ -176,6 +227,10 @@ export default function MacdMonitorPage() {
           <div className="card">
             <p className="eyebrow">TAM YEŞİL ({tfs.length}/{tfs.length})</p>
             <p className="mt-1 font-mono text-2xl font-bold text-neon-green">{allGreenSymbols}</p>
+          </div>
+          <div className="card">
+            <p className="eyebrow">SIRÇRAMA ≥ {JUMP_MIN}</p>
+            <p className="mt-1 font-mono text-2xl font-bold text-neon-green">{jumpCount}</p>
           </div>
           <div className="card">
             <p className="eyebrow">SON GÜNCELLEME</p>
@@ -236,6 +291,7 @@ export default function MacdMonitorPage() {
                     ))}
                     <th className="px-3 py-2 text-center" title={`${tfs.length} zaman diliminde yeşil sayısı`}>YEŞİL</th>
                     <th className="px-3 py-2 text-center" title="Trend gücü: 20 barlık lineer regresyon — R² (düzenlilik) × eğim/bar-aralığı (hız); evren içinde 0-10 normalize">GÜÇ · 0-10</th>
+                    <th className="px-3 py-2 text-center" title={`Sıçrama adayı skoru (0-100): trend gücü + MACD yeşil + M5/M15 kırılım, volatilite genişlemesi, hacim ve agresör teyidi. ≥ ${JUMP_MIN} = aday (WS/push alarmı tetiklenir)`}>SIRÇRAMA</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -290,6 +346,30 @@ export default function MacdMonitorPage() {
                           <span className="text-bunker-muted/60" title="Trend verisi yok (mum serisi ısınana kadar)">—</span>
                         )}
                       </td>
+                      <td className="px-3 py-2 text-center">
+                        {row.jump != null ? (
+                          <span className="inline-flex items-center justify-center gap-1.5">
+                            <span
+                              title={`Sıçrama skoru ${row.jump}/100 (≥ ${JUMP_MIN} aday)`}
+                              className={`inline-flex min-w-[2.5rem] items-center justify-center rounded-md border px-2 py-1 text-xs font-bold ${jumpChip(row.jump)}`}
+                            >
+                              {row.jump}
+                            </span>
+                            {(() => {
+                              const icons = jumpIcons(row.sigs?.["5m"] ?? null, row.sigs?.["15m"] ?? null, row.cvd ?? null);
+                              return icons.length > 0 ? (
+                                <span className="flex gap-0.5 text-[11px] leading-none">
+                                  {icons.map((item, index) => (
+                                    <span key={`${item.icon}-${index}`} title={item.title}>{item.icon}</span>
+                                  ))}
+                                </span>
+                              ) : null;
+                            })()}
+                          </span>
+                        ) : (
+                          <span className="text-bunker-muted/60" title="Sinyal verisi yok">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -306,6 +386,7 @@ export default function MacdMonitorPage() {
             <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-4 rounded border border-neon-green/30 bg-neon-green/5" /> ZAYIF</span>
             <span className="text-bunker-muted/50">· GÜÇ: 20 barlık lineer regresyon — R² (trend düzenliliği) × eğim/bar-aralığı (hız); evren içinde 0-10 normalize.</span>
             <span className="text-bunker-muted/50">Ağırlıklar: M5·M15 önde, H1/M30 orta, M3/M1 düşük.</span>
+            <span className="text-bunker-muted/50">SIRÇRAMA ikonları: 🚀 20-bar kırılım · ⚡ genişleme · 🧲 sıkışma · 🔥 hacim · 🐋 alıcı agresör.</span>
           </p>
         </div>
       </main>
