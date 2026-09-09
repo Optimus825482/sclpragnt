@@ -95,27 +95,58 @@ const extractRisingCandidates = (payload: any): RisingCandidate[] => {
 // SIRÇRAMA ADAYLARI: sıçrama skoru (0-100) ≥ eşik — kırılım/squeeze/hacim/agresör.
 const JUMP_MIN = 60;
 type JumpSig = { break?: boolean | null; state?: string | null; vol?: boolean | null };
-type JumpCand = { symbol: string; jump: number; m5: JumpSig | null; m15: JumpSig | null; cvd: { buy_dominant?: boolean; buy_ratio?: number | null; whale_net?: number | null } | null };
+type PreSig = { approach?: boolean; m1?: boolean; dip?: boolean };
+type JumpCand = { symbol: string; jump: number; m5: JumpSig | null; m15: JumpSig | null; cvd: { buy_dominant?: boolean; buy_ratio?: number | null; whale_net?: number | null } | null; pre: PreSig | null };
+type EarlyCand = { symbol: string; pre: PreSig; jump: number | null };
 const extractJumpCandidates = (payload: any): JumpCand[] => {
   const symbols = payload?.symbols || {};
   const universe = Array.isArray(payload?.universe) && payload.universe.length
     ? payload.universe
     : Object.keys(symbols);
+  const threshold = Number(payload?.jump_min ?? JUMP_MIN);
   const list: JumpCand[] = [];
   for (const sym of universe) {
     const row = symbols[sym] || {};
     const jump = Number(row?.jump);
-    if (!Number.isFinite(jump) || jump < JUMP_MIN) continue;
+    if (!Number.isFinite(jump) || jump < threshold) continue;
     list.push({
       symbol: sym,
       jump,
       m5: row?.sigs?.["5m"] || null,
       m15: row?.sigs?.["15m"] || null,
       cvd: row?.cvd || null,
+      pre: row?.pre || null,
     });
   }
   list.sort((a, b) => b.jump - a.jump);
   return list;
+};
+
+// ERKEN SİNYAL (YAKLAŞIYOR): kırılım öncesi öncüler — M5 zirveye yakın,
+// M1 öncü kırılım, MACD dip dönüşü. Skor eşiği dolmadan haber verir.
+const extractEarlyCandidates = (payload: any): EarlyCand[] => {
+  const symbols = payload?.symbols || {};
+  const universe = Array.isArray(payload?.universe) && payload.universe.length
+    ? payload.universe
+    : Object.keys(symbols);
+  const list: EarlyCand[] = [];
+  for (const sym of universe) {
+    const row = symbols[sym] || {};
+    const pre = row?.pre || {};
+    if (!row?.pre_any) continue;
+    const jump = Number(row?.jump);
+    list.push({ symbol: sym, pre, jump: Number.isFinite(jump) ? jump : null });
+  }
+  list.sort((a, b) => (b.jump ?? 0) - (a.jump ?? 0));
+  return list;
+};
+
+const earlyFlagIcons = (pre: PreSig) => {
+  const icons: { icon: string; title: string }[] = [];
+  if (pre.approach) icons.push({ icon: "🎯", title: "M5 zirveye yaklaşıyor (≤0.5 ATR) + hacim/genişleme" });
+  if (pre.m1) icons.push({ icon: "🕐", title: "M1 öncü kırılımı + M5 yeşil" });
+  if (pre.dip) icons.push({ icon: "📈", title: "M5 MACD hist dip dönüşü" });
+  return icons;
 };
 
 const jumpFlagIcons = (cand: JumpCand) => {
@@ -278,6 +309,8 @@ export default function MonitoringPage() {
   useLiveMessages(onLiveMessage);
   const rising = useMemo(() => extractRisingCandidates(macdData), [macdData]);
   const jumpers = useMemo(() => extractJumpCandidates(macdData), [macdData]);
+  const earlyCands = useMemo(() => extractEarlyCandidates(macdData), [macdData]);
+  const jumpThreshold = Number(macdData?.jump_min ?? JUMP_MIN);
 
   // Admin girişteyken 30sn'lik tarama döngüsü inputu ezmesin: yalnız
   // düzenlenmemişken (dirty değilken) ayar değeriyle senkronlanır.
@@ -433,6 +466,44 @@ export default function MonitoringPage() {
         </section>
       )}
 
+      {earlyCands.length > 0 && (
+        <section className="card border-sky-400/30">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="eyebrow text-sky-300">🌱 ERKEN SİNYAL · YAKLAŞIYOR ({earlyCands.length})</p>
+            <a href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-sky-300">
+              MACD MONITOR&apos;DE GÖR →
+            </a>
+          </div>
+          <p className="mt-1 text-xs text-bunker-muted">
+            Kırılımdan ÖNCE öncüller: 🎯 M5 zirveye yaklaşıyor (≤0.5 ATR + aktivite) · 🕐 M1 öncü kırılım · 📈 MACD dip dönüşü. Alarmlar Ayarlar → MACD/Sıçrama&apos;dan yönetilir.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {earlyCands.map((item) => (
+              <a
+                key={item.symbol}
+                href={`/charts?symbol=${encodeURIComponent(item.symbol)}`}
+                className="group rounded-lg border border-sky-400/40 bg-sky-400/10 px-3 py-2 transition-colors hover:border-sky-300/70 hover:bg-sky-400/15"
+                title={`${item.symbol} grafiğini aç · erken sinyal${item.jump != null ? ` · skor ${item.jump}/100` : ""}`}
+              >
+                <span className="flex items-center gap-2 font-mono text-sm font-bold text-white">
+                  {item.symbol}
+                  {item.jump != null && (
+                    <span className="rounded border border-bunker-600 bg-bunker-900 px-1.5 py-0.5 font-mono text-[10px] font-bold text-bunker-muted">
+                      {item.jump}
+                    </span>
+                  )}
+                  <span className="flex gap-0.5 text-[11px] leading-none">
+                    {earlyFlagIcons(item.pre).map((entry, index) => (
+                      <span key={`${entry.icon}-${index}`} title={entry.title}>{entry.icon}</span>
+                    ))}
+                  </span>
+                </span>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
+
       {jumpers.length > 0 && (
         <section className="card border-yellow-400/30">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -442,7 +513,7 @@ export default function MonitoringPage() {
             </a>
           </div>
           <p className="mt-1 text-xs text-bunker-muted">
-            Sıçrama skoru ≥ {JUMP_MIN}/100: trend gücü + MACD yeşil + M5/M15 kırılım, volatilite genişlemesi, hacim ve alıcı agresör teyidi. Eşiği geçenler WS/push ile bildirilir.
+            Sıçrama skoru ≥ {jumpThreshold}/100: trend gücü + MACD yeşil + M5/M15 kırılım, volatilite genişlemesi, hacim ve alıcı agresör teyidi. Eşiği geçenler alarm/push ile bildirilir (Ayarlar → MACD/Sıçrama).
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {jumpers.map((item) => {

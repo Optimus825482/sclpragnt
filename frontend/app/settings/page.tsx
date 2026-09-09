@@ -41,7 +41,7 @@ export default function SettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "system-health">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "system-health">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -515,6 +515,7 @@ function SettingsPageInner() {
             ["llm", "LLM / Provider", "🤖"],
             ["chat", "Chat Ayarları", "✦"],
             ["auto-paper", "Otonom Paper", "🤖"],
+            ["macd", "MACD / Sıçrama", "🚀"],
             ["system-health", "Sistem Sağlığı", "🩺"],
           ] as const).map(([key, label, icon]) => (
             <button key={key} onClick={() => setActiveTab(key)} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${activeTab === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>
@@ -534,6 +535,9 @@ function SettingsPageInner() {
           </div>
           <div className={`${activeTab !== "auto-paper" ? "hidden" : ""}`}>
             <AutoPaperSettingsPanel />
+          </div>
+          <div className={`${activeTab !== "macd" ? "hidden" : ""}`}>
+            <MacdJumpSettingsPanel />
           </div>
           <div className={`card bg-bunker-950 ${activeTab !== "symbols" ? "hidden" : ""}`}>
             <div className="flex justify-between items-center mb-4">
@@ -882,6 +886,92 @@ function SettingsPageInner() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function MacdJumpSettingsPanel() {
+  const [draft, setDraft] = useState<any>({});
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const res = await apiRequest(`${API_BASE}/api/macd-monitor/settings`);
+      if (res.ok) { const d = await res.json(); setDraft(d.settings || {}); }
+    } catch { setError("Veri alınamadı"); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setSaving(true); setError(null); setSaved(false);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/macd-monitor/settings`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(draft),
+      });
+      if (!res.ok) { const b = await res.json(); throw new Error(b.detail || "Kayıt hatası"); }
+      const d = await res.json();
+      setDraft(d.settings || {});
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (e) { setError(e instanceof Error ? e.message : "Bilinmeyen hata"); }
+    finally { setSaving(false); }
+  };
+
+  const set = (key: string, value: any) => setDraft((prev: any) => ({ ...prev, [key]: value }));
+
+  return (
+    <div className="card bg-bunker-950">
+      <p className="eyebrow mb-2">MACD MONITOR · SIRÇRAMA ADAYI AYARLARI</p>
+      <p className="text-xs text-bunker-muted mb-4">
+        Sıçrama skoru eşiği ve alarm davranışı. Eşik; MACD MONITOR sayfasındaki SIRÇRAMA sütunu ile
+        İzleme sayfasındaki "SIRÇRAMA ADAYLARI" listesini ve alarmları aynı anda yönetir.
+      </p>
+      {error && <p className="text-neon-red text-xs mb-3">{error}</p>}
+      {saved && <p className="text-neon-green text-xs mb-3">✅ Kaydedildi</p>}
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Sıçrama Adayı Eşiği (0-100)</label>
+          <input type="number" min="0" max="100" value={draft.jump_min_score ?? 60} onChange={(e) => set("jump_min_score", Number(e.target.value))} className="input" />
+        </div>
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Eşik Alarmları</label>
+          <select value={draft.alerts_enabled ? "1" : "0"} onChange={(e) => set("alerts_enabled", e.target.value === "1")} className="input">
+            <option value="1">Açık (WS + banner)</option>
+            <option value="0">Kapalı</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Web Push Bildirimi</label>
+          <select value={draft.push_enabled ? "1" : "0"} onChange={(e) => set("push_enabled", e.target.value === "1")} className="input">
+            <option value="1">Açık</option>
+            <option value="0">Kapalı</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Erken Sinyal Alarmları</label>
+          <select value={draft.early_alerts_enabled ? "1" : "0"} onChange={(e) => set("early_alerts_enabled", e.target.value === "1")} className="input">
+            <option value="1">Açık (varsayılan)</option>
+            <option value="0">Kapalı</option>
+          </select>
+        </div>
+      </div>
+      <p className="mt-3 text-[11px] text-bunker-muted leading-relaxed">
+        <b className="text-sky-300">Erken Sinyal (YAKLAŞIYOR):</b> kırılımdan önce haber verir — M5 zirveye yaklaşma (≤0.5 ATR + aktivite),
+        M1 öncü kırılımı (M5 yeşilken) ve MACD hist dip dönüşü. "Web Push Bildirimi" kapalıyken hiç push
+        gönderilmez; sayfa içi canlı banner (WS) yine çalışır. "Eşik Alarmları" kapalıysa hiçbir alarm üretilmez —
+        skor ve listeler yine güncellenir.
+      </p>
+
+      <div className="flex gap-3 mt-6">
+        <button onClick={save} disabled={saving} className="px-5 py-2 rounded-lg border border-neon-green/50 text-neon-green font-mono text-xs hover:bg-neon-green/10 disabled:opacity-50">
+          {saving ? "KAYDEDİLİYOR..." : "KAYDET"}
+        </button>
+      </div>
     </div>
   );
 }
