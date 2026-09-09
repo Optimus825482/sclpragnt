@@ -54,6 +54,11 @@ _FULL_BROADCAST_EVERY = 5
 _TREND_WINDOW = 20
 _TREND_MIN_POINTS = 8
 
+# Zaman dilimi ağırlıkları (kullanıcı isteği 2026-09-09): kullanıcı M5'te
+# sıçrama/düzenli yükselişi izlemek istiyor → M5/M15 en yüksek; H1 önemli ama
+# biraz daha kısa vade ağırlıklı → orta; M30 ortada; M1/M3 en düşük.
+_TF_WEIGHTS = {"1m": 0.4, "3m": 0.6, "5m": 1.5, "15m": 1.4, "30m": 1.0, "1h": 1.1}
+
 _loop_task = None
 
 # Son hesaplanan görünüm. symbols: {SYM: {"last": fiyat|None,
@@ -258,32 +263,33 @@ async def _compute_pass(pass_no: int) -> dict:
         _dirty = True
 
     # Trend gücü: her TF için 20 barlık lineer regresyon — R² (düzenlilik) ×
-    # |eğim|/bar-aralığı (hız). Sembol skoru = TF ortalaması, evren içinde
-    # 0-10'a normalize edilir (ADR volatilitesi değil, gerçek trend gücü).
+    # |eğim|/bar-aralığı (hız). Sembol skoru = TF'lerin _TF_WEIGHTS ile AĞIRLIKLI
+    # ortalaması (M5/M15 önde, M1/M3 düşük); evren içinde 0-10'a normalize.
     raw_map: dict[str, dict] = {}
     for sym in snapshot_symbols:
-        features = []
+        raw_wsum = 0.0
+        weight_sum = 0.0
+        r2_wsum = 0.0
+        speed_wsum = 0.0
+        speed_weight_sum = 0.0
         for tf in TF_LIST:
             feat = _trend_feature(sym, tf)
-            if feat and feat["r2"] is not None:
-                features.append(feat)
-        if not features:
-            continue
-        products = []
-        speeds = []
-        for feat in features:
+            if feat is None or feat["r2"] is None:
+                continue
+            weight = _TF_WEIGHTS.get(tf, 1.0)
             speed = feat.get("speed")
+            raw_wsum += weight * (feat["r2"] * (speed if speed is not None else 0.0))
+            r2_wsum += weight * feat["r2"]
+            weight_sum += weight
             if speed is not None:
-                speeds.append(speed)
-                products.append(feat["r2"] * speed)
-            else:
-                products.append(feat["r2"] * 0.0)
-        r2_avg = float(sum(f["r2"] for f in features) / len(features))
-        speed_avg = float(sum(speeds) / len(speeds)) if speeds else None
+                speed_wsum += weight * speed
+                speed_weight_sum += weight
+        if weight_sum <= 0:
+            continue
         raw_map[sym] = {
-            "raw": float(sum(products) / len(products)),
-            "r2": r2_avg,
-            "speed": speed_avg,
+            "raw": raw_wsum / weight_sum,
+            "r2": r2_wsum / weight_sum,
+            "speed": (speed_wsum / speed_weight_sum) if speed_weight_sum else None,
         }
     raws = [entry["raw"] for entry in raw_map.values()]
     lo, hi = (min(raws), max(raws)) if raws else (None, None)

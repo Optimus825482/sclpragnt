@@ -305,6 +305,7 @@ export default function MacdMonitorPage() {
             <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-4 rounded border border-neon-green/40 bg-neon-green/10" /> NORMAL</span>
             <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-4 rounded border border-neon-green/30 bg-neon-green/5" /> ZAYIF</span>
             <span className="text-bunker-muted/50">· GÜÇ: 20 barlık lineer regresyon — R² (trend düzenliliği) × eğim/bar-aralığı (hız); evren içinde 0-10 normalize.</span>
+            <span className="text-bunker-muted/50">Ağırlıklar: M5·M15 önde, H1/M30 orta, M3/M1 düşük.</span>
           </p>
         </div>
       </main>
