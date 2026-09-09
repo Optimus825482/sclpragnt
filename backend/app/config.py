@@ -297,6 +297,15 @@ class Config:
     # Farklı sembollerden gelen bildirim zinciri cüzdanı tüketmesin.
     AUTO_PAPER_MAX_OPEN_POSITIONS = max(0, int(os.getenv("AUTO_PAPER_MAX_OPEN_POSITIONS", "0")))
 
+    # MACD MONITOR / SIRÇRAMA ADAYI ayarları (DB üzerinden değiştirilebilir;
+    # burada yalnızca varsayılanlar). Eşik ve alarm/push anahtarları.
+    MACD_JUMP_MIN_SCORE_DEFAULT = max(0, min(100, int(os.getenv("MACD_JUMP_MIN_SCORE", "60"))))
+    MACD_JUMP_ALERTS_ENABLED = os.getenv("MACD_JUMP_ALERTS_ENABLED", "true").lower() == "true"
+    MACD_JUMP_PUSH_ENABLED = os.getenv("MACD_JUMP_PUSH_ENABLED", "true").lower() == "true"
+    # Erken sinyal alarmları (YAKLAŞIYOR → KIRILIM aşamalı öncü sistem) —
+    # varsayılan AÇIK: M5 zirveye yaklaşma, M1 öncü kırılım, MACD dip dönüşü.
+    MACD_EARLY_ALERTS_ENABLED = os.getenv("MACD_EARLY_ALERTS_ENABLED", "true").lower() == "true"
+
     @classmethod
     def min_net_exit_pct(cls, order_value: float | None = None) -> float:
         """Gross move needed to cover round-trip costs plus minimum net PnL."""

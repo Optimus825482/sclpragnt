@@ -21,6 +21,7 @@ type MacdCell = { green: boolean; hist: number };
 type MacdTier = "strong" | "normal" | "weak";
 type TfSignals = { break: boolean | null; state: string | null; vol: boolean | null };
 type CvdInfo = { fresh?: boolean; buy_ratio?: number | null; whale_net?: number | null; buy_dominant?: boolean };
+type PreSignals = { approach?: boolean; m1?: boolean; dip?: boolean };
 type SymbolMacd = {
   last: number | null;
   tfs: Record<string, MacdCell | null>;
@@ -31,15 +32,18 @@ type SymbolMacd = {
   jump?: number | null;
   sigs?: { "5m"?: TfSignals | null; "15m"?: TfSignals | null };
   cvd?: CvdInfo | null;
+  pre?: PreSignals | null;
+  pre_any?: boolean | null;
 };
-const JUMP_MIN = 60;
 type Snapshot = {
   universe: string[];
   symbols: Record<string, SymbolMacd>;
   generated_at: number;
   timeframes?: string[];
   running?: boolean;
+  jump_min?: number;
 };
+const JUMP_MIN_FALLBACK = 60;
 
 const fmtTime = (ts: number | null | undefined) => {
   if (!ts) return "—";
@@ -62,6 +66,12 @@ const histShort = (hist: number) => {
 
 const TIER_LABEL: Record<string, string> = { strong: "GÜÇLÜ", normal: "NORMAL", weak: "ZAYIF" };
 
+const EARLY_LABEL: Record<string, string> = {
+  approach: "M5 zirveye yakın",
+  m1_breakout: "M1 öncü kırılım",
+  macd_dip_turn: "MACD dip dönüşü",
+};
+
 // Yeşil ok tonu: trend gücü GÜÇLÜ ise dolu/koyu, ZAYIF ise soluk. Kırmızı
 // oklar yön baskısı olduğundan güç tonlamasına girmez.
 const arrowShade = (tier: MacdTier | null | undefined) => {
@@ -76,14 +86,14 @@ const strengthChip = (tier: MacdTier | null | undefined) => {
   return "border-yellow-300/50 bg-yellow-300/10 text-yellow-300";
 };
 
-const jumpChip = (jump: number) =>
-  jump >= JUMP_MIN
+const jumpChip = (jump: number, min: number) =>
+  jump >= min
     ? "border-neon-green/60 bg-neon-green/20 text-neon-green"
-    : jump >= 40
+    : jump >= Math.max(30, min - 20)
       ? "border-yellow-300/50 bg-yellow-300/10 text-yellow-300"
       : "border-bunker-600 bg-bunker-900 text-bunker-muted";
 
-const jumpIcons = (m5: TfSignals | null | undefined, m15: TfSignals | null | undefined, cvd: CvdInfo | null | undefined) => {
+const jumpIcons = (m5: TfSignals | null | undefined, m15: TfSignals | null | undefined, cvd: CvdInfo | null | undefined, pre: PreSignals | null | undefined) => {
   const icons: { icon: string; title: string }[] = [];
   const push = (icon: string, title: string) => icons.push({ icon, title });
   if (m5?.break) push("🚀", "M5: 20-bar yüksek kırılımı");
@@ -95,7 +105,10 @@ const jumpIcons = (m5: TfSignals | null | undefined, m15: TfSignals | null | und
   if (m5?.vol) push("🔥", "M5: hacim patlaması (>1.5× ort.)");
   if (m15?.vol) push("🔥", "M15: hacim patlaması (>1.5× ort.)");
   if (cvd?.buy_dominant) push("🐋", `Agresör alıcı baskın (oran ${Number(cvd.buy_ratio ?? 0).toFixed(2)}${cvd.whale_net ? ` · balina ${cvd.whale_net > 0 ? "+" : ""}${cvd.whale_net}` : ""})`);
-  return icons.slice(0, 6);
+  if (pre?.approach) push("🎯", "M5: zirveye yaklaşıyor (≤0.5 ATR) + hacim/genişleme — YAKLAŞIYOR");
+  if (pre?.m1) push("🕐", "M1 öncü kırılımı + M5 yeşil — erken sinyal");
+  if (pre?.dip) push("📈", "M5 MACD hist dip dönüşü (yeşile hazır)");
+  return icons.slice(0, 8);
 };
 
 export default function MacdMonitorPage() {
@@ -106,6 +119,7 @@ export default function MacdMonitorPage() {
   const [onlyGreen, setOnlyGreen] = useState(false);
   const [sortAlpha, setSortAlpha] = useState(false);
   const [lastAlert, setLastAlert] = useState<{ symbol: string; score: number; at: number } | null>(null);
+  const [lastEarly, setLastEarly] = useState<{ symbol: string; signals: string[]; at: number } | null>(null);
   const liveStatus = useLiveStatus();
 
   const loadSnapshot = useCallback(() => {
@@ -128,6 +142,9 @@ export default function MacdMonitorPage() {
     if (message.type === "macd_monitor" && message.data) setSnapshot(message.data);
     if (message.type === "macd_monitor_alert" && message.data?.symbol) {
       setLastAlert({ symbol: message.data.symbol, score: Number(message.data.score) || 0, at: Date.now() / 1000 });
+    }
+    if (message.type === "macd_early_alert" && message.data?.symbol) {
+      setLastEarly({ symbol: message.data.symbol, signals: message.data.signals || [], at: Date.now() / 1000 });
     }
   }, []);
   useLiveMessages(onLiveMessage);
@@ -162,6 +179,7 @@ export default function MacdMonitorPage() {
           sigs: row?.sigs ?? null,
           cvd: row?.cvd ?? null,
           jump: row?.jump ?? null,
+          pre: row?.pre ?? null,
         };
       })
       .filter((r) => !onlyGreen || r.greenCount === tfs.length);
@@ -181,12 +199,13 @@ export default function MacdMonitorPage() {
     ).length;
   }, [snapshot, tfs]);
 
+  const jumpMin = Number(snapshot?.jump_min ?? JUMP_MIN_FALLBACK);
   const jumpCount = useMemo(() => {
     const symbols = snapshot?.symbols || {};
     return (snapshot?.universe?.length ? snapshot.universe : Object.keys(symbols)).filter(
-      (symbol) => Number(symbols[symbol]?.jump) >= JUMP_MIN,
+      (symbol) => Number(symbols[symbol]?.jump) >= jumpMin,
     ).length;
-  }, [snapshot]);
+  }, [snapshot, jumpMin]);
 
   const universeCount = snapshot?.universe?.length || Object.keys(snapshot?.symbols || {}).length;
   const stale = liveStatus === "open" && snapshot?.generated_at
@@ -219,6 +238,21 @@ export default function MacdMonitorPage() {
           </div>
         )}
 
+        {lastEarly && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-sky-400/50 bg-sky-400/10 px-3 py-2 font-mono text-xs text-sky-300">
+            <span>🌱 ERKEN SİNYAL — YAKLAŞIYOR</span>
+            <b className="text-white">{lastEarly.symbol}</b>
+            <span className="flex flex-wrap gap-1">
+              {lastEarly.signals.map((signal) => (
+                <span key={signal} className="rounded border border-sky-400/40 bg-sky-400/10 px-1.5 py-0.5 text-[10px]">
+                  {EARLY_LABEL[signal] ?? signal}
+                </span>
+              ))}
+            </span>
+            <span className="text-sky-300/70">· {fmtTime(lastEarly.at)}</span>
+          </div>
+        )}
+
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="card">
             <p className="eyebrow">AKTİF SEMBOL</p>
@@ -229,7 +263,7 @@ export default function MacdMonitorPage() {
             <p className="mt-1 font-mono text-2xl font-bold text-neon-green">{allGreenSymbols}</p>
           </div>
           <div className="card">
-            <p className="eyebrow">SIRÇRAMA ≥ {JUMP_MIN}</p>
+            <p className="eyebrow">SIRÇRAMA ≥ {jumpMin}</p>
             <p className="mt-1 font-mono text-2xl font-bold text-neon-green">{jumpCount}</p>
           </div>
           <div className="card">
@@ -291,7 +325,7 @@ export default function MacdMonitorPage() {
                     ))}
                     <th className="px-3 py-2 text-center" title={`${tfs.length} zaman diliminde yeşil sayısı`}>YEŞİL</th>
                     <th className="px-3 py-2 text-center" title="Trend gücü: 20 barlık lineer regresyon — R² (düzenlilik) × eğim/bar-aralığı (hız); evren içinde 0-10 normalize">GÜÇ · 0-10</th>
-                    <th className="px-3 py-2 text-center" title={`Sıçrama adayı skoru (0-100): trend gücü + MACD yeşil + M5/M15 kırılım, volatilite genişlemesi, hacim ve agresör teyidi. ≥ ${JUMP_MIN} = aday (WS/push alarmı tetiklenir)`}>SIRÇRAMA</th>
+                    <th className="px-3 py-2 text-center" title={`Sıçrama adayı skoru (0-100): trend gücü + MACD yeşil + M5/M15 kırılım, volatilite genişlemesi, hacim ve agresör teyidi. ≥ ${jumpMin} = aday (alarm/push ayarlardan yönetilir)`}>SIRÇRAMA</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -350,13 +384,13 @@ export default function MacdMonitorPage() {
                         {row.jump != null ? (
                           <span className="inline-flex items-center justify-center gap-1.5">
                             <span
-                              title={`Sıçrama skoru ${row.jump}/100 (≥ ${JUMP_MIN} aday)`}
-                              className={`inline-flex min-w-[2.5rem] items-center justify-center rounded-md border px-2 py-1 text-xs font-bold ${jumpChip(row.jump)}`}
+                              title={`Sıçrama skoru ${row.jump}/100 (≥ ${jumpMin} aday)`}
+                              className={`inline-flex min-w-[2.5rem] items-center justify-center rounded-md border px-2 py-1 text-xs font-bold ${jumpChip(row.jump, jumpMin)}`}
                             >
                               {row.jump}
                             </span>
                             {(() => {
-                              const icons = jumpIcons(row.sigs?.["5m"] ?? null, row.sigs?.["15m"] ?? null, row.cvd ?? null);
+                              const icons = jumpIcons(row.sigs?.["5m"] ?? null, row.sigs?.["15m"] ?? null, row.cvd ?? null, row.pre ?? null);
                               return icons.length > 0 ? (
                                 <span className="flex gap-0.5 text-[11px] leading-none">
                                   {icons.map((item, index) => (

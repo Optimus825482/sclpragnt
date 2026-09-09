@@ -19,12 +19,13 @@ Tasarım:
     (3m ~75 sn, 30m ~31 dk — kendi aralıklarına göre).
 """
 import asyncio
+import json
 import logging
 import time
 
 import numpy as np
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.config import config
 from app import database
@@ -59,10 +60,13 @@ _TREND_MIN_POINTS = 8
 # biraz daha kısa vade ağırlıklı → orta; M30 ortada; M1/M3 en düşük.
 _TF_WEIGHTS = {"1m": 0.4, "3m": 0.6, "5m": 1.5, "15m": 1.4, "30m": 1.0, "1h": 1.1}
 
-# SIRÇRAMA ADAYI skoru: 0-100; ≥ bu eşik aday sayılır ve geçiş anında alarm.
-_JUMP_ALERT_MIN = 60
+# SIRÇRAMA ADAYI skoru: 0-100; eşik ayarlardan (macd_monitor_settings)
+# gelir; varsayılan config.MACD_JUMP_MIN_SCORE_DEFAULT (60).
 # Aynı sembol için alarm tekrar aralığı (cooldown)
 _JUMP_ALERT_COOLDOWN_SEC = 30 * 60
+_SETTINGS_TTL_SEC = 5.0
+
+_settings_cache: dict = {"value": None, "at": 0.0}
 
 _loop_task = None
 
@@ -75,6 +79,8 @@ _last_price_seen: dict[str, float] = {}
 _last_rest_refresh: dict[tuple[str, str], float] = {}
 # symbol → son sıçrama alarmı zamanı (cooldown için)
 _jump_alerted_at: dict[str, float] = {}
+# symbol → son ERKEN SİNYAL (yaklaşıyor) alarmı zamanı (ayrı cooldown)
+_early_alerted_at: dict[str, float] = {}
 _dirty = False
 
 
@@ -83,6 +89,45 @@ def _status_value(info) -> str:
     if isinstance(info, dict):
         return str(info.get("status") or "")
     return str(info or "")
+
+
+def _to_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "açık", "on")
+
+
+def _macd_settings_defaults() -> dict:
+    return {
+        "jump_min_score": int(config.MACD_JUMP_MIN_SCORE_DEFAULT),
+        "alerts_enabled": bool(config.MACD_JUMP_ALERTS_ENABLED),
+        "push_enabled": bool(config.MACD_JUMP_PUSH_ENABLED),
+        "early_alerts_enabled": bool(config.MACD_EARLY_ALERTS_ENABLED),
+    }
+
+
+async def get_macd_settings(force: bool = False) -> dict:
+    """MACD MONITOR ayarları (DB; 5 sn TTL'li önbellek)."""
+    global _settings_cache
+    now = time.time()
+    if not force and _settings_cache["value"] and now - _settings_cache["at"] < _SETTINGS_TTL_SEC:
+        return dict(_settings_cache["value"])
+    defaults = _macd_settings_defaults()
+    try:
+        raw = await database.get_llm_setting("macd_monitor_settings", "{}")
+        stored = json.loads(raw or "{}") if raw else {}
+    except Exception:
+        stored = {}
+    merged = {
+        "jump_min_score": int(max(0, min(100, int(stored.get("jump_min_score", defaults["jump_min_score"]))))),
+        "alerts_enabled": _to_bool(stored.get("alerts_enabled"), defaults["alerts_enabled"]),
+        "push_enabled": _to_bool(stored.get("push_enabled"), defaults["push_enabled"]),
+        "early_alerts_enabled": _to_bool(stored.get("early_alerts_enabled"), defaults["early_alerts_enabled"]),
+    }
+    _settings_cache.update(value=merged, at=now)
+    return dict(merged)
 
 
 async def _active_symbols() -> list[str]:
@@ -260,6 +305,83 @@ def _tf_volume_surge(symbol: str, tf: str) -> bool | None:
     return bool(current > baseline * 1.5)
 
 
+def _live_close_series(symbol: str, tf: str, min_len: int) -> list[float] | None:
+    """Kapanmış seri + taze canlı fiyat (MACD/öncü hesaplarının ortak girdisi)."""
+    history = market.get_ut_kline(symbol, tf)
+    closes = history.get("closes") or []
+    if not closes:
+        return None
+    now = time.time()
+    ticker = market.get_ticker(symbol)
+    live_price = float((ticker or {}).get("last_price") or 0)
+    tick_ts = float((ticker or {}).get("timestamp") or 0)
+    series = list(closes[-(min_len - 1):])
+    if live_price > 0 and tick_ts and now * 1000 - tick_ts <= config.MAX_TICKER_AGE_SEC * 1000:
+        series.append(live_price)
+    if len(series) < min_len:
+        return None
+    return series
+
+
+def _atr_14_closed(symbol: str, tf: str) -> float | None:
+    """Kapanmış bar TR'lerinin son 14'lük ortalaması (öncü mesafeyi ölçekler)."""
+    history = market.get_ut_kline(symbol, tf)
+    highs = history.get("highs") or []
+    lows = history.get("lows") or []
+    closes = history.get("closes") or []
+    if len(closes) < 15:
+        return None
+    trs = []
+    for index in range(len(closes) - 14, len(closes)):
+        high, low = highs[index], lows[index]
+        prev_close = closes[index - 1]
+        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    return float(sum(trs) / len(trs)) if trs else None
+
+
+def _m5_approach_gap_atr(symbol: str) -> float | None:
+    """M5: canlı fiyatın 20-bar zirvesine ATR cinsinden uzaklığı.
+
+    Pozitif = zirvenin altında (ne kadar yakın), 0 = zirvede. Zirve kırılmışsa
+    (fiyat üstündeyse) negatif döner. Veri yetersizse None.
+    """
+    history = market.get_ut_kline(symbol, "5m")
+    highs = history.get("highs") or []
+    closes = history.get("closes") or []
+    if len(highs) < 21 or not closes:
+        return None
+    now = time.time()
+    ticker = market.get_ticker(symbol)
+    price = float((ticker or {}).get("last_price") or 0)
+    tick_ts = float((ticker or {}).get("timestamp") or 0)
+    if not (price > 0 and tick_ts and now * 1000 - tick_ts <= config.MAX_TICKER_AGE_SEC * 1000):
+        price = float(closes[-1] or 0)
+    if price <= 0:
+        return None
+    atr = _atr_14_closed(symbol, "5m")
+    if not atr or atr <= 0:
+        return None
+    high20 = max(highs[-21:-1])
+    return (high20 - price) / atr
+
+
+def _macd_hist_turn_up(symbol: str, tf: str) -> bool:
+    """MACD histogram 'dip dönüşü': hist hâlâ <0 ama son iki değerde yükseliyor.
+
+    Yeşil ok çıkmadan ÖNCE yukarı ivmelenmenin en erken işareti.
+    """
+    series = _live_close_series(symbol, tf, _MACD_MIN_CANDLES)
+    if not series:
+        return False
+    current = _macd(series)
+    previous = _macd(series[:-1]) if len(series) > 1 else None
+    if not current or not previous:
+        return False
+    hist_now = float(current["histogram"])
+    hist_prev = float(previous["histogram"])
+    return bool(hist_prev < hist_now < 0.0)
+
+
 def _symbol_cvd(symbol: str) -> dict:
     """Son ~60 sn agresör akışı (CVD): alıcı/satıcı dengesi + balina neti."""
     flow = market.trade_flow.get(symbol) or {}
@@ -310,8 +432,14 @@ def _jump_score(strength10, green: int, sigs: dict, cvd: dict) -> int | None:
     return int(min(100.0, score))
 
 
-async def _maybe_fire_jump_alert(symbol: str, score: int):
-    """Sıçrama eşiği geçilince WS olayı + web push (sembol başına cooldown)."""
+async def _maybe_fire_jump_alert(symbol: str, score: int, jump_min: int, settings: dict):
+    """Sıçrama eşiği geçilince WS olayı + web push (ayarlar + cooldown).
+
+    alarms_enabled=false → hiçbir alarm üretilmez; push_enabled=false →
+    yalnızca WS olayı (sayfa içi) yayınlanır, web push gönderilmez.
+    """
+    if not bool(settings.get("alerts_enabled", True)):
+        return
     now = time.time()
     last = _jump_alerted_at.get(symbol, 0.0)
     if now - last < _JUMP_ALERT_COOLDOWN_SEC:
@@ -320,10 +448,13 @@ async def _maybe_fire_jump_alert(symbol: str, score: int):
     try:
         await ws_manager.broadcast({
             "type": "macd_monitor_alert",
-            "data": {"symbol": symbol, "score": int(score), "generated_at": now},
+            "data": {"symbol": symbol, "score": int(score), "jump_min": int(jump_min),
+                     "generated_at": now},
         })
     except Exception as exc:
         logger.debug("macd_monitor alarm WS: %s", exc)
+    if not bool(settings.get("push_enabled", True)):
+        return
     try:
         from app.alerting import deliver_web_push
         await deliver_web_push(
@@ -336,6 +467,51 @@ async def _maybe_fire_jump_alert(symbol: str, score: int):
         )
     except Exception as exc:
         logger.debug("macd_monitor push alarm: %s", exc)
+
+
+async def _maybe_fire_early_alert(symbol: str, pre: dict, settings: dict):
+    """YAKLAŞIYOR aşaması: kırılımdan ÖNCE erken öncü alarm (WS + web push).
+
+    Tetikleyen öncüler pre içinde: approach (M5 zirveye yakın + aktivite),
+    m1 (M1 kırılımı + M5 yeşil), dip (MACD hist dip dönüşü).
+    """
+    if not bool(settings.get("alerts_enabled", True)) or not bool(settings.get("early_alerts_enabled", True)):
+        return
+    now = time.time()
+    last = _early_alerted_at.get(symbol, 0.0)
+    if now - last < _JUMP_ALERT_COOLDOWN_SEC:
+        return
+    _early_alerted_at[symbol] = now
+    signals = []
+    if pre.get("approach"):
+        signals.append("approach")
+    if pre.get("m1"):
+        signals.append("m1_breakout")
+    if pre.get("dip"):
+        signals.append("macd_dip_turn")
+    if not signals:
+        return
+    try:
+        await ws_manager.broadcast({
+            "type": "macd_early_alert",
+            "data": {"symbol": symbol, "signals": signals, "generated_at": now},
+        })
+    except Exception as exc:
+        logger.debug("macd_monitor erken alarm WS: %s", exc)
+    if not bool(settings.get("push_enabled", True)):
+        return
+    try:
+        from app.alerting import deliver_web_push
+        await deliver_web_push(
+            f"🌱 {symbol} YAKLAŞIYOR — kırılım öncesi erken sinyal ({'/'.join(signals)})",
+            title=f"🌱 {symbol} erken sıçrama sinyali",
+            url=f"/charts?symbol={symbol}",
+            tag=f"macd-early-{symbol}",
+            extra={"symbol": symbol, "signals": signals,
+                   "reason": "early_approach", "source": "macd_monitor"},
+        )
+    except Exception as exc:
+        logger.debug("macd_monitor erken push: %s", exc)
 
 
 def _strength_meta(raw: float | None, lo: float | None, hi: float | None):
@@ -363,6 +539,10 @@ async def _compute_pass(pass_no: int) -> dict:
     """
     global _SNAPSHOT, _dirty, _last_price_seen
     now = time.time()
+    settings = await get_macd_settings()
+    jump_min = int(settings.get("jump_min_score", config.MACD_JUMP_MIN_SCORE_DEFAULT))
+    alerts_enabled = bool(settings.get("alerts_enabled", True))
+    early_alerts_enabled = bool(settings.get("early_alerts_enabled", True))
     universe = await _active_symbols()
     snapshot_symbols = _SNAPSHOT.setdefault("symbols", {})
     universe_changed = universe != list(_SNAPSHOT.get("universe") or [])
@@ -451,7 +631,19 @@ async def _compute_pass(pass_no: int) -> dict:
         }
         row_tfs = snapshot_symbols[sym].get("tfs") or {}
         green = sum(1 for tf in TF_LIST if (row_tfs.get(tf) or {}).get("green"))
-        extras[sym] = {"sigs": sigs, "cvd": _symbol_cvd(sym), "green": green}
+        # Erken sinyal öncüleri (YAKLAŞIYOR → KIRILIM): M5 zirveye yaklaşma +
+        # aktivite teyidi, M1 öncü kırılım (M5 yeşilken), MACD dip dönüşü.
+        m5_sig = sigs["5m"]
+        green5 = bool((row_tfs.get("5m") or {}).get("green"))
+        approach = False
+        gap = _m5_approach_gap_atr(sym)
+        if gap is not None and gap >= 0 and not m5_sig.get("break"):
+            approach = bool(gap <= 0.5 and (m5_sig.get("vol") or m5_sig.get("state") == "expand"))
+        m1_pre = bool(_tf_breakout(sym, "1m")) and green5
+        dip = _macd_hist_turn_up(sym, "5m")
+        pre = {"approach": approach, "m1": m1_pre, "dip": dip}
+        extras[sym] = {"sigs": sigs, "cvd": _symbol_cvd(sym), "green": green,
+                       "pre": pre, "pre_any": bool(approach or m1_pre or dip)}
     raws = [entry["raw"] for entry in raw_map.values()]
     lo, hi = (min(raws), max(raws)) if raws else (None, None)
     for sym, row in snapshot_symbols.items():
@@ -460,10 +652,13 @@ async def _compute_pass(pass_no: int) -> dict:
             continue
         extra = extras.get(sym) or {}
         prev_jump = row.get("jump")
+        pre_prev = bool(row.get("pre_any"))
         score, tier = _strength_meta(entry["raw"], lo, hi)
         jump = _jump_score(score, extra.get("green", 0), extra.get("sigs", {}), extra.get("cvd", {}))
         sigs = extra.get("sigs")
         cvd = extra.get("cvd")
+        pre = extra.get("pre") or {}
+        pre_any = bool(extra.get("pre_any"))
         updated = {
             "strength": score,
             "tier": tier,
@@ -472,24 +667,35 @@ async def _compute_pass(pass_no: int) -> dict:
             "sigs": sigs,
             "cvd": cvd,
             "jump": jump,
+            "pre": pre,
+            "pre_any": pre_any,
         }
         if (row.get("strength"), row.get("tier"), row.get("r2"), row.get("speed"),
-                row.get("jump"), row.get("sigs"), row.get("cvd")) != (
+                row.get("jump"), row.get("sigs"), row.get("cvd"),
+                row.get("pre"), row.get("pre_any")) != (
             updated["strength"], updated["tier"], updated["r2"], updated["speed"],
-            updated["jump"], updated["sigs"], updated["cvd"]
+            updated["jump"], updated["sigs"], updated["cvd"],
+            updated["pre"], updated["pre_any"]
         ):
             _dirty = True
         row.update(updated)
-        # Alarm: yalnızca gerçek eşik GEÇİŞİ (başlangıçta hepsi ≥60 ise alarm basma)
-        if (prev_jump is not None and jump is not None
-                and prev_jump < _JUMP_ALERT_MIN <= jump):
-            await _maybe_fire_jump_alert(sym, jump)
+        # KIRILIM aşaması: skor eşik GEÇİŞİ (başlangıçta hepsi ≥ eşik ise alarm basma)
+        if (alerts_enabled and prev_jump is not None and jump is not None
+                and prev_jump < jump_min <= jump):
+            await _maybe_fire_jump_alert(sym, jump, jump_min, settings)
+        # YAKLAŞIYOR aşaması: erken öncü sinyal (0 → 1 geçişi, boot'ta sessiz)
+        if (alerts_enabled and early_alerts_enabled and pre_any and not pre_prev):
+            await _maybe_fire_early_alert(sym, pre, settings)
 
+    # Ayarlar değişirse UI eşiği de tazelensin
+    if _SNAPSHOT.get("jump_min") != jump_min:
+        _dirty = True
     _SNAPSHOT.update({
         "universe": universe,
         "symbols": snapshot_symbols,
         "generated_at": now,
         "timeframes": list(TF_LIST),
+        "jump_min": jump_min,
     })
     return _SNAPSHOT
 
@@ -530,6 +736,39 @@ async def get_macd_monitor():
         payload = dict(_SNAPSHOT)
     payload["running"] = _loop_task is not None and not _loop_task.done()
     return {"paper_only": True, **payload}
+
+
+@router.get("/api/macd-monitor/settings")
+async def get_macd_settings_endpoint():
+    """MACD MONITOR / SIRÇRAMA ADAYI ayarları (okuma herkese açık)."""
+    settings = await get_macd_settings(force=True)
+    return {"paper_only": True, "settings": settings}
+
+
+@router.put("/api/macd-monitor/settings")
+async def update_macd_settings_endpoint(payload: dict, request: Request):
+    """MACD MONITOR / SIRÇRAMA ADAYI ayarlarını güncelle (admin-only).
+
+    jump_min_score: SIRÇRAMA ADAYI eşiği (0-100).
+    alerts_enabled: eşik geçiş alarmları (WS olayı + banner).
+    push_enabled: web push bildirimleri (açıksa alarmla birlikte gider).
+    """
+    global _dirty
+    from app.main import _require_admin
+    _require_admin(request)
+    existing = await get_macd_settings(force=True)
+    editable = ("jump_min_score", "alerts_enabled", "push_enabled", "early_alerts_enabled")
+    merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
+    settings = {
+        "jump_min_score": int(max(0, min(100, int(merged.get("jump_min_score", existing["jump_min_score"]))))),
+        "alerts_enabled": _to_bool(merged.get("alerts_enabled"), existing["alerts_enabled"]),
+        "push_enabled": _to_bool(merged.get("push_enabled"), existing["push_enabled"]),
+        "early_alerts_enabled": _to_bool(merged.get("early_alerts_enabled"), existing["early_alerts_enabled"]),
+    }
+    await database.set_llm_setting("macd_monitor_settings", json.dumps(settings))
+    _settings_cache.update(value=settings, at=time.time())
+    _dirty = True  # yeni eşik değeri bir sonraki yayında UI'a gitsin
+    return {"paper_only": True, "ok": True, "settings": settings}
 
 
 def start_macd_monitor_loop() -> bool:
