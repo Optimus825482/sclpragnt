@@ -59,6 +59,11 @@ _TREND_MIN_POINTS = 8
 # biraz daha kısa vade ağırlıklı → orta; M30 ortada; M1/M3 en düşük.
 _TF_WEIGHTS = {"1m": 0.4, "3m": 0.6, "5m": 1.5, "15m": 1.4, "30m": 1.0, "1h": 1.1}
 
+# SIRÇRAMA ADAYI skoru: 0-100; ≥ bu eşik aday sayılır ve geçiş anında alarm.
+_JUMP_ALERT_MIN = 60
+# Aynı sembol için alarm tekrar aralığı (cooldown)
+_JUMP_ALERT_COOLDOWN_SEC = 30 * 60
+
 _loop_task = None
 
 # Son hesaplanan görünüm. symbols: {SYM: {"last": fiyat|None,
@@ -68,6 +73,8 @@ _SNAPSHOT: dict = {"universe": [], "symbols": {}, "generated_at": 0.0}
 _last_price_seen: dict[str, float] = {}
 # (symbol, tf) → son REST tazeleme zamanı
 _last_rest_refresh: dict[tuple[str, str], float] = {}
+# symbol → son sıçrama alarmı zamanı (cooldown için)
+_jump_alerted_at: dict[str, float] = {}
 _dirty = False
 
 
@@ -188,6 +195,149 @@ def _trend_feature(symbol: str, tf: str):
     return {"r2": r2, "speed": speed, "slope": slope}
 
 
+def _tf_breakout(symbol: str, tf: str):
+    """Donchian kırılımı: canlı fiyat, son 20 kapanmış barın en yükseğini kırdı mı.
+
+    M5/M15 sıçrama adayı için en erken yapısal sinyal. Veri yetersizse None.
+    """
+    history = market.get_ut_kline(symbol, tf)
+    highs = history.get("highs") or []
+    closes = history.get("closes") or []
+    if len(highs) < 21 or not closes:
+        return None
+    now = time.time()
+    ticker = market.get_ticker(symbol)
+    price = float((ticker or {}).get("last_price") or 0)
+    tick_ts = float((ticker or {}).get("timestamp") or 0)
+    if not (price > 0 and tick_ts and now * 1000 - tick_ts <= config.MAX_TICKER_AGE_SEC * 1000):
+        price = float(closes[-1] or 0)
+    if price <= 0:
+        return None
+    prior_high = max(highs[-21:-1])
+    return bool(price > prior_high)
+
+
+def _tf_vol_state(symbol: str, tf: str):
+    """Volatilite durumu: squeeze (sıkışma) veya expand (genişleme).
+
+    Kapanmış bar TR'leri üzerinden: son bar TR'si 14-ATR'nin ≥1.5 katıysa
+    'expand' (sıçrama başlıyor), son 3 bar ortalaması ATR'nin ≤0.7 katıysa
+    'squeeze' (yay hazırlığı). Veri yetersizse None.
+    """
+    history = market.get_ut_kline(symbol, tf)
+    highs = history.get("highs") or []
+    lows = history.get("lows") or []
+    closes = history.get("closes") or []
+    if len(closes) < 22:
+        return None
+    trs = []
+    for index in range(len(closes) - 21, len(closes)):
+        high, low = highs[index], lows[index]
+        prev_close = closes[index - 1]
+        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    atr = float(sum(trs[-14:]) / 14.0)
+    if atr <= 0:
+        return None
+    tr_last = trs[-1]
+    recent3 = float(sum(trs[-3:]) / 3.0)
+    if tr_last >= atr * 1.5:
+        return "expand"
+    if recent3 <= atr * 0.7:
+        return "squeeze"
+    return None
+
+
+def _tf_volume_surge(symbol: str, tf: str) -> bool | None:
+    """Son kapanmış mum hacmi, önceki 20 bar ortalamasının 1.5 katını aştı mı."""
+    history = market.get_ut_kline(symbol, tf)
+    volumes = history.get("volumes") or []
+    if len(volumes) < 22:
+        return None
+    current = float(volumes[-1] or 0)
+    baseline = float(sum(volumes[-21:-1]) / 20.0)
+    if baseline <= 0:
+        return None
+    return bool(current > baseline * 1.5)
+
+
+def _symbol_cvd(symbol: str) -> dict:
+    """Son ~60 sn agresör akışı (CVD): alıcı/satıcı dengesi + balina neti."""
+    flow = market.trade_flow.get(symbol) or {}
+    updated = float(flow.get("updated_at") or 0)
+    if not updated or time.time() - updated > 180:
+        return {"fresh": False, "buy_ratio": None, "whale_net": None, "buy_dominant": False}
+    buy = float(flow.get("buy_qty") or 0)
+    sell = float(flow.get("sell_qty") or 0)
+    total = buy + sell
+    ratio = (buy / total) if total > 0 else None
+    whale_net = int(flow.get("whale_buys") or 0) - int(flow.get("whale_sells") or 0)
+    return {
+        "fresh": True,
+        "buy_ratio": round(ratio, 3) if ratio is not None else None,
+        "whale_net": int(whale_net),
+        "buy_dominant": bool(ratio is not None and total > 0 and ratio >= 0.58),
+    }
+
+
+def _jump_score(strength10, green: int, sigs: dict, cvd: dict) -> int | None:
+    """SIRÇRAMA ADAYI skoru (0-100).
+
+    Ağırlıklar (M5/M15 odaklı): trend gücü 30, MACD yeşil uyumu 20,
+    M5 paketi (kırılım 14 + genişleme 7 + hacim 6) 27, M15 paketi
+    (kırılım 11 + genişleme 5 + hacim 4) 20, alıcı-agresör teyidi 3.
+    """
+    if strength10 is None:
+        return None
+    score = 0.0
+    score += max(0.0, min(30.0, strength10 * 3.0))
+    score += round((min(green, len(TF_LIST)) / len(TF_LIST)) * 20.0)
+    m5 = sigs.get("5m") or {}
+    m15 = sigs.get("15m") or {}
+    if m5.get("break"):
+        score += 14
+    if m5.get("state") == "expand":
+        score += 7
+    if m5.get("vol"):
+        score += 6
+    if m15.get("break"):
+        score += 11
+    if m15.get("state") == "expand":
+        score += 5
+    if m15.get("vol"):
+        score += 4
+    if cvd.get("buy_dominant"):
+        score += 3
+    return int(min(100.0, score))
+
+
+async def _maybe_fire_jump_alert(symbol: str, score: int):
+    """Sıçrama eşiği geçilince WS olayı + web push (sembol başına cooldown)."""
+    now = time.time()
+    last = _jump_alerted_at.get(symbol, 0.0)
+    if now - last < _JUMP_ALERT_COOLDOWN_SEC:
+        return
+    _jump_alerted_at[symbol] = now
+    try:
+        await ws_manager.broadcast({
+            "type": "macd_monitor_alert",
+            "data": {"symbol": symbol, "score": int(score), "generated_at": now},
+        })
+    except Exception as exc:
+        logger.debug("macd_monitor alarm WS: %s", exc)
+    try:
+        from app.alerting import deliver_web_push
+        await deliver_web_push(
+            f"🚀 {symbol} SIRÇRAMA ADAYI — skor {int(score)}/100 (M5/M15 kırılım/volatilite teyidi)",
+            title=f"🚀 {symbol} sıçrama adayı",
+            url=f"/charts?symbol={symbol}",
+            tag=f"macd-jump-{symbol}",
+            extra={"symbol": symbol, "score": int(score),
+                   "reason": "jump_threshold", "source": "macd_monitor"},
+        )
+    except Exception as exc:
+        logger.debug("macd_monitor push alarm: %s", exc)
+
+
 def _strength_meta(raw: float | None, lo: float | None, hi: float | None):
     """Evren içi min-max ile 0-10 güç skoru + GÜÇLÜ/NORMAL/ZAYIF dilimi."""
     if raw is None or lo is None or hi is None:
@@ -266,6 +416,7 @@ async def _compute_pass(pass_no: int) -> dict:
     # |eğim|/bar-aralığı (hız). Sembol skoru = TF'lerin _TF_WEIGHTS ile AĞIRLIKLI
     # ortalaması (M5/M15 önde, M1/M3 düşük); evren içinde 0-10'a normalize.
     raw_map: dict[str, dict] = {}
+    extras: dict[str, dict] = {}
     for sym in snapshot_symbols:
         raw_wsum = 0.0
         weight_sum = 0.0
@@ -291,24 +442,48 @@ async def _compute_pass(pass_no: int) -> dict:
             "r2": r2_wsum / weight_sum,
             "speed": (speed_wsum / speed_weight_sum) if speed_weight_sum else None,
         }
+        # Sıçrama sinyalleri (M5/M15 odaklı) + agresör akışı + yeşil sayısı
+        sigs = {
+            "5m": {"break": _tf_breakout(sym, "5m"), "state": _tf_vol_state(sym, "5m"),
+                   "vol": _tf_volume_surge(sym, "5m")},
+            "15m": {"break": _tf_breakout(sym, "15m"), "state": _tf_vol_state(sym, "15m"),
+                    "vol": _tf_volume_surge(sym, "15m")},
+        }
+        row_tfs = snapshot_symbols[sym].get("tfs") or {}
+        green = sum(1 for tf in TF_LIST if (row_tfs.get(tf) or {}).get("green"))
+        extras[sym] = {"sigs": sigs, "cvd": _symbol_cvd(sym), "green": green}
     raws = [entry["raw"] for entry in raw_map.values()]
     lo, hi = (min(raws), max(raws)) if raws else (None, None)
     for sym, row in snapshot_symbols.items():
         entry = raw_map.get(sym)
         if not entry:
             continue
+        extra = extras.get(sym) or {}
+        prev_jump = row.get("jump")
         score, tier = _strength_meta(entry["raw"], lo, hi)
+        jump = _jump_score(score, extra.get("green", 0), extra.get("sigs", {}), extra.get("cvd", {}))
+        sigs = extra.get("sigs")
+        cvd = extra.get("cvd")
         updated = {
             "strength": score,
             "tier": tier,
             "r2": round(entry["r2"], 3),
             "speed": round(entry["speed"], 4) if entry["speed"] is not None else None,
+            "sigs": sigs,
+            "cvd": cvd,
+            "jump": jump,
         }
-        if (row.get("strength"), row.get("tier"), row.get("r2"), row.get("speed")) != (
-            updated["strength"], updated["tier"], updated["r2"], updated["speed"]
+        if (row.get("strength"), row.get("tier"), row.get("r2"), row.get("speed"),
+                row.get("jump"), row.get("sigs"), row.get("cvd")) != (
+            updated["strength"], updated["tier"], updated["r2"], updated["speed"],
+            updated["jump"], updated["sigs"], updated["cvd"]
         ):
             _dirty = True
         row.update(updated)
+        # Alarm: yalnızca gerçek eşik GEÇİŞİ (başlangıçta hepsi ≥60 ise alarm basma)
+        if (prev_jump is not None and jump is not None
+                and prev_jump < _JUMP_ALERT_MIN <= jump):
+            await _maybe_fire_jump_alert(sym, jump)
 
     _SNAPSHOT.update({
         "universe": universe,
