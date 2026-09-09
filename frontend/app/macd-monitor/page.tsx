@@ -22,7 +22,8 @@ type MacdTier = "strong" | "normal" | "weak";
 type SymbolMacd = {
   last: number | null;
   tfs: Record<string, MacdCell | null>;
-  adr_pct?: number | null;
+  r2?: number | null;
+  speed?: number | null;
   strength?: number | null;
   tier?: MacdTier | null;
 };
@@ -55,8 +56,8 @@ const histShort = (hist: number) => {
 
 const TIER_LABEL: Record<string, string> = { strong: "GÜÇLÜ", normal: "NORMAL", weak: "ZAYIF" };
 
-// Yeşil ok tonu: ADR gücü GÜÇLÜ ise dolu/koyu, ZAYIF ise soluk. Kırmızı oklar
-// yön baskısı olduğundan güç tonlamasına girmez.
+// Yeşil ok tonu: trend gücü GÜÇLÜ ise dolu/koyu, ZAYIF ise soluk. Kırmızı
+// oklar yön baskısı olduğundan güç tonlamasına girmez.
 const arrowShade = (tier: MacdTier | null | undefined) => {
   if (tier === "strong") return "border-neon-green/60 bg-neon-green/25 text-neon-green";
   if (tier === "weak") return "border-neon-green/30 bg-neon-green/5 text-neon-green/80";
@@ -122,7 +123,8 @@ export default function MacdMonitorPage() {
           last: row?.last ?? null,
           tfsMap,
           greenCount,
-          adrPct: row?.adr_pct ?? null,
+          r2: row?.r2 ?? null,
+          speed: row?.speed ?? null,
           strength: row?.strength ?? null,
           tier: row?.tier ?? null,
         };
@@ -233,7 +235,7 @@ export default function MacdMonitorPage() {
                       <th key={tf} className="px-3 py-2 text-center">{TF_LABELS[tf]}</th>
                     ))}
                     <th className="px-3 py-2 text-center" title={`${tfs.length} zaman diliminde yeşil sayısı`}>YEŞİL</th>
-                    <th className="px-3 py-2 text-center" title="Ortalama Günlük Hareket (ADR) — sembolün günlük hareket kapasitesi; evren içinde 0-10 normalize edilmiş güç">GÜÇ · 0-10</th>
+                    <th className="px-3 py-2 text-center" title="Trend gücü: 20 barlık lineer regresyon — R² (düzenlilik) × eğim/bar-aralığı (hız); evren içinde 0-10 normalize">GÜÇ · 0-10</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -278,14 +280,14 @@ export default function MacdMonitorPage() {
                       <td className="px-3 py-2 text-center">
                         {row.strength != null && row.tier ? (
                           <span
-                            title={`ADR %${row.adrPct != null ? row.adrPct.toFixed(2) : "—"} · günlük hareket kapasitesi; evren içinde 0-10 normalize`}
+                            title={`Trend gücü: R² ${row.r2 ?? "—"} · hız ${row.speed ?? "—"} (20 barlık lineer regresyon; evren içinde 0-10 normalize)`}
                             className={`inline-flex items-center justify-center gap-1 rounded-md border px-2 py-1 text-xs font-bold ${strengthChip(row.tier)}`}
                           >
                             {row.strength.toFixed(1)}
                             <span className="hidden lg:inline text-[9px] tracking-wide">{TIER_LABEL[row.tier]}</span>
                           </span>
                         ) : (
-                          <span className="text-bunker-muted/60" title="ADR verisi yok (1d seri ısınana kadar)">—</span>
+                          <span className="text-bunker-muted/60" title="Trend verisi yok (mum serisi ısınana kadar)">—</span>
                         )}
                       </td>
                     </tr>
@@ -298,11 +300,11 @@ export default function MacdMonitorPage() {
             Hesaplama: kapanmış mum serisine canlı fiyat eklenerek MACD (12, 26, 9). M3/M30 serileri REST ile aralıklı tazelenir.
           </p>
           <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-bunker-muted/70">
-            <span>▲ yeşil tonu → ADR gücü:</span>
+            <span>▲ yeşil tonu → trend gücü:</span>
             <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-4 rounded border border-neon-green/60 bg-neon-green/25" /> GÜÇLÜ</span>
             <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-4 rounded border border-neon-green/40 bg-neon-green/10" /> NORMAL</span>
             <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-4 rounded border border-neon-green/30 bg-neon-green/5" /> ZAYIF</span>
-            <span className="text-bunker-muted/50">· GÜÇ: son 14 günlük ortalama günlük hareket (ADR %), mevcut evren içinde 0-10 normalize.</span>
+            <span className="text-bunker-muted/50">· GÜÇ: 20 barlık lineer regresyon — R² (trend düzenliliği) × eğim/bar-aralığı (hız); evren içinde 0-10 normalize.</span>
           </p>
         </div>
       </main>

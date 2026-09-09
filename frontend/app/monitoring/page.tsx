@@ -52,9 +52,10 @@ const SCAN_INTERVAL_MS = 30_000;
 // alanını gönderir; eski yanıt.cache'leri için burada da hesaplanır.
 const SCORE_NORM_CAP = 2000;  // 2026-09-07 saturation kaldirildi, skor 0-1000 MONITORING_SCORE_NORM_CAP
 
-// YÜKSELİŞ EĞİLİMİ ADAYLARI: MACD MONITOR GÜÇ skoru (ADR, 0-10) eşiği ve
-// en az 5/6 zaman diliminde yeşil histogram şartı (MACD MONITOR sayfasıyla
-// aynı veri kaynağından; /api/macd-monitor).
+// YÜKSELİŞ EĞİLİMİ ADAYLARI: MACD MONITOR GÜÇ skoru (20 barlık lineer
+// regresyon trend gücü, 0-10) eşiği ve en az 5/6 zaman diliminde yeşil
+// histogram şartı (MACD MONITOR sayfasıyla aynı veri kaynağından;
+// /api/macd-monitor).
 const RISING_MIN_STRENGTH = 9.8;
 const RISING_MIN_GREEN = 5;
 const MACD_TFS = ["1m", "3m", "5m", "15m", "30m", "1h"];
@@ -357,7 +358,7 @@ export default function MonitoringPage() {
             </a>
           </div>
           <p className="mt-1 text-xs text-bunker-muted">
-            GÜÇ ≥ {RISING_MIN_STRENGTH} (ADR 0-10) ve en az {RISING_MIN_GREEN}/6 zaman diliminde MACD histogramı yeşil olan semboller — en güçlü yükseliş adayları.
+            Trend gücü ≥ {RISING_MIN_STRENGTH} (20 barlık lineer regresyon: R² × eğim/bar aralığı, 0-10) ve en az {RISING_MIN_GREEN}/6 zaman diliminde MACD histogramı yeşil olan semboller — en güçlü yükseliş adayları.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {rising.map((item) => (
