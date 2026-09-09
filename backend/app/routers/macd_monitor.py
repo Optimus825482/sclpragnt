@@ -22,6 +22,8 @@ import asyncio
 import logging
 import time
 
+import numpy as np
+
 from fastapi import APIRouter
 
 from app.config import config
@@ -46,13 +48,11 @@ _MAX_REST_PER_PASS = 8
 # Kaç pass'ta bir koşulsuz tam yayın yapılır (UI kendini onarır)
 _FULL_BROADCAST_EVERY = 5
 
-# ADR (Ortalama Günlük Hareket): calculate_snapshot ile aynı tanım —
-# kapanmış 1d mumlarının son 14 günlük (yüksek-düşük)/kapanış ortalaması.
-_ADR_WINDOW = 15  # [-15:-1] → 14 gün
-_ADR_CACHE_TTL_SEC = 120.0
-# 0-10 normalize skorda güç dilimleri
-_STRONG_MIN = 7.0
-_WEAK_MAX = 4.0
+# Trend gücü (lineer regresyon): 20 barlık pencere; eğim, bar-aralığına
+# (h-l ort.) bölünerek HIZ, R² ile TUTARLILIK ölçülür. ADR (volatilite) ve
+# ADX'ten (gecikmeli) farklı olarak M1..H1'de hem hassas hem karşılaştırılabilir.
+_TREND_WINDOW = 20
+_TREND_MIN_POINTS = 8
 
 _loop_task = None
 
@@ -63,8 +63,6 @@ _SNAPSHOT: dict = {"universe": [], "symbols": {}, "generated_at": 0.0}
 _last_price_seen: dict[str, float] = {}
 # (symbol, tf) → son REST tazeleme zamanı
 _last_rest_refresh: dict[tuple[str, str], float] = {}
-# symbol → (adr_pct|None, hesap zamanı) — 1d serisi günde bir değişir; 2 dk TTL
-_adr_cache: dict[str, tuple[float | None, float]] = {}
 _dirty = False
 
 
@@ -122,50 +120,81 @@ def _compute_cell(symbol: str, tf: str):
     return {"green": bool(hist > 0), "hist": round(hist, 12)}
 
 
-def _symbol_adr_pct(symbol: str) -> float | None:
-    """Ortalama Günlük Hareket yüzdesi (calculate_snapshot ile aynı tanım).
-
-    1d kapanmış mumlar: son 14 günün (high-low)/close ortalaması × 100.
-    Günlük seri yavaş değiştiği için sonuç kısa TTL ile önbelleklenir.
-    """
-    now = time.time()
-    cached = _adr_cache.get(symbol)
-    if cached and now - cached[1] < _ADR_CACHE_TTL_SEC:
-        return cached[0]
-    pct: float | None = None
-    try:
-        daily = market.get_ut_kline(symbol, "1d")
-        dhigh = daily.get("highs") or []
-        dlow = daily.get("lows") or []
-        dclose = daily.get("closes") or []
-        if len(dclose) >= _ADR_WINDOW:
-            ranges = [
-                (high - low) / close
-                for high, low, close in zip(
-                    dhigh[-_ADR_WINDOW:-1], dlow[-_ADR_WINDOW:-1], dclose[-_ADR_WINDOW:-1]
-                )
-                if close
-            ]
-            if ranges:
-                pct = float(sum(ranges) / len(ranges) * 100.0)
-    except Exception as exc:
-        logger.debug("macd_monitor adr %s: %s", symbol, exc)
-    _adr_cache[symbol] = (pct, now)
-    return pct
-
-
-def _strength_meta(pct: float | None, lo: float | None, hi: float | None):
-    """Evren içi min-max ile 0-10 güç skoru + GÜÇLÜ/NORMAL/ZAYIF dilimi."""
-    if pct is None or lo is None or hi is None or pct <= 0:
+def _ols_slope_r2(values: list[float]):
+    """Son N kapanış üzerinde lineer regresyon: eğim ve R² (0-1)."""
+    n = len(values)
+    if n < _TREND_MIN_POINTS:
         return None, None
-    if hi <= lo:
-        score = 5.0
+    xs = np.arange(n, dtype=float)
+    ys = np.asarray(values, dtype=float)
+    xm, ym = xs.mean(), ys.mean()
+    sxx = float(np.sum((xs - xm) ** 2))
+    sxy = float(np.sum((xs - xm) * (ys - ym)))
+    syy = float(np.sum((ys - ym) ** 2))
+    if sxx <= 0:
+        return None, None
+    slope = sxy / sxx
+    if syy <= 0:
+        r2 = 0.0 if abs(slope) <= 0 else 1.0
     else:
-        score = (pct - lo) / (hi - lo) * 10.0
+        corr = sxy / (np.sqrt(sxx * syy) + 1e-12)
+        r2 = max(0.0, min(1.0, float(corr ** 2)))
+    return float(slope), float(r2)
+
+
+def _bar_range_mean(highs, lows) -> float | None:
+    """Son pencere boyunca ortalama bar aralığı (h-l) — eğimi ölçekler."""
+    highs = list(highs or [])
+    lows = list(lows or [])
+    n = min(_TREND_WINDOW, len(highs), len(lows))
+    if n < 2:
+        return None
+    ranges = [highs[-i] - lows[-i] for i in range(1, n + 1) if highs[-i] > lows[-i]]
+    if not ranges:
+        return None
+    return float(sum(ranges) / len(ranges))
+
+
+def _trend_feature(symbol: str, tf: str):
+    """Tek (sembol, zaman dilimi) için trend gücü bileşenleri.
+
+    Kapanmış serinin son 20 barına canlı fiyat eklenir (MACD hücresiyle aynı
+    canlılık politikası). Dönüş: {"r2": 0-1 tutarlılık, "speed": |eğim|/bar
+    aralığı (hız), "slope": işaretli eğim} veya veri yetersizse None.
+    """
+    history = market.get_ut_kline(symbol, tf)
+    closes = history.get("closes") or []
+    if not closes:
+        return None
+    now = time.time()
+    ticker = market.get_ticker(symbol)
+    live_price = float((ticker or {}).get("last_price") or 0)
+    tick_ts = float((ticker or {}).get("timestamp") or 0)
+    series = list(closes[-(_TREND_WINDOW - 1):])
+    if live_price > 0 and tick_ts and now * 1000 - tick_ts <= config.MAX_TICKER_AGE_SEC * 1000:
+        series.append(live_price)
+    if len(series) < _TREND_MIN_POINTS:
+        return None
+    slope, r2 = _ols_slope_r2(series)
+    if slope is None or r2 is None:
+        return None
+    span = _bar_range_mean(history.get("highs") or [], history.get("lows") or [])
+    speed = abs(slope) / span if span else None
+    return {"r2": r2, "speed": speed, "slope": slope}
+
+
+def _strength_meta(raw: float | None, lo: float | None, hi: float | None):
+    """Evren içi min-max ile 0-10 güç skoru + GÜÇLÜ/NORMAL/ZAYIF dilimi."""
+    if raw is None or lo is None or hi is None:
+        return None, None
+    if hi > lo:
+        score = (raw - lo) / (hi - lo) * 10.0
+    else:
+        score = 0.0 if raw <= 0 else 5.0
     score = round(max(0.0, min(10.0, score)), 1)
-    if score >= _STRONG_MIN:
+    if score >= 7.0:
         tier = "strong"
-    elif score < _WEAK_MAX:
+    elif score < 4.0:
         tier = "weak"
     else:
         tier = "normal"
@@ -228,21 +257,49 @@ async def _compute_pass(pass_no: int) -> dict:
     if universe_changed or recomputed:
         _dirty = True
 
-    # ADR tabanlı güç: her sembolün ortalama günlük hareketini evren içinde
-    # min-max normalize edip 0-10 skor + GÜÇLÜ/NORMAL/ZAYIF dilimi üret.
-    adr_map = {sym: _symbol_adr_pct(sym) for sym in snapshot_symbols}
-    valid = [pct for pct in adr_map.values() if pct is not None and pct > 0]
-    lo, hi = (min(valid), max(valid)) if valid else (None, None)
+    # Trend gücü: her TF için 20 barlık lineer regresyon — R² (düzenlilik) ×
+    # |eğim|/bar-aralığı (hız). Sembol skoru = TF ortalaması, evren içinde
+    # 0-10'a normalize edilir (ADR volatilitesi değil, gerçek trend gücü).
+    raw_map: dict[str, dict] = {}
+    for sym in snapshot_symbols:
+        features = []
+        for tf in TF_LIST:
+            feat = _trend_feature(sym, tf)
+            if feat and feat["r2"] is not None:
+                features.append(feat)
+        if not features:
+            continue
+        products = []
+        speeds = []
+        for feat in features:
+            speed = feat.get("speed")
+            if speed is not None:
+                speeds.append(speed)
+                products.append(feat["r2"] * speed)
+            else:
+                products.append(feat["r2"] * 0.0)
+        r2_avg = float(sum(f["r2"] for f in features) / len(features))
+        speed_avg = float(sum(speeds) / len(speeds)) if speeds else None
+        raw_map[sym] = {
+            "raw": float(sum(products) / len(products)),
+            "r2": r2_avg,
+            "speed": speed_avg,
+        }
+    raws = [entry["raw"] for entry in raw_map.values()]
+    lo, hi = (min(raws), max(raws)) if raws else (None, None)
     for sym, row in snapshot_symbols.items():
-        pct = adr_map.get(sym)
-        score, tier = _strength_meta(pct, lo, hi)
+        entry = raw_map.get(sym)
+        if not entry:
+            continue
+        score, tier = _strength_meta(entry["raw"], lo, hi)
         updated = {
-            "adr_pct": round(pct, 3) if pct is not None else None,
             "strength": score,
             "tier": tier,
+            "r2": round(entry["r2"], 3),
+            "speed": round(entry["speed"], 4) if entry["speed"] is not None else None,
         }
-        if (row.get("adr_pct"), row.get("strength"), row.get("tier")) != (
-            updated["adr_pct"], updated["strength"], updated["tier"]
+        if (row.get("strength"), row.get("tier"), row.get("r2"), row.get("speed")) != (
+            updated["strength"], updated["tier"], updated["r2"], updated["speed"]
         ):
             _dirty = True
         row.update(updated)
@@ -282,8 +339,8 @@ async def get_macd_monitor():
     """MACD MONITOR snapshot'ı (REST ilk yükleme/yedek).
 
     Veri yalnızca public market verisinden türetilir (kapanış fiyatları +
-    MACD/ADR); monitoring sayfasındaki "YÜKSELİŞ EĞİLİMİ ADAYLARI" bölümü
-    de bu ucu kullandığından admin kısıtı YOKTUR.
+    MACD/trend gücü); monitoring sayfasındaki "YÜKSELİŞ EĞİLİMİ ADAYLARI"
+    bölümü de bu ucu kullandığından admin kısıtı YOKTUR.
     """
     try:
         payload = await _compute_pass(0)
