@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import RequireAdmin from "../components/RequireAdmin";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import SymbolLink from "../components/SymbolLink";
+import { useAuth } from "../lib/auth";
+import { canViewMacdMonitor } from "../lib/macdAccess";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import { apiFetch } from "../lib/api";
 
@@ -111,6 +112,24 @@ const jumpIcons = (m5: TfSignals | null | undefined, m15: TfSignals | null | und
   return icons.slice(0, 8);
 };
 
+/** MACD MONITOR erişim kapısı: admin VEYA lib/macdAccess izin listesindeki kullanıcı. */
+function MacdAccessGate({ children }: { children: ReactNode }) {
+  const { role, username } = useAuth();
+  if (canViewMacdMonitor(role, username)) return <>{children}</>;
+  return (
+    <main className="page-shell">
+      <div className="card mt-10 flex flex-col items-center gap-4 border-neon-red/30 bg-neon-red/5 px-6 py-12 text-center">
+        <p className="eyebrow">YETKİSİZ ERİŞİM</p>
+        <h1 className="font-mono text-xl font-bold text-white">Bu sayfayı görüntüleme yetkiniz yok</h1>
+        <p className="max-w-md text-sm text-bunker-muted">
+          MACD MONITOR yalnız sistem yöneticisine ve yetkilendirilmiş kullanıcılara açıktır.
+        </p>
+        <a href="/" className="ui-button ui-button-primary">ANA SAYFAYA DÖN</a>
+      </div>
+    </main>
+  );
+}
+
 export default function MacdMonitorPage() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -212,7 +231,7 @@ export default function MacdMonitorPage() {
     && Date.now() / 1000 - snapshot.generated_at > 15;
 
   return (
-    <RequireAdmin>
+    <MacdAccessGate>
       <main className="page-shell">
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
@@ -424,6 +443,6 @@ export default function MacdMonitorPage() {
           </p>
         </div>
       </main>
-    </RequireAdmin>
+    </MacdAccessGate>
   );
 }

@@ -8,6 +8,7 @@ import { toMs } from "../lib/format";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "./SymbolLink";
 import { useAuth } from "../lib/auth";
+import { canViewMacdMonitor } from "../lib/macdAccess";
 
 const MENU_BASE = [
     { href: "/portfolio", label: "Portföy", icon: "💼", desc: "Canlı portföy ve otonom işlem takibi" },
@@ -24,8 +25,10 @@ const MENU_ADMIN = [
     { href: "/binance-tr", label: "Binance TR", icon: "🏛️", desc: "Canlı bakiye ve işlemler" },
     { href: "/database", label: "Veritabanı", icon: "🗄️", desc: "Tablo verileri, CSV/SQL indirme" },
     { href: "/chat", label: "Chat", icon: "💬", desc: "LLM chat merkezi (admin)" },
-    { href: "/macd-monitor", label: "MACD Monitor", icon: "📊", desc: "M1–H1 MACD histogram yönü" },
 ];
+// MACD MONITOR: admin her zaman; normal kullanıcılar için lib/macdAccess
+// izin listesindekiler (örn. caner) görebilir (2026-09-09).
+const MENU_MACD = { href: "/macd-monitor", label: "MACD Monitor", icon: "📊", desc: "M1–H1 MACD histogram yönü" };
 const formatNotificationDate = (value: unknown) => {
     const numeric = Number(value);
     const date = Number.isFinite(numeric) ? new Date(toMs(numeric)) : new Date(String(value || ""));
@@ -36,6 +39,7 @@ export default function Sidebar() {
     const pathname = usePathname();
     const { username, role } = useAuth();
     const isAdmin = role === "admin";
+    const canViewMacd = canViewMacdMonitor(role, username);
     const [open, setOpen] = useState(false);
     const [installEvent, setInstallEvent] = useState<any>(null);
     const [installed, setInstalled] = useState(false);
@@ -115,7 +119,7 @@ export default function Sidebar() {
             </div>
 
             <nav className="flex-1 overflow-y-auto p-3 space-y-1">
-                {[...MENU_BASE, ...(isAdmin ? MENU_ADMIN : [])].map((m) => {
+                {[...MENU_BASE, ...(isAdmin ? MENU_ADMIN : []), ...(isAdmin || canViewMacd ? [MENU_MACD] : [])].map((m) => {
                     const active = pathname === m.href;
                     return (
                         <div key={m.href}>
