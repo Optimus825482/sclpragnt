@@ -294,11 +294,46 @@ def _hma(closes, period=16):
     return _wma(values, root)
 
 def _aroon(highs, lows, period=25):
-    if len(highs) < period: return None
-    high_window, low_window = highs[-period:], lows[-period:]
-    high_bars = period - 1 - int(np.argmax(high_window)); low_bars = period - 1 - int(np.argmin(low_window))
+    """Aroon Up/Down (periyot 25 = sistem geneli ``aroon_25``).
+
+    Standart tanım: son ``period+1`` bar taranır, ``period+1`` nokta ``period``
+    aralığı temsil eder; böylece değer aralığı tam 0..100 olur (``period`` bar
+    kullanmak alt sınırı 100/period'a yükseltir ve aralığı kırpar).
+
+    Eşit değerlerde (özellikle düşük fiyatlı/stablecoin sembollerinde çok sık)
+    **son** oluşum esas alınır: sembol zirveyi tekrar test ediyorsa "zirveden
+    geçen bar" 0'dır. İlk oluşumu almak (``list.index``/``np.argmax``) Aroon'u
+    yanlış hesaplar — bu davranış velocity taramasında da bilinçli olarak
+    seçilmiştir; tek kanonik kaynak bu fonksiyondur.
+    """
+    if len(highs) < period + 1: return None
+    high_window = np.asarray(highs[-(period + 1):], dtype=np.float64)
+    low_window = np.asarray(lows[-(period + 1):], dtype=np.float64)
+    # Ters dizide argmax = sondan kaçıncı bar; bu doğrudan "zirveden geçen bar"dır.
+    high_bars = int(np.argmax(high_window[::-1]))
+    low_bars = int(np.argmin(low_window[::-1]))
     up, down = 100 * (period - high_bars) / period, 100 * (period - low_bars) / period
     return {"up": float(up), "down": float(down), "oscillator": float(up - down), "bullish": bool(up > down)}
+
+
+def _linreg_slope_pct(closes, period=10):
+    """Son ``period`` barın doğrusal regresyon eğimi, ortalamaya göre YÜZDE/bar.
+
+    Kanonik ML özelliği tanımı (``linreg_slope10_pct``): eğim = cov(x, y)/var(x),
+    x = 0..period-1; sonuç ortalama fiyata bölünür ve yüzdeye çevrilir. Eğitim
+    tarafındaki vektörel eşleniği ``ml_forecast.build_symbol_dataset``'tedir ve
+    ikisi birebir aynı sonucu vermelidir (parity testi ile korunur).
+    """
+    if len(closes) < period:
+        return None
+    ys = np.asarray(closes[-period:], dtype=np.float64)
+    mean_y = float(ys.mean())
+    if mean_y == 0:
+        return None
+    xs = np.arange(period, dtype=np.float64)
+    x_centered = xs - xs.mean()
+    slope = float((x_centered * (ys - mean_y)).sum() / (x_centered ** 2).sum())
+    return slope / mean_y * 100.0
 
 def _vortex(highs, lows, closes, period=14):
     if len(closes) < period + 1: return None

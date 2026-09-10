@@ -213,6 +213,9 @@ async def init_db():
             (config.INITIAL_BALANCE_TRY, _get_reset_cutoff_sync(conn), _get_reset_cutoff_sync(conn), config.COMMISSION_PCT))
         conn.conn.commit()
     await _run_db(pg_op)
+    # Legacy pozisyonların eksik trade_id'leri açılışta BİR KEZ doldurulur;
+    # okuma yolu (load_positions) artık veritabanına yazmaz (Madde 21).
+    await backfill_position_trade_ids()
 
 async def ensure_default_scalper_skill():
     """Keep the built-in trade manager visible in the active database skill registry."""
@@ -611,20 +614,44 @@ async def set_llm_setting(key, value):
     await _run_db(op)
 
 
+async def backfill_position_trade_ids():
+    """Legacy ``positions`` satırlarındaki eksik ``trade_id`` alanını BİR KEZ doldurur.
+
+    Bu yazma daha önce ``load_positions`` (okuma yolu) içindeydi: her okuma bir
+    UPDATE tetikleyebiliyor, yani salt-okunur sanılan bir çağrı veritabanını
+    değiştiriyordu. Açılış migration'ına taşındı (Madde 21); okuma yolu artık
+    hiçbir koşulda yazmaz.
+
+    Dönen değer: doldurulan satır sayısı.
+    """
+    def op(conn):
+        rows = conn.execute(
+            "SELECT symbol FROM positions WHERE trade_id IS NULL OR trade_id=''"
+        ).fetchall()
+        symbols = [r[0] for r in rows]
+        for symbol in symbols:
+            conn.execute("UPDATE positions SET trade_id=? WHERE symbol=?",
+                         (uuid.uuid4().hex, symbol))
+        if symbols:
+            conn.commit()
+        return len(symbols)
+
+    return await _run_db(op)
+
+
 async def load_positions():
     def op(conn):
         positions = {}
         rows = conn.execute("SELECT * FROM positions").fetchall()
-        legacy_ids = []
         for row in rows:
             values = dict(row)
             context = _json_value(values.get("entry_context"), {})
             runtime = context.get("_runtime") if isinstance(context.get("_runtime"), dict) else {}
             symbol = values.get("symbol")
-            trade_id = values.get("trade_id")
-            if not trade_id:
-                trade_id = uuid.uuid4().hex
-                legacy_ids.append((symbol, trade_id))
+            # trade_id normalde backfill_position_trade_ids() ile açılışta
+            # doldurulur. Yine de eksikse burada yalnızca GEÇİCİ bir kimlik
+            # üretilir; okuma yolu DB'ye yazmaz (disentanglement, Madde 21).
+            trade_id = values.get("trade_id") or uuid.uuid4().hex
             positions[symbol] = {
                 "side": values.get("side"), "entry_price": values.get("entry_price"), "stop_price": values.get("stop_price"),
                 "take_profit": values.get("take_profit"), "peak_price": values.get("peak_price"), "breakeven_hit": bool(values.get("breakeven_hit")),
@@ -647,10 +674,6 @@ async def load_positions():
                     positions[symbol]["llm_take_profit_price"] = entry * (1 + float(target_pct))
                 if max_hold is not None:
                     positions[symbol]["llm_max_hold_sec"] = int(max_hold)
-        for symbol, trade_id in legacy_ids:
-            conn.execute("UPDATE positions SET trade_id=? WHERE symbol=?", (trade_id, symbol))
-        if legacy_ids:
-            conn.commit()
         return positions
 
     return await _run_db(op)

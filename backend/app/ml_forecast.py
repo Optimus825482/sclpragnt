@@ -26,11 +26,13 @@ from .config import config
 
 logger = logging.getLogger("scalper.ml")
 
-FEATURE_VERSION = "v2"  # v2: 5m bar tabanlı özellikler (1m veri toplanmıyor)
+FEATURE_VERSION = "v3"  # v3: göstergeler kanonik kaynakla birleştirildi
+                        #     (Wilder RSI, Aroon-25, kanonik linreg_slope10_pct).
+                        #     v2 artefaktları artık yüklenmez; yeniden eğitim gerekir.
 HORIZONS = (5, 15)
 FEATURE_NAMES = [
     "ret1_pct", "ret3_pct", "ret5_pct", "atr_pct", "bb_width_pct", "rsi14",
-    "mfi14", "vol_z", "linreg_slope10_pct", "aroon_up14", "aroon_down14",
+    "mfi14", "vol_z", "linreg_slope10_pct", "aroon_up25", "aroon_down25",
     "hour", "day_quarter", "velocity_proxy", "symbol_code",
 ]
 
@@ -40,6 +42,12 @@ FEATURE_NAMES = [
 #   prepare_journal_samples bunları içeride KESİRE çevirir (2.0 -> 0.02) ve
 #   satıra kesir olarak yazar; build_symbol_dataset ise aynı sonucu doğrudan
 #   ham fiyat dizilerinden üretir. Ayrıca rsi/mfi/aroon 0..100 ölçeğindedir.
+#
+# Gösterge tanım sözleşmesi (2026-09-10): eğitimdeki vektörel hesaplar ile
+# çıkarımdaki skaler hesaplar AYNI tanımı kullanmalıdır. Kanonik skaler
+# kaynak ``technical_analysis`` (``_rsi`` Wilder, ``_aroon`` periyot 25,
+# ``_linreg_slope_pct`` periyot 10). Buradaki vektörel eşlenikler
+# ``tests/test_ml_feature_parity.py`` ile birebir eşleşmeye zorlanır.
 # ---------------------------------------------------------------------------
 def _ratio_from_pct(value) -> float | None:
     """None/NaN güvenli yüzde→kesir dönüşümü (sözleşme: girdi YÜZDE)."""
@@ -68,6 +76,40 @@ def velocity_proxy_value(atr_ratio: float | None, ret3_ratio: float | None) -> f
     return atr * 100.0 * (1.0 + ret3)
 
 
+def _wilder_rsi_series(closes: np.ndarray, period: int = 14) -> np.ndarray:
+    """Vektörel Wilder RSI — ``technical_analysis._rsi`` ile birebir aynı sonuç.
+
+    Wilder yumuşatması özyinelemeli olduğundan (``avg = (avg*(p-1)+x)/p``)
+    dizinin tamamı için tek geçiş gerekir; başlangıç değeri ilk ``period``
+    farkın basit ortalamasıdır (kanonik tanım). NaN'lar yalnızca ısınma
+    bölgesinde (``period`` bar) kalır.
+    """
+    n = len(closes)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n < period + 1:
+        return out
+    deltas = np.diff(closes)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    # t barındaki RSI, deltas[0..t-1] işlendikten sonraki durumdur; ilk geçerli
+    # bar t=period olup başlangıç ilk `period` farkın basit ortalamasıdır.
+    avg_gain = float(gains[:period].mean())
+    avg_loss = float(losses[:period].mean())
+    out[period] = _rsi_from_averages(avg_gain, avg_loss)
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        out[i + 1] = _rsi_from_averages(avg_gain, avg_loss)
+    return out
+
+
+def _rsi_from_averages(avg_gain: float, avg_loss: float) -> float:
+    """Wilder ortalamalarından RSI — kanonik ``technical_analysis._rsi`` ile aynı."""
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    return 100.0 - 100.0 / (1.0 + avg_gain / avg_loss)
+
+
 def _rolling(a: np.ndarray, window: int) -> np.ndarray:
     from numpy.lib.stride_tricks import sliding_window_view
     if len(a) < window:
@@ -89,14 +131,19 @@ def _rolling_std(a: np.ndarray, window: int) -> np.ndarray:
 
 
 def _rolling_argmax_dist(a: np.ndarray, window: int, highest: bool) -> np.ndarray:
-    """Aroon bileşeni: pencere içindeki en uç değerin kaç bar önce olduğuna daken mesafe."""
+    """Aroon bileşeni: pencere içindeki en uç değere kaç bar önce ulaşıldığı.
+
+    Eşit değerlerde **son** oluşum esas alınır (kanonik ``technical_analysis._aroon``
+    ile aynı): ters pencerede argmax/argmin almak doğrudan "kaç bar önce"yi verir.
+    """
     from numpy.lib.stride_tricks import sliding_window_view
     if len(a) < window:
         return np.full(len(a), np.nan, dtype=np.float64)
     windows = sliding_window_view(a, window)
-    hit = windows.argmax(axis=1) if highest else windows.argmin(axis=1)
+    reversed_windows = windows[:, ::-1]
+    hit = reversed_windows.argmax(axis=1) if highest else reversed_windows.argmin(axis=1)
     out = np.full(len(a), np.nan, dtype=np.float64)
-    out[window - 1:] = (window - 1) - hit
+    out[window - 1:] = hit
     return out
 
 
@@ -141,11 +188,10 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
     std20 = _rolling_std(c, 20)
     bb_width = (4 * std20) / c
 
-    gain = np.clip(np.diff(c, prepend=c[0]), 0, None)
-    loss = np.clip(np.diff(c, prepend=c[0]), None, 0) * -1
-    avg_gain = _rolling(gain, 14)
-    avg_loss = _rolling(loss, 14)
-    rsi = 100 - 100 / (1 + avg_gain / np.where(avg_loss == 0, np.nan, avg_loss))
+    # RSI: kanonik Wilder yumuşatması (technical_analysis._rsi ile birebir).
+    # Önceden basit hareketli ortalama kullanılıyordu; çıkarım tarafı Wilder
+    # olduğu için aynı isimli özellik iki farklı dağılım gösteriyordu (E6).
+    rsi = _wilder_rsi_series(c, 14)
 
     tp = (h + low_ + c) / 3
     flow = tp * v
@@ -170,8 +216,14 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
         slope = ((windows - y_mean) * (x - x_mean)).sum(axis=1) / x_var
         out[9:] = slope / windows.mean(axis=1)
 
-    aroon_up = 100 - 100 * _rolling_argmax_dist(c, 14, highest=True) / 14
-    aroon_down = 100 - 100 * _rolling_argmax_dist(c, 14, highest=False) / 14
+    # Aroon: kanonik periyot 25 (technical_analysis._aroon, sistem genelinde
+    # ``aroon_25`` olarak kullanılır ve velocity eşikleri bu periyoda kalibre).
+    # Standart tanım gereği pencere period+1 = 26 bardır (değer aralığı 0..100).
+    # Kanonik tanım Aroon Up'ı HIGH, Aroon Down'ı LOW üzerinden hesaplar;
+    # önceden eğitimde her ikisi de KAPANIŞ fiyatından ve periyot 14 ile
+    # hesaplanıyordu → çıkarımla aynı isimli özellik farklı tanımdı (E6).
+    aroon_up = 100 - 100 * _rolling_argmax_dist(h, 26, highest=True) / 25
+    aroon_down = 100 - 100 * _rolling_argmax_dist(low_, 26, highest=False) / 25
 
     hours = ((open_time.astype(np.int64) // 1000 + 3 * 3600) % 86400) // 3600
     day_quarter = hours // 6

@@ -70,7 +70,14 @@ def _replay_parity_candle_evidence(symbol: str, timeframe: str):
 
 
 async def _persist_replay_parity_observation(entry: dict):
-    """Persist one scan outcome with enough context for later decision matching."""
+    """Persist one scan outcome with enough context for later decision matching.
+
+    ⚠️ BAĞLANMAMIŞ KANCA (2026-09-10, Madde 21): çağıranı yok. Replay-parity
+    gözlemlerini kalıcılaştırmak için yazılmış; toplu backfill yolu
+    (``_run_replay_parity_backfill``) farklı bir fonksiyon kullanıyor. Canlı
+    tarama gözlemi kaydı devreye girdiğinde çağrılmalı. Silinmedi — gerçek
+    işlevsellik kaybı olurdu.
+    """
     symbol = str(entry.get("symbol") or "").upper()
     timeframe = str(entry.get("timeframe") or "5m")
     try:

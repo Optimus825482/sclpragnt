@@ -48,7 +48,8 @@ class Config:
     STALE_POSITION_SEC = int(os.getenv("STALE_POSITION_SEC", str(90 * 60)))
     STALE_POSITION_MIN_PROGRESS_PCT = float(os.getenv("STALE_POSITION_MIN_PROGRESS_PCT", "0.004"))
     STALE_POSITION_EXIT_BELOW_COST = os.getenv("STALE_POSITION_EXIT_BELOW_COST", "false").lower() == "true"
-    EXIT_ON_OPPOSITE_SIGNAL = os.getenv("EXIT_ON_OPPOSITE_SIGNAL", "false").lower() == "true"
+    # Not: EXIT_ON_OPPOSITE_SIGNAL (ters sinyalde çıkış) klasik strateji motoruyla
+    # birlikte kaldırıldı — kalan kod yolu yoktu ve hiçbir yer okumuyordu (Madde 21).
     TIMEOUT_REENTRY_BLOCK_SEC = 24 * 60 * 60
     HARD_STOP_REENTRY_BLOCK_SEC = 2 * 60 * 60
     # Short-horizon velocity paper entries get a shorter, still non-zero
@@ -56,7 +57,9 @@ class Config:
     VELOCITY_HARD_STOP_REENTRY_BLOCK_SEC = max(
         60, int(os.getenv("VELOCITY_HARD_STOP_REENTRY_BLOCK_SEC", str(15 * 60)))
     )
-    MAX_POSITION_LAYERS = 1
+    # Not: MAX_POSITION_LAYERS kaldırıldı (Madde 21) — sembol başına katman
+    # sınırı hiçbir kod yolunda okunmuyordu; tek-sembol-tek-pozisyon zaten
+    # commit_open_position'ın "already_open" korumasıyla uygulanıyor.
     # LLM market commentary is a journaled, paper-only forecast.  These
     # horizons never authorize an order or mutate strategy parameters.
     LLM_FORECAST_HORIZONS_MINUTES = (5, 15, 60, 240)
@@ -175,7 +178,8 @@ class Config:
     MONITORING_MICRO_WHALE_MULT = float(os.getenv("MONITORING_MICRO_WHALE_MULT", "1.05"))
     MONITORING_MICRO_NO_WHALE_MULT = float(os.getenv("MONITORING_MICRO_NO_WHALE_MULT", "0.9"))
     # CVD işareti dokunuşu anlamlı ayırmıyor (negatif %14.4 vs pozitif %15.0) → nötr.
-    MONITORING_MICRO_CVD_POSITIVE_MULT = float(os.getenv("MONITORING_MICRO_CVD_POSITIVE_MULT", "1.0"))
+    # Nötr olduğu için çarpan sabiti kaldırıldı (Madde 21); kod CVD işaretini
+    # sıralamaya hiç dahil etmiyor.
     # Mikro-yapı giriş filtreleri (2026-08-31, microflow verisiyle):
     # 1) Whale dağıtım filtresi: son whale'ler dağıtım ağırlıklıysa (fiyat etkisi
     #    analizi) girişi engelle — "sahte kırılım" elemesi. Varsayılan OFF:
@@ -200,7 +204,9 @@ class Config:
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     SYMBOL_ORDER_PCT = {}
-    SYMBOL_PYRAMIDING_LAYERS = {}
+    # Not: SYMBOL_PYRAMIDING_LAYERS (sembol bazlı katman sınırı) kaldırıldı
+    # (Madde 21) — hiçbir kod yolu okumuyordu; pyramiding kararı
+    # PYRAMIDING_LAYERS ile verilir.
     MIN_24H_QUOTE_VOLUME_TRY = 1_000_000.0
     HIGH_LIQUIDITY_BYPASS_VOLUME_TRY = 3_000_000.0
     MIN_VOLUME_RATIO = 0.3
@@ -321,7 +327,7 @@ class Config:
     @classmethod
     def min_net_exit_pct(cls, order_value: float | None = None) -> float:
         """Gross move needed to cover round-trip costs plus minimum net PnL."""
-        value = float(order_value or cls.DEFAULT_ORDER_USDT)
+        value = float(order_value or cls.DEFAULT_ORDER_TRY)
         if value <= 0:
             return cls.COMMISSION_PCT * 2 + cls.ESTIMATED_SLIPPAGE_PCT * 2
         return (cls.COMMISSION_PCT * 2

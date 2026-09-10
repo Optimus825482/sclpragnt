@@ -15,7 +15,6 @@ class ScalpAnalyzer:
     def __init__(self, market):
         self.market = market
         self.positions = {}
-        self._last_signal_lengths = {}
         self._cooldown_until = {}
         self._timeout_block_until = {}
         self._hard_stop_block_until = {}
@@ -279,8 +278,15 @@ class ScalpAnalyzer:
             self._cooldown_until.pop(symbol, None)
         return None
 
-    def calculate_atr(self, kline, period=11):
-        """ATR hesapla (period=11: velocity stratejisi için daha hızlı tepki — technical_analysis._atr'den farklıdır)."""
+    def calculate_atr(self, kline, period=14):
+        """ATR hesapla.
+
+        Not: tarihsel olarak varsayılan ``period=11`` idi ("velocity için daha
+        hızlı tepki" gerekçesiyle) ama hiçbir çağıran onu kullanmıyordu — hepsi
+        açıkça 14 veya ``config.SYSTEM_ATR_PERIOD`` geçiriyor. Yanıltıcı ölü
+        varsayılan 14'e çekildi (Madde 21). ``technical_analysis._atr``'den
+        farkı: burada basit ortalama (Wilder yumuşatması yok).
+        """
         highs = kline.get("highs", [])
         lows = kline.get("lows", [])
         closes = kline.get("closes", [])
@@ -530,24 +536,6 @@ class ScalpAnalyzer:
                 return {"ok": True, "paper_only": True, "symbol": symbol, "plan_revision": revision, "position": self.llm_position_context(symbol)}
             except (TypeError, ValueError) as exc:
                 return {"ok": False, "paper_only": True, "symbol": symbol, "error": str(exc)}
-
-    def _flow_filter(self, symbol):
-        if not self.market:
-            return True, 0.0
-        flow = self.market.get_orderflow(symbol)
-        bid, ask = flow.get("bid_qty", 0), flow.get("ask_qty", 0)
-        if not bid or not ask:
-            return False, 0.0
-        imbalance = (bid - ask) / (bid + ask)
-        return imbalance >= config.ORDERFLOW_MIN_IMBALANCE, imbalance
-
-    def _optional_flow_filter(self, symbol):
-        """Akış verisi yoksa trend stratejisini kilitleme; varsa kalite filtresi uygula."""
-        if not self.market: return True, 0.0
-        flow = self.market.get_orderflow(symbol)
-        if not flow.get("bid_qty") or not flow.get("ask_qty"):
-            return True, 0.0
-        return self._flow_filter(symbol)
 
     async def evaluate(self, symbol, ticker, allow_entry=True):
         """Açık pozisyon yönetimi.
