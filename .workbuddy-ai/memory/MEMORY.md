@@ -52,6 +52,35 @@ Kalıcı (oturumlar arası) proje kuralları ve mimari kararlar. Günlük iş ka
 - Tip denetimi: `frontend` içinde `npx tsc --noEmit`
 - Derleme kontrolü: `python -m py_compile <dosyalar>`
 
+## MACD MONITOR — bilinen tasarım özellikleri / açık kararlar
+
+Denetim raporu: `outputs/macd_monitor_denetim_raporu.md` (2026-09-10). Modül:
+`routers/macd_monitor.py` (döngü + `GET /api/macd-monitor` + ayar ucu), beslediği paneller:
+`/macd-monitor` ve `/monitoring` (YÜKSELİŞ EĞİLİMİ ADAYLARI, SIRÇRAMA ADAYLARI).
+
+- **Trend gücü göreceli ve yönsüzdür ve bu KANITLA DOĞRUDUR.** `strength` 0-10, evren-içi min-max ile
+  normalize edilir (`_strength_meta`) ve hız `abs(slope)/bar_aralığı` olduğundan **yön içermez**.
+  OOS/replay (312 sembol · 571.980 gözlem) yönlü formülün bu evrende **contrarian** olduğunu gösterdi
+  (IC −0.049, t −23.8 @30m) → yön skora EKLENMEZ. `dir` alanı yalnızca tanımlayıcıdır, skora girmez.
+  `monitoring/page.tsx` `RISING_MIN_STRENGTH=9.8` "evren maksimumu"nu seçer; bu davranış korundu.
+- **Tazelik (C1 ile düzeltildi):** M3/M30 serileri WS aboneliğinde değildir, `market.refresh_series()`
+  ile REST'ten tazelenir (3m≈75sn, 30m≈1860sn). Artık tazelenen `(sym,tf)` hücreleri fiyat değişmese
+  de yeniden hesaplanır (`refreshed` kümesi + `_bar_marker` yeni-bar kapısı).
+- **Alarm cooldown'ları ayrıdır:** jump (`_jump_alerted_at`) ve erken (`_early_alerted_at`),
+  ikisi de 30 dk sabitini kullanır ama birbirini bloke etmez.
+- **Kanıt katmanı VAR (C3):** `macd_monitor_alerts` tablosu; her alarm sinyal imzası + fiyatla kaydedilir,
+  5m/15m/30m ileri getirisi doldurulur (`macd_evidence_loop`, ~2 dk). `GET /api/macd-monitor/alerts`.
+  UI: MACD MONITOR sayfasında "ALARM GEÇMİŞİ & İSABET" paneli. **Eşik/ağırlık ayarı yalnızca bu
+  kanıtla yapılır** — sezgiyle veya kısmi modellerle DEĞİL.
+- **Performans:** `_trend_cache` (B8) değişmeyen sembolde trend/sinyal hesabını atlar;
+  `macd_monitor_delta` WS mesajı (B9) yalnız değişen sembolleri yayınlar, her 5. pass'ta tam yayın.
+- **MACD snapshot'ın İKİ tüketicisi vardır:** `/macd-monitor` ve `/monitoring` (YÜKSELİŞ/SIRÇAAMA panelleri).
+  Yeni bir WS mesaj tipi eklerken **ikisini de** güncelle — B9'da yalnız biri güncellendiği için
+  `/monitoring` sessizce ~1 sn → ~5 sn'ye yavaşladı. Birleştirme tek kaynaktan:
+  `frontend/app/lib/macdSnapshot.ts` → `mergeMacdDelta`.
+- **Kararlar (2026-09-10, kullanıcı onayı):** C1/C3 uygulandı; C2 kanıt sonrası → yön eklenmedi,
+  eşik/ağırlık DEĞİŞMEDİ; B6 histerezis + B8/B9 uygulandı. Kanıt: `outputs/macd_monitor_replay_kanit.md`.
+
 ## Dikkat
 
 - Araştırma betikleri (`backend/scripts`, `backend/work`) **silinmez** — kullanıcının

@@ -5,6 +5,7 @@ import { API_BASE, apiFetch, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
 import { useLiveMessages } from "../lib/liveSocket";
+import { mergeMacdDelta } from "../lib/macdSnapshot";
 
 type NotificationSettings = {
   enabled: boolean;
@@ -305,6 +306,12 @@ export default function MonitoringPage() {
   }, [loadMacd]);
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "macd_monitor" && message.data) setMacdData(message.data);
+    // Delta yayını da birleştirilmeli (B9): backend artık çoğu turda yalnızca
+    // DEĞİŞEN sembolleri yayınlar; yalnız `macd_monitor` dinlenirse bu panel
+    // her 5. pass'a (≈5 sn) düşer ve anlık tazeleme kaybolur.
+    if (message.type === "macd_monitor_delta" && message.data?.symbols) {
+      setMacdData((prev: any) => mergeMacdDelta(prev, message.data));
+    }
   }, []);
   useLiveMessages(onLiveMessage);
   const rising = useMemo(() => extractRisingCandidates(macdData), [macdData]);

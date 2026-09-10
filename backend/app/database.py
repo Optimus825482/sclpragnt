@@ -639,6 +639,194 @@ async def backfill_position_trade_ids():
     return await _run_db(op)
 
 
+# ---------------------------------------------------------------------------
+# MACD MONITOR alarm kayıtları (2026-09-11) — paper-only kanıt katmanı.
+#
+# Amaç: `jump_min_score` ve `_TF_WEIGHTS` gibi sezgisel eşiklerin ampirik
+# olarak ayarlanabilmesi. Her üretilen sinyal saklanır; sonra 5m/15m/30m
+# ileri getirileri doldurulur. Sinyal DAVRANIŞINI değiştirmez, yalnızca ölçer.
+# ---------------------------------------------------------------------------
+
+# Alarmın sonucunun "kesinleşmesi" için gereken süre (sn) — 30 dk ufuk + pay.
+_MACD_ALERT_OUTCOME_WINDOW_SEC = 32 * 60
+
+
+async def record_macd_monitor_alert(created_at: float, symbol: str, kind: str,
+                                    score: int | None = None, jump_min: int | None = None,
+                                    price: float | None = None,
+                                    signals: dict | list | None = None) -> int | None:
+    """Bir MACD alarmını kaydet. Dönen değer satır id'si."""
+    payload = json.dumps(signals) if signals is not None else None
+
+    def op(conn):
+        row = conn.execute(
+            "INSERT INTO macd_monitor_alerts"
+            "(created_at, symbol, kind, score, jump_min, price, signals) "
+            "VALUES(?,?,?,?,?,?,?) RETURNING id",
+            (float(created_at), str(symbol).upper(), str(kind), score, jump_min,
+             price, payload),
+        ).fetchone()
+        conn.commit()
+        return int(row[0]) if row else None
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        # Kanıt katmanı kritik yol DEĞİL: kayıt başarısız olsa da alarm akışı
+        # bozulmamalı (uyarı yalnızca loglanır).
+        logging.getLogger("scalper.database").debug(
+            "macd_monitor_alerts kaydı başarısız: %s", symbol, exc_info=True)
+        return None
+
+
+async def list_macd_monitor_alerts(limit: int = 100, symbol: str | None = None) -> list[dict]:
+    """Son alarmlar (en yeni önce)."""
+    limit = max(1, min(1000, int(limit)))
+    def op(conn):
+        if symbol:
+            rows = conn.execute(
+                "SELECT * FROM macd_monitor_alerts WHERE symbol=? "
+                "ORDER BY created_at DESC LIMIT ?", (str(symbol).upper(), limit)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM macd_monitor_alerts ORDER BY created_at DESC LIMIT ?",
+                (limit,)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["signals"] = _json_value(item.get("signals"), None)
+            out.append(item)
+        return out
+
+    return await _run_db(op)
+
+
+async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
+    """Bekleyen alarmların 5m/15m/30m ileri getirilerini doldur.
+
+    Fiyat kaynağı: `historical_candles` (5m). Alarm anındaki fiyat kayıtlıysa
+    taban o; değilse alarm anına en yakın mumun kapanışı kullanılır. Pencere
+    tamamen geçmiş ve veri yoksa kayıt 'expired' işaretlenir.
+    """
+    horizons = (("outcome_5m_pct", 5), ("outcome_15m_pct", 15), ("outcome_30m_pct", 30))
+
+    def op(conn):
+        pending = conn.execute(
+            "SELECT id, created_at, symbol, kind, price FROM macd_monitor_alerts "
+            "WHERE outcome_state='pending' ORDER BY created_at ASC LIMIT ?",
+            (max(1, min(5000, int(limit))),)).fetchall()
+        filled = 0
+        now = time.time()
+        for row in pending:
+            values = dict(row)
+            alert_id = values["id"]
+            symbol = values["symbol"]
+            created = float(values["created_at"] or 0)
+            base_price = values.get("price")
+            t0_ms = created * 1000.0
+            window_end_ms = t0_ms + 30 * 60_000
+
+            candles = conn.execute(
+                "SELECT open_time, close FROM historical_candles "
+                "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
+                "ORDER BY open_time",
+                (symbol, t0_ms - 5 * 60_000, window_end_ms + 5 * 60_000)).fetchall()
+            rows = [(float(dict(c)["open_time"]), float(dict(c)["close"])) for c in candles]
+
+            if not rows:
+                if now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC:
+                    conn.execute(
+                        "UPDATE macd_monitor_alerts SET outcome_state='expired', filled_at=? WHERE id=?",
+                        (now, alert_id))
+                    filled += 1
+                continue
+
+            base = float(base_price) if base_price else rows[0][1]
+            if base <= 0:
+                continue
+            updates = {}
+            for column, minutes in horizons:
+                target = t0_ms + minutes * 60_000
+                candidates = [close for stamp, close in rows if stamp <= target]
+                if not candidates:
+                    continue
+                updates[column] = (candidates[-1] / base - 1.0) * 100.0
+            if len(updates) == len(horizons):
+                conn.execute(
+                    "UPDATE macd_monitor_alerts SET outcome_5m_pct=?, outcome_15m_pct=?, "
+                    "outcome_30m_pct=?, outcome_state='filled', filled_at=? WHERE id=?",
+                    (updates["outcome_5m_pct"], updates["outcome_15m_pct"],
+                     updates["outcome_30m_pct"], now, alert_id))
+                filled += 1
+            elif now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC:
+                conn.execute(
+                    "UPDATE macd_monitor_alerts SET outcome_state='expired', filled_at=? WHERE id=?",
+                    (now, alert_id))
+                filled += 1
+        if filled:
+            conn.commit()
+        return filled
+
+    return await _run_db(op)
+
+
+async def macd_monitor_alert_stats(days: int = 30) -> dict:
+    """Alarm isabet özeti: tür ve ufuk bazında ortalama getiri + isabet oranı.
+
+    Yalnızca sonucu kesinleşmiş ('filled') kayıtlar sayılır. Bu tablo,
+    `jump_min_score` eşiğinin ampirik ayarı için kanıt sağlar.
+    """
+    since = time.time() - max(1, int(days)) * 86400.0
+
+    def op(conn):
+        rows = conn.execute(
+            "SELECT kind, score, outcome_5m_pct, outcome_15m_pct, outcome_30m_pct "
+            "FROM macd_monitor_alerts WHERE created_at >= ? AND outcome_state='filled'",
+            (since,)).fetchall()
+        buckets: dict[str, dict] = {}
+        for row in rows:
+            values = dict(row)
+            kind = values.get("kind") or "unknown"
+            bucket = buckets.setdefault(kind, {"n": 0, "score_sum": 0.0, "score_n": 0})
+            bucket["n"] += 1
+            if values.get("score") is not None:
+                bucket["score_sum"] += float(values["score"])
+                bucket["score_n"] += 1
+            for column, label in (("outcome_5m_pct", "5m"),
+                                  ("outcome_15m_pct", "15m"),
+                                  ("outcome_30m_pct", "30m")):
+                value = values.get(column)
+                if value is None:
+                    continue
+                slot = bucket.setdefault(label, {"n": 0, "sum": 0.0, "wins": 0})
+                slot["n"] += 1
+                slot["sum"] += float(value)
+                if float(value) > 0:
+                    slot["wins"] += 1
+        out = {}
+        for kind, bucket in buckets.items():
+            entry = {"n": bucket["n"]}
+            if bucket["score_n"]:
+                entry["avg_score"] = round(bucket["score_sum"] / bucket["score_n"], 1)
+            for label in ("5m", "15m", "30m"):
+                slot = bucket.get(label)
+                if not slot or not slot["n"]:
+                    continue
+                entry[label] = {
+                    "n": slot["n"],
+                    "avg_pct": round(slot["sum"] / slot["n"], 3),
+                    "hit_rate": round(slot["wins"] / slot["n"], 3),
+                }
+            out[kind] = entry
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM macd_monitor_alerts WHERE outcome_state='pending'"
+        ).fetchone()
+        return {"days": int(days), "kinds": out,
+                "pending": int(pending[0]) if pending else 0}
+
+    return await _run_db(op)
+
+
 async def load_positions():
     def op(conn):
         positions = {}

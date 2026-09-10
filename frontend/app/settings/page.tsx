@@ -892,6 +892,7 @@ function SettingsPageInner() {
 
 function MacdJumpSettingsPanel() {
   const [draft, setDraft] = useState<any>({});
+  const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -899,7 +900,7 @@ function MacdJumpSettingsPanel() {
   const load = async () => {
     try {
       const res = await apiRequest(`${API_BASE}/api/macd-monitor/settings`);
-      if (res.ok) { const d = await res.json(); setDraft(d.settings || {}); }
+      if (res.ok) { const d = await res.json(); setDraft(d.settings || {}); setLoaded(true); }
     } catch { setError("Veri alınamadı"); }
   };
 
@@ -922,6 +923,9 @@ function MacdJumpSettingsPanel() {
   };
 
   const set = (key: string, value: any) => setDraft((prev: any) => ({ ...prev, [key]: value }));
+  // Ayarlar yüklenene kadar kontroller kilitli: `draft` boşken select'ler
+  // yanlışlıkla "Kapalı" gösteriyordu (varsayılan Açık) — A12.
+  const pending = !loaded;
 
   return (
     <div className="card bg-bunker-950">
@@ -932,29 +936,30 @@ function MacdJumpSettingsPanel() {
       </p>
       {error && <p className="text-neon-red text-xs mb-3">{error}</p>}
       {saved && <p className="text-neon-green text-xs mb-3">✅ Kaydedildi</p>}
+      {pending && !error && <p className="text-bunker-muted text-xs mb-3">Ayarlar yükleniyor…</p>}
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className={`grid gap-4 md:grid-cols-3 ${pending ? "opacity-60" : ""}`}>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Sıçrama Adayı Eşiği (0-100)</label>
-          <input type="number" min="0" max="100" value={draft.jump_min_score ?? 60} onChange={(e) => set("jump_min_score", Number(e.target.value))} className="input" />
+          <input type="number" min="0" max="100" disabled={pending} value={draft.jump_min_score ?? 60} onChange={(e) => set("jump_min_score", Number(e.target.value))} className="input" />
         </div>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Eşik Alarmları</label>
-          <select value={draft.alerts_enabled ? "1" : "0"} onChange={(e) => set("alerts_enabled", e.target.value === "1")} className="input">
+          <select disabled={pending} value={draft.alerts_enabled ? "1" : "0"} onChange={(e) => set("alerts_enabled", e.target.value === "1")} className="input">
             <option value="1">Açık (WS + banner)</option>
             <option value="0">Kapalı</option>
           </select>
         </div>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Web Push Bildirimi</label>
-          <select value={draft.push_enabled ? "1" : "0"} onChange={(e) => set("push_enabled", e.target.value === "1")} className="input">
+          <select disabled={pending} value={draft.push_enabled ? "1" : "0"} onChange={(e) => set("push_enabled", e.target.value === "1")} className="input">
             <option value="1">Açık</option>
             <option value="0">Kapalı</option>
           </select>
         </div>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Erken Sinyal Alarmları</label>
-          <select value={draft.early_alerts_enabled ? "1" : "0"} onChange={(e) => set("early_alerts_enabled", e.target.value === "1")} className="input">
+          <select disabled={pending} value={draft.early_alerts_enabled ? "1" : "0"} onChange={(e) => set("early_alerts_enabled", e.target.value === "1")} className="input">
             <option value="1">Açık (varsayılan)</option>
             <option value="0">Kapalı</option>
           </select>
@@ -968,7 +973,7 @@ function MacdJumpSettingsPanel() {
       </p>
 
       <div className="flex gap-3 mt-6">
-        <button onClick={save} disabled={saving} className="px-5 py-2 rounded-lg border border-neon-green/50 text-neon-green font-mono text-xs hover:bg-neon-green/10 disabled:opacity-50">
+        <button onClick={save} disabled={saving || pending} className="px-5 py-2 rounded-lg border border-neon-green/50 text-neon-green font-mono text-xs hover:bg-neon-green/10 disabled:opacity-50">
           {saving ? "KAYDEDİLİYOR..." : "KAYDET"}
         </button>
       </div>
