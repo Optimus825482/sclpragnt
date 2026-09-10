@@ -37,6 +37,7 @@ from app.correlation import CorrelationMonitor, cluster_exposure
 from app.promotion import pipeline as promotion_pipeline
 from app import universe_registry
 from app import database
+from app import runtime_deps
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, orderbook, top_gainers
 from app import binance_tr_public
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
@@ -82,7 +83,7 @@ from app.routers.runtime import (  # noqa: F401
     refresh_top_gainer_symbols, top_gainers_refresh_loop, refresh_symbol_activity,
     bootstrap_symbol_activity, symbol_activity_loop, llm_replenish_after_close, llm_idle_trigger_loop,
     _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status)
-from app.routers.velocity import velocity_learning_loop, load_velocity_atr_profiles  # noqa: F401
+from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop, load_velocity_atr_profiles  # noqa: F401
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
 from app.routers import monitoring  # noqa: F401
 
@@ -763,6 +764,10 @@ async def startup_market_warmup():
 
 async def startup_services():
     global _pg_pool
+    # Geç bağlanan bağımlılıklar döngüler başlamadan ÖNCE doğrulanır. main.py
+    # modülü tamamen yüklendiği için bağlama bu noktada bitmiş olmalı; eksik
+    # varsa süreç sessizce "ölü döngü" çalıştırmak yerine net hata verir.
+    runtime_deps.assert_ready()
     await database.init_db()
     try:
         security.load_user_session_versions(await database.list_users())
@@ -815,6 +820,11 @@ async def startup_services():
     # Velocity ATR profillerini hemen yükle (ilk scan doğru eşikle çalışsın)
     await load_velocity_atr_profiles()
     _start_background(velocity_learning_loop, "velocity-learner")
+    # Otonom Hız Avcısı: her M5 kapanışında tarama yapıp en iyi adaya paper
+    # pozisyon açar. Kendi içinde kapılıdır (her turda VELOCITY_AUTO_ENABLED +
+    # llm_paper_trade_enabled yeniden okunur) → ayar kapatılınca tarama durur,
+    # yeniden açılınca restart gerekmeden devam eder. Paper-only; gerçek emir yok.
+    _start_background(autonomous_velocity_loop, "velocity-autonomous")
     _start_background(radar_loop, "radar-loop")
     _start_background(top_gainers_refresh_loop, "top-gainers-monitor")
     _start_background(symbol_activity_loop, "symbol-activity")
@@ -1463,7 +1473,6 @@ async def _apply_config_update(payload: dict, request: Request = None):
         )
     else:
         await market.repair_history_gaps()
-    analyzer._last_signal_lengths.clear()
     existing = await database.get_llm_setting("runtime_config", "{}")
     try: persisted = json.loads(existing or "{}")
     except json.JSONDecodeError: persisted = {}
@@ -2837,9 +2846,6 @@ async def reset_all(request: Request = None):
     """Eski paper-trading/strateji geçmişini sil, ayarları koru ve cüzdanı sıfırla."""
     analyzer.positions.clear()
     analyzer.pending_orders.clear()
-    # Reset sonrası mevcut mum uzunlukları eski sinyal durumuyla karşılaştırılmasın;
-    # aksi halde yeni mum kapanana kadar tüm stratejiler sessiz kalabiliyordu.
-    analyzer._last_signal_lengths.clear()
     analyzer._cooldown_until.clear()
     analyzer._timeout_block_until.clear()
     analyzer._hard_stop_block_until.clear()
@@ -2854,11 +2860,13 @@ async def reset_all(request: Request = None):
 
 
 # Geç bağlama: router modülleri burada tanımlı app düzeyi handler'ları çağrı
-# zamanında çözer. main modülü tam yüklendikten sonra atanır; böylece router
-# -> main yönünde döngüsel import oluşmaz.
-llm_chat_routes.llm_open_paper_trade = llm_open_paper_trade
-llm_chat_routes.symbol_analysis = symbol_analysis
-llm_chat_routes.get_config = get_config
+# zamanında çözer. main modülü tam yüklendikten sonra AÇIK olarak bağlanır;
+# böylece router -> main yönünde döngüsel import oluşmaz ve hangi bağımlılığın
+# gerçekten bağlandığı runtime_deps kaydında izlenir (eksik kalırsa açılışta
+# assert_ready net hata verir; sessiz "ölü döngü" oluşamaz).
+runtime_deps.bind(llm_chat_routes, "llm_open_paper_trade", llm_open_paper_trade)
+runtime_deps.bind(llm_chat_routes, "symbol_analysis", symbol_analysis)
+runtime_deps.bind(llm_chat_routes, "get_config", get_config)
 async def get_strategy_stats():
     """LLM aracı: strateji bazlı işlem istatistikleri (kayıt olan stratejiler)."""
     trades = await database.get_trades(limit=None)
@@ -2877,6 +2885,6 @@ async def get_strategy_stats():
     return {"stats": stats, "active": ["CHAT_PREDICTION", "LLM_PAPER"]}
 
 
-llm_chat_routes.get_strategy_stats = get_strategy_stats
-runtime_routes.llm_open_paper_trade = llm_open_paper_trade
-runtime_routes.gainers_radar = gainers_radar
+runtime_deps.bind(llm_chat_routes, "get_strategy_stats", get_strategy_stats)
+runtime_deps.bind(runtime_routes, "llm_open_paper_trade", llm_open_paper_trade)
+runtime_deps.bind(runtime_routes, "gainers_radar", gainers_radar)

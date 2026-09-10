@@ -54,6 +54,14 @@ from app.market_intelligence import trade_economics
 from app import pattern_research
 from app.agent_learning import (append_event, finish_trace, new_trace_id, start_trace,
                                 evaluate_output, save_evaluation, save_experience, upsert_instinct)
+from app.runtime_deps import pending_dep
+
+# Geç bağlanan bağımlılıklar (main.py runtime_deps.bind ile atar). Yer tutucular
+# atama öncesi çağrıda sessiz NameError yerine açıklayıcı hata verir.
+llm_open_paper_trade = pending_dep("llm_open_paper_trade")
+symbol_analysis = pending_dep("symbol_analysis")
+get_config = pending_dep("get_config")
+get_strategy_stats = pending_dep("get_strategy_stats")
 
 logger = logging.getLogger("scalper.llm_chat")
 router = APIRouter()

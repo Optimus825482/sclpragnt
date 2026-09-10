@@ -13,7 +13,8 @@ from app import database
 from app.state import market, analyzer
 from app.api_common import _start_background, _fresh_public_price
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook, ticker_price
-from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
+from app.technical_analysis import (calculate_snapshot, _atr, _aroon, _bollinger,
+                                    _cci, _ema, _linreg_slope_pct, _mfi, _rsi, _sma)
 from app.market_intelligence import microstructure_snapshot
 from app.microflow import microflow
 from app import calibration as calibration_service
@@ -75,20 +76,8 @@ def _rate_limit_stats():
 
 
 def _velocity_rsi(closes, n=14):
-    """Wilder-smoothed RSI (technical_analysis._rsi ile aynı)."""
-    if len(closes) < n + 1:
-        return None
-    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
-    gains = [max(d, 0.0) for d in deltas]
-    losses = [max(-d, 0.0) for d in deltas]
-    avg_gain = sum(gains[:n]) / n
-    avg_loss = sum(losses[:n]) / n
-    for i in range(n, len(deltas)):
-        avg_gain = (avg_gain * (n - 1) + gains[i]) / n
-        avg_loss = (avg_loss * (n - 1) + losses[i]) / n
-    if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
-    return 100 - 100 / (1 + avg_gain / avg_loss)
+    """Wilder RSI — kanonik ``technical_analysis._rsi``'e devreder (tek tanım)."""
+    return _rsi(closes, n)
 
 
 def _velocity_mfi(highs, lows, closes, vols, n=14):
@@ -113,7 +102,14 @@ def _velocity_bollinger_width(closes, n=20, mult=2.0):
     return (4 * sd) / m * 100 if m else None
 
 
-def _velocity_linreg_slope(closes, n=20):
+def _velocity_struct_slope(closes, n=20):
+    """Velocity yapısal eğim göstergesi — ``VELOCITY_STRUCT_SLOPE_PCT``'e KALİBRE.
+
+    DİKKAT: Bu, ML özelliği ``linreg_slope10_pct`` DEĞİLDİR. Tarama eşiği
+    (0.20) buradaki %/bar×10 ölçeğine göre kalibre edilmiştir; ölçeği veya
+    pencereyi değiştirmek giriş davranışını bozar. ML yolu kanonik
+    ``technical_analysis._linreg_slope_pct`` kullanır (periyot 10, yüzde/bar).
+    """
     if len(closes) < n:
         return None
     xs = list(range(n))
@@ -126,18 +122,15 @@ def _velocity_linreg_slope(closes, n=20):
 
 
 def _velocity_aroon(highs, lows=None, n=25):
-    if len(highs) < n + 1:
+    """Aroon — kanonik ``technical_analysis._aroon``'e devreder (tek tanım).
+
+    ``lows`` verilmezse yalnız yukarı bileşen hesaplanır (eski davranış korunur).
+    """
+    result = _aroon(highs, highs if lows is None else lows, n)
+    if result is None:
         return None
-    win = highs[-(n + 1):]
-    # Duplicate değerlerde son oluşumu bul (list.index ilkini döner, yanlış Aroon)
-    high_max = max(win)
-    up = max(i for i, v in enumerate(win) if v == high_max) / n * 100
-    down = None
-    if lows is not None and len(lows) >= n + 1:
-        lwin = lows[-(n + 1):]
-        low_min = min(lwin)
-        down = max(i for i, v in enumerate(lwin) if v == low_min) / n * 100
-    return {"up": up, "down": down}
+    return {"up": result["up"],
+            "down": result["down"] if lows is not None else None}
 
 
 def _velocity_ml_feature_dict(closes, highs, lows, vols):
@@ -161,7 +154,7 @@ def _velocity_ml_feature_dict(closes, highs, lows, vols):
         "bb_width_pct": _velocity_bollinger_width(closes),
         "rsi": _velocity_rsi(closes),
         "mfi": _velocity_mfi(highs, lows, closes, vols),
-        "linreg_slope10_pct": _velocity_linreg_slope(closes),
+        "linreg_slope10_pct": _linreg_slope_pct(closes, 10),
         "aroon_up": aroon["up"] if aroon else None,
         "aroon_down": aroon["down"] if aroon else None,
     }
@@ -244,7 +237,11 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             bb_width = _velocity_bollinger_width(closes)
             rsi = _velocity_rsi(closes)
             mfi = _velocity_mfi(highs, lows, closes, vols)
-            slope = _velocity_linreg_slope(closes)
+            # Yapısal eğim: VELOCITY_STRUCT_SLOPE_PCT eşiğine kalibre ayrı
+            # gösterge (ML özelliği linreg_slope10_pct DEĞİL — aşağıda kanonik
+            # değer ayrıca hesaplanır).
+            slope = _velocity_struct_slope(closes)
+            ml_slope = _linreg_slope_pct(closes, 10)
             aroon = _velocity_aroon(highs, lows)
             aroon_up = aroon["up"] if aroon else None
             aroon_down = aroon["down"] if aroon else None
@@ -404,7 +401,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "ret1_pct": None, "ret3_pct": ret3,
                     "ret5_pct": None,
                     "atr_pct": atr_pct, "bb_width_pct": bb_width,
-                    "rsi": rsi, "mfi": mfi, "linreg_slope10_pct": slope,
+                    "rsi": rsi, "mfi": mfi, "linreg_slope10_pct": ml_slope,
                     "aroon_up": aroon_up, "aroon_down": aroon_down,
                 }
                 ml_pred = ml_forecast.predict_target(symbol, ml_features, horizon=horizon_minutes)
@@ -446,7 +443,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "bb_width_pct": round(bb_width, 2) if bb_width else None,
                     "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
                     "mode": mode, "exhausted": exhausted,
-                    "linreg_slope10_pct": round(slope, 3) if slope is not None else None,
+                    "linreg_slope10_pct": round(ml_slope, 3) if ml_slope is not None else None,
                     "aroon_up": round(aroon_up, 0) if aroon_up is not None else None,
                     "aroon_down": round(aroon_down, 0) if aroon_down is not None else None,
                     "horizon_minutes": horizon_minutes,
@@ -571,10 +568,6 @@ VELOCITY_PROFILE_CALIB = {
             "min_atr": 0.10, "max_atr": 1.00, "min_samples": 30},
 }
 _velocity_profile_atr = {"5m": None, "15m": None}  # lazy-loaded per-profile thresholds
-
-
-def _profile_prefix(profile):
-    return {"5m": "vel-5dk-%", "15m": "vel-15dk-%"}.get(profile)
 
 
 async def velocity_calibrate():
@@ -949,6 +942,11 @@ async def velocity_status():
         "ok": True,
         "auto_enabled": bool(config.VELOCITY_AUTO_ENABLED and
                              (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"),
+        # ``auto_enabled`` ayar kapısını yansıtır (env + DB). ``loop_running``
+        # ise döngünün GERÇEKTEN başlatıldığını gösterir — 2026-09-10 öncesinde
+        # döngü hiç başlatılmıyordu ve bu ayrım yoktu; artık ikisi birlikte
+        # raporlanır ki UI "ayar açık" ile "fiilen çalışıyor"u karıştırmasın.
+        "loop_running": _VELOCITY_AUTO_LOOP_STARTED,
         "pool_size": config.VELOCITY_POOL_SIZE,
         "pattern_filter_enabled": config.VELOCITY_PATTERN_FILTER_ENABLED,
         "sl_pct": config.VELOCITY_AUTO_SL_PCT,
@@ -1101,6 +1099,11 @@ _velocity_auto_state = {"last_scan_at": None, "last_error": None, "opened": [],
                           "last_open": None, "total_opened": 0,
                           "filters": {"whale_dagilim_reddet": 0, "akis_aykiri_reddet": 0,
                                       "microflow_yok": 0}}
+
+#: ``autonomous_velocity_loop`` gerçekten başlatıldı mı? Bu bayrak yalnızca
+#: döngünün kendisi tarafından True yapılır; startup'a eklenmediği sürece
+#: False kalır ve ``velocity_status`` bunu dürüstçe raporlar (Madde 21).
+_VELOCITY_AUTO_LOOP_STARTED = False
 
 
 async def _velocity_24h_quote_volume(symbol: str) -> float | None:
@@ -1494,7 +1497,21 @@ async def autonomous_velocity_loop():
     hedef (target_pct) TP olarak konur → fiyat oraya ulaşınca take_profit ile
     kapanır; +%0.5 kâr kilidi stop'u maliyet üstüne çeker (trailing yok),
     30dk max-hold + -%3 acil stop zararı sınırlar.
+
+    AKTİF (2026-09-10, kullanıcı kararı): ``main.py::startup_services()`` içinde
+    ``_start_background(autonomous_velocity_loop, "velocity-autonomous")`` ile
+    başlatılır. Kablolama, tanımlı ama başlatılmamış döngüleri yakalayan
+    ``tests/test_loop_wiring.py`` ile korunur.
+
+    Çift kilit: ``VELOCITY_AUTO_ENABLED`` (env) **ve**
+    ``llm_paper_trade_enabled`` (DB ayarı) birlikte açık olmalı. Kapı her turda
+    yeniden okunur → ayar kapatılınca tarama durur, açılınca restart gerekmez.
+    Başlatma sırasında ikisi de açıktı (env=true, DB=1).
     """
+    global _VELOCITY_AUTO_LOOP_STARTED
+    # Döngü gövdesi çalışmaya başladığı anda "başlatıldı" sayılır; ilk 60 sn'lik
+    # uyku boyunca da durum ucu doğru (True) raporlar.
+    _VELOCITY_AUTO_LOOP_STARTED = True
     await asyncio.sleep(60)
     # Restart sonrası mevcut M5 kapanışıyla senkron başla: ilk turda hazır
     # kapanışa bağlı kalıp yeni mum gelmeden taramayalım (0 ile başlarsak

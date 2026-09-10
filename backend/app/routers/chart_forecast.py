@@ -21,7 +21,8 @@ from app import database
 from app import ml_forecast
 from app.binance_tr_public import klines as fetch_klines
 from app.routers.velocity import (_velocity_bollinger_width, _velocity_rsi,
-                                  _velocity_mfi, _velocity_linreg_slope, _velocity_aroon)
+                                  _velocity_mfi, _velocity_aroon)
+from app.technical_analysis import _linreg_slope_pct
 
 logger = logging.getLogger("scalper.chart_forecast")
 
@@ -72,7 +73,7 @@ async def collect_forecast_features(symbol: str) -> dict | None:
         "bb_width_pct": round(_velocity_bollinger_width(closes), 2) if _velocity_bollinger_width(closes) is not None else None,
         "rsi": round(_velocity_rsi(closes), 1) if _velocity_rsi(closes) is not None else None,
         "mfi": round(_velocity_mfi(highs, lows, closes, vols), 1) if _velocity_mfi(highs, lows, closes, vols) is not None else None,
-        "linreg_slope10_pct": round(_velocity_linreg_slope(closes), 3) if _velocity_linreg_slope(closes) is not None else None,
+        "linreg_slope10_pct": round(_linreg_slope_pct(closes, 10), 3) if _linreg_slope_pct(closes, 10) is not None else None,
         "aroon_up": round(aroon["up"], 0) if aroon else None,
         "aroon_down": round(aroon["down"], 0) if aroon else None,
     }

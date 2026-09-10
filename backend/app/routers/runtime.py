@@ -22,6 +22,13 @@ from app.api_common import (_json_safe_positions, correlation_monitor,
                             _radar_snapshot, _radar_response_cache)
 from app.correlation import cluster_exposure
 from app.technical_analysis import _atr, _bollinger, _cci, _ema, _mfi, _sma
+from app.runtime_deps import pending_dep
+
+# Geç bağlanan bağımlılıklar: main.py bunları runtime_deps.bind ile atar.
+# Yer tutucu sayesinde atama öncesi çağrı, sessiz NameError yerine açıklayıcı
+# bir RuntimeError verir (bkz. app/runtime_deps.py).
+llm_open_paper_trade = pending_dep("llm_open_paper_trade")
+gainers_radar = pending_dep("gainers_radar")
 
 
 async def correlation_refresh_loop():
@@ -104,7 +111,14 @@ async def _cached_try_balance() -> float:
 
 
 def invalidate_wallet_caches():
-    """Trade kapanışı/açılışı sonrası önbelleği sıfırla (anında doğru bakiye)."""
+    """Trade kapanışı/açılışı sonrası önbelleği sıfırla (anında doğru bakiye).
+
+    ⚠️ BAĞLANMAMIŞ KANCA (2026-09-10, Madde 21): hiçbir yerden çağrılmıyor.
+    Önbelleklerin TTL'i ``_WALLET_TTL_SEC`` = 3 sn olduğu için işlem
+    kapanışından sonra en fazla 3 sn bayat değer gösterilir; bu yüzden
+    kaldırmak yerine kayda geçirildi. Anında tazelik gerekirse trade
+    açılış/kapanış noktalarından çağrılmalıdır.
+    """
     _realized_pnl_cache.update(value=None, at=0.0)
     _try_balance_cache.update(value=None, at=0.0)
     _auto_trades_cache.update(data=[], at=0.0)
@@ -266,7 +280,12 @@ async def strategy_loop():
 
 
 def _ma_cascade_observation_context(symbol: str, event: dict) -> dict:
-    """Attach current radar/liquidity context without turning it into a gate."""
+    """Attach current radar/liquidity context without turning it into a gate.
+
+    ⚠️ BAĞLANMAMIŞ KANCA (2026-09-10, Madde 21): çağıranı yok. MA-cascade
+    gözlem olayına bağlam eklemek için yazılmış; olay üretimi devreye
+    girdiğinde çağrılmalı. Silinmedi — amaçlanan işlevsellik kaybı olurdu.
+    """
     ticker = market.get_ticker(symbol) or {}
     flow = market.get_orderflow(symbol) or {}
     price = float(event.get("price") or ticker.get("last_price") or 0)
@@ -350,7 +369,6 @@ async def refresh_top_gainer_symbols():
             except Exception as exc:
                 print(f"[Top Gainers] Yeni sembol hidrasyon hatası: {exc}", flush=True)
         market.reconnect_requested = True
-        analyzer._last_signal_lengths.clear()
         persisted = await database.get_llm_setting("runtime_config", "{}")
         try:
             runtime = json.loads(persisted or "{}")
@@ -387,14 +405,6 @@ def _is_real_candle(high: float, low: float) -> bool:
         return False
     range_pct = (high - low) / low * 100
     return range_pct > 0.001  # En az %0.001 hareket
-
-
-def _all_same(values: list) -> bool:
-    """Tüm değerler birbirine eşit mi?"""
-    if not values:
-        return True
-    first = values[0]
-    return all(abs(v - first) < 1e-10 for v in values)
 
 
 def _comprehensive_passive_analysis(m1_bars: dict, m5_bars: dict, now_ms: int) -> dict:
