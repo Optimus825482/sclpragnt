@@ -107,8 +107,19 @@ _trend_cache: dict[str, tuple[dict, dict]] = {}
 _pending_changed: set[str] = set()
 # symbol → son sıçrama alarmı zamanı (cooldown için)
 _jump_alerted_at: dict[str, float] = {}
-# symbol → son ERKEN SİNYAL (yaklaşıyor) alarmı zamanı (ayrı cooldown)
-_early_alerted_at: dict[str, float] = {}
+# (symbol, öncü) → son ERKEN SİNYAL (yaklaşıyor) alarmı zamanı (B5: öncü bazlı
+# cooldown; eskiden `symbol` bazlıydı ve yeni bir öncüyü yutuyordu)
+_early_alerted_at: dict[tuple[str, str], float] = {}
+# Aşama 3 (kanıta dayalı) — erken alarm kapısı: hangi öncüler ALARM ATEŞLEYEBİLİR.
+# Kanıt `outputs/erken_oncu_replay_kanit.md` (§2–§3, 312 sembol replay):
+#   * `approach`   → TERS (contrarian): OOS lift −0.082, isabet 0.33 → kapıdan ÇIKARILDI.
+#   * `m1_breakout`→ TERS: OOS lift −0.094, isabet 0.40 → kapıdan ÇIKARILDI.
+#   * `macd_dip_turn` → TEK pozitif-lift öncü: OOS +0.018, lead ≈6.5 bar → tek kalan.
+# Her ikisi tanımlayıcı (B alanları) olarak kalır; YALNIZCA `dip` ateş eder ve o da
+# PAPER-ONLY (kanıt katmanına yazılır, kullanıcı push'u/YATIRIM kararı AKTİVE EDİLMEZ).
+# Zedeleme kuralı: kanıt yoksa → tanımlayıcı; promotion = kanıt → replay → paper → aktivasyon.
+_EARLY_FIRE_KEYS = ("dip",)
+_EARLY_FIRE_LABEL: dict[str, str] = {"dip": "macd_dip_turn"}
 _dirty = False
 
 
@@ -125,6 +136,42 @@ def _to_bool(value, default: bool) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in ("1", "true", "yes", "açık", "on")
+
+
+def _tf_seconds(tf: str) -> int:
+    """Zaman dilimi etiketini saniyeye çevir ('5m'→300, '1h'→3600)."""
+    text = str(tf or "").strip().lower()
+    if not text:
+        return 0
+    unit = text[-1]
+    try:
+        amount = int(text[:-1])
+    except ValueError:
+        return 0
+    if unit == "m":
+        return amount * 60
+    if unit == "h":
+        return amount * 3600
+    if unit == "d":
+        return amount * 86400
+    return 0
+
+
+def _live_tick(symbol: str):
+    """Taze canlı tick: (fiyat, tick zaman damgası sn) — bayatsa (0, 0)."""
+    ticker = market.get_ticker(symbol)
+    price = float((ticker or {}).get("last_price") or 0)
+    tick_ts = float((ticker or {}).get("timestamp") or 0)
+    fresh = price > 0 and tick_ts and (time.time() * 1000 - tick_ts <= config.MAX_TICKER_AGE_SEC * 1000)
+    return (price, tick_ts / 1000.0) if fresh else (0.0, 0.0)
+
+
+def _closed_bar_close_ts(history, tf: str) -> float | None:
+    """Serideki son KAPANMIŞ barın KAPANIŞ zamanı (sn) — bayatlık ölçüsü (B4)."""
+    marker = _bar_marker(history)
+    if marker > 0:
+        return (marker + _tf_seconds(tf) * 1000) / 1000.0
+    return None
 
 
 def _aligned_ohlc(symbol: str, tf: str, min_len: int):
@@ -299,38 +346,52 @@ def _trend_feature(symbol: str, tf: str):
     return {"r2": r2, "speed": speed, "slope": slope}
 
 
+def _tf_breakout_detail(symbol: str, tf: str) -> dict:
+    """Donchian kırılımı + KIRILIM PAYI (ATR cinsinden) + baz zamanı (B4).
+
+    `break` davranışı `_tf_breakout` ile birebir aynıdır (canlı fiyat > son 20
+    kapanmış barın en yükseği). Ek alanlar yalnız tanımlayıcıdır: `margin_atr`
+    kırılımın ne kadar güçlü olduğunu (1 tick mi, %3 mü) ölçer ve `as_of`
+    sinyalin hangi ana ait olduğunu gösterir — bunlar karar kapısına girmez.
+    """
+    out = {"ok": False, "break": False, "margin_atr": None, "as_of": None, "price": None}
+    history = _aligned_ohlc(symbol, tf, 21)
+    if history is None:
+        return out
+    highs = history.get("highs") or []
+    closes = history.get("closes") or []
+    live_price, live_ts = _live_tick(symbol)
+    if live_price > 0:
+        price, as_of = live_price, live_ts
+    else:
+        price, as_of = float(closes[-1] or 0), _closed_bar_close_ts(history, tf)
+    if price <= 0:
+        return out
+    prior_high = max(highs[-21:-1])
+    out["ok"] = True
+    out["break"] = bool(price > prior_high)
+    out["price"] = price
+    out["as_of"] = as_of
+    atr = _atr_14_closed(symbol, tf)
+    if atr and atr > 0:
+        out["margin_atr"] = (price - prior_high) / atr
+    return out
+
+
 def _tf_breakout(symbol: str, tf: str):
     """Donchian kırılımı: canlı fiyat, son 20 kapanmış barın en yükseğini kırdı mı.
 
     M5/M15 sıçrama adayı için en erken yapısal sinyal. Veri yetersizse None.
     """
-    history = _aligned_ohlc(symbol, tf, 21)
-    if history is None:
-        return None
-    highs = history.get("highs") or []
-    closes = history.get("closes") or []
-    now = time.time()
-    ticker = market.get_ticker(symbol)
-    price = float((ticker or {}).get("last_price") or 0)
-    tick_ts = float((ticker or {}).get("timestamp") or 0)
-    if not (price > 0 and tick_ts and now * 1000 - tick_ts <= config.MAX_TICKER_AGE_SEC * 1000):
-        price = float(closes[-1] or 0)
-    if price <= 0:
-        return None
-    prior_high = max(highs[-21:-1])
-    return bool(price > prior_high)
+    detail = _tf_breakout_detail(symbol, tf)
+    return detail["break"] if detail["ok"] else None
 
 
-def _tf_vol_state(symbol: str, tf: str):
-    """Volatilite durumu: squeeze (sıkışma) veya expand (genişleme).
-
-    Kapanmış bar TR'leri üzerinden: son bar TR'si 14-ATR'nin ≥1.5 katıysa
-    'expand' (sıçrama başlıyor), son 3 bar ortalaması ATR'nin ≤0.7 katıysa
-    'squeeze' (yay hazırlığı). Veri yetersizse None.
-    """
+def _tf_trs_atr(symbol: str, tf: str):
+    """Kapanmış barların TR listesi + 14'lük ATR'si. Veri yetersizse (None, None)."""
     history = _aligned_ohlc(symbol, tf, 22)
     if history is None:
-        return None
+        return None, None
     highs = history.get("highs") or []
     lows = history.get("lows") or []
     closes = history.get("closes") or []
@@ -341,14 +402,57 @@ def _tf_vol_state(symbol: str, tf: str):
         trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
     atr = float(sum(trs[-14:]) / 14.0)
     if atr <= 0:
+        return None, None
+    return trs, atr
+
+
+def _vol_state_from_trs(trs, atr) -> str | None:
+    """TR serisinden volatilite durumu: 'expand' / 'squeeze' / None.
+
+    `trs` mutlak bir pencere olabilir (ör. son barı kırpılmış `trs[:-1]`), bu
+    yüzden karar daima serinin SONUNDAN okunur → geçiş tespiti için aynı
+    fonksiyon "dün" ve "bugün" durumunu üretir (B2).
+    """
+    if not trs or not atr or atr <= 0:
         return None
-    tr_last = trs[-1]
-    recent3 = float(sum(trs[-3:]) / 3.0)
-    if tr_last >= atr * 1.5:
+    if trs[-1] >= atr * 1.5:
         return "expand"
-    if recent3 <= atr * 0.7:
+    if len(trs) >= 3 and (sum(trs[-3:]) / 3.0) <= atr * 0.7:
         return "squeeze"
     return None
+
+
+def _tf_vol_state(symbol: str, tf: str):
+    """Volatilite durumu: squeeze (sıkışma) veya expand (genişleme).
+
+    Kapanmış bar TR'leri üzerinden: son bar TR'si 14-ATR'nin ≥1.5 katıysa
+    'expand' (sıçrama başlıyor), son 3 bar ortalaması ATR'nin ≤0.7 katıysa
+    'squeeze' (yay hazırlığı). Veri yetersizse None.
+    """
+    trs, atr = _tf_trs_atr(symbol, tf)
+    return _vol_state_from_trs(trs, atr)
+
+
+def _tf_vol_transition(symbol: str, tf: str) -> dict:
+    """Sıkışma→genişleme GEÇİŞİ (B2, tanımlayıcı alanlar).
+
+    Erken sinyal, hareketin BAŞLADIĞI an değil, yayın BOŞANDIĞI andır:
+    `squeeze` (yay kurulu) → `expand` (boşandı). Bugüne kadar yalnız
+    `state == "expand"` aranıyordu, yani geçiş bilgisi kayboluyordu.
+
+    Dönen alanlar (`now`/`prev`/bayraklar) SADECE tanımlayıcıdır; skora veya
+    alarm kapısına girmez. Geçişi kullanmak kanıt (replay) gerektirir.
+    """
+    trs, atr = _tf_trs_atr(symbol, tf)
+    now_state = _vol_state_from_trs(trs, atr)
+    prev_state = _vol_state_from_trs(trs[:-1], atr) if trs and len(trs) > 1 else None
+    return {
+        "now": now_state,
+        "prev": prev_state,
+        "squeeze_now": now_state == "squeeze",
+        "expand_now": now_state == "expand",
+        "transition": bool(prev_state == "squeeze" and now_state == "expand"),
+    }
 
 
 def _tf_volume_surge(symbol: str, tf: str) -> bool | None:
@@ -405,24 +509,71 @@ def _m5_approach_gap_atr(symbol: str) -> float | None:
     Pozitif = zirvenin altında (ne kadar yakın), 0 = zirvede. Zirve kırılmışsa
     (fiyat üstündeyse) negatif döner. Veri yetersizse None.
     """
+    return _approach_detail(symbol)["gap"]
+
+
+def _approach_detail(symbol: str) -> dict:
+    """M5 zirveye yakınlık: sürekli `proximity` (0-1) + baz zamanı (B1/B4).
+
+    `gap` = (20-bar zirve − canlı fiyat) / ATR; `proximity` = clamp(1 − gap,0,1)
+    yani zirvede 1.0, 1 ATR uzakta 0.0. Boolean eşik yerine sürekli değer
+    taşınır ki sınır etkisi (0.51 ATR → tamamen düşme) görünür olsun. Bu alan
+    SADECE tanımlayıcıdır; `approach` kararı hâlâ eski eşiği kullanır.
+    """
+    out = {"gap": None, "proximity": None, "as_of": None}
     history = _aligned_ohlc(symbol, "5m", 21)
     if history is None:
-        return None
+        return out
     highs = history.get("highs") or []
     closes = history.get("closes") or []
-    now = time.time()
-    ticker = market.get_ticker(symbol)
-    price = float((ticker or {}).get("last_price") or 0)
-    tick_ts = float((ticker or {}).get("timestamp") or 0)
-    if not (price > 0 and tick_ts and now * 1000 - tick_ts <= config.MAX_TICKER_AGE_SEC * 1000):
-        price = float(closes[-1] or 0)
+    live_price, live_ts = _live_tick(symbol)
+    if live_price > 0:
+        price, as_of = live_price, live_ts
+    else:
+        price, as_of = float(closes[-1] or 0), _closed_bar_close_ts(history, "5m")
     if price <= 0:
-        return None
+        return out
     atr = _atr_14_closed(symbol, "5m")
     if not atr or atr <= 0:
-        return None
-    high20 = max(highs[-21:-1])
-    return (high20 - price) / atr
+        return out
+    gap = (max(highs[-21:-1]) - price) / atr
+    out["gap"] = gap
+    out["proximity"] = max(0.0, min(1.0, 1.0 - max(0.0, gap)))
+    out["as_of"] = as_of
+    return out
+
+
+def _dip_detail(symbol: str, tf: str) -> dict:
+    """MACD histogram 'dip dönüşü' + nicel büyüklük ve baz zamanı (B4).
+
+    `turn` kararı `_macd_hist_turn_up` ile birebir aynıdır (`hist_prev <
+    hist_now < 0`). Ek alanlar (`hist`, `hist_prev`, `delta`) yalnız
+    tanımlayıcıdır: dönüşün NE KADAR sığ/derin olduğunu ve ne kadar arttığını
+    ölçer — E2'deki "kalıcılık/büyüklük/derinlik yok" boşluğunu görünür kılar.
+    """
+    out = {"turn": False, "hist": None, "hist_prev": None, "delta": None, "as_of": None}
+    # Uyarı (Aşama 3/C1, kanıt → tanımlayıcı): `_live_close_series(n)` son {n-1}
+    # kapanmış + 1 canlı = n değer döndürür. `_macd` ≥35 KAPANMIŞ bar ister; bu
+    # yüzden n+1 istiyoruz ki `series[:-1]` (canlı hariç) en az 35 kapanmış olsun.
+    # Aksi halde `_macd(series[:-1])` hep None → `dip` ASLA 1 olamazdı (yapısal bug).
+    # Bu düzeltme davranışı AKTIVE ETMEZ (dip kapıdan çıkarıldı, bkz. `_early_fire_keys`);
+    # yalnızca öncüyü ölçülebilir + kaydedilebilir kılar.
+    series = _live_close_series(symbol, tf, _MACD_MIN_CANDLES + 1)
+    if not series:
+        return out
+    current = _macd(series)
+    previous = _macd(series[:-1]) if len(series) > 1 else None
+    if not current or not previous:
+        return out
+    hist_now = float(current["histogram"])
+    hist_prev = float(previous["histogram"])
+    out["hist"] = hist_now
+    out["hist_prev"] = hist_prev
+    out["delta"] = hist_now - hist_prev
+    out["turn"] = bool(hist_prev < hist_now < 0.0)
+    history = market.get_ut_kline(symbol, tf)
+    out["as_of"] = _closed_bar_close_ts(history, tf)
+    return out
 
 
 def _macd_hist_turn_up(symbol: str, tf: str) -> bool:
@@ -430,16 +581,7 @@ def _macd_hist_turn_up(symbol: str, tf: str) -> bool:
 
     Yeşil ok çıkmadan ÖNCE yukarı ivmelenmenin en erken işareti.
     """
-    series = _live_close_series(symbol, tf, _MACD_MIN_CANDLES)
-    if not series:
-        return False
-    current = _macd(series)
-    previous = _macd(series[:-1]) if len(series) > 1 else None
-    if not current or not previous:
-        return False
-    hist_now = float(current["histogram"])
-    hist_prev = float(previous["histogram"])
-    return bool(hist_prev < hist_now < 0.0)
+    return bool(_dip_detail(symbol, tf)["turn"])
 
 
 def _symbol_cvd(symbol: str) -> dict:
@@ -531,13 +673,19 @@ async def _record_alert_evidence(symbol: str, kind: str, score: int | None = Non
         "sigs": row.get("sigs"),
         "cvd": row.get("cvd"),
         "jump": row.get("jump"),
+        # Aşama 2 tanımlayıcı imzası: öncü yakınlığı, sıkışma→genişleme geçişi,
+        # dip büyüklüğü, baz zamanları ve tanımlayıcı early_score. Kanıt
+        # katmanında replay ile karşılaştırılabilmesi için saklanır.
+        "pre_detail": row.get("pre_detail"),
+        "early_score": row.get("early_score"),
     }
     if extra_signals:
         signals.update(extra_signals)
     try:
         await database.record_macd_monitor_alert(
             created_at=time.time(), symbol=symbol, kind=kind, score=score,
-            jump_min=jump_min, price=row.get("last"), signals=signals)
+            jump_min=jump_min, price=row.get("last"), signals=signals,
+            early_score=(row.get("early_score") if kind == "early" else None))
     except Exception as exc:  # pragma: no cover - kanıt katmanı kritik değil
         logger.debug("macd_monitor kanıt kaydı (%s/%s): %s", kind, symbol, exc)
 
@@ -588,24 +736,37 @@ async def _maybe_fire_early_alert(symbol: str, pre: dict, settings: dict):
 
     Tetikleyen öncüler pre içinde: approach (M5 zirveye yakın + aktivite),
     m1 (M1 kırılımı + M5 yeşil), dip (MACD hist dip dönüşü).
+
+    B5 — cooldown artık ÖNCÜ bazlıdır: `(symbol, öncü)`. Yalnızca kendi cooldown'ı
+    dolmamış öncüler susturulur.
+
+    Aşama 3 (kanıta dayalı) — kapı `_EARLY_FIRE_KEYS` ile sınırlıdır:
+      * `approach` / `m1_breakout` TERS-yönlü (OOS lift −0.082 / −0.094) → bu
+        fonksiyon onları ASLA AteşleMEZ (tanımlayıcı kalır, alarm yok).
+      * `dip` (düzeltilmiş `macd_dip_turn`) tek pozitif-lift öncü (OOS +0.018);
+        YALNIZCA o ateş eder ve PAPER-ONLY'dir: WS/kanıt katmanına yazılır, ama
+        kullanıcıya web-push/Yatırım kararı GÖNDERİLMEZ (promotion kuralı:
+        kanıt → replay → paper → aktivasyon; aktivasyon yapılmadı).
     """
     if not bool(settings.get("alerts_enabled", True)) or not bool(settings.get("early_alerts_enabled", True)):
         return
     now = time.time()
-    last = _early_alerted_at.get(symbol, 0.0)
-    if now - last < _JUMP_ALERT_COOLDOWN_SEC:
-        return
-    _early_alerted_at[symbol] = now
+    cooldown = _JUMP_ALERT_COOLDOWN_SEC
+    fired: list[str] = []
     signals = []
-    if pre.get("approach"):
-        signals.append("approach")
-    if pre.get("m1"):
-        signals.append("m1_breakout")
-    if pre.get("dip"):
-        signals.append("macd_dip_turn")
+    for key in _EARLY_FIRE_KEYS:
+        if not pre.get(key):
+            continue
+        if now - _early_alerted_at.get((symbol, key), 0.0) < cooldown:
+            continue
+        signals.append(_EARLY_FIRE_LABEL.get(key, key))
+        fired.append(key)
     if not signals:
         return
-    # C3: erken sinyali de aynı kanıt katmanına yaz (kind="early").
+    for key in fired:
+        _early_alerted_at[(symbol, key)] = now
+    # C3: erken sinyali de aynı kanıt katmanına yaz (kind="early"). Yalnız dip
+    # ateşlediği için bu kayıt yalnızca paper-only `dip` gözlemlerini toplar.
     await _record_alert_evidence(symbol, "early", score=None, jump_min=None,
                                  extra_signals={"early_signals": signals})
     try:
@@ -615,20 +776,10 @@ async def _maybe_fire_early_alert(symbol: str, pre: dict, settings: dict):
         })
     except Exception as exc:
         logger.debug("macd_monitor erken alarm WS: %s", exc)
-    if not bool(settings.get("push_enabled", True)):
-        return
-    try:
-        from app.alerting import deliver_web_push
-        await deliver_web_push(
-            f"🌱 {symbol} YAKLAŞIYOR — kırılım öncesi erken sinyal ({'/'.join(signals)})",
-            title=f"🌱 {symbol} erken sıçrama sinyali",
-            url=f"/charts?symbol={symbol}",
-            tag=f"macd-early-{symbol}",
-            extra={"symbol": symbol, "signals": signals,
-                   "reason": "early_approach", "source": "macd_monitor"},
-        )
-    except Exception as exc:
-        logger.debug("macd_monitor erken push: %s", exc)
+    # Aşama 3 (paper-only): `dip` yalnızca kanıt katmanına + WS'ye yazılır.
+    # Kullanıcıya web-push gönderilmez — bu sinyal AKTİVE EDİLMEMİŞTİR
+    # (promotion kuralı: kanıt → replay → paper → ancak sonra aktivasyon).
+    _ = settings
 
 
 def _strength_meta(raw: float | None, lo: float | None, hi: float | None):
@@ -690,29 +841,106 @@ def _symbol_trend_and_signals(sym: str, snapshot_symbols: dict) -> tuple[dict, d
         "speed": (speed_wsum / speed_weight_sum) if speed_weight_sum else None,
         "dir": (dir_wsum / dir_weight_sum) if dir_weight_sum else None,
     }
-    # Sıçrama sinyalleri (M5/M15 odaklı) + agresör akışı + yeşil sayısı
+    # Sıçrama sinyalleri (M5/M15 odaklı) + agresör akışı + yeşil sayısı.
+    # Kırılım/durum DETAYLI yardımcılardan BİR KEZ hesaplanır (aynı TR/ATR
+    # penceresi iki kez okunmasın) — boolean alanlar eskisiyle aynı.
+    br5 = _tf_breakout_detail(sym, "5m")
+    br15 = _tf_breakout_detail(sym, "15m")
+    vol5 = _tf_vol_transition(sym, "5m")
+    vol15 = _tf_vol_transition(sym, "15m")
     sigs = {
-        "5m": {"break": _tf_breakout(sym, "5m"), "state": _tf_vol_state(sym, "5m"),
-               "vol": _tf_volume_surge(sym, "5m")},
-        "15m": {"break": _tf_breakout(sym, "15m"), "state": _tf_vol_state(sym, "15m"),
-                "vol": _tf_volume_surge(sym, "15m")},
+        "5m": {"break": br5["break"] if br5["ok"] else None,
+               "state": vol5["now"], "vol": _tf_volume_surge(sym, "5m")},
+        "15m": {"break": br15["break"] if br15["ok"] else None,
+                "state": vol15["now"], "vol": _tf_volume_surge(sym, "15m")},
     }
     row_tfs = (snapshot_symbols.get(sym) or {}).get("tfs") or {}
     green = sum(1 for tf in TF_LIST if (row_tfs.get(tf) or {}).get("green"))
     # Erken sinyal öncüleri (YAKLAŞIYOR → KIRILIM): M5 zirveye yaklaşma +
     # aktivite teyidi, M1 öncü kırılım (M5 yeşilken), MACD dip dönüşü.
+    #
+    # DAVRANIŞ NOTU: `approach` / `m1` / `dip` kararları DEĞİŞMEDİ. Yanlarına
+    # Aşama 2 tanımlayıcı alanları eklendi (proximity, geçiş bayrakları,
+    # büyüklükler, as_of, early_score) — bunlar skora/kapıya GİRMEZ, yalnızca
+    # ölçüm ve sıralama içindir (bkz. outputs/macd_monitor_erken_sinyal_yol_haritasi.md).
     m5_sig = sigs["5m"]
     green5 = bool((row_tfs.get("5m") or {}).get("green"))
+    approach_detail = _approach_detail(sym)
+    gap = approach_detail["gap"]
     approach = False
-    gap = _m5_approach_gap_atr(sym)
     if gap is not None and gap >= 0 and not m5_sig.get("break"):
         approach = bool(gap <= 0.5 and (m5_sig.get("vol") or m5_sig.get("state") == "expand"))
-    m1_pre = bool(_tf_breakout(sym, "1m")) and green5
-    dip = _macd_hist_turn_up(sym, "5m")
+    m1_detail = _tf_breakout_detail(sym, "1m")
+    m1_pre = bool(m1_detail["break"]) and green5
+    dip_detail = _dip_detail(sym, "5m")
+    dip = dip_detail["turn"]
+    cvd = _symbol_cvd(sym)
     pre = {"approach": approach, "m1": m1_pre, "dip": dip}
-    extra = {"sigs": sigs, "cvd": _symbol_cvd(sym), "green": green,
-             "pre": pre, "pre_any": bool(approach or m1_pre or dip)}
+    pre_detail = {
+        "proximity": (round(approach_detail["proximity"], 3)
+                      if approach_detail["proximity"] is not None else None),
+        "gap_atr": (round(gap, 3) if gap is not None else None),
+        "m1_margin_atr": (round(m1_detail["margin_atr"], 3)
+                          if m1_detail["margin_atr"] is not None else None),
+        "dip_hist": (round(dip_detail["hist"], 8) if dip_detail["hist"] is not None else None),
+        "dip_delta": (round(dip_detail["delta"], 8) if dip_detail["delta"] is not None else None),
+        "squeeze_now": bool(vol5["squeeze_now"]),
+        "expand_now": bool(vol5["expand_now"]),
+        "transition": bool(vol5["transition"]),
+        "squeeze_prev": bool(vol5["prev"] == "squeeze"),
+        "m15_squeeze_now": bool(vol15["squeeze_now"]),
+        "m15_transition": bool(vol15["transition"]),
+        "as_of": {
+            "approach": approach_detail["as_of"],
+            "m1": m1_detail["as_of"],
+            "dip": dip_detail["as_of"],
+        },
+    }
+    early_score = _early_score(pre, pre_detail, cvd, green, row_tfs)
+    extra = {"sigs": sigs, "cvd": cvd, "green": green,
+             "pre": pre, "pre_any": bool(approach or m1_pre or dip),
+             "pre_detail": pre_detail, "early_score": early_score}
     return trend, extra
+
+
+def _early_trigger(pre_key: tuple, prev_key: tuple, pre_prev: bool) -> bool:
+    """Erken alarmın tetik koşulu (B5) — saf fonksiyon, test edilebilir.
+
+    İki durumda tetiklenir:
+      1) Hiç öncü yokken ilk öncü belirdi (`pre_any` 0 → 1 kenarı),
+      2) Mevcut öncü kümesine YENİ bir öncü eklendi (eskiden bu durum
+         tamamen yutuluyordu: `approach` açıkken beliren `dip` görülmüyordu).
+    Aynı kümenin sürmesi tetiklemez (alarm yorgunluğu olmasın).
+    """
+    if not pre_key:
+        return False
+    if not pre_prev:
+        return True
+    return bool(set(pre_key) - set(prev_key or ()))
+
+
+def _early_score(pre: dict, detail: dict, cvd: dict, green: int, row_tfs: dict) -> int:
+    """ERKEN SİNYAL SKORU (0-100) — **TANIMLAYICI**, karar kapısı DEĞİL (B3).
+
+    Neden ayrı: bugün erken alarm 3 boolean'ın eşit ağırlıklı VEYA'sı; hangi
+    adayın daha "olgun" olduğu sıralanamıyor. Bu skor yalnızca ölçüm/UI
+    sıralaması içindir; eşik olarak KULLANILMAZ (kullanmak kanıt gerektirir).
+
+    Bileşenler (toplam 100):
+      öncü sayısı 45 (her öncü 15) · yakınlık 25 (proximity×25)
+      · alıcı agresör 15 · üst-TF hizası 15 (M15+H1 yeşil → 7.5'er)
+    """
+    score = 0.0
+    score += 15.0 * sum(1 for key in ("approach", "m1", "dip") if pre.get(key))
+    proximity = detail.get("proximity")
+    if proximity is not None:
+        score += 25.0 * max(0.0, min(1.0, float(proximity)))
+    if (cvd or {}).get("buy_dominant"):
+        score += 15.0
+    for tf in ("15m", "1h"):
+        if (row_tfs.get(tf) or {}).get("green"):
+            score += 7.5
+    return int(min(100.0, round(score)))
 
 
 async def _compute_pass(pass_no: int) -> dict:
@@ -857,6 +1085,14 @@ async def _compute_pass_locked(pass_no: int) -> dict:
         cvd = extra.get("cvd")
         pre = extra.get("pre") or {}
         pre_any = bool(extra.get("pre_any"))
+        pre_detail = extra.get("pre_detail") or {}
+        early_score = extra.get("early_score")
+        # Öncü KİMLİK imzası: hangi öncüler açık? (B5) Yeni bir öncü belirdiğinde
+        # bilgi gerçekten yenidir → erken alarm yeniden değerlendirilir. Eskiden
+        # `pre_any` yalnız 0→1 kenarında tetiklediği için, A açıkken beliren B
+        # öncüsü tamamen yutuluyordu.
+        pre_key = tuple(sorted(key for key, value in pre.items() if value))
+        prev_key = tuple(row.get("pre_key") or ())
         updated = {
             "strength": score,
             "tier": tier,
@@ -868,21 +1104,28 @@ async def _compute_pass_locked(pass_no: int) -> dict:
             "jump": jump,
             "pre": pre,
             "pre_any": pre_any,
+            "pre_detail": pre_detail,
+            "early_score": early_score,
+            "pre_key": pre_key,
         }
         if (row.get("strength"), row.get("tier"), row.get("r2"), row.get("speed"),
                 row.get("dir"), row.get("jump"), row.get("sigs"), row.get("cvd"),
-                row.get("pre"), row.get("pre_any")) != (
+                row.get("pre"), row.get("pre_any"), row.get("pre_detail"),
+                row.get("early_score"), row.get("pre_key")) != (
             updated["strength"], updated["tier"], updated["r2"], updated["speed"],
             updated["dir"], updated["jump"], updated["sigs"], updated["cvd"],
-            updated["pre"], updated["pre_any"]
+            updated["pre"], updated["pre_any"], updated["pre_detail"],
+            updated["early_score"], updated["pre_key"]
         ):
             pass_changed.add(sym)
         row.update(updated)
         # KIRILIM aşaması: skor eşik GEÇİŞİ + histerezis (başlangıçta sessiz)
         if alerts_enabled and _update_jump_arm(row, jump, jump_min, prev_jump):
             await _maybe_fire_jump_alert(sym, jump, jump_min, settings)
-        # YAKLAŞIYOR aşaması: erken öncü sinyal (0 → 1 geçişi, boot'ta sessiz)
-        if (alerts_enabled and early_alerts_enabled and pre_any and not pre_prev):
+        # YAKLAŞIYOR aşaması: erken öncü sinyal. Tetik: pre_any 0→1 VEYA mevcut
+        # kümeye YENİ bir öncü eklendi (B5 — eski 0→1 kenarı yeni öncüyü yutardı).
+        if (alerts_enabled and early_alerts_enabled
+                and _early_trigger(pre_key, prev_key, pre_prev)):
             await _maybe_fire_early_alert(sym, pre, settings)
 
     # Ayarlar değişirse UI eşiği de tazelensin (delta yetmez → tam yayın)
@@ -1025,6 +1268,20 @@ async def get_macd_monitor_alerts(limit: int = 100, symbol: str | None = None,
     alerts = await database.list_macd_monitor_alerts(limit=limit, symbol=symbol)
     stats = await database.macd_monitor_alert_stats(days=days)
     return {"paper_only": True, "alerts": alerts, "stats": stats}
+
+
+@router.get("/api/macd-monitor/event-study")
+async def get_macd_monitor_event_study(days: int = 14, kind: str = "early",
+                                       precursor: str | None = None, limit: int = 200):
+    """Olay çalışması (A3): alarm etrafında ortalama getiri yolu + MFE/MAE.
+
+    "Daha erken" iddiası ancak lead time ve yol ölçülürse anlamlıdır; `precursor`
+    verilirse yalnız o öncünün (approach / m1 / dip) alarmları kullanılır.
+    Yalnızca ölçüm — sinyal davranışını değiştirmez.
+    """
+    study = await database.macd_monitor_alert_event_paths(
+        days=days, kind=kind, precursor=precursor, limit=limit)
+    return {"paper_only": True, **study}
 
 
 @router.get("/api/macd-monitor/settings")
