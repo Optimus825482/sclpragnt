@@ -1126,6 +1126,78 @@ async def macd_monitor_alert_stats(days: int = 30) -> dict:
     return await _run_db(op)
 
 
+async def macd_monitor_alert_conditional_stats(days: int = 30,
+                                               dimension: str = "regime",
+                                               min_n: int = 5) -> dict:
+    """Aşama 4 — REJİM / SEANS bazında KOŞULLU istatistik (yalnızca ölçüm).
+
+    Erken alarmların başarısı rejim (trend vs yatay; volatilite) ve seanstan
+    (Binance TR likidite saatleri) etkilenebilir. Tek bir global isabet eşiği
+    yerine rejime/seansa göre koşullu isabet-LİFT ölçmek, kanıtı çok daha
+    ayrıştırıcı verir.
+
+    `dimension` ∈ {"regime", "session"}: hücre etiketi `signals[dimension]`'dan
+    okunur. Her gruba bir kova; her grup `n < min_n` ise global tabloyu
+    kalabalık etmek yerine taşaya alınmaz — küçük gruplar UI'da boş durum
+    gösterir. Sinyal davranışını DEĞİŞTİRMEZ (yalnız okurama).
+
+    Dönüş: {"days", "dimension", "min_n", "groups": {etiket: bucket_out},
+    "baseline": ...}.
+    """
+    since = time.time() - max(1, int(days)) * 86400.0
+    dimension = str(dimension or "regime").lower()
+    min_n = max(1, int(min_n))
+
+    def op(conn):
+        _ensure_macd_evidence_schema(conn)
+        try:
+            rows = conn.execute(
+                "SELECT created_at, kind, signals, outcome_5m_pct, outcome_15m_pct, "
+                "outcome_30m_pct, mfe_pct, mae_pct FROM macd_monitor_alerts "
+                "WHERE created_at >= ? AND outcome_state='filled'",
+                (since,)).fetchall()
+        except Exception:
+            rows = conn.execute(
+                "SELECT created_at, kind, signals, outcome_5m_pct, outcome_15m_pct, "
+                "outcome_30m_pct FROM macd_monitor_alerts "
+                "WHERE created_at>= ? AND outcome_state='filled'",
+                (since,)).fetchall()
+        entries = []
+        for row in rows:
+            values = dict(row)
+            signals = _json_value(values.get("signals"), None)
+            values["signals"] = signals
+            entries.append(values)
+        baselines = _baseline_map(conn, {_macd_bucket(float(e["created_at"] or 0))
+                                         for e in entries})
+        groups: dict[str, dict] = {}
+        addr = _alert_bucket_add
+        for entry in entries:
+            # Rejim/seç grupları yalnız ERKEN alarmları için anlamlıdır.
+            if (entry.get("kind") or "unknown") != "early":
+                continue
+            signals = entry.get("signals")
+            if not isinstance(signals, dict):
+                continue
+            label = signals.get(dimension) or "undef"
+            base = baselines.get(_macd_bucket(float(entry["created_at"] or 0)))
+            addr(groups.setdefault(str(label), _new_alert_bucket()), entry, base)
+        out = {}
+        for k, v in groups.items():
+            entry = _alert_bucket_out(v)
+            entry["low_sample"] = int(v["n"]) < min_n  # UI gri gösterir
+            out[k] = entry
+        return {
+            "days": int(days),
+            "dimension": dimension,
+            "min_n": min_n,
+            "groups": out,
+            "baseline": _baseline_summary(baselines),
+        }
+
+    return await _run_db(op)
+
+
 def _baseline_summary(baselines: dict[int, dict]) -> dict:
     """Kova tabanlarını ufuk bazında tek satıra indir (UI başlığı için)."""
     out: dict[str, dict] = {}

@@ -672,6 +672,72 @@ def _update_jump_arm(row: dict, jump: int | None, jump_min: int, prev_jump: int 
     return False
 
 
+def _regime_tag(row: dict) -> str:
+    """Aşama 4 — snapshot'ta zaten hesaplanan alanlardan REJİM etiketi (saf).
+
+    Yeni market okuması YOK; yalnız `_SNAPSHOT` satırındaki `r2`, `dir` ve
+    5m/15m volatilite durumundan türetilir. Format `"side:vol"`.
+
+    Yön/tutarlılık (global 0-10 skorun r2 bileşeni):
+      - r2 yok        → "undef"
+      - r2 >= 0.55 ve dir yönlü → "trend_up" / "trend_down"
+      - r2 <  0.20    → "sideways"
+      - araya         → "mixed"
+    Volatilite (sigs.5m / sigs.15m state):
+      - biri "expand"  → "highvol"
+      - biri "squeeze" → "lowvol"
+      - aksi           → "normalvol"
+    """
+    try:
+        r2 = row.get("r2")
+        if r2 is None:
+            side = "undef"
+        else:
+            r2 = float(r2)
+            _dir = float(row.get("dir") or 0)
+            if r2 >= 0.55:
+                side = "trend_up" if _dir >= 0 else "trend_down"
+            elif r2 < 0.20:
+                side = "sideways"
+            else:
+                side = "mixed"
+        vol = "normalvol"
+        sigs = row.get("sigs") or {}
+        states = [s.get("state") for s in (sigs.get("5m"), sigs.get("15m"))
+                  if isinstance(s, dict)]
+        if "expand" in states:
+            vol = "highvol"
+        elif "squeeze" in states:
+            vol = "lowvol"
+        return f"{side}:{vol}"
+    except Exception:
+        return "undef:normalvol"
+
+
+def _session_tag(ts: float) -> str:
+    """Aşama 4 — İstanbul (UTC+3 sabit) seans kovası etiketi (Yeni).
+
+    Binance TR likidite pencereleri kabaca bu saatlerde yoğunlaşır:
+      gece 0-6 · sabah 7-9 · oglen 10-13 · ogleden_sonra 14-17 ·
+      aksam 18-21 · gece_gec 22-23. `ts` savunmacı float olarak okunur.
+    """
+    try:
+        hour = time.gmtime(float(ts) + 3 * 3600).tm_hour
+    except (TypeError, ValueError, OverflowError):
+        return "undef"
+    if hour <= 6:
+        return "gece"
+    if hour <= 9:
+        return "sabah"
+    if hour <= 13:
+        return "oglen"
+    if hour <= 17:
+        return "ogleden_sonra"
+    if hour <= 21:
+        return "aksam"
+    return "gece_gec"
+
+
 async def _record_alert_evidence(symbol: str, kind: str, score: int | None = None,
                                  jump_min: int | None = None,
                                  extra_signals: dict | None = None) -> None:
@@ -694,6 +760,11 @@ async def _record_alert_evidence(symbol: str, kind: str, score: int | None = Non
         # katmanında replay ile karşılaştırılabilmesi için saklanır.
         "pre_detail": row.get("pre_detail"),
         "early_score": row.get("early_score"),
+        # Aşama 4 — koşullu İSABET ölçümü için REJİM + SEANS etiketi (yalnız
+        # okuma; sinyal davranışını DEĞİŞTİRMEZ). `regime` snapshot'tan,
+        # `session` alarm zamanından türetilir.
+        "regime": _regime_tag(row),
+        "session": _session_tag(time.time()),
     }
     if extra_signals:
         signals.update(extra_signals)
@@ -1314,6 +1385,22 @@ async def get_macd_monitor_alerts(limit: int = 100, symbol: str | None = None,
     alerts = await database.list_macd_monitor_alerts(limit=limit, symbol=symbol)
     stats = await database.macd_monitor_alert_stats(days=days)
     return {"paper_only": True, "alerts": alerts, "stats": stats}
+
+
+@router.get("/api/macd-monitor/conditional-stats")
+async def get_macd_monitor_conditional_stats(days: int = 30,
+                                             dimension: str = "regime",
+                                             min_n: int = 5):
+    """Aşama 4 — rejim / seans bazında koşullu isabet-LİFT (yalnızca ölçüm).
+
+    Erken alarmın başarısı rejime ve seansa göre değişebilir. Bu uç, alarm
+    kayıtlarına yazılan `signals.regime` / `signals.session` etiketleriyle
+    koşullu isabet-LİFT döndürür. Hiçbir sinyal davranışını değiştirmez;
+    veri biriktikçe daha anlamlı hale gelir.
+    """
+    stats = await database.macd_monitor_alert_conditional_stats(
+        days=days, dimension=dimension, min_n=min_n)
+    return {"paper_only": True, **stats}
 
 
 @router.get("/api/macd-monitor/event-study")

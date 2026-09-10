@@ -112,6 +112,30 @@ type EventStudy = {
   avg_mfe?: number | null;
   avg_mae?: number | null;
 };
+// Aşama 4 — rejim / seans bazında koşullu isabet (yalnız ölçüm).
+type ConditionalGroupHorizon = {
+  n: number;
+  avg_pct: number;
+  hit_rate: number;
+  avg_lift?: number;
+  base_hit_rate?: number;
+  hit_lift?: number;
+};
+type ConditionalGroup = {
+  n: number;
+  low_sample: boolean;
+  avg_score?: number;
+  "5m"?: ConditionalGroupHorizon;
+  "15m"?: ConditionalGroupHorizon;
+  "30m"?: ConditionalGroupHorizon;
+};
+type ConditionalStats = {
+  days?: number;
+  dimension?: string;
+  min_n?: number;
+  groups?: Record<string, ConditionalGroup>;
+  baseline?: Record<string, AlertBaseline>;
+};
 
 const fmtTime = (ts: number | null | undefined) => {
   if (!ts) return "—";
@@ -163,6 +187,33 @@ const EARLY_LABEL: Record<string, string> = {
   approach: "M5 zirveye yakın",
   m1_breakout: "M1 öncü kırılım",
   macd_dip_turn: "MACD dip dönüşü",
+};
+
+// Aşama 4 — rejim / seans etiketi insan-okunur karşılıkları.
+const REGIME_LABEL: Record<string, string> = {
+  "undef:normalvol": "belirsiz / normal v.",
+  "undef:highvol": "belirsiz / yüksek v.",
+  "undef:lowvol": "belirsiz / düşük v.",
+  "trend_up:normalvol": "yükselen / normal v.",
+  "trend_up:highvol": "yükselen / yüksek v.",
+  "trend_up:lowvol": "yükselen / düşük v.",
+  "trend_down:normalvol": "düşen / normal v.",
+  "trend_down:highvol": "düşen / yüksek v.",
+  "trend_down:lowvol": "düşen / düşük v.",
+  "sideways:normalvol": "yatay / normal v.",
+  "sideways:highvol": "yatay / yüksek v.",
+  "sideways:lowvol": "yatay / düşük v.",
+  "mixed:normalvol": "karışık / normal v.",
+  "mixed:highvol": "karışık / yüksek v.",
+  "mixed:lowvol": "karışık / düşük v.",
+};
+const SESSION_LABEL: Record<string, string> = {
+  gece: "Gece (00-06)",
+  sabah: "Sabah (07-09)",
+  oglen: "Öğlen (10-13)",
+  ogleden_sonra: "Öğleden sonra (14-17)",
+  aksam: "Akşam (18-21)",
+  gece_gec: "Gece geç (22-23)",
 };
 
 // Yeşil ok tonu: trend gücü GÜÇLÜ ise dolu/koyu, ZAYIF ise soluk. Kırmızı
@@ -255,6 +306,9 @@ export default function MacdMonitorPage() {
   // A3 olay çalışması: seçili öncü için alarm etrafındaki ortalama getiri yolu.
   const [studyPrecursor, setStudyPrecursor] = useState("");
   const [study, setStudy] = useState<EventStudy | null>(null);
+  // Aşama 4 — rejim / seans bazında koşullu isabet tablosu.
+  const [condDimension, setCondDimension] = useState<"regime" | "session">("regime");
+  const [condStats, setCondStats] = useState<ConditionalStats | null>(null);
   const liveStatus = useLiveStatus();
 
   const loadSnapshot = useCallback(async () => {
@@ -306,6 +360,22 @@ export default function MacdMonitorPage() {
       cancelled = true;
     };
   }, [studyPrecursor]);
+
+  // Aşama 4 — rejim / seans koşullu ölçüm: boyut değişince yeniden çekilir.
+  // `showHistory` kapalıyken bile hafif tutulur; bekleyen yalnız ERKEN alarmlar.
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch(`/api/macd-monitor/conditional-stats?days=30&dimension=${condDimension}&min_n=5`)
+      .then((data) => {
+        if (!cancelled) setCondStats((data as ConditionalStats) || null);
+      })
+      .catch(() => {
+        if (!cancelled) setCondStats(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [condDimension]);
 
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "macd_monitor" && message.data) setSnapshot(message.data as Snapshot);
@@ -858,6 +928,104 @@ export default function MacdMonitorPage() {
                 ) : (
                   <p className="mt-3 font-mono text-[11px] text-bunker-muted">
                     Bu seçim için yeterli doldurulmuş kayıt yok.
+                  </p>
+                )}
+              </div>
+
+              {/* A4 KOŞULLU İSABET — rejim / seans bazında (yalnız ölçüm) */}
+              <div className="rounded-lg border border-bunker-700 bg-bunker-900/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="eyebrow">KOŞULLU İSABET (REJİM / SEANS)</p>
+                    <p className="mt-1 font-mono text-[11px] text-bunker-muted">
+                      Erken alarmın başarısı rejime ve seansa göre ayrışır. Tek bir
+                      global eşik yerine koşullu isabet-LİFT ölçülür; örnek az olan
+                      gruplar gri gösterilir. Sinyal davranışını <b className="text-white">değiştirmez</b> (paper-only).
+                    </p>
+                  </div>
+                  <select
+                    value={condDimension}
+                    onChange={(event) => setCondDimension(event.target.value as "regime" | "session")}
+                    className="input w-44 font-mono text-xs"
+                    aria-label="Koşullu boyut"
+                  >
+                    <option value="regime">REJİM</option>
+                    <option value="session">SEANS</option>
+                  </select>
+                </div>
+
+                {condStats && condStats.groups && Object.keys(condStats.groups).length > 0 ? (
+                  <div className="mt-3 overflow-x-auto">
+                    <table className="w-full border-collapse font-mono text-sm">
+                      <thead>
+                        <tr className="border-b border-bunker-800 text-left text-[11px] text-bunker-muted">
+                          <th className="px-3 py-2">GRUP</th>
+                          <th className="px-3 py-2 text-center">UFUK</th>
+                          <th className="px-3 py-2 text-right">ÖRNEK</th>
+                          <th className="px-3 py-2 text-right">ORT. GETİRİ</th>
+                          <th className="px-3 py-2 text-right">LIFT</th>
+                          <th className="px-3 py-2 text-right">İSABET (pozitif)</th>
+                          <th className="px-3 py-2 text-right">İSABET LİFT</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(condStats.groups).map(([key, group]) => {
+                          const label = condDimension === "regime"
+                            ? REGIME_LABEL[key] ?? key
+                            : SESSION_LABEL[key] ?? key;
+                          const dimmed = group.low_sample;
+                          return (
+                            <tr key={key} className={`border-b border-bunker-800/60 ${dimmed ? "opacity-45" : ""}`}>
+                              <td className="px-3 py-2">
+                                <span className="text-white">{label}</span>
+                                {dimmed && (
+                                  <span className="ml-1.5 rounded border border-yellow-300/40 bg-yellow-300/5 px-1 py-0.5 text-[9px] text-yellow-300">
+                                    AZ ÖRNEK
+                                  </span>
+                                )}
+                              </td>
+                              {(["5m", "15m", "30m"] as const).map((h) => {
+                                const slot = group[h];
+                                return (
+                                  <td key={h} colSpan={1} className="px-3 py-2 text-center align-top">
+                                    {slot ? (
+                                      <div className="inline-block text-left">
+                                        <div className="grid grid-cols-[3rem_1fr_1fr] gap-x-2 gap-y-0.5 text-[11px] leading-tight">
+                                          <span className="text-bunker-muted">{h}</span>
+                                          <span className="text-right">n
+                                            <b className="text-white"> {slot.n}</b>
+                                          </span>
+                                          <span className={`text-right font-bold ${pctClass(slot.avg_pct)}`}>
+                                            {fmtPct(slot.avg_pct)}
+                                          </span>
+                                          <span />
+                                          <span className="text-right text-bunker-muted/70">
+                                            lift <span className={pctClass(slot.avg_lift ?? null)}>{slot.avg_lift == null ? "—" : fmtPct(slot.avg_lift)}</span>
+                                          </span>
+                                          <span className="text-right text-white">
+                                            %{(slot.hit_rate * 100).toFixed(0)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <span className="text-bunker-muted/40">—</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    <p className="mt-2 font-mono text-[10px] text-bunker-muted/70">
+                      % = pozitif oranı; <b>LIFT</b> = alarm getirisi − evren tabanı.
+                      n &lt; {condStats.min_n} olanlar <b className="text-yellow-300">AZ ÖRNEK</b> işaretlenir, yorumlanmaz.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-3 font-mono text-[11px] text-bunker-muted">
+                    Bu boyut için henüz doldurulmuş erken alarm kaydı yok.
                   </p>
                 )}
               </div>
