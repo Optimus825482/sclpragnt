@@ -96,9 +96,24 @@ def build_buckets(trades: list[dict]) -> dict[tuple, dict]:
                 hour = datetime.fromtimestamp(ts, tz=timezone.utc).hour
         except (TypeError, ValueError):
             hour = None
+        # H4: bucket key must use the SAME volume-ratio definition as the
+        # live lookup path (analyzer.py:893-900), otherwise keys never match
+        # and calibration silently stays at 1.0. The live path computes
+        # vols[-1] / mean(vols[-21:-1]) from the 5m candle cache. We rebuild
+        # that from the trade's snapshot candles if available.
+        vr = None
         ctx = trade.get("entry_context") or {}
-        vr = ((ctx.get("liquidity") or {}).get("volume_ratio")
-              if isinstance(ctx, dict) else None)
+        if isinstance(ctx, dict):
+            # Prefer the same cache-derived ratio the live path would see.
+            candles = ctx.get("candles") or {}
+            vols = candles.get("volumes") if isinstance(candles, dict) else None
+            if isinstance(vols, (list, tuple)) and len(vols) >= 21:
+                base = float(sum(vols[-21:-1]) / 20)
+                if base > 0:
+                    vr = float(vols[-1]) / base
+            # Fallback to the legacy stored liquidity ratio.
+            if vr is None:
+                vr = ((ctx.get("liquidity") or {}).get("volume_ratio"))
         key = bucket_key(strategy=trade.get("strategy"), hour=hour, volume_ratio=vr)
         grouped[key].append(pnl)
     buckets = {}

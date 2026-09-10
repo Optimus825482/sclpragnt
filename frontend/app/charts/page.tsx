@@ -1208,7 +1208,11 @@ export default function ChartsPage() {
 
     const openPnl = livePortfolio?.unrealized_pnl ?? allPositions.reduce((total, position) => total + Number(position.pnl_try || 0), 0);
     const netPnl = portfolioMetrics?.net_pnl ?? 0;
-    const money = (value: number) => `₺${value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const money = (value: number) => {
+        const abs = Math.abs(value);
+        const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return value < 0 ? `-₺${formatted}` : `₺${formatted}`;
+    };
     const pnlClass = (value: number) => value >= 0 ? "text-neon-green" : "text-red-400";
     const pressure = (() => {
         const recent = bars.slice(-8);
@@ -1594,7 +1598,7 @@ export default function ChartsPage() {
                     {([
                         { key: "RSI", value: strip.rsi, text: num1(strip.rsi), zone: zoneLabel(strip.rsi, 30, 70), cls: zoneClass(strip.rsi, 30, 70), hint: "14 periyot · 30/70 eşik" },
                         { key: "MFI", value: strip.mfi, text: num1(strip.mfi), zone: zoneLabel(strip.mfi, 20, 80), cls: zoneClass(strip.mfi, 20, 80), hint: "14 periyot · 20/80 eşik" },
-                        { key: "OBV", value: strip.obv.value, text: strip.obv.value == null ? "—" : obvCompact(strip.obv.value), zone: strip.obv.deltaPct == null ? "VERİ YOK" : `${strip.obv.deltaPct >= 0 ? "+" : ""}${strip.obv.deltaPct.toFixed(0)}% / 20 mum`, cls: strip.obv.deltaPct == null ? "text-bunker-muted" : strip.obv.deltaPct >= 0 ? "text-neon-green" : "text-red-400", hint: "birikimli hacim farkı" },
+                        { key: "OBV", value: strip.obv.value, text: strip.obv.value == null ? "—" : obvCompact(strip.obv.value), zone: strip.obv.deltaPct == null ? "VERİ YOK" : `${strip.obv.deltaPct >= 0 ? "+" : ""}${strip.obv.deltaPct.toFixed(2)} OBV Δ / ort. vol`, cls: strip.obv.deltaPct == null ? "text-bunker-muted" : strip.obv.deltaPct >= 0 ? "text-neon-green" : "text-red-400", hint: "birikimli hacim farkı" },
                     ]).map((item) => (
                         <div key={item.key} title={item.hint} className="px-2 py-2 sm:px-4 sm:py-2.5 min-w-0 text-center">
                             <p className="font-mono text-[10px] font-bold tracking-wider text-bunker-muted">{item.key}</p>
@@ -1723,7 +1727,7 @@ export default function ChartsPage() {
                                             <span className="text-white">GÜ {formatPrice(p.current)}</span>
                                             {entryValue > 0 && <span className="text-bunker-muted">{money(entryValue)}</span>}
                                             <span className={`font-bold ${pnl >= 0 ? "text-neon-green" : "text-red-400"}`}>
-                                                {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}% {pnlTry >= 0 ? "+" : ""}₺{pnlTry.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                                {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}% {pnlTry >= 0 ? "+" : ""}{money(pnlTry)}
                                             </span>
                                         </div>
                                     </div>

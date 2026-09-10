@@ -17,6 +17,10 @@ ALTER TABLE signals ADD COLUMN IF NOT EXISTS strategy TEXT;
 ALTER TABLE signals ADD COLUMN IF NOT EXISTS trade_id TEXT;
 CREATE TABLE IF NOT EXISTS decision_logs (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION NOT NULL, symbol TEXT, strategy TEXT, decision TEXT, reason TEXT, price DOUBLE PRECISION, metadata JSONB);
 CREATE INDEX IF NOT EXISTS idx_trades_exit_symbol_strategy ON trades(exit_time DESC, symbol, strategy);
+-- commit_close_position her kapanışta 'SELECT COUNT(*) FROM trades WHERE trade_id=?' ile
+-- kaydı doğrular; legacy id atama/temizlik akışları da trade_id ile filtreler.
+-- İndeks yokken bu sorgular trades üzerinde tam tarama yapıyordu.
+CREATE INDEX IF NOT EXISTS idx_trades_trade_id ON trades(trade_id);
 CREATE INDEX IF NOT EXISTS idx_signals_time_symbol_action ON signals(timestamp DESC, symbol, action);
 CREATE INDEX IF NOT EXISTS idx_decisions_time_symbol_strategy ON decision_logs(timestamp DESC, symbol, strategy);
 CREATE TABLE IF NOT EXISTS llm_tool_logs (id BIGINT PRIMARY KEY, timestamp DOUBLE PRECISION NOT NULL, scope TEXT, tool_name TEXT, arguments JSONB, result_summary TEXT, duration_ms DOUBLE PRECISION, success BOOLEAN);
@@ -482,6 +486,9 @@ CREATE TABLE IF NOT EXISTS auto_paper_trades (
 );
 CREATE INDEX IF NOT EXISTS auto_paper_trades_status_idx ON auto_paper_trades(status, entry_time DESC);
 CREATE INDEX IF NOT EXISTS auto_paper_trades_symbol_status_idx ON auto_paper_trades(symbol, status);
+-- Aynı bildirimle ikinci kez açmayı engelleyen 'WHERE notification_id=?' kontrolü
+-- her otonom açılışta çalışır; indekssiz tam tarama yapıyordu.
+CREATE INDEX IF NOT EXISTS auto_paper_trades_notification_idx ON auto_paper_trades(notification_id);
 -- Sembol başına tek açık pozisyon garantisi (aynı anda yalnız bir 'open' olabilir).
 -- Mevcut veride ihlal varsa oluşturulamaz; temizlik sonrası uygulanır.
 CREATE UNIQUE INDEX IF NOT EXISTS auto_paper_trades_one_open_per_symbol

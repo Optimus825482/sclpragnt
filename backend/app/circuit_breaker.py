@@ -25,7 +25,7 @@ class StrategyCircuitBreaker:
     def __init__(self):
         self._paused = {}          # strategy -> {"paused_at": ts, "reason": str}
         self._loaded = False
-        self._last_eval = 0.0
+        self._last_eval = {}       # strategy -> ts (per-strategy debounce)
 
     def _key(self):
         return "strategy_circuit_breaker_paused"
@@ -68,9 +68,11 @@ class StrategyCircuitBreaker:
 
         await self._ensure_loaded()
         now = time.time()
-        if now - self._last_eval < 5:
-            return None  # debounce rapid successive closes
-        self._last_eval = now
+        # Per-strategy debounce so a close of strategy A cannot suppress the
+        # evaluation of strategy B within the same 5s window.
+        if now - self._last_eval.get(strategy, 0.0) < 5:
+            return None
+        self._last_eval[strategy] = now
         try:
             trades = await database.get_trades(limit=WINDOW_DEFAULT, strategy=strategy)
         except Exception:

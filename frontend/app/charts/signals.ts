@@ -1,9 +1,15 @@
-// Saf sinyal/gösterge matematiği: backend ile aynı formüller, React'ten bağımsız.
+// Saf sinyal/gösterge matematiği: frontend-friendly simplification of backend rules, React'ten bağımsız.
 // Bu modül yalnızca saf fonksiyon ve tip dışa aktarır; DOM veya state erişimi yoktur.
+// Not: Mum formasyonları backend ile aynı formül kullanmaz; görsel işaretleyiciler için basitleştirilmiştir.
 
 export type Bar = { time: number; open: number; high: number; low: number; close: number; volume: number };
 
 export type PatternMarker = { time: number; type: "buy" | "sell"; text: string };
+
+// Spot yürütme simülasyonu sabitleri (grafik işaretleyicileri için basitleştirilmiş;
+// gerçek backend yürütmesiyle birebir aynı değildir).
+const SPOT_TARGET_PCT = 0.03; // display simulation only
+const SPOT_STOP_PCT = 0.012;  // match backend HARD_STOP_LOSS_PCT
 
 export const patternDescriptions: Record<string, string> = {
     "BOĞA YUTAN": "Önceki ayı gövdesini tamamen saran güçlü boğa mumu; alıcı baskısı artıyor.",
@@ -23,6 +29,7 @@ export const patternDescriptions: Record<string, string> = {
 };
 export const strongCandlestickPatterns = (bars: Bar[]): PatternMarker[] => {
     const out: PatternMarker[] = [];
+    // Frontend-friendly simplification of backend rules.
     // Son mum WebSocket ile hâlâ değişebilir; yalnız tamamlanmış mumlar üzerinde
     // formasyon üretmek repaint ve yanlış pozitifleri engeller.
     const closedBars = bars.slice(0, -1);
@@ -211,7 +218,6 @@ export const mfiLast = (bars: Bar[], period = 14): number | null => {
         if (current > previous) positive += flow;
         else if (current < previous) negative += flow;
     }
-    if (positive + negative === 0) return 50;
     if (negative === 0) return 100;
     return 100 - 100 / (1 + positive / negative);
 };
@@ -232,7 +238,7 @@ export const obvLast = (bars: Bar[]): { value: number | null; deltaPct: number |
         else if (bars[i].close < bars[i - 1].close) windowDelta -= bars[i].volume;
     }
     const avgVolume = bars.slice(-windowBars).reduce((s, b) => s + b.volume, 0) / windowBars;
-    return { value, deltaPct: avgVolume ? (windowDelta / avgVolume) * 100 : null };
+    return { value, deltaPct: avgVolume > 0 ? windowDelta / avgVolume : 0 };
 };
 
 // CRSI hesaplama (backend ile aynı: RSI3 + Streak RSI2 + PercentRank50)
@@ -349,13 +355,12 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
     };
 
     // Grafik sinyallerini spot yürütme modeline dönüştür:
-    // alıştan sonra yalnızca hedef satış üretir; karşıt sinyal çıkış değildir.
-    // Hedef backend'in dinamik hedef modeliyle aynı banttadır
-    // (MONITORING_TARGET_PCT_MIN=1.5, MAX=6, varsayılan profil hedefi %2-3).
+    // alıştan sonra hedef satış veya stop çıkışı üretir; karşıt sinyal çıkış değildir.
+    // Bu basitleştirilmiş bir simülasyondur; gerçek backend yürütmesiyle birebir aynı değildir.
     export const spotExecutionSignals = (bars: Bar[], raw: { time: number; type: "buy" | "sell" }[]) => {
         const byTime = new Map(bars.map((bar) => [bar.time, bar]));
         let entry: number | null = null;
-        const executed: { time: number; type: "buy" | "sell" }[] = [];
+        const executed: { time: number; type: "buy" | "sell"; reason?: "target" | "stop" }[] = [];
         const signalsByTime = new Map(raw.map((signal) => [signal.time, signal]));
         for (const bar of bars) {
             const signal = signalsByTime.get(bar.time);
@@ -363,9 +368,13 @@ export const cmoCrsiSignals = (bars: Bar[], params: Record<string, any>): { time
                 entry = bar.close;
                 executed.push(signal);
             } else if (entry != null) {
-                const target = entry * 1.03;
-                if (bar.high >= target) {
-                    executed.push({ time: bar.time, type: "sell" });
+                const target = entry * (1 + SPOT_TARGET_PCT);
+                const stop = entry * (1 - SPOT_STOP_PCT);
+                if (bar.low <= stop) {
+                    executed.push({ time: bar.time, type: "sell", reason: "stop" });
+                    entry = null;
+                } else if (bar.high >= target) {
+                    executed.push({ time: bar.time, type: "sell", reason: "target" });
                     entry = null;
                 }
             }

@@ -823,7 +823,11 @@ class MarketData:
         cached = self._avg_volume_cache.get(key)
         if cached and cached[0] == cache_key:
             return cached[1]
-        value = float(np.mean(volumes))
+        # Trailing window (last 20 closed bars), not the whole 400-bar cache —
+        # a long-run mean washes out recent volume spikes. Matches the window
+        # used by liquidity_status (volumes[-21:-1]).
+        window = volumes[-21:-1] if len(volumes) >= 21 else volumes
+        value = float(np.mean(window))
         # Sınırlı önbellek: 512 girişten fazlasını tutma (sembol churn'ünde şişmesin)
         if len(self._avg_volume_cache) > 512:
             self._avg_volume_cache.clear()

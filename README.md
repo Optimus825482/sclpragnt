@@ -44,8 +44,8 @@ Frontend'de `frontend/app/charts/` altında grafik mantığı `chartShared.ts` (
 
 ## Pozisyon Yönetimi (Aktif Stratejiye Göre)
 
-- **BB_MFI_MEAN_REVERSION (varsayılan):** Hard stop −%8.882 (`BB_MFI_STOP_LOSS_PCT`), take profit +%2.317 (`BB_MFI_TAKE_PROFIT_PCT`), teyitli sell sinyali çıkışı (varsayılan 2 ardışık bar) ve LLM yönetilen plan stop/TP/max-hold.
-- **Diğer (legacy) stratejiler:** Sistem stop'u, RR hedefine ulaşınca ATR trailing ve erken başarısızlık/bayat pozisyon kuralları.
+- **LLM_PAPER / CHAT_PREDICTION / VELOCITY_AUTO (aktif):** Alım kararları LLM sohbet, chat-prediction veya otonom Hız Avcısı modüllerinden gelir. Sistem stop'u `HARD_STOP_LOSS_PCT=0.012` (−%1,2), TP `SPOT_PROFIT_TARGET_PCT=0.01` (+%1). LLM yönetilen plan stop/TP/max-hold ve erken başarısızlık/bayat pozisyon kuralları uygulanır.
+- **BB_MFI_MEAN_REVERSION:** 2026-09-04 itibarıyla koddan kaldırılmıştır; belgedeki −%8,882 / +%2,317 sabitleri mevcut değildir.
 - **Re-entry guard'ları:** Bar cooldown, timeout sonrası 24 saatlik blok, hard-stop sonrası 2 saatlik blok — timeout/hard-stop blokları restart'ta kalıcıdır.
 - Not: eski belgedeki −%1 hard stop / +%0.2 break-even / %0.5 trailing modeli hiçbir aktif stratejide kullanılmaz; ölü yapılandırma sabitleri (`TAKE_PROFIT_PCT`, `TRAILING_*`, çok kademeli `TIME_DECAY_TP_*`) config'ten kaldırılmıştır.
 

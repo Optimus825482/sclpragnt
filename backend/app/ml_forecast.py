@@ -13,6 +13,7 @@ Tasarım (kullanıcı vizyonu): sembol bazlı, taze veriyle eğitilen, journal'd
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -32,6 +33,39 @@ FEATURE_NAMES = [
     "mfi14", "vol_z", "linreg_slope10_pct", "aroon_up14", "aroon_down14",
     "hour", "day_quarter", "velocity_proxy", "symbol_code",
 ]
+
+# ---------------------------------------------------------------------------
+# Feature-unit contract (tek kaynak — eğitim ve çıkarım AYNI birimi görmeli):
+#   TÜM ``*_pct`` girdi alanları YÜZDE'dir (2.0 = %2). predict_target ve
+#   prepare_journal_samples bunları içeride KESİRE çevirir (2.0 -> 0.02) ve
+#   satıra kesir olarak yazar; build_symbol_dataset ise aynı sonucu doğrudan
+#   ham fiyat dizilerinden üretir. Ayrıca rsi/mfi/aroon 0..100 ölçeğindedir.
+# ---------------------------------------------------------------------------
+def _ratio_from_pct(value) -> float | None:
+    """None/NaN güvenli yüzde→kesir dönüşümü (sözleşme: girdi YÜZDE)."""
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric):
+        return None
+    return numeric / 100.0
+
+
+def velocity_proxy_value(atr_ratio: float | None, ret3_ratio: float | None) -> float:
+    """Paylaşılan hız vekili: ATR oranı × 100 × (1 + 3-bar getiri oranı).
+
+    build_symbol_dataset'teki ``atr_pct * 100 * (1 + ret3)`` ile birebir aynı
+    tanım; eğitim/çıkarım arasında özellik kaymasını önler.
+    """
+    try:
+        atr = float(atr_ratio) if atr_ratio is not None and np.isfinite(float(atr_ratio)) else 0.0
+        ret3 = float(ret3_ratio) if ret3_ratio is not None and np.isfinite(float(ret3_ratio)) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+    return atr * 100.0 * (1.0 + ret3)
 
 
 def _rolling(a: np.ndarray, window: int) -> np.ndarray:
@@ -141,6 +175,8 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
 
     hours = ((open_time.astype(np.int64) // 1000 + 3 * 3600) % 86400) // 3600
     day_quarter = hours // 6
+    # velocity_proxy: eğitim tarafı (vektörel). Skaler eşleniği olan
+    # ``velocity_proxy(atr_ratio, ret3_ratio)`` ile aynı tanımı korumalıdır.
     velocity_proxy = atr_pct * 100 * (1 + np.nan_to_num(ret3, nan=0.0))
 
     features = np.column_stack([
@@ -171,6 +207,12 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
         if row.get("direction") != "up" or row.get("max_favorable_pct") is None:
             continue
         snap = row.get("snapshot") or {}
+        # Bazı yazıcılar snapshot'ı {"candidate": {...}, "label_policy": {...}}
+        # biçiminde (iç içe) kaydeder; özellik alanları candidate içindedir.
+        if isinstance(snap, dict) and not any(
+                key in snap for key in ("ret3_pct", "atr_pct", "rsi")) \
+                and isinstance(snap.get("candidate"), dict):
+            snap = snap["candidate"]
         sym = str(row.get("symbol") or "").upper()
         if sym not in symbol_codes:
             continue
@@ -178,13 +220,31 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
         if horizon not in HORIZONS:
             continue
         mfe = float(row["max_favorable_pct"])
-        X.append([snap.get("ret1_pct"), snap.get("ret3_pct"), snap.get("ret5_pct"),
-                  (snap.get("atr_pct") or 0) / 100 if snap.get("atr_pct") is not None else None,
-                  (snap.get("bb_width_pct") or 0) / 100 if snap.get("bb_width_pct") is not None else None,
+        ts = row.get("timestamp") or row.get("created_at") or row.get("decision_at")
+        if isinstance(ts, (int, float)):
+            if ts < 1e11:
+                ts = ts * 1000
+        elif hasattr(ts, "timestamp"):
+            ts = ts.timestamp() * 1000
+        else:
+            ts = time.time() * 1000
+        hour = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).hour
+        hour = (hour + 3) % 24
+        day_quarter = hour // 6
+        # velocity_proxy: sözleşme gereği TÜM *_pct alanları YÜZDE; kesire çevir
+        # ve paylaşılan tanımdan geçir (eğitimdeki ham dizi tanımıyla aynı).
+        snap_atr_ratio = _ratio_from_pct(snap.get("atr_pct"))
+        snap_ret3_ratio = _ratio_from_pct(snap.get("ret3_pct"))
+        vp = velocity_proxy_value(snap_atr_ratio, snap_ret3_ratio)
+        X.append([_ratio_from_pct(snap.get("ret1_pct")),
+                  snap_ret3_ratio,
+                  _ratio_from_pct(snap.get("ret5_pct")),
+                  snap_atr_ratio if snap_atr_ratio is not None else 0.0,
+                  (_ratio_from_pct(snap.get("bb_width_pct")) if snap.get("bb_width_pct") is not None else None),
                   snap.get("rsi"), snap.get("mfi"), None,
-                  (snap.get("linreg_slope10_pct") or 0) / 100 if snap.get("linreg_slope10_pct") is not None else None,
+                  (_ratio_from_pct(snap.get("linreg_slope10_pct")) if snap.get("linreg_slope10_pct") is not None else None),
                   snap.get("aroon_up"), snap.get("aroon_down"),
-                  None, None, None, float(symbol_codes[sym])])
+                  float(hour), float(day_quarter), float(vp), float(symbol_codes[sym])])
         y_mfe.append(mfe)
         y_hit.append(1.0 if mfe >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02) else 0.0)
         horizon_ids.append(HORIZONS.index(horizon))
@@ -264,13 +324,22 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -
 
         X_hold, y_hold = X[split:], y[split:]
         pred = reg.predict(X_hold)
-        hit_rate = float(np.mean(y_hold >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02)))
+        actual_hit = (y_hold >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02)).astype(np.int64)
+        hit_rate = float(np.mean(actual_hit))
+        # Model-level holdout metrics (the classifier's own accuracy), so the
+        # readout reflects model quality rather than just the dataset hit-rate.
+        try:
+            clf_pred = clf.predict(X_hold).astype(np.int64)
+            model_hit_accuracy = float(np.mean(clf_pred == actual_hit))
+        except Exception:
+            model_hit_accuracy = None
         metrics["per_horizon"][str(horizon)] = {
             "samples": int(len(X)), "holdout": int(len(X_hold)),
             "mae_mfe_pct": round(float(np.mean(np.abs(pred - y_hold))) * 100, 4),
             "pred_p65_pct_mean": round(float((pred * 100).mean()), 3),
             "actual_mfe_pct_mean": round(float((y_hold * 100).mean()), 3),
-            "actual_hit_rate": round(hit_rate, 4),
+            "dataset_hit_rate": round(hit_rate, 4),
+            "model_hit_accuracy": (round(model_hit_accuracy, 4) if model_hit_accuracy is not None else None),
             "journal_samples": int(h_mask.sum()),
         }
         artifact["horizons"][str(horizon)] = {"reg": reg, "clf": clf}
@@ -313,13 +382,32 @@ def predict_target(symbol: str, features: dict[str, Any], horizon: int = 5) -> d
     sym = str(symbol).upper()
     if sym not in artifact["symbol_codes"]:
         return None
+    ts = features.get("timestamp") or features.get("ts") or features.get("last_closed_at_ms")
+    if isinstance(ts, (int, float)):
+        if ts < 1e11:
+            ts = ts * 1000
+    elif hasattr(ts, "timestamp"):
+        ts = ts.timestamp() * 1000
+    else:
+        ts = time.time() * 1000
+    hour = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).hour
+    hour = (hour + 3) % 24
+    day_quarter = hour // 6
+    # Sözleşme: girdideki TÜM *_pct alanları YÜZDE; satıra kesir olarak yazılır.
+    # velocity_proxy paylaşılan tanımdan geçer (eğitimdeki ölçekle aynı).
+    atr_ratio = _ratio_from_pct(features.get("atr_pct"))
+    ret3_ratio = _ratio_from_pct(features.get("ret3_pct"))
+    vp = velocity_proxy_value(atr_ratio, ret3_ratio)
     row = [
-        features.get("ret1_pct"), features.get("ret3_pct"), features.get("ret5_pct"),
-        (features.get("atr_pct") or 0) / 100 if features.get("atr_pct") is not None else None,
-        (features.get("bb_width_pct") or 0) / 100 if features.get("bb_width_pct") is not None else None,
+        _ratio_from_pct(features.get("ret1_pct")),
+        ret3_ratio,
+        _ratio_from_pct(features.get("ret5_pct")),
+        atr_ratio if atr_ratio is not None else 0.0,
+        _ratio_from_pct(features.get("bb_width_pct")),
         features.get("rsi"), features.get("mfi"), None,
-        (features.get("linreg_slope10_pct") or 0) / 100 if features.get("linreg_slope10_pct") is not None else None,
-        features.get("aroon_up"), features.get("aroon_down"), None, None, None,
+        _ratio_from_pct(features.get("linreg_slope10_pct")),
+        features.get("aroon_up"), features.get("aroon_down"),
+        float(hour), float(day_quarter), float(vp),
         float(artifact["symbol_codes"][sym]),
     ]
     X = np.asarray([row], dtype=np.float32)
