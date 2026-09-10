@@ -560,6 +560,226 @@ class AlertEndpointTests(_MacdTestBase):
         self.assertEqual(7, response["stats"]["days"])
 
 
+class EarlyDetailTests(_MacdTestBase):
+    """Aşama 2 tanımlayıcı alanları (B1/B2/B3) + erken alarm kapısı (B5).
+
+    Bu testler DAVRANIŞ KAPISINI (approach/m1/dip booleans) değil, yeni eklenen
+    ölçüm alanlarını ve B5 tetik mantığını kilitler.
+    """
+
+    def _vol_hist(self, wide: float = 1.0, tight: float = 0.1,
+                  last_tr: float | None = None) -> dict:
+        """Sentetik TR geçmişi: geniş barlar + son 3 SIKIŞIK bar (+ son bar).
+
+        TR = max(h-l, |h-pc|, |l-pc|); kapanışlar yatay tutulup high/low ile
+        TR ayarlanır → ATR ve sıkışma/genişleme eşikleri deterministiktir.
+        `last_tr` verilirse son bar o kadar genişler (patlama).
+        """
+        n = 40
+        closes = [100.0] * n
+        highs = [100.0 + wide] * n
+        lows = [100.0 - wide] * n
+        for index in (-3, -2, -1):
+            highs[index] = 100.0 + tight
+            lows[index] = 100.0 - tight
+        if last_tr is not None:
+            highs[-1] = 100.0 + last_tr
+            lows[-1] = 100.0 - last_tr
+        return {
+            "timestamps": [index * 300_000 for index in range(n)],
+            "opens": closes,
+            "highs": highs,
+            "lows": lows,
+            "closes": closes,
+            "volumes": [10.0] * n,
+            "last_closed_at_ms": 1_000.0,
+        }
+
+    async def test_vol_transition_detects_squeeze_then_expand(self):
+        # 1) Yalnız sıkışma: geniş barların ardından son 3 bar dar → 'squeeze'
+        self.market.set("AAA", "5m", self._vol_hist())
+        self.assertEqual("squeeze", mm._tf_vol_state("AAA", "5m"))
+        # 2) Son bar patlarsa geçiş: önceki durum sıkışma, şimdi genişleme
+        self.market.set("AAA", "5m", self._vol_hist(last_tr=5.0))
+        tx = mm._tf_vol_transition("AAA", "5m")
+        self.assertEqual("expand", tx["now"])
+        self.assertEqual("squeeze", tx["prev"])
+        self.assertTrue(tx["transition"])
+        self.assertTrue(tx["expand_now"])
+        self.assertFalse(tx["squeeze_now"])
+
+    async def test_vol_transition_false_when_no_prior_squeeze(self):
+        """Geçiş için ÖNCEKİ barın sıkışma olması şart — düz genişleme yetmez."""
+        self.market.set("AAA", "5m", self._vol_hist(tight=1.0, last_tr=5.0))
+        tx = mm._tf_vol_transition("AAA", "5m")
+        self.assertEqual("expand", tx["now"])
+        self.assertFalse(tx["transition"])
+
+    async def test_vol_transition_none_without_data(self):
+        """Veri yoksa çökmemeli ve geçiş iddia etmemeli."""
+        tx = mm._tf_vol_transition("YOK", "5m")
+        self.assertIsNone(tx["now"])
+        self.assertFalse(tx["transition"])
+
+    async def test_proximity_one_at_high_zero_one_atr_away(self):
+        """Zirvede yakınlık 1.0; kırılım YOK (price == 20-bar zirvesi, > değil).
+
+        prior_high SABİT YAZILMAZ — serinin gerçek 20-bar zirvesinden türetilir.
+        (Sabit yazımın bedeli burada ödendi: 5m serisi 'up' iken zirve ~128.7
+        olduğu için 100.2'ye tick'lemek gap=16.76 veriyordu.)
+        """
+        hist = _hist(60, shape="flat_then_up")
+        for tf in mm.TF_LIST:
+            self.market.set("AAA", tf, hist)
+        prior_high = max(hist["highs"][-21:-1])   # serinin GERÇEK 20-bar zirvesi
+        self.market.tick("AAA", prior_high)
+        at_high = mm._approach_detail("AAA")
+        self.assertAlmostEqual(0.0, at_high["gap"], places=6)
+        self.assertAlmostEqual(1.0, at_high["proximity"], places=6)
+        self.assertFalse(mm._tf_breakout("AAA", "5m"), "Zirveye eşit fiyat kırılım değildir")
+
+    async def test_proximity_clamps_at_zero_when_far(self):
+        """Zirveden 1 ATR'den uzakta yakınlık 0'a kırpılır (negatif olmaz)."""
+        self.market.set("AAA", "5m", _hist(60, shape="flat_then_up"))
+        self.market.tick("AAA", 95.0)
+        far = mm._approach_detail("AAA")
+        self.assertGreater(far["gap"], 1.0)
+        self.assertEqual(0.0, far["proximity"])
+
+    async def test_proximity_none_without_data(self):
+        self.assertIsNone(mm._approach_detail("YOK")["proximity"])
+
+    async def test_breakout_detail_reports_margin_and_basis(self):
+        self._fill("AAA", n=60, shape="flat_then_up")
+        self.market.tick("AAA", 131.5)
+        detail = mm._tf_breakout_detail("AAA", "5m")
+        self.assertTrue(detail["ok"])
+        self.assertTrue(detail["break"])
+        self.assertIsNotNone(detail["margin_atr"])
+        self.assertIsNotNone(detail["as_of"])
+
+    async def test_breakout_detail_not_ok_without_data(self):
+        detail = mm._tf_breakout_detail("YOK", "5m")
+        self.assertFalse(detail["ok"])
+        self.assertFalse(detail["break"])
+
+    async def test_early_score_components_add_up(self):
+        """Öncü 15'er + yakınlık 25 + agresör 15 + üst-TF 15 = 100 tavanı."""
+        full = mm._early_score(
+            {"approach": True, "m1": True, "dip": True},
+            {"proximity": 1.0}, {"buy_dominant": True},
+            6, {"15m": {"green": True}, "1h": {"green": True}})
+        self.assertEqual(100, full)
+        only_approach_far = mm._early_score(
+            {"approach": True, "m1": False, "dip": False},
+            {"proximity": 0.0}, {}, 1, {})
+        self.assertEqual(15, only_approach_far)
+        self.assertEqual(0, mm._early_score({}, {}, {}, 0, {}))
+
+    async def test_early_score_is_not_a_gate(self):
+        """Skor 0 olsa bile öncü varsa kapı AÇIK kalır (skor karar vermez)."""
+        proximity_zero = mm._early_score({"dip": True}, {"proximity": 0.0}, {}, 0, {})
+        self.assertEqual(15, proximity_zero)
+        pre = {"approach": False, "m1": False, "dip": True}
+        self.assertTrue(mm._early_trigger(
+            tuple(sorted(k for k, v in pre.items() if v)), (), False))
+
+
+class EarlyAlertCooldownTests(_MacdTestBase):
+    """B5 — cooldown ÖNCÜ bazlı olmalı; yeni öncü eskisinin cooldown'ına takılmamalı."""
+
+    def setUp(self):
+        super().setUp()
+        # Gerçek alarm fonksiyonunu geri koy (base sınıf onu fake'liyor).
+        mm._maybe_fire_early_alert = self._orig["_maybe_fire_early_alert"]
+
+    async def _fire(self, symbol, pre):
+        await mm._maybe_fire_early_alert(symbol, pre, {
+            "alerts_enabled": True, "early_alerts_enabled": True, "push_enabled": False})
+
+    async def test_approach_and_m1_never_fire_after_evidence(self):
+        """Aşama 3: `approach`/`m1` TERS-yönlü (OOS lift −0.082/−0.094) → kapı
+        `_EARLY_FIRE_KEYS=("dip",)`; bunlar alarm ATEŞLEMEZ (tanımlayıcı kalır)."""
+        await self._fire("AAA", {"approach": True, "m1": True, "dip": False})
+        self.assertEqual([], self.ws.messages,
+                         "approach/m1 kapıdan çıkarıldı → alarm üretilmemeli")
+        # Dip yokken hiçbir alarm yok; evidence katmanı da boş kalır.
+        self.assertEqual([], getattr(self, "evidence_rows", []))
+
+    async def test_only_dip_fires_and_after_cooldown_suppresses(self):
+        await self._fire("AAA", {"approach": True, "m1": False, "dip": True})
+        self.assertEqual(1, len(self.ws.messages))
+        self.assertEqual(["macd_dip_turn"], self.ws.messages[0]["data"]["signals"])
+        # Aynı öncü tekrar → cooldown içinde, alarm YOK.
+        await self._fire("AAA", {"approach": True, "m1": False, "dip": True})
+        self.assertEqual(1, len(self.ws.messages))
+
+    async def test_all_precursors_in_cooldown_suppresses_alert(self):
+        await self._fire("AAA", {"approach": True, "m1": True, "dip": True})
+        self.assertEqual(1, len(self.ws.messages))
+        await self._fire("AAA", {"approach": True, "m1": True, "dip": True})
+        self.assertEqual(1, len(self.ws.messages), "Cooldown içinde tekrar alarm yok")
+
+    async def test_cooldown_is_per_symbol_and_precursor(self):
+        await self._fire("AAA", {"approach": False, "m1": False, "dip": True})
+        await self._fire("BBB", {"approach": False, "m1": False, "dip": True})
+        self.assertEqual(2, len(self.ws.messages), "Farklı sembol etkilenmemeli")
+
+    async def test_disabled_early_alerts_produce_nothing(self):
+        await mm._maybe_fire_early_alert("AAA", {"dip": True}, {
+            "alerts_enabled": True, "early_alerts_enabled": False, "push_enabled": False})
+        self.assertEqual([], self.ws.messages)
+
+    async def test_no_precursor_no_alert_and_no_cooldown_burn(self):
+        await self._fire("AAA", {"approach": False, "m1": False, "dip": False})
+        self.assertEqual([], self.ws.messages)
+        await self._fire("AAA", {"approach": False, "m1": False, "dip": True})
+        self.assertEqual(1, len(self.ws.messages), "Boş çağrı cooldown yakmamalı")
+
+
+class EarlyTriggerTests(_MacdTestBase):
+    """B5 tetik mantığı — saf fonksiyon."""
+
+    async def test_first_precursor_triggers(self):
+        self.assertTrue(mm._early_trigger(("approach",), (), False))
+
+    async def test_new_member_triggers_even_while_pre_any_is_true(self):
+        self.assertTrue(mm._early_trigger(("approach", "dip"), ("approach",), True))
+
+    async def test_same_set_does_not_retrigger(self):
+        self.assertFalse(mm._early_trigger(("approach", "dip"), ("approach", "dip"), True))
+
+    async def test_shrinking_set_does_not_trigger(self):
+        """Öncü KAYBI yeni bilgi değildir → alarm basılmaz."""
+        self.assertFalse(mm._early_trigger(("approach",), ("approach", "dip"), True))
+
+    async def test_empty_set_never_triggers(self):
+        self.assertFalse(mm._early_trigger((), (), False))
+        self.assertFalse(mm._early_trigger((), ("approach",), True))
+
+
+class EventStudyEndpointTests(_MacdTestBase):
+    async def test_event_study_endpoint_forwards_filters(self):
+        from app import database
+        original = database.macd_monitor_alert_event_paths
+        seen: dict = {}
+
+        async def fake(days=14, kind="early", precursor=None, limit=200):
+            seen.update({"days": days, "kind": kind, "precursor": precursor, "limit": limit})
+            return {"n": 0, "offsets": [], "avg_path": [], "rows": []}
+
+        database.macd_monitor_alert_event_paths = fake
+        try:
+            response = await mm.get_macd_monitor_event_study(
+                days=3, kind="early", precursor="macd_dip_turn", limit=25)
+        finally:
+            database.macd_monitor_alert_event_paths = original
+
+        self.assertTrue(response["paper_only"])
+        self.assertEqual({"days": 3, "kind": "early",
+                          "precursor": "macd_dip_turn", "limit": 25}, seen)
+
+
 class SettingsTests(_MacdTestBase):
     async def test_to_bool_variants(self):
         self.assertTrue(mm._to_bool(True, False))

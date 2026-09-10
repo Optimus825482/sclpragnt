@@ -650,21 +650,137 @@ async def backfill_position_trade_ids():
 # Alarmın sonucunun "kesinleşmesi" için gereken süre (sn) — 30 dk ufuk + pay.
 _MACD_ALERT_OUTCOME_WINDOW_SEC = 32 * 60
 
+# Taban (baseline) kovası: alarmları 5m kovalarına yuvarlarız. Aynı kovadaki tüm
+# alarmlar aynı evren tabanını paylaşır → taban hesabı kova başına BİR kez yapılır.
+_MACD_BASELINE_BUCKET_SEC = 300
+# Ufuk → (sütun, dakika). Taban ve olay çalışması bu listeyi kullanır.
+_MACD_HORIZON_MINUTES = (("5m", 5), ("15m", 15), ("30m", 30))
+# Şema bir kez doğrulanır (idempotent ALTER'lar her turda koşmasın).
+_MACD_EVIDENCE_SCHEMA_READY = False
+# İstatistik çağrısı başına en fazla kaç eksik taban kovası hesaplanır (üst sınır).
+_MACD_BASELINE_MAX_PER_CALL = 40
+
+
+def _ensure_macd_evidence_schema(conn) -> None:
+    """A2/A3 şema eklerini idempotent uygula (002 migration'ın kodu içi eşi).
+
+    Koşan bir dağıtımda migration dosyası elle uygulanmamış olabilir; kanıt
+    katmanı kendi kendini onarsın. Hata durumunda ölçüm fonksiyonları sessizce
+    eski davranışa düşer (kanıt katmanı kritik yol değildir).
+    """
+    global _MACD_EVIDENCE_SCHEMA_READY
+    if _MACD_EVIDENCE_SCHEMA_READY:
+        return
+    try:
+        conn.execute("ALTER TABLE macd_monitor_alerts ADD COLUMN IF NOT EXISTS mfe_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE macd_monitor_alerts ADD COLUMN IF NOT EXISTS mae_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE macd_monitor_alerts ADD COLUMN IF NOT EXISTS early_score INTEGER")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS macd_market_baseline ("
+            "bucket_ts BIGINT NOT NULL, horizon TEXT NOT NULL, avg_pct DOUBLE PRECISION NOT NULL, "
+            "med_pct DOUBLE PRECISION NOT NULL, hit_rate DOUBLE PRECISION NOT NULL, "
+            "n_symbols INTEGER NOT NULL, filled_at DOUBLE PRECISION NOT NULL, "
+            "PRIMARY KEY (bucket_ts, horizon))")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS macd_market_baseline_ts_idx "
+            "ON macd_market_baseline(bucket_ts DESC)")
+        conn.commit()
+        _MACD_EVIDENCE_SCHEMA_READY = True
+    except Exception:
+        logging.getLogger("scalper.database").debug(
+            "macd kanıt şeması hazırlanamadı", exc_info=True)
+
+
+def _macd_bucket(ts: float) -> int:
+    """Zaman damgasını 5m taban kovasına yuvarla (tam sayı saniye)."""
+    return int(ts // _MACD_BASELINE_BUCKET_SEC) * _MACD_BASELINE_BUCKET_SEC
+
+
+def _baseline_rows_for_bucket(conn, bucket_ts: int) -> list[dict]:
+    """Bir kovanın 5m/15m/30m evren tabanı; yoksa historical_candles'tan üretir.
+
+    Taban = aynı zaman penceresinde (t → t+ufuk) evrendeki TÜM sembollerin
+    getirisinin eşit ağırlıklı ortalaması. Kapanmış 5m mumlarından hesaplanır,
+    canlı fiyat kullanılmaz (sızıntı yok). Tabanı olmayan kova (ör. veri yoksa)
+    sessizce boş döner — alarm kaydı yine de geçerlidir, yalnız lift görünmez.
+    """
+    existing = conn.execute(
+        "SELECT horizon, avg_pct, med_pct, hit_rate, n_symbols FROM macd_market_baseline "
+        "WHERE bucket_ts=?", (int(bucket_ts),)).fetchall()
+    have = {str(dict(r)["horizon"]): dict(r) for r in existing}
+    missing = [h for h, _minutes in _MACD_HORIZON_MINUTES if h not in have]
+    if missing:
+        t0_ms = int(bucket_ts) * 1000
+        max_ms = t0_ms + 30 * 60_000 + 5 * 60_000
+        rows = conn.execute(
+            "SELECT symbol, open_time, close FROM historical_candles "
+            "WHERE timeframe='5m' AND open_time >= ? AND open_time <= ? ORDER BY symbol, open_time",
+            (t0_ms - 5 * 60_000, max_ms)).fetchall()
+        per_symbol: dict[str, list[tuple[float, float]]] = {}
+        for row in rows:
+            item = dict(row)
+            per_symbol.setdefault(str(item["symbol"]), []).append(
+                (float(item["open_time"]), float(item["close"] or 0)))
+        for horizon, minutes in _MACD_HORIZON_MINUTES:
+            if horizon not in missing:
+                continue
+            target = t0_ms + minutes * 60_000
+            returns: list[float] = []
+            for _symbol, candles in per_symbol.items():
+                base_rows = [close for stamp, close in candles if stamp <= t0_ms]
+                ahead_rows = [close for stamp, close in candles if stamp <= target]
+                if not base_rows or not ahead_rows:
+                    continue
+                base = base_rows[-1]
+                if base <= 0:
+                    continue
+                returns.append((ahead_rows[-1] / base - 1.0) * 100.0)
+            if len(returns) < 5:
+                continue
+            ordered = sorted(returns)
+            mid = len(ordered) // 2
+            median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+            entry = {
+                "horizon": horizon,
+                "avg_pct": sum(returns) / len(returns),
+                "med_pct": median,
+                "hit_rate": sum(1 for value in returns if value > 0) / len(returns),
+                "n_symbols": len(returns),
+            }
+            conn.execute(
+                "INSERT INTO macd_market_baseline"
+                "(bucket_ts, horizon, avg_pct, med_pct, hit_rate, n_symbols, filled_at) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT (bucket_ts, horizon) DO UPDATE SET "
+                "avg_pct=EXCLUDED.avg_pct, med_pct=EXCLUDED.med_pct, "
+                "hit_rate=EXCLUDED.hit_rate, n_symbols=EXCLUDED.n_symbols, "
+                "filled_at=EXCLUDED.filled_at",
+                (int(bucket_ts), horizon, entry["avg_pct"], entry["med_pct"],
+                 entry["hit_rate"], int(entry["n_symbols"]), time.time()))
+            have[horizon] = entry
+        conn.commit()
+    return list(have.values())
+
 
 async def record_macd_monitor_alert(created_at: float, symbol: str, kind: str,
                                     score: int | None = None, jump_min: int | None = None,
                                     price: float | None = None,
-                                    signals: dict | list | None = None) -> int | None:
-    """Bir MACD alarmını kaydet. Dönen değer satır id'si."""
+                                    signals: dict | list | None = None,
+                                    early_score: int | None = None) -> int | None:
+    """Bir MACD alarmını kaydet. Dönen değer satır id'si.
+
+    `early_score` (B3) yalnız ERKEN alarmlarda dolan TANIMLAYICI 0-100 skordur;
+    eşik olarak kullanılmaz, replay'de karşılaştırma ekseni olsun diye saklanır.
+    """
     payload = json.dumps(signals) if signals is not None else None
 
     def op(conn):
+        _ensure_macd_evidence_schema(conn)
         row = conn.execute(
             "INSERT INTO macd_monitor_alerts"
-            "(created_at, symbol, kind, score, jump_min, price, signals) "
-            "VALUES(?,?,?,?,?,?,?) RETURNING id",
+            "(created_at, symbol, kind, score, jump_min, price, signals, early_score) "
+            "VALUES(?,?,?,?,?,?,?,?) RETURNING id",
             (float(created_at), str(symbol).upper(), str(kind), score, jump_min,
-             price, payload),
+             price, payload, early_score),
         ).fetchone()
         conn.commit()
         return int(row[0]) if row else None
@@ -702,21 +818,30 @@ async def list_macd_monitor_alerts(limit: int = 100, symbol: str | None = None) 
 
 
 async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
-    """Bekleyen alarmların 5m/15m/30m ileri getirilerini doldur.
+    """Bekleyen alarmların 5m/15m/30m ileri getirilerini + MFE/MAE'yi doldur.
 
     Fiyat kaynağı: `historical_candles` (5m). Alarm anındaki fiyat kayıtlıysa
     taban o; değilse alarm anına en yakın mumun kapanışı kullanılır. Pencere
     tamamen geçmiş ve veri yoksa kayıt 'expired' işaretlenir.
+
+    A3: ayrıca alarm sonrası 30 dk içindeki **MFE** (en yüksek lehte hareket) ve
+    **MAE** (en düşük aleyhte hareket) yüzde olarak yazılır; bunlar "kâr
+    potansiyeli vs maksimum ters hareket" ölçüsüdür.
+
+    A2: alarmın 5m kovası için evren tabanı (baseline) üretilir; lift hesabı
+    `macd_monitor_alert_stats` içinde bu tabana göre yapılır.
     """
     horizons = (("outcome_5m_pct", 5), ("outcome_15m_pct", 15), ("outcome_30m_pct", 30))
 
     def op(conn):
+        _ensure_macd_evidence_schema(conn)
         pending = conn.execute(
             "SELECT id, created_at, symbol, kind, price FROM macd_monitor_alerts "
             "WHERE outcome_state='pending' ORDER BY created_at ASC LIMIT ?",
             (max(1, min(5000, int(limit))),)).fetchall()
         filled = 0
         now = time.time()
+        baseline_buckets: set[int] = set()
         for row in pending:
             values = dict(row)
             alert_id = values["id"]
@@ -727,11 +852,12 @@ async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
             window_end_ms = t0_ms + 30 * 60_000
 
             candles = conn.execute(
-                "SELECT open_time, close FROM historical_candles "
+                "SELECT open_time, high, low, close FROM historical_candles "
                 "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
                 "ORDER BY open_time",
                 (symbol, t0_ms - 5 * 60_000, window_end_ms + 5 * 60_000)).fetchall()
-            rows = [(float(dict(c)["open_time"]), float(dict(c)["close"])) for c in candles]
+            rows = [(float(dict(c)["open_time"]), float(dict(c)["high"] or 0),
+                     float(dict(c)["low"] or 0), float(dict(c)["close"])) for c in candles]
 
             if not rows:
                 if now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC:
@@ -741,28 +867,50 @@ async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
                     filled += 1
                 continue
 
-            base = float(base_price) if base_price else rows[0][1]
+            base = float(base_price) if base_price else rows[0][3]
             if base <= 0:
                 continue
             updates = {}
             for column, minutes in horizons:
                 target = t0_ms + minutes * 60_000
-                candidates = [close for stamp, close in rows if stamp <= target]
+                candidates = [close for stamp, _h, _l, close in rows if stamp <= target]
                 if not candidates:
                     continue
                 updates[column] = (candidates[-1] / base - 1.0) * 100.0
+            # MFE/MAE: yalnız alarm SONRASI barlar (t0'dan sonra açılanlar) —
+            # alarm anını içeren kısmi barın uçları geriye dönük olduğundan
+            # ölçüye katılmaz (aksi halde MFE/MAE yapay şişerdi).
+            after = [(high, low) for stamp, high, low, _close in rows
+                     if t0_ms < stamp <= window_end_ms]
+            mfe = mae = None
+            highs_after = [high for high, _low in after if high > 0]
+            lows_after = [low for _high, low in after if low > 0]
+            if highs_after:
+                mfe = (max(highs_after) / base - 1.0) * 100.0
+            if lows_after:
+                mae = (min(lows_after) / base - 1.0) * 100.0
             if len(updates) == len(horizons):
                 conn.execute(
                     "UPDATE macd_monitor_alerts SET outcome_5m_pct=?, outcome_15m_pct=?, "
-                    "outcome_30m_pct=?, outcome_state='filled', filled_at=? WHERE id=?",
+                    "outcome_30m_pct=?, mfe_pct=?, mae_pct=?, outcome_state='filled', "
+                    "filled_at=? WHERE id=?",
                     (updates["outcome_5m_pct"], updates["outcome_15m_pct"],
-                     updates["outcome_30m_pct"], now, alert_id))
+                     updates["outcome_30m_pct"], mfe, mae, now, alert_id))
                 filled += 1
+                baseline_buckets.add(_macd_bucket(created))
             elif now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC:
                 conn.execute(
                     "UPDATE macd_monitor_alerts SET outcome_state='expired', filled_at=? WHERE id=?",
                     (now, alert_id))
                 filled += 1
+        # A2: sonucu kesinleşen alarmların kovaları için evren tabanını hazırla
+        # (üretim anında değil, doldurma anında — alarm akışını yavaşlatmaz).
+        for bucket in sorted(baseline_buckets)[:50]:
+            try:
+                _baseline_rows_for_bucket(conn, bucket)
+            except Exception:
+                logging.getLogger("scalper.database").debug(
+                    "macd taban hesabı başarısız (kova %s)", bucket, exc_info=True)
         if filled:
             conn.commit()
         return filled
@@ -770,59 +918,321 @@ async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
     return await _run_db(op)
 
 
-async def macd_monitor_alert_stats(days: int = 30) -> dict:
-    """Alarm isabet özeti: tür ve ufuk bazında ortalama getiri + isabet oranı.
+_ALERT_HORIZONS = (("outcome_5m_pct", "5m"), ("outcome_15m_pct", "15m"),
+                   ("outcome_30m_pct", "30m"))
 
-    Yalnızca sonucu kesinleşmiş ('filled') kayıtlar sayılır. Bu tablo,
-    `jump_min_score` eşiğinin ampirik ayarı için kanıt sağlar.
+
+def _new_alert_bucket() -> dict:
+    """Boş alarm kovası — n / skor / ufuk bazında getiri + lift + MFE-MAE."""
+    return {"n": 0, "score_sum": 0.0, "score_n": 0,
+            "esc_sum": 0.0, "esc_n": 0,
+            "mfe_sum": 0.0, "mfe_n": 0, "mae_sum": 0.0, "mae_n": 0}
+
+
+def _alert_bucket_add(bucket: dict, values: dict, baselines: dict | None = None) -> None:
+    """Tek alarm satırını bir kovaya işle (n / skor / ufuk bazında isabet + lift).
+
+    `baselines`: {"5m": {"avg_pct":…, "hit_rate":…}, …} — alarmın 5m kovasına ait
+    evren tabanı. Varsa her ufuk için `lift` (= alarm getirisi − evren ortalaması)
+    ve `hit_lift` (= isabet − evren pozitif oranı) biriktirilir.
+    """
+    bucket["n"] += 1
+    if values.get("score") is not None:
+        bucket["score_sum"] += float(values["score"])
+        bucket["score_n"] += 1
+    if values.get("early_score") is not None:
+        bucket["esc_sum"] += float(values["early_score"])
+        bucket["esc_n"] += 1
+    mfe = values.get("mfe_pct")
+    if mfe is not None:
+        bucket["mfe_sum"] += float(mfe)
+        bucket["mfe_n"] += 1
+    mae = values.get("mae_pct")
+    if mae is not None:
+        bucket["mae_sum"] += float(mae)
+        bucket["mae_n"] += 1
+    for column, label in _ALERT_HORIZONS:
+        value = values.get(column)
+        if value is None:
+            continue
+        slot = bucket.setdefault(label, {"n": 0, "sum": 0.0, "wins": 0,
+                                         "lift_sum": 0.0, "lift_n": 0,
+                                         "base_hit_sum": 0.0, "base_hit_n": 0})
+        slot["n"] += 1
+        slot["sum"] += float(value)
+        if float(value) > 0:
+            slot["wins"] += 1
+        base = (baselines or {}).get(label)
+        if base and base.get("avg_pct") is not None:
+            slot["lift_sum"] += float(value) - float(base["avg_pct"])
+            slot["lift_n"] += 1
+        if base and base.get("hit_rate") is not None:
+            slot["base_hit_sum"] += float(base["hit_rate"])
+            slot["base_hit_n"] += 1
+
+
+def _alert_bucket_out(bucket: dict) -> dict:
+    """İç kovayı dışa verilecek özete çevir."""
+    entry: dict = {"n": bucket["n"]}
+    if bucket.get("score_n"):
+        entry["avg_score"] = round(bucket["score_sum"] / bucket["score_n"], 1)
+    if bucket.get("esc_n"):
+        entry["avg_early_score"] = round(bucket["esc_sum"] / bucket["esc_n"], 1)
+    if bucket.get("mfe_n"):
+        entry["avg_mfe"] = round(bucket["mfe_sum"] / bucket["mfe_n"], 3)
+    if bucket.get("mae_n"):
+        entry["avg_mae"] = round(bucket["mae_sum"] / bucket["mae_n"], 3)
+    for _column, label in _ALERT_HORIZONS:
+        slot = bucket.get(label)
+        if not slot or not slot["n"]:
+            continue
+        horizon = {
+            "n": slot["n"],
+            "avg_pct": round(slot["sum"] / slot["n"], 3),
+            "hit_rate": round(slot["wins"] / slot["n"], 3),
+        }
+        if slot.get("lift_n"):
+            horizon["avg_lift"] = round(slot["lift_sum"] / slot["lift_n"], 3)
+        if slot.get("base_hit_n"):
+            horizon["base_hit_rate"] = round(slot["base_hit_sum"] / slot["base_hit_n"], 3)
+            horizon["hit_lift"] = round(horizon["hit_rate"] - horizon["base_hit_rate"], 3)
+        entry[label] = horizon
+    return entry
+
+
+def _baseline_map(conn, buckets: set[int]) -> dict[int, dict]:
+    """Verilen kovalar için {bucket: {"5m": {...}, …}} haritası.
+
+    Önce depodaki tabanlar TEK sorguyla okunur (normal durum: doldurma sırasında
+    zaten üretilmiştir). Eksik kovalar tembel üretilir ama tur başına
+    `_MACD_BASELINE_MAX_PER_CALL` ile sınırlanır — istatistik ucu asla uzun
+    süren bir taramaya dönüşmemelidir (eksik kalan kova yalnız liftsiz görünür).
+    """
+    if not buckets:
+        return {}
+    wanted = sorted(int(b) for b in buckets)
+    stored: dict[int, dict] = {}
+    for chunk_start in range(0, len(wanted), 200):
+        chunk = wanted[chunk_start:chunk_start + 200]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT bucket_ts, horizon, avg_pct, med_pct, hit_rate, n_symbols "
+            f"FROM macd_market_baseline WHERE bucket_ts IN ({placeholders})",
+            tuple(chunk)).fetchall()
+        for row in rows:
+            item = dict(row)
+            stored.setdefault(int(item["bucket_ts"]), {})[str(item["horizon"])] = {
+                "avg_pct": float(item["avg_pct"]),
+                "med_pct": float(item["med_pct"]),
+                "hit_rate": float(item["hit_rate"]),
+                "n_symbols": int(item["n_symbols"]),
+            }
+    computed = 0
+    for bucket in wanted:
+        mapped = stored.get(bucket) or {}
+        if len(mapped) >= len(_MACD_HORIZON_MINUTES):
+            stored[bucket] = mapped
+            continue
+        if computed >= _MACD_BASELINE_MAX_PER_CALL:
+            stored.setdefault(bucket, mapped)
+            continue
+        computed += 1
+        try:
+            rows = _baseline_rows_for_bucket(conn, bucket)
+        except Exception:
+            logging.getLogger("scalper.database").debug(
+                "macd taban okunamadı (kova %s)", bucket, exc_info=True)
+            stored.setdefault(bucket, mapped)
+            continue
+        fresh = {}
+        for row in rows:
+            item = dict(row)
+            fresh[str(item["horizon"])] = {
+                "avg_pct": float(item["avg_pct"]),
+                "med_pct": float(item["med_pct"]),
+                "hit_rate": float(item["hit_rate"]),
+                "n_symbols": int(item["n_symbols"]),
+            }
+        stored[bucket] = fresh or mapped
+    return stored
+
+
+async def macd_monitor_alert_stats(days: int = 30) -> dict:
+    """Alarm isabet özeti: tür + ÖNCÜ bazında getiri, LİFT, isabet ve MFE/MAE.
+
+    Yalnızca sonucu kesinleşmiş ('filled') kayıtlar sayılır.
+
+    `kinds`  → alarm türü bazında (jump / early).
+    `precursors` → **erken alarmın hangi öncüsü** işe yarıyor? Kayıtlı
+      `signals.early_signals` listesindeki her etiket için ayrı kova; bir alarm
+      birden fazla öncüyle geldiyse her birine sayılır (kotalar toplanabilir,
+      bu yüzden `n` toplamı alarm sayısından büyük olabilir).
+    `baseline` → son `days` gün için evren tabanı özeti (kova ortalaması).
+
+    Her ufukta `avg_lift` = alarm ortalama getirisi − aynı 5m kovasındaki evren
+    ortalama getirisi; `hit_lift` = isabet − evren pozitif oranı. **Karar
+    metriği lift'tir**, `avg_pct` tek başına iyi/kötü demez (A2).
     """
     since = time.time() - max(1, int(days)) * 86400.0
 
     def op(conn):
-        rows = conn.execute(
-            "SELECT kind, score, outcome_5m_pct, outcome_15m_pct, outcome_30m_pct "
-            "FROM macd_monitor_alerts WHERE created_at >= ? AND outcome_state='filled'",
-            (since,)).fetchall()
+        _ensure_macd_evidence_schema(conn)
+        try:
+            rows = conn.execute(
+                "SELECT created_at, kind, score, early_score, signals, outcome_5m_pct, "
+                "outcome_15m_pct, outcome_30m_pct, mfe_pct, mae_pct FROM macd_monitor_alerts "
+                "WHERE created_at >= ? AND outcome_state='filled'",
+                (since,)).fetchall()
+        except Exception:
+            # Şema henüz genişlememişse eski sütun kümesiyle devam et.
+            rows = conn.execute(
+                "SELECT created_at, kind, score, signals, outcome_5m_pct, outcome_15m_pct, "
+                "outcome_30m_pct FROM macd_monitor_alerts "
+                "WHERE created_at >= ? AND outcome_state='filled'",
+                (since,)).fetchall()
         buckets: dict[str, dict] = {}
+        precursors: dict[str, dict] = {}
+        entries = []
         for row in rows:
             values = dict(row)
-            kind = values.get("kind") or "unknown"
-            bucket = buckets.setdefault(kind, {"n": 0, "score_sum": 0.0, "score_n": 0})
-            bucket["n"] += 1
-            if values.get("score") is not None:
-                bucket["score_sum"] += float(values["score"])
-                bucket["score_n"] += 1
-            for column, label in (("outcome_5m_pct", "5m"),
-                                  ("outcome_15m_pct", "15m"),
-                                  ("outcome_30m_pct", "30m")):
-                value = values.get(column)
-                if value is None:
-                    continue
-                slot = bucket.setdefault(label, {"n": 0, "sum": 0.0, "wins": 0})
-                slot["n"] += 1
-                slot["sum"] += float(value)
-                if float(value) > 0:
-                    slot["wins"] += 1
-        out = {}
-        for kind, bucket in buckets.items():
-            entry = {"n": bucket["n"]}
-            if bucket["score_n"]:
-                entry["avg_score"] = round(bucket["score_sum"] / bucket["score_n"], 1)
-            for label in ("5m", "15m", "30m"):
-                slot = bucket.get(label)
-                if not slot or not slot["n"]:
-                    continue
-                entry[label] = {
-                    "n": slot["n"],
-                    "avg_pct": round(slot["sum"] / slot["n"], 3),
-                    "hit_rate": round(slot["wins"] / slot["n"], 3),
-                }
-            out[kind] = entry
+            entry = {**values, "signals": _json_value(values.get("signals"), None)}
+            entries.append(entry)
+        baselines = _baseline_map(conn, {_macd_bucket(float(e["created_at"] or 0))
+                                         for e in entries})
+        for entry in entries:
+            base = baselines.get(_macd_bucket(float(entry["created_at"] or 0)))
+            kind = entry.get("kind") or "unknown"
+            _alert_bucket_add(buckets.setdefault(kind, _new_alert_bucket()), entry, base)
+            # Öncü kırılımı: yalnız erken alarmlar (jump'ta öncü yoktur).
+            if kind != "early":
+                continue
+            signals = entry.get("signals")
+            labels = signals.get("early_signals") if isinstance(signals, dict) else None
+            for label in labels or []:
+                _alert_bucket_add(
+                    precursors.setdefault(str(label), _new_alert_bucket()), entry, base)
         pending = conn.execute(
             "SELECT COUNT(*) FROM macd_monitor_alerts WHERE outcome_state='pending'"
         ).fetchone()
-        return {"days": int(days), "kinds": out,
-                "pending": int(pending[0]) if pending else 0}
+        summary = {
+            "days": int(days),
+            "kinds": {k: _alert_bucket_out(b) for k, b in buckets.items()},
+            "precursors": {k: _alert_bucket_out(b) for k, b in precursors.items()},
+            "pending": int(pending[0]) if pending else 0,
+            "baseline": _baseline_summary(baselines),
+        }
+        return summary
+
+    return await _run_db(op)
+
+
+def _baseline_summary(baselines: dict[int, dict]) -> dict:
+    """Kova tabanlarını ufuk bazında tek satıra indir (UI başlığı için)."""
+    out: dict[str, dict] = {}
+    for _bucket, mapped in baselines.items():
+        for horizon, values in mapped.items():
+            slot = out.setdefault(horizon, {"n_buckets": 0, "avg_sum": 0.0,
+                                            "hit_sum": 0.0, "n_symbols": 0})
+            slot["n_buckets"] += 1
+            slot["avg_sum"] += float(values["avg_pct"])
+            slot["hit_sum"] += float(values["hit_rate"])
+            slot["n_symbols"] = max(slot["n_symbols"], int(values["n_symbols"]))
+    return {
+        horizon: {
+            "buckets": slot["n_buckets"],
+            "avg_pct": round(slot["avg_sum"] / slot["n_buckets"], 3),
+            "hit_rate": round(slot["hit_sum"] / slot["n_buckets"], 3),
+            "symbols": slot["n_symbols"],
+        }
+        for horizon, slot in out.items() if slot["n_buckets"]
+    }
+
+
+async def macd_monitor_alert_event_paths(days: int = 14, kind: str = "early",
+                                        precursor: str | None = None,
+                                        limit: int = 200) -> dict:
+    """Olay çalışması (A3): alarm etrafında ortalama getiri YOLU + MFE/MAE.
+
+    Her doldurulmuş alarm için t−10 … t+30 dk getiri yolu kapanmış 5m
+    mumlarından yeniden hesaplanır (sızıntısız); sonra grup ortalaması alınır.
+    `precursor` verilirse yalnız o erken öncüyle gelen alarmlar seçilir.
+
+    Dönen: {"n", "offsets", "avg_path", "avg_mfe", "avg_mae", "rows"}.
+    """
+    offsets = (-10, -5, 0, 5, 10, 15, 20, 30)
+    limit = max(1, min(1000, int(limit)))
+    since = time.time() - max(1, int(days)) * 86400.0
+
+    def op(conn):
+        _ensure_macd_evidence_schema(conn)
+        rows = conn.execute(
+            "SELECT id, created_at, symbol, kind, price, signals, mfe_pct, mae_pct "
+            "FROM macd_monitor_alerts WHERE created_at >= ? AND outcome_state='filled' "
+            "AND kind=? ORDER BY created_at DESC LIMIT ?",
+            (since, str(kind), limit)).fetchall()
+
+        def path_for(symbol: str, created: float, base_price):
+            t0_ms = created * 1000.0
+            candles = conn.execute(
+                "SELECT open_time, close FROM historical_candles "
+                "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
+                "ORDER BY open_time",
+                (symbol, t0_ms - 15 * 60_000, t0_ms + 35 * 60_000)).fetchall()
+            series = [(float(dict(c)["open_time"]), float(dict(c)["close"] or 0))
+                      for c in candles]
+            if not series:
+                return None
+            upto = [close for stamp, close in series if stamp <= t0_ms]
+            base = float(base_price) if base_price else (upto[-1] if upto else None)
+            if not base or base <= 0:
+                return None
+            path = []
+            for offset in offsets:
+                target = t0_ms + offset * 60_000
+                candidates = [close for stamp, close in series if stamp <= target]
+                if not candidates:
+                    path.append(None)
+                    continue
+                path.append(round((candidates[-1] / base - 1.0) * 100.0, 3))
+            return path
+
+        collected: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            signals = _json_value(item.get("signals"), None)
+            labels = signals.get("early_signals") if isinstance(signals, dict) else None
+            if precursor and (not labels or precursor not in labels):
+                continue
+            path = path_for(str(item["symbol"]), float(item["created_at"] or 0),
+                            item.get("price"))
+            if not path:
+                continue
+            collected.append({
+                "id": int(item["id"]),
+                "symbol": str(item["symbol"]),
+                "created_at": float(item["created_at"] or 0),
+                "signals": labels or [],
+                "mfe_pct": item.get("mfe_pct"),
+                "mae_pct": item.get("mae_pct"),
+                "path": path,
+            })
+        avg_path = []
+        for position in range(len(offsets)):
+            values = [row["path"][position] for row in collected
+                      if row["path"][position] is not None]
+            avg_path.append(round(sum(values) / len(values), 3) if values else None)
+        mfes = [float(row["mfe_pct"]) for row in collected if row.get("mfe_pct") is not None]
+        maes = [float(row["mae_pct"]) for row in collected if row.get("mae_pct") is not None]
+        return {
+            "kind": str(kind),
+            "precursor": precursor,
+            "n": len(collected),
+            "offsets": list(offsets),
+            "avg_path": avg_path,
+            "avg_mfe": round(sum(mfes) / len(mfes), 3) if mfes else None,
+            "avg_mae": round(sum(maes) / len(maes), 3) if maes else None,
+            "rows": collected[:limit],
+        }
 
     return await _run_db(op)
 

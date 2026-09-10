@@ -24,6 +24,21 @@ type MacdTier = "strong" | "normal" | "weak";
 type TfSignals = { break: boolean | null; state: string | null; vol: boolean | null };
 type CvdInfo = { fresh?: boolean; buy_ratio?: number | null; whale_net?: number | null; buy_dominant?: boolean };
 type PreSignals = { approach?: boolean; m1?: boolean; dip?: boolean };
+// Aşama 2 tanımlayıcı alanlar — DAVRANIŞ DEĞİL, ölçüm/teşhis içindir.
+type PreDetail = {
+  proximity?: number | null;
+  gap_atr?: number | null;
+  m1_margin_atr?: number | null;
+  dip_hist?: number | null;
+  dip_delta?: number | null;
+  squeeze_now?: boolean;
+  expand_now?: boolean;
+  transition?: boolean;
+  squeeze_prev?: boolean;
+  m15_squeeze_now?: boolean;
+  m15_transition?: boolean;
+  as_of?: Record<string, number | null>;
+};
 type SymbolMacd = {
   last: number | null;
   tfs: Record<string, MacdCell | null>;
@@ -36,6 +51,9 @@ type SymbolMacd = {
   cvd?: CvdInfo | null;
   pre?: PreSignals | null;
   pre_any?: boolean | null;
+  pre_detail?: PreDetail | null;
+  pre_key?: string[] | null;
+  early_score?: number | null;
 };
 type Snapshot = {
   universe: string[];
@@ -62,9 +80,38 @@ type MacdAlert = {
   outcome_30m_pct: number | null;
   outcome_state: string;
 };
-type AlertHorizon = { n: number; avg_pct: number; hit_rate: number };
-type AlertKindStats = { n: number; avg_score?: number } & Record<string, unknown>;
-type AlertStats = { days?: number; kinds?: Record<string, AlertKindStats>; pending?: number };
+type AlertHorizon = {
+  n: number;
+  avg_pct: number;
+  hit_rate: number;
+  avg_lift?: number;
+  base_hit_rate?: number;
+  hit_lift?: number;
+};
+type AlertKindStats = {
+  n: number;
+  avg_score?: number;
+  avg_early_score?: number;
+  avg_mfe?: number;
+  avg_mae?: number;
+} & Record<string, unknown>;
+type AlertBaseline = { buckets: number; avg_pct: number; hit_rate: number; symbols: number };
+type AlertStats = {
+  days?: number;
+  kinds?: Record<string, AlertKindStats>;
+  precursors?: Record<string, AlertKindStats>;
+  pending?: number;
+  baseline?: Record<string, AlertBaseline>;
+};
+type EventStudy = {
+  kind?: string;
+  precursor?: string | null;
+  n?: number;
+  offsets?: number[];
+  avg_path?: Array<number | null>;
+  avg_mfe?: number | null;
+  avg_mae?: number | null;
+};
 
 const fmtTime = (ts: number | null | undefined) => {
   if (!ts) return "—";
@@ -100,6 +147,15 @@ const pctClass = (value: number | null | undefined) =>
         ? "text-neon-red"
         : "text-bunker-muted";
 const KIND_LABEL: Record<string, string> = { jump: "SIRÇRAMA", early: "ERKEN" };
+// Erken alarm öncüleri. Anahtarlar, BACKEND'İN KAYIT ETTİĞİ etiketlerle
+// birebir aynı olmalıdır (`_maybe_fire_early_alert` → signals listesi);
+// aksi halde istatistik satırları ham `m1_breakout` yazar ve öncü filtresi
+// (olay çalışması) hiç eşleşmez.
+const PRECURSOR_LABEL: Record<string, string> = {
+  approach: "M5 yaklaşma",
+  m1_breakout: "M1 kırılım",
+  macd_dip_turn: "MACD dip dönüşü",
+};
 
 const TIER_LABEL: Record<string, string> = { strong: "GÜÇLÜ", normal: "NORMAL", weak: "ZAYIF" };
 
@@ -130,7 +186,7 @@ const jumpChip = (jump: number, min: number) =>
       ? "border-yellow-300/50 bg-yellow-300/10 text-yellow-300"
       : "border-bunker-600 bg-bunker-900 text-bunker-muted";
 
-const jumpIcons = (m5: TfSignals | null | undefined, m15: TfSignals | null | undefined, cvd: CvdInfo | null | undefined, pre: PreSignals | null | undefined) => {
+const jumpIcons = (m5: TfSignals | null | undefined, m15: TfSignals | null | undefined, cvd: CvdInfo | null | undefined, pre: PreSignals | null | undefined, detail?: PreDetail | null) => {
   const icons: { icon: string; title: string }[] = [];
   const push = (icon: string, title: string) => icons.push({ icon, title });
   if (m5?.break) push("🚀", "M5: 20-bar yüksek kırılımı");
@@ -139,14 +195,31 @@ const jumpIcons = (m5: TfSignals | null | undefined, m15: TfSignals | null | und
   if (m15?.state === "expand") push("⚡", "M15: volatilite genişlemesi");
   if (m5?.state === "squeeze") push("🧲", "M5: sıkışma — yay hazır");
   if (m15?.state === "squeeze") push("🧲", "M15: sıkışma — yay hazır");
+  if (detail?.transition) push("🎯", "M5: sıkışma → genişleme GEÇİŞİ (yay boşandı) — tanımlayıcı, karar değil");
   if (m5?.vol) push("🔥", "M5: hacim patlaması (>1.5× ort.)");
   if (m15?.vol) push("🔥", "M15: hacim patlaması (>1.5× ort.)");
   if (cvd?.buy_dominant) push("🐋", `Agresör alıcı baskın (oran ${Number(cvd.buy_ratio ?? 0).toFixed(2)}${cvd.whale_net ? ` · balina ${cvd.whale_net > 0 ? "+" : ""}${cvd.whale_net}` : ""})`);
-  if (pre?.approach) push("🎯", "M5: zirveye yaklaşıyor (≤0.5 ATR) + hacim/genişleme — YAKLAŞIYOR");
-  if (pre?.m1) push("🕐", "M1 öncü kırılımı + M5 yeşil — erken sinyal");
-  if (pre?.dip) push("📈", "M5 MACD hist dip dönüşü (yeşile hazır)");
-  return icons.slice(0, 8);
+  if (pre?.approach) {
+    const proximity = detail?.proximity;
+    const age = detail?.as_of?.approach;
+    const ageText = age ? ` · baz ${Math.max(0, Math.round(Date.now() / 1000 - age))} sn önce` : "";
+    push("🎯", `M5: zirveye yaklaşıyor (gap ${detail?.gap_atr ?? "—"} ATR, yakınlık ${proximity == null ? "—" : proximity.toFixed(2)}) + hacim/genişleme${ageText}`);
+  }
+  if (pre?.m1) push("🕐", `M1 öncü kırılımı + M5 yeşil (kırılım payı ${detail?.m1_margin_atr ?? "—"} ATR)`);
+  if (pre?.dip) push("📈", `M5 MACD hist dip dönüşü (hist ${detail?.dip_hist ?? "—"}, artış ${detail?.dip_delta ?? "—"} — yeşile hazır)`);
+  return icons.slice(0, 9);
 };
+
+/** Erken sinyal olgunluk rozeti: early_score + öncü kimliği + yakınlık (tanımlayıcı). */
+const earlyChip = (score: number | null | undefined) =>
+  score == null
+    ? "border-bunker-600 bg-bunker-900 text-bunker-muted"
+    : score >= 60
+      ? "border-sky-400/60 bg-sky-400/15 text-sky-300"
+      : score >= 30
+        ? "border-sky-400/40 bg-sky-400/10 text-sky-300/90"
+        : "border-bunker-600 bg-bunker-900 text-bunker-muted";
+const PRECURSOR_SHORT: Record<string, string> = { approach: "YAK", m1: "M1K", dip: "DİP" };
 
 /** MACD MONITOR erişim kapısı: admin VEYA lib/macdAccess izin listesindeki kullanıcı. */
 function MacdAccessGate({ children }: { children: ReactNode }) {
@@ -179,6 +252,9 @@ export default function MacdMonitorPage() {
   const [alerts, setAlerts] = useState<MacdAlert[]>([]);
   const [alertStats, setAlertStats] = useState<AlertStats | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  // A3 olay çalışması: seçili öncü için alarm etrafındaki ortalama getiri yolu.
+  const [studyPrecursor, setStudyPrecursor] = useState("");
+  const [study, setStudy] = useState<EventStudy | null>(null);
   const liveStatus = useLiveStatus();
 
   const loadSnapshot = useCallback(async () => {
@@ -214,6 +290,22 @@ export default function MacdMonitorPage() {
     const timer = window.setInterval(loadAlerts, ALERT_POLL_MS);
     return () => window.clearInterval(timer);
   }, [loadAlerts]);
+
+  // A3: olay çalışması — öncü seçimi değiştiğinde yeniden çekilir.
+  useEffect(() => {
+    let cancelled = false;
+    const query = studyPrecursor ? `&precursor=${encodeURIComponent(studyPrecursor)}` : "";
+    apiFetch(`/api/macd-monitor/event-study?days=14&kind=early&limit=200${query}`)
+      .then((data) => {
+        if (!cancelled) setStudy((data as EventStudy) || null);
+      })
+      .catch(() => {
+        if (!cancelled) setStudy(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [studyPrecursor]);
 
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "macd_monitor" && message.data) setSnapshot(message.data as Snapshot);
@@ -263,6 +355,10 @@ export default function MacdMonitorPage() {
           cvd: row?.cvd ?? null,
           jump: row?.jump ?? null,
           pre: row?.pre ?? null,
+          pre_any: row?.pre_any ?? null,
+          pre_detail: row?.pre_detail ?? null,
+          pre_key: row?.pre_key ?? null,
+          early_score: row?.early_score ?? null,
         };
       })
       .filter((r) => !onlyGreen || r.greenCount === tfs.length);
@@ -300,20 +396,63 @@ export default function MacdMonitorPage() {
   const stale = dataAgeSec != null && dataAgeSec > staleAfterSec;
   const staleLabel = `${Math.round(dataAgeSec ?? 0)} sn`;
 
-  // İsabet özeti: tür + ufuk satırları (yalnızca sonucu kesinleşmiş alarmlar)
+  // İsabet özeti: alarm türü + ERKEN ÖNCÜ bazında satırlar.
+  // Öncü kırılımı, "approach / m1 / dip öncülerinden hangisi işe yarıyor?"
+  // sorusunu veriyle cevaplar (eşik/ağırlık ayarının önkoşulu).
+  // Karar metriği LIFT'tir: avg_pct tek başına iyi/kötü demez, evren tabanına
+  // göre fark gerekir (A2).
   const statRows = useMemo(() => {
-    const kinds = alertStats?.kinds || {};
-    const out: Array<{ kind: string; h: string; n: number; avg: number; hit: number }> = [];
-    Object.entries(kinds).forEach(([kind, entry]) => {
-      ["5m", "15m", "30m"].forEach((h) => {
-        const slot = entry[h] as AlertHorizon | undefined;
-        if (slot && slot.n > 0) {
-          out.push({ kind, h, n: slot.n, avg: slot.avg_pct, hit: slot.hit_rate });
-        }
+    const out: Array<{
+      group: string;
+      label: string;
+      h: string;
+      n: number;
+      avg: number;
+      hit: number;
+      lift: number | null;
+      hitLift: number | null;
+      mfe: number | null;
+      mae: number | null;
+    }> = [];
+    const push = (group: string, table?: Record<string, AlertKindStats>) => {
+      Object.entries(table || {}).forEach(([name, entry]) => {
+        ["5m", "15m", "30m"].forEach((h) => {
+          const slot = entry[h] as AlertHorizon | undefined;
+          if (slot && slot.n > 0) {
+            out.push({
+              group,
+              label: KIND_LABEL[name] ?? PRECURSOR_LABEL[name] ?? name,
+              h,
+              n: slot.n,
+              avg: slot.avg_pct,
+              hit: slot.hit_rate,
+              lift: slot.avg_lift ?? null,
+              hitLift: slot.hit_lift ?? null,
+              mfe: entry.avg_mfe ?? null,
+              mae: entry.avg_mae ?? null,
+            });
+          }
+        });
       });
-    });
+    };
+    push("TÜR", alertStats?.kinds);
+    push("ÖNCÜ", alertStats?.precursors);
     return out;
   }, [alertStats]);
+
+  const baselineRows = useMemo(
+    () =>
+      ["5m", "15m", "30m"]
+        .map((h) => ({ h, ...(alertStats?.baseline?.[h] as AlertBaseline | undefined) }))
+        .filter((row): row is { h: string } & AlertBaseline => Boolean(row.buckets)),
+    [alertStats],
+  );
+
+  // Olay yolu: en kötü/en iyi uç için ortak ölçek (basit çubuk gösterimi).
+  const studyScale = useMemo(() => {
+    const values = (study?.avg_path || []).filter((value): value is number => value != null);
+    return values.length ? Math.max(0.05, ...values.map((value) => Math.abs(value))) : 1;
+  }, [study]);
 
   return (
     <MacdAccessGate>
@@ -431,6 +570,7 @@ export default function MacdMonitorPage() {
                     <th className="px-3 py-2 text-center" title={`${tfs.length} zaman diliminde yeşil sayısı`}>YEŞİL</th>
                     <th className="px-3 py-2 text-center" title="Trend gücü: 20 barlık lineer regresyon — R² (düzenlilik) × eğim/bar-aralığı (hız); evren içinde 0-10 normalize">GÜÇ · 0-10</th>
                     <th className="px-3 py-2 text-center" title={`Sıçrama adayı skoru (0-100): trend gücü + MACD yeşil + M5/M15 kırılım, volatilite genişlemesi, hacim ve agresör teyidi. ≥ ${jumpMin} = aday (alarm/push ayarlardan yönetilir)`}>SIRÇRAMA</th>
+                    <th className="px-3 py-2 text-center" title="ERKEN SİNYAL olgunluğu (0-100, TANIMLAYICI — eşik değildir): öncü sayısı + zirveye yakınlık + alıcı agresör + üst-TF yeşil hizası. Sıralama/teşhis içindir.">ERKEN</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -495,7 +635,7 @@ export default function MacdMonitorPage() {
                               {row.jump}
                             </span>
                             {(() => {
-                              const icons = jumpIcons(row.sigs?.["5m"] ?? null, row.sigs?.["15m"] ?? null, row.cvd ?? null, row.pre ?? null);
+                              const icons = jumpIcons(row.sigs?.["5m"] ?? null, row.sigs?.["15m"] ?? null, row.cvd ?? null, row.pre ?? null, row.pre_detail ?? null);
                               return icons.length > 0 ? (
                                 <span className="flex gap-0.5 text-[11px] leading-none">
                                   {icons.map((item, index) => (
@@ -507,6 +647,41 @@ export default function MacdMonitorPage() {
                           </span>
                         ) : (
                           <span className="text-bunker-muted/60" title="Sinyal verisi yok">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        {row.pre_any ? (
+                          <span className="inline-flex flex-col items-center gap-0.5">
+                            <span
+                              title={`Erken sinyal olgunluğu ${row.early_score ?? "—"}/100 — TANIMLAYICI (eşik değildir). Öncüler: ${(row.pre_key || []).map((key) => PRECURSOR_SHORT[key] ?? key).join(" + ") || "—"}`}
+                              className={`inline-flex min-w-[2.5rem] items-center justify-center rounded-md border px-2 py-1 text-xs font-bold ${earlyChip(row.early_score)}`}
+                            >
+                              {row.early_score ?? "—"}
+                            </span>
+                            <span className="flex gap-0.5 font-mono text-[9px]">
+                              {(row.pre_key || []).map((key) => (
+                                <span
+                                  key={key}
+                                  className={`rounded border px-1 ${
+                                    key === "approach"
+                                      ? "border-sky-400/40 bg-sky-400/10 text-sky-300"
+                                      : key === "m1"
+                                        ? "border-yellow-300/40 bg-yellow-300/10 text-yellow-300"
+                                        : "border-neon-green/40 bg-neon-green/10 text-neon-green"
+                                  }`}
+                                >
+                                  {PRECURSOR_SHORT[key] ?? key}
+                                </span>
+                              ))}
+                              {row.pre_detail?.transition && (
+                                <span className="rounded border border-neon-green/40 bg-neon-green/10 px-1 text-neon-green" title="M5 sıkışma → genişleme geçişi (tanımlayıcı)">
+                                  ⇗
+                                </span>
+                              )}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-bunker-muted/60" title="Erken öncü yok">—</span>
                         )}
                       </td>
                     </tr>
@@ -548,28 +723,75 @@ export default function MacdMonitorPage() {
 
           {showHistory && (
             <div className="mt-4 space-y-4">
+              {baselineRows.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-bunker-700 bg-bunker-900/50 px-3 py-2 font-mono text-[11px] text-bunker-muted">
+                  <span className="text-white">EVREN TABANI (aynı 5m kovası):</span>
+                  {baselineRows.map((row) => (
+                    <span key={row.h} className="rounded border border-bunker-600 px-1.5 py-0.5">
+                      {row.h} ort <b className={pctClass(row.avg_pct)}>{fmtPct(row.avg_pct)}</b>{" "}
+                      pozitif <b className="text-white">{(row.hit_rate * 100).toFixed(1)}%</b>
+                    </span>
+                  ))}
+                  <span className="text-bunker-muted/70">
+                    · <b className="text-white">LIFT</b> = alarm getirisi − taban. Karar metriği lift'tir.
+                  </span>
+                </div>
+              )}
+
               {statRows.length > 0 ? (
                 <div className="overflow-x-auto">
                   <table className="w-full border-collapse font-mono text-sm">
                     <thead>
                       <tr className="border-b border-bunker-800 text-left text-[11px] text-bunker-muted">
-                        <th className="px-3 py-2">TÜR</th>
+                        <th className="px-3 py-2">GRUP</th>
+                        <th className="px-3 py-2">AD</th>
                         <th className="px-3 py-2 text-center">UFUK</th>
                         <th className="px-3 py-2 text-right">ÖRNEK</th>
                         <th className="px-3 py-2 text-right">ORT. GETİRİ</th>
+                        <th className="px-3 py-2 text-right">LIFT</th>
                         <th className="px-3 py-2 text-right">İSABET (pozitif)</th>
+                        <th className="px-3 py-2 text-right">İSABET LİFT</th>
+                        <th className="px-3 py-2 text-right">MFE / MAE</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {statRows.map((row) => (
-                        <tr key={`${row.kind}-${row.h}`} className="border-b border-bunker-800/60">
-                          <td className="px-3 py-2 text-white">{KIND_LABEL[row.kind] ?? row.kind}</td>
-                          <td className="px-3 py-2 text-center text-bunker-muted">{row.h}</td>
-                          <td className="px-3 py-2 text-right text-bunker-muted">{row.n}</td>
-                          <td className={`px-3 py-2 text-right font-bold ${pctClass(row.avg)}`}>{fmtPct(row.avg)}</td>
-                          <td className="px-3 py-2 text-right text-white">{(row.hit * 100).toFixed(1)}%</td>
-                        </tr>
-                      ))}
+                      {statRows.map((row) => {
+                        const mfe = row.mfe;
+                        const mae = row.mae;
+                        return (
+                          <tr key={`${row.group}-${row.label}-${row.h}`} className="border-b border-bunker-800/60">
+                            <td className="px-3 py-2">
+                              <span className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                                row.group === "ÖNCÜ"
+                                  ? "border-sky-400/40 bg-sky-400/10 text-sky-300"
+                                  : "border-bunker-600 bg-bunker-900 text-bunker-muted"
+                              }`}>
+                                {row.group}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-white">{row.label}</td>
+                            <td className="px-3 py-2 text-center text-bunker-muted">{row.h}</td>
+                            <td className="px-3 py-2 text-right text-bunker-muted">{row.n}</td>
+                            <td className={`px-3 py-2 text-right font-bold ${pctClass(row.avg)}`}>{fmtPct(row.avg)}</td>
+                            <td className={`px-3 py-2 text-right font-bold ${row.lift == null ? "text-bunker-muted/60" : pctClass(row.lift)}`}>
+                              {row.lift == null ? "—" : fmtPct(row.lift)}
+                            </td>
+                            <td className="px-3 py-2 text-right text-white">{(row.hit * 100).toFixed(1)}%</td>
+                            <td className={`px-3 py-2 text-right ${row.hitLift == null ? "text-bunker-muted/60" : pctClass(row.hitLift)}`}>
+                              {row.hitLift == null ? "—" : `${(row.hitLift * 100).toFixed(1)}%`}
+                            </td>
+                            <td className="px-3 py-2 text-right text-bunker-muted">
+                              {mfe == null && mae == null ? "—" : (
+                                <>
+                                  <span className={pctClass(mfe)}>{mfe == null ? "—" : fmtPct(mfe)}</span>
+                                  {" / "}
+                                  <span className={pctClass(mae)}>{mae == null ? "—" : fmtPct(mae)}</span>
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -578,6 +800,67 @@ export default function MacdMonitorPage() {
                   Henüz sonucu kesinleşmiş alarm yok (alarm oluşup 30 dk geçince satırlar dolar).
                 </p>
               )}
+
+              {/* A3 OLAY ÇALIŞMASI — alarm etrafında ortalama getiri yolu */}
+              <div className="rounded-lg border border-bunker-700 bg-bunker-900/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="eyebrow">OLAY ÇALIŞMASI (LEAD TIME)</p>
+                    <p className="mt-1 font-mono text-[11px] text-bunker-muted">
+                      Alarm etrafında ortalama getiri yolu — &quot;daha erken&quot; iddiası ancak bu ölçülürse anlamlıdır.
+                    </p>
+                  </div>
+                  <select
+                    value={studyPrecursor}
+                    onChange={(event) => setStudyPrecursor(event.target.value)}
+                    className="input w-44 font-mono text-xs"
+                    aria-label="Öncü seç"
+                  >
+                    <option value="">TÜM ÖNCÜLER</option>
+                    {Object.entries(PRECURSOR_LABEL).map(([key, label]) => (
+                      <option key={key} value={key}>{label}</option>
+                    ))}
+                  </select>
+                </div>
+                {study && (study.n || 0) > 0 ? (
+                  <div className="mt-3 space-y-2">
+                    <div className="flex flex-wrap items-end gap-1">
+                      {(study.offsets || []).map((offset, index) => {
+                        const value = study.avg_path?.[index] ?? null;
+                        const height = value == null
+                          ? 2
+                          : Math.max(2, Math.round((Math.abs(value) / studyScale) * 40));
+                        return (
+                          <div key={offset} className="flex w-14 flex-col items-center gap-1">
+                            <span className={`font-mono text-[10px] ${pctClass(value)}`}>
+                              {value == null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}`}
+                            </span>
+                            <div
+                              className={`w-6 rounded-sm ${
+                                value == null ? "bg-bunker-700" : value >= 0 ? "bg-neon-green/60" : "bg-neon-red/60"
+                              }`}
+                              style={{ height: `${height}px` }}
+                              title={`t${offset >= 0 ? "+" : ""}${offset} dk: ${value == null ? "veri yok" : `${value.toFixed(3)}%`}`}
+                            />
+                            <span className="font-mono text-[10px] text-bunker-muted">
+                              t{offset >= 0 ? "+" : ""}{offset}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="font-mono text-[11px] text-bunker-muted">
+                      n={study.n} · ortalama <b className={pctClass(study.avg_mfe)}>MFE {study.avg_mfe == null ? "—" : fmtPct(study.avg_mfe)}</b>{" "}
+                      / <b className={pctClass(study.avg_mae)}>MAE {study.avg_mae == null ? "—" : fmtPct(study.avg_mae)}</b>
+                      {" · "}t0 = alarm anı (kapanmış 5m mumlarından; canlı fiyat kullanılmaz).
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-3 font-mono text-[11px] text-bunker-muted">
+                    Bu seçim için yeterli doldurulmuş kayıt yok.
+                  </p>
+                )}
+              </div>
 
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse font-mono text-sm">

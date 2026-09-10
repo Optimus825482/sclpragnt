@@ -97,8 +97,24 @@ const extractRisingCandidates = (payload: any): RisingCandidate[] => {
 const JUMP_MIN = 60;
 type JumpSig = { break?: boolean | null; state?: string | null; vol?: boolean | null };
 type PreSig = { approach?: boolean; m1?: boolean; dip?: boolean };
+type PreDetail = {
+  proximity?: number | null;
+  gap_atr?: number | null;
+  m1_margin_atr?: number | null;
+  dip_hist?: number | null;
+  dip_delta?: number | null;
+  transition?: boolean;
+  squeeze_now?: boolean;
+  as_of?: Record<string, number | null>;
+};
 type JumpCand = { symbol: string; jump: number; m5: JumpSig | null; m15: JumpSig | null; cvd: { buy_dominant?: boolean; buy_ratio?: number | null; whale_net?: number | null } | null; pre: PreSig | null };
-type EarlyCand = { symbol: string; pre: PreSig; jump: number | null };
+type EarlyCand = {
+  symbol: string;
+  pre: PreSig;
+  jump: number | null;
+  earlyScore: number | null;
+  detail: PreDetail | null;
+};
 const extractJumpCandidates = (payload: any): JumpCand[] => {
   const symbols = payload?.symbols || {};
   const universe = Array.isArray(payload?.universe) && payload.universe.length
@@ -125,6 +141,8 @@ const extractJumpCandidates = (payload: any): JumpCand[] => {
 
 // ERKEN SİNYAL (YAKLAŞIYOR): kırılım öncesi öncüler — M5 zirveye yakın,
 // M1 öncü kırılım, MACD dip dönüşü. Skor eşiği dolmadan haber verir.
+// Sıralama artık `early_score` (0-100, TANIMLAYICI) öncelikli: skor yalnız
+// adayları SIRALAR, hiçbir kapıyı açmaz/kapatmaz (eşik değildir).
 const extractEarlyCandidates = (payload: any): EarlyCand[] => {
   const symbols = payload?.symbols || {};
   const universe = Array.isArray(payload?.universe) && payload.universe.length
@@ -136,9 +154,16 @@ const extractEarlyCandidates = (payload: any): EarlyCand[] => {
     const pre = row?.pre || {};
     if (!row?.pre_any) continue;
     const jump = Number(row?.jump);
-    list.push({ symbol: sym, pre, jump: Number.isFinite(jump) ? jump : null });
+    const earlyScore = Number(row?.early_score);
+    list.push({
+      symbol: sym,
+      pre,
+      jump: Number.isFinite(jump) ? jump : null,
+      earlyScore: Number.isFinite(earlyScore) ? earlyScore : null,
+      detail: row?.pre_detail || null,
+    });
   }
-  list.sort((a, b) => (b.jump ?? 0) - (a.jump ?? 0));
+  list.sort((a, b) => (b.earlyScore ?? -1) - (a.earlyScore ?? -1) || (b.jump ?? 0) - (a.jump ?? 0));
   return list;
 };
 
@@ -482,31 +507,58 @@ export default function MonitoringPage() {
             </a>
           </div>
           <p className="mt-1 text-xs text-bunker-muted">
-            Kırılımdan ÖNCE öncüller: 🎯 M5 zirveye yaklaşıyor (≤0.5 ATR + aktivite) · 🕐 M1 öncü kırılım · 📈 MACD dip dönüşü. Alarmlar Ayarlar → MACD/Sıçrama&apos;dan yönetilir.
+            Kırılımdan ÖNCE öncüller: 🎯 M5 zirveye yaklaşıyor (≤0.5 ATR + aktivite) · 🕐 M1 öncü kırılım · 📈 MACD dip dönüşü. Kartlardaki sayı <b>erken sinyal olgunluğudur</b> (0-100, yalnız sıralama/teşhis — eşik DEĞİLDİR). Alarmlar Ayarlar → MACD/Sıçrama&apos;dan yönetilir.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            {earlyCands.map((item) => (
-              <a
-                key={item.symbol}
-                href={`/charts?symbol=${encodeURIComponent(item.symbol)}`}
-                className="group rounded-lg border border-sky-400/40 bg-sky-400/10 px-3 py-2 transition-colors hover:border-sky-300/70 hover:bg-sky-400/15"
-                title={`${item.symbol} grafiğini aç · erken sinyal${item.jump != null ? ` · skor ${item.jump}/100` : ""}`}
-              >
-                <span className="flex items-center gap-2 font-mono text-sm font-bold text-white">
-                  {item.symbol}
-                  {item.jump != null && (
-                    <span className="rounded border border-bunker-600 bg-bunker-900 px-1.5 py-0.5 font-mono text-[10px] font-bold text-bunker-muted">
-                      {item.jump}
+            {earlyCands.map((item) => {
+              const proximity = item.detail?.proximity;
+              const age = item.detail?.as_of?.approach;
+              const ageSec = age ? Math.max(0, Math.round(Date.now() / 1000 - age)) : null;
+              const title = [
+                `${item.symbol} grafiğini aç`,
+                item.earlyScore != null ? `erken olgunluk ${item.earlyScore}/100 (tanımlayıcı)` : null,
+                item.jump != null ? `sıçrama skoru ${item.jump}/100` : null,
+                proximity != null ? `zirveye yakınlık ${(proximity * 100).toFixed(0)}%` : null,
+                item.detail?.transition ? "sıkışma→genişleme geçişi" : null,
+                ageSec != null ? `yaklaşma bazı ${ageSec} sn önce` : null,
+              ].filter(Boolean).join(" · ");
+              return (
+                <a
+                  key={item.symbol}
+                  href={`/charts?symbol=${encodeURIComponent(item.symbol)}`}
+                  className="group rounded-lg border border-sky-400/40 bg-sky-400/10 px-3 py-2 transition-colors hover:border-sky-300/70 hover:bg-sky-400/15"
+                  title={title}
+                >
+                  <span className="flex items-center gap-2 font-mono text-sm font-bold text-white">
+                    {item.symbol}
+                    {item.earlyScore != null && (
+                      <span
+                        className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${
+                          item.earlyScore >= 60
+                            ? "border-sky-400/60 bg-sky-400/20 text-sky-200"
+                            : "border-sky-400/30 bg-sky-400/5 text-sky-300/80"
+                        }`}
+                      >
+                        {item.earlyScore}
+                      </span>
+                    )}
+                    {item.jump != null && (
+                      <span className="rounded border border-bunker-600 bg-bunker-900 px-1.5 py-0.5 font-mono text-[10px] font-bold text-bunker-muted">
+                        {item.jump}
+                      </span>
+                    )}
+                    <span className="flex gap-0.5 text-[11px] leading-none">
+                      {earlyFlagIcons(item.pre).map((entry, index) => (
+                        <span key={`${entry.icon}-${index}`} title={entry.title}>{entry.icon}</span>
+                      ))}
+                      {item.detail?.transition && (
+                        <span title="M5 sıkışma → genişleme geçişi (yay boşandı) — tanımlayıcı">⇗</span>
+                      )}
                     </span>
-                  )}
-                  <span className="flex gap-0.5 text-[11px] leading-none">
-                    {earlyFlagIcons(item.pre).map((entry, index) => (
-                      <span key={`${entry.icon}-${index}`} title={entry.title}>{entry.icon}</span>
-                    ))}
                   </span>
-                </span>
-              </a>
-            ))}
+                </a>
+              );
+            })}
           </div>
         </section>
       )}
