@@ -203,6 +203,12 @@ class ScalpAnalyzer:
                 # A missing/invalid leg must leave the order idle; defaulting
                 # stop to 0 used to fire every LONG OCO instantly.
                 if stop <= 0 or take_profit_price <= 0: continue
+                # NOTE: for LONG this is an OCO *entry* bracket — `stop_price`
+                # is the breakout buy-stop (above entry, price >= stop) and
+                # `take_profit_price` is the pullback buy-limit (below entry,
+                # price <= take_profit_price). The field names are inherited
+                # from the exit bracket; the evaluation below is consistent
+                # with this entry interpretation (validated: both legs > 0).
                 take_profit_hit = price >= take_profit_price if side in {"SELL", "SHORT"} else price <= take_profit_price
                 stop_hit = price <= stop if side in {"SELL", "SHORT"} else price >= stop
                 triggered = take_profit_hit or stop_hit
@@ -672,6 +678,11 @@ class ScalpAnalyzer:
         }
 
     async def open_position(self, symbol, entry_price, side="LONG", strat_name="CHAT_PREDICTION", order_value=None, stop_loss_pct=None, take_profit_pct=None, max_hold_sec=None, entry_context_extra=None):
+        # Circuit breaker: a paused strategy must not receive new entries
+        # (C3 — is_paused was defined but never consulted by the entry gate).
+        if strategy_breaker.is_paused(strat_name):
+            return {"action": "BUY_BLOCKED", "reason": f"strategy_paused:{strat_name}",
+                    "symbol": symbol, "strategy": strat_name}
         # Strategy loop ve Gainer Radar aynı anda aynı sembolü tetikleyebilir.
         # Cüzdan düşümü ile pozisyon kaydı tek atomik akışta yapılmalı.
         # REST orderbook yenilemesi lock DIŞINDA yapılır: global open/close
@@ -748,10 +759,11 @@ class ScalpAnalyzer:
             if atr_value and price > 0:
                 atr_pct = atr_value / price
                 baseline = max(1e-9, config.VOLATILITY_BASELINE_ATR_PCT)
-                scale = min(baseline / atr_pct, 1.0) if atr_pct > baseline else min(
-                    1.0, baseline / max(atr_pct, baseline * 0.25))
-                clamp_min = config.VOLATILITY_SIZING_MIN_SCALE
-                scale = max(clamp_min, min(1.0, scale))
+                # Equal-risk sizing: high-ATR symbols get a smaller position,
+                # quiet symbols a proportionally larger one (bounded upward).
+                scale = baseline / max(atr_pct, baseline * 0.25)
+                scale = max(config.VOLATILITY_SIZING_MIN_SCALE,
+                            min(config.VOLATILITY_SIZING_MAX_SCALE, scale))
                 order_value *= scale
         return order_value
 
@@ -795,8 +807,6 @@ class ScalpAnalyzer:
             reason = "symbol_activity:passive"
             if failed:
                 reason += ":" + ",".join(failed)
-            # Log strat_name for debugging velocity auto-trader passthrough
-            print(f"[Activity Debug] symbol={symbol} strat_name={strat_name!r} PASSIVE checks failed={failed}", flush=True)
             blocked = {
                 "symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                 "reason": reason, "strategy": strat_name, "timestamp": time.time(),
@@ -1166,7 +1176,7 @@ class ScalpAnalyzer:
             # ve rapor sayfasında "AÇIK" görünen ama DB'de olmayan hayalet
             # sinyaller oluşur.
             self.positions.pop(symbol, None)
-            if any(token in error_text for token in ("duplicate key", "unique constraint", "max_open_positions_reached", "insufficient_paper_balance")):
+            if any(token in error_text for token in ("duplicate key", "unique constraint", "already_open", "max_open_positions_reached", "insufficient_paper_balance")):
                 self.positions = await database.load_positions()
                 reason = "max_open_positions_reached" if "max_open_positions" in error_text else "insufficient_paper_balance" if "insufficient" in error_text else "position_already_open"
                 await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,

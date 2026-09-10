@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { fetchAllPages } from "../lib/api";
+import { formatPrice } from "../charts/chartShared";
 
 type Trade = {
     id: number;
@@ -50,11 +51,11 @@ export default function HistoryPage() {
     const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
     const wins = trades.filter((t) => t.pnl > 0).length;
     const winRate = trades.length ? (wins / trades.length) * 100 : 0;
-    const pricePrec = (v: number) => { const a = Math.abs(v); return a < 1 ? 8 : a < 100 ? 4 : a < 1000 ? 3 : 2; };
-    const formatTL = (v: number) =>
-        v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: Math.max(2, pricePrec(v)) });
-    const formatSmall = (v: number | null | undefined) =>
-        v == null ? "—" : v.toLocaleString("tr-TR", { minimumFractionDigits: 0, maximumFractionDigits: pricePrec(v) });
+    const formatCurrency = (v: number) => {
+        const abs = Math.abs(v);
+        const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return v < 0 ? `-₺${formatted}` : `₺${formatted}`;
+    };
     const fmtTime = (ts?: number) =>
         ts ? new Date(ts * 1000).toLocaleString("tr-TR", { hour12: false }) : "-";
 
@@ -78,7 +79,7 @@ export default function HistoryPage() {
                 <div className="card">
                     <p className="eyebrow">GERÇEKLEŞMİŞ PnL</p>
                     <p className={`font-mono text-2xl font-bold mt-1 ${totalPnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                        {totalPnl >= 0 ? "+" : ""}₺{formatTL(totalPnl)}
+                        {formatCurrency(totalPnl)}
                     </p>
                 </div>
                 <div className="card">
@@ -129,12 +130,12 @@ export default function HistoryPage() {
                                             {t.side === "LONG" ? "LONG" : "SHORT"}
                                         </span>
                                     </td>
-                                    <td className="p-3 text-bunker-muted">₺{formatTL(t.entry_price)}</td>
-                                    <td className="p-3 text-bunker-muted">₺{formatTL(t.exit_price)}</td>
+                                    <td className="p-3 text-bunker-muted">₺{formatPrice(t.entry_price)}</td>
+                                    <td className="p-3 text-bunker-muted">₺{formatPrice(t.exit_price)}</td>
                                     <td className="p-3 text-bunker-muted">{t.quantity.toFixed(6)}</td>
-                                    <td className="p-3 text-neon-yellow">₺{formatTL(t.commission ?? 0)}</td>
+                                    <td className="p-3 text-neon-yellow">{formatCurrency(t.commission ?? 0)}</td>
                                     <td className={`p-3 font-bold ${t.pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                                        {t.pnl >= 0 ? "+" : ""}₺{formatTL(t.pnl)}
+                                        {formatCurrency(t.pnl)}
                                     </td>
                                     <td className={`p-3 font-bold ${t.pnl_pct >= 0 ? "text-neon-green" : "text-neon-red"}`}>
                                         {t.pnl_pct > 0 ? "+" : ""}{t.pnl_pct.toFixed(2)}%

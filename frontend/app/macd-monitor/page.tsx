@@ -141,14 +141,16 @@ export default function MacdMonitorPage() {
   const [lastEarly, setLastEarly] = useState<{ symbol: string; signals: string[]; at: number } | null>(null);
   const liveStatus = useLiveStatus();
 
-  const loadSnapshot = useCallback(() => {
-    apiFetch("/api/macd-monitor")
-      .then((data) => {
-        setSnapshot(data as Snapshot);
-        setError(null);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
+  const loadSnapshot = useCallback(async () => {
+    try {
+      const data = await apiFetch("/api/macd-monitor");
+      setSnapshot(data as Snapshot);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {

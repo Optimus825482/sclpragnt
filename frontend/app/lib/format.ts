@@ -28,12 +28,15 @@ export function fmtDate(ts: number | string | null | undefined): string {
 }
 
 /**
- * Paylaşılan fiyat hassasiyeti: <1 → 6 hane, <100 → 3 hane, aksi 2 hane.
+ * Paylaşılan fiyat hassasiyeti: <1 → 6 hane, <100 → 4 hane, <1000 → 3 hane,
+ * aksi 2 hane. Grafik bileşenlerindeki `chartShared.pricePrecision` ile AYNI
+ * kural olmalı; aynı fiyat farklı sayfalarda farklı yuvarlanmasın.
  */
 export function formatPrice(value: number | null | undefined): string {
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
-  const digits = Math.abs(n) < 1 ? 6 : Math.abs(n) < 100 ? 3 : 2;
+  const abs = Math.abs(n);
+  const digits = abs < 1 ? 6 : abs < 100 ? 4 : abs < 1000 ? 3 : 2;
   return n.toLocaleString("tr-TR", { minimumFractionDigits: 0, maximumFractionDigits: digits });
 }
 

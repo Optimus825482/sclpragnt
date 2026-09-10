@@ -277,7 +277,9 @@ def _get_reset_cutoff_sync(conn) -> float:
         pass
     return 0.0
 
-async def get_wallet_balance(asset="USDT"):
+async def get_wallet_balance(asset="TRY"):
+    """Virtual wallet balance. Defaults to TRY — the only asset the wallet
+    holds (legacy "USDT" default silently returned 0.0)."""
     def op(conn):
         row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", (asset,)).fetchone()
         return row[0] if row else 0.0
@@ -296,34 +298,63 @@ async def update_wallet_balance(asset, amount):
     await _run_db(op)
 
 def _chronological_overallocation_candidates(conn):
-    """Return only positions whose opening event made the ledger insolvent."""
+    """Return only positions whose opening event made the ledger insolvent.
+
+    Models the shared TRY wallet across BOTH the main `trades`/`positions`
+    ledger and the `auto_paper_trades` subsystem (they debit/credit the same
+    `virtual_wallet` row). Credit events use the actual wallet credit
+    (exit_notional * (1 - commission)), not `cost + pnl`, so the buy-side
+    commission is not subtracted twice (K3).
+    """
+    c = config.COMMISSION_PCT
     cash = float(config.INITIAL_BALANCE_TRY)
     events = []
     cutoff = _get_reset_cutoff_sync(conn)
     trades = conn.execute(
-        "SELECT entry_time,exit_time,entry_price,quantity,pnl FROM trades"
+        "SELECT entry_time,exit_time,entry_price,quantity,pnl,exit_price FROM trades"
         + (" WHERE exit_time>?" if cutoff else ""),
         (cutoff,) if cutoff else ()).fetchall()
     for row in trades:
         cost = float(row[2] or 0) * float(row[3] or 0)
-        events.append((float(row[0] or 0), 0, "debit", None, cost * (1 + config.COMMISSION_PCT)))
-        events.append((float(row[1] or 0), 1, "credit", None, cost + float(row[4] or 0)))
+        exit_notional = (float(row[5] or 0) * float(row[3] or 0)) if row[5] is not None else 0.0
+        events.append((float(row[0] or 0), 0, "debit", None, cost * (1 + c)))
+        events.append((float(row[1] or 0), 1, "credit", None, exit_notional * (1 - c)))
+    # auto_paper_trades share the same TRY wallet.
+    ap_trades = conn.execute(
+        "SELECT entry_time,exit_time,order_value_try,quantity,status,exit_price FROM auto_paper_trades"
+        + (" WHERE exit_time>?" if cutoff else ""),
+        (cutoff,) if cutoff else ()).fetchall()
+    for row in ap_trades:
+        order_value = float(row[2] or 0)
+        qty = float(row[3] or 0)
+        if row[4] == "open":
+            events.append((float(row[0] or 0), 0, "open", None, order_value * (1 + c)))
+        else:
+            events.append((float(row[0] or 0), 0, "debit", None, order_value * (1 + c)))
+            exit_notional = (float(row[5] or 0) * qty) if row[5] is not None else 0.0
+            events.append((float(row[1] or 0), 1, "credit", None, exit_notional * (1 - c)))
     positions = conn.execute("SELECT symbol,entry_time,entry_price,quantity FROM positions").fetchall()
     for row in positions:
         cost = float(row[2] or 0) * float(row[3] or 0)
-        events.append((float(row[1] or 0), 0, "open", row, cost * (1 + config.COMMISSION_PCT)))
+        events.append((float(row[1] or 0), 0, "open", row, cost * (1 + c)))
     candidates = []
     for _, _, kind, row, amount in sorted(events, key=lambda item: (item[0], item[1])):
         if kind == "credit":
             cash += amount
         else:
             cash -= amount
-            if kind == "open" and cash < -0.01:
+            if kind == "open" and cash < -0.01 and row is not None:
                 candidates.append({"symbol": row[0], "entry_time": row[1], "entry_price": row[2], "quantity": row[3], "cost": float(row[2] or 0) * float(row[3] or 0), "reason": "entry_cash_was_insufficient"})
     return candidates
 
 async def reconcile_portfolio():
-    """Rebuild TRY cash and remove only over-allocated newest open positions."""
+    """Rebuild TRY cash and remove only over-allocated newest open positions.
+
+    The main `trades`/`positions` ledger and the `auto_paper_trades` subsystem
+    share the same `virtual_wallet` TRY row, so reconciliation must account for
+    both (C2). Including only the main ledger would corrupt capital whenever an
+    auto_paper position is open.
+    """
     def op(conn):
         before_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", ("TRY",)).fetchone()
         before = float(before_row[0]) if before_row else 0.0
@@ -333,7 +364,14 @@ async def reconcile_portfolio():
         realized = float(conn.execute(
             "SELECT COALESCE(SUM(pnl),0) FROM trades WHERE (?=0 OR exit_time>?)",
             (cutoff, cutoff)).fetchone()[0] or 0)
-        open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
+        auto_realized = float(conn.execute(
+            "SELECT COALESCE(SUM(pnl),0) FROM auto_paper_trades WHERE status='closed' AND (?=0 OR exit_time>?)",
+            (cutoff, cutoff)).fetchone()[0] or 0)
+        realized += auto_realized
+        main_open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
+        auto_open_cost = float(conn.execute(
+            "SELECT COALESCE(SUM(order_value_try),0) FROM auto_paper_trades WHERE status='open'").fetchone()[0] or 0)
+        open_cost = main_open_cost + auto_open_cost
         entry_commission = open_cost * config.COMMISSION_PCT
         after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
         removed = []
@@ -352,22 +390,26 @@ async def reconcile_portfolio():
                     conn.execute("DELETE FROM signals WHERE symbol=? AND action='BUY_SIGNAL' AND ABS(timestamp-?) <= 10", (symbol, entry_time))
                 conn.execute("DELETE FROM decision_logs WHERE symbol=? AND decision='BUY_SIGNAL' AND ABS(timestamp-?) <= 10", (symbol, entry_time))
                 removed.append({"symbol": symbol, "entry_time": entry_time, "cost": position_cost})
-                open_cost -= position_cost
+                main_open_cost -= position_cost
+                open_cost = main_open_cost + auto_open_cost
                 entry_commission = open_cost * config.COMMISSION_PCT
                 after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
             # A valid partial position opened from remaining cash must never be
             # removed merely because later mark-to-market PnL changed.
             if removed:
-                open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
+                main_open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
+                open_cost = main_open_cost + auto_open_cost
                 entry_commission = open_cost * config.COMMISSION_PCT
                 after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
         conn.execute("INSERT INTO virtual_wallet(asset,amount) VALUES(?,?) ON CONFLICT(asset) DO UPDATE SET amount=excluded.amount", ("TRY", after))
         conn.commit()
         trade_count = int(conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0])
         position_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0])
+        auto_count = int(conn.execute("SELECT COUNT(*) FROM auto_paper_trades WHERE status='open'").fetchone()[0])
         return {"before_try": before, "after_try": after, "realized_pnl": realized,
                 "open_entry_cost": open_cost, "open_entry_commission": entry_commission,
                 "trade_count": trade_count, "open_position_count": position_count,
+                "auto_paper_open": auto_count,
                 "difference": after - before, "removed_overallocated_positions": removed}
     return await _run_db(op)
 
@@ -936,7 +978,11 @@ async def get_dashboard_summary() -> dict:
             "losing": sum(1 for r in ap_rows if float(r[0] or 0) <= 0),
         }
 
-        # Portföy: bakiye + açık pozisyon sayısı
+        # Portföy: bakiye + açık pozisyon değerleri (ana + otonom paper).
+        # NOT: dashboard giriş (entry) fiyatı bazlıdır; WS portföy anlık görüntüsü
+        # mark-to-market'tir. İkisi de AYNI bileşimi (ana positions + açık
+        # auto_paper_trades) kapsamalıdır; aksi halde panel ile canlı terminal
+        # farklı "toplam değer" gösterir.
         cash_row = conn.execute(
             "SELECT amount FROM virtual_wallet WHERE asset='TRY'"
         ).fetchone()
@@ -946,11 +992,20 @@ async def get_dashboard_summary() -> dict:
         ).fetchall()
         open_count = len(pos_rows)
         pos_value = sum(float(r[0] or 0) * float(r[1] or 0) for r in pos_rows)
-        total_value = balance + pos_value
+        ap_rows = conn.execute(
+            "SELECT entry_price, quantity FROM auto_paper_trades WHERE status='open'"
+        ).fetchall()
+        ap_value = sum(float(r[0] or 0) * float(r[1] or 0) for r in ap_rows)
+        total_value = balance + pos_value + ap_value
         portfolio = {
             "balance": round(balance, 2),
             "open_positions": open_count,
+            "auto_paper_open": len(ap_rows),
+            "positions_value": round(pos_value, 2),
+            "auto_paper_value": round(ap_value, 2),
             "total_value": round(total_value, 2),
+            # Panel entry-basis; canlı WS anlık görüntüsü mark-to-market.
+            "basis": "entry",
         }
 
         return {
@@ -1170,10 +1225,11 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
     def op(conn):
         conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
         existing = conn.execute("SELECT quantity FROM positions WHERE symbol=?" + " FOR UPDATE", (symbol,)).fetchone()
-        if not existing:
-            open_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] or 0)
-            if int(config.MAX_OPEN_POSITIONS) > 0 and open_count >= int(config.MAX_OPEN_POSITIONS):
-                raise RuntimeError("max_open_positions_reached")
+        if existing:
+            raise RuntimeError("already_open")
+        open_count = int(conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] or 0)
+        if int(config.MAX_OPEN_POSITIONS) > 0 and open_count >= int(config.MAX_OPEN_POSITIONS):
+            raise RuntimeError("max_open_positions_reached")
         cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?" + " FOR UPDATE", ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else config.INITIAL_BALANCE_TRY)
         debit = float(asset_amount or 0) * float(sig.get("price") or pos.get("entry_price") or 0) * (1 + config.COMMISSION_PCT)

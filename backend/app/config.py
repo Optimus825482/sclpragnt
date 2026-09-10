@@ -28,9 +28,13 @@ class Config:
 ]
     MIN_NOTIONAL = 10.0
     INITIAL_BALANCE_TRY = 10000.0
-    # Spot paper işlemlerde varsayılan işlem tutarı (TRY).
+    # Spot paper işlemlerde varsayılan işlem tutarı (TRY cinsinden; adı tarihsel
+    # olarak USDT kalmıştır, Binance TR tarafında bakiye TRY'dir).
     # Varsayılan paper işlem büyüklüğü (TRY). Arayüzden ayrıca değiştirilebilir.
     DEFAULT_ORDER_USDT = float(os.getenv("DEFAULT_ORDER_USDT", "1000.0"))
+    # Aynı ayarın doğru adı; yeni kod bunu kullanmalı (eski ad geriye dönük uyum
+    # için korunuyor, .env'deki DEFAULT_ORDER_USDT değişkeni hâlâ okunur).
+    DEFAULT_ORDER_TRY = DEFAULT_ORDER_USDT
     MIN_PARTIAL_ORDER_TRY = 100.0
     # Normal yüzde tutarı minimumun altına düştüğünde boş bakiyeyi eritmek
     # için kullanılacak kademeli paper işlem tutarı.
@@ -123,6 +127,11 @@ class Config:
     # 30+ %50.0 (n=14) — 10 altı adaylarda açılış yapmak EV'yi düşürüyor.
     # 0 = filtre kapalı. Eşik ham velocity_score'a bakar; kalite çarpanı uygulanmaz.
     VELOCITY_AUTO_MIN_SCORE = float(os.getenv("VELOCITY_AUTO_MIN_SCORE", "10"))
+    # Otonom Hız Avcısı'nin açık pozisyon üst sınırı. Velocity pozisyonları
+    # CHAT_PREDICTION stratejisi + signal_context.source=="velocity_auto"
+    # işaretiyle taşınır (yönetim merdiveni ortak); bu cap yalnızca velocity
+    # kaynaklı pozisyonları sayar (H2 düzeltmesi). 0 = sınırsız.
+    VELOCITY_AUTO_MAX_OPEN_POSITIONS = max(0, int(os.getenv("VELOCITY_AUTO_MAX_OPEN_POSITIONS", "0")))
     # Journal tabanlı sembol kalitesi: hız avcısı adaylarının ölçülmüş geçmişi
     # (dokunuş oranı, ort. MFE) yalnızca sıralama çarpanı ve LLM bağlamı için
     # kullanılır. Açılış engelleyen sembol kalite filtresi kaldırıldı
@@ -263,6 +272,9 @@ class Config:
     VOLATILITY_SIZING_ENABLED = os.getenv("VOLATILITY_SIZING_ENABLED", "true").lower() == "true"
     VOLATILITY_BASELINE_ATR_PCT = max(0.0005, float(os.getenv("VOLATILITY_BASELINE_ATR_PCT", "0.006")))
     VOLATILITY_SIZING_MIN_SCALE = max(0.25, float(os.getenv("VOLATILITY_SIZING_MIN_SCALE", "0.35")))
+    # Quiet symbols (< baseline ATR%) may take a proportionally LARGER position;
+    # capped here so equal-risk scaling stays bounded (A3 fix).
+    VOLATILITY_SIZING_MAX_SCALE = min(2.0, max(1.0, float(os.getenv("VOLATILITY_SIZING_MAX_SCALE", "1.25"))))
     # Strategy circuit breaker (S2): rolling expectancy window and floor.
     STRATEGY_BREAKER_WINDOW = max(10, int(os.getenv("STRATEGY_BREAKER_WINDOW", "20")))
     STRATEGY_BREAKER_EXPECTANCY_FLOOR = float(os.getenv("STRATEGY_BREAKER_EXPECTANCY_FLOOR", "-0.5"))

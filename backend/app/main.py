@@ -334,6 +334,10 @@ def _public_user(user: dict) -> dict:
 # Admin Veritabanı sayfası (2026-09-04): tablo listesi, satır verisi, CSV/SQL export.
 # Yalnızca admin rolü. PostgreSQL şeması public.
 # ---------------------------------------------------------------------------
+# Admin export üst sınırı: sınırsız SELECT * büyük tablolarda (signals,
+# decision_logs, agent_trace_events) tüm veriyi belleğe çekip isteği/sunucuyu
+# kilitleyebiliyordu.
+_ADMIN_EXPORT_MAX_ROWS = 20000
 _DB_TABLE_DESCRIPTIONS = {
     "agent_eval_cases": "Ajan değerlendirme test senaryoları",
     "agent_eval_runs": "Ajan değerlendirme koşu kayıtları",
@@ -398,19 +402,23 @@ async def admin_db_tables(request: Request):
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name"
         ).fetchall()
-        return [dict(row) if isinstance(row, dict) else {"table_name": row[0]} for row in rows]
+        names = [str(r["table_name"] if isinstance(r, dict) else r[0]) for r in rows]
+        if not names:
+            return []
+        # N+1 yerine tek sorgu: her tablo için ayrı _run_db çağırmak her seferinde
+        # yeni bir bağlantı/tur açıyordu. Tablolar tek UNION ALL ile sayılır.
+        # Adlar information_schema'dan gelir; yine de tanımlayıcı doğrulanır.
+        safe = [n for n in names if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", n)]
+        parts = [f"SELECT '{n}' AS table_name, COUNT(*) AS row_count FROM \"{n}\"" for n in safe]
+        counts = {
+            str(r["table_name"] if isinstance(r, dict) else r[0]):
+                int(r["row_count"] if isinstance(r, dict) else r[1])
+            for r in conn.execute(" UNION ALL ".join(parts)).fetchall()
+        }
+        return [{"table": n, "rows": counts.get(n),
+                 "description": _DB_TABLE_DESCRIPTIONS.get(n, "")} for n in names]
 
-    tables = await database._run_db(op)
-    result = []
-    for t in tables:
-        name = str(t["table_name"])
-        try:
-            count = await database._run_db(lambda conn, n=name: conn.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0])
-        except Exception:
-            count = None
-        result.append({"table": name, "rows": count,
-                       "description": _DB_TABLE_DESCRIPTIONS.get(name, "")})
-    return {"paper_only": True, "tables": result}
+    return {"paper_only": True, "tables": await database._run_db(op)}
 
 
 @app.get("/api/admin/db/table")
@@ -501,6 +509,8 @@ async def admin_db_table_export(request: Request, table: str = "", format: str =
     return Response(content=content, media_type=media, headers={
         "Content-Disposition": f'attachment; filename="{filename}"',
         "Content-Length": str(len(content.encode("utf-8"))),
+        "X-Export-Rows": str(len(rows)),
+        "X-Export-Truncated": "true" if truncated else "false",
     })
 
 
@@ -2389,7 +2399,14 @@ async def ml_train_now():
 @app.get("/api/ml/predict")
 async def ml_predict(symbol: str, horizon: int = 5):
     """Tek nokta ML tahmini (Faz 2 gölge mod doğrulaması için)."""
-    target = ml_forecast.predict_target(symbol, {}, horizon)
+    # Boş özellik sözlüğü modeli NaN'larla besler ve güvenilmez hedef üretir;
+    # grafik tahminiyle aynı canlı özellik toplayıcıyı kullan (tek yol).
+    from app.routers.chart_forecast import collect_forecast_features
+    features = await collect_forecast_features(symbol)
+    if not features:
+        return {"symbol": symbol.upper(), "horizon": horizon, "available": False,
+                "prediction": None, "reason": "güncel veri yok"}
+    target = ml_forecast.predict_target(symbol, features, horizon)
     return {"symbol": symbol.upper(), "horizon": horizon, "available": target is not None,
             "prediction": target}
 

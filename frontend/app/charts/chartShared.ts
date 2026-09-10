@@ -92,10 +92,10 @@ export const macdHistogramColor = (value: number, previous?: number) => {
 // kullanılır; böylece aynı fiyat farklı yerlerde farklı yuvarlanmaz.
 export const pricePrecision = (value: number) => {
     const absolute = Math.abs(Number(value) || 0);
-    // Alt-1 fiyatlar da (örn. 0,335) üç basamakla okunur olmalı.
-    if (absolute < 100) return 3;
-    if (absolute >= 100 && absolute < 1000) return 2;
-    return 1;
+    if (absolute < 1) return 6;
+    if (absolute < 100) return 4;
+    if (absolute < 1000) return 3;
+    return 2;
 };
 export const formatPrice = (value: number | null | undefined) => {
     const numeric = Number(value);

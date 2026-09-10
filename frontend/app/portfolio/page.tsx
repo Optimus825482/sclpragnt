@@ -11,6 +11,7 @@ import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
 import { Button } from "../components/ui";
 import { toMs } from "../lib/format";
+import { formatPrice } from "../charts/chartShared";
 
 /* ------------------------------------------------------------------ */
 /* Tipler                                                              */
@@ -75,18 +76,27 @@ type AutoPaperStats = {
 /* ------------------------------------------------------------------ */
 /* Yardımcılar                                                         */
 /* ------------------------------------------------------------------ */
-const money = (v?: number | null) =>
-  v == null || !Number.isFinite(v) ? "0,00" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const money = (v?: number | null) => {
+  if (v == null || !Number.isFinite(v)) return "0,00";
+  const abs = Math.abs(v);
+  const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `₺${formatted}`;
+};
 
-const signedMoney = (v?: number | null) =>
-  v == null || !Number.isFinite(v) ? "—" : `${v < 0 ? "-" : ""}${Math.abs(v).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const signedMoney = (v?: number | null) => {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return v < 0 ? `-₺${formatted}` : `₺${formatted}`;
+};
 
 const pctText = (v?: number | null) => {
   if (v == null || !Number.isFinite(v)) return "—";
   return `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
 };
 
-const tone = (v?: number | null) => (v == null || (v ?? 0) >= 0 ? "text-neon-green" : "text-neon-red");
+const tone = (v?: number | null) =>
+  v == null || !Number.isFinite(v) ? "text-bunker-muted" : v >= 0 ? "text-neon-green" : "text-neon-red";
 
 const fmtDay = (ts?: number | null) => {
   if (!ts) return "—";
@@ -359,16 +369,16 @@ export default function PortfolioPage() {
 
       {/* ---- ÜST: Sermaye özeti ---- */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard label="TOPLAM DEĞER" value={`₺${money(totalValue)}`} hint={`mevcut TL ₺${money(freeTry)} + açık pozisyonlar`} />
-        <MetricCard label="SERBEST TL" value={`₺${money(freeTry)}`} toneClass="ui-tone-positive" />
+        <MetricCard label="TOPLAM DEĞER" value={money(totalValue)} hint={`mevcut TL ${money(freeTry)} + açık pozisyonlar`} />
+        <MetricCard label="SERBEST TL" value={money(freeTry)} toneClass="ui-tone-positive" />
         <MetricCard label="AÇIK POZİSYON" value={String(totalOpen)} toneClass={totalOpen > 0 ? "ui-tone-warning" : ""} hint={`otonom ${apTrades.length} · ana ${displayMain.length}`} />
-        <MetricCard label="AÇIK KAR/ZARAR" value={`₺${signedMoney(totalOpenPnl)}`} toneClass={tone(totalOpenPnl)} />
+        <MetricCard label="AÇIK KAR/ZARAR" value={signedMoney(totalOpenPnl)} toneClass={tone(totalOpenPnl)} />
       </div>
       <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricCard label="GERÇEKLEŞEN K/Z (tümü)" value={`₺${signedMoney(realizedTotal)}`} toneClass={tone(realizedTotal)} hint="ana + otonom kapanan işlemler" />
+        <MetricCard label="GERÇEKLEŞEN K/Z (tümü)" value={signedMoney(realizedTotal)} toneClass={tone(realizedTotal)} hint="ana + otonom kapanan işlemler" />
         <MetricCard label="OTONOM BAŞARI" value={apStats?.closed ? `%${apStats.win_rate?.toFixed(1)}` : "—"} toneClass={apStats && apStats.win_rate >= 50 ? "ui-tone-positive" : apStats ? "ui-tone-negative" : ""} hint={`${apStats?.winning ?? 0} kazanç · ${apStats?.losing ?? 0} kayıp`} />
         <MetricCard label="OTONOM KAPANAN" value={String(apStats?.closed ?? 0)} hint={`toplam ${apStats?.total ?? 0} işlem`} />
-        <MetricCard label="OTONOM NET PnL" value={`₺${signedMoney(apStats?.total_pnl_try)}`} toneClass={tone(apStats?.total_pnl_try)} />
+        <MetricCard label="OTONOM NET PnL" value={signedMoney(apStats?.total_pnl_try)} toneClass={tone(apStats?.total_pnl_try)} />
       </div>
 
       {/* ---- Otonom Paper bölümü ---- */}
@@ -425,11 +435,11 @@ export default function PortfolioPage() {
                     return (
                       <tr key={t.id}>
                         <td><SymbolLink symbol={t.symbol} className="font-bold text-white hover:text-neon-green" /></td>
-                        <td className="font-mono text-xs">{entry.toFixed(6)}</td>
-                        <td className={`font-mono text-xs ${tpDist !== null && tpDist <= 0 ? "text-neon-green font-bold" : ""}`}>{current.toFixed(6)}</td>
-                        <td className="font-mono text-xs text-neon-green">{Number(t.take_profit || 0).toFixed(6)}</td>
-                        <td className="font-mono text-xs text-neon-red">{Number(t.stop_loss || 0).toFixed(6)}</td>
-                        <td className={`font-mono text-xs ${tone(pnl)}`}>₺{signedMoney(pnl)}</td>
+                        <td className="font-mono text-xs">{formatPrice(entry)}</td>
+                        <td className={`font-mono text-xs ${tpDist !== null && tpDist <= 0 ? "text-neon-green font-bold" : ""}`}>{formatPrice(current)}</td>
+                        <td className="font-mono text-xs text-neon-green">{formatPrice(Number(t.take_profit || 0))}</td>
+                        <td className="font-mono text-xs text-neon-red">{formatPrice(Number(t.stop_loss || 0))}</td>
+                        <td className={`font-mono text-xs ${tone(pnl)}`}>{signedMoney(pnl)}</td>
                         <td className={`font-mono text-xs ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
                         <td className="font-mono text-xs text-bunker-muted">{held != null ? `${held} dk` : "—"}</td>
                       </tr>
@@ -454,7 +464,7 @@ export default function PortfolioPage() {
                       <SymbolLink symbol={t.symbol} className="font-bold text-white hover:text-neon-green" />
                       <span className="font-mono text-[10px] text-bunker-muted">{fmtDay(t.exit_time)}</span>
                     </div>
-                    <div className={`mt-1 font-mono text-lg font-bold ${tone(pnl)}`}>₺{signedMoney(pnl)}</div>
+                    <div className={`mt-1 font-mono text-lg font-bold ${tone(pnl)}`}>{signedMoney(pnl)}</div>
                     <div className="mt-0.5 flex items-center justify-between">
                       <span className="font-mono text-[10px] text-bunker-muted">{REASON_LABEL[t.exit_reason || ""] || t.exit_reason || "—"}</span>
                       <span className={`font-mono text-[10px] ${tone(pnl)}`}>{pctText(Number(t.pnl_pct || 0))}</span>
@@ -492,9 +502,9 @@ export default function PortfolioPage() {
                   <tr key={p.symbol}>
                     <td><SymbolLink symbol={p.symbol} className="font-bold text-white hover:text-neon-green" /></td>
                     <td className="text-xs">{STRATEGY_LABEL[p.strategy || ""] || p.strategy || "—"}</td>
-                    <td className="font-mono text-xs">{Number(p.entry || 0).toFixed(6)}</td>
-                    <td className="font-mono text-xs">{Number(p.current || 0).toFixed(6)}</td>
-                    <td className={`font-mono text-xs ${tone(p.pnl_try ?? 0)}`}>₺{signedMoney(p.pnl_try ?? 0)}</td>
+                    <td className="font-mono text-xs">{formatPrice(Number(p.entry || 0))}</td>
+                    <td className="font-mono text-xs">{formatPrice(Number(p.current || 0))}</td>
+                    <td className={`font-mono text-xs ${tone(p.pnl_try ?? 0)}`}>{signedMoney(p.pnl_try ?? 0)}</td>
                     <td className={`font-mono text-xs ${tone(p.pnl_pct)}`}>{pctText(p.pnl_pct)}</td>
                   </tr>
                 ))}
@@ -545,7 +555,7 @@ export default function PortfolioPage() {
                     <td className={`font-mono text-xs font-bold ${String(d.decision).startsWith("CLOSE") ? "text-neon-red" : "text-neon-green"}`}>
                       {String(d.decision || "—")}
                     </td>
-                    <td className="font-mono text-xs">{Number(d.price || 0).toFixed(6)}</td>
+                    <td className="font-mono text-xs">{formatPrice(Number(d.price || 0))}</td>
                     <td className="text-xs">{STRATEGY_LABEL[d.strategy || ""] || d.strategy || "—"}</td>
                     <td className="max-w-md truncate text-xs text-bunker-muted" title={d.reason}>{d.reason || "—"}</td>
                   </tr>
@@ -586,9 +596,9 @@ export default function PortfolioPage() {
                     <tr key={t.id}>
                       <td><SymbolLink symbol={t.symbol} className="font-bold text-white hover:text-neon-green" /></td>
                       <td className="font-mono text-xs text-bunker-muted">{fmtDay(t.entry_time)}</td>
-                      <td className="font-mono text-xs">{Number(t.entry_price || 0).toFixed(6)}</td>
-                      <td className="font-mono text-xs">{Number(t.exit_price || 0).toFixed(6)}</td>
-                      <td className={`font-mono text-xs font-bold ${tone(pnl)}`}>₺{signedMoney(pnl)}</td>
+                      <td className="font-mono text-xs">{formatPrice(Number(t.entry_price || 0))}</td>
+                      <td className="font-mono text-xs">{formatPrice(Number(t.exit_price || 0))}</td>
+                      <td className={`font-mono text-xs font-bold ${tone(pnl)}`}>{signedMoney(pnl)}</td>
                       <td className={`font-mono text-xs ${tone(pnl)}`}>{pctText(Number(t.pnl_pct || 0))}</td>
                       <td className="text-xs">{REASON_LABEL[t.exit_reason || ""] || t.exit_reason || "—"}</td>
                       <td className="font-mono text-xs text-bunker-muted">{holdMin != null ? `${holdMin} dk` : "—"}</td>

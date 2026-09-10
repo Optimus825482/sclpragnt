@@ -29,7 +29,12 @@ async def correlation_refresh_loop():
     await asyncio.sleep(300)  # let candles warm up first
     while True:
         try:
+            # Statik evren + açık pozisyon sembolleri (dinamik top-gainer evreni
+            # dahil) korelasyon için kapsansın; aksi halde yeni semboller sabit
+            # 0.75 varsayılanına düşer (cap işlevsiz kalır).
             symbols = [s.upper() for s in config.SYMBOLS]
+            symbols += [str(s).upper() for s in analyzer.positions.keys()]
+            symbols = list(dict.fromkeys(symbols))
             result = await correlation_monitor.refresh(market, symbols=symbols)
             if result.get("ok") and result.get("updated"):
                 print(f"[Correlation] {result['updated']} sembol güncellendi", flush=True)
@@ -306,9 +311,12 @@ async def refresh_top_gainer_symbols():
     """Refresh active TRY symbols from Binance TR's public 24h ticker data."""
     if not config.TOP_GAINERS_AUTO_ACTIVATE:
         return {"ok": False, "enabled": False, "symbols": config.SYMBOLS}
+    # Ağ I/O'su kilit DIŞINDA yapılır. Aksi halde yavaş ya da askıda kalan bir
+    # Binance TR yanıtı _top_gainers_lock'ı tutar; refresh_top_gainer_symbols'i
+    # bekleyen periyodik döngü ve eşzamanlı çağrılar süresiz bloke olurdu.
+    all_tickers = await ticker_24h()
+    known_try = set(await trading_symbols("TRY"))
     async with _top_gainers_lock:
-        all_tickers = await ticker_24h()
-        known_try = set(await trading_symbols("TRY"))
         ranked = []
         for item in all_tickers or []:
             symbol = str(item.get("symbol", "")).replace("_", "").upper()

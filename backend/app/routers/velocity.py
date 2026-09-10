@@ -144,8 +144,8 @@ def _velocity_ml_feature_dict(closes, highs, lows, vols):
     """Kapanmış 1m serisinden ML özellik sözlüğü — scan_one'daki hesabın birebir kopyası.
 
     Geriye dönük ML backfill (maintenance) geçmiş mumlardan bu fonksiyonla
-    özellik üretir; scan_one'daki ML bloğu değişirse burası da senkron kalmalı
-    (ret3_pct kesir olarak girer, atr/bb/slope yüzde — predict_target sözleşmesi).
+    özellik üretir; scan_one'daki ML bloğu değişirse burası da senkron kalmalı.
+    Sözleşme: TÜM *_pct alanları YÜZDE girer (predict_target içeride kesire çevirir).
     """
     price = closes[-1] if closes else 0.0
     trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j - 1]), abs(lows[j] - closes[j - 1]))
@@ -155,7 +155,7 @@ def _velocity_ml_feature_dict(closes, highs, lows, vols):
     aroon = _velocity_aroon(highs, lows)
     return {
         "ret1_pct": None,
-        "ret3_pct": ret3 / 100 if ret3 is not None else None,
+        "ret3_pct": ret3,
         "ret5_pct": None,
         "atr_pct": atr_pct,
         "bb_width_pct": _velocity_bollinger_width(closes),
@@ -401,7 +401,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             ml_hit_prob = None
             try:
                 ml_features = {
-                    "ret1_pct": None, "ret3_pct": ret3 / 100 if ret3 is not None else None,
+                    "ret1_pct": None, "ret3_pct": ret3,
                     "ret5_pct": None,
                     "atr_pct": atr_pct, "bb_width_pct": bb_width,
                     "rsi": rsi, "mfi": mfi, "linreg_slope10_pct": slope,
@@ -1373,10 +1373,16 @@ async def _open_velocity_position(candidate: dict) -> dict:
                     "reason": "m5_pattern_reddet", "m5_pattern": candidate.get("m5_pattern")}
     if symbol in analyzer.positions:
         return {"symbol": symbol, "status": "SKIPPED", "reason": "acik_pozisyon_var"}
-    chat_max = int(config.CHAT_PREDICTION_MAX_OPEN_POSITIONS)
-    if 0 < chat_max <= 9999:
-        chat_open = sum(1 for pos in analyzer.positions.values() if pos.get("strategy") == "CHAT_PREDICTION")
-        if chat_open >= chat_max:
+    # Velocity positions are stored under CHAT_PREDICTION (shared management
+    # ladder), so they are identified by their signal_context.source marker.
+    # This enforces a dedicated velocity cap instead of silently sharing the
+    # chat-prediction cap (H2).
+    vel_max = int(config.VELOCITY_AUTO_MAX_OPEN_POSITIONS)
+    if 0 < vel_max <= 9999:
+        vel_open = sum(
+            1 for pos in analyzer.positions.values()
+            if ((pos.get("entry_context") or {}).get("signal_context") or {}).get("source") == "velocity_auto")
+        if vel_open >= vel_max:
             return {"symbol": symbol, "status": "SKIPPED", "reason": "pozisyon_limiti_dolu"}
     guard = await database.get_llm_symbol_guard(symbol)
     guard_reason = _llm_guard_block_reason(guard)
@@ -1459,6 +1465,10 @@ async def _open_velocity_position(candidate: dict) -> dict:
                 "horizon_minutes": horizon_minutes,
                 "target_pct": target_pct,
                 "exit_model": "plan_tp"}
+    # Strategy stays CHAT_PREDICTION: the analyzer's position-management ladder
+    # (no-initial-stop, profit lock, emergency stop, plan TP, max hold) is keyed
+    # to it, so renaming would silently drop velocity exit handling. Velocity
+    # trades remain distinguishable via signal_context.source == "velocity_auto".
     result = await analyzer.open_position(symbol, price, "LONG", "CHAT_PREDICTION", order_value,
                                            stop_loss_pct=stop_loss_pct,
                                            take_profit_pct=target_pct / 100.0,
@@ -1504,10 +1514,10 @@ async def autonomous_velocity_loop():
                 # M5 kapanış tetiklemesi: yeni kapanmış M5 mumu gelmeden tarama
                 # yapma (replay'deki ile aynı senkron; her kapanışta 1 kez tara).
                 try:
-                    m5_tick = await _velocity_rate_acquire()
-                    await fetch_klines("BTCTRY", "5m", 2)
-                    if m5_tick:
-                        latest_close_ms = int(m5_tick[-1][0])
+                    await _velocity_rate_acquire()  # rate-limit gate (returns bool; ignored)
+                    m5_rows = await fetch_klines("BTCTRY", "5m", 2)
+                    if m5_rows:
+                        latest_close_ms = int(m5_rows[-1][0])
                     else:
                         latest_close_ms = _last_m5_close_ms
                 except Exception:

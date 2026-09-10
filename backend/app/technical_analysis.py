@@ -114,8 +114,8 @@ def _crsi(closes, rsi_period=3, streak_period=2, rank_period=100):
     recent = np.asarray(streaks[-streak_period:], dtype=float)
     up, down = float(np.sum(np.maximum(recent, 0))), float(np.sum(np.maximum(-recent, 0)))
     streak_rsi = 100.0 if down == 0 and up else 50.0 if down == 0 else 100 - 100 / (1 + up / down)
-    changes = np.diff(np.asarray(closes[-rank_period - 1:-1], dtype=float))
-    rank = 100 * float(np.sum(changes < closes[-1] - closes[-2])) / len(changes) if len(changes) else None
+    window = closes[-rank_period - 1:-1]
+    rank = 100.0 * float(sum(1 for x in window if x < closes[-1])) / len(window) if window else None
     return float((_rsi(closes, rsi_period) + streak_rsi + rank) / 3) if rank is not None else None
 
 def _obv(closes, volumes):
@@ -189,19 +189,41 @@ def _mfi(highs, lows, closes, volumes, period=14):
         elif typical[i] < typical[i-1]: neg += flow[i]
     return float(100 - (100 / (1 + pos / neg))) if neg else 100.0
 
+def _wilder_series(values, period):
+    """Wilder smoothing series: first = SMA of first `period`, then recursive."""
+    if len(values) < period:
+        return []
+    out = [sum(values[:period]) / period]
+    for v in values[period:]:
+        out.append((out[-1] * (period - 1) + v) / period)
+    return out
+
+
 def _adx(highs, lows, closes, period=14):
+    """Canonical ADX: Wilder-smoothed +DI/-DI, DX series, then Wilder-smoothed ADX.
+
+    Previously this returned the raw (unsmoothed) DX, which is much noisier and
+    caused the `>= 25 / >= 20` regime splits to trigger far too often.
+    """
     if len(closes) < period * 2 + 1: return None
     tr, plus, minus = [], [], []
     for i in range(1, len(closes)):
         tr.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
         up, down = highs[i]-highs[i-1], lows[i-1]-lows[i]
         plus.append(up if up > down and up > 0 else 0.0); minus.append(down if down > up and down > 0 else 0.0)
-    atr = np.mean(tr[-period:]); pdi = 100*np.mean(plus[-period:])/atr if atr else 0; mdi = 100*np.mean(minus[-period:])/atr if atr else 0
-    dx = 100*abs(pdi-mdi)/(pdi+mdi) if pdi+mdi else 0
-    # NOT: Kanonik ADX, DX serisine period-length SMA uygular. Burada raw DX
-    # döndürülür (daha hızlı tepki verir). Klasik ADX için çağıran _sma ile
-    # smoothing ekleyebilir: _sma(dx_series, period).
-    return {"adx": float(dx), "plus_di": float(pdi), "minus_di": float(mdi)}
+    tr_w, plus_w, minus_w = _wilder_series(tr, period), _wilder_series(plus, period), _wilder_series(minus, period)
+    if not tr_w:
+        return None
+    dx_series = []
+    for a, p, m in zip(tr_w, plus_w, minus_w):
+        pdi = 100 * p / a if a else 0.0
+        mdi = 100 * m / a if a else 0.0
+        dx_series.append(100 * abs(pdi - mdi) / (pdi + mdi) if (pdi + mdi) else 0.0)
+    adx_series = _wilder_series(dx_series, period)
+    adx_val = adx_series[-1] if adx_series else dx_series[-1]
+    pdi_last = 100 * plus_w[-1] / tr_w[-1] if tr_w[-1] else 0.0
+    mdi_last = 100 * minus_w[-1] / tr_w[-1] if tr_w[-1] else 0.0
+    return {"adx": float(adx_val), "plus_di": float(pdi_last), "minus_di": float(mdi_last)}
 
 def _sma(values, period):
     return float(np.mean(values[-period:])) if len(values) >= period else None
@@ -749,7 +771,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     moving_averages["vwma_20"] = float(np.sum(np.asarray(closes[-20:]) * np.asarray(volumes[-20:])) / np.sum(volumes[-20:])) if len(closes) >= 20 and np.sum(volumes[-20:]) else None
     moving_averages["hma_9"] = _sma(closes[-9:], 9)
     oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "stochastic_d": stochastic.get("d") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "cmo_9": cmo, "crsi": crsi, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate, "mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend}
-    oscillator_signals = {"rsi_14": _signal(oscillator_values["rsi_14"], 50, 70, 30, 20), "stochastic_k": _signal(oscillator_values["stochastic_k"], 50, 80, 20, 10), "cci_20": _signal(cci, 0, 100, -100, -200), "adx_14": "neutral" if adx is None else ("buy" if adx["plus_di"] > adx["minus_di"] else "sell"), "awesome": "buy" if (ao or 0) > 0 else "sell", "momentum_10": "buy" if (ret(10) or 0) > 0 else "sell", "macd": "buy" if macd and macd["histogram"] > 0 else "sell", "williams_r": _signal(None if williams is None else williams, -80, -20, -20, -5), "ultimate": _signal(ultimate, 50, 70, 30, 20)}
+    oscillator_signals = {"rsi_14": _signal(oscillator_values["rsi_14"], 50, 70, 30, 20), "stochastic_k": _signal(oscillator_values["stochastic_k"], 50, 80, 20, 10), "cci_20": _signal(cci, 0, 100, -100, -200), "adx_14": "neutral" if adx is None else ("buy" if adx["plus_di"] > adx["minus_di"] else "sell"), "awesome": "buy" if (ao or 0) > 0 else "sell", "momentum_10": "buy" if (ret(10) or 0) > 0 else "sell", "macd": "buy" if macd and macd["histogram"] > 0 else "sell", "williams_r": _signal(None if williams is None else williams, -50, -20, -70, -80), "ultimate": _signal(ultimate, 50, 70, 30, 20)}
     daily = klines.get("1d", {}); dclose, dhigh, dlow = daily.get("closes", []), daily.get("highs", []), daily.get("lows", [])
     adr = None
     if len(dclose) >= 15:

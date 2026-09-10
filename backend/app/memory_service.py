@@ -82,11 +82,14 @@ async def link_contradictions(conn, document_id: int, document: dict[str, Any]):
     """Link opposing outcome memories instead of silently mixing them in retrieval."""
     symbol, strategy = document.get("symbol"), document.get("strategy")
     outcome = str((document.get("metadata") or {}).get("outcome") or "").lower()
-    if not (symbol or strategy) or outcome not in {"success", "profit", "passed", "failure", "loss", "failed"}:
+    if not (symbol or strategy) or outcome not in {"success", "profit", "passed", "failure", "loss", "failed", "profitable", "losing", "flat"}:
         return
-    opposite = {"success": {"failure", "loss", "failed"}, "profit": {"failure", "loss", "failed"},
-                "passed": {"failure", "loss", "failed"}, "failure": {"success", "profit", "passed"},
-                "loss": {"success", "profit", "passed"}, "failed": {"success", "profit", "passed"}}[outcome]
+    opposite = {"success": {"failure", "loss", "failed", "losing"}, "profit": {"failure", "loss", "failed", "losing"},
+                "passed": {"failure", "loss", "failed", "losing"}, "failure": {"success", "profit", "passed", "profitable"},
+                "loss": {"success", "profit", "passed", "profitable"}, "failed": {"success", "profit", "passed", "profitable"},
+                "profitable": {"failure", "loss", "failed", "losing"},
+                "losing": {"success", "profit", "passed", "profitable"},
+                "flat": set()}[outcome]
     rows = await conn.fetch("""SELECT id, metadata->>'outcome' AS outcome FROM memory_documents
         WHERE id<>$1 AND ($2::text IS NULL OR symbol=$2) AND ($3::text IS NULL OR strategy=$3)
         AND lower(COALESCE(metadata->>'outcome','')) = ANY($4::text[])
@@ -111,7 +114,8 @@ async def retrieve(conn, query_vector: list[float], *, limit: int = 8, layer: st
       {f"ts_rank_cd(d.search_vector, plainto_tsquery('simple', ${text_param}))" if text_param else "0"} AS lexical_score,
       EXP(-GREATEST(0, EXTRACT(EPOCH FROM (now()-d.observed_at))/86400.0)/30.0) AS recency_score,
       CASE WHEN lower(COALESCE(d.metadata->>'outcome','')) IN ('passed','success','profit','profitable') THEN 1.0
-           WHEN lower(COALESCE(d.metadata->>'outcome','')) IN ('failed','failure','loss','losing') THEN -1.0 ELSE 0.0 END AS outcome_score,
+           WHEN lower(COALESCE(d.metadata->>'outcome','')) IN ('failed','failure','loss','losing') THEN -1.0
+           WHEN lower(COALESCE(d.metadata->>'outcome','')) IN ('flat') THEN 0.0 ELSE 0.0 END AS outcome_score,
       COALESCE((SELECT COUNT(*) FROM memory_relations mr WHERE mr.target_id=d.id AND mr.relation_type='contradicts'),0) AS contradiction_count
       FROM memory_documents d JOIN memory_embeddings e ON e.memory_document_id=d.id
       WHERE {' AND '.join(clauses)}

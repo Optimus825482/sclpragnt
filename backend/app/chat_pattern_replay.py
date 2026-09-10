@@ -343,8 +343,19 @@ class PatternReplayRunner:
                         else:
                             snap = None
                     # baseline: her data-ready sembol için skor eşiğiyle (eski davranış)
-                    if score >= self.score_threshold and str((snap or {}).get("summary") or "").lower() != "bearish":
+                    baseline_picked = score >= self.score_threshold and str((snap or {}).get("summary") or "").lower() != "bearish"
+                    if baseline_picked:
                         baseline[horizon]["picked"] += 1
+                    policy = _label_policy(horizon, (feat.get("atr_pct") or 0) / 100)
+                    prediction = {"entry_price": feat["price"], "direction": "up",
+                                  "confidence": max(35.0, min(85.0, 50.0 + score * 8.0)),
+                                  "min_move_pct": policy["min_move_pct"], "horizon_minutes": horizon}
+                    outcome = self._measure(prediction, data, decision_ms)
+                    if baseline_picked and outcome:
+                        baseline[horizon]["evaluated"] += 1
+                        if outcome["direction_correct"]:
+                            baseline[horizon]["correct"] += 1
+                        baseline[horizon]["sum_ret"] += float(outcome["outcome_return_pct"] or 0)
                     # pattern-filtered pick
                     if len(matches) < self.min_pattern_matches:
                         skipped_by_pattern[f"eksik_desen({len(matches)} eşleşme)"] += 1
@@ -352,12 +363,6 @@ class PatternReplayRunner:
                     if str((snap or {}).get("summary") or "").lower() == "bearish":
                         skipped_by_pattern["bearish"] += 1
                         continue
-                    from app.chat_prediction_replay import _label_policy as _lp
-                    policy = _lp(horizon, (feat.get("atr_pct") or 0) / 100)
-                    prediction = {"entry_price": feat["price"], "direction": "up",
-                                  "confidence": max(35.0, min(85.0, 50.0 + score * 8.0)),
-                                  "min_move_pct": policy["min_move_pct"], "horizon_minutes": horizon}
-                    outcome = self._measure(prediction, data, decision_ms)
                     per_horizon[horizon]["picked"] += 1
                     entry = {"decision_at": decision_ms / 1000, "symbol": symbol,
                              "horizon_minutes": horizon, "score": score,

@@ -86,7 +86,9 @@ export default function Home() {
   }, [load]));
 
   const s = summary;
-  const pnlTone = s && s.auto_paper_today.pnl >= 0 ? "text-neon-green" : "text-neon-red";
+  // Özet henüz yüklenmediyse (s == null) nötr renk: eskiden bu durum KIRMIZI
+  // gösteriyordu, yani sayfa açılırken "zarar" izlenimi oluşuyordu.
+  const pnlTone = !s ? "text-bunker-muted" : s.auto_paper_today.pnl >= 0 ? "text-neon-green" : "text-neon-red";
   const apPnl = s?.auto_paper_today.pnl ?? 0;
 
   return (

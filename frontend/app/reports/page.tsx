@@ -25,7 +25,10 @@ const STRATEGY_META: Record<string, string> = {
   GAINER_RADAR: "Gainer Radar",
 };
 const strategyLabel = (s?: string | null) => STRATEGY_META[s?.toUpperCase() || ""] || s || "Diğer";
-const pnlTone = (v: number | null | undefined) => (rl(v) >= 0 ? "text-neon-green" : "text-neon-red");
+// Kâr/zarar rengi: veri YOKSA nötr (gri) olmalı — null'u 0'a çevirip yeşil
+// boyamak "kâr var" izlenimi veriyordu (proje kuralı: YEŞİL=kâr, KIRMIZI=zarar).
+const pnlTone = (v: number | null | undefined) =>
+  v == null || !Number.isFinite(Number(v)) ? "text-bunker-muted" : Number(v) >= 0 ? "text-neon-green" : "text-neon-red";
 
 function StatCard({ label, value, tone = "", sub }: { label: string; value: React.ReactNode; tone?: string; sub?: string }) {
   return (

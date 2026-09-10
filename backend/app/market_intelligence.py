@@ -203,7 +203,7 @@ def symbol_behavior_profile(snapshot: dict, history: dict | None = None) -> dict
             buckets: dict[int, dict] = {}
             for ts, close, vol in zip(timestamps, closes, volumes):
                 try:
-                    hour = int(ts / 3_600_000) % 24
+                    hour = (int(ts / 3_600_000) + 3) % 24
                 except (TypeError, ValueError, ZeroDivisionError):
                     continue
                 bucket = buckets.setdefault(hour, {"count": 0, "range_sum": 0.0, "vol_sum": 0.0, "last_close": None})

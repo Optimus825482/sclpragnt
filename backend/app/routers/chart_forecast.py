@@ -277,8 +277,10 @@ async def chart_forecast_evaluation_loop():
                 return_pct = observed["outcome_price"] / entry - 1 if entry else 0.0
                 max_fav = observed["max_high"] / entry - 1 if entry else None
                 max_adv = observed["min_low"] / entry - 1 if entry else None
-                # Scalper yükseliş hedefi: yön her zaman up.
-                direction_correct = bool(max_fav is not None and max_fav >= 0)
+                # Scalper yükseliş hedefi: yön her zaman up. Yön isabeti, net
+                # getiriye (return_pct) göre belirlenir — yalnızca bir fitilin
+                # girişe değmesi "doğru" sayılmaz (K4: şişirilmiş isabet düzeltmesi).
+                direction_correct = bool(return_pct >= 0)
                 outcome = {
                     "evaluated_at": time.time(),
                     "outcome_price": observed["outcome_price"],
