@@ -499,3 +499,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS auto_paper_trades_one_open_per_symbol
 -- üstte yeniden koşar, ADD COLUMN burada zaten oluşturulmuş şemalar için güvence).
 ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS trailing_activated BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS trailing_stop DOUBLE PRECISION;
+
+-- MACD MONITOR alarm kayıtları (2026-09-11). Paper-only kanıt katmanı:
+-- her üretilen sinyal burada saklanır ve sonraki 5m/15m/30m getirileri
+-- periyodik olarak doldurulur. Amaç: jump_min_score ve _TF_WEIGHTS gibi
+-- sezgisel eşiklerin ampirik olarak ayarlanabilmesi. Sinyal DAVRANIŞINI
+-- değiştirmez, yalnızca ölçer.
+--   kind: 'jump' (eşik geçişi) | 'early' (YAKLAŞIYOR öncüsü)
+--   outcome_5m/15m/30m_pct: alarm anındaki fiyata göre yüzde getiri
+--   outcome_state: 'pending' | 'filled' | 'expired' (veri gelmedi)
+CREATE TABLE IF NOT EXISTS macd_monitor_alerts (
+  id BIGSERIAL PRIMARY KEY,
+  created_at DOUBLE PRECISION NOT NULL,
+  symbol TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  score INTEGER,
+  jump_min INTEGER,
+  price DOUBLE PRECISION,
+  signals JSONB,
+  outcome_5m_pct DOUBLE PRECISION,
+  outcome_15m_pct DOUBLE PRECISION,
+  outcome_30m_pct DOUBLE PRECISION,
+  outcome_state TEXT NOT NULL DEFAULT 'pending',
+  filled_at DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS macd_monitor_alerts_created_idx ON macd_monitor_alerts(created_at DESC);
+CREATE INDEX IF NOT EXISTS macd_monitor_alerts_symbol_idx ON macd_monitor_alerts(symbol, created_at DESC);
+CREATE INDEX IF NOT EXISTS macd_monitor_alerts_pending_idx ON macd_monitor_alerts(outcome_state) WHERE outcome_state = 'pending';

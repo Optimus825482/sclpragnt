@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { canViewMacdMonitor } from "../lib/macdAccess";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import { apiFetch } from "../lib/api";
+import { mergeMacdDelta } from "../lib/macdSnapshot";
 
 // ---------------------------------------------------------------------------
 // MACD MONITOR — aktif sembollerin M1/M3/M5/M15/M30/H1 MACD histogram yönü.
@@ -45,6 +46,25 @@ type Snapshot = {
   jump_min?: number;
 };
 const JUMP_MIN_FALLBACK = 60;
+const ALERT_POLL_MS = 60_000;
+
+// C3 kanıt katmanı: alarmın gerçekleşen 5m/15m/30m sonucu (paper-only).
+type MacdAlert = {
+  id: number;
+  created_at: number;
+  symbol: string;
+  kind: string;
+  score: number | null;
+  jump_min: number | null;
+  price: number | null;
+  outcome_5m_pct: number | null;
+  outcome_15m_pct: number | null;
+  outcome_30m_pct: number | null;
+  outcome_state: string;
+};
+type AlertHorizon = { n: number; avg_pct: number; hit_rate: number };
+type AlertKindStats = { n: number; avg_score?: number } & Record<string, unknown>;
+type AlertStats = { days?: number; kinds?: Record<string, AlertKindStats>; pending?: number };
 
 const fmtTime = (ts: number | null | undefined) => {
   if (!ts) return "—";
@@ -64,6 +84,22 @@ const histShort = (hist: number) => {
   if (abs >= 0.0001) return hist.toFixed(4);
   return hist.toExponential(2);
 };
+
+// Alarm sonucu: kâr yeşil, zarar kırmızı (global renk kuralı).
+const fmtPct = (value: number | null | undefined) => {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(3)}%`;
+};
+const pctClass = (value: number | null | undefined) =>
+  value == null || !Number.isFinite(value)
+    ? "text-bunker-muted/60"
+    : value > 0
+      ? "text-neon-green"
+      : value < 0
+        ? "text-neon-red"
+        : "text-bunker-muted";
+const KIND_LABEL: Record<string, string> = { jump: "SIRÇRAMA", early: "ERKEN" };
 
 const TIER_LABEL: Record<string, string> = { strong: "GÜÇLÜ", normal: "NORMAL", weak: "ZAYIF" };
 
@@ -139,6 +175,10 @@ export default function MacdMonitorPage() {
   const [sortAlpha, setSortAlpha] = useState(false);
   const [lastAlert, setLastAlert] = useState<{ symbol: string; score: number; at: number } | null>(null);
   const [lastEarly, setLastEarly] = useState<{ symbol: string; signals: string[]; at: number } | null>(null);
+  // C3 kanıt katmanı: son alarmlar + isabet özeti (panel açılınca görünür)
+  const [alerts, setAlerts] = useState<MacdAlert[]>([]);
+  const [alertStats, setAlertStats] = useState<AlertStats | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const liveStatus = useLiveStatus();
 
   const loadSnapshot = useCallback(async () => {
@@ -153,14 +193,36 @@ export default function MacdMonitorPage() {
     }
   }, []);
 
+  const loadAlerts = useCallback(async () => {
+    try {
+      const data = await apiFetch("/api/macd-monitor/alerts?limit=100");
+      setAlerts((data?.alerts as MacdAlert[]) || []);
+      setAlertStats((data?.stats as AlertStats) || null);
+    } catch {
+      // Kanıt paneli yardımcıdır; hata ana görünümü bozmasın.
+    }
+  }, []);
+
   useEffect(() => {
     loadSnapshot();
     const timer = window.setInterval(loadSnapshot, POLL_MS);
     return () => window.clearInterval(timer);
   }, [loadSnapshot]);
 
+  useEffect(() => {
+    loadAlerts();
+    const timer = window.setInterval(loadAlerts, ALERT_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [loadAlerts]);
+
   const onLiveMessage = useCallback((message: any) => {
-    if (message.type === "macd_monitor" && message.data) setSnapshot(message.data);
+    if (message.type === "macd_monitor" && message.data) setSnapshot(message.data as Snapshot);
+    // Delta yayın: yalnızca değişen sembol satırları gelir, mevcut görünüme
+    // birleştirilir (tek kaynak: mergeMacdDelta). Tam yayın (her 5 pass)
+    // kendini onarma işlevini görür.
+    if (message.type === "macd_monitor_delta" && message.data?.symbols) {
+      setSnapshot((prev) => mergeMacdDelta<Snapshot>(prev, message.data));
+    }
     if (message.type === "macd_monitor_alert" && message.data?.symbol) {
       setLastAlert({ symbol: message.data.symbol, score: Number(message.data.score) || 0, at: Date.now() / 1000 });
     }
@@ -229,8 +291,29 @@ export default function MacdMonitorPage() {
   }, [snapshot, jumpMin]);
 
   const universeCount = snapshot?.universe?.length || Object.keys(snapshot?.symbols || {}).length;
-  const stale = liveStatus === "open" && snapshot?.generated_at
-    && Date.now() / 1000 - snapshot.generated_at > 15;
+  // Veri tazeliği: WS kapalıyken de bayat veri uyarılmalı (A11). WS açıkken
+  // akış ~1 sn olduğundan 15 sn, REST yedeğinde poll 30 sn olduğundan 45 sn.
+  const dataAgeSec = snapshot?.generated_at
+    ? Math.max(0, Date.now() / 1000 - snapshot.generated_at)
+    : null;
+  const staleAfterSec = liveStatus === "open" ? 15 : 45;
+  const stale = dataAgeSec != null && dataAgeSec > staleAfterSec;
+  const staleLabel = `${Math.round(dataAgeSec ?? 0)} sn`;
+
+  // İsabet özeti: tür + ufuk satırları (yalnızca sonucu kesinleşmiş alarmlar)
+  const statRows = useMemo(() => {
+    const kinds = alertStats?.kinds || {};
+    const out: Array<{ kind: string; h: string; n: number; avg: number; hit: number }> = [];
+    Object.entries(kinds).forEach(([kind, entry]) => {
+      ["5m", "15m", "30m"].forEach((h) => {
+        const slot = entry[h] as AlertHorizon | undefined;
+        if (slot && slot.n > 0) {
+          out.push({ kind, h, n: slot.n, avg: slot.avg_pct, hit: slot.hit_rate });
+        }
+      });
+    });
+    return out;
+  }, [alertStats]);
 
   return (
     <MacdAccessGate>
@@ -319,7 +402,8 @@ export default function MacdMonitorPage() {
 
           {stale && (
             <p className="mt-3 rounded-lg border border-yellow-300/40 bg-yellow-300/5 px-3 py-2 font-mono text-xs text-yellow-300">
-              Son veri 15 sn&apos;den eski — WS mesajları gelmiyor olabilir.
+              Son veri {staleLabel} önce geldi ({staleAfterSec} sn eşiği) —{" "}
+              {liveStatus === "open" ? "WS mesajları gelmiyor olabilir." : "WS kapalı, REST yedeği gecikmiş olabilir."}
             </p>
           )}
           {error && (
@@ -443,6 +527,104 @@ export default function MacdMonitorPage() {
             <span className="text-bunker-muted/50">Ağırlıklar: M5·M15 önde, H1/M30 orta, M3/M1 düşük.</span>
             <span className="text-bunker-muted/50">SIRÇRAMA ikonları: 🚀 20-bar kırılım · ⚡ genişleme · 🧲 sıkışma · 🔥 hacim · 🐋 alıcı agresör.</span>
           </p>
+        </div>
+
+        {/* C3 KANIT PANELİ — alarm → gerçekleşen sonuç (paper-only ölçüm) */}
+        <div className="card mt-4">
+          <button
+            type="button"
+            onClick={() => setShowHistory((value) => !value)}
+            className="flex w-full items-center justify-between gap-3 text-left"
+          >
+            <div>
+              <p className="eyebrow">ALARM GEÇMİŞİ &amp; İSABET</p>
+              <p className="mt-1 font-mono text-xs text-bunker-muted">
+                Üretilen her alarm 5m/15m/30m ileri getirisiyle ölçülür — eşik/ağırlık ayarı bu kanıtla yapılır.
+                {alertStats?.pending != null ? ` Bekleyen: ${alertStats.pending}.` : ""}
+              </p>
+            </div>
+            <span className="ui-button ui-button-secondary shrink-0">{showHistory ? "GİZLE" : "GÖSTER"}</span>
+          </button>
+
+          {showHistory && (
+            <div className="mt-4 space-y-4">
+              {statRows.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse font-mono text-sm">
+                    <thead>
+                      <tr className="border-b border-bunker-800 text-left text-[11px] text-bunker-muted">
+                        <th className="px-3 py-2">TÜR</th>
+                        <th className="px-3 py-2 text-center">UFUK</th>
+                        <th className="px-3 py-2 text-right">ÖRNEK</th>
+                        <th className="px-3 py-2 text-right">ORT. GETİRİ</th>
+                        <th className="px-3 py-2 text-right">İSABET (pozitif)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {statRows.map((row) => (
+                        <tr key={`${row.kind}-${row.h}`} className="border-b border-bunker-800/60">
+                          <td className="px-3 py-2 text-white">{KIND_LABEL[row.kind] ?? row.kind}</td>
+                          <td className="px-3 py-2 text-center text-bunker-muted">{row.h}</td>
+                          <td className="px-3 py-2 text-right text-bunker-muted">{row.n}</td>
+                          <td className={`px-3 py-2 text-right font-bold ${pctClass(row.avg)}`}>{fmtPct(row.avg)}</td>
+                          <td className="px-3 py-2 text-right text-white">{(row.hit * 100).toFixed(1)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="font-mono text-xs text-bunker-muted">
+                  Henüz sonucu kesinleşmiş alarm yok (alarm oluşup 30 dk geçince satırlar dolar).
+                </p>
+              )}
+
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse font-mono text-sm">
+                  <thead>
+                    <tr className="border-b border-bunker-800 text-left text-[11px] text-bunker-muted">
+                      <th className="px-3 py-2">ZAMAN</th>
+                      <th className="px-3 py-2">SEMBOL</th>
+                      <th className="px-3 py-2">TÜR</th>
+                      <th className="px-3 py-2 text-right">SKOR</th>
+                      <th className="px-3 py-2 text-right">5m</th>
+                      <th className="px-3 py-2 text-right">15m</th>
+                      <th className="px-3 py-2 text-right">30m</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {alerts.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="px-3 py-6 text-center text-bunker-muted">
+                          Alarm kaydı yok.
+                        </td>
+                      </tr>
+                    ) : (
+                      alerts.map((alert) => (
+                        <tr key={alert.id} className="border-b border-bunker-800/60 transition-colors hover:bg-bunker-800/40">
+                          <td className="px-3 py-2 text-bunker-muted">
+                            {new Date(alert.created_at * 1000).toLocaleString("tr-TR")}
+                          </td>
+                          <td className="px-3 py-2">
+                            <SymbolLink symbol={alert.symbol} className="font-bold text-white hover:text-neon-green" />
+                          </td>
+                          <td className="px-3 py-2 text-bunker-muted">{KIND_LABEL[alert.kind] ?? alert.kind}</td>
+                          <td className="px-3 py-2 text-right text-white">{alert.score ?? "—"}</td>
+                          <td className={`px-3 py-2 text-right ${pctClass(alert.outcome_5m_pct)}`}>{fmtPct(alert.outcome_5m_pct)}</td>
+                          <td className={`px-3 py-2 text-right ${pctClass(alert.outcome_15m_pct)}`}>{fmtPct(alert.outcome_15m_pct)}</td>
+                          <td className={`px-3 py-2 text-right ${pctClass(alert.outcome_30m_pct)}`}>{fmtPct(alert.outcome_30m_pct)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="font-mono text-[10px] text-bunker-muted/70">
+                Sonuçlar <b>kapanmış 5m mumlarından</b> hesaplanır; canlı fiyat kullanılmaz. Kayıtlar yalnızca ölçüm içindir,
+                sinyal davranışını değiştirmez (paper-only).
+              </p>
+            </div>
+          )}
         </div>
       </main>
     </MacdAccessGate>
