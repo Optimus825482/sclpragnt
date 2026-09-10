@@ -793,9 +793,54 @@ class SettingsTests(_MacdTestBase):
     async def test_defaults_shape(self):
         defaults = mm._macd_settings_defaults()
         self.assertEqual(
-            {"jump_min_score", "alerts_enabled", "push_enabled", "early_alerts_enabled"},
+            {"jump_min_score", "alerts_enabled", "push_enabled", "early_alerts_enabled",
+             "early_adaptive_cooldown"},
             set(defaults),
         )
+
+
+class EarlyAdaptiveCooldownTests(_MacdTestBase):
+    """C7 — kanıt tabanlı adaptif cooldown (replay-gated, varsayılan KAPALI)."""
+
+    def setUp(self):
+        super().setUp()
+        mm._early_alerted_at.clear()
+        mm._early_last_gap.clear()
+        mm._maybe_fire_early_alert = self._orig["_maybe_fire_early_alert"]
+
+    async def _fire(self, symbol, pre, adaptive):
+        await mm._maybe_fire_early_alert(symbol, pre, {
+            "alerts_enabled": True, "early_alerts_enabled": True,
+            "push_enabled": False, "early_adaptive_cooldown": adaptive})
+
+    async def test_adaptive_disabled_defaults_to_fixed_30m(self):
+        """Adaptif kapalıyken davranış DEĞİŞMEZ: sabit 30 dk cooldown."""
+        mm._early_alerted_at[("AAA", "dip")] = time.time() - 60 * 29   # 29 dk önce
+        await self._fire("AAA", {"dip": True}, False)
+        self.assertEqual([], self.ws.messages, "29 dk < 30 dk → cooldown içinde")
+
+    async def test_adaptive_raises_cooldown_toward_cadence(self):
+        """Adaptif açık: dip yavaş tempoda yeniden-aryorsa → cooldown kanıt
+        tavanına yaklaşır; sabit 30 dk'nın aştığı noktada bile engeller."""
+        mm._early_last_gap[("AAA", "dip")] = 60 * 120          # medyana-yatkın aralık
+        mm._early_alerted_at[("AAA", "dip")] = time.time() - 60 * 45
+        await self._fire("AAA", {"dip": True}, True)
+        self.assertEqual([], self.ws.messages,
+                         "Adaptif: 45 dk < hedef(≈60 dk) → engeller; sabit 30 dk buna izin verirdi")
+
+    async def test_adaptive_respects_min_floor(self):
+        # Çok kısa aralık bile cooldown'u 30 dk altına indirmez (isabet koruması).
+        mm._early_last_gap[("AAA", "dip")] = 60 * 2
+        mm._early_alerted_at[("AAA", "dip")] = time.time() - 60 * 10
+        await self._fire("AAA", {"dip": True}, True)
+        self.assertEqual([], self.ws.messages, "10 dk < 30 dk min → hâlâ yasaklı")
+
+    async def test_adaptive_long_gap_raises_ceiling(self):
+        # Çok uzun arı (<150 dk) → cooldown 150 dk'ya şişer → 60 dk yeterli değil.
+        mm._early_last_gap[("AAA", "dip")] = 60 * 250
+        mm._early_alerted_at[("AAA", "dip")] = time.time() - 60 * 100
+        await self._fire("AAA", {"dip": True}, True)
+        self.assertEqual([], self.ws.messages, "100 dk < 150 dk → hâlâ engeller")
 
 
 if __name__ == "__main__":

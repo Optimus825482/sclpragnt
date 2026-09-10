@@ -323,6 +323,11 @@ class Config:
     # Erken sinyal alarmları (YAKLAŞIYOR → KIRILIM aşamalı öncü sistem) —
     # varsayılan AÇIK: M5 zirveye yaklaşma, M1 öncü kırılım, MACD dip dönüşü.
     MACD_EARLY_ALERTS_ENABLED = os.getenv("MACD_EARLY_ALERTS_ENABLED", "true").lower() == "true"
+    # C7 — erken cooldown'ı kanıta dayalı adapt yap (varsayılan KAPALI; davranışı
+    # değiştirmez). Replay kanıtı §4-C7: dip yeniden-arme medyanı ~150 dk, sabit
+    # 30 dk onu kesiyor. Açılınca dip için 30–150 dk aralığında ölçeklenir
+    # (kanıt → replay → paper kuralı; aktive DEĞİL, yalnız gözlem).
+    MACD_EARLY_ADAPTIVE_COOLDOWN = os.getenv("MACD_EARLY_ADAPTIVE_COOLDOWN", "false").lower() == "true"
 
     @classmethod
     def min_net_exit_pct(cls, order_value: float | None = None) -> float:

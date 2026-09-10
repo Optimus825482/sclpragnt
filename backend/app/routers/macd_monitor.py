@@ -62,8 +62,18 @@ _TF_WEIGHTS = {"1m": 0.4, "3m": 0.6, "5m": 1.5, "15m": 1.4, "30m": 1.0, "1h": 1.
 
 # SIRÇRAMA ADAYI skoru: 0-100; eşik ayarlardan (macd_monitor_settings)
 # gelir; varsayılan config.MACD_JUMP_MIN_SCORE_DEFAULT (60).
-# Aynı sembol için alarm tekrar aralığı (cooldown)
+# Aynı sembol için alarm tekrar aralığı (cooldown) — sabit varsayılan.
 _JUMP_ALERT_COOLDOWN_SEC = 30 * 60
+# C7 — ADAPTİF erken-cooldown (kanıta dayalı, replay-gated, varsayılan KAPALI).
+# `outputs/erken_oncu_replay_kanit.md` §4-C7: aynı sembolde `dip` yeniden
+# ateşleme medyanı ≈30 bar (~150 dk), p10 ≈6 bar, p90 ≈99 bar. Sabit 30-dk
+# cooldown, medyan ≈2.5 saatlik yeniden-arme ritmini kesiyordu. Adaptive mod
+# `dip` için 30–150 dk arasında ölçeklenir: az önce ateşleyen sembol daha uzun,
+# sakin sembol daha kısa bekler. Varsayılan OFF → sabit davranış korunur;
+# açılması yalnız paper-only `dip` gözlemlerini etkiler (aktive değil).
+_EARLY_COOLDOWN_MIN_SEC = 30 * 60          # alt sınır (isabet koruması)
+_EARLY_COOLDOWN_MAX_SEC = 150 * 60         # üst sınır (dip medyanı)
+_EARLY_ADAPTIVE_DEFAULT = bool(config.MACD_EARLY_ADAPTIVE_COOLDOWN)
 _SETTINGS_TTL_SEC = 5.0
 # REST snapshot'ı bu yaşın altındaysa döngünün ürettiği önbellek döndürülür
 # (her istekte tam evren hesabı yapılmasını engeller — A2).
@@ -110,6 +120,10 @@ _jump_alerted_at: dict[str, float] = {}
 # (symbol, öncü) → son ERKEN SİNYAL (yaklaşıyor) alarmı zamanı (B5: öncü bazlı
 # cooldown; eskiden `symbol` bazlıydı ve yeni bir öncüyü yutuyordu)
 _early_alerted_at: dict[tuple[str, str], float] = {}
+# C7 — adaptif cooldown durumu: kadar hızlı yeniden-armosun, son ateşleme
+# aralığı baz alınır (geçmiş aralık↑ → cooldown yukarı, ↓ → aşağı). Yalnız
+# paper-only `dip` gözlemlerini ölçekler; sabit varsayılanı DEĞİŞTİRMEZ.
+_early_last_gap: dict[tuple[str, str], float] = {}
 # Aşama 3 (kanıta dayalı) — erken alarm kapısı: hangi öncüler ALARM ATEŞLEYEBİLİR.
 # Kanıt `outputs/erken_oncu_replay_kanit.md` (§2–§3, 312 sembol replay):
 #   * `approach`   → TERS (contrarian): OOS lift −0.082, isabet 0.33 → kapıdan ÇIKARILDI.
@@ -211,6 +225,7 @@ def _macd_settings_defaults() -> dict:
         "alerts_enabled": bool(config.MACD_JUMP_ALERTS_ENABLED),
         "push_enabled": bool(config.MACD_JUMP_PUSH_ENABLED),
         "early_alerts_enabled": bool(config.MACD_EARLY_ALERTS_ENABLED),
+        "early_adaptive_cooldown": _EARLY_ADAPTIVE_DEFAULT,
     }
 
 
@@ -231,6 +246,7 @@ async def get_macd_settings(force: bool = False) -> dict:
         "alerts_enabled": _to_bool(stored.get("alerts_enabled"), defaults["alerts_enabled"]),
         "push_enabled": _to_bool(stored.get("push_enabled"), defaults["push_enabled"]),
         "early_alerts_enabled": _to_bool(stored.get("early_alerts_enabled"), defaults["early_alerts_enabled"]),
+        "early_adaptive_cooldown": _to_bool(stored.get("early_adaptive_cooldown"), defaults["early_adaptive_cooldown"]),
     }
     _settings_cache.update(value=merged, at=now)
     return dict(merged)
@@ -731,6 +747,26 @@ async def _maybe_fire_jump_alert(symbol: str, score: int, jump_min: int, setting
         logger.debug("macd_monitor push alarm: %s", exc)
 
 
+def _early_adaptive_cooldown(symbol: str, key: str, last: float, now: float) -> float:
+    """C7 — kanıt tabanlı adaptif erken-cooldown (saf fonksiyon, test edilebilir).
+
+    Sabit varsayılan 30 dk; adaptive mod `dip` için kanıta göre ölçeklenir
+    (`outputs/erken_oncu_replay_kanit.md` §4-C7: yeniden-arme medyanı ~150 dk,
+    p10 ~30 dk). Önceki ateşleme aralığı uzunsa cooldown yukarı, kısayse aşağı
+    çekilir; [30 dk, 150 dk] bandına kıstırılır. İlk ateşlemede (geçmiş yok)
+    sabit 30 dk varsayılır — davranışı değiştirmez.
+    """
+    if key != "dip":
+        # Replay'de dip dışı öncüler ya kapıdan çıktı ya da veri yok → sabitte kal.
+        return float(_JUMP_ALERT_COOLDOWN_SEC)
+    if not last or not now or now <= last:
+        return float(_JUMP_ALERT_COOLDOWN_SEC)
+    gap = _early_last_gap.get((symbol, key), 0.0)
+    # Varsayılan ölçek: önceki aralığın yarısı kadar beklet; [min,max] kıstır.
+    target = gap / 2.0 if gap > 0 else float(_JUMP_ALERT_COOLDOWN_SEC)
+    return float(max(_EARLY_COOLDOWN_MIN_SEC, min(_EARLY_COOLDOWN_MAX_SEC, target)))
+
+
 async def _maybe_fire_early_alert(symbol: str, pre: dict, settings: dict):
     """YAKLAŞIYOR aşaması: kırılımdan ÖNCE erken öncü alarm (WS + web push).
 
@@ -751,19 +787,29 @@ async def _maybe_fire_early_alert(symbol: str, pre: dict, settings: dict):
     if not bool(settings.get("alerts_enabled", True)) or not bool(settings.get("early_alerts_enabled", True)):
         return
     now = time.time()
-    cooldown = _JUMP_ALERT_COOLDOWN_SEC
+    adaptive = bool(settings.get("early_adaptive_cooldown", _EARLY_ADAPTIVE_DEFAULT))
     fired: list[str] = []
     signals = []
     for key in _EARLY_FIRE_KEYS:
         if not pre.get(key):
             continue
-        if now - _early_alerted_at.get((symbol, key), 0.0) < cooldown:
+        last = _early_alerted_at.get((symbol, key), 0.0)
+        # C7: adaptif aktifse kanıt-tabanlı per-öncü cooldown; değilse sabit 30 dk.
+        if adaptive:
+            cooldown = _early_adaptive_cooldown(symbol, key, last, now)
+        else:
+            cooldown = _JUMP_ALERT_COOLDOWN_SEC
+        if now - last < cooldown:
             continue
         signals.append(_EARLY_FIRE_LABEL.get(key, key))
         fired.append(key)
     if not signals:
         return
     for key in fired:
+        # C7: adaptif cooldown için önceki ateşleme aralığını kaydet (skalayıcı).
+        prev = _early_alerted_at.get((symbol, key), 0.0)
+        if prev:
+            _early_last_gap[(symbol, key)] = now - prev
         _early_alerted_at[(symbol, key)] = now
     # C3: erken sinyali de aynı kanıt katmanına yaz (kind="early"). Yalnız dip
     # ateşlediği için bu kayıt yalnızca paper-only `dip` gözlemlerini toplar.
@@ -1303,13 +1349,15 @@ async def update_macd_settings_endpoint(payload: dict, request: Request):
     from app.main import _require_admin
     _require_admin(request)
     existing = await get_macd_settings(force=True)
-    editable = ("jump_min_score", "alerts_enabled", "push_enabled", "early_alerts_enabled")
+    editable = ("jump_min_score", "alerts_enabled", "push_enabled", "early_alerts_enabled",
+                "early_adaptive_cooldown")
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
     settings = {
         "jump_min_score": int(max(0, min(100, int(merged.get("jump_min_score", existing["jump_min_score"]))))),
         "alerts_enabled": _to_bool(merged.get("alerts_enabled"), existing["alerts_enabled"]),
         "push_enabled": _to_bool(merged.get("push_enabled"), existing["push_enabled"]),
         "early_alerts_enabled": _to_bool(merged.get("early_alerts_enabled"), existing["early_alerts_enabled"]),
+        "early_adaptive_cooldown": _to_bool(merged.get("early_adaptive_cooldown"), existing["early_adaptive_cooldown"]),
     }
     await database.set_llm_setting("macd_monitor_settings", json.dumps(settings))
     _settings_cache.update(value=settings, at=time.time())
