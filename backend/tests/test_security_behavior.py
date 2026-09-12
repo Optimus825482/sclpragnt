@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.error import HTTPError
 
 
@@ -85,7 +85,10 @@ class ConfigApiBehavior(unittest.IsolatedAsyncioTestCase):
     async def test_config_validation_failure_is_a_json_response(self):
         from app.main import update_config
 
-        response = await update_config({"max_open_positions": 501}, request=None)
+        # G-03: endpoint artık admin kapsında. Bu test hata sözleşmesini
+        # (JSON gövde) sınar, yetkiyi değil -> kapı atlanır.
+        with patch("app.main._require_admin", new=MagicMock(return_value={"role": "admin"})):
+            response = await update_config({"max_open_positions": 501}, request=None)
 
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.media_type, "application/json")
@@ -95,13 +98,30 @@ class ConfigApiBehavior(unittest.IsolatedAsyncioTestCase):
     async def test_config_runtime_failure_is_a_safe_json_response(self):
         from app.main import update_config
 
-        with patch("app.main._apply_config_update", new=AsyncMock(side_effect=RuntimeError("exchangeInfo unavailable"))):
+        with patch("app.main._require_admin", new=MagicMock(return_value={"role": "admin"})), \
+             patch("app.main._apply_config_update", new=AsyncMock(side_effect=RuntimeError("exchangeInfo unavailable"))):
             response = await update_config({"symbols": ["BTCTRY"]}, request=None)
 
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.media_type, "application/json")
         self.assertIn(b'"code":"settings_service_unavailable"', response.body)
         self.assertNotIn(b"exchangeInfo unavailable", response.body)
+
+    async def test_config_update_requires_admin(self):
+        """G-03: admin olmayan oturum ayar yazamamalı. Kapı 403 verir ve
+        _apply_config_update HİÇ çağrılmaz (yan etki bırakmamalı)."""
+        from fastapi import HTTPException
+
+        from app.main import update_config
+
+        with patch("app.main._require_admin",
+                   new=MagicMock(side_effect=HTTPException(status_code=403, detail="admin only"))), \
+             patch("app.main._apply_config_update", new=AsyncMock(return_value={"symbols": []})) as apply_mock:
+            with self.assertRaises(HTTPException) as ctx:
+                await update_config({"max_open_positions": 5}, request=None)
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        apply_mock.assert_not_called()
 
 
 if __name__ == "__main__":

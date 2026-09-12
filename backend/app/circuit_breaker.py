@@ -46,6 +46,24 @@ class StrategyCircuitBreaker:
         await database.set_llm_setting(self._key(), json.dumps(self._paused))
 
     def is_paused(self, strategy: str) -> bool:
+        """Senkron görünüm — YALNIZCA halihazırda yüklenmiş bellek durumu.
+
+        UYARI: DB'den yükleme yapmaz. Süreç yeni başladıysa ``self._paused``
+        boştur ve duraklatılmış bir strateji için False döner (D-05 "restart
+        amnezi"). Giriş kapısı gibi doğruluk gerektiren çağrılar bunu DEĞİL
+        ``await is_paused_async(...)`` kullanmalıdır. Bu metot yalnızca test
+        ve senkron bağlamlar için tutulur.
+        """
+        return strategy in self._paused
+
+    async def is_paused_async(self, strategy: str) -> bool:
+        """Doğruluk gerektiren tek giriş: DB durumu yüklenene kadar bekler.
+
+        D-05 (2026-09-12): senkron ``is_paused`` ``_ensure_loaded()``
+        çağırmadığı için restart sonrası ilk kapanışa kadar duraklatılmış bir
+        strateji serbestçe işlem açabiliyordu.
+        """
+        await self._ensure_loaded()
         return strategy in self._paused
 
     def status(self) -> dict:
@@ -73,14 +91,20 @@ class StrategyCircuitBreaker:
         if now - self._last_eval.get(strategy, 0.0) < 5:
             return None
         self._last_eval[strategy] = now
-        try:
-            trades = await database.get_trades(limit=WINDOW_DEFAULT, strategy=strategy)
-        except Exception:
-            return None
-        pnls = [float(t.get("pnl") or 0) for t in trades]
         # Only judge when the full window has data; small samples stay allowed.
         window = max(5, min(int(getattr(config, "STRATEGY_BREAKER_WINDOW", WINDOW_DEFAULT)), 100))
         floor = float(getattr(config, "STRATEGY_BREAKER_EXPECTANCY_FLOOR", FLOOR_DEFAULT))
+        try:
+            # D-05 (2026-09-12): kayıt limiti sabit WINDOW_DEFAULT(20) idi ama
+            # pencere config'den 10..100 arası gelebiliyor. window > 20 ise
+            # `len(pnls)=20 < window` her zaman True kalıyor ve breaker ASLA
+            # duraklatmıyordu (sessiz devre dışı). Limit pencereden küçük
+            # olmamalı — bu yüzden window hesabı get_trades'ten ÖNCE yapılır.
+            trades = await database.get_trades(limit=max(WINDOW_DEFAULT, window),
+                                               strategy=strategy)
+        except Exception:
+            return None
+        pnls = [float(t.get("pnl") or 0) for t in trades]
         if len(pnls) < window:
             return None
         expectancy = sum(pnls[:window]) / window  # newest-first slice

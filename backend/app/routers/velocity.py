@@ -94,12 +94,18 @@ def _velocity_mfi(highs, lows, closes, vols, n=14):
 
 
 def _velocity_bollinger_width(closes, n=20, mult=2.0):
-    if len(closes) < n:
+    """Bollinger genişliği — kanonik ``technical_analysis._bollinger``'e devreder.
+
+    I-02 (2026-09-12): eski kopya `ddof=1` (n-1) kullanıyordu; kanonik `_bollinger`
+    ddof=0 (n) kullanır ve ML eğitim tarafı (`ml_forecast`) da ddof=0 kullanıyor.
+    Kesir→yüzde dönüşümü `_bollinger` genişliğinin ekran/panel beklediği ölçeğe
+    uyar (x100). Eşikler (VELOCITY_MIN_BB_WIDTH_PCT=2.5) yeni ölçekle kalibre
+    edilir; tek tüketici bu kopya olduğundan davranış tek kaynaktan gelir.
+    """
+    b = _bollinger(closes, n, mult)
+    if b is None:
         return None
-    m = sum(closes[-n:]) / n
-    # Örneklem standart sapması (n-1) — finansal göstergelerde yaygın kullanım
-    sd = (sum((c - m) ** 2 for c in closes[-n:]) / (n - 1)) ** 0.5 if n > 1 else 0.0
-    return (4 * sd) / m * 100 if m else None
+    return b.get("width_pct") * 100 if b.get("width_pct") is not None else None
 
 
 def _velocity_struct_slope(closes, n=20):
@@ -216,6 +222,13 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 rows = await fetch_klines(symbol, "1m", 60)
             except Exception:
                 return None
+            # D-04 (2026-09-12): oluşmakta olan (forming) mumu düşür. Binance
+            # /api/v3/klines son satırı içinde bulunulan mumu döndürür; eşikler
+            # (VELOCITY_MIN_ATR_PCT, VELOCITY_PATTERN_*) kapanmış mum varsayımıyla
+            # kalibre edildi. Yarım mumla ölçüm ATR/chg/roc'u sistematik eksik
+            # gösterir ve kapıyı bar içinde kararsızlaştırır.
+            if int(rows[-1][0]) + 60_000 > now_ms:
+                rows = rows[:-1]
             if len(rows) < 30:
                 return None
             # Ölü/borsa dışı semboller 24h ticker'da eski kapanış verisiyle
@@ -324,14 +337,24 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # Eşikler config.VELOCITY_PATTERN_* (24s/72s/7g doğrulandı).
             m5_pattern = None
             m5_pattern_ok = None
+            # ML-01 (2026-09-12): eğitime özelliklerin üretildiği bar dayanağı
+            # (5m kapanış) ile çıkarım AYNI olmalıdır. Model 5m kapanış barlarla
+            # eğitildiği için ML özellikleri de kapanmış 5m serisinden üretilir;
+            # 1m serisi yalnız tarama/desen eşikleri için kalır.
+            m5_ml_features = None
             try:
                 await _velocity_rate_acquire()
                 m5_rows = await fetch_klines(symbol, "5m", 40)  # ~3.3 saat warmup
+                # D-04: oluşmakta olan 5m mumunu düşür (kalibrasyon kapanmış mum).
+                if int(m5_rows[-1][0]) + 300_000 > now_ms:
+                    m5_rows = m5_rows[:-1]
                 if len(m5_rows) >= 35:
                     m5_closes = [float(r[4]) for r in m5_rows]
                     m5_highs = [float(r[2]) for r in m5_rows]
                     m5_lows = [float(r[3]) for r in m5_rows]
                     m5_vols = [float(r[5]) for r in m5_rows]
+                    m5_ml_features = _velocity_ml_feature_dict(
+                        m5_closes, m5_highs, m5_lows, m5_vols)
                     k = len(m5_rows) - 1  # son kapanmiş M5
                     def _m5_groups():
                         # g1: k-1'e kadar tam seri; g2: son 2 çıkar; g0: k dahil tam seri
@@ -396,15 +419,17 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # --- ML tahmin: sembol bazlı adaptif hedef/süre ---
             ml_target = None
             ml_hit_prob = None
+            ml_pred = None
             try:
-                ml_features = {
-                    "ret1_pct": None, "ret3_pct": ret3,
-                    "ret5_pct": None,
-                    "atr_pct": atr_pct, "bb_width_pct": bb_width,
-                    "rsi": rsi, "mfi": mfi, "linreg_slope10_pct": ml_slope,
-                    "aroon_up": aroon_up, "aroon_down": aroon_down,
-                }
-                ml_pred = ml_forecast.predict_target(symbol, ml_features, horizon=horizon_minutes)
+                # ML-01 (2026-09-12): çıkarım eğitimle aynı dayanağı (5m kapanış)
+                # kullanır. 5m warmup yeterli değilse ML tahmini TAMAMEN atlanır
+                # (ml_target/ml_hit_prob None kalır → dynamic_target_pct ml_pct
+                # almaz, baz hedef kullanılır). 1m serisiyle tahmin etmek — eski
+                # davranış — modelin eğitildiği dağılımın dışında bir noktaydı
+                # (ML-01 kökü) ve bundan kaçınırız.
+                if m5_ml_features is not None:
+                    ml_pred = ml_forecast.predict_target(symbol, m5_ml_features,
+                                                         horizon=horizon_minutes)
                 if ml_pred:
                     ml_target = float(ml_pred.get("target_pct") or 0)
                     ml_hit_prob = float(ml_pred.get("hit_probability") or 0)

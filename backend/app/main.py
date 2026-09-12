@@ -460,7 +460,11 @@ async def admin_db_table_export(request: Request, table: str = "", format: str =
         raise HTTPException(status_code=422, detail="format csv veya sql olmalı")
 
     def op(conn):
-        rows = conn.execute(f'SELECT * FROM "{name}"').fetchall()
+        # Sınırsız SELECT * büyük tablolarda (signals, decision_logs,
+        # agent_trace_events) tüm veriyi belleğe çekip sunucuyu kilitliyordu.
+        # LIMIT+1 çekip fazlalığı atıyoruz -> hem bellek sınırlı hem de
+        # "kesildi mi?" bilgisi gerçekten doğru oluyor.
+        rows = conn.execute(f'SELECT * FROM "{name}" LIMIT {_ADMIN_EXPORT_MAX_ROWS + 1}').fetchall()
         cols = [d[0] for d in (conn.execute(f'SELECT * FROM "{name}" LIMIT 0')).description]
         return {"columns": cols,
                 "rows": [dict(r) if isinstance(r, dict) else dict(zip(cols, r)) for r in rows]}
@@ -470,6 +474,10 @@ async def admin_db_table_export(request: Request, table: str = "", format: str =
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Tablo okunamadı: {exc}")
     cols, rows = data["columns"], data["rows"]
+    # G-01: `truncated` hiç tanımlanmıyordu -> endpoint her çağrıda NameError.
+    truncated = len(rows) > _ADMIN_EXPORT_MAX_ROWS
+    if truncated:
+        rows = rows[:_ADMIN_EXPORT_MAX_ROWS]
 
     if fmt == "csv":
         buf = io.StringIO()
@@ -795,7 +803,15 @@ async def startup_services():
         except Exception as exc:
             print(f"[Config] Kalıcı ayarlar yüklenemedi: {exc}")
     await analyzer.load_state()
-    await bootstrap_symbol_activity()
+    # G-06: bootstrap_symbol_activity ağ I/O yapar ve evren boş dönerse
+    # RuntimeError fırlatır (runtime.py:899). Korumasız olduğu için tek bir
+    # Binance TR kesintisi startup'ı tamamen öldürüyordu. Isınma best-effort:
+    # aşağıdaki startup_market_warmup / market.connect döngüleri veriyi
+    # arka planda tamamlar, bu yüzden hata yutulur ve loglanır.
+    try:
+        await bootstrap_symbol_activity()
+    except Exception as exc:
+        print(f"[Startup] Sembol aktivite isinmasi atlandi: {exc}")
     if os.getenv("DB_BACKEND", "postgres").lower() == "postgres" and asyncpg and os.getenv("DATABASE_URL"):
         try:
             _pg_pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=4)
@@ -1350,6 +1366,7 @@ def _session_username(request) -> str | None:
 @app.put("/api/config")
 async def update_config(payload: dict, request: Request):
     """Persist runtime settings while always preserving the JSON API contract."""
+    _require_admin(request)
     try:
         return await _apply_config_update(payload, request)
     except (TypeError, ValueError) as exc:
@@ -1476,6 +1493,19 @@ async def _apply_config_update(payload: dict, request: Request = None):
     existing = await database.get_llm_setting("runtime_config", "{}")
     try: persisted = json.loads(existing or "{}")
     except json.JSONDecodeError: persisted = {}
+    # G-07: `payload` hiç birleştirilmiyordu; kayıt okunup değiştirilmeden geri
+    # yazıldığı için kullanıcı ayarları restart'ta sessizce kayboluyordu
+    # (startup DB'den geri yüklüyor -> satır 795). Kalıcılığa alma, uygulanmış
+    # canlı `config` değerlerinden okunur: anahtarlar CONFIG_FIELDS anahtarlarıyla
+    # aynı olmalıdır, çünkü geri yükleme bu anahtarlarla okuyor.
+    # Kasten yalnızca payload'da gelen anahtarlar yazılır: tüm config'i yazmak,
+    # G-09'da GET isteğinin 60 sn'de bir mutasyona uğrattığı SYMBOLS'u da
+    # kalıcı hale getirirdi.
+    for key, attr in CONFIG_FIELDS.items():
+        if key in payload:
+            persisted[key] = getattr(config, attr, None)
+    if "symbols" in payload:
+        persisted["symbols"] = list(config.SYMBOLS)
     await database.set_llm_setting("runtime_config", json.dumps(persisted, ensure_ascii=False))
     if config.TOP_GAINERS_AUTO_ACTIVATE and any(
         key in payload for key in ("top_gainers_auto_activate", "top_gainers_limit", "top_gainers_refresh_sec")
@@ -1684,6 +1714,7 @@ async def get_positions():
             })
     positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
     # Otonom paper pozisyonlarını da ekle
+    auto_paper_error = None
     try:
         auto_trades = await database.list_auto_paper_trades(status="open")
         for t in auto_trades:
@@ -1693,6 +1724,10 @@ async def get_positions():
             ticker = market.get_ticker(sym)
             current = float(ticker.get("last_price") or entry) if ticker else entry
             gross = (current - entry) * qty
+            # BİLİNEN SORUN (Parti 3, replay gerektirir): yalnızca GİRİŞ komisyonu
+            # düşülüyor, çıkış bacağı yok. Aynı kök hata analyzer.py:412-421'de de var.
+            # Burası paylaşılan para matematiği -> "hata düzeltmesi" diye sessizce
+            # değiştirilmemeli, ayrı replay-validated değişiklik olarak ele alınacak.
             entry_c = entry * qty * config.COMMISSION_PCT
             pnl_try = gross - entry_c
             pnl_pct = (pnl_try / (entry * qty) * 100) if (entry and qty) else 0.0
@@ -1707,15 +1742,18 @@ async def get_positions():
                 "notification_score": t.get("notification_score"),
                 "notification_target_pct": t.get("notification_target_pct"),
             })
-    except Exception:
-        pass
+    except Exception as exc:
+        # G-08: hata yutulup HTTP 200 dönüyordu; UI "hiç pozisyon yok" ile
+        # "pozisyonlar okunamadı"yı ayırt edemiyordu. Hatayı logla ve alanda döndür.
+        logger.warning("/api/positions: AUTO_PAPER pozisyonları okunamadı: %s", exc)
+        auto_paper_error = str(exc)
     positions.sort(key=lambda item: float(item.get("entry_time") or 0), reverse=True)
     # Canlı sunucuda pozisyon alanlarından biri NaN/±Infinity olduğunda
     # json.dumps "Out of range float values are not JSON compliant" ile TÜM
     # yanıtı 500'e düşürüyordu ve açık pozisyon paneli boşalıyordu. NaN/Inf
     # değerler None'a çevrilir; tek pozisyon listeyi bloklamamalı.
     positions = _json_safe_positions(positions)
-    return {"positions": positions}
+    return {"positions": positions, "auto_paper_error": auto_paper_error}
 
 @app.get("/api/symbol-analysis/{symbol}")
 async def symbol_analysis(symbol: str, timeframe: str = ""):
@@ -2370,7 +2408,8 @@ async def llm_open_paper_trade(payload: dict, request: Request = None):
     raise HTTPException(status_code=409, detail={"message": "Hiçbir aday paper işlem kurallarını geçemedi; işlem açılmadı", "blocked_candidates": blocked[:10], "retry_research": True})
 
 @app.post("/api/llm/providers")
-async def add_llm_provider(payload: dict):
+async def add_llm_provider(request: Request, payload: dict):
+    _require_admin(request)
     name = str(payload.get("name", "")).strip()
     base_url = str(payload.get("base_url", "")).strip()
     key = str(payload.get("api_key", "")).strip()
@@ -2421,7 +2460,8 @@ async def ml_predict(symbol: str, horizon: int = 5):
 
 
 @app.post("/api/llm/models")
-async def add_llm_model(payload: dict):
+async def add_llm_model(request: Request, payload: dict):
+    _require_admin(request)
     try:
         provider_id = int(payload["provider_id"])
         name = str(payload["name"]).strip()
@@ -2437,7 +2477,8 @@ async def add_llm_model(payload: dict):
     except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
 
 @app.post("/api/llm/skills")
-async def add_llm_skill(payload: dict):
+async def add_llm_skill(request: Request, payload: dict):
+    _require_admin(request)
     name = str(payload.get("name", "")).strip()
     instructions = str(payload.get("instructions", "")).strip()
     if not name or not instructions: raise HTTPException(status_code=400, detail="Uzmanlık adı ve talimatları gerekli")
@@ -2445,7 +2486,8 @@ async def add_llm_skill(payload: dict):
     except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
 
 @app.put("/api/llm/providers/{provider_id}")
-async def update_llm_provider(provider_id: int, payload: dict):
+async def update_llm_provider(request: Request, provider_id: int, payload: dict):
+    _require_admin(request)
     name, base_url, key = str(payload.get("name", "")).strip(), str(payload.get("base_url", "")).strip(), str(payload.get("api_key", "")).strip()
     if not name: raise HTTPException(status_code=400, detail="Provider adı gerekli")
     try: base_url = security._validate_provider_url_sync(base_url)
@@ -2454,11 +2496,13 @@ async def update_llm_provider(provider_id: int, payload: dict):
     except Exception as exc: raise HTTPException(status_code=500, detail=str(exc))
 
 @app.delete("/api/llm/providers/{provider_id}")
-async def delete_llm_provider(provider_id: int):
+async def delete_llm_provider(request: Request, provider_id: int):
+    _require_admin(request)
     await database.delete_llm_provider(provider_id); return {"ok": True}
 
 @app.put("/api/llm/models/{model_id}")
-async def update_llm_model(model_id: int, payload: dict):
+async def update_llm_model(request: Request, model_id: int, payload: dict):
+    _require_admin(request)
     name = str(payload.get("name", "")).strip()
     if not name: raise HTTPException(status_code=400, detail="Model adı gerekli")
     model_type = payload.get("model_type")
@@ -2466,21 +2510,25 @@ async def update_llm_model(model_id: int, payload: dict):
     await database.update_llm_model(model_id, name, float(payload.get("temperature", 0.2)), model_type, int(dimensions) if dimensions not in (None, "") else None, payload.get("embedding_metric")); return {"ok": True}
 
 @app.delete("/api/llm/models/{model_id}")
-async def delete_llm_model(model_id: int):
+async def delete_llm_model(request: Request, model_id: int):
+    _require_admin(request)
     await database.delete_llm_model(model_id); return {"ok": True}
 
 @app.put("/api/llm/skills/{skill_id}")
-async def update_llm_skill(skill_id: int, payload: dict):
+async def update_llm_skill(request: Request, skill_id: int, payload: dict):
+    _require_admin(request)
     name, instructions = str(payload.get("name", "")).strip(), str(payload.get("instructions", "")).strip()
     if not name or not instructions: raise HTTPException(status_code=400, detail="Uzmanlık adı ve talimatları gerekli")
     await database.update_llm_skill(skill_id, name, instructions); return {"ok": True}
 
 @app.delete("/api/llm/skills/{skill_id}")
-async def delete_llm_skill(skill_id: int):
+async def delete_llm_skill(request: Request, skill_id: int):
+    _require_admin(request)
     await database.delete_llm_skill(skill_id); return {"ok": True}
 
 @app.put("/api/llm/active")
-async def activate_llm(payload: dict):
+async def activate_llm(request: Request, payload: dict):
+    _require_admin(request)
     await database.set_llm_setting("llm_enabled", "1" if payload.get("enabled") else "0")
     if payload.get("model_id") is not None: await database.set_llm_setting("active_model_id", payload["model_id"])
     return {"ok": True}

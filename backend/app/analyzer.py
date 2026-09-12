@@ -4,7 +4,7 @@ import json
 import numpy as np
 import uuid
 from app.config import config
-from app.technical_analysis import calculate_snapshot, _adx, _stochastic, _macd, _mfi, _ema, _rsi, _crsi, _cmo
+from app.technical_analysis import calculate_snapshot, _adx, _stochastic, _macd, _mfi, _ema, _rsi, _crsi, _cmo, _atr
 from app.binance_tr_public import orderbook
 from app import database
 from app import agent_learning
@@ -279,23 +279,31 @@ class ScalpAnalyzer:
         return None
 
     def calculate_atr(self, kline, period=14):
-        """ATR hesapla.
+        """ATR hesapla — TEK doğruluk kaynağı ``technical_analysis._atr``.
 
-        Not: tarihsel olarak varsayılan ``period=11`` idi ("velocity için daha
-        hızlı tepki" gerekçesiyle) ama hiçbir çağıran onu kullanmıyordu — hepsi
-        açıkça 14 veya ``config.SYSTEM_ATR_PERIOD`` geçiriyor. Yanıltıcı ölü
-        varsayılan 14'e çekildi (Madde 21). ``technical_analysis._atr``'den
-        farkı: burada basit ortalama (Wilder yumuşatması yok).
+        Birim: FİYAT (TRY/USD gibi kote birim), yüzde DEĞİL. Yüzdeye çevirmek
+        isteyen çağıran ``atr / price`` yapar (bkz. technical_analysis
+        ``volatility.atr_pct`` yorum sözleşmesi).
+
+        I-03 (2026-09-12): bu metodun gövdesi ``_atr``'ın kopyasıydı. İkisi de
+        son ``period`` barın true-range'ının BASİT ortalamasını alır (Wilder
+        yumuşatması yok) ve ikisi de aynı barları, aynı ``closes[i-1``]
+        referansıyla kullanır. 20 farklı (bar sayısı × period) kombinasyonunda
+        birebir (bit-bit) aynı sonucu verdiği doğrulandı; bu yüzden gövde
+        silinip kanonik kaynağa devredildi — davranış değişikliği yoktur.
+        Varsayılan ``period=14``: tarihsel olarak 11 idi ama hiçbir çağıran
+        onu kullanmıyordu; ölü varsayılan 14'e çekilmişti (Madde 21).
         """
         highs = kline.get("highs", [])
         lows = kline.get("lows", [])
         closes = kline.get("closes", [])
-        if len(closes) < period + 1: return None
-        trs = []
-        for i in range(len(closes) - period, len(closes)):
-            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-            trs.append(tr)
-        return float(np.mean(trs))
+        try:
+            return _atr(highs, lows, closes, period)
+        except (ValueError, TypeError, IndexError):
+            # Eksik/uyumsuz serilerde (ör. highs boş) kanonik yardımcı numpy
+            # broadcast hatası verir; eski gövde IndexError verirdi. Çağıranlar
+            # bu değeri opsiyonel sayar, bu yüzden None'a çevirip susturuyoruz.
+            return None
 
 
     def calculate_ema(self, prices, period):
@@ -317,6 +325,31 @@ class ScalpAnalyzer:
     # --- YARDIMCI: Chande Momentum (CMO) Hesaplama ---
     def calculate_cmo(self, prices, period=9):
         return _cmo(prices, period)
+
+    @staticmethod
+    def _planned_max_hold_sec(requested_hold_sec=None):
+        """CHAT_PREDICTION için planlanan max-hold süresi (SANİYE).
+
+        D-02 (2026-09-12): belgelenen 30dk max-hold hiç uygulanmıyordu çünkü
+        çağıran `max_hold_sec` göndermediğinde plan None kalıyor, yönetim
+        merdivenindeki `plan_hold > 0` bloğu hiç çalışmıyor ve pozisyon 90dk'lık
+        genel `stale_position` yoluna kadar açık kalıyordu.
+
+        Birim sözleşmesi: GİRİŞ/ÇIKIŞ saniyedir; `config.VELOCITY_MAX_HOLD_MIN`
+        DAKİKA birimindedir, bu yüzden ×60 yapılır. Çağıran açıkça bir süre
+        gönderirse (chat tahmin otomatının 900 sn replay planı gibi) O değer
+        birebir korunur; yalnızca çağıran sustuğunda config varsayılanı devreye
+        girer. Geçersiz/negatif/sıfır değer de varsayılana düşer.
+        """
+        try:
+            requested = float(requested_hold_sec)
+        except (TypeError, ValueError):
+            requested = 0.0
+        if requested > 0:
+            return int(requested)
+        fallback_min = float(getattr(config, "VELOCITY_MAX_HOLD_MIN", 30) or 0)
+        fallback_sec = int(fallback_min * 60)
+        return fallback_sec if fallback_sec > 0 else None
 
     # --- EK STRATEJİLER ---
     # --- POZİSYON TAKİBİ (açık pozisyon varsa stratejiye göre) ---
@@ -388,7 +421,16 @@ class ScalpAnalyzer:
             # etkisiz kılınır (system_stop_price=None + burada -inf); +%0.5
             # kâr kilidi (velocity_protection_armed) aşağıdaki merdivende stop'u
             # maliyet üstüne çeker, hedef TP çıkışı ayrıca işler.
-            if pos.get("strategy") == "CHAT_PREDICTION" and \
+            # D-01 (devam, 2026-09-12): bu -inf geçersiz kılma HER tick'te
+            # yeniden uygulanıyordu. Kilit devreye girdikten sonraki ilk
+            # turda `velocity_protection_armed=True` olduğu için kilit bloğu
+            # atlanıyor, ama -inf hâlâ yazılıyordu → kilit stop'u bir kez
+            # kurulup hemen sonra SIFIRLANIYOR ve asla tetiklenmiyordu
+            # (kâr kilidi yalnızca kurulduğu tick'te çalışıyordu). Artık
+            # geçersiz kılma yalnızca kilitten ÖNCE uygulanır: "açılışta sert
+            # stop yok" sözleşmesi korunur, kilitlendikten sonra zemin kalıcı
+            # olur.
+            if pos.get("strategy") == "CHAT_PREDICTION" and not pos.get("velocity_protection_armed") and \
                     bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
                 system_stop = float("-inf")
             # Otonom hız avcısı güvenlik stopu (kâr kilidi tetiklenmeden ÖNCE):
@@ -403,8 +445,8 @@ class ScalpAnalyzer:
                 if price <= emg_stop:
                     return await self.close_position(symbol, price, "velocity_emergency_stop")
             # Chat Prediction (velocity auto-trade) kâr koruma merdiveni:
-            # 1) +%0.5 kâr görülünce stop, maliyet + %0,01 sabit kâr + çift
-            #    komisyon payına çekilir → pozisyon artık zarara dönemez.
+            # 1) +%0.5 kâr görülünce stop, round-trip maliyetin üstüne çekilir
+            #    → pozisyon artık zarara dönemez (D-01: eskiden dönüyordu).
             # 2) Dinamik trailing YOK: çıkış, açılışta tahmin edilen hedefe
             #    (target_pct → system_take_profit_price) göre TP'de yapılır;
             #    kâr kilidi stop'u sabit tutar (tepeyi takip etmez).
@@ -414,10 +456,24 @@ class ScalpAnalyzer:
                 if float(pos.get("max_price") or entry) >= lock_trigger:
                     pos["velocity_protection_armed"] = True
                     qty_value = float(pos.get("quantity", 0) or 0) * entry
-                    # Kâr kilidi: giriş + %0,01 sabit kâr + geri alınmamış
-                    # giriş komisyonu payı → kapanışta kesin pozitif net.
-                    lock_stop = entry * (1 + config.VELOCITY_PROFIT_LOCK_PCT / 100.0) \
-                        + qty_value * config.COMMISSION_PCT / max(float(pos.get("quantity") or 1), 1e-9)
+                    # D-01 (2026-09-12) — KRİTİK PARA MATEMATİĞİ.
+                    # BİRİM SÖZLEŞMESİ: config.min_net_exit_pct(...) bir
+                    # FRAKSİYON döndürür (0.004 == %0.40), yüzde DEĞİL.
+                    # VELOCITY_PROFIT_LOCK_PCT ise yüzde birimindedir (/100).
+                    # TEK DOĞRULUK KAYNAĞI: round-trip maliyet formülü
+                    # config.min_net_exit_pct — burada yeni formül uydurulmaz.
+                    # İçerdiği bileşenler: 2 × COMMISSION_PCT (GİRİŞ + ÇIKIŞ
+                    # bacağı) + 2 × ESTIMATED_SLIPPAGE_PCT + asgari net kâr
+                    # payı (MIN_EXPECTED_NET_PNL_TRY / order_value).
+                    # ESKİ HATA: önceki kod yalnızca GİRİŞ komisyonunu
+                    # ekliyordu → üretilen gross %0.160, gereken round-trip
+                    # maliyet %0.300 → "kilitli kâr" çıkışlarının HEPSİ zarar
+                    # yazıyordu (10.000 TRY notionalda −14.02 TRY net).
+                    # Kilit zemini: konfigüre edilmiş sabit kâr tamponu ile
+                    # round-trip maliyetin BÜYÜĞÜ (ikisini de karşılar).
+                    lock_fraction = max(config.VELOCITY_PROFIT_LOCK_PCT / 100.0,
+                                        config.min_net_exit_pct(qty_value))
+                    lock_stop = entry * (1 + lock_fraction)
                     pos["system_stop_price"] = max(system_stop, lock_stop)
                     system_stop = pos["system_stop_price"]
             if price <= system_stop:
@@ -667,8 +723,11 @@ class ScalpAnalyzer:
 
     async def open_position(self, symbol, entry_price, side="LONG", strat_name="CHAT_PREDICTION", order_value=None, stop_loss_pct=None, take_profit_pct=None, max_hold_sec=None, entry_context_extra=None):
         # Circuit breaker: a paused strategy must not receive new entries
-        # (C3 — is_paused was defined but never consulted by the entry gate).
-        if strategy_breaker.is_paused(strat_name):
+        # (C3 — is_paused was defined but never consulted by the entry gate;
+        # D-05 — senkron is_paused DB'yi yüklemediği için restart sonrası
+        # duraklatılmış strateji serbestçe işlem açıyordu; artık async varyant
+        # kullanılır, _ensure_loaded() tamamlanana kadar bekler).
+        if await strategy_breaker.is_paused_async(strat_name):
             return {"action": "BUY_BLOCKED", "reason": f"strategy_paused:{strat_name}",
                     "symbol": symbol, "strategy": strat_name}
         # Strategy loop ve Gainer Radar aynı anda aynı sembolü tetikleyebilir.
@@ -722,10 +781,18 @@ class ScalpAnalyzer:
         return flow
 
     async def _entry_order_value(self, symbol, strat_name, requested_order_value=None):
-        """Mirror the paper order-size calculation without opening or recording a signal."""
+        """Mirror the paper order-size calculation without opening or recording a signal.
+
+        BİRİM: TRY notional. Yazıcı (`_open_position_unlocked`) ile aynı kuralı
+        uygular; aksi halde ön kontrol (likidite kapısı) gerçekleşecek
+        büyüklükten FARKLI bir büyüklüğe göre karar verir.
+        """
         try_balance = await database.get_wallet_balance("TRY")
         requested = float(requested_order_value or 0)
-        if strat_name == "LLM_PAPER" and requested > 0:
+        # D-03: talep stratejiden bağımsız onurlandırılır (eskiden yalnızca
+        # LLM_PAPER'daydı; CHAT_PREDICTION isteği yok sayılıyordu —
+        # llm_chat.py:1365 bu yolu requested değerle çağırıyor).
+        if requested > 0:
             return min(requested, try_balance / (1 + config.COMMISSION_PCT))
         available_value = try_balance / (1 + config.COMMISSION_PCT)
         order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
@@ -778,9 +845,12 @@ class ScalpAnalyzer:
 
     async def _open_position_unlocked(self, symbol, entry_price, side="LONG", strat_name="CHAT_PREDICTION", requested_order_value=None, requested_stop_pct=None, requested_tp_pct=None, requested_hold_sec=None, entry_context_extra=None):
         symbol = str(symbol).replace("_", "").upper()
-        # Kullanıcı kararı (2026-09-03): strategy-level circuit breaker pause
-        # kaldırıldı. Pause'lu strateji artık yeni pozisyon açabilir; risk
-        # yönetimi sembol bazlı guard/kalite filtreleriyle sürer.
+        # DÜZELTME (D-05, 2026-09-12): buradaki yorum "circuit breaker pause
+        # kaldırıldı, pause'lu strateji işlem açabilir" diyordu — kodun tersi.
+        # Duraklatma kapısı YUKARIDA, `open_position` içinde
+        # (`await strategy_breaker.is_paused_async(...)`) gerçekten var ve tüm
+        # giriş yolları oradan geçer. Bu yanlış yorum yüzünden kapının bir
+        # bakımda silinme riski vardı; doğrusuyla değiştirildi.
         # Every entry path (strategy, LLM, alert, radar and pending orders)
         # converges here. A passive symbol must therefore be rejected at this
         # final writer boundary, not only skipped by the strategy scan loop.
@@ -850,15 +920,28 @@ class ScalpAnalyzer:
                     await database.save_signal(blocked)
                     return blocked
         try_balance = await database.get_wallet_balance("TRY")
+        # BİRİM: TRY notional (adet/lot DEĞİL). Komisyon iki bacakta da
+        # notional üzerinden kesilir; available_value giriş komisyonunu da
+        # içerebilsin diye bakiye (1 + COMMISSION_PCT)'e bölünür.
+        available_value = try_balance / (1 + config.COMMISSION_PCT)
         requested_order_value = float(requested_order_value or 0)
-        if strat_name == "LLM_PAPER" and requested_order_value > 0:
-            order_value = min(requested_order_value, try_balance / (1 + config.COMMISSION_PCT))
+        # D-03 (2026-09-12): talep edilen işlem büyüklüğü eskiden YALNIZCA
+        # LLM_PAPER dalında okunuyordu. CHAT_PREDICTION (otonom hız avcısı /
+        # velocity) %50 (VELOCITY_AUTO_BALANCE_PCT) isteyip %10 (ORDER_PCT)
+        # alıyordu — 5000 TRY talebe karşı 998 TRY gerçekleşen. Artık talep
+        # stratejiden bağımsız onurlandırılır; tek sınır nakit + giriş
+        # komisyonudur. (Böylece VELOCITY_AUTO_BALANCE_PCT ölü ayar olmaktan
+        # çıkar; çağıran talep ettiği sürece gerçekten uygulanır.)
+        if requested_order_value > 0:
+            order_value = min(requested_order_value, available_value)
             if order_value < config.MIN_PARTIAL_ORDER_TRY:
-                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price, "reason": "llm_order_below_minimum_or_balance", "strategy": strat_name, "timestamp": time.time()})
+                await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                                            "reason": ("llm_order_below_minimum_or_balance" if strat_name == "LLM_PAPER"
+                                                       else "requested_order_below_minimum_or_balance"),
+                                            "strategy": strat_name, "timestamp": time.time()})
                 return None
         else:
             order_pct = float(config.SYMBOL_ORDER_PCT.get(symbol, config.ORDER_PCT))
-            available_value = try_balance / (1 + config.COMMISSION_PCT)
             order_value = available_value * max(0.001, min(order_pct, 1.0))
             if order_value < config.MIN_PARTIAL_ORDER_TRY:
                 # Küçük yüzde tutarı yüzünden kullanılabilir bakiye boşta
@@ -901,18 +984,36 @@ class ScalpAnalyzer:
             # regimes; continuation shrinks in confirmed dead ranges.
             regime_info = {}
             try:
-                from app.technical_analysis import calculate_snapshot as _cs
+                # C-06 (2026-09-12): iki hata vardı ve ikisi de `except
+                # Exception` içinde yutuluyordu → S4 regime sizing hiç
+                # çalışmıyordu (ölü kod).
+                #   1) `calculate_snapshot(symbol, price, klines, ...)` imzası
+                #      3 zorunlu argüman ister; `_cs(k)` tek argümanla
+                #      çağrılıyordu → TypeError. Ayrıca 3. argüman TEK kline
+                #      değil,
+                #      {timeframe: kline} sözlüğüdür (primary_timeframe ile
+                #      eşleşmeli).
+                #   2) Rejim `snapshot["regime"]` ALTINDA DEĞİL — kanonik yol
+                #      `snapshot["methodologies"]["regime"]` (bkz.
+                #      _methodology_analysis; routers/llm_chat.py:1831 ile aynı
+                #      yol). Eski kod `{}` okuyordu → regime=None → multiplier
+                #      her zaman 1.0.
+                # Anahtar sözleşmesi: regime = {"name": ..., "confidence": ...}
                 tf_probe = self._strategy_tf(strat_name)
                 k = self.market.get_ut_kline(symbol, tf_probe) if self.market else None
                 if k and len(k.get("closes") or []) >= 55:
-                    snap = _cs(k)
-                    regime_info = (snap or {}).get("regime") or {}
+                    snap = calculate_snapshot(symbol, entry_price, {tf_probe: k},
+                                              None, 0, order_value, tf_probe)
+                    regime_info = (((snap or {}).get("methodologies") or {}).get("regime") or {})
                     style = calibration_service.strategy_style_of(strat_name)
                     regime_mult = calibration_service.regime_size_multiplier(
                         style, (regime_info or {}).get("name"), (regime_info or {}).get("confidence"))
                     if config.REGIME_SIZING_ENABLED and regime_mult != 1.0:
                         order_value = max(config.MIN_PARTIAL_ORDER_TRY, order_value * regime_mult)
-            except Exception:
+            except Exception as exc:
+                # Sessiz yutma bu hatanın bulunamamasının sebebiydi; nötr (1.0)
+                # davranışı korunur ama artık iz bırakır.
+                print(f"[Rejim] S4 rejim bazlı boyutlandırma atlandı: {exc}", flush=True)
                 regime_info = {}
             if order_value < config.MIN_PARTIAL_ORDER_TRY:
                 await database.save_signal({"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
@@ -1012,7 +1113,12 @@ class ScalpAnalyzer:
                 planned_stop_loss_pct = float(requested_stop_pct) if requested_stop_pct is not None \
                     else config.VELOCITY_AUTO_SL_PCT / 100.0
             planned_take_profit_pct = float(requested_tp_pct) if requested_tp_pct is not None else None
-            planned_max_hold_sec = int(requested_hold_sec) if requested_hold_sec is not None else None
+            # D-02 (2026-09-12): çağıran (velocity.py) max_hold_sec göndermese
+            # de belgelenen 30dk max-hold uygulanmalı. Eski kod None bırakıyor,
+            # plan_hold 0'a düşüyor ve `if plan_hold > 0` bloğu hiç çalışmıyordu
+            # → pozisyon 90dk'lık stale_position yoluna kadar sürükleniyordu.
+            # Saniye birimi; VELOCITY_MAX_HOLD_MIN dakika birimindedir.
+            planned_max_hold_sec = self._planned_max_hold_sec(requested_hold_sec)
         else:
             planned_take_profit_pct = (
                 float(requested_tp_pct) if strat_name == "LLM_PAPER" and requested_tp_pct is not None
@@ -1154,7 +1260,12 @@ class ScalpAnalyzer:
                 if requested_hold_sec is not None:
                     pos["llm_max_hold_sec"] = max(60, int(requested_hold_sec))
         self.positions[symbol] = pos
-        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "trade_id": pos.get("trade_id"), "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time()}
+        sig = {"symbol": symbol, "action": "BUY_SIGNAL", "price": entry_price, "reason": "position_opened", "strategy": strat_name, "trade_id": pos.get("trade_id"), "strategy_revision": config.STRATEGY_REVISION, "timestamp": time.time(),
+               # D-03: raporlanan büyüklük FİİLEN kullanılan büyüklük olsun.
+               # Eskiden velocity tarafı talep ettiği %50'yi raporluyordu ama
+               # gerçekleşen %10'du; artık ikisi aynı kaynaktan okunabilir.
+               # BİRİM: TRY notional (quantity DEĞİL).
+               "order_value_try": order_value, "quantity": quantity}
         try:
             await database.commit_open_position(symbol, symbol.replace("TRY", ""), next_cash, quantity, pos, sig)
         except Exception as exc:

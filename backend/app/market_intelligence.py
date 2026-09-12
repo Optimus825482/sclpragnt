@@ -234,8 +234,11 @@ def symbol_behavior_profile(snapshot: dict, history: dict | None = None) -> dict
                           "normal" if volume_ratio >= 0.5 else "low")
     volatility_regime = "unknown"
     if atr_pct is not None:
-        volatility_regime = ("expanding" if atr_pct >= 0.5 else
-                             "normal" if atr_pct >= 0.15 else "contracting")
+        # I-01 (2026-09-12): `atr_pct` KESİR'dir (atr/price, [0,1]). Eski 0.5/0.15
+        # eşikleri %50/%15 yüzde varsayıyordu → regime hep "contracting"di ve
+        # volatility_expanding hiç üretilmiyordu. Kesire göre: %0.5 / %0.15.
+        volatility_regime = ("expanding" if atr_pct >= 0.005 else
+                             "normal" if atr_pct >= 0.0015 else "contracting")
     return {"symbol": symbol,
             "activity_level": activity_level,
             "volatility_regime": volatility_regime,
@@ -278,9 +281,10 @@ def regime_transition_signal(snapshot: dict) -> dict:
     # ATR rejimi
     atr_pct = volatility.get("atr_pct")
     if atr_pct is not None:
-        if atr_pct >= 0.5:
+        # I-01 (2026-09-12): `atr_pct` KESİR; %0.5 (0.005) / %0.15 (0.0015).
+        if atr_pct >= 0.005:
             signals.append("volatility_expanding")
-        elif atr_pct < 0.15:
+        elif atr_pct < 0.0015:
             signals.append("volatility_contracting")
     return {"signals": signals,
             "regime": "range_breakout_candidate" if "range_breakout_volume" in signals else

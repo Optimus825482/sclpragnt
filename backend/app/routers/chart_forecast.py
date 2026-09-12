@@ -20,9 +20,7 @@ from app.config import config
 from app import database
 from app import ml_forecast
 from app.binance_tr_public import klines as fetch_klines
-from app.routers.velocity import (_velocity_bollinger_width, _velocity_rsi,
-                                  _velocity_mfi, _velocity_aroon)
-from app.technical_analysis import _linreg_slope_pct
+from app.routers.velocity import _velocity_ml_feature_dict
 
 logger = logging.getLogger("scalper.chart_forecast")
 
@@ -37,20 +35,25 @@ HIT_GRACE_MINUTES = int(getattr(config, "LLM_FORECAST_HIT_GRACE_MINUTES", 0))
 
 
 async def collect_forecast_features(symbol: str) -> dict | None:
-    """Sembolün güncel 1m snapshot'ından ML tahmin özelliklerini toplar.
+    """Sembolün güncel 5m kapanış serisinden ML tahmin özelliklerini toplar.
 
-    predict_target'in beklediği feature isimlerini üretir (velocity taramasıyla
-    aynı hesap). Veri yetersiz/çok eski -> None (tahmin yapılamaz).
+    ML-01 (2026-09-12): model 5m kapanış barlarla eğitildiği için çıkarım da
+    5m kapanış barlardan üretilir (velocity taramasıyla aynı `_velocity_ml_feature_dict`
+    dayanağı). Eski davranış 1m barlardı → aynı özellik adı farklı anlama geliyordu.
+    Veri yetersiz/çok eski -> None (tahmin yapılamaz).
     """
     now_ms = int(time.time() * 1000)
     try:
-        rows = await fetch_klines(symbol, "1m", 60)
+        rows = await fetch_klines(symbol, "5m", 40)
     except Exception:
         return None
+    # D-04: oluşmakta olan 5m mumunu düşür (kalibrasyon kapanmış mum).
+    if int(rows[-1][0]) + 300_000 > now_ms:
+        rows = rows[:-1]
     if len(rows) < 30:
         return None
     # Güncel mum şartı: ölü/sembol dışı sembollerde tahmin üretme.
-    last_age_sec = (now_ms - (int(rows[-1][0]) + 59_999)) / 1000
+    last_age_sec = (now_ms - (int(rows[-1][0]) + 299_999)) / 1000
     if last_age_sec > 180:
         return None
     closes = [float(r[4]) for r in rows]
@@ -60,23 +63,10 @@ async def collect_forecast_features(symbol: str) -> dict | None:
     price = closes[-1]
     if price <= 0:
         return None
-    atr_pct = None
-    trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j - 1]), abs(lows[j] - closes[j - 1]))
-           for j in range(max(1, len(closes) - 14), len(closes))]
-    if trs:
-        atr_pct = (sum(trs) / len(trs)) / price * 100
-    aroon = _velocity_aroon(highs, lows)
-    return {
-        "price": price,
-        "ret3_pct": round((closes[-1] / closes[-4] - 1) * 100, 3) if len(closes) >= 4 else None,
-        "atr_pct": round(atr_pct, 3) if atr_pct else None,
-        "bb_width_pct": round(_velocity_bollinger_width(closes), 2) if _velocity_bollinger_width(closes) is not None else None,
-        "rsi": round(_velocity_rsi(closes), 1) if _velocity_rsi(closes) is not None else None,
-        "mfi": round(_velocity_mfi(highs, lows, closes, vols), 1) if _velocity_mfi(highs, lows, closes, vols) is not None else None,
-        "linreg_slope10_pct": round(_linreg_slope_pct(closes, 10), 3) if _linreg_slope_pct(closes, 10) is not None else None,
-        "aroon_up": round(aroon["up"], 0) if aroon else None,
-        "aroon_down": round(aroon["down"], 0) if aroon else None,
-    }
+    feats = _velocity_ml_feature_dict(closes, highs, lows, vols)
+    feats["price"] = price
+    feats["timestamp"] = int(rows[-1][0])
+    return feats
 
 
 def _run_predict(symbol: str, features: dict, horizon: int) -> dict | None:
