@@ -11,8 +11,20 @@ export const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || API_BASE.replace(/^http
 
 export const WS_URL = `${WS_BASE.replace(/\/$/, "")}/ws`;
 
+/**
+ * H-12: tüm GET istekleri varsayılan olarak tarayıcı HTTP önbelleğini atlar.
+ * Backend `Cache-Control` göndermediği için (yalnız auth ara katmanı var)
+ * 51 GET çağrısının çoğu `cache: "no-store"` bayrağını taşımıyordu; bir ayar
+ * kaydedildikten sonra sekmeye geri dönüldüğünde eski değer görünebiliyordu.
+ * Çağıran kendi `cache` değerini verirse o değer kazanır.
+ */
 export function apiRequest(input: RequestInfo | URL, init?: RequestInit) {
-  return fetch(input, { ...init, credentials: "include" }).then((response) => {
+  const method = String(init?.method || "GET").toUpperCase();
+  const merged: RequestInit = { credentials: "include", ...init };
+  if ((method === "GET" || method === "HEAD") && merged.cache === undefined) {
+    merged.cache = "no-store";
+  }
+  return fetch(input, merged).then((response) => {
     if (response.status === 401 && typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("scalper:auth-expired"));
     }

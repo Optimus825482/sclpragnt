@@ -71,6 +71,12 @@ def microstructure_snapshot(snapshot: dict, order_value_try: float = 500.0) -> d
             "stale": stale, "paper_only": True}
 
 
+# C-23: `llm_chat._market_candidate_score` skorunun üst sınırı (2.5 + 1.0 +
+# 3*0.35 + 1.0 + 0.6 + 0.8 + 0.5 = 7.45). `estimate_local_regime` ortalamayı bu
+# tavana göre [−1, 1]'e normalize eder.
+LOCAL_REGIME_SCORE_SCALE = 7.45
+
+
 def estimate_local_regime(rows: list[dict]) -> dict:
     """Estimate a degraded, local regime from already-fetched TR snapshots.
 
@@ -84,7 +90,12 @@ def estimate_local_regime(rows: list[dict]) -> dict:
     bullish = [r for r in ready if str(r.get("trend_direction", "")).lower() in {"bullish", "bull", "up"}]
     participation = len(bullish) / len(ready)
     avg_score = mean(scores)
-    score = max(0.0, min(100.0, 50 + participation * 35 + max(-15.0, min(15.0, avg_score * 5))))
+    # C-23: `_market_candidate_score` skoru yaklaşık -4.65 .. +7.45 aralığındadır.
+    # Eski `avg_score * 5` çarpanı |avg_score| >= 3'te ±15 tavanına çarpıp terimi
+    # fiilen ikili (binary) hâle getiriyordu. Önce pozitif tavana göre [−1, 1]'e
+    # normalize edilir, sonra ±15 ile ölçeklenir; böylece ara değerler korunur.
+    normalized = max(-1.0, min(1.0, avg_score / LOCAL_REGIME_SCORE_SCALE))
+    score = max(0.0, min(100.0, 50 + participation * 35 + normalized * 15))
     if score >= 70:
         zone = "RISK_ON"
         reason = "Sembollerin çoğunda pozitif teknik katılım var"
@@ -474,7 +485,19 @@ def walk_forward_assessment(windows: list[dict]) -> dict:
         return {"status": "INSUFFICIENT_WINDOWS", "degradation_ratio": None}
     first = float(windows[0].get("net_pnl") or 0)
     last = float(windows[-1].get("net_pnl") or 0)
-    ratio = round(last / first, 4) if first > 0 else None
-    status = "STABLE" if ratio is not None and ratio >= 0.5 else "DEGRADED"
+    # C-21: eski kod `ratio = last/first if first > 0 else None` idi; ilk pencere
+    # zarar (first < 0) olduğunda oran tanımsızdı ve fonksiyon, iyileşme olsa
+    # bile (ilk -100 → son +50), taban değere bakmadan "DEGRADED" dönüyordu.
+    # Negatif tabanda ±1 tabanlı bir "değişim oranı" kullanılır ve bozulma,
+    # son pencerenin ilkinden DAHA KÖTÜ olup olmadığına göre belirlenir.
+    if first > 0:
+        ratio = round(last / first, 4)
+        status = "STABLE" if ratio >= 0.5 else "DEGRADED"
+    elif first < 0:
+        ratio = round((last - first) / abs(first), 4)
+        status = "STABLE" if last >= first else "DEGRADED"
+    else:
+        ratio = None
+        status = "STABLE" if last >= 0 else "DEGRADED"
     return {"status": status, "degradation_ratio": ratio,
             "note": "Pencereler farklı tarih aralıklarıdır; gerçek IS/OOS ayrımı değildir."}

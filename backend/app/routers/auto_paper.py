@@ -54,6 +54,8 @@ _AUTO_PAPER_STATE = {
     "winning_trades": 0,
     "losing_trades": 0,
     "last_check_at": None,
+    # D-16 (2026-09-12): yönetim döngüsü hata sayacı (üstel backoff için).
+    "consecutive_errors": 0,
 }
 
 
@@ -193,13 +195,19 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
 
         commission_pct = config.COMMISSION_PCT
         max_cost = order_value / (1 + commission_pct)
-        quantity = max_cost / current_price if current_price > 0 else 0
+        # D-08 (2026-09-12): fiilî ALIŞ dolumuna kayma (slippage) uygula. Maliyet
+        # tabanı ve adet bu dolumdan türetilir; quantity*entry_price = max_cost
+        # kimliği korunur (boyut raporu ile muhasebe tutarlı kalır). Tek kaynak:
+        # config.ESTIMATED_SLIPPAGE_PCT.
+        entry_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        fill_entry = current_price * (1.0 + entry_slip)
+        quantity = max_cost / fill_entry if fill_entry > 0 else 0
         if quantity <= 0:
             return None
 
-        net_order_value = current_price * quantity
-        take_profit_price = current_price * (1 + target_pct / 100)
-        stop_loss_price = current_price * (1 - sl_pct)
+        net_order_value = fill_entry * quantity
+        take_profit_price = fill_entry * (1 + target_pct / 100)
+        stop_loss_price = fill_entry * (1 - sl_pct)
         now = time.time()
         notification_id = notification.get("id")
 
@@ -208,12 +216,12 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             "side": "LONG",
             "status": "open",
             "notification_id": notification_id,
-            "entry_price": current_price,
+            "entry_price": fill_entry,
             "quantity": quantity,
             "order_value_try": net_order_value,
             "stop_loss": stop_loss_price,
             "take_profit": take_profit_price,
-            "peak_price": current_price,
+            "peak_price": fill_entry,
             "entry_time": now,
             "notification_score": notification.get("score"),
             "notification_target_pct": target_pct,
@@ -225,7 +233,7 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             "timestamp": now,
             "symbol": symbol,
             "action": "BUY_SIGNAL",
-            "price": current_price,
+            "price": fill_entry,
             "reason": f"AUTO_PAPER skor {notification.get('score', 0):.1f} hedef +%{target_pct:.1f} TP={take_profit_price:.6f} SL={stop_loss_price:.6f}",
             "strategy": "AUTO_PAPER",
             "trade_id": None,  # insert sonrası id bilinir; DB'de dolduramayız, reason yeterli
@@ -253,14 +261,14 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
 
         await _broadcast_trade({
             "action": "OPENED", "symbol": symbol,
-            "entry": current_price, "take_profit": take_profit_price,
+            "entry": fill_entry, "take_profit": take_profit_price,
             "stop_loss": stop_loss_price, "quantity": quantity,
             "order_value": net_order_value, "score": notification.get("score"),
             "target_pct": target_pct, "trade_id": trade_id,
         })
 
         logger.info("auto_paper %s: AÇILDI miktar=%.4f giriş=%.6f TP=%.6f SL=%.6f değer=%.2fTRY skor=%.1f",
-                    symbol, quantity, current_price, take_profit_price, stop_loss_price,
+                    symbol, quantity, fill_entry, take_profit_price, stop_loss_price,
                     net_order_value, notification.get("score"))
 
         return {"status": "opened", "trade_id": trade_id, "symbol": symbol}
@@ -308,14 +316,25 @@ async def auto_paper_management_loop():
     """
     logger.info("auto_paper yönetim döngüsü başladı")
     await asyncio.sleep(30)
+    # D-16 (2026-09-12): hata durumunda üstel backoff (5 → 60 sn) ve
+    # `consecutive_errors` sayacı. Eskiden kalıcı DB/REST hatasında 5 sn'de bir
+    # denenip log gürültüsü + boşa yük üretiliyordu. Başarılı turda taban
+    # gecikmeye ve sayaç 0'a döner; liveness korunur (CancelledError re-raise).
+    backoff_sec = 5.0
     while True:
         try:
             await _check_open_positions()
+            backoff_sec = 5.0
+            _AUTO_PAPER_STATE["consecutive_errors"] = 0
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("auto_paper yönetim turu: %s", exc)
-        await asyncio.sleep(5.0)
+            errors = int(_AUTO_PAPER_STATE.get("consecutive_errors", 0)) + 1
+            _AUTO_PAPER_STATE["consecutive_errors"] = errors
+            backoff_sec = min(60.0, 5.0 * (2 ** (errors - 1)))
+            logger.warning("auto_paper yönetim turu hatası (ardışık=%d, %.0fs sonra tekrar): %s",
+                           errors, backoff_sec, exc)
+        await asyncio.sleep(backoff_sec)
 
 
 async def _check_open_positions():
@@ -364,25 +383,24 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     if peak_price > float(trade.get("peak_price") or entry_price):
         await database.update_auto_paper_peak(trade_id, peak_price)
 
-    # Trailing devredeyse TP UYGULANMAZ: çıkışı tamamen trailing stop yönetir
-    # (kullanıcı isteği 2026-09-08). "Devrede" = ayar açık VE (önceden aktifleşmiş
-    # VEYA bu turda tetik eşiği aşılmış). Tetik eşiği TP'ye eşit ya da altındayken
-    # bile TP'nin trailing'den ÖNCE kapanmaması için tetik hesabı TP kontrolünden
-    # önce yapılır.
-    trailing_enabled = bool((settings or {}).get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED))
-    trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT))
-    gross_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
+    # D-07 (2026-09-12): TP DEĞERLENDİRMESİ trailing AKTİVASYONUNDAN bağımsız.
+    # Eskiden `trailing_devrede = trailing_enabled and (activated or gross>=trigger)`
+    # idi ve TP kontrolünden ÖNCE hesaplanıyordu; varsayılan
+    # default_target_pct(2.0) == trailing_trigger_pct(2.0) olduğu için hedefe
+    # ulaşan tick'te "trailing devrede" sayılıp TP atlanıyordu → bildirimin
+    # dinamik hedefi (monitoring'in varlık sebebi %1.5-6) hiç uygulanmıyordu.
+    # Artık TP yalnızca trailing FİİLEN aktifleştiğinde (DB'de trailing_activated)
+    # devre dışı kalır. Aynı tick'te hem trigger hem TP'ye ulaşılırsa TP kazanır
+    # (trailing bloğu bu bloktan SONRA çalışır).
     trailing_activated = bool(trade.get("trailing_activated", False))
-    trailing_devrede = trailing_enabled and (trailing_activated or gross_pnl_pct >= trailing_trigger_pct)
-
-    # TP kontrolü — yalnızca trailing devrede DEĞİLKEN uygulanır.
-    if not trailing_devrede and take_profit is not None and current_price >= take_profit:
-        await _close_trade(trade_id, symbol, current_price, now, "take_profit")
+    # D-08 (2026-09-12): TP dolumu TETİK fiyatından (gap-through: min(price, tp)).
+    if not trailing_activated and take_profit is not None and current_price >= take_profit:
+        await _close_trade(trade_id, symbol, min(current_price, take_profit), now, "take_profit")
         return
 
-    # SL kontrolü
+    # SL kontrolü — D-08: dolum tetik fiyatından (gap-through: max(price, sl)).
     if stop_loss is not None and current_price <= stop_loss:
-        await _close_trade(trade_id, symbol, current_price, now, "stop_loss")
+        await _close_trade(trade_id, symbol, max(current_price, stop_loss), now, "stop_loss")
         return
 
     # Breakeven kontrolü (trailing + dinamik komisyon + buffer).
@@ -411,12 +429,17 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
             if not breakeven_activated or applied_breakeven > current_breakeven_stop:
                 await database.update_auto_paper_breakeven(trade_id, True, applied_breakeven)
                 current_breakeven_stop = applied_breakeven
+                # D-14 (2026-09-12): bayrak YALNIZCA DB yazımı gerçekleştiğinde
+                # set edilir. Eskiden koşulsuz atanıyordu (blok DIŞINDA), DB'de
+                # breakeven_stop 0 kalırken bellek True oluyordu → bellek↔DB
+                # tutarsızlığı ve yanıltıcı log. Artık ikisi aynı anda yazılır.
+                breakeven_activated = True
                 logger.info("auto_paper %s: breakeven stop=%.6f (gross=%+.2f%%)", symbol, applied_breakeven, gross_pnl_pct)
-        breakeven_activated = True
 
-    # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil)
+    # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil).
+    # D-08: stop dolumu tetik fiyatından (gap-through: max(price, stop)).
     if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
-        await _close_trade(trade_id, symbol, current_price, now, "breakeven_stop")
+        await _close_trade(trade_id, symbol, max(current_price, current_breakeven_stop), now, "breakeven_stop")
         return
 
     # Trailing stop modülü (kullanıcı isteği 2026-09-08): %trailing_trigger_pct
@@ -447,8 +470,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
                 logger.info("auto_paper %s: trailing stop=%.6f (gross=%+.2f%%)", symbol, applied_trailing, gross_pnl_pct)
 
         # Trailing stop koruması: aktifse ve fiyat stopa düştüyse kapat.
+        # D-08: stop dolumu tetik fiyatından (gap-through: max(price, stop)).
         if trailing_activated and current_trailing_stop > 0 and current_price <= current_trailing_stop:
-            await _close_trade(trade_id, symbol, current_price, now, "trailing_stop")
+            await _close_trade(trade_id, symbol, max(current_price, current_trailing_stop), now, "trailing_stop")
 
 
 async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float, reason: str):
@@ -461,10 +485,16 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
         entry_price = float(trade["entry_price"])
         quantity = float(trade["quantity"])
         commission_pct = config.COMMISSION_PCT
+        # D-08 (2026-09-12): fiilî SATIŞ dolumuna kayma (slippage) uygula.
+        # TP/SL tetik dolumu `_manage_single_trade` içinde tetik fiyatına
+        # çekilir (min/max); kayma bunun ÜZERİNE uygulanır. Tek kaynak:
+        # config.ESTIMATED_SLIPPAGE_PCT.
+        exit_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        fill_price = exit_price * (1.0 - exit_slip)
         entry_commission = entry_price * quantity * commission_pct
-        exit_commission = exit_price * quantity * commission_pct
+        exit_commission = fill_price * quantity * commission_pct
         total_commission = entry_commission + exit_commission
-        gross_pnl = (exit_price - entry_price) * quantity
+        gross_pnl = (fill_price - entry_price) * quantity
         pnl = gross_pnl - total_commission
         invested = entry_price * quantity
         pnl_pct = (pnl / invested * 100) if invested else 0.0
@@ -472,7 +502,7 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
 
         # DB güncelle + wallet iadesi + sinyal tek transaction'da
         closed = await database.close_auto_paper_trade(
-            trade_id, exit_price, now, pnl, pnl_pct, total_commission, reason)
+            trade_id, fill_price, now, pnl, pnl_pct, total_commission, reason)
         if not closed:
             logger.warning("auto_paper %s: kapanış başarısız (zaten kapalı?)", symbol)
             return
@@ -486,33 +516,91 @@ async def _close_trade(trade_id: int, symbol: str, exit_price: float, now: float
 
         await _broadcast_trade({
             "action": "CLOSED", "symbol": symbol,
-            "exit": exit_price, "pnl": round(pnl, 2),
+            "exit": fill_price, "pnl": round(pnl, 2),
             "reason": reason, "trade_id": trade_id,
         })
 
         logger.info("auto_paper %s: KAPANDI (%s) çıkış=%.6f PnL=%.2fTRY (%+.2f%%) süre=%.0fs",
-                    symbol, reason, exit_price, pnl, pnl_pct, hold_seconds)
+                    symbol, reason, fill_price, pnl, pnl_pct, hold_seconds)
 
         # Kâr koruma (trailing/breakeven) kapanışı: sembol monitoring sayfasının
         # "uygun adaylar" listesinde kaldığı sürece aynı sembole yeniden aç.
+        # D-15 (2026-09-12): yeniden açma artık bu zincirin DIŞINDA, tek
+        # seferlik arka plan görevi olarak çalışır. Eskiden `await
+        # _maybe_reopen_after_protect_close(...)` kapanışın içinde senkron
+        # çağrılıyordu (REST + DB transaction); döngü tek task olduğundan bu
+        # süre boyunca DİĞER sembollerin TP/SL yönetimi bekliyordu.
         if reason in ("trailing_stop", "breakeven_stop"):
-            await _maybe_reopen_after_protect_close(symbol)
+            orig_notification_id = trade.get("notification_id")
+            _start_background(
+                lambda: _maybe_reopen_after_protect_close(symbol, orig_notification_id),
+                f"auto-paper-reopen-{symbol}", single_pass=True)
 
     except Exception as exc:
         logger.exception("auto_paper %s kapatma: %s", symbol, exc)
 
 
-async def _maybe_reopen_after_protect_close(symbol: str) -> None:
+#: D-06 (2026-09-12): koruma kapanışı sonrası yeniden açma denemeleri için saat
+#: kovası. Aynı kova içinde üretilen bildirim id'si KARARLI olduğundan, DB'deki
+#: `notification_id` churn kontrolü (auto_paper_trades.notification_id) saat
+#: başına en fazla bir yeniden açmayı zorlar — eski kod `notification_id=None`
+#: ile bu korumayı tamamen baypas ediyordu.
+_REOPEN_HOUR_BUCKET_SEC = 3600
+#: Tur/deneme sınırı: sembol başına son deneme zamanı (in-memory, tek süreç).
+_reopen_last_attempt: dict[str, float] = {}
+
+
+def _reopen_notification_id(symbol: str, now: float | None = None) -> str:
+    """Yeniden açma için KARARLI bildirim kimliği (D-06).
+
+    Format: ``reopen:{SYMBOL}:{hour_bucket}``. Saat kovası hem kararlıdır hem de
+    saat başına en fazla bir yeniden açmayı DB churn kontrolü üzerinden zorlar.
+    """
+    bucket = int((now if now is not None else time.time()) // _REOPEN_HOUR_BUCKET_SEC)
+    return f"reopen:{str(symbol).upper()}:{bucket}"
+
+
+async def _maybe_reopen_after_protect_close(symbol: str, orig_notification_id=None) -> None:
     """Trailing/breakeven kapanışı sonrası yeniden açma denemesi.
 
     Kural (kullanıcı isteği 2026-09-08): sembol monitoring sayfasının "uygun
     adaylar" listesinde (son tarama sonucunda) kaldığı sürece kâr koruma
     çıkışının ardından aynı sembole yeniden pozisyon açılır. Sembol listeden
     düşmüşse veya reopen_after_protect_close ayarı kapalıysa açılmaz.
+
+    D-06 (2026-09-12): yeniden açma bildirimine KARARLI bir ``id`` verilir
+    (``reopen:{symbol}:{saat_kovası}``) ve hem uygulama içi hem DB tarafındaki
+    ``already_traded`` kontrolü uygulanır. Ayrıca sembol başına saatte en fazla
+    BİR deneme (in-memory + DB) yapılır. Eski kod ``id`` alanı olmadan
+    ``notification_id=None`` gönderiyordu → churn koruması tamamen atlanıyor,
+    sembol radar listesinde kaldığı sürece sınırsız yeniden giriş (her turda
+    round-trip komisyon) oluşuyordu.
     """
     try:
         settings = await get_auto_paper_settings()
         if not bool(settings.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)):
+            return
+
+        # D-06: saat başına en fazla bir DENEME (başarısız deneme de sayılır).
+        now = time.time()
+        last_attempt = float(_reopen_last_attempt.get(symbol, 0) or 0)
+        if now - last_attempt < _REOPEN_HOUR_BUCKET_SEC:
+            logger.info("auto_paper %s: yeniden açma denemesi saatlik sınırda (%ds) — atlandı",
+                        symbol, int(now - last_attempt))
+            return
+        _reopen_last_attempt[symbol] = now
+
+        # D-06: kararlı bildirim id'si + mevcut dedup kontrolünü ZORLA. Bu saat
+        # kovasında zaten bir yeniden açma yapıldıysa (DB'de notification_id var)
+        # tekrar açma.
+        reopen_id = _reopen_notification_id(symbol, now)
+        try:
+            prior_reopen = await database.get_recent_auto_paper_trade_by_notification(reopen_id)
+        except Exception:
+            prior_reopen = None
+        if prior_reopen:
+            logger.info("auto_paper %s: %s saat kovasında yeniden açma zaten yapıldı — atlandı",
+                        symbol, reopen_id)
             return
 
         # monitoring'i tembel içe aktar (çevrimsel import riski olmasın).
@@ -535,6 +623,10 @@ async def _maybe_reopen_after_protect_close(symbol: str) -> None:
         price = float(cand.get("price") or 0)
         target_pct = float(cand.get("target_pct") or 0)
         notif = {
+            # D-06: KARARLI, saat-kovalı bildirim id'si — `notification_id=None`
+            # DEĞİL. Böylece try_open_from_notification + open_auto_paper_trade
+            # içindeki already_traded churn kontrolü yeniden açmayı da kapsar.
+            "id": reopen_id,
             "symbol": symbol,
             "score": panel,
             "price": price,
@@ -604,7 +696,7 @@ async def get_settings_endpoint():
 @router.put("/api/auto-paper/settings")
 async def update_settings_endpoint(payload: dict, request: Request):
     """Otonom paper trade ayarlarını güncelle (admin)."""
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
 
     editable = ("enabled", "min_score", "balance_pct", "stop_loss_pct",
@@ -669,7 +761,7 @@ async def close_auto_paper_endpoint(trade_id: int, request: Request):
     Piyasa fiyatından kapanır; muhasebe close_auto_paper_trade içinde
     (komisyon + wallet iadesi + CLOSE sinyali) atomiktir.
     """
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     trade = await database.get_auto_paper_trade(trade_id)
     if not trade or trade.get("status") != "open":
@@ -697,6 +789,7 @@ def reset_state():
         "winning_trades": 0,
         "losing_trades": 0,
         "last_check_at": None,
+        "consecutive_errors": 0,
     })
 
 

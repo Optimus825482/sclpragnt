@@ -33,6 +33,7 @@ _monitoring_state = {
     "pending_targets": {},        # symbol -> {"expected": float, "horizon_minutes": int, "set_at": epoch}
     "candidate_streak": {},       # symbol -> ardışık aday tarama sayısı (debounce)
     "risk_off": False,            # piyasa rejimi RISK_OFF
+    "risk_off_unknown": False,    # F-14: referans verisi yetersiz → rejim BİLİNMİYOR
     "_db_latencies": [],              # notify query gecikmeleri (diagnostics icin, 2026-09-07) (gözlem bayrağı, eşiği etkilemez — 2026-09-04)
 }
 
@@ -93,7 +94,8 @@ async def _persist_runtime_state() -> None:
             })
         payload = {
             "pending_targets": _monitoring_state["pending_targets"],
-            "notified_symbols": _monitoring_state["notified_symbols"],
+            # F-07: bellek monotonik → kalıcı katman duvar saati (tek noktada dönüşüm).
+            "notified_symbols": _notified_wall_from_mono(_monitoring_state["notified_symbols"]),
             "watchlist_seen_at": _monitoring_state["watchlist_seen_at"],
             "candidate_streak": _monitoring_state["candidate_streak"],
             "risk_off": bool(_monitoring_state["risk_off"]),
@@ -113,7 +115,9 @@ async def restore_runtime_state() -> None:
             payload = json.loads(raw or "{}")
             if isinstance(payload, dict):
                 _monitoring_state["pending_targets"] = payload.get("pending_targets") or {}
-                _monitoring_state["notified_symbols"] = payload.get("notified_symbols") or {}
+                # F-07: kalıcı duvar saati → bellek monotonik (tek noktada dönüşüm).
+                _monitoring_state["notified_symbols"] = _notified_mono_from_wall(
+                    payload.get("notified_symbols"))
                 _monitoring_state["watchlist_seen_at"] = payload.get("watchlist_seen_at") or {}
                 _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
                 _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
@@ -147,13 +151,50 @@ def _in_quiet_hours(settings) -> bool:
 
 
 def _effective_min_score(settings) -> float:
-    """O an gercekten uygulanan esik: admin min_score.
-    Piyasa RISK_OFF rejimdeyse esik otomatik yukseltilir (2026-09-07).
+    """O an gercekten uygulanan esik: admin min_score AYNEN uygulanır.
+
+    F-14: RISK_OFF'un eşiğe etkisi YOKTUR. Kod, üç ayrı yorum + UI metniyle
+    çelişiyordu (`max(base+20, 50)` çarpanı hâlâ uygulanıyordu; ısınma
+    sırasında referans verisi gelmezse `risk_off=True` oluyor ve radar eşiği
+    SESSİZCE +20 yükseliyordu). Çarpan kaldırıldı — rejim bayrağı yalnızca
+    gözlem amaçlıdır; veri yetersizken `risk_off_unknown` ile BİLİNMİYOR
+    raporlanır.
     """
     base = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
-    if _monitoring_state.get("risk_off", False):
-        base = max(base + 20.0, 50.0)
     return round(min(100.0, base), 1)
+
+
+def _notified_mono_from_wall(values) -> dict[str, float]:
+    """F-07: kalıcı (duvar saati) bildirim damgalarını monotonik tabana çevir.
+
+    `notified_symbols` BELLEKTE monotonik zaman tutar (cooldown GÖRELİ ölçüm);
+    kalıcı katman duvar saati beklediği için restore'da yaş üzerinden tek seferde
+    dönüştürülür — iki saat karıştırılmaz.
+    """
+    mono_now = time.monotonic()
+    wall_now = time.time()
+    out: dict[str, float] = {}
+    for sym, ts in (values or {}).items():
+        try:
+            age = max(0.0, wall_now - float(ts))
+        except (TypeError, ValueError):
+            age = 0.0
+        out[sym] = mono_now - age
+    return out
+
+
+def _notified_wall_from_mono(values) -> dict[str, float]:
+    """F-07: bellekteki monotonik bildirim damgalarını kalıcı duvar saatine çevir."""
+    mono_now = time.monotonic()
+    wall_now = time.time()
+    out: dict[str, float] = {}
+    for sym, ts in (values or {}).items():
+        try:
+            age = max(0.0, mono_now - float(ts))
+        except (TypeError, ValueError):
+            age = 0.0
+        out[sym] = wall_now - age
+    return out
 
 
 def get_cached_radar_candidate(symbol: str) -> dict | None:
@@ -199,6 +240,7 @@ async def get_monitoring_settings():
     settings = await get_user_notification_settings()
     return {"paper_only": True, "scope": "global_admin",
             "risk_off": bool(_monitoring_state["risk_off"]),
+            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
             "effective_min_score": _effective_min_score(settings),
             **settings}
 
@@ -213,7 +255,7 @@ async def update_monitoring_settings(payload: dict, request: Request):
     (min_target_pct, quiet_hours, enabled) korunur — aksi halde eşiği kaydeden
     her istek diğer ayarları varsayılana sıfırlıyordu (2026-09-04 teşhis).
     """
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     existing = await get_user_notification_settings()
     editable = ("enabled", "min_score", "min_target_pct",
@@ -233,6 +275,7 @@ async def update_monitoring_settings(payload: dict, request: Request):
                           request=request)
     return {"paper_only": True, "ok": True, "scope": "global_admin",
             "risk_off": bool(_monitoring_state["risk_off"]),
+            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
             "effective_min_score": _effective_min_score(settings),
             **settings}
 
@@ -400,7 +443,13 @@ async def _notify(candidates_list, settings) -> list:
     # 2026-09-04 kullanıcı kararı — tek kaynak _effective_min_score).
     min_score = _effective_min_score(settings)
     quiet = _in_quiet_hours(settings)
+    # F-07: `now` duvar saati — KALICI/yayınlanan alanlar (detected_at,
+    # pending_targets.set_at, DB horizon karşılaştırması) buna bağlı.
     now = time.time()
+    # F-07: cooldown GÖRELİ ölçüm — monotonik saat. `notified_symbols` BELLEKTE
+    # monotonik tutulur (kalıcılık sınırında duvar saatine çevrilir). Duvar saati
+    # NTP adımıyla sıçrayınca tüm sembollerin cooldown'u aynı anda doluyordu.
+    now_mono = time.monotonic()
     notified = []
     new_entries = []     # Yeni bildirimler
     # N+1 önlemi: aday sembollerinin BEKLİYOR kayıtlarını tek toplu sorguyla çek
@@ -479,9 +528,9 @@ async def _notify(candidates_list, settings) -> list:
             _monitoring_state["candidate_streak"][sym] = streak
             continue
         _monitoring_state["candidate_streak"][sym] = streak
-        # Kısa vadeli soğama
+        # Kısa vadeli soğama (F-07: monotonik ölçüm → duvar saati adımına dayanıklı)
         last_sent = _monitoring_state["notified_symbols"].get(sym)
-        if last_sent and now - last_sent < NOTIFY_COOLDOWN_SEC:
+        if last_sent is not None and now_mono - last_sent < NOTIFY_COOLDOWN_SEC:
             continue
         # Beklenen fiyata ulaşana kadar aynı sembolü tekrar bildirme
         pending = _monitoring_state["pending_targets"].get(sym)
@@ -494,7 +543,7 @@ async def _notify(candidates_list, settings) -> list:
         notif["updated"] = False
         new_entries.append(notif)
         notified.append(notif)
-        _monitoring_state["notified_symbols"][sym] = now
+        _monitoring_state["notified_symbols"][sym] = now_mono
         _monitoring_state["candidate_streak"].pop(sym, None)
         expected_price = float(notif.get("expected_price") or 0)
         horizon_minutes = int(c.get("horizon_minutes") or 5)
@@ -594,6 +643,36 @@ def _check_pending_targets():
         _monitoring_state["pending_targets"].pop(sym, None)
 
 
+def _risk_state_from_references() -> tuple[bool, bool]:
+    """Piyasa rejimi: (risk_off, risk_off_unknown) — hafif yerel ölçüm.
+
+    Referans semboller (BTC/ETH 1h) EMA25 üstündeyse yapıcı, değilse zayıf
+    rejim katkısı sayılır.
+
+    F-14: referanslardan hiçbirinde yeterli veri YOKSA rejim HESAPLANAMAZ →
+    `risk_off` BİLİNMİYOR kabul edilir (fail-open, eşik DEĞİŞTİRİLMEZ). Eskiden
+    boş veri `risk_score == 0` yapıp `risk_off=True` döndürüyordu; bu da eşiği
+    sessizce +20 yükselterek ısınma sırasında radar listesini boşaltıyordu.
+    """
+    try:
+        risk_score = 0
+        refs = 0
+        for ref in ("BTC_TRY", "ETH_TRY"):
+            bars = market.get_ut_kline(ref.lower().replace("_", ""), "1h")
+            closes = (bars or {}).get("closes") or []
+            if len(closes) >= 25:
+                refs += 1
+                ema25 = sum(closes[-25:]) / 25
+                # Fiyat EMA25 üstündeyse yapıcı/pozitif rejim katkısı.
+                if closes[-1] >= ema25:
+                    risk_score += 1
+        if refs == 0:
+            return False, True
+        return risk_score == 0, False
+    except Exception:
+        return False, True  # rejim hesaplanamazsa fail-open + BİLİNMİYOR
+
+
 async def _run_scan() -> dict:
     """Tek tarama turu: 5dk + 15dk velocity taramalarını hibrit sıralamayla birleştirir.
 
@@ -607,8 +686,13 @@ async def _run_scan() -> dict:
     5dk+15dk çift profili saklanır. RISK_OFF rejimde etkin eşik yükseltilir.
     """
     watch_symbols = sorted({w.get("symbol") for w in (_monitoring_state["last_watchlist"] or []) if w.get("symbol")})
-    scan5 = await detect_velocity_candidates({"limit": 10}, horizon_minutes=5, extra_symbols=watch_symbols)
-    scan15 = await detect_velocity_candidates({"limit": 10}, horizon_minutes=15, extra_symbols=watch_symbols)
+    # F-16: 5dk ve 15dk taramaları AYNI havuzu bağımsız olarak tarar; seri
+    # beklemek gecikmeyi ikiye katlıyordu. Eşzamanlı çalıştırılır (asyncio tek
+    # thread olduğu için paylaşılan durumda yarış yok).
+    scan5, scan15 = await asyncio.gather(
+        detect_velocity_candidates({"limit": 10}, horizon_minutes=5, extra_symbols=watch_symbols),
+        detect_velocity_candidates({"limit": 10}, horizon_minutes=15, extra_symbols=watch_symbols),
+    )
 
     candidates5 = scan5.get("candidates", [])
     candidates15 = scan15.get("candidates", [])
@@ -682,22 +766,12 @@ async def _run_scan() -> dict:
     for sym in all_watchlist:
         _monitoring_state["watchlist_seen_at"].setdefault(sym, now)
 
-    # Rejim: RISK_OFF bayrağı — hafif yerel ölçüm (BTC/ETH 1h trend + 5m katılımı).
+    # Rejim: RISK_OFF bayrağı — hafif yerel ölçüm (BTC/ETH 1h trend).
     # 2026-09-04: bayrağın eşikle ilişkisi kaldırıldı (çarpan yok); yalnızca
-    # gözlem amaçlı API'de raporlanmaya devam eder.
-    try:
-        risk_score = 0
-        for ref in ("BTC_TRY", "ETH_TRY"):
-            bars = market.get_ut_kline(ref.lower().replace("_", ""), "1h")
-            closes = bars.get("closes") or []
-            if len(closes) >= 25:
-                ema25 = sum(closes[-25:]) / 25
-                # Fiyat EMA25 üstündeyse yapıcı/pozitif rejim katkısı; altındaysa zayıflık.
-                if closes[-1] >= ema25:
-                    risk_score += 1
-        _monitoring_state["risk_off"] = risk_score == 0  # hicbir referans EMA25 ustunde degilse riskli
-    except Exception:
-        pass  # rejim hesaplanamazsa normal eşik (fail-open)
+    # gözlem amaçlı API'de raporlanır. F-14: referans verisi yoksa BİLİNMİYOR.
+    risk_off, risk_off_unknown = _risk_state_from_references()
+    _monitoring_state["risk_off"] = risk_off
+    _monitoring_state["risk_off_unknown"] = risk_off_unknown
 
     settings = await get_user_notification_settings()
     effective_min_score = _effective_min_score(settings)
@@ -742,7 +816,7 @@ async def monitoring_scan(request: Request = None):
     Admin çağrısı: yeni scan başlatır. Normal kullanıcı /api/monitoring/state
     endpoint'inden son tarama sonuçlarını okur.
     """
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     try:
         _require_admin(request)
     except HTTPException:
@@ -759,12 +833,18 @@ async def monitoring_scan(request: Request = None):
             "watchlist": _monitoring_state["last_watchlist"],
             "settings": settings,
             "risk_off": bool(_monitoring_state["risk_off"]),
+            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
             "effective_min_score": _effective_min_score(settings),
             "loop_active": _loop_task is not None and not _loop_task.done(),
         }
     try:
+        # F-15: REST tarama yolu da `_locked_state()` almalı — arka plan döngüsü
+        # `_scan_lock` + `_locked_state()` alırken REST yolu yalnız `_scan_lock`
+        # alıyordu (yan etkili tarama state kilidi olmadan çalışıyordu). Kilit
+        # SIRASI döngüyle aynı (scan → state) → deadlock yok.
         async with _scan_lock:
-            result = await _run_scan()
+            async with _locked_state():
+                result = await _run_scan()
         return {
             "paper_only": True,
             "data_ready": True,
@@ -778,6 +858,7 @@ async def monitoring_scan(request: Request = None):
             "history": _monitoring_state["history"][:20],
             "settings": result["settings"],
             "risk_off": bool(_monitoring_state["risk_off"]),
+            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
             "effective_min_score": _effective_min_score(result["settings"]),
             "loop_active": _loop_task is not None and not _loop_task.done(),
         }
@@ -806,6 +887,7 @@ async def monitoring_state():
         "settings": settings,
         "scope": "global_admin",
         "risk_off": _monitoring_state["risk_off"],
+        "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
         "effective_min_score": _effective_min_score(settings),
         "loop_active": _loop_task is not None and not _loop_task.done(),
         "next_scan_in_sec": next_in,
@@ -1144,7 +1226,7 @@ async def reset_monitoring_notifications(request: Request):
     Reset sonrasi ayni semboller yeniden bildirilebilir; spam korumasini
     atlatabilmek isteyen her kimlik yetkili olmamalidir (2026-09-04).
     """
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     async with _locked_state():
         _monitoring_state["notified_symbols"].clear()

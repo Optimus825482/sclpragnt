@@ -1,13 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
-import { toMs, localDateInput } from "../lib/format";
+import { formatSignedTL, formatTL, toMs, localDateInput } from "../lib/format";
 
-const money = (v?: number | null) =>
-  v == null ? "—" : `${v >= 0 ? "+" : ""}${v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}₺`;
+// H-04/H-15: TL biçimi tek kaynaktan. K/Z işaretli (`+₺12,34`), komisyon ve
+// bakiye işaretsiz (H-22: "komisyon +12,34₺" bir maliyeti gelir gibi
+// gösteriyordu).
+const money = (v?: number | null) => formatSignedTL(v);
+const plainMoney = (v?: number | null) => formatTL(v);
 
 const num = (v?: number | null) => (v == null || !Number.isFinite(v) ? "—" : String(Number(v).toFixed(2)));
 const pct = (v?: number | null, digits = 1) => (v == null || !Number.isFinite(v) ? "—" : `%${(Number(v) * 100).toFixed(digits)}`);
@@ -105,9 +108,9 @@ function OverviewTab() {
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="KAPANMIŞ İŞLEM" value={String(total)} />
-        <StatCard label="NET PnL" value={money(o.net_pnl)} tone={pnlTone(o.net_pnl)} sub={`komisyon ${money(o.commission)}`} />
+        <StatCard label="NET PnL" value={money(o.net_pnl)} tone={pnlTone(o.net_pnl)} sub={`komisyon ${plainMoney(o.commission)}`} />
         <StatCard label="BAŞARI ORANI" value={winRate != null ? `%${winRate.toFixed(1)}` : "—"} tone={winRate != null && winRate >= 50 ? "text-neon-green" : "text-yellow-300"} />
-        <StatCard label="AÇIK POZİSYON" value={String(rl(o.open_positions))} sub={`TRY ${money(o.try_balance)}`} />
+        <StatCard label="AÇIK POZİSYON" value={String(rl(o.open_positions))} sub={`bakiye ${plainMoney(o.try_balance)}`} />
       </div>
       {breakdown && (
         <section className="card">
@@ -162,7 +165,7 @@ function OverviewTab() {
                     <td>{s.trade_count}</td>
                     <td className="font-mono text-xs text-white">{s.win_rate == null ? "—" : `%${Number(s.win_rate).toFixed(1)}`}</td>
                     <td className={`font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
-                    <td className="font-mono text-xs text-bunker-muted">{money(s.commission)}</td>
+                    <td className="font-mono text-xs text-bunker-muted">{plainMoney(s.commission)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -293,8 +296,13 @@ function AutonomousTab() {
   const [strategy, setStrategy] = useState("");
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(false);
+  // H-10: arama kutuları tuş başına istek atıyordu ("BTCUSDT" yazarken 7
+  // istek × 2 endpoint) ve yarışan yanıtlarda ESKİ liste kalabiliyordu.
+  // Sıra numarası: geç gelen yanıt güncel veriyi ezemez.
+  const requestSeqRef = useRef(0);
 
   const load = useCallback(async (offset = 0, appliedSymbol = symbol, appliedStrategy = strategy) => {
+    const seq = ++requestSeqRef.current;
     setLoading(true);
     setError("");
     try {
@@ -306,21 +314,27 @@ function AutonomousTab() {
       const res = await apiRequest(`${API_BASE}/api/reports/autonomous-log?${params}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (seq !== requestSeqRef.current) return;
       setRows(data.rows || []);
       setHasMore(Boolean(data.next_offset));
       const sres = await apiRequest(`${API_BASE}/api/reports/autonomous-decisions?limit=80${appliedSymbol ? `&symbol=${appliedSymbol}` : ""}${appliedStrategy ? `&strategy=${appliedStrategy}` : ""}`, { cache: "no-store" });
+      if (seq !== requestSeqRef.current) return;
       if (sres.ok) {
         const sdata = await sres.json();
         setSummary(sdata.summary || []);
       }
     } catch {
-      setError("Otonom işlem geçmişi alınamadı");
+      if (seq === requestSeqRef.current) setError("Otonom işlem geçmişi alınamadı");
     } finally {
-      setLoading(false);
+      if (seq === requestSeqRef.current) setLoading(false);
     }
   }, [symbol, strategy]);
 
-  useEffect(() => { load(0, symbol, strategy); }, [load, symbol, strategy]);
+  // H-10: 400 ms debounce — tuş başına değil, yazma durunca tek istek.
+  useEffect(() => {
+    const t = window.setTimeout(() => { load(0, symbol, strategy); }, 400);
+    return () => window.clearTimeout(t);
+  }, [load, symbol, strategy]);
 
   return (
     <div className="space-y-4">
@@ -943,7 +957,9 @@ function UserRadarTab() {
                 </thead>
                 <tbody>
                   {pageRows.map((n: any) => {
-                    const dt = new Date(n.detected_at * 1000);
+                    // H-24: aynı dosyada `fmtDt` (toMs) ve elle `* 1000` iki farklı
+                    // dönüşüm vardı → tek kaynak.
+                    const dt = new Date(toMs(n.detected_at));
                     const dateStr = dt.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric" });
                     const timeStr = dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
                     const mfePct = n.mfe_pct != null ? Number(n.mfe_pct) : null;

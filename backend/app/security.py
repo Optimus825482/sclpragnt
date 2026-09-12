@@ -105,49 +105,55 @@ def create_session_token(username: str = "admin", role: str = "admin", ttl_secon
     return f"{payload}.{signature}"
 
 
-def verify_session_token(token, client_fingerprint: str = ""):
-    """Token'ı doğrular. client_fingerprint varsa, token'ın bağlı olduğu cihazla eşleşmesini kontrol eder."""
+def _decode_session(token, client_fingerprint: str = "") -> dict | None:
+    """Oturum token'ının TEK doğrulama yolu (imza + exp + sv + fingerprint).
+
+    G-22 (2026-09-12): Eskiden ``verify_session_token`` ölü koddı — üretim yolu
+    (``session_user``) kendi kopyasını çalıştırıyordu ve fingerprint kontrolü
+    hiçbir zaman uygulanmıyordu. Artık ikisi de bu çekirdeği kullanır, yani
+    testlerin doğruladığı davranış üretimdeki davranışın ta kendisidir.
+    Geçersiz token için ``None`` döner.
+    """
     try:
         payload, signature = str(token or "").split(".", 1)
         secret = os.getenv("SCALPER_SESSION_SECRET", "").encode()
         expected = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
         data = json.loads(_unb64(payload))
         username = str(data.get("sub") or "").strip().lower()
-        expected_version = _user_session_versions.get(username)
-        if expected_version is not None and int(data.get("sv", -1)) != expected_version:
-            return False
+        if not username:
+            return None
+        # Oturum iptali (logout → session_version bump) imza kontrolünden önce
+        # değil sonra uygulanır; sıra sonucu değiştirmez ama imzasız bir
+        # payload'ın sv alanına güvenilmemesi için önce imzayı doğrularız.
         if not (secret and hmac.compare_digest(signature, expected)
                 and int(data.get("exp", 0)) > time.time()):
-            return False
+            return None
+        expected_version = _user_session_versions.get(username)
+        if expected_version is not None and int(data.get("sv", -1)) != expected_version:
+            return None
         # Fingerprint varsa eşleşmayı kontrol et
         stored_fp = str(data.get("fp", ""))
         if stored_fp:
             expected_fp = hashlib.sha256(str(client_fingerprint or "").encode()).hexdigest()[:16]
             if not hmac.compare_digest(stored_fp, expected_fp):
-                return False
-        return True
+                return None
+        return data
     except (ValueError, TypeError, json.JSONDecodeError):
-        return False
+        return None
+
+
+def verify_session_token(token, client_fingerprint: str = "") -> bool:
+    """Token geçerli mi? (imza + süre + oturum sürümü + fingerprint)"""
+    return _decode_session(token, client_fingerprint) is not None
 
 
 def session_user(token) -> dict | None:
     """Decode a valid session token into {username, role}; None when invalid."""
-    try:
-        payload, signature = str(token or "").split(".", 1)
-        secret = os.getenv("SCALPER_SESSION_SECRET", "").encode()
-        expected = _b64(hmac.new(secret, payload.encode(), hashlib.sha256).digest())
-        data = json.loads(_unb64(payload))
-        if not (secret and hmac.compare_digest(signature, expected)
-                and int(data.get("exp", 0)) > time.time()):
-            return None
-        username = str(data.get("sub") or "").strip().lower()
-        role = str(data.get("role") or "user").lower()
-        expected_version = _user_session_versions.get(username)
-        if not username or (expected_version is not None and int(data.get("sv", -1)) != expected_version):
-            return None
-        return {"username": username, "role": role}
-    except (ValueError, TypeError, json.JSONDecodeError):
+    data = _decode_session(token)
+    if data is None:
         return None
+    return {"username": str(data.get("sub") or "").strip().lower(),
+            "role": str(data.get("role") or "user").lower()}
 
 
 def password_matches(password):
@@ -180,15 +186,50 @@ def request_authenticated(headers, cookies=None, query_token=None):
     return request_user(headers, cookies, query_token) is not None
 
 
+#: G-15 (2026-09-12): Statik yönetici token'ı yalnızca bu bayrak açıkken çalışır.
+STATIC_ADMIN_TOKEN_FLAG = "SCALPER_ADMIN_TOKEN_ALLOW_STATIC"
+
+
+def static_admin_token_enabled() -> bool:
+    """Statik ``SCALPER_ADMIN_TOKEN`` yolu açıkça etkinleştirildi mi?
+
+    Gerekçe: statik token ``exp``, ``sv`` (oturum sürümü) ve fingerprint
+    kontrollerini atlar, logout ile iptal edilemez ve süresi yoktur. Varsayılan
+    olarak KAPALIDIR; böylece ``SCALPER_ADMIN_TOKEN`` yanlışlıkla set edilse
+    bile süresiz tam yetkili bir anahtar oluşmaz. Operatör bu yolu bilinçli
+    olarak isterse ``SCALPER_ADMIN_TOKEN_ALLOW_STATIC=1`` verir ve token
+    rotasyonu ile süresiz erişim riskini kabul eder (dokümantasyon: bu modül).
+    """
+    return os.getenv(STATIC_ADMIN_TOKEN_FLAG, "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def request_user(headers, cookies=None, query_token=None):
     """Return {username, role} for the request principal, or None."""
     authorization = str(headers.get("authorization", ""))
     bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
     admin_token = os.getenv("SCALPER_ADMIN_TOKEN", "").strip()
-    if admin_token and bearer and hmac.compare_digest(bearer, admin_token):
+    if admin_token and static_admin_token_enabled() and bearer and hmac.compare_digest(bearer, admin_token):
+        # G-15: yalnız açık env bayrağı ile; oturum sürümü/süre kontrolü yoktur.
         return {"username": "admin", "role": "admin"}
     token = (cookies or {}).get(SESSION_COOKIE) or query_token
     return session_user(token)
+
+
+def require_admin(request) -> dict:
+    """Yönetici kapısı (G-23): ortak uygulama burada, ``main`` içinde DEĞİL.
+
+    ``main._require_admin`` ve router'lar (``app.api_common.require_admin``
+    üzerinden) aynı kapıyı kullanır. Eksik principal → 401, admin olmayan →
+    403. Davranış eskisiyle birebir aynıdır.
+    """
+    from fastapi import HTTPException
+
+    user = request_user(request.headers, request.cookies)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Bu işlem yalnız sistem yöneticisine açıktır")
+    return user
 
 
 def _validate_provider_url_sync(base_url):

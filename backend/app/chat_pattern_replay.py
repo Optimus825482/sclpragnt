@@ -24,7 +24,7 @@ import time
 from collections import Counter, defaultdict
 
 from app.forecast_learning import evaluate_forecast
-from app.technical_analysis import calculate_snapshot
+from app.technical_analysis import _atr, calculate_snapshot
 
 
 DEFAULT_STEP_MINUTES = 15
@@ -67,14 +67,14 @@ def _resample(rows: list, factor: int) -> dict:
 
 
 def _atr_pct(closes, highs, lows) -> float:
-    if len(closes) < 15:
-        return 0.0
-    trs = []
-    for i in range(len(closes) - 14, len(closes)):
-        prev = closes[i - 1]
-        trs.append(max(highs[i] - lows[i], abs(highs[i] - prev), abs(lows[i] - prev)))
-    atr = sum(trs) / len(trs) if trs else 0.0
-    return atr / closes[-1] if closes[-1] else 0.0
+    """Kanonik ATR'nin KESİR hali (I-03) — tek kaynak `technical_analysis._atr`.
+
+    Önceden bu gövde `chat_prediction_replay._atr_pct`'in bayt bayt aynı
+    kopyasıydı; artık ikisi de kanonik yardımcıya devreder. Çağıran `* 100`
+    ile yüzdeye çevirir (tarihsel sözleşme korunur).
+    """
+    atr = _atr(highs, lows, closes, 14)
+    return atr / closes[-1] if atr is not None and closes[-1] else 0.0
 
 
 def rich_features(symbol: str, rows: list, horizon_minutes: int) -> dict | None:
@@ -233,7 +233,7 @@ class PatternReplayRunner:
         except Exception as exc:
             self.log(f"{symbol} veri hatası: {exc}")
             return None
-        rows = [r for r in rows if _close_time(r) <= int(r[0]) + 59_999]
+        rows = [r for r in rows if _close_time(r) <= int(time.time() * 1000)]  # yalnız kapanmış mumlar (REP-02)
         if len(rows) < MIN_SYMBOL_CANDLES:
             self.log(f"{symbol}: yetersiz kapalı mum ({len(rows)})")
             return None
@@ -286,6 +286,23 @@ class PatternReplayRunner:
         split_ms = end_ms - self.test_hours * 3_600_000
         train_start_ms = end_ms - (self.train_hours + self.test_hours) * 3_600_000
 
+        # REP-03: istenen train+test penceresi indirilen 1m serinin tamamına
+        # sığmıyorsa (kline limiti min(1000, …)) sessizce boş eğitim üretmek
+        # yerine açık uyarı ver ve başlangıcı mevcut veriye kırp.
+        requested_hours = self.train_hours + self.test_hours
+        requested_ms = requested_hours * 3_600_000
+        earliest_open_ms = min(min(int(r[0]) for r in d["rows"]) for d in loaded.values())
+        available_ms = end_ms - earliest_open_ms
+        available_hours = round(available_ms / 3_600_000.0, 2)
+        window_complete = available_ms + 59_999 >= requested_ms
+        window_warning = None
+        if not window_complete:
+            window_warning = (f"İstenen {requested_hours} saatlik pencere karşılanamadı; "
+                              f"yalnızca ~{available_hours} saat 1m mum var (kline limiti). "
+                              "train/test penceresi mevcut veriye kırpıldı.")
+            self.log("UYARI: " + window_warning)
+            train_start_ms = max(train_start_ms, earliest_open_ms)
+
         def steps_between(start_ms, end):
             out, cur = [], ((start_ms // step_ms) + 1) * step_ms
             while cur + max(self.horizons) * 60_000 <= end:
@@ -298,9 +315,14 @@ class PatternReplayRunner:
         # ---------- FAZ A: TRAIN — artanları tespit + özellik madenciliği ----------
         train_rows = []
         risers_found = 0
+        # REP-04: iç içe/örtüşen pencereler örneklemi şişiriyordu (5dk penceresi
+        # 15dk penceresinin alt kümesi → aynı gözlem iki kez sayılıyor, desenler
+        # olduğundan güçlü görünüyordu). Faz A'da sembol-adım başına TEK satır:
+        # birincil (en geniş) ufuk.
+        primary_horizon = max(self.horizons)
         for decision_ms in train_steps:
             for symbol, data in loaded.items():
-                for horizon in self.horizons:
+                for horizon in (primary_horizon,):
                     feat = self._features_at(data, decision_ms, horizon)
                     if not feat:
                         continue
@@ -414,7 +436,7 @@ def live_pattern_tags(kline_rows: list, horizon_minutes: int) -> dict | None:
     Dönen sözlük features/tags içerir; hiçbir alan geleceğe bakmaz.
     """
     try:
-        closed = [r for r in kline_rows if _close_time(r) <= int(r[0]) + 59_999]
+        closed = [r for r in kline_rows if _close_time(r) <= int(time.time() * 1000)]  # REP-02
         if len(closed) < MIN_SYMBOL_CANDLES:
             return None
         feat = rich_features("LIVE", closed, horizon_minutes)

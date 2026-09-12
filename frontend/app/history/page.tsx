@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { fetchAllPages } from "../lib/api";
+import { formatFixed, formatSignedTL, formatTL, toMs } from "../lib/format";
 import { formatPrice } from "../charts/chartShared";
 
 type Trade = {
@@ -67,8 +68,12 @@ export default function HistoryPage() {
         const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         return v < 0 ? `-₺${formatted}` : `₺${formatted}`;
     };
-    const fmtTime = (ts?: number) =>
-        ts ? new Date(ts * 1000).toLocaleString("tr-TR", { hour12: false }) : "-";
+    // H-24: elle `* 1000` yerine `toMs` (backend saniye/ms karışık gönderir;
+    // sezgisel dönüşüm tek kaynakta).
+    const fmtTime = (ts?: number) => {
+        const ms = toMs(ts);
+        return ms ? new Date(ms).toLocaleString("tr-TR", { hour12: false }) : "-";
+    };
 
     return (
         <div className="max-w-7xl mx-auto space-y-6">
@@ -143,7 +148,7 @@ export default function HistoryPage() {
                                     </td>
                                     <td className="p-3 text-bunker-muted">₺{formatPrice(t.entry_price)}</td>
                                     <td className="p-3 text-bunker-muted">₺{formatPrice(t.exit_price)}</td>
-                                    <td className="p-3 text-bunker-muted">{t.quantity.toFixed(6)}</td>
+                                    <td className="p-3 text-bunker-muted">{Number.isFinite(Number(t.quantity)) ? Number(t.quantity).toFixed(6) : "—"}</td>
                                     <td className="p-3 text-neon-yellow">{t.commission == null ? "—" : formatCurrency(t.commission)}</td>
                                     <td className={`p-3 font-bold ${t.pnl == null ? "text-bunker-muted" : t.pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
                                         {t.pnl == null ? "—" : formatCurrency(t.pnl)}

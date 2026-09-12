@@ -54,6 +54,12 @@ _FULL_BROADCAST_EVERY = 5
 # ADX'ten (gecikmeli) farklı olarak M1..H1'de hem hassas hem karşılaştırılabilir.
 _TREND_WINDOW = 20
 _TREND_MIN_POINTS = 8
+# F-08: trend/sinyal yeniden hesabı (6 TF OLS + ATR + kırılım + hacim) KABA bir
+# kadansa bağlanır. Aktif sembolde fiyat her saniye değiştiği için `price_changed`
+# tek başına cache'i fiilen ölü bırakıyordu (her pass 6×_compute_cell + trend
+# yolu ≈ 440 ms/tur). Yeni kapanmış bar / evrene giriş / REST tazeleme kadansı
+# BYPASS eder; salt fiyat oynaklığı artık trend_stale TETİKLEMEZ.
+_TREND_RECOMPUTE_SEC = 20.0
 
 # Zaman dilimi ağırlıkları (kullanıcı isteği 2026-09-09): kullanıcı M5'te
 # sıçrama/düzenli yükselişi izlemek istiyor → M5/M15 en yüksek; H1 önemli ama
@@ -75,6 +81,10 @@ _EARLY_COOLDOWN_MIN_SEC = 30 * 60          # alt sınır (isabet koruması)
 _EARLY_COOLDOWN_MAX_SEC = 150 * 60         # üst sınır (dip medyanı)
 _EARLY_ADAPTIVE_DEFAULT = bool(config.MACD_EARLY_ADAPTIVE_COOLDOWN)
 _SETTINGS_TTL_SEC = 5.0
+# F-12: aktif evren (`_active_symbols`) 20 sn TTL ile önbelleklenir. Açık
+# pozisyonlar / activity durumu yavaş değişir; her 1 sn'lik pass'te
+# `list_auto_paper_trades` DB round-trip'i gereksizdi.
+_ACTIVE_SYMBOLS_TTL_SEC = 20.0
 # REST snapshot'ı bu yaşın altındaysa döngünün ürettiği önbellek döndürülür
 # (her istekte tam evren hesabı yapılmasını engeller — A2).
 _REST_CACHE_MAX_AGE_SEC = 5.0
@@ -82,10 +92,17 @@ _REST_CACHE_MAX_AGE_SEC = 5.0
 # eşiği = jump_min - bu değer. Sinyal davranışını etkilediği için kanıtla
 # (replay) seçildi — bkz. outputs/macd_monitor_replay_kanit.md.
 _JUMP_HYSTERESIS = 5
+# F-11: eşiğin ÜSTÜNDE evrene giren sembol boot koruması yüzünden HİÇ alarm
+# üretmiyordu (skor temizleme eşiğinin altına inmediği sürece bayrak düşmez).
+# Boot koruması artık SINIRLI: en fazla bu kadar pass sessiz kalır, sonra bir kez
+# alarm üretir. Sürekli yüksek skorlu sembol "hiç uyarı almama"ya düşmez.
+_JUMP_ARM_MAX_PASSES = 3
 # C3: bekleyen alarmların 5m/15m/30m ileri getirilerini doldurma aralığı (sn)
 _EVIDENCE_FILL_SEC = 120.0
 
 _settings_cache: dict = {"value": None, "at": 0.0}
+# F-12: aktif evren TTL önbelleği ({"value": [...], "at": monotonic})
+_active_symbols_cache: dict = {"value": None, "at": 0.0}
 
 _loop_task = None
 # C3 kanıt katmanı: bekleyen alarm sonuçlarını dolduran yardımcı döngü
@@ -105,20 +122,27 @@ _last_price_seen: dict[str, float] = {}
 _last_bar_ts: dict[tuple[str, str], float] = {}
 # (symbol, tf) → son REST tazeleme zamanı
 _last_rest_refresh: dict[tuple[str, str], float] = {}
+# F-13: başarısız yenileme anahtarları — kuyruk başını kalıcı işgal etmesinler.
+_rest_refresh_failures: dict[tuple[str, str], int] = {}
 # C4/B8: sembol → (trend, ekstralar) önbelleği. Fiyat ve kapanmış barlar
 # değişmediği sürece trend/sinyal hesabı (6 TF × OLS + ATR + kırılım + hacim)
 # yeniden yapılmaz. MIN-MAX normalizasyonu yine her turda uygulanır, çünkü
 # skor evrenin o anki min/max'ına bağlıdır.
 _trend_cache: dict[str, tuple[dict, dict]] = {}
+# F-08: sembol → son trend/sinyal yeniden hesap zamanı (GÖRELİ, monotonik sn).
+# Kadans (`_TREND_RECOMPUTE_SEC`) bu tabanla ölçülür; `time.time()` değil.
+_trend_recomputed_at: dict[str, float] = {}
 # C4/B9: son tam yayından bu yana satırı değişen semboller. Loop, tam snapshot
 # yerine yalnızca bu sembolleri (delta) yayınlar; böylece 312 sembollük ~60 KB
 # gövde saniyede bir değil, yalnızca değişenler kadar gönderilir. Her 5. pass'ta
 # koşulsuz TAM yayın yapılır (istemci kendini onarır).
 _pending_changed: set[str] = set()
-# symbol → son sıçrama alarmı zamanı (cooldown için)
+# symbol → son sıçrama alarmı zamanı (cooldown için). F-07: GÖRELİ ölçüm →
+# `time.monotonic()` (duvar saati adımlarına dayanıklı); bellek-içi, kalıcı değil.
 _jump_alerted_at: dict[str, float] = {}
 # (symbol, öncü) → son ERKEN SİNYAL (yaklaşıyor) alarmı zamanı (B5: öncü bazlı
-# cooldown; eskiden `symbol` bazlıydı ve yeni bir öncüyü yutuyordu)
+# cooldown; eskiden `symbol` bazlıydı ve yeni bir öncüyü yutuyordu). F-07:
+# diğer cooldown yapılarıyla aynı şekilde monotonik saat.
 _early_alerted_at: dict[tuple[str, str], float] = {}
 # C7 — adaptif cooldown durumu: kadar hızlı yeniden-armosun, son ateşleme
 # aralığı baz alınır (geçmiş aralık↑ → cooldown yukarı, ↓ → aşağı). Yalnız
@@ -144,12 +168,35 @@ def _status_value(info) -> str:
     return str(info or "")
 
 
-def _to_bool(value, default: bool) -> bool:
+_TRUE_BOOL_WORDS = ("1", "true", "yes", "açık", "on")
+_FALSE_BOOL_WORDS = ("0", "false", "no", "kapalı", "off", "")
+# F-19: tanınmayan yazımlar için uyarı logunu tekrarlamayalım.
+_bool_warned: set[str] = set()
+
+
+def _to_bool(value, default: bool, *, source: str = "") -> bool:
+    """Ayar boolean'ını çöz; F-19: TANINMAYAN yazımda SESSİZCE False yapma → logla.
+
+    Eskiden yalnızca `1/true/yes/açık/on` kabul ediliyordu ve "acik", "enabled",
+    "True " gibi yazımlar hiçbir uyarı olmadan False'a düşüyordu (tek yazım
+    hatası tüm alarmları/push'ları sessizce kapatabiliyordu). Davranış korunur
+    (yine False döner) ama artık WARNING loglanır.
+    """
     if isinstance(value, bool):
         return value
     if value is None:
         return default
-    return str(value).strip().lower() in ("1", "true", "yes", "açık", "on")
+    text = str(value).strip().lower()
+    if text in _TRUE_BOOL_WORDS:
+        return True
+    if text in _FALSE_BOOL_WORDS:
+        return False
+    key = f"{source}|{text}"
+    if key not in _bool_warned:
+        _bool_warned.add(key)
+        logger.warning("macd_monitor ayarı tanınmayan boolean değeri: %r (kaynak: %s) → False",
+                       value, source or "bilinmeyen")
+    return False
 
 
 def _tf_seconds(tf: str) -> int:
@@ -181,11 +228,27 @@ def _live_tick(symbol: str):
 
 
 def _closed_bar_close_ts(history, tf: str) -> float | None:
-    """Serideki son KAPANMIŞ barın KAPANIŞ zamanı (sn) — bayatlık ölçüsü (B4)."""
-    marker = _bar_marker(history)
+    """Serideki son KAPANMIŞ barın KAPANIŞ zamanı (sn) — bayatlık ölçüsü (B4/F-06).
+
+    F-06: `last_closed_at_ms` ZATEN kapanış anıdır; ona bir TF daha eklemek
+    gelecekteki bir damga üretiyor ve UI'daki "baz yaşı" her zaman 0 sn
+    görünüyordu. Interval yalnızca açılış anına (timestamps[-1]) düşülen
+    fallback dalında eklenir.
+    """
+    try:
+        marker = float(history.get("last_closed_at_ms") or 0)
+    except Exception:
+        marker = 0.0
     if marker > 0:
-        return (marker + _tf_seconds(tf) * 1000) / 1000.0
-    return None
+        return marker / 1000.0
+    stamps = history.get("timestamps") or []
+    try:
+        open_ms = float(stamps[-1]) if stamps else 0.0
+    except Exception:
+        open_ms = 0.0
+    if open_ms <= 0:
+        return None
+    return (open_ms + _tf_seconds(tf) * 1000) / 1000.0
 
 
 def _aligned_ohlc(symbol: str, tf: str, min_len: int):
@@ -230,7 +293,14 @@ def _macd_settings_defaults() -> dict:
 
 
 async def get_macd_settings(force: bool = False) -> dict:
-    """MACD MONITOR ayarları (DB; 5 sn TTL'li önbellek)."""
+    """MACD MONITOR ayarları (DB; 5 sn TTL'li önbellek).
+
+    F-19 — öncelik: **env (yalnız import anı) < DB < UI**. DB'de
+    `macd_monitor_settings` satırı varsa ilgili anahtar DB'den gelir; yoksa
+    varsayılan (env/config türevi) kullanılır. Her anahtarın nereden geldiği
+    `sources` alanında raporlanır (db/env/default) ki "env değiştirdim ama
+    etkisi yok" kafa karışıklığı görünür olsun.
+    """
     global _settings_cache
     now = time.time()
     if not force and _settings_cache["value"] and now - _settings_cache["at"] < _SETTINGS_TTL_SEC:
@@ -241,22 +311,44 @@ async def get_macd_settings(force: bool = False) -> dict:
         stored = json.loads(raw or "{}") if raw else {}
     except Exception:
         stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
     merged = {
         "jump_min_score": int(max(0, min(100, int(stored.get("jump_min_score", defaults["jump_min_score"]))))),
-        "alerts_enabled": _to_bool(stored.get("alerts_enabled"), defaults["alerts_enabled"]),
-        "push_enabled": _to_bool(stored.get("push_enabled"), defaults["push_enabled"]),
-        "early_alerts_enabled": _to_bool(stored.get("early_alerts_enabled"), defaults["early_alerts_enabled"]),
-        "early_adaptive_cooldown": _to_bool(stored.get("early_adaptive_cooldown"), defaults["early_adaptive_cooldown"]),
+        "alerts_enabled": _to_bool(stored.get("alerts_enabled"), defaults["alerts_enabled"],
+                                   source="db:alerts_enabled"),
+        "push_enabled": _to_bool(stored.get("push_enabled"), defaults["push_enabled"],
+                                 source="db:push_enabled"),
+        "early_alerts_enabled": _to_bool(stored.get("early_alerts_enabled"), defaults["early_alerts_enabled"],
+                                         source="db:early_alerts_enabled"),
+        "early_adaptive_cooldown": _to_bool(stored.get("early_adaptive_cooldown"),
+                                            defaults["early_adaptive_cooldown"],
+                                            source="db:early_adaptive_cooldown"),
+    }
+    # F-19: her ayarın KAYNAĞI (DB satırı mı, env/config varsayılanı mı?).
+    merged["sources"] = {
+        key: ("db" if key in stored else ("env" if key == "early_adaptive_cooldown" else "default"))
+        for key in _macd_settings_defaults()
     }
     _settings_cache.update(value=merged, at=now)
     return dict(merged)
 
 
-async def _active_symbols() -> list[str]:
+async def _active_symbols(force: bool = False) -> list[str]:
     """Aktif evren: ACTIVE durumdakiler + açık pozisyonlar (bot + auto paper).
 
     Activity haritası boşsa (ilk tarama öncesi) tüm takip listesi döner.
+
+    F-12: sonuç `_ACTIVE_SYMBOLS_TTL_SEC` (20 sn) boyunca önbelleklenir —
+    `_compute_pass` her ~1 sn'de çağırdığı için her pass'ta
+    `list_auto_paper_trades` DB round-trip'i yapılıyordu. Açık pozisyonlar ve
+    activity durumu yavaş değişir; 20 sn gecikme kabul edilebilir.
     """
+    now = time.monotonic()
+    cached = _active_symbols_cache.get("value")
+    if (not force and cached is not None
+            and now - float(_active_symbols_cache.get("at") or 0.0) < _ACTIVE_SYMBOLS_TTL_SEC):
+        return list(cached)
     statuses = getattr(config, "SYMBOL_ACTIVITY_STATUS", None) or {}
     active = {str(s).upper() for s, info in statuses.items() if _status_value(info).upper() == "ACTIVE"}
     open_syms = {str(s).upper() for s in (analyzer.positions or {})}
@@ -269,7 +361,9 @@ async def _active_symbols() -> list[str]:
     if not symbols:
         tracked = [str(s).upper() for s in (getattr(config, "SYMBOLS", None) or [])]
         symbols = sorted(set(tracked))
-    return symbols
+    _active_symbols_cache["value"] = list(symbols)
+    _active_symbols_cache["at"] = now
+    return list(symbols)
 
 
 def _compute_cell(symbol: str, tf: str):
@@ -383,7 +477,9 @@ def _tf_breakout_detail(symbol: str, tf: str) -> dict:
         price, as_of = float(closes[-1] or 0), _closed_bar_close_ts(history, tf)
     if price <= 0:
         return out
-    prior_high = max(highs[-21:-1])
+    # F-05: cache yalnızca KAPANMIŞ bar tutar → `highs[-1]` en yeni kapalı bardır.
+    # `[-21:-1]` onu dışarıda bırakıp pencereyi bir bar geriye kaydırıyordu.
+    prior_high = max(highs[-20:])
     out["ok"] = True
     out["break"] = bool(price > prior_high)
     out["price"] = price
@@ -403,8 +499,25 @@ def _tf_breakout(symbol: str, tf: str):
     return detail["break"] if detail["ok"] else None
 
 
+def _rest_refresh_order(due: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """F-13: REST yenileme kuyruğunu başarısızlık sayısına göre sırala.
+
+    Başarısız anahtar `_last_rest_refresh`'e yazılmadığı için her turda "due"
+    olur ve sıralama olmadan kuyruğun başındaki slotları kalıcı işgal eder.
+    Sorunlu anahtarlar sona düşünce evrenin geri kalanı tazelenmeye devam eder.
+    """
+    return sorted(due, key=lambda item: (_rest_refresh_failures.get(item, 0), item))
+
+
 def _tf_trs_atr(symbol: str, tf: str):
-    """Kapanmış barların TR listesi + 14'lük ATR'si. Veri yetersizse (None, None)."""
+    """Kapanmış barların TR listesi + 14'lük ATR'si. Veri yetersizse (None, None).
+
+    F-10 (ERTELENDİ): `(symbol, tf)` memoizasyonu denendi; ancak bar işareti
+    değişmeden serinin içeriği değiştiğinde bayat değer döndürüyordu (mevcut
+    `test_macd_monitor` testleri bunu yakaladı). Güvenli bir anahtar serinin
+    parmak izini (uzunluk + son kapanış + TR özeti) içermelidir; bu ayrı bir
+    iştir. Şimdilik hesap her çağrıda yapılır (doğruluk > mikro-optimizasyon).
+    """
     history = _aligned_ohlc(symbol, tf, 22)
     if history is None:
         return None, None
@@ -504,7 +617,11 @@ def _live_close_series(symbol: str, tf: str, min_len: int) -> list[float] | None
 
 
 def _atr_14_closed(symbol: str, tf: str) -> float | None:
-    """Kapanmış bar TR'lerinin son 14'lük ortalaması (öncü mesafeyi ölçekler)."""
+    """Kapanmış bar TR'lerinin son 14'lük ortalaması (öncü mesafeyi ölçekler).
+
+    F-10 (ERTELENDİ): bkz. `_tf_trs_atr` — güvenli seri-parmak-izi anahtarı
+    gelene kadar memoizasyon kapalı (bayat değer riski).
+    """
     history = _aligned_ohlc(symbol, tf, 15)
     if history is None:
         return None
@@ -552,7 +669,7 @@ def _approach_detail(symbol: str) -> dict:
     atr = _atr_14_closed(symbol, "5m")
     if not atr or atr <= 0:
         return out
-    gap = (max(highs[-21:-1]) - price) / atr
+    gap = (max(highs[-20:]) - price) / atr  # F-05: en yeni kapanmış bar dahil
     out["gap"] = gap
     out["proximity"] = max(0.0, min(1.0, 1.0 - max(0.0, gap)))
     out["as_of"] = as_of
@@ -655,27 +772,55 @@ def _update_jump_arm(row: dict, jump: int | None, jump_min: int, prev_jump: int 
     """Histerezisli eşik bayrağını güncelle; alarm basılmalıysa True döner (B6).
 
     - Eşik geçişi (`jump >= jump_min`) bayrağı kurar ve alarm ister; ancak
-      boot'ta (`prev_jump is None`) bayrak kurulur, alarm BASILMAZ — aksi halde
-      sunucu her açılışta hazır adaylar için toplu alarm üretirdi.
+      boot'ta (`prev_jump is None`) bayrak kurulur, alarm HEMEN basılmaz — aksi
+      halde sunucu her açılışta hazır adaylar için toplu alarm üretirdi.
+    - **F-11:** boot koruması SÜRESİZDİ — eşiğin ÜSTÜNDE evrene giren sembol,
+      skor temizleme eşiğinin altına inmeden bayrağı düşmediği için HİÇ alarm
+      üretmiyordu. Artık koruma SINIRLI: en fazla `_JUMP_ARM_MAX_PASSES` pass
+      sessiz kalır, sonra BİR kez alarm üretir (sayaç `jump_arm_passes`).
     - Bayrak, skor temizleme eşiğinin (`jump_min - _JUMP_HYSTERESIS`) altına
       inene kadar kurulu kalır → eşik çevresinde titreyen skor tekrar tekrar
       alarm basmaz (histerezis).
     - F-01: `activity_changed=False` ise (sembolün kendi raw/sigs/cvd'si
       değişmedi) eşik geçişi YALNIZCA evren normalizasyonu kaymasından
-      geliyordur → bayrak kurulmaz, alarm basılmaz. Sembolün verisi gerçekten
-      değiştiğinde bir sonraki turda normal şekilde değerlendirilir.
+      geliyordur → bayrak kurulmaz, alarm basılmaz. Bu kapı yalnız bayrağı
+      KURMA anında uygulanır; meşru şekilde arm olmuş sembolün sınırlı boot
+      sayacı (dwell) bu kapıdan bağımsız ilerler.
     """
     if jump is None:
         return False
     armed = bool(row.get("jump_armed", False))
     clear = max(0, jump_min - _JUMP_HYSTERESIS)
-    if not armed and jump >= jump_min:
+    if armed and jump <= clear:
+        # Histerezis: temizleme eşiğinin altına indi → bayrak düşer, sayaç sıfır.
+        row["jump_armed"] = False
+        row["jump_arm_passes"] = 0
+        return False
+    if jump < jump_min:
+        # Eşik altı (henüz geçiş yok) — bayrak kurulu kalsa da bu turda sessiz.
+        return False
+    if not armed:
         if not activity_changed:
             return False
         row["jump_armed"] = True
-        return prev_jump is not None
-    if armed and jump <= clear:
-        row["jump_armed"] = False
+        if prev_jump is not None:
+            # Normal eşik geçişi (skor altından geldi) → hemen ateş.
+            row["jump_arm_passes"] = 0
+            return True
+        # Boot / evrene yeni giriş: sessiz arm; sayaç sınırlı boot koruması.
+        row["jump_arm_passes"] = 1
+        return _JUMP_ARM_MAX_PASSES <= 1
+    # Bayrak zaten kurulu ve skor eşiğin üstünde → boot sayacı hâlâ doluyorsa
+    # sınırlı pass sonra ateşle (yoksa sürekli yüksek skorlu sembol asla uyarı
+    # üretmezdi). Ateşledikten sonra sayaç 0'a çekilir (histerezis beklenir).
+    passes = int(row.get("jump_arm_passes", 0))
+    if passes <= 0:
+        return False
+    passes += 1
+    if passes >= _JUMP_ARM_MAX_PASSES:
+        row["jump_arm_passes"] = 0
+        return True
+    row["jump_arm_passes"] = passes
     return False
 
 
@@ -792,9 +937,14 @@ async def _maybe_fire_jump_alert(symbol: str, score: int, jump_min: int, setting
     """
     if not bool(settings.get("alerts_enabled", True)):
         return
-    now = time.time()
-    last = _jump_alerted_at.get(symbol, 0.0)
-    if now - last < _JUMP_ALERT_COOLDOWN_SEC:
+    # F-07: cooldown GÖRELİ ölçüm → monotonik saat. Duvar saati (`time.time`)
+    # NTP adımıyla ileri sıçrayınca tüm sembollerin cooldown'u aynı anda dolup
+    # alarm fırtınası, geri sıçrayınca negatif fark → alarm donması üretiyordu.
+    # Duvar saati yalnızca YAYINLANAN/KALICI alanlarda (generated_at, created_at,
+    # session) kalır. `_jump_alerted_at` yalnız bellek-içi olduğundan karışım yok.
+    now = time.monotonic()
+    last = _jump_alerted_at.get(symbol)
+    if last is not None and now - last < _JUMP_ALERT_COOLDOWN_SEC:
         return
     _jump_alerted_at[symbol] = now
     # C3 kanıt katmanı: alarmı, o anki sinyal imzası ve fiyatla birlikte kalıcı
@@ -805,7 +955,7 @@ async def _maybe_fire_jump_alert(symbol: str, score: int, jump_min: int, setting
         await ws_manager.broadcast({
             "type": "macd_monitor_alert",
             "data": {"symbol": symbol, "score": int(score), "jump_min": int(jump_min),
-                     "generated_at": now},
+                     "generated_at": time.time()},
         })
     except Exception as exc:
         logger.debug("macd_monitor alarm WS: %s", exc)
@@ -864,28 +1014,32 @@ async def _maybe_fire_early_alert(symbol: str, pre: dict, settings: dict):
     """
     if not bool(settings.get("alerts_enabled", True)) or not bool(settings.get("early_alerts_enabled", True)):
         return
-    now = time.time()
+    # F-07: cooldown GÖRELİ ölçüm → monotonik. `_early_alerted_at` / `_early_last_gap`
+    # yalnız bellek-içi olduğundan duvar saatiyle KARIŞMAZ; `generated_at` gibi
+    # yayınlanan alanlarda duvar saati kullanılmaya devam eder.
+    now = time.monotonic()
     adaptive = bool(settings.get("early_adaptive_cooldown", _EARLY_ADAPTIVE_DEFAULT))
     fired: list[str] = []
     signals = []
     for key in _EARLY_FIRE_KEYS:
         if not pre.get(key):
             continue
-        last = _early_alerted_at.get((symbol, key), 0.0)
+        last = _early_alerted_at.get((symbol, key))
         # C7: adaptif aktifse kanıt-tabanlı per-öncü cooldown; değilse sabit 30 dk.
-        if adaptive:
-            cooldown = _early_adaptive_cooldown(symbol, key, last, now)
-        else:
-            cooldown = _JUMP_ALERT_COOLDOWN_SEC
-        if now - last < cooldown:
-            continue
+        if last is not None:
+            if adaptive:
+                cooldown = _early_adaptive_cooldown(symbol, key, last, now)
+            else:
+                cooldown = _JUMP_ALERT_COOLDOWN_SEC
+            if now - last < cooldown:
+                continue
         signals.append(_EARLY_FIRE_LABEL.get(key, key))
         fired.append(key)
     if not signals:
         return
     for key in fired:
         # C7: adaptif cooldown için önceki ateşleme aralığını kaydet (skalayıcı).
-        prev = _early_alerted_at.get((symbol, key), 0.0)
+        prev = _early_alerted_at.get((symbol, key))
         if prev:
             _early_last_gap[(symbol, key)] = now - prev
         _early_alerted_at[(symbol, key)] = now
@@ -896,7 +1050,7 @@ async def _maybe_fire_early_alert(symbol: str, pre: dict, settings: dict):
     try:
         await ws_manager.broadcast({
             "type": "macd_early_alert",
-            "data": {"symbol": symbol, "signals": signals, "generated_at": now},
+            "data": {"symbol": symbol, "signals": signals, "generated_at": time.time()},
         })
     except Exception as exc:
         logger.debug("macd_monitor erken alarm WS: %s", exc)
@@ -1086,7 +1240,8 @@ def _symbol_trend_and_signals(sym: str, snapshot_symbols: dict) -> tuple[dict, d
     return trend, extra
 
 
-def _early_trigger(pre_key: tuple, prev_key: tuple, pre_prev: bool) -> bool:
+def _early_trigger(pre_key: tuple, prev_key: tuple, pre_prev: bool,
+                   first_observation: bool = False) -> bool:
     """Erken alarmın tetik koşulu (B5) — saf fonksiyon, test edilebilir.
 
     İki durumda tetiklenir:
@@ -1094,7 +1249,15 @@ def _early_trigger(pre_key: tuple, prev_key: tuple, pre_prev: bool) -> bool:
       2) Mevcut öncü kümesine YENİ bir öncü eklendi (eskiden bu durum
          tamamen yutuluyordu: `approach` açıkken beliren `dip` görülmüyordu).
     Aynı kümenin sürmesi tetiklemez (alarm yorgunluğu olmasın).
+
+    **F-04:** `first_observation=True` (satırda henüz `pre_key` yok — süreç yeni
+    başladı / sembol evrene yeni girdi) ise SESSİZ ARM: tetik YOK. Jump
+    tarafındaki `prev_jump is not None` korumasının karşılığıdır; aksi halde her
+    sunucu restart'ında "dip" açık olan HER sembol için aynı saniyede toplu
+    alarm üretilir ve kanıt setinde yapay bir kümelenme oluşurdu.
     """
+    if first_observation:
+        return False
     if not pre_key:
         return False
     if not pre_prev:
@@ -1156,6 +1319,7 @@ async def _compute_pass_locked(pass_no: int) -> dict:
     for sym in [s for s in list(snapshot_symbols) if s not in keep]:
         snapshot_symbols.pop(sym, None)
         _last_price_seen.pop(sym, None)
+        _trend_recomputed_at.pop(sym, None)
         for tf in TF_LIST:
             _last_bar_ts.pop((sym, tf), None)
 
@@ -1169,6 +1333,11 @@ async def _compute_pass_locked(pass_no: int) -> dict:
             last = _last_rest_refresh.get(key, 0.0)
             if not last or now - last > interval:
                 due.append(key)
+    # F-13: başarısız anahtar `_last_rest_refresh`'e yazılmadığı için her turda
+    # kuyruğun BAŞINDA kalıp slotları kalıcı işgal ediyordu. Başarısızlık
+    # sayısına göre sırala → sorunlu anahtarlar sona düşer, evrenin geri kalanı
+    # tazelenmeye devam eder.
+    due = _rest_refresh_order(due)
     refreshed: set[tuple[str, str]] = set()
     if due:
         async def _refresh(key):
@@ -1176,8 +1345,12 @@ async def _compute_pass_locked(pass_no: int) -> dict:
             try:
                 if await market.refresh_series(sym, tf, limit=150):
                     _last_rest_refresh[key] = time.time()
+                    _rest_refresh_failures.pop(key, None)
                     refreshed.add(key)
+                else:
+                    _rest_refresh_failures[key] = _rest_refresh_failures.get(key, 0) + 1
             except Exception as exc:
+                _rest_refresh_failures[key] = _rest_refresh_failures.get(key, 0) + 1
                 logger.debug("macd_monitor refresh_series %s/%s: %s", sym, tf, exc)
         await asyncio.gather(*(_refresh(k) for k in due[:_MAX_REST_PER_PASS]),
                              return_exceptions=True)
@@ -1199,6 +1372,8 @@ async def _compute_pass_locked(pass_no: int) -> dict:
             # asla atlanmaz — aksi halde satır ilk değerde donar (A1/A8/A9).
             price_changed = price != float(_last_price_seen.get(sym) or 0)
             touched = False
+            bar_new = False        # F-08: ilgili TF'lerde kapanmış yeni bar var mı
+            refresh_hit = False    # F-08: ilgili TF REST'ten tazelendi mi
             for tf in TF_LIST:
                 key = (sym, tf)
                 history = market.get_ut_kline(sym, tf)
@@ -1212,6 +1387,8 @@ async def _compute_pass_locked(pass_no: int) -> dict:
                 if marker:
                     _last_bar_ts[key] = marker
                 touched = True
+                bar_new = bar_new or new_bar
+                refresh_hit = refresh_hit or stale_tf
             row["tfs"] = tfs
             if price > 0:
                 row["last"] = price
@@ -1219,7 +1396,13 @@ async def _compute_pass_locked(pass_no: int) -> dict:
             # Fiyat, hücreler BAŞARIYLA hesaplandıktan sonra kaydedilir; erken
             # yazılırsa bir istisna satırın kalıcı olarak donmasına yol açardı.
             _last_price_seen[sym] = price
-            if is_new or price_changed or universe_changed or touched:
+            # F-08: trend/sinyal (pahalı 6 TF OLS + ATR + kırılım + hacim) YALNIZCA
+            # YAPISAL değişimde hemen tazelenir: yeni sembol / evren değişimi /
+            # yeni kapanmış bar / REST tazelemesi. Salt fiyat oynaklığı
+            # (`price_changed`, her saniye True) artık trend_stale TETİKLEMEZ —
+            # kadans (`_TREND_RECOMPUTE_SEC`) devralır; aksi halde `_trend_cache`
+            # fiilen ölüydü (her pass yeniden hesap).
+            if is_new or universe_changed or bar_new or refresh_hit:
                 trend_stale.add(sym)
             if is_new or price_changed or universe_changed:
                 recomputed += 1
@@ -1236,23 +1419,31 @@ async def _compute_pass_locked(pass_no: int) -> dict:
     # Trend gücü: her TF için 20 barlık lineer regresyon — R² (düzenlilik) ×
     # |eğim|/bar-aralığı (hız). Sembol skoru = TF'lerin _TF_WEIGHTS ile AĞIRLIKLI
     # ortalaması (M5/M15 önde, M1/M3 düşük); evren içinde 0-10'a normalize.
+    #
+    # F-08: bu pahalı hesap artık YALNIZCA (a) yapısal değişimde (yeni sembol /
+    # evren / yeni kapanmış bar / REST tazeleme) veya (b) `_TREND_RECOMPUTE_SEC`
+    # kadansı dolduğunda yapılır. Önbellek yoksa her hâlükârda hesaplanır.
     raw_map: dict[str, dict] = {}
     extras: dict[str, dict] = {}
+    now_mono = time.monotonic()
     for sym in snapshot_symbols:
-        if sym not in trend_stale:
-            cached = _trend_cache.get(sym)
-            if cached is not None:
-                raw_map[sym], extras[sym] = cached
-                continue
+        cached = _trend_cache.get(sym)
+        cadence_due = (now_mono - float(_trend_recomputed_at.get(sym) or 0.0)
+                       >= _TREND_RECOMPUTE_SEC)
+        if cached is not None and sym not in trend_stale and not cadence_due:
+            raw_map[sym], extras[sym] = cached
+            continue
         try:
             raw_map[sym], extras[sym] = _symbol_trend_and_signals(sym, snapshot_symbols)
         except Exception as exc:
             logger.warning("macd_monitor trend hatası %s: %s", sym, exc)
             continue
         _trend_cache[sym] = (raw_map[sym], extras[sym])
+        _trend_recomputed_at[sym] = now_mono
     # Önbellekten düşen sembolleri (evrenden çıkanlar) temizle
     for sym in [s for s in list(_trend_cache) if s not in snapshot_symbols]:
         _trend_cache.pop(sym, None)
+        _trend_recomputed_at.pop(sym, None)
     raws = [entry["raw"] for entry in raw_map.values()]
     lo, hi = (min(raws), max(raws)) if raws else (None, None)
     # F-01: alarm yolu için dayanıklı referans aralığı (evren churn'üne karşı).
@@ -1284,7 +1475,11 @@ async def _compute_pass_locked(pass_no: int) -> dict:
         # `pre_any` yalnız 0→1 kenarında tetiklediği için, A açıkken beliren B
         # öncüsü tamamen yutuluyordu.
         pre_key = tuple(sorted(key for key, value in pre.items() if value))
-        prev_key = tuple(row.get("pre_key") or ())
+        # F-04: satırda `pre_key` YOKSA bu sembolün İLK gözlemidir (süreç yeni
+        # başladı / sembol evrene yeni girdi) → erken alarm SESSİZ ARM'lanır.
+        # Jump tarafındaki `prev_jump is not None` korumasının karşılığı.
+        prev_key_raw = row.get("pre_key")
+        prev_key = tuple(prev_key_raw or ())
         updated = {
             "strength": score,
             "tier": tier,
@@ -1318,8 +1513,11 @@ async def _compute_pass_locked(pass_no: int) -> dict:
             await _maybe_fire_jump_alert(sym, jump, jump_min, settings)
         # YAKLAŞIYOR aşaması: erken öncü sinyal. Tetik: pre_any 0→1 VEYA mevcut
         # kümeye YENİ bir öncü eklendi (B5 — eski 0→1 kenarı yeni öncüyü yutardı).
+        # F-04: ilk gözlem (prev_key_raw None) SESSİZ — restart'ta "dip" açık olan
+        # her sembol için toplu alarm üretilmesini engeller.
         if (alerts_enabled and early_alerts_enabled
-                and _early_trigger(pre_key, prev_key, pre_prev)):
+                and _early_trigger(pre_key, prev_key, pre_prev,
+                                   first_observation=prev_key_raw is None)):
             await _maybe_fire_early_alert(sym, pre, settings)
 
     # Ayarlar değişirse UI eşiği de tazelensin (delta yetmez → tam yayın)
@@ -1510,7 +1708,7 @@ async def update_macd_settings_endpoint(payload: dict, request: Request):
     push_enabled: web push bildirimleri (açıksa alarmla birlikte gider).
     """
     global _dirty
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     existing = await get_macd_settings(force=True)
     editable = ("jump_min_score", "alerts_enabled", "push_enabled", "early_alerts_enabled",
@@ -1518,10 +1716,15 @@ async def update_macd_settings_endpoint(payload: dict, request: Request):
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
     settings = {
         "jump_min_score": int(max(0, min(100, int(merged.get("jump_min_score", existing["jump_min_score"]))))),
-        "alerts_enabled": _to_bool(merged.get("alerts_enabled"), existing["alerts_enabled"]),
-        "push_enabled": _to_bool(merged.get("push_enabled"), existing["push_enabled"]),
-        "early_alerts_enabled": _to_bool(merged.get("early_alerts_enabled"), existing["early_alerts_enabled"]),
-        "early_adaptive_cooldown": _to_bool(merged.get("early_adaptive_cooldown"), existing["early_adaptive_cooldown"]),
+        "alerts_enabled": _to_bool(merged.get("alerts_enabled"), existing["alerts_enabled"],
+                                   source="ui:alerts_enabled"),
+        "push_enabled": _to_bool(merged.get("push_enabled"), existing["push_enabled"],
+                                 source="ui:push_enabled"),
+        "early_alerts_enabled": _to_bool(merged.get("early_alerts_enabled"), existing["early_alerts_enabled"],
+                                         source="ui:early_alerts_enabled"),
+        "early_adaptive_cooldown": _to_bool(merged.get("early_adaptive_cooldown"),
+                                            existing["early_adaptive_cooldown"],
+                                            source="ui:early_adaptive_cooldown"),
     }
     await database.set_llm_setting("macd_monitor_settings", json.dumps(settings))
     _settings_cache.update(value=settings, at=time.time())
@@ -1530,17 +1733,27 @@ async def update_macd_settings_endpoint(payload: dict, request: Request):
 
 
 def start_macd_monitor_loop() -> bool:
-    """Arka plan döngülerini bir kez başlat (idempotent)."""
+    """Arka plan döngülerini başlat (idempotent; iki döngü BAĞIMSIZ yönetilir).
+
+    F-20: Eskiden `_evidence_task` yalnızca `_loop_task` da ölüyse yeniden
+    kuruluyordu → kanıt döngüsü TEK BAŞINA ölürse (`_loop_task` ayakta olduğu
+    için) bir daha başlatılmıyor ve kanıt toplama sessizce duruyordu. Artık iki
+    görev birbirinden bağımsız kontrol edilir: biri ölüyse yalnız O yeniden
+    başlatılır; ikisi de sağsa idempotent olarak False döner.
+    """
     global _loop_task, _evidence_task
-    if _loop_task is not None and not _loop_task.done():
-        return False
+    started = False
     # G-10: iki döngü de süpervizörlü başlatılır (beklenmeyen hatada backoff +
     # yeniden başlatma; aksi halde sessizce ölüp bir daha başlamıyorlardı).
-    _loop_task = _start_background(macd_monitor_loop, "macd-monitor-loop")
-    # C3 kanıt doldurma yardımcı döngüsü (sinyal davranışını değiştirmez)
+    if _loop_task is None or _loop_task.done():
+        _loop_task = _start_background(macd_monitor_loop, "macd-monitor-loop")
+        started = True
+    # C3 kanıt doldurma yardımcı döngüsü (sinyal davranışını değiştirmez) —
+    # ana döngüden BAĞIMSIZ olarak yeniden başlatılır (F-20).
     if _evidence_task is None or _evidence_task.done():
         _evidence_task = _start_background(macd_evidence_loop, "macd-evidence-loop")
-    return True
+        started = True
+    return started
 
 
 def stop_macd_monitor_loop():

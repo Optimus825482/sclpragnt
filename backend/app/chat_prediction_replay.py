@@ -16,8 +16,8 @@ import asyncio
 import time
 from collections import defaultdict
 
-from app.forecast_learning import evaluate_forecast
-from app.technical_analysis import calculate_snapshot
+from app.forecast_learning import evaluate_forecast, label_policy
+from app.technical_analysis import _atr, calculate_snapshot
 
 
 DEFAULT_HORIZONS = (5, 15)
@@ -62,15 +62,16 @@ def _resample_1m(rows: list, factor: int) -> dict:
 
 
 def _atr_pct(closes: list[float], highs: list[float], lows: list[float]) -> float:
-    if len(closes) < 15:
-        return 0.0
-    period = 14
-    trs = []
-    for index in range(len(closes) - period, len(closes)):
-        prev = closes[index - 1]
-        trs.append(max(highs[index] - lows[index], abs(highs[index] - prev), abs(lows[index] - prev)))
-    atr = sum(trs) / len(trs) if trs else 0.0
-    return atr / closes[-1] if closes[-1] else 0.0
+    """Kanonik ATR'nin KESİR hali (I-03).
+
+    Gövde önceden `technical_analysis._atr` ile bayt bayt aynı bir kopyaydı ve
+    kardeş modül `chat_pattern_replay` aynı kopyayı taşıyordu; ikisi sessizce
+    ayrışabilirdi. Artık tek kaynak kanonik `_atr` (14 bar, aynı TR penceresi);
+    tarihsel sözleşmeyi korumak için kapanış fiyatına bölünmüş kesir döner
+    (çağıran taraf `* 100` ile yüzdeye çevirir).
+    """
+    atr = _atr(highs, lows, closes, 14)
+    return atr / closes[-1] if atr is not None and closes[-1] else 0.0
 
 
 def _candidate_score(snapshot: dict) -> tuple[float, list[str], list[str]]:
@@ -114,13 +115,12 @@ def _candidate_score(snapshot: dict) -> tuple[float, list[str], list[str]]:
 
 
 def _label_policy(horizon_minutes: int, atr_pct: float) -> dict:
-    from app.config import config
-    noise_ratio = 0.25 if horizon_minutes == 5 else 0.35
-    min_move_pct = max(config.LLM_FORECAST_MIN_MOVE_PCT,
-                       config.min_net_exit_pct(config.DEFAULT_ORDER_USDT) * 1.05,
-                       atr_pct * noise_ratio)
-    return {"min_move_pct": min_move_pct, "atr_pct": atr_pct, "noise_ratio": noise_ratio,
-            "round_trip_cost_floor": config.min_net_exit_pct(config.DEFAULT_ORDER_USDT)}
+    """Kenar etiketi (REP-01) — tek kaynak `forecast_learning.label_policy`.
+
+    Replay ile canlı journal (upside-candidate + upside-scout) artık birebir aynı
+    formülü kullanır; bu sarmalayıcı geriye dönük adı korur.
+    """
+    return label_policy(horizon_minutes, atr_pct)
 
 
 def _close_time(row) -> int:
@@ -149,7 +149,7 @@ class ReplayRunner:
         except Exception as exc:
             self.log(f"{symbol} 1m verisi alınamadı: {exc}")
             return None
-        rows = [row for row in rows if _close_time(row) <= int(row[0]) + 59_999]  # closed bars only
+        rows = [row for row in rows if _close_time(row) <= int(time.time() * 1000)]  # yalnız kapanmış mumlar (REP-02)
         if len(rows) < MIN_SYMBOL_CANDLES:
             self.log(f"{symbol} yeterli kapalı 1m mum yok ({len(rows)})")
             return None
@@ -350,7 +350,7 @@ class ReplayRunner:
                 "step_minutes": self.step_minutes, "symbols_scanned": len(loaded),
                 "steps": len(steps), "window_start_ms": start_ms, "window_end_ms": end_ms,
                 "pool_mode": "top_gaining_20" if self.use_top_gainers else "configured_symbols",
-                "label_policy_note": "min_move_pct = max(tutarlılık eşiği, tur maliyeti x1.05, ATR x gürültü oranı) — canlı journal ile aynı etiketleme",
+                "label_policy_note": "min_move_pct = max(tutarlılık eşiği, tur maliyeti x1.05, ATR x gürültü oranı) — canlı journal (upside-candidate + upside-scout) ile AYNI kural; tek kaynak _label_policy (REP-01)",
                 "replay_gaps": ["canlı orderbook/spread/24h ticker geçmişi yok; spread-derinlik bilinmiyor sayılır",
                                  "her adımdaki Top-20 gainer havuzu 24h ticker yerine kapanmış mumlardan hesaplanan nedensel 24s değişimle sıralanır"],
                 "pool_history": pool_history[-30:],

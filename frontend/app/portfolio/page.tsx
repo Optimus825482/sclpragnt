@@ -10,7 +10,7 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
 import { Button } from "../components/ui";
-import { toMs } from "../lib/format";
+import { formatSignedTL, formatTL, toMs } from "../lib/format";
 import { closedPnlTry, netOpenPnlPct, netOpenPnlTry } from "../lib/pnl";
 import { formatPrice } from "../charts/chartShared";
 
@@ -77,20 +77,12 @@ type AutoPaperStats = {
 /* ------------------------------------------------------------------ */
 /* Yardımcılar                                                         */
 /* ------------------------------------------------------------------ */
-const money = (v?: number | null) => {
-  // H-02: `null` → "—" (0 DEĞİL). 0 meşru bir değerdir ama "veri yok" değildir.
-  if (v == null || !Number.isFinite(v)) return "—";
-  const abs = Math.abs(v);
-  const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return `₺${formatted}`;
-};
+// H-04/H-15: TL biçimi tek kaynaktan (`lib/format.ts`) — ₺ önek, 2 ondalık
+// (küçük tutarlarda 8 ondalık basılmaz). null → "—" (0 DEĞİL): 0 meşru bir
+// değerdir ama "veri yok" değildir (H-02).
+const money = formatTL;
 
-const signedMoney = (v?: number | null) => {
-  if (v == null || !Number.isFinite(v)) return "—";
-  const abs = Math.abs(v);
-  const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return v < 0 ? `-₺${formatted}` : `₺${formatted}`;
-};
+const signedMoney = formatSignedTL;
 
 const pctText = (v?: number | null) => {
   if (v == null || !Number.isFinite(v)) return "—";
@@ -155,12 +147,20 @@ export default function PortfolioPage() {
   const [apRecent, setApRecent] = useState<AutoPaperTrade[]>([]);
   const [apSettings, setApSettings] = useState<any>(null);
   const [lastEvent, setLastEvent] = useState<{ text: string; at: number } | null>(null);
+  // H-05: ağ hatası "veri yok"tan ayırt edilebilir olmalı — ana veri yolu
+  // (`/api/positions`) başarısız olduğunda uyarı şeridi gösterilir.
+  const [loadError, setLoadError] = useState(false);
   // Kapanan otonom işlemler: pagination'lı tam geçmiş (sayfa altı tablo)
   const [apHistory, setApHistory] = useState<AutoPaperTrade[]>([]);
   const [apHistoryPage, setApHistoryPage] = useState(0);
   const apHistoryPageRef = useRef(apHistoryPage);
   apHistoryPageRef.current = apHistoryPage;
   const AP_HISTORY_PAGE_SIZE = 20;
+  // H-29: liste küçülünce sayfa numarası boş sayfada kalmasın.
+  useEffect(() => {
+    const pages = Math.max(1, Math.ceil(apHistory.length / AP_HISTORY_PAGE_SIZE));
+    setApHistoryPage((p) => (p > pages - 1 ? pages - 1 : p));
+  }, [apHistory.length]);
   // Otonom karar akışı (decision_logs, strategy=AUTO_PAPER)
   const [decisions, setDecisions] = useState<any[]>([]);
   const [decisionsExpanded, setDecisionsExpanded] = useState(false);
@@ -168,8 +168,8 @@ export default function PortfolioPage() {
   const loadMain = useCallback(() => {
     apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => setMainPositions(d.positions || []))
-      .catch(() => undefined);
+      .then((d) => { setMainPositions(d.positions || []); setLoadError(false); })
+      .catch(() => setLoadError(true));
   }, []);
 
   // Sık değişen: yalnız açık pozisyonlar (WS auto_paper_trade sonrası anında
@@ -202,7 +202,14 @@ export default function PortfolioPage() {
     const offset = page * AP_HISTORY_PAGE_SIZE;
     apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=${AP_HISTORY_PAGE_SIZE}&offset=${offset}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => setApHistory(d.trades || []))
+      .then((d) => {
+        const rows: AutoPaperTrade[] = d.trades || [];
+        // H-29: liste küçülünce sayfa numarası kırpılmıyordu → boş tablo +
+        // "Sayfa 7". Boş bir sayfaya düşülürse bir öncekine dön (o yükleme
+        // dolu sayfayı getirir).
+        if (rows.length === 0 && page > 0) { setApHistoryPage(page - 1); return; }
+        setApHistory(rows);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -268,14 +275,26 @@ export default function PortfolioPage() {
 
   // auto_paper_trade WS olayı seri gelebilir (açılış+kapanış) — her olayda
   // 3 REST atmamak için 800 ms debounce ile açık pozisyon listesini tazele.
-  const debouncedRefresh = useMemo(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    return () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => { loadAutoPaperOpen(); loadMain(); loadAutoPaperHistory(apHistoryPageRef.current); loadDecisions(); }, 800);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  //
+  // H-19: zamanlayıcı `useMemo` içinde tutuluyordu ve unmount'ta
+  // temizlenmiyordu → sayfadan çıkıldıktan sonra bile REST istekleri atılıyor,
+  // StrictMode çift aboneliğiyle istek sayısı ikiye çıkıyordu. Ref + effect
+  // cleanup ile tek zamanlayıcı ve sökülmede iptal garanti edilir.
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedRefresh = useCallback(() => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      loadAutoPaperOpen();
+      loadMain();
+      loadAutoPaperHistory(apHistoryPageRef.current);
+      loadDecisions();
+    }, 800);
   }, [loadAutoPaperOpen, loadMain, loadAutoPaperHistory, loadDecisions]);
+  useEffect(() => () => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = null;
+  }, []);
 
   const onReset = useCallback(() => {
     loadMain();
@@ -301,13 +320,25 @@ export default function PortfolioPage() {
       onReset();
     } else if (["signal", "trade_updated"].includes(message.type)) {
       loadMain();
+    } else if (["portfolio_reconciled", "llm_position_management"].includes(message.type)) {
+      // H-20: backend bu iki olayı yayınlıyor ama tüketicisi yoktu → Ayarlar'dan
+      // "portföy mutabakatı" veya LLM pozisyon açılışı sonrası açık Portföy
+      // sayfası 5-15 sn'ye kadar eski bakiye/pozisyon gösteriyordu.
+      loadMain();
+      loadAutoPaperOpen();
+      loadPortfolioFallback();
     }
-  }, [debouncedRefresh, loadMain, onReset]);
+  }, [debouncedRefresh, loadMain, loadAutoPaperOpen, loadPortfolioFallback, onReset]);
   useLiveMessages(onLiveMessage);
 
   // Ana pozisyonları birleştir: WS anlık değeri REST'ten önceliklidir.
-  // AUTO_PAPER satırları hariçtir — otonom pozisyonlar yukarıdaki kendi
-  // bölümünde gösterilir ve metriklerde ayrı toplanır (çift sayım olmasın).
+  //
+  // H-23: `isAutoPaper` filtresi GERÇEKTEN çalışır ve gereklidir — REST
+  // `/api/positions` yanıtı otonom pozisyonları `strategy:"AUTO_PAPER"` olarak
+  // `positions` içine EKLER (main.py). Bu sayfa otonomları ayrı `apTrades`
+  // bölümünde gösterdiği için filtrelenmezlerse çift sayılırlar. WS `portfolio`
+  // mesajı ise otonomları `positions` içine değil ayrı `auto_paper_positions`
+  // anahtarına koyar (runtime yayını) → filtre o yolda zararsız bir no-op'tur.
   const isAutoPaper = (p: MainPosition) => String(p.strategy || "").toUpperCase() === "AUTO_PAPER";
   const displayMain = useMemo(() => {
     const bySymbol = new Map<string, MainPosition>();
@@ -391,6 +422,20 @@ export default function PortfolioPage() {
       {lastEvent && (
         <div className="mb-4 rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 font-mono text-xs text-neon-green">
           ⚡ Otonom işlem: {lastEvent.text} · {new Date(lastEvent.at).toLocaleTimeString("tr-TR")}
+        </div>
+      )}
+
+      {/* H-05: bağlantı hatası "boş portföy / veri yok" gibi görünmesin */}
+      {loadError && (
+        <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neon-red/40 bg-neon-red/5 px-3 py-2">
+          <p className="font-mono text-xs text-neon-red">⚠ Backend'e ulaşılamıyor — pozisyonlar güncellenemiyor (aşağıdaki değerler bayat olabilir).</p>
+          <button
+            type="button"
+            onClick={onReset}
+            className="rounded border border-neon-red/40 px-2 py-1 font-mono text-[11px] text-neon-red hover:bg-neon-red/10"
+          >
+            YENİDEN DENE
+          </button>
         </div>
       )}
 

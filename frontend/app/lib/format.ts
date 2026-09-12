@@ -1,11 +1,20 @@
-// Sayfa bazlı kopyalanan biçimlendirme kurallarının tek kaynağı.
-// Aynı fiyat/ zaman değeri farklı sayfalarda farklı hassasiyetle basılmaması
-// için tüm bileşenler bu modülü kullanmalıdır.
+// Sayfa bazlı kopyalanan biçimlendirme kurallarının TEK kaynağı.
+//
+// H-04/H-15/H-16: fiyat biçimi 5 ayrı dosyada kopyalanmıştı (`chartShared`,
+// `macd-monitor`, `monitoring`, `RadarAlertModal`, `binance-tr`) ve aynı fiyat
+// sayfaya göre `1,5` / `1,5000` / `4250000.00` gibi farklı basılıyordu.
+// Artık tüm bileşenler bu modülü kullanır; `app/charts/chartShared.ts` yalnızca
+// buradan yeniden dışa aktarır (grafik ekseni de aynı `pricePrecision`'ı alır).
+//
+// TL biçimi tek (H-15): `₺` ÖNEK, her zaman 2 ondalık, tr-TR gruplama.
+//
+// Veri yoksa her fonksiyon "—" döner (0 DEĞİL). 0 meşru bir değerdir ama
+// "veri yok" değildir; null'u 0'a çevirip yeşile boyamak yasaktır (H-02/H-05).
 
 /**
  * Zaman damgasını milisaniyeye normalize eder. Backend karışık birim
  * gönderir (epoch saniye veya ms); eski `ts < 10_000_000_000 ? ts * 1000 : ts`
- * sezgiseli 8 sayfada kopyalanmıştı — artık burada tek yerde.
+ * sezgiseli 8 sayfada kopyalanmıştı — artık burada tek yerde (H-24).
  */
 export function toMs(ts: number | string | null | undefined): number {
   const value = Number(ts || 0);
@@ -27,24 +36,71 @@ export function fmtDate(ts: number | string | null | undefined): string {
   return new Date(ms).toLocaleDateString("tr-TR");
 }
 
+/** tr-TR yalnız saat (saniye/ms karışık girdi güvenli). */
+export function fmtClockTime(ts: number | string | null | undefined): string {
+  const ms = toMs(ts);
+  if (!ms) return "—";
+  return new Date(ms).toLocaleTimeString("tr-TR");
+}
+
 /**
  * Paylaşılan fiyat hassasiyeti: <1 → 6 hane, <100 → 4 hane, <1000 → 3 hane,
- * aksi 2 hane. Grafik bileşenlerindeki `chartShared.pricePrecision` ile AYNI
- * kural olmalı; aynı fiyat farklı sayfalarda farklı yuvarlanmasın.
+ * aksi 2 hane. Grafik ekseni (`chartPriceFormat`) ve tüm fiyat gösterimi bu
+ * kuralı kullanır; aynı fiyat farklı sayfalarda farklı yuvarlanmaz.
+ */
+export function pricePrecision(value: number | null | undefined): number {
+  const abs = Math.abs(Number(value));
+  if (!Number.isFinite(abs)) return 2;
+  if (abs < 1) return 6;
+  if (abs < 100) return 4;
+  if (abs < 1000) return 3;
+  return 2;
+}
+
+/**
+ * Fiyat biçimi (tr-TR, hassasiyet kovası `pricePrecision`).
+ * Eksik/geçersiz veya ≤0 fiyat "—" döner: 0 bir fiyat değil, "veri yok"tur.
  */
 export function formatPrice(value: number | null | undefined): string {
   const n = Number(value);
-  if (!Number.isFinite(n)) return "—";
-  const abs = Math.abs(n);
-  const digits = abs < 1 ? 6 : abs < 100 ? 4 : abs < 1000 ? 3 : 2;
-  return n.toLocaleString("tr-TR", { minimumFractionDigits: 0, maximumFractionDigits: digits });
+  if (value == null || !Number.isFinite(n) || n <= 0) return "—";
+  return n.toLocaleString("tr-TR", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: pricePrecision(n),
+  });
 }
 
-/** Türk Lirası biçimi: ₺ sonekli, tr-TR gruplama. */
+/**
+ * Türk Lirası: `₺` önek, TAM 2 ondalık, tr-TR gruplama.
+ * Küçük tutarlarda 8 ondalık basmak yok (H-15); sembol her zaman önek.
+ */
 export function formatTL(value: number | null | undefined): string {
   const n = Number(value);
-  if (!Number.isFinite(n)) return "—";
-  return `${n.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}₺`;
+  if (value == null || !Number.isFinite(n)) return "—";
+  return `₺${n.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * İşaretli TL (K/Z): kâr `+₺…`, zarar `-₺…`, tam sıfır `₺0,00`, veri yok "—".
+ * Sembol önek, işaret sembolün önünde → `-₺12,00` (H-15 biçim birliği).
+ */
+export function formatSignedTL(value: number | null | undefined): string {
+  const n = Number(value);
+  if (value == null || !Number.isFinite(n)) return "—";
+  const magnitude = formatTL(Math.abs(n));
+  if (n < 0) return `-${magnitude}`;
+  if (n > 0) return `+${magnitude}`;
+  return magnitude;
+}
+
+/**
+ * Fiyat olmayan sabit ondalıklı sayılar (miktar/adet/miktar tutarı).
+ * Fiyat için `formatPrice` kullanılmalıdır. Eksik/geçersiz → "—".
+ */
+export function formatFixed(value: number | string | null | undefined, digits = 2): string {
+  const n = Number(value);
+  if (value == null || value === "" || !Number.isFinite(n)) return "—";
+  return n.toLocaleString("tr-TR", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 /** Yerel (UTC değil) YYYY-MM-DD — date input default değeri için. */

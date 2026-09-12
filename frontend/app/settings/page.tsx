@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { useLiveMessages } from "../lib/liveSocket";
+import { formatSignedTL, toMs } from "../lib/format";
 import LlmManagement from "./LlmManagement";
 import SystemHealthTab from "./SystemHealthTab";
 import SymbolLink from "../components/SymbolLink";
@@ -155,6 +157,14 @@ function SettingsPageInner() {
     return () => window.clearInterval(timer);
   }, []);
 
+  // H-20: `symbol_activity` WS mesajı yalnızca manuel aktivasyon yenilemesinde
+  // yayınlanır ve daha önce hiç tüketilmiyordu → başka bir sekmede yapılan
+  // yenileme bu panelde 60 sn poll'a kadar bayat kalıyordu. Mesaj geldiğinde
+  // durum anında güncellenir (güvenli + ucuz: yalnız setState).
+  useLiveMessages((message: any) => {
+    if (message.type === "symbol_activity" && message.data?.statuses) setActivity(message.data.statuses);
+  });
+
   const refreshActivity = async () => {
     setRefreshingActivity(true);
     try {
@@ -243,6 +253,11 @@ function SettingsPageInner() {
   };
 
   const num = (v: any) => (typeof v === "number" ? v : Number.isFinite(parseFloat(v)) ? parseFloat(v) : 0);
+  // H-30: boş sayısal input `num()` ile "0" olarak geri yazılıyordu; kullanıcı
+  // alanı temizleyip rakam yazmak isterken "0" ile uğraşıyordu. Kaydetme
+  // kontrolü (NaN reddi) zaten var → input boş kalabilir.
+  const numInput = (v: any) =>
+    v == null || v === "" || (typeof v === "number" && !Number.isFinite(v)) ? "" : v;
   const selectedSymbols = Array.from(new Set((draft.symbols || []).map((symbol) => String(symbol).replace(/_/g, "").toUpperCase()))).sort();
   const filteredSymbols = marketSymbols.filter((s) => s.includes(symbolQuery.trim().toUpperCase()));
   const visibleActivity = Object.values(activity).filter((item: any) => activityFilter === "all" || item.status === activityFilter).filter((item: any) => !symbolQuery.trim() || item.symbol.includes(symbolQuery.trim().toUpperCase()));
@@ -618,7 +633,7 @@ function SettingsPageInner() {
                 <p className="eyebrow">GAINER RADAR MİNİMUM SKOR</p>
                 <p className="text-xs text-bunker-muted mt-1">Radar şu anda yalnızca gözlem ve sıralama yapar; otomatik paper işlem açmaz. Önerilen başlangıç: 50.</p>
               </div>
-              <input type="number" min={0} max={100} step={1} value={num(draft.gainer_radar_min_score)} onChange={(e) => setDraft((d) => ({ ...d, gainer_radar_min_score: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none" />
+              <input type="number" min={0} max={100} step={1} value={numInput(draft.gainer_radar_min_score)} onChange={(e) => setDraft((d) => ({ ...d, gainer_radar_min_score: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none" />
             </div>
             <div className="flex items-center justify-between gap-4">
               <div>
@@ -642,7 +657,7 @@ function SettingsPageInner() {
                 ] as const).map(([key, label, step]) => (
                   <label key={key} className="flex items-center justify-between gap-3 rounded-lg border border-bunker-800 bg-bunker-900 px-3 py-2">
                     <span className="font-mono text-xs text-bunker-muted">{label}</span>
-                    <input type="number" min={0} step={step} value={num((draft as any)[key])} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-32 bg-bunker-950 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right outline-none focus:border-neon-green/50" />
+                    <input type="number" min={0} step={step} value={numInput((draft as any)[key])} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-32 bg-bunker-950 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right outline-none focus:border-neon-green/50" />
                   </label>
                 ))}
               </div>
@@ -698,7 +713,7 @@ function SettingsPageInner() {
                 <p className="font-mono text-sm text-white mt-2">Yükseliş hedefi modelini journal sonuçlarıyla yeniden eğit</p>
                 <p className="text-xs text-bunker-muted mt-1">
                   {mlStatus?.status === "ready" && mlStatus?.artifact
-                    ? `Son eğitim: ${new Date(Number(mlStatus.artifact.created_at) * 1000).toLocaleString("tr-TR")} · ${mlStatus.artifact.sample_count.toLocaleString("tr-TR")} örnek · ${mlStatus.artifact.symbol_count} sembol · ${mlStatus.artifact.journal_sample_count} journal örneği`
+                    ? `Son eğitim: ${new Date(toMs(mlStatus.artifact.created_at)).toLocaleString("tr-TR")} · ${mlStatus.artifact.sample_count.toLocaleString("tr-TR")} örnek · ${mlStatus.artifact.symbol_count} sembol · ${mlStatus.artifact.journal_sample_count} journal örneği`
                     : mlStatus?.status === "not_trained"
                       ? "Henüz eğitim yok; otomatik döngü veya buton ile başlatın."
                       : "Durum alınıyor..."}
@@ -781,7 +796,7 @@ function SettingsPageInner() {
                   type="number"
                   step={5}
                   min={5}
-                  value={num(draft.default_order_usdt)}
+                  value={numInput(draft.default_order_usdt)}
                   onChange={(e) => setDraft((d) => ({ ...d, default_order_usdt: e.target.value === "" ? NaN : Number(e.target.value) }))}
                   className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
                 />
@@ -796,7 +811,7 @@ function SettingsPageInner() {
                   step={1}
                   min={0}
                   max={500}
-                  value={num(draft.max_open_positions)}
+                  value={numInput(draft.max_open_positions)}
                   onChange={(e) => setDraft((d) => ({ ...d, max_open_positions: e.target.value === "" ? NaN : Number(e.target.value) }))}
                   className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
                 />
@@ -834,7 +849,7 @@ function SettingsPageInner() {
                   <p className="font-mono text-sm text-white">Kapanış Sonrası Cooldown</p>
                   <p className="text-xs text-bunker-muted mt-0.5">Yeni girişten önce beklenecek mum sayısı</p>
                 </div>
-                <input type="number" step={1} min={0} max={100} value={num(draft.cooldown_bars)} onChange={(e) => setDraft((d) => ({ ...d, cooldown_bars: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right outline-none" />
+                <input type="number" step={1} min={0} max={100} value={numInput(draft.cooldown_bars)} onChange={(e) => setDraft((d) => ({ ...d, cooldown_bars: e.target.value === "" ? NaN : Number(e.target.value) }))} className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right outline-none" />
               </div>
             </div>
           </div>
@@ -856,7 +871,7 @@ function SettingsPageInner() {
             <div className="flex items-center justify-between border-b border-bunker-800 pb-3 mb-4"><div><p className="eyebrow text-purple-300">MTF BACKFILL LOG</p><p className="font-mono text-sm text-white mt-1">{mtfBackfill.message || "Hazırlanıyor..."}</p></div><button onClick={() => setMtfBackfillOpen(false)} className="text-bunker-muted hover:text-white">✕</button></div>
             <div className="grid grid-cols-3 gap-3 mb-4 text-xs font-mono"><div><span className="text-bunker-muted">DURUM</span><p className="text-purple-300 mt-1">{String(mtfBackfill.status || "idle").toUpperCase()}</p></div><div><span className="text-bunker-muted">İLERLEME</span><p className="text-white mt-1">{mtfBackfill.completed ?? 0}/{mtfBackfill.total ?? 0} · %{mtfBackfill.progress ?? 0}</p></div><div><span className="text-bunker-muted">SONUÇ</span><p className="text-neon-green mt-1">{mtfBackfill.result ? `${mtfBackfill.result.updated} güncellendi` : "—"}</p></div></div>
             <div className="h-2 rounded bg-bunker-800 mb-4"><div className="h-2 rounded bg-purple-400 transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(mtfBackfill.progress || 0)))}%` }} /></div>
-            <div className="max-h-[48vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(mtfBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(mtfBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
+            <div className="max-h-[48vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(mtfBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(toMs(log.timestamp)).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(mtfBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
             <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend’de arka planda devam eder; tekrar açarak son durumu görebilirsiniz.</p>
           </div>
         </div>
@@ -867,7 +882,7 @@ function SettingsPageInner() {
             <div className="flex items-center justify-between border-b border-bunker-800 pb-3 mb-4"><div><p className="eyebrow text-cyan-300">REPLAY PARİTE BACKFILL</p><p className="font-mono text-sm text-white mt-1">{parityBackfill.message || "Hazırlanıyor..."}</p></div><button onClick={() => setParityBackfillOpen(false)} className="text-bunker-muted hover:text-white">✕</button></div>
             <div className="grid grid-cols-3 gap-3 mb-4 text-xs font-mono"><div><span className="text-bunker-muted">DURUM</span><p className="text-cyan-300 mt-1">{String(parityBackfill.status || "idle").toUpperCase()}</p></div><div><span className="text-bunker-muted">İLERLEME</span><p className="text-white mt-1">{parityBackfill.completed ?? 0}/{parityBackfill.total ?? 0} · %{parityBackfill.progress ?? 0}</p></div><div><span className="text-bunker-muted">SONUÇ</span><p className="text-neon-green mt-1">{parityBackfill.result ? `${parityBackfill.result.written ?? 0} eklendi` : "—"}</p></div></div>
             <div className="h-2 rounded bg-bunker-800 mb-4"><div className="h-2 rounded bg-cyan-400 transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(parityBackfill.progress || 0)))}%` }} /></div>
-            <div className="max-h-[36vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(parityBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(parityBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
+            <div className="max-h-[36vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(parityBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(toMs(log.timestamp)).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(parityBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
             {parityBackfill.status === "complete" && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border border-neon-green/30 bg-neon-green/5 p-3"><p className="font-mono text-xs text-neon-green">Backfill tamamlandı. Tüm kapalı işlem ayrıntılarını indirip bu sohbete yükleyebilirsiniz.</p><button onClick={downloadParityTradeCsv} className="shrink-0 rounded-lg border border-neon-green/50 bg-neon-green/10 px-3 py-2 font-mono text-xs text-neon-green hover:bg-neon-green/20">TÜM İŞLEM CSV&apos;SİNİ İNDİR</button></div>}
             <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend&apos;de devam eder. CSV yalnızca kapalı paper işlemlerini; tam giriş bağlamı, teknik ve MTF JSON alanlarıyla içerir.</p>
           </div>
@@ -880,7 +895,7 @@ function SettingsPageInner() {
             <div className="grid grid-cols-4 gap-3 mb-4 text-xs font-mono"><div><span className="text-bunker-muted">DURUM</span><p className="text-emerald-300 mt-1">{String(mlBackfill.status || "idle").toUpperCase()}</p></div><div><span className="text-bunker-muted">İLERLEME</span><p className="text-white mt-1">{mlBackfill.completed ?? 0}/{mlBackfill.total ?? 0} · %{mlBackfill.progress ?? 0}</p></div><div><span className="text-bunker-muted">GÜNCELLENEN</span><p className="text-neon-green mt-1">{mlBackfill.updated ?? 0}</p></div><div><span className="text-bunker-muted">ATLANAN</span><p className="text-yellow-300 mt-1">{mlBackfill.skipped ?? 0}</p></div></div>
             <div className="h-2 rounded bg-bunker-800 mb-4"><div className="h-2 rounded bg-emerald-400 transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(mlBackfill.progress || 0)))}%` }} /></div>
             {mlBackfill.current_symbol && <p className="font-mono text-xs text-emerald-300 mb-3">İşlenen: {mlBackfill.current_symbol}</p>}
-            <div className="max-h-[44vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(mlBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(log.timestamp * 1000).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(mlBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
+            <div className="max-h-[44vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(mlBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(toMs(log.timestamp)).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(mlBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
             {mlBackfill.status === "complete" && mlBackfill.result && <div className="mt-4 rounded border border-neon-green/30 bg-neon-green/5 p-3 font-mono text-xs text-neon-green">Tamamlandı · güncellenen={mlBackfill.result.updated ?? 0} atlanan={mlBackfill.result.skipped ?? 0} sembol={mlBackfill.result.symbols ?? 0} · gölge (mevcut model)</div>}
             <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend&apos;de arka planda devam eder; tekrar açarak son durumu görebilirsiniz. İşlem, PnL ve pozisyonlar değişmez.</p>
           </div>
@@ -989,14 +1004,28 @@ function AutoPaperSettingsPanel() {
   const [resetting, setResetting] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // H-07: ayarlar yüklenene kadar form KİLİTLİ olmalı. `draft = {}` iken
+  // `draft.enabled ? "1" : "0"` → "0" (Kapalı) ve `draft.min_score ?? 50` →
+  // 50 görünüyordu; kullanıcı KAYDET'e basınca otonom trade KAPANIYOR ve
+  // eşikler varsayılana dönüyordu. `MacdJumpSettingsPanel` ile aynı
+  // `loaded`/`pending` deseni.
+  const [loaded, setLoaded] = useState(false);
 
   const load = async () => {
+    setError(null);
     try {
       const [sRes, stRes] = await Promise.all([
         apiRequest(`${API_BASE}/api/auto-paper/settings`),
         apiRequest(`${API_BASE}/api/auto-paper/stats`),
       ]);
-      if (sRes.ok) { const d = await sRes.json(); setSettings(d.settings); setDraft(d.settings); }
+      if (sRes.ok) {
+        const d = await sRes.json();
+        setSettings(d.settings);
+        setDraft(d.settings || {});
+        setLoaded(true);
+      } else {
+        setError("Otonom paper ayarları alınamadı");
+      }
       if (stRes.ok) { const d = await stRes.json(); setStats(d.stats); }
     } catch { setError("Veri alınamadı"); }
   };
@@ -1004,6 +1033,7 @@ function AutoPaperSettingsPanel() {
   useEffect(() => { load(); }, []);
 
   const save = async () => {
+    if (!loaded) return;
     setSaving(true); setError(null); setSaved(false);
     try {
       const res = await apiRequest(`${API_BASE}/api/auto-paper/settings`, {
@@ -1034,81 +1064,104 @@ function AutoPaperSettingsPanel() {
   };
 
   const set = (key: string, value: any) => setDraft((prev: any) => ({ ...prev, [key]: value }));
+  // H-07: ayarlar gelmeden form değerleri varsayılana düşmesin.
+  const pending = !loaded;
 
   return (
     <div className="card bg-bunker-950">
       <p className="eyebrow mb-4">OTONOM PAPER TRADE AYARLARI</p>
-      {error && <p className="text-neon-red text-xs mb-3">{error}</p>}
+      {error && (
+        <p className="mb-3 flex flex-wrap items-center gap-2 text-neon-red text-xs">
+          {error}
+          <button type="button" onClick={load} className="rounded border border-neon-red/40 px-2 py-0.5 font-mono hover:bg-neon-red/10">YENİDEN DENE</button>
+        </p>
+      )}
       {saved && <p className="text-neon-green text-xs mb-3">✅ Kaydedildi</p>}
+      {pending && !error && <p className="text-bunker-muted text-xs mb-3">Ayarlar yükleniyor…</p>}
+      {pending && error && (
+        <p className="mb-3 rounded border border-neon-red/40 bg-neon-red/5 px-3 py-2 text-xs text-neon-red">
+          Ayarlar yüklenemediği için form kilitli — kaydetmek otonom trade ayarlarını varsayılana döndürürdü.
+        </p>
+      )}
 
       {stats && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Toplam</p>
-            <p className="text-lg font-mono text-white">{stats.total}</p>
+            <p className="text-lg font-mono text-white">{stats.total ?? "—"}</p>
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Açık</p>
-            <p className="text-lg font-mono text-yellow-300">{stats.open}</p>
+            <p className="text-lg font-mono text-yellow-300">{stats.open ?? "—"}</p>
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Kapanmış</p>
-            <p className="text-lg font-mono text-white">{stats.closed}</p>
+            <p className="text-lg font-mono text-white">{stats.closed ?? "—"}</p>
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Başarı</p>
-            <p className={`text-lg font-mono ${stats.win_rate == null ? "text-bunker-muted" : stats.win_rate >= 50 ? "text-neon-green" : "text-neon-red"}`}>{stats.win_rate == null ? "—" : `%${stats.win_rate}`}</p>
+            {/* H-11: hiç işlem kapanmamışken backend win_rate=0.0 döner →
+                kırmızı "%0" "başarısız" izlenimi veriyordu. Ölçüm yoksa nötr. */}
+            {(() => {
+              const measured = stats.closed != null && Number(stats.closed) > 0 && stats.win_rate != null && Number.isFinite(Number(stats.win_rate));
+              const tone = !measured ? "text-bunker-muted" : Number(stats.win_rate) >= 50 ? "text-neon-green" : "text-neon-red";
+              return <p className={`text-lg font-mono ${tone}`}>{measured ? `%${stats.win_rate}` : "—"}</p>;
+            })()}
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Net PnL</p>
-            <p className={`text-lg font-mono ${stats.total_pnl_try == null ? "text-bunker-muted" : stats.total_pnl_try >= 0 ? "text-neon-green" : "text-neon-red"}`}>{stats.total_pnl_try == null ? "—" : `${stats.total_pnl_try >= 0 ? "+" : ""}${stats.total_pnl_try.toFixed(2)}₺`}</p>
+            <p className={`text-lg font-mono ${stats.total_pnl_try == null ? "text-bunker-muted" : Number(stats.total_pnl_try) >= 0 ? "text-neon-green" : "text-neon-red"}`}>{stats.total_pnl_try == null ? "—" : formatSignedTL(stats.total_pnl_try)}</p>
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Kazanan</p>
-            <p className="text-lg font-mono text-neon-green">{stats.winning}</p>
+            <p className="text-lg font-mono text-neon-green">{stats.winning ?? "—"}</p>
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Kaybeden</p>
-            <p className="text-lg font-mono text-neon-red">{stats.losing}</p>
+            <p className="text-lg font-mono text-neon-red">{stats.losing ?? "—"}</p>
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Ort. PnL</p>
-            <p className={`text-lg font-mono ${stats.avg_pnl_try >= 0 ? "text-neon-green" : "text-neon-red"}`}>{stats.avg_pnl_try >= 0 ? "+" : ""}{stats.avg_pnl_try.toFixed(2)}₺</p>
+            {/* H-11: `avg_pnl_try` null iken `.toFixed(2)` TypeError atıp
+                sayfayı error boundary'ye düşürüyordu. */}
+            <p className={`text-lg font-mono ${stats.avg_pnl_try == null || !Number.isFinite(Number(stats.avg_pnl_try)) ? "text-bunker-muted" : Number(stats.avg_pnl_try) >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+              {stats.avg_pnl_try == null || !Number.isFinite(Number(stats.avg_pnl_try)) ? "—" : formatSignedTL(stats.avg_pnl_try)}
+            </p>
           </div>
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className={`grid gap-4 md:grid-cols-2 ${pending ? "opacity-60" : ""}`}>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Aktif</label>
-          <select value={draft.enabled ? "1" : "0"} onChange={(e) => set("enabled", e.target.value === "1")} className="input">
+          <select disabled={pending} value={draft.enabled ? "1" : "0"} onChange={(e) => set("enabled", e.target.value === "1")} className="input">
             <option value="1">Açık</option>
             <option value="0">Kapalı</option>
           </select>
         </div>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Minimum Skor (0-100)</label>
-          <input type="number" min="0" max="100" value={draft.min_score ?? 50} onChange={(e) => set("min_score", Number(e.target.value))} className="input" />
+          <input type="number" min="0" max="100" disabled={pending} value={draft.min_score ?? 50} onChange={(e) => set("min_score", Number(e.target.value))} className="input" />
         </div>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Bakiye Yüzdesi (%)</label>
-          <input type="number" min="1" max="100" value={draft.balance_pct ?? 35} onChange={(e) => set("balance_pct", Number(e.target.value))} className="input" />
+          <input type="number" min="1" max="100" disabled={pending} value={draft.balance_pct ?? 35} onChange={(e) => set("balance_pct", Number(e.target.value))} className="input" />
         </div>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Stop Loss (%)</label>
-          <input type="number" min="0.1" max="20" step="0.1" value={draft.stop_loss_pct ?? 3} onChange={(e) => set("stop_loss_pct", Number(e.target.value))} className="input" />
+          <input type="number" min="0.1" max="20" step="0.1" disabled={pending} value={draft.stop_loss_pct ?? 3} onChange={(e) => set("stop_loss_pct", Number(e.target.value))} className="input" />
         </div>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Varsayılan Hedef (%)</label>
-          <input type="number" min="0.5" max="20" step="0.1" value={draft.default_target_pct ?? 2} onChange={(e) => set("default_target_pct", Number(e.target.value))} className="input" />
+          <input type="number" min="0.5" max="20" step="0.1" disabled={pending} value={draft.default_target_pct ?? 2} onChange={(e) => set("default_target_pct", Number(e.target.value))} className="input" />
         </div>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Minimum Emir (TRY)</label>
-          <input type="number" min="10" value={draft.min_order_try ?? 50} onChange={(e) => set("min_order_try", Number(e.target.value))} className="input" />
+          <input type="number" min="10" disabled={pending} value={draft.min_order_try ?? 50} onChange={(e) => set("min_order_try", Number(e.target.value))} className="input" />
         </div>
         <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Breakeven Tetikleme (%)</label>
-          <input type="number" min="0.5" max="10" step="0.1" value={draft.breakeven_trigger_pct ?? 1.5} onChange={(e) => set("breakeven_trigger_pct", Number(e.target.value))} className="input" />
+          <input type="number" min="0.5" max="10" step="0.1" disabled={pending} value={draft.breakeven_trigger_pct ?? 1.5} onChange={(e) => set("breakeven_trigger_pct", Number(e.target.value))} className="input" />
         </div>
         <div className="md:col-span-2 border-t border-bunker-800 pt-3">
           <label className="text-xs font-mono text-neon-green block mb-2">TRAILING STOP MODÜLÜ</label>
@@ -1116,18 +1169,18 @@ function AutoPaperSettingsPanel() {
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
               <label className="text-xs font-mono text-bunker-muted block mb-1">Modül</label>
-              <select value={draft.trailing_enabled ? "1" : "0"} onChange={(e) => set("trailing_enabled", e.target.value === "1")} className="input">
+              <select disabled={pending} value={draft.trailing_enabled ? "1" : "0"} onChange={(e) => set("trailing_enabled", e.target.value === "1")} className="input">
                 <option value="1">Açık</option>
                 <option value="0">Kapalı</option>
               </select>
             </div>
             <div>
               <label className="text-xs font-mono text-bunker-muted block mb-1">Kâr Tetikleme (%)</label>
-              <input type="number" min="0.5" max="20" step="0.1" value={draft.trailing_trigger_pct ?? 2} onChange={(e) => set("trailing_trigger_pct", Number(e.target.value))} className="input" />
+              <input type="number" min="0.5" max="20" step="0.1" disabled={pending} value={draft.trailing_trigger_pct ?? 2} onChange={(e) => set("trailing_trigger_pct", Number(e.target.value))} className="input" />
             </div>
             <div>
               <label className="text-xs font-mono text-bunker-muted block mb-1">Takip Mesafesi (%)</label>
-              <input type="number" min="0.1" max="10" step="0.1" value={draft.trailing_gap_pct ?? 0.8} onChange={(e) => set("trailing_gap_pct", Number(e.target.value))} className="input" />
+              <input type="number" min="0.1" max="10" step="0.1" disabled={pending} value={draft.trailing_gap_pct ?? 0.8} onChange={(e) => set("trailing_gap_pct", Number(e.target.value))} className="input" />
             </div>
           </div>
         </div>
@@ -1135,7 +1188,7 @@ function AutoPaperSettingsPanel() {
           <label className="text-xs font-mono text-neon-green block mb-2">TRAILING/BREAKEVEN SONRASI YENİDEN AÇ</label>
           <p className="text-xs text-bunker-muted mb-3">Trailing veya breakeven ile kapanan pozisyonda; sembol İzleme sayfasının "Uygun Adaylar" listesinde kaldığı sürece aynı sembole yeniden işlem açılır. Adaylıktan düşerse yeniden açılmaz. Varsayılan AÇIK.</p>
           <div className="max-w-xs">
-            <select value={draft.reopen_after_protect_close ? "1" : "0"} onChange={(e) => set("reopen_after_protect_close", e.target.value === "1")} className="input">
+            <select disabled={pending} value={draft.reopen_after_protect_close ? "1" : "0"} onChange={(e) => set("reopen_after_protect_close", e.target.value === "1")} className="input">
               <option value="1">Açık</option>
               <option value="0">Kapalı</option>
             </select>
@@ -1144,7 +1197,7 @@ function AutoPaperSettingsPanel() {
       </div>
 
       <div className="flex gap-3 mt-6">
-        <button onClick={save} disabled={saving} className="px-5 py-2 rounded-lg border border-neon-green/50 text-neon-green font-mono text-xs hover:bg-neon-green/10 disabled:opacity-50">
+        <button onClick={save} disabled={saving || pending} className="px-5 py-2 rounded-lg border border-neon-green/50 text-neon-green font-mono text-xs hover:bg-neon-green/10 disabled:opacity-50">
           {saving ? "KAYDEDİLİYOR..." : "KAYDET"}
         </button>
         <button onClick={resetData} disabled={resetting} className="px-5 py-2 rounded-lg border border-neon-red/50 text-neon-red font-mono text-xs hover:bg-neon-red/10 disabled:opacity-50">

@@ -163,7 +163,9 @@ def _fisher_transform(highs, lows, length=9):
         mids = [(float(highs[i]) + float(lows[i])) / 2 for i in range(index - length + 1, index + 1)]
         hi, lo = max(mids), min(mids); midpoint = (float(highs[index]) + float(lows[index])) / 2
         ratio = (midpoint - lo) / (hi - lo) - 0.5 if hi != lo else 0.0
-        prior = value
+        # C-22: burada kullanılmayan bir `prior` ataması vardı (ölü değişken,
+        # hiçbir yerde okunmuyordu). Fisher'ın önceki değeri zaten
+        # `previous_fisher` ile taşınıyor; kaldırıldı.
         value = max(-0.999, min(0.999, 0.66 * ratio + 0.67 * value))
         fisher = 0.5 * np.log((1 + value) / (1 - value)) + 0.5 * previous_fisher
         series.append((float(fisher), float(previous_fisher)))
@@ -252,6 +254,23 @@ def _adx(highs, lows, closes, period=14):
 
 def _sma(values, period):
     return float(np.mean(values[-period:])) if len(values) >= period else None
+
+def _rolling_vwma(values, volumes, period=20):
+    """Son ``period`` barın hacim-ağırlıklı ortalaması (tek kaynak).
+
+    C-17: ``moving_averages["vwma_20"]`` (kapanış ağırlıklı) ve
+    ``volume["vwap"]`` (tipik fiyat ağırlıklı) aynı kayan-hacim mantığının iki
+    bağımsız kopyasıydı. İkisi de bu yardımcıdan türetilir; ``vwap`` adı
+    yanıltıcıydı (seans başından kümülatif değil, 20 barlık kayandır) → yanına
+    açıkça adlandırılmış ``volume["vwap_rolling_20"]`` alanı eklendi.
+    """
+    if len(values) < period or len(volumes) < period:
+        return None
+    weight = float(np.sum(np.asarray(volumes[-period:], dtype=float)))
+    if not weight:
+        return None
+    return float(np.dot(np.asarray(values[-period:], dtype=float),
+                        np.asarray(volumes[-period:], dtype=float)) / weight)
 
 def _cci(highs, lows, closes, period=20):
     if len(closes) < period: return None
@@ -494,7 +513,15 @@ def _linear_regression(closes, period=20):
     if len(closes) < period: return None
     x = np.arange(period, dtype=float); y = np.asarray(closes[-period:], dtype=float)
     slope, intercept = np.polyfit(x, y, 1); fitted = slope * (period - 1) + intercept
-    return {"slope": float(slope), "slope_pct": float(slope / y[-1] * 100) if y[-1] else None, "value": float(fitted), "period": period}
+    mean_y = float(np.mean(y)); last_y = float(y[-1])
+    # C-15: Aynı modülde iki farklı eğim yüzdesi vardı — burada son kapanışa
+    # bölünüyordu, kanonik ML özelliği `_linreg_slope_pct` ise ortalamaya böler.
+    # `slope_pct` artık kanonik (ortalama tabanlı) tanıma hizalandı; eski
+    # son-kapanış tabanı yanıltıcı olmasın diye açıkça adlandırıldı.
+    return {"slope": float(slope),
+            "slope_pct": float(slope / mean_y * 100) if mean_y else None,
+            "slope_pct_vs_last": float(slope / last_y * 100) if last_y else None,
+            "value": float(fitted), "period": period}
 
 def _signal(value, buy, strong_buy, sell, strong_sell):
     if value is None: return "unknown"
@@ -563,8 +590,13 @@ def _methodology_analysis(opens, highs, lows, closes, volumes, adx=None, alignme
     trend_score = 0.8 if alignment == "bullish" else 0.2 if alignment == "bearish" else 0.5
     turtle_score = 0.9 if turtle["breakout"] == "up_20" else 0.1 if turtle["breakout"] == "down_20" else 0.5
     wyckoff_score = 0.75 if wyckoff_event in {"spring_candidate", "sign_of_strength_candidate"} else 0.25 if wyckoff_event in {"upthrust_candidate", "sign_of_weakness_candidate"} else 0.5
-    score = round(0.25 * trend_score + 0.15 * min(1, adx_value / 40) + 0.15 * min(1, (volume_ratio or 0) / 2) + 0.15 * turtle_score + 0.15 * wyckoff_score + 0.10 * elliott["confidence"] + 0.05 * (1 if regime_name in {"bull_quiet", "accumulation"} else 0.5), 4)
-    return {"regime": {"name": regime_name, "confidence": round(regime_confidence, 3), "method": "deterministic_v1", "atr_pct": atr_pct, "volatility_change": vol_change}, "elliott": elliott, "wyckoff": wyckoff, "fibonacci": fib, "turtle": turtle, "confluence": {"score": score, "label": "high" if score >= 0.7 else "moderate" if score >= 0.4 else "low", "components": {"trend": trend_score, "turtle": turtle_score, "wyckoff": wyckoff_score, "elliott": elliott["confidence"]}}, "methodology_version": "methodology-v1"}
+    # C-18: `elliott["confidence"]` üst sınırı 0.7 olduğu için 0.10 ağırlıklı
+    # bileşen en fazla 0.07'ye ulaşabiliyordu (ağırlık hiç gerçekleşmiyordu) ve
+    # `components` içinde diğer üç bileşen [0,1] iken elliott [0,0.7] kalıyordu.
+    # Güven [0,1] sinyale normalize edilir; ham güven `elliott` altında korunur.
+    elliott_signal = min(1.0, elliott["confidence"] / 0.7)
+    score = round(0.25 * trend_score + 0.15 * min(1, adx_value / 40) + 0.15 * min(1, (volume_ratio or 0) / 2) + 0.15 * turtle_score + 0.15 * wyckoff_score + 0.10 * elliott_signal + 0.05 * (1 if regime_name in {"bull_quiet", "accumulation"} else 0.5), 4)
+    return {"regime": {"name": regime_name, "confidence": round(regime_confidence, 3), "method": "deterministic_v1", "atr_pct": atr_pct, "volatility_change": vol_change}, "elliott": elliott, "wyckoff": wyckoff, "fibonacci": fib, "turtle": turtle, "confluence": {"score": score, "label": "high" if score >= 0.7 else "moderate" if score >= 0.4 else "low", "components": {"trend": trend_score, "turtle": turtle_score, "wyckoff": wyckoff_score, "elliott": elliott_signal}}, "methodology_version": "methodology-v1"}
 
 def _candlestick_patterns(opens, highs, lows, closes):
     """Detect high-confidence formations on the *last confirmed* candle.
@@ -896,7 +928,9 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
         moving_averages[f"ema_{period}"] = _ema(closes, period)
         moving_averages[f"sma_{period}"] = _sma(closes, period)
     moving_averages["ichimoku_base"] = (max(highs[-26:]) + min(lows[-26:])) / 2 if len(closes) >= 26 else None
-    moving_averages["vwma_20"] = float(np.sum(np.asarray(closes[-20:]) * np.asarray(volumes[-20:])) / np.sum(volumes[-20:])) if len(closes) >= 20 and np.sum(volumes[-20:]) else None
+    # C-17: `vwma_20` ve aşağıdaki `volume.vwap` aynı kayan-hacim mantığının iki
+    # kopyasıydı. İkisi de tek kaynaktan (`_rolling_vwma`) türetilir.
+    moving_averages["vwma_20"] = _rolling_vwma(closes, volumes, 20)
     # C-13: anahtar `hma_9` idi ama değer `_sma` idi — LLM/UI'ya yanlış
     # özellik anlamı taşıyordu. Modülün kendi kanonik `_hma`'sı kullanılır.
     moving_averages["hma_9"] = _hma(closes, 9)
@@ -919,13 +953,25 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     candle_patterns = _candlestick_patterns(opens, highs, lows, closes)
     alignment = "bullish" if ema9 and ema21 and ema50 and ema9 > ema21 > ema50 else "bearish" if ema9 and ema21 and ema50 and ema9 < ema21 < ema50 else "mixed"
     methodologies = _methodology_analysis(opens, highs, lows, closes, volumes, adx, alignment)
+    typical_prices = ((np.asarray(highs, dtype=float) + np.asarray(lows, dtype=float) + np.asarray(closes, dtype=float)) / 3.0)
+    # C-17: `volume.vwap` (tipik fiyat) ve `moving_averages.vwma_20` (kapanış) aynı
+    # kayan-hacim mantığının iki kopyasıydı. Tek kaynak `_rolling_vwma`; isim
+    # yanıltıcı olduğu için (`vwap` seans-başı kümülatif değil, 20-bar kayandır)
+    # açıkça adlandırılmış `vwap_rolling_20` alanı eklendi; `vwap` geriye dönük
+    # alias olarak korundu (araştırma betikleri `volume.vwap` okur).
+    vwap_rolling_20 = _rolling_vwma(typical_prices, volumes, 20)
+    # C-16: `adr_14_pct` / `day_range_used_pct` / `remaining_capacity_pct` değerleri
+    # KESİR taşır (adr=(h-l)/c, used=max/min-1, remaining=adr-used) — `atr_pct` ile
+    # aynı sözleşme. İsim-sözleşme uyuşmazlığı için yanlarına açıkça adlandırılmış
+    # `*_ratio` ikizleri eklendi; `*_pct` anahtarları geriye dönük uyumluluk için
+    # korundu (frontend `remaining_capacity_pct`'yi `percent()` ile kesir okur).
     # UNIT CONTRACT — deliberate, do NOT "fix": `volatility.atr_pct` is a
     # FRACTION in [0, 1] (atr / price), not a percentage, despite the name.
     # Rescaling it here would desync the ML feature pipeline (train/inference
     # parity is the deadliest bug class in this repo) and every stored
     # downstream threshold; that rescaling belongs to its own workstream.
     # `_methodology_analysis` uses the identical atr / price scale.
-    result.update({"timeframe": primary_timeframe, "data_ready": True, "trend": {"ema_9": ema9, "ema_21": ema21, "ema_50": ema50, "alignment": alignment, "adx": adx}, "trend_indicators": trend_indicators, "momentum": {"return_5m": ret(1), "return_15m": ret(3), "return_1h": ret(12), "rsi_14": _rsi(closes), "roc_21": ret(21), "macd": macd, "stochastic": stochastic, "mfi_14": mfi}, "momentum_indicators": momentum_indicators, "oscillators": {"values": oscillator_values, "signals": oscillator_signals}, "moving_averages": moving_averages, "candlestick_patterns": _candlestick_patterns(opens, highs, lows, closes), "channels": {"bollinger": bollinger, "donchian": {"upper": max(highs[-20:]), "middle": _sma(closes, 20), "lower": min(lows[-20:])} if len(closes) >= 20 else None, "keltner": {"middle": ema20, "upper": ema20 + 2*atr if ema20 and atr else None, "lower": ema20 - 2*atr if ema20 and atr else None}}, "volatility": {"atr_14": atr, "atr_pct": atr / price if atr and price else None, "adr_14_pct": adr, "adr_basis": "1d", "bollinger": bollinger, "day_range_used_pct": None, "adr_utilization": None, "remaining_capacity_pct": None}, "volatility_indicators": volatility_indicators, "volume": {"volume_ratio_20": volumes[-1] / vavg if vavg else None, "volume_quality": "insufficient_history" if len(volumes) < 21 else "low_volume" if vavg and volumes[-1] / vavg < 0.2 else "valid", "volume_timeframe": primary_timeframe, "vwap": float(np.sum(((np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3) * np.array(volumes[-20:])) / np.sum(volumes[-20:])) if len(volumes) >= 20 and np.sum(volumes[-20:]) else None, "obv": obv}, "flow_indicators": flow_indicators, "pivots": _pivots(dhigh[-1], dlow[-1], dclose[-1]) if len(dclose) else None, "liquidity": {"quote_volume_24h": ticker_24h, "spread_pct": spread, "best_bid_price": flow.get("bid_price"), "best_ask_price": flow.get("ask_price"), "bid_qty": flow.get("bid_qty"), "ask_qty": flow.get("ask_qty"), "orderbook_depth_try": depth, "depth_multiplier": depth / order_value if order_value else None, "orderflow_imbalance": ((flow.get("bid_qty", 0) - flow.get("ask_qty", 0)) / (flow.get("bid_qty", 0) + flow.get("ask_qty", 0))) if (flow.get("bid_qty", 0) + flow.get("ask_qty", 0)) else None, "scope": "realtime_market", "timeframe_independent": True, "source": flow.get("source", "binance_tr_public_websocket"), "updated_at": flow.get("updated_at")}, "methodologies": methodologies})
+    result.update({"timeframe": primary_timeframe, "data_ready": True, "trend": {"ema_9": ema9, "ema_21": ema21, "ema_50": ema50, "alignment": alignment, "adx": adx}, "trend_indicators": trend_indicators, "momentum": {"return_5m": ret(1), "return_15m": ret(3), "return_1h": ret(12), "rsi_14": _rsi(closes), "roc_21": ret(21), "macd": macd, "stochastic": stochastic, "mfi_14": mfi}, "momentum_indicators": momentum_indicators, "oscillators": {"values": oscillator_values, "signals": oscillator_signals}, "moving_averages": moving_averages, "candlestick_patterns": _candlestick_patterns(opens, highs, lows, closes), "channels": {"bollinger": bollinger, "donchian": {"upper": max(highs[-20:]), "middle": _sma(closes, 20), "lower": min(lows[-20:])} if len(closes) >= 20 else None, "keltner": {"middle": ema20, "upper": ema20 + 2*atr if ema20 and atr else None, "lower": ema20 - 2*atr if ema20 and atr else None}}, "volatility": {"atr_14": atr, "atr_pct": atr / price if atr and price else None, "adr_14_pct": adr, "adr_14_ratio": adr, "adr_basis": "1d", "bollinger": bollinger, "day_range_used_pct": None, "day_range_used_ratio": None, "adr_utilization": None, "remaining_capacity_pct": None, "remaining_capacity_ratio": None}, "volatility_indicators": volatility_indicators, "volume": {"volume_ratio_20": volumes[-1] / vavg if vavg else None, "volume_quality": "insufficient_history" if len(volumes) < 21 else "low_volume" if vavg and volumes[-1] / vavg < 0.2 else "valid", "volume_timeframe": primary_timeframe, "vwap": vwap_rolling_20, "vwap_rolling_20": vwap_rolling_20, "obv": obv}, "flow_indicators": flow_indicators, "pivots": _pivots(dhigh[-1], dlow[-1], dclose[-1]) if len(dclose) else None, "liquidity": {"quote_volume_24h": ticker_24h, "spread_pct": spread, "best_bid_price": flow.get("bid_price"), "best_ask_price": flow.get("ask_price"), "bid_qty": flow.get("bid_qty"), "ask_qty": flow.get("ask_qty"), "orderbook_depth_try": depth, "depth_multiplier": depth / order_value if order_value else None, "orderflow_imbalance": ((flow.get("bid_qty", 0) - flow.get("ask_qty", 0)) / (flow.get("bid_qty", 0) + flow.get("ask_qty", 0))) if (flow.get("bid_qty", 0) + flow.get("ask_qty", 0)) else None, "scope": "realtime_market", "timeframe_independent": True, "source": flow.get("source", "binance_tr_public_websocket"), "updated_at": flow.get("updated_at")}, "methodologies": methodologies})
     result["candlestick_patterns"] = candle_patterns
     result["momentum"]["cmo_9"] = cmo
     result["momentum"]["crsi"] = crsi
@@ -959,7 +1005,7 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     if adr and len(dclose) and dclose[-1]:
         day_open = daily.get("opens", [])[-1] if daily.get("opens") else dclose[-1]
         used = max(price, day_open) / min(price, day_open) - 1 if price > 0 and day_open > 0 else 0
-        result["volatility"].update({"day_range_used_pct": used, "adr_utilization": used / adr, "remaining_capacity_pct": adr - used})
+        result["volatility"].update({"day_range_used_pct": used, "day_range_used_ratio": used, "adr_utilization": used / adr, "remaining_capacity_pct": adr - used, "remaining_capacity_ratio": adr - used})
     result["summary"] = "bullish" if result["trend"]["alignment"] == "bullish" and (result["momentum"]["rsi_14"] or 0) >= 50 else "mixed"
     return result
 

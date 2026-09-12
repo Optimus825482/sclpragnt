@@ -129,8 +129,20 @@ def derive_insights(analyzed: list[dict], *, min_samples: int = 5) -> list[dict]
     for (symbol, horizon), samples in grouped.items():
         if len(samples) < min_samples:
             continue
+        # ÖĞR-01: kronolojik holdout kapısı + AYRI aktivasyon eşiği. Eskiden
+        # `len(samples) >= min_samples` tek başına "active" yapıyordu (5 örnekle
+        # "aktif ders"). Artık `derive_lessons` ile aynı kapı uygulanır ve
+        # aktivasyon daha yüksek bir örneklem ister.
+        samples = sorted(samples, key=lambda row: float(row.get("created_at") or 0))
         success = sum(bool(row.get("direction_correct")) for row in samples)
         failures = len(samples) - success
+        split = max(1, int(len(samples) * 0.70))
+        train, holdout = samples[:split], samples[split:]
+        holdout_ok = len(holdout) >= max(3, min_samples // 3)
+        train_accuracy = (sum(bool(r.get("direction_correct")) for r in train) / len(train)) if train else 0.0
+        holdout_accuracy = (sum(bool(r.get("direction_correct")) for r in holdout) / len(holdout)) if holdout else 0.0
+        consistent = holdout_ok and abs(holdout_accuracy - train_accuracy) <= 0.20
+        active = len(samples) >= max(min_samples * 3, 15) and consistent
         misleading = Counter(tag for row in samples
                              for tag in ((row.get("analysis_factors") or {}).get("misleading_factors") or []))
         supporting = Counter(tag for row in samples
@@ -146,17 +158,23 @@ def derive_insights(analyzed: list[dict], *, min_samples: int = 5) -> list[dict]
             tops = ", ".join(f"{tag} ({count})" for tag, count in supporting.most_common(3))
             parts.append(f"Başarıyı en çok destekleyen: {tops}.")
         if lessons:
-            parts.append(f"Son ders: {lessons[-1][:160]}")
+            # LLM'in kendi özeti prompt'a geri dönerken sanitize edilir: içerik
+            # VERİ olarak işaretlenir, talimat olarak yükseltilmez (LLM→DB→prompt
+            # geri besleme halkası kapatılır).
+            from app.memory_service import sanitize_retrieved_memory
+            lesson_text = str(sanitize_retrieved_memory({"content": lessons[-1]}).get("content") or "")
+            parts.append(f"Son ders: {lesson_text[:160]}")
         key = f"chat-prediction:{symbol or 'global'}:{horizon}"
         insights.append({
             "insight_key": key, "scope": scope, "symbol": symbol, "horizon_minutes": horizon,
             "sample_size": len(samples), "success_count": success, "failure_count": failures,
+            "in_sample_accuracy": round(train_accuracy, 3), "holdout_accuracy": round(holdout_accuracy, 3),
             "insight": " ".join(parts)[:600], "factors": {
                 "misleading_factors": [tag for tag, _ in misleading.most_common(5)],
                 "success_factors": [tag for tag, _ in supporting.most_common(5)],
             },
             "source_ids": [row.get("prediction_id") for row in samples[-20:] if row.get("prediction_id")],
-            "status": "active" if len(samples) >= min_samples else "candidate",
+            "status": "active" if active else "candidate",
         })
     return insights
 

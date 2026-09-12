@@ -57,7 +57,7 @@ export default function Sidebar() {
     useLiveMessages(onLiveMessage);
     useEffect(() => {
         if ("serviceWorker" in navigator) {
-            if (process.env.NODE_ENV === "production") navigator.serviceWorker.register("/sw.js?v=13").catch(() => undefined);
+            if (process.env.NODE_ENV === "production") navigator.serviceWorker.register(`/sw.js?v=${process.env.NEXT_PUBLIC_BUILD_ID || "dev"}`).catch(() => undefined);
             else navigator.serviceWorker.getRegistrations().then((registrations) => registrations.forEach((registration) => registration.unregister()));
         }
         const handler = (event: Event) => { event.preventDefault(); setInstallEvent(event); };

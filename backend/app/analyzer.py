@@ -365,6 +365,29 @@ class ScalpAnalyzer:
             "CHAT_PREDICTION": "1m",
         }.get(strat_name, "5m")
 
+    @staticmethod
+    def _trigger_fill_price(price, trigger, kind):
+        """D-08 (2026-09-12): TP/SL dolum fiyatını TETİK fiyatına çek.
+
+        Denetim D-08: TP çıkışı tetik fiyatından değil `current_price`'dan
+        (= TP'nin üstü) dolduruluyordu → paper PnL gerçekleşeceğin ÜZERİNDE.
+        Gap-through sözleşmesi (istenen):
+          - ``kind == "take_profit"`` (LONG satış, fiyat >= trigger):
+            fill = ``min(price, trigger)`` → tetikten iyi fiyat iddia edilmez.
+          - stop (fiyat <= trigger): fill = ``max(price, trigger)``.
+        Trigger yoksa/geçersizse fiyat aynen döner. Kayma (slippage) BURADA
+        uygulanmaz; ``_close_position_unlocked`` satış bacağına uygular.
+        """
+        try:
+            trigger_val = float(trigger)
+        except (TypeError, ValueError):
+            return price
+        if trigger_val <= 0:
+            return price
+        if kind == "take_profit":
+            return min(float(price), trigger_val)
+        return max(float(price), trigger_val)
+
     async def _manage_open_position(self, symbol, price, strat_name):
         tf = self._strategy_tf(strat_name)
         kline = self.market.get_ut_kline(symbol, tf)
@@ -397,9 +420,11 @@ class ScalpAnalyzer:
             pos["max_price"] = max(pos.get("max_price", pos["entry_price"]), cur_hi)
             pos["min_price"] = min(pos.get("min_price", pos["entry_price"]), cur_lo)
         if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_stop_price") and price <= pos["llm_stop_price"]:
-            return await self.close_position(symbol, price, "llm_stop_loss")
+            return await self.close_position(
+                symbol, self._trigger_fill_price(price, pos["llm_stop_price"], "stop"), "llm_stop_loss")
         if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_take_profit_price") and price >= pos["llm_take_profit_price"]:
-            return await self.close_position(symbol, price, "llm_take_profit")
+            return await self.close_position(
+                symbol, self._trigger_fill_price(price, pos["llm_take_profit_price"], "take_profit"), "llm_take_profit")
         if pos and pos.get("strategy") == "LLM_PAPER" and pos.get("llm_max_hold_sec"):
             entry_time = float(pos.get("entry_time") or 0)
             if entry_time and time.time() - entry_time >= float(pos["llm_max_hold_sec"]):
@@ -443,7 +468,8 @@ class ScalpAnalyzer:
                     bool(((pos.get("entry_context") or {}).get("signal_context") or {}).get("no_initial_stop")):
                 emg_stop = entry * (1 - config.VELOCITY_EMERGENCY_STOP_PCT / 100.0)
                 if price <= emg_stop:
-                    return await self.close_position(symbol, price, "velocity_emergency_stop")
+                    return await self.close_position(
+                        symbol, self._trigger_fill_price(price, emg_stop, "stop"), "velocity_emergency_stop")
             # Chat Prediction (velocity auto-trade) kâr koruma merdiveni:
             # 1) +%0.5 kâr görülünce stop, round-trip maliyetin üstüne çekilir
             #    → pozisyon artık zarara dönemez (D-01: eskiden dönüyordu).
@@ -479,7 +505,8 @@ class ScalpAnalyzer:
             if price <= system_stop:
                 # Kâr kilidi stop'u bir trailing değil, kârı koruyan sabit bir
                 # zemindir; normal stop-loss çıkışı olarak işlenir.
-                return await self.close_position(symbol, price, "system_stop_loss")
+                return await self.close_position(
+                    symbol, self._trigger_fill_price(price, system_stop, "stop"), "system_stop_loss")
             if pos.get("strategy") == "CHAT_PREDICTION":
                 # Replay planı ve otonom hız avcısı çıkışları: sabit plan TP
                 # (hedef fiyat) ve max-hold. TP girişte
@@ -490,7 +517,8 @@ class ScalpAnalyzer:
                 # tetiklenmesin (15 dk scalp planı için aşırı).
                 plan_tp = float(pos.get("system_take_profit_price") or pos.get("take_profit") or 0)
                 if plan_tp and price >= plan_tp:
-                    return await self.close_position(symbol, price, "chat_plan_take_profit")
+                    return await self.close_position(
+                        symbol, self._trigger_fill_price(price, plan_tp, "take_profit"), "chat_plan_take_profit")
                 # velocity_max_hold_sec bellek alanıdır; restart sonrası
                 # restore edilen pozisyonlar için plan süresi kalıcı
                 # entry_context'ten okunur.
@@ -517,7 +545,10 @@ class ScalpAnalyzer:
                 pos["system_trailing_stop_price"] = max(previous, candidate)
                 net_floor = entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))
                 if price <= pos["system_trailing_stop_price"] and price >= net_floor:
-                    return await self.close_position(symbol, price, "atr_trailing_stop")
+                    return await self.close_position(
+                        symbol,
+                        self._trigger_fill_price(price, pos["system_trailing_stop_price"], "stop"),
+                        "atr_trailing_stop")
             if (config.STALE_POSITION_EXIT_BELOW_COST and elapsed >= config.STALE_POSITION_SEC and
                     price < entry * (1 + config.min_net_exit_pct(pos.get("quantity", 0) * entry))):
                 return await self.close_position(symbol, price, "stale_position_below_cost")
@@ -631,11 +662,18 @@ class ScalpAnalyzer:
         ):
             await database.save_signal({"symbol": symbol, "action": "CLOSE_BLOCKED", "price": price, "reason": f"llm_legacy_exit_blocked:{reason}", "strategy": "LLM_PAPER", "timestamp": time.time()})
             return None
-        sell_value = pos["quantity"] * price
+        # D-08 (2026-09-12): fiilî SATIŞ dolumuna kayma (slippage) uygula.
+        # Bu, TP/SL tetik dolumunun (min/max ile tetik fiyatına çekilmiş)
+        # ÜZERİNE uygulanır; iki ayrı kavramdır. Tek kaynak:
+        # config.ESTIMATED_SLIPPAGE_PCT (config.min_net_exit_pct da aynı sabiti
+        # kullanır); yeni formül uydurulmaz.
+        exit_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        fill_price = price * (1.0 - exit_slip)
+        sell_value = pos["quantity"] * fill_price
         commission = sell_value * config.COMMISSION_PCT
         try_balance = await database.get_wallet_balance("TRY")
-        trade = await self._record_trade(symbol, pos, price, reason, commission)
-        sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": price,
+        trade = await self._record_trade(symbol, pos, fill_price, reason, commission)
+        sig = {"symbol": symbol, "action": "CLOSE_LONG", "reason": reason, "price": fill_price,
                "strategy": pos.get("strategy", "CHAT_PREDICTION"), "trade_id": pos.get("trade_id"), "timestamp": time.time()}
         await database.commit_close_position(symbol, symbol.replace("TRY", ""), try_balance + sell_value - commission, trade, sig)
         try:
@@ -910,6 +948,26 @@ class ScalpAnalyzer:
             if len(self.positions) >= self.max_open_positions():
                 blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
                            "reason": "max_open_positions_reached", "strategy": strat_name, "timestamp": time.time()}
+                await database.save_signal(blocked)
+                return blocked
+            # D-10 (2026-09-12): iki alt sistem AYNI TRY cüzdanını paylaşır.
+            # `database.open_auto_paper_trade` `positions` tablosunu kontrol eder
+            # (tek yön) ama ters yön yoktu: analyzer yalnızca bellekteki
+            # self.positions + DB `positions` tablosuna bakıyor, `auto_paper_trades`
+            # tablosunu SORGULAMIYORDU. Sonuç: aynı sembole velocity (bu yol) ve
+            # auto_paper (bildirim yolu) iki pozisyon açabiliyor → istenen riskin
+            # 2×'i ve pozisyon sayımı yanlış. Sorgu burada serbesttir
+            # (`database.py` DEĞİŞTİRİLMEZ; mevcut okuma yardımcısı çağrılır).
+            try:
+                auto_open = await database.get_open_auto_paper_trade(symbol)
+            except Exception as exc:
+                # DB erişilemezse mevcut açılış akışını bozmamak için fail-open
+                # (load_positions da hata kabul etmez); iz bırakılır.
+                auto_open = None
+                print(f"[D-10] auto_paper açık pozisyon kontrolü atlandı {symbol}: {exc}", flush=True)
+            if auto_open:
+                blocked = {"symbol": symbol, "action": "BUY_BLOCKED", "price": entry_price,
+                           "reason": "auto_paper_position_open", "strategy": strat_name, "timestamp": time.time()}
                 await database.save_signal(blocked)
                 return blocked
             if strat_name != "LLM_PAPER":
@@ -1192,6 +1250,18 @@ class ScalpAnalyzer:
                 mtf_snapshots[timeframe] = snapshot
             entry_context["technical"]["mtf_snapshots"] = mtf_snapshots
             entry_context["technical"]["mtf_timeframes"] = list(mtf_snapshots)
+        # D-08 (2026-09-12): fiilî ALIŞ dolumuna kayma (slippage) uygula.
+        # Pozisyonun maliyet tabanı (entry_price) ve adet bu dolumdan türetilir;
+        # böylece PnL = (satış_dolum - alış_dolum)*adet - komisyonlar giriş
+        # kaymasını da yansıtır. Nakit düşümü order_value (komisyonla) üzerinden
+        # yapıldığı için adet = order_value / fill; quantity*entry_price =
+        # order_value kimliği korunur (boyut raporu ile muhasebe tutarlı kalır).
+        # Tek kaynak: config.ESTIMATED_SLIPPAGE_PCT. Yukarıdaki TA anlık
+        # görüntüleri (entry_context.technical / mtf_snapshots) HAM piyasa
+        # fiyatını kullanır — maliyet tabanıyla karışmaması için reassignment
+        # burada (snapshot'lardan SONRA) yapılır.
+        entry_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        entry_price = entry_price * (1.0 + entry_slip)
         quantity = order_value / entry_price
         commission = order_value * config.COMMISSION_PCT
 

@@ -6,6 +6,7 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
 import { useUiMode } from "../lib/ui-mode";
 import SymbolLink from "../components/SymbolLink";
+import { formatSignedTL, formatTL, toMs } from "../lib/format";
 import { netOpenPnlPct, netOpenPnlTry, applyCommissionPct } from "../lib/pnl";
 import {
     createChart, createSeriesMarkers, CandlestickSeries, LineSeries, HistogramSeries,
@@ -44,6 +45,31 @@ const pnlTryText = (v?: number | null) => {
     return v < 0 ? `-₺${abs}` : `+₺${abs}`;
 };
 
+/**
+ * H-08: mum kapanış geri sayımı. Sayacın kendi state'i vardır ve 250 ms
+ * tazeleme YALNIZCA bu küçük bileşeni yeniden render eder. Eskiden sayaç
+ * `ChartsPage` state'iydi: 1700 satırlık sayfa ağacının tamamı saniyede 4 kez
+ * diff ediliyordu (mobilde jank + pil).
+ */
+function CandleCountdown({ intervalMs }: { intervalMs: number }) {
+    const [remaining, setRemaining] = useState(0);
+    useEffect(() => {
+        const ms = intervalMs > 0 ? intervalMs : 60_000;
+        const tick = () => {
+            const now = Date.now();
+            setRemaining(Math.max(0, Math.ceil(now / ms) * ms - now));
+        };
+        tick();
+        const t = setInterval(tick, 250);
+        return () => clearInterval(t);
+    }, [intervalMs]);
+    return (
+        <span className="text-neon-green font-bold tabular-nums">
+            {String(Math.floor(remaining / 60000)).padStart(2, "0")}:{String(Math.floor((remaining % 60000) / 1000)).padStart(2, "0")}
+        </span>
+    );
+}
+
 
 
 export default function ChartsPage() {
@@ -60,7 +86,6 @@ export default function ChartsPage() {
     const [picking, setPicking] = useState(false);
     const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
     const [volumeVisible, setVolumeVisible] = useState(false);
-    const [countdown, setCountdown] = useState<number>(0);
     const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
     const [showPositions, setShowPositions] = useState(false);
     const [showStopTakeProfit, setShowStopTakeProfit] = useState(false);
@@ -156,18 +181,9 @@ export default function ChartsPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [searchParams]);
 
-    // mum kapanış geri sayımı: seçili TF'ye göre kalan süre
-    useEffect(() => {
-        const tick = () => {
-            const now = Date.now();
-            const ms = INTERVAL_MS[interval] || 60_000;
-            const next = Math.ceil(now / ms) * ms;
-            setCountdown(Math.max(0, next - now));
-        };
-        tick();
-        const t = setInterval(tick, 250);
-        return () => clearInterval(t);
-    }, [interval]);
+    // mum kapanış geri sayımı: seçili TF'ye göre kalan süre.
+    // H-08: state artık <CandleCountdown/> içinde — 250 ms tazeleme tüm
+    // sayfayı yeniden render etmez.
 
     const containerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
@@ -548,7 +564,14 @@ export default function ChartsPage() {
             }
         }
         if (["trade_updated", "signal", "reset"].includes(message.type)) loadPortfolioSummary();
-    }, [loadPortfolioSummary]));
+        // H-20: LLM pozisyon yönetimi ve portföy mutabakatı olaylarının tüketicisi
+        // yoktu → pozisyon tablosu ve özet 3-30 sn'ye kadar bayat kalıyordu.
+        if (["llm_position_management", "portfolio_reconciled"].includes(message.type)) {
+            loadPortfolioSummary();
+            fetchPositions();
+            fetchAutoPaper();
+        }
+    }, [loadPortfolioSummary, fetchPositions, fetchAutoPaper]));
 
     // mum serisi ilk yüklemede load() içinde setData ile kurulur,
     // canlı güncelleme WebSocket handler'ında update() ile yapılır (görünüm sıfırlanmaz)
@@ -1238,15 +1261,10 @@ export default function ChartsPage() {
     })();
     // H-02: metrikler yüklenmeden `0` göstermek sahte "başabaş yeşil" üretirdi.
     const netPnl = portfolioMetrics?.net_pnl == null ? null : Number(portfolioMetrics.net_pnl);
-    const money = (value: number | null) => {
-        if (value == null || !Number.isFinite(value)) return "—";
-        const abs = Math.abs(value);
-        const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        return value < 0 ? `-₺${formatted}` : `₺${formatted}`;
-    };
+    // H-04/H-15: TL biçimi tek kaynaktan (`lib/format.ts`) — ₺ önek, 2 ondalık.
+    const money = formatTL;
     const pnlClass = (value: number | null) => pnlToneClass(value);
-    const signedMoney = (value: number | null) =>
-        value == null || !Number.isFinite(value) ? "—" : `${value >= 0 ? "+" : "-"}${money(Math.abs(value))}`;
+    const signedMoney = formatSignedTL;
     const pressure = (() => {
         const recent = bars.slice(-8);
         if (recent.length < 2) return 0;
@@ -1276,7 +1294,8 @@ export default function ChartsPage() {
     };
     const num1 = (value: number | null) => value == null ? "—" : value.toLocaleString("tr-TR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
     // radar bildirim zamanı (unix sn) -> saat:dakika:saniye
-    const fmtClock = (ts: number | null | undefined) => (ts ? new Date(ts * 1000).toLocaleTimeString("tr-TR") : "—");
+    // H-24: elle `* 1000` yerine `toMs` (saniye/ms karışık girdi güvenli).
+    const fmtClock = (ts: number | null | undefined) => (ts ? new Date(toMs(ts)).toLocaleTimeString("tr-TR") : "—");
     // RSI/MFI bölge etiketi: aşırı bölgelerde renk değişir, nötrde beyaz kalır.
     const zoneClass = (value: number | null, oversold: number, overbought: number) =>
         value == null ? "text-bunker-muted" : value <= oversold ? "text-neon-green" : value >= overbought ? "text-red-400" : "text-white";
@@ -1659,9 +1678,7 @@ export default function ChartsPage() {
                     <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-bunker-700 bg-bunker-900/90 backdrop-blur font-mono text-xs text-bunker-muted pointer-events-none">
                         <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" />
                         <span className="hidden sm:inline">MUM KAPANIŞ: </span>
-                        <span className="text-neon-green font-bold tabular-nums">
-                            {String(Math.floor(countdown / 60000)).padStart(2, "0")}:{String(Math.floor((countdown % 60000) / 1000)).padStart(2, "0")}
-                        </span>
+                        <CandleCountdown intervalMs={INTERVAL_MS[interval] || 60_000} />
                     </div>
                     <button type="button" onClick={() => setChartSettingsOpen(true)} aria-label="Grafik ayarlarını aç" title="Grafik ayarları" className="grid h-8 w-8 place-items-center rounded-lg border border-bunker-700 bg-bunker-900/90 text-bunker-muted backdrop-blur transition-colors hover:border-neon-green/50 hover:text-neon-green focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-green/70">
                         <svg aria-hidden="true" viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current" strokeWidth="2"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" /><path d="m19.4 15 .1.1 1.4 1.1-2 3.4-1.7-.7a7.5 7.5 0 0 1-2.3 1.3L14.6 22h-4l-.3-1.8a7.5 7.5 0 0 1-2.3-1.3l-1.7.7-2-3.4 1.4-1.1.1-.1a7.4 7.4 0 0 1 0-2l-.1-.1-1.4-1.1 2-3.4 1.7.7a7.5 7.5 0 0 1 2.3-1.3l.3-1.8h4l.3 1.8a7.5 7.5 0 0 1 2.3 1.3l1.7-.7 2 3.4-1.4 1.1-.1.1a7.4 7.4 0 0 1 0 2Z" /></svg>
@@ -1698,11 +1715,11 @@ export default function ChartsPage() {
                                     const pnl = p.pnl_pct ?? null;
                                     const pnlTry = p.pnl_try ?? null;
                                     const time = p.entry_time
-                                        ? new Date(p.entry_time * 1000).toLocaleTimeString("tr-TR")
+                                        ? new Date(toMs(p.entry_time)).toLocaleTimeString("tr-TR")
                                         : "-";
                                     const entryValue = Number(p.entry || 0) * Number(p.quantity || 0);
                                     return (
-                                        <tr key={p.symbol} className="border-b border-bunker-800/50 hover:bg-bunker-900/50">
+                                        <tr key={p._auto_paper_id ? `ap-${p._auto_paper_id}` : `main-${p.symbol}`} className="border-b border-bunker-800/50 hover:bg-bunker-900/50">
                                             <td className="px-4 py-2 text-white font-bold"><SymbolLink symbol={p.symbol} className="text-white hover:text-neon-green" />
                                                 <div className="mt-1 text-[10px] font-mono text-bunker-muted">{strategyLabelFor(p)}</div>
                                             </td>
@@ -1744,11 +1761,11 @@ export default function ChartsPage() {
                             const pnl = p.pnl_pct ?? null;
                             const pnlTry = p.pnl_try ?? null;
                             const time = p.entry_time
-                                ? new Date(p.entry_time * 1000).toLocaleTimeString("tr-TR")
+                                ? new Date(toMs(p.entry_time)).toLocaleTimeString("tr-TR")
                                 : "-";
                             const entryValue = Number(p.entry || 0) * Number(p.quantity || 0);
                             return (
-                                <div key={p.symbol} className="px-3 py-3 flex items-center gap-3">
+                                <div key={p._auto_paper_id ? `ap-${p._auto_paper_id}` : `main-${p.symbol}`} className="px-3 py-3 flex items-center gap-3">
                                     <div className="min-w-0 flex-1">
                                         <div className="flex items-center gap-2 flex-wrap">
                                             <SymbolLink symbol={p.symbol} className="text-white font-bold hover:text-neon-green" />

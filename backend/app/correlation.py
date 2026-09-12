@@ -88,8 +88,13 @@ class CorrelationMonitor:
 
 
 def _returns(closes: list[float]) -> list[float]:
-    return [(closes[i] / closes[i - 1] - 1.0) for i in range(1, len(closes))
-            if closes[i - 1] != 0]
+    # C-19: sıfır kapanışta eleman DÜŞÜRMEK seriyi kaydırıyordu (BTC'de sıfır
+    # yokken altta tek bir sıfır olsa getiri listesi 1 bar kayar ve `_pearson`
+    # yanlış hizalanmış çiftlerle çalışırdı). Artık her bitişik çift için bir
+    # çıktı üretilir; geçersiz (sıfır taban) çift NaN ile işaretlenir ve
+    # `_pearson` çift bazında maskeler.
+    return [float("nan") if closes[i - 1] == 0 else (closes[i] / closes[i - 1] - 1.0)
+            for i in range(1, len(closes))]
 
 
 def _pearson(xs: list[float], ys: list[float]) -> float:
@@ -97,6 +102,14 @@ def _pearson(xs: list[float], ys: list[float]) -> float:
     if n < 20:
         return 0.75  # thin data: assume high correlation
     xs, ys = xs[-n:], ys[-n:]
+    # C-19: NaN (sıfır tabanlı) çiftleri AYNI index'te birlikte at; aksi hâlde
+    # bir serinin kayması korelasyonu bozar.
+    pairs = [(x, y) for x, y in zip(xs, ys) if not (math.isnan(x) or math.isnan(y))]
+    if len(pairs) < 20:
+        return 0.75
+    xs = [pair[0] for pair in pairs]
+    ys = [pair[1] for pair in pairs]
+    n = len(pairs)
     mx = sum(xs) / n
     my = sum(ys) / n
     cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
@@ -129,9 +142,13 @@ def cluster_exposure(positions: dict, new_symbol: str | None, new_value: float,
                         "corr": round(corr, 3), "weighted": round(weighted, 2)})
     if new_symbol and new_value > 0:
         corr_new = monitor.correlation_of(new_symbol, benchmark)
-        total_weighted += new_value * max(0.0, corr_new)
+        weighted_new = new_value * max(0.0, corr_new)
+        total_weighted += weighted_new
+        # C-20: toplam `max(0, corr)` ile ağırlıklandırılırken detay satırı çıplak
+        # `new_value * corr_new` yazıyordu → negatif korelasyonda raporlanan katkı
+        # gerçek katkıdan farklıydı. Detay da aynı clamp'i kullanır.
         details.append({"symbol": str(new_symbol).upper(), "notional": round(new_value, 2),
-                        "corr": round(corr_new, 3), "weighted": round(new_value * corr_new, 2),
+                        "corr": round(corr_new, 3), "weighted": round(weighted_new, 2),
                         "new": True})
     pct = None
     if equity and equity > 0:
