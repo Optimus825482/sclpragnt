@@ -36,7 +36,15 @@ async def main():
     url = os.getenv("DATABASE_URL")
     if not url:
         raise SystemExit("DATABASE_URL gerekli")
-    sql = (Path(__file__).resolve().parents[1] / "migrations" / "001_pgvector_schema.sql").read_text(encoding="utf-8")
+    # V-03: 001 ile birlikte 002 de uygulanır; sha ikisinin birleşimidir ki
+    # `database.init_db()` ile aynı işareti üretsin (yoksa her restart'ta DDL
+    # yeniden koşar veya 002 hiç uygulanmaz).
+    migrations_dir = Path(__file__).resolve().parents[1] / "migrations"
+    sql = "".join(
+        (migrations_dir / filename).read_text(encoding="utf-8") + "\n"
+        for filename in ("001_pgvector_schema.sql", "002_macd_evidence_lift.sql")
+        if (migrations_dir / filename).exists()
+    )
     schema_sha = hashlib.sha256(sql.encode("utf-8")).hexdigest()
     last_error = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):

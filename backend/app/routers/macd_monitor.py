@@ -29,7 +29,7 @@ from fastapi import APIRouter, Request
 
 from app.config import config
 from app import database
-from app.api_common import _background_tasks
+from app.api_common import _background_tasks, _start_background
 from app.state import market, analyzer
 from app.technical_analysis import _macd
 from app.ws_runtime import ws_manager
@@ -1534,13 +1534,12 @@ def start_macd_monitor_loop() -> bool:
     global _loop_task, _evidence_task
     if _loop_task is not None and not _loop_task.done():
         return False
-    _loop_task = asyncio.create_task(macd_monitor_loop(), name="macd-monitor-loop")
-    _background_tasks.add(_loop_task)
+    # G-10: iki döngü de süpervizörlü başlatılır (beklenmeyen hatada backoff +
+    # yeniden başlatma; aksi halde sessizce ölüp bir daha başlamıyorlardı).
+    _loop_task = _start_background(macd_monitor_loop, "macd-monitor-loop")
     # C3 kanıt doldurma yardımcı döngüsü (sinyal davranışını değiştirmez)
     if _evidence_task is None or _evidence_task.done():
-        _evidence_task = asyncio.create_task(macd_evidence_loop(),
-                                              name="macd-evidence-loop")
-        _background_tasks.add(_evidence_task)
+        _evidence_task = _start_background(macd_evidence_loop, "macd-evidence-loop")
     return True
 
 

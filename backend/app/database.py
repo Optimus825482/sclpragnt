@@ -1,4 +1,5 @@
 import asyncio
+import bisect
 import hashlib
 import json
 import logging
@@ -95,6 +96,15 @@ class _PostgresCompat:
                 set_clause = ",".join(f"{c}=EXCLUDED.{c}" for c in cols)
                 sql += f" ON CONFLICT DO UPDATE SET {set_clause}"
         cur = self.conn.cursor(); cur.executemany(sql, params); return cur
+    def raw_execute(self, sql, params=()):
+        """V-19: ``?`` → ``%s`` dönüşümü YAPMADAN çalıştır.
+
+        LLM'in ürettiği hazır SQL, string literal içinde ``?`` taşıyabilir;
+        compat katmanının naif dönüşümü onu parametre yer tutucusuna çevirip
+        hataya yol açıyordu. Yalnız izin listesi + yazma yasağı doğrulanmış
+        salt-okunur sorgular için kullanılır.
+        """
+        cur = self.conn.cursor(); cur.execute(sql, params); return cur
     def commit(self): self.conn.commit()
     def rollback(self): self.conn.rollback()
     # Pool bağlantılarını asla elle kapatma — `with pool.connection()` çıkınca
@@ -133,6 +143,56 @@ def _db_datetime_value(value):
         return value
 
 
+def _matches_within(index, target: float, tolerance: float) -> list:
+    """V-09: zamanla SIRALI ``(zaman, değer)`` çiftlerinde ``|zaman-target|<=tol``.
+
+    Eskiden onarım fonksiyonları her log için TÜM işlem listesini Python'da
+    tarıyordu (O(N_trades × N_logs)). İkili arama aynı sonucu O(log N) verir.
+    """
+    if not index:
+        return []
+    times = [item[0] for item in index]
+    start = bisect.bisect_left(times, target - tolerance)
+    found = []
+    for position in range(start, len(index)):
+        if index[position][0] > target + tolerance:
+            break
+        found.append(index[position][1])
+    return found
+
+
+def _has_timestamp_within(index, target: float, tolerance: float) -> bool:
+    """V-09: sıralı zaman listesinde ``target ± tolerance`` aralığında değer var mı."""
+    if not index:
+        return False
+    start = bisect.bisect_left(index, target - tolerance)
+    return start < len(index) and index[start] <= target + tolerance
+
+
+def _escape_like(value: str) -> str:
+    """V-18: LIKE/ILIKE desen jokerlerini kaçır (varsayılan ESCAPE '\\')."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _configure_pool_connection(conn) -> None:
+    """V-15: kilit beklemesini SINIRLA — sonsuz bekleme deploy hang'i üretiyordu.
+
+    ``init_db`` 528 satırlık DDL'i çalıştırır. Canlı bir backend aynı nesneler
+    üzerinde ACCESS EXCLUSIVE kilit tutarken yeni konteynerin ``init_db``'si
+    süresiz bloklanıyordu (healthcheck timeout -> restart döngüsü). 5 sn'lik
+    ``lock_timeout`` bunu görünür bir hataya çevirir.
+
+    ``statement_timeout`` burada AYARLANMAZ: retention yıkaması ve backfill
+    partileri gibi meşru uzun işler anahtarın dışında kalmalı. DDL'e özel sınır
+    ``init_db`` içinde ``SET LOCAL`` ile verilir.
+    """
+    try:
+        conn.execute("SET lock_timeout = '5s'")
+        conn.commit()
+    except Exception:
+        pass
+
+
 def _get_connection():
     """Pool'dan bir bağlantı al (context manager olarak kullanılır)."""
     global _PG_POOL
@@ -145,6 +205,7 @@ def _get_connection():
                 max_size=8,
                 open=False,
                 kwargs={"row_factory": _hybrid_row_factory},
+                configure=_configure_pool_connection,
             )
             _PG_POOL.open()
         except Exception as exc:
@@ -179,9 +240,17 @@ def _execute(operation):
 async def init_db():
     """Initialize the PostgreSQL schema (single backend)."""
     def pg_op(conn):
-        schema_path = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations", "001_pgvector_schema.sql"))
-        with open(schema_path, encoding="utf-8") as schema_file:
-            schema_sql = schema_file.read()
+        # V-03: TÜM migration dosyaları uygulanır ve sha ikisinin birleşimidir.
+        # Eskiden yalnız 001 okunuyordu → 002_macd_evidence_lift.sql ölüydü ve
+        # MACD kanıt kolonları yalnız çalışma anındaki gecikmeli DDL ile var
+        # oluyordu (şema sürümlemesi yanıltıcıydı).
+        migrations_dir = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations"))
+        schema_sql = ""
+        for filename in ("001_pgvector_schema.sql", "002_macd_evidence_lift.sql"):
+            path = os.path.join(migrations_dir, filename)
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as schema_file:
+                    schema_sql += schema_file.read() + "\n"
         schema_sha = hashlib.sha256(schema_sql.encode("utf-8")).hexdigest()
         # Hızlı yol: entrypoint migration'ı aynı sha'yı uyguladıysa DDL'i
         # yeniden koşma (canlı sistemde gereksiz ACCESS EXCLUSIVE lock
@@ -191,12 +260,48 @@ async def init_db():
             mrow = conn.execute("SELECT value FROM llm_settings WHERE key='schema_sha256'").fetchone()
             marker = mrow[0] if mrow else None
         if marker != schema_sha:
+            # V-15: DDL'e işlem kapsamlı bir üst sınır (lock_timeout havuz
+            # yapılandırmasından gelir). SET LOCAL dışında bir işlemde
+            # çalıştırılırsa PostgreSQL uyarı verip yok sayar — zararsız.
+            conn.conn.execute("SET LOCAL statement_timeout = '300s'")
             conn.conn.execute(schema_sql)
             conn.execute(
                 "INSERT INTO llm_settings(key,value) VALUES('schema_sha256',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (schema_sha,))
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_skills_name ON llm_skills(name)")
+        # V-07: `signals.trade_id` üzerinde index yoktu; `reconcile_portfolio`
+        # ve `purge_legacy_trade_records` bu kolonla DELETE atıyordu -> tam
+        # tarama. V-08: `decision_logs.decision` da indexsizdi ve onarım uçları
+        # `WHERE decision='CLOSE_LONG'` ile tam tarama yapıyordu. İkisi de
+        # idempotent; her açılışta çalışır (şema sha'sına bağlı değildir).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_trade_id ON signals(trade_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_decision_logs_decision ON decision_logs(decision, timestamp DESC)")
+        # TAH-01: tahmin satırının ölçüm çapası (fiyatın gözlendiği an). Şema
+        # dosyası tek başına yeterli değil — koşan dağıtımlarda da idempotent eklenir.
+        conn.execute("ALTER TABLE llm_forecasts ADD COLUMN IF NOT EXISTS decided_at DOUBLE PRECISION")
+        # V-04: MACD kanıt şeması artık OKUMA yolunda değil, açılışta bir kez
+        # hazırlanır (istatistik uçları DDL/INSERT/COMMIT yapmaz).
+        _ensure_macd_evidence_schema(conn)
+        # V-02/V-06: kırılgan UNIQUE kısıtlar tek tek ve HATA TOLERANSLI kurulur.
+        # Şemaya (001) gömülü olsalardı mevcut veride ihlal varsa 528 satırlık
+        # DDL'in TAMAMI rollback olur, `schema_sha256` yazılmaz ve her restart
+        # aynı yerde patlardı (kalıcı açılış döngüsü). Ayrıca bu kısıtlar
+        # `trade_id` kopya korumasını DB düzeyine taşır (V-06).
+        for constraint_sql in (
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_trades_trade_id "
+            "ON trades(trade_id) WHERE trade_id IS NOT NULL",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_positions_trade_id "
+            "ON positions(trade_id) WHERE trade_id IS NOT NULL",
+            "CREATE UNIQUE INDEX IF NOT EXISTS auto_paper_trades_one_open_per_symbol "
+            "ON auto_paper_trades(symbol) WHERE status='open'",
+        ):
+            try:
+                conn.execute(constraint_sql)
+            except Exception:
+                logger.warning(
+                    "Kısıt kurulamadı (veri temizliği gerekli, açılış sürüyor): %s",
+                    constraint_sql, exc_info=True)
         conn.execute("INSERT INTO llm_skills(name,instructions,enabled,created_at) VALUES(%s,%s,TRUE,%s) "
                      "ON CONFLICT(name) DO NOTHING",
                      (DEFAULT_SCALPER_SKILL_NAME, DEFAULT_SCALPER_SKILL_INSTRUCTIONS, time.time()))
@@ -296,7 +401,12 @@ async def get_wallet_balance(asset="TRY"):
     holds (legacy "USDT" default silently returned 0.0)."""
     def op(conn):
         row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", (asset,)).fetchone()
-        return row[0] if row else 0.0
+        # V-17: `virtual_wallet.amount` şemada NOT NULL değil; eski kod NULL'u
+        # olduğu gibi döndürüyordu ve `float(None)` çağıranlarda çöküyordu.
+        # Sözleşme: bakiye her zaman bir sayıdır.
+        if not row or row[0] is None:
+            return 0.0
+        return float(row[0])
 
     return await _run_db(op)
 
@@ -334,9 +444,14 @@ def _chronological_overallocation_candidates(conn):
         events.append((float(row[0] or 0), 0, "debit", None, cost * (1 + c)))
         events.append((float(row[1] or 0), 1, "credit", None, exit_notional * (1 - c)))
     # auto_paper_trades share the same TRY wallet.
+    # V-10: açık (`status='open'`) satırların `exit_time` değeri NULL'dur, bu
+    # yüzden `exit_time > cutoff` filtresi onları ELİYORDU. Reset sonrası açık
+    # otonom pozisyonların borcu aşırı-tahsis modeline hiç girmiyor, model nakdi
+    # gerçekte olandan yüksek gösteriyordu — oysa `reconcile_portfolio` aynı
+    # maliyeti `open_cost`'a katıyor (çelişkili çıktı).
     ap_trades = conn.execute(
         "SELECT entry_time,exit_time,order_value_try,quantity,status,exit_price FROM auto_paper_trades"
-        + (" WHERE exit_time>?" if cutoff else ""),
+        + (" WHERE status='open' OR exit_time>?" if cutoff else ""),
         (cutoff,) if cutoff else ()).fetchall()
     for row in ap_trades:
         order_value = float(row[2] or 0)
@@ -476,10 +591,19 @@ async def preview_trade_repair():
             "WHERE decision='CLOSE_LONG' AND (strategy IS NULL OR strategy='' OR strategy<>'AUTO_PAPER') "
             "ORDER BY timestamp"
         ).fetchall()
+        # V-09: eskiden her log için TÜM trades listesi Python'da taranıyordu
+        # (10.000 trade + 10.000 log -> ~100M karşılaştırma, tek istek içinde).
+        # Sembol başına SIRALI çıkış zamanı listesi + ikili arama: aynı semantik.
+        exit_index: dict[str, list[float]] = {}
+        for trade in trades:
+            if trade[4] is None:
+                continue
+            exit_index.setdefault(trade[1], []).append(float(trade[4]))
+        for values in exit_index.values():
+            values.sort()
         unmatched_closes = []
         for log in close_logs:
-            matches = [t for t in trades if t[1] == log[1] and t[4] is not None and abs(float(t[4]) - float(log[2] or 0)) <= 30]
-            if not matches:
+            if not _has_timestamp_within(exit_index.get(log[1]), float(log[2] or 0), 30.0):
                 unmatched_closes.append({"id": log[0], "symbol": log[1], "timestamp": log[2], "reason": "matching_trade_not_found"})
         return {"status":"preview", "missing_trade_ids":missing_trade_ids, "missing_position_ids":missing_position_ids,
                 "unmatched_close_logs":unmatched_closes, "actions": {
@@ -505,10 +629,20 @@ async def apply_trade_repair():
                 updated_positions += 1
         trades = conn.execute("SELECT id,symbol,strategy,exit_time FROM trades WHERE strategy IS NOT NULL AND strategy<>''").fetchall()
         logs = conn.execute("SELECT id,symbol,timestamp FROM decision_logs WHERE decision='CLOSE_LONG' AND (strategy IS NULL OR strategy='')").fetchall()
+        # V-09: aynı O(N²) desen burada da vardı. Sembol başına
+        # (çıkış zamanı -> strateji) sıralı indeks; "tam olarak 1 eşleşme"
+        # kuralı korunur.
+        strategy_index: dict[str, list[tuple[float, str]]] = {}
+        for trade in trades:
+            if trade[3] is None:
+                continue
+            strategy_index.setdefault(trade[1], []).append((float(trade[3]), trade[2]))
+        for values in strategy_index.values():
+            values.sort(key=lambda item: item[0])
         for log in logs:
-            matches = [t for t in trades if t[1] == log[1] and t[3] is not None and abs(float(t[3]) - float(log[2] or 0)) <= 30]
+            matches = _matches_within(strategy_index.get(log[1]), float(log[2] or 0), 30.0)
             if len(matches) == 1:
-                conn.execute("UPDATE decision_logs SET strategy=? WHERE id=?", (matches[0][2], log[0]))
+                conn.execute("UPDATE decision_logs SET strategy=? WHERE id=?", (matches[0], log[0]))
                 enriched_logs += 1
         conn.commit()
         return {"updated_trades":updated_trades, "updated_positions":updated_positions, "enriched_close_logs":enriched_logs, "deleted":0}
@@ -688,8 +822,6 @@ _MACD_BASELINE_BUCKET_SEC = 300
 _MACD_HORIZON_MINUTES = (("5m", 5), ("15m", 15), ("30m", 30))
 # Şema bir kez doğrulanır (idempotent ALTER'lar her turda koşmasın).
 _MACD_EVIDENCE_SCHEMA_READY = False
-# İstatistik çağrısı başına en fazla kaç eksik taban kovası hesaplanır (üst sınır).
-_MACD_BASELINE_MAX_PER_CALL = 40
 
 
 def _ensure_macd_evidence_schema(conn) -> None:
@@ -1059,12 +1191,14 @@ def _alert_bucket_out(bucket: dict) -> dict:
 
 
 def _baseline_map(conn, buckets: set[int]) -> dict[int, dict]:
-    """Verilen kovalar için {bucket: {"5m": {...}, …}} haritası.
+    """Verilen kovalar için {bucket: {"5m": {...}, …}} haritası — SALT OKUMA.
 
-    Önce depodaki tabanlar TEK sorguyla okunur (normal durum: doldurma sırasında
-    zaten üretilmiştir). Eksik kovalar tembel üretilir ama tur başına
-    `_MACD_BASELINE_MAX_PER_CALL` ile sınırlanır — istatistik ucu asla uzun
-    süren bir taramaya dönüşmemelidir (eksik kalan kova yalnız liftsiz görünür).
+    V-04: eskiden eksik kovalar burada tembel ÜRETİLİR ve `COMMIT` edilirdi;
+    yani bir istatistik GET'i DDL/INSERT/COMMIT yapıyor, `ALTER TABLE` ile
+    ACCESS EXCLUSIVE lock alıp alarm yazma yolunu bloke ediyor ve okuma yolu
+    saflığı kuralını ihlal ediyordu. Tabanlar artık yalnız yazma yolunda
+    (`fill_macd_monitor_alert_outcomes`) üretilir; burada sadece depodan okunur.
+    Eksik kova liftsiz görünür (uydurulmaz).
     """
     if not buckets:
         return {}
@@ -1085,33 +1219,6 @@ def _baseline_map(conn, buckets: set[int]) -> dict[int, dict]:
                 "hit_rate": float(item["hit_rate"]),
                 "n_symbols": int(item["n_symbols"]),
             }
-    computed = 0
-    for bucket in wanted:
-        mapped = stored.get(bucket) or {}
-        if len(mapped) >= len(_MACD_HORIZON_MINUTES):
-            stored[bucket] = mapped
-            continue
-        if computed >= _MACD_BASELINE_MAX_PER_CALL:
-            stored.setdefault(bucket, mapped)
-            continue
-        computed += 1
-        try:
-            rows = _baseline_rows_for_bucket(conn, bucket)
-        except Exception:
-            logging.getLogger("scalper.database").debug(
-                "macd taban okunamadı (kova %s)", bucket, exc_info=True)
-            stored.setdefault(bucket, mapped)
-            continue
-        fresh = {}
-        for row in rows:
-            item = dict(row)
-            fresh[str(item["horizon"])] = {
-                "avg_pct": float(item["avg_pct"]),
-                "med_pct": float(item["med_pct"]),
-                "hit_rate": float(item["hit_rate"]),
-                "n_symbols": int(item["n_symbols"]),
-            }
-        stored[bucket] = fresh or mapped
     return stored
 
 
@@ -1134,7 +1241,7 @@ async def macd_monitor_alert_stats(days: int = 30) -> dict:
     since = time.time() - max(1, int(days)) * 86400.0
 
     def op(conn):
-        _ensure_macd_evidence_schema(conn)
+        # V-04: okuma yolu DDL/INSERT/COMMIT yapmaz; şema açılışta hazırlanır.
         try:
             rows = conn.execute(
                 "SELECT created_at, kind, score, early_score, signals, outcome_5m_pct, "
@@ -1207,7 +1314,7 @@ async def macd_monitor_alert_conditional_stats(days: int = 30,
     min_n = max(1, int(min_n))
 
     def op(conn):
-        _ensure_macd_evidence_schema(conn)
+        # V-04: okuma yolu DDL/INSERT/COMMIT yapmaz; şema açılışta hazırlanır.
         try:
             rows = conn.execute(
                 "SELECT created_at, kind, signals, outcome_5m_pct, outcome_15m_pct, "
@@ -1294,22 +1401,43 @@ async def macd_monitor_alert_event_paths(days: int = 14, kind: str = "early",
     since = time.time() - max(1, int(days)) * 86400.0
 
     def op(conn):
-        _ensure_macd_evidence_schema(conn)
+        # V-04: okuma yolu DDL yapmaz; şema açılışta hazırlanır.
         rows = conn.execute(
             "SELECT id, created_at, symbol, kind, price, signals, mfe_pct, mae_pct "
             "FROM macd_monitor_alerts WHERE created_at >= ? AND outcome_state='filled' "
             "AND kind=? ORDER BY created_at DESC LIMIT ?",
             (since, str(kind), limit)).fetchall()
 
+        # V-12: eskiden `path_for` her alarm için ayrı bir historical_candles
+        # sorgusu atıyordu (1 + N, N<=1000). Sembol başına BİRLEŞİK zaman
+        # aralığı tek sorguda çekilir; pencere dilimi Python'da alınır.
+        windows: dict[str, list[float]] = {}
+        for alert in rows:
+            item = dict(alert)
+            alert_symbol = str(item["symbol"])
+            created_ms = float(item["created_at"] or 0) * 1000.0
+            if alert_symbol and created_ms > 0:
+                windows.setdefault(alert_symbol, []).append(created_ms)
+        candle_index: dict[str, list[tuple[float, float]]] = {}
+        if windows:
+            symbols = list(windows)
+            low = min(min(values) for values in windows.values()) - 15 * 60_000
+            high = max(max(values) for values in windows.values()) + 35 * 60_000
+            placeholders = ",".join(["%s"] * len(symbols))
+            candle_rows = conn.execute(
+                "SELECT symbol, open_time, close FROM historical_candles"
+                f" WHERE symbol IN ({placeholders}) AND timeframe='5m'"
+                " AND open_time >= %s AND open_time <= %s ORDER BY symbol, open_time",
+                symbols + [low, high]).fetchall()
+            for candle in candle_rows:
+                item = dict(candle)
+                candle_index.setdefault(str(item["symbol"]), []).append(
+                    (float(item["open_time"]), float(item["close"] or 0)))
+
         def path_for(symbol: str, created: float, base_price):
             t0_ms = created * 1000.0
-            candles = conn.execute(
-                "SELECT open_time, close FROM historical_candles "
-                "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
-                "ORDER BY open_time",
-                (symbol, t0_ms - 15 * 60_000, t0_ms + 35 * 60_000)).fetchall()
-            series = [(float(dict(c)["open_time"]), float(dict(c)["close"] or 0))
-                      for c in candles]
+            series = [pair for pair in candle_index.get(symbol, [])
+                      if t0_ms - 15 * 60_000 <= pair[0] <= t0_ms + 35 * 60_000]
             if not series:
                 return None
             upto = [close for stamp, close in series if stamp <= t0_ms]
@@ -2029,10 +2157,19 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
         conn.execute("UPDATE virtual_wallet SET amount=amount-? WHERE asset=?", (position_qty, asset))
         conn.execute("INSERT INTO trades (symbol,strategy,side,entry_price,exit_price,quantity,pnl,pnl_pct,entry_time,exit_time,commission,reason,entry_context,max_favorable_pct,max_adverse_pct,hold_seconds,trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (trade.get("symbol"), trade.get("strategy"), trade.get("side"), trade.get("entry_price"), trade.get("exit_price"), trade.get("quantity"), trade.get("pnl"), trade.get("pnl_pct"), trade.get("entry_time"), trade.get("exit_time"), trade.get("commission"), trade.get("reason"), _json_safe_dumps(trade.get("entry_context", {})), trade.get("max_favorable_pct"), trade.get("max_adverse_pct"), trade.get("hold_seconds"), trade.get("trade_id")))
-        persisted = conn.execute(
-            "SELECT COUNT(*) FROM trades WHERE trade_id=?",
-            (trade.get("trade_id"),),
-        ).fetchone()[0]
+        # V-06: `trade_id` NULL iken `WHERE trade_id=NULL` SQL'de hiçbir satır
+        # döndürmez → eski guard her zaman başarısız oluyor ve pozisyon
+        # KAPATILAMIYORDU (sermaye kilitleniyordu). NULL'da (sembol, giriş, çıkış)
+        # üçlüsüyle doğrula; doluysa DB düzeyindeki UNIQUE kısıt zaten korur.
+        trade_id = trade.get("trade_id")
+        if trade_id:
+            persisted = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE trade_id=?",
+                (trade_id,)).fetchone()[0]
+        else:
+            persisted = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE symbol=? AND entry_time=? AND exit_time=?",
+                (trade.get("symbol"), trade.get("entry_time"), trade.get("exit_time"))).fetchone()[0]
         if int(persisted or 0) != 1:
             raise RuntimeError("Kapanan işlem kaydı doğrulanamadı; transaction geri alınacak")
         conn.execute("DELETE FROM positions WHERE symbol=?", (symbol,))
@@ -2096,15 +2233,19 @@ async def save_llm_forecasts(rows):
         return 0
     def op(conn):
         sql = """INSERT INTO llm_forecasts
-            (forecast_id,forecast_group_id,symbol,created_at,horizon_minutes,entry_price,direction,confidence,
+            (forecast_id,forecast_group_id,symbol,created_at,decided_at,horizon_minutes,entry_price,direction,confidence,
              invalidation_price,min_move_pct,regime,timeframe_context,scenario,counter_scenario,summary,
              model,prompt_version,snapshot_hash,snapshot,status)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(forecast_id) DO NOTHING"""
         values = []
         for row in rows:
+            # TAH-01: fiyatın GÖZLEMLENDİĞİ an (`decided_at`) saklanır; yoksa
+            # (kolon öncesi satırlar) kayıt anına (`created_at`) düşülür.
+            decided_at = row.get("decided_at")
+            decided_at = float(decided_at) if decided_at not in (None, "") else float(row["created_at"])
             values.append((row["forecast_id"], row["forecast_group_id"], str(row["symbol"]).upper(),
-                float(row["created_at"]), int(row["horizon_minutes"]), float(row["entry_price"]),
+                float(row["created_at"]), decided_at, int(row["horizon_minutes"]), float(row["entry_price"]),
                 row["direction"], float(row["confidence"]), row.get("invalidation_price"),
                 float(row["min_move_pct"]), row.get("regime"),
                 _json_safe_dumps(row.get("timeframe_context") or {}, ensure_ascii=False, default=str),
@@ -2175,6 +2316,8 @@ async def get_llm_forecasts(symbol=None, status=None, limit=100, source=None):
             clauses.append("prompt_version LIKE ?"); values.append("upside-candidate-%")
         elif source == "upside_scout":
             clauses.append("prompt_version LIKE ?"); values.append("upside-scout-%")
+        elif source == "upside_explore":
+            clauses.append("prompt_version LIKE ?"); values.append("upside-explore-%")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         # 5000: ML journal eğitimi tüm ölçülmüş canlı tahminleri ister;
         # diğer çağrılar kendi limitiyle kalır.
@@ -2193,6 +2336,10 @@ async def get_llm_forecast_report(source=None):
         elif source == "upside_scout":
             source_clause = " AND prompt_version LIKE ?"
             params = ("upside-scout-%",)
+        elif source == "upside_explore":
+            # TAH-03: ε-keşif satırları başlık metriğinden AYRI raporlanır.
+            source_clause = " AND prompt_version LIKE ?"
+            params = ("upside-explore-%",)
         else:
             source_clause = ""
             params = ()
@@ -2757,7 +2904,8 @@ async def read_only_query(sql: str, limit: int = 500):
     else:
         bounded = re.sub(r"(\bLIMIT\s+)\d+", lambda m: f"{m.group(1)}{max(1, min(int(limit), 500))}", bounded, count=1, flags=re.I)
     def op(conn):
-        cur = conn.execute(bounded)
+        # V-19: hazır SQL `?` içerebilir; compat'ın yer tutucu dönüşümü atlanır.
+        cur = conn.raw_execute(bounded)
         rows = cur.fetchall()
         return [dict(row) if isinstance(row, dict) else dict(zip([d[0] for d in cur.description], row)) for row in rows]
     return await _run_db(op)
@@ -3019,6 +3167,32 @@ async def get_monitoring_velocity_matches(limit: int = 200, day: str | None = No
         base_sql += " ORDER BY detected_at DESC LIMIT %s"
         params.append(max(1, min(int(limit), 1000)))
         notif_rows = conn.execute(base_sql, params).fetchall()
+        # V-11: eskiden her bildirim için ayrı bir `velocity_candidates` sorgusu
+        # atılıyordu (1 + N, N<=1000). Tek sorgu ile aynı semantik: bildirim
+        # pencerelerinin BİRLEŞİMİ çekilir, ±60 sn kuralı ve "en yakın 4"
+        # sıralaması Python'da uygulanır.
+        windows: dict[str, list[float]] = {}
+        for notif in notif_rows:
+            item = dict(notif)
+            sym = str(item.get('symbol') or '').upper()
+            stamp = float(item.get('detected_at') or 0)
+            if sym and stamp > 0:
+                windows.setdefault(sym, []).append(stamp)
+        candidate_index: dict[str, list[dict]] = {}
+        if windows:
+            symbols = list(windows)
+            low = min(min(values) for values in windows.values()) - 60
+            high = max(max(values) for values in windows.values()) + 60
+            placeholders = ",".join(["%s"] * len(symbols))
+            candidate_rows = conn.execute(
+                "SELECT candidate_id, symbol, target_pct, passes, status, mfe_pct,"
+                " touched_target, created_at, ml_target_pct, ml_hit_probability"
+                f" FROM velocity_candidates WHERE symbol IN ({placeholders})"
+                " AND created_at >= %s AND created_at <= %s",
+                symbols + [low, high]).fetchall()
+            for candidate in candidate_rows:
+                item = dict(candidate)
+                candidate_index.setdefault(str(item.get('symbol') or '').upper(), []).append(item)
         matches = []
         for n in notif_rows:
             item = dict(n)
@@ -3027,16 +3201,10 @@ async def get_monitoring_velocity_matches(limit: int = 200, day: str | None = No
             target = float(item.get('target_pct') or 0)
             best = None
             if symbol and detected > 0:
-                cands = conn.execute(
-                    """SELECT candidate_id, symbol, target_pct, passes, status,
-                              mfe_pct, touched_target, created_at, ml_target_pct,
-                              ml_hit_probability
-                       FROM velocity_candidates
-                       WHERE symbol=%s AND ABS(created_at - %s) <= 60
-                       ORDER BY ABS(created_at - %s) LIMIT 4"""
-                    ,(symbol, detected, detected)).fetchall()
-                for c in cands:
-                    row = dict(c)
+                cands = [item for item in candidate_index.get(symbol, [])
+                         if abs(float(item.get('created_at') or 0) - detected) <= 60]
+                cands.sort(key=lambda item: abs(float(item.get('created_at') or 0) - detected))
+                for row in cands[:4]:
                     if target > 0 and abs(float(row.get('target_pct') or 0) - target) < 0.01:
                         best = row
                         break
@@ -3155,7 +3323,7 @@ async def list_monitoring_notifications(limit=50):
         rows = conn.execute(
             "SELECT id,symbol,message,title,score,target_pct,price,expected_price,"
             "horizon_minutes,mode,detected_at,sent_via_push FROM monitoring_notifications"
-            " ORDER BY detected_at DESC LIMIT ?", (int(limit),)
+            " ORDER BY detected_at DESC LIMIT ?", (max(1, min(int(limit), 500)),)
         ).fetchall()
         result = []
         for row in rows:
@@ -3325,7 +3493,8 @@ async def get_research_patterns(status=None, timeframe=None, limit=30):
         return out
     return await _run_db(op)
 
-async def prune_retention(days: int = 30, microstructure_days: int = 7):
+async def prune_retention(days: int = 30, microstructure_days: int = 7,
+                         memory_days: int = 180):
     """Delete high-volume observability rows older than ``days`` days.
 
     microstructure_snapshots grows one row per fresh symbol per second and
@@ -3337,6 +3506,8 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7):
     """
     cutoff = time.time() - max(1, int(days)) * 86400
     micro_cutoff = time.time() - max(1, int(microstructure_days)) * 86400
+    # MEM-01: sohbet belleği kendi, daha uzun penceresiyle düşürülür.
+    memory_cutoff = time.time() - max(1, int(memory_days)) * 86400
 
     def op(conn):
         deleted = {}
@@ -3388,6 +3559,24 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7):
         except Exception:
             conn.rollback()
             deleted["velocity_candidates"] = 0
+        # MEM-01: `_persist_chat_memory` HER sohbet isteğinde bir
+        # `memory_documents` satırı (ve ON DELETE CASCADE ile
+        # `memory_embeddings`) yazıyordu; bu tablolar hiç temizlenmiyordu ->
+        # sohbet hacmiyle doğrusal, sınırsız büyüme (her satırda halfvec vektör).
+        # Öğrenme artefaktları (`agent_experiences`, `trading_instincts`)
+        # BİLİNÇLİ olarak temizlenmez — yalnızca ham telemetri ve yaşlı belgeler.
+        for table, column, window in (
+            ("agent_traces", "started_at", cutoff),
+            ("memory_documents", "created_at", memory_cutoff),
+        ):
+            try:
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE EXTRACT(EPOCH FROM {column}) < ?", (window,))
+                conn.commit()
+                deleted[table] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+            except Exception:
+                conn.rollback()
+                deleted[table] = 0
         return deleted
 
     return await _run_db(op)
@@ -3558,9 +3747,10 @@ async def get_recent_chart_forecast(symbol: str, timeframe: str, within_sec: flo
 
 async def list_chart_forecasts(symbol: str, limit: int = 50) -> list[dict]:
     def op(conn):
+        # V-16: kullanıcı girdisi doğrudan LIMIT'e girmemeli.
         rows = conn.execute(
             "SELECT * FROM chart_forecasts WHERE symbol=%s ORDER BY created_at DESC LIMIT %s",
-            (str(symbol).upper(), int(limit))).fetchall()
+            (str(symbol).upper(), max(1, min(int(limit), 500)))).fetchall()
         return [_chart_forecast_row(r) for r in rows if r is not None]
     return await _run_db(op)
 
@@ -3614,7 +3804,7 @@ async def get_pending_chart_forecasts(limit: int = 200) -> list[dict]:
     def op(conn):
         rows = conn.execute(
             "SELECT * FROM chart_forecasts WHERE status='pending' AND created_at + (horizon_minutes*60) <= %s "
-            "ORDER BY created_at LIMIT %s", (now, int(limit))).fetchall()
+            "ORDER BY created_at LIMIT %s", (now, max(1, min(int(limit), 500)))).fetchall()
         return [_chart_forecast_row(r) for r in rows if r is not None]
     return await _run_db(op)
 
@@ -3682,7 +3872,10 @@ def _audit_filters(actor: str | None, category: str | None, action: str | None, 
     if (action or "").strip():
         clauses.append("action=%s"); values.append(str(action).strip().upper())
     if (q or "").strip():
-        needle = f"%{str(q).strip()}%"
+        # V-18: parametre olarak geçtiği için SQL enjeksiyonu zaten yoktu, ama
+        # kullanıcının yazdığı `%` / `_` LIKE jokeri gibi davranıyordu
+        # ("BUY_SIGNAL" araması herhangi bir karakteri eşliyordu). Artık harfi harfine.
+        needle = f"%{_escape_like(str(q).strip())}%"
         clauses.append("(actor_username ILIKE %s OR action ILIKE %s OR target ILIKE %s OR details::text ILIKE %s)")
         values.extend([needle, needle, needle, needle])
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -3725,20 +3918,36 @@ async def delete_audit_logs_before(before_ts: float) -> int:
 # Sembol bazlı adaptif hedef öğrenme (2026-09-03): Her sembol için başarı/başarısız
 # sayısı tutulur, hedef otomatik ayarlanır. ML tahmin + adaptif durum harmanlanır.
 # ---------------------------------------------------------------------------
+def _symbol_target_state_default(symbol: str, now: float | None = None) -> dict:
+    now = time.time() if now is None else float(now)
+    return {"symbol": symbol, "target_pct": 2.0, "horizon_minutes": 5, "success_count": 0,
+            "fail_count": 0, "total_count": 0, "last_adjusted_at": now, "created_at": now}
+
+
+def _symbol_target_state_dict(symbol: str, row) -> dict:
+    return {"symbol": symbol, "target_pct": float(row["target_pct"] or 2.0),
+            "horizon_minutes": int(row["horizon_minutes"] or 5),
+            "success_count": int(row["success_count"] or 0), "fail_count": int(row["fail_count"] or 0),
+            "total_count": int(row["total_count"] or 0),
+            "last_adjusted_at": float(row["last_adjusted_at"] or 0),
+            "created_at": float(row["created_at"] or 0)}
+
+
 async def get_symbol_target_state(symbol: str) -> dict:
-    """Sembol için adaptif hedef durumu döndürür (yoksa varsayılan oluşturur)."""
+    """Sembol için adaptif hedef durumu DÖNDÜRÜR — V-05: SALT OKUMA.
+
+    Eskiden satır yoksa burada INSERT + COMMIT yapılıyordu: adı `get_*` olan bir
+    okuma yolu veritabanını değiştiriyor, `ON CONFLICT` olmadığı için eşzamanlı
+    ilk isteklerde `UniqueViolation` üretebiliyordu. Artık yazma YOKTUR; satır
+    yoksa varsayılan değer döner. Yazma, sonucu kaydeden
+    `record_symbol_target_outcome` içinde tek transaction'da yapılır.
+    """
     sym = str(symbol or "").strip().upper()
-    now = time.time()
     def op(conn):
         row = conn.execute("SELECT * FROM symbol_target_state WHERE symbol=%s", (sym,)).fetchone()
         if row is None:
-            conn.execute("INSERT INTO symbol_target_state(symbol,target_pct,horizon_minutes,success_count,fail_count,total_count,last_adjusted_at,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)",
-                         (sym, 2.0, 5, 0, 0, 0, now, now))
-            conn.commit()
-            return {"symbol": sym, "target_pct": 2.0, "horizon_minutes": 5, "success_count": 0, "fail_count": 0, "total_count": 0, "last_adjusted_at": now, "created_at": now}
-        return {"symbol": sym, "target_pct": float(row["target_pct"] or 2.0), "horizon_minutes": int(row["horizon_minutes"] or 5),
-                "success_count": int(row["success_count"] or 0), "fail_count": int(row["fail_count"] or 0),
-                "total_count": int(row["total_count"] or 0), "last_adjusted_at": float(row["last_adjusted_at"] or 0), "created_at": float(row["created_at"] or 0)}
+            return _symbol_target_state_default(sym)
+        return _symbol_target_state_dict(sym, row)
     return await _run_db(op)
 
 
@@ -3747,32 +3956,43 @@ async def record_symbol_target_outcome(symbol: str, success: bool, achieved_pct:
 
     Başarılıysa hedefi yükseltmeye başla (daha iddialı), başarısızsa düşür.
     achieved_pct: gerçekleşen yükseliş yüzdesi (pozitif = hedefe yaklaşmış).
+
+    V-05: satırı garanti et + oku + güncelle **tek transaction** içinde
+    (`INSERT ... ON CONFLICT DO NOTHING` + `SELECT ... FOR UPDATE`). Eskiden
+    `get_symbol_target_state` (ayrı transaction) + ayrı `UPDATE` çağrılıyordu.
     """
     sym = str(symbol or "").strip().upper()
     now = time.time()
-    state = await get_symbol_target_state(sym)
-    success_count = int(state["success_count"]) + (1 if success else 0)
-    fail_count = int(state["fail_count"]) + (0 if success else 1)
-    total_count = success_count + fail_count
-    current_target = float(state["target_pct"])
-    current_horizon = int(state["horizon_minutes"])
-    # Adaptif ayar: başarı oranı %60+ ise hedefi artır, %40- ise azalt
-    success_rate = success_count / total_count if total_count > 0 else 0.5
-    new_target = current_target
-    new_horizon = current_horizon
-    if total_count >= 3:
-        if success_rate >= 0.6:
-            new_target = min(10.0, current_target + 0.5)
-            new_horizon = min(15, current_horizon + 5)
-        elif success_rate <= 0.4:
-            new_target = max(1.0, current_target - 0.5)
-            new_horizon = max(5, current_horizon - 5)
     def op(conn):
+        conn.execute(
+            "INSERT INTO symbol_target_state(symbol,target_pct,horizon_minutes,success_count,fail_count,total_count,last_adjusted_at,created_at) "
+            "VALUES(%s,%s,%s,0,0,0,%s,%s) ON CONFLICT(symbol) DO NOTHING",
+            (sym, 2.0, 5, now, now))
+        row = conn.execute("SELECT * FROM symbol_target_state WHERE symbol=%s FOR UPDATE", (sym,)).fetchone()
+        state = _symbol_target_state_dict(sym, row) if row is not None else _symbol_target_state_default(sym, now)
+        success_count = int(state["success_count"]) + (1 if success else 0)
+        fail_count = int(state["fail_count"]) + (0 if success else 1)
+        total_count = success_count + fail_count
+        current_target = float(state["target_pct"])
+        current_horizon = int(state["horizon_minutes"])
+        # Adaptif ayar: başarı oranı %60+ ise hedefi artır, %40- ise azalt
+        success_rate = success_count / total_count if total_count > 0 else 0.5
+        new_target = current_target
+        new_horizon = current_horizon
+        if total_count >= 3:
+            if success_rate >= 0.6:
+                new_target = min(10.0, current_target + 0.5)
+                new_horizon = min(15, current_horizon + 5)
+            elif success_rate <= 0.4:
+                new_target = max(1.0, current_target - 0.5)
+                new_horizon = max(5, current_horizon - 5)
         conn.execute("UPDATE symbol_target_state SET target_pct=%s, horizon_minutes=%s, success_count=%s, fail_count=%s, total_count=%s, last_adjusted_at=%s WHERE symbol=%s",
                      (new_target, new_horizon, success_count, fail_count, total_count, now, sym))
         conn.commit()
-    await _run_db(op)
-    return {"symbol": sym, "target_pct": new_target, "horizon_minutes": new_horizon, "success_count": success_count, "fail_count": fail_count, "total_count": total_count, "success_rate": round(success_rate, 3)}
+        return {"symbol": sym, "target_pct": new_target, "horizon_minutes": new_horizon,
+                "success_count": success_count, "fail_count": fail_count, "total_count": total_count,
+                "success_rate": round(success_rate, 3)}
+    return await _run_db(op)
 
 
 async def get_all_symbol_target_states() -> list[dict]:

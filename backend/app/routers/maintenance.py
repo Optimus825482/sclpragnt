@@ -559,8 +559,11 @@ async def start_velocity_ml_backfill(payload: dict = None, request: Request = No
 
 
 @router.get("/api/replay-parity-backfill/trades.csv")
-async def download_replay_parity_trade_csv():
+async def download_replay_parity_trade_csv(request: Request = None):
     """Download all closed paper-trade detail, including the saved entry context."""
+    # G-05: tüm kapanan işlem geçmişi + giriş bağlamını döker; admin kapısı yoktu.
+    from app.main import _require_admin
+    _require_admin(request)
     rows = await database.get_trade_export_rows()
     stream = io.StringIO(newline="")
     writer = csv.writer(stream)

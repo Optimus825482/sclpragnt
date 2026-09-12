@@ -139,27 +139,55 @@ def _velocity_aroon(highs, lows=None, n=25):
             "down": result["down"] if lows is not None else None}
 
 
+def _velocity_volume_z(vols, n=20):
+    """Hacim z-skoru — eğitimdeki ``(v - mean20) / std20`` tanımıyla aynı.
+
+    ML-08 (2026-09-12): `vol_z` çıkarımda sabit None yazılıyordu, eğitimde ise
+    gerçek değer hesaplanıyordu (`build_symbol_dataset`). Aynı tanım burada.
+    """
+    if len(vols) < n:
+        return None
+    window = [float(value) for value in vols[-n:]]
+    mean = sum(window) / n
+    variance = sum((value - mean) ** 2 for value in window) / n
+    if variance <= 0:
+        return None
+    return (float(vols[-1]) - mean) / math.sqrt(variance)
+
+
 def _velocity_ml_feature_dict(closes, highs, lows, vols):
-    """Kapanmış 1m serisinden ML özellik sözlüğü — scan_one'daki hesabın birebir kopyası.
+    """Kapanmış **5m** serisinden ML özellik sözlüğü (ML-01: eğitimle aynı dayanak).
 
     Geriye dönük ML backfill (maintenance) geçmiş mumlardan bu fonksiyonla
-    özellik üretir; scan_one'daki ML bloğu değişirse burası da senkron kalmalı.
+    özellik üretir; `scan_one`'daki ML bloğu değişirse burası da senkron kalmalı.
     Sözleşme: TÜM *_pct alanları YÜZDE girer (predict_target içeride kesire çevirir).
+
+    ML-03/ML-04 (2026-09-12): ATR ve Bollinger genişliği KANONİK yardımcılardan
+    (`ml_forecast.atr_ratio_from_bars` / `bb_width_ratio_from_bars`) gelir; eğitim
+    tarafıyla aynı pencere (14 TR) ve aynı payda (kapanış) kullanılır.
+    `scan_one`'daki tarama `atr_pct`'i KALİBRE eşik göstergesidir, ML özelliği
+    DEĞİLDİR — bu yüzden ona dokunulmaz.
+
+    ML-08 (2026-09-12): `ret1_pct`/`ret5_pct`/`vol_z` artık GERÇEKTEN hesaplanır.
+    Önceden sabit None yazılıyordu; model bu üç kolonu eğitimde dolu görüp
+    çıkarımda hep NaN aldığı için körleşebiliyordu.
     """
-    price = closes[-1] if closes else 0.0
-    trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j - 1]), abs(lows[j] - closes[j - 1]))
-           for j in range(max(1, len(closes) - 15), len(closes))]
-    atr_pct = (sum(trs) / len(trs)) / price * 100 if trs and price else 0.0
-    ret3 = (closes[-1] / closes[-4] - 1) * 100 if len(closes) >= 4 else 0.0
+    closes = list(closes); highs = list(highs); lows = list(lows); vols = list(vols)
+    atr_ratio = ml_forecast.atr_ratio_from_bars(highs, lows, closes)
+    bb_ratio = ml_forecast.bb_width_ratio_from_bars(closes)
+    ret1 = (closes[-1] / closes[-2] - 1) * 100 if len(closes) >= 2 and closes[-2] else None
+    ret3 = (closes[-1] / closes[-4] - 1) * 100 if len(closes) >= 4 and closes[-4] else None
+    ret5 = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 and closes[-6] else None
     aroon = _velocity_aroon(highs, lows)
     return {
-        "ret1_pct": None,
+        "ret1_pct": ret1,
         "ret3_pct": ret3,
-        "ret5_pct": None,
-        "atr_pct": atr_pct,
-        "bb_width_pct": _velocity_bollinger_width(closes),
+        "ret5_pct": ret5,
+        "atr_pct": (atr_ratio * 100) if atr_ratio is not None else None,
+        "bb_width_pct": (bb_ratio * 100) if bb_ratio is not None else None,
         "rsi": _velocity_rsi(closes),
         "mfi": _velocity_mfi(highs, lows, closes, vols),
+        "vol_z": _velocity_volume_z(vols),
         "linreg_slope10_pct": _linreg_slope_pct(closes, 10),
         "aroon_up": aroon["up"] if aroon else None,
         "aroon_down": aroon["down"] if aroon else None,

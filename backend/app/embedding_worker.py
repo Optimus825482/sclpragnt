@@ -10,22 +10,27 @@ class EmbeddingWorker:
         self.pool = None
         self.embedder = None
         self._fill_lock = asyncio.Lock()
+        # EMB-01: eşzamanlı iki `start()` çağrısı `self.task`i ikisi de
+        # `done()` görebilir ve İKİ `_run` görevi üretir; ikisi de aynı
+        # job'ları çekmeye çalışır. Başlatma kilit altına alınır.
+        self._start_lock = asyncio.Lock()
         self.stats = {"queued": 0, "processed": 0, "failed": 0, "last_error": None, "last_processed_at": None}
 
     async def start(self, pool, embedder):
         self.pool, self.embedder = pool, embedder
-        if not self.task or self.task.done():
-            await self._recover_interrupted_jobs()
-            try:
-                await self._fill_from_persistence()
-            except Exception as exc:
-                # DB başlangıçta erişilemezse worker görevi yine de başlatılır;
-                # _run döngüsü DB döndüğünde işleri devralır.
-                import logging
-                logging.getLogger("scalper.embedding").warning(
-                    "Başlangıç fill_from_persistence hatası (daha sonra tekrarlacak): %s", exc, exc_info=True
-                )
-            self.task = asyncio.create_task(self._run(), name="embedding-worker")
+        async with self._start_lock:
+            if not self.task or self.task.done():
+                await self._recover_interrupted_jobs()
+                try:
+                    await self._fill_from_persistence()
+                except Exception as exc:
+                    # DB başlangıçta erişilemezse worker görevi yine de başlatılır;
+                    # _run döngüsü DB döndüğünde işleri devralır.
+                    import logging
+                    logging.getLogger("scalper.embedding").warning(
+                        "Başlangıç fill_from_persistence hatası (daha sonra tekrarlacak): %s", exc, exc_info=True
+                    )
+                self.task = asyncio.create_task(self._run(), name="embedding-worker")
 
     async def stop(self):
         if self.task:

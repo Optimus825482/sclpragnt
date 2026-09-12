@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS analysis_snapshots (id BIGSERIAL PRIMARY KEY, symbol 
 CREATE INDEX IF NOT EXISTS idx_analysis_snapshots_symbol_time ON analysis_snapshots(symbol, captured_at DESC);
 CREATE TABLE IF NOT EXISTS llm_forecasts (
   forecast_id TEXT PRIMARY KEY, forecast_group_id TEXT NOT NULL,
-  symbol TEXT NOT NULL, created_at DOUBLE PRECISION NOT NULL, horizon_minutes INTEGER NOT NULL,
+  symbol TEXT NOT NULL, created_at DOUBLE PRECISION NOT NULL,
+  decided_at DOUBLE PRECISION, horizon_minutes INTEGER NOT NULL,
   entry_price DOUBLE PRECISION NOT NULL, direction TEXT NOT NULL, confidence DOUBLE PRECISION NOT NULL,
   invalidation_price DOUBLE PRECISION, min_move_pct DOUBLE PRECISION NOT NULL,
   regime TEXT, timeframe_context JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -490,9 +491,10 @@ CREATE INDEX IF NOT EXISTS auto_paper_trades_symbol_status_idx ON auto_paper_tra
 -- her otonom açılışta çalışır; indekssiz tam tarama yapıyordu.
 CREATE INDEX IF NOT EXISTS auto_paper_trades_notification_idx ON auto_paper_trades(notification_id);
 -- Sembol başına tek açık pozisyon garantisi (aynı anda yalnız bir 'open' olabilir).
--- Mevcut veride ihlal varsa oluşturulamaz; temizlik sonrası uygulanır.
-CREATE UNIQUE INDEX IF NOT EXISTS auto_paper_trades_one_open_per_symbol
-  ON auto_paper_trades(symbol) WHERE status='open';
+-- V-02: bu kısıt 001'in tekil transaction'ından ÇIKARILDI. Mevcut veride ihlal
+-- varsa tek bir başarısız ifade tüm DDL'i geri alıyor, `schema_sha256` hiç
+-- yazılmıyor ve her restart aynı yerde patlıyordu (kalıcı açılış döngüsü).
+-- Kısıt artık `database.init_db()` içinde hata toleranslı (try/except) kurulur.
 
 -- Trailing stop modülü (2026-09-08). Önceki deploy'larda bu kolonlar yoktu;
 -- mevcut tabloya idempotent ekleme (şema sha'sı değiştiği için CREATE TABLE

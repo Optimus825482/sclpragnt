@@ -13,6 +13,7 @@ from base64 import urlsafe_b64decode, urlsafe_b64encode
 from urllib.parse import urlparse
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, build_opener
+from concurrent.futures import ThreadPoolExecutor
 
 
 SESSION_COOKIE = "scalper_session"
@@ -20,6 +21,16 @@ _LOGIN_FAILURE_LIMIT = 512
 _login_failures = defaultdict(deque)
 _PBKDF2_ITERATIONS = 200_000
 _user_session_versions = {"admin": 0}
+
+# LLM-03 (2026-09-12): Provider çağrıları 90–120 sn timeout ile
+# bekleyebilir. Varsayılan executor `min(32, cpu+4)` PAYLAŞIMLIDIR;
+# eşzamanlı birkaç LLM isteği havuzu doldurduğunda `main.py`'nin
+# tarama/pozisyon döngüleri (aynı havuzu `to_thread` ile kullanır)
+# kuyrukta bekler ve uygulama geneli yavaşlar. LLM çağrıları için
+# ayrı ve sınırlı bir havuz ayrılır.
+LLM_EXECUTOR_MAX_WORKERS = max(1, int(os.getenv("LLM_EXECUTOR_MAX_WORKERS", "8")))
+_LLM_EXECUTOR = ThreadPoolExecutor(max_workers=LLM_EXECUTOR_MAX_WORKERS,
+                                   thread_name_prefix="llm-provider")
 
 
 def set_user_session_version(username: str, version: int):
@@ -209,7 +220,7 @@ def _validate_provider_url_sync(base_url):
 async def validate_provider_url(base_url):
     """Provider URL'sini doğrular — DNS bloklamasını async olarak çalıştırır."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _validate_provider_url_sync, base_url)
+    return await loop.run_in_executor(_LLM_EXECUTOR, _validate_provider_url_sync, base_url)
 
 
 class _ValidatedRedirectHandler(HTTPRedirectHandler):
@@ -221,4 +232,4 @@ async def safe_provider_open(request, timeout):
     """Provider URL'sini async doğrulama ile açarak event loop'u bloke etmez."""
     await validate_provider_url(request.full_url)
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: build_opener(_ValidatedRedirectHandler()).open(request, timeout=timeout))
+    return await loop.run_in_executor(_LLM_EXECUTOR, lambda: build_opener(_ValidatedRedirectHandler()).open(request, timeout=timeout))

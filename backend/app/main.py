@@ -673,7 +673,8 @@ async def retention_loop():
     while True:
         try:
             deleted = await database.prune_retention(days=int(os.getenv("RETENTION_DAYS", "30")),
-                                                     microstructure_days=int(os.getenv("MICROSTRUCTURE_RETENTION_DAYS", "7")))
+                                                     microstructure_days=int(os.getenv("MICROSTRUCTURE_RETENTION_DAYS", "7")),
+                                                     memory_days=int(os.getenv("MEMORY_RETENTION_DAYS", "180")))
             if any(deleted.values()):
                 print(f"[Retention] {deleted}", flush=True)
         except Exception as exc:
@@ -694,7 +695,10 @@ async def run_ml_training(trigger: str = "scheduled"):
         candles = await database.get_ml_training_candles(
             cutoff_ms, max_bars_per_symbol=config.ML_MAX_BARS_PER_SYMBOL)
         journal = await database.get_llm_forecasts(status="evaluated", limit=5000)
-        meta = await asyncio.to_thread(ml_forecast.train, candles, journal)
+        # ML-07: önceki artifact'ın sembol kodları devralınır (cache'li
+        # `load_model()` çağrısı; diskte yenilenen model görülür).
+        previous_codes = (ml_forecast.load_model() or {}).get("symbol_codes")
+        meta = await asyncio.to_thread(ml_forecast.train, candles, journal, previous_codes)
         await database.save_ml_model_artifact(meta)
         print(f"[ML] eğitim ({trigger}): {meta['sample_count']} örnek, "
               f"{meta['symbol_count']} sembol, {meta['journal_sample_count']} journal örneği", flush=True)
@@ -1196,13 +1200,13 @@ async def _gainers_radar_uncached(execute: bool = False):
             quote_volume = float(item.get("quoteVolume", 0) or 0)
             if symbol in known_try and 3 <= change <= 18 and quote_volume >= config.MIN_24H_QUOTE_VOLUME_TRY:
                 gainer_candidates.append((change, quote_volume, symbol))
-        for _, _, symbol in sorted(gainer_candidates, reverse=True)[:10]:
-            if symbol not in config.SYMBOLS:
-                config.SYMBOLS.append(symbol)
-                if symbol.lower() not in market.symbols:
-                    market.symbols.append(symbol.lower())
-                    market.reconnect_requested = True
-                auto_added.append(symbol)
+        # G-09: radar bir GET/yoklama yoludur ve kullanıcının evrenini MUTASYONA
+        # UĞRATMAZ. Eskiden her 60 sn'de ~10 sembol sınırsız ekleniyordu.
+        # Keşfedilen adaylar yalnız BİLGİ olarak döner; listeye ekleme operatör
+        # onaylı `PUT /api/config` (UI'daki "Listeye Ekle") veya admin onaylı
+        # `refresh_top_gainer_symbols` ile yapılır.
+        auto_added = [symbol for _, _, symbol in sorted(gainer_candidates, reverse=True)[:10]
+                      if symbol not in config.SYMBOLS]
     except Exception as exc:
         print(f"[Radar] gainer tarama hatası: {exc}")
     for symbol in config.SYMBOLS:

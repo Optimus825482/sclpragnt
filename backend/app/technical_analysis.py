@@ -552,7 +552,12 @@ def _methodology_analysis(opens, highs, lows, closes, volumes, adx=None, alignme
     elif turtle["breakout"] == "up_20" and effort > 1.2: wyckoff_event = "sign_of_strength_candidate"
     elif turtle["breakout"] == "down_20" and effort > 1.2: wyckoff_event = "sign_of_weakness_candidate"
     wyckoff = {"phase": "accumulation" if regime_name == "accumulation" else "distribution" if regime_name == "distribution" else "unknown", "event": wyckoff_event, "volume_confirmation": bool(volume_ratio and volume_ratio >= 1.2), "confidence": min(0.9, 0.4 + (0.2 if wyckoff_event != "none" else 0) + (0.15 if volume_ratio and volume_ratio > 1.2 else 0))}
-    swing_up = sum(1 for i in range(max(1, len(closes)-8), len(closes)) if closes[i] > closes[i-1]); swing_down = 8 - swing_up
+    # C-10: `swing_down = 8 - swing_up` EŞİT barları düşüş sayıyordu; tamamen
+    # yatay bir seri 8 "düşüş" üretip `impulse_candidate` + maksimum güven
+    # veriyordu. Her yön ayrı sayılır, eşit barlar iki tarafa da yazılmaz.
+    _swing_start = max(1, len(closes) - 8)
+    swing_up = sum(1 for i in range(_swing_start, len(closes)) if closes[i] > closes[i - 1])
+    swing_down = sum(1 for i in range(_swing_start, len(closes)) if closes[i] < closes[i - 1])
     elliott_structure = "impulse_candidate" if swing_up >= 6 or swing_down >= 6 else "correction_or_range"
     elliott = {"structure": elliott_structure, "wave_hint": "possible_wave_3" if swing_up >= 6 else "possible_wave_c" if swing_down >= 6 else "unconfirmed", "confidence": round(min(0.7, 0.35 + abs(swing_up - swing_down) * 0.05), 3), "confirmed": False}
     trend_score = 0.8 if alignment == "bullish" else 0.2 if alignment == "bearish" else 0.5
@@ -656,7 +661,11 @@ def _price_action_setup(opens, highs, lows, closes):
     """Conservative, non-repainting price-action labels from closed candles."""
     if len(closes) < 4:
         return {"setup": "none", "direction": "neutral", "confirmed": False, "reason": "insufficient_data"}
-    i = len(closes) - 2  # exclude the currently forming candle
+    # C-08: `MarketData` geçmişi YALNIZCA kapanmış mumları taşır
+    # (`market_data._closed_history` açık barı atar), bu yüzden `closes[-1]`
+    # zaten son onaylanmış mumdur — aynı modüldeki `_candlestick_patterns`
+    # `size - 1` kullanır. Eski `len(closes) - 2` gerçek bir barı atlıyordu.
+    i = len(closes) - 1
     o, h, l, c = map(float, (opens[i], highs[i], lows[i], closes[i]))
     rng = max(h - l, 1e-12); body = abs(c - o)
     upper = h - max(o, c); lower = min(o, c) - l
@@ -888,7 +897,9 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
         moving_averages[f"sma_{period}"] = _sma(closes, period)
     moving_averages["ichimoku_base"] = (max(highs[-26:]) + min(lows[-26:])) / 2 if len(closes) >= 26 else None
     moving_averages["vwma_20"] = float(np.sum(np.asarray(closes[-20:]) * np.asarray(volumes[-20:])) / np.sum(volumes[-20:])) if len(closes) >= 20 and np.sum(volumes[-20:]) else None
-    moving_averages["hma_9"] = _sma(closes[-9:], 9)
+    # C-13: anahtar `hma_9` idi ama değer `_sma` idi — LLM/UI'ya yanlış
+    # özellik anlamı taşıyordu. Modülün kendi kanonik `_hma`'sı kullanılır.
+    moving_averages["hma_9"] = _hma(closes, 9)
     oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "stochastic_d": stochastic.get("d") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "cmo_9": cmo, "crsi": crsi, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate, "mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend}
     oscillator_signals = {"rsi_14": _signal(oscillator_values["rsi_14"], 50, 70, 30, 20), "stochastic_k": _signal(oscillator_values["stochastic_k"], 50, 80, 20, 10), "cci_20": _signal(cci, 0, 100, -100, -200), "adx_14": "neutral" if adx is None else ("buy" if adx["plus_di"] > adx["minus_di"] else "sell"), "awesome": "buy" if (ao or 0) > 0 else "sell", "momentum_10": "buy" if (ret(10) or 0) > 0 else "sell", "macd": "buy" if macd and macd["histogram"] > 0 else "sell",
         # C-02: %R lives in [-100, 0] where -10 is *overbought*. `_signal`

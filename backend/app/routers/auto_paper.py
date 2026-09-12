@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database, security
-from app.api_common import log_user_action, _background_tasks
+from app.api_common import log_user_action, _background_tasks, _start_background
 from app.state import market
 from app.ws_runtime import ws_manager
 
@@ -705,8 +705,8 @@ def start_auto_paper_loop() -> bool:
     global _loop_task
     if _loop_task is not None and not _loop_task.done():
         return False
-    _loop_task = asyncio.create_task(auto_paper_management_loop(), name="auto-paper-management")
-    _background_tasks.add(_loop_task)
+    # G-10: süpervizörlü başlatma (hata sonrası sınırlı backoff ile yeniden başlar).
+    _loop_task = _start_background(auto_paper_management_loop, "auto-paper-management")
     return True
 
 
