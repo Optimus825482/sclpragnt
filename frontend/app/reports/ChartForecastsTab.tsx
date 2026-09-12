@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { toMs } from "../lib/format";
 import SymbolLink from "../components/SymbolLink";
 
 type Forecast = {
@@ -214,7 +215,8 @@ export default function ChartForecastsTab() {
                 <tbody>
                   {forecasts.map((f) => (
                     <tr key={f.id}>
-                      <td>{new Date(f.created_at * 1000).toLocaleString("tr-TR")}</td>
+                      {/* H-24: elle `* 1000` yerine `toMs`. */}
+                      <td>{new Date(toMs(f.created_at)).toLocaleString("tr-TR")}</td>
                       <td><SymbolLink symbol={f.symbol} className="text-white hover:text-neon-green" /></td>
                       <td>{f.timeframe}</td>
                       <td>{f.horizon_minutes}dk</td>

@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.config import config
 from app import database
 from app.state import market, analyzer
-from app.api_common import _start_background, _background_tasks
+from app.api_common import _start_background, _background_tasks, rate_limit
 from app import memory_service
 from app import migration_monitor
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
@@ -45,7 +45,11 @@ async def health():
         "rest": {"last_event_at": market.rest_last_event_at, "last_error": market.rest_last_error},
         "ws": {"last_event_at": market.ws_last_event_at, "last_error": market.ws_last_error,
                "generation": market.connection_generation},
-        "market_error": market.last_error, "open_positions": list(analyzer.positions.keys())
+        "market_error": market.last_error,
+        # G-30: /health kimlik doğrulamasız bir yoldur; açık pozisyon sembolleri
+        # (hangi sembollerde pozisyon var) sızdırılmamalı. Yalnız sayı verilir;
+        # sembol listesi kimlik doğrulamalı /api/positions'tan alınır.
+        "open_position_count": len(analyzer.positions)
     }
 
 @router.get("/api/system/health")
@@ -93,7 +97,7 @@ async def memory_status():
 
 @router.post("/api/memory/backfill")
 async def memory_backfill(request: Request = None):
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     if not _main_pg_pool(): raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
     if _embedding_backfill["status"] == "running": return {"ok": False, **_embedding_backfill}
@@ -118,7 +122,7 @@ async def memory_backfill(request: Request = None):
 @router.post("/api/memory/repair-historical")
 async def repair_historical_memory(request: Request = None):
     """Rebuild historical trade memory without inventing unavailable market data."""
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     if not _main_pg_pool(): raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
     if _embedding_repair["status"] == "running": return {"ok": False, **_embedding_repair}
@@ -172,7 +176,7 @@ async def migration_status():
 
 @router.post("/api/migration/start")
 async def migration_start(payload: dict = None, request: Request = None):
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     body = payload or {}
     source = str(body.get("source") or os.getenv("MIGRATION_SOURCE_PATH") or "legacy-pasif")
@@ -188,7 +192,13 @@ async def migration_start(payload: dict = None, request: Request = None):
     return {"ok":True, "source":info}
 
 @router.post("/api/memory/retrieve")
-async def memory_retrieve(payload: dict = None):
+async def memory_retrieve(payload: dict = None, request: Request = None):
+    # G-13: her çağrı ücretli/uzak bir embedding + vektör arama + log yazımı
+    # yapıyordu; admin kapısı ve hız sınırı yoktu. İkisi de eklendi.
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    if not rate_limit("memory-retrieve", rate_per_sec=1.0, burst=5):
+        raise HTTPException(status_code=429, detail="Hafıza sorgusu çok sık çağrıldı; lütfen bekleyin")
     if not _main_pg_pool(): raise HTTPException(status_code=503, detail="PostgreSQL memory backend aktif değil")
     body = payload or {}
     text = str(body.get("query", "")).strip()

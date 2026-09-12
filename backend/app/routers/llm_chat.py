@@ -40,7 +40,8 @@ from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app.forecast_learning import (normalize_direction, evaluate_forecast,
                                    derive_lessons, mine_target_patterns,
-                                   effective_hit_grace_minutes, outcome_window_seconds)
+                                   effective_hit_grace_minutes, outcome_window_seconds,
+                                   label_policy)
 from app import agent_learning
 import uuid
 import hashlib
@@ -968,17 +969,21 @@ async def _upside_scout_impl():
         ctx["target_pct"] = effective_pct
         ctx["target_price"] = round(ctx["current_price"] * (1 + effective_pct / 100.0), 6)
         confidence = max(30.0, min(65.0, 35.0 + ctx["velocity_score"] * 0.5))
+        # REP-01: ölçüm etiketi replay ile AYNI formülden (kanonik label_policy).
+        # Vitrindeki hedef (`target_pct`) ürün kararıdır; ÖLÇÜLEN eşik maliyet+ATR
+        # farkındalıklıdır ve böylece "canlı journal ile aynı etiketleme" doğrudur.
+        scout_policy = label_policy(ctx["horizon_minutes"], (ctx.get("atr_pct") or 0) / 100.0)
         snapshot = dict(ctx)
         snapshot.update({"paper_only": True, "generated_at": now, "source": "upside_scout",
-                         "price_observed_at": observed_at})
+                         "price_observed_at": observed_at, "label_policy": scout_policy})
         forecasts.append({
             "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id,
             "symbol": ctx["symbol"], "created_at": now, "decided_at": observed_at,
             "horizon_minutes": ctx["horizon_minutes"], "entry_price": ctx["current_price"],
             "direction": "up", "confidence": confidence,
             "invalidation_price": None,
-            # evaluate_forecast kesir karşılaştırması yapar (0.02 = %2).
-            "min_move_pct": ctx["target_pct"] / 100.0,
+            # evaluate_forecast kesir karşılaştırması yapar (0.0035 = %0,35).
+            "min_move_pct": scout_policy["min_move_pct"],
             "regime": "velocity", "timeframe_context": {"profile": f"{ctx['horizon_minutes']}dk",
                                                         "blended_profiles": sorted(int(h) for h in (ctx.get("profiles") or {}))},
             "scenario": (f"upside-scout: {ctx['symbol']} upside sıra {ctx['upside_rank']}; "
@@ -1538,15 +1543,13 @@ async def _journal_upside_candidates(candidates: list[dict], horizon_minutes: in
         risks = "; ".join((candidate.get("risks") or [])[:4]) or "none reported"
         volatility = candidate.get("snapshot", {}).get("volatility") or {}
         atr_pct = float(volatility.get("atr_pct") or 0)
-        # A forecast is only counted as an actionable directional hit when it
-        # clears round-trip cost and a fraction of current ATR noise.
-        noise_ratio = .25 if horizon_minutes == 5 else .35
-        min_move_pct = max(config.LLM_FORECAST_MIN_MOVE_PCT, config.min_net_exit_pct(config.DEFAULT_ORDER_USDT) * 1.05, atr_pct * noise_ratio)
+        # REP-01: etiket politikası TEK kaynaktan (replay ile birebir aynı formül).
+        policy = label_policy(horizon_minutes, atr_pct)
+        min_move_pct = policy["min_move_pct"]
         snapshot = {"candidate": candidate, "horizon_minutes": horizon_minutes,
                     "generated_at": generated_at, "source": "upside_candidate_scan",
-                    "label_policy": {"min_move_pct": min_move_pct, "atr_pct": atr_pct, "noise_ratio": noise_ratio,
-                                     "round_trip_cost_floor": config.min_net_exit_pct(config.DEFAULT_ORDER_USDT),
-                                     "prior_chat_samples": len(prior_horizon), "prior_chat_accuracy": prior_accuracy}}
+                    "label_policy": {**policy, "prior_chat_samples": len(prior_horizon),
+                                     "prior_chat_accuracy": prior_accuracy}}
         snapshot_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
         forecasts.append({
             "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id,

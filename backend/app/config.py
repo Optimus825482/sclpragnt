@@ -11,6 +11,15 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 load_dotenv(override=False)
 
+# G-24 (denetim): Aşağıdaki ayarların TAMAMI `class Config` gövdesinde, yani
+# IMPORT anında okunur. Birkaç ayar (RETENTION_DAYS, microstructure retention,
+# DATABASE_URL, SCALPER_SESSION_SECRET) ise çalışma zamanında okunur → iki
+# farklı okuma rejimi vardır. Sonuç: çalışırken `os.environ` değiştirmek
+# (test/reload senaryoları) bu sabitlere YANSIMAZ; süreci yeniden başlatmak
+# gerekir. Davranışı kanıtlanmış bir dağıtım provası olmadan değiştirmemek için
+# refactor yerine burada belgelenmiştir.
+
+
 class Config:
     STRATEGY_REVISION = os.getenv("STRATEGY_REVISION", "filters-2026-08-06-adx18-keltner-retest-chop45")
     # Startup and top-gainer hydration use only the timeframes that active
@@ -39,8 +48,14 @@ class Config:
     # Normal yüzde tutarı minimumun altına düştüğünde boş bakiyeyi eritmek
     # için kullanılacak kademeli paper işlem tutarı.
     FALLBACK_ORDER_TRY = float(os.getenv("FALLBACK_ORDER_TRY", "250.0"))
-    # 0 means unlimited; cash, liquidity and per-symbol pyramid limits still apply.
-    MAX_OPEN_POSITIONS = 0
+    # D-11 (2026-09-12): varsayılan artık 5 — eskiden 0 (= sınırsız) idi ve
+    # zincirleme bildirimlerde cüzdanın tamamı tek turda pozisyona girebiliyordu.
+    # 0 HÂLÂ sınırsız demektir (açıkça `0` verilirse), ancak güvenli varsayılan
+    # artık sonlu. Env `MAX_OPEN_POSITIONS` > sınıf varsayılanı; çalışma anında
+    # `PUT /api/config` (main.py `_apply_config_update`) DB'den üzerine yazar →
+    # öncelik: çalışma-anı ayarı > env > bu sabit. Nakit/likidite/sembol-başı
+    # (pyramiding) limitleri bundan bağımsız olarak ayrıca geçerlidir.
+    MAX_OPEN_POSITIONS = max(0, int(os.getenv("MAX_OPEN_POSITIONS", "5")))
     MAX_TICKER_AGE_SEC = 15
     MAX_POSITION_HOLD_SEC = 4 * 60 * 60
     EARLY_FAILURE_SEC = int(os.getenv("EARLY_FAILURE_SEC", str(45 * 60)))
@@ -311,9 +326,11 @@ class Config:
     # (fiyat bildirim fiyatının üzerinde + ufuk süresi dolmadı + yükselme
     # eğilimi varsa). Varsayılan AÇIK; false ile kapatılabilir.
     AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE = os.getenv("AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE", "true").lower() == "true"
-    # Otonom paper için global maksimum açık pozisyon sayısı (0 = sınırsız).
-    # Farklı sembollerden gelen bildirim zinciri cüzdanı tüketmesin.
-    AUTO_PAPER_MAX_OPEN_POSITIONS = max(0, int(os.getenv("AUTO_PAPER_MAX_OPEN_POSITIONS", "0")))
+    # D-11 (2026-09-12): otonom paper için global maksimum açık pozisyon sayısı.
+    # Eskiden varsayılan 0 (= sınırsız) idi; farklı sembollerden gelen bildirim
+    # zinciri cüzdanı tek turda tüketebiliyordu. Güvenli varsayılan artık 3;
+    # açıkça 0 verilirse yine sınırsız. Env/DB (çalışma-anı ayarı) önceliklidir.
+    AUTO_PAPER_MAX_OPEN_POSITIONS = max(0, int(os.getenv("AUTO_PAPER_MAX_OPEN_POSITIONS", "3")))
 
     # MACD MONITOR / SIRÇRAMA ADAYI ayarları (DB üzerinden değiştirilebilir;
     # burada yalnızca varsayılanlar). Eşik ve alarm/push anahtarları.
@@ -356,10 +373,50 @@ if _session_secret and _session_secret in _PLACEHOLDER_SECRETS:
     )
 if _session_secret and len(_session_secret) < 32:
     print("[config] UYARI: SCALPER_SESSION_SECRET 32 karakterden kısa; güçlü bir secret üretin.")
+# G-17 (2026-09-12): zayıf yönetici şifresi artık yalnızca UYARI vermiyor —
+# üretim modunda başlatmayı ENGELLİYOR. Geliştirme modunda (varsayılan) davranış
+# korunur (yalnızca uyarı) ki yerel kurulumlar kırılmasın.
+# Mod seçimi: SCALPER_ENV > ENVIRONMENT > "development". Yalnızca
+# {"production","prod"} üretim sayılır.
+_WEAK_ADMIN_PASSWORDS = {"admin", "password", "12345678", "1234567890"}
+
+
+def admin_password_policy_message(password: str) -> str | None:
+    """Zayıf yönetici şifresi için açıklama; güçlü/boş ise None.
+
+    Politika: en az 10 karakter, tamamen rakam DEĞİL ve yaygın sözlük değeri
+    DEĞİL. Bu, `main.py::_require_admin`in tek yetki kapısı olduğu bir sistemde
+    savunma derinliğidir; parola hiçbir zaman loglanmaz (yalnızca politika
+    ihlali loglanır).
+    """
+    if not password:
+        return None
+    if (len(password) < 10
+            or password.isdigit()
+            or password.lower() in _WEAK_ADMIN_PASSWORDS):
+        return ("SCALPER_ADMIN_PASSWORD zayıf/öngörülebilir: en az 10 karakter, "
+                "harf+rakam karışımı ve yaygın sözlük değeri dışında olmalı.")
+    return None
+
+
+def enforce_admin_password_policy(password: str, *, production: bool) -> None:
+    """Politika ihlalinde üretimde RuntimeError, geliştirmede uyarı.
+
+    Tek karar noktası: hem modül yüklemesi hem testler bu fonksiyonu kullanır,
+    böylece "uyarıyı RuntimeError'a çevir" davranışı tek yerden doğrulanır.
+    """
+    message = admin_password_policy_message(password)
+    if not message:
+        return
+    if production:
+        raise RuntimeError(
+            "[config] " + message + " (SCALPER_ENV=production; başlatma reddedildi)")
+    print("[config] UYARI: " + message + " (geliştirme modunda yalnızca uyarı; "
+          "üretimde başlatma engellenir)")
+
+
+PRODUCTION_MODE = os.getenv(
+    "SCALPER_ENV", os.getenv("ENVIRONMENT", "development")
+).strip().lower() in {"production", "prod"}
 _admin_password = os.getenv("SCALPER_ADMIN_PASSWORD", "")
-if _admin_password and (
-    len(_admin_password) < 10
-    or _admin_password.isdigit()
-    or _admin_password.lower() in {"admin", "password", "12345678", "1234567890"}
-):
-    print("[config] UYARI: SCALPER_ADMIN_PASSWORD zayıf görünüyor; rotasyon önerilir.")
+enforce_admin_password_policy(_admin_password, production=PRODUCTION_MODE)

@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { toMs } from "../lib/format";
 import MarkdownMessage from "../components/MarkdownMessage";
 import SymbolLink from "../components/SymbolLink";
 import { streamChat } from "../lib/streamChat";
@@ -182,7 +183,7 @@ function UpsideScoutCard({ scout }: { scout: ScoutResult }) {
       <div className="flex items-center justify-between gap-3 mb-3">
         <p className="eyebrow">🎯 EN HIZLI YÜKSELİŞ ANALİZİ · İLK {candidates.length}</p>
         <span className="text-[10px] text-bunker-muted shrink-0">
-          {scout.generated_at ? new Date(scout.generated_at * 1000).toLocaleTimeString("tr-TR") : "—"}
+          {scout.generated_at ? new Date(toMs(scout.generated_at)).toLocaleTimeString("tr-TR") : "—"}
         </span>
       </div>
       {candidates.length === 0 ? (
@@ -499,7 +500,7 @@ function ChatPageInner() {
       key: `${d.at || Date.now() / 1000}-${d.tool || d.kind}-${Math.random().toString(36).slice(2, 7)}`,
       kind: String(d.kind || "info"),
       text,
-      time: new Date((d.at || Date.now() / 1000) * 1000).toLocaleTimeString("tr-TR"),
+      time: new Date(toMs(d.at || Date.now() / 1000)).toLocaleTimeString("tr-TR"),
       success: d.success,
       duration_ms: d.duration_ms,
     }, ...current].slice(0, 40));

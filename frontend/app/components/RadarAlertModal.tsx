@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLiveMessages } from "../lib/liveSocket";
-import { fmtDateTime } from "../lib/format";
+import { fmtDateTime, formatPrice } from "../lib/format";
 import SymbolLink from "./SymbolLink";
 
 /** Kısa, keskin "radar" sesi: iki vuruşlu yüksek ton + düşük vurgu. */
@@ -53,10 +53,12 @@ export type RadarAlertItem = {
   auto_paper_trade?: { status?: string; error?: string } | null;
 };
 
-const fmtPrice = (value: number | undefined, symbol?: string) => {
+// H-16: biçim TEK kaynaktan (`lib/format`); buradaki 5. hassasiyet kopyası
+// (binlik ayraçsız `toFixed`) kaldırıldı. Sembol argümanı geriye dönük uyum
+// için korunur ama artık kullanılmaz.
+const fmtPrice = (value: number | undefined, _symbol?: string) => {
   if (value == null || !Number.isFinite(value)) return "—";
-  const digits = symbol && symbol.includes("TRY") && value < 100 ? 6 : value < 10 ? 4 : 2;
-  return `${Number(value).toFixed(digits)} TRY`;
+  return `${formatPrice(value)} TRY`;
 };
 
 export default function RadarAlertModal() {

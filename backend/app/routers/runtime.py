@@ -276,9 +276,19 @@ async def strategy_loop():
                     print(f"[Sinyal] {sig}")
                     await ws_manager.broadcast({"type": "signal", "data": sig})
                     if str(sig.get("action", "")).startswith("CLOSE"):
+                        # G-29: pozisyon kapandı → cüzdan/realized PnL önbelleği
+                        # anında geçersiz kılınır (3 sn TTL beklemeden doğru bakiye).
+                        invalidate_wallet_caches()
                         await ws_manager.broadcast({"type": "trade_updated", "data": {"symbol": sig.get("symbol"), "reason": sig.get("reason")}})
         except asyncio.CancelledError:
             raise
+        except Exception as exc:
+            # G-11: dış hata (ticker/broadcast/pending emirler) döngüyü tamamen
+            # düşürmemeli. Eskiden yalnız CancelledError yakalanıyordu; tek bir
+            # beklenmeyen istisna pozisyon yönetimini durdurup supervisor'ın
+            # (api_common._start_background) sınırsız restart döngüsüne giriyordu.
+            logger.error("strategy_loop turu hata ile düştü (döngü devam ediyor): %s",
+                         exc, exc_info=True)
         await asyncio.sleep(5)
 
 

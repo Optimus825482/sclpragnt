@@ -16,6 +16,21 @@ from app.forecast_learning import outcome_window_seconds
 
 logger = logging.getLogger("scalper.database")
 
+# ---------------------------------------------------------------------------
+# BİRİM SÖZLEŞMESİ (V-14) — `*_pct` alanları
+#
+# `trades` tablosu AYNI satırda iki farklı birim taşır (analyzer.py):
+#   * `pnl_pct`           → YÜZDE  ((pnl/(entry*qty))*100)
+#   * `max_favorable_pct` → KESİR  ((max_price-entry)/entry)
+#   * `max_adverse_pct`   → KESİR
+# Depolanan değerler KASITLI olarak yeniden ölçeklenmez: bu alanlar paylaşılan
+# muhasebe matematiğinde ve replay'de kullanılır, sessiz bir ×100 kaydırma tüm
+# yeniden-üretimi bozar. Bunun yerine birim, OKUMA/RAPOR sınırında açık hale
+# getirilir: `get_report_trade_breakdown` eski alanı (geriye dönük uyum) KORUR
+# ve yanında `*_ratio` (kesir) + `*_pct` (yüzde = kesir×100) ikizlerini döndürür.
+# Kural: `*_ratio` = kesir; `*_pct` = yüzde.
+# ---------------------------------------------------------------------------
+
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 # Bağlantı havuzu: tek global bağlantı + global lock yerine psycopg_pool.
 # Pool eşzamanlı bağlantılar verir; transaction bütünlüğü çok-statement'lı
@@ -411,15 +426,13 @@ async def get_wallet_balance(asset="TRY"):
     return await _run_db(op)
 
 
-async def update_wallet_balance(asset, amount):
-    def op(conn):
-        conn.execute(
-            "INSERT INTO virtual_wallet (asset, amount) VALUES (?, ?) ON CONFLICT(asset) DO UPDATE SET amount=?",
-            (asset, amount, amount)
-        )
-        conn.commit()
+# NOT (V-20): `update_wallet_balance(asset, amount)` burada duruyordu. Repo
+# genelinde (app/routers/scripts/tests/backend/work/work) HİÇBİR okuyucusu
+# yoktu ve cüzdanı kilit/komisyon olmadan kör bir UPSERT ile yazıyordu — V-01
+# para yolu için tehlikeli bir tuzaktı. Silindi. Cüzdan artık yalnız
+# `reconcile_portfolio` / `commit_close_position` / açılış mutabakatı ile
+# yazılır; `get_wallet_balance` yalnız okur.
 
-    await _run_db(op)
 
 def _chronological_overallocation_candidates(conn):
     """Return only positions whose opening event made the ledger insolvent.
@@ -815,6 +828,12 @@ async def backfill_position_trade_ids():
 # Alarmın sonucunun "kesinleşmesi" için gereken süre (sn) — 30 dk ufuk + pay.
 _MACD_ALERT_OUTCOME_WINDOW_SEC = 32 * 60
 
+# F-09: bir satır çözülemeden (fill/expire) en fazla bu kadar kez denenir; sayaç
+# üst sınıra ulaşınca satır expire edilir ve `pending` sorgusundan düşer. Böylece
+# tek bir bozuk satır sonucu doldurma partisini KALICI olarak bloke edemez.
+# Pencere ~16 tur (32 dk / 120 sn) olduğundan sağlıklı satırlar sınıra takılmaz.
+_MACD_OUTCOME_MAX_ATTEMPTS = 60
+
 # Taban (baseline) kovası: alarmları 5m kovalarına yuvarlarız. Aynı kovadaki tüm
 # alarmlar aynı evren tabanını paylaşır → taban hesabı kova başına BİR kez yapılır.
 _MACD_BASELINE_BUCKET_SEC = 300
@@ -838,6 +857,11 @@ def _ensure_macd_evidence_schema(conn) -> None:
         conn.execute("ALTER TABLE macd_monitor_alerts ADD COLUMN IF NOT EXISTS mfe_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE macd_monitor_alerts ADD COLUMN IF NOT EXISTS mae_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE macd_monitor_alerts ADD COLUMN IF NOT EXISTS early_score INTEGER")
+        # F-03: baz fiyatın hangi çapadan geldiğini (kapanmış mum / canlı tick /
+        # ilk ileri mum) denetlenebilir kılar. F-09: satır bazı deneme sayacı —
+        # bozuk satırlar `pending` sorgusunu sonsuza dek işgal etmesin.
+        conn.execute("ALTER TABLE macd_monitor_alerts ADD COLUMN IF NOT EXISTS base_source TEXT")
+        conn.execute("ALTER TABLE macd_monitor_alerts ADD COLUMN IF NOT EXISTS outcome_attempts INTEGER")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS macd_market_baseline ("
             "bucket_ts BIGINT NOT NULL, horizon TEXT NOT NULL, avg_pct DOUBLE PRECISION NOT NULL, "
@@ -1029,9 +1053,13 @@ def _macd_forward_outcomes(rows, base: float, t0_ms: float, now_ms: float):
 async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
     """Bekleyen alarmların 5m/15m/30m ileri getirilerini + MFE/MAE'yi doldur.
 
-    Fiyat kaynağı: `historical_candles` (5m). Alarm anındaki fiyat kayıtlıysa
-    taban o; değilse alarm anına en yakın mumun kapanışı kullanılır. Pencere
-    tamamen geçmiş ve veri yoksa kayıt 'expired' işaretlenir.
+    Fiyat kaynağı: `historical_candles` (5m). Taban artık evren tabanıyla AYNI
+    çapaya bağlanır: t0'a eşit/önce açılmış **son kapanmış** mumun kapanışı
+    (F-03). Yalnız hiç mum yoksa canlı tick'e, o da yoksa ilk ileri mumun
+    kapanışına düşülür. Hangi kaynağın kullanıldığı `base_source` sütununa
+    yazılır (`closed_candle` / `live_tick` / `first_candle`). `price` sütunu
+    (görüntüleme) DEĞİŞTİRİLMEZ. Pencere tamamen geçmiş ve veri yoksa kayıt
+    'expired' işaretlenir.
 
     A3: ayrıca alarm sonrası 30 dk içindeki **MFE** (en yüksek lehte hareket) ve
     **MAE** (en düşük aleyhte hareket) yüzde olarak yazılır; bunlar "kâr
@@ -1039,69 +1067,140 @@ async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
 
     A2: alarmın 5m kovası için evren tabanı (baseline) üretilir; lift hesabı
     `macd_monitor_alert_stats` içinde bu tabana göre yapılır.
+
+    F-09: her satır kendi try/except'inde işlenir ve deneysel `outcome_attempts`
+    sayacı ile sınırlanır. `base <= 0` satırları pencere dolunca expire edilir;
+    tek bir bozuk satır ne tüm partiyi iptal eder ne de sonsuza dek `pending`
+    kalır.
     """
+    max_attempts = _MACD_OUTCOME_MAX_ATTEMPTS
+
     def op(conn):
         _ensure_macd_evidence_schema(conn)
         pending = conn.execute(
-            "SELECT id, created_at, symbol, kind, price FROM macd_monitor_alerts "
-            "WHERE outcome_state='pending' ORDER BY created_at ASC LIMIT ?",
-            (max(1, min(5000, int(limit))),)).fetchall()
+            "SELECT id, created_at, symbol, kind, price, "
+            "COALESCE(outcome_attempts, 0) AS outcome_attempts "
+            "FROM macd_monitor_alerts "
+            "WHERE outcome_state='pending' AND COALESCE(outcome_attempts, 0) < ? "
+            "ORDER BY created_at ASC LIMIT ?",
+            (max_attempts, max(1, min(5000, int(limit))))).fetchall()
         filled = 0
+        touched = False
         now = time.time()
         baseline_buckets: set[int] = set()
         for row in pending:
             values = dict(row)
             alert_id = values["id"]
-            symbol = values["symbol"]
             created = float(values["created_at"] or 0)
-            base_price = values.get("price")
-            t0_ms = created * 1000.0
-            window_end_ms = t0_ms + 30 * 60_000
+            attempts = int(values.get("outcome_attempts") or 0)
+            try:
+                symbol = values["symbol"]
+                base_price = values.get("price")
+                t0_ms = created * 1000.0
+                window_end_ms = t0_ms + 30 * 60_000
 
-            candles = conn.execute(
-                "SELECT open_time, high, low, close FROM historical_candles "
-                "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
-                "ORDER BY open_time",
-                (symbol, t0_ms - 5 * 60_000, window_end_ms + 5 * 60_000)).fetchall()
-            rows = [(float(dict(c)["open_time"]), float(dict(c)["high"] or 0),
-                     float(dict(c)["low"] or 0), float(dict(c)["close"])) for c in candles]
+                candles = conn.execute(
+                    "SELECT open_time, high, low, close FROM historical_candles "
+                    "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
+                    "ORDER BY open_time",
+                    (symbol, t0_ms - 5 * 60_000, window_end_ms + 5 * 60_000)).fetchall()
+                rows = [(float(dict(c)["open_time"]), float(dict(c)["high"] or 0),
+                         float(dict(c)["low"] or 0), float(dict(c)["close"])) for c in candles]
 
-            if not rows:
-                if now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC:
+                if not rows:
+                    if now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC:
+                        conn.execute(
+                            "UPDATE macd_monitor_alerts SET outcome_state='expired', filled_at=? WHERE id=?",
+                            (now, alert_id))
+                        filled += 1
+                        touched = True
+                    continue
+
+                # F-03: evren tabanı `_baseline_rows_for_bucket` içindeki
+                # `base_rows[-1]` (stamp <= t0 olan son kapanmış mum) ile AYNI
+                # çapayı kullanır; böylece LIFT baz sürüklenmesinden arınır.
+                prior_closes = [close for stamp, _high, _low, close in rows if stamp <= t0_ms]
+                if prior_closes:
+                    base = prior_closes[-1]
+                    base_source = "closed_candle"
+                elif base_price:
+                    base = float(base_price)
+                    base_source = "live_tick"
+                else:
+                    base = rows[0][3]
+                    base_source = "first_candle"
+
+                if base <= 0:
+                    # F-09: ESKİDEN koşulsuz `continue` idi → sonsuza dek
+                    # `pending` kalıp partiyi bloke ediyordu. Artık pencere
+                    # dolunca (veya deneme sınırında) expire edilir.
+                    if now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC or attempts + 1 >= max_attempts:
+                        conn.execute(
+                            "UPDATE macd_monitor_alerts SET outcome_state='expired', "
+                            "base_source=?, outcome_attempts=?, filled_at=? WHERE id=?",
+                            (base_source, attempts + 1, now, alert_id))
+                        filled += 1
+                    else:
+                        conn.execute(
+                            "UPDATE macd_monitor_alerts SET outcome_attempts=? WHERE id=?",
+                            (attempts + 1, alert_id))
+                    touched = True
+                    continue
+
+                # F-02: saf yardımcı — yalnız hedef ana ulaşılmış ufukları üretir.
+                updates, mfe, mae = _macd_forward_outcomes(rows, base, t0_ms, now * 1000.0)
+                if len(updates) == len(_MACD_HORIZON_MINUTES):
                     conn.execute(
-                        "UPDATE macd_monitor_alerts SET outcome_state='expired', filled_at=? WHERE id=?",
-                        (now, alert_id))
+                        "UPDATE macd_monitor_alerts SET outcome_5m_pct=?, outcome_15m_pct=?, "
+                        "outcome_30m_pct=?, mfe_pct=?, mae_pct=?, outcome_state='filled', "
+                        "base_source=?, filled_at=? WHERE id=?",
+                        (updates["outcome_5m_pct"], updates["outcome_15m_pct"],
+                         updates["outcome_30m_pct"], mfe, mae, base_source, now, alert_id))
                     filled += 1
-                continue
-
-            base = float(base_price) if base_price else rows[0][3]
-            if base <= 0:
-                continue
-            # F-02: saf yardımcı — yalnız hedef ana ulaşılmış ufukları üretir.
-            updates, mfe, mae = _macd_forward_outcomes(rows, base, t0_ms, now * 1000.0)
-            if len(updates) == len(_MACD_HORIZON_MINUTES):
-                conn.execute(
-                    "UPDATE macd_monitor_alerts SET outcome_5m_pct=?, outcome_15m_pct=?, "
-                    "outcome_30m_pct=?, mfe_pct=?, mae_pct=?, outcome_state='filled', "
-                    "filled_at=? WHERE id=?",
-                    (updates["outcome_5m_pct"], updates["outcome_15m_pct"],
-                     updates["outcome_30m_pct"], mfe, mae, now, alert_id))
-                filled += 1
-                baseline_buckets.add(_macd_bucket(created))
-            elif now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC:
-                conn.execute(
-                    "UPDATE macd_monitor_alerts SET outcome_state='expired', filled_at=? WHERE id=?",
-                    (now, alert_id))
-                filled += 1
+                    touched = True
+                    baseline_buckets.add(_macd_bucket(created))
+                elif now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC or attempts + 1 >= max_attempts:
+                    conn.execute(
+                        "UPDATE macd_monitor_alerts SET outcome_state='expired', "
+                        "base_source=?, outcome_attempts=?, filled_at=? WHERE id=?",
+                        (base_source, attempts + 1, now, alert_id))
+                    filled += 1
+                    touched = True
+                else:
+                    conn.execute(
+                        "UPDATE macd_monitor_alerts SET outcome_attempts=? WHERE id=?",
+                        (attempts + 1, alert_id))
+                    touched = True
+            except Exception:
+                # F-09: tek bozuk satırlık hata TÜM doldurma partisini iptal
+                # etmemeli. Satırı atla, sayacı artır; sınırda veya pencere
+                # dolduğunda expire et.
+                attempts += 1
+                logger.debug("macd alarm sonucu doldurulamadı (id=%s)", alert_id, exc_info=True)
+                try:
+                    if now - created > _MACD_ALERT_OUTCOME_WINDOW_SEC or attempts >= max_attempts:
+                        conn.execute(
+                            "UPDATE macd_monitor_alerts SET outcome_state='expired', "
+                            "outcome_attempts=?, filled_at=? WHERE id=?",
+                            (attempts, now, alert_id))
+                        filled += 1
+                    else:
+                        conn.execute(
+                            "UPDATE macd_monitor_alerts SET outcome_attempts=? WHERE id=?",
+                            (attempts, alert_id))
+                    touched = True
+                except Exception:
+                    logger.debug("macd alarm deneme sayacı güncellenemedi (id=%s)",
+                                 alert_id, exc_info=True)
         # A2: sonucu kesinleşen alarmların kovaları için evren tabanını hazırla
         # (üretim anında değil, doldurma anında — alarm akışını yavaşlatmaz).
         for bucket in sorted(baseline_buckets)[:50]:
             try:
                 _baseline_rows_for_bucket(conn, bucket)
             except Exception:
-                logging.getLogger("scalper.database").debug(
+                logger.debug(
                     "macd taban hesabı başarısız (kova %s)", bucket, exc_info=True)
-        if filled:
+        if touched:
             conn.commit()
         return filled
 
@@ -1772,8 +1871,32 @@ async def get_realized_pnl():
         return float(row["pnl"] or 0.0)
     return await _run_db(op)
 
+def _add_unit_twins(item: dict, source_key: str, ratio_key: str, pct_key: str) -> None:
+    """V-14: `*_pct` alanı aslında KESİR taşıyan rapor satırına birim ikizlerini ekler.
+
+    Depolanan değer DEĞİŞTİRİLMEZ (paylaşılan matematik / replay riski); yalnız
+    rapor çıktısında hem kesir (`*_ratio`) hem yüzde (`*_pct` = kesir×100) açık
+    adlarla görünür kılınır. `source_key` eski (geriye dönük uyumlu) alandır ve
+    korunur (bkz. modül başı birim sözleşmesi).
+    """
+    raw = item.get(source_key)
+    try:
+        ratio = float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
+        ratio = 0.0
+    item[ratio_key] = ratio
+    item[pct_key] = round(ratio * 100.0, 4)
+
+
 async def get_report_trade_breakdown():
-    """Salt-okunur admin raporu: strateji/sembol bazlı kapanmış işlem özetleri (reset_at sonrasi)."""
+    """Salt-okunur admin raporu: strateji/sembol bazlı kapanmış işlem özetleri (reset_at sonrasi).
+
+    Birim sözleşmesi (V-14): `*_pct` alanları bu satırlarda KESİR taşır
+    (`max_favorable_pct`/`max_adverse_pct` = analyzer'da ×100'süz). Eski alanlar
+    geriye dönük uyum için korunur; yanlarına açık birimli ikizler eklenir:
+    `avg_max_favorable_ratio` (kesir) + `avg_max_favorable_pct` (yüzde, ×100) ve
+    aynı şekilde `avg_max_adverse_*`. `pnl_pct` (varsa) YÜZDE'dir.
+    """
     def op(conn):
         cutoff = _get_reset_cutoff_sync(conn)
         where = ' WHERE exit_time > %s' if cutoff else ''
@@ -1800,6 +1923,10 @@ async def get_report_trade_breakdown():
             total = int(item.get("trade_count") or 0)
             wins = int(item.get("winning") or 0)
             item["win_rate"] = round((wins / total) * 100, 2) if total else 0.0
+            # V-14: `avg_mfe_pct`/`avg_dd_pct` eski alanlar KESİR taşır; açık
+            # birimli ikizler ekle (eski alanlar korunur).
+            _add_unit_twins(item, "avg_mfe_pct", "avg_max_favorable_ratio", "avg_max_favorable_pct")
+            _add_unit_twins(item, "avg_dd_pct", "avg_max_adverse_ratio", "avg_max_adverse_pct")
             by_symbol.append(item)
         stats_row = conn.execute(
             "SELECT COUNT(*) AS trade_count, COALESCE(SUM(pnl), 0) AS net_pnl, "
@@ -1809,12 +1936,16 @@ async def get_report_trade_breakdown():
             "COALESCE(AVG(max_adverse_pct), 0) AS avg_max_adverse "
             "FROM trades" + where, params).fetchone()
         overall = dict(stats_row)
+        _add_unit_twins(overall, "avg_max_favorable", "avg_max_favorable_ratio", "avg_max_favorable_pct")
+        _add_unit_twins(overall, "avg_max_adverse", "avg_max_adverse_ratio", "avg_max_adverse_pct")
         strategy_rows = []
         for row in strategies:
             item = dict(row)
             total = int(item.get("trade_count") or 0)
             wins = int(item.get("winning") or 0)
             item["win_rate"] = round((wins / total) * 100, 2) if total else 0.0
+            _add_unit_twins(item, "avg_max_favorable", "avg_max_favorable_ratio", "avg_max_favorable_pct")
+            _add_unit_twins(item, "avg_max_adverse", "avg_max_adverse_ratio", "avg_max_adverse_pct")
             strategy_rows.append(item)
         return {"strategies": strategy_rows, "symbols": by_symbol, "overall": overall}
     return await _run_db(op)
@@ -4008,26 +4139,11 @@ async def get_all_symbol_target_states() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Otonom Paper Trade (2026-09-04): monitoring bildiriminden tetiklenen pozisyonlar
 # ---------------------------------------------------------------------------
-async def save_auto_paper_trade(trade: dict) -> dict | None:
-    """Yeni otonom paper trade kaydı oluştur (salt INSERT; atomik akış için open_auto_paper_trade kullan)."""
-    def op(conn):
-        row = conn.execute(
-            """INSERT INTO auto_paper_trades
-               (symbol, side, status, notification_id, entry_price, quantity, order_value_try,
-                stop_loss, take_profit, peak_price, entry_time,
-                notification_score, notification_target_pct, notification_expected_price,
-                created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
-            (str(trade["symbol"]).upper(), trade.get("side", "LONG"), "open",
-             trade.get("notification_id"), trade["entry_price"], trade["quantity"],
-             trade["order_value_try"], trade.get("stop_loss"), trade.get("take_profit"),
-             trade.get("peak_price", trade["entry_price"]), trade["entry_time"],
-             trade.get("notification_score"), trade.get("notification_target_pct"),
-             trade.get("notification_expected_price"), trade["created_at"], trade["updated_at"])
-        ).fetchone()
-        conn.commit()
-        return dict(row) if row else None
-    return await _run_db(op)
+# NOT (V-20): `save_auto_paper_trade(trade)` burada duruyordu. Salt INSERT'ti
+# (atomik değil) ve repoda HİÇBİR okuyucusu yoktu; I-11 onu "kablolamayın —
+# silin" diye işaretlemişti çünkü kablolamak mutabakatsız işlem kaydı üretir.
+# Yerini `open_auto_paper_trade` (kilit + churn kontrolü + cüzdan düşümü, tek
+# transaction) aldı. Silindi.
 
 
 async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None, str]:

@@ -13,9 +13,9 @@ def flat_kline(last, length=21):
 
 
 class PaperOrderValidationTests(unittest.TestCase):
-    def test_oco_requires_both_legs(self):
-        from tests.test_regressions import RegressionContracts  # noqa: F401  (import guard)
-
+    # I-09: `test_oco_requires_both_legs` yalnızca bir import yapıp hiçbir assert
+    # içermiyordu (her koşulda geçen boş test). Kaldırıldı; gerçek OCO
+    # doğrulaması `tests/test_regressions.py` içindeki sözleşme testlerinde.
     def test_stop_price_zero_is_invalid(self):
         # Direct check on the validation helper semantics used in place_paper_order.
         def positive_leg(order, key):

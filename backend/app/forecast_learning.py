@@ -131,6 +131,25 @@ def _accuracy(rows: list[dict[str, Any]]) -> float:
     return sum(bool(item.get("direction_correct")) for item in rows) / len(rows) if rows else 0.0
 
 
+def label_policy(horizon_minutes: int, atr_ratio: float) -> dict[str, Any]:
+    """REP-01: kenar etiketinin TEK kaynağı — replay ve canlı journal aynı kural.
+
+    `atr_ratio` bir KESİRdir (ör. 0.003 = %0,3). Etiket = max(asgari tutarlılık
+    eşiği, tur-maliyeti ×1,05, ATR × gürültü oranı). Eskiden replay bu formülü
+    kullanırken canlı scout sabit %2/%3 yazıyordu; "canlı journal ile aynı
+    etiketleme" notu bu yüzden yanlıştı.
+    """
+    from app.config import config
+    horizon = int(horizon_minutes)
+    noise_ratio = 0.25 if horizon == 5 else 0.35
+    atr_ratio = float(atr_ratio or 0.0)
+    round_trip_floor = config.min_net_exit_pct(config.DEFAULT_ORDER_USDT)
+    min_move_pct = max(config.LLM_FORECAST_MIN_MOVE_PCT, round_trip_floor * 1.05,
+                       atr_ratio * noise_ratio)
+    return {"min_move_pct": min_move_pct, "atr_pct": atr_ratio, "noise_ratio": noise_ratio,
+            "round_trip_cost_floor": round_trip_floor}
+
+
 # ---------------------------------------------------------------------------
 # Hedef desen madenciliği: ölçülen upside-scout satırlarından okunabilir
 # kurallar türetir (snapshot koşulu -> hedefe ulaşma oranı). ML modelinin

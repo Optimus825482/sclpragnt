@@ -413,10 +413,15 @@ class TrendCacheTests(_MacdTestBase):
             # Fiyat ve barlar değişmedi → ikinci turda yeniden hesaplanmamalı
             await mm._compute_pass(2)
             self.assertEqual(1, calls["n"], "Değişmeyen sembol önbellekten okunmadı (B8)")
-            # Fiyat değişince yeniden hesaplanmalı
+            # F-08: salt fiyat değişimi artık trend'i HEMEN tazelemez — pahalı
+            # hesap kaba kadansa bağlandı; aksi halde cache her saniye ölüydü.
             self.market.tick("AAA", 132.0)
             await mm._compute_pass(3)
-            self.assertEqual(2, calls["n"], "Fiyat değişince trend tazelenmeli")
+            self.assertEqual(1, calls["n"], "Kadans dolmadan trend yeniden hesaplanmamalı (F-08)")
+            # Kadans dolunca (monotonik taban geriye çekilir) yeniden hesaplanmalı.
+            mm._trend_recomputed_at["AAA"] = 0.0
+            await mm._compute_pass(4)
+            self.assertEqual(2, calls["n"], "Kadans dolunca trend tazelenmeli (F-08)")
         finally:
             mm._symbol_trend_and_signals = original
 
@@ -631,7 +636,9 @@ class EarlyDetailTests(_MacdTestBase):
         hist = _hist(60, shape="flat_then_up")
         for tf in mm.TF_LIST:
             self.market.set("AAA", tf, hist)
-        prior_high = max(hist["highs"][-21:-1])   # serinin GERÇEK 20-bar zirvesi
+        # F-05: cache yalnız KAPANMIŞ bar tutar → en yeni kapalı bar `highs[-1]`'dir.
+        # Referans pencere artık `[-20:]` (eski `[-21:-1]` bir bar gerideydi).
+        prior_high = max(hist["highs"][-20:])   # serinin GERÇEK 20-bar zirvesi
         self.market.tick("AAA", prior_high)
         at_high = mm._approach_detail("AAA")
         self.assertAlmostEqual(0.0, at_high["gap"], places=6)

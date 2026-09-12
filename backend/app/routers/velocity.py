@@ -2,6 +2,7 @@
 import asyncio
 import json
 import math
+import os
 import time
 import logging
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from app.config import config
 from app import database
 from app.state import market, analyzer
-from app.api_common import _start_background, _fresh_public_price
+from app.api_common import _start_background, _fresh_public_price, _background_tasks
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook, ticker_price
 from app.technical_analysis import (calculate_snapshot, _atr, _aroon, _bollinger,
                                     _cci, _ema, _linreg_slope_pct, _mfi, _rsi, _sma)
@@ -29,7 +30,13 @@ logger = logging.getLogger("scalper.velocity")
 router = APIRouter()
 
 
-VELOCITY_MIN_ATR_PCT = 0.30        # 1m ATR% ≥ 0.30 → yüksek salınım rejimi (her iki mod)
+# I-07 (2026-09-12): modül sabiti artık env ile GEÇERSİZ KILINABİLİR. Öncelik:
+# DB (llm_settings["velocity_min_atr_pct"], `load_velocity_atr_profiles` ile
+# açılışta/öğrenme döngüsünde okunur ve bu global'e yazar) > env
+# (`VELOCITY_MIN_ATR_PCT`) > bu sabit. Global eşik için DB anahtarı KALICI
+# YAZILMAZ (yalnızca profil anahtarları `velocity_min_atr_pct_5m/_15m` yazılır);
+# bu yüzden restart'ta env/sabit değerine döner — bilinçli ve belgelenmiş.
+VELOCITY_MIN_ATR_PCT = float(os.getenv("VELOCITY_MIN_ATR_PCT", "0.30"))  # 1m ATR% ≥ 0.30 → yüksek salınım rejimi (her iki mod)
 VELOCITY_MIN_BB_WIDTH_PCT = 2.5    # Bollinger(20,2) genişliği ≥ %2.5 (d=+0.73, en güçlü)
 VELOCITY_TREND_RSI_MIN = 60.0      # trend-içi mod: RSI ≥ 60 (momentum devam)
 VELOCITY_REVERSAL_RSI_MAX = 35.0   # V-dönüşü mod: RSI ≤ 35 (aşırı satımdan sıçrama)
@@ -53,20 +60,32 @@ _velocity_rate_last_refill = time.time()
 _velocity_rate_lock = asyncio.Lock()
 
 async def _velocity_rate_acquire():
-    """Token bucket rate limiter: burst kadar token kuyruga, saniyede RPS oraninda yenilenir."""
+    """Token bucket rate limiter: burst kadar token, saniyede RPS oranında yenilenir.
+
+    D-13 (2026-09-12): eski sürüm asyncio.Lock ALTINDA uyuyordu
+    (`await asyncio.sleep`) ve uyanınca token'ı DÜŞÜRMÜYOR, `_velocity_rate_tokens
+    = 0` yapıp geçiyordu → eşzamanlı bekleyen N çağrı AYNI ANDA serbest kalıp
+    8 rps sınırını aşıyordu (Binance TR 429 riski). Ayrıca bazı REST yolları
+    limiter'ı hiç çağırmıyordu (bkz. `_fetch_one`, `_hydrate_market_cache_for`).
+
+    Düzeltme: bekleme kilit DIŞINDA yapılır; döngü başında token yeniden
+    kontrol edilir ve TAM BİR token düşülerek dönülür. Böylece her başarılı
+    çağrı tam bir token tüketir; dönüş daima True'dur (bloklayıcı sözleşme).
+    """
     global _velocity_rate_tokens, _velocity_rate_last_refill
-    async with _velocity_rate_lock:
-        now = time.time()
-        elapsed = now - _velocity_rate_last_refill
-        _velocity_rate_tokens = min(_VELOCITY_RATE_BURST, _velocity_rate_tokens + elapsed * _VELOCITY_RATE_LIMIT_RPS)
-        _velocity_rate_last_refill = now
-        if _velocity_rate_tokens >= 1.0:
-            _velocity_rate_tokens -= 1.0
-            return True
-        wait = (1.0 - _velocity_rate_tokens) / _VELOCITY_RATE_LIMIT_RPS
-        await asyncio.sleep(wait + 0.05)
-        _velocity_rate_tokens = 0
-        return True
+    while True:
+        async with _velocity_rate_lock:
+            now = time.time()
+            elapsed = now - _velocity_rate_last_refill
+            _velocity_rate_tokens = min(_VELOCITY_RATE_BURST,
+                                        _velocity_rate_tokens + elapsed * _VELOCITY_RATE_LIMIT_RPS)
+            _velocity_rate_last_refill = now
+            if _velocity_rate_tokens >= 1.0:
+                _velocity_rate_tokens -= 1.0
+                return True
+            wait = (1.0 - _velocity_rate_tokens) / _VELOCITY_RATE_LIMIT_RPS
+        # Kilit DIŞINDA bekle; uyanınca döngü başında token yeniden düşülür.
+        await asyncio.sleep(wait + 0.01)
 
 def _rate_limit_stats():
     """Anlik rate limit durumu (diagnostics icin)."""
@@ -272,9 +291,14 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             price = closes[-1]
             if price <= 0:
                 return None
-            trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j - 1]), abs(lows[j] - closes[j - 1]))
-                   for j in range(max(1, i - 14), i + 1)]
-            atr_pct = (sum(trs) / len(trs)) / price * 100 if trs else 0.0
+            # I-03 (2026-09-12): özel 15-bar ATR yerine KANONİK
+            # `technical_analysis._atr` (14 bar). Eski kopya `range(i-14, i+1)`
+            # ile 15 true-range alıp basit ortalamasını alıyordu; kanonik `_atr`
+            # 14 bar kullanır (analyzer.calculate_atr ve eğitim tarafıyla AYNI
+            # pencere). Yüzde anlamı korunur (atr / price * 100) ve
+            # VELOCITY_MIN_ATR_PCT=0.30 bu yüzde ölçeğinde kalır.
+            atr_value = _atr(highs, lows, closes, 14)
+            atr_pct = (atr_value / price * 100) if (atr_value and price) else 0.0
             bb_width = _velocity_bollinger_width(closes)
             rsi = _velocity_rsi(closes)
             mfi = _velocity_mfi(highs, lows, closes, vols)
@@ -635,8 +659,12 @@ async def velocity_calibrate():
 
     Döndürür: (değişiklik_yapıldı_mı, durum_sözlüğü). Eşikler
     ``llm_settings``'e kalıcı yazılır (restart'ta geri yüklenir).
+
+    I-07 (2026-09-12): eskiden burada vestigial bir ``global VELOCITY_MIN_ATR_PCT``
+    bildirimi vardı ama fonksiyon global'i HİÇ atamıyordu (yalnızca okuyordu) →
+    kaldırıldı. Global eşiğin env ile geçersiz kılınabilmesi modül tepesinde
+    (``VELOCITY_MIN_ATR_PCT = float(os.getenv(...))``) sağlanır.
     """
-    global VELOCITY_MIN_ATR_PCT
     changed = False
     by_profile = {}
     hit_rates = []
@@ -751,6 +779,9 @@ async def velocity_learning_loop():
                 due_ms = created_ms + horizon * 60_000
                 try:
                     async with sem:
+                        # D-13: bu REST yolu eskiden limiter'ı atlıyordu; artık
+                        # tarama/ölçüm çağrılarıyla AYNI token bucket'tan geçer.
+                        await _velocity_rate_acquire()
                         rows = await fetch_klines(symbol, "1m", horizon + 12, created_ms, due_ms + 65_000)
                     fetch_results[candidate["candidate_id"]] = rows
                 except Exception:
@@ -923,7 +954,7 @@ async def get_velocity_report(limit: int = 60):
 @router.delete("/api/reports/velocity/{candidate_id}")
 async def delete_velocity_candidate(candidate_id: str, request: Request = None):
     """Journal temizliği: geçersiz/ölü sembol kaydını raporlardan kaldırır."""
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     deleted = await database.delete_velocity_candidates([candidate_id])
     if not deleted:
@@ -938,7 +969,7 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
     Eski/yanlış ölçülmüş kayıtlar için: pencere (created → created+5dk)
     yeniden hesaplanır, MFE ve dokunuş journal'a tekrar yazılır.
     """
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     rows = await database.get_velocity_candidates(limit=200)
     candidate = next((r for r in rows if r["candidate_id"] == candidate_id), None)
@@ -979,7 +1010,7 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
 async def remeasure_all_velocity(request: Request = None):
     """Journal'daki tüm ölçülmüş kayıtları yeniden ölçer (sunucu saati/veri
     tutarsızlıklarını topluca gidermek için)."""
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     rows = await database.get_velocity_candidates(limit=300)
     remeasured, failed = 0, []
@@ -1003,10 +1034,12 @@ async def velocity_status():
         "auto_enabled": bool(config.VELOCITY_AUTO_ENABLED and
                              (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"),
         # ``auto_enabled`` ayar kapısını yansıtır (env + DB). ``loop_running``
-        # ise döngünün GERÇEKTEN başlatıldığını gösterir — 2026-09-10 öncesinde
-        # döngü hiç başlatılmıyordu ve bu ayrım yoktu; artık ikisi birlikte
-        # raporlanır ki UI "ayar açık" ile "fiilen çalışıyor"u karıştırmasın.
-        "loop_running": _VELOCITY_AUTO_LOOP_STARTED,
+        # ise döngünün GERÇEKTEN ÇALIŞTIĞINI gösterir (G-16, 2026-09-12): görev
+        # nesnesinin done() durumu + heartbeat tazeliği. Eskiden yapışkan
+        # `_VELOCITY_AUTO_LOOP_STARTED` bayrağı okunuyordu ve döngü öldükten
+        # sonra da True kalıyordu. `loop_started` ham bayrağı (gözlem) korur.
+        "loop_running": velocity_loop_running(),
+        "loop_started": _VELOCITY_AUTO_LOOP_STARTED,
         "pool_size": config.VELOCITY_POOL_SIZE,
         "pattern_filter_enabled": config.VELOCITY_PATTERN_FILTER_ENABLED,
         "sl_pct": config.VELOCITY_AUTO_SL_PCT,
@@ -1157,13 +1190,44 @@ async def get_velocity_live_tracking():
 
 _velocity_auto_state = {"last_scan_at": None, "last_error": None, "opened": [],
                           "last_open": None, "total_opened": 0,
+                          # G-16 (2026-09-12): her turda güncellenen kalp atışı.
+                          "last_heartbeat_at": None,
                           "filters": {"whale_dagilim_reddet": 0, "akis_aykiri_reddet": 0,
                                       "microflow_yok": 0}}
 
 #: ``autonomous_velocity_loop`` gerçekten başlatıldı mı? Bu bayrak yalnızca
 #: döngünün kendisi tarafından True yapılır; startup'a eklenmediği sürece
 #: False kalır ve ``velocity_status`` bunu dürüstçe raporlar (Madde 21).
+#: G-16 (2026-09-12): yapışkan bayrak TEK BAŞINA yeterli değil — döngü ölse de
+#: True kalıyordu. ``velocity_loop_running()`` görev nesnesinin ``done()``
+#: durumunu ve heartbeat tazeliğini birlikte raporlar.
 _VELOCITY_AUTO_LOOP_STARTED = False
+#: main.py startup'ta bu adla başlatır (`_start_background(autonomous_velocity_loop, "velocity-autonomous")`).
+_VELOCITY_AUTO_TASK_NAME = "velocity-autonomous"
+#: Döngü ~5 sn'de bir tur atar; 120 sn'den uzun sessizlik = ölü.
+_VELOCITY_LOOP_HEARTBEAT_TIMEOUT_SEC = 120.0
+
+
+def velocity_loop_running() -> bool:
+    """Döngünün GERÇEKTEN çalıştığını raporla (yapışkan boolean DEĞİL — G-16).
+
+    - ``_background_tasks`` içinde ``velocity-autonomous`` görevi aranır; görev
+      ``done()`` ise False döner (çökmüş/durmuş döngü artık "çalışıyor" demez).
+    - Heartbeat (``last_heartbeat_at``) 120 sn'den eskiyse False döner.
+    """
+    now = time.time()
+    heartbeat = _velocity_auto_state.get("last_heartbeat_at")
+    fresh = heartbeat is not None and (now - float(heartbeat)) <= _VELOCITY_LOOP_HEARTBEAT_TIMEOUT_SEC
+    try:
+        task = next((t for t in _background_tasks
+                     if getattr(t, "get_name", lambda: "")() == _VELOCITY_AUTO_TASK_NAME), None)
+    except Exception:
+        task = None
+    if task is not None:
+        return (not task.done()) and fresh
+    # Görev nesnesi bulunamadı (doğrudan çağrı / test / yeniden kablolama):
+    # heartbeat tazeliğine güven; hiç başlamadıysa False.
+    return bool(_VELOCITY_AUTO_LOOP_STARTED and fresh)
 
 
 async def _velocity_24h_quote_volume(symbol: str) -> float | None:
@@ -1228,6 +1292,9 @@ async def _hydrate_market_cache_for(symbol: str):
     1m kline geçmişini ve orderbook akışını önbelleğe işler.
     """
     try:
+        # D-13: bu REST yolu eskiden limiter'ı atlıyordu (ticker+klines+orderbook
+        # = 4 istek/sembol). Artık token bucket üzerinden geçer.
+        await _velocity_rate_acquire()
         rows = await ticker_24h([symbol])
         row = next((r for r in rows if str(r.get("symbol", "")).upper() == symbol), None)
         if row:
@@ -1246,6 +1313,7 @@ async def _hydrate_market_cache_for(symbol: str):
         # ikisini de doldur; aksi halde recheck 0 bar üzerinden yanlış
         # reddediyor. MOMENTUM_TIMEFRAME kaldırıldı; sabit "5m" kullanılır.
         for tf in ("1m", "5m"):
+            await _velocity_rate_acquire()
             kline_rows = await fetch_klines(symbol, tf, 120)
             if kline_rows:
                 market.klines.setdefault(tf, {})[symbol] = {
@@ -1259,6 +1327,8 @@ async def _hydrate_market_cache_for(symbol: str):
     except Exception as exc:
         logger.warning("hydrate klines %s: %s", symbol, exc)
     try:
+        # D-13: orderbook da limiter'dan geçsin.
+        await _velocity_rate_acquire()
         book = await orderbook(symbol, 5)
         bids, asks = book.get("bids") or [], book.get("asks") or []
         if bids and asks:
@@ -1441,7 +1511,10 @@ async def _open_velocity_position(candidate: dict) -> dict:
     # This enforces a dedicated velocity cap instead of silently sharing the
     # chat-prediction cap (H2).
     vel_max = int(config.VELOCITY_AUTO_MAX_OPEN_POSITIONS)
-    if 0 < vel_max <= 9999:
+    # D-12 (2026-09-12): sihirli üst sınır (eski kod: `0 < vel_max <= 9_999`)
+    # KALDIRILDI. 10.000 ve üzeri bir ayarda koşul False oluyor ve pozisyon
+    # limiti SESSİZCE uygulanmıyordu. 0 = sınırsız; pozitif her değer cap'tir.
+    if vel_max > 0:
         vel_open = sum(
             1 for pos in analyzer.positions.values()
             if ((pos.get("entry_context") or {}).get("signal_context") or {}).get("source") == "velocity_auto")
@@ -1572,6 +1645,8 @@ async def autonomous_velocity_loop():
     # Döngü gövdesi çalışmaya başladığı anda "başlatıldı" sayılır; ilk 60 sn'lik
     # uyku boyunca da durum ucu doğru (True) raporlar.
     _VELOCITY_AUTO_LOOP_STARTED = True
+    # G-16: heartbeat'i hemen yaz ki ilk 60 sn'lik uykuda da canlı sayılsın.
+    _velocity_auto_state["last_heartbeat_at"] = time.time()
     await asyncio.sleep(60)
     # Restart sonrası mevcut M5 kapanışıyla senkron başla: ilk turda hazır
     # kapanışa bağlı kalıp yeni mum gelmeden taramayalım (0 ile başlarsak
@@ -1585,13 +1660,18 @@ async def autonomous_velocity_loop():
         pass
     while True:
         try:
+            # G-16: tur başına canlılık işareti.
+            _velocity_auto_state["last_heartbeat_at"] = time.time()
             enabled = config.VELOCITY_AUTO_ENABLED and \
                 (await database.get_llm_setting("llm_paper_trade_enabled", "0")) == "1"
             if enabled:
                 # M5 kapanış tetiklemesi: yeni kapanmış M5 mumu gelmeden tarama
                 # yapma (replay'deki ile aynı senkron; her kapanışta 1 kez tara).
                 try:
-                    await _velocity_rate_acquire()  # rate-limit gate (returns bool; ignored)
+                    # D-13: `_velocity_rate_acquire` bloklayıcıdır ve her çağrıda
+                    # TAM BİR token tüketir; dönüş daima True'dur (dolayısıyla
+                    # "ignored" değil, sözleşmesi gereği kontrol gerektirmez).
+                    await _velocity_rate_acquire()
                     m5_rows = await fetch_klines("BTCTRY", "5m", 2)
                     if m5_rows:
                         latest_close_ms = int(m5_rows[-1][0])

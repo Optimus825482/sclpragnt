@@ -53,13 +53,22 @@ class PromotionPipeline:
         return info.get("stage") if info else None
 
     async def register(self, name: str, stage: str = "shadow") -> dict:
-        if stage not in VALID_STAGES:
-            raise ValueError(f"geçersiz aşama: {stage}")
+        """Stratejiyi boru hattına kaydeder — HER ZAMAN ``shadow`` (D-09).
+
+        ``stage`` parametresi geriye dönük uyumluluk için kabul edilir, ancak
+        yalnızca ``"shadow"`` geçerlidir. Eskiden ``stage="active"`` tek çağrıda
+        OOS/paper kanıt zincirini atlayarak terminal aşamaya geçiriyordu. Aktif'e
+        yükseltme YALNIZ ``promote(..., human_approved=True)`` ile yapılabilir.
+        """
+        if stage not in (None, "", "shadow"):
+            raise ValueError(
+                "register yalnızca 'shadow' aşamasında kayıt açar; "
+                "yükseltme promote(human_approved=True) ile yapılır")
         await self._ensure()
         entry = self._state.setdefault(name, {
-            "stage": stage, "created_at": time.time(), "evidence": {},
+            "stage": "shadow", "created_at": time.time(), "evidence": {},
             "transitions": []})
-        entry["stage"] = stage
+        entry["stage"] = "shadow"
         entry["updated_at"] = time.time()
         await self._save()
         return entry

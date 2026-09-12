@@ -6,6 +6,7 @@ import { useAuth } from "../lib/auth";
 import { canViewMacdMonitor } from "../lib/macdAccess";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import { apiFetch } from "../lib/api";
+import { formatPrice, toMs } from "../lib/format";
 import { mergeMacdDelta } from "../lib/macdSnapshot";
 
 // ---------------------------------------------------------------------------
@@ -137,16 +138,15 @@ type ConditionalStats = {
   baseline?: Record<string, AlertBaseline>;
 };
 
-const fmtTime = (ts: number | null | undefined) => {
-  if (!ts) return "—";
-  const date = new Date(ts * 1000);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleTimeString("tr-TR");
-};
+// H-04: fiyat biçimi artık TEK kaynaktan (`lib/format.ts`) — buradaki kopya
+// `12.345678`'i `12,345678` basarken Grafik `12,3457` basıyordu.
+const fmtPrice = formatPrice;
 
-const fmtPrice = (value: number | null | undefined) => {
-  if (value == null || !Number.isFinite(value) || value <= 0) return "—";
-  const digits = value < 1 ? 8 : value < 100 ? 6 : 2;
-  return Number(value).toLocaleString("tr-TR", { maximumFractionDigits: digits });
+// H-24: elle `* 1000` yerine `toMs` (backend bir gün ms gönderirse tarih
+// 1970'e düşmez).
+const fmtTime = (ts: number | null | undefined) => {
+  const ms = toMs(ts);
+  return ms ? new Date(ms).toLocaleTimeString("tr-TR") : "—";
 };
 
 const histShort = (hist: number) => {
@@ -154,6 +154,16 @@ const histShort = (hist: number) => {
   if (abs === 0) return "0";
   if (abs >= 0.0001) return hist.toFixed(4);
   return hist.toExponential(2);
+};
+
+/**
+ * H-11: backend alanı eksik/NaN gelirse "%NaN" basmak yerine "—".
+ * Oran alanları (0..1) yüzdeye çevrilir.
+ */
+const ratioPct = (value: number | null | undefined, digits = 1) => {
+  const n = Number(value);
+  if (value == null || !Number.isFinite(n)) return "—";
+  return `${(n * 100).toFixed(digits)}%`;
 };
 
 // Alarm sonucu: kâr yeşil, zarar kırmızı (global renk kuralı).
@@ -688,7 +698,7 @@ export default function MacdMonitorPage() {
                             title={`Trend gücü: R² ${row.r2 ?? "—"} · hız ${row.speed ?? "—"} (20 barlık lineer regresyon; evren içinde 0-10 normalize)`}
                             className={`inline-flex items-center justify-center gap-1 rounded-md border px-2 py-1 text-xs font-bold ${strengthChip(row.tier)}`}
                           >
-                            {row.strength.toFixed(1)}
+                            {Number(row.strength).toFixed(1)}
                             <span className="hidden lg:inline text-[9px] tracking-wide">{TIER_LABEL[row.tier]}</span>
                           </span>
                         ) : (
@@ -799,7 +809,7 @@ export default function MacdMonitorPage() {
                   {baselineRows.map((row) => (
                     <span key={row.h} className="rounded border border-bunker-600 px-1.5 py-0.5">
                       {row.h} ort <b className={pctClass(row.avg_pct)}>{fmtPct(row.avg_pct)}</b>{" "}
-                      pozitif <b className="text-white">{(row.hit_rate * 100).toFixed(1)}%</b>
+                      pozitif <b className="text-white">{ratioPct(row.hit_rate)}</b>
                     </span>
                   ))}
                   <span className="text-bunker-muted/70">
@@ -846,9 +856,9 @@ export default function MacdMonitorPage() {
                             <td className={`px-3 py-2 text-right font-bold ${row.lift == null ? "text-bunker-muted/60" : pctClass(row.lift)}`}>
                               {row.lift == null ? "—" : fmtPct(row.lift)}
                             </td>
-                            <td className="px-3 py-2 text-right text-white">{(row.hit * 100).toFixed(1)}%</td>
+                            <td className="px-3 py-2 text-right text-white">{ratioPct(row.hit)}</td>
                             <td className={`px-3 py-2 text-right ${row.hitLift == null ? "text-bunker-muted/60" : pctClass(row.hitLift)}`}>
-                              {row.hitLift == null ? "—" : `${(row.hitLift * 100).toFixed(1)}%`}
+                              {row.hitLift == null ? "—" : ratioPct(row.hitLift)}
                             </td>
                             <td className="px-3 py-2 text-right text-bunker-muted">
                               {mfe == null && mae == null ? "—" : (
@@ -922,7 +932,7 @@ export default function MacdMonitorPage() {
                     <p className="font-mono text-[11px] text-bunker-muted">
                       n={study.n} · ortalama <b className={pctClass(study.avg_mfe)}>MFE {study.avg_mfe == null ? "—" : fmtPct(study.avg_mfe)}</b>{" "}
                       / <b className={pctClass(study.avg_mae)}>MAE {study.avg_mae == null ? "—" : fmtPct(study.avg_mae)}</b>
-                      {" · "}t0 = alarm anı (kapanmış 5m mumlarından; canlı fiyat kullanılmaz).
+                      {" · "}t0 = alarm anı <b>baz fiyatı canlı tick</b>&apos;tir; ileri getiriler kapanmış 5m mumlarından ölçülür.
                     </p>
                   </div>
                 ) : (
@@ -1003,7 +1013,7 @@ export default function MacdMonitorPage() {
                                             lift <span className={pctClass(slot.avg_lift ?? null)}>{slot.avg_lift == null ? "—" : fmtPct(slot.avg_lift)}</span>
                                           </span>
                                           <span className="text-right text-white">
-                                            %{(slot.hit_rate * 100).toFixed(0)}
+                                            {ratioPct(slot.hit_rate, 0)}
                                           </span>
                                         </div>
                                       </div>
@@ -1054,7 +1064,7 @@ export default function MacdMonitorPage() {
                       alerts.map((alert) => (
                         <tr key={alert.id} className="border-b border-bunker-800/60 transition-colors hover:bg-bunker-800/40">
                           <td className="px-3 py-2 text-bunker-muted">
-                            {new Date(alert.created_at * 1000).toLocaleString("tr-TR")}
+                            {new Date(toMs(alert.created_at)).toLocaleString("tr-TR")}
                           </td>
                           <td className="px-3 py-2">
                             <SymbolLink symbol={alert.symbol} className="font-bold text-white hover:text-neon-green" />
@@ -1071,7 +1081,7 @@ export default function MacdMonitorPage() {
                 </table>
               </div>
               <p className="font-mono text-[10px] text-bunker-muted/70">
-                Sonuçlar <b>kapanmış 5m mumlarından</b> hesaplanır; canlı fiyat kullanılmaz. Kayıtlar yalnızca ölçüm içindir,
+                İleri getiriler <b>kapanmış 5m mumlarından</b> ölçülür; baz (t0) fiyatı alarm anındaki <b>canlı tick</b>&apos;tir. Kayıtlar yalnızca ölçüm içindir,
                 sinyal davranışını değiştirmez (paper-only).
               </p>
             </div>

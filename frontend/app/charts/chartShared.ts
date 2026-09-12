@@ -1,5 +1,10 @@
 import { API_BASE } from "../lib/api";
+// H-04: fiyat biçimi/hassasiyeti artık TEK kaynaktan (`lib/format.ts`) gelir.
+// Buradaki kopya, `1.5`'i `1,5000` basarken diğer sayfalar `1,5` basıyordu.
+import { formatPrice, pricePrecision } from "../lib/format";
 import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "./types";
+
+export { formatPrice, pricePrecision };
 
 export const FALLBACK_SYMBOLS = ["BTCTRY", "ETHTRY", "SOLTRY"];
 export const INTERVALS = [
@@ -88,24 +93,9 @@ export const macdHistogramColor = (value: number, previous?: number) => {
 };
 
 // Grafik fiyatları, sembolün mevcut değer aralığına göre aynı okunabilirlikte
-// kalır. Bu kural sağ eksen, fiyat çizgileri ve açık pozisyon tablosunda ortak
-// kullanılır; böylece aynı fiyat farklı yerlerde farklı yuvarlanmaz.
-export const pricePrecision = (value: number) => {
-    const absolute = Math.abs(Number(value) || 0);
-    if (absolute < 1) return 6;
-    if (absolute < 100) return 4;
-    if (absolute < 1000) return 3;
-    return 2;
-};
-export const formatPrice = (value: number | null | undefined) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric)
-        ? numeric.toLocaleString("tr-TR", {
-            minimumFractionDigits: pricePrecision(numeric),
-            maximumFractionDigits: pricePrecision(numeric)
-        })
-        : "—";
-};
+// kalır. Kural/hassasiyet ve metin biçimi `lib/format.ts`'teki tek kaynaktan
+// gelir (yukarıdaki yeniden dışa aktarım); burada yalnız grafik ekseninin
+// ihtiyaç duyduğu `minMove` türetilir.
 export const chartPriceFormat = (value: number) => {
     const precision = pricePrecision(value);
     return { type: "price" as const, precision, minMove: Number(`1e-${precision}`) };

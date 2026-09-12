@@ -11,7 +11,7 @@ import { API_BASE, apiRequest } from "./lib/api";
 import { useAuth } from "./lib/auth";
 import { useLiveMessages as useLiveSocketMessages, useLiveStatus } from "./lib/liveSocket";
 import { useUiMode } from "./lib/ui-mode";
-import { formatPrice } from "./lib/format";
+import { formatPrice, formatSignedTL, formatTL, toMs } from "./lib/format";
 import { netOpenPnlPct, netOpenPnlTry } from "./lib/pnl";
 
 /* ============== TİPLER ============== */
@@ -27,13 +27,14 @@ type AutoPaperTrade = {
 type LiveSignal = { id?: number; symbol: string; action: string; price?: number; reason?: string; timestamp?: number };
 
 /* ============== YARDIMCILAR ============== */
-const money = (v?: number | null) =>
-  v == null ? "—" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const signedMoney = (v?: number | null) =>
-  v == null ? "—" : `${v < 0 ? "-" : ""}${Math.abs(v).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// H-04/H-15: TL biçimi tek kaynaktan (`lib/format.ts`) — ₺ önek, 2 ondalık.
+const money = formatTL;
+const signedMoney = formatSignedTL;
 const fmtTime = (ts?: number | null) => {
-  if (!ts) return "";
-  return new Date(ts * 1000).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+  // H-24: elle `* 1000` yerine `toMs` (saniye/ms karışık girdi güvenli).
+  const ms = toMs(ts);
+  if (!ms) return "";
+  return new Date(ms).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
 };
 
 function MetricCard({ label, value, hint, tone = "" }: { label: string; value: string; hint?: string; tone?: string }) {
@@ -57,22 +58,29 @@ export default function Home() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [autoPaperOpen, setAutoPaperOpen] = useState<AutoPaperTrade[]>([]);
   const [liveSignals, setLiveSignals] = useState<LiveSignal[]>([]);
+  // H-05: ağ hatası "veri yok" gibi görünmemeli. Eskiden `load` hatayı yutup
+  // "₺0,00 / …" bırakıyordu; kullanıcı sıfır bakiyeyi bağlantı hatasından
+  // ayırt edemiyordu.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Yükle
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
     if (document.hidden) return;
-    apiRequest(`${API_BASE}/api/dashboard/summary`, { cache: "no-store" })
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setSummary(d))
-      .catch(() => undefined);
-    apiRequest(`${API_BASE}/api/auto-paper/trades?status=open`, { cache: "no-store" })
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setAutoPaperOpen(d.trades || []))
-      .catch(() => undefined);
-    apiRequest(`${API_BASE}/api/signals?limit=30`, { cache: "no-store" })
-      .then((r) => r.ok ? r.json() : Promise.reject())
-      .then((d) => setLiveSignals((d.signals || []).slice(-10).reverse()))
-      .catch(() => undefined);
+    const getJson = async (path: string) => {
+      const r = await apiRequest(`${API_BASE}${path}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    };
+    const [summaryRes, apRes, signalsRes] = await Promise.allSettled([
+      getJson("/api/dashboard/summary"),
+      getJson("/api/auto-paper/trades?status=open"),
+      getJson("/api/signals?limit=30"),
+    ]);
+    if (summaryRes.status === "fulfilled") setSummary(summaryRes.value);
+    if (apRes.status === "fulfilled") setAutoPaperOpen(apRes.value.trades || []);
+    if (signalsRes.status === "fulfilled") setLiveSignals((signalsRes.value.signals || []).slice(-10).reverse());
+    const failed = [summaryRes, apRes, signalsRes].filter((r) => r.status === "rejected").length;
+    setLoadError(failed === 0 ? null : failed === 3 ? "Backend'e bağlanılamadı — veriler alınamıyor." : "Bazı veriler alınamadı.");
   }, []);
 
   useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
@@ -83,6 +91,12 @@ export default function Home() {
       setLiveSignals((prev) => [msg.data, ...prev].slice(0, 10));
       // Listeyi boşaltmak 15 sn'lik poll'a kadar "pozisyonlar kayboldu" görüntüsü
       // veriyordu; yalnızca tazeleme tetikle, mevcut liste kalsın.
+      load();
+    }
+    // H-20: backend `portfolio_reconciled` / `llm_position_management` / `reset`
+    // yayınlıyor ama ana sayfada tüketici yoktu → mutabakat veya LLM pozisyon
+    // açılışı sonrası özet 15 sn'ye kadar bayat kalıyordu.
+    if (["portfolio_reconciled", "llm_position_management", "reset", "auto_paper_trade"].includes(msg.type)) {
       load();
     }
   }, [load]));
@@ -121,11 +135,25 @@ export default function Home() {
         </div>
       </header>
 
+      {/* H-05: ağ hatası durumu — "veri yok"tan ayırt edilebilir olmalı */}
+      {loadError && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-neon-red/40 bg-neon-red/5 px-3 py-2">
+          <p className="font-mono text-xs text-neon-red">⚠ {loadError}</p>
+          <button
+            type="button"
+            onClick={() => { setLoadError(null); void load(); }}
+            className="rounded border border-neon-red/40 px-2 py-1 font-mono text-[11px] text-neon-red hover:bg-neon-red/10"
+          >
+            YENİDEN DENE
+          </button>
+        </div>
+      )}
+
       {/* 4 kart: 2 sütun mobil, 4 sütun masaüstü */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <MetricCard label="BUGÜN SİNYAL" value={String(s?.signals_today.total ?? "…")} hint={`${s?.signals_today.buy_signals ?? 0} giriş · ${s?.signals_today.close_signals ?? 0} çıkış`} />
-        <MetricCard label="OTONOM İŞLEM" value={`${s?.auto_paper_today.trades ?? 0} · ₺${signedMoney(apPnl)}`} tone={s ? pnlTone : ""} hint={`${s?.auto_paper_today.winning ?? 0} kazanç · ${s?.auto_paper_today.losing ?? 0} kayıp`} />
-        <MetricCard label="PORTFÖY" value={`₺${money(s?.portfolio.total_value)}`} hint={`₺${money(s?.portfolio.balance)} serbest`} />
+        <MetricCard label="OTONOM İŞLEM" value={`${s?.auto_paper_today.trades ?? 0} · ${signedMoney(apPnl)}`} tone={s ? pnlTone : ""} hint={`${s?.auto_paper_today.winning ?? 0} kazanç · ${s?.auto_paper_today.losing ?? 0} kayıp`} />
+        <MetricCard label="PORTFÖY" value={money(s?.portfolio.total_value)} hint={`${money(s?.portfolio.balance)} serbest`} />
         <MetricCard label="AÇIK POZİSYON" value={String(s?.portfolio.open_positions ?? 0)} hint={s?.portfolio.open_positions ? "pozisyon var" : "yok"} />
       </div>
 
@@ -154,10 +182,10 @@ export default function Home() {
                   <p className={`mt-1 font-mono text-sm ${toneClass}`}>
                     {pnlPct == null || pnl == null
                       ? "—"
-                      : `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% · ₺${signedMoney(pnl)}`}
+                      : `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% · ${signedMoney(pnl)}`}
                   </p>
                   <p className="mt-0.5 font-mono text-[10px] text-bunker-muted">
-                    {current == null ? "güncel fiyat bekleniyor" : `güncel ${formatPrice(current)}`} · TP {t.take_profit ? Number(t.take_profit).toFixed(2) : "—"} · SL {t.stop_loss ? Number(t.stop_loss).toFixed(2) : "—"}
+                    {current == null ? "güncel fiyat bekleniyor" : `güncel ${formatPrice(current)}`} · TP {formatPrice(t.take_profit)} · SL {formatPrice(t.stop_loss)}
                   </p>
                 </div>
               );
@@ -175,9 +203,9 @@ export default function Home() {
           </div>
           <div className="mt-2 flex flex-wrap gap-3">
             <APStatCard label="Bugün sinyal" value={String(s?.signals_today.total ?? 0)} />
-            <APStatCard label="Otonom işlem" value={String(s?.auto_paper_today.trades ?? 0)} sub={s ? `₺${signedMoney(apPnl)}` : ""} />
-            <APStatCard label="Serbest TL" value={`₺${money(s?.portfolio.balance)}`} />
-            <APStatCard label="Toplam Değer" value={`₺${money(s?.portfolio.total_value)}`} />
+            <APStatCard label="Otonom işlem" value={String(s?.auto_paper_today.trades ?? 0)} sub={s ? signedMoney(apPnl) : ""} />
+            <APStatCard label="Serbest TL" value={money(s?.portfolio.balance)} />
+            <APStatCard label="Toplam Değer" value={money(s?.portfolio.total_value)} />
           </div>
         </section>
       )}
@@ -191,11 +219,11 @@ export default function Home() {
         <div className="px-4 py-3 font-mono text-sm max-h-40 overflow-y-auto">
           {liveSignals.length === 0 && <p className="text-bunker-muted">Sinyal bekleniyor…</p>}
           {liveSignals.slice(0, isAdvanced ? 8 : 4).map((s, i) => (
-            <div key={s.id ?? i} className={`py-1 text-xs ${s.action === "BUY_BLOCKED" ? "text-sky-400" : s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
+            <div key={s.id ?? i} className={`py-1 text-xs ${s.action === "BUY_BLOCKED" ? "text-sky-400" : String(s.action || "").includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
               <span className="text-bunker-muted">[{fmtTime(s.timestamp)}]</span>{" "}
               <b>{s.action}</b>{" "}
               <span className="text-white">{s.symbol}</span>
-              {s.price ? ` @ ₺${Number(s.price).toLocaleString("tr-TR", { maximumFractionDigits: 2 })}` : ""}
+              {s.price ? ` @ ${formatPrice(Number(s.price))}` : ""}
               {s.reason && <span className="text-bunker-muted ml-1">· {s.reason}</span>}
             </div>
           ))}

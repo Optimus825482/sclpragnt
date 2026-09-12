@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiFetch, apiRequest } from "../lib/api";
+import { formatPrice, toMs } from "../lib/format";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
 import { useLiveMessages } from "../lib/liveSocket";
@@ -48,15 +49,24 @@ type MonitoringState = {
 };
 
 const SCAN_INTERVAL_MS = 30_000;
-// Backend normalize_score cap'ı (MONITORING_SCORE_NORM_CAP): ham velocity_score
-// bu değere bölünüp 0-100 panel ölçeğine çevrilir. Backend artık panel_score
-// alanını gönderir; eski yanıt.cache'leri için burada da hesaplanır.
-const SCORE_NORM_CAP = 2000;  // 2026-09-07 saturation kaldirildi, skor 0-1000 MONITORING_SCORE_NORM_CAP
+// Backend normalize_score cap'i (config.MONITORING_SCORE_NORM_CAP, env ile
+// değişebilir; tipik ham skor 50-2000). Backend normalde `panel_score` alanını
+// gönderir ve asıl kaynak ODUR — buradaki sabit yalnızca `panel_score`
+// taşımayan eski/ara yanıtlar için emniyet ağıdır (H-21). Env değişirse
+// ekrandaki fallback değer backend'den sapabilir; backend'in gönderdiği
+// `panel_score` kullanıldığı sürece sapma olmaz.
+const SCORE_NORM_CAP = 2000;
 
-// YÜKSELİŞ EĞİLİMİ ADAYLARI: MACD MONITOR GÜÇ skoru (20 barlık lineer
-// regresyon trend gücü, 0-10) eşiği ve en az 5/6 zaman diliminde yeşil
-// histogram şartı (MACD MONITOR sayfasıyla aynı veri kaynağından;
-// /api/macd-monitor).
+// YÜKSELİŞ EĞİLİMİ ADAYLARI: MACD MONITOR GÜÇ skoru eşiği ve en az 5/6 zaman
+// diliminde yeşil histogram şartı (MACD MONITOR sayfasıyla aynı veri
+// kaynağından; /api/macd-monitor).
+//
+// F-18: `strength` MUTLAK bir trend gücü DEĞİLDİR. Backend onu evren içi
+// min-max ile 0-10'a normalize eder (macd_monitor.py) → evrenin EN GÜÇLÜ
+// sembolü her turda tam 10.0 alır. Bu yüzden 9.8 = "ham skoru evren zirvesinin
+// %2'si içinde" demektir; evren kompozisyonu değişince aynı ham veriyle liste
+// değişir. Eşik bilinçli olarak korunuyor (davranış değişikliği replay
+// gerektirir); yalnızca panel bunu "evren içi sıralama" olarak etiketler.
 const RISING_MIN_STRENGTH = 9.8;
 const RISING_MIN_GREEN = 5;
 const MACD_TFS = ["1m", "3m", "5m", "15m", "30m", "1h"];
@@ -190,15 +200,12 @@ const jumpFlagIcons = (cand: JumpCand) => {
   return icons;
 };
 
+// H-04: fiyat biçimi TEK kaynaktan (`lib/format.ts`). Buradaki 5. kopya
+// `symbol.includes("TRY") && value<100 → 6` kuralı taşıyordu.
 const fmtTime = (ts: number | null) => {
-  if (!ts) return "—";
-  return new Date(ts * 1000).toLocaleTimeString("tr-TR");
-};
-
-const fmtPrice = (value: number | undefined, symbol?: string) => {
-  if (value == null || !Number.isFinite(value) || value <= 0) return "—";
-  const digits = symbol && value < 100 ? 6 : value < 10 ? 4 : 2;
-  return Number(value).toLocaleString("tr-TR", { maximumFractionDigits: digits });
+  // H-24: elle `* 1000` yerine `toMs`.
+  const ms = toMs(ts);
+  return ms ? new Date(ms).toLocaleTimeString("tr-TR") : "—";
 };
 
 // Panel (0-100) ölçeği: admin eşiği ve bildirim skoru bu ölçekte; ham
@@ -206,6 +213,7 @@ const fmtPrice = (value: number | undefined, symbol?: string) => {
 const panelScore = (c: { panel_score?: number | null; velocity_score?: number | null }) => {
   const p = Number(c.panel_score);
   if (Number.isFinite(p) && c.panel_score != null) return p;
+  // Fallback yalnız `panel_score` taşımayan yanıtlar için (H-21).
   const raw = Number(c.velocity_score) || 0;
   return Math.round(100 * Math.min(1, raw / SCORE_NORM_CAP) * 10) / 10;
 };
@@ -255,11 +263,11 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
           </div>
           <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
             <p className="eyebrow">ANLIK</p>
-            <p className="mt-1 font-mono text-sm font-bold text-white">{fmtPrice(price, c.symbol)} <span className="text-[10px] text-bunker-muted">TRY</span></p>
+            <p className="mt-1 font-mono text-sm font-bold text-white">{formatPrice(price)} <span className="text-[10px] text-bunker-muted">TRY</span></p>
           </div>
           <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
             <p className="eyebrow">BEKLENEN</p>
-            <p className="mt-1 font-mono text-sm font-bold text-neon-green">{expected != null ? `${fmtPrice(expected, c.symbol)}` : "—"}</p>
+            <p className="mt-1 font-mono text-sm font-bold text-neon-green">{expected != null ? formatPrice(expected) : "—"}</p>
           </div>
           <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
             <p className="eyebrow">ML OLASILIK</p>
@@ -329,6 +337,24 @@ export default function MonitoringPage() {
     const timer = window.setInterval(loadMacd, 15_000);
     return () => window.clearInterval(timer);
   }, [loadMacd]);
+  // F-15 (frontend yarısı): SALT-OKUNUR tarama durumu okuyucu. Sayfa artık
+  // otomatik olarak yan etkili `/api/monitoring/scan` ÇAĞIRMAZ (o uç nokta tam
+  // tarama + DB yazımı + web push + otonom paper pozisyon açma yapar; her 30
+  // sn'de tetiklenmesi tarama sıklığını ikiye katlıyordu). Yalnızca son tarama
+  // durumu okunur; taze tarama kullanıcının "ŞİMDİ TARA" düğmesiyle (runScan).
+  const loadState = useCallback(async () => {
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/state`, { cache: "no-store" });
+      // H-27: boş gövdeli/hata yanıtı `json()` throw edip sessizce yutuluyordu
+      // ("veri yok" gibi görünüyordu) → önce `ok` kontrolü.
+      if (!res.ok) return;
+      const data = await res.json();
+      setState({ last_scan_at: data.last_scan_at, scan_count: data.scan_count, candidates: data.candidates || [], watchlist: data.watchlist || [] });
+      if (data.settings) setSettings({ enabled: data.settings.enabled ?? true, min_score: data.settings.min_score ?? 50, min_target_pct: data.settings.min_target_pct ?? 2.0, quiet_hours_start: data.settings.quiet_hours_start ?? null, quiet_hours_end: data.settings.quiet_hours_end ?? null });
+      setEffectiveMinScore(data.effective_min_score != null ? Number(data.effective_min_score) : null);
+    } catch { /* sessiz */ }
+  }, []);
+
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "macd_monitor" && message.data) setMacdData(message.data);
     // Delta yayını da birleştirilmeli (B9): backend artık çoğu turda yalnızca
@@ -337,7 +363,10 @@ export default function MonitoringPage() {
     if (message.type === "macd_monitor_delta" && message.data?.symbols) {
       setMacdData((prev: any) => mergeMacdDelta(prev, message.data));
     }
-  }, []);
+    // H-20: arka plan taraması yeni radar bildirimi yayınladığında aday listesi
+    // anında tazelenir (otomatik scan kaldırıldığı için tazelik buradan gelir).
+    if (message.type === "monitoring_alert") loadState();
+  }, [loadState]);
   useLiveMessages(onLiveMessage);
   const rising = useMemo(() => extractRisingCandidates(macdData), [macdData]);
   const jumpers = useMemo(() => extractJumpCandidates(macdData), [macdData]);
@@ -393,14 +422,13 @@ export default function MonitoringPage() {
 
   useEffect(() => {
     loadSettings();
-    apiRequest(`${API_BASE}/api/monitoring/state`, { cache: "no-store" }).then((r) => r.json()).then((data) => {
-      setState({ last_scan_at: data.last_scan_at, scan_count: data.scan_count, candidates: data.candidates || [], watchlist: data.watchlist || [] });
-      if (data.settings) setSettings({ enabled: data.settings.enabled ?? true, min_score: data.settings.min_score ?? 50, min_target_pct: data.settings.min_target_pct ?? 2.0, quiet_hours_start: data.settings.quiet_hours_start ?? null, quiet_hours_end: data.settings.quiet_hours_end ?? null });
-      setEffectiveMinScore(data.effective_min_score != null ? Number(data.effective_min_score) : null);
-    }).catch(() => {});
-    scanTimerRef.current = setInterval(runScan, SCAN_INTERVAL_MS);
+    loadState();
+    // F-15/H-27: otomatik tarama (yan etkili GET /api/monitoring/scan) kaldırıldı;
+    // 30 sn'de bir yalnızca SALT-OKUNUR durum okunur. Sekme arka plandayken
+    // atlanır (gereksiz REST/CPU önlenir).
+    scanTimerRef.current = setInterval(() => { if (!document.hidden) loadState(); }, SCAN_INTERVAL_MS);
     return () => { if (scanTimerRef.current) clearInterval(scanTimerRef.current); };
-  }, [runScan, loadSettings]);
+  }, [loadState, loadSettings]);
 
   // Tek eşik (2026-09-04): backend'in gönderdiği etkin değer; yoksa admin ayarı.
   const effThreshold = effectiveMinScore != null
@@ -466,7 +494,7 @@ export default function MonitoringPage() {
             </a>
           </div>
           <p className="mt-1 text-xs text-bunker-muted">
-            Trend gücü ≥ {RISING_MIN_STRENGTH} (20 barlık lineer regresyon: R² × eğim/bar aralığı, 0-10) ve en az {RISING_MIN_GREEN}/6 zaman diliminde MACD histogramı yeşil olan semboller — en güçlü yükseliş adayları.
+            <b>Evren içi normalize</b> trend gücü ≥ {RISING_MIN_STRENGTH}/10 (0-10 min-max; evrenin en güçlü sembolü 10.0 alır → 9.8 &quot;ham skorda evren zirvesinin %2&apos;si içinde&quot; demektir; 20 barlık lineer regresyon: R² × eğim/bar aralığı) ve en az {RISING_MIN_GREEN}/6 zaman diliminde MACD histogramı yeşil olan semboller — en güçlü yükseliş adayları.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {rising.map((item) => (

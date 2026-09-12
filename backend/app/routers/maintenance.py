@@ -166,7 +166,12 @@ async def history_candle_loop(interval_minutes: int = 5):
                                      "trade_count": int(item[8]) if len(item) > 8 else None,
                                      "source": "binance_tr_public_live", "fetched_at": now_ms})
                     return await database.upsert_market_candles(rows)
-                except Exception:
+                except Exception as exc:
+                    # G-21: `except Exception: return 0` mum kalıcılık hatasını
+                    # tamamen sessizleştiriyordu; historical_candles sessizce
+                    # bayatlayıp ML eğitimini boş pencereye düşürebiliyordu.
+                    logger.warning("canlı mum kalıcılığı başarısız | symbol=%s error=%s: %s",
+                                   symbol, type(exc).__name__, exc)
                     return 0
             async def worker(symbol: str):
                 nonlocal written_total
@@ -361,7 +366,7 @@ async def historical_mtf_backfill_status():
 
 @router.post("/api/historical-mtf-backfill/start")
 async def start_historical_mtf_backfill(payload: dict = None, request: Request = None):
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     global _historical_mtf_backfill_task
     if _historical_mtf_backfill.get("status") == "running":
@@ -412,7 +417,7 @@ async def replay_parity_backfill_status():
 
 @router.post("/api/replay-parity-backfill/start")
 async def start_replay_parity_backfill(request: Request = None):
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     global _replay_parity_backfill_task
     if _replay_parity_backfill.get("status") == "running":
@@ -549,7 +554,7 @@ async def velocity_ml_backfill_status():
 
 @router.post("/api/velocity-ml-backfill/start")
 async def start_velocity_ml_backfill(payload: dict = None, request: Request = None):
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     global _velocity_ml_backfill_task
     if _velocity_ml_backfill.get("status") == "running":
@@ -562,7 +567,7 @@ async def start_velocity_ml_backfill(payload: dict = None, request: Request = No
 async def download_replay_parity_trade_csv(request: Request = None):
     """Download all closed paper-trade detail, including the saved entry context."""
     # G-05: tüm kapanan işlem geçmişi + giriş bağlamını döker; admin kapısı yoktu.
-    from app.main import _require_admin
+    from app.api_common import require_admin as _require_admin
     _require_admin(request)
     rows = await database.get_trade_export_rows()
     stream = io.StringIO(newline="")

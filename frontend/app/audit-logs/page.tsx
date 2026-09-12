@@ -97,13 +97,27 @@ export default function AuditLogsPage() {
   const [purgeDays, setPurgeDays] = useState(30);
   const [purgeBusy, setPurgeBusy] = useState(false);
   const timerRef = useRef<number | null>(null);
+  // H-26: bildirim zamanlayıcısı ref'te tutulmuyor ve unmount'ta
+  // temizlenmiyordu (sökülmüş bileşende `setNotice` çağrılıyordu).
+  const noticeTimerRef = useRef<number | null>(null);
+  // H-10: yarışan yanıtlarda eski veri kazanmasın (sıra numarası).
+  const requestSeqRef = useRef(0);
 
   const notify = (kind: "ok" | "err", text: string) => {
     setNotice({ kind, text });
-    window.setTimeout(() => setNotice(null), 4000);
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => {
+      noticeTimerRef.current = null;
+      setNotice(null);
+    }, 4000);
   };
+  useEffect(() => () => {
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = null;
+  }, []);
 
   const load = useCallback(async () => {
+    const seq = ++requestSeqRef.current;
     try {
       const params = new URLSearchParams();
       params.set("limit", String(PAGE_SIZE));
@@ -115,18 +129,24 @@ export default function AuditLogsPage() {
       const response = await apiRequest(`${API_BASE}/api/admin/audit-logs?${params.toString()}`, { cache: "no-store" });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || "Kayıt listesi alınamadı");
+      if (seq !== requestSeqRef.current) return;
       setLogs(data.logs || []);
       setTotal(Number(data.total || 0));
     } catch (reason) {
+      if (seq !== requestSeqRef.current) return;
       setNotice({ kind: "err", text: reason instanceof Error ? reason.message : "Kayıt listesi alınamadı" });
     } finally {
-      setLoading(false);
+      if (seq === requestSeqRef.current) setLoading(false);
     }
   }, [category, action, actor, q, offset]);
 
+  // H-10: `load` bağımlılıkları arasında `q`/`actor` var → her tuş vuruşunda
+  // istek atılıyordu ("BTCUSDT" yazarken 7 istek). 350 ms debounce: yazma
+  // durunca tek istek gider.
   useEffect(() => {
     setLoading(true);
-    load();
+    const t = window.setTimeout(() => { void load(); }, 350);
+    return () => window.clearTimeout(t);
   }, [load]);
 
   useEffect(() => {

@@ -16,25 +16,40 @@ export default function GainerRadar() {
   // formatter keeps a missing field from crashing the whole table.
   const fmt = (value: number | undefined | null, digits = 2) =>
     typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
+  // H-25: kâr yeşil, zarar kırmızı, bilinmeyen/başabaş nötr (0'ı yeşile boyamak
+  // yasak — proje kuralı: veri yok = nötr).
+  const retTone = (value: number | undefined | null) =>
+    typeof value === "number" && Number.isFinite(value)
+      ? value > 0 ? "text-neon-green" : value < 0 ? "text-neon-red" : "text-bunker-muted"
+      : "text-bunker-muted";
   useEffect(() => {
     let active = true;
     // Passive viewing must not mutate bot config or fire paper executions:
     // those stay explicit operator actions (see the apply buttons below).
-    const load = () => {
+    const loadItems = () => {
       setLoading(true);
       apiRequest(`${API_BASE}/api/radar/gainers`).then((r) => r.json()).then((d) => {
         if (!active) return;
         setItems(d.items || []);
         setAdded(d.auto_added || []);
-        apiRequest(`${API_BASE}/api/market-snapshot-scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeframes: ["5m", "15m", "1h"], limit: 5 }) })
-          .then((r) => r.json()).then((scan) => { if (active) setRegime(scan.market_regime || {}); }).catch(() => { if (active) setRegime({}); });
         setSecondsLeft(30);
       }).catch(() => { if (active) setItems([]); }).finally(() => { if (active) setLoading(false); });
     };
-    load();
+    // H-28: rejim verisi yalnızca `POST /api/market-snapshot-scan` ile gelir;
+    // salt-okunur bir GET rejim uç noktası YOK ve backend değiştirilemez (kural).
+    // Bu yüzden istek korunur ama (a) arka plan sekmesinde atlanır, (b) 5 dk'ya
+    // seyreltilir → görüntüleme amaçlı otomatik yazma yükü 30 sn yerine 300 sn.
+    const loadRegime = () => {
+      if (document.hidden) return;
+      apiRequest(`${API_BASE}/api/market-snapshot-scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeframes: ["5m", "15m", "1h"], limit: 5 }) })
+        .then((r) => r.json()).then((scan) => { if (active) setRegime(scan.market_regime || {}); }).catch(() => { if (active) setRegime({}); });
+    };
+    loadItems();
+    loadRegime();
     const countdown = setInterval(() => setSecondsLeft((value) => value > 0 ? value - 1 : 30), 1000);
-    const refresh = setInterval(load, 30000);
-    return () => { active = false; clearInterval(countdown); clearInterval(refresh); };
+    const refresh = setInterval(loadItems, 30000);
+    const regimeRefresh = setInterval(loadRegime, 300_000);
+    return () => { active = false; clearInterval(countdown); clearInterval(refresh); clearInterval(regimeRefresh); };
   }, []);
   const autoAddSymbols = added.length > 0;
   return <div className="gainer-radar card bg-bunker-950 overflow-hidden">
@@ -58,6 +73,6 @@ export default function GainerRadar() {
         }}
       >✓ Listeye Ekle</button>
     </div>}
-    <div className="overflow-x-auto"><table className="w-full text-left font-mono text-xs"><thead className="text-bunker-muted"><tr><th className="p-3">Sembol</th><th className="p-3">Öncelik</th><th className="p-3">MTF</th><th className="p-3">Bullish TF</th><th className="p-3">Skor</th><th className="p-3">CRSI</th><th className="p-3">5dk</th><th className="p-3">1s</th><th className="p-3">24s</th><th className="p-3">Hacim</th><th className="p-3">Akış</th><th className="p-3">Durum</th></tr></thead><tbody>{items.map((x) => <tr key={x.symbol} className="border-t border-bunker-800/60"><td className="p-3 font-bold"><SymbolLink symbol={x.symbol} className="text-white hover:text-neon-green" /></td><td className="p-3 text-neon-green">{x.priority_score ?? x.score}</td><td className="p-3"><span className={x.mtf_bullish_count && x.mtf_bullish_count >= 3 ? "text-neon-green" : "text-yellow-300"}>{x.mtf_bullish_count ?? 0}/5 · {x.mtf_score ?? 0}</span></td><td className="p-3 text-[10px] text-sky-300">{x.mtf_bullish_rank || "—"}</td><td className="p-3">{x.score}</td><td className="p-3">{x.crsi == null ? "—" : fmt(x.crsi, 1)}</td><td className="p-3">{fmt(x.ret_5m)}%</td><td className="p-3">{fmt(x.ret_1h)}%</td><td className="p-3">{fmt(x.ret_24h)}%</td><td className="p-3">{fmt(x.volume_ratio, 1)}x</td><td className="p-3">{fmt(x.imbalance, 1)}%</td><td className={`p-3 ${x.eligible ? "text-neon-green" : "text-bunker-muted"}`}>{x.eligible ? "ADAY" : "İZLE"}</td></tr>)}</tbody></table>{!items.length && <p className="p-4 text-sm text-bunker-muted">Yeterli canlı mum verisi bekleniyor.</p>}</div>
+    <div className="overflow-x-auto"><table className="w-full text-left font-mono text-xs"><thead className="text-bunker-muted"><tr><th className="p-3">Sembol</th><th className="p-3">Öncelik</th><th className="p-3">MTF</th><th className="p-3">Bullish TF</th><th className="p-3">Skor</th><th className="p-3">CRSI</th><th className="p-3">5dk</th><th className="p-3">1s</th><th className="p-3">24s</th><th className="p-3">Hacim</th><th className="p-3">Akış</th><th className="p-3">Durum</th></tr></thead><tbody>{items.map((x) => <tr key={x.symbol} className="border-t border-bunker-800/60"><td className="p-3 font-bold"><SymbolLink symbol={x.symbol} className="text-white hover:text-neon-green" /></td><td className="p-3 text-neon-green">{x.priority_score ?? x.score}</td><td className="p-3"><span className={x.mtf_bullish_count && x.mtf_bullish_count >= 3 ? "text-neon-green" : "text-yellow-300"}>{x.mtf_bullish_count ?? 0}/5 · {x.mtf_score ?? 0}</span></td><td className="p-3 text-[10px] text-sky-300">{x.mtf_bullish_rank || "—"}</td><td className="p-3">{x.score}</td><td className="p-3">{x.crsi == null ? "—" : fmt(x.crsi, 1)}</td><td className={`p-3 ${retTone(x.ret_5m)}`}>{fmt(x.ret_5m)}%</td><td className={`p-3 ${retTone(x.ret_1h)}`}>{fmt(x.ret_1h)}%</td><td className={`p-3 ${retTone(x.ret_24h)}`}>{fmt(x.ret_24h)}%</td><td className="p-3">{fmt(x.volume_ratio, 1)}x</td><td className="p-3">{fmt(x.imbalance, 1)}%</td><td className={`p-3 ${x.eligible ? "text-neon-green" : "text-bunker-muted"}`}>{x.eligible ? "ADAY" : "İZLE"}</td></tr>)}</tbody></table>{!items.length && <p className="p-4 text-sm text-bunker-muted">Yeterli canlı mum verisi bekleniyor.</p>}</div>
   </div>;
 }

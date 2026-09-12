@@ -17,6 +17,40 @@ let status: LiveStatus = "closed";
 const messageListeners = new Set<MessageListener>();
 const statusListeners = new Set<StatusListener>();
 
+// H-09: yarım-açık (half-open) WS bağlantısı gözetimi.
+//
+// `onclose` yalnızca TCP kapanışında tetiklenir; kablo/NAT oturumu düştüğünde
+// soket "open" kalır ve başlıklarda yeşil "● CANLI" yanmaya devam eder, veri
+// donar. Bu yüzden son mesaj zamanı izlenir: 15 sn'de bir kontrol edilir,
+// 45 sn boyunca hiç mesaj gelmezse bağlantı ölü sayılır ve kapatılır
+// (onclose → status "closed" → backoff'lu yeniden bağlanma).
+const HEARTBEAT_CHECK_MS = 15_000;
+const STALE_AFTER_MS = 45_000;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let lastMessageAt = 0;
+
+function stopHeartbeat() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  lastMessageAt = Date.now();
+  heartbeatTimer = setInterval(() => {
+    const instance = socket;
+    if (!instance) { stopHeartbeat(); return; }
+    if (Date.now() - lastMessageAt <= STALE_AFTER_MS) return;
+    // Ölü soket: kapat → onclose → "closed" + yeniden bağlanma.
+    try { instance.close(); } catch { /* zaten kapalı */ }
+  }, HEARTBEAT_CHECK_MS);
+}
+
+/** Son WS mesajının üzerinden geçen süre (ms). Gözetim/etiket için. */
+export function liveSilenceMs(): number {
+  return lastMessageAt ? Date.now() - lastMessageAt : 0;
+}
+
 function setStatus(next: LiveStatus) {
   status = next;
   statusListeners.forEach((listener) => listener(next));
@@ -27,9 +61,16 @@ function connect() {
   setStatus("connecting");
   const instance = new WebSocket(WS_URL);
   socket = instance;
-  instance.onopen = () => { if (socket === instance) { reconnectAttempt = 0; setStatus("open"); } };
+  instance.onopen = () => {
+    if (socket === instance) {
+      reconnectAttempt = 0;
+      setStatus("open");
+      startHeartbeat();
+    }
+  };
   instance.onmessage = (event) => {
     if (socket !== instance) return;
+    lastMessageAt = Date.now();
     try {
       const message = JSON.parse(event.data) as LiveMessage;
       // H-01: komisyon oranı backend'den tek noktadan senkronlanır → tüm
@@ -45,6 +86,7 @@ function connect() {
   instance.onclose = (event) => {
     if (socket !== instance) return;
     socket = null;
+    stopHeartbeat();
     setStatus("closed");
     if (event.code === 4401) {
       window.dispatchEvent(new CustomEvent("scalper:auth-expired"));
@@ -67,6 +109,7 @@ export function subscribeLive(listener: MessageListener) {
     if (messageListeners.size === 0) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = null;
+      stopHeartbeat();
       const instance = socket;
       socket = null;
       if (instance) {

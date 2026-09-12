@@ -31,6 +31,120 @@ _restart_counters: dict[str, int] = {}
 # yeniden başlatılmırlar, sıfırlama görev bitiminde yapılır.
 _single_pass_tasks: set[str] = set()
 
+# G-11 (2026-09-12): sonsuz restart yerine sonlu deneme + KALICI "failed" durumu.
+# Eskiden deneme sayısı sınırsızdı ve gecikme 30 sn'de sabitleniyordu; kalıcı
+# bozuk bir döngü (örn. strategy_loop) 30 sn'de bir crash-loop'a giriyor ve hiç
+# alarm üretmiyordu. Artık MAX_BACKGROUND_RESTARTS aşılırsa görev "failed"
+# olarak işaretlenir, kritik loglanır ve (best-effort) alarm kaydı yazılır.
+MAX_BACKGROUND_RESTARTS = 10
+_failed_loops: dict[str, dict] = {}
+
+
+def loop_health() -> dict:
+    """Diagnostik: kalıcı olarak başarısız olan döngüler + deneme sayaçları (G-11)."""
+    return {"failed": {name: dict(info) for name, info in _failed_loops.items()},
+            "restart_counters": dict(_restart_counters),
+            "max_restarts": MAX_BACKGROUND_RESTARTS}
+
+
+def _alert_failed_loop(name: str, exc: BaseException) -> None:
+    """Kalıcı olarak düşen döngü için en iyi çaba alarmı (DB/gözetim)."""
+    message = (f"Arka plan döngüsü '{name}' {MAX_BACKGROUND_RESTARTS} denemede "
+               f"kalıcı olarak başarısız oldu: {type(exc).__name__}: {exc}")
+
+    async def _record():
+        try:
+            await database.save_signal({
+                "symbol": "*", "action": "BACKGROUND_LOOP_FAILED", "reason": message,
+                "strategy": "system", "timestamp": time.time()})
+        except Exception as record_exc:  # noqa: BLE001 - alarm ana akışı bozmamalı
+            logger.warning("failed-loop alarmı kaydedilemedi (%s): %s", name, record_exc)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        task = asyncio.create_task(_record(), name=f"{name}-failed-alert")
+    except RuntimeError:
+        return
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+def _handle_task_failure(name: str, exc: BaseException) -> bool:
+    """Bir background görev hata ile düştüğünde yeniden başlatma kararını verir.
+
+    Dönüş: ``True`` → yeniden başlatılmalı (deneme sınırı içinde),
+    ``False`` → kalıcı "failed" durumuna geçildi (yeniden başlatılmaz, alarm verilir).
+    """
+    current = _restart_counters.get(name, 0) + 1
+    _restart_counters[name] = current
+    if current > MAX_BACKGROUND_RESTARTS:
+        _failed_loops[name] = {"failed_at": time.time(),
+                               "error": f"{type(exc).__name__}: {exc}",
+                               "attempts": current - 1}
+        logger.critical(
+            "background görev '%s' %d denemede kalıcı olarak başarısız; "
+            "yeniden başlatılmayacak. Hata: %s", name, MAX_BACKGROUND_RESTARTS, exc,
+            exc_info=True)
+        _alert_failed_loop(name, exc)
+        return False
+    _failed_loops.pop(name, None)
+    delay = min(2 * current, 30)
+    logger.error("background görev '%s' hata ile düştü (%s); deneme %d, %.0fs sonra yeniden deneniyor.",
+                 name, exc, current, delay, exc_info=True)
+    return True
+
+
+class _TokenBucket:
+    """Basit token-bucket hız sınırlayıcı (G-13/G-18). Tek process, tek event loop."""
+
+    def __init__(self, rate_per_sec: float, burst: float):
+        self.rate = float(rate_per_sec)
+        self.burst = float(burst)
+        self._tokens = float(burst)
+        self._at = time.monotonic()
+
+    def allow(self, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else float(now)
+        elapsed = max(0.0, now - self._at)
+        self._tokens = min(self.burst, self._tokens + elapsed * self.rate)
+        self._at = now
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return True
+        return False
+
+
+_rate_limiters: dict[str, "_TokenBucket"] = {}
+
+
+def rate_limit(name: str, *, rate_per_sec: float, burst: float, now: float | None = None) -> bool:
+    """``name`` için token-bucket kontrolü. ``True`` → istek geçebilir.
+
+    Aynı isim aynı kovayı kullanır; kova ilk çağrıda oluşturulup süreç boyunca
+    yaşar. Testler ``_rate_limiters`` üzerinden sıfırlayabilir.
+    """
+    bucket = _rate_limiters.get(name)
+    if bucket is None:
+        bucket = _rate_limiters[name] = _TokenBucket(rate_per_sec, burst)
+    return bucket.allow(now)
+
+
+def require_admin(request) -> dict:
+    """Router'ların kullandığı yönetici kapısı (G-23).
+
+    Kanonik uygulama ``app.security.require_admin``; ``main._require_admin`` da
+    ona delege eder. Burada çağrı ANINDA ``app.main._require_admin`` çözülür,
+    böylece (a) router modülleri ``from app.main import ...`` YAPMAZ (gizli
+    router→main döngüsü kalkar) ve (b) testlerin/operatörün
+    ``app.main._require_admin`` üzerinden yaptığı override birebir çalışmaya
+    devam eder. Davranış aynı: eksik principal → 401, admin değil → 403.
+    """
+    from app import main
+    return main._require_admin(request)
+
 def _start_background(coro_factory, name, single_pass=False):
     """Başlat ve supervisor, hata ile biterse sınırlı geri alımla yeniden başlat.
 
@@ -72,11 +186,11 @@ def _start_background(coro_factory, name, single_pass=False):
             _restart_counters.pop(name, None)
             logger.warning("tek seferlik görev '%s' hata ile düştü, yeniden başlatılmıyor: %s", name, exc, exc_info=True)
             return
-        current = _restart_counters.get(name, 0) + 1
-        _restart_counters[name] = current
-        delay = min(2 * current, 30)
-        logger.error("background görev '%s' hata ile düştü (%s); deneme %d, %.0fs sonra yeniden deneniyor.",
-                     name, exc, current, delay, exc_info=True)
+        # G-11: sonlu deneme + kalıcı "failed" durumu. Sınır aşılırsa
+        # yeniden başlatma YOK; görev failed olarak raporlanır ve alarm verilir.
+        if not _handle_task_failure(name, exc):
+            return
+        delay = min(2 * _restart_counters.get(name, 1), 30)
         async def _respawn():
             await asyncio.sleep(delay)
             _start_background(coro_factory, name)

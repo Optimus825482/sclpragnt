@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { toMs } from "../lib/format";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "./SymbolLink";
 
@@ -107,8 +108,8 @@ export default function LiveTerminal() {
           <div className="p-4 font-mono text-sm h-64 overflow-y-auto">
             {signals.length === 0 && <p className="text-bunker-muted">$ Bot çalışıyor, strateji sinyali bekleniyor...</p>}
             {signals.map((s, i) => (
-              <div key={s.id ?? `${s.timestamp}-${s.symbol}-${s.action}-${i}`} className={`trade-log-row py-1 ${s.action === "BUY_BLOCKED" ? "text-sky-400" : s.action.includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
-                <span className="text-bunker-muted">[{s.timestamp ? new Date(s.timestamp * 1000).toLocaleTimeString("tr-TR") : "--"}]</span>{" "}
+              <div key={s.id ?? `${s.timestamp}-${s.symbol}-${s.action}-${i}`} className={`trade-log-row py-1 ${s.action === "BUY_BLOCKED" ? "text-sky-400" : String(s.action || "").includes("BUY") ? "text-neon-green" : "text-neon-red"}`}>
+                <span className="text-bunker-muted">[{s.timestamp ? new Date(toMs(s.timestamp)).toLocaleTimeString("tr-TR") : "--"}]</span>{" "}
                 <span className="font-bold">{s.action}</span>{" "}
                 <SymbolLink symbol={s.symbol} className="font-bold text-current hover:text-white" /> {(s.price ?? 0) > 0 && `@ ₺${s.price!.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}{" "}
                 <span className="text-bunker-600 text-xs">// {s.reason}</span>

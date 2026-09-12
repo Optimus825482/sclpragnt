@@ -2,7 +2,11 @@
 // discard stale cached responses. The HTML document itself is network-first:
 // Next.js emits content-hashed /_next/static/*.js|css filenames, so a fresh
 // HTML response always references the newest assets and cache-busts itself.
-const CACHE = "scalper-agent-v4-shell-14";
+// H-13: sürüm ELLE tutulmuyor; `.../sw.js?v=<BUILD_ID>` sorgusundan türetilir.
+// Böylece yeni dağıtımda cache adı kendiliğinden değişir ve kurulu PWA eski
+// shell'i sunmaya devam edemez.
+const BUILD = new URL(self.location.href).searchParams.get("v") || "dev";
+const CACHE = "scalper-agent-v4-shell-" + BUILD;
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", function (event) {
