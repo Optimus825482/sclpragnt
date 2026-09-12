@@ -1,5 +1,7 @@
 import asyncio
 import json
+import random
+import re
 import time
 from collections import defaultdict, deque
 
@@ -25,12 +27,23 @@ def _empty_history():
     }
 
 
+# B-15: bilinmeyen aralık kodu SESSİZCE 60 sn'ye düşmez. Eski hâlde
+# `_interval_ms("1s")` 60_000 dönüyordu (60 kat yanlış) ve `kline_freshness` /
+# `_closed_history` / `repair_history_gaps` bu fonksiyon üzerinden çalıştığı
+# için yeni bir zaman dilimi eklendiğinde pencereler sessizce bozulurdu.
+# Binance aralık kodları BÜYÜK/küçük harfe duyarlıdır: `1m` = 1 dakika,
+# `1M` = 1 ay. Eski kod `.lower()` yaptığı için `1M` sessizce 60_000 ms
+# (1 dakika) dönüyordu — 43.200 kat yanlış.
+_INTERVAL_UNITS_MS = {"s": 1_000, "m": 60_000, "h": 3_600_000,
+                      "d": 86_400_000, "w": 604_800_000, "M": 2_592_000_000}
+_INTERVAL_RE = re.compile(r"^(\d+)([smhdwM])$")
+
+
 def _interval_ms(interval: str) -> int:
-    units = {"m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
-    try:
-        return int(interval[:-1]) * units[interval[-1].lower()]
-    except (KeyError, TypeError, ValueError, IndexError):
-        return 60_000
+    match = _INTERVAL_RE.match(str(interval or "").strip())
+    if not match:
+        raise ValueError(f"Bilinmeyen mum aralığı: {interval!r}")
+    return int(match.group(1)) * _INTERVAL_UNITS_MS[match.group(2)]
 
 
 class MarketData:
@@ -41,6 +54,20 @@ class MarketData:
     REST_24H_MAX_AGE_SEC = 30.0
     WARMUP_BYPASS_SEC = 20.0
     MAX_HISTORY_CANDLES = 400
+    # B-01: nesiller arası asgari bekleme (sıcak döngüyü engeller). 0.25 sn,
+    # hatalı davranıştaki ~11.900 nesil/sn'yi saniyede birkaç nesle indirir;
+    # sağlıklı nesiller zaten saatler sürdüğü için normal akışı etkilemez.
+    WS_GENERATION_MIN_INTERVAL_SEC = 0.25
+    # B-07: kline tazelik toleransı = bar aralığı + pay. Eskiden
+    # `_interval_ms(tf)/1000*2 + 30` idi → 5m serisi son mum kapandıktan sonra
+    # 10,5 dakika boyunca "fresh" sayılıyordu; bir scalper'da 10 dakikalık
+    # boşluk MTF kapılarını ve `liquidity_status.fresh_inputs` kontrolünü
+    # yanlış pozitif geçiriyordu. WS ile beslenen seri bir sonraki mum
+    # kapanışında tazelenir; REST ile tazelenen serilerde (WS aboneliği
+    # olmayan 3m/30m) tazeleme kadansı paya dahil edilmelidir, aksi hâlde
+    # her turda yanlış "bayat" üretilirdi.
+    KLINE_FRESHNESS_LAG_SEC = 15.0
+    KLINE_REST_FRESHNESS_LAG_SEC = 120.0
 
     def __init__(self, symbols):
         self.symbols = [s.lower() for s in symbols]
@@ -106,6 +133,10 @@ class MarketData:
         self._rest_refresh_task = None
         self._connect_owner_task = None
         self._ws_tasks = set()
+        # B-06: arka plan onarım görevleri güçlü referansla tutulur.
+        self._bg_tasks = set()
+        # B-05: atlanan bozuk/işlenemeyen WS çerçevesi sayacı (gözlemlenebilirlik).
+        self.ws_malformed_frames = 0
         self.WS_URL = f"{WS_BASE}/stream?streams={{}}"
 
     def _all_timeframes(self):
@@ -189,7 +220,11 @@ class MarketData:
                         return
                     gap_start_ms = int(timestamps[-1]) + 1
                     rows = await fetch_klines(symbol.lower(), timeframe, limit=400, start_time_ms=gap_start_ms)
-                    fresh_rows = self._closed_history(rows, timeframe, now_ms)
+                    # B-12: `now_ms` döngü başında yakalanmıştı; fetch 4 deneme ×
+                    # 15 sn sürebildiği için bu sırada kapanan mumlar bayat
+                    # `now_ms` yüzünden `_closed_history` tarafından atılıyordu
+                    # ve onarım boşluklu kalıyordu. Await SONRASI tazele.
+                    fresh_rows = self._closed_history(rows, timeframe, int(time.time() * 1000))
                     if not fresh_rows["timestamps"]:
                         return
                     # Fetch await'i sırasında WS yeni kapanmış mumlar eklemiş
@@ -432,7 +467,10 @@ class MarketData:
                     }
             if not quote_volumes:
                 raise RuntimeError("24h ticker yanıtında geçerli sembol yok")
-            self.ticker_24h = quote_volumes
+            # B-04: BİRLEŞTİR, DEĞİŞTİRME. Eskiden tamamen değiştirildiği için
+            # bu turda dönmeyen semboller önceki quoteVolume değerini de
+            # kaybediyordu → likidite kapısı 0 görüp sembolü sessizce kilitler.
+            self.ticker_24h.update(quote_volumes)
             self.tickers = {**self.tickers, **updates}
             self.rest_ticker_updated_at = now
             self.rest_last_event_at = now
@@ -506,60 +544,129 @@ class MarketData:
         plans = []
         for index in range(0, len(symbols), group_size):
             group = symbols[index:index + group_size]
-            streams = "/".join(
-                [f"{symbol}@kline_{tf}" for tf in timeframes for symbol in group]
-                + [f"{symbol}@depth5@100ms" for symbol in group]
-                + [f"{symbol}@aggTrade" for symbol in group]
-                + [f"{symbol}@bookTicker" for symbol in group]
-                + [f"{symbol}@ticker" for symbol in group]
-            )
             plans.append({
                 "group_id": index // group_size + 1,
                 "generation": generation,
                 "symbols": tuple(group),
                 "timeframes": tuple(timeframes),
                 "base": base,
-                "url": f"{base}/stream?streams={streams}",
+                # B-03: `url` yalnızca başlangıç değeri; `_run_ws_group`
+                # her denemede `_ws_url_for` ile yeniden kurar (host rotasyonu).
+                "url": self._ws_url_for(base, group, timeframes),
             })
         return plans
+
+    @staticmethod
+    def _ws_stream_list(symbols, timeframes):
+        """WS stream listesi — tek kaynak (plan kurulumu ve yeniden bağlanma)."""
+        return "/".join(
+            [f"{symbol}@kline_{tf}" for tf in timeframes for symbol in symbols]
+            + [f"{symbol}@depth5@100ms" for symbol in symbols]
+            + [f"{symbol}@aggTrade" for symbol in symbols]
+            + [f"{symbol}@bookTicker" for symbol in symbols]
+            + [f"{symbol}@ticker" for symbol in symbols]
+        )
+
+    def _ws_url_for(self, base, symbols, timeframes):
+        return f"{base}/stream?streams={self._ws_stream_list(symbols, timeframes)}"
+
+    @staticmethod
+    def _ws_backoff_sec(attempt: int) -> float:
+        """B-03: üstel backoff + jitter (eskiden sabit 2 sn idi, üst sınır yoktu)."""
+        exponent = max(0, int(attempt) - 1)
+        capped = min(30.0, 1.0 * (2 ** min(exponent, 5)))
+        return capped * (0.5 + random.random() * 0.5)
+
+    def _schedule_repair(self, symbols, timeframes, generation: int, group_id: int):
+        """B-06: arka plan onarım görevi GÜÇLÜ referansla tutulur.
+
+        `create_task` sonucu tutulmazsa CPython görevi toplayabilir (yalnızca zayıf
+        referans kalır) ve görevin istisnası hiçbir zaman görülmez.
+        """
+        task = asyncio.create_task(
+            self.repair_history_gaps(symbols=symbols, timeframes=timeframes),
+            name=f"market-gap-repair-g{generation}-{group_id}",
+        )
+        self._bg_tasks.add(task)
+
+        def _done(t: asyncio.Task):
+            self._bg_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                print(f"[MarketData] gap onarım hatası grup={group_id}: {exc}", flush=True)
+
+        task.add_done_callback(_done)
+        return task
+
+    def _handle_ws_frame(self, message, generation: int, group_id: int):
+        """B-05: TEK bozuk çerçeve tüm grup soketini düşürmemeli.
+
+        Eskiden `json.loads` + işleme doğrudan döngü içinde çağrılıyordu; bir hata
+        dıştaki `except Exception`'a sızıp soketi yeniden kuruyor, o gruptaki TÜM
+        semboller veri kaybediyordu.
+        """
+        try:
+            payload = json.loads(message)
+        except (TypeError, ValueError) as exc:
+            self.ws_malformed_frames += 1
+            print(f"[MarketData] WS bozuk çerçeve atlandı grup={group_id}: {exc}", flush=True)
+            return
+        try:
+            self._process_ws_message(payload)
+        except Exception as exc:  # tek sembolün verisi bozuksa akış devam etsin
+            self.ws_malformed_frames += 1
+            print(f"[MarketData] WS mesaj işleme hatası grup={group_id}: {exc}", flush=True)
 
     async def _run_ws_group(self, plan):
         group_id = plan["group_id"]
         generation = plan["generation"]
+        bases = list(WS_BASES or (WS_BASE,))
+        attempts = 0
         while self.running and generation == self.connection_generation:
+            # B-03: URL HER denemede yeniden kurulur. Eskiden donmuş `plan["url"]`
+            # kullanılıyordu → yedek host'a geçiş fiilen çalışmıyordu.
+            base = bases[self.ws_host_index % len(bases)]
+            url = self._ws_url_for(base, plan["symbols"], plan["timeframes"])
             try:
                 print(
                     f"[MarketData] WebSocket generation={generation} grup={group_id} "
                     f"symbols={len(plan['symbols'])} timeframes={len(plan['timeframes'])}", flush=True,
                 )
-                async with websockets.connect(plan["url"], ping_interval=20, ping_timeout=20, close_timeout=5) as ws:
+                async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=5) as ws:
                     self.ws_connected_at = time.time()
-                    print(f"[MarketData] WS bağlandı generation={generation} grup={group_id} base={plan.get('base')}", flush=True)
+                    attempts = 0  # başarılı bağlantı backoff'u sıfırlar
+                    print(f"[MarketData] WS bağlandı generation={generation} grup={group_id} base={base}", flush=True)
                     async for message in ws:
                         if (not self.running or generation != self.connection_generation
                                 or self.reconnect_requested):
                             break
-                        self._process_ws_message(json.loads(message))
+                        self._handle_ws_frame(message, generation, group_id)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.ws_last_error = str(exc)
                 self.last_error = self.ws_last_error or self.rest_last_error
-                print(f"[MarketData] WS Hata generation={generation} grup={group_id}: {exc}", flush=True)
-                # Bağlantı hatasında bir sonraki nesil diğer hostu denesin.
-                bases = list(WS_BASES or (WS_BASE,))
+                print(f"[MarketData] WS Hata generation={generation} grup={group_id} base={base}: {exc}", flush=True)
+                # Bağlantı hatasında BİR SONRAKİ deneme diğer hostu denesin.
                 self.ws_host_index = (self.ws_host_index + 1) % len(bases)
                 # Candles may have closed while the socket was down; splice
                 # the missing range back in before fresh bars resume.
-                asyncio.create_task(self.repair_history_gaps(symbols=plan["symbols"], timeframes=plan["timeframes"]),
-                                    name=f"market-gap-repair-g{generation}-{group_id}")
-                await asyncio.sleep(2)
+                self._schedule_repair(plan["symbols"], plan["timeframes"], generation, group_id)
+                attempts += 1
+                await asyncio.sleep(self._ws_backoff_sec(attempts))
+
 
     async def _watch_reconnect(self, generation: int):
         while self.running and generation == self.connection_generation:
+            # B-01: bayrağı ÖNCE kontrol etmek, nesil kurulurken bayrak zaten
+            # True ise ANINDA dönmeye yol açıyordu (min-dwell yok) → grup
+            # soketleri el sıkışmayı tamamlayamadan iptal ediliyordu. Artık en
+            # az bir bekleme turu geçmeden dönülmez.
+            await asyncio.sleep(0.1)
             if self.reconnect_requested:
                 return
-            await asyncio.sleep(0.1)
 
     async def connect(self, skip_history: bool = False):
         if not skip_history:
@@ -582,8 +689,14 @@ class MarketData:
                     await asyncio.sleep(0.25)
                     continue
                 # 24 saatlik sunucu bağlantı ömrü dolduysa yeni nesil başlat.
+                # B-01: bayrağı set ettikten sonra `ws_connected_at` SIFIRLANMAZSA
+                # bir sonraki nesil de aynı koşulu sağlar; `_watch_reconnect`
+                # bayrağı görüp anında döner, `asyncio.wait(FIRST_COMPLETED)` ilk
+                # tick'te döner ve soketler el sıkışmadan iptal edilir → saniyede
+                # binlerce yarım bağlantı (ölçüldü: ~11.900/sn, 0 tamamlanan).
                 if self.ws_connected_at and (time.time() - self.ws_connected_at) >= self.ws_max_lifetime_sec:
                     print("[MarketData] WS 24s ömrü doldu; yeni nesil başlatılıyor", flush=True)
+                    self.ws_connected_at = 0.0
                     self.reconnect_requested = True
                 group_tasks = {
                     asyncio.create_task(
@@ -605,6 +718,9 @@ class MarketData:
                         task.cancel()
                 await asyncio.gather(*generation_tasks, return_exceptions=True)
                 self._ws_tasks.difference_update(generation_tasks)
+                # B-01: nesiller arası asgari bekleme — bayrak sürekli True
+                # kalsa bile saniyede binlerce nesil kurulamasın.
+                await asyncio.sleep(self.WS_GENERATION_MIN_INTERVAL_SEC)
         except asyncio.CancelledError:
             raise
         finally:
@@ -736,6 +852,13 @@ class MarketData:
         if not candle.get("x", False):
             return
         history = self.klines[tf][symbol]
+        # B-02 savunması: bozuk/eksik bir geçmiş sözlüğü (ör. `timestamps`
+        # yazılmadan `closes` doldurulmuş) seriyi kalıcı olarak desenkronize
+        # ederdi. Uzunluklar tutmuyorsa seriyi sıfırla — WS yeniden kuracak.
+        _ts, _closes = history.get("timestamps"), history.get("closes")
+        if _ts is None or _closes is None or len(_ts) != len(_closes):
+            history.clear()
+            history.update(_empty_history())
         timestamps = history.setdefault("timestamps", [])
         values = (opened, high, low, close, volume)
         keys = ("opens", "highs", "lows", "closes", "volumes")
@@ -781,13 +904,30 @@ class MarketData:
                 "source": ticker.get("source")}
 
     def kline_freshness(self, symbol, tf=None):
+        """B-07: tolerans = bar aralığı + küçük gecikme payı.
+
+        Eskiden `interval*2 + 30` idi: 5m serisi son mum kapandıktan sonra
+        10,5 dakika "fresh" kalıyordu. WS ile beslenen serilerde pay yalnız
+        15 sn'dir (bir mumun tamamen kaybolması bir sonraki turda yakalanır);
+        REST ile tazelenen serilerde ise tazeleme kadansını kapsayacak daha
+        geniş bir pay kullanılır (ör. 30m → 31 dk kadans).
+        """
         tf = tf or "5m"
         history = self.klines.get(tf, {}).get(symbol.upper(), {})
         closed_at_ms = float(history.get("last_closed_at_ms", 0) or 0)
         age = time.time() - closed_at_ms / 1000 if closed_at_ms else float("inf")
-        maximum = _interval_ms(tf) / 1000 * 2 + 30
+        source = str(history.get("source") or "")
+        try:
+            interval_sec = _interval_ms(tf) / 1000
+        except ValueError as exc:
+            # Bilinmeyen aralık sessizce "fresh" sayılmaz (B-15 ile tutarlı).
+            return {"fresh": False, "age_sec": age, "max_age_sec": None,
+                    "source": source, "error": str(exc)}
+        ws_fed = source.startswith("binance_tr_public_ws")
+        lag = self.KLINE_FRESHNESS_LAG_SEC if ws_fed else self.KLINE_REST_FRESHNESS_LAG_SEC
+        maximum = interval_sec + lag
         return {"fresh": bool(history.get("closes")) and age <= maximum,
-                "age_sec": age, "max_age_sec": maximum, "source": history.get("source")}
+                "age_sec": age, "max_age_sec": maximum, "source": source}
 
     def orderbook_freshness(self, symbol):
         flow = self.orderflow.get(symbol.upper(), {})
@@ -881,9 +1021,13 @@ class MarketData:
     def get_orderflow(self, symbol):
         return dict(self.orderflow.get(symbol.upper(), {}))
 
-    # Aggressive-flow accumulation window in seconds; the rolling counters are
-    # reset when the window rolls over, never mid-window.
+    # Aggressive-flow accumulation window in seconds. B-10: pencere artık
+    # GERÇEK kayan penceredir (1 sn'lik kovalar) — "tumbling reset" değil.
     TRADE_FLOW_WINDOW_SEC = 60.0
+    # Düz sayaç anahtarları okuma uyumluluğu için korunur; `macd_monitor`
+    # `_symbol_cvd` bu sözlüğü doğrudan okur.
+    _FLOW_COUNTER_KEYS = ("buy_qty", "sell_qty", "buy_count", "sell_count",
+                          "buy_notional", "sell_notional", "whale_buys", "whale_sells")
 
     @staticmethod
     def _trade_side(is_buyer_maker: bool) -> str:
@@ -909,25 +1053,38 @@ class MarketData:
         side = self._trade_side(bool(trade.get("m", False)))
         bucket = self.trade_flow[symbol]
         now = time.time()
-        if now - float(bucket.get("window_start") or 0) >= self.TRADE_FLOW_WINDOW_SEC:
-            bucket.update({
-                "buy_qty": 0.0, "sell_qty": 0.0, "buy_count": 0, "sell_count": 0,
-                "buy_notional": 0.0, "sell_notional": 0.0,
-                "whale_buys": 0, "whale_sells": 0, "window_start": now,
-            })
+        # B-10: her işlem kendi 1 sn'lik kovasına yazılır. Eskiden sayaçlar
+        # 60 sn dolduğunda İLK gelen işlemde sıfırlanıyordu; pencere sınırına
+        # hizalı olmadığı için sıfırlama anında hâlâ geçerli olan 60 sn'lik
+        # veri tek tick'te siliniyordu (ölçüldü: CVD %99,8 çöküyordu).
+        sec = int(now)
+        buckets = self._flow_buckets(bucket)
+        if not buckets or buckets[-1]["sec"] != sec:
+            buckets.append({"sec": sec, **{key: 0 for key in self._FLOW_COUNTER_KEYS}})
+        current = buckets[-1]
+        whale = notional >= self.WHALE_NOTIONAL_TRY
         if side == "buy":
-            bucket["buy_qty"] += qty
-            bucket["buy_count"] += 1
-            bucket["buy_notional"] += notional
-            if notional >= self.WHALE_NOTIONAL_TRY:
-                bucket["whale_buys"] += 1
+            bucket["buy_qty"] = float(bucket.get("buy_qty") or 0) + qty
+            bucket["buy_count"] = int(bucket.get("buy_count") or 0) + 1
+            bucket["buy_notional"] = float(bucket.get("buy_notional") or 0) + notional
+            current["buy_qty"] += qty
+            current["buy_count"] += 1
+            current["buy_notional"] += notional
+            if whale:
+                bucket["whale_buys"] = int(bucket.get("whale_buys") or 0) + 1
+                current["whale_buys"] += 1
         else:
-            bucket["sell_qty"] += qty
-            bucket["sell_count"] += 1
-            bucket["sell_notional"] += notional
-            if notional >= self.WHALE_NOTIONAL_TRY:
-                bucket["whale_sells"] += 1
+            bucket["sell_qty"] = float(bucket.get("sell_qty") or 0) + qty
+            bucket["sell_count"] = int(bucket.get("sell_count") or 0) + 1
+            bucket["sell_notional"] = float(bucket.get("sell_notional") or 0) + notional
+            current["sell_qty"] += qty
+            current["sell_count"] += 1
+            current["sell_notional"] += notional
+            if whale:
+                bucket["whale_sells"] = int(bucket.get("whale_sells") or 0) + 1
+                current["whale_sells"] += 1
         bucket["updated_at"] = now
+        self._evict_stale_buckets(bucket, now)
         # Bounded FIFO trade tape: whale activity classification needs the
         # surrounding trades to measure the post-fill price impact. 2000
         # aggTrade events is enough for a multi-minute context on active pairs.
@@ -940,18 +1097,29 @@ class MarketData:
     # same threshold still catches genuinely large market orders.
     WHALE_NOTIONAL_TRY = 25_000.0
 
+    def _flow_buckets(self, bucket: dict) -> deque:
+        """Sembolün 1 sn'lik kayan-pencere kovaları (tembel kurulur)."""
+        buckets = bucket.get("_buckets")
+        if buckets is None:
+            buckets = deque(maxlen=int(self.TRADE_FLOW_WINDOW_SEC) + 2)
+            bucket["_buckets"] = buckets
+        return buckets
+
+    def _evict_stale_buckets(self, bucket: dict, now: float) -> None:
+        """Pencere dışına çıkan kovaları düş ve düz sayaçlardan eksilt (B-10)."""
+        buckets = self._flow_buckets(bucket)
+        cutoff = int(now) - int(self.TRADE_FLOW_WINDOW_SEC) + 1
+        while buckets and buckets[0]["sec"] < cutoff:
+            old = buckets.popleft()
+            for key in self._FLOW_COUNTER_KEYS:
+                bucket[key] = float(bucket.get(key) or 0) - float(old.get(key) or 0)
+        if buckets:
+            bucket["window_start"] = buckets[0]["sec"]
+
     def _roll_trade_window(self, symbol: str):
+        """Pencereyi ilerlet — artık reset değil, yalnız eskimiş kovaları düşür."""
         bucket = self.trade_flow[symbol]
-        now = time.time()
-        if now - float(bucket.get("window_start") or 0) >= self.TRADE_FLOW_WINDOW_SEC:
-            tape = bucket.get("_tape")
-            bucket.update({
-                "buy_qty": 0.0, "sell_qty": 0.0, "buy_count": 0, "sell_count": 0,
-                "buy_notional": 0.0, "sell_notional": 0.0,
-                "whale_buys": 0, "whale_sells": 0, "window_start": now,
-            })
-            if tape:
-                bucket["_tape"] = tape
+        self._evict_stale_buckets(bucket, time.time())
 
     def get_microstructure(self, symbol: str, price: float | None = None,
                            window_sec: float = 60.0) -> dict:
@@ -966,6 +1134,12 @@ class MarketData:
         trades = self.trade_flow[symbol]
         self._roll_trade_window(symbol)
         now = time.time()
+        # B-10: pencerenin yaşı ve tape ufku AÇIKÇA raporlanır. Eskiden 60 sn'lik
+        # sayaçlar ile 2000 işlemlik tape aynı yanıtta karşılaştırılıyor,
+        # farklı ufuklar (ör. whale_buys=0 iken whale_activity.whale_count=5)
+        # sessizce çelişiyordu.
+        window_elapsed_sec = (now - float(trades["window_start"])) if trades.get("window_start") else None
+        tape_trades = len(trades.get("_tape") or [])
         bid, ask = flow.get("bid_price"), flow.get("ask_price")
         bid_qty = float(flow.get("bid_qty") or 0)
         ask_qty = float(flow.get("ask_qty") or 0)
@@ -1019,9 +1193,13 @@ class MarketData:
                 "cvd_try": round(buy_notional - sell_notional, 2),
                 "trade_imbalance": round(trade_imbalance, 4) if trade_imbalance is not None else None,
                 "trade_rate_per_min": buy_count + sell_count,
+                "window_elapsed_sec": round(window_elapsed_sec, 3) if window_elapsed_sec is not None else None,
                 "whale_buys": whale_buys, "whale_sells": whale_sells,
                 "whale_notional_threshold_try": self.WHALE_NOTIONAL_TRY,
                 "whale_activity": whale_activity,
+                "whale_activity_source": "tape",
+                "tape_trades": tape_trades,
+                "tape_horizon": "2000_agg_trades",
             },
             "freshness": {
                 "orderbook_age_sec": round(age_sec, 3) if age_sec is not None else None,
@@ -1054,7 +1232,11 @@ class MarketData:
         history = self.klines.get(tf, {}).get(symbol, {})
         volumes = history.get("volumes", [])
         current = volumes[-1] if volumes else 0.0
-        average = float(np.mean(volumes[-21:-1])) if len(volumes) >= 21 else 0.0
+        # B-18: pencere tanımı TEK yerde (get_avg_volume) kalsın. Burada
+        # kopyalanınca biri değiştiğinde diğeri sessizce ayrışıyordu; ayrıca
+        # önbellek sayesinde tarama döngüsünde sembol başına numpy mean
+        # tekrar tekrar hesaplanmıyor.
+        average = self.get_avg_volume(symbol, tf)
         ratio = current / average if average > 0 else 0.0
         flow = self.get_orderflow(symbol)
         price = float(ticker.get("last_price", 0) or 0)

@@ -407,6 +407,21 @@ async def ma_cascade_shadow_status(limit: int = 200, symbol: str = ""):
     }
 
 
+@router.get("/api/research/universe-at")
+async def research_universe_at(ts: float = 0):
+    """S7/B-20: point-in-time evren anlık görüntüsü (hayatta kalma yanlılığı).
+
+    ``ts`` verilmezse şimdiki zaman kullanılır. Salt okunurdur; yalnızca
+    kaydedilmiş evren geçmişini döndürür, hiçbir şey yazmaz. Geri-test /
+    replay araçları "o anda hangi semboller aktifti" sorusunu buradan
+    yanıtlayabilir.
+    """
+    from app import universe_registry
+    target = float(ts) if ts else time.time()
+    result = await universe_registry.universe_at(target)
+    return {**result, "requested_ts": target, "paper_only": True}
+
+
 @router.get("/api/decisions")
 async def get_decisions(limit: int = 500, offset: int = 0, symbol: str = "", strategy: str = ""):
     return {"decisions": await database.get_decision_logs(limit, symbol or None, strategy or None, offset), "limit": limit, "offset": offset}

@@ -203,15 +203,25 @@ async def init_db():
         # Reconcile migrated cash with trades and open positions.
         # Portföy reseti sonrası yeniden init, reset ÖNCESİ PnL'i cüzdana
         # geri yüklememeli — reset cutoff'u burada da uygulanır.
+        # V-13: `virtual_wallet` TRY satırı ana defter + auto_paper tarafından
+        # PAYLAŞILIR; açılış mutabakatı da iki bacağı katmalı (reconcile_portfolio
+        # ile aynı formül) — aksi halde açık auto-paper pozisyonu kadar FAZLA yazar.
         conn.execute("""UPDATE virtual_wallet SET amount=
             (SELECT COALESCE(
                 (SELECT amount FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0),
-                %s + COALESCE((SELECT SUM(pnl) FROM trades WHERE (%s = 0) OR (exit_time > %s)), 0)
+                %s
+                + COALESCE((SELECT SUM(pnl) FROM trades WHERE (%s = 0) OR (exit_time > %s)), 0)
+                + COALESCE((SELECT SUM(pnl) FROM auto_paper_trades WHERE status='closed' AND ((%s = 0) OR (exit_time > %s))), 0)
                 - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
-                - COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0) * %s
+                - COALESCE((SELECT SUM(order_value_try) FROM auto_paper_trades WHERE status='open'), 0)
+                - (COALESCE((SELECT SUM(entry_price * quantity) FROM positions), 0)
+                   + COALESCE((SELECT SUM(order_value_try) FROM auto_paper_trades WHERE status='open'), 0)) * %s
             ) AS reconciled)
         WHERE asset='TRY' AND NOT EXISTS (SELECT 1 FROM virtual_wallet WHERE asset='TRY' AND amount IS NOT NULL AND amount > 0)""",
-            (config.INITIAL_BALANCE_TRY, _get_reset_cutoff_sync(conn), _get_reset_cutoff_sync(conn), config.COMMISSION_PCT))
+            (config.INITIAL_BALANCE_TRY,
+             _get_reset_cutoff_sync(conn), _get_reset_cutoff_sync(conn),
+             _get_reset_cutoff_sync(conn), _get_reset_cutoff_sync(conn),
+             config.COMMISSION_PCT))
         conn.conn.commit()
     await _run_db(pg_op)
     # Legacy pozisyonların eksik trade_id'leri açılışta BİR KEZ doldurulur;
@@ -351,6 +361,30 @@ def _chronological_overallocation_candidates(conn):
                 candidates.append({"symbol": row[0], "entry_time": row[1], "entry_price": row[2], "quantity": row[3], "cost": float(row[2] or 0) * float(row[3] or 0), "reason": "entry_cash_was_insufficient"})
     return candidates
 
+def _portfolio_reconcile_figures(conn, cutoff: float):
+    """Mutabakat rakamlarının TEK kaynağı (V-01/V-13).
+
+    `virtual_wallet` TRY satırı İKİ defter tarafından paylaşılır:
+      * ana defter -> `trades` (kapanmış) + `positions` (açık)
+      * otonom     -> `auto_paper_trades` (kapanmış PnL + açık `order_value_try`)
+    Preview ve apply AYNI SQL'i kullanmak zorundadır; aksi halde iki adımlı onay
+    akışında operatör yanlış bakiyeyi onaylar (V-01).
+
+    Döner: (realized_pnl, main_open_cost, auto_open_cost) — hepsi TRY.
+    """
+    realized = float(conn.execute(
+        "SELECT COALESCE(SUM(pnl),0) FROM trades WHERE (?=0 OR exit_time>?)",
+        (cutoff, cutoff)).fetchone()[0] or 0)
+    realized += float(conn.execute(
+        "SELECT COALESCE(SUM(pnl),0) FROM auto_paper_trades WHERE status='closed' AND (?=0 OR exit_time>?)",
+        (cutoff, cutoff)).fetchone()[0] or 0)
+    main_open_cost = float(conn.execute(
+        "SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
+    auto_open_cost = float(conn.execute(
+        "SELECT COALESCE(SUM(order_value_try),0) FROM auto_paper_trades WHERE status='open'").fetchone()[0] or 0)
+    return realized, main_open_cost, auto_open_cost
+
+
 async def reconcile_portfolio():
     """Rebuild TRY cash and remove only over-allocated newest open positions.
 
@@ -365,16 +399,7 @@ async def reconcile_portfolio():
         # Reset cutoff'u uygula: reset öncesi kapanmış işlemler cüzdana
         # geri yüklenemez (reset_trading_data belgelendiği gibi).
         cutoff = _get_reset_cutoff_sync(conn)
-        realized = float(conn.execute(
-            "SELECT COALESCE(SUM(pnl),0) FROM trades WHERE (?=0 OR exit_time>?)",
-            (cutoff, cutoff)).fetchone()[0] or 0)
-        auto_realized = float(conn.execute(
-            "SELECT COALESCE(SUM(pnl),0) FROM auto_paper_trades WHERE status='closed' AND (?=0 OR exit_time>?)",
-            (cutoff, cutoff)).fetchone()[0] or 0)
-        realized += auto_realized
-        main_open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
-        auto_open_cost = float(conn.execute(
-            "SELECT COALESCE(SUM(order_value_try),0) FROM auto_paper_trades WHERE status='open'").fetchone()[0] or 0)
+        realized, main_open_cost, auto_open_cost = _portfolio_reconcile_figures(conn, cutoff)
         open_cost = main_open_cost + auto_open_cost
         entry_commission = open_cost * config.COMMISSION_PCT
         after = config.INITIAL_BALANCE_TRY + realized - open_cost - entry_commission
@@ -418,13 +443,18 @@ async def reconcile_portfolio():
     return await _run_db(op)
 
 async def preview_portfolio_reconcile():
+    """Read-only preview of `reconcile_portfolio` — AYNI rakamları göstermek zorunda.
+
+    V-01 (KRİTİK): preview daha önce `auto_paper_trades` alt sistemini tamamen yok
+    sayıyordu (ne realize PnL ne açık pozisyon maliyeti). İki adımlı onay akışında
+    operatör yanlış "mutabakat sonrası bakiye"yi onaylıyordu (tek açık 2.000 TRY'lik
+    auto-paper pozisyonunda ölçülen sapma: +2.003,00 TRY). Artık ikisi de
+    `_portfolio_reconcile_figures` kullanır.
+    """
     def op(conn):
         cutoff = _get_reset_cutoff_sync(conn)
-        realized = float(conn.execute(
-            "SELECT COALESCE(SUM(pnl),0) FROM trades WHERE (?=0 OR exit_time>?)",
-            (cutoff, cutoff)).fetchone()[0] or 0)
-        open_cost = float(conn.execute("SELECT COALESCE(SUM(entry_price*quantity),0) FROM positions").fetchone()[0] or 0)
-        after = config.INITIAL_BALANCE_TRY + realized - open_cost - open_cost * config.COMMISSION_PCT
+        realized, main_open_cost, auto_open_cost = _portfolio_reconcile_figures(conn, cutoff)
+        open_cost = main_open_cost + auto_open_cost
         candidates = _chronological_overallocation_candidates(conn)
         projected_open_cost = open_cost - sum(float(item["cost"] or 0) for item in candidates)
         projected_try = config.INITIAL_BALANCE_TRY + realized - projected_open_cost - projected_open_cost * config.COMMISSION_PCT
