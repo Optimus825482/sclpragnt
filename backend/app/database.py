@@ -295,6 +295,16 @@ async def init_db():
         # TAH-01: tahmin satırının ölçüm çapası (fiyatın gözlendiği an). Şema
         # dosyası tek başına yeterli değil — koşan dağıtımlarda da idempotent eklenir.
         conn.execute("ALTER TABLE llm_forecasts ADD COLUMN IF NOT EXISTS decided_at DOUBLE PRECISION")
+        # M4 (R2-03): bildirim skorunun normalize edildiği cap satır başına saklanır —
+        # mutable `MONITORING_SCORE_NORM_CAP` değişse bile eski satır doğru ölçeklenir.
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS norm_cap DOUBLE PRECISION")
+        # M4 (R3-05/R2-05/R4-07): bildirim <-> velocity adayını ±60 sn + hedef eşleşmesi
+        # yerine KALICI `candidate_id` ile bağlamak için kolon (hedef değişse de ölçülebilir).
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS candidate_id TEXT")
+        # M4 (R3-09): koruma kapanışı sonrası aynı bildirimin yeniden açılışı için
+        # kalıcı "reopen" anahtarı. `notification_id` (bigint) string id taşıyamaz;
+        # bu TEXT kolon reopen churn korumasını taşır.
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS notification_key TEXT")
         # V-04: MACD kanıt şeması artık OKUMA yolunda değil, açılışta bir kez
         # hazırlanır (istatistik uçları DDL/INSERT/COMMIT yapmaz).
         _ensure_macd_evidence_schema(conn)
@@ -310,6 +320,8 @@ async def init_db():
             "ON positions(trade_id) WHERE trade_id IS NOT NULL",
             "CREATE UNIQUE INDEX IF NOT EXISTS auto_paper_trades_one_open_per_symbol "
             "ON auto_paper_trades(symbol) WHERE status='open'",
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_auto_paper_notification_key "
+            "ON auto_paper_trades(notification_key) WHERE notification_key IS NOT NULL",
         ):
             try:
                 conn.execute(constraint_sql)
@@ -3218,9 +3230,24 @@ async def save_monitoring_notifications(entries):
     entries: sözlük listesi — symbol, message, title, score, target_pct,
     price, expected_price, horizon_minutes, mode, detected_at, sent_via_push,
     ml_target_pct, ml_hit_probability (opsiyonel; 2026-09-04 eklendi).
+    norm_cap (opsiyonel; R2-03) satırın normalize edildiği cap — varsa float,
+    yoksa NULL. candidate_id (opsiyonel; R3-05) kaynak aday kimliği — varsa
+    saklanır (ölçümde birebir eşleşme için).
     Girdilerde 'id' yoksa kaydedilen satırın id'si entry'e eklenir (ertelenen
     push'un sonradan etiketlenmesi için; 2026-09-05).
     """
+    def _norm_cap_value(e):
+        raw = e.get("norm_cap")
+        if raw not in (None, ""):
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _candidate_id_value(e):
+        cid = e.get("candidate_id")
+        return str(cid) if cid not in (None, "") else None
     if not entries:
         return 0
     now = time.time()
@@ -3230,8 +3257,8 @@ async def save_monitoring_notifications(entries):
             row = conn.execute(
                 "INSERT INTO monitoring_notifications"
                 "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at,"
-                "ml_target_pct,ml_hit_probability)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                "ml_target_pct,ml_hit_probability,candidate_id,norm_cap)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                 (
                     str(e.get("symbol") or "?"),
                     str(e.get("message") or ""),
@@ -3239,9 +3266,12 @@ async def save_monitoring_notifications(entries):
                     e.get("score"), e.get("target_pct"), e.get("price"), e.get("expected_price"),
                     e.get("horizon_minutes"), e.get("mode"),
                     float(e.get("detected_at") or now),
-                    bool(e.get("sent_via_push", True)),
+                    # M4 (R2-19): varsayılan False — alanı atlayan çağıran yanlış
+                    # "gönderildi" etiketi yazmamalı; fiilî teslim mark_... ile yazılır.
+                    bool(e.get("sent_via_push", False)),
                     now,
                     e.get("ml_target_pct"), e.get("ml_hit_probability"),
+                    _candidate_id_value(e), _norm_cap_value(e),
                 ),
             ).fetchone()
             if row is not None and e.get("id") is None:
@@ -3271,32 +3301,43 @@ async def mark_monitoring_push_sent(notification_id):
 
 
 
-async def get_monitoring_velocity_matches(limit: int = 200, day: str | None = None):
-    """Bildirimleri ayni andaki velocity adayiyla eslestir (salt okunur).
+async def get_monitoring_velocity_matches(limit: int | None = 1000, day: str | None = None):
+    """Bildirimleri ayni andaki velocity adayiyla karsilastir (salt okunur).
 
-    monitoring_notifications ve velocity_candidates ayni tarama turunda
+monitoring_notifications VE velocity_candidates ayni tarama turunda
     uretilir: bildirimin tespit ani (detected_at) ile velocity adayinin
-    kayit ani (created_at) <= 60 saniye fark ve hedef % eslesmesi aranir.
-    Velocity adayi degerlendirildiyse gercek M1 kapanis olcmue (mfe_pct,
-    touched_target) kullanilir; degilse bekliyor kabul edilir.
+    kayit ani (created_at) <= 60 saniye fark VE hedef % eslesmesi aranir.
+    M4 (R3-05/R2-05/R4-07): bildirim `candidate_id` ile yazilmisa once KALICI
+    `candidate_id` birebir eslesmesi denenir; bulunamazsa eski ~60 sn pencere
+    + hedef eslesmesine (legacy) dusulur. Boylece guncelleme `target_pct`'i
+    degistirse bile kaynak aday yine olcumu mumkun kalir. Sonuc bicimi aynidir.
+    Velocity adayi degerlendirildiyse gercek M1 kapanis olcumu (mfe_pct,
+    touched_target) kullanilir; degilse bekliyor sayilir.
 
-    day: 'YYYY-MM-DD' formatinda gun filtresi (opsiyonel).
+    limit: ust sinir (varsayilan 1000). M4 (R4-04): ``limit=None`` = cap YOK,
+    tumu getirilir (overall hesaplari icin). day: 'YYYY-MM-DD' gun filtresi.
     """
     from datetime import datetime, timezone, timedelta
     def op(conn):
         base_sql = (
             "SELECT id, symbol, mode, score, target_pct, price, expected_price,"
-            " horizon_minutes, detected_at, sent_via_push, message, title"
+            " horizon_minutes, detected_at, sent_via_push, message, title,"
+            " candidate_id, norm_cap"
             " FROM monitoring_notifications"
         )
         params: list = []
         if day:
-            day_start = datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=timezone(timedelta(hours=3)))
+            try:
+                day_start = datetime.strptime(str(day), '%Y-%m-%d').replace(tzinfo=timezone(timedelta(hours=3)))
+            except ValueError:
+                raise ValueError(f"Geçersiz tarih: {day!r} (YYYY-MM-DD bekleniyor)") from None
             day_end = day_start + timedelta(days=1)
             base_sql += " WHERE detected_at >= %s AND detected_at < %s"
             params.extend([day_start.timestamp(), day_end.timestamp()])
-        base_sql += " ORDER BY detected_at DESC LIMIT %s"
-        params.append(max(1, min(int(limit), 1000)))
+        base_sql += " ORDER BY detected_at DESC"
+        if limit is not None:
+            base_sql += " LIMIT %s"
+            params.append(max(1, min(int(limit), 1000)))
         notif_rows = conn.execute(base_sql, params).fetchall()
         # V-11: eskiden her bildirim için ayrı bir `velocity_candidates` sorgusu
         # atılıyordu (1 + N, N<=1000). Tek sorgu ile aynı semantik: bildirim
@@ -4187,6 +4228,16 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
             ).fetchone()
             if prior and int(prior[0] or 0) > 0:
                 return (None, "already_traded")
+        # R3-09: kalıcı yeniden-açma anahtarı da churn korumasına girer (string id
+        # bigint `notification_id`'ye yazılamaz; `notification_key TEXT` bunu taşır).
+        notification_key = trade.get("notification_key")
+        if notification_key:
+            prior_key = conn.execute(
+                "SELECT COUNT(*) FROM auto_paper_trades WHERE notification_key=?",
+                (notification_key,)
+            ).fetchone()
+            if prior_key and int(prior_key[0] or 0) > 0:
+                return (None, "already_traded")
         # Bakiye kontrolü + düşüm
         cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
@@ -4201,15 +4252,15 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
             ("TRY", next_cash)
         )
         row = conn.execute(
-            """INSERT INTO auto_paper_trades
-               (symbol, side, status, notification_id, entry_price, quantity, order_value_try,
+"""INSERT INTO auto_paper_trades
+               (symbol, side, status, notification_id, notification_key, entry_price, quantity, order_value_try,
                 stop_loss, take_profit, peak_price, entry_time,
                 notification_score, notification_target_pct, notification_expected_price,
                 created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
             (symbol, trade.get("side", "LONG"), "open",
-             notification_id, trade["entry_price"], trade["quantity"],
-             order_value, trade.get("stop_loss"), trade.get("take_profit"),
+             notification_id, notification_key, trade["entry_price"], trade["quantity"], order_value,
+             trade.get("stop_loss"), trade.get("take_profit"),
              trade.get("peak_price", trade["entry_price"]), trade["entry_time"],
              trade.get("notification_score"), trade.get("notification_target_pct"),
              trade.get("notification_expected_price"), trade["created_at"], trade["updated_at"])
@@ -4243,6 +4294,17 @@ async def get_open_auto_paper_trade(symbol: str) -> dict | None:
         row = conn.execute(
             "SELECT * FROM auto_paper_trades WHERE symbol=? AND status='open' ORDER BY entry_time DESC LIMIT 1",
             (str(symbol).upper(),)
+        ).fetchone()
+        return dict(row) if row else None
+    return await _run_db(op)
+
+
+async def get_recent_auto_paper_trade_by_notification_key(notification_key: str) -> dict | None:
+    """R3-09: kalıcı yeniden-açma anahtarına göre son auto paper trade'i döndür."""
+    def op(conn):
+        row = conn.execute(
+            "SELECT * FROM auto_paper_trades WHERE notification_key=? ORDER BY entry_time DESC LIMIT 1",
+            (str(notification_key),)
         ).fetchone()
         return dict(row) if row else None
     return await _run_db(op)

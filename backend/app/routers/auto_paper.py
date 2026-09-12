@@ -26,7 +26,9 @@ from fastapi import APIRouter, HTTPException, Request
 from app.config import config
 from app import database, security
 from app.api_common import log_user_action, _background_tasks, _start_background
-from app.state import market
+# R3-06: likidite + korelasyon küme kapıları (velocity-auto ile aynı kaynak)
+# için analyzer örneği kullanılır (state'ten; market ile aynı yaşam döngüsü).
+from app.state import market, analyzer
 from app.ws_runtime import ws_manager
 
 
@@ -42,6 +44,54 @@ def _session_username(request: Request) -> str | None:
 
 logger = logging.getLogger("scalper.auto_paper")
 router = APIRouter()
+
+
+def _blocked(symbol: str, reason: str, **extra) -> dict:
+    """R3-06/R3-07: giriş engeli için görünür durum — sessiz düşme yok.
+
+    `try_open_from_notification` artık engellerde None değil, neden tanımlı bir
+    sözlük döndürür (operatör/rapor neden 'likidite'/'küme'/'max_open'/'sessiz'
+    olduğunu görür). `_maybe_reopen_after_protect_close` bunu "açıldı" sanmasın
+    diye yalnızca `status in ("opened","tp_updated","no_change")`ı doğrular.
+    """
+    block = {"status": "blocked", "reason": reason, "symbol": symbol}
+    block.update(extra)
+    return block
+
+
+async def _liquidity_cluster_gate(symbol: str, order_value: float, balance: float) -> dict | None:
+    """R3-06 (P1): bildirim→auto_paper yolunda likidite + korelasyon küme kapısı.
+
+    velocity-auto yolu (`analyzer.open_position`) bu kapıları zaten uygular;
+    auto_paper kendi DB yolunu (`database.open_auto_paper_trade`) kullandığı
+    için burada AYNI KAPI vurgulanır. Engelin NEDENİ dönüş durumunda
+    taşınır (sessiz düşme yok). Hata durumunda açık/geçirgen olunur (paper-only).
+    """
+    if not analyzer:
+        return None
+    # (a) Likidite kapısı.
+    liquid = True
+    details = {}
+    try:
+        liquid, details = await analyzer.entry_liquidity_preflight(
+            symbol, "AUTO_PAPER", order_value)
+    except Exception as exc:
+        logger.warning("auto_paper %s likidite ön-kapı değerlendirmesi atlandı: %s", symbol, exc)
+    if not liquid:
+        block = _blocked(symbol, "liquidity")
+        block["liquidity"] = details
+        return block
+    # (b) Korelasyon küme aşımı.
+    try:
+        cluster = await analyzer.cluster_entry_blocked(symbol, order_value, balance)
+    except Exception as exc:
+        logger.debug("auto_paper %s küme kapısı atlandı: %s", symbol, exc)
+        cluster = None
+    if cluster:
+        block = _blocked(symbol, "cluster")
+        block["cluster"] = cluster
+        return block
+    return None
 
 # ---------------------------------------------------------------------------
 # Background loop state
@@ -64,13 +114,40 @@ _AUTO_PAPER_STATE = {
 # ---------------------------------------------------------------------------
 async def try_open_from_notification(notification: dict) -> dict | None:
     """Bir monitoring bildirimi geldiğinde otonom paper pozisyonu aç.
-    
-    Kurallar:
+
+    Giriş kuralları:
       - Sembolde açık pozisyon yoksa serbest TL bakiyesinin %balance_pct'i ile pozisyon aç.
       - SL: settings'teki stop_loss_pct (varsayılan %3)
       - TP: bildirimdeki hedef (notification_target_pct üzerinden)
       - Sembolde zaten açık auto_paper pozisyonu varsa TP güncelle (hedef takibi)
-      - Aynı bildirim daha önce işlendiyse (kapanış sonrası yeniden açma) açma
+      - Aynı bildirim daha önce işlendiyse (kapanış sonrası yeniden açma) engelle.
+      - R3-06 (P1): girişten önce likidite + korelasyon küme kapısı; engelin NEDENİ
+        dönüş durumunda taşınır (sessiz düşme yok). R3-07 (P0): sessiz saatlerde
+        otonom işlem engellenir.
+
+IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
+
+      * Bildirim -> auto_paper (BU yol):
+          - Esik olcegi: PANEL (0-100). `score` panel; `min_score` varsayilani
+            `AUTO_PAPER_MIN_SCORE_DEFAULT` (50). Monitoring yalnizca panel
+            `monitoring.min_score`'u (varsayilan 70) gecen PASSING adaylari bildirir.
+          - Havuz: yalnizca PASSING adaylar (watchlist dahil DEGIL).
+          - Desen kapisi: `m5_pattern_ok` koşulu YOK.
+          - Likidite/kume: R3-06 ile bu yola DAHIL EDILDI (asagida).
+
+      * velocity-auto (velocity.py):
+          - Esik olcegi: HAM `velocity_score` >= 10 (0-2000; panel yaklasik 0.5).
+          - Havuz: WATCHLIST (`passes=False`) adaylarini DAHIL eder.
+          - Desen kapisi: `m5_pattern_ok` ZORUNLU.
+          - Likidite: R3-06 oncesi yalnizca bu yolda vardi.
+
+      Bu yuzden ayni tarama iki farkli islem seti uretebilir. Bu fonksiyon
+      kapi/olcek uyumsuzlugunu DOKUMANTE eder ve esikleri BILINCLI olarak
+      DEGISTIRMEZ (her yol kendi sozlesmesiyle calismaya devam eder — R3-08).
+      R3-08 kapsaminda yalnizca `passes` bayragi acikca FALSE ise giris engellenir.
+
+      Kurallar:
+      - Likidite (derinlik + 24h) ve korelasyon kume asimi kapilari (R3-06).
     """
     try:
         settings = await get_auto_paper_settings()
@@ -88,6 +165,31 @@ async def try_open_from_notification(notification: dict) -> dict | None:
                         symbol, score, min_score)
             return None
 
+        # R3-08 (P1): aday PANEL EŞİĞİNİ geçmiş olmalı (passing-only). Monitoring
+        # yalnızca passing adayları bildirir; burada `passes` bayrağı açıkça False
+        # erse giriş engellenir. Guard (koruma) metriği kanıtlarsa engellenmez;
+        # anahtar yoksa da geçirgen kalınır (geriye dönük uyum).
+        passes = notification.get("passes")
+        if passes is not None and not bool(passes):
+            logger.warning("auto_paper %s: aday panel şartını geçmedi (passes=False) — "
+                           "açılmadı (R3-08)", symbol)
+            return _blocked(symbol, "not_passing")
+
+        # R3-07 (P0): SESSİZ SAATLERDE otonom işlem DURDURULUR. Web push'un sessiz
+        # saatlerde ertelenmesi monitoring._notify içinde zaten korunur (onun
+        # ALTERNATİFİ değil, POSITION açılışında ek kapı). Aday bir sonraki taramada
+        # (sessiz saat bitince) yeniden değerlendirilir — doğal retry. Ertelemeyi
+        # buraya uygulamıyoruz: sessiz aralık boyunca pozisyon açmak istemiyoruz.
+        try:
+            from app.routers import monitoring as _monitoring_mod
+            if await _monitoring_mod.quiet_hours_active():
+                logger.warning("auto_paper %s: sessiz saatler etkin — otonom işlem "
+                            "açılmadı (R3-07)", symbol)
+                return _blocked(symbol, "quiet_hours")
+        except Exception as quiet_exc:
+            # Sessizlik sorgusu başarısızsa AÇ (fail-open; darwinlik kapısı olmasın).
+            logger.debug("auto_paper %s sessiz saat sorgusu atlandı: %s", symbol, quiet_exc)
+
         # Mevcut fiyat
         ticker = market.get_ticker(symbol)
         current_price = float(ticker.get("last_price") or 0) if ticker else 0
@@ -97,15 +199,43 @@ async def try_open_from_notification(notification: dict) -> dict | None:
             return None
 
         notification_id = notification.get("id")
-        # Aynı bildirim daha önce bir trade'e dönüştüyse: trailing/breakeven ile
-        # kapandıysa ve fiyat hâlâ bildirim fiyatının ÜZERİNDEYSE + ufuk süresi
-        # dolmadıysa + fiyat yükselme eğilimindeyse YENİDEN açmaya izin ver.
-        # (Böylece kâr kilidi/trailing çıkışı sonrası aynı fırsat devam ediyorsa
-        # kaçırılmaz; diğer kapanış nedenleri (take_profit/stop_loss/reset) tekrar
-        # açılışı engeller.)
+        notification_key = notification.get("notification_key")
+        # Aynı bildirim daha önce bir trade'e dönüşüyse: trailing/breakeven ile
+        # kapandıysa ve fiyat hâlâ bildirim fiyatının üzerindeyse + ufuk süresi
+        # dolmadıysa + hedefe ulaşılmadıysa YENİDEN açmaya izin ver. (Böylece kâr
+        # kilidi/trailing çıkışı sonrası aynı fırsat devam ediyorsa kaçırılmaz;
+        # diğer kapanış nedenleri tekrar açılışı engeller.)
         now = time.time()
-        if notification_id is not None:
-            prior_trade = await database.get_recent_auto_paper_trade_by_notification(notification_id)
+        # R3-09 (P0): yeniden-açma (reopen) akışı, churn kontrolünü artık
+        # `notification_key` (TEXT kolon) üzerinden yapar. Eski kod string'i
+        # `notification_id` (bigint) içine yazıyordu → PostgreSQL tip hatası sessiz
+        # yutuluyor ve yeniden açma HİÇ ÇALIŞMIYORDU. Normal (monitoring) bildirimler
+        # integer id taşır ve `notification_id` bigint'i üzerinden geçerli kalır.
+        prior_trade = None
+        if notification_key is not None:
+            # Reopen: kararlı anahtara göre churn koruması — saat başına en fazla bir.
+            try:
+                prior_trade = await database.get_recent_auto_paper_trade_by_notification_key(
+                    str(notification_key))
+            except Exception:
+                prior_trade = None
+            if prior_trade:
+                logger.info("auto_paper %s: bildirim anahtarı %s daha önce işlendi — "
+                            "yeniden açılmadı (R3-09)", symbol, notification_key)
+                return None
+        elif notification_id is not None:
+            # Normal bildirim: id yalnızca tam sayı olabilir (bigint). String id
+            # asla bigint'e yazılmaz/atanmaz → tip hatası riski yok.
+            nid_int = None
+            if isinstance(notification_id, int):
+                nid_int = notification_id
+            elif isinstance(notification_id, str) and notification_id.lstrip("-").isdigit():
+                nid_int = int(notification_id)
+            if nid_int is not None:
+                try:
+                    prior_trade = await database.get_recent_auto_paper_trade_by_notification(nid_int)
+                except Exception:
+                    prior_trade = None
             if prior_trade:
                 # "Trailing/breakeven sonrası yeniden açma" kapalıysa eski davranış:
                 # aynı bildirimle asla tekrar açma.
@@ -135,10 +265,10 @@ async def try_open_from_notification(notification: dict) -> dict | None:
                     logger.info("auto_paper %s: trailing kapanış sonrası ufuk süresi doldu — yeniden açılmadı", symbol)
                     return None
 
-                # Koşul 3: hedefe (take_profit) ulaşılMAMIŞ olmalı. Trailing/breakeven
+                # Koşul 3: hedefe (take_profit) ulaşılmamış olmalı. Trailing/breakeven
                 # zaten TP'ye ulaşmadan kapanış olduğu için bu genellikle otomatik
-                # sağlanır; yine de açık kontrol edilir. (Eski "fiyat yükselme
-                # eğiliminde olmalı" koşulu, trailing çıkışında fiyat zirveden
+                # sağlar; yine de açık kontrol edilir. (Eski "fiyat yükselme
+                # eğilimindedir" koşulu, trailing çıkışında fiyat zirveden
                 # düştüğü için hep false dönüp yeniden açmayı engelliyordu.)
                 prior_tp = float(prior_trade.get("take_profit") or 0)
                 if prior_tp > 0 and current_price >= prior_tp:
@@ -157,31 +287,51 @@ async def try_open_from_notification(notification: dict) -> dict | None:
         if open_trade:
             # Açık pozisyon var → TP güncelle (bildirim hedefini takip et)
             return await _update_existing_trade(open_trade, notification, current_price)
-        # Global maksimum açık pozisyon sınırı (0 = sınırsız). Sınır olmadan
-        # farklı sembollerde üst üste gelen bildirimler cüzdanı hızla tüketir.
+        # Global maksimum açık pozisyon sınırı (0 = sınırsız, varsayılan 3).
+        # R3-06 (c): sembol-başı sınır yukarıda `open_trade` ile korunur; global
+        # sınır ise burada. Engel NEDENÎ ile döndürülür (sessiz düşme yok).
         max_open = int(getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0))
         if max_open > 0:
             open_count = len(await database.list_auto_paper_trades(status="open"))
             if open_count >= max_open:
-                logger.info("auto_paper %s: max açık pozisyon (%d/%d) — açılmadı",
-                            symbol, open_count, max_open)
-                return None
+                logger.warning("auto_paper %s: max açık pozisyon (%d/%d) — açılmadı "
+                               "(R3-06)", symbol, open_count, max_open)
+                return _blocked(symbol, "max_open", open_count=open_count, max_open=max_open)
+
+        # R3-06 (a/b): girişten önce LİKİDİTE + KORELASYON KÜME kapısı. order_value
+        # burada hesaplanıp `_open_new_trade`'e iletilir (tek wallet okuması).
+        balance = await database.get_wallet_balance("TRY")
+        balance_pct = float(settings.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)) / 100.0
+        order_value = balance * balance_pct
+        gate = await _liquidity_cluster_gate(symbol, order_value, balance)
+        if gate is not None:
+            logger.warning("auto_paper %s giriş engellendi: %s (R3-06)", symbol, gate.get("reason"))
+            return gate
+
         # Yeni pozisyon aç (atomik; DB tarafında çift-açılış kontrolü de var)
-        return await _open_new_trade(symbol, notification, current_price, settings)
+        return await _open_new_trade(symbol, notification, current_price, settings,
+                                    order_value=order_value, balance=balance)
     except Exception as exc:
         logger.exception("auto_paper try_open: %s", exc)
         return None
 
 
-async def _open_new_trade(symbol: str, notification: dict, current_price: float, settings: dict) -> dict | None:
-    """Yeni otonom paper pozisyonu aç — atomik DB işlemi (open_auto_paper_trade)."""
+async def _open_new_trade(symbol: str, notification: dict, current_price: float, settings: dict,
+                          order_value: float | None = None, balance: float | None = None) -> dict | None:
+    """Yeni otonom paper pozisyonu aç — atomik DB işlemi (open_auto_paper_trade).
+    
+    R3-06: `order_value`/`balance` önceden hesaplanıp iletilmişse yeniden okunmaz
+    (likidite kapısı ile açılışta aynı değerler kullanılır — tutarlılık).
+    """
     try:
         balance_pct = float(settings.get("balance_pct", config.AUTO_PAPER_BALANCE_PCT_DEFAULT)) / 100.0
         min_order = float(settings.get("min_order_try", config.AUTO_PAPER_MIN_ORDER_TRY))
 
-        # Bakiye kontrolü
-        balance = await database.get_wallet_balance("TRY")
-        order_value = balance * balance_pct
+        # Bakiye kontrolü — R3-06: çağıran (try_open) önceden hesapladıysa onu kullan.
+        if balance is None:
+            balance = await database.get_wallet_balance("TRY")
+        if order_value is None:
+            order_value = balance * balance_pct
         if order_value < min_order:
             order_value = balance
             if order_value < min_order:
@@ -209,13 +359,23 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
         take_profit_price = fill_entry * (1 + target_pct / 100)
         stop_loss_price = fill_entry * (1 - sl_pct)
         now = time.time()
-        notification_id = notification.get("id")
+        # R3-09 (P0): `notification_id` bigint kolonuna yalnızca TAM SAYI yazılır.
+        # Reopen akışının string anahtarı ayrı `notification_key` (TEXT kolon)
+        # olarak taşınır. String `id` → notification_id NULL, key doldurulur.
+        raw_nid = notification.get("id")
+        notification_id_val = None
+        if isinstance(raw_nid, int):
+            notification_id_val = raw_nid
+        elif isinstance(raw_nid, str) and raw_nid.lstrip("-").isdigit():
+            notification_id_val = int(raw_nid)
+        notification_key = notification.get("notification_key")
 
         trade_data = {
             "symbol": symbol,
             "side": "LONG",
             "status": "open",
-            "notification_id": notification_id,
+            "notification_id": notification_id_val,
+            "notification_key": notification_key,
             "entry_price": fill_entry,
             "quantity": quantity,
             "order_value_try": net_order_value,

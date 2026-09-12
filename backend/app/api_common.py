@@ -39,6 +39,21 @@ _single_pass_tasks: set[str] = set()
 MAX_BACKGROUND_RESTARTS = 10
 _failed_loops: dict[str, dict] = {}
 
+# M1/P1 (R4-02): süpervizörlü görevlerin İSİM→canlı görev kaydı. `_start_background`
+# görevi oluşturduğunda ve respawn ettiğinde bu kayıt güncellenir; böylece çağıranlar
+# (örn. monitoring) bayat bir görev referansı yerine HER ZAMAN canlı görevi görür.
+_background_registry: dict[str, "asyncio.Task"] = {}
+
+
+def get_task(name: str):
+    """İsimle kayıtlı CANLI background görevini döndür (yoksa None).
+
+    Süpervizör respawn ettiğinde kayıt yeni göreve yönlendirilir; bu nedenle
+    ``get_task(name)`` üzerinden yapılan liveness kontrolü çöküş-respawn
+    sonrasında da doğrudur (R4-02).
+    """
+    return _background_registry.get(name)
+
 
 def loop_health() -> dict:
     """Diagnostik: kalıcı olarak başarısız olan döngüler + deneme sayaçları (G-11)."""
@@ -199,6 +214,9 @@ def _start_background(coro_factory, name, single_pass=False):
 
     task = asyncio.create_task(coro_factory(), name=name)
     _background_tasks.add(task)
+    # M1/P1 (R4-02): canlı görev kaydı — respawn bu kaydı güncellesin diye
+    # `_start_background` yeniden çağrıldığında da kayıt tazelenir.
+    _background_registry[name] = task
     task.add_done_callback(_restart_if_failed)
     return task
 
