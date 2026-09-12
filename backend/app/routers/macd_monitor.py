@@ -21,6 +21,7 @@ Tasarım:
 import asyncio
 import json
 import logging
+import os
 import time
 
 import numpy as np
@@ -158,7 +159,21 @@ _early_last_gap: dict[tuple[str, str], float] = {}
 # Zedeleme kuralı: kanıt yoksa → tanımlayıcı; promotion = kanıt → replay → paper → aktivasyon.
 _EARLY_FIRE_KEYS = ("dip",)
 _EARLY_FIRE_LABEL: dict[str, str] = {"dip": "macd_dip_turn"}
+# KALIBRASYON KANITI (outputs/monitoring_analiz_2026-09-12/KALIBRASYON_KANITI_JUMP_DIP.md):
+# dip tek basina 0.76-0.86x (baseline ALTİ). dip+approach (fiyat 20-bar zirvesine
+# <= DIP_APPROACH_GAP_ATR ATR kadar yakin) ise 1.47-1.67x lift uretiyor (n~16k).
+# Bu yuzden dip yalnizca MACD histogram dip donusunu + direnciye yakiniği BIRLIKTE
+# dogrular; yoksa negatif-EV alarm uretir.
+DIP_APPROACH_GAP_ATR = float(os.getenv("DIP_APPROACH_GAP_ATR", "1.5"))
 _dirty = False
+
+
+def _dip_gate(turn: bool, gap, gap_atr: float = DIP_APPROACH_GAP_ATR) -> bool:
+    """KALIBRASYON KANITI: dip yalnizca MACD histogram dip donusunu + fiyatin
+    20-bar zirvesine (`gap`) yakinligini BIRLIKTE dogrular. Saf fonksiyon,
+    unit-test edilebilir; `dip+approach` 1.47-1.67x lift, dip tek basina ise
+    0.76-0.86x (baseline alti)."""
+    return bool(turn and gap is not None and 0.0 <= gap <= gap_atr)
 
 
 def _status_value(info) -> str:
@@ -1205,7 +1220,10 @@ def _symbol_trend_and_signals(sym: str, snapshot_symbols: dict) -> tuple[dict, d
     m1_detail = _tf_breakout_detail(sym, "1m")
     m1_pre = bool(m1_detail["break"]) and green5
     dip_detail = _dip_detail(sym, "5m")
-    dip = dip_detail["turn"]
+    # KALIBRASYON KANITI: dip tek basina baseline alti (negatif EV). dip yalnizca
+    # MACD histogram dip donusunu + fiyatin 20-bar zirvesine yakinligini (approach/gap)
+    # BIRLIKTE dogrular. Direnciye yakin degilse dip susturulur.
+    dip = _dip_gate(dip_detail["turn"], gap)
     cvd = _symbol_cvd(sym)
     pre = {"approach": approach, "m1": m1_pre, "dip": dip}
     pre_detail = {
