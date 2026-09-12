@@ -369,24 +369,19 @@ async def _active_symbols(force: bool = False) -> list[str]:
 def _compute_cell(symbol: str, tf: str):
     """Tek (sembol, zaman dilimi) için histogram yönü.
 
-    Kapanmış mum serisine taze canlı fiyat eklenerek oluşan mum da işin içine
-    girer; yetersiz mum (< MACD_MIN_CANDLES) veya veri yoksa None döner.
+    **Kapanmış mum serisi üzerinden** hesaplanır (AB-ölçümü: oluşan barı canlı
+    fiyatla eklemek bar içinde %6-7 oranında `green`/hist işaretini yanlış
+    çevirip karar çırpıntısı + gösterge tanımını bozuyordu; MACD tanımı da
+    kapanmış mum üzerinedir). Canlı fiyat, `breakout`/`price` gibi yerlerde
+    kendi doğal akışında ayrıca kullanılır — bu hücre yalnız histogram yönüdür.
+
+    Yetersiz kapalı mum (< MACD_MIN_CANDLES) veya veri yoksa None döner.
     """
     history = market.get_ut_kline(symbol, tf)
     closes = history.get("closes") or []
-    if not closes:
+    if len(closes) < _MACD_MIN_CANDLES:
         return None
-    now = time.time()
-    ticker = market.get_ticker(symbol)
-    live_price = float((ticker or {}).get("last_price") or 0)
-    tick_ts = float((ticker or {}).get("timestamp") or 0)
-    series = list(closes)
-    # Kapanmamış son mumu canlı fiyatla temsil et (tazelik kapısı MAX_TICKER_AGE)
-    if live_price > 0 and tick_ts and now * 1000 - tick_ts <= config.MAX_TICKER_AGE_SEC * 1000:
-        series.append(live_price)
-    if len(series) < _MACD_MIN_CANDLES:
-        return None
-    macd = _macd(series)
+    macd = _macd(closes)
     if macd is None:
         return None
     hist = float(macd["histogram"])
