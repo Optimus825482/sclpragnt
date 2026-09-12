@@ -167,8 +167,13 @@ def symbol_outcome_profile(trades: list[dict], symbol: str | None = None,
     for pnl in reversed(pnls):
         if pnl <= 0: streak += 1
         else: break
+    # C-07: eski kod `longest`i her kayıpta artırıp kazançta sıfırlıyordu,
+    # yani döngü sonunda elde kalan değer EN SONDAKİ kayıp serisinin uzunluğuydu
+    # (seri kazançla bitiyorsa 0). Bu artık gerçek maksimum kayıp serisi.
+    running = 0
     for pnl in pnls:
-        longest = longest + 1 if pnl <= 0 else 0
+        running = running + 1 if pnl <= 0 else 0
+        longest = max(longest, running)
     return {**metrics, "symbol": symbol, "strategy": strategy,
             "expectancy_net_pnl": round(expectancy, 6) if expectancy is not None else None,
             "average_win": round(sum(positive) / len(positive), 6) if positive else None,

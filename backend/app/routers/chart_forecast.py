@@ -70,13 +70,10 @@ async def collect_forecast_features(symbol: str) -> dict | None:
 
 
 def _run_predict(symbol: str, features: dict, horizon: int) -> dict | None:
-    ml = ml_forecast.predict_target(symbol, {
-        "ret3_pct": features.get("ret3_pct"), "atr_pct": features.get("atr_pct"),
-        "bb_width_pct": features.get("bb_width_pct"), "rsi": features.get("rsi"),
-        "mfi": features.get("mfi"), "linreg_slope10_pct": features.get("linreg_slope10_pct"),
-        "aroon_up": features.get("aroon_up"), "aroon_down": features.get("aroon_down"),
-    }, horizon)
-    return ml
+    # ML-08 (2026-09-12): özellik sözlüğü SEÇİLEREK değil TAMAMEN geçirilir.
+    # Eski kod yalnız 8 anahtarı kopyalıyordu; `ret1_pct`/`ret5_pct`/`vol_z`
+    # düşüyor ve model çıkarımda üç kolonu hep NaN görüyordu.
+    return ml_forecast.predict_target(symbol, dict(features or {}), horizon)
 
 
 @router.post("/{symbol}/forecast")

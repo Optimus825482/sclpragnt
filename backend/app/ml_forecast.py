@@ -91,6 +91,76 @@ def velocity_proxy_value(atr_ratio: float | None, ret3_ratio: float | None) -> f
     return atr * 100.0 * (1.0 + ret3)
 
 
+def atr_ratio_from_bars(highs, lows, closes, period: int = 14) -> float | None:
+    """Kanonik ATR ORANI (atr / fiyat) — eğitim ve çıkarım AYNI pencereyi kullanır.
+
+    ML-04 (2026-09-12): `build_symbol_dataset` son ``period`` (14) true-range'in
+    basit ortalamasını kullanır. velocity 15, chart_forecast ise 14 elemanla
+    hesaplıyordu → aynı isimli özellik üç farklı tanım (ölçülen medyan oran
+    0.9928, aralık 0.9439–1.0978). Tek tanım burasıdır.
+
+    Dönen değer KESİRdİr; ``*_pct`` bekleyen çağıranlar ×100 uygular.
+    """
+    try:
+        size = min(len(highs), len(lows), len(closes))
+    except TypeError:
+        return None
+    if size < period + 1:
+        return None
+    price = float(closes[-1])
+    if not price:
+        return None
+    ranges = []
+    for index in range(size - period, size):
+        high = float(highs[index]); low = float(lows[index]); prev = float(closes[index - 1])
+        ranges.append(max(high - low, abs(high - prev), abs(low - prev)))
+    if not ranges:
+        return None
+    return (sum(ranges) / len(ranges)) / price
+
+
+def bb_width_ratio_from_bars(closes, period: int = 20) -> float | None:
+    """Kanonik Bollinger GENİŞLİK ORANI — eğitimdeki ``4·std(ddof=0)/close[t]``.
+
+    ML-03 (2026-09-12): eğitim ``4·std(ddof=0)/close[t]`` kullanır. velocity
+    kopyası ddof=1 VE payda ``mean20`` idi (ölçülen sistematik sapma +%2.6).
+    ddof W3'te düzeltildi; payda bu yardımcıyla tekilleştirilir. Dönen değer
+    KESİRdİr; ``*_pct`` bekleyen çağıranlar ×100 uygular.
+    """
+    values = np.asarray(closes, dtype=np.float64)
+    if len(values) < period:
+        return None
+    close_now = float(values[-1])
+    if not close_now:
+        return None
+    window = values[-period:]
+    return (4.0 * float(window.std())) / close_now
+
+
+def _merge_symbol_codes(symbols: list, previous) -> dict:
+    """ML-07: sembol→kod eşlemesini mümkün olduğunca KORU.
+
+    `previous` (önceki artifact'ın `symbol_codes`'u) verilirse bilinen semboller
+    aynı kodu korur; yeni semboller en büyük kodun üstünden sırayla atanır.
+    Böylece öğrenilen sembol kimliği ardışık eğitimler arasında kararlı kalır.
+    Verilmezse eski davranış (alfabetik 0..N-1) uygulanır.
+    """
+    codes: dict = {}
+    if isinstance(previous, dict):
+        for symbol in symbols:
+            if symbol in previous:
+                try:
+                    codes[symbol] = int(previous[symbol])
+                except (TypeError, ValueError):
+                    continue
+    next_code = (max(codes.values()) + 1) if codes else 0
+    for symbol in symbols:
+        if symbol not in codes:
+            codes[symbol] = next_code
+            next_code += 1
+    return codes
+
+
 def _wilder_rsi_series(closes: np.ndarray, period: int = 14) -> np.ndarray:
     """Vektörel Wilder RSI — ``technical_analysis._rsi`` ile birebir aynı sonuç.
 
@@ -325,7 +395,8 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
                   _ratio_from_pct(snap.get("ret5_pct")),
                   snap_atr_ratio,  # None kalabilir (NaN), 0.0 değil
                   (_ratio_from_pct(snap.get("bb_width_pct")) if snap.get("bb_width_pct") is not None else None),
-                  snap.get("rsi"), snap.get("mfi"), None,
+                  # ML-08: vol_z eğitimde gerçek; journal satırında da geçirilir.
+                  snap.get("rsi"), snap.get("mfi"), snap.get("vol_z"),
                   (_ratio_from_pct(snap.get("linreg_slope10_pct")) if snap.get("linreg_slope10_pct") is not None else None),
                   snap.get("aroon_up"), snap.get("aroon_down"),
                   float(hour), float(day_quarter), float(vp), float(symbol_codes[sym])])
@@ -343,12 +414,16 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
             np.asarray(ts_list, dtype=np.float64))
 
 
-def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -> dict[str, Any]:
+def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict],
+          previous_codes: dict | None = None) -> dict[str, Any]:
     """Eğitim: 5m candle verisi + journal örnekleri -> artifact + metrics sözlüğü.
 
     Saf/senkron fonksiyon; DB okuma ve artifact kaydı çağıran tarafta async
     yapılır. Holdout: candle örneklerinin zaman sırasıyla son %15'i.
     Journal örnekleri (doğrulanmış canlı tahminler) tamamen eğitime girer.
+
+    ML-07 (2026-09-12): `previous_codes` (önceki artifact'ın `symbol_codes`'u)
+    verilirse sembol kodları devralınır; verilmezse alfabetik numaralandırma.
     """
     try:
         from sklearn.ensemble import (HistGradientBoostingClassifier,
@@ -361,7 +436,11 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -
     if not candles:
         raise RuntimeError("Eğitim verisi yok: historical_candles (5m) boş")
     symbols = sorted(candles)
-    symbol_codes = {sym: idx for idx, sym in enumerate(symbols)}
+    # ML-07 (2026-09-12): `sorted()` her eğitimde evreni yeniden numaralandırır;
+    # evren değişince aynı sembolün kodu kayar ve ardışık eğitimlerde öğrenilen
+    # sembol kimliği karşılaştırılamaz hale gelir. Önceki artifact'ın eşlemesi
+    # devralınır (bilinen semboller kodunu korur, yeniler en üstten atanır).
+    symbol_codes = _merge_symbol_codes(symbols, previous_codes)
     (journal_X, journal_mfe, journal_hit, journal_h, journal_w,
      journal_ts) = prepare_journal_samples(journal_rows, symbol_codes)
 
@@ -452,7 +531,10 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -
             "metrics": metrics, "artifact_path": path, "feature_version": FEATURE_VERSION, "status": "ready"}
 
 
-_MODEL_CACHE: dict[str, Any] = {"artifact": None, "loaded_at": 0.0}
+# ML-06: `stamp` = (mtime, size). Disk üzerindeki artifact yenilendiğinde
+# cache anahtarı değişir; eski davranışta yalnız `loaded_at` bakıldığı için
+# yeni model 24 saate kadar görülmüyordu.
+_MODEL_CACHE: dict[str, Any] = {"artifact": None, "loaded_at": 0.0, "stamp": None}
 
 
 def load_model(max_age_seconds: int = 86400) -> dict[str, Any] | None:
@@ -472,9 +554,19 @@ def load_model(max_age_seconds: int = 86400) -> dict[str, Any] | None:
     """
     import joblib
     now = time.time()
-    if _MODEL_CACHE["artifact"] is not None and now - _MODEL_CACHE["loaded_at"] < max_age_seconds:
-        return _MODEL_CACHE["artifact"]
     path = os.path.join(config.ML_MODELS_DIR, f"upside_{FEATURE_VERSION}.joblib")
+    # ML-06: cache anahtarına dosya kimliği (mtime + boyut) katılır. Ölçüm:
+    # artifact diske yeniden yazıldıktan sonra `load_model()` AYNI nesneyi
+    # döndürüyordu (`a1 is a2 == True`) — 12 saatlik eğitim döngüsü varken
+    # çıkarım 24 saate kadar eski modeli kullanabiliyordu.
+    try:
+        stamp = (os.path.getmtime(path), os.path.getsize(path))
+    except OSError:
+        stamp = None
+    if (_MODEL_CACHE["artifact"] is not None
+            and _MODEL_CACHE.get("stamp") == stamp
+            and now - _MODEL_CACHE["loaded_at"] < max_age_seconds):
+        return _MODEL_CACHE["artifact"]
     if not os.path.exists(path):
         return None
     artifact = joblib.load(path)
@@ -487,9 +579,11 @@ def load_model(max_age_seconds: int = 86400) -> dict[str, Any] | None:
                      path, artifact.get("feature_version"), artifact.get("feature_names"),
                      artifact.get("training_bar_minutes"))
         _MODEL_CACHE["artifact"] = None
+        _MODEL_CACHE["stamp"] = stamp
         return None
     _MODEL_CACHE["artifact"] = artifact
     _MODEL_CACHE["loaded_at"] = now
+    _MODEL_CACHE["stamp"] = stamp
     return _MODEL_CACHE["artifact"]
 
 
@@ -509,6 +603,16 @@ def predict_target(symbol: str, features: dict[str, Any], horizon: int = 5) -> d
         ts = ts.timestamp() * 1000
     else:
         ts = time.time() * 1000
+    # ML-05 (2026-09-12): zorunlu özellik kapısı. Eskiden yalnız artifact/
+    # sembol kontrolü vardı; özelliklerin TAMAMI None olsa bile satır kurulup
+    # model HER ZAMAN bir sayı üretiyordu (ölçüm: `predict_target(sym, {})` ->
+    # target_pct=6.036, hit_probability=0.9987). Bu değer
+    # `dynamic_target_pct` üzerinden hedefe ve TP'ye giriyordu.
+    required = ("atr_pct", "ret3_pct", "rsi")
+    if not all(features.get(key) is not None for key in required):
+        logger.warning("[ML] predict_target zorunlu özellikler eksik: %s %s", sym,
+                       [key for key in required if features.get(key) is None])
+        return None
     hour = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).hour
     hour = (hour + 3) % 24
     day_quarter = hour // 6
@@ -521,9 +625,13 @@ def predict_target(symbol: str, features: dict[str, Any], horizon: int = 5) -> d
         _ratio_from_pct(features.get("ret1_pct")),
         ret3_ratio,
         _ratio_from_pct(features.get("ret5_pct")),
-        atr_ratio if atr_ratio is not None else 0.0,
+        # ML-08: `atr_ratio` None ise 0.0 UYDURMA — eğitimde bu hücre NaN'dır.
+        atr_ratio,
         _ratio_from_pct(features.get("bb_width_pct")),
-        features.get("rsi"), features.get("mfi"), None,
+        # ML-08: `vol_z` önceden sabit None yazılıyordu; eğitimde GERÇEK değer
+        # hesaplandığı için model bu kolona dayanmayı öğrenirse çıkarımda
+        # körleşiyordu. Artık çağıranın verdiği değer geçirilir.
+        features.get("rsi"), features.get("mfi"), features.get("vol_z"),
         _ratio_from_pct(features.get("linreg_slope10_pct")),
         features.get("aroon_up"), features.get("aroon_down"),
         float(hour), float(day_quarter), float(vp),

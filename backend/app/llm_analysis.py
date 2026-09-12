@@ -272,6 +272,17 @@ def _context_window_messages(messages, token_budget=900_000):
 TOOL_LOOP_MAX_ROUNDS = max(1, int(os.getenv("LLM_TOOL_MAX_ROUNDS", "25")))
 TOOL_LOOP_TOKEN_BUDGET = max(50_000, int(os.getenv("LLM_TOOL_TOKEN_BUDGET", "600_000")))
 TOOL_RESULT_MAX_CHARS = max(2_000, int(os.getenv("LLM_TOOL_RESULT_MAX_CHARS", "40_000")))
+# LLM-02 (2026-09-12): chat yolunda `max_tokens` HİÇ set edilmiyordu;
+# provider sınırsız uzunlukta yanıt döndürebiliyor, maliyet ve latency
+# için üst sınır kalmıyordu. 0 = sınırsız (eski davranış).
+CHAT_MAX_TOKENS = max(0, int(os.getenv("LLM_CHAT_MAX_TOKENS", "2048")))
+# Araç döngüsü round başına 45 sn × 2 deneme × 25 round ile teorik
+# olarak saatlerce sürebilir; toplam süreye mutlak sınır konur.
+TOOL_LOOP_TOTAL_TIMEOUT = max(30, int(os.getenv("LLM_TOOL_TOTAL_TIMEOUT", "300")))
+# LLM-01: SSE akışı için de toplam süre sınırı gerekir — aksi halde
+# hiç bitmeyen bir provider akışı bağlantıyı sonsuza kadar tutar.
+STREAM_TOTAL_TIMEOUT = max(30, int(os.getenv("LLM_STREAM_TOTAL_TIMEOUT", "600")))
+STREAM_OPEN_TIMEOUT = max(5, int(os.getenv("LLM_STREAM_OPEN_TIMEOUT", "120")))
 
 
 def _estimate_tokens(conversation):
@@ -383,8 +394,14 @@ async def embedding(text, model_id=None):
         vector = data[0].get("embedding") if isinstance(data, list) and data else None
         if vector is None and isinstance(data, dict): vector = data.get("embedding")
         if not isinstance(vector, list) or not vector: raise RuntimeError("Provider embedding yanıtında vector bulunamadı")
-        expected = model.get("dimensions") or 2048
-        if expected and len(vector) != int(expected): raise RuntimeError(f"Dimension uyumsuzluğu: beklenen {expected}, gelen {len(vector)}")
+        # EMB-01: `dimensions` ZORUNLU. Eskiden NULL ise 2048 varsayılıyordu;
+        # uyuşmazlık ancak 3 deneme × 30 sn sonra fark ediliyor ve yanlış
+        # boyutlu vektörler pgvector'e yazılmaya çalışılıyordu.
+        expected = model.get("dimensions")
+        if not expected:
+            raise RuntimeError("Embedding modeli için `dimensions` tanımlı değil; boyut doğrulanamaz")
+        if len(vector) != int(expected):
+            raise RuntimeError(f"Dimension uyumsuzluğu: beklenen {expected}, gelen {len(vector)}")
         return {"status":"ok", "model":model["name"], "model_id":model.get("id"), "dimensions":len(vector), "vector":vector, "latency_ms":None}
     except Exception as exc:
         return {"status":"error", "error":str(exc), "model":model.get("name")}
@@ -408,6 +425,9 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
             if key in item: message[key] = item[key]
         conversation.append(message)
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation}
+    if CHAT_MAX_TOKENS:
+        # LLM-02: üst sınır — provider'ın sınırsız uzun yanıt üretmesini engeller.
+        payload["max_tokens"] = CHAT_MAX_TOKENS
     if tools: payload["tools"] = tools; payload["tool_choice"] = "auto"
     if json_mode:
         # Structured-output call. OpenAI-compatible gateways (and the JSON
@@ -467,9 +487,14 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                 raise
         tool_round = 0
         tool_stats = {"rounds": 0, "tool_calls": 0, "estimated_tokens": 0}
+        # LLM-02: round ve token bütçesine ek olarak MUTLAK süre sınırı.
+        tool_deadline = time.monotonic() + TOOL_LOOP_TOTAL_TIMEOUT
         # while True yerine bounded loop — ölü else clause kaldırıldı
         while tool_round <= TOOL_LOOP_MAX_ROUNDS:
             tool_round += 1
+            if time.monotonic() > tool_deadline:
+                raise RuntimeError(
+                    f"LLM araç döngüsü toplam süre sınırını aştı: {TOOL_LOOP_TOTAL_TIMEOUT} sn")
             estimated_tokens = _estimate_tokens(conversation)
             if estimated_tokens > TOOL_LOOP_TOKEN_BUDGET:
                 raise RuntimeError(
@@ -480,8 +505,18 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
             assistant = first.get("message") or {}
             usage = data.get("usage") or {} if isinstance(data, dict) else {}
             if isinstance(usage, dict) and (usage.get("total_tokens") or usage.get("prompt_tokens")):
-                tool_stats["provider_total_tokens"] = int(usage.get("total_tokens") or 0)
-                tool_stats["provider_prompt_tokens"] = int(usage.get("prompt_tokens") or 0)
+                # LLM-02: her round TÜM konuşmayı yeniden gönderir; gerçek
+                # maliyet round başına kullanımın TOPLAMIdır. Eskiden yalnız
+                # son round yazılıyordu → maliyet olduğundan az görünüyordu.
+                tool_stats["provider_total_tokens"] = (
+                    int(tool_stats.get("provider_total_tokens") or 0)
+                    + int(usage.get("total_tokens") or 0))
+                tool_stats["provider_prompt_tokens"] = (
+                    int(tool_stats.get("provider_prompt_tokens") or 0)
+                    + int(usage.get("prompt_tokens") or 0))
+                tool_stats["provider_completion_tokens"] = (
+                    int(tool_stats.get("provider_completion_tokens") or 0)
+                    + int(usage.get("completion_tokens") or 0))
             tool_calls = assistant.get("tool_calls", []) or []
             # A number of OpenAI-compatible gateways still emit the legacy
             # single-call function_call shape. Normalize it to the modern
@@ -558,30 +593,59 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         headers = {"Content-Type": "application/json", "Authorization": "Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}
         import queue
         lines = queue.Queue()
+
+        def _drain_response(response, sink):
+            """Gövdeyi SENKRON okur — ayrı thread'de çalıştırılmalıdır (LLM-01).
+
+            `for raw_line in response:` soket üzerinde BLOKE EDEN bir okumadır.
+            `async def` gövdesinde çalıştırıldığında FastAPI event-loop'unu
+            kilitler; tarama, pozisyon yönetimi ve WS döngüleri tamamen durur.
+            """
+            try:
+                if response.status >= 400:
+                    sink.put(("error", f"Provider HTTP {response.status}: "
+                                       f"{response.read(1000).decode(errors='replace')}"))
+                    return
+                for raw_line in response:
+                    sink.put(("line", raw_line.decode("utf-8", errors="replace")))
+            except HTTPError as exc:
+                sink.put(("error", _provider_http_error(exc)))
+            except Exception as exc:
+                sink.put(("error", str(exc)))
+            finally:
+                sink.put(("done", None))
+
         async def read_stream():
             try:
                 request = Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
-                response = await safe_provider_open(request, timeout=120)
-                if response.status >= 400:
-                    lines.put(("error", f"Provider HTTP {response.status}: {response.read(1000).decode(errors='replace')}"))
-                else:
-                    for raw_line in response:
-                        lines.put(("line", raw_line.decode("utf-8", errors="replace")))
+                response = await safe_provider_open(request, timeout=STREAM_OPEN_TIMEOUT)
+                await asyncio.to_thread(_drain_response, response, lines)
             except HTTPError as exc:
                 lines.put(("error", _provider_http_error(exc)))
+                lines.put(("done", None))
             except Exception as exc:
                 lines.put(("error", str(exc)))
-            finally:
                 lines.put(("done", None))
+
         reader = asyncio.create_task(read_stream())
         emitted = False
+        stream_deadline = time.monotonic() + STREAM_TOTAL_TIMEOUT
         while True:
+            if time.monotonic() > stream_deadline:
+                # LLM-01: hiç bitmeyen akış bağlantıyı ve okuma thread'ini
+                # sonsuza kadar tutmasın.
+                reader.cancel()
+                await asyncio.gather(reader, return_exceptions=True)
+                raise RuntimeError(
+                    f"LLM akışı toplam süre sınırını aştı: {STREAM_TOTAL_TIMEOUT} sn")
             # Blocking queue.get yerine asyncio.Queue kullan — event loop'u bloke etme
             try:
                 kind, raw_line = await asyncio.wait_for(asyncio.to_thread(lines.get), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
             if kind == "error":
+                reader.cancel()
+                await asyncio.gather(reader, return_exceptions=True)
                 raise RuntimeError(raw_line)
             if kind == "done":
                 break

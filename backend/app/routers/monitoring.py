@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database
-from app.api_common import log_user_action, _background_tasks
+from app.api_common import log_user_action, _background_tasks, _start_background
 from app.state import market, analyzer
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
@@ -1203,8 +1203,9 @@ def start_monitoring_loop() -> bool:
     global _loop_task
     if _loop_task is not None and not _loop_task.done():
         return False
-    _loop_task = asyncio.create_task(monitoring_background_loop(), name="monitoring-scan-loop")
-    _background_tasks.add(_loop_task)
+    # G-10: ham `create_task` yerine SÜPERVİZÖRLÜ başlatma — döngü beklenmeyen
+    # bir hatayla ölürse sınırlı backoff ile yeniden başlatılır (sessiz ölü kanca yok).
+    _loop_task = _start_background(monitoring_background_loop, "monitoring-scan-loop")
     return True
 
 

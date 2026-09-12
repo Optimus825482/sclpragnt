@@ -177,8 +177,10 @@ async def migration_start(payload: dict = None, request: Request = None):
     body = payload or {}
     source = str(body.get("source") or os.getenv("MIGRATION_SOURCE_PATH") or "legacy-pasif")
     if migration_monitor.state["status"] == "running": return {"ok": False, "message": "Migration zaten çalışıyor"}
+    # V-21: SQLite migration kalıcı olarak kaldırıldı → 410 Gone (400 "bad
+    # request" kullanıcıyı girdiyi düzeltmeye çalıştırıyordu).
     try: info = migration_monitor.inspect_source(source)
-    except Exception as exc: raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc: raise HTTPException(status_code=410, detail=str(exc))
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url: raise HTTPException(status_code=503, detail="DATABASE_URL tanımlı değil")
     migration_monitor.state.update({"source":info, "status":"queued", "phase":"queued", "progress":0, "message":"Migration kuyruğa alındı"})

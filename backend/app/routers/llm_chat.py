@@ -356,9 +356,18 @@ async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
     sayılamaz. Pencereyi kapsayan veri yoksa ölçüm UYDURULMAZ — satır pending
     kalır (bounded deferral sonrası best-effort mühürlenir ve loglanır).
     """
-    created_at_ms = int(float(forecast["created_at"]) * 1000)
+    # TAH-01: ölçüm penceresi fiyatın GÖZLEMLENDİĞİ andan (`decided_at`) başlar.
+    # LLM yanıtı gecikirse `created_at` kayar; eski kod bu kaymayı pencereye
+    # yazıyordu (5 dk'lık tahmin, fiyat okunduktan 10 dk sonra kaydedilince
+    # yanlış pencerede ölçülüyordu). Kolon öncesi satırlar `created_at`e düşer.
+    anchor_at = forecast.get("decided_at")
+    try:
+        anchor_at = float(anchor_at) if anchor_at not in (None, "") else float(forecast["created_at"])
+    except (TypeError, ValueError):
+        anchor_at = float(forecast["created_at"])
+    anchor_ms = int(anchor_at * 1000)
     horizon_minutes = int(forecast["horizon_minutes"])
-    due_at_ms = created_at_ms + horizon_minutes * 60_000
+    due_at_ms = anchor_ms + horizon_minutes * 60_000
     grace_minutes = effective_hit_grace_minutes(
         horizon_minutes, getattr(config, "LLM_FORECAST_HIT_GRACE_MINUTES", 0))
     grace_end_ms = due_at_ms + grace_minutes * 60_000
@@ -374,7 +383,7 @@ async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
             int(timestamps[-1]) + 59_999 < grace_end_ms:
         try:
             rows = await fetch_klines(symbol, "1m", horizon_minutes + grace_minutes + 12,
-                                      start_time_ms=created_at_ms, end_time_ms=grace_end_ms + 65_000)
+                                      start_time_ms=anchor_ms, end_time_ms=grace_end_ms + 65_000)
         except Exception:
             rows = []
         if len(rows) >= 2:
@@ -392,7 +401,7 @@ async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
                        "best-effort mühürleniyor", symbol, int(grace_end_ms), int(timestamps[-1]))
     close_times = [int(value) + 59_999 for value in timestamps]
     end_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= due_at_ms), None)
-    start_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= created_at_ms), None)
+    start_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= anchor_ms), None)
     if start_index is None or end_index is None or end_index < start_index:
         return None
     first_hit_minutes = None
@@ -411,7 +420,7 @@ async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
                 hit_index = index
                 break
         if hit_index is not None:
-            first_hit_minutes = round((int(timestamps[hit_index]) - created_at_ms) / 60_000.0, 1)
+            first_hit_minutes = round((int(timestamps[hit_index]) - anchor_ms) / 60_000.0, 1)
     return {
         "outcome_price": float(closes[end_index]),
         "max_high": max(float(value) for value in highs[start_index:end_index + 1]),
@@ -696,7 +705,8 @@ async def symbol_analysis_llm_commentary(symbol: str, payload: dict = None):
     for item in parsed["forecasts"]:
         forecasts.append({
             "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id, "symbol": symbol.upper(),
-            "created_at": now, "horizon_minutes": item["horizon_minutes"], "entry_price": entry_price,
+            "created_at": now, "decided_at": forecast_context.get("observed_at") or now,
+            "horizon_minutes": item["horizon_minutes"], "entry_price": entry_price,
             "direction": item["direction"], "confidence": item["confidence"],
             "invalidation_price": item.get("invalidation_price"), "min_move_pct": min_move_pct,
             "regime": regime, "timeframe_context": context.get("timeframes", {}), "scenario": item["scenario"],
@@ -743,6 +753,13 @@ def _upside_target_pct(horizon_minutes: int) -> float:
     return 2.0 if int(horizon_minutes) <= 5 else 3.0
 
 
+# TAH-03: başlık (headline) metriği yalnız en iyi N adayı kapsar. Kalan adaylar
+# ε-keşif evreni olarak AYRI prompt ailesinde journal'lanır; böylece hem piyasa
+# hakkında kanıt birikir hem de başlık isabet oranı/lessons havuzu kirletilmez.
+_UPSIDE_HEADLINE_COUNT = 3
+_UPSIDE_EXPLORATION_COUNT = 2
+
+
 def _upside_rank_score(candidate: dict, touch_rates: dict[str, float]) -> float:
     """velocity.upside_rank_score'a delege eder (ortak hibrit sıralama anahtarı).
 
@@ -757,6 +774,9 @@ async def _upside_scout_impl():
     # 1) Deterministik aday seçimi: dakika başına yükseliş potansiyeli sıralaması.
     scan5 = await detect_velocity_candidates({}, horizon_minutes=5)
     scan15 = await detect_velocity_candidates({}, horizon_minutes=15)
+    # TAH-01: aday fiyatları tarama anında gözlemlendi. Ölçüm penceresi bu ana
+    # (`decided_at`) sabitlenir; LLM gecikmesi pencereyi kaydıramaz.
+    observed_at = time.time()
     open_symbols = {str(s or "").upper() for s in (analyzer.positions or {})}
     pool = [c for c in (list(scan5.get("candidates") or []) + list(scan5.get("watchlist") or [])
             + list(scan15.get("candidates") or []) + list(scan15.get("watchlist") or []))
@@ -774,7 +794,8 @@ async def _upside_scout_impl():
         if sym not in seen:
             seen.add(sym)
             deduped.append(c)
-    top = deduped[:3]
+    top = deduped[:_UPSIDE_HEADLINE_COUNT]
+    exploration = deduped[_UPSIDE_HEADLINE_COUNT:_UPSIDE_HEADLINE_COUNT + _UPSIDE_EXPLORATION_COUNT]
     symbols = [str(c.get("symbol") or "").upper() for c in top]
 
     # 2) Öğrenilen bağlam: sembol journal kalitesi + aktif forecast dersleri.
@@ -948,10 +969,11 @@ async def _upside_scout_impl():
         ctx["target_price"] = round(ctx["current_price"] * (1 + effective_pct / 100.0), 6)
         confidence = max(30.0, min(65.0, 35.0 + ctx["velocity_score"] * 0.5))
         snapshot = dict(ctx)
-        snapshot.update({"paper_only": True, "generated_at": now, "source": "upside_scout"})
+        snapshot.update({"paper_only": True, "generated_at": now, "source": "upside_scout",
+                         "price_observed_at": observed_at})
         forecasts.append({
             "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id,
-            "symbol": ctx["symbol"], "created_at": now,
+            "symbol": ctx["symbol"], "created_at": now, "decided_at": observed_at,
             "horizon_minutes": ctx["horizon_minutes"], "entry_price": ctx["current_price"],
             "direction": "up", "confidence": confidence,
             "invalidation_price": None,
@@ -969,6 +991,47 @@ async def _upside_scout_impl():
     if forecasts:
         await database.save_llm_forecasts(forecasts)
 
+    # 3b) TAH-03 — ε-keşif evreni: başlık dışında kalan adaylar AYRI prompt
+    #     ailesinde (`upside-explore-v1`) journal'lanır. Bunlar başlık isabet
+    #     oranına/lessons havuzuna girmez ama piyasa hakkında kanıt üretir.
+    exploration_forecasts = []
+    for cand in exploration:
+        price = float(cand.get("price") or 0)
+        if price <= 0:
+            continue
+        horizon = int(cand.get("horizon_minutes") or 0)
+        horizon = horizon if horizon in (5, 15) else (5 if horizon <= 5 else 15)
+        target_pct = _upside_target_pct(horizon)
+        velocity = round(float(cand.get("velocity_score") or 0), 2)
+        explore_snapshot = {
+            "exploration": True, "paper_only": True, "source": "upside_explore",
+            "price_observed_at": observed_at, "generated_at": observed_at,
+            "horizon_minutes": horizon, "target_pct": target_pct,
+            "upside_rank": round(_upside_rank_score(cand, touch_rates), 2),
+            "velocity_score": velocity,
+            "rsi": cand.get("rsi"), "mfi": cand.get("mfi"), "atr_pct": cand.get("atr_pct"),
+            "ret3_pct": cand.get("ret3_pct"),
+            "m5_pattern_ok": cand.get("m5_pattern_ok"), "leading_ok": cand.get("leading_ok"),
+        }
+        exploration_forecasts.append({
+            "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id,
+            "symbol": str(cand.get("symbol") or "").upper(), "created_at": now, "decided_at": observed_at,
+            "horizon_minutes": horizon, "entry_price": price,
+            "direction": "up", "confidence": max(30.0, min(65.0, 35.0 + velocity * 0.5)),
+            "invalidation_price": None, "min_move_pct": target_pct / 100.0,
+            "regime": "velocity",
+            "timeframe_context": {"profile": f"{horizon}dk", "exploration": True},
+            "scenario": (f"upside-explore: {str(cand.get('symbol') or '').upper()} ε-keşif adayı; "
+                         f"{horizon}dk içinde %{target_pct:g} hedef"),
+            "counter_scenario": None, "summary": analysis_text,
+            "model": result.get("model"), "prompt_version": "upside-explore-v1",
+            "snapshot_hash": hashlib.sha256(json.dumps(
+                explore_snapshot, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest(),
+            "snapshot": explore_snapshot,
+        })
+    if exploration_forecasts:
+        await database.save_llm_forecasts(exploration_forecasts)
+
     # 4) Analizi hafızaya yaz: sonraki scout/chat yanıtları bu analizleri hatırlasın.
     try:
         await embedding_worker.enqueue_persistent(build_document(
@@ -984,6 +1047,9 @@ async def _upside_scout_impl():
     return {"enabled": True, "status": "ok", "symbols": symbols,
             "symbol": symbols[0] if symbols else None, "candidates": candidates_ctx,
             "analysis": analysis_text, "journal_saved": len(forecasts),
+            "journal_saved_exploration": len(exploration_forecasts),
+            "coverage": {"ranked_pool": len(deduped), "journaled_top": len(forecasts),
+                         "exploration_journaled": len(exploration_forecasts)},
             "model": result.get("model"), "generated_at": result.get("generated_at")}
 
 
@@ -1151,7 +1217,11 @@ def _market_candidate_score(snapshot: dict):
     momentum = snapshot.get("momentum") or {}
     volume = snapshot.get("volume") or {}
     liquidity = snapshot.get("liquidity") or {}
-    methodology = snapshot.get("methodology") or {}
+    # C-14: snapshot üst seviyede `methodologies` üretir
+    # (`technical_analysis` -> `result.update({... "methodologies": ...})`).
+    # Eski `"methodology"` anahtarı daima None dönüyordu, bu yüzden aşağıdaki
+    # "bull rejim" bonusu hiç uygulanmıyordu.
+    methodology = snapshot.get("methodologies") or {}
     score = 0.0; evidence = []; risks = []
     alignment = str(trend.get("alignment") or "").lower()
     if alignment == "bullish": score += 2.5; evidence.append("EMA hizalaması bullish")
@@ -1480,7 +1550,7 @@ async def _journal_upside_candidates(candidates: list[dict], horizon_minutes: in
         snapshot_hash = hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
         forecasts.append({
             "forecast_id": uuid.uuid4().hex, "forecast_group_id": group_id,
-            "symbol": candidate["symbol"], "created_at": generated_at,
+            "symbol": candidate["symbol"], "created_at": generated_at, "decided_at": generated_at,
             "horizon_minutes": horizon_minutes, "entry_price": float(price),
             "direction": "up", "confidence": confidence,
             "invalidation_price": None, "min_move_pct": min_move_pct,
@@ -1637,7 +1707,7 @@ def _gainer_row_to_candidate(row: dict, common: dict, horizon_minutes: int, hist
             "trend": {"alignment": trend.get("alignment"), "adx": adx_number, "adx_14": adx_number, "plus_di": plus_di, "minus_di": minus_di},
             "volume": {key: volume.get(key) for key in ("volume_ratio_20", "quote_volume")},
             "liquidity": {key: liquidity.get(key) for key in ("spread_pct", "orderbook_depth_try", "orderflow_imbalance")},
-            "regime": (selected.get("methodology") or {}).get("regime"),
+            "regime": (selected.get("methodologies") or {}).get("regime"),
             "data_gaps": [tf for tf, snapshot in snapshots.items() if not snapshot.get("data_ready")],
             "snapshot": selected, "timeframes": snapshots}
 
