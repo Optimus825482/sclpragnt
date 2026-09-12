@@ -1117,6 +1117,9 @@ async def get_config():
         "gainer_radar_min_score": config.GAINER_RADAR_MIN_SCORE,
         "symbols": config.SYMBOLS,
         "min_notional": config.MIN_NOTIONAL,
+        # H-01: açık pozisyon K/Z'si frontend'de de net hesaplanabilsin diye
+        # komisyon oranı tek kaynaktan (config) yayınlanır.
+        "commission_pct": config.COMMISSION_PCT,
         "min_24h_quote_volume_try": config.MIN_24H_QUOTE_VOLUME_TRY,
         "high_liquidity_bypass_volume_try": config.HIGH_LIQUIDITY_BYPASS_VOLUME_TRY,
         "min_volume_ratio": config.MIN_VOLUME_RATIO,

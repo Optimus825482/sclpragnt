@@ -36,9 +36,14 @@ Kalıcı (oturumlar arası) proje kuralları ve mimari kararlar. Günlük iş ka
   Kapatma: env'i false yap **veya** DB ayarını 0 yap.
   `/api/velocity/status` → `auto_enabled` (ayar) ve `loop_running` (fiilen
   başlatıldı mı) ayrı raporlanır.
-- Kablolama koruması: `tests/test_loop_wiring.py` — `app/` altındaki her
-  `*_loop` tanımı ya `main.py`'de geçmeli ya modülünde `create_task` ile
-  başlatılmalı. Yeni döngü eklerken bu test kırılırsa wiring unutulmuş demektir.
+- Kablolama koruması: `tests/test_loop_wiring.py` (W6'da YENİDEN YAZILDI) — `app/`
+  altındaki her `*_loop` tanımı ya `_start_background(<ad>…)` ile **gerçekten**
+  başlatılmalı ya da modülünde `create_task(<ad>(…))` olmalı. **Import/isim geçişi
+  SAYILMAZ** (eski sürüm `re.search(name, main_src)` ile import bloğuna takılıyordu →
+  kapsam 1/29, boşa çalışıyordu). Yeni denetim `_START_BG_RE` / `_CREATE_TASK_RE`
+  kullanır ve girintili tanımları da görür. Mutasyonla doğrulandı: bir
+  `_start_background(...)` satırı silinince test KIRILIR. Yeni döngü eklerken bu test
+  kırılırsa wiring unutulmuş demektir.
 
 ## Bilinçli olarak bağlanmamış kancalar (çağıranı yok, silinmedi)
 
@@ -46,35 +51,53 @@ Kalıcı (oturumlar arası) proje kuralları ve mimari kararlar. Günlük iş ka
   sınırlı), `_ma_cascade_observation_context`,
   `routers/maintenance.py::_persist_replay_parity_observation` — işaretlendi.
 
-## 2026-09-12 kapsamlı denetim (Parti 1 uygulandı; Parti 2-6 bekliyor)
+## 2026-09-12 kapsamlı denetim (W1–W6 TAMAMLANDI)
 
-Çıktılar: `outputs/denetim_2026-09-12/` — `ANA_RAPOR.md` + `A…J_*.md`. **195 bulgu**
-(10 KRİTİK / 44 YÜKSEK / 75 ORTA / 66 DÜŞÜK). Red-team: 10 doğrulandı, 2 kısmen, 0 reddedildi.
+Çıktılar: `outputs/denetim_2026-09-12/` — `ANA_RAPOR.md` + `A…J_*.md` + `FIX_W1…W6_*.md`.
+**195 bulgu** (10 KRİTİK / 44 YÜKSEK / 75 ORTA / 66 DÜŞÜK). Red-team: 10 doğrulandı, 2 kısmen, 0 reddedildi.
+Test sayısı: 381 → **469/469 yeşil**.
 
-**Uygulanan (Parti 1, 2026-09-12):** G-01 (`truncated` NameError + LIMIT'siz SELECT),
-G-06 (startup'ı öldüren korumasız `bootstrap_symbol_activity`), G-08 (`except: pass` →
-`auto_paper_error` alanı), G-07 (ayarlar restart'ta kayboluyordu), G-03/04 (11 endpoint'e
-`_require_admin`). `main.py` +78, `test_security_behavior.py` +26; test 382/382 yeşil.
+**Uygulanan partiler:**
+- **W1/W2** — göstergeler + işlem/risk (`FIX_W1_gostergeler.md`, `FIX_W2_islem_risk.md`).
+- **W3** — ML/velocity eğitim-çıkarım uyumu (ML-01, ML-02, ML-09, I-05, I-01, I-02, D-04).
+  Ayrıca **üretim regresyonu**: I-05 katı doğrulaması `training_bar_minutes` alanı olmayan
+  mevcut artifact'ı reddetti → 503. Düzeltme: alan **varsa** doğrulanır, yoksa legacy kabul.
+- **W4** — gözlem/kanıt bütünlüğü (F-02, F-01, TAH-02) → aşağıya bkz.
+- **W5** — frontend net esas + `null` renk sözleşmesi (H-01/H-02/H-03) → aşağıya bkz.
+- **W6** — kablolama koruması + para matematiği testleri (G-02, I-08) → aşağıya bkz.
+- **Parti 1:** G-01, G-06, G-08, G-07, G-03/04.
 
-- **Kablolama koruma testi BOŞA ÇALIŞIYOR** — `tests/test_loop_wiring.py:55`
-  `re.search(name, main_src)` `main.py:81-87`'deki **import bloğuyla** eşleşiyor; 29
-  `_start_background` satırından biri silinse bile test geçiyor (gerçek kapsam 1/29).
-  Düzeltirken mutasyonla kırıldığını kanıtla.
-- **Para matematiğinin hiç testi yok** (PnL, komisyon, `_entry_order_value`,
-  `commit_close_position`, `trade_economics`, `multiplier_for`). Testler 381/381 yeşil
-  olmasına rağmen 10 kritik hata var — yeşil test = güvenlik DEĞİLDİR.
-- **Ölçüm katmanı bozuk:** `database.py:874-899` MACD kanıt tablosu hedef ana ulaşıldı
-  kontrolü yapmıyor → 5m/15m/30m aynı ~4.5 dk getiriyle mühürleniyor. **Kanıt düzeltilmeden
-  eşik/ağırlık AYARLANMAMALI** (mevcut kanıt çöp).
-- **ML zaman dilimi uyuşmazlığı:** model 5m barlarda eğitiliyor, çıkarım 1m barlarla
-  (`ml_forecast.py:336-338` ↔ `velocity.py:216`). En yüksek etkili tek düzeltme.
-- **Komisyon tek bacak:** `analyzer.py:412-421` kâr kilidi yalnızca giriş bacağını ekliyor
-  → "kilitli kâr" çıkışı zarar yazıyor. `main.py:1646` de aynı hata. **Paylaşılan matematik;
-  replay-validated ayrı değişiklik olarak işaretle, "hata düzeltmesi" diye gizleme.**
-- 3 "ölü" araştırma düğmesi `backend\work\` betikleri tarafından okunuyor → **CANLI, silinmez**.
+- **Ölü araştırma düğmesi YOK:** 3 "ölü" düğme `backend\work\` betikleri tarafından okunuyor → CANLI.
   Gerçekten ölü sembol sayısı: **0** (204 aday tarandı).
 - Operasyonel: `pytest` özet satırı yazdırmıyor, çıkışta `couldn't stop thread 'pool-1-worker-N'`
-  → kapatılmayan bir `ThreadPoolExecutor` var.
+  → zararsız psycopg havuzu teardown gürültüsü (kapatılmayan `ThreadPoolExecutor`).
+
+## Para matematiği & ölçüm katmanı — kilitli sözleşmeler
+
+- **Açık pozisyon net K/Z TEK KAYNAK:** `frontend/app/lib/pnl.ts`. Kanonik kural backend
+  `config.min_net_exit_pct` ile aynı: `net = brüt − commission_pct × q × (giriş + çıkış)`
+  (**iki bacak**; yalnız giriş bacağı D-01'in kök hatasıydı). Girdi eksikse **`null`** (0 DEĞİL).
+  Tüketiciler: `portfolio`, `page`, `charts`. Komisyon oranı WS `portfolio.commission_pct`
+  + `GET /api/config` ile yayınlanır → `applyCommissionPct` (geçersiz değeri yok sayar).
+- **Backend `pnl_try` bilinçli olarak YALNIZ giriş bacağını düşer** (`main.py:1677-1680`,
+  `runtime.py:152-155`) — muhasebe/`reconciliation`/`unrealized_pnl` doğru kalsın diye.
+  Görüntü tek esasa çekildi; **muhasebe tarafı DEĞİŞTİRİLMEDİ.** İkisini eşitlemek
+  `min_net_exit_pct`'i yayınlamayı + reconciliation'ı yeniden doğrulamayı gerektirir → açık iş.
+- **MACD kanıt ileri getirisi (F-02):** `database.py::_macd_forward_outcomes(rows, base, t0_ms, now_ms)`
+  saf fonksiyon. Bir ufuk ancak hedefi **kapsayan KAPANMIŞ** 5m bar varsa mühürlenir
+  (`stamp + _MACD_BAR_MS >= target` **ve** `<= now_ms`); yoksa `NULL` kalır, sonraki turda dolar.
+  `_MACD_BAR_MS = 5*60_000`.
+- **MACD hayalet alarm kapısı (F-01):** trend gücü evren-içi min-max ile normalize edilir →
+  tek sembol evrenden çıkınca diğerleri zıplar. Alarm artık `_stable_range` (p5–p95,
+  `_STABLE_RANGE_PCTL=5.0`; `n<20` → min/max) **ve** `_own_activity_changed` kapısından geçer.
+  Ekrandaki `strength` evren min-max **kaldı** (gösterge tanımı değişmedi).
+- **Tahmin isabet penceresi (TAH-02):** tek kaynak `forecast_learning.py` —
+  `effective_hit_grace_minutes = min(grace, horizon)`, `outcome_window_seconds = (h + grace)*60`.
+  Tolerans ufku AŞAMAZ (5m tahmin 19. dk'da "isabet" sayılamaz). Belirlenimci; tarama
+  gecikmesinden bağımsız. Tüketiciler: `database.py:2106/2349`, `llm_chat.py:362`.
+- **`min_net_exit_pct` `0` davranışı:** `float(order_value or DEFAULT_ORDER_TRY)` → `0` değeri
+  varsayılan emir proxy'sini devreye sokar. **Risk kapısı; sessizce değiştirme** — davranış
+  kilitli (`test_w6_money_math.py`).
 
 ## Komutlar
 

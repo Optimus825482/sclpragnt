@@ -11,6 +11,7 @@ import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "../components/SymbolLink";
 import { Button } from "../components/ui";
 import { toMs } from "../lib/format";
+import { closedPnlTry, netOpenPnlPct, netOpenPnlTry } from "../lib/pnl";
 import { formatPrice } from "../charts/chartShared";
 
 /* ------------------------------------------------------------------ */
@@ -30,8 +31,8 @@ type MainPosition = {
 };
 
 type Portfolio = {
-  try: number;
-  total_value: number;
+  try?: number;
+  total_value?: number;
   realized_pnl?: number;
   unrealized_pnl?: number;
   positions: MainPosition[];
@@ -77,7 +78,8 @@ type AutoPaperStats = {
 /* Yardımcılar                                                         */
 /* ------------------------------------------------------------------ */
 const money = (v?: number | null) => {
-  if (v == null || !Number.isFinite(v)) return "0,00";
+  // H-02: `null` → "—" (0 DEĞİL). 0 meşru bir değerdir ama "veri yok" değildir.
+  if (v == null || !Number.isFinite(v)) return "—";
   const abs = Math.abs(v);
   const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return `₺${formatted}`;
@@ -221,9 +223,11 @@ export default function PortfolioPage() {
       const d = await r.json();
       const snap = d.portfolio || {};
       setPortfolio({
-        try: Number(snap.try || 0),
-        total_value: Number(snap.total_value || 0),
-        realized_pnl: Number(snap.realized_pnl || 0),
+        // H-02: eksik alan `0`'a çevrilmez (0 = "başabaş" izlenimi). `undefined`
+        // bırakılır; UI bunu nötr "—" olarak gösterir.
+        try: snap.try != null ? Number(snap.try) : undefined,
+        total_value: snap.total_value != null ? Number(snap.total_value) : undefined,
+        realized_pnl: snap.realized_pnl != null ? Number(snap.realized_pnl) : undefined,
         unrealized_pnl: snap.unrealized_pnl != null ? Number(snap.unrealized_pnl) : undefined,
         positions: Array.isArray(snap.positions) ? snap.positions : [],
       });
@@ -320,26 +324,49 @@ export default function PortfolioPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mainPositions, portfolio]);
 
-  // Açık auto-paper PnL (canlı ticker ile)
-  const apOpenPnl = useMemo(() => {
-    return apTrades.reduce((sum, t) => {
-      const entry = Number(t.entry_price || 0);
-      const current = Number(t.current_price) > 0 ? Number(t.current_price) : entry;
-      return sum + (current - entry) * Number(t.quantity || 0);
-    }, 0);
+  // Açık auto-paper PnL (H-01): brüt DEĞİL, kanonik net formül (lib/pnl.ts).
+  // Girdi eksikse (current_price gelmedi) ilgili satır `null` döner ve toplama
+  // girmez — 0 sayılırsa "başabaş" gibi görünürdü (H-02). Hiçbir satır
+  // ölçülemiyorsa toplam da `null` (pozisyon yoksa meşru olarak 0).
+  const apOpenPnl = useMemo<number | null>(() => {
+    if (apTrades.length === 0) return 0;
+    const values = apTrades
+      .map((t) => netOpenPnlTry(t.entry_price, t.current_price, t.quantity))
+      .filter((v): v is number => v != null);
+    return values.length === 0 ? null : values.reduce((a, v) => a + v, 0);
   }, [apTrades]);
 
-  const openMainPnl = useMemo(() => displayMain.reduce((a, p) => a + (p.pnl_try ?? 0), 0), [displayMain]);
+  // ANA hesap açık pozisyon K/Z'si de GÖRÜNTÜDE aynı kanonik esastan (net,
+  // gidiş-dönüş komisyonlu) hesaplanır. Backend `pnl_try` yalnız giriş bacağını
+  // düşer (muhasebe/reconciliation doğru kalması için) → aynı tabloda iki
+  // farklı esas görünmesin diye görüntü tek kaynaktan üretilir.
+  const openMainPnl = useMemo<number | null>(() => {
+    const values = displayMain
+      .map((p) => netOpenPnlTry(p.entry, p.current, p.quantity))
+      .filter((v): v is number => v != null);
+    return values.length === 0 ? null : values.reduce((a, v) => a + v, 0);
+  }, [displayMain]);
   const totalOpen = displayMain.length + apTrades.length;
-  const totalOpenPnl = openMainPnl + apOpenPnl;
+  // Pozisyon yoksa PnL meşru olarak 0'dır; pozisyon VAR ama veri yoksa `null`.
+  const totalOpenPnl = totalOpen === 0
+    ? 0
+    : (openMainPnl == null && apOpenPnl == null ? null : (openMainPnl ?? 0) + (apOpenPnl ?? 0));
 
   // Toplam değer: WS/summary total_value (ana + otonom açık pozisyon değerleri
   // dahil — backend toplamı zaten otonom pozisyonları katıyor), ayrıca
   // apOpenValue eklenmez (çift sayım olmasın). WS kopukken summary fallback'i
   // aynı alanı REST'ten besler.
-  const totalValue = portfolio?.total_value ?? 0;
-  const freeTry = portfolio?.try ?? 0;
-  const realizedTotal = (portfolio?.realized_pnl ?? 0) + (apStats?.total_pnl_try ?? 0);
+  //
+  // H-02: portföy henüz yüklenmediyse `0` DEĞİL `null` döner — aksi halde
+  // "₺0,00" yeşil görünüp "başabaş" izlenimi verirdi.
+  const totalValue = portfolio?.total_value ?? null;
+  const freeTry = portfolio?.try ?? null;
+  // Gerçekleşen K/Z (ana + otonom): iki kaynak da gelmeden toplam `null`.
+  const realizedTotal: number | null = portfolio == null
+    ? null
+    : (portfolio.realized_pnl == null && apStats?.total_pnl_try == null
+        ? null
+        : (portfolio.realized_pnl ?? 0) + (apStats?.total_pnl_try ?? 0));
 
   const apEnabled = apSettings?.settings?.enabled;
 
@@ -370,7 +397,7 @@ export default function PortfolioPage() {
       {/* ---- ÜST: Sermaye özeti ---- */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <MetricCard label="TOPLAM DEĞER" value={money(totalValue)} hint={`mevcut TL ${money(freeTry)} + açık pozisyonlar`} />
-        <MetricCard label="SERBEST TL" value={money(freeTry)} toneClass="ui-tone-positive" />
+        <MetricCard label="SERBEST TL" value={money(freeTry)} toneClass={freeTry == null ? "" : "ui-tone-positive"} />
         <MetricCard label="AÇIK POZİSYON" value={String(totalOpen)} toneClass={totalOpen > 0 ? "ui-tone-warning" : ""} hint={`otonom ${apTrades.length} · ana ${displayMain.length}`} />
         <MetricCard label="AÇIK KAR/ZARAR" value={signedMoney(totalOpenPnl)} toneClass={tone(totalOpenPnl)} />
       </div>
@@ -427,18 +454,22 @@ export default function PortfolioPage() {
                 <tbody>
                   {apTrades.map((t) => {
                     const entry = Number(t.entry_price || 0);
-                    const current = Number(t.current_price) > 0 ? Number(t.current_price) : entry;
-                    const pnl = (current - entry) * Number(t.quantity || 0);
-                    const pnlPct = entry > 0 ? ((current - entry) / entry) * 100 : 0;
+                    // H-02: ticker gelmediyse güncel fiyat `null`'dur; entry'ye
+                    // düşürmek sahte "başabaş" (yeşil +0,00%) üretirdi.
+                    const current = Number(t.current_price) > 0 ? Number(t.current_price) : null;
+                    // H-01: net (gidiş-dönüş komisyonu düşülmüş) — backend ile aynı.
+                    const pnl = netOpenPnlTry(t.entry_price, t.current_price, t.quantity);
+                    const pnlPct = netOpenPnlPct(t.entry_price, t.current_price, t.quantity);
                     const held = t.entry_time ? Math.floor((Date.now() / 1000 - Number(t.entry_time)) / 60) : null;
-                    const tpDist = entry > 0 && t.take_profit ? (((Number(t.take_profit) - current) / entry) * 100) : null;
+                    const tpDist = entry > 0 && current != null && t.take_profit
+                      ? (((Number(t.take_profit) - current) / entry) * 100) : null;
                     return (
                       <tr key={t.id}>
                         <td><SymbolLink symbol={t.symbol} className="font-bold text-white hover:text-neon-green" /></td>
                         <td className="font-mono text-xs">{formatPrice(entry)}</td>
-                        <td className={`font-mono text-xs ${tpDist !== null && tpDist <= 0 ? "text-neon-green font-bold" : ""}`}>{formatPrice(current)}</td>
-                        <td className="font-mono text-xs text-neon-green">{formatPrice(Number(t.take_profit || 0))}</td>
-                        <td className="font-mono text-xs text-neon-red">{formatPrice(Number(t.stop_loss || 0))}</td>
+                        <td className={`font-mono text-xs ${tpDist !== null && tpDist <= 0 ? "text-neon-green font-bold" : ""}`}>{current == null ? "—" : formatPrice(current)}</td>
+                        <td className={`font-mono text-xs ${t.take_profit ? "text-neon-green" : "text-bunker-muted"}`}>{t.take_profit ? formatPrice(Number(t.take_profit)) : "—"}</td>
+                        <td className={`font-mono text-xs ${t.stop_loss ? "text-neon-red" : "text-bunker-muted"}`}>{t.stop_loss ? formatPrice(Number(t.stop_loss)) : "—"}</td>
                         <td className={`font-mono text-xs ${tone(pnl)}`}>{signedMoney(pnl)}</td>
                         <td className={`font-mono text-xs ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
                         <td className="font-mono text-xs text-bunker-muted">{held != null ? `${held} dk` : "—"}</td>
@@ -457,7 +488,8 @@ export default function PortfolioPage() {
             <p className="eyebrow mb-2">SON KAPANANLAR</p>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {apRecent.map((t) => {
-                const pnl = Number(t.pnl || 0);
+                const pnl = closedPnlTry(t.pnl);
+                const pnlPct = closedPnlTry(t.pnl_pct);
                 return (
                   <div key={t.id} className="rounded-lg border border-bunker-800 bg-bunker-900/60 p-3">
                     <div className="flex items-center justify-between">
@@ -467,7 +499,7 @@ export default function PortfolioPage() {
                     <div className={`mt-1 font-mono text-lg font-bold ${tone(pnl)}`}>{signedMoney(pnl)}</div>
                     <div className="mt-0.5 flex items-center justify-between">
                       <span className="font-mono text-[10px] text-bunker-muted">{REASON_LABEL[t.exit_reason || ""] || t.exit_reason || "—"}</span>
-                      <span className={`font-mono text-[10px] ${tone(pnl)}`}>{pctText(Number(t.pnl_pct || 0))}</span>
+                      <span className={`font-mono text-[10px] ${tone(pnlPct)}`}>{pctText(pnlPct)}</span>
                     </div>
                   </div>
                 );
@@ -498,16 +530,24 @@ export default function PortfolioPage() {
                 <tr><th>Sembol</th><th>Strateji</th><th>Giriş</th><th>Güncel</th><th>K/Z</th><th>%</th></tr>
               </thead>
               <tbody>
-                {displayMain.map((p) => (
-                  <tr key={p.symbol}>
-                    <td><SymbolLink symbol={p.symbol} className="font-bold text-white hover:text-neon-green" /></td>
-                    <td className="text-xs">{STRATEGY_LABEL[p.strategy || ""] || p.strategy || "—"}</td>
-                    <td className="font-mono text-xs">{formatPrice(Number(p.entry || 0))}</td>
-                    <td className="font-mono text-xs">{formatPrice(Number(p.current || 0))}</td>
-                    <td className={`font-mono text-xs ${tone(p.pnl_try ?? 0)}`}>{signedMoney(p.pnl_try ?? 0)}</td>
-                    <td className={`font-mono text-xs ${tone(p.pnl_pct)}`}>{pctText(p.pnl_pct)}</td>
-                  </tr>
-                ))}
+                {displayMain.map((p) => {
+                  // Görüntü tek kanonik esastan (net, gidiş-dönüş komisyonlu)
+                  // üretilir — yukarıdaki `openMainPnl` toplamı ile aynı kaynak.
+                  // Backend `p.pnl_try` yalnız giriş bacağını düşer; burada
+                  // satırlar toplamla tutarlı olsun diye kanonik helper kullanılır.
+                  const pnl = netOpenPnlTry(p.entry, p.current, p.quantity);
+                  const pnlPct = netOpenPnlPct(p.entry, p.current, p.quantity);
+                  return (
+                    <tr key={p.symbol}>
+                      <td><SymbolLink symbol={p.symbol} className="font-bold text-white hover:text-neon-green" /></td>
+                      <td className="text-xs">{STRATEGY_LABEL[p.strategy || ""] || p.strategy || "—"}</td>
+                      <td className="font-mono text-xs">{formatPrice(Number(p.entry || 0))}</td>
+                      <td className="font-mono text-xs">{p.current == null ? "—" : formatPrice(p.current)}</td>
+                      <td className={`font-mono text-xs ${tone(pnl)}`}>{signedMoney(pnl)}</td>
+                      <td className={`font-mono text-xs ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -590,7 +630,8 @@ export default function PortfolioPage() {
               </thead>
               <tbody>
                 {apHistory.map((t) => {
-                  const pnl = Number(t.pnl || 0);
+                  const pnl = closedPnlTry(t.pnl);
+                  const pnlPct = closedPnlTry(t.pnl_pct);
                   const holdMin = t.entry_time && t.exit_time ? Math.max(0, Math.round((Number(t.exit_time) - Number(t.entry_time)) / 60)) : null;
                   return (
                     <tr key={t.id}>
@@ -599,7 +640,7 @@ export default function PortfolioPage() {
                       <td className="font-mono text-xs">{formatPrice(Number(t.entry_price || 0))}</td>
                       <td className="font-mono text-xs">{formatPrice(Number(t.exit_price || 0))}</td>
                       <td className={`font-mono text-xs font-bold ${tone(pnl)}`}>{signedMoney(pnl)}</td>
-                      <td className={`font-mono text-xs ${tone(pnl)}`}>{pctText(Number(t.pnl_pct || 0))}</td>
+                      <td className={`font-mono text-xs ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
                       <td className="text-xs">{REASON_LABEL[t.exit_reason || ""] || t.exit_reason || "—"}</td>
                       <td className="font-mono text-xs text-bunker-muted">{holdMin != null ? `${holdMin} dk` : "—"}</td>
                     </tr>

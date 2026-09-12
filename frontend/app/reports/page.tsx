@@ -30,6 +30,14 @@ const strategyLabel = (s?: string | null) => STRATEGY_META[s?.toUpperCase() || "
 const pnlTone = (v: number | null | undefined) =>
   v == null || !Number.isFinite(Number(v)) ? "text-bunker-muted" : Number(v) >= 0 ? "text-neon-green" : "text-neon-red";
 
+// H-03: ölçülmemiş ufukta renk NÖTR olmalı. `rl(null)` 0'a düşüyordu → koşul
+// false → KIRMIZI "—" görünüyordu, yani "bu ufukta başarısızız" izlenimi.
+// `warn=true` iken eşik altı sarı gösterilir (özet kartı davranışı korunur).
+const accuracyTone = (v: number | null | undefined, warn = false) => {
+  if (v == null || !Number.isFinite(Number(v))) return "text-bunker-muted";
+  return Number(v) >= 0.55 ? "text-neon-green" : warn ? "text-yellow-300" : "text-neon-red";
+};
+
 function StatCard({ label, value, tone = "", sub }: { label: string; value: React.ReactNode; tone?: string; sub?: string }) {
   return (
     <section className="card">
@@ -152,7 +160,7 @@ function OverviewTab() {
                   <tr key={s.symbol}>
                     <td><SymbolLink symbol={s.symbol} className="font-mono text-xs text-white hover:text-neon-green" /></td>
                     <td>{s.trade_count}</td>
-                    <td className="font-mono text-xs text-white">%{Number(s.win_rate || 0).toFixed(1)}</td>
+                    <td className="font-mono text-xs text-white">{s.win_rate == null ? "—" : `%${Number(s.win_rate).toFixed(1)}`}</td>
                     <td className={`font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
                     <td className="font-mono text-xs text-bunker-muted">{money(s.commission)}</td>
                   </tr>
@@ -179,7 +187,7 @@ function OverviewTab() {
                     <td className="font-mono text-xs text-bunker-muted">{fmtDt(n.detected_at)}</td>
                     <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                     <td className="font-mono text-xs text-bunker-muted">{n.mode || "—"}</td>
-                    <td className="font-mono text-xs text-neon-green">{n.target_pct ? `+%${Number(n.target_pct).toFixed(1)}` : "—"}</td>
+                    <td className={`font-mono text-xs ${n.target_pct ? "text-neon-green" : "text-bunker-muted"}`}>{n.target_pct ? `+%${Number(n.target_pct).toFixed(1)}` : "—"}</td>
                     <td className="font-mono text-xs text-white">{n.mfe_pct != null ? `%${Number(n.mfe_pct).toFixed(2)}` : "—"}</td>
                     <td>
                       {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">TAMAMEN</Badge>
@@ -460,7 +468,7 @@ function VelocityTab() {
                   <tr key={c.candidate_id}>
                     <td className="font-mono text-xs text-bunker-muted">{fmtDt(c.created_at)}</td>
                     <td><SymbolLink symbol={c.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
-                    <td className="font-mono text-xs text-neon-green">+%{Number(c.target_pct || 0).toFixed(2)}</td>
+                    <td className={`font-mono text-xs ${c.target_pct == null ? "text-bunker-muted" : "text-neon-green"}`}>{c.target_pct == null ? "—" : `+%${Number(c.target_pct).toFixed(2)}`}</td>
                     <td className="font-mono text-xs text-white">{c.mfe_pct != null ? `%${Number(c.mfe_pct).toFixed(2)}` : "—"}</td>
                     <td>{c.touched_target ? <Badge tone="ok">EVET</Badge> : c.status === "evaluated" ? <Badge tone="bad">HAYIR</Badge> : <Badge>—</Badge>}</td>
                     <td className="font-mono text-xs text-bunker-muted">{c.status}</td>
@@ -510,7 +518,7 @@ function LlmTab() {
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatCard label="ÖLÇÜLEN" value={String(ev)} />
         <StatCard label="DOĞRU" value={`${ok}/${ev}`} />
-        <StatCard label="YÖN DOĞRULUĞU" value={ev ? pct(r?.directional_accuracy) : "—"} tone={rl(r?.directional_accuracy) >= 0.55 ? "text-neon-green" : "text-yellow-300"} />
+        <StatCard label="YÖN DOĞRULUĞU" value={ev ? pct(r?.directional_accuracy) : "—"} tone={accuracyTone(r?.directional_accuracy, true)} />
         <StatCard label="BEKLEYEN" value={String(rl(r?.pending_count))} />
       </div>
     );
@@ -528,7 +536,7 @@ function LlmTab() {
                 <td className="font-mono text-xs text-white">{h.horizon_minutes} dk</td>
                 <td>{h.evaluated_count || 0}</td>
                 <td>{h.correct_count || 0}</td>
-                <td className={`font-mono text-xs ${rl(h.directional_accuracy) >= 0.55 ? "text-neon-green" : "text-neon-red"}`}>{pct(h.directional_accuracy)}</td>
+                <td className={`font-mono text-xs ${accuracyTone(h.directional_accuracy)}`}>{pct(h.directional_accuracy)}</td>
                 <td className="font-mono text-xs text-bunker-muted">{pct(h.average_return_pct)}</td>
                 <td>{h.pending_count || 0}</td>
               </tr>
@@ -645,7 +653,7 @@ function SelfLearningTab() {
                   <tr key={s.strategy}>
                     <td className="font-mono text-xs text-white">{strategyLabel(s.strategy)}</td>
                     <td>{s.trades}</td>
-                    <td className="font-mono text-xs text-white">%{Number(s.win_rate_pct || 0).toFixed(1)}</td>
+                    <td className="font-mono text-xs text-white">{s.win_rate_pct == null ? "—" : `%${Number(s.win_rate_pct).toFixed(1)}`}</td>
                     <td className={`font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
                     <td className="font-mono text-xs text-bunker-muted">{s.profit_factor != null ? s.profit_factor.toFixed(2) : "—"}</td>
                   </tr>
@@ -687,7 +695,7 @@ function SelfLearningTab() {
                 <p className="mt-1 text-xs text-bunker-muted">{l.lesson || "—"}</p>
                 {l.holdout_accuracy != null && (
                   <p className="mt-1 font-mono text-[10px] text-bunker-muted">
-                    in-sample %{Number((l.in_sample_accuracy || 0) * 100).toFixed(0)} · holdout %{Number((l.holdout_accuracy || 0) * 100).toFixed(0)} · {l.sample_size} örnek
+                    in-sample {l.in_sample_accuracy == null ? "—" : `%${Number(l.in_sample_accuracy * 100).toFixed(0)}`} · holdout %{Number(l.holdout_accuracy * 100).toFixed(0)} · {l.sample_size} örnek
                   </p>
                 )}
               </div>
@@ -947,8 +955,8 @@ function UserRadarTab() {
                         <td className="font-mono text-xs text-bunker-muted">{timeStr}</td>
                         <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                         <td className="font-mono text-xs text-white">{n.price != null ? Number(n.price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
-                        <td className="font-mono text-xs text-neon-green">{n.expected_price != null ? Number(n.expected_price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
-                        <td className="font-mono text-xs text-neon-green">{tgtPct != null ? `+%${tgtPct.toFixed(1)}` : "—"}</td>
+                        <td className={`font-mono text-xs ${n.expected_price != null ? "text-neon-green" : "text-bunker-muted"}`}>{n.expected_price != null ? Number(n.expected_price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
+                        <td className={`font-mono text-xs ${tgtPct != null ? "text-neon-green" : "text-bunker-muted"}`}>{tgtPct != null ? `+%${tgtPct.toFixed(1)}` : "—"}</td>
                         <td className="font-mono text-xs text-white">{n.score != null ? Number(n.score).toFixed(2) : "—"}</td>
                         <td>
                           {n.ml_hit_probability != null ? (

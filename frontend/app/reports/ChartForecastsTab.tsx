@@ -106,12 +106,12 @@ export default function ChartForecastsTab() {
             <StatCard
               title="Yön Doğruluğu"
               value={summary.accuracy != null ? `%${(summary.accuracy * 100).toFixed(1)}` : "—"}
-              tone={summary.accuracy != null && summary.accuracy >= 0.55 ? "text-neon-green" : "text-neon-red"}
+              tone={summary.accuracy == null ? "text-bunker-muted" : summary.accuracy >= 0.55 ? "text-neon-green" : "text-neon-red"}
             />
             <StatCard
               title="Hedef İsabet"
               value={summary.hit_rate != null ? `%${(summary.hit_rate * 100).toFixed(1)}` : "—"}
-              tone={summary.hit_rate != null && summary.hit_rate >= 0.5 ? "text-neon-green" : "text-yellow-300"}
+              tone={summary.hit_rate == null ? "text-bunker-muted" : summary.hit_rate >= 0.5 ? "text-neon-green" : "text-yellow-300"}
             />
           </div>
 
@@ -140,10 +140,10 @@ export default function ChartForecastsTab() {
                         <td>{row.evaluated}</td>
                         <td className="text-neon-green">{row.correct}</td>
                         <td className="text-sky-300">{row.hit}</td>
-                        <td className={row.accuracy != null && row.accuracy >= 0.55 ? "text-neon-green" : "text-neon-red"}>
+                        <td className={row.accuracy == null ? "text-bunker-muted" : row.accuracy >= 0.55 ? "text-neon-green" : "text-neon-red"}>
                           {row.accuracy != null ? `%${(row.accuracy * 100).toFixed(1)}` : "—"}
                         </td>
-                        <td className={row.hit_rate != null && row.hit_rate >= 0.5 ? "text-neon-green" : "text-yellow-300"}>
+                        <td className={row.hit_rate == null ? "text-bunker-muted" : row.hit_rate >= 0.5 ? "text-neon-green" : "text-yellow-300"}>
                           {row.hit_rate != null ? `%${(row.hit_rate * 100).toFixed(1)}` : "—"}
                         </td>
                       </tr>

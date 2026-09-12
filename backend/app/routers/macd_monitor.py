@@ -650,7 +650,8 @@ def _jump_score(strength10, green: int, sigs: dict, cvd: dict) -> int | None:
     return int(min(100.0, score))
 
 
-def _update_jump_arm(row: dict, jump: int | None, jump_min: int, prev_jump: int | None) -> bool:
+def _update_jump_arm(row: dict, jump: int | None, jump_min: int, prev_jump: int | None,
+                     activity_changed: bool = True) -> bool:
     """Histerezisli eşik bayrağını güncelle; alarm basılmalıysa True döner (B6).
 
     - Eşik geçişi (`jump >= jump_min`) bayrağı kurar ve alarm ister; ancak
@@ -659,12 +660,18 @@ def _update_jump_arm(row: dict, jump: int | None, jump_min: int, prev_jump: int 
     - Bayrak, skor temizleme eşiğinin (`jump_min - _JUMP_HYSTERESIS`) altına
       inene kadar kurulu kalır → eşik çevresinde titreyen skor tekrar tekrar
       alarm basmaz (histerezis).
+    - F-01: `activity_changed=False` ise (sembolün kendi raw/sigs/cvd'si
+      değişmedi) eşik geçişi YALNIZCA evren normalizasyonu kaymasından
+      geliyordur → bayrak kurulmaz, alarm basılmaz. Sembolün verisi gerçekten
+      değiştiğinde bir sonraki turda normal şekilde değerlendirilir.
     """
     if jump is None:
         return False
     armed = bool(row.get("jump_armed", False))
     clear = max(0, jump_min - _JUMP_HYSTERESIS)
     if not armed and jump >= jump_min:
+        if not activity_changed:
+            return False
         row["jump_armed"] = True
         return prev_jump is not None
     if armed and jump <= clear:
@@ -900,7 +907,13 @@ async def _maybe_fire_early_alert(symbol: str, pre: dict, settings: dict):
 
 
 def _strength_meta(raw: float | None, lo: float | None, hi: float | None):
-    """Evren içi min-max ile 0-10 güç skoru + GÜÇLÜ/NORMAL/ZAYIF dilimi."""
+    """Evren içi min-max ile 0-10 güç skoru + GÜÇLÜ/NORMAL/ZAYIF dilimi.
+
+    NOT (F-01): Bu fonksiyon GÖRÜNTÜ (display) skorunu üretir ve min-max
+    evren-göreli kalır — `monitoring/page.tsx` `RISING_MIN_STRENGTH=9.8`
+    "evren maksimumu" seçimi bu semantiğe dayanır. Jump/alarm yolu ise
+    `_stable_range` ile beslenir (aşağıya bkz.).
+    """
     if raw is None or lo is None or hi is None:
         return None, None
     if hi > lo:
@@ -915,6 +928,59 @@ def _strength_meta(raw: float | None, lo: float | None, hi: float | None):
     else:
         tier = "normal"
     return score, tier
+
+
+# F-01: jump/alarm normalizasyonu için dayanıklı referans aralığı yüzdelikleri.
+# Tek bir sembolün evrenden düşmesi/eklenmesi referans aralığı (dolayısıyla TÜM
+# sembollerin normalize gücü) neredeyse hiç oynatmaz → hiç değişmeyen sembolde
+# `jump` kendiliğinden yükselip eşiği geçemez (hayalet alarm).
+_STABLE_RANGE_PCTL = 5.0
+_STABLE_RANGE_MIN_N = 20  # altında yüzdelik gürültülü → min/max'a düş
+
+
+def _stable_range(values) -> tuple[float | None, float | None]:
+    """F-01: evren min-max yerine DAYANIKLI yüzdelik aralığı (p5–p95).
+
+    Amaç: alarm yolu (jump) evren kompozisyonu oynadıkça kendi kendine
+    tetiklenmesin. Küçük evrende (n < 20) yüzdelik gürültülü olduğundan
+    min/max'a düşülür; bu durumda hayalet alarmı `_own_activity_changed`
+    kapısı engeller.
+    """
+    clean = sorted(float(v) for v in values if v is not None)
+    n = len(clean)
+    if n == 0:
+        return None, None
+    if n < _STABLE_RANGE_MIN_N:
+        return clean[0], clean[-1]
+    k = (_STABLE_RANGE_PCTL / 100.0) * (n - 1)
+    lo_i = int(round(k))
+    hi_i = int(round((n - 1) - k))
+    if hi_i <= lo_i:
+        return clean[0], clean[-1]
+    return clean[lo_i], clean[hi_i]
+
+
+def _own_activity_changed(row: dict, raw: float | None, sigs, cvd) -> bool:
+    """F-01 ikinci kapı: sembolün KENDİ verisi değişti mi?
+
+    Hayalet alarmın tam tanımı: "hiç değişmeyen sembol için alarm". Sembolün
+    `raw` gücü ve sinyal imzası (sigs/cvd) bir önceki tura göre değişmediyse
+    jump'taki artış YALNIZCA evren normalizasyonundan geliyordur → alarm
+    basılmaz. Gerçek bir kırılım/hacim olayı sigs'i değiştirir; gerçek bir
+    trend hızlanması raw'ı değiştirir; ikisi de bu kapıyı geçer.
+    """
+    prev_raw = row.get("raw")
+    if prev_raw is None or raw is None:
+        return True  # ilk tur / veri yok: kararı `_update_jump_arm` boot kuralı verir
+    try:
+        prev_f = float(prev_raw)
+        cur_f = float(raw)
+    except (TypeError, ValueError):
+        return True
+    if abs(cur_f - prev_f) > max(1e-9, 0.01 * abs(prev_f)):
+        return True
+    return (row.get("sigs") != sigs) or (row.get("cvd") != cvd)
+
 
 
 def _symbol_trend_and_signals(sym: str, snapshot_symbols: dict) -> tuple[dict, dict]:
@@ -1189,6 +1255,8 @@ async def _compute_pass_locked(pass_no: int) -> dict:
         _trend_cache.pop(sym, None)
     raws = [entry["raw"] for entry in raw_map.values()]
     lo, hi = (min(raws), max(raws)) if raws else (None, None)
+    # F-01: alarm yolu için dayanıklı referans aralığı (evren churn'üne karşı).
+    s_lo, s_hi = _stable_range(raws)
     for sym, row in snapshot_symbols.items():
         entry = raw_map.get(sym)
         if not entry:
@@ -1197,9 +1265,16 @@ async def _compute_pass_locked(pass_no: int) -> dict:
         prev_jump = row.get("jump")
         pre_prev = bool(row.get("pre_any"))
         score, tier = _strength_meta(entry["raw"], lo, hi)
-        jump = _jump_score(score, extra.get("green", 0), extra.get("sigs", {}), extra.get("cvd", {}))
         sigs = extra.get("sigs")
         cvd = extra.get("cvd")
+        # F-01: alarm yolu DAYANIKLI referans aralığıyla beslenir; görüntü
+        # skoru (`strength`) ise evren min-max'ta kalır (yukarıya bkz.).
+        stable_score, _ = _strength_meta(entry["raw"], s_lo, s_hi)
+        jump = _jump_score(stable_score if stable_score is not None else score,
+                           extra.get("green", 0), extra.get("sigs", {}), extra.get("cvd", {}))
+        # F-01 ikinci kapı: sembolün KENDİ verisi değişti mi? (row HÂLÂ eski
+        # değerleri taşıyor — `row.update` sonrası hesaplanırsa anlamsız olur.)
+        activity_changed = _own_activity_changed(row, entry["raw"], sigs, cvd)
         pre = extra.get("pre") or {}
         pre_any = bool(extra.get("pre_any"))
         pre_detail = extra.get("pre_detail") or {}
@@ -1216,6 +1291,7 @@ async def _compute_pass_locked(pass_no: int) -> dict:
             "r2": round(entry["r2"], 3),
             "speed": round(entry["speed"], 4) if entry["speed"] is not None else None,
             "dir": round(entry["dir"], 4) if entry.get("dir") is not None else None,
+            "raw": entry["raw"],
             "sigs": sigs,
             "cvd": cvd,
             "jump": jump,
@@ -1237,7 +1313,8 @@ async def _compute_pass_locked(pass_no: int) -> dict:
             pass_changed.add(sym)
         row.update(updated)
         # KIRILIM aşaması: skor eşik GEÇİŞİ + histerezis (başlangıçta sessiz)
-        if alerts_enabled and _update_jump_arm(row, jump, jump_min, prev_jump):
+        if alerts_enabled and _update_jump_arm(row, jump, jump_min, prev_jump,
+                                               activity_changed):
             await _maybe_fire_jump_alert(sym, jump, jump_min, settings)
         # YAKLAŞIYOR aşaması: erken öncü sinyal. Tetik: pre_any 0→1 VEYA mevcut
         # kümeye YENİ bir öncü eklendi (B5 — eski 0→1 kenarı yeni öncüyü yutardı).
