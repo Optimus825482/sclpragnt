@@ -12,8 +12,10 @@ type Trade = {
     entry_price: number;
     exit_price: number;
     quantity: number;
-    pnl: number;
-    pnl_pct: number;
+    // H-02: backend bazı legacy/onarım kayıtlarında null dönebilir; null'u 0
+    // sayıp yeşile boyamak yasak (proje kuralı: veri yok = nötr).
+    pnl: number | null;
+    pnl_pct: number | null;
     commission?: number;
     reason?: string;
     entry_time: number;
@@ -48,9 +50,18 @@ export default function HistoryPage() {
     const safePage = Math.min(page, pageCount - 1);
     const pageRows = trades.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
-    const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
-    const wins = trades.filter((t) => t.pnl > 0).length;
-    const winRate = trades.length ? (wins / trades.length) * 100 : 0;
+    // H-02: null PnL'i 0 sayıp yeşile boyamak yasak (yukarıdaki tip notu).
+    // Yalnız ÖLÇÜLEBİLİR (sonlu) PnL değerleri toplanır; hiç ölçülebilir satır
+    // yoksa toplam `null` (nötr), işlem yoksa meşru olarak 0.
+    const pnlValues = trades
+        .map((t) => t.pnl)
+        .filter((v): v is number => v != null && Number.isFinite(v));
+    const totalPnl: number | null = trades.length === 0
+        ? 0
+        : pnlValues.length === 0 ? null : pnlValues.reduce((s, v) => s + v, 0);
+    const wins = pnlValues.filter((v) => v > 0).length;
+    // Oran yalnız ölçülebilir işlemler üzerinden hesaplanır (payda = pnlValues).
+    const winRate: number | null = pnlValues.length ? (wins / pnlValues.length) * 100 : null;
     const formatCurrency = (v: number) => {
         const abs = Math.abs(v);
         const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -78,17 +89,17 @@ export default function HistoryPage() {
                 </div>
                 <div className="card">
                     <p className="eyebrow">GERÇEKLEŞMİŞ PnL</p>
-                    <p className={`font-mono text-2xl font-bold mt-1 ${totalPnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                        {formatCurrency(totalPnl)}
+                    <p className={`font-mono text-2xl font-bold mt-1 ${totalPnl == null ? "text-bunker-muted" : totalPnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                        {totalPnl == null ? "—" : formatCurrency(totalPnl)}
                     </p>
                 </div>
                 <div className="card">
                     <p className="eyebrow">KAZANAN</p>
-                    <p className="font-mono text-2xl font-bold text-neon-green mt-1">{wins}</p>
+                    <p className={`font-mono text-2xl font-bold mt-1 ${wins > 0 ? "text-neon-green" : "text-bunker-muted"}`}>{pnlValues.length === 0 ? "—" : wins}</p>
                 </div>
                 <div className="card">
                     <p className="eyebrow">KAZANMA ORANI</p>
-                    <p className="font-mono text-2xl font-bold text-white mt-1">%{winRate.toFixed(1)}</p>
+                    <p className={`font-mono text-2xl font-bold mt-1 ${winRate == null ? "text-bunker-muted" : "text-white"}`}>{winRate == null ? "—" : `%${winRate.toFixed(1)}`}</p>
                 </div>
             </div>
 
@@ -133,12 +144,12 @@ export default function HistoryPage() {
                                     <td className="p-3 text-bunker-muted">₺{formatPrice(t.entry_price)}</td>
                                     <td className="p-3 text-bunker-muted">₺{formatPrice(t.exit_price)}</td>
                                     <td className="p-3 text-bunker-muted">{t.quantity.toFixed(6)}</td>
-                                    <td className="p-3 text-neon-yellow">{formatCurrency(t.commission ?? 0)}</td>
-                                    <td className={`p-3 font-bold ${t.pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                                        {formatCurrency(t.pnl)}
+                                    <td className="p-3 text-neon-yellow">{t.commission == null ? "—" : formatCurrency(t.commission)}</td>
+                                    <td className={`p-3 font-bold ${t.pnl == null ? "text-bunker-muted" : t.pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                                        {t.pnl == null ? "—" : formatCurrency(t.pnl)}
                                     </td>
-                                    <td className={`p-3 font-bold ${t.pnl_pct >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                                        {t.pnl_pct > 0 ? "+" : ""}{t.pnl_pct.toFixed(2)}%
+                                    <td className={`p-3 font-bold ${t.pnl_pct == null ? "text-bunker-muted" : t.pnl_pct >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                                        {t.pnl_pct == null ? "—" : `${t.pnl_pct > 0 ? "+" : ""}${t.pnl_pct.toFixed(2)}%`}
                                     </td>
                                     <td className="p-3 text-neon-yellow text-xs whitespace-nowrap">{t.reason || "-"}</td>
                                     <td className="p-3 text-bunker-muted text-xs">{fmtTime(t.entry_time)}</td>

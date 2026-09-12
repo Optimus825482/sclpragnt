@@ -251,7 +251,7 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
           </div>
           <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 px-3 py-2 text-center">
             <p className="eyebrow">HEDEF (5/15dk)</p>
-            <p className="mt-1 font-mono text-lg font-bold text-neon-green">{validTarget ? `+%${targetPct.toFixed(1)}` : "—"}</p>
+            <p className={`mt-1 font-mono text-lg font-bold ${validTarget ? "text-neon-green" : "text-bunker-muted"}`}>{validTarget ? `+%${targetPct.toFixed(1)}` : "—"}</p>
           </div>
           <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
             <p className="eyebrow">ANLIK</p>
@@ -279,7 +279,7 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
               {Object.values(c.profiles).map((p) => (
                 <div key={p.horizon_minutes} className={`flex items-center justify-between rounded border px-2.5 py-1.5 font-mono text-[11px] ${p.passes ? "border-neon-green/30 bg-neon-green/5" : "border-bunker-800 bg-bunker-900/40"}`}>
                   <span className="font-bold text-white">{p.horizon_minutes}dk</span>
-                  <span className="text-bunker-muted">hedef <b className="text-neon-green">+%{Number(p.target_pct ?? 0).toFixed(1)}</b></span>
+                  <span className="text-bunker-muted">hedef <b className={p.target_pct == null ? "text-bunker-muted" : "text-neon-green"}>{p.target_pct == null ? "—" : `+%${Number(p.target_pct).toFixed(1)}`}</b></span>
                   <span className="text-bunker-muted">skor <b className="text-white">{panelScore({ velocity_score: p.velocity_score }).toFixed(1)}</b></span>
                   <span className={p.passes ? "text-neon-green" : "text-neon-red"}>{p.passes ? "GEÇTİ" : (blockReasonLabel(p.block_reason) ?? "İZLE")}</span>
                 </div>
@@ -628,7 +628,7 @@ export default function MonitoringPage() {
                     </div>
                     <div className="text-right">
                       <p className="font-mono text-xs text-bunker-muted">HEDEF</p>
-                      <p className="font-mono text-sm font-bold text-neon-green">{validTarget ? `+%${targetPct.toFixed(1)}` : "—"}</p>
+                      <p className={`font-mono text-sm font-bold ${validTarget ? "text-neon-green" : "text-bunker-muted"}`}>{validTarget ? `+%${targetPct.toFixed(1)}` : "—"}</p>
                     </div>
                     <span className="font-mono text-xs text-bunker-muted">›</span>
                   </div>

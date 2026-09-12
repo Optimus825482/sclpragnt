@@ -11,6 +11,8 @@ import { API_BASE, apiRequest } from "./lib/api";
 import { useAuth } from "./lib/auth";
 import { useLiveMessages as useLiveSocketMessages, useLiveStatus } from "./lib/liveSocket";
 import { useUiMode } from "./lib/ui-mode";
+import { formatPrice } from "./lib/format";
+import { netOpenPnlPct, netOpenPnlTry } from "./lib/pnl";
 
 /* ============== TİPLER ============== */
 type DashboardSummary = {
@@ -26,7 +28,7 @@ type LiveSignal = { id?: number; symbol: string; action: string; price?: number;
 
 /* ============== YARDIMCILAR ============== */
 const money = (v?: number | null) =>
-  v == null ? "0,00" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  v == null ? "—" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const signedMoney = (v?: number | null) =>
   v == null ? "—" : `${v < 0 ? "-" : ""}${Math.abs(v).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtTime = (ts?: number | null) => {
@@ -88,8 +90,12 @@ export default function Home() {
   const s = summary;
   // Özet henüz yüklenmediyse (s == null) nötr renk: eskiden bu durum KIRMIZI
   // gösteriyordu, yani sayfa açılırken "zarar" izlenimi oluşuyordu.
-  const pnlTone = !s ? "text-bunker-muted" : s.auto_paper_today.pnl >= 0 ? "text-neon-green" : "text-neon-red";
-  const apPnl = s?.auto_paper_today.pnl ?? 0;
+  // H-02: PnL alanı `null` ise de NÖTR — 0 sayıp yeşile boyamak yasak.
+  const apTodayPnl = s?.auto_paper_today.pnl ?? null;
+  const pnlTone = apTodayPnl == null
+    ? "text-bunker-muted"
+    : apTodayPnl >= 0 ? "text-neon-green" : "text-neon-red";
+  const apPnl = apTodayPnl;
 
   return (
     <div className="mx-auto max-w-7xl space-y-5">
@@ -133,17 +139,25 @@ export default function Home() {
           <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {autoPaperOpen.map((t) => {
               const entry = Number(t.entry_price);
-              const current = Number(t.current_price) > 0 ? Number(t.current_price) : entry;
-              const pnl = (current - entry) * Number(t.quantity);
-              const pnlPct = entry > 0 ? ((current - entry) / entry * 100) : 0;
+              // H-02: ticker yoksa güncel fiyat `null` — entry'ye düşürmek
+              // sahte "%0,00 yeşil" üretirdi.
+              const current = Number(t.current_price) > 0 ? Number(t.current_price) : null;
+              // H-01: net (gidiş-dönüş komisyonu düşülmüş) — backend ile aynı.
+              const pnl = netOpenPnlTry(t.entry_price, t.current_price, t.quantity);
+              const pnlPct = netOpenPnlPct(t.entry_price, t.current_price, t.quantity);
+              const toneClass = pnl == null || pnlPct == null
+                ? "text-bunker-muted"
+                : pnl >= 0 ? "text-neon-green" : "text-neon-red";
               return (
                 <div key={t.id} className="rounded-lg border border-bunker-700 bg-bunker-900/60 p-3">
                   <p className="font-mono font-bold text-white">{t.symbol}</p>
-                  <p className={`mt-1 font-mono text-sm ${pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                    {pnl >= 0 ? "+" : ""}{pnlPct.toFixed(2)}% · ₺{signedMoney(pnl)}
+                  <p className={`mt-1 font-mono text-sm ${toneClass}`}>
+                    {pnlPct == null || pnl == null
+                      ? "—"
+                      : `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% · ₺${signedMoney(pnl)}`}
                   </p>
                   <p className="mt-0.5 font-mono text-[10px] text-bunker-muted">
-                    TP {Number(t.take_profit || 0).toFixed(2)} · SL {Number(t.stop_loss || 0).toFixed(2)}
+                    {current == null ? "güncel fiyat bekleniyor" : `güncel ${formatPrice(current)}`} · TP {t.take_profit ? Number(t.take_profit).toFixed(2) : "—"} · SL {t.stop_loss ? Number(t.stop_loss).toFixed(2) : "—"}
                   </p>
                 </div>
               );

@@ -463,6 +463,12 @@ def load_model(max_age_seconds: int = 86400) -> dict[str, Any] | None:
     ayrıca (I-04 follow-up) `training_bar_minutes` = TRAINING_BAR_MINUTES
     doğrulanır. Aksi halde predict_target kolonları anlamsız sırada kurar ve
     model "sayı üretmeye devam eder". Uyuşmazlıkta `None` döner + hata loglar.
+
+    Geriye uyumluluk (2026-09-12 üretim regresyonu): W3 öncesi üretilmiş
+    artifact'larda `training_bar_minutes` alanı YOKTUR. Bu alan yoksa (None)
+    eski artifact'lar da zaten 5m kapanmış barlarla eğitildiği için kabul
+    edilir; yalnızca alan MEVCUT ve farklıysa reddedilir. Böylece mevcut
+    üretim artifact'ı (upside_v3.joblib) silinip yeniden eğitilmeden çalışır.
     """
     import joblib
     now = time.time()
@@ -472,9 +478,11 @@ def load_model(max_age_seconds: int = 86400) -> dict[str, Any] | None:
     if not os.path.exists(path):
         return None
     artifact = joblib.load(path)
+    training_bars = artifact.get("training_bar_minutes")
+    training_ok = training_bars is None or int(training_bars) == TRAINING_BAR_MINUTES
     if artifact.get("feature_version") != FEATURE_VERSION \
             or artifact.get("feature_names") != FEATURE_NAMES \
-            or int(artifact.get("training_bar_minutes") or 0) != TRAINING_BAR_MINUTES:
+            or not training_ok:
         logger.error("[ML] artifact uyumsuz (I-05): %s; feature_version=%r feature_names=%r training=%r",
                      path, artifact.get("feature_version"), artifact.get("feature_names"),
                      artifact.get("training_bar_minutes"))

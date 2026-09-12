@@ -14,10 +14,21 @@ export default function LiveTerminal() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const liveStatus = useLiveStatus();
   // Guarded formatters: a malformed WS/API payload must not crash the page.
-  const safeNumber = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  // H-02: veri yoksa (null/NaN) "—" ve NÖTR renk. Eskiden `safeNumber` null'u
+  // 0'a çeviriyordu → ölçülmemiş bir pozisyon yeşil "+0,00%" görünüyordu.
   const pctText = (pct: unknown) => {
-    const value = safeNumber(pct);
+    if (pct == null || !Number.isFinite(Number(pct))) return "—";
+    const value = Number(pct);
     return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+  };
+  const pnlColor = (pnl: unknown) =>
+    pnl == null || !Number.isFinite(Number(pnl))
+      ? "text-bunker-muted"
+      : Number(pnl) >= 0 ? "text-neon-green" : "text-neon-red";
+  const tryText = (v: unknown) => {
+    if (v == null || !Number.isFinite(Number(v))) return "—";
+    const value = Number(v);
+    return `${value >= 0 ? "+" : "-"}₺${formatTL(Math.abs(value))}`;
   };
   const logEndRef = useRef<HTMLDivElement | null>(null);
   const onLiveMessage = useCallback((msg: any) => {
@@ -51,12 +62,20 @@ export default function LiveTerminal() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [signals]);
 
-  const pnlColor = (pnl: number) => pnl >= 0 ? "text-neon-green" : "text-neon-red";
-  const openPnl = portfolio?.positions.reduce((total, position) => total + (position.pnl_try ?? 0), 0) ?? 0;
+  // H-02: pnl_try'si olmayan pozisyon toplama 0 olarak girmez; hiçbiri yoksa
+  // toplam `null` → "—" gösterilir (0 → sahte "başabaş" demek olurdu).
+  const openPnl = (() => {
+    const values = (portfolio?.positions || [])
+      .map((position) => position.pnl_try)
+      .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+    if (values.length === 0) return null;
+    return values.reduce((total, v) => total + v, 0);
+  })();
 
   const pricePrec = (v: number) => { const a = Math.abs(v); return a < 1 ? 8 : a < 100 ? 4 : a < 1000 ? 3 : 2; };
-  const formatTL = (v?: number) =>
-    v == null ? "0,00" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: Math.max(2, pricePrec(v)) });
+  const formatTL = (v?: number | null) =>
+    v == null ? "—" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: Math.max(2, pricePrec(v)) });
+  const tryAmount = (v?: number | null) => (v == null ? "—" : `₺${formatTL(v)}`);
 
   return (
     <div className="live-terminal grid lg:grid-cols-3 gap-6">
@@ -65,13 +84,13 @@ export default function LiveTerminal() {
           <div>
             <p className="eyebrow text-bunker-muted">SANAL PORTFÖY (PAPER)</p>
             <p className="font-mono text-3xl font-bold text-white mt-1">
-              ₺{formatTL(portfolio?.total_value)}
+              {tryAmount(portfolio?.total_value)}
             </p>
           </div>
           <div className="text-right">
             <p className="eyebrow text-bunker-muted">MEVCUT TL</p>
             <p className="font-mono text-xl text-neon-green mt-1">
-              ₺{formatTL(portfolio?.try)}
+              {tryAmount(portfolio?.try)}
             </p>
           </div>
         </div >
@@ -107,7 +126,7 @@ export default function LiveTerminal() {
             <div className="text-right font-mono">
               <p className="text-[10px] text-bunker-muted">TOPLAM PnL</p>
               <p className={`text-sm font-bold ${pnlColor(openPnl)}`}>
-                {openPnl >= 0 ? "+" : ""}₺{formatTL(openPnl)}
+                {openPnl == null ? "—" : `${openPnl >= 0 ? "+" : "-"}₺${formatTL(Math.abs(openPnl))}`}
               </p>
             </div>
           </div>
@@ -117,7 +136,7 @@ export default function LiveTerminal() {
               <div key={p.symbol} className="bg-bunker-950 p-4 rounded-lg border border-bunker-800">
                 <div className="flex justify-between mb-2">
                   <SymbolLink symbol={p.symbol} className="font-bold text-white hover:text-neon-green" />
-                  <span className={`font-mono ${pnlColor(safeNumber(p.pnl_pct))}`}>
+                  <span className={`font-mono ${pnlColor(p.pnl_pct)}`}>
                     {pctText(p.pnl_pct)}
                   </span>
                 </div>
@@ -126,7 +145,7 @@ export default function LiveTerminal() {
                   <span>Anlık: ₺{p.current.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
                 <div className="mt-2 text-xs text-right text-bunker-muted font-mono">
-                  PnL: <span className={pnlColor(safeNumber(p.pnl_pct))}>{(p.pnl_try ?? 0) >= 0 ? "+" : ""}₺{formatTL(p.pnl_try)}</span> · {pctText(p.pnl_pct)}
+                  PnL: <span className={pnlColor(p.pnl_try)}>{tryText(p.pnl_try)}</span> · {pctText(p.pnl_pct)}
                 </div>
                 <div className="mt-1 text-xs text-bunker-muted font-mono">Sinyal: {p.strategy || "—"}</div>
                 <div className="mt-1 text-xs text-right text-bunker-muted font-mono">

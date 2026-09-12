@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 from app.config import config
+from app.forecast_learning import outcome_window_seconds
 
 logger = logging.getLogger("scalper.database")
 
@@ -817,6 +818,52 @@ async def list_macd_monitor_alerts(limit: int = 100, symbol: str | None = None) 
     return await _run_db(op)
 
 
+_MACD_BAR_MS = 5 * 60_000  # historical_candles yalnız kapanmış 5m bar tutar
+
+
+def _macd_forward_outcomes(rows, base: float, t0_ms: float, now_ms: float):
+    """F-02: alarmın 5m/15m/30m ileri getirisi + MFE/MAE (saf fonksiyon).
+
+    `rows`: [(open_time_ms, high, low, close)] — 5m kapanmış mumlar.
+    Dönüş: (updates, mfe, mae) — `updates` YALNIZ hedef ana gerçekten
+    ulaşılmış ufukları içerir.
+
+    Eski hata: `candidates = [close for ... if stamp <= target]` hedef ana
+    ulaşılıp ulaşılmadığını kontrol etmiyordu. Pencere henüz dolmamışken
+    (ör. 4,5 dk geçmiş) 5m/15m/30m hepsi SON mumun AYNI kapanışını alıyor ve
+    satır 'filled' olarak mühürleniyordu → tüm LIFT/isabet ölçümü çöp.
+
+    Yeni kural: bir ufuk ancak kapanışı hedefi KAPSAYAN (open_time + bar_ms >=
+    target) ve o bar KAPANMIŞ (open_time + bar_ms <= now) ise yazılır.
+    """
+    updates: dict[str, float] = {}
+    for name, minutes in _MACD_HORIZON_MINUTES:
+        column = f"outcome_{name}_pct"
+        target = t0_ms + minutes * 60_000
+        covered = [r for r in rows if r[0] <= target]
+        if not covered:
+            continue
+        stamp, _high, _low, close = covered[-1]
+        if stamp + _MACD_BAR_MS < target:
+            continue
+        if stamp + _MACD_BAR_MS > now_ms:
+            continue
+        updates[column] = (close / base - 1.0) * 100.0
+    # MFE/MAE: yalnız alarm SONRASI barlar (t0'dan sonra açılanlar) — alarm
+    # anını içeren kısmi barın uçları geriye dönük olduğundan ölçüye katılmaz.
+    window_end_ms = t0_ms + 30 * 60_000
+    after = [(high, low) for stamp, high, low, _close in rows
+             if t0_ms < stamp <= window_end_ms]
+    mfe = mae = None
+    highs_after = [high for high, _low in after if high > 0]
+    lows_after = [low for _high, low in after if low > 0]
+    if highs_after:
+        mfe = (max(highs_after) / base - 1.0) * 100.0
+    if lows_after:
+        mae = (min(lows_after) / base - 1.0) * 100.0
+    return updates, mfe, mae
+
+
 async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
     """Bekleyen alarmların 5m/15m/30m ileri getirilerini + MFE/MAE'yi doldur.
 
@@ -831,8 +878,6 @@ async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
     A2: alarmın 5m kovası için evren tabanı (baseline) üretilir; lift hesabı
     `macd_monitor_alert_stats` içinde bu tabana göre yapılır.
     """
-    horizons = (("outcome_5m_pct", 5), ("outcome_15m_pct", 15), ("outcome_30m_pct", 30))
-
     def op(conn):
         _ensure_macd_evidence_schema(conn)
         pending = conn.execute(
@@ -870,26 +915,9 @@ async def fill_macd_monitor_alert_outcomes(limit: int = 500) -> int:
             base = float(base_price) if base_price else rows[0][3]
             if base <= 0:
                 continue
-            updates = {}
-            for column, minutes in horizons:
-                target = t0_ms + minutes * 60_000
-                candidates = [close for stamp, _h, _l, close in rows if stamp <= target]
-                if not candidates:
-                    continue
-                updates[column] = (candidates[-1] / base - 1.0) * 100.0
-            # MFE/MAE: yalnız alarm SONRASI barlar (t0'dan sonra açılanlar) —
-            # alarm anını içeren kısmi barın uçları geriye dönük olduğundan
-            # ölçüye katılmaz (aksi halde MFE/MAE yapay şişerdi).
-            after = [(high, low) for stamp, high, low, _close in rows
-                     if t0_ms < stamp <= window_end_ms]
-            mfe = mae = None
-            highs_after = [high for high, _low in after if high > 0]
-            lows_after = [low for _high, low in after if low > 0]
-            if highs_after:
-                mfe = (max(highs_after) / base - 1.0) * 100.0
-            if lows_after:
-                mae = (min(lows_after) / base - 1.0) * 100.0
-            if len(updates) == len(horizons):
+            # F-02: saf yardımcı — yalnız hedef ana ulaşılmış ufukları üretir.
+            updates, mfe, mae = _macd_forward_outcomes(rows, base, t0_ms, now * 1000.0)
+            if len(updates) == len(_MACD_HORIZON_MINUTES):
                 conn.execute(
                     "UPDATE macd_monitor_alerts SET outcome_5m_pct=?, outcome_15m_pct=?, "
                     "outcome_30m_pct=?, mfe_pct=?, mae_pct=?, outcome_state='filled', "
@@ -2057,13 +2085,28 @@ async def save_llm_forecasts(rows):
     return await _run_db(op)
 
 
-async def get_pending_llm_forecasts(now=None, limit=200):
+async def get_pending_llm_forecasts(now=None, limit=200, grace_minutes=None):
+    """Ufku VE gözlem penceresi dolmuş, henüz değerlendirilmemiş tahminler.
+
+    TAH-02: satır, ufuk kapanır kapanmaz değil; `ufuk + effective_grace`
+    dolduktan SONRA değerlendirmeye alınır. Böylece ölçüm süpürücünün ne zaman
+    çalıştığına bağlı olmaktan çıkar (aynı tahmin her koşulda aynı sonucu verir).
+    """
     now = float(now if now is not None else time.time())
+    if grace_minutes is None:
+        grace_minutes = getattr(config, "LLM_FORECAST_HIT_GRACE_MINUTES", 0)
     def op(conn):
         rows = conn.execute("""SELECT * FROM llm_forecasts
             WHERE status='pending' AND created_at + horizon_minutes * 60 <= ?
             ORDER BY created_at ASC LIMIT ?""", (now, max(1, min(int(limit), 500)))).fetchall()
-        return [_forecast_row(row) for row in rows]
+        out = []
+        for row in rows:
+            item = _forecast_row(row)
+            horizon = int(item.get("horizon_minutes") or 0)
+            if float(item.get("created_at") or 0) + outcome_window_seconds(
+                    horizon, grace_minutes) <= now:
+                out.append(item)
+        return out
     return await _run_db(op)
 
 
@@ -2290,13 +2333,23 @@ async def save_chat_predictions(rows):
     return await _run_db(op)
 
 
-async def get_pending_chat_predictions(now=None, limit=100):
+async def get_pending_chat_predictions(now=None, limit=100, grace_minutes=None):
+    """Sohbet tahminleri için bkz. `get_pending_llm_forecasts` (TAH-02 aynı kural)."""
     now = float(now if now is not None else time.time())
+    if grace_minutes is None:
+        grace_minutes = getattr(config, "LLM_FORECAST_HIT_GRACE_MINUTES", 0)
     def op(conn):
         rows = conn.execute("""SELECT * FROM chat_predictions
             WHERE status='pending' AND created_at + horizon_minutes * 60 <= ?
             ORDER BY created_at ASC LIMIT ?""", (now, max(1, min(int(limit), 500)))).fetchall()
-        return [_prediction_row(row) for row in rows]
+        out = []
+        for row in rows:
+            item = _prediction_row(row)
+            horizon = int(item.get("horizon_minutes") or 0)
+            if float(item.get("created_at") or 0) + outcome_window_seconds(
+                    horizon, grace_minutes) <= now:
+                out.append(item)
+        return out
     return await _run_db(op)
 
 

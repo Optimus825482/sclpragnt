@@ -738,7 +738,7 @@ function ChatPageInner() {
                 <div>
                   <p className="eyebrow">CANLI FİYAT · {livePriceWatch.symbol}</p>
                   <strong>{Number.isFinite(livePriceWatch.price) ? livePriceWatch.price?.toLocaleString("tr-TR", { maximumFractionDigits: 8 }) : "Bağlanıyor…"}</strong>
-                  <span className={(livePriceWatch.changePct || 0) >= 0 ? "text-neon-green" : "text-neon-red"}>
+                  <span className={livePriceWatch.changePct == null || !Number.isFinite(livePriceWatch.changePct) ? "text-bunker-muted" : livePriceWatch.changePct >= 0 ? "text-neon-green" : "text-neon-red"}>
                     {Number.isFinite(livePriceWatch.changePct) ? `%${(livePriceWatch.changePct || 0) >= 0 ? "+" : ""}${livePriceWatch.changePct?.toFixed(3)}` : ""}
                   </span>
                 </div>

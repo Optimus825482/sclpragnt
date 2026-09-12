@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { WS_URL } from "./api";
+import { applyCommissionPct } from "./pnl";
 
 export type LiveMessage<T = unknown> = { type: string; data: T };
 export type LiveStatus = "connecting" | "open" | "closed";
@@ -31,6 +32,11 @@ function connect() {
     if (socket !== instance) return;
     try {
       const message = JSON.parse(event.data) as LiveMessage;
+      // H-01: komisyon oranı backend'den tek noktadan senkronlanır → tüm
+      // sayfalar açık pozisyon K/Z'sini aynı (net) esasla hesaplar.
+      if (message?.type === "portfolio") {
+        applyCommissionPct((message.data as { commission_pct?: unknown } | null)?.commission_pct);
+      }
       if (message?.type) messageListeners.forEach((listener) => listener(message));
     } catch {
       // Ignore malformed messages without taking the shared live channel down.

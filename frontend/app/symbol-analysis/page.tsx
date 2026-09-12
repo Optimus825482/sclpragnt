@@ -130,8 +130,8 @@ export default function SymbolAnalysisPage() {
       {jq && <div className="flex flex-wrap gap-2 text-xs">
         <Badge tone="neutral">Öğrenilmiş profil: {jq.evaluated} ölçüm</Badge>
         <Badge tone={(jq.touched || 0) > 0 ? "positive" : "warning"}>{jq.touched} dokunuş</Badge>
-        <Badge tone={(jq.avg_mfe_pct || 0) >= 2 ? "positive" : (jq.avg_mfe_pct || 0) >= 0.8 ? "warning" : "negative"}>
-          ort. MFE %{Number(jq.avg_mfe_pct).toFixed(2)}
+        <Badge tone={jq.avg_mfe_pct == null ? "neutral" : jq.avg_mfe_pct >= 2 ? "positive" : jq.avg_mfe_pct >= 0.8 ? "warning" : "negative"}>
+          ort. MFE {jq.avg_mfe_pct == null ? "—" : `%${Number(jq.avg_mfe_pct).toFixed(2)}`}
         </Badge>
         <span className="text-bunker-500 self-center">— sistem bu sembolde öğrendikleriyle güveni kalibre eder</span>
       </div>}

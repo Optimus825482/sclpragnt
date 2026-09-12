@@ -479,6 +479,13 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "velocity_score": velocity_score, "passes": passes,
                     "block_reason": block_reason,
                     "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
+                    # ML-01: gölge ML tahmininin girdisi. Bu sözlük KAPANMIŞ 5m
+                    # seriden üretilir (eğitimle aynı dayanak). Aday satırındaki
+                    # `atr_pct`/`ret3_pct`/`rsi`... ise 1m serisindendir (tarama
+                    # eşikleri için kalibrasyonlu) — ML çıkarımında KULLANILMAZ.
+                    # Tek doğruluk kaynağı burasıdır; tüketiciler (llm_chat)
+                    # bunu doğrudan `predict_target`e geçirmelidir.
+                    "ml_features_5m": m5_ml_features,
                     "m1_atr_prev": round(m1_atr_prev, 3) if m1_atr_prev is not None else None,
                     "m3_atr_prev": round(m3_atr_prev, 3) if m3_atr_prev is not None else None,
                     "leading_ok": leading_ok,

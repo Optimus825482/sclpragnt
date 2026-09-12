@@ -1057,11 +1057,11 @@ function AutoPaperSettingsPanel() {
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Başarı</p>
-            <p className={`text-lg font-mono ${stats.win_rate >= 50 ? "text-neon-green" : "text-neon-red"}`}>%{stats.win_rate}</p>
+            <p className={`text-lg font-mono ${stats.win_rate == null ? "text-bunker-muted" : stats.win_rate >= 50 ? "text-neon-green" : "text-neon-red"}`}>{stats.win_rate == null ? "—" : `%${stats.win_rate}`}</p>
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Net PnL</p>
-            <p className={`text-lg font-mono ${stats.total_pnl_try >= 0 ? "text-neon-green" : "text-neon-red"}`}>{stats.total_pnl_try >= 0 ? "+" : ""}{stats.total_pnl_try.toFixed(2)}₺</p>
+            <p className={`text-lg font-mono ${stats.total_pnl_try == null ? "text-bunker-muted" : stats.total_pnl_try >= 0 ? "text-neon-green" : "text-neon-red"}`}>{stats.total_pnl_try == null ? "—" : `${stats.total_pnl_try >= 0 ? "+" : ""}${stats.total_pnl_try.toFixed(2)}₺`}</p>
           </div>
           <div className="rounded border border-bunker-700 bg-bunker-900 p-3">
             <p className="eyebrow">Kazanan</p>

@@ -39,7 +39,8 @@ from app import ml_forecast
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app.forecast_learning import (normalize_direction, evaluate_forecast,
-                                   derive_lessons, mine_target_patterns)
+                                   derive_lessons, mine_target_patterns,
+                                   effective_hit_grace_minutes, outcome_window_seconds)
 from app import agent_learning
 import uuid
 import hashlib
@@ -334,6 +335,13 @@ async def llm_position_manager_loop():
             print(f"[LLM position manager] döngü hatası: {exc}")
         await asyncio.sleep(60)
 
+# TAH-02: pencereyi kapsayan kapanmış mum verisi yoksa satır hemen mühürlenmez;
+# en fazla bu süre boyunca yeniden denenir (veri sağlayıcı gecikmesi / geçici
+# REST hatası). Süre dolduğunda eldeki veriyle best-effort mühürlenir ve durum
+# loglanır — satır sonsuza dek pending kalmaz.
+_OUTCOME_MAX_DEFER_SEC = 6 * 3600
+
+
 async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
     """Return a causal outcome only when the requested horizon has closed.
 
@@ -341,15 +349,18 @@ async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
     gelip config.SYMBOLS'ta olmayabilir) kapanmış mumlar REST'ten getirilir —
     aksi halde bu öngörüler sonsuza dek 'pending' kalıyordu.
 
-    Ufuk kapanışı sonrası LLM_FORECAST_HIT_GRACE_MINUTES dakikalık ek gözlem
-    penceresinde hedef fiyatı izlenir; ilk dokunuş dakikası first_hit_minutes
-    olarak döner (hedefe hiç ulaşılmadıysa None). Yön/aralık doğruluğu ve
-    MFE/MAE yalnızca ufuk penceresinden hesaplanmaya devam eder.
+    TAH-02: gözlem penceresi artık `effective_hit_grace_minutes` ile ufka göre
+    SINIRLANIR (grace ≤ ufuk) ve çağıran taraf pencere DOLMADAN satırı
+    değerlendirmeye almaz (`database.get_pending_*`). Böylece ölçüm süpürücü
+    gecikmesinden bağımsızdır; 5 dakikalık tahmin 19. dakikada "tuttu"
+    sayılamaz. Pencereyi kapsayan veri yoksa ölçüm UYDURULMAZ — satır pending
+    kalır (bounded deferral sonrası best-effort mühürlenir ve loglanır).
     """
     created_at_ms = int(float(forecast["created_at"]) * 1000)
     horizon_minutes = int(forecast["horizon_minutes"])
     due_at_ms = created_at_ms + horizon_minutes * 60_000
-    grace_minutes = max(0, int(getattr(config, "LLM_FORECAST_HIT_GRACE_MINUTES", 0)))
+    grace_minutes = effective_hit_grace_minutes(
+        horizon_minutes, getattr(config, "LLM_FORECAST_HIT_GRACE_MINUTES", 0))
     grace_end_ms = due_at_ms + grace_minutes * 60_000
     bars = market.get_ut_kline(symbol, "1m") or {}
     timestamps = list(bars.get("timestamps") or [])
@@ -373,6 +384,12 @@ async def _forecast_outcome_from_closed_m1(symbol: str, forecast: dict):
             lows = [float(r[3]) for r in rows]
     if min(len(timestamps), len(closes), len(highs), len(lows)) < 2:
         return None
+    # TAH-02: pencereyi kapsamayan veriyle ölçüm yapma (yanlış negatif üretme).
+    if int(timestamps[-1]) + 59_999 < grace_end_ms:
+        if time.time() * 1000.0 < grace_end_ms + _OUTCOME_MAX_DEFER_SEC * 1000.0:
+            return None
+        logger.warning("TAH-02: %s pencere verisi eksik (grace_end=%s son_bar=%s) — "
+                       "best-effort mühürleniyor", symbol, int(grace_end_ms), int(timestamps[-1]))
     close_times = [int(value) + 59_999 for value in timestamps]
     end_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= due_at_ms), None)
     start_index = next((index for index, closed_at in enumerate(close_times) if closed_at >= created_at_ms), None)
@@ -794,6 +811,9 @@ async def _upside_scout_impl():
                 "aroon_up": row.get("aroon_up"), "aroon_down": row.get("aroon_down"),
                 "m5_pattern_ok": row.get("m5_pattern_ok"), "leading_ok": row.get("leading_ok"),
                 "calibrated_hit_pct": row.get("calibrated_hit_pct"),
+                # ML-01: 5m dayanaklı ML özellikleri (bkz. velocity scan). Profil
+                # seçildikten sonra gölge tahmin bu sözlükle beslenir.
+                "ml_features_5m": row.get("ml_features_5m"),
             }
         # Eksik profil varsa (sembol yalnızca bir ufukta yakalanmış) diğeri
         # "yok" olarak işaretlenir; LLM tek profilli veriyi de sentezleyebilir.
@@ -807,15 +827,19 @@ async def _upside_scout_impl():
         target_pct = _upside_target_pct(horizon)
         best = profiles.get(best_horizon) or profiles.get(horizon) or {}
         ml_pred = None
-        try:
-            ml_pred = ml_forecast.predict_target(sym, {
-                "ret3_pct": best.get("ret3_pct"), "atr_pct": best.get("atr_pct"),
-                "bb_width_pct": best.get("bb_width_pct"), "rsi": best.get("rsi"),
-                "mfi": best.get("mfi"), "linreg_slope10_pct": best.get("linreg_slope10_pct"),
-                "aroon_up": best.get("aroon_up"), "aroon_down": best.get("aroon_down"),
-            }, best_horizon)
-        except Exception as exc:
-            logger.debug("ML gölge tahmin atlandı (%s): %s", sym, exc)
+        # ML-01: model KAPANMIŞ 5m barlarla eğitildi. Çıkarım özellikleri de
+        # 5m seriden gelmelidir. Aday satırındaki `atr_pct`/`ret3_pct`/`rsi`...
+        # 1m serisindendir (tarama eşikleri için kalibrasyonlu) → bunlarla
+        # beslemek aynı isimli ama farklı anlamlı kolonlar üretir ve model
+        # "sayı üretmeye devam eder". Tek doğru kaynak `ml_features_5m`.
+        ml_features_5m = best.get("ml_features_5m")
+        if ml_features_5m:
+            try:
+                ml_pred = ml_forecast.predict_target(sym, dict(ml_features_5m), best_horizon)
+            except Exception as exc:
+                logger.debug("ML gölge tahmin atlandı (%s): %s", sym, exc)
+        else:
+            logger.debug("ML gölge tahmin atlandı (%s): 5m özellik sözlüğü yok", sym)
         try:
             quality = await _velocity_journal_quality(sym)
         except Exception:

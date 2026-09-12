@@ -205,7 +205,10 @@ async def ws_broadcast_loop():
                 _ws_snapshot_cache["portfolio"] = {"try": try_bal, "total_value": total_value, "realized_pnl": realized_pnl,
                                                     "unrealized_pnl": unrealized_pnl, "reconciliation_expected": reconciliation_expected,
                                                     "reconciliation_delta": reconciliation_delta, "positions": open_positions,
-                                                    "auto_paper_positions": auto_positions}
+                                                    "auto_paper_positions": auto_positions,
+                                                    # H-01: frontend açık pozisyon K/Z'sini TEK kaynaktan
+                                                    # (lib/pnl.ts) ve backend ile aynı komisyonla hesaplasın.
+                                                    "commission_pct": config.COMMISSION_PCT}
                 # NaN/±Infinity tek bir WS portfolio mesajını da tüketicilerde
                 # bozabilir; /api/positions ile aynı güvenlik uygulanır.
                 await ws_manager.broadcast({"type": "portfolio", "data": _json_safe_positions(_ws_snapshot_cache["portfolio"])})

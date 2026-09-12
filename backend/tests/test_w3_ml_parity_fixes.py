@@ -72,6 +72,21 @@ def test_load_model_rejects_mismatched_training_bar(tmp_path, monkeypatch):
     assert ml_forecast.load_model(max_age_seconds=0) is None
 
 
+def test_load_model_accepts_legacy_artifact_without_training_bar(tmp_path, monkeypatch):
+    """I-05 geriye uyumluluk: W3 öncesi artifact'ta training_bar_minutes YOK →
+    yüklenir (üretim regresyonu: mevcut upside_v3.joblib silinmeden çalışmalı)."""
+    monkeypatch.setattr(cfg, "ML_MODELS_DIR", str(tmp_path))
+    legacy = {"feature_version": FEATURE_VERSION,
+              "feature_names": FEATURE_NAMES,
+              "symbol_codes": {}, "horizons": {},
+              "trained_at": 0.0}  # training_bar_minutes alanı yok
+    path = tmp_path / f"upside_{FEATURE_VERSION}.joblib"
+    joblib.dump(legacy, path, compress=3)
+    ml_forecast._MODEL_CACHE["artifact"] = None
+    ml_forecast._MODEL_CACHE["loaded_at"] = 0.0
+    assert ml_forecast.load_model(max_age_seconds=0) is not None
+
+
 def test_bollinger_width_uses_canonical_ddof0():
     """I-02: _velocity_bollinger_width kanonik ddof=0 (eğitimle aynı)."""
     from app.routers.velocity import _velocity_bollinger_width

@@ -13,6 +13,32 @@ from typing import Any
 VALID_DIRECTIONS = {"up", "down", "range"}
 
 
+def effective_hit_grace_minutes(horizon_minutes: int, configured_grace: int) -> int:
+    """TAH-02: hedef-dokunuş gözlem penceresi — ufka göre SINIRLI ve deterministik.
+
+    Eski davranış: `LLM_FORECAST_HIT_GRACE_MINUTES` (varsayılan 120 dk) ufuktan
+    bağımsız uygulanıyordu → 5 dakikalık bir tahmin, hedefe 2 saat içinde
+    değdiği anda "tuttu" sayılıyordu (ör. 19. dakikada). Ayrıca satır, ufuk
+    kapanır kapanmaz — grace penceresi HENÜZ dolmadan — mühürlendiği için ölçüm
+    süpürücünün ne zaman çalıştığına bağlıydı (0/10/30 dk gecikmeyle
+    None/None/19.0 dk).
+
+    Düzeltme: grace, ufkun kendisini AŞAMAZ → pencere en fazla 2×ufuktur ve
+    çağıran taraf pencere dolmadan satırı değerlendirmeye almaz (aşağıdaki
+    `get_pending_*` sorguları).
+    """
+    h = max(1, int(horizon_minutes or 0))
+    g = max(0, int(configured_grace or 0))
+    return min(g, h)
+
+
+def outcome_window_seconds(horizon_minutes: int, configured_grace: int) -> float:
+    """Satırın mühürlenebilmesi için geçmesi gereken toplam süre (sn)."""
+    h = max(1, int(horizon_minutes or 0))
+    return (h + effective_hit_grace_minutes(h, configured_grace)) * 60.0
+
+
+
 def normalize_direction(value: object) -> str | None:
     mapping = {
         "up": "up", "yukarı": "up", "yukari": "up", "bullish": "up",

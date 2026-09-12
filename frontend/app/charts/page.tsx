@@ -6,6 +6,7 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
 import { useUiMode } from "../lib/ui-mode";
 import SymbolLink from "../components/SymbolLink";
+import { netOpenPnlPct, netOpenPnlTry, applyCommissionPct } from "../lib/pnl";
 import {
     createChart, createSeriesMarkers, CandlestickSeries, LineSeries, HistogramSeries,
     IChartApi, ISeriesApi, IPriceLine, UTCTimestamp, Time
@@ -30,6 +31,18 @@ import {
     vwapMacdSignals, cmoCrsiSignals, rsiLast, mfiLast, obvLast, spotExecutionSignals,
     strategySignalFns, strategyColors, strategyLabels, type Bar, type PatternMarker,
 } from "./signals";
+
+/* H-02: null/NaN K/Z NÖTR renkte olmalı (proje kuralı: yeşil=kâr, kırmızı=zarar,
+ * veri yok=nötr). `?? 0` ile 0'a çevirip yeşile boyamak yasak. */
+const pnlToneClass = (v?: number | null) =>
+    v == null || !Number.isFinite(v) ? "text-bunker-muted" : v >= 0 ? "text-neon-green" : "text-red-400";
+const pnlPctText = (v?: number | null) =>
+    v == null || !Number.isFinite(v) ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+const pnlTryText = (v?: number | null) => {
+    if (v == null || !Number.isFinite(v)) return "—";
+    const abs = Math.abs(v).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return v < 0 ? `-₺${abs}` : `+₺${abs}`;
+};
 
 
 
@@ -87,6 +100,9 @@ export default function ChartsPage() {
             if (!r.ok) throw new Error(`config HTTP ${r.status}`);
             return r.json();
         }).then((d) => {
+            // H-01: komisyon oranını backend'den al — açık pozisyon K/Z'si
+            // böylece env değişse bile backend ile aynı kalır.
+            applyCommissionPct(d.commission_pct);
             const active = Array.isArray(d.symbols) && d.symbols.length ? d.symbols : FALLBACK_SYMBOLS;
             const available = [...new Set([...active, ...(querySymbol ? [querySymbol] : [])])].sort((a, b) => a.localeCompare(b));
             setSymbols(available);
@@ -440,10 +456,12 @@ export default function ChartsPage() {
             const id = Number(ap.id || 0);
             if (id && seenIds.has(id)) continue;
             if (id) seenIds.add(id);
+            // H-01: otonom pozisyonlar da NET (gidiş-dönüş komisyonlu) — ana
+            // pozisyonlarla aynı kolonda brüt/net karışıklığı böylece biter.
             const entry = Number(ap.entry_price || 0);
-            const current = Number(ap.current_price) > 0 ? Number(ap.current_price) : entry;
-            const pnl = (current - entry) * Number(ap.quantity || 0);
-            const pnlPct = entry > 0 ? ((current - entry) / entry) * 100 : 0;
+            const current = Number(ap.current_price) > 0 ? Number(ap.current_price) : null;
+            const pnl = netOpenPnlTry(ap.entry_price, ap.current_price, ap.quantity);
+            const pnlPct = netOpenPnlPct(ap.entry_price, ap.current_price, ap.quantity);
             result.push({
                 symbol: ap.symbol,
                 entry,
@@ -1206,14 +1224,29 @@ export default function ChartsPage() {
         }
     };
 
-    const openPnl = livePortfolio?.unrealized_pnl ?? allPositions.reduce((total, position) => total + Number(position.pnl_try || 0), 0);
-    const netPnl = portfolioMetrics?.net_pnl ?? 0;
-    const money = (value: number) => {
+    // H-02: pnl_try `null` olan pozisyon toplama 0 olarak girmez (aksi halde
+    // "veri yok" ile "başabaş" ayırt edilemezdi). Hiç ölçüm yoksa toplam `null`.
+    const openPnl = (() => {
+        if (livePortfolio?.unrealized_pnl != null && Number.isFinite(Number(livePortfolio.unrealized_pnl))) {
+            return Number(livePortfolio.unrealized_pnl);
+        }
+        const values = allPositions
+            .map((position) => position.pnl_try)
+            .filter((v): v is number => v != null && Number.isFinite(Number(v)))
+            .map((v) => Number(v));
+        return values.length === 0 ? null : values.reduce((total, v) => total + v, 0);
+    })();
+    // H-02: metrikler yüklenmeden `0` göstermek sahte "başabaş yeşil" üretirdi.
+    const netPnl = portfolioMetrics?.net_pnl == null ? null : Number(portfolioMetrics.net_pnl);
+    const money = (value: number | null) => {
+        if (value == null || !Number.isFinite(value)) return "—";
         const abs = Math.abs(value);
         const formatted = abs.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         return value < 0 ? `-₺${formatted}` : `₺${formatted}`;
     };
-    const pnlClass = (value: number) => value >= 0 ? "text-neon-green" : "text-red-400";
+    const pnlClass = (value: number | null) => pnlToneClass(value);
+    const signedMoney = (value: number | null) =>
+        value == null || !Number.isFinite(value) ? "—" : `${value >= 0 ? "+" : "-"}${money(Math.abs(value))}`;
     const pressure = (() => {
         const recent = bars.slice(-8);
         if (recent.length < 2) return 0;
@@ -1275,10 +1308,10 @@ export default function ChartsPage() {
             <section aria-label="Portföy özeti" className="grid grid-cols-2 gap-2 rounded-xl border border-bunker-800 bg-bunker-950/80 p-3 sm:grid-cols-6">
                 <div className="min-w-0"><p className="eyebrow">TOPLAM PORTFÖY</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.total_value == null ? "—" : money(livePortfolio.total_value)}</p></div>
                 <div className="min-w-0"><p className="eyebrow">SERBEST TL</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.try == null ? "—" : money(livePortfolio.try)}</p></div>
-                <div className="min-w-0"><p className="eyebrow">AÇIK PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(openPnl)}`}>{openPnl >= 0 ? "+" : ""}{money(openPnl)}</p></div>
+                <div className="min-w-0"><p className="eyebrow">AÇIK PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(openPnl)}`}>{openPnl == null ? "—" : signedMoney(openPnl)}</p></div>
                 <div className="min-w-0"><p className="eyebrow">POZİSYON</p><p className="mt-1 font-mono text-sm font-bold text-white">{allPositions.length}</p></div>
                 <div className="min-w-0"><p className="eyebrow">KAPANAN İŞLEM</p><p className="mt-1 font-mono text-sm font-bold text-white">{portfolioMetrics?.closed_trades ?? "—"}</p></div>
-                <div className="min-w-0 col-span-2 sm:col-span-1"><p className="eyebrow">NET PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(netPnl)}`}>{netPnl >= 0 ? "+" : ""}{money(netPnl)}</p></div>
+                <div className="min-w-0 col-span-2 sm:col-span-1"><p className="eyebrow">NET PnL</p><p className={`mt-1 truncate font-mono text-sm font-bold ${pnlClass(netPnl)}`}>{netPnl == null ? "—" : signedMoney(netPnl)}</p></div>
             </section>
 
             <section aria-label="Zaman dilimi trend durumu" className="flex flex-wrap items-stretch gap-2 rounded-xl border border-bunker-800 bg-bunker-950/80 p-3">
@@ -1491,11 +1524,11 @@ export default function ChartsPage() {
                         </div>
                         <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 p-2 text-center">
                             <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Hedef</p>
-                            <p className="mt-1 font-mono text-sm font-bold text-neon-green">{Number(monitorNotif.expected_price) > 0 ? formatPrice(Number(monitorNotif.expected_price)) : "—"}</p>
+                            <p className={`mt-1 font-mono text-sm font-bold ${Number(monitorNotif.expected_price) > 0 ? "text-neon-green" : "text-bunker-muted"}`}>{Number(monitorNotif.expected_price) > 0 ? formatPrice(Number(monitorNotif.expected_price)) : "—"}</p>
                         </div>
                         <div className="rounded-lg border border-neon-green/30 bg-neon-green/5 p-2 text-center">
                             <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Hedef artış</p>
-                            <p className="mt-1 font-mono text-sm font-bold text-neon-green">+{(Number(monitorNotif.target_gain_pct) || Number(monitorNotif.target_pct) || 0).toFixed(1)}%</p>
+                            <p className={`mt-1 font-mono text-sm font-bold ${(monitorNotif.target_gain_pct ?? monitorNotif.target_pct) == null ? "text-bunker-muted" : "text-neon-green"}`}>{(monitorNotif.target_gain_pct ?? monitorNotif.target_pct) == null ? "—" : `+${Number(monitorNotif.target_gain_pct ?? monitorNotif.target_pct).toFixed(1)}%`}</p>
                         </div>
                         <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 p-2 text-center">
                             <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Skor</p>
@@ -1513,9 +1546,9 @@ export default function ChartsPage() {
                             <span className="font-mono text-[11px] text-bunker-muted">ufuk dolmasına kalan (bildirim: {fmtClock(monitorNotif.detected_at)})</span>
                         )}
                         <span className="font-mono text-[11px] text-bunker-muted">
-                            canlı: <b className={monitorTargetHit ? "text-neon-green" : "text-white"}>{monitorLivePrice > 0 ? formatPrice(monitorLivePrice) : "—"}</b>
+                            canlı: <b className={monitorLivePrice > 0 ? (monitorTargetHit ? "text-neon-green" : "text-white") : "text-bunker-muted"}>{monitorLivePrice > 0 ? formatPrice(monitorLivePrice) : "—"}</b>
                         </span>
-                        <span className={`font-mono text-lg font-bold tabular-nums ${monitorRemainingSec != null && monitorRemainingSec <= 60 ? "text-yellow-300 animate-pulse" : "text-neon-green"}`}>
+                        <span className={`font-mono text-lg font-bold tabular-nums ${monitorRemainingSec == null ? "text-bunker-muted" : monitorRemainingSec <= 60 ? "text-yellow-300 animate-pulse" : "text-neon-green"}`}>
                             {monitorRemainingSec != null
                                 ? `${Math.floor(monitorRemainingSec / 60)}:${String(monitorRemainingSec % 60).padStart(2, "0")}`
                                 : "—"}
@@ -1553,7 +1586,7 @@ export default function ChartsPage() {
                                         <span>{f.hit_probability != null ? `%${(f.hit_probability * 100).toFixed(0)} olasılık` : ""}</span>
                                     </div>
                                     <div className="mt-1 flex items-center gap-3">
-                                        <span className="font-mono text-sm font-bold text-neon-green">{f.target_pct != null ? `+%${f.target_pct.toFixed(2)}` : "—"}</span>
+                                        <span className={`font-mono text-sm font-bold ${f.target_pct != null ? "text-neon-green" : "text-bunker-muted"}`}>{f.target_pct != null ? `+%${f.target_pct.toFixed(2)}` : "—"}</span>
                                         <span className="font-mono text-sm text-white">{f.target_price != null ? formatPrice(f.target_price) : "—"}</span>
                                     </div>
                                 </div>
@@ -1565,7 +1598,7 @@ export default function ChartsPage() {
                     {forecastHistory && (forecastHistory.evaluated ?? 0) > 0 && (
                         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-bunker-muted border-t border-bunker-800 pt-2">
                             <span>ölçülen: <b className="text-white">{forecastHistory.evaluated}</b></span>
-                            <span>yön doğruluğu: <b className={forecastHistory.direction_correct_rate != null && forecastHistory.direction_correct_rate >= 0.5 ? "text-neon-green" : "text-red-400"}>%{(forecastHistory.direction_correct_rate ?? 0) * 100}</b></span>
+                            <span>yön doğruluğu: <b className={forecastHistory.direction_correct_rate == null ? "text-bunker-muted" : forecastHistory.direction_correct_rate >= 0.5 ? "text-neon-green" : "text-red-400"}>{forecastHistory.direction_correct_rate == null ? "—" : `%${(forecastHistory.direction_correct_rate * 100).toFixed(0)}`}</b></span>
                             <span>hedef dokunma: <b className="text-neon-yellow">%{((forecastHistory.target_hit_rate ?? 0) * 100).toFixed(0)}</b></span>
                         </div>
                     )}
@@ -1662,8 +1695,8 @@ export default function ChartsPage() {
                                 </tr>
                             ) : (
                                 allPositions.map((p) => {
-                                    const pnl = p.pnl_pct ?? 0;
-                                    const pnlTry = p.pnl_try ?? 0;
+                                    const pnl = p.pnl_pct ?? null;
+                                    const pnlTry = p.pnl_try ?? null;
                                     const time = p.entry_time
                                         ? new Date(p.entry_time * 1000).toLocaleTimeString("tr-TR")
                                         : "-";
@@ -1675,11 +1708,11 @@ export default function ChartsPage() {
                                             </td>
                                             <td className="px-4 py-2 text-bunker-muted">{time}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{formatPrice(p.entry)}</td>
-                                            <td className="px-4 py-2 text-white">{formatPrice(p.current)}</td>
+                                            <td className="px-4 py-2 text-white">{p.current == null ? "—" : formatPrice(p.current)}</td>
                                             <td className="px-4 py-2 text-bunker-muted">{entryValue > 0 ? money(entryValue) : "—"}</td>
-                                            <td className={`px-4 py-2 text-right font-bold ${pnl >= 0 ? "text-neon-green" : "text-red-400"}`}>
-                                                <div>{pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}%</div>
-                                                <div className="text-xs mt-1">{pnlTry >= 0 ? "+" : ""}₺{pnlTry.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                            <td className={`px-4 py-2 text-right font-bold ${pnlToneClass(pnlTry ?? pnl)}`}>
+                                                <div>{pnlPctText(pnl)}</div>
+                                                <div className="text-xs mt-1">{pnlTryText(pnlTry)}</div>
                                             </td>
                                             <td className="px-3 py-2 text-right">
                                                 <button
@@ -1708,8 +1741,8 @@ export default function ChartsPage() {
                         <p className="px-4 py-5 text-center text-bunker-muted text-sm">Açık pozisyon yok</p>
                     ) : (
                         allPositions.map((p) => {
-                            const pnl = p.pnl_pct ?? 0;
-                            const pnlTry = p.pnl_try ?? 0;
+                            const pnl = p.pnl_pct ?? null;
+                            const pnlTry = p.pnl_try ?? null;
                             const time = p.entry_time
                                 ? new Date(p.entry_time * 1000).toLocaleTimeString("tr-TR")
                                 : "-";
@@ -1724,10 +1757,10 @@ export default function ChartsPage() {
                                         <div className="mt-1 text-[10px] font-mono text-bunker-muted truncate">{strategyLabelFor(p)}</div>
                                         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-xs">
                                             <span className="text-bunker-muted">G {formatPrice(p.entry)}</span>
-                                            <span className="text-white">GÜ {formatPrice(p.current)}</span>
+                                            <span className="text-white">GÜ {p.current == null ? "—" : formatPrice(p.current)}</span>
                                             {entryValue > 0 && <span className="text-bunker-muted">{money(entryValue)}</span>}
-                                            <span className={`font-bold ${pnl >= 0 ? "text-neon-green" : "text-red-400"}`}>
-                                                {pnl >= 0 ? "+" : ""}{pnl.toFixed(2)}% {pnlTry >= 0 ? "+" : ""}{money(pnlTry)}
+                                            <span className={`font-bold ${pnlToneClass(pnlTry ?? pnl)}`}>
+                                                {pnlPctText(pnl)} {pnlTryText(pnlTry)}
                                             </span>
                                         </div>
                                     </div>
