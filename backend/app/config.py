@@ -167,9 +167,17 @@ class Config:
     # Tipik orta-kuvvetli sinyal 20-60 arasıdır. Varsayılan eşik 70: yalnızca yüksek
     # güvenli adaylar bildirilir; admin PUT /api/monitoring/settings ile düşürebilir.
     MONITORING_SCORE_NORM_CAP = float(os.getenv("MONITORING_SCORE_NORM_CAP", "2000"))  # 2026-09-07: saturation kaldirma sonrasi tipik skor 50-2000
+    # M1/P0 (R2-01/R2-02/R3-01): ADAY KAPISI ham velocity_score üzerinden tanımlanır.
+    # Panel normalizasyonu (raw/cap×100) yalnızca GÖSTERİM ölçeğidir; cap değişince
+    # eşiğin anlamı sessizce kaymasın diye varsayılan kapı mutlak ham skora bağlandı.
+    # 1400 ≈ eski varsayılan (panel 70) × cap 2000; cap artık kapıyı HAREKET ETTİRMEZ.
+    # Öncelik: açık admin panel eşiği (min_score) > bu varsayılan ham eşik.
+    MONITORING_MIN_RAW_SCORE = float(os.getenv("MONITORING_MIN_RAW_SCORE", "1400"))
     # Hızlı şerit: bu skor üstü adaylar debounce beklemeden anında bildirilir
     # (yüksek skor hızlı pump'larda gelir; bekleme fırsatı kaçırır).
-    MONITORING_FAST_LANE_SCORE = float(os.getenv("MONITORING_FAST_LANE_SCORE", "70"))
+    # M1/P1 (R2-04/R3-10/R5-C2.4): eşik varsayılan KAPI'nın (panel 70) KESİN ÜSTÜNDE
+    # (85) olmalı; aksi halde debounce bandı boş kalır ve gürültü filtresi hiç çalışmaz.
+    MONITORING_FAST_LANE_SCORE = float(os.getenv("MONITORING_FAST_LANE_SCORE", "85"))
     # Debounce: fast-lane altı aday N ardışık taramada aday kalırsa bildirilir.
     MONITORING_DEBOUNCE_SCANS = max(1, int(os.getenv("MONITORING_DEBOUNCE_SCANS", "2")))
     # Bu andan itibaren monitoring bildirim skoru panel (0-100) ölçeğinde yazılır

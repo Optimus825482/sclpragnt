@@ -860,6 +860,36 @@ class ScalpAnalyzer:
                 order_value *= scale
         return order_value
 
+    async def cluster_entry_blocked(self, symbol: str, order_value: float,
+                                    balance: float) -> dict | None:
+        """R3-06: korelasyon ağırlıklı küme aşımı kapısı (S5 formülüyle birebir).
+
+        `auto_paper` yolunun likidite kapısı `entry_liquidity_preflight`'ı;
+        küme kapısı da bu yöntemi kullanır ki iki otonom yol (velocity-auto ve
+        auto_paper) AYNI korelasyon capiyle çalışsın. Engeli sözlük olarak döner
+        (neden görünür), aşılmıyorsa `None`.
+        """
+        import logging
+        try:
+            if not getattr(config, "CORRELATION_CAP_ENABLED", False) or not self.market:
+                return None
+            from app.correlation import cluster_exposure
+            from app.api_common import correlation_monitor
+            equity = float(balance or 0) + sum(
+                float(pos.get("entry_price") or 0) * float(pos.get("quantity") or 0)
+                for pos in self.positions.values())
+            exposure = cluster_exposure(
+                self.positions, str(symbol), float(order_value or 0),
+                correlation_monitor, "BTC", equity)
+            cap = float(getattr(config, "MAX_CLUSTER_EXPOSURE_PCT", 0) or 0)
+            value = exposure.get("exposure_pct")
+            if value is not None and cap > 0 and float(value) > cap:
+                return {"exposure_pct": float(value), "cap_pct": cap}
+        except Exception as exc:
+            logging.getLogger("scalper.analyzer").debug(
+                "küme kapısı atlandı %s: %s", symbol, exc)
+        return None
+
     async def entry_liquidity_preflight(self, symbol, strat_name="CHAT_PREDICTION", requested_order_value=None):
         """Gate a *new* entry before strategy/LLM signal production.
 

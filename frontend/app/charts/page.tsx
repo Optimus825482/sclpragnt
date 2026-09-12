@@ -1551,7 +1551,15 @@ export default function ChartsPage() {
                         </div>
                         <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 p-2 text-center">
                             <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Skor</p>
-                            <p className={`mt-1 font-mono text-sm font-bold ${(Number(monitorNotif.score) || 0) >= 50 ? "text-neon-green" : "text-yellow-300"}`}>{monitorNotif.score != null ? Number(monitorNotif.score).toFixed(1) : "—"}</p>
+                            {/* R4-05 (FE yarısı): skor PANEL (0-100) ölçeğinde backend'den
+                                geldiği gibi gösterilir — yeniden ham ölçeğe çevrilmez.
+                                Veri yoksa "—" + nötr (eski `|| 0` yeşil/sarı sapması yok). */}
+                            <p
+                                title="Panel skoru (0-100, backend normalize)"
+                                className={`mt-1 font-mono text-sm font-bold ${monitorNotif.score == null || !Number.isFinite(Number(monitorNotif.score)) ? "text-bunker-muted" : Number(monitorNotif.score) >= 70 ? "text-neon-green" : Number(monitorNotif.score) >= 50 ? "text-yellow-300" : "text-red-400"}`}
+                            >
+                                {monitorNotif.score == null || !Number.isFinite(Number(monitorNotif.score)) ? "—" : Number(monitorNotif.score).toFixed(1)}
+                            </p>
                         </div>
                         <div className="rounded-lg border border-sky-400/30 bg-sky-400/5 p-2 text-center">
                             <p className="font-mono text-[10px] uppercase tracking-wider text-bunker-muted">Ufuk</p>

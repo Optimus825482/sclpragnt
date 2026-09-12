@@ -225,6 +225,31 @@ VELOCITY_PROFILES = {
 }
 
 
+def _panel_score(raw_score: float) -> float:
+    """Ham ``velocity_score`` (cap'siz, tipik 50-2000+) → panel 0-100 ölçeği.
+
+    R2-01 / R3-03 (P0, 2026-09-12): ``MONITORING_TARGET_SCORE_TIERS``
+    ('90:4.0,70:2.5,50:2.0') ve admin eşiği (``MONITORING_MIN_SCORE_DEFAULT``=70)
+    **panel** ölçeğinde tanımlıdır. Eski kod ``dynamic_target_pct``'e HAM skoru
+    geçiriyordu; kapıyı geçen her aday ham ≥ ~1400 ≫ 90 olduğundan daima üst bant
+    (4.0%) seçiliyordu → hedef bantları fiilen ölüydü.
+
+    Formül, ``monitoring.normalize_score`` (kanonik kaynak) ile BİREBİR aynıdır:
+    ``round(max(0.0, min(100.0, raw / MONITORING_SCORE_NORM_CAP * 100)), 1)``.
+    ``monitoring.py`` bu modülü import ettiği için burada ters yönde import
+    döngü (cycle) yaratırdı; bu yüzden formül TEK kaynaktan replike edilir ve
+    ``tests/test_m2_velocity_fixes.py::PanelScoreLockTests`` eşitliği kilitler.
+    """
+    try:
+        raw = float(raw_score or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    cap = float(config.MONITORING_SCORE_NORM_CAP or 0)
+    if cap <= 0:
+        return 0.0
+    return round(max(0.0, min(100.0, raw / cap * 100)), 1)
+
+
 async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5,
                                       extra_symbols: list | None = None):
     """Belirli ufukta (5dk/15dk) en az hedef % (2/3) yükselme potansiyeli taşıyan en hızlı 3 aday.
@@ -505,8 +530,11 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                         learned_target = val if val > 0 else None
                 except Exception:
                     learned_target = None
+            # R2-01/R3-03 (P0): hEDEF bantları PANEL (0-100) ölçeğinde tanımlı;
+            # buraya HAM skor değil PANEL skoru geçilir (aksi halde tüm adaylar
+            # ham ≥1400 ≫ 90 olduğundan daima 4.0% alıyordu).
             effective_target = dynamic_target_pct(
-                float(velocity_score), float(base_target_pct),
+                _panel_score(velocity_score), float(base_target_pct),
                 learned_pct=learned_target,
                 ml_pct=ml_target if (ml_target is not None and ml_target > 0) else None,
             )
@@ -799,18 +827,18 @@ async def velocity_learning_loop():
                 created_ms = int(float(candidate["created_at"]) * 1000)
                 horizon = 15 if "15dk-%3" in candidate_id else 5
                 due_ms = created_ms + horizon * 60_000
-                # Tarama anı bir M1 mumun ortasına denk gelebilir; o mum atak
-                # öncesi sayılır ve pencereye tam ufuk kadar mum sığmayabilir.
-                # Pencere süresi dolduysa ufuk × %60 mum yeterli — aksi halde
-                # kayıt sonsuza dek 'pending' kalıyordu.
-                window = [r for r in rows if int(r[0]) + 59_999 > created_ms and int(r[0]) + 59_999 <= due_ms]
+                # Tarama anı bir M1 mumun ortasına denk gelebilir; o PARSİYEL mum
+                # "atak öncesi" sayılır ve HARİÇ tutulur (R5-C4.4): aksi halde
+                # mumun tüm dakikaya yayılan high'ı sinyal-öncesi hareketi MFE'ye
+                # katar. Pencere süresi dolduysa ufuk × %60 mum yeterli — aksi
+                # halde kayıt sonsuza dek 'pending' kalıyordu.
+                window = _post_signal_window(rows, created_ms, due_ms)
                 if time.time() * 1000 < due_ms or len(window) < horizon * 3 // 5:
                     continue
-                highs = [float(r[2]) for r in window]
                 entry = float(candidate["price"])
                 if entry <= 0:
                     continue
-                mfe_pct = (max(highs) / entry - 1) * 100
+                mfe_pct = _mfe_from_window(window, entry)
                 touched = mfe_pct >= float(candidate["target_pct"])
                 ok = await database.mark_velocity_candidate_evaluated(
                     candidate["candidate_id"], mfe_pct=round(mfe_pct, 4),
@@ -983,7 +1011,8 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
         rows1m = await fetch_klines(symbol, "1m", horizon + 12, created_ms, due_ms + 65_000)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"mum verisi alınamadı: {exc}")
-    window = [r for r in rows1m if int(r[0]) + 59_999 > created_ms and int(r[0]) + 59_999 <= due_ms]
+    # R5-C4.4: sinyal anını içeren parsiyel mum HARİÇ (aynı `_post_signal_window`).
+    window = _post_signal_window(rows1m, created_ms, due_ms)
     if len(window) < 3:
         raise HTTPException(status_code=409, detail=f"pencere mumları yetersiz: {len(window)}")
     entry = float(candidate["price"])
@@ -1121,7 +1150,8 @@ async def get_velocity_live_tracking():
         best_high, touch_sec = None, None
         try:
             window_rows = await fetch_klines(symbol, "1m", 12, created_ms, due_ms + 65_000)
-            window = [r for r in window_rows if int(r[0]) + 59_999 > created_ms and int(r[0]) + 59_999 <= due_ms]
+            # R5-C4.4: sinyal anını içeren parsiyel mum HARİÇ (aynı `_post_signal_window`).
+            window = _post_signal_window(window_rows, created_ms, due_ms)
             if entry > 0:
                 touched_high = max((float(r[2]) for r in window if float(r[2]) / entry >= 1.02), default=None)
                 best_high = max((float(r[2]) for r in window), default=None)
@@ -1451,28 +1481,81 @@ def micro_structure_multiplier(micro: dict | None) -> float:
     return 1.0
 
 
-def dynamic_target_pct(score: float, base_target_pct: float,
-                       learned_pct: float | None = None,
-                       ml_pct: float | None = None) -> float:
-    """Skor bantlı dinamik hedef: yüksek skorlu adaylarda hedef esnetilir.
+def _parse_target_tiers(tiers_value) -> list[tuple[float, float]]:
+    """``MONITORING_TARGET_SCORE_TIERS`` ('skor:hedef' çiftleri) → TÜM bantlar.
 
-    Bantlar config.MONITORING_TARGET_SCORE_TIERS ('skor:hedef' çiftleri, yüksekten
-    düşüğe). Journal'dan öğrenilen sembol hedefi (learned_pct) ve ML tahmini
-    (ml_pct) yalnızca yukarı çekebilir; sonuç MIN/MAX'a kelepçelenir. Skor hiçbir
-    banda uymuyorsa profil baz hedefi korunur (düşük skor davranışı değişmez).
+    R5-C3.4 / R2-12 (2026-09-12): Bant seçimi artık "ilk eşleşmede dur" DEĞİL;
+    bu yardımcı bantların HEPSİNİ döndürür (bozuk/eksik parçalar sessizce
+    atlanır). ``dynamic_target_pct`` eşiği karşılayan EN YÜKSEK skor bandını
+    seçer, böylece sonuç girdi sırasından bağımsız ve deterministiktir.
+
+    Beklenen konvansiyon yüksekten düşüğe yazmaktır ('90:4.0,70:2.5,50:2.0');
+    ancak parser artan sıralı bir liste verilse bile monoton bir hedef üretir
+    (eski `break`'li sürüm bu durumda yanlış/azalan hedef veriyordu).
     """
-    target = float(base_target_pct)
-    for pair in str(config.MONITORING_TARGET_SCORE_TIERS or "").split(","):
+    bands: list[tuple[float, float]] = []
+    for pair in str(tiers_value or "").split(","):
         pair = pair.strip()
         if not pair or ":" not in pair:
             continue
         try:
             min_score_s, pct_s = pair.split(":", 1)
-            if float(score) >= float(min_score_s):
-                target = max(target, float(pct_s))
-                break  # bantlar yüksekten düşüğe tanımlı
+            bands.append((float(min_score_s), float(pct_s)))
         except ValueError:
             continue
+    return bands
+
+
+def _post_signal_window(rows, created_ms: int, due_ms: int,
+                        bar_ms: int = 60_000) -> list:
+    """Sinyal ANINDAN SONRA TAMAMEN oluşan kapanmış M1 barları.
+
+    R5-C4.4 (P0, 2026-09-12): Sinyal anını İÇEREN parsiyel (yarım) mum "atak
+    öncesi" sayılıp HARİÇ tutulur. Eski filtre ``int(r[0]) + 59_999 > created_ms``
+    bu mumu DAHİL ediyordu; mumun tüm dakikaya yayılan ``high``'ı sinyal öncesi
+    hareketi MFE'ye katarak sahte "hedefe dokundu" üretiyordu (ör. sinyal öncesi
+    105 spike'ı, dürüst sinyal-sonrası tepe 100.5 → yanlış MFE %5 ≫ %0.5).
+
+    Yeni koşul: barın AÇILIŞI sinyal anına eşit/büyük (``int(r[0]) >= created_ms``)
+    ve bar due_ms'ten önce kapanmış (``int(r[0]) + bar_ms - 1 <= due_ms``).
+    """
+    return [r for r in (rows or [])
+            if int(r[0]) >= created_ms and int(r[0]) + bar_ms - 1 <= due_ms]
+
+
+def _mfe_from_window(window, entry: float) -> float | None:
+    """Pencere içi en yüksek ``high``'tan MFE (%) — tek tanım (R5-C4.4 kilitli)."""
+    if not window or entry is None or float(entry) <= 0:
+        return None
+    return (max(float(r[2]) for r in window) / float(entry) - 1) * 100
+
+
+def dynamic_target_pct(score: float, base_target_pct: float,
+                       learned_pct: float | None = None,
+                       ml_pct: float | None = None) -> float:
+    """Skor bantlı dinamik hedef: yüksek skorlu adaylarda hedef esnetilir.
+
+    ``score`` **PANEL** (0-100) ölçeğinde beklenir — çağıran taraf ham
+    ``velocity_score``'u ``_panel_score`` ile normalize etmelidir (R2-01/R3-03).
+    Bantlar ``config.MONITORING_TARGET_SCORE_TIERS`` ('skor:hedef' çiftleri);
+    eşiği karşılayan EN YÜKSEK skor bandı seçilir (girdi sırasından bağımsız;
+    R5-C3.4). Journal'dan öğrenilen sembol hedefi (``learned_pct``) ve ML tahmini
+    (``ml_pct``) yalnızca yukarı çekebilir; sonuç MIN/MAX'a kelepçelenir.
+
+    Maliyet tabanı (R3-14): ``MONITORING_TARGET_PCT_MIN`` (1.5%) gidiş-dönüş
+    maliyetinin üzerinde kalır — 1000 TRY'de ~%0.4, asgari emir (50 TRY) için
+    ~%1.35. Bu yüzden hiçbir hedef yapısal olarak zarar-garantili olamaz; bu
+    zemin ``tests/test_m2_velocity_fixes.py::TargetCostFloorTests`` ile kilitli.
+    """
+    target = float(base_target_pct)
+    # R5-C3.4 / R2-12: TÜM bantlar ayrıştırılır ve eşiği karşılayan EN YÜKSEK
+    # skor eşiğine sahip bant seçilir. Eski sürüm ilk eşleşen bantta `break`
+    # ediyordu → artan sıralı liste yanlış (monoton olmayan) hedef üretiyordu.
+    matched_threshold: float | None = None
+    for min_score, pct in _parse_target_tiers(config.MONITORING_TARGET_SCORE_TIERS):
+        if float(score) >= min_score and (matched_threshold is None or min_score > matched_threshold):
+            matched_threshold = min_score
+            target = max(target, pct)
     if learned_pct and float(learned_pct) > target:
         target = float(learned_pct)
     if ml_pct and float(ml_pct) > 0 and float(ml_pct) > target:

@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.config import config
 from app import database
-from app.api_common import log_user_action, _background_tasks, _start_background
+from app.api_common import log_user_action, _background_tasks, _start_background, get_task
 from app.state import market, analyzer
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
@@ -67,12 +67,17 @@ _STATE_SETTING_KEY = "monitoring_runtime_state"
 def normalize_score(raw_score: float) -> float:
     """velocity_score 0-1000+ bandina cikabilir; MONITORING_SCORE_NORM_CAP (2000) ile
     0-100 panel olcegine haritalanir. Cap astiysa 100, astiysa dogrusal (2026-09-07).
+
+    M1/P2 (R4-10): cap<=0 (hatalı env) artık ZeroDivisionError yerine ham skoru
+    0-100'e kelepçeleyerek döner — `_stored_panel_score` ile aynı fail-safe.
     """
     try:
         raw = float(raw_score or 0)
     except (TypeError, ValueError):
         return 0.0
-    cap = config.MONITORING_SCORE_NORM_CAP
+    cap = float(config.MONITORING_SCORE_NORM_CAP)
+    if not cap > 0:  # cap<=0/NaN → normalizasyon tanımsız; ham skoru kelepçele
+        return round(max(0.0, min(100.0, raw)), 1)
     return round(max(0.0, min(100.0, raw / cap * 100)), 1)
 
 
@@ -99,12 +104,16 @@ async def _persist_runtime_state() -> None:
             "watchlist_seen_at": _monitoring_state["watchlist_seen_at"],
             "candidate_streak": _monitoring_state["candidate_streak"],
             "risk_off": bool(_monitoring_state["risk_off"]),
+            # M1/P2 (R4-11): rejim "BİLİNMİYOR" bayrağı da kalıcılaştırılır.
+            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
             "history": _monitoring_state["history"][:100],
             "deferred_push": deferred,
         }
         await database.set_llm_setting(_STATE_SETTING_KEY, json.dumps(payload, default=str))
     except Exception as exc:
-        logger.debug("monitoring state kalıcılaştırılamadı: %s", exc)
+        # M1/P2 (R2-08): sessiz DEBUG yerine WARNING — persist hatası restart'ta
+        # dedup/cooldown kaybı demektir, operatör bunu görmeli.
+        logger.warning("monitoring state kalıcılaştırılamadı: %s", exc)
 
 
 async def restore_runtime_state() -> None:
@@ -121,14 +130,20 @@ async def restore_runtime_state() -> None:
                 _monitoring_state["watchlist_seen_at"] = payload.get("watchlist_seen_at") or {}
                 _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
                 _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
+                # M1/P2 (R4-11): BİLİNMİYOR bayrağı geri yüklenir (restart sonrası
+                # ilk taramaya kadar "rejim biliniyor" yanılsaması olmasın).
+                _monitoring_state["risk_off_unknown"] = bool(payload.get("risk_off_unknown", False))
                 _monitoring_state["history"] = (payload.get("history") or [])[:HISTORY_LIMIT]
                 deferred = payload.get("deferred_push") or []
                 _deferred_push.clear()
                 for n in deferred:
                     _deferred_push.append(n)
-                _monitoring_state["pending_targets"] = payload.get("pending_targets") or {}
+                # NOT: `pending_targets` YUKARIDA bir kez atanır; burada ikinci kez
+                # atanması ölü koddu (M1/P2 — R4-11).
     except Exception as exc:
-        logger.debug("monitoring state geri yuklenemedi: %s", exc)
+        # M1/P2 (R2-08): bozuk payload TÜM runtime state'i sessizce sıfırlıyordu;
+        # artık uyarı seviyesinde loglanır (operatör restart kaybını görür).
+        logger.warning("monitoring state geri yuklenemedi (runtime state sifirlandi): %s", exc)
 
 
 def _in_quiet_hours(settings) -> bool:
@@ -150,8 +165,20 @@ def _in_quiet_hours(settings) -> bool:
     return (cur >= a and cur < b) if a < b else (cur >= a or cur < b)
 
 
+async def quiet_hours_active(settings: dict | None = None) -> bool:
+    """Sessiz saatlerin ŞU AN etkin olup olmadığını döndür (dışa açık yardımcı — M1/P2).
+
+    TEK KAYNAK: `_in_quiet_hours` mantığı. `auto_paper.py` bunu kullanarak sessiz
+    saatlerde OTONOM işlemi de DURDURMALIDIR (yalnızca push erteleme değil — R3-07).
+    `settings` verilmezse global bildirim ayarları DB'den okunur.
+    """
+    if settings is None:
+        settings = await get_user_notification_settings()
+    return _in_quiet_hours(settings)
+
+
 def _effective_min_score(settings) -> float:
-    """O an gercekten uygulanan esik: admin min_score AYNEN uygulanır.
+    """O an geçerli PANEL (0-100) eşiği — yalnızca gösterim/panel filtresi içindir.
 
     F-14: RISK_OFF'un eşiğe etkisi YOKTUR. Kod, üç ayrı yorum + UI metniyle
     çelişiyordu (`max(base+20, 50)` çarpanı hâlâ uygulanıyordu; ısınma
@@ -159,9 +186,51 @@ def _effective_min_score(settings) -> float:
     SESSİZCE +20 yükseliyordu). Çarpan kaldırıldı — rejim bayrağı yalnızca
     gözlem amaçlıdır; veri yetersizken `risk_off_unknown` ile BİLİNMİYOR
     raporlanır.
+
+    M1/P2 (R2-11/C2.3): alt sınır da kelepçelenir (negatif admin değeri tüm
+    adayları geçirmesin). Aday KAPISI artık `_effective_min_raw_score`.
     """
     base = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
-    return round(min(100.0, base), 1)
+    return round(max(0.0, min(100.0, base)), 1)
+
+
+def _effective_min_raw_score(settings) -> float:
+    """Aday KAPISI için HAM velocity_score eşiği (M1/P0 — R2-01/R2-02/R3-01).
+
+    Öncelik sırası (dokümante):
+      1. **Açık admin panel eşiği** (`min_score`, 0-100) verilmişse → ham eşik
+         `panel/100 × MONITORING_SCORE_NORM_CAP` olarak TÜRETİLİR. Admin panel
+         ölçeğinde düşünür; cap değişse de bu türetme tutarlıdır.
+      2. Aksi halde → `config.MONITORING_MIN_RAW_SCORE` (varsayılan 1400). Bu mutlak
+         ham eşik cap'ten BAĞIMSIZDIR; böylece `MONITORING_SCORE_NORM_CAP` ileride
+         değişse bile aday kapısı sessizce kaymaz.
+
+    "Açık" belirleme: settings'te `min_score_explicit` işareti varsa o kullanılır
+    (DB'den gelen ayarlar bu işareti taşır); yoksa `min_score` anahtarının
+    varlığına bakılır (testlerin/manuel sözlüklerin geriye dönük uyumu).
+    """
+    cap = float(config.MONITORING_SCORE_NORM_CAP)
+    explicit = settings.get("min_score_explicit")
+    if explicit is None:
+        explicit = "min_score" in settings
+    if explicit:
+        panel = max(0.0, min(100.0, float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))))
+        return round(panel / 100.0 * max(1e-9, cap), 4)
+    return float(config.MONITORING_MIN_RAW_SCORE)
+
+
+def _threshold_fields(settings) -> dict:
+    """State/ayar yanıtlarına eklenecek eşik alanları (M1/P0 — R2-02).
+
+    `monitoring_min_raw_score`: aday kapısının karşılaştırdığı HAM skor eşiği.
+    `monitoring_min_score_panel`: aynı eşiğin panel (0-100) karşılığı — gösterim.
+    `effective_min_score`: geriye dönük uyumluluk (== panel eşiği).
+    """
+    return {
+        "effective_min_score": _effective_min_score(settings),
+        "monitoring_min_raw_score": _effective_min_raw_score(settings),
+        "monitoring_min_score_panel": _effective_min_score(settings),
+    }
 
 
 def _notified_mono_from_wall(values) -> dict[str, float]:
@@ -225,12 +294,16 @@ async def get_user_notification_settings() -> dict:
         return {
             "enabled": settings.get("enabled", True),
             "min_score": min_score,
+            # M1/P0: admin `min_score` PANEL eşiğini AÇIKÇA set etti mi? Aday kapısı
+            # önceliği buna bağlı (açık panel > varsayılan ham eşik).
+            "min_score_explicit": settings.get("min_score") is not None,
             "min_target_pct": float(settings.get("min_target_pct", 2.0)),
             "quiet_hours_start": settings.get("quiet_hours_start", None),
             "quiet_hours_end": settings.get("quiet_hours_end", None),
         }
     except Exception:
         return {"enabled": True, "min_score": config.MONITORING_MIN_SCORE_DEFAULT,
+                "min_score_explicit": False,
                 "min_target_pct": 2.0, "quiet_hours_start": None, "quiet_hours_end": None}
 
 
@@ -238,11 +311,44 @@ async def get_user_notification_settings() -> dict:
 async def get_monitoring_settings():
     """Global bildirim ayarlarını döndür (okuma tüm kullanıcıya açık)."""
     settings = await get_user_notification_settings()
+    # M1/P2 (R2-18): okuma uçları state'i kilit altında okur.
+    async with _locked_state():
+        risk_off = bool(_monitoring_state["risk_off"])
+        risk_off_unknown = bool(_monitoring_state.get("risk_off_unknown", False))
     return {"paper_only": True, "scope": "global_admin",
-            "risk_off": bool(_monitoring_state["risk_off"]),
-            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
-            "effective_min_score": _effective_min_score(settings),
+            "risk_off": risk_off,
+            "risk_off_unknown": risk_off_unknown,
+            **_threshold_fields(settings),
             **settings}
+
+
+def _coerce_bool(value) -> bool:
+    """Bool alanları esnek ama GÜVENLİ çevir; tanınmazsa HTTPException(422) (R4-06)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in ("true", "1", "yes", "on", "acik", "açık"):
+            return True
+        if low in ("false", "0", "no", "off", "kapali", "kapalı"):
+            return False
+    raise HTTPException(status_code=422, detail=f"Geçersiz boolean değeri: {value!r}")
+
+
+def _validate_hhmm(value, field: str) -> str:
+    """'HH:MM' doğrula; geçersizse HTTPException(422) (R4-06)."""
+    try:
+        parts = str(value).strip().split(":")
+        if len(parts) != 2:
+            raise ValueError("format")
+        hh, mm = int(parts[0]), int(parts[1])
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            raise ValueError("range")
+    except (TypeError, ValueError, IndexError):
+        raise HTTPException(status_code=422, detail=f"{field} 'HH:MM' biçiminde olmalı (0-23:0-59)")
+    return f"{hh:02d}:{mm:02d}"
 
 
 @router.put("/api/monitoring/settings")
@@ -254,29 +360,67 @@ async def update_monitoring_settings(payload: dict, request: Request):
     Merge semantiği: yalnızca gönderilen alanlar güncellenir; diğer alanlar
     (min_target_pct, quiet_hours, enabled) korunur — aksi halde eşiği kaydeden
     her istek diğer ayarları varsayılana sıfırlıyordu (2026-09-04 teşhis).
+
+    M1/P1 (R4-06): tip/aralık doğrulaması eklendi — `"abc"` → 500 DEĞİL 422;
+    bozuk sessiz saatler deferral'ı sessizce kapatamaz; `min_target_pct`
+    [MONITORING_TARGET_PCT_MIN, MAX] aralığına zorlanır.
     """
     from app.api_common import require_admin as _require_admin
     _require_admin(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Gövde bir JSON nesnesi olmalı")
     existing = await get_user_notification_settings()
     editable = ("enabled", "min_score", "min_target_pct",
                 "quiet_hours_start", "quiet_hours_end")
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
+
+    # --- Doğrulama (geçersiz girdi → 422, state BOZULMAZ) ---
+    enabled = _coerce_bool(merged.get("enabled", True))
+    try:
+        min_score = float(merged.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="min_score sayısal olmalı (0-100 panel)")
+    if not (0.0 <= min_score <= 100.0):
+        raise HTTPException(status_code=422, detail="min_score 0-100 aralığında olmalı")
+    try:
+        min_target = float(merged.get("min_target_pct", 2.0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="min_target_pct sayısal olmalı")
+    if not (config.MONITORING_TARGET_PCT_MIN <= min_target <= config.MONITORING_TARGET_PCT_MAX):
+        raise HTTPException(
+            status_code=422,
+            detail=f"min_target_pct {config.MONITORING_TARGET_PCT_MIN}-{config.MONITORING_TARGET_PCT_MAX} aralığında olmalı")
+    quiet_start = merged.get("quiet_hours_start", None)
+    quiet_end = merged.get("quiet_hours_end", None)
+    if quiet_start not in (None, ""):
+        quiet_start = _validate_hhmm(quiet_start, "quiet_hours_start")
+    else:
+        quiet_start = None
+    if quiet_end not in (None, ""):
+        quiet_end = _validate_hhmm(quiet_end, "quiet_hours_end")
+    else:
+        quiet_end = None
+
     settings = {
-        "enabled": bool(merged.get("enabled", True)),
-        "min_score": max(0.0, min(100.0, float(merged.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT)))),
-        "min_target_pct": max(0.0, float(merged.get("min_target_pct", 2.0))),
-        "quiet_hours_start": merged.get("quiet_hours_start", None),
-        "quiet_hours_end": merged.get("quiet_hours_end", None),
+        "enabled": enabled,
+        "min_score": round(min_score, 4),
+        "min_score_explicit": True,   # admin açıkça set etti → kapı panel türetimi
+        "min_target_pct": min_target,
+        "quiet_hours_start": quiet_start,
+        "quiet_hours_end": quiet_end,
     }
     await database.set_llm_setting("monitoring_notification_settings", json.dumps(settings))
     await log_user_action(None, None, "monitoring", "MONITORING_SETTINGS_UPDATE",
                           details={"settings": {k: v for k, v in settings.items() if k != "enabled"},
                                    "scope": "global_admin"},
                           request=request)
+    async with _locked_state():
+        risk_off = bool(_monitoring_state["risk_off"])
+        risk_off_unknown = bool(_monitoring_state.get("risk_off_unknown", False))
     return {"paper_only": True, "ok": True, "scope": "global_admin",
-            "risk_off": bool(_monitoring_state["risk_off"]),
-            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
-            "effective_min_score": _effective_min_score(settings),
+            "risk_off": risk_off,
+            "risk_off_unknown": risk_off_unknown,
+            **_threshold_fields(settings),
             **settings}
 
 
@@ -317,18 +461,55 @@ async def _send_push(notif: dict) -> bool:
 
 
 async def _flush_deferred_push():
-    """Sessiz saat bittiyse ertelenen push kuyruğunu boşalt."""
+    """Sessiz saat bittiyse ertelenen push kuyruğunu boşalt (M1/P1 — R2-07/R4-12).
+
+    Düzeltmeler:
+      * Bayatlık (TTL): ufku (+2 dk tolerans) dolmuş bildirim GÖNDERİLMEZ (atılır).
+      * Ayarlara saygı: `enabled=false` ise kuyruk TAMAMEN düşürülür.
+      * VAPID yokken KİLİTLENME yok: gönderilemeyen öğeler kuyrukta tutulur ama
+        TTL dolunca atılır (eskiden `break` ile sonsuza dek yeniden kuyruğa
+        ekleniyordu — kalıcı latch).
+      * `break` yok: tüm kuyruk her turda işlenir.
+    """
     if not _deferred_push:
         return
     settings = await get_user_notification_settings()
     if _in_quiet_hours(settings):
         return  # hâlâ sessiz saatteyiz
+    now = time.time()
+    # Bildirimler kapatılmışsa ertelenenler bekletilmez (kullanıcı niyeti).
+    if not settings.get("enabled", True):
+        n = len(_deferred_push)
+        _deferred_push.clear()
+        logger.info("Monitoring: bildirimler kapalı — %d ertelenen push düşürüldü", n)
+        return
+    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    if not vapid_configured:
+        logger.warning("Monitoring: VAPID yapılandırılmamış — ertelenen push'lar teslim "
+                       "edilemez; TTL dolunca düşürülecek (%d kuyrukta)", len(_deferred_push))
     sent = 0
+    dropped = 0
+    survivors = deque(maxlen=_deferred_push.maxlen)
     while _deferred_push:
         notif = _deferred_push.popleft()
+        try:
+            detected = float(notif.get("detected_at") or 0)
+            horizon = int(notif.get("horizon_minutes") or 0)
+        except (TypeError, ValueError):
+            detected, horizon = 0.0, 0
+        # TTL: hedef ufku (+ tolerans) geçtiyse bayat push gönderilmez.
+        if detected and horizon and (now - detected) > (horizon + 2) * 60:
+            dropped += 1
+            continue
+        if not vapid_configured:
+            # Gönderilemez ama TTL dolmadan atmayız; sonraki turda yeniden denenir
+            # ve TTL dolunca yukarıdaki dalda düşürülür (kalıcı latch YOK).
+            survivors.append(notif)
+            continue
         ok = await _send_push(notif)
         if ok:
             sent += 1
+            notif["sent_via_push"] = True
             # Ertelenen push gerçekten gönderildi → DB etiketini düzelt
             nid = notif.get("id")
             if nid:
@@ -337,11 +518,13 @@ async def _flush_deferred_push():
                 except Exception as exc:
                     logger.warning("push etiketi güncellenemedi %s: %s", nid, exc)
         else:
-            # Gönderilemedi; bir sonraki fırsatta tekrar dene (kuyruk sonuna ekle)
-            _deferred_push.append(notif)
-            break
+            # Gönderilemedi; TTL'e kadar bir sonraki fırsatta yeniden dene.
+            survivors.append(notif)
+    _deferred_push.extend(survivors)
     if sent:
         logger.info("Monitoring: sessiz saat bitti, %d ertelenen push gönderildi", sent)
+    if dropped:
+        logger.info("Monitoring: %d bayat (TTL dolmuş) ertelenen push düşürüldü", dropped)
 
 
 def _build_notification(sym, c, settings, first_price: float | None = None) -> dict:
@@ -393,6 +576,24 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     }
 
 
+def _row_norm_cap(row: dict) -> float:
+    """Satırın normalize edildiği cap'i çöz (M1/P1 — R2-03).
+
+    Opsiyonel `norm_cap` alanı (başka bir ajan `database.py`'ye ekliyor) varsa
+    o kullanılır; yoksa/geçersizse güncel `MONITORING_SCORE_NORM_CAP`. Kolonun
+    VAR OLMASI gerekmez — alan yoksa geriye dönük davranış aynen sürer.
+    """
+    raw_cap = row.get("norm_cap")
+    if raw_cap not in (None, ""):
+        try:
+            cap = float(raw_cap)
+            if cap > 0:
+                return cap
+        except (TypeError, ValueError):
+            pass
+    return float(config.MONITORING_SCORE_NORM_CAP)
+
+
 def _stored_panel_score(row: dict) -> float:
     """DB'deki score değerini panel (0-100) ölçeğine getirir.
 
@@ -401,6 +602,10 @@ def _stored_panel_score(row: dict) -> float:
     kez normalize edilir. Kayda kaydı geçen skora tekrar normalize uygulamak
     (çift dönüşüm) eşiği fiilen 0.4×min_score'a indirdiği için düzeltildi
     (2026-09-04 teşhis).
+
+    M1/P1 (R2-03): satırda opsiyonel `norm_cap` varsa (yazım anındaki cap)
+    normalize bu cap ile yapılır; yoksa güncel cap'e düşülür. Böylece eski
+    kayıtlar bugünkü cap ile yanlış yeniden ölçeklenmez.
     """
     try:
         detected = float(row.get("detected_at") or 0)
@@ -413,7 +618,7 @@ def _stored_panel_score(row: dict) -> float:
             raw = float(row.get("score") or 0)
         except (TypeError, ValueError):
             raw = 0.0
-        cap = float(config.MONITORING_SCORE_NORM_CAP)
+        cap = _row_norm_cap(row)
         return round(max(0.0, min(100.0, 100.0 * raw / cap)), 1) if cap > 0 else round(max(0.0, min(100.0, raw)), 1)
     try:
         return float(row.get("score") or 0)
@@ -439,9 +644,9 @@ async def _notify(candidates_list, settings) -> list:
     """
     if not settings.get("enabled", True):
         return []
-    # Tek eşik: admin min_score aynen uygulanır (RISK_OFF çarpanı kaldırıldı,
-    # 2026-09-04 kullanıcı kararı — tek kaynak _effective_min_score).
-    min_score = _effective_min_score(settings)
+    # Tek eşik: aday kapısı HAM velocity_score üzerinden (M1/P0 — R2-01/R2-02/R3-01).
+    # Panel (0-100) yalnızca gösterim ölçeğidir; cap değişince kapı kaymaz.
+    min_raw = _effective_min_raw_score(settings)
     quiet = _in_quiet_hours(settings)
     # F-07: `now` duvar saati — KALICI/yayınlanan alanlar (detected_at,
     # pending_targets.set_at, DB horizon karşılaştırması) buna bağlı.
@@ -473,10 +678,12 @@ async def _notify(candidates_list, settings) -> list:
         sym = str(c.get("symbol", "") or "").upper()
         # normalize_score'a geçilir (2026-09-04 teşhis). upside_rank yalnızca
         # SIRALAMA anahtarıdır (dk-başı yükseliş × kalite × mikro-yapı).
-        score = normalize_score(c.get("velocity_score", 0))
+        raw = float(c.get("velocity_score", 0) or 0)
+        score = normalize_score(raw)
         target = float(c.get("target_pct") or 2.0)
         min_target = float(settings.get("min_target_pct") or 0)
-        if not sym or score < min_score or (min_target > 0 and target < min_target):
+        # M1/P0: kapı HAM skoru karşılaştırır (panel değil).
+        if not sym or raw < min_raw or (min_target > 0 and target < min_target):
             continue
         # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
         # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
@@ -556,13 +763,16 @@ async def _notify(candidates_list, settings) -> list:
         if len(_monitoring_state["notified_symbols"]) > 500:
             for k in sorted(_monitoring_state["notified_symbols"], key=_monitoring_state["notified_symbols"].get)[:-250]:
                 _monitoring_state["notified_symbols"].pop(k, None)
-    # Yeni bildirimleri DB'ye kaydet — sessiz saatte push GÖNDERİLMEYECEK
-    # bildirimler için sent_via_push=False yazılır (yanlış etiket düzeltmesi).
+    # Yeni bildirimleri DB'ye kaydet — M1/P1 (R2-06/R2-19): `sent_via_push` artık
+    # GERÇEK teslimi yansıtır. Varsayılan False (henüz push denenmedi/teslim
+    # edilmedi); yalnızca push gerçekten ulaşırsa mark_monitoring_push_sent ile
+    # True'ya çevrilir. "sessiz saat değil" artık "gönderildi" DEMEK DEĞİL.
     if new_entries:
         for n in new_entries:
-            n["sent_via_push"] = not quiet
+            n["sent_via_push"] = False
         _s_t0 = time.time()
-        await database.save_monitoring_notifications(new_entries)
+        # M1/P2 (R2-15): ölü `_record_history` artık burada KULLANILIYOR (tek yol).
+        await _record_history(new_entries)
         _s_t1 = time.time()
         _db_lat = (_s_t1 - _s_t0) * 1000
         _monitoring_state.setdefault("_db_latencies", []).append(_db_lat)
@@ -580,8 +790,17 @@ async def _notify(candidates_list, settings) -> list:
         for notif in new_notifs:
             ok = await _send_push(notif)
             notif["push_success"] = ok
-            if not ok:
-                logger.warning("Monitoring push gönderilemedi (VAPID yapılandırılmamış olabilir): %s", notif.get("symbol"))
+            if ok:
+                # M1/P1 (R2-06): gerçek teslim → DB etiketi True.
+                notif["sent_via_push"] = True
+                nid = notif.get("id")
+                if nid:
+                    try:
+                        await database.mark_monitoring_push_sent(nid)
+                    except Exception as exc:
+                        logger.warning("push etiketi güncellenemedi %s: %s", nid, exc)
+            else:
+                logger.warning("Monitoring push gönderilemedi: %s", notif.get("symbol"))
     elif new_notifs and not quiet:
         # VAPID yok: push atlanır, bildirim kaydına işlenir
         logger.info("Monitoring push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d bildirim)", len(new_notifs))
@@ -774,14 +993,16 @@ async def _run_scan() -> dict:
     _monitoring_state["risk_off_unknown"] = risk_off_unknown
 
     settings = await get_user_notification_settings()
-    effective_min_score = _effective_min_score(settings)
+    # M1/P0 (R2-01/R2-02/R3-01): aday kapısı HAM velocity_score ile karşılaştırılır —
+    # panel skoru yalnızca GÖSTERİM ölçeğidir. Cap değişse bile kapı sessizce kaymaz.
+    effective_min_raw_score = _effective_min_raw_score(settings)
     # Admin eşiği altındaki adaylar listede GÖSTERILMEZ (2026-09-04 kullanıcı
-    # kararı; RISK_OFF çarpanı kaldırıldı — _effective_min_score aynen uygulanır).
+    # kararı; RISK_OFF çarpanı kaldırıldı — _effective_min_raw_score aynen uygulanır).
     # _notify aynı eşiği zaten uyguladığından bildirim davranışı değişmez; yalnız
     # radar listesi temiz kalır.
     candidates_list = sorted(
         (c for c in filtered_candidates.values()
-         if float(c.get("panel_score", 0) or 0) >= effective_min_score),
+         if float(c.get("velocity_score", 0) or 0) >= effective_min_raw_score),
         key=lambda x: x.get("upside_rank", 0), reverse=True)
     watchlist_list = sorted(all_watchlist.values(), key=lambda x: x.get("upside_rank", 0), reverse=True)
 
@@ -809,89 +1030,131 @@ async def _run_scan() -> dict:
     }
 
 
+def _loop_is_active() -> bool:
+    """Tarama döngüsü GERÇEKTEN canlı mı? (M1/P1 — R4-02)
+
+    `_loop_task` yalnızca ilk başlatmada set edilir; süpervizör respawn ettikten
+    sonra BAYAT (ölü) görevi göstermeye devam eder. Süpervizörün İSİM→canlı görev
+    kaydı (`api_common.get_task`) respawn'da güncellendiği için asıl kaynak odur;
+    geriye dönük olarak `_loop_task`'a düşülür.
+    """
+    task = get_task("monitoring-scan-loop")
+    if task is None:
+        task = _loop_task
+    return task is not None and not task.done()
+
+
+def _cached_scan_snapshot(settings: dict, *, cached: bool = True) -> dict:
+    """Son tarama durumunun önbellek anlık görüntüsü (YAN ETKİSİZ)."""
+    data_ready = bool(_monitoring_state.get("last_scan_at"))
+    return {
+        "paper_only": True,
+        "cached": cached,
+        "data_ready": data_ready,
+        "system_startup": not data_ready,
+        "scan_at": _monitoring_state["last_scan_at"],
+        "scan_count": _monitoring_state["scan_count"],
+        "candidates": _monitoring_state["last_candidates"],
+        "watchlist": _monitoring_state["last_watchlist"],
+        "history": _monitoring_state["history"][:20],
+        "settings": settings,
+        "risk_off": bool(_monitoring_state["risk_off"]),
+        "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
+        **_threshold_fields(settings),
+        "loop_active": _loop_is_active(),
+    }
+
+
 @router.get("/api/monitoring/scan")
 async def monitoring_scan(request: Request = None):
-    """Run a fresh scan for 5m and 15m velocity candidates (admin-only).
+    """SON TARAMA önbelleğini döndür — SALT OKUNUR (M1/P1 — R4-03/R4-13).
 
-    Admin çağrısı: yeni scan başlatır. Normal kullanıcı /api/monitoring/state
-    endpoint'inden son tarama sonuçlarını okur.
+    Eski davranış: GET tam tarama + DB yazımı + web push + otonom paper pozisyon
+    açıyordu (yan etkili, hız sınırsız GET). Artık GET HİÇBİR yan etki üretmez;
+    taramayı tetiklemek için `POST /api/monitoring/scan` (admin) kullanılır.
     """
-    from app.api_common import require_admin as _require_admin
-    try:
-        _require_admin(request)
-    except HTTPException:
-        # Yetkisiz kullanıcılar son tarama önbelleğini döndürür
+    # M1/P2 (R2-18): okuma state kilidi altında (F-15 uyumlu; scan kilidi ALINMAZ).
+    async with _locked_state():
         settings = await get_user_notification_settings()
-        return {
-            "paper_only": True,
-            "cached": True,
-            "data_ready": bool(_monitoring_state.get("last_scan_at")),
-            "system_startup": _monitoring_state.get("last_scan_at") is None,
-            "scan_at": _monitoring_state["last_scan_at"],
-            "scan_count": _monitoring_state["scan_count"],
-            "candidates": _monitoring_state["last_candidates"],
-            "watchlist": _monitoring_state["last_watchlist"],
-            "settings": settings,
-            "risk_off": bool(_monitoring_state["risk_off"]),
-            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
-            "effective_min_score": _effective_min_score(settings),
-            "loop_active": _loop_task is not None and not _loop_task.done(),
-        }
+        return _cached_scan_snapshot(settings, cached=True)
+
+
+@router.post("/api/monitoring/scan")
+async def monitoring_scan_trigger(request: Request):
+    """Taramayı ZORLA tetikle — YALNIZ admin, basit hız sınırı ile (R4-03).
+
+    Kanonik tetikleyici budur; GET artık salt-okunur. `rate_limit` token-bucket
+    aşımında 429 döner.
+    """
+    from app.api_common import require_admin as _require_admin, rate_limit
+    _require_admin(request)
+    if not rate_limit("monitoring_scan", rate_per_sec=1 / 20.0, burst=2):
+        raise HTTPException(status_code=429, detail="Çok sık tarama — lütfen bekleyin")
     try:
-        # F-15: REST tarama yolu da `_locked_state()` almalı — arka plan döngüsü
-        # `_scan_lock` + `_locked_state()` alırken REST yolu yalnız `_scan_lock`
-        # alıyordu (yan etkili tarama state kilidi olmadan çalışıyordu). Kilit
-        # SIRASI döngüyle aynı (scan → state) → deadlock yok.
+        # F-15: REST tarama yolu `_locked_state()` de almalı — kilit SIRASI
+        # döngüyle aynı (scan → state) ⇒ deadlock yok.
         async with _scan_lock:
             async with _locked_state():
                 result = await _run_scan()
-        return {
-            "paper_only": True,
-            "data_ready": True,
-            "system_startup": False,
-            "scan_at": _monitoring_state["last_scan_at"],
-            "scan_count": _monitoring_state["scan_count"],
-            "candidates": result["candidates"],
-            "watchlist": result["watchlist"],
-            "new_notifications": len(result["new_notifications"]),
-            "notifications": result["new_notifications"],
-            "history": _monitoring_state["history"][:20],
-            "settings": result["settings"],
-            "risk_off": bool(_monitoring_state["risk_off"]),
-            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
-            "effective_min_score": _effective_min_score(result["settings"]),
-            "loop_active": _loop_task is not None and not _loop_task.done(),
-        }
+        async with _locked_state():
+            return {
+                "paper_only": True,
+                "cached": False,
+                "data_ready": True,
+                "system_startup": False,
+                "scan_at": _monitoring_state["last_scan_at"],
+                "scan_count": _monitoring_state["scan_count"],
+                "candidates": result["candidates"],
+                "watchlist": result["watchlist"],
+                "new_notifications": len(result["new_notifications"]),
+                "notifications": result["new_notifications"],
+                "history": _monitoring_state["history"][:20],
+                "settings": result["settings"],
+                "risk_off": bool(_monitoring_state["risk_off"]),
+                "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
+                **_threshold_fields(result["settings"]),
+                "loop_active": _loop_is_active(),
+            }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Monitoring scan failed: %s", exc)
-        return {"paper_only": True, "error": str(exc), "candidates": [], "watchlist": []}
+        return {"paper_only": True, "cached": False,
+                "data_ready": bool(_monitoring_state.get("last_scan_at")),
+                "system_startup": _monitoring_state.get("last_scan_at") is None,
+                "loop_active": _loop_is_active(),
+                "error": str(exc), "candidates": [], "watchlist": []}
 
 
 @router.get("/api/monitoring/state")
 async def monitoring_state():
     """Get current monitoring state (last scan results + notification history)."""
     settings = await get_user_notification_settings()
-    last_scan = _monitoring_state.get("last_scan_at")
-    next_in = None
-    if last_scan:
-        next_in = max(0, int(SCAN_INTERVAL_SEC - (time.time() - float(last_scan))))
-    return {
-        "paper_only": True,
-        "data_ready": bool(_monitoring_state.get("last_scan_at")),
-        "system_startup": _monitoring_state.get("last_scan_at") is None,
-        "last_scan_at": _monitoring_state["last_scan_at"],
-        "scan_count": _monitoring_state["scan_count"],
-        "candidates": _monitoring_state["last_candidates"],
-        "watchlist": _monitoring_state["last_watchlist"],
-        "history": _monitoring_state["history"][:20],
-        "settings": settings,
-        "scope": "global_admin",
-        "risk_off": _monitoring_state["risk_off"],
-        "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
-        "effective_min_score": _effective_min_score(settings),
-        "loop_active": _loop_task is not None and not _loop_task.done(),
-        "next_scan_in_sec": next_in,
-    }
+    # M1/P2 (R2-18): okuma state kilidi altında; tutarlı snapshot.
+    async with _locked_state():
+        last_scan = _monitoring_state.get("last_scan_at")
+        next_in = None
+        if last_scan:
+            next_in = max(0, int(SCAN_INTERVAL_SEC - (time.time() - float(last_scan))))
+        return {
+            "paper_only": True,
+            "data_ready": bool(last_scan),
+            "system_startup": last_scan is None,
+            "last_scan_at": _monitoring_state["last_scan_at"],
+            "scan_count": _monitoring_state["scan_count"],
+            "candidates": _monitoring_state["last_candidates"],
+            "watchlist": _monitoring_state["last_watchlist"],
+            "history": _monitoring_state["history"][:20],
+            "settings": settings,
+            "scope": "global_admin",
+            "risk_off": _monitoring_state["risk_off"],
+            "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
+            # M1/P0: hem ham kapı hem panel gösterim eşiği açıkça raporlanır.
+            **_threshold_fields(settings),
+            # M1/P1 (R4-02): canlı görev kaydından gerçek liveness.
+            "loop_active": _loop_is_active(),
+            "next_scan_in_sec": next_in,
+        }
 
 
 @router.get("/api/monitoring/active-notification/{symbol}")
@@ -936,7 +1199,9 @@ async def monitoring_active_notification(symbol: str):
     return {
         "symbol": sym,
         "active": True,
-        "score": row.get("score"),
+        # M1/P1 (R4-05): diğer TÜM monitoring skorları gibi panel (0-100) ölçeğine
+        # normalize edilir; eski/ham kayıtlar `_stored_panel_score` ile çevrilir.
+        "score": _stored_panel_score(row),
         "target_pct": target_pct,
         "price": price,
         "expected_price": expected,
@@ -961,6 +1226,12 @@ async def report_notifications(limit: int = 200, day: str = None):
     skorlu gürültü başarı oranını yanıltmasın.
     """
     limit = max(1, min(int(limit), 1000))
+    # R4-01: bozuk `day` parametresi veritabanına ulaşmadan 400 döner (500 üretmez).
+    if day:
+        try:
+            time.strptime(str(day), "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Geçersiz tarih: YYYY-MM-DD bekleniyor")
     settings = await get_user_notification_settings()
     # Tek eşik ilkesi (2026-09-04 kullanıcı kararı): raporlar da radar/bildirim/
     # otonom taramayla AYNI etkin eşiği kullanır (admin min_score — RISK_OFF
@@ -984,11 +1255,12 @@ async def report_notifications(limit: int = 200, day: str = None):
         candidate_status = str(row.get("candidate_status") or "")
         horizon = int(row.get("horizon_minutes") or 0)
         window_closed = bool(detected_at and horizon and (now - detected_at) >= (horizon + 2) * 60)
+        # M1/P0 (R3-04): TAMAMEN BAŞARILI YALNIZCA hedefe GERÇEKTEN dokunulduysa.
+        # Yarım-hedef hareketi (mfe >= hedef×0.5) artık "BAŞARILI" DEĞİL → "KISMİ";
+        # eski tanım başarı oranını ~2× şişiriyordu (hedefe değmeden "başarılı").
         if candidate_status == "evaluated" and mfe_pct is not None:
             if touched:
                 status = "TAMAMEN BAŞARILI"
-            elif target_pct > 0 and mfe_pct >= target_pct * 0.5:
-                status = "BAŞARILI"
             elif mfe_pct > 0:
                 status = "KISMİ"
             else:
@@ -1023,11 +1295,15 @@ async def report_notifications(limit: int = 200, day: str = None):
     for item in result:
         counts[item["status"]] = counts.get(item["status"], 0) + 1
     evaluated = sum(counts[k] for k in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ"))
-    success = counts["TAMAMEN BAŞARILI"] + counts["BAŞARILI"]
+    # M1/P0 (R3-04): başarı = YALNIZCA gerçek dokunuş (TAMAMEN BAŞARILI).
+    # Yarım-hedef KISMİ sayılır ve başarıya eklenmez ("BAŞARILI" kovası korunur
+    # ama boştur — FE uyumluluğu için anahtar silinmedi).
+    success = counts["TAMAMEN BAŞARILI"]
     day_breakdown = {"counts": counts, "evaluated": evaluated,
                     "success_count": success,
                     "success_rate": (success / evaluated * 100) if evaluated else None}
-    all_rows = await database.get_monitoring_velocity_matches(limit=1000, day=None)
+    # R4-04: "genel (tüm zamanlar)" artık cap'siz (limit=None) — 1000 satırda sessizce kırpılmaz.
+    all_rows = await database.get_monitoring_velocity_matches(limit=None, day=None)
     # Genel başarı da aynı global eşiğe tabi (gürültü oranları dışarıda kalır);
     # eski kayıtlar için tek kez normalize uygulanır (bkz. _stored_panel_score).
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= min_score]
@@ -1041,7 +1317,9 @@ async def report_notifications(limit: int = 200, day: str = None):
         tgt = float(r.get("target_pct") or 0)
         if cand_st == "evaluated" and mfe_f is not None:
             all_evaluated += 1
-            if tch or mfe_f >= tgt * 0.5:
+            # M1/P0 (R3-04): yarım-hedef (mfe >= hedef×0.5) artık başarı SAYILMAZ;
+            # genel başarı da yalnızca GERÇEK dokunuşla hesaplanır.
+            if tch:
                 all_success += 1
     overall_breakdown = {
         "evaluated": all_evaluated,
@@ -1059,7 +1337,8 @@ async def monitoring_diagnostics():
     """
     settings = await get_user_notification_settings()
     min_score = _effective_min_score(settings)
-    rows = await database.get_monitoring_velocity_matches(limit=1000, day=None)
+    # R4-04: genel tablo da cap'siz okunur (limit=None).
+    rows = await database.get_monitoring_velocity_matches(limit=None, day=None)
     rows = [r for r in rows if _stored_panel_score(r) >= min_score]
     profile_buckets: dict[str, list] = {"all": []}
     for r in rows:
@@ -1085,8 +1364,9 @@ async def monitoring_diagnostics():
         else:
             bucket = "0-50"
         tch = bool(r.get("touched_target"))
-        label = "TAMAMEN" if tch else ("BASARILI" if mfe_f >= tgt * 0.5 else
-                                        ("KISMİ" if mfe_f > 0 else "BASARISIZ"))
+        # M1/P0 (R3-04): yarım-hedef artık "BASARILI" değil "KISMİ"; başarı yalnız
+        # gerçek dokunuş (TAMAMEN). Teşhis kovaları raporla aynı tanımı kullanır.
+        label = "TAMAMEN" if tch else ("KISMİ" if mfe_f > 0 else "BASARISIZ")
         entry = {"symbol": r.get("symbol"), "score": score, "target_pct": tgt,
                  "mfe_pct": round(mfe_f, 3), "status": label, "horizon": r.get("horizon_minutes")}
         profile_buckets.setdefault(bucket, []).append(entry)
@@ -1094,7 +1374,8 @@ async def monitoring_diagnostics():
     summary = {}
     for bk, items in profile_buckets.items():
         n = len(items)
-        s = sum(1 for i in items if i["status"] in ("TAMAMEN", "BASARILI"))
+        # M1/P0 (R3-04): başarı yalnız gerçek dokunuş (TAMAMEN).
+        s = sum(1 for i in items if i["status"] == "TAMAMEN")
         avg_target = sum(i["target_pct"] for i in items) / n if n else 0
         avg_mfe = sum(i["mfe_pct"] for i in items) / n if n else 0
         summary[bk] = {"count": n, "success": s, "success_rate": round(s/n*100,1) if n else 0,
@@ -1112,7 +1393,8 @@ async def monitoring_diagnostics():
         tch = bool(r.get("touched_target"))
         by_symbol.setdefault(sym, {"count": 0, "success": 0, "total_mfe": 0.0, "total_target": 0.0})
         by_symbol[sym]["count"] += 1
-        if tch or mfe_f >= tgt * 0.5:
+        # M1/P0 (R3-04): yarım-hedef başarı sayılmaz (yalnız gerçek dokunuş).
+        if tch:
             by_symbol[sym]["success"] += 1
         by_symbol[sym]["total_mfe"] += mfe_f
         by_symbol[sym]["total_target"] += tgt
@@ -1154,8 +1436,10 @@ async def monitoring_diagnostics():
             if sym_name:
                 fd = market.data_freshness(sym_name, "5m") if hasattr(market, "data_freshness") else {}
                 freshness_sample[sym_name] = fd
-    except Exception:
-        pass
+    except Exception as exc:
+        # M1/P2: sessiz `pass` yerine görünür kayıt (teşhis boş kalmasın).
+        logger.warning("freshness_sample olusturulamadi: %s", exc)
+        freshness_sample = {"error": str(exc)}
     # Memory usage: obezite tespiti (2026-09-07)
     memory_metrics = {}
     try:
@@ -1199,8 +1483,10 @@ async def monitoring_diagnostics():
             db_latency["avg_notify_ms"] = None
             db_latency["max_notify_ms"] = None
             db_latency["sample_count"] = 0
-    except Exception:
-        pass
+    except Exception as exc:
+        # M1/P2: sessiz `pass` yerine loglanır.
+        logger.warning("db_latency metrigi olusturulamadi: %s", exc)
+        db_latency["error"] = str(exc)
     return {
         "paper_only": True,
         "system_startup": _monitoring_state.get("last_scan_at") is None,
@@ -1243,7 +1529,10 @@ async def monitoring_notification_history():
     except Exception as exc:
         logger.warning("monitoring bildirim geçmişi okunamadı: %s", exc)
         persisted = []
-    return {"paper_only": True, "history": persisted, "session": _monitoring_state["history"][:20]}
+    # M1/P2 (R2-18): oturum geçmişi state kilidi altında okunur.
+    async with _locked_state():
+        session = _monitoring_state["history"][:20]
+    return {"paper_only": True, "history": persisted, "session": session}
 
 
 async def monitoring_background_loop():
@@ -1283,7 +1572,9 @@ async def monitoring_background_loop():
 def start_monitoring_loop() -> bool:
     """Arka plan döngüsünü bir kez başlat (idempotent)."""
     global _loop_task
-    if _loop_task is not None and not _loop_task.done():
+    # M1/P1 (R4-02): canlılık süpervizörün görev kaydından okunur; respawn sonrası
+    # bayat `_loop_task` yüzünden İKİNCİ bir döngü açılması engellenir.
+    if _loop_is_active():
         return False
     # G-10: ham `create_task` yerine SÜPERVİZÖRLÜ başlatma — döngü beklenmeyen
     # bir hatayla ölürse sınırlı backoff ile yeniden başlatılır (sessiz ölü kanca yok).
@@ -1293,7 +1584,9 @@ def start_monitoring_loop() -> bool:
 
 def stop_monitoring_loop():
     global _loop_task
-    if _loop_task is not None:
-        _loop_task.cancel()
-        _background_tasks.discard(_loop_task)
-        _loop_task = None
+    # M1/P1 (R4-02): respawn edilmiş CANLI görevi iptal et (bayat `_loop_task` değil).
+    task = get_task("monitoring-scan-loop") or _loop_task
+    if task is not None:
+        task.cancel()
+        _background_tasks.discard(task)
+    _loop_task = None
