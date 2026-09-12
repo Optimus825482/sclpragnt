@@ -13,22 +13,46 @@ def _ema(values, period):
     return value
 
 
-def _rsi(closes, period=14):
-    """Wilder-smoothed RSI over the full series (kanonik kaynak)."""
-    if len(closes) < period + 1:
-        return None
-    deltas = np.diff(np.asarray(closes, dtype=float))
-    gains = np.where(deltas > 0, deltas, 0.0)
-    losses = np.where(deltas < 0, -deltas, 0.0)
-    avg_gain = float(np.mean(gains[:period]))
-    avg_loss = float(np.mean(losses[:period]))
-    for i in range(period, len(deltas)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+def _rsi_from_averages(avg_gain: float, avg_loss: float) -> float:
+    """Terminal RSI mapping shared by the scalar and series paths.
+
+    Kept separate so ``_rsi`` and ``_rsi_series`` can never drift apart.
+    """
     if avg_loss == 0:
         return 100.0 if avg_gain > 0 else 50.0
     rs = avg_gain / avg_loss
     return float(100 - (100 / (1 + rs)))
+
+
+def _rsi_series(closes, period=14):
+    """Wilder-smoothed RSI for every closed bar, single O(n) pass.
+
+    C-12: ``_stoch_rsi`` used to call ``_rsi`` on every prefix of the series,
+    which is O(n^2) (127 ms at n=600, ~6 snapshots per symbol). One pass here
+    reproduces those prefix values **exactly** (same arithmetic, same order),
+    so the indicator values are unchanged — only the cost drops.
+    Element ``i`` is the RSI of ``closes[:period + 1 + i]``.
+    """
+    array = np.asarray(closes, dtype=float)
+    if len(array) < period + 1:
+        return []
+    deltas = np.diff(array)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+    avg_gain = float(np.mean(gains[:period]))
+    avg_loss = float(np.mean(losses[:period]))
+    series = [_rsi_from_averages(avg_gain, avg_loss)]
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        series.append(_rsi_from_averages(avg_gain, avg_loss))
+    return series
+
+
+def _rsi(closes, period=14):
+    """Wilder-smoothed RSI over the full series (kanonik kaynak)."""
+    series = _rsi_series(closes, period)
+    return series[-1] if series else None
 
 
 def _atr(highs, lows, closes, period=14):
@@ -79,19 +103,20 @@ def _stochastic(highs, lows, closes, period=14, smooth=3):
     for i in range(period - 1, len(closes)):
         hi, lo = max(highs[i-period+1:i+1]), min(lows[i-period+1:i+1])
         values.append((closes[i] - lo) / (hi - lo) * 100 if hi != lo else 50.0)
-    k = float(np.mean(values[-smooth:]))
-    # D = SMA(K, smooth): K değerlerinin son smooth adedinin ortalaması.
-    # Kısa seride K = D (yetersiz veri), ayrı hesaplama gerekmez.
-    if len(values) >= smooth * 2:
-        d = float(np.mean(values[-smooth*2:-smooth]))
-    else:
-        d = k  # yetersiz veride D = K
-    return {"k": k, "d": d}
+    # C-04: %K = SMA(raw, smooth), %D = SMA(%K, smooth) — aynı kural
+    # ``_stoch_rsi`` içinde de kullanılıyor (kanonik tanım). Eski kod %D'yi
+    # ``values[-6:-3]`` (ham serinin gecikmeli bir penceresi) ile alıyordu:
+    # referansa göre ~10-26 puan sapma üretiyor ve K ile D'yi karıştırıyordu.
+    k_values = [float(np.mean(values[i-smooth+1:i+1])) for i in range(smooth - 1, len(values))]
+    if not k_values:
+        return None
+    return {"k": k_values[-1], "d": float(np.mean(k_values[-smooth:]))}
 
 def _stoch_rsi(closes, rsi_period=14, stoch_period=14, k_period=3, d_period=3):
     if len(closes) < rsi_period + stoch_period + k_period + d_period:
         return None
-    values = [_rsi(closes[:end], rsi_period) for end in range(rsi_period + 1, len(closes) + 1)]
+    # C-12: tek geçişte O(n) RSI serisi (eski hâl: her prefix için ayrı _rsi = O(n^2)).
+    values = _rsi_series(closes, rsi_period)
     raw = []
     for i in range(stoch_period - 1, len(values)):
         window = values[i - stoch_period + 1:i + 1]; lo, hi = min(window), max(window)
@@ -238,6 +263,54 @@ def _awesome_oscillator(highs, lows, fast=5, slow=34):
     median = ((np.asarray(highs) + np.asarray(lows)) / 2).tolist()
     fast_value, slow_value = _sma(median, fast), _sma(median, slow)
     return float(fast_value - slow_value) if fast_value is not None and slow_value is not None else None
+
+# C-09: bars per calendar day, used as the volatility annualizer. Crypto runs
+# 24/7, so one day is always 1440 minutes; the multiplier is sqrt(bars/day).
+# A hardcoded sqrt(1440) assumes 1-minute bars and inflates the value by
+# sqrt(5) = 2.236x (+123.6%) when the primary timeframe is 5m, which is what
+# the snapshot loop actually feeds in.
+TIMEFRAME_MINUTES = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+                     "1h": 60, "2h": 120, "4h": 240, "6h": 360, "8h": 480,
+                     "12h": 720, "1d": 1440, "3d": 4320, "1w": 10080}
+DEFAULT_TIMEFRAME = "5m"   # system-wide primary timeframe (calculate_snapshot)
+
+
+def _periods_per_day(timeframe):
+    """Bars in one calendar day for a Binance-style interval string.
+
+    Returns None when the interval cannot be parsed, so callers choose the
+    fallback explicitly instead of silently inheriting a 1-minute assumption.
+    """
+    if timeframe is None:
+        return None
+    text = str(timeframe).strip().lower()
+    minutes = TIMEFRAME_MINUTES.get(text)
+    if minutes is None:
+        # Fall back to parsing "45m" / "2h" style intervals.
+        try:
+            amount = float(text[:-1])
+            minutes = amount * {"m": 1.0, "h": 60.0, "d": 1440.0, "w": 10080.0}.get(text[-1], 0.0)
+        except (ValueError, IndexError):
+            return None
+    if not minutes or minutes <= 0:
+        return None
+    per_day = 1440.0 / minutes
+    return int(round(per_day)) if per_day >= 1 else None
+
+
+def _historical_volatility(closes, bars_per_day, period=20):
+    """Annualised close-to-close volatility in PERCENT for the bar interval in use.
+
+    ``bars_per_day`` must come from ``_periods_per_day(<primary_timeframe>)``;
+    passing 1440 for 5m bars is exactly the bug this helper replaces.
+    """
+    if not bars_per_day or len(closes) < period + 1:
+        return None
+    window = np.asarray(closes[-period - 1:], dtype=float)
+    if float(np.min(window)) <= 0:
+        return None
+    return float(np.std(np.diff(np.log(window))) * math.sqrt(bars_per_day) * 100)
+
 
 def _williams_r(highs, lows, closes, period=14):
     if len(closes) < period: return None
@@ -432,9 +505,17 @@ def _signal(value, buy, strong_buy, sell, strong_sell):
     return "neutral"
 
 def _pivots(high, low, close):
+    """Classic floor-trader pivots from the previous bar's H/L/C.
+
+    C-01: R3 = H + 2(P-L) = 2P - 2L + H and S3 = L - 2(H-P) = 2P - 2H + L.
+    The old code dropped the trailing ``+high`` / ``+low`` term, so with
+    H=105/L=95/C=100 it produced R3=10.0 (correct 115.0) and S3=-10.0
+    (correct 85.0) — R3 fell *below* R2 and S3 below the price, i.e. an
+    impossible, out-of-order level ladder.
+    """
     p = (high + low + close) / 3
-    return {"R3": 2*p - 2*low, "R2": p + (high-low), "R1": 2*p-low, "P": p,
-            "S1": 2*p-high, "S2": p-(high-low), "S3": 2*p-2*high,
+    return {"R3": 2*p - 2*low + high, "R2": p + (high-low), "R1": 2*p-low, "P": p,
+            "S1": 2*p-high, "S2": p-(high-low), "S3": 2*p-2*high + low,
             "F_R3": p + 1.0*(high-low), "F_R2": p + 0.618*(high-low), "F_R1": p + 0.382*(high-low),
             "F_S1": p - 0.382*(high-low), "F_S2": p - 0.618*(high-low), "F_S3": p - 1.0*(high-low)}
 
@@ -793,8 +874,11 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     momentum_indicators = {"roc_5": ret(5), "roc_10": ret(10), "roc_21": ret(21), "trix_15": _trix(closes, 15), "tsi_25_13": _tsi(closes, 25, 13)}
     flow_indicators = {"adl": _adl(highs, lows, closes, volumes), "cmf_20": _cmf(highs, lows, closes, volumes, 20),
                        "pvt": _pvt(closes, volumes), "volume_oscillator_5_20": _volume_oscillator(volumes, 5, 20)}
+    # C-09: annualizer follows the bar interval actually fed in (5m -> 288/day).
+    bars_per_day = _periods_per_day(primary_timeframe) or _periods_per_day(DEFAULT_TIMEFRAME)
     volatility_indicators = {"stddev_20": float(np.std(closes[-20:])) if len(closes) >= 20 else None,
-                             "historical_volatility_20": float(np.std(np.diff(np.log(np.asarray(closes[-21:], dtype=float)))) * math.sqrt(1440) * 100) if len(closes) >= 21 and all(float(value) > 0 for value in closes[-21:]) else None,
+                             "historical_volatility_20": _historical_volatility(closes, bars_per_day, 20),
+                             "historical_volatility_bars_per_day": bars_per_day,
                              "choppiness_14": _choppiness(highs, lows, closes, 14)}
     cci = _cci(highs, lows, closes); ao = _awesome_oscillator(highs, lows); williams = _williams_r(highs, lows, closes)
     bull_bear = _bull_bear_power(highs, lows, closes); ultimate = _ultimate_oscillator(highs, lows, closes)
@@ -806,7 +890,14 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     moving_averages["vwma_20"] = float(np.sum(np.asarray(closes[-20:]) * np.asarray(volumes[-20:])) / np.sum(volumes[-20:])) if len(closes) >= 20 and np.sum(volumes[-20:]) else None
     moving_averages["hma_9"] = _sma(closes[-9:], 9)
     oscillator_values = {"rsi_14": _rsi(closes), "stochastic_k": stochastic.get("k") if stochastic else None, "stochastic_d": stochastic.get("d") if stochastic else None, "cci_20": cci, "adx_14": adx.get("adx") if adx else None, "awesome": ao, "momentum_10": ret(10), "macd_histogram": macd.get("histogram") if macd else None, "stoch_rsi_fast": stoch_rsi.get("k") if stoch_rsi else None, "stoch_rsi_signal": stoch_rsi.get("d") if stoch_rsi else None, "cmo_9": cmo, "crsi": crsi, "williams_r": williams, "bull_bear": bull_bear.get("bull") if bull_bear else None, "ultimate": ultimate, "mfi_14": mfi, "obv": obv, "fisher_9": fisher, "fisher_11": fisher_11, "wavetrend_7_1": wavetrend}
-    oscillator_signals = {"rsi_14": _signal(oscillator_values["rsi_14"], 50, 70, 30, 20), "stochastic_k": _signal(oscillator_values["stochastic_k"], 50, 80, 20, 10), "cci_20": _signal(cci, 0, 100, -100, -200), "adx_14": "neutral" if adx is None else ("buy" if adx["plus_di"] > adx["minus_di"] else "sell"), "awesome": "buy" if (ao or 0) > 0 else "sell", "momentum_10": "buy" if (ret(10) or 0) > 0 else "sell", "macd": "buy" if macd and macd["histogram"] > 0 else "sell", "williams_r": _signal(None if williams is None else williams, -50, -20, -70, -80), "ultimate": _signal(ultimate, 50, 70, 30, 20)}
+    oscillator_signals = {"rsi_14": _signal(oscillator_values["rsi_14"], 50, 70, 30, 20), "stochastic_k": _signal(oscillator_values["stochastic_k"], 50, 80, 20, 10), "cci_20": _signal(cci, 0, 100, -100, -200), "adx_14": "neutral" if adx is None else ("buy" if adx["plus_di"] > adx["minus_di"] else "sell"), "awesome": "buy" if (ao or 0) > 0 else "sell", "momentum_10": "buy" if (ret(10) or 0) > 0 else "sell", "macd": "buy" if macd and macd["histogram"] > 0 else "sell",
+        # C-02: %R lives in [-100, 0] where -10 is *overbought*. `_signal`
+        # reads ascending values, so negate it and use positive thresholds:
+        # -10 -> 10 -> strong_sell, -90 -> 90 -> strong_buy. Bands mirror the
+        # classic -20/-80 (strong) and -40/-60 (mild) %R lines. The old call
+        # passed the raw value with negative thresholds and had the whole
+        # ladder backwards (an overbought print was labelled "strong_buy").
+        "williams_r": _signal(None if williams is None else -williams, 60, 80, 40, 20), "ultimate": _signal(ultimate, 50, 70, 30, 20)}
     daily = klines.get("1d", {}); dclose, dhigh, dlow = daily.get("closes", []), daily.get("highs", []), daily.get("lows", [])
     adr = None
     if len(dclose) >= 15:
@@ -817,6 +908,12 @@ def calculate_snapshot(symbol, price, klines, orderflow=None, ticker_24h=0, orde
     candle_patterns = _candlestick_patterns(opens, highs, lows, closes)
     alignment = "bullish" if ema9 and ema21 and ema50 and ema9 > ema21 > ema50 else "bearish" if ema9 and ema21 and ema50 and ema9 < ema21 < ema50 else "mixed"
     methodologies = _methodology_analysis(opens, highs, lows, closes, volumes, adx, alignment)
+    # UNIT CONTRACT — deliberate, do NOT "fix": `volatility.atr_pct` is a
+    # FRACTION in [0, 1] (atr / price), not a percentage, despite the name.
+    # Rescaling it here would desync the ML feature pipeline (train/inference
+    # parity is the deadliest bug class in this repo) and every stored
+    # downstream threshold; that rescaling belongs to its own workstream.
+    # `_methodology_analysis` uses the identical atr / price scale.
     result.update({"timeframe": primary_timeframe, "data_ready": True, "trend": {"ema_9": ema9, "ema_21": ema21, "ema_50": ema50, "alignment": alignment, "adx": adx}, "trend_indicators": trend_indicators, "momentum": {"return_5m": ret(1), "return_15m": ret(3), "return_1h": ret(12), "rsi_14": _rsi(closes), "roc_21": ret(21), "macd": macd, "stochastic": stochastic, "mfi_14": mfi}, "momentum_indicators": momentum_indicators, "oscillators": {"values": oscillator_values, "signals": oscillator_signals}, "moving_averages": moving_averages, "candlestick_patterns": _candlestick_patterns(opens, highs, lows, closes), "channels": {"bollinger": bollinger, "donchian": {"upper": max(highs[-20:]), "middle": _sma(closes, 20), "lower": min(lows[-20:])} if len(closes) >= 20 else None, "keltner": {"middle": ema20, "upper": ema20 + 2*atr if ema20 and atr else None, "lower": ema20 - 2*atr if ema20 and atr else None}}, "volatility": {"atr_14": atr, "atr_pct": atr / price if atr and price else None, "adr_14_pct": adr, "adr_basis": "1d", "bollinger": bollinger, "day_range_used_pct": None, "adr_utilization": None, "remaining_capacity_pct": None}, "volatility_indicators": volatility_indicators, "volume": {"volume_ratio_20": volumes[-1] / vavg if vavg else None, "volume_quality": "insufficient_history" if len(volumes) < 21 else "low_volume" if vavg and volumes[-1] / vavg < 0.2 else "valid", "volume_timeframe": primary_timeframe, "vwap": float(np.sum(((np.array(highs[-20:]) + np.array(lows[-20:]) + np.array(closes[-20:])) / 3) * np.array(volumes[-20:])) / np.sum(volumes[-20:])) if len(volumes) >= 20 and np.sum(volumes[-20:]) else None, "obv": obv}, "flow_indicators": flow_indicators, "pivots": _pivots(dhigh[-1], dlow[-1], dclose[-1]) if len(dclose) else None, "liquidity": {"quote_volume_24h": ticker_24h, "spread_pct": spread, "best_bid_price": flow.get("bid_price"), "best_ask_price": flow.get("ask_price"), "bid_qty": flow.get("bid_qty"), "ask_qty": flow.get("ask_qty"), "orderbook_depth_try": depth, "depth_multiplier": depth / order_value if order_value else None, "orderflow_imbalance": ((flow.get("bid_qty", 0) - flow.get("ask_qty", 0)) / (flow.get("bid_qty", 0) + flow.get("ask_qty", 0))) if (flow.get("bid_qty", 0) + flow.get("ask_qty", 0)) else None, "scope": "realtime_market", "timeframe_independent": True, "source": flow.get("source", "binance_tr_public_websocket"), "updated_at": flow.get("updated_at")}, "methodologies": methodologies})
     result["candlestick_patterns"] = candle_patterns
     result["momentum"]["cmo_9"] = cmo

@@ -30,6 +30,21 @@ FEATURE_VERSION = "v3"  # v3: göstergeler kanonik kaynakla birleştirildi
                         #     (Wilder RSI, Aroon-25, kanonik linreg_slope10_pct).
                         #     v2 artefaktları artık yüklenmez; yeniden eğitim gerekir.
 HORIZONS = (5, 15)
+# ML-01 (2026-09-12): eğitim ve çıkarım AYNI bar dayanağını kullanmalıdır.
+# Model 5m kapanış barlarıyla eğitilir; çıkarım da 5m kapanış barlardan
+# özellik üretmelidir. Aksi halde aynı isimli özellik (ret3_pct, atr_pct,
+# rsi14, aroon25) farklı anlama gelir ve model eğitim dağılımının dışında
+# bir noktada çalışır.
+TRAINING_BAR_MINUTES = 5
+
+
+def inference_bar_minutes() -> int:
+    """Çıkarımın kullanması gereken bar dakikası — eğitimle birebir.
+
+    Çağıranlar (velocity, chart_forecast, llm_chat) eğitimle uyumlu kalmak
+    için 5m kapanış barlarından özellik üretirken bu fonksiyonu kullanmalıdır.
+    """
+    return TRAINING_BAR_MINUTES
 FEATURE_NAMES = [
     "ret1_pct", "ret3_pct", "ret5_pct", "atr_pct", "bb_width_pct", "rsi14",
     "mfi14", "vol_z", "linreg_slope10_pct", "aroon_up25", "aroon_down25",
@@ -251,16 +266,25 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
 def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
     """Ölçülmüş canlı tahminler: özellikler snapshot'tan, etiket gerçek sonuçtan.
 
-    Yalnızca direction='up' satırlar; etiket MFE, ikinci etiket min_move_pct'e
+    Yalnızca direction='up' satırlar; baz etiket MFE, ikinci etiket min_move_pct'e
     dokunma (classifier). Ağırlık ML_JOURNAL_SAMPLE_WEIGHT (pekiştirme).
+
+    Dönüş: (X, y_mfe, y_hit, horizon_ids, weights, timestamps_ms). Son öğe,
+    her journal satırının karar zamanını (ms, epoch) taşır; ML-02 kronolojik
+    holdout ayrımı bu zaman damgalarına dayanır. Eşleşme sağlama garantisi için
+    `ts_list` asymptotic işaretçidir; boş dönüşte de aynı uzunlukta olur.
+
+    ML-09 (2026-09-12): alan kapsamı filtresi. Chat-candidate satırlarının
+    snapshot'ı özellik alanları içermeyebilir (yalnız trend/hacim/likidite) →
+    özelliklerin neredeyse tamamı NaN olur ve "uydurulmuş" değerler eğitime
+    gürültü enjekte eder. Çekirdek özelliklerden en az biri dolu değilse satır
+    atılır ve `atr_pct=None` → 0.0 yerine NaN yazılır.
     """
-    X, y_mfe, y_hit, horizon_ids, weights = [], [], [], [], []
+    X, meta, y_min, y_hit, hid, weights, ts_list = [], [], [], [], [], [], []
     for row in rows or []:
         if row.get("direction") != "up" or row.get("max_favorable_pct") is None:
             continue
         snap = row.get("snapshot") or {}
-        # Bazı yazıcılar snapshot'ı {"candidate": {...}, "label_policy": {...}}
-        # biçiminde (iç içe) kaydeder; özellik alanları candidate içindedir.
         if isinstance(snap, dict) and not any(
                 key in snap for key in ("ret3_pct", "atr_pct", "rsi")) \
                 and isinstance(snap.get("candidate"), dict):
@@ -280,32 +304,43 @@ def prepare_journal_samples(rows: list[dict], symbol_codes: dict[str, int]):
             ts = ts.timestamp() * 1000
         else:
             ts = time.time() * 1000
+        # ML-09 (2026-09-12): alan kapsamı — çekirdek özelliklerden EN AZ biri
+        # dolu olmalı. Chat-candidate satırlarında snapshot, özellik alanlarını
+        # taşımadığı için bu satırlar hep NaN üretirdi; artık atlanır.
+        core_present = any(k in snap and snap.get(k) is not None
+                           for k in ("atr_pct", "ret3_pct", "rsi", "aroon_up"))
+        if not core_present:
+            continue
         hour = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).hour
         hour = (hour + 3) % 24
         day_quarter = hour // 6
         # velocity_proxy: sözleşme gereği TÜM *_pct alanları YÜZDE; kesire çevir
-        # ve paylaşılan tanımdan geçir (eğitimdeki ham dizi tanımıyla aynı).
+        # ve paykınlanan tanımdan geç (evaluate-allı ham dizi tanımıyla aynı).
         snap_atr_ratio = _ratio_from_pct(snap.get("atr_pct"))
         snap_ret3_ratio = _ratio_from_pct(snap.get("ret3_pct"))
         vp = velocity_proxy_value(snap_atr_ratio, snap_ret3_ratio)
+        # ML-09: `atr_pct=None` → 0.0 UYDURMA; model NaN'ı doğal işler.
         X.append([_ratio_from_pct(snap.get("ret1_pct")),
                   snap_ret3_ratio,
                   _ratio_from_pct(snap.get("ret5_pct")),
-                  snap_atr_ratio if snap_atr_ratio is not None else 0.0,
+                  snap_atr_ratio,  # None kalabilir (NaN), 0.0 değil
                   (_ratio_from_pct(snap.get("bb_width_pct")) if snap.get("bb_width_pct") is not None else None),
                   snap.get("rsi"), snap.get("mfi"), None,
                   (_ratio_from_pct(snap.get("linreg_slope10_pct")) if snap.get("linreg_slope10_pct") is not None else None),
                   snap.get("aroon_up"), snap.get("aroon_down"),
                   float(hour), float(day_quarter), float(vp), float(symbol_codes[sym])])
-        y_mfe.append(mfe)
+        y_min.append(mfe)
         y_hit.append(1.0 if mfe >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02) else 0.0)
-        horizon_ids.append(HORIZONS.index(horizon))
+        hid.append(HORIZONS.index(horizon))
         weights.append(config.ML_JOURNAL_SAMPLE_WEIGHT)
+        ts_list.append(float(ts))
     if not X:
         empty = np.empty((0, len(FEATURE_NAMES)), dtype=np.float32)
-        return empty, np.empty(0, dtype=np.float32), np.empty(0), np.empty(0), np.empty(0, dtype=np.float32)
-    return (np.asarray(X, dtype=np.float32), np.asarray(y_mfe, dtype=np.float32),
-            np.asarray(y_hit), np.asarray(horizon_ids), np.asarray(weights, dtype=np.float32))
+        return (empty, np.empty(0, dtype=np.float32), np.empty(0), np.empty(0),
+                np.empty(0, dtype=np.float32), np.empty(0, dtype=np.float64))
+    return (np.asarray(X, dtype=np.float32), np.asarray(y_min, dtype=np.float32),
+            np.asarray(y_hit), np.asarray(hid), np.asarray(weights, dtype=np.float32),
+            np.asarray(ts_list, dtype=np.float64))
 
 
 def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -> dict[str, Any]:
@@ -327,7 +362,8 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -
         raise RuntimeError("Eğitim verisi yok: historical_candles (5m) boş")
     symbols = sorted(candles)
     symbol_codes = {sym: idx for idx, sym in enumerate(symbols)}
-    journal_X, journal_mfe, journal_hit, journal_h, journal_w = prepare_journal_samples(journal_rows, symbol_codes)
+    (journal_X, journal_mfe, journal_hit, journal_h, journal_w,
+     journal_ts) = prepare_journal_samples(journal_rows, symbol_codes)
 
     xs, mfe_by_h, times_by_h = {h: [] for h in HORIZONS}, {h: [] for h in HORIZONS}, {h: [] for h in HORIZONS}
     for sym, arrays in candles.items():
@@ -345,7 +381,8 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -
 
     artifact = {"feature_version": FEATURE_VERSION, "feature_names": FEATURE_NAMES,
                 "symbol_codes": symbol_codes, "horizons": {}, "trained_at": time.time(),
-                "journal_sample_count": int(len(journal_X))}
+                "journal_sample_count": int(len(journal_X)),
+                "training_bar_minutes": TRAINING_BAR_MINUTES}
     metrics: dict[str, Any] = {"per_horizon": {}}
 
     for horizon in HORIZONS:
@@ -359,12 +396,18 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict]) -
         X, y, times = X[order], y[order], times[order]
         split = int(len(X) * 0.85)
         h_mask = journal_h == HORIZONS.index(horizon)
-        X_train = np.vstack([X[:split], journal_X[h_mask]])
-        y_train = np.concatenate([y[:split], journal_mfe[h_mask]])
-        weights = np.concatenate([np.ones(split, dtype=np.float32), journal_w[h_mask]])
+        # ML-02 (2026-09-12): kronolojik holdout bütünlüğü. Journal satırları
+        # artık karar zaman damgası (journal_ts, ms) taşır; split noktasına
+        # (times[split-1]) KADAR olanlar eğitime, sonrakiler holdout'a girer.
+        # Eskiden hepsi eğitime giriyordu → holdout metriği iyimserdi.
+        train_cutoff_ms = float(times[split - 1]) if split > 0 else float("-inf")
+        in_split_ts = h_mask & (journal_ts <= train_cutoff_ms) if split > 0 else h_mask
+        X_train = np.vstack([X[:split], journal_X[in_split_ts]])
+        y_train = np.concatenate([y[:split], journal_mfe[in_split_ts]])
+        weights = np.concatenate([np.ones(split, dtype=np.float32), journal_w[in_split_ts]])
         hit_train = np.concatenate([
             (y[:split] >= config.ML_HIT_TARGET_PCT.get(horizon, 0.02)).astype(np.float64),
-            journal_hit[h_mask]])
+            journal_hit[in_split_ts]])
 
         reg = HistGradientBoostingRegressor(loss="quantile", quantile=config.ML_TARGET_QUANTILE,
                                             max_iter=300, learning_rate=0.06, max_leaf_nodes=31,
@@ -413,7 +456,14 @@ _MODEL_CACHE: dict[str, Any] = {"artifact": None, "loaded_at": 0.0}
 
 
 def load_model(max_age_seconds: int = 86400) -> dict[str, Any] | None:
-    """Scout/gölge mod için artifact yükler; 24 saatten eskiyse yeniden okur."""
+    """Scout/gölge mod için artifact yükler; 24 saatten geçse de yeniden okur.
+
+    I-05 (2026-09-12): artifact'ın `feature_version` ve `feature_names`i
+    FEATURE_VERSION / FEATURE_NAMES ile birebir eşleşmeyen yükleme reddedilir;
+    ayrıca (I-04 follow-up) `training_bar_minutes` = TRAINING_BAR_MINUTES
+    doğrulanır. Aksi halde predict_target kolonları anlamsız sırada kurar ve
+    model "sayı üretmeye devam eder". Uyuşmazlıkta `None` döner + hata loglar.
+    """
     import joblib
     now = time.time()
     if _MODEL_CACHE["artifact"] is not None and now - _MODEL_CACHE["loaded_at"] < max_age_seconds:
@@ -421,7 +471,16 @@ def load_model(max_age_seconds: int = 86400) -> dict[str, Any] | None:
     path = os.path.join(config.ML_MODELS_DIR, f"upside_{FEATURE_VERSION}.joblib")
     if not os.path.exists(path):
         return None
-    _MODEL_CACHE["artifact"] = joblib.load(path)
+    artifact = joblib.load(path)
+    if artifact.get("feature_version") != FEATURE_VERSION \
+            or artifact.get("feature_names") != FEATURE_NAMES \
+            or int(artifact.get("training_bar_minutes") or 0) != TRAINING_BAR_MINUTES:
+        logger.error("[ML] artifact uyumsuz (I-05): %s; feature_version=%r feature_names=%r training=%r",
+                     path, artifact.get("feature_version"), artifact.get("feature_names"),
+                     artifact.get("training_bar_minutes"))
+        _MODEL_CACHE["artifact"] = None
+        return None
+    _MODEL_CACHE["artifact"] = artifact
     _MODEL_CACHE["loaded_at"] = now
     return _MODEL_CACHE["artifact"]
 
