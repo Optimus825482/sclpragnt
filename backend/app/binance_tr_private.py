@@ -14,9 +14,12 @@ import hashlib
 import hmac
 import json
 import logging
+import math
+import random
 import threading
 import time
 from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
@@ -24,14 +27,26 @@ logger = logging.getLogger(__name__)
 REST_BASE = "https://www.binance.tr"
 REST_TIMEOUT_SEC = 15
 RECV_WINDOW_MS = 5000
+# B-14: imzalı istekler için sınırlı yeniden deneme + sunucu saati ofseti.
+REST_MAX_ATTEMPTS = 4
+REST_BACKOFF_BASE_SEC = 0.35
+REST_BACKOFF_MAX_SEC = 4.0
+REST_BAN_BACKOFF_BASE_SEC = 30.0
+REST_BAN_BACKOFF_MAX_SEC = 120.0
+_SERVER_TIME_TTL_SEC = 300.0
 
 _SYMBOLS_CACHE_TTL_SEC = 6 * 3600
 _OPEN_ORDERS_CACHE_TTL_SEC = 30
 
 _symbols_cache: dict = {"symbols": [], "underscore_by_concat": {}, "expires": 0.0, "filters": {}}
 _symbols_lock = threading.Lock()
+# B-14: sembol listesi yüklemesi TEK UÇUŞ olmalı; eskiden ağ çağrısı kilidin
+# DIŞINDA yapıldığı için eşzamanlı çağrılar sürü hâlinde aynı isteği atıyordu.
+_symbols_load_lock = threading.Lock()
 _open_orders_cache: dict = {"orders": [], "expires": 0.0}
 _open_orders_lock = threading.Lock()
+_server_time_cache: dict = {"at": 0.0, "offset": 0.0}
+_server_time_lock = threading.Lock()
 
 
 def _unwrap(payload: dict) -> dict | list:
@@ -60,6 +75,39 @@ def _http_post_json(url: str, headers: dict | None = None) -> dict | list:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _private_retry_delay(attempt: int) -> float:
+    """Üstel backoff + jitter (B-14)."""
+    exponential = min(REST_BACKOFF_MAX_SEC, REST_BACKOFF_BASE_SEC * (2 ** (attempt - 1)))
+    return exponential + random.uniform(0.0, exponential * 0.25)
+
+
+def _server_time_offset_ms() -> float:
+    """Sunucu saati ile yerel saat farkı (ms) — TTL'li önbellek (B-14).
+
+    `RECV_WINDOW_MS = 5000` olduğu için yerel saat 5 sn'den fazla kayarsa
+    (`-1021 Timestamp outside recvWindow`) TÜM bakiye/açık emir/satış akışı
+    tek noktadan kırılır. Ofset `/open/v1/time` ile ölçülüp `timestamp`'a
+    uygulanır; ölçüm başarısız olursa ofset 0 kalır (eski davranış korunur).
+    """
+    now = time.time()
+    with _server_time_lock:
+        cached = dict(_server_time_cache)
+    if cached.get("at") and now - float(cached["at"]) < _SERVER_TIME_TTL_SEC:
+        return float(cached.get("offset") or 0.0)
+    offset = 0.0
+    try:
+        payload = _http_get_json(f"{REST_BASE}/open/v1/time")
+        data = _unwrap(payload)
+        server_ms = int((data or {}).get("serverTime") or 0) if isinstance(data, dict) else 0
+        if server_ms:
+            offset = float(server_ms) - now * 1000
+    except Exception as exc:
+        logger.info("Binance TR sunucu saati alınamadı (%s); ofset 0 varsayıldı", exc)
+    with _server_time_lock:
+        _server_time_cache.update({"at": now, "offset": offset})
+    return offset
+
+
 def _signed_request(method: str, path: str, params: dict | None,
                     api_key: str, api_secret: str) -> dict | list:
     """HMAC-SHA256 imzalı Binance TR isteği.
@@ -67,17 +115,49 @@ def _signed_request(method: str, path: str, params: dict | None,
     Parametreler (recvWindow+timestamp+signature dahil) query string'te
     taşınır; POST için gövde boştur — dokümana göre toplam imza alanı
     "query string + body" olduğundan bu kombinasyon geçerlidir.
+
+    B-14: `timestamp` sunucu saati ofsetiyle düzeltilir ve 429/5xx (ve ban
+    sinyali 418) için sınırlı yeniden deneme yapılır; her denemede yeni
+    timestamp + imza üretilir (eskiden hiç yeniden deneme yoktu).
     """
-    params = dict(params or {})
-    params["recvWindow"] = RECV_WINDOW_MS
-    params["timestamp"] = int(time.time() * 1000)
-    query = urlencode(sorted(params.items()))
-    signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
-    query += f"&signature={signature}"
-    url = f"{REST_BASE}{path}?{query}"
+    base_params = dict(params or {})
+    base_params["recvWindow"] = RECV_WINDOW_MS
+    offset_ms = _server_time_offset_ms()
     headers = {"X-MBX-APIKEY": api_key}
-    payload = _http_post_json(url, headers) if method.upper() == "POST" else _http_get_json(url, headers)
-    return _unwrap(payload)
+    last_error: Exception | None = None
+    for attempt in range(1, REST_MAX_ATTEMPTS + 1):
+        attempt_params = dict(base_params)
+        attempt_params["timestamp"] = int(time.time() * 1000 + offset_ms)
+        query = urlencode(sorted(attempt_params.items()))
+        signature = hmac.new(api_secret.encode("utf-8"), query.encode("utf-8"),
+                             hashlib.sha256).hexdigest()
+        url = f"{REST_BASE}{path}?{query}&signature={signature}"
+        try:
+            payload = (_http_post_json(url, headers) if method.upper() == "POST"
+                       else _http_get_json(url, headers))
+            return _unwrap(payload)
+        except HTTPError as exc:
+            last_error = exc
+            if exc.code == 418:
+                # Ban sinyali: uzun geri çekilme, anında raise YOK.
+                if attempt == REST_MAX_ATTEMPTS:
+                    break
+                time.sleep(min(REST_BAN_BACKOFF_MAX_SEC, REST_BAN_BACKOFF_BASE_SEC * attempt))
+                continue
+            if exc.code == 429 or 500 <= exc.code < 600:
+                if attempt == REST_MAX_ATTEMPTS:
+                    break
+                time.sleep(_private_retry_delay(attempt))
+                continue
+            raise
+        except (URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt == REST_MAX_ATTEMPTS:
+                break
+            time.sleep(_private_retry_delay(attempt))
+    raise RuntimeError(
+        f"Binance TR imzalı istek {REST_MAX_ATTEMPTS} denemede başarısız: {last_error}"
+    ) from last_error
 
 
 def _to_underscore_symbol(symbol: str) -> str:
@@ -96,13 +176,22 @@ def _to_underscore_symbol(symbol: str) -> str:
 
 
 def _load_symbol_list(api_key: str, api_secret: str) -> None:
-    """GET /open/v1/common/symbols — sembol listesi + bitişik→alt çizgi eşlemesi (cache'li)."""
-    now = time.monotonic()
-    if now < _symbols_cache["expires"]:
+    """GET /open/v1/common/symbols — sembol listesi + bitişik→alt çizgi eşlemesi (cache'li).
+
+    B-14: yükleme TEK UÇUŞ (single-flight). Eskiden ağ çağrısı `_symbols_lock`
+    DIŞINDA yapıldığı için eşzamanlı çağrılar sürü hâlinde aynı isteği atıyordu.
+    """
+    if time.monotonic() < _symbols_cache["expires"]:
         return
-    with _symbols_lock:
-        if now < _symbols_cache["expires"]:
+    with _symbols_load_lock:
+        # Kilidi beklerken başka bir çağrı doldurmuş olabilir.
+        if time.monotonic() < _symbols_cache["expires"]:
             return
+        _load_symbol_list_locked(api_key, api_secret)
+
+
+def _load_symbol_list_locked(api_key: str, api_secret: str) -> None:
+    now = time.monotonic()
     try:
         payload = _http_get_json(f"{REST_BASE}/open/v1/common/symbols")
         data = _unwrap(payload)
@@ -145,17 +234,25 @@ def get_symbol_filters(api_key: str, api_secret: str, symbol_underscore: str) ->
         return _symbols_cache["filters"].get(symbol_underscore)
 
 
-def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, quantity: float) -> dict:
+def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, quantity: float,
+                      step_size: float | None = None) -> dict:
     """MARKET SELL emri gönderir (POST /open/v1/orders; side=1, type=2).
 
     Kullanıcı onayı UI katmanında alınır; bu fonksiyon doğrudan emir gönderir.
     Cevap: {"order_id": ..., "symbol": ..., "quantity": ...}.
     """
+    # B-14: lot adımı kütüphane düzeyinde uygulanır. Adım YALNIZCA zaten
+    # yüklü filtre önbelleğinden okunur — burada ağ çağrısı tetiklenmez
+    # (satış yolunu yeni bir ağ bağımlılığına sokmamak için).
+    if step_size is None:
+        with _symbols_lock:
+            entry = _symbols_cache["filters"].get(symbol_underscore) or {}
+        step_size = float(entry.get("step_size") or 0) or None
     params = {
         "symbol": symbol_underscore,
         "side": 1,       # doküman: 0=BUY, 1=SELL
         "type": 2,       # doküman: 2=MARKET (satış için quantity zorunlu)
-        "quantity": _fmt_quantity(quantity),
+        "quantity": _fmt_quantity(quantity, step_size),
     }
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret)
     order_id = data.get("orderId") if isinstance(data, dict) else None
@@ -164,8 +261,16 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
             "symbol": symbol_underscore, "quantity": params["quantity"]}
 
 
-def _fmt_quantity(q: float) -> str:
-    """Miktarı 8 basamağa sabitle (API ondalık string ister; bilimsel gösterim yok)."""
+def _fmt_quantity(q: float, step_size: float | None = None) -> str:
+    """Miktarı API'nin beklediği ondalık string'e çevir (bilimsel gösterim yok).
+
+    B-14: `step_size` verilirse miktar lot adımına AŞAĞI yuvarlanır
+    (`floor(q/step)*step`). Eskiden yalnız 8 basamağa sabitleniyordu ve
+    yuvarlama tamamen çağırana bırakılmıştı; `place_market_sell`'i doğrudan
+    çağıran yeni bir yol geçersiz miktar gönderebiliyordu.
+    """
+    if step_size and step_size > 0:
+        q = math.floor(float(q) / float(step_size)) * float(step_size)
     return f"{q:.8f}".rstrip("0").rstrip(".")
 
 

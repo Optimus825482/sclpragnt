@@ -3,6 +3,7 @@
 import asyncio
 import json
 import random
+import threading
 import time
 from email.message import Message
 from urllib.parse import urlencode
@@ -21,12 +22,47 @@ REST_TIMEOUT_SEC = 15
 REST_MAX_ATTEMPTS = 4
 REST_BACKOFF_BASE_SEC = 0.35
 REST_BACKOFF_MAX_SEC = 4.0
+# B-13: 418 = kademeli IP ban sinyali. Anında raise etmek yerine uzun geri
+# çekilme uygulanır (429/5xx kadar agresif denenmez).
+REST_BAN_BACKOFF_BASE_SEC = 30.0
+REST_BAN_BACKOFF_MAX_SEC = 120.0
+# B-11: çağrı noktaları (fetch_historical_data / ensure_history /
+# repair_history_gaps) kendi `asyncio.Semaphore(8)`'ini kurduğunda toplam
+# eşzamanlılık 8×3 = 24 isteğe çıkıyordu ve thread havuzunu doyurabiliyordu.
+# Tek, modül düzeyinde paylaşılan sınır bunu kapatır.
+REST_MAX_CONCURRENCY = 8
+# B-11: sunucunun bildirdiği 1 dakikalık ağırlık (X-MBX-USED-WEIGHT-1M) bu
+# eşiği aşarsa yeni istek, pencere sıfırlanana kadar bekletilir. Binance TR
+# limiti tam olarak bilinmediğinden muhafazakâr bir tavan kullanılır; sabit
+# bir hız sınırı uydurmak yerine GERÇEK sunucu metriğine dayanılır.
+REST_WEIGHT_SOFT_LIMIT = 4500
+REST_WEIGHT_WINDOW_SEC = 60.0
+
+_REQUEST_SEMAPHORE = threading.Semaphore(REST_MAX_CONCURRENCY)
 
 # Server-reported used request weight (X-MBX-USED-WEIGHT-1M), tracked per
 # response. Without this the startup burst (~900 kline requests) has zero
 # rate-limit visibility.
 _rate_limit_used = {"total": 0, "by_endpoint": {}}
 _rate_limit_last_reset = None
+_weight_lock = threading.Lock()
+_weight_reported_at = 0.0
+
+
+class TransientDecodeError(RuntimeError):
+    """Gövde geçici olarak bozuk/eksik — yeniden denenebilir (B-13)."""
+
+
+def _throttle_for_weight() -> None:
+    """B-11: sunucunun bildirdiği ağırlık tavana yaklaştıysa pencereyi bekle."""
+    with _weight_lock:
+        used = int(_rate_limit_used.get("total") or 0)
+        reported_at = _weight_reported_at
+    if used < REST_WEIGHT_SOFT_LIMIT or not reported_at:
+        return
+    wait = REST_WEIGHT_WINDOW_SEC - (time.time() - reported_at)
+    if wait > 0:
+        time.sleep(min(wait, REST_WEIGHT_WINDOW_SEC))
 
 
 def _retry_delay(attempt: int, headers: Message | dict | None = None) -> float:
@@ -41,17 +77,23 @@ def _retry_delay(attempt: int, headers: Message | dict | None = None) -> float:
 
 
 def _decode_payload(raw: bytes):
+    """Gövdeyi çöz ve zarfla.
+
+    B-13: çözme/şema hataları GEÇİCİ kabul edilir (kesilmiş gövde kalıcı seri
+    hatasına dönüşmesin diye yeniden denenir); `code != 0` iş kuralı hatası
+    kalıcıdır — tekrar denemek yalnız ağırlık israfı olur.
+    """
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("Binance TR public API geçersiz JSON döndürdü") from exc
+        raise TransientDecodeError("Binance TR public API geçersiz JSON döndürdü") from exc
     if not isinstance(payload, (dict, list)):
-        raise RuntimeError("Binance TR public API beklenmeyen yanıt şeması döndürdü")
+        raise TransientDecodeError("Binance TR public API beklenmeyen yanıt şeması döndürdü")
     if isinstance(payload, dict) and payload.get("code") not in (None, 0):
         raise RuntimeError(str(payload.get("msg") or "Binance TR public API hatası"))
     data = payload.get("data", payload) if isinstance(payload, dict) else payload
     if data is None:
-        raise RuntimeError("Binance TR public API boş veri döndürdü")
+        raise TransientDecodeError("Binance TR public API boş veri döndürdü")
     return data
 
 
@@ -59,35 +101,57 @@ def _get_json(path: str, params: dict):
     url = f"{REST_BASE}{path}?{urlencode(params)}"
     request = Request(url, headers={"User-Agent": "scalperagent-v4", "Accept": "application/json"})
     last_error = None
-    for attempt in range(1, REST_MAX_ATTEMPTS + 1):
-        try:
-            with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
-                # Track rate-limit headers; a malformed header must not fail
-                # the response itself.
+    # B-11: eşzamanlılık TÜM çağrı noktaları için paylaşılan tek sınırla
+    # kapatılır; ağırlık tavana yaklaştıysa istek pencere açılana kadar bekler.
+    with _REQUEST_SEMAPHORE:
+        for attempt in range(1, REST_MAX_ATTEMPTS + 1):
+            _throttle_for_weight()
+            try:
+                with urlopen(request, timeout=REST_TIMEOUT_SEC) as response:
+                    # Track rate-limit headers; a malformed header must not fail
+                    # the response itself.
+                    try:
+                        used = int(response.headers.get("X-MBX-USED-WEIGHT-1M", 0) or 0)
+                        global _rate_limit_last_reset, _weight_reported_at
+                        _rate_limit_used["total"] = used
+                        _rate_limit_used["by_endpoint"][path] = max(
+                            _rate_limit_used["by_endpoint"].get(path, 0), used)
+                        _rate_limit_last_reset = time.time()
+                        _weight_reported_at = _rate_limit_last_reset
+                    except (TypeError, ValueError):
+                        pass
+                    raw = response.read()
+                # B-13: gövde çözme/şema hatası GEÇİCİdir → yeniden dene.
                 try:
-                    used = int(response.headers.get("X-MBX-USED-WEIGHT-1M", 0) or 0)
-                    global _rate_limit_last_reset
-                    _rate_limit_used["total"] = used
-                    _rate_limit_used["by_endpoint"][path] = max(_rate_limit_used["by_endpoint"].get(path, 0), used)
-                    _rate_limit_last_reset = time.time()
-                except (TypeError, ValueError):
-                    pass
-                return _decode_payload(response.read())
-        except HTTPError as exc:
-            last_error = exc
-            if exc.code != 429 and not 500 <= exc.code < 600:
-                raise RuntimeError(f"Binance TR public API HTTP {exc.code}") from exc
-            if attempt == REST_MAX_ATTEMPTS:
-                break
-            time.sleep(_retry_delay(attempt, exc.headers))
-        except (URLError, TimeoutError, ConnectionError) as exc:
-            last_error = exc
-            if attempt == REST_MAX_ATTEMPTS:
-                break
-            time.sleep(_retry_delay(attempt))
-    raise RuntimeError(
-        f"Binance TR public API {REST_MAX_ATTEMPTS} denemede yanıt vermedi: {last_error}"
-    ) from last_error
+                    return _decode_payload(raw)
+                except TransientDecodeError as exc:
+                    last_error = exc
+                    if attempt == REST_MAX_ATTEMPTS:
+                        break
+                    time.sleep(_retry_delay(attempt))
+                    continue
+            except HTTPError as exc:
+                last_error = exc
+                if exc.code == 418:
+                    # B-13: IP ban sinyali — uzun geri çekilme, anında raise YOK.
+                    if attempt == REST_MAX_ATTEMPTS:
+                        break
+                    time.sleep(min(REST_BAN_BACKOFF_MAX_SEC,
+                                   REST_BAN_BACKOFF_BASE_SEC * attempt))
+                    continue
+                if exc.code != 429 and not 500 <= exc.code < 600:
+                    raise RuntimeError(f"Binance TR public API HTTP {exc.code}") from exc
+                if attempt == REST_MAX_ATTEMPTS:
+                    break
+                time.sleep(_retry_delay(attempt, exc.headers))
+            except (URLError, TimeoutError, ConnectionError) as exc:
+                last_error = exc
+                if attempt == REST_MAX_ATTEMPTS:
+                    break
+                time.sleep(_retry_delay(attempt))
+        raise RuntimeError(
+            f"Binance TR public API {REST_MAX_ATTEMPTS} denemede yanıt vermedi: {last_error}"
+        ) from last_error
 
 
 async def klines(symbol: str, interval: str, limit: int = 500, start_time_ms: int | None = None,
@@ -175,24 +239,58 @@ async def trading_symbols_with_filters(quote_asset: str = "TRY"):
     return result
 
 
+# Binance TR tek istekte sınırlı sayıda sembol kabul eder; istemci tarafında
+# dilimleyip sonuçları BİRLEŞTİRİRİZ. Eskiden fazlası sessizce ATILIYORDU.
+TICKER_SYMBOL_BATCH = 50
+
+
+def _chunked(items, size: int = TICKER_SYMBOL_BATCH):
+    items = list(items or [])
+    for index in range(0, len(items), size):
+        yield items[index:index + size]
+
+
 def _ticker_params(symbols: list | None) -> dict:
-    """Binance TR symbol filtresi: ["BTCTRY","ETHTRY"] → {"symbols":"[""BTCTRY"",""ETHTRY""]"}"""
+    """Binance TR symbol filtresi: ["BTCTRY","ETHTRY"] → {"symbols":"[""BTCTRY"",""ETHTRY""]"}
+
+    B-04: dilimleme BURADA yapılmaz (eskiden `symbols[:50]` evreni sessizce
+    kesiyordu). Çağıranlar `_chunked` ile bölüp sonuçları birleştirir.
+    """
     if not symbols:
         return {}
-    quoted = ",".join(f'"{s}"' for s in symbols[:50])
+    quoted = ",".join(f'"{s}"' for s in symbols)
     return {"symbols": f"[{quoted}]"}
+
+
+async def _ticker_paged(path: str, symbols: list | None):
+    """Sembol listesini dilimleyip her dilimi ayrı istekle çeker ve birleştirir.
+
+    `symbols` verilmezse tek istekte tüm tablo alınır. Bir dilim başarısız olursa
+    istisna YUKARI ÇIKAR — sessiz kısmi sonuç üretilmez (çağıran loglar ve
+    sağlık ucu hatayı gösterir).
+    """
+    if not symbols:
+        return await asyncio.to_thread(_get_json, path, {})
+    merged: list = []
+    for batch in _chunked(symbols):
+        rows = await asyncio.to_thread(_get_json, path, _ticker_params(batch))
+        if isinstance(rows, list):
+            merged.extend(rows)
+    return merged
+
+
 async def ticker_24h(symbols: list | None = None):
-    return await asyncio.to_thread(_get_json, "/api/v3/ticker/24hr", _ticker_params(symbols))
+    return await _ticker_paged("/api/v3/ticker/24hr", symbols)
 
 
 async def ticker_price(symbols: list | None = None):
     """Son fiyat listesi (symbols verilmezse tüm semboller). Weight: 2-4."""
-    return await asyncio.to_thread(_get_json, "/api/v3/ticker/price", _ticker_params(symbols))
+    return await _ticker_paged("/api/v3/ticker/price", symbols)
 
 
 async def book_tickers(symbols: list | None = None):
     """Tüm (veya seçili) semboller için best-bid/ask. Weight: 2-4."""
-    return await asyncio.to_thread(_get_json, "/api/v3/ticker/bookTicker", _ticker_params(symbols))
+    return await _ticker_paged("/api/v3/ticker/bookTicker", symbols)
 
 # Web'deki https://www.binance.tr/en/markets/overview?tab=top-gaining listesiyle
 # aynı kaynak: /api/v3/ticker/24hr, priceChangePercent'e göre azalan sıralama.
@@ -283,4 +381,8 @@ def rate_limit_snapshot():
         "total_weight_used": _rate_limit_used["total"],
         "by_endpoint": dict(_rate_limit_used["by_endpoint"]),
         "last_reset_at": _rate_limit_last_reset,
+        # B-11: istemci tarafı koruma sınırları da raporlanır (gözlemlenebilirlik).
+        "soft_limit": REST_WEIGHT_SOFT_LIMIT,
+        "max_concurrency": REST_MAX_CONCURRENCY,
+        "weight_reported_at": _weight_reported_at,
     }

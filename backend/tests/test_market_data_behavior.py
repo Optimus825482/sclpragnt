@@ -170,7 +170,11 @@ class MarketDataCacheTests(unittest.IsolatedAsyncioTestCase):
                 first_generation = launched[-1]["generation"]
                 market.symbols = ["ETHTRY"]
                 market.reconnect_requested = True
-                for _ in range(50):
+                # B-01: nesiller arasına asgari bekleme eklendi
+                # (WS_GENERATION_MIN_INTERVAL_SEC) → yeni nesil anında değil, kısa
+                # bir aradan sonra kurulur. Pencere bu invariant'a göre genişletildi;
+                # testin amacı değişmedi (nesiller DÖNER).
+                for _ in range(300):
                     if len(launched) >= 2:
                         break
                     await asyncio.sleep(0.01)

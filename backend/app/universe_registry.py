@@ -14,7 +14,9 @@ import time
 from app import database
 
 _KEY = "symbol_universe_history"
-_MAX_ENTRIES = 2000  # ~ years of hourly snapshots; KV stays bounded
+# B-20: saatlik snapshot başına 1 kayıt → 2000 kayıt ≈ 83 GÜN. Eski yorum
+# "~ yıllar" diyordu ve yanlıştı; 83 günden eski kayıtlar sessizce silinir.
+_MAX_ENTRIES = 2000
 
 
 async def record_universe(active_symbols: list[str], source: str = "top_gainers"):
@@ -39,19 +41,30 @@ async def record_universe(active_symbols: list[str], source: str = "top_gainers"
 
 
 async def universe_at(ts: float) -> dict:
-    """Reconstruct the active universe as it was at ``ts``."""
+    """Reconstruct the active universe as it was at ``ts``.
+
+    B-20: bu fonksiyon artık gerçekten TÜKETİLİR — `/api/research/universe-at`
+    ucu üzerinden research/geri-test araçlarına açılır. Eskiden yazma yolu
+    çalışıyor ama okuma yolu hiçbir yerden çağrılmıyordu; yani hayatta kalma
+    yanlılığı (survivorship bias) düzeltmesi fiilen devre dışıydı.
+
+    Sıralama varsayımı da kaldırıldı: `ts`'ten küçük-eşit EN BÜYÜK zaman
+    damgalı kayıt seçilir (bozuk/sırasız geçmişte de doğru çalışır).
+    """
     try:
         raw = await database.get_llm_setting(_KEY, "[]")
         history = json.loads(raw or "[]")
     except (ValueError, TypeError):
         return {"symbols": [], "as_of": None}
     best = None
-    for entry in history:
-        if float(entry.get("ts") or 0) <= ts:
-            best = entry
-        else:
-            break
+    best_ts = None
+    for entry in history or []:
+        if not isinstance(entry, dict):
+            continue
+        entry_ts = float(entry.get("ts") or 0)
+        if entry_ts <= ts and (best_ts is None or entry_ts > best_ts):
+            best, best_ts = entry, entry_ts
     if not best:
         return {"symbols": [], "as_of": None}
     return {"symbols": best.get("symbols") or [], "as_of": best.get("ts"),
-            "source": best.get("source")}
+            "source": best.get("source"), "entries": len(history or [])}

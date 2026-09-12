@@ -1776,19 +1776,22 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
                 return {"symbol": sym, "analysis_build": "rest-fallback-v4", "data_ready": False, "error": "Sembol Binance TR'de işlem görmüyor"}
             rows = await fetch_klines(sym, tf, limit=300)
             if rows and len(rows) >= 55:
-                hydrated = {"opens": [], "highs": [], "lows": [], "closes": [], "volumes": []}
-                for row in rows:
-                    hydrated["opens"].append(float(row[1]))
-                    hydrated["highs"].append(float(row[2]))
-                    hydrated["lows"].append(float(row[3]))
-                    hydrated["closes"].append(float(row[4]))
-                    hydrated["volumes"].append(float(row[5]))
+                # B-02: REST klines yanıtının SON satırı HÂLÂ OLUŞMAKTA olan
+                # (açık) mumdur. Eskiden tüm satırlar "kapalı" gibi yazılıyor,
+                # ayrıca `timestamps` / `last_closed_at_ms` hiç yazılmıyordu:
+                #   * closes[-1] = kısmi barın kapanışı → yanlış hacim/look-ahead
+                #   * last_closed_at_ms yok → kline_freshness age=inf → sembol
+                #     KALICI olarak fail-closed kalıyordu
+                # Kanonik `_closed_history` açık barı atar, `timestamps` ve
+                # `last_closed_at_ms` alanlarını yazar (aynı semantik:
+                # routers/runtime.py:920).
+                hydrated = market._closed_history(rows, tf, int(time.time() * 1000))
                 market.klines[tf][sym] = hydrated
                 analysis_klines = {
                     tf: hydrated,
                     "1d": market.klines.get("1d", {}).get(sym, {}),
                 }
-                last_price = float(rows[-1][4])
+                last_price = float(hydrated["closes"][-1]) if hydrated["closes"] else float(rows[-1][4])
                 ticker = {"symbol": sym, "last_price": last_price, "timestamp": int(time.time() * 1000)}
                 market.tickers[sym] = ticker
             else:
