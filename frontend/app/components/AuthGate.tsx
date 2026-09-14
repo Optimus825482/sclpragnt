@@ -16,6 +16,9 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Audit: /api/auth/status AĞ hatası (TypeError "Failed to fetch") ile
+  // başarısız olursa sayfadan çıkış yolu yoktu → YENİDEN DENE butonu eklenir.
+  const [statusNetworkError, setStatusNetworkError] = useState(false);
 
   const refresh = useCallback(async () => {
     const response = await apiRequest(`${API_BASE}/api/auth/status`, { cache: "no-store" });
@@ -28,9 +31,20 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     const expired = () => { setStatus((current) => current ? { ...current, authenticated: false } : current); setError("Oturum süresi doldu. Yeniden giriş yapın."); };
     window.addEventListener("scalper:auth-expired", expired);
-    refresh().catch((reason) => setError(reason instanceof Error ? reason.message : "Backend bağlantısı kurulamadı"));
+    refresh().catch((reason) => {
+      setStatusNetworkError(reason instanceof TypeError);
+      setError(reason instanceof Error ? reason.message : "Backend bağlantısı kurulamadı");
+    });
     return () => window.removeEventListener("scalper:auth-expired", expired);
   }, [refresh]);
+
+  const retryStatusCheck = () => {
+    setError("");
+    refresh().catch((reason) => {
+      setStatusNetworkError(reason instanceof TypeError);
+      setError(reason instanceof Error ? reason.message : "Backend bağlantısı kurulamadı");
+    });
+  };
 
   const login = async (event: FormEvent) => {
     event.preventDefault();
@@ -79,6 +93,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
         <button disabled={busy} className="ui-button ui-button-primary w-full">{busy ? "DOĞRULANIYOR…" : "OTURUM AÇ"}</button>
       </form>}
       {error && <p role="alert" className="mt-4 text-sm text-neon-red">{error}</p>}
+      {statusNetworkError && <button type="button" onClick={retryStatusCheck} className="mt-2 ui-button ui-button-secondary">YENİDEN DENE</button>}
     </section>
   </main>;
 

@@ -106,6 +106,10 @@ class AutoPaperChurnLogicTests(unittest.TestCase):
         async def scenario():
             original_prior = auto_paper.database.get_recent_auto_paper_trade_by_notification
             original_settings = auto_paper.get_auto_paper_settings
+            # Ticker tazelik kapısı (denetim düzeltmesi) testte mock'lanır —
+            # aksi halde gerçek market boş ticker'ı ile "stale_ticker" engeline
+            # takılır ve churn senaryosuna hiç ulaşılmaz.
+            original_freshness = auto_paper.market.ticker_freshness
 
             calls = []
 
@@ -120,8 +124,12 @@ class AutoPaperChurnLogicTests(unittest.TestCase):
                     "min_order_try": 10.0, "breakeven_trigger_pct": 1.5,
                 }
 
+            def fake_freshness(symbol, max_age_sec=None):
+                return {"fresh": True, "age_sec": 0.0, "max_age_sec": max_age_sec}
+
             auto_paper.database.get_recent_auto_paper_trade_by_notification = fake_get_recent
             auto_paper.get_auto_paper_settings = fake_settings
+            auto_paper.market.ticker_freshness = fake_freshness
             try:
                 result = await auto_paper.try_open_from_notification(
                     _make_notification(score=80.0, notif_id=777)
@@ -129,6 +137,7 @@ class AutoPaperChurnLogicTests(unittest.TestCase):
             finally:
                 auto_paper.database.get_recent_auto_paper_trade_by_notification = original_prior
                 auto_paper.get_auto_paper_settings = original_settings
+                auto_paper.market.ticker_freshness = original_freshness
             self.assertIsNone(result)
             self.assertEqual(calls, [777])
 

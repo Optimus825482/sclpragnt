@@ -19,13 +19,17 @@ export const WS_URL = `${WS_BASE.replace(/\/$/, "")}/ws`;
  * Çağıran kendi `cache` değerini verirse o değer kazanır.
  */
 export function apiRequest(input: RequestInfo | URL, init?: RequestInit) {
-  const method = String(init?.method || "GET").toUpperCase();
+  const method = String(init?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+  // Audit: başarısız login POST'u auth-expired yayınlamamalı (login ekranında
+  // yanlış "Oturum süresi doldu" flaşı), o yüzden URL de ayrıştırılır.
+  const url = input instanceof Request ? input.url : String(input);
   const merged: RequestInit = { credentials: "include", ...init };
   if ((method === "GET" || method === "HEAD") && merged.cache === undefined) {
     merged.cache = "no-store";
   }
   return fetch(input, merged).then((response) => {
-    if (response.status === 401 && typeof window !== "undefined") {
+    const isLoginPost = method === "POST" && url.includes("/auth/login");
+    if (response.status === 401 && typeof window !== "undefined" && !isLoginPost) {
       window.dispatchEvent(new CustomEvent("scalper:auth-expired"));
     }
     return response;
