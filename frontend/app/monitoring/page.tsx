@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import Link from "next/link";
 import { API_BASE, apiRequest } from "../lib/api";
 import { fmtDateTime, formatPrice, toMs } from "../lib/format";
 import { useAuth } from "../lib/auth";
@@ -113,6 +114,10 @@ const parseSettings = (raw: unknown): NotificationSettings | null => {
 };
 
 const SCAN_INTERVAL_MS = 30_000;
+
+// 🔔 Son bildirimler geçmişi satırı (/api/monitoring/notifications → { history: [...] }).
+type NotificationRow = { symbol?: string; score?: number | null; target_pct?: number | null; detected_at?: number | null; sent_via_push?: boolean | null; mode?: string | null };
+
 // Backend normalize_score cap'i (config.MONITORING_SCORE_NORM_CAP, env ile
 // değişebilir; tipik ham skor 50-2000). Backend normalde `panel_score` alanını
 // gönderir ve asıl kaynak ODUR — buradaki sabit yalnızca `panel_score`
@@ -360,7 +365,7 @@ const blockReasonLabel = (reason?: string | null) => {
   return "Kriter sağlanmadı";
 };
 
-const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) => {
+const CandidateDetail = ({ c, kind, onClose }: { c: Candidate; kind: "radar" | "watch"; onClose: () => void }) => {
   const targetPct = Number(c.target_pct) > 0 ? Number(c.target_pct) : Number(c.ml_target_pct);
   const price = Number(c.price);
   const validTarget = Number.isFinite(targetPct) && targetPct > 0 && Number.isFinite(price) && price > 0;
@@ -402,7 +407,7 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
       >
         <div className="flex items-center justify-between border-b border-bunker-800 bg-neon-green/5 px-5 py-4">
           <div>
-            <p className="eyebrow text-neon-green/80">RADAR ADAYI</p>
+            <p className="eyebrow text-neon-green/80">{kind === "radar" ? "RADAR ADAYI" : "İZLEME ÖĞESİ"}</p>
             <h2 id="candidate-detail-title" className="font-mono text-lg font-bold text-white">{c.symbol}</h2>
           </div>
           <button type="button" onClick={onClose} aria-label="Kapat" className="text-bunker-muted hover:text-white">✕</button>
@@ -455,7 +460,7 @@ const CandidateDetail = ({ c, onClose }: { c: Candidate; onClose: () => void }) 
             {c.mode === "trend_devam" ? "TREND" : c.mode === "v_donusu" ? "V-DÖNÜŞÜ" : "NÖTR"}
           </span>
           <div className="flex gap-2">
-            <a href={`/charts?symbol=${c.symbol}`} className="ui-button ui-button-secondary">GRAFİK</a>
+            <Link href={`/charts?symbol=${c.symbol}`} className="ui-button ui-button-secondary">GRAFİK</Link>
             <button type="button" onClick={onClose} className="ui-button ui-button-primary">TAMAM</button>
           </div>
         </div>
@@ -485,10 +490,22 @@ export default function MonitoringPage() {
   // R1-04: tarama tetikleme sonucu (önbellek/yetki/hata) kullanıcıya bildirilir.
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanNote, setScanNote] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Candidate | null>(null);
+  const [selected, setSelected] = useState<{ c: Candidate; kind: "radar" | "watch" } | null>(null);
   const [minScoreInput, setMinScoreInput] = useState<string>("");
   const [minScoreDirty, setMinScoreDirty] = useState(false);
   const [savingMinScore, setSavingMinScore] = useState(false);
+  // Global admin ayarları (bildirim kartı): hedef % ve sessiz saatler.
+  const [targetPctInput, setTargetPctInput] = useState<string>("");
+  const [quietStart, setQuietStart] = useState<string>("");
+  const [quietEnd, setQuietEnd] = useState<string>("");
+  const [savingSettings, setSavingSettings] = useState(false);
+  // 🔔 Son bildirimler geçmişi (null = henüz yüklenmedi).
+  const [historyRows, setHistoryRows] = useState<NotificationRow[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  // 🩺 Teşhis kartı (yalnız admin).
+  const [diag, setDiag] = useState<Record<string, any> | null>(null);
+  const [diagError, setDiagError] = useState<string | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
 
   // R1-06/R1-10: istek nesli + in-flight kapıları. Yalnız EN YENİ neslin yanıtı
   // uygulanır (last-write-wins yarışı) ve unmount sonrası yazım yapılmaz.
@@ -591,6 +608,22 @@ export default function MonitoringPage() {
     }
   }, [applyMonitoringPayload]);
 
+  // 🔔 Son bildirimler geçmişi: ilk 10 satır; WS monitoring_alert ile tazelenir.
+  const loadHistory = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/notifications`, { cache: "no-store", signal });
+      if (!res.ok) throw new HttpStatusError(res.status);
+      const data = await res.json();
+      if (!mountedRef.current) return;
+      const list: NotificationRow[] = Array.isArray(data?.history) ? data.history : [];
+      setHistoryRows(list.slice(0, 10));
+      setHistoryError(null);
+    } catch (err) {
+      if (isAbortError(err) || !mountedRef.current) return;
+      setHistoryError(humanizeError(err));
+    }
+  }, []);
+
   const onLiveMessage = useCallback((message: any) => {
     if (message.type === "macd_monitor" && message.data) {
       setMacdData(message.data);
@@ -607,8 +640,8 @@ export default function MonitoringPage() {
     }
     // H-20/R1-14: arka plan taraması yeni radar bildirimi yayınladığında aday
     // listesi + sağlık alanları anında tazelenir (tek okuma yolu).
-    if (message.type === "monitoring_alert") void loadState();
-  }, [loadState]);
+    if (message.type === "monitoring_alert") { void loadState(); void loadHistory(); }
+  }, [loadState, loadHistory]);
   useLiveMessages(onLiveMessage);
   const rising = useMemo(() => extractRisingCandidates(macdData), [macdData]);
   const jumpers = useMemo(() => extractJumpCandidates(macdData), [macdData]);
@@ -617,8 +650,13 @@ export default function MonitoringPage() {
 
   // Admin girişteyken poll inputu ezmesin: yalnız düzenlenmemişken (dirty
   // değilken) ve ayar YÜKLENDİĞİNDE sunucu değeriyle senkronlanır.
+  // Global admin ayar kartı girdileri (hedef %, sessiz saatler) da burada senkron.
   useEffect(() => {
-    if (!minScoreDirty && settings?.min_score != null) setMinScoreInput(String(Math.round(settings.min_score)));
+    if (!settings) return;
+    if (!minScoreDirty && settings.min_score != null) setMinScoreInput(String(Math.round(settings.min_score)));
+    setTargetPctInput(settings.min_target_pct != null ? String(settings.min_target_pct) : "");
+    setQuietStart(settings.quiet_hours_start ?? "");
+    setQuietEnd(settings.quiet_hours_end ?? "");
   }, [settings, minScoreDirty]);
 
   const loadSettings = useCallback(async (signal?: AbortSignal) => {
@@ -640,27 +678,76 @@ export default function MonitoringPage() {
     }
   }, []);
 
-  const saveMinScore = useCallback(async () => {
-    const val = Number(minScoreInput);
-    if (!Number.isFinite(val) || val < 0 || val > 100) return;
+  // Genel ayar kaydedici: tüm global admin ayar güncellemeleri bu yoldan gider.
+  const putSettings = useCallback(async (patch: Record<string, unknown>, okMessage: string) => {
     setSavingMinScore(true);
+    setSavingSettings(true);
     setSettingsError(null);
     try {
       const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ min_score: val }),
+        body: JSON.stringify(patch),
       });
       // R1-04: yetki/oturum hataları sessizce yutulmaz.
-      if (res.status === 401 || res.status === 403) { setSettingsError("Eşiği yalnız yönetici değiştirebilir — yetkiniz yok."); return; }
+      if (res.status === 401 || res.status === 403) { setSettingsError("Ayarları yalnız yönetici değiştirebilir — yetkiniz yok."); return; }
       if (!res.ok) throw new HttpStatusError(res.status);
-      setMinScoreDirty(false);
+      if (okMessage) setScanNote(okMessage);
       await loadSettings();
     } catch (err) {
       if (!mountedRef.current) return;
-      setSettingsError(`Eşik kaydedilemedi: ${humanizeError(err)}`);
-    } finally { if (mountedRef.current) setSavingMinScore(false); }
-  }, [minScoreInput, loadSettings]);
+      setSettingsError(`Ayar kaydedilemedi: ${humanizeError(err)}`);
+    } finally {
+      if (mountedRef.current) { setSavingMinScore(false); setSavingSettings(false); }
+    }
+  }, [loadSettings]);
+
+  const saveMinScore = useCallback(async () => {
+    const val = Number(minScoreInput);
+    if (!Number.isFinite(val) || val < 0 || val > 100) {
+      setSettingsError("Eşik 0-100 arasında bir sayı olmalı.");
+      return;
+    }
+    setMinScoreDirty(false);
+    await putSettings({ min_score: val }, "Eşik kaydedildi.");
+  }, [minScoreInput, putSettings]);
+
+  // 🩺 Teşhis: yalnız admin uç noktası (403 → humanizeError yetki mesajı verir).
+  const loadDiag = useCallback(async () => {
+    setDiagLoading(true);
+    setDiagError(null);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/diagnostics`, { cache: "no-store" });
+      if (!res.ok) throw new HttpStatusError(res.status);
+      const data = await res.json();
+      if (!mountedRef.current) return;
+      setDiag(data && typeof data === "object" ? data : null);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setDiagError(humanizeError(err));
+    } finally {
+      if (mountedRef.current) setDiagLoading(false);
+    }
+  }, []);
+
+  // 🧹 Bildirim spam koruması sıfırlama (yalnız admin).
+  const resetNotifications = useCallback(async () => {
+    setSettingsError(null);
+    setSavingSettings(true);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/reset-notifications`, { method: "POST", cache: "no-store" });
+      if (res.status === 401 || res.status === 403) { setSettingsError("Bu işlemi yalnız yönetici yapabilir — yetkiniz yok."); return; }
+      if (!res.ok) throw new HttpStatusError(res.status);
+      setScanNote("Bildirim spam koruması sıfırlandı.");
+      await loadSettings();
+      await loadState();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setSettingsError(`Bildirim sıfırlanamadı: ${humanizeError(err)}`);
+    } finally {
+      if (mountedRef.current) setSavingSettings(false);
+    }
+  }, [loadSettings, loadState]);
 
   // R1-04: tarama tetikleme artık POST (GET salt-okunur; M1 sözleşmesi). Cached
   // yanıt TAZE tarama değildir: sayaçlar/last_scan_at güncellenmez, kullanıcıya
@@ -703,6 +790,7 @@ export default function MonitoringPage() {
     const controller = new AbortController();
     void loadSettings(controller.signal);
     void loadState(controller.signal);
+    void loadHistory(controller.signal);
     // R1-16/R1-18: poll `next_scan_in_sec`e hizalanır; arka planda atlanır,
     // sekmeye dönünce hemen tazelenir. Tek timeout zinciri → üst üste binmez.
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -723,7 +811,7 @@ export default function MonitoringPage() {
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [loadState, loadSettings]);
+  }, [loadState, loadSettings, loadHistory]);
 
   // R1-02/R1-09: TEK eşik kaynağı sunucunun etkin eşiğidir. Sunucudan gelene
   // kadar "—" gösterilir; istemci sabiti (eski 50) KALDIRILDI. M1 ile gelen
@@ -752,28 +840,8 @@ export default function MonitoringPage() {
             ⚖️ EŞİK: SKOR ≥ {effThreshold != null ? effThreshold : "—"} · GLOBAL
             {rawThreshold != null ? ` (ham ≥ ${rawThreshold})` : ""}
           </span>
-          {isAdmin && (
-            <>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                value={minScoreInput}
-                onChange={(e) => { setMinScoreInput(e.target.value); setMinScoreDirty(true); }}
-                title="Admin eşiği: radar listesi, bildirim, rapor ve otonom taramada aynen uygulanır"
-                placeholder="—"
-                className="w-20 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
-              />
-              <button
-                onClick={saveMinScore}
-                disabled={savingMinScore || !minScoreDirty || !minScoreInput || Number(minScoreInput) < 0 || Number(minScoreInput) > 100}
-                className="ui-button ui-button-primary"
-              >
-                {savingMinScore ? "KAYDEDİLİYOR…" : "EŞİĞİ KAYDET"}
-              </button>
-            </>
-          )}
+          {/* Eşik girişi/kaydetme "⚙️ BİLDİRİM AYARLARI · GLOBAL (YÖNETİCİ)"
+              kartına taşındı (aşağıda); başlıkta yalnız salt-okunur rozet kalır. */}
           {/* R1-04: taze tarama YALNIZ yetkiliye (admin) gösterilir; aksi halde
               buton tüm rollere açıkken backend `cached:true` döndürüp bayat veri
               "taze tarama" gibi sunuluyordu. Yetkisiz kullanıcıya net mesaj. */}
@@ -829,6 +897,166 @@ export default function MonitoringPage() {
         </div>
       </section>
 
+      {/* ⚙️ GLOBAL ADMIN AYARLARI: eşik, bildirim aç/kapa, min hedef %, sessiz
+          saatler + bildirim spam koruması sıfırlama. Yalnız admin görür; tüm
+          yazım PUT /api/monitoring/settings üzerinden gider. */}
+      {isAdmin && (
+        <section className="card" aria-label="Global bildirim ayarları (yönetici)">
+          <p className="eyebrow text-neon-green">⚙️ BİLDİRİM AYARLARI · GLOBAL (YÖNETİCİ)</p>
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <div>
+              <p className="eyebrow text-bunker-muted">MİN SKOR (0-100)</p>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={minScoreInput}
+                onChange={(e) => { setMinScoreInput(e.target.value); setMinScoreDirty(true); }}
+                title="Admin eşiği: radar listesi, bildirim, rapor ve otonom taramada aynen uygulanır"
+                placeholder="—"
+                className="mt-1 w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
+              />
+            </div>
+            <button
+              onClick={saveMinScore}
+              disabled={savingMinScore || !minScoreDirty || !minScoreInput || Number(minScoreInput) < 0 || Number(minScoreInput) > 100}
+              className="ui-button ui-button-primary"
+            >
+              {savingMinScore ? "KAYDEDİLİYOR…" : "EŞİĞİ KAYDET"}
+            </button>
+            <button
+              onClick={() => { setMinScoreDirty(false); void putSettings({ min_score: null }, "Eşik varsayılana sıfırlandı."); }}
+              disabled={savingMinScore || settings?.min_score == null}
+              title="Varsayılan ham eşik değerine dön (sunucu MONITORING_MIN_RAW_SCORE)"
+              className="ui-button ui-button-secondary"
+            >
+              SIFIRLA
+            </button>
+
+            <div>
+              <p className="eyebrow text-bunker-muted">BİLDİRİMLER</p>
+              <button
+                onClick={() => void putSettings({ enabled: !settings?.enabled }, settings?.enabled ? "Bildirimler kapatıldı." : "Bildirimler açıldı.")}
+                disabled={savingMinScore || settings == null}
+                title="Global bildirim anahtarı (tüm kullanıcılara uygulanır)"
+                className={`ui-button ui-button-secondary mt-1 font-mono ${settings?.enabled ? "text-neon-green" : "text-neon-red"}`}
+              >
+                {settings?.enabled ? "AÇIK" : "KAPALI"}
+              </button>
+            </div>
+
+            <div>
+              <p className="eyebrow text-bunker-muted">MİN HEDEF %</p>
+              <input
+                type="number"
+                min={0}
+                max={50}
+                step={0.1}
+                value={targetPctInput}
+                onChange={(e) => setTargetPctInput(e.target.value)}
+                title="Bildirim için gereken en düşük hedef yüzdesi"
+                placeholder="—"
+                className="mt-1 w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
+              />
+            </div>
+            <button
+              onClick={() => {
+                const val = Number(targetPctInput);
+                if (!Number.isFinite(val) || val < 0) { setSettingsError("Min hedef % geçersiz."); return; }
+                void putSettings({ min_target_pct: val }, "Min hedef % kaydedildi.");
+              }}
+              disabled={savingMinScore || !targetPctInput || (settings?.min_target_pct != null ? Number(targetPctInput) === settings.min_target_pct : false)}
+              className="ui-button ui-button-primary"
+            >
+              {savingMinScore ? "KAYDEDİLİYOR…" : "KAYDET"}
+            </button>
+
+            <div>
+              <p className="eyebrow text-bunker-muted">SESSİZ SAATLER</p>
+              <div className="mt-1 flex items-center gap-1.5">
+                <input
+                  type="time"
+                  value={quietStart}
+                  onChange={(e) => setQuietStart(e.target.value)}
+                  title="Bildirim sessiz saati başlangıcı"
+                  className="bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+                />
+                <span className="font-mono text-xs text-bunker-muted">→</span>
+                <input
+                  type="time"
+                  value={quietEnd}
+                  onChange={(e) => setQuietEnd(e.target.value)}
+                  title="Bildirim sessiz saati bitişi"
+                  className="bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+                />
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                if ((quietStart && !quietEnd) || (!quietStart && quietEnd)) {
+                  setSettingsError("Sessiz saat başlangıç ve bitiş birlikte girilmeli.");
+                  return;
+                }
+                void putSettings({ quiet_hours_start: quietStart || null, quiet_hours_end: quietEnd || null }, "Sessiz saatler kaydedildi.");
+              }}
+              disabled={savingMinScore}
+              className="ui-button ui-button-primary"
+            >
+              {savingMinScore ? "KAYDEDİLİYOR…" : "KAYDET"}
+            </button>
+
+            <button
+              onClick={() => void resetNotifications()}
+              disabled={savingSettings}
+              title="Aynı semboller yeniden bildirilebilir — spam koruması sıfırlanır"
+              className="ui-button ui-button-secondary"
+            >
+              BİLDİRİM SIFIRLA
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* 🩺 TEŞHİS: sunucu iç durumu (yalnız admin; uç nokta 403 verebilir). */}
+      {isAdmin && (
+        <details className="card">
+          <summary className="eyebrow cursor-pointer">🩺 TEŞHİS (YÖNETİCİ)</summary>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button onClick={() => void loadDiag()} disabled={diagLoading} className="ui-button ui-button-primary">
+              {diagLoading ? "YÜKLENİYOR…" : "YENİLE"}
+            </button>
+            {diagError && <p className="text-sm text-neon-red">⚠ {diagError}</p>}
+          </div>
+          {diag && (
+            <div className="mt-3 grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
+              {(() => {
+                const rateLimiter = diag.rate_limiter;
+                const rateLimiterText = rateLimiter == null ? "—"
+                  : typeof rateLimiter === "string" ? rateLimiter
+                  : (() => { const s = JSON.stringify(rateLimiter); return s.length > 120 ? `${s.slice(0, 120)}…` : s; })();
+                const rows: { label: string; value: string }[] = [
+                  { label: "Tarama sayısı", value: numOrNull(diag.scan_count) != null ? String(numOrNull(diag.scan_count)) : "—" },
+                  { label: "Son tarama", value: diag.last_scan_at != null ? fmtDateTime(diag.last_scan_at) : "—" },
+                  { label: "Etkin eşik", value: numOrNull(diag.effective_min_score) != null ? String(numOrNull(diag.effective_min_score)) : "—" },
+                  { label: "WS bağlantı", value: numOrNull(diag.ws_health?.active_connections) != null ? String(numOrNull(diag.ws_health?.active_connections)) : "—" },
+                  { label: "WS son hata", value: diag.ws_health?.ws_last_error ? String(diag.ws_health.ws_last_error) : "—" },
+                  { label: "Önbellek mum", value: numOrNull(diag.memory_metrics?.total_cached_klines) != null ? String(numOrNull(diag.memory_metrics?.total_cached_klines)) : "—" },
+                  { label: "Bildirim gecikme (ort, ms)", value: numOrNull(diag.db_latency?.avg_notify_ms) != null ? String(numOrNull(diag.db_latency?.avg_notify_ms)) : "—" },
+                  { label: "Rate limiter", value: rateLimiterText },
+                ];
+                return rows.map((row) => (
+                  <div key={row.label} className="flex items-baseline justify-between gap-3 border-b border-bunker-800/60 py-1">
+                    <span className="text-xs text-bunker-muted">{row.label}</span>
+                    <span className="truncate font-mono text-xs text-white" title={row.value}>{row.value}</span>
+                  </div>
+                ));
+              })()}
+            </div>
+          )}
+        </details>
+      )}
+
       {/* R1-08/R1-14: kartlar dar ekranda tek kolon; "Son Tarama" artık TARİH+SAAT
           (dünkü tarama taze sanılmasın) + göreli etiket; sayaçlar sunucudan veri
           gelmeden "—" (0/yeşil ile "sağlıklı" izlenimi vermez). */}
@@ -877,9 +1105,9 @@ export default function MonitoringPage() {
         <section className="card border-neon-green/30">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="eyebrow text-neon-green">📈 YÜKSELİŞ EĞİLİMİ ADAYLARI ({rising.length})</p>
-            <a href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-neon-green">
+            <Link href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-neon-green">
               MACD MONITOR&apos;DE GÖR →
-            </a>
+            </Link>
           </div>
           <p className="mt-1 text-xs text-bunker-muted">
             <b>Evren içi normalize</b> trend gücü ≥ {RISING_MIN_STRENGTH}/10 (0-10 min-max; evrenin en güçlü sembolü 10.0 alır → 9.8 &quot;ham skorda evren zirvesinin %2&apos;si içinde&quot; demektir; 20 barlık lineer regresyon: R² × eğim/bar aralığı) ve en az {RISING_MIN_GREEN}/6 zaman diliminde MACD histogramı yeşil olan semboller — en güçlü yükseliş adayları.
@@ -890,7 +1118,7 @@ export default function MonitoringPage() {
                 .map((tf, index) => `${MACD_TF_SHORT[tf]} ${item.dots[index] === true ? "yeşil" : item.dots[index] === false ? "kırmızı" : "veri yok"}`)
                 .join(", ");
               return (
-              <a
+              <Link
                 key={item.symbol}
                 href={`/charts?symbol=${encodeURIComponent(item.symbol)}`}
                 className="group rounded-lg border border-neon-green/40 bg-neon-green/10 px-3 py-2 transition-colors hover:border-neon-green/70 hover:bg-neon-green/15"
@@ -914,7 +1142,7 @@ export default function MonitoringPage() {
                     />
                   ))}
                 </span>
-              </a>
+              </Link>
               );
             })}
           </div>
@@ -925,9 +1153,9 @@ export default function MonitoringPage() {
         <section className="card border-sky-400/30">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="eyebrow text-sky-300">🌱 ERKEN SİNYAL · YAKLAŞIYOR ({earlyCands.length})</p>
-            <a href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-sky-300">
+            <Link href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-sky-300">
               MACD MONITOR&apos;DE GÖR →
-            </a>
+            </Link>
           </div>
           <p className="mt-1 text-xs text-bunker-muted">
             Kırılımdan ÖNCE öncüller: 🎯 M5 zirveye yaklaşıyor (≤0.5 ATR + aktivite) · 🕐 M1 öncü kırılım · 📈 MACD dip dönüşü. Kartlardaki sayı <b>erken sinyal olgunluğudur</b> (0-100, yalnız sıralama/teşhis — eşik DEĞİLDİR). Alarmlar Ayarlar → MACD/Sıçrama&apos;dan yönetilir.
@@ -946,7 +1174,7 @@ export default function MonitoringPage() {
               ].filter(Boolean).join(" · ");
               const flags = earlyFlagIcons(item.pre);
               return (
-                <a
+                <Link
                   key={item.symbol}
                   href={`/charts?symbol=${encodeURIComponent(item.symbol)}`}
                   className="group rounded-lg border border-sky-400/40 bg-sky-400/10 px-3 py-2 transition-colors hover:border-sky-300/70 hover:bg-sky-400/15"
@@ -985,7 +1213,7 @@ export default function MonitoringPage() {
                       {[...flags.map((entry) => entry.title), item.detail?.transition ? "M5 sıkışma→genişleme geçişi" : ""].filter(Boolean).join(" · ")}
                     </span>
                   </span>
-                </a>
+                </Link>
               );
             })}
           </div>
@@ -996,9 +1224,9 @@ export default function MonitoringPage() {
         <section className="card border-yellow-400/30">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="eyebrow text-yellow-300">🚀 SIRÇRAMA ADAYLARI ({jumpers.length})</p>
-            <a href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-yellow-300">
+            <Link href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-yellow-300">
               MACD MONITOR&apos;DE GÖR →
-            </a>
+            </Link>
           </div>
           <p className="mt-1 text-xs text-bunker-muted">
             Sıçrama skoru ≥ {jumpThreshold}/100: trend gücü + MACD yeşil + M5/M15 kırılım, volatilite genişlemesi, hacim ve alıcı agresör teyidi. Eşiği geçenler alarm/push ile bildirilir (Ayarlar → MACD/Sıçrama).
@@ -1007,7 +1235,7 @@ export default function MonitoringPage() {
             {jumpers.map((item) => {
               const icons = jumpFlagIcons(item);
               return (
-                <a
+                <Link
                   key={item.symbol}
                   href={`/charts?symbol=${encodeURIComponent(item.symbol)}`}
                   className="group rounded-lg border border-yellow-400/40 bg-yellow-400/10 px-3 py-2 transition-colors hover:border-yellow-300/70 hover:bg-yellow-400/15"
@@ -1028,7 +1256,7 @@ export default function MonitoringPage() {
                     {/* R1-12: emoji sinyallerin ekran okuyucu metni. */}
                     {icons.length > 0 && <span className="sr-only">{icons.map((entry) => entry.title).join(" · ")}</span>}
                   </span>
-                </a>
+                </Link>
               );
             })}
           </div>
@@ -1055,7 +1283,7 @@ export default function MonitoringPage() {
               const mlActive = Number(c.ml_target_pct) > 0 && c.ml_hit_probability != null;
               const score = panelScore(c);
               return (
-                <button key={c.symbol} type="button" onClick={() => setSelected(c)} className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-bunker-800 bg-bunker-900/40 px-4 py-3 text-left transition-colors hover:border-neon-green/40 hover:bg-bunker-900/70">
+                <button key={c.symbol} type="button" onClick={() => setSelected({ c, kind: "radar" })} className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-bunker-800 bg-bunker-900/40 px-4 py-3 text-left transition-colors hover:border-neon-green/40 hover:bg-bunker-900/70">
                   <div className="flex min-w-0 items-center gap-3">
                     <span className="w-6 shrink-0 text-center font-mono text-xs text-bunker-muted">{i + 1}</span>
                     <span className="truncate font-mono font-bold text-white">{c.symbol}</span>
@@ -1080,6 +1308,50 @@ export default function MonitoringPage() {
         )}
       </section>
 
+      {/* 🔔 SON BİLDİRİMLER: son 10 bildirim; WS monitoring_alert ile tazelenir. */}
+      <section className="card">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="eyebrow text-neon-green">🔔 SON BİLDİRİMLER</p>
+          {historyError && (
+            <button type="button" onClick={() => { void loadHistory(); }} className="ui-button ui-button-secondary">YENİDEN DENE</button>
+          )}
+        </div>
+        {historyError ? (
+          <p className="mt-2 text-sm text-neon-red">⚠ {historyError}</p>
+        ) : historyRows == null ? (
+          <p className="mt-2 text-sm text-bunker-muted">Yükleniyor…</p>
+        ) : historyRows.length === 0 ? (
+          <p className="mt-2 text-sm text-bunker-muted">Henüz bildirim yok.</p>
+        ) : (
+          <div className="mt-3 space-y-1.5">
+            {historyRows.map((row, index) => {
+              const score = numOrNull(row.score);
+              const targetPct = numOrNull(row.target_pct);
+              const ts = toMs(row.detected_at);
+              return (
+                <div
+                  key={`${row.symbol ?? "?"}-${row.detected_at ?? index}-${index}`}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded border border-bunker-800 bg-bunker-900/40 px-3 py-1.5 font-mono text-xs"
+                  title={ts ? fmtDateTime(ts) : undefined}
+                >
+                  <span className="font-bold text-white">{row.symbol ?? "—"}</span>
+                  <span className="flex items-center gap-3">
+                    <span className={`font-bold ${scoreColor(score)}`}>{scoreText(score)}</span>
+                    <span className={targetPct != null && targetPct > 0 ? "text-neon-green" : "text-bunker-muted"}>
+                      {targetPct != null && targetPct > 0 ? `+%${targetPct.toFixed(1)}` : "—"}
+                    </span>
+                    <span className={row.sent_via_push === true ? "text-neon-green" : "text-bunker-muted"}>
+                      {row.sent_via_push === true ? "PUSH ✓" : row.sent_via_push === false ? "PUSH —" : "—"}
+                    </span>
+                    <RelativeTime ts={row.detected_at} />
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       {state.watchlist.length > 0 && (
         <section className="card">
           <p className="eyebrow text-yellow-300">👁 İZLEME LİSTESİ ({state.watchlist.length})</p>
@@ -1088,7 +1360,7 @@ export default function MonitoringPage() {
               const reason = blockReasonLabel(w.block_reason);
               const score = panelScore(w);
               return (
-                <button key={w.symbol} type="button" onClick={() => setSelected(w)} className="flex w-full items-center justify-between gap-2 rounded-lg border border-bunker-800 bg-bunker-900/40 px-4 py-2.5 text-left transition-colors hover:border-yellow-400/40">
+                <button key={w.symbol} type="button" onClick={() => setSelected({ c: w, kind: "watch" })} className="flex w-full items-center justify-between gap-2 rounded-lg border border-bunker-800 bg-bunker-900/40 px-4 py-2.5 text-left transition-colors hover:border-yellow-400/40">
                   <span className="min-w-0 truncate font-mono text-sm font-bold text-white">{w.symbol}</span>
                   <span className="flex shrink-0 items-center gap-2 sm:gap-3">
                     {reason && (
@@ -1108,7 +1380,7 @@ export default function MonitoringPage() {
         </section>
       )}
 
-      {selected && <CandidateDetail c={selected} onClose={() => setSelected(null)} />}
+      {selected && <CandidateDetail c={selected.c} kind={selected.kind} onClose={() => setSelected(null)} />}
     </main>
   );
 }
