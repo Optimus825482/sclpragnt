@@ -109,7 +109,13 @@ def _velocity_mfi(highs, lows, closes, vols, n=14):
         flow = tp * vols[i]
         if tp > ptp: pos += flow
         elif tp < ptp: neg += flow
-    return 100 - 100 / (1 + pos / neg) if neg else 100.0
+    # MFI düzeltmesi: hem pos hem neg sıfırsa (tüm hacimler 0 / düz tipik fiyat)
+    # "aşırı alım 100" DÖNME — nötr 50.0. 100 yalnızca pos > 0 ve neg == 0
+    # (tek yönlü alış akışı) iken anlamlıdır; kanonik `technical_analysis._mfi`
+    # ile aynı kural.
+    if neg:
+        return 100 - 100 / (1 + pos / neg)
+    return 100.0 if pos > 0 else 50.0
 
 
 def _velocity_bollinger_width(closes, n=20, mult=2.0):
@@ -250,6 +256,18 @@ def _panel_score(raw_score: float) -> float:
     return round(max(0.0, min(100.0, raw / cap * 100)), 1)
 
 
+def _velocity_raw_score_gate() -> float:
+    """``VELOCITY_AUTO_MIN_SCORE`` (PANEL 0-100) → ham velocity_score eşiği.
+
+    Düzeltme (2026-09-12): eşik eski 0-100 skor ölçeğinde kalibre edilmişti
+    (varsayılan 10), ama ham skor saturation kaldırıldıktan sonra tipik
+    50-2000 bandında → `score < 10` kapısı hiçbir adayı elemiyordu. Panel→ham
+    dönüşümü monitoring paneliyle aynı formüldür: ham = panel / 100 × cap
+    (varsayılan: 10/100 × 2000 = 200 ham skor).
+    """
+    return float(config.VELOCITY_AUTO_MIN_SCORE or 0) / 100.0 * float(config.MONITORING_SCORE_NORM_CAP or 0)
+
+
 async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5,
                                       extra_symbols: list | None = None):
     """Belirli ufukta (5dk/15dk) en az hedef % (2/3) yükselme potansiyeli taşıyan en hızlı 3 aday.
@@ -361,7 +379,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                       atr_pct >= prof_atr and
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
                       mode is not None and
-                      (struct_ok or (mode == "v_donusu" and (ret3 >= 0.30 or (len(closes) >= 4 and (closes[-1] - closes[-4]) / max(closes[-4], 1) * 100 >= 0.30)))))
+                      # ret3 saf yüzde formuyla yukarıda hesaplandı; eski
+                      # `/max(closes[-4], 1)` kopyası 1 TRY altı fiyatları
+                      # sistematik eksik raporluyordu — tek tanım ret3.
+                      (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)))
             # Elme sebebi: izleme listesindeki sembol yüksek skorla görünsede
             # hangi kapıya takıldığını arayüz gösterebilsin (2026-09-04).
             block_reason = None
@@ -372,7 +393,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     block_reason = f"atr_yetersiz:{atr_pct:.2f}%<{prof_atr:.2f}%"
                 elif bb_width is None or bb_width < VELOCITY_MIN_BB_WIDTH_PCT:
                     block_reason = f"bb_genisligi_yetersiz:{bb_width:.2f}%" if bb_width else "bb_verisi_yok"
-                elif not (struct_ok or (mode == "v_donusu" and (ret3 >= 0.30 or (len(closes) >= 4 and (closes[-1] - closes[-4]) / max(closes[-4], 1) * 100 >= 0.30)))):
+                elif not (struct_ok or (mode == "v_donusu" and ret3 >= 0.30)):
                     block_reason = "yapisal_teyit_yok"
                 else:
                     block_reason = "diger"
@@ -394,7 +415,12 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             if ret3 > 0 or ret5 > 0:
                 momentum = max(0.0, ret3, ret5)
             else:
-                _reversal_slope = ((closes[-1] - closes[-4]) / max(closes[-4], 1)) * 100 / 3 if len(closes) >= 4 else 0.0
+                # Saf yüzde formu: eski `/max(closes[-4], 1)` 1 TRY altı
+                # fiyatlarda dönüşü sistematik eksik raporluyordu. Sıfıra
+                # yakın payda güvenliği: |closes[-4]| < 1e-12 → 0.0.
+                _ret3_base = closes[-4] if len(closes) >= 4 else 0.0
+                _reversal_slope = (((closes[-1] - closes[-4]) / _ret3_base) * 100 / 3
+                                   if len(closes) >= 4 and abs(_ret3_base) > 1e-12 else 0.0)
                 momentum = max(0.0, _reversal_slope)
             momentum_ratio = momentum / 4.0  # cap kaldirildi (2026-09-07)
             # Hacim teyidi: son bar hacminin son 20 bar ortalamasina orani.
@@ -475,11 +501,15 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 m1_atr_prev = m3_atr_prev = None
                 if len(closes) >= 16:
                     def _atr_pct_at(idx):
-                        if idx < 15:
+                        # Pencere hizalaması: kanonik `technical_analysis._atr`
+                        # (ve taramadaki `_atr(highs, lows, closes, 14)`) 14 true
+                        # range kullanır; buradaki eski 15-TR penceresi (idx-14..idx)
+                        # ile aynı ölçülmüyordu. Aynı 14-bar kuralına hizalandı.
+                        if idx < 13:
                             return None
                         trs = [max(highs[j] - lows[j], abs(highs[j] - closes[j - 1]),
                                    abs(lows[j] - closes[j - 1]))
-                               for j in range(idx - 14, idx + 1)]
+                               for j in range(idx - 13, idx + 1)]
                         return (sum(trs) / len(trs)) / closes[idx] * 100 if trs else None
                     m1_atr_prev = _atr_pct_at(i - 1)
                     m3_atr_prev = _atr_pct_at(i - 3)
@@ -598,8 +628,13 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     candidates.sort(key=lambda r: r["velocity_score"] * r["micro_mult"], reverse=True)
     for rank, candidate in enumerate(candidates[:limit], 1):
         candidate["rank"] = rank
-    # Izleme listesi: geçmeyen ama kayda deger hareket sinyali olanlar (skor >= 0.6).
-    watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= 0.6]
+    # Izleme listesi: geçmeyen ama kayda deger hareket sinyali olanlar.
+    # Düzeltme (2026-09-12): eski `>= 0.6` eşiği 0-100 skor ölçeğinden kalma ve
+    # ham ölçekte (tipik 50-2000) ölüydü — her elenen aday izlemeye düşüyordu.
+    # Aynı panel→ham dönüşümü (ham = panel/100 × cap) uygulanır: panel 0.6 →
+    # varsayılan cap ile 12 ham skor.
+    _watchlist_min_raw = 0.6 / 100.0 * float(config.MONITORING_SCORE_NORM_CAP or 0)
+    watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= _watchlist_min_raw]
     watchlist.sort(key=lambda r: r["velocity_score"] * r["micro_mult"], reverse=True)
     # Journal: geçenler + izleme listesi kaydedilir; ufuk süresi dolunca
     # kapanmış M1 mumlarla gerçek dokunuş ölçülüp eşikler kalibre edilir.
@@ -1125,8 +1160,8 @@ async def get_velocity_live_tracking():
     """Canlı izleme: son taramaların adaylarını güncel fiyatla takip eder.
 
     Her aday için: analiz anındaki giriş fiyatı, güncel fiyat, +%2'ye ulaşıp
-    ulaşılmadığı, ulaşıldıysa kaç saniyede ulaşıldığı. 5 dakikalık pencere
-    kapanınca durum kesinleşir; öğrenme döngüsü nihai sonucu journal'a yazar.
+    ulaşılmadığı, ulaşıldıysa kaç saniyede ulaşıldığı. Adayın kendi ufku (5dk/15dk) ve hedefi dolunca
+    durum kesinleşir; öğrenme döngüsü nihai sonucu journal'a yazar.
     """
     import datetime as _dt
     tz_tr = _dt.timezone(_dt.timedelta(hours=3))  # GMT+3 sabit
@@ -1135,9 +1170,13 @@ async def get_velocity_live_tracking():
     # Canlı takip: penceresi hâlâ açık olanlar + kapanmış ama journal'a henüz
     # yazılmamışlar. Süresi dolup değerlendirilenler rapordan düşer (Son
     # Adaylar sekmesinde kalıcı olarak yaşar).
+    # Düzeltme (2026-09-12): pencere sabit 5dk DEĞİL — her satırın ufku
+    # candidate_id'den okunur (15dk adaylar eskiden 5dk'da "süresi doldu"
+    # sayılıyordu). Ufuk okunamazsa 5dk fallback korunur.
     rows = [r for r in rows
-            if now_ms / 1000 - float(r["created_at"]) <= 300
-            or r["status"] == "pending"]
+            if r["status"] == "pending"
+            or now_ms / 1000 - float(r["created_at"])
+            <= _velocity_horizon_from_candidate_id(r.get("candidate_id")) * 60]
     sem = asyncio.Semaphore(6)
     tracked = []
 
@@ -1145,15 +1184,25 @@ async def get_velocity_live_tracking():
         symbol = row["symbol"]
         entry = float(row["price"])
         created_ms = int(float(row["created_at"]) * 1000)
-        due_ms = created_ms + 5 * 60_000
+        # Düzeltme (2026-09-12): pencere ve dokunuş eşiği satırdan okunur;
+        # 5dk-%2 sabiti 15dk adayları yanlış sınıflandırıyordu.
+        # - pencere: horizon_minutes × 60 sn (yoksa 5dk fallback)
+        # - dokunuş: 1 + target_pct/100 (target yoksa 1.02 fallback)
+        horizon_min = _velocity_horizon_from_candidate_id(row.get("candidate_id"))
+        due_ms = created_ms + horizon_min * 60_000
+        try:
+            row_target_pct = float(row.get("target_pct"))
+        except (TypeError, ValueError):
+            row_target_pct = None
+        touch_ratio = (1 + row_target_pct / 100.0) if (row_target_pct and row_target_pct > 0) else 1.02
         # Kapanmış M1 mumlardan pencere içi tepe + dokunuş anı (5 sn çözünürlük için mum üstü)
         best_high, touch_sec = None, None
         try:
-            window_rows = await fetch_klines(symbol, "1m", 12, created_ms, due_ms + 65_000)
+            window_rows = await fetch_klines(symbol, "1m", horizon_min + 12, created_ms, due_ms + 65_000)
             # R5-C4.4: sinyal anını içeren parsiyel mum HARİÇ (aynı `_post_signal_window`).
             window = _post_signal_window(window_rows, created_ms, due_ms)
             if entry > 0:
-                touched_high = max((float(r[2]) for r in window if float(r[2]) / entry >= 1.02), default=None)
+                touched_high = max((float(r[2]) for r in window if float(r[2]) / entry >= touch_ratio), default=None)
                 best_high = max((float(r[2]) for r in window), default=None)
                 if touched_high is not None:
                     touch_bar = next(r for r in window if float(r[2]) == touched_high)
@@ -1445,7 +1494,6 @@ def upside_rank_score(candidate: dict, touch_rates: dict[str, float] | None = No
     """
     horizon = int(candidate.get("horizon_minutes") or 15)
     target = float(candidate.get("target_pct") or 0) or (2.0 if horizon <= 5 else 3.0)
-    upside_rate = target / max(1, horizon)
     sym = str(candidate.get("symbol") or "").upper()
     rates = touch_rates or {}
     micro = candidate.get("microstructure") if isinstance(candidate.get("microstructure"), dict) else None
@@ -1456,6 +1504,10 @@ def upside_rank_score(candidate: dict, touch_rates: dict[str, float] | None = No
         target = min(target, vel_score * 0.3)
     elif vel_score < 20 and target > 5.0:
         target = min(target, vel_score * 0.25)
+    # Düzeltme: upside_rate KELEPLENMİŞ target'tan hesaplanmalı. Eski sürüm
+    # kelempeden ÖNCE hesaplayıp kelempsiz değeri kullanıyordu → clamp ölü koddu
+    # ve şişirilmiş ML hedefi zayıf adayı sıralamada haksız öne taşıyordu.
+    upside_rate = target / max(1, horizon)
     return (upside_rate * vel_score
             * _quality_multiplier(rates.get(sym))
             * micro_structure_multiplier(micro))
@@ -1560,6 +1612,14 @@ def dynamic_target_pct(score: float, base_target_pct: float,
         target = float(learned_pct)
     if ml_pct and float(ml_pct) > 0 and float(ml_pct) > target:
         target = float(ml_pct)
+    # Zayıf skor + iddialı hedef kelepçesi: ``upside_rank_score`` ile AYNI kural
+    # (skor < 10 → target ≤ skor×0.3; skor < 20 → target ≤ skor×0.25). Aksi halde
+    # şişirilmiş ML/journal hedefi zayıf adaya TP olarak 4-5% yazılabiliyordu.
+    # PANEL ölçeğindeki skor üzerinde uygulanır (fonksiyon sözleşmesi).
+    if float(score) < 10 and target > 4.0:
+        target = min(target, float(score) * 0.3)
+    elif float(score) < 20 and target > 5.0:
+        target = min(target, float(score) * 0.25)
     return round(max(config.MONITORING_TARGET_PCT_MIN,
                      min(config.MONITORING_TARGET_PCT_MAX, target)), 3)
 
@@ -1576,7 +1636,11 @@ async def _open_velocity_position(candidate: dict) -> dict:
     symbol = str(candidate["symbol"] or "").upper()
     # Minimum skor eşiği: düşük skorlu adaylarda dokunuş oranının üçte biri
     # (journal analizi: <10 → %16.7, ≥10 → ~%50). Eşik altında tur pas geçilir.
-    min_score = config.VELOCITY_AUTO_MIN_SCORE
+    # Düzeltme (2026-09-12): eşik PANEL (0-100) ölçeğinde tanımlıdır ve ham
+    # velocity_score ile karşılaştırılmadan ÖNCE `_velocity_raw_score_gate`
+    # üzerinden ham ölçeğe çevrilir (varsayılan panel 10 → ham 200); aksi halde
+    # `score < 10` kapısı 50-2000 bandındaki ham skorları hiç elemiyordu.
+    min_score = _velocity_raw_score_gate()
     score = float(candidate.get("velocity_score") or 0)
     if min_score > 0 and score < min_score:
         return {"symbol": symbol, "status": "SKIPPED",

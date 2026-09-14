@@ -391,7 +391,8 @@ class VelocityCapTests(unittest.IsolatedAsyncioTestCase):
                      "passes": True, "price": 100.0}
         with patch.object(velocity, "analyzer", fake_analyzer), \
              patch.object(config, "VELOCITY_AUTO_MAX_OPEN_POSITIONS", 1), \
-             patch.object(config, "VELOCITY_PATTERN_FILTER_ENABLED", True):
+             patch.object(config, "VELOCITY_PATTERN_FILTER_ENABLED", True), \
+             patch.object(config, "VELOCITY_AUTO_MIN_SCORE", 0.0):  # skor kapısı bu testin konusu değil
             result = await velocity._open_velocity_position(candidate)
         self.assertEqual("SKIPPED", result["status"])
         self.assertEqual("pozisyon_limiti_dolu", result["reason"])

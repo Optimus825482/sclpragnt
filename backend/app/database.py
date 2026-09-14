@@ -4199,7 +4199,7 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
       5. auto_paper_trades INSERT + signals/decision_logs kaydı tek commit'te
 
     Dönen tuple: (trade_row veya None, durum) — durum:
-      "opened" | "already_open" | "already_traded" | "insufficient_balance" | "error"
+      "opened" | "already_open" | "already_traded" | "max_open" | "insufficient_balance" | "error"
     """
     symbol = str(trade["symbol"]).upper()
     notification_id = trade.get("notification_id")
@@ -4213,6 +4213,17 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
         ).fetchone()
         if open_row:
             return (dict(open_row), "already_open")
+        # Denetim düzeltmesi (atomik global limit): uygulama katmanındaki sayım
+        # ile bu insert arasında yarış penceresi vardı — eşzamanlı tarama
+        # tetiklerinde AUTO_PAPER_MAX_OPEN_POSITIONS+1 pozisyon açılabilirdi.
+        # Sayım artık advisory xact_lock'lu bu op içinde yapılır → atomik.
+        global_max = int(getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0) or 0)
+        if global_max > 0:
+            cnt = conn.execute(
+                "SELECT COUNT(*) FROM auto_paper_trades WHERE status='open'"
+            ).fetchone()
+            if cnt and int(cnt[0] or 0) >= global_max:
+                return (None, "max_open")
         # Ana positions tablosunda da aynı sembol açıksa çakışmayı önle
         main_pos = conn.execute(
             "SELECT 1 FROM positions WHERE symbol=?",

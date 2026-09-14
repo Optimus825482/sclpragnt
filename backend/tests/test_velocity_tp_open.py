@@ -34,7 +34,8 @@ class VelocityTPOpenTests(unittest.IsolatedAsyncioTestCase):
              patch.object(velocity, "database") as db, \
              patch.object(velocity, "microflow") as mf, \
              patch.object(velocity, "ws_manager") as ws, \
-             patch.object(config, "VELOCITY_PATTERN_FILTER_ENABLED", True):
+             patch.object(config, "VELOCITY_PATTERN_FILTER_ENABLED", True), \
+             patch.object(config, "VELOCITY_AUTO_MIN_SCORE", 0.0):  # skor kapısı bu testin konusu değil
             db.get_llm_symbol_guard = AsyncMock(return_value=None)
             db.get_wallet_balance = AsyncMock(return_value=2000.0)
             db.get_chat_prediction_insights = AsyncMock(return_value=[])

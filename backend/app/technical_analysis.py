@@ -214,7 +214,12 @@ def _mfi(highs, lows, closes, volumes, period=14):
     for i in range(len(typical) - period, len(typical)):
         if typical[i] > typical[i-1]: pos += flow[i]
         elif typical[i] < typical[i-1]: neg += flow[i]
-    return float(100 - (100 / (1 + pos / neg))) if neg else 100.0
+    # MFI düzeltmesi: pos == 0 ve neg == 0 (tüm hacimler 0 / düz tipik fiyat)
+    # durumunda nötr 50.0 dön — "aşırı alım 100" yanlış sinyal veriyordu.
+    # 100 yalnızca pos > 0 ve neg == 0 iken anlamlıdır.
+    if neg:
+        return float(100 - (100 / (1 + pos / neg)))
+    return 100.0 if pos > 0 else 50.0
 
 def _wilder_series(values, period):
     """Wilder smoothing series: first = SMA of first `period`, then recursive."""

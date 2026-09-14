@@ -143,7 +143,10 @@ class Config:
     # Otonom açılış için minimum velocity skoru. Journal analizi (2026-08-31):
     # skor <10 geçen adaylarda dokunuş %16.7 (n=12), 10-30 arası %47.6 (n=21),
     # 30+ %50.0 (n=14) — 10 altı adaylarda açılış yapmak EV'yi düşürüyor.
-    # 0 = filtre kapalı. Eşik ham velocity_score'a bakar; kalite çarpanı uygulanmaz.
+    # 0 = filtre kapalı. ÖLÇEK (2026-09-12): bu eşik PANEL (0-100) ölçeğindedir
+    # ve ham velocity_score ile karşılaştırılmadan `velocity._velocity_raw_score_gate`
+    # üzerinden ham ölçeğe çevrilir (ham = panel/100 × MONITORING_SCORE_NORM_CAP;
+    # varsayılan panel 10 → ham 200). Ham skor artık tipik 50-2000 bandında.
     VELOCITY_AUTO_MIN_SCORE = float(os.getenv("VELOCITY_AUTO_MIN_SCORE", "10"))
     # Otonom Hız Avcısı'nin açık pozisyon üst sınırı. Velocity pozisyonları
     # CHAT_PREDICTION stratejisi + signal_context.source=="velocity_auto"
@@ -163,9 +166,15 @@ class Config:
     # üstünde), skor <10 kovasında başarı %19 (gürültü).
     # Global bildirim eşiği: admin tek değer ayarlar, tüm kullanıcılar etkilenir.
     MONITORING_MIN_SCORE_DEFAULT = float(os.getenv("MONITORING_MIN_SCORE_DEFAULT", "70"))
-    # velocity_score 0-100 bandında üretilir (formül: atr_ratio × bb_ratio × yapı × momentum).
-    # Tipik orta-kuvvetli sinyal 20-60 arasıdır. Varsayılan eşik 70: yalnızca yüksek
-    # güvenli adaylar bildirilir; admin PUT /api/monitoring/settings ile düşürebilir.
+    # velocity_score HAM ölçekte üretilir (formül: atr_ratio × bb_ratio × yapı ×
+    # momentum; saturation kaldırıldığından sınırsızdır). TİPİK BANT 50-2000'dir
+    # (2026-09-12 notu: eski "0-100, tipik 20-60" açıklaması saturation
+    # kaldırılmasından önceydi ve artık geçersizdir). Panel gösterimi ham/cap×100
+    # ile MONITORING_SCORE_NORM_CAP üzerinden 0-100'e normalize edilir;
+    # admin eşikleri (MONITORING_MIN_SCORE_DEFAULT, VELOCITY_AUTO_MIN_SCORE)
+    # PANEL ölçeğindedir ve kod tarafında ham ölçeğe çevrilir. Varsayılan eşik 70
+    # (panel): yalnızca yüksek güvenli adaylar bildirilir; admin
+    # PUT /api/monitoring/settings ile düşürebilir.
     MONITORING_SCORE_NORM_CAP = float(os.getenv("MONITORING_SCORE_NORM_CAP", "2000"))  # 2026-09-07: saturation kaldirma sonrasi tipik skor 50-2000
     # M1/P0 (R2-01/R2-02/R3-01): ADAY KAPISI ham velocity_score üzerinden tanımlanır.
     # Panel normalizasyonu (raw/cap×100) yalnızca GÖSTERİM ölçeğidir; cap değişince

@@ -609,17 +609,20 @@ export default function MonitoringPage() {
   }, [applyMonitoringPayload]);
 
   // 🔔 Son bildirimler geçmişi: ilk 10 satır; WS monitoring_alert ile tazelenir.
+  // Nesil koruması (loadState ile aynı desen): gecikmiş cevap eskisini ezmeyecek.
+  const historyReqIdRef = useRef(0);
   const loadHistory = useCallback(async (signal?: AbortSignal) => {
+    const reqId = ++historyReqIdRef.current;
     try {
       const res = await apiRequest(`${API_BASE}/api/monitoring/notifications`, { cache: "no-store", signal });
       if (!res.ok) throw new HttpStatusError(res.status);
       const data = await res.json();
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || historyReqIdRef.current !== reqId) return;
       const list: NotificationRow[] = Array.isArray(data?.history) ? data.history : [];
       setHistoryRows(list.slice(0, 10));
       setHistoryError(null);
     } catch (err) {
-      if (isAbortError(err) || !mountedRef.current) return;
+      if (isAbortError(err) || !mountedRef.current || historyReqIdRef.current !== reqId) return;
       setHistoryError(humanizeError(err));
     }
   }, []);

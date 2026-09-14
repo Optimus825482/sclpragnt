@@ -187,8 +187,15 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                             "açılmadı (R3-07)", symbol)
                 return _blocked(symbol, "quiet_hours")
         except Exception as quiet_exc:
-            # Sessizlik sorgusu başarısızsa AÇ (fail-open; darwinlik kapısı olmasın).
-            logger.debug("auto_paper %s sessiz saat sorgusu atlandı: %s", symbol, quiet_exc)
+            # Sessizlik sorgusu BAŞARISIZ OLURSA KAPAT (fail-closed, R3-07 düzeltmesi):
+            # eskiden sorgu hatasında AÇILIYORDU (fail-open) ve kullanıcı
+            # sessiz saatlerde otonom pozisyon açıldığını görebiliyordu —
+            # ayardaki R3-07 sözleşmesiyle çelişiyordu. Sessiz aralık
+            # pozisyon açmaya izin vermez; aday bir sonraki taramada yeniden
+            # değerlendirilir (doğal retry).
+            logger.warning("auto_paper %s: sessiz saat sorgusu başarısız — işlem "
+                        "açılmadı (fail-closed): %s", symbol, quiet_exc)
+            return _blocked(symbol, "quiet_hours_query_error")
 
         # Mevcut fiyat
         ticker = market.get_ticker(symbol)
@@ -197,6 +204,25 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
             current_price = float(notification.get("price") or 0)
         if current_price <= 0:
             return None
+
+        # Ticker tazelik kapısı: REST ticker'ı getiremezse bildirim fiyatına
+        # (detected_at anına ait, bayat) düşmek SL/TP çapasını yanlış sabitler.
+        # Bildirim fiyatı yalnızca taze bir ticker ile doğrulanınca kullanılır.
+        # (Denetim maddesi: otomatik açılışta bayat fiyata çapa riski.)
+        # NOT: `timestamp` ms cinsindendir — `ticker_freshness` dönüşümü ve
+        # `MAX_TICKER_AGE_SEC` toleransını zaten uygular; elle ms/s karışımı
+        # hesaplamak yerine hazır yardımcı kullanılır.
+        try:
+            # Otonom akış için 60 sn: global 15 sn toleransı (MAX_TICKER_AGE_SEC)
+            # tarama kadansı + REST tazeleme aralığı içinde sık engel üretirdi;
+            # 60 sn bayat-çapa riskini kabul edilebilir düzeyde tutar.
+            freshness = market.ticker_freshness(symbol, max_age_sec=60)
+        except Exception:
+            freshness = {"fresh": False, "age_sec": None}
+        if not bool(freshness.get("fresh")):
+            logger.warning("auto_paper %s: taze ticker yok (age=%ss) — bayat fiyata "
+                        "açılış engellendi", symbol, freshness.get("age_sec"))
+            return _blocked(symbol, "stale_ticker")
 
         notification_id = notification.get("id")
         notification_key = notification.get("notification_key")
@@ -290,6 +316,10 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         # Global maksimum açık pozisyon sınırı (0 = sınırsız, varsayılan 3).
         # R3-06 (c): sembol-başı sınır yukarıda `open_trade` ile korunur; global
         # sınır ise burada. Engel NEDENÎ ile döndürülür (sessiz düşme yok).
+        # Denetim notu (atomiklik): bu sayım ile `_open_new_trade` içindeki insert
+        # arasında yarış penceresi VAR; kök neden düzeltmesi DB katmanında —
+        # `insert_auto_paper_trade` advisory xact_lock'lu op içinde global limiti
+        # yeniden sayar (aşağıdaki `_AUTO_PAPER_GLOBAL_LIMIT_NOTE`).
         max_open = int(getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0))
         if max_open > 0:
             open_count = len(await database.list_auto_paper_trades(status="open"))
@@ -408,6 +438,11 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             return None
         if status == "already_traded":
             logger.info("auto_paper %s: bildirim %s zaten işlendi — açılmadı", symbol, notification_id)
+            return None
+        if status == "max_open":
+            # Advisory-lock'lu op içindeki ikinci savunma: arada başka tarama
+            # tetiği limiti doldurdu — sessiz None yerine görünür log.
+            logger.warning("auto_paper %s: transaction içinde max açık pozisyon dolu — açılmadı", symbol)
             return None
         if status == "insufficient_balance":
             logger.info("auto_paper %s: transaction'da bakiye yetersiz", symbol)
@@ -787,6 +822,14 @@ async def _maybe_reopen_after_protect_close(symbol: str, orig_notification_id=No
             # DEĞİL. Böylece try_open_from_notification + open_auto_paper_trade
             # içindeki already_traded churn kontrolü yeniden açmayı da kapsar.
             "id": reopen_id,
+            # R3-09 düzeltmesi: `notification_key` AYNI reopen_id olmalı —
+            # eskiden bu anahtar hiç set edilmiyordu ve try_open_from_notification
+            # içindeki `get_recent_auto_paper_trade_by_notification_key` dedup
+            # kontrolleri (database.py) HİÇ TETİKLENMİYORDU: trailing stop ->
+            # reopen -> trailing stop döngüsü her saat her turda ~%0.35 sessiz
+            # eriti ve restart'ta _reopen_last_attempt sıfırlanınca limit de
+            # sıfırlanıyordu. Tek satırlık kök neden düzeltmesi.
+            "notification_key": reopen_id,
             "symbol": symbol,
             "score": panel,
             "price": price,

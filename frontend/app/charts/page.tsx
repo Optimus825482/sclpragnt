@@ -94,6 +94,13 @@ export default function ChartsPage() {
     const [forecast, setForecast] = useState<any>(null);
     const [forecastHistory, setForecastHistory] = useState<any>(null);
     const [forecastLoading, setForecastLoading] = useState(false);
+    // Denetim: ML tahmin/radar panellerinde "backend kapalı" ile "veri yok"
+    // ayrımı — hata durumunda panel bayatlık şeridi gösterir (sessiz yutma yok).
+    const [forecastError, setForecastError] = useState<string | null>(null);
+    const [monitorNotifError, setMonitorNotifError] = useState<string | null>(null);
+    // Denetim: portföy özeti HTTP/network hatasında bayat veriyle "canlı"
+    // görünmesin — şeridin üstünde görünür uyarı.
+    const [portfolioStale, setPortfolioStale] = useState(false);
     const [chartSettingsOpen, setChartSettingsOpen] = useState(false);
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
@@ -315,9 +322,11 @@ export default function ChartsPage() {
                 body: JSON.stringify({ timeframe: interval, fresh })
             });
             const data = await res.json();
-            if (res.ok) setForecast(data);
+            if (res.ok) { setForecast(data); setForecastError(null); }
+            else setForecastError(`Üst tahmin alınamadı (HTTP ${res.status}) — panel bayat olabilir.`);
         } catch {
             setForecast(null);
+            setForecastError("Üst tahmin alınamadı (bağlantı hatası) — panel bayat olabilir.");
         } finally {
             setForecastLoading(false);
         }
@@ -328,7 +337,7 @@ export default function ChartsPage() {
         try {
             const res = await apiRequest(`${API}/${encodeURIComponent(symbol)}/forecast-history`);
             const data = await res.json();
-            if (res.ok) setForecastHistory(data);
+            if (res.ok) { setForecastHistory(data); setForecastError(null); }
         } catch {
             setForecastHistory(null);
         }
@@ -348,8 +357,10 @@ export default function ChartsPage() {
             const res = await apiRequest(`${API_BASE}/api/monitoring/active-notification/${encodeURIComponent(symbol)}`, { cache: "no-store" });
             const data = await res.json();
             setMonitorNotif(res.ok && data?.active ? data : null);
+            setMonitorNotifError(null);
         } catch {
             setMonitorNotif(null);
+            setMonitorNotifError("Radar bildirimi alınamadı (bağlantı hatası) — panel bayat olabilir.");
         }
     }, [symbol]);
     useEffect(() => {
@@ -509,10 +520,12 @@ export default function ChartsPage() {
     const loadPortfolioSummary = useCallback(async () => {
         try {
             const response = await apiRequest(`${API_BASE}/api/portfolio/summary`);
+            if (!response.ok) { setPortfolioStale(true); return; }
             const result = await response.json();
             if (result.portfolio && Object.keys(result.portfolio).length) setLivePortfolio(result.portfolio as LivePortfolio);
             if (result.metrics) setPortfolioMetrics(result.metrics as PortfolioMetrics);
-        } catch { /* özet için portföy metrikleri geçici olarak kullanılamıyor */ }
+            setPortfolioStale(false);
+        } catch { setPortfolioStale(true); }
     }, []);
 
     useEffect(() => {
@@ -549,7 +562,7 @@ export default function ChartsPage() {
             if (Array.isArray(message.data?.positions)) {
                 setPositions(message.data.positions);
             }
-            if (Array.isArray(message.data?.auto_paper_positions) && message.data.auto_paper_positions.length >= 0) {
+            if (Array.isArray(message.data?.auto_paper_positions)) {
                 const ap = message.data.auto_paper_positions.map((t: any) => ({
                     id: Number(t.auto_paper_id || 0),
                     symbol: t.symbol,
@@ -560,7 +573,9 @@ export default function ChartsPage() {
                     stop_loss: t.stop,
                     entry_time: t.entry_time,
                 }));
-                if (ap.some((a: any) => a.id > 0)) setAutoPaperPositions(ap);
+                // Kapalı pozisyon WS'te boş liste olarak gelir; boş set
+                // atlanırsa kapanan pozisyon tabloda "açık" kalırdı.
+                setAutoPaperPositions(ap);
             }
         }
         if (["trade_updated", "signal", "reset"].includes(message.type)) loadPortfolioSummary();
@@ -1324,6 +1339,12 @@ export default function ChartsPage() {
                 </div>
             </header>
 
+            {portfolioStale && (
+                <div className="flex items-center gap-2 rounded-lg border border-yellow-400/40 bg-yellow-400/5 px-3 py-1.5">
+                    <span className="font-mono text-[11px] text-yellow-300">Portföy özeti güncellenemedi (bayat)</span>
+                    <button type="button" onClick={() => { setPortfolioStale(false); loadPortfolioSummary(); }} className="rounded border border-bunker-700 px-2 py-0.5 font-mono text-[11px] text-bunker-muted hover:text-white">YENİDEN DENE</button>
+                </div>
+            )}
             <section aria-label="Portföy özeti" className="grid grid-cols-2 gap-2 rounded-xl border border-bunker-800 bg-bunker-950/80 p-3 sm:grid-cols-6">
                 <div className="min-w-0"><p className="eyebrow">TOPLAM PORTFÖY</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.total_value == null ? "—" : money(livePortfolio.total_value)}</p></div>
                 <div className="min-w-0"><p className="eyebrow">SERBEST TL</p><p className="mt-1 truncate font-mono text-sm font-bold text-white">{livePortfolio?.try == null ? "—" : money(livePortfolio.try)}</p></div>
@@ -1618,6 +1639,15 @@ export default function ChartsPage() {
                                     </div>
                                 </div>
                             ))}
+                        </div>
+                    ) : forecastError ? (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-red-900/60 bg-red-950/40 px-2 py-1.5">
+                            <p className="font-mono text-xs text-red-400">{forecastError}</p>
+                            <button
+                                onClick={() => loadForecast(false)}
+                                className="inline-flex items-center gap-1 rounded-lg border border-bunker-700 px-2 py-1 font-mono text-[11px] text-bunker-muted hover:text-white"
+                                title="Yeniden dene"
+                            >YENİDEN DENE</button>
                         </div>
                     ) : (
                         <p className="mt-2 font-mono text-xs text-bunker-muted">tahmin yok (model eğitilmedi / veri yok)</p>

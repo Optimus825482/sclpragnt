@@ -709,11 +709,21 @@ class D11GlobalRiskGateTests(unittest.IsolatedAsyncioTestCase):
         async def enabled(key, default="0"):
             return "1"
 
+        # Yetki denetimi (denetim düzeltmesi): manuel LLM girişi artık admin
+        # kapısından geçer; test kapıyı pasifleştirip gate akışını sınar.
         with patch("app.main.database.get_llm_setting", new=enabled), \
-             patch("app.main.daily_loss_guard", new=gate):
+             patch("app.main.daily_loss_guard", new=gate), \
+             patch("app.main._require_admin", new=MagicMock(return_value=None)):
             with self.assertRaises(HTTPException):
                 await main.llm_open_paper_trade({"symbol": "BTCTRY"}, request=None)
         gate.assert_awaited()
+
+    async def test_llm_entry_requires_admin(self):
+        """Yetki kapısı: principal'sız istek → 401/HTTPException."""
+        from app import main
+        anonymous = MagicMock(headers={}, cookies={})
+        with self.assertRaises(HTTPException):
+            await main.llm_open_paper_trade({"symbol": "BTCTRY"}, request=anonymous)
 
     async def test_kill_switch_endpoint_requires_admin(self):
         from app import main

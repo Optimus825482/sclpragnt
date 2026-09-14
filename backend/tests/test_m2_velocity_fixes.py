@@ -27,8 +27,9 @@ from app.routers import velocity                  # noqa: E402
 from app.routers.monitoring import normalize_score  # noqa: E402  (kanonik panel formülü)
 from app.routers.velocity import (                # noqa: E402
     _mfe_from_window, _panel_score, _parse_target_tiers, _post_signal_window,
-    dynamic_target_pct,
+    _velocity_raw_score_gate, _velocity_mfi, dynamic_target_pct, upside_rank_score,
 )
+from app.technical_analysis import _mfi           # noqa: E402
 
 _DEFAULT_TIERS = "90:4.0,70:2.5,50:2.0"
 
@@ -214,6 +215,109 @@ class DeterminismMonotonicityTests(unittest.TestCase):
                         self.assertGreaterEqual(val, prev,
                                                 msg=f"base={base} score={score} azaldı!")
                     prev = val
+
+
+class UpsideRankClampTests(unittest.TestCase):
+    """upside_rank_score kelepçe sırası: upside_rate KELEPLENMİŞ target'tan.
+
+    Eski hata: ``upside_rate = target / horizon`` kelempeden ÖNCE hesaplanıp
+    dönüşte KELEMPSİZ değer kullanılıyordu → clamp ölü koddu ve zayıf skorlu
+    adayın şişirilmiş ML hedefi sıralamayı haksız şişiriyordu.
+    """
+
+    def test_weak_score_inflated_ml_target_ranks_lower(self):
+        cand = {"symbol": "WEAKTRY", "horizon_minutes": 5,
+                "target_pct": 5.0, "velocity_score": 8.0}  # skor<10, target>4 → clamp
+        clamped = upside_rank_score(cand)
+        # Kelepçe: target = min(5.0, 8*0.3=2.4) = 2.4 → rate = 2.4/5 = 0.48
+        self.assertAlmostEqual(0.48 * 8.0, clamped, places=9)
+        # Eski (bozuk) davranış kelempsiz 5/5=1.0 rate kullanıyordu:
+        unclamped_legacy = (5.0 / 5) * 8.0
+        self.assertLess(clamped, unclamped_legacy,
+                        "şişirilmiş ML hedefi zayıf adayı hâlâ öne taşıyor!")
+
+    def test_strong_score_target_not_clamped(self):
+        cand = {"symbol": "STRGTRY", "horizon_minutes": 5,
+                "target_pct": 5.0, "velocity_score": 30.0}
+        self.assertAlmostEqual((5.0 / 5) * 30.0, upside_rank_score(cand), places=9)
+
+
+class DynamicTargetWeakScoreClampTests(unittest.TestCase):
+    """dynamic_target_pct aynı zayıf-skor kelepçesini uygulamalı (TP enflasyonu)."""
+
+    def test_weak_score_ml_target_clamped(self):
+        # panel skor 5 + şişirilmiş ML hedefi 6.0 → kelepçe: min(6, 5*0.3=1.5)
+        # → ardından maliyet tabanı (MIN 1.5) → 1.5; eski davranış 6.0 verirdi.
+        self.assertEqual(1.5, dynamic_target_pct(5.0, 2.0, ml_pct=6.0))
+
+    def test_weak_score_learned_target_clamped(self):
+        self.assertEqual(1.5, dynamic_target_pct(5.0, 2.0, learned_pct=5.0))
+
+    def test_strong_score_not_clamped(self):
+        self.assertEqual(4.0, dynamic_target_pct(95.0, 2.0, ml_pct=4.0))
+
+
+class MfiBothZeroNeutralTests(unittest.TestCase):
+    """MFI: pos == 0 VE neg == 0 (sıfır hacim / düz tipik fiyat) → nötr 50.0."""
+
+    N = 15
+
+    def _flat(self, volumes):
+        n = self.N
+        return ([100.0] * n, [100.0] * n, [100.0] * n, volumes)
+
+    def test_canonical_mfi_all_zero_volume_is_neutral(self):
+        highs, lows, closes, vols = self._flat([0.0] * self.N)
+        self.assertEqual(50.0, _mfi(highs, lows, closes, vols))
+
+    def test_velocity_mfi_all_zero_volume_is_neutral(self):
+        highs, lows, closes, vols = self._flat([0.0] * self.N)
+        self.assertEqual(50.0, _velocity_mfi(highs, lows, closes, vols))
+
+    def test_one_sided_flow_still_returns_100(self):
+        # Düz tipik fiyat yerine YÜKSELEN seri + sıfır olmayan hacim → pos>0, neg=0
+        n = self.N
+        closes = [100.0 + i for i in range(n)]
+        highs = [c + 0.5 for c in closes]
+        lows = [c - 0.5 for c in closes]
+        vols = [10.0] * n
+        self.assertEqual(100.0, _mfi(highs, lows, closes, vols))
+        self.assertEqual(100.0, _velocity_mfi(highs, lows, closes, vols))
+
+
+class VelocityRawScoreGateTests(unittest.IsolatedAsyncioTestCase):
+    """VELOCITY_AUTO_MIN_SCORE panel (0-100) → ham ölçek dönüşümü."""
+
+    def test_default_panel_10_maps_to_raw_200(self):
+        self.assertAlmostEqual(200.0, _velocity_raw_score_gate(), places=9)
+
+    def test_conversion_uses_cap(self):
+        with patch.object(config, "VELOCITY_AUTO_MIN_SCORE", 25.0), \
+             patch.object(config, "MONITORING_SCORE_NORM_CAP", 1000.0):
+            self.assertAlmostEqual(250.0, _velocity_raw_score_gate(), places=9)
+
+    async def test_gate_blocks_mid_band_raw_score(self):
+        """Ham 150 (eski ölçekte 'yüksek') varsayılan kapının (ham 200) altında."""
+        from app.routers import velocity as _v
+
+        with patch.object(_v.analyzer, "positions", {}):
+            result = await _v._open_velocity_position(
+                {"symbol": "MIDTRY", "price": 1.0, "velocity_score": 150.0,
+                 "mode": "trend_devam", "m5_pattern_ok": True, "atr_pct": 0.5})
+        self.assertEqual(result["status"], "SKIPPED")
+        self.assertIn("skor_esigi_alti", result["reason"])
+
+    async def test_gate_passes_raw_score_above_threshold(self):
+        """Ham 250 ≥ kapı (200) → skor kapısı geçilir, sonraki kapıya düşer."""
+        from app.routers import velocity as _v
+
+        with patch.object(_v.analyzer, "positions",
+                          {"PASSTRY": {"strategy": "CHAT_PREDICTION"}}):
+            result = await _v._open_velocity_position(
+                {"symbol": "PASSTRY", "price": 1.0, "velocity_score": 250.0,
+                 "mode": "trend_devam", "m5_pattern_ok": True, "atr_pct": 0.5})
+        self.assertEqual(result["status"], "SKIPPED")
+        self.assertEqual(result["reason"], "acik_pozisyon_var")
 
 
 if __name__ == "__main__":

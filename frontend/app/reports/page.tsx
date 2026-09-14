@@ -430,7 +430,7 @@ function VelocityTab() {
         <StatCard label="ÖLÇÜLEN" value={String(evaluated)} />
         <StatCard label="HEDEF DOKUNAN" value={`${touched}/${evaluated}`} tone="text-neon-green" />
         <StatCard label="DOKUNUŞ ORANI" value={evaluated ? `%${((touched / evaluated) * 100).toFixed(1)}` : "—"} tone="text-sky-300"
-          sub={`ort MFE ${pctPct(stats.average_mfe_pct, 3)} · geçenler %${stats.passing_hit_rate != null ? (stats.passing_hit_rate * 100).toFixed(1) : "—"}`} />
+          sub={`ort MFE ${stats.average_mfe_pct != null ? `%${Number(stats.average_mfe_pct).toFixed(3)}` : "—"} · geçenler %${stats.passing_hit_rate != null ? (stats.passing_hit_rate * 100).toFixed(1) : "—"}`} />
       </div>
       <div className="grid gap-5 lg:grid-cols-2">
         <section className="card">
@@ -785,9 +785,17 @@ function UserRadarTab() {
         setBreakdown(nt.breakdown || null);
         setOverall(nt.overall || null);
       } else {
+        // Başarısız gün değişiminde önceki günün satırları "seçili günün
+        // verisi" gibi kalmamasın — listeyi boşalt (denetim maddesi).
+        setNotifications([]);
+        setBreakdown(null);
+        setOverall(null);
         setError(nt.detail || "Radar tespitleri alinamadi");
       }
     } catch {
+      setNotifications([]);
+      setBreakdown(null);
+      setOverall(null);
       setError("Radar tespitleri alinamadi");
     } finally {
       setLoading(false);

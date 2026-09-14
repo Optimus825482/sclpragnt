@@ -377,11 +377,23 @@ async def auth_login(payload: dict, response: Response, request: Request):
     security.set_user_session_version(user.get("username") or username, session_version)
     await log_user_action((user.get("username") or username).lower(), role, "auth", "LOGIN_SUCCESS",
                           target=(user.get("username") or username).lower(), request=request)
+    cookie_secure = os.getenv("SCALPER_COOKIE_SECURE", "1") == "1"
+    if cookie_secure and request.url.scheme != "https":
+        # Altyapı uyarısı (denetim maddesi): secure=1 + düz http (LAN erişimi)
+        # kombinasyonunda tarayıcı oturum cookie'sini REDDEDER ve login
+        # SESSİZCE döngüye girer. Ayarı değiştirmek yerine bir kez uyarı logla:
+        # LAN için SCALPER_COOKIE_SECURE=0 (veya ters proxy ile https) gerekir.
+        username_log = (user.get("username") or username)
+        logger.warning(
+            "auth login: SCALPER_COOKIE_SECURE=1 ama istek scheme=%s — tarayıcı bu "
+            "cookie'yi kaydetmeyecektir (secure flag). Düz http LAN erişiminde "
+            "SCALPER_COOKIE_SECURE=0 kullanın veya https üzerinden erişin. "
+            "(kullanıcı=%s)", request.url.scheme, username_log)
     response.set_cookie(security.SESSION_COOKIE,
                         security.create_session_token(username=user.get("username") or username, role=role,
                                                       session_version=session_version),
                         httponly=True,
-                        secure=os.getenv("SCALPER_COOKIE_SECURE", "1") == "1", samesite="strict",
+                        secure=cookie_secure, samesite="strict",
                         max_age=43200, path="/")
     return {"ok": True, "authenticated": True, "username": (user.get("username") or username).lower(), "role": role}
 
@@ -2434,6 +2446,9 @@ async def llm_entry_policy():
 
 @app.put("/api/llm/paper-trading")
 async def set_llm_paper_trading(payload: dict, request: Request):
+    # Yetki denetimi: paper-trade anahtarlarını açmak/kapatmak yalnız YÖNETİCİ
+    # yetkisindir — "user" rolüyle atlanabilir rol kontrolü kaldırıldı.
+    _require_admin(request)
     enabled = bool(payload.get("enabled"))
     await database.set_llm_setting("llm_paper_trade_enabled", "1" if enabled else "0")
     actor, actor_role = _session_identity(request)
@@ -2443,6 +2458,8 @@ async def set_llm_paper_trading(payload: dict, request: Request):
 
 @app.put("/api/llm/auto-paper-trading")
 async def set_llm_auto_paper_trading(payload: dict, request: Request):
+    # Yetki denetimi: yukarıdaki toggle ile aynı — yalnız YÖNETİCİ.
+    _require_admin(request)
     enabled = bool(payload.get("enabled"))
     await database.set_llm_setting("llm_auto_paper_enabled", "1" if enabled else "0")
     actor, actor_role = _session_identity(request)
@@ -2453,6 +2470,8 @@ async def set_llm_auto_paper_trading(payload: dict, request: Request):
 
 @app.post("/api/llm/paper-trade")
 async def llm_open_paper_trade(payload: dict, request: Request = None):
+    # Yetki denetimi: manuel LLM paper girişi açmak yalnız YÖNETİCİ yetkisindedir.
+    _require_admin(request)
     if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
         raise HTTPException(status_code=403, detail="LLM paper işlem açma yetkisi ayarlardan kapalı")
     # D-11: global kill-switch / günlük zarar limiti — yeni girişten ÖNCE kontrol.

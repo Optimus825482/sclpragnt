@@ -1622,6 +1622,14 @@ async def monitoring_background_loop():
     yapılıyordu). Veri hazır değilse scan_one boş döner ama API her zaman
     yanıt verir (2026-09-07)."""
     logger.info("Monitoring arka plan taraması başladı (tur=%ss)", SCAN_INTERVAL_SEC)
+    # Altyapı uyarısı: VAPID anahtarları yapılandırılmamışsa push bildirimleri
+    # SESSİZCE hiç çalışmaz (uygulama sağlıklı görünür) — denetim maddesi.
+    # Startup'ta bir kez görünür uyarı verilir; flush davranışı değişmez.
+    if not os.getenv("VAPID_PRIVATE_KEY", "").strip() or not os.getenv("VAPID_PUBLIC_KEY", "").strip():
+        logger.warning(
+            "Monitoring push: VAPID_PRIVATE_KEY/VAPID_PUBLIC_KEY yapılandırılmamış — "
+            "tarayıcı push bildirimleri GÖNDERİLMEYECEK (sadece panel geçmişi çalışır). "
+            "Push için anahtarları docker-compose/.env içinde doldurun.")
     await restore_runtime_state()
     while True:
         result = None

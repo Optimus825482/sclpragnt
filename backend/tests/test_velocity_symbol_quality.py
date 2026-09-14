@@ -7,6 +7,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.config import config  # noqa: E402
+
 
 def _stats_row(symbol, evaluated, touched, avg_mfe):
     return {"symbol": symbol, "evaluated": evaluated, "touched": touched,
@@ -30,7 +32,8 @@ class VelocitySymbolQualityTests(unittest.IsolatedAsyncioTestCase):
         # açık-pozisyon kapısını simüle edip filtre sebebiyle SKIPPED dönmediğini
         # doğruluyoruz.
         with patch.object(velocity.database, "get_trades", side_effect=fake_trades), \
-             patch.object(velocity.analyzer, "positions", {symbol: {"strategy": "CHAT_PREDICTION"}}):
+             patch.object(velocity.analyzer, "positions", {symbol: {"strategy": "CHAT_PREDICTION"}}), \
+             patch.object(config, "VELOCITY_AUTO_MIN_SCORE", 0.0):  # skor kapısı bu testin konusu değil
             result = await velocity._open_velocity_position({
                 "symbol": symbol, "price": 1.0, "velocity_score": 20.0,
                 "mode": "trend_devam", "m5_pattern_ok": True,
