@@ -7,6 +7,7 @@ import { fmtDateTime, formatPrice, toMs } from "../lib/format";
 import { useAuth } from "../lib/auth";
 import { useLiveMessages } from "../lib/liveSocket";
 import { mergeMacdDelta } from "../lib/macdSnapshot";
+import { ML_PROB_CLASS, ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
 
 // R1-02: `min_score` artık BİLİNMİYOR olabilir (`null`) — başlangıçta backend
 // varsayılanı (70) dahil hiçbir sabit uydurulmaz; sunucunun `effective_min_score`
@@ -370,7 +371,6 @@ const CandidateDetail = ({ c, kind, onClose }: { c: Candidate; kind: "radar" | "
   const price = Number(c.price);
   const validTarget = Number.isFinite(targetPct) && targetPct > 0 && Number.isFinite(price) && price > 0;
   const expected = validTarget ? price * (1 + targetPct / 100) : null;
-  const mlActive = Number(c.ml_target_pct) > 0 && c.ml_hit_probability != null;
   // R1-11: Escape ile kapanma + açılışta odak diyaloğa taşınır + kapanışta
   // odağı eski sahibine geri verir (klavye-only erişilebilirlik).
   const dialogRef = useRef<HTMLElement | null>(null);
@@ -431,8 +431,8 @@ const CandidateDetail = ({ c, kind, onClose }: { c: Candidate; kind: "radar" | "
           </div>
           <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">
             <p className="eyebrow">ML OLASILIK</p>
-            <p className={`mt-1 font-mono text-sm font-bold ${mlActive ? (Number(c.ml_hit_probability) >= 0.6 ? "text-neon-green" : "text-yellow-300") : "text-bunker-muted"}`}>
-              {mlActive ? `%${Math.round(Number(c.ml_hit_probability) * 100)}` : "—"}
+            <p className="mt-1 font-mono text-sm font-bold text-bunker-muted" title={ML_PROB_TITLE}>
+              {formatMlProbability(c.ml_hit_probability)}
             </p>
           </div>
           <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 px-3 py-2 text-center">

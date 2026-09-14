@@ -32,6 +32,10 @@ _monitoring_state = {
     "history": [],                # son bildirim geçmişi (yeni -> eski)
     "pending_targets": {},        # symbol -> {"expected": float, "horizon_minutes": int, "set_at": epoch}
     "candidate_streak": {},       # symbol -> ardışık aday tarama sayısı (debounce)
+    # D-07 (2026-09-14): symbol -> son YENİ bildirimin taban fiyatı.
+    # "Hiçbir şey değişmedi" durumunu yakalamak için (zaman kapıları görmez).
+    "notified_prices": {},
+    "refire_blocked": 0,          # D-07: fiyat değişmediği için bastırılan yeniden tetikleme
     "risk_off": False,            # piyasa rejimi RISK_OFF
     "risk_off_unknown": False,    # F-14: referans verisi yetersiz → rejim BİLİNMİYOR
     "_db_latencies": [],              # notify query gecikmeleri (diagnostics icin, 2026-09-07) (gözlem bayrağı, eşiği etkilemez — 2026-09-04)
@@ -43,6 +47,14 @@ _monitoring_state = {
 SCAN_INTERVAL_SEC = 60.0
 HISTORY_LIMIT = 60
 NOTIFY_COOLDOWN_SEC = 300.0  # aynı sembol için tekrar bildirim engeli (5 dk)
+# D-07 (2026-09-14): yeniden tetikleme için ASGARİ fiyat hareketi (YÜZDE).
+# Zaman kapıları (cooldown + ufuk) "değişen bir şey var mı" sorusunu SORMAZ;
+# donmuş/likit olmayan sembolde aynı fiyattan tekrar tekrar bildirim üretir.
+# Varsayılan = gidiş-dönüş maliyeti (%0.35): kâr ettirmeyecek bir hareket
+# "yeni sinyal" sayılmaz. Kanıt: 88 ardışık çiftte 26 tekrarı bastırır,
+# hiçbir TAMAMEN'i kaybettirmez (TAMAMEN oranı %8.0 -> %11.3).
+MONITORING_REFIRE_MIN_MOVE_PCT = float(
+    os.getenv("MONITORING_REFIRE_MIN_MOVE_PCT", str(config.round_trip_cost() * 100)))
 _loop_task = None
 # Manuel (/api/monitoring/scan) ile arka plan döngüsü aynı anda taramasın diye
 # ortak kilit — çift tarama/çift journal/state yarışını önler (2026-09-04).
@@ -62,6 +74,22 @@ async def _locked_state():
 # sayacı / bildirim cooldown kaybolmasın diye her tarama sonunda JSON olarak
 # yazılır, loop başlarken geri yüklenir (2026-09-04, hibrit sistem).
 _STATE_SETTING_KEY = "monitoring_runtime_state"
+
+
+def _score_is_saturated(row: dict) -> bool:
+    """Panel skoru cap yuzunden 100'a KIRPILMIS mi? (D-08, 2026-09-14).
+
+    `normalize_score` sert kirpar: raw >= cap -> tam 100.00. Bu durumda
+    gosterilen skor SIRALAMA bilgisi tasimaz (104 tespitin 100'u 100.00).
+    Bayrak yalnizca GORUNURLUK icindir; esik/hedef davranisi degismez.
+    """
+    raw = row.get("raw_score")
+    if raw is None:
+        return False
+    try:
+        return float(raw) >= float(_row_norm_cap(row))
+    except (TypeError, ValueError):
+        return False
 
 
 def normalize_score(raw_score: float) -> float:
@@ -103,6 +131,11 @@ async def _persist_runtime_state() -> None:
             "notified_symbols": _notified_wall_from_mono(_monitoring_state["notified_symbols"]),
             "watchlist_seen_at": _monitoring_state["watchlist_seen_at"],
             "candidate_streak": _monitoring_state["candidate_streak"],
+            "notified_prices": _monitoring_state["notified_prices"],
+            "refire_blocked": int(_monitoring_state.get("refire_blocked", 0)),
+            "refire_min_move_pct": MONITORING_REFIRE_MIN_MOVE_PCT,
+            "notified_prices": _monitoring_state["notified_prices"],
+            "refire_blocked": int(_monitoring_state.get("refire_blocked", 0)),
             "risk_off": bool(_monitoring_state["risk_off"]),
             # M1/P2 (R4-11): rejim "BİLİNMİYOR" bayrağı da kalıcılaştırılır.
             "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
@@ -131,6 +164,8 @@ async def restore_runtime_state() -> None:
                     payload.get("notified_symbols"))
                 _monitoring_state["watchlist_seen_at"] = payload.get("watchlist_seen_at") or {}
                 _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
+                _monitoring_state["notified_prices"] = payload.get("notified_prices") or {}
+                _monitoring_state["refire_blocked"] = int(payload.get("refire_blocked", 0) or 0)
                 _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
                 # M1/P2 (R4-11): BİLİNMİYOR bayrağı geri yüklenir (restart sonrası
                 # ilk taramaya kadar "rejim biliniyor" yanılsaması olmasın).
@@ -547,6 +582,39 @@ async def _flush_deferred_push():
         logger.info("Monitoring: %d bayat (TTL dolmuş) ertelenen push düşürüldü", dropped)
 
 
+# --- D-05 (2026-09-14): ticker fiyati tazelik dogrulamasi OLMADAN kullanilmaz ---
+# `market.get_ticker()` onbellekten BAYAT fiyat dondurebiliyor; bildirime bayat
+# fiyat + taze zaman damgasi yaziliyordu (olcum: 13.09 ARKTRY tabloda 10,26,
+# ayni anda gercek mum ~7,0; gun araligi 5,95–9,94). MFE/touched ise adayin kendi
+# fiyatiyla hesaplaniyor (velocity.py:873) -> ekrandaki fiyat ile olcum tabani
+# ayrisiyordu. Tazelik kapisi precedent'i: auto_paper.py:219.
+TICKER_MAX_AGE_SEC = float(getattr(config, "MONITORING_TICKER_MAX_AGE_SEC", 60))
+# Yalnizca log: taze ama aday fiyattan cok sapmis ticker'i gormek icin.
+TICKER_DIVERGENCE_WARN_PCT = 25.0
+
+
+def _ticker_price(symbol: str) -> float | None:
+    """Tazeligi DOGRULANMIS ticker fiyati; degilse None (bayat fiyat dondurmez)."""
+    if not market:
+        return None
+    try:
+        ticker = market.get_ticker(symbol)
+    except Exception:
+        return None
+    if not ticker:
+        return None
+    try:
+        if not market.ticker_freshness(symbol, max_age_sec=TICKER_MAX_AGE_SEC).get("fresh"):
+            return None
+    except Exception:
+        return None
+    try:
+        price = float(ticker.get("last_price") or 0)
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
 def _build_notification(sym, c, settings, first_price: float | None = None) -> dict:
     """Zengin bildirim içeriği: sembol, tespit zamanı, %potansiyel, anlık ve beklenen fiyat.
 
@@ -560,8 +628,16 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     if first_price is not None:
         base_price = first_price
     else:
-        ticker = market.get_ticker(sym)
-        base_price = float(ticker.get("last_price", price)) if ticker else price
+        # D-05: tazeligi dogrulanmis ticker YOKSA adayin kendi fiyati.
+        # MFE/touched de `candidate.price` uzerinden olculuyor -> tek taban.
+        ticker_price = _ticker_price(sym)
+        base_price = ticker_price if ticker_price else price
+        if ticker_price and price > 0:
+            divergence = abs(ticker_price - price) / price * 100
+            if divergence > TICKER_DIVERGENCE_WARN_PCT:
+                logger.warning(
+                    "[monitoring] ticker/aday fiyat ayrisimi %.1f%%: %s ticker=%s aday=%s",
+                    divergence, sym, ticker_price, price)
     if base_price <= 0:
         base_price = price
     expected_price = base_price * (1 + target / 100) if base_price > 0 else 0.0
@@ -770,11 +846,25 @@ async def _notify(candidates_list, settings) -> list:
             if now - float(pending.get("set_at", 0)) < horizon_sec:
                 continue
             _monitoring_state["pending_targets"].pop(sym, None)
+        # D-07: fiyat DEGISTI mi? Zaman kapıları doldu ama fiyat aynıysa
+        # bu "yeni sinyal" değil, aynı sinyalin tekrarıdır (donmuş fiyat /
+        # likit olmayan sembol). Taban fiyat aynı kuraldan: taze ticker,
+        # yoksa adayın kendi fiyatı (D-05 ile aynı tek taban).
+        cand_px = float(c.get("price") or 0)
+        tick_px = _ticker_price(sym)
+        base_px = tick_px if tick_px else cand_px
+        last_px = float(_monitoring_state["notified_prices"].get(sym) or 0)
+        if last_px > 0 and base_px > 0 and (
+                abs(base_px - last_px) / last_px * 100 < MONITORING_REFIRE_MIN_MOVE_PCT):
+            _monitoring_state["refire_blocked"] = int(_monitoring_state.get("refire_blocked", 0)) + 1
+            continue
         notif = _build_notification(sym, c, settings)
         notif["updated"] = False
         new_entries.append(notif)
         notified.append(notif)
         _monitoring_state["notified_symbols"][sym] = now_mono
+        if base_px > 0:
+            _monitoring_state["notified_prices"][sym] = base_px
         _monitoring_state["candidate_streak"].pop(sym, None)
         expected_price = float(notif.get("expected_price") or 0)
         horizon_minutes = int(c.get("horizon_minutes") or 5)
@@ -787,6 +877,10 @@ async def _notify(candidates_list, settings) -> list:
         if len(_monitoring_state["notified_symbols"]) > 500:
             for k in sorted(_monitoring_state["notified_symbols"], key=_monitoring_state["notified_symbols"].get)[:-250]:
                 _monitoring_state["notified_symbols"].pop(k, None)
+        # D-07: fiyat geçmişi de sınırlı (sonsuz büyüme yok).
+        if len(_monitoring_state["notified_prices"]) > 500:
+            for k in list(_monitoring_state["notified_prices"])[:-250]:
+                _monitoring_state["notified_prices"].pop(k, None)
     # Yeni bildirimleri DB'ye kaydet — M1/P1 (R2-06/R2-19): `sent_via_push` artık
     # GERÇEK teslimi yansıtır. Varsayılan False (henüz push denenmedi/teslim
     # edilmedi); yalnızca push gerçekten ulaşırsa mark_monitoring_push_sent ile
@@ -891,9 +985,9 @@ def _check_pending_targets():
         set_at = float(info.get("set_at", 0))
         expired = now - set_at >= horizon_sec
         price = None
+        # D-05: bayat ticker ile yanlis "hedefe ulasildi" uretme.
         try:
-            ticker = market.get_ticker(sym) if market else None
-            price = float(ticker.get("last_price") or 0) if ticker else None
+            price = _ticker_price(sym)
         except Exception:
             price = None
         expected = float(info.get("expected") or 0)
@@ -1254,11 +1348,9 @@ async def monitoring_active_notification(symbol: str):
     # Canlı fiyat (ticker): hedef kontrolü _check_pending_targets ile aynı
     # ölçütle — panel ufuk dolana kadar kalır, hedefe ulaşıldıysa durum döner.
     current_price = None
+    # D-05: tazeligi dogrulanmamis ticker None sayilir.
     try:
-        ticker = market.get_ticker(sym) if market else None
-        current_price = float(ticker.get("last_price") or 0) if ticker else None
-        if not current_price or current_price <= 0:
-            current_price = None
+        current_price = _ticker_price(sym)
     except Exception:
         current_price = None
     target_hit = bool(current_price and expected > 0 and current_price >= expected)
@@ -1347,6 +1439,9 @@ async def report_notifications(limit: int = 200, day: str = None):
             "price": price,
             "expected_price": row.get("expected_price"),
             "mfe_pct": mfe_pct,
+            # D-06: MFE tepe; exit/net gerçekleşen çıkış ve maliyet sonrası net.
+            "exit_pct": (float(row["exit_pct"]) if row.get("exit_pct") is not None else None),
+            "net_pct": (float(row["net_pct"]) if row.get("net_pct") is not None else None),
             "touched_target": touched,
             "status": status,
             "mode": row.get("mode"),
@@ -1355,6 +1450,10 @@ async def report_notifications(limit: int = 200, day: str = None):
             "sent_via_push": row.get("sent_via_push"),
             "candidate_id": row.get("candidate_id"),
             "ml_hit_probability": row.get("ml_hit_probability"),
+            # D-08: doygunlukta siralama bilgisi panel skordan KAYBOLUR
+            # (100'a kirpilir). Ham skor + kirpilma bayragi tasinir.
+            "raw_score": (float(row["raw_score"]) if row.get("raw_score") is not None else None),
+            "saturated": _score_is_saturated(row),
         })
     counts = {"TAMAMEN BAŞARILI": 0, "BAŞARILI": 0, "KISMİ": 0,
               "BAŞARISIZ": 0, "BEKLİYOR": 0, "ÖLÇÜLEMEDİ": 0}

@@ -305,6 +305,10 @@ async def init_db():
         # kalıcı "reopen" anahtarı. `notification_id` (bigint) string id taşıyamaz;
         # bu TEXT kolon reopen churn korumasını taşır.
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS notification_key TEXT")
+        # D-06 (2026-09-14): MFE ulasilamaz bir TEPE. `exit_pct` ufuk sonundaki
+        # kapanis (gerceklestirilebilir), `net_pct` gidis/donus maliyeti dusulmus hali.
+        conn.execute("ALTER TABLE velocity_candidates ADD COLUMN IF NOT EXISTS exit_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE velocity_candidates ADD COLUMN IF NOT EXISTS net_pct DOUBLE PRECISION")
         # V-04: MACD kanıt şeması artık OKUMA yolunda değil, açılışta bir kez
         # hazırlanır (istatistik uçları DDL/INSERT/COMMIT yapmaz).
         _ensure_macd_evidence_schema(conn)
@@ -2860,7 +2864,12 @@ async def get_pending_velocity_candidates(now=None, limit=100):
     return await _run_db(op)
 
 
-async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_target, details, force=False):
+async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_target, details,
+                                            force=False, exit_pct=None, net_pct=None):
+    """D-06: `exit_pct` (ufuk sonu kapanis) ve `net_pct` (maliyet sonrasi) de yazar.
+
+    Ikisi de opsiyonel: None gelirse kolon guncellenmez (geriye donuk uyumluluk).
+    """
     def op(conn):
         where = "WHERE candidate_id=?" + ("" if force else " AND status='pending'")
         # outcome_details taramada m5_pattern/m5_pattern_ok taşıyor; üzerine
@@ -2870,10 +2879,17 @@ async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_ta
                                  (candidate_id,)).fetchone()
         prior = _json_value(existing[0], {}) if existing else {}
         merged = {**(prior or {}), **(details or {})}
+        extra_sql, extra_vals = "", []
+        if exit_pct is not None:
+            extra_sql += ", exit_pct=?"
+            extra_vals.append(float(exit_pct))
+        if net_pct is not None:
+            extra_sql += ", net_pct=?"
+            extra_vals.append(float(net_pct))
         cur = conn.execute(f"""UPDATE velocity_candidates SET status='evaluated', evaluated_at=?, mfe_pct=?,
-            touched_target=?, outcome_details=? {where}""",
+            touched_target=?, outcome_details=?{extra_sql} {where}""",
             (time.time(), float(mfe_pct), bool(touched_target),
-             _json_safe_dumps(merged, ensure_ascii=False, default=str), candidate_id))
+             _json_safe_dumps(merged, ensure_ascii=False, default=str), *extra_vals, candidate_id))
         changed = cur.rowcount
         conn.commit(); return changed > 0
     return await _run_db(op)
@@ -3358,7 +3374,8 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
             placeholders = ",".join(["%s"] * len(symbols))
             candidate_rows = conn.execute(
                 "SELECT candidate_id, symbol, target_pct, passes, status, mfe_pct,"
-                " touched_target, created_at, ml_target_pct, ml_hit_probability"
+                " touched_target, created_at, ml_target_pct, ml_hit_probability,"
+                " exit_pct, net_pct, velocity_score"
                 f" FROM velocity_candidates WHERE symbol IN ({placeholders})"
                 " AND created_at >= %s AND created_at <= %s",
                 symbols + [low, high]).fetchall()
@@ -3390,6 +3407,13 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
                 item['candidate_id'] = best.get('candidate_id')
                 item['candidate_status'] = best.get('status')
                 item['mfe_pct'] = best.get('mfe_pct')
+                # D-08: panel skoru cap'ta 100'a KIRPILIR; ham skor kirpilmaz.
+                # Doygunlukta (%96'si 100.00) gercek sirayi yalnizca bu verir.
+                item['raw_score'] = (float(best['velocity_score'])
+                                     if best.get('velocity_score') is not None else None)
+                # D-06: gerceklesen cikis + maliyet sonrasi net (MFE'nin iyimserligini gosterir).
+                item['exit_pct'] = float(best['exit_pct']) if best.get('exit_pct') is not None else None
+                item['net_pct'] = float(best['net_pct']) if best.get('net_pct') is not None else None
                 item['touched_target'] = bool(best.get('touched_target')) if best.get('touched_target') is not None else None
                 item['candidate_target_pct'] = best.get('target_pct')
                 item['candidate_passes'] = bool(best.get('passes')) if best.get('passes') is not None else None
@@ -3399,6 +3423,9 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
                 item['candidate_id'] = None
                 item['candidate_status'] = None
                 item['mfe_pct'] = None
+                item['exit_pct'] = None
+                item['net_pct'] = None
+                item['raw_score'] = None
                 item['touched_target'] = None
                 item['candidate_target_pct'] = None
                 item['candidate_passes'] = None

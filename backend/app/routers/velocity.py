@@ -874,10 +874,15 @@ async def velocity_learning_loop():
                 if entry <= 0:
                     continue
                 mfe_pct = _mfe_from_window(window, entry)
+                # D-06: gerçekleşen çıkış + maliyet sonrası net (MFE'ye EK, yerine DEĞİL).
+                exit_pct = _exit_pct_from_window(window, entry)
+                net_pct = (exit_pct - round_trip_cost_pct()) if exit_pct is not None else None
                 touched = mfe_pct >= float(candidate["target_pct"])
                 ok = await database.mark_velocity_candidate_evaluated(
                     candidate["candidate_id"], mfe_pct=round(mfe_pct, 4),
                     touched_target=touched,
+                    exit_pct=(round(exit_pct, 4) if exit_pct is not None else None),
+                    net_pct=(round(net_pct, 4) if net_pct is not None else None),
                     details={"window_bars": len(window), "entry": entry, "target_pct": candidate["target_pct"]})
                 if ok:
                     measured += 1
@@ -1580,6 +1585,28 @@ def _mfe_from_window(window, entry: float) -> float | None:
     if not window or entry is None or float(entry) <= 0:
         return None
     return (max(float(r[2]) for r in window) / float(entry) - 1) * 100
+
+
+def _exit_pct_from_window(window, entry: float) -> float | None:
+    """Penceredeki SON kapanmış mumun ``close``'undan gerçekleşen çıkış (%).
+
+    D-06 (2026-09-14): MFE ulaşılamaz bir TEPE'dir — "hedefe dokundu" demek için
+    doğru olsa da "kazandık" demek için yanıltıcıdır. Bu ölçüm "sinyali al, ufuk
+    sonunda kapanıştan çık" kuralının getirisidir: gerçekleştirilebilir ve
+    ileriye dönük bilgi içermez. Aynı pencere (`_post_signal_window`) kullanılır.
+    """
+    if not window or entry is None or float(entry) <= 0:
+        return None
+    return (float(window[-1][4]) / float(entry) - 1) * 100
+
+
+def round_trip_cost_pct() -> float:
+    """Gidiş-dönüş maliyet (iki bacak komisyon + iki bacak slippage), YÜZDE.
+
+    Tek kaynak `config.round_trip_cost()` (kesir) -> yüzde.
+    -> (0.0015 + 0.00025) * 2 * 100 = %0.35
+    """
+    return float(config.round_trip_cost()) * 100
 
 
 def dynamic_target_pct(score: float, base_target_pct: float,

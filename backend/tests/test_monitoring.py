@@ -20,6 +20,10 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         monitoring._monitoring_state["notified_symbols"] = {}
         monitoring._monitoring_state["candidate_streak"] = {}
         monitoring._monitoring_state["pending_targets"] = {}
+        # D-07: yeniden tetikleme kapısı da testler arasında sıfırlanır
+        # (aksi halde bir testin fiyatı diğerinin kapısını kapatır).
+        monitoring._monitoring_state["notified_prices"] = {}
+        monitoring._monitoring_state["refire_blocked"] = 0
         monitoring._monitoring_state["risk_off"] = False
 
     async def test_notify_respects_min_score_and_min_target(self):
@@ -222,7 +226,14 @@ class MonitoringHelpersTests(unittest.IsolatedAsyncioTestCase):
             def get_ticker(self, sym):
                 return {"last_price": "12.5"}
 
-        with patch.object(market, "get_ticker", FakeMarket().get_ticker):
+            # D-05: tazelik dogrulamasi eklendigi icin fake market
+            # `ticker_freshness` de saglamak zorunda.
+            def ticker_freshness(self, sym, max_age_sec=None):
+                return {"fresh": True, "age_sec": 0.0, "max_age_sec": max_age_sec}
+
+        _fake_market = FakeMarket()
+        with patch.object(market, "get_ticker", _fake_market.get_ticker), \
+             patch.object(market, "ticker_freshness", _fake_market.ticker_freshness):
             n = monitoring._build_notification(
                 "XYZTRY", {"velocity_score": 3.1, "target_pct": 4.0, "price": 12.0,
                            "horizon_minutes": 5, "mode": "trend_devam"},
@@ -261,6 +272,10 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         monitoring._monitoring_state["notified_symbols"] = {}
         monitoring._monitoring_state["candidate_streak"] = {}
         monitoring._monitoring_state["pending_targets"] = {}
+        # D-07: yeniden tetikleme kapısı da testler arasında sıfırlanır
+        # (aksi halde bir testin fiyatı diğerinin kapısını kapatır).
+        monitoring._monitoring_state["notified_prices"] = {}
+        monitoring._monitoring_state["refire_blocked"] = 0
         monitoring._monitoring_state["risk_off"] = False
         monitoring._deferred_push.clear()
 
@@ -365,7 +380,7 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         async def fake_pending(sym):
             return dict(row)
 
-        with patch.object(database, "get_pending_monitoring_notification", side_effect=fake_pending),              patch.object(monitoring.market, "get_ticker", return_value={"last_price": 102.5}):
+        with patch.object(database, "get_pending_monitoring_notification", side_effect=fake_pending),              patch.object(monitoring.market, "get_ticker", return_value={"last_price": 102.5}),              patch.object(monitoring.market, "ticker_freshness",                           return_value={"fresh": True, "age_sec": 0.0}):
             result = await monitoring.monitoring_active_notification("BTCTRY")
         self.assertTrue(result["active"])
         self.assertEqual(result["score"], 62.5)
@@ -556,6 +571,69 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
        
         self.assertEqual(len(result), 1)
         self.assertTrue(result[0].get("updated"))
+
+
+class MonitoringTickerFreshnessTests(unittest.TestCase):
+    """D-05 (2026-09-14): bildirim fiyatı BAYAT ticker'dan gelmemeli.
+
+    Kök neden: `_build_notification`, `market.get_ticker()["last_price"]`'ı tazelik
+    doğrulaması OLMADAN kullanıyordu → bayat fiyat + taze zaman damgası yazılıyordu
+    (ölçüm: 13.09 ARKTRY tabloda 10,26, aynı anda gerçek mum ~7,0). Ayrıca
+    MFE/touched adayın kendi fiyatıyla hesaplandığı için ekrandaki fiyat ile ölçüm
+    tabanı ayrışıyordu. Düzeltme: tazeligi doğrulanmış ticker yoksa aday fiyatı.
+    """
+
+    @staticmethod
+    def _fake_market(last_price, fresh):
+        class _M:
+            def get_ticker(self, symbol):
+                return {"last_price": last_price}
+
+            def ticker_freshness(self, symbol, max_age_sec=None):
+                return {"fresh": fresh, "age_sec": 0.0 if fresh else 99_999.0,
+                        "max_age_sec": max_age_sec}
+        return _M()
+
+    CANDIDATE = {"symbol": "ARKTRY", "velocity_score": 2500.0, "target_pct": 4.0,
+                 "price": 7.0, "horizon_minutes": 5}
+
+    def test_stale_ticker_is_not_used(self):
+        from app.routers import monitoring
+        with patch.object(monitoring, "market", self._fake_market(10.26, fresh=False)):
+            notif = monitoring._build_notification("ARKTRY", dict(self.CANDIDATE), {})
+        # Bayat ticker (10,26) DEĞİL adayın kendi fiyatı (7,0) yazılmalı.
+        self.assertEqual(notif["price"], 7.0)
+        self.assertAlmostEqual(notif["expected_price"], 7.0 * 1.04, places=6)
+
+    def test_fresh_ticker_is_used(self):
+        from app.routers import monitoring
+        with patch.object(monitoring, "market", self._fake_market(7.05, fresh=True)):
+            notif = monitoring._build_notification("ARKTRY", dict(self.CANDIDATE), {})
+        self.assertEqual(notif["price"], 7.05)
+        self.assertAlmostEqual(notif["expected_price"], 7.05 * 1.04, places=6)
+
+    def test_missing_ticker_falls_back_to_candidate(self):
+        from app.routers import monitoring
+        with patch.object(monitoring, "market", None):
+            notif = monitoring._build_notification("ARKTRY", dict(self.CANDIDATE), {})
+        self.assertEqual(notif["price"], 7.0)
+
+    def test_ticker_price_helper_gates_on_freshness(self):
+        from app.routers import monitoring
+        with patch.object(monitoring, "market", self._fake_market(10.26, fresh=False)):
+            self.assertIsNone(monitoring._ticker_price("ARKTRY"))
+        with patch.object(monitoring, "market", self._fake_market(7.05, fresh=True)):
+            self.assertEqual(monitoring._ticker_price("ARKTRY"), 7.05)
+        with patch.object(monitoring, "market", None):
+            self.assertIsNone(monitoring._ticker_price("ARKTRY"))
+
+    def test_first_price_still_wins_on_update_path(self):
+        """Güncelleme yolunda ilk tespit fiyatı korunur (2026-09-06 davranışı)."""
+        from app.routers import monitoring
+        with patch.object(monitoring, "market", self._fake_market(9.99, fresh=True)):
+            notif = monitoring._build_notification("ARKTRY", dict(self.CANDIDATE), {},
+                                                   first_price=7.0)
+        self.assertEqual(notif["price"], 7.0)
 
 
 if __name__ == "__main__":
