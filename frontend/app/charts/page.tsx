@@ -441,7 +441,26 @@ export default function ChartsPage() {
         return () => {
             closed = true;
             if (retryTimer) clearTimeout(retryTimer);
-            if (ws) { ws.onmessage = null; ws.close(); }
+            if (ws) {
+                // Hijyen: handler'ları temizlemeden close etmek, CONNECTING
+                // durumundaki bağlantıda tarayıcının "closed before established"
+                // konsol uyarısına ek bir handler sızıntısı bırakırdı.
+                ws.onclose = null;
+                ws.onmessage = null;
+                ws.onerror = null;
+                // Uyarının kendisi de artık bastırılıyor: CONNECTING durumunda
+                // close() çağırmak tarayıcının "WebSocket is closed before the
+                // connection is established" satırını network seviyesinde
+                // bastırır (sembol/TF değişimi ve StrictMode çift çağrısında
+                // kaçış yoktu; gerçek bir bağlantı hatası DEĞİLDİR). Bağlantı
+                // kurulur kurulmaz kapatmak aynı sonucu sessizce verir.
+                if (ws.readyState === WebSocket.CONNECTING) {
+                    const pending = ws;
+                    ws.onopen = () => pending.close();
+                } else {
+                    ws.close();
+                }
+            }
         };
     }, [symbol, interval]);
 

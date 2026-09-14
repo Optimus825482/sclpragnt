@@ -78,5 +78,67 @@ class ChartForecastFeatureTests(unittest.TestCase):
         self.assertIn("jsonb_exists(data, 'indicators')", translated)
 
 
+class _FakeClock:
+    """`chart_forecast` icindeki `time` modulunun yerine gecer (salt okunur)."""
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def time(self) -> float:
+        return self.value
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+class ChartForecastFreshnessTests(unittest.TestCase):
+    """Tazelik kapisi 5m seriye gore olceklenmeli.
+
+    collect_forecast_features() D-04 geregi olusmakta olan 5m bari dusr, sonra
+    son KAPANMIS barin yasini olcer. 5m grid'de bu yas DOGAL OLARAK 0..300 sn
+    arasinda degisir. Sabit 180 sn esigiyle 5 dakikalik pencerenin yaklasik
+    2 dakikasinda canli sembolde bile None donuyor -> endpoint 503 (olculdu:
+    ~%40). Kapı artik bir bar araligi + pay (300 + 120) tolerans verir; amaci
+    yalnizca "olu sembol" yakalamaktir.
+    """
+
+    BAR_MS = 300_000
+
+    @classmethod
+    def _rows_for(cls, now_ms: int, n: int = 40, shift_ms: int = 0):
+        """`now_ms` anindaki 5m seri (son satir olusmakta olan bar)."""
+        last_open = now_ms - (now_ms % cls.BAR_MS) + shift_ms
+        rows = []
+        for i in range(n):
+            t = last_open - (n - 1 - i) * cls.BAR_MS
+            p = 100.0 + i * 0.01
+            rows.append([t, p, p + 0.2, p - 0.2, p, 1.0])
+        return rows
+
+    def test_live_symbol_passes_across_full_5m_window(self):
+        base = int(time.time() * 1000)
+        base -= base % self.BAR_MS
+        for offset in range(0, self.BAR_MS + 1, 10_000):
+            now_ms = base + offset + 1_000  # 5m barin icinde bir an
+            rows = self._rows_for(now_ms)
+            with patch.object(chart_forecast, "fetch_klines", new=_async_klines(rows)), \
+                    patch.object(chart_forecast, "time", new=_FakeClock(now_ms / 1000.0)):
+                features = _run(chart_forecast.collect_forecast_features("TESTTRY"))
+            self.assertIsNotNone(
+                features, f"offset={offset}ms: canli sembolde tazelik kapisi 503 uretti")
+
+    def test_dead_symbol_still_rejected(self):
+        now_ms = int(time.time() * 1000)
+        stale = self._rows_for(now_ms, shift_ms=-3 * 3600_000)  # 3 saat bayat
+        with patch.object(chart_forecast, "fetch_klines", new=_async_klines(stale)), \
+                patch.object(chart_forecast, "time", new=_FakeClock(now_ms / 1000.0)):
+            features = _run(chart_forecast.collect_forecast_features("TESTTRY"))
+        self.assertIsNone(features, "olu sembolde tahmin uretilmemeli")
+
+    def test_threshold_scales_with_bar_interval(self):
+        self.assertGreater(chart_forecast.INFERENCE_BAR_MS // 1000, 180)
+        self.assertEqual(chart_forecast.INFERENCE_BAR_MS, 300_000)
+
+
 if __name__ == "__main__":
     unittest.main()

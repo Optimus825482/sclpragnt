@@ -33,6 +33,15 @@ EVAL_INTERVAL_SEC = int(getattr(config, "CHART_FORECAST_EVAL_INTERVAL_SEC", 15))
 # Ufuk kapanışı sonrası hedef dokunuşu için ek gözlem penceresi (dk).
 HIT_GRACE_MINUTES = int(getattr(config, "LLM_FORECAST_HIT_GRACE_MINUTES", 0))
 
+# Cikarim serisi 5m KAPANMIS bar (ML-01/W3: model 5m kapanis barlarla egitildi).
+INFERENCE_BAR_MS = 300_000
+# Tazelik payi: son KAPANMIS 5m barin yasi DOGAL OLARAK 0..300 sn arasinda
+# degisir. Bu kapinin amaci "olu sembol" yakalamak oldugu icin tolerans
+# bir bar araligi + pay kadar olmalidir. Sabit 180 sn kullanilirken 5
+# dakikalik pencerenin ~2 dakikasinda (olculdu: ~%40) yas > 180 olusuyor ve
+# canli sembolde bile 503 donuyordu (D-04 sonrasi tazelik hatasi).
+FRESHNESS_GRACE_SEC = 120
+
 
 async def collect_forecast_features(symbol: str) -> dict | None:
     """Sembolün güncel 5m kapanış serisinden ML tahmin özelliklerini toplar.
@@ -48,13 +57,13 @@ async def collect_forecast_features(symbol: str) -> dict | None:
     except Exception:
         return None
     # D-04: oluşmakta olan 5m mumunu düşür (kalibrasyon kapanmış mum).
-    if int(rows[-1][0]) + 300_000 > now_ms:
+    if int(rows[-1][0]) + INFERENCE_BAR_MS > now_ms:
         rows = rows[:-1]
     if len(rows) < 30:
         return None
     # Güncel mum şartı: ölü/sembol dışı sembollerde tahmin üretme.
-    last_age_sec = (now_ms - (int(rows[-1][0]) + 299_999)) / 1000
-    if last_age_sec > 180:
+    last_age_sec = (now_ms - (int(rows[-1][0]) + INFERENCE_BAR_MS - 1)) / 1000
+    if last_age_sec > (INFERENCE_BAR_MS // 1000) + FRESHNESS_GRACE_SEC:
         return None
     closes = [float(r[4]) for r in rows]
     highs = [float(r[2]) for r in rows]
