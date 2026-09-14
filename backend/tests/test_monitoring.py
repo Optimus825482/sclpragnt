@@ -41,6 +41,9 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
              patch.object(monitoring, "_record_history", return_value=None), \
              patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
             result = await monitoring._notify(candidates, settings)
+            # B5 refactoru: push gönderimi artık _deliver_scan_notifications'ta
+            # (state kilidi dışı); _notify yalnızca bildirimleri üretir.
+            await monitoring._deliver_scan_notifications(result)
         # normalize_score(2.5, cap=40) = 6.25; min_score=2.0 → GOODTRY passes.
         # LOWTRY normalize(0.5)=1.25 < 2.0 → filtered.
         # LOWTARGETTRY normalize(2.5)=6.25 >= 2.0 but target=0.5 < min_target=2.0 → filtered.
@@ -83,11 +86,16 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
                  patch.object(monitoring, "deliver_web_push") as push, \
                  patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
+                monitoring._deferred_push.clear()
                 result = await monitoring._notify(candidates, settings)
+                # B5: erteleme artık teslim adımında (_deliver_scan_notifications)
+                await monitoring._deliver_scan_notifications(result)
         self.assertEqual(len(result), 1)
         self.assertTrue(result[0].get("quiet_hours"))
         push.assert_not_called()
         save_mock.assert_called_once()  # sessiz saatte DB kaydı (push değil) yapılır
+        self.assertEqual(len(monitoring._deferred_push), 1,
+                         "sessiz saatte push ertelenen kuyruğa düşmeli (B5)")
 
     async def test_notify_cooldown_prevents_resend(self):
         """Aynı sembol 5 dk içinde tekrar bildirilmemeli."""
@@ -481,23 +489,36 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(monitoring._deferred_push), 0)
 
     async def test_diagnostics_includes_ws_metrics(self):
-        """monitoring_diagnostics endpointi ws_health ve rate_limiter alanlarini icermeli."""
+        """monitoring_diagnostics endpointi ws_health ve rate_limiter alanlarini icermeli.
+
+        B7: uç artık admin kısıtlı — test admin kapısını pasifleştirir.
+        """
         from app.routers import monitoring
         self._reset_state()
         settings = {"enabled": True, "min_score": 2.0, "min_target_pct": 2.0,
                     "quiet_hours_start": None, "quiet_hours_end": None}
-       
+
         monitoring._monitoring_state["last_candidates"] = [
             {"symbol": "TESTTRY", "velocity_score": 5.0}
         ]
         with patch.object(monitoring.database, "get_monitoring_velocity_matches",
-                          new_callable=AsyncMock, return_value=[]):
-            result = await monitoring.monitoring_diagnostics()
-       
+                          new_callable=AsyncMock, return_value=[]), \
+             patch("app.main._require_admin", return_value=None):
+            result = await monitoring.monitoring_diagnostics(request=None)
+
         self.assertIn("ws_health", result)
         self.assertIn("rate_limiter", result)
         self.assertIn("freshness_sample", result)
         self.assertEqual(result["paper_only"], True)
+
+    async def test_diagnostics_requires_admin(self):
+        """B7: diagnostics admin olmadan çalışmaz (altyapı iç metrikleri)."""
+        from app.routers import monitoring
+        self._reset_state()
+        with patch("app.main._require_admin",
+                   side_effect=Exception("403")):
+            with self.assertRaises(Exception):
+                await monitoring.monitoring_diagnostics(request=None)
 
     async def test_rate_limiter_acquire(self):
         """_velocity_rate_acquire token azalinca beklemeli."""

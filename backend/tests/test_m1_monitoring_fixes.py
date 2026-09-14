@@ -227,6 +227,9 @@ class PushHonestyTests(unittest.IsolatedAsyncioTestCase):
              patch.object(monitoring.market, "get_ticker", return_value={"last_price": 10.0}), \
              patch.object(monitoring, "ws_manager", SimpleNamespace(broadcast=AsyncMock())):
             res = await monitoring._notify([dict(c) for c in cand], settings)
+            # B5: push gönderimi teslim adımına taşındı; dürüstlük testi teslimi
+            # de koşmalı (sent_via_push / mark_monitoring_push_sent davranışı).
+            await monitoring._deliver_scan_notifications(res)
         return res, saved, mark
 
     async def test_delivery_failure_keeps_sent_via_push_false(self):

@@ -106,7 +106,9 @@ async def _persist_runtime_state() -> None:
             "risk_off": bool(_monitoring_state["risk_off"]),
             # M1/P2 (R4-11): rejim "BİLİNMİYOR" bayrağı da kalıcılaştırılır.
             "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
-            "history": _monitoring_state["history"][:100],
+            # HISTORY_LIMIT ile aynı sınır (restore'da [:HISTORY_LIMIT] kesiliyor —
+            # yazım 100, okuma 60 farklı limanlarıydı; tek limana indirildi).
+            "history": _monitoring_state["history"][:HISTORY_LIMIT],
             "deferred_push": deferred,
         }
         await database.set_llm_setting(_STATE_SETTING_KEY, json.dumps(payload, default=str))
@@ -189,8 +191,10 @@ def _effective_min_score(settings) -> float:
 
     M1/P2 (R2-11/C2.3): alt sınır da kelepçelenir (negatif admin değeri tüm
     adayları geçirmesin). Aday KAPISI artık `_effective_min_raw_score`.
+    B6: `min_score=None` (varsayılana dönüş) → panel varsayılanı kullanılır.
     """
-    base = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
+    raw = settings.get("min_score")
+    base = float(raw) if raw is not None else float(config.MONITORING_MIN_SCORE_DEFAULT)
     return round(max(0.0, min(100.0, base)), 1)
 
 
@@ -207,14 +211,18 @@ def _effective_min_raw_score(settings) -> float:
 
     "Açık" belirleme: settings'te `min_score_explicit` işareti varsa o kullanılır
     (DB'den gelen ayarlar bu işareti taşır); yoksa `min_score` anahtarının
-    varlığına bakılır (testlerin/manuel sözlüklerin geriye dönük uyumu).
+    VAR OLUP None OLMADIĞINA bakılır (B6: `min_score: null` → açık eşik YOK,
+    varsayılan ham eşik devreye döner; testlerin/manuel sözlüklerin geriye
+    dönük uyumu korunur).
     """
     cap = float(config.MONITORING_SCORE_NORM_CAP)
     explicit = settings.get("min_score_explicit")
     if explicit is None:
-        explicit = "min_score" in settings
+        explicit = settings.get("min_score") is not None
     if explicit:
-        panel = max(0.0, min(100.0, float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))))
+        raw_panel = settings.get("min_score")
+        panel = max(0.0, min(100.0, float(
+            raw_panel if raw_panel is not None else config.MONITORING_MIN_SCORE_DEFAULT)))
         return round(panel / 100.0 * max(1e-9, cap), 4)
     return float(config.MONITORING_MIN_RAW_SCORE)
 
@@ -290,7 +298,9 @@ async def get_user_notification_settings() -> dict:
     try:
         settings_json = await database.get_llm_setting("monitoring_notification_settings", "{}")
         settings = json.loads(settings_json or "{}")
-        min_score = float(settings.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
+        # B6: min_score None olabilir (varsayılana dönüş) — float(None) patlamasın.
+        raw_min = settings.get("min_score")
+        min_score = float(raw_min) if raw_min is not None else float(config.MONITORING_MIN_SCORE_DEFAULT)
         return {
             "enabled": settings.get("enabled", True),
             "min_score": min_score,
@@ -364,6 +374,9 @@ async def update_monitoring_settings(payload: dict, request: Request):
     M1/P1 (R4-06): tip/aralık doğrulaması eklendi — `"abc"` → 500 DEĞİL 422;
     bozuk sessiz saatler deferral'ı sessizce kapatamaz; `min_target_pct`
     [MONITORING_TARGET_PCT_MIN, MAX] aralığına zorlanır.
+
+    B6: `"min_score": null` gönderilerek AÇIK panel eşiği kaldırılabilir —
+    aday kapısı varsayılan ham eşiğe (`MONITORING_MIN_RAW_SCORE`) döner.
     """
     from app.api_common import require_admin as _require_admin
     _require_admin(request)
@@ -376,12 +389,17 @@ async def update_monitoring_settings(payload: dict, request: Request):
 
     # --- Doğrulama (geçersiz girdi → 422, state BOZULMAZ) ---
     enabled = _coerce_bool(merged.get("enabled", True))
-    try:
-        min_score = float(merged.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail="min_score sayısal olmalı (0-100 panel)")
-    if not (0.0 <= min_score <= 100.0):
-        raise HTTPException(status_code=422, detail="min_score 0-100 aralığında olmalı")
+    # B6: min_score=None (veya açıkça null gönderilmiş) → eşik sıfırlanır.
+    min_score_reset = "min_score" in payload and payload["min_score"] is None
+    if min_score_reset:
+        min_score = None
+    else:
+        try:
+            min_score = float(merged.get("min_score", config.MONITORING_MIN_SCORE_DEFAULT))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="min_score sayısal olmalı (0-100 panel); varsayılana dönmek için null gönderin")
+        if not (0.0 <= min_score <= 100.0):
+            raise HTTPException(status_code=422, detail="min_score 0-100 aralığında olmalı")
     try:
         min_target = float(merged.get("min_target_pct", 2.0))
     except (TypeError, ValueError):
@@ -403,8 +421,10 @@ async def update_monitoring_settings(payload: dict, request: Request):
 
     settings = {
         "enabled": enabled,
-        "min_score": round(min_score, 4),
-        "min_score_explicit": True,   # admin açıkça set etti → kapı panel türetimi
+        # B6: None saklanabilir → ham eşik varsayılanına dönüş (tek yönlü
+        # kilit kaldırıldı; getter None'ı panel varsayılanı olarak çözer).
+        "min_score": round(min_score, 4) if min_score is not None else None,
+        "min_score_explicit": min_score is not None,
         "min_target_pct": min_target,
         "quiet_hours_start": quiet_start,
         "quiet_hours_end": quiet_end,
@@ -659,10 +679,8 @@ async def _notify(candidates_list, settings) -> list:
     new_entries = []     # Yeni bildirimler
     # N+1 önlemi: aday sembollerinin BEKLİYOR kayıtlarını tek toplu sorguyla çek
     # (2026-09-05). Eşik altı adaylar pending kontrolüne girmez; yine de tüm
-    # aday setini sorgulamak tek DB round-trip'idir.
-    # N+1 onlemi: aday sembollerinin BEKLIYOR kayitlarini tek toplu sorguyla cek
-    # (2026-09-05). Esik alti adaylar pending kontrolune girmez; yine de tum
-    # aday setini sorgulamak tek DB round-tripidir.
+    # aday setini sorgulamak tek DB round-trip'idir. (Kopyalanmış ikinci yorum
+    # bloğu kaldırıldı — küçük temizlik.)
     try:
         _t0 = time.time()
         pending_by_symbol = await database.get_pending_monitoring_notifications(
@@ -720,6 +738,12 @@ async def _notify(candidates_list, settings) -> list:
             # Eski kayitlar kalir - sinyal tarihcesi icin
             # Bildirim olarak da ekle (push için)
             notif = _build_notification(sym, c, settings, first_price=first_price)
+            # B2: `detected_at` DB kaydındaki İLK tespit zamanıyla eşitlenir;
+            # `_build_notification` taze zaman üretiyordu — sessiz saat kuyruğuna
+            # düşerse TTL hesabı gerçek yaşından uzun ömür verecekti.
+            orig_detected = float(existing_pending.get("detected_at") or 0)
+            if orig_detected > 0:
+                notif["detected_at"] = orig_detected
             notif["id"] = existing_pending["id"]
             notif["updated"] = True
             notified.append(notif)
@@ -742,8 +766,8 @@ async def _notify(candidates_list, settings) -> list:
         # Beklenen fiyata ulaşana kadar aynı sembolü tekrar bildirme
         pending = _monitoring_state["pending_targets"].get(sym)
         if pending:
-            horizon_ms = int(pending.get("horizon_minutes", 5) + 2) * 60
-            if now - float(pending.get("set_at", 0)) < horizon_ms:
+            horizon_sec = int(pending.get("horizon_minutes", 5) + 2) * 60
+            if now - float(pending.get("set_at", 0)) < horizon_sec:
                 continue
             _monitoring_state["pending_targets"].pop(sym, None)
         notif = _build_notification(sym, c, settings)
@@ -780,12 +804,31 @@ async def _notify(candidates_list, settings) -> list:
     # Sessiz saat bilgisi bildirim nesnesine işaretlenir (UI geçmişte görür).
     for n in notified:
         n["quiet_hours"] = bool(quiet)
-    # Push bildirimleri — sadece YENI bildirimler (guncellemeler her turda
-    # tetiklenmesin diye spam korumasi).
-    # VAPID anahtarı yoksa push hiç denenmez ve bildirim kaydına işlenir
-    # (kullanıcı push gelmediğini anlayabilir).
-    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    # B3: oturum geçmişi TÜM bildirimleri içersin (önceden yalnız yeniler
+    # alınıyordu; "güncellendi" bildirimleri geçmişte görünmüyordu).
+    if notified:
+        _monitoring_state["history"] = (notified + _monitoring_state["history"])[:HISTORY_LIMIT]
+    # B5: Push gönderimi, WS yayını ve otonom paper denemeleri STATE KİLİDİ
+    # DIŞINA taşındı (`_deliver_scan_notifications`) — ağırlıklı ağ I/O'su kilit
+    # altında GET /state ve GET /scan isteklerini saniyelerce blokluyordu.
+    return notified
+
+
+async def _deliver_scan_notifications(notified: list) -> None:
+    """Bildirim teslimi: push gönderimi, erteleme, WS yayını, otonom paper.
+
+    MUTLAKA `_locked_state()` DIŞINDA çağrılmalı (B5): web push ağ I/O'su ve
+    auto_paper DB/plan işlemleri state kilidini uzun süre tutmamalıdır.
+
+    Push yalnızca YENI bildirimlere gönderilir (güncellemeler her turda
+    tetiklenmesin diye spam koruması); WS yayını ise B3 ile TÜM bildirimleri
+    (yeni + güncelleme) kapsar.
+    """
+    if not notified:
+        return
     new_notifs = [n for n in notified if not n.get("updated")]
+    quiet = bool(notified[0].get("quiet_hours"))
+    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
     if new_notifs and not quiet and vapid_configured:
         for notif in new_notifs:
             ok = await _send_push(notif)
@@ -816,7 +859,7 @@ async def _notify(candidates_list, settings) -> list:
     # sorgu + hesaplamayı önlemek için yok sayılır, 2026-09-06).
     try:
         from app.routers.auto_paper import try_open_from_notification
-        for notif in new_entries:
+        for notif in new_notifs:
             try:
                 await try_open_from_notification(notif)
             except Exception as exc:
@@ -825,13 +868,12 @@ async def _notify(candidates_list, settings) -> list:
         pass
     except Exception as exc:
         logger.warning("auto_paper toplu deneme hatası: %s", exc)
-    if new_notifs:
-        try:
-            await ws_manager.broadcast({"type": "monitoring_alert", "data": new_notifs})
-        except Exception as exc:
-            logger.warning("Monitoring WS broadcast hatasi: %s", exc)
-        _monitoring_state["history"] = (notified + _monitoring_state["history"])[:HISTORY_LIMIT]
-    return notified
+    try:
+        await ws_manager.broadcast({"type": "monitoring_alert", "data": notified})
+    except Exception as exc:
+        logger.warning("Monitoring WS broadcast hatasi: %s", exc)
+
+
 def _check_pending_targets():
     """Beklenen fiyata ulaşan sembolleri tespit et ve pending listesinden çıkar.
 
@@ -845,9 +887,9 @@ def _check_pending_targets():
     now = time.time()
     resolved = []
     for sym, info in list(pending.items()):
-        horizon_ms = int(info.get("horizon_minutes", 5) + 2) * 60
+        horizon_sec = int(info.get("horizon_minutes", 5) + 2) * 60
         set_at = float(info.get("set_at", 0))
-        expired = now - set_at >= horizon_ms
+        expired = now - set_at >= horizon_sec
         price = None
         try:
             ticker = market.get_ticker(sym) if market else None
@@ -866,7 +908,8 @@ def _risk_state_from_references() -> tuple[bool, bool]:
     """Piyasa rejimi: (risk_off, risk_off_unknown) — hafif yerel ölçüm.
 
     Referans semboller (BTC/ETH 1h) EMA25 üstündeyse yapıcı, değilse zayıf
-    rejim katkısı sayılır.
+    rejim katkısı sayılır. (B4: önceki kod `sum/25` hesaplayıp adına EMA
+    diyordu — gerçekte SMA idi; aşağıda standart EMA hesabı uygulanır.)
 
     F-14: referanslardan hiçbirinde yeterli veri YOKSA rejim HESAPLANAMAZ →
     `risk_off` BİLİNMİYOR kabul edilir (fail-open, eşik DEĞİŞTİRİLMEZ). Eskiden
@@ -881,9 +924,16 @@ def _risk_state_from_references() -> tuple[bool, bool]:
             closes = (bars or {}).get("closes") or []
             if len(closes) >= 25:
                 refs += 1
-                ema25 = sum(closes[-25:]) / 25
+                # B4: gerçek EMA25 — SMA (sum/25) ile karıştırılmıştı. Standart
+                # alpha=2/(span+1); hesap, mevcut serinin son 100 barına
+                # ısınmalı uygulanır (daha uzun geçmiş EMA'yı stabilize eder).
+                span = 25
+                alpha = 2.0 / (span + 1)
+                ema25 = float(closes[-100]) if len(closes) >= 100 else float(closes[0])
+                for close_val in closes[-99:] if len(closes) >= 100 else closes[1:]:
+                    ema25 = float(close_val) * alpha + ema25 * (1 - alpha)
                 # Fiyat EMA25 üstündeyse yapıcı/pozitif rejim katkısı.
-                if closes[-1] >= ema25:
+                if float(closes[-1]) >= ema25:
                     risk_score += 1
         if refs == 0:
             return False, True
@@ -984,6 +1034,12 @@ async def _run_scan() -> dict:
     now = time.time()
     for sym in all_watchlist:
         _monitoring_state["watchlist_seen_at"].setdefault(sym, now)
+
+    # B1: izleme listesinden TAMAMEN düşen sembollerin seen_at kaydı budanır —
+    # aksi halde sözlük (ve her taramada yazılan kalıcı JSON) sınırsız büyür.
+    for sym in list(_monitoring_state["watchlist_seen_at"]):
+        if sym not in all_watchlist:
+            _monitoring_state["watchlist_seen_at"].pop(sym, None)
 
     # Rejim: RISK_OFF bayrağı — hafif yerel ölçüm (BTC/ETH 1h trend).
     # 2026-09-04: bayrağın eşikle ilişkisi kaldırıldı (çarpan yok); yalnızca
@@ -1096,7 +1152,15 @@ async def monitoring_scan_trigger(request: Request):
         async with _scan_lock:
             async with _locked_state():
                 result = await _run_scan()
+        # B5: push/WS/otonom paper teslimi state kilidi DIŞINDA — yavaş push
+        # ağ I/O'su artık okuma uçlarını bloklamaz.
+        try:
+            await _deliver_scan_notifications(result["new_notifications"])
+        except Exception as exc:
+            logger.warning("monitoring bildirim teslimi (manuel tarama): %s", exc)
         async with _locked_state():
+            last_scan = _monitoring_state.get("last_scan_at")
+            next_in = max(0, int(SCAN_INTERVAL_SEC - (time.time() - float(last_scan)))) if last_scan else None
             return {
                 "paper_only": True,
                 "cached": False,
@@ -1114,6 +1178,8 @@ async def monitoring_scan_trigger(request: Request):
                 "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
                 **_threshold_fields(result["settings"]),
                 "loop_active": _loop_is_active(),
+                # Frontend poll hizalaması bu alanı okur; POST yanıtı eksikti.
+                "next_scan_in_sec": next_in,
             }
     except HTTPException:
         raise
@@ -1330,11 +1396,16 @@ async def report_notifications(limit: int = 200, day: str = None):
             "breakdown": day_breakdown, "overall": overall_breakdown}
 
 @router.get("/api/monitoring/diagnostics")
-async def monitoring_diagnostics():
+async def monitoring_diagnostics(request: Request):
     """Diagnostic deep-dive: compare target_pct vs actual MFE across all records.
     
     Returns per-symbol breakout so user can spot where the success rate is lost.
+
+    B7: WS/bellek/rate-limit metrikleri ALTYAPI İÇ bilgileridir — uç artık
+    YALNIZ admin erişimlidir (önceden kimlik doğrulamasız açıktı).
     """
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
     settings = await get_user_notification_settings()
     min_score = _effective_min_score(settings)
     # R4-04: genel tablo da cap'siz okunur (limit=None).
@@ -1511,11 +1582,20 @@ async def reset_monitoring_notifications(request: Request):
 
     Reset sonrasi ayni semboller yeniden bildirilebilir; spam korumasini
     atlatabilmek isteyen her kimlik yetkili olmamalidir (2026-09-04).
+
+    Kapsam genişletildi: yalnız `notified_symbols` değil, cooldown'a bağlı TÜM
+    geçici durumlar temizlenir (pending_targets, debounce sayacı, sessiz saat
+    push kuyruğu) — aksi halde reset sonrası eski bekleyen hedefler/kuyruk
+    yeni bildirimleri yine engelliyordu.
     """
     from app.api_common import require_admin as _require_admin
     _require_admin(request)
     async with _locked_state():
         _monitoring_state["notified_symbols"].clear()
+        _monitoring_state["pending_targets"].clear()
+        _monitoring_state["candidate_streak"].clear()
+        _deferred_push.clear()
+        await _persist_runtime_state()
     await log_user_action(None, None, "monitoring", "MONITORING_NOTIFICATIONS_RESET",
                           details={}, request=request)
     return {"ok": True, "message": "Bildirim sıfırlandı"}
@@ -1537,28 +1617,33 @@ async def monitoring_notification_history():
 
 async def monitoring_background_loop():
     """Sunucu tarafı sürekli tarama: PWA kapalıyken bile taramayı ve push
-    bildirimlerini sürdürür. Hemen başlar, 20sn beklemez. Veri hazır değilse
-    scan_one boş döner ama API her zaman yanıt verir (2026-09-07)."""
+    bildirimlerini sürdürür. Hemen başlar (B8: ayrı bir başlangıç taraması
+    YOK — döngünün ilk turu zaten hemen koşar; eskiden açılışta çift tarama
+    yapılıyordu). Veri hazır değilse scan_one boş döner ama API her zaman
+    yanıt verir (2026-09-07)."""
     logger.info("Monitoring arka plan taraması başladı (tur=%ss)", SCAN_INTERVAL_SEC)
     await restore_runtime_state()
-    # İlk taramayı hemen yap (başlangıç gecikmesi kaldırıldı 2026-09-07)
-    try:
-        async with _scan_lock:
-            async with _locked_state():
-                await _run_scan()
-    except Exception as exc:
-        logger.debug("monitoring ilk tarama (başlangıç): %s", exc)
     while True:
+        result = None
         try:
             async with _scan_lock:
                 async with _locked_state():
-                    await _run_scan()
+                    result = await _run_scan()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("monitoring loop turu başarısız: %s", exc)
             await asyncio.sleep(SCAN_INTERVAL_SEC)
             continue
+        # B5: bildirim teslimi (push/WS/otonom paper) state kilidi DIŞINDA —
+        # yavaş push ağ I/O'su GET /state ve GET /scan isteklerini bloklamaz.
+        if result:
+            try:
+                await _deliver_scan_notifications(result["new_notifications"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("monitoring bildirim teslimi: %s", exc)
         # Sessiz saat bittiyse ertelenen push'ları gönder (scan kilidinden bağımsız)
         try:
             await _flush_deferred_push()
