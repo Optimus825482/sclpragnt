@@ -364,13 +364,22 @@ class Config:
     MACD_EARLY_ADAPTIVE_COOLDOWN = os.getenv("MACD_EARLY_ADAPTIVE_COOLDOWN", "false").lower() == "true"
 
     @classmethod
+    def round_trip_cost(cls) -> float:
+        """Gidiş-dönüş maliyet: iki bacak komisyon + iki bacak slippage (KESİR).
+
+        D-06 (2026-09-14) tek kaynak: `min_net_exit_pct` VE velocity gerçekleşen
+        çıkış metriği aynı sayıyı kullanır; kopya formül üretilmez.
+        -> (0.0015 + 0.00025) * 2 = 0.0035 (%%0.35)
+        """
+        return cls.COMMISSION_PCT * 2 + cls.ESTIMATED_SLIPPAGE_PCT * 2
+
+    @classmethod
     def min_net_exit_pct(cls, order_value: float | None = None) -> float:
         """Gross move needed to cover round-trip costs plus minimum net PnL."""
         value = float(order_value or cls.DEFAULT_ORDER_TRY)
         if value <= 0:
-            return cls.COMMISSION_PCT * 2 + cls.ESTIMATED_SLIPPAGE_PCT * 2
-        return (cls.COMMISSION_PCT * 2
-                + cls.ESTIMATED_SLIPPAGE_PCT * 2
+            return cls.round_trip_cost()
+        return (cls.round_trip_cost()
                 + cls.MIN_EXPECTED_NET_PNL_TRY / value)
 
 config = Config()

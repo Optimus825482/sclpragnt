@@ -39,6 +39,11 @@ def _reset_state():
     monitoring._monitoring_state["history"] = []
     monitoring._monitoring_state["risk_off"] = False
     monitoring._monitoring_state["risk_off_unknown"] = False
+    # D-07: yeniden tetikleme kapısı da sıfırlanır. Aksi halde aynı sembolü
+    # aynı fiyatla kullanan ikinci test, kapı tarafından bastırılır
+    # (kapı doğru çalışıyor; test izolasyonu eksikti).
+    monitoring._monitoring_state["notified_prices"] = {}
+    monitoring._monitoring_state["refire_blocked"] = 0
     monitoring._deferred_push.clear()
 
 
