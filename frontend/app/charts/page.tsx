@@ -272,6 +272,13 @@ export default function ChartsPage() {
     // oldest data" fırlatırdı. Artık karar `barsRef` üzerinden yapılır, updater
     // YOK; yan etki updater dışında, tam bir kez çalışır.
     const barsRef = useRef<Bar[]>([]);
+    // BAYAT YANIT KORUMASI (2026-09-16): `reloadKlines` için istek sırası.
+    // Sayfa `symbol="BTCTRY"` (useState varsayılanı) ile ilk render olur ve BTC
+    // fetch'i BAŞLAR; mount efekti sembolü gerçek değere (ör. NEARTRY) çevirir.
+    // BTC yanıtı NEARTRY'den SONRA dönerse, koruma olmadığında `setData` BTC'yi
+    // NEARTRY'nin ÜZERİNE yazardı → "grafik ilk açılışta BTC gösteriyor". Bu sayaç
+    // yalnızca EN SON isteğin verisini uygular.
+    const klineReqIdRef = useRef(0);
     // GÖRÜNÜM KİLİDİ (2026-09-16): `fitContent()` 10 sn'lik her HTTP turunda
     // çağrılıyordu → kullanıcının kaydırması/yakınlaştırması sürekli sıfırlanıyor
     // ve canlı güncellemeler "grafik zıplıyor" gibi görünüyordu. Artık yalnızca
@@ -381,10 +388,13 @@ export default function ChartsPage() {
     // olur, erişilemediği ağlarda (bulut sunucu/VPN) en az 10 sn'de bir güncellenir.
     const reloadKlines = useCallback(async () => {
         if (!symbol) { setLoading(false); return; }
+        // BAYAT YANIT KORUMASI: yalnız EN SON isteğin yanıtı uygulanır.
+        const requestId = ++klineReqIdRef.current;
         try {
             const res = await apiRequest(`${API_BASE}/api/market-klines/${symbol}?interval=${interval}&limit=200`);
             if (!res.ok) throw new Error(`kline HTTP ${res.status}`);
             const payload = await res.json();
+            if (requestId !== klineReqIdRef.current) return;   // bayat yanıt → uygulama
             const data = payload.candles || [];
             if (!candleRef.current) return;
             if (!data.length) {

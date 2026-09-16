@@ -122,12 +122,20 @@ function isDocumentRequest(request) {
   return request.destination === "document" || request.mode === "navigate";
 }
 
-// Next.js App Router'ın istemci-içi gezinme iskeleti (RSC payload) SÖZLEŞME DIŞI:
-// bu istekler önbelleğe alınırsa bir kez yazılır, sonraki gezinmelerde BAYAT RSC
-// döner → grafik eski sembolü (BTCTRY) gösterir, sonra görüntülenemez; yalnız tam
-// yenileme düzeltir. Bu yüzden RSC istekleri service worker'dan ÇIKARILIR
-// (ağa doğrudan gider; SW karışmaz).
-function isRscRequest(request) {
+function isStaticAssetRequest(request) {
+  return request.method === "GET" &&
+    new URL(request.url).pathname.startsWith("/_next/static/");
+}
+
+// Next.js App Router'ın istemci-içi gezinme iskeleti (RSC payload) ve diğer
+// uygulama fetch'leri (API dışı) service worker'dan ÇIKARILIR. Çok geniş bir
+// `eligible` kuralı RSC'yi bir kez önbelleğe alıp sonraki gezinmelerde BAYAT
+// yanıt döndürüyordu → grafik eski sembolü (BTCTRY) gösteriyor, sonra navigasyon
+// bozuluyor; yalnız tam yenileme düzeltiyordu. Bu yüzden SW yalnızca şunlara bakar:
+//   (1) document/navigation → network-first, çevrimdışı shell fallback
+//   (2) /_next/static/*    → stale-while-revalidate
+// Geri kalan HER ŞEY (RSC, API, manifest, ikon dışı GET) ağa doğrudan gider.
+function isRscOrAppDataRequest(request) {
   return request.method === "GET" &&
     (request.headers.get("RSC") === "1" ||
      request.headers.has("Next-Router-State-Tree"));
@@ -135,10 +143,9 @@ function isRscRequest(request) {
 
 self.addEventListener("fetch", function (event) {
   const url = new URL(event.request.url);
-  if (isRscRequest(event.request)) return;
-  const eligible = event.request.method === "GET" &&
-    url.origin === self.location.origin && !url.pathname.startsWith("/api/");
-  if (!eligible) return;
+  if (isRscOrAppDataRequest(event.request)) return;
+  if (url.origin !== self.location.origin) return;
+  if (event.request.method !== "GET") return;
 
   if (isDocumentRequest(event.request)) {
     // HTML: network-first. Always try the server so users get the newest
@@ -160,18 +167,23 @@ self.addEventListener("fetch", function (event) {
     return;
   }
 
-  // Static assets (_next hashed JS/CSS, images, manifest): stale-while-revalidate.
-  event.respondWith(caches.match(event.request).then(function (cached) {
-    const network = fetch(event.request).then(function (response) {
-      if (response && response.ok) {
-        const copy = response.clone();
-        caches.open(CACHE).then(function (cache) { return cache.put(event.request, copy); });
-      }
-      return response;
-    }).catch(function () {
-      // Ağ hatasında `cached` yoksa `undefined` döndürme → SW TypeError vermesin.
-      return cached || new Response("offline", { status: 503, statusText: "offline" });
-    });
-    return cached || network;
-  }));
+  if (isStaticAssetRequest(event.request)) {
+    // Static assets (_next hashed JS/CSS): stale-while-revalidate.
+    event.respondWith(caches.match(event.request).then(function (cached) {
+      const network = fetch(event.request).then(function (response) {
+        if (response && response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE).then(function (cache) { return cache.put(event.request, copy); });
+        }
+        return response;
+      }).catch(function () {
+        // Ağ hatasında `cached` yoksa `undefined` döndürme → SW TypeError vermesin.
+        return cached || new Response("offline", { status: 503, statusText: "offline" });
+      });
+      return cached || network;
+    }));
+    return;
+  }
+
+  // Diğer her şey (RSC, manifest, ikon, API-dışı GET): SW karışmasın.
 });
