@@ -378,17 +378,26 @@ async def auth_login(payload: dict, response: Response, request: Request):
     await log_user_action((user.get("username") or username).lower(), role, "auth", "LOGIN_SUCCESS",
                           target=(user.get("username") or username).lower(), request=request)
     cookie_secure = os.getenv("SCALPER_COOKIE_SECURE", "1") == "1"
-    if cookie_secure and request.url.scheme != "https":
+    # 2026-09-16: Uygulama TERS PROXY (Coolify/Traefik) arkasında çalışırken TLS
+    # proxy'de sonlanır ve backend her isteği düz http olarak görür. Bu yüzden
+    # uyarı `request.url.scheme`e bakınca YANLIŞ ALARM veriyordu ("SCALPER_COOKIE_SECURE=1
+    # ama scheme=http") — tarayıcı aslında https'te. Gerçek istemci şeması
+    # `X-Forwarded-Proto` içindedir. Cookie `secure` bayrağı GÜVENLİK için
+    # config'den (spoof edilebilir başlıktan değil) gelmeye devam eder; yalnızca
+    # UYARI doğru şemaya göre üretilir.
+    forwarded_proto = (request.headers.get("x-forwarded-proto", "") or "").split(",")[0].strip().lower()
+    effective_scheme = forwarded_proto or request.url.scheme
+    if cookie_secure and effective_scheme != "https":
         # Altyapı uyarısı (denetim maddesi): secure=1 + düz http (LAN erişimi)
         # kombinasyonunda tarayıcı oturum cookie'sini REDDEDER ve login
         # SESSİZCE döngüye girer. Ayarı değiştirmek yerine bir kez uyarı logla:
         # LAN için SCALPER_COOKIE_SECURE=0 (veya ters proxy ile https) gerekir.
         username_log = (user.get("username") or username)
         logger.warning(
-            "auth login: SCALPER_COOKIE_SECURE=1 ama istek scheme=%s — tarayıcı bu "
+            "auth login: SCALPER_COOKIE_SECURE=1 ama istemci şeması=%s — tarayıcı bu "
             "cookie'yi kaydetmeyecektir (secure flag). Düz http LAN erişiminde "
             "SCALPER_COOKIE_SECURE=0 kullanın veya https üzerinden erişin. "
-            "(kullanıcı=%s)", request.url.scheme, username_log)
+            "(kullanıcı=%s)", effective_scheme, username_log)
     response.set_cookie(security.SESSION_COOKIE,
                         security.create_session_token(username=user.get("username") or username, role=role,
                                                       session_version=session_version),
@@ -824,6 +833,12 @@ async def calibration_refresh_loop():
     """
     await asyncio.sleep(180)  # let the trade history warm up
     while True:
+        # 2026-09-16: İlk tur neredeyse her zaman HENÜZ kapanmış trade yokken
+        # koşar (log: "[Calibration] 0 kova, 0 karar-verebilir") ve eski kod
+        # ardından 7 GÜN uyuyordu → trade'ler kapansa bile kalibrasyon bir hafta
+        # boyunca boş kalıyordu. Artık veri yoksa saatlik yeniden denenir; ilk
+        # karar-verebilir kova oluştuğunda haftalık kadansa geçilir.
+        informative = 0
         try:
             trades = await database.get_trades(limit=500)
             buckets = calibration_service.build_buckets(trades)
@@ -832,7 +847,10 @@ async def calibration_refresh_loop():
             print(f"[Calibration] {len(buckets)} kova, {informative} karar-verebilir", flush=True)
         except Exception as exc:
             print(f"[Calibration] yenileme hatası: {exc}")
-        await asyncio.sleep(7 * 24 * 3600)
+        if informative:
+            await asyncio.sleep(7 * 24 * 3600)      # veri var → haftalık kadans
+        else:
+            await asyncio.sleep(3600)               # veri yok → saatte bir dene
 
 
 async def _ensure_admin_user():
@@ -863,11 +881,21 @@ async def startup_market_warmup():
             market.history_loaded = True
         print(
             f"[MarketData] startup warmup tamamlandı | timeframes={len(priority_timeframes)} "
-            f"ready_series={ready} errors={len(hydration.get('errors', []) or [])}",
+            f"ready_series={ready} errors={len(hydration.get("errors", []) or [])}",
             flush=True,
         )
     except Exception as exc:
-        print(f"[MarketData] startup warmup hatası: {exc}", flush=True)
+        print(f"[MarketData] startup warmup hatası: %s", exc, flush=True)
+
+    # CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): kapanmış mumları backend'in
+    # sağlıklı liveSocket kanalı üzerinden yayınla. Böylece grafik sayfası doğrudan
+    # Binance'ye (browser'dan ERİŞİLEMEYEN adres) bağlanmak yerine bu veriyi alır.
+    # `lightweight_subscription` modülü yoksa (opsiyonel bağımlılık) sessiz geç.
+    try:
+        from app.ws_live_candles import start_live_candle_broadcast
+        start_live_candle_broadcast(market)
+    except ImportError:
+        pass
 
 
 async def startup_services():

@@ -381,7 +381,13 @@ async def refresh_top_gainer_symbols():
                       f"{hydration.get('hydrated', 0)} seri dolduruldu", flush=True)
             except Exception as exc:
                 print(f"[Top Gainers] Yeni sembol hidrasyon hatası: {exc}", flush=True)
-        market.reconnect_requested = True
+        # 2026-09-16: Sembol seti DEĞİŞMEDİYSE reconnect İSTEME. Eskiden koşulsuz
+        # `True` set ediliyordu → her yenileme turunda (TOP_GAINERS_REFRESH_SEC)
+        # tüm WS grupları yıkılıp yeniden kuruluyordu (log: nesil 1 → nesil 2).
+        # Bu, gereksiz bağlantı kaybı + veri boşluğu + Binance tarafında gereksiz
+        # yeniden abonelik demekti. Yalnızca gerçek bir değişimde yeniden bağlan.
+        if set(active) != previous_active:
+            market.reconnect_requested = True
         persisted = await database.get_llm_setting("runtime_config", "{}")
         try:
             runtime = json.loads(persisted or "{}")
