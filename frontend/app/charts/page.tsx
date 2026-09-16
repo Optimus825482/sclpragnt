@@ -463,12 +463,25 @@ export default function ChartsPage() {
 
             ws = new WebSocket(`${binanceWsBase}/ws/${symbol.toLowerCase()}@kline_${interval}`);
             ws.onopen = () => { attempt = 0; setCandleWsState("open"); };
-            ws.onclose = () => {
+            ws.onclose = (ev) => {
                 setCandleWsState("closed");
                 if (!closed) {
                     attempt += 1;
+                    // WS BAŞARISIZ: anında HTTP tazele — kullanıcı donuk grafik görmesin.
+                    // (30 sn'lik periyodik fallback'ı bekleme; ilk mum gelmeden kapanırsa
+                    // lastBarMessageAt 0 kalır ve periyodik fallback'a da düşer, ama bu
+                    // daha hızlı.)
+                    if (lastBarMessageAt.current === 0) {
+                        void reloadKlines();
+                    }
                     retryTimer = setTimeout(connect, Math.min(30_000, 2_000 * 2 ** Math.min(attempt, 4)) + Math.random() * 1_000);
                 }
+            };
+            ws.onerror = () => {
+                // Tarayıcı seviyesinde bağlantı hatası (DNS/TLS/yasak host). WS'i kapat
+                // ki onclose tetiklensin ve fallback devreye ginsin; aksi halde tarayıcı
+                // "WebSocket connection failed" konsol hatası basar ve fallback gecikir.
+                try { ws?.close(); } catch { /* zaten kapalı */ }
             };
 
             ws.onmessage = (ev) => {
