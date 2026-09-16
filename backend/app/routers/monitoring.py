@@ -416,12 +416,32 @@ async def get_user_notification_settings() -> dict:
             # A5: verilmezse config varsayılanı (AÇIK) — `_notify` ile aynı öncelik.
             "macd_refire_gate": _coerce_bool(settings.get(
                 "macd_refire_gate", getattr(config, "MONITORING_MACD_REFIRE_GATE", True))),
+            # BİRLEŞİK RADAR (2026-09-16): verilmezse config varsayılanı. Tek doğruluk
+            # kaynağı bu fonksiyondur — motor, teslimat ve Radar ayar sekmesi buradan okur.
+            "radar_combined_enabled": _coerce_bool(settings.get(
+                "radar_combined_enabled", getattr(config, "RADAR_COMBINED_ENABLED", False))),
+            "radar_unified_notify": _coerce_bool(settings.get(
+                "radar_unified_notify", getattr(config, "RADAR_UNIFIED_NOTIFY", False))),
+            "radar_route_velocity_auto_through_auto_paper": _coerce_bool(settings.get(
+                "radar_route_velocity_auto_through_auto_paper",
+                getattr(config, "RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", False))),
+            "radar_confluence_window_sec": _radar_confluence_window(settings.get(
+                "radar_confluence_window_sec",
+                getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))),
         }
     except Exception:
         return {"enabled": True, "min_score": config.MONITORING_MIN_SCORE_DEFAULT,
                 "min_score_explicit": False,
                 "min_target_pct": 2.0, "quiet_hours_start": None, "quiet_hours_end": None,
-                "macd_refire_gate": bool(getattr(config, "MONITORING_MACD_REFIRE_GATE", True))}
+                "macd_refire_gate": bool(getattr(config, "MONITORING_MACD_REFIRE_GATE", True)),
+                # Hata durumunda da RADAR anahtarları VAR OLMALI — yoksa motor/teslimat
+                # anahtarı bulamayıp sessizce yanlış dala gider.
+                "radar_combined_enabled": bool(getattr(config, "RADAR_COMBINED_ENABLED", False)),
+                "radar_unified_notify": bool(getattr(config, "RADAR_UNIFIED_NOTIFY", False)),
+                "radar_route_velocity_auto_through_auto_paper": bool(
+                    getattr(config, "RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", False)),
+                "radar_confluence_window_sec": int(
+                    getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))}
 
 
 @router.get("/api/monitoring/settings")
@@ -468,6 +488,22 @@ def _validate_hhmm(value, field: str) -> str:
     return f"{hh:02d}:{mm:02d}"
 
 
+def _radar_confluence_window(value) -> int:
+    """Birleşik radar çakışma penceresi (sn): 60 sn - 6 saat aralığına zorlanır.
+
+    Bu pencere "iki kaynağın aynı olay sayılması" için maksimum aralıktır; aşırı
+    büyük bir değer alakasız sinyalleri çakışma sanıp raporu şişirir, bu yüzden
+    üst sınır konur (6 saat = en uzun radar ufkundan geniş).
+    """
+    try:
+        window = int(float(value))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="radar_confluence_window_sec sayısal olmalı (sn)")
+    if not (60 <= window <= 21600):
+        raise HTTPException(status_code=422, detail="radar_confluence_window_sec 60-21600 sn (6 saat) aralığında olmalı")
+    return window
+
+
 @router.put("/api/monitoring/settings")
 async def update_monitoring_settings(payload: dict, request: Request):
     """Global bildirim ayarlarını güncelle — YALNIZ admin.
@@ -491,7 +527,10 @@ async def update_monitoring_settings(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail="Gövde bir JSON nesnesi olmalı")
     existing = await get_user_notification_settings()
     editable = ("enabled", "min_score", "min_target_pct",
-                "quiet_hours_start", "quiet_hours_end", "macd_refire_gate")
+                "quiet_hours_start", "quiet_hours_end", "macd_refire_gate",
+                # BİRLEŞİK RADAR (2026-09-16): aynı ayar deposu, aynı merge semantiği.
+                "radar_combined_enabled", "radar_confluence_window_sec",
+                "radar_unified_notify", "radar_route_velocity_auto_through_auto_paper")
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
 
     # --- Doğrulama (geçersiz girdi → 422, state BOZULMAZ) ---
@@ -539,6 +578,18 @@ async def update_monitoring_settings(payload: dict, request: Request):
         # config varsayılanı korunur — `_notify` aynı önceliği uygular.
         "macd_refire_gate": _coerce_bool(merged.get(
             "macd_refire_gate", getattr(config, "MONITORING_MACD_REFIRE_GATE", True))),
+        # BİRLEŞİK RADAR (2026-09-16): varsayılanlar config.RADAR_*'dan, admin
+        # üzerine yazabilir. Kapalıyken hiçbir üretim yolu değişmez.
+        "radar_combined_enabled": _coerce_bool(merged.get(
+            "radar_combined_enabled", getattr(config, "RADAR_COMBINED_ENABLED", False))),
+        "radar_unified_notify": _coerce_bool(merged.get(
+            "radar_unified_notify", getattr(config, "RADAR_UNIFIED_NOTIFY", False))),
+        "radar_route_velocity_auto_through_auto_paper": _coerce_bool(merged.get(
+            "radar_route_velocity_auto_through_auto_paper",
+            getattr(config, "RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", False))),
+        "radar_confluence_window_sec": _radar_confluence_window(
+            merged.get("radar_confluence_window_sec",
+                       getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))),
     }
     await database.set_llm_setting("monitoring_notification_settings", json.dumps(settings))
     await log_user_action(None, None, "monitoring", "MONITORING_SETTINGS_UPDATE",

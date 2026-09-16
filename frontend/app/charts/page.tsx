@@ -169,13 +169,37 @@ export default function ChartsPage() {
             // böylece env değişse bile backend ile aynı kalır.
             applyCommissionPct(d.commission_pct);
             const active = Array.isArray(d.symbols) && d.symbols.length ? d.symbols : FALLBACK_SYMBOLS;
-            const available = [...new Set([...active, ...(querySymbol ? [querySymbol] : [])])].sort((a, b) => a.localeCompare(b));
-            setSymbols(available);
-            setSymbol((current) => available.includes(current) ? current : active[0]);
+            // SEMBOL KAÇIRMA DÜZELTMESİ (2026-09-16): kullanıcı ne seçtiyse O KALIR.
+            //
+            // Eski kod `available.includes(current) ? current : active[0]` diyerek
+            // yapılandırılmış listede OLMAYAN bir sembolü SESSİZCE BTCTRY'ye
+            // çeviriyordu (config.SYMBOLS[0] === "BTCTRY"). Radar/velocity adayları
+            // `top_gainers` havuzundan gelir ve config.SYMBOLS alt kümesi DEĞİLDİR →
+            // o sembollerin grafiği açılır açılmaz BTC'ye dönerdi. Kullanıcının
+            // tarif ettiği tam buydu: "grafiğe girince zoom yapınca BTC çıkıyor"
+            // (config yanıtı mount'tan SONRA asenkron çözüldüğü için geçiş, tam
+            // etkileşime başladığı anda fark ediliyordu).
+            //
+            // Artık `symbol` state'ine DOKUNULMAZ; yalnız dropdown listesi
+            // BİRLEŞTİRİLİR (config + mevcut seçim + ?symbol= değeri).
+            setSymbols((currentList) => {
+                const merged = new Set<string>([...currentList, ...active]);
+                if (querySymbol) merged.add(querySymbol);
+                if (savedSymbol) merged.add(savedSymbol);
+                return [...merged].sort((a, b) => a.localeCompare(b));
+            });
             setInstances(filterIndicatorInstances(loadIndicators()));
             loadFromDb(savedSymbol);
         }).catch(() => {
-            setSymbols(FALLBACK_SYMBOLS);
+            // Config alınamadı: yine seçime dokunma, yalnız minimum listeyi birleştir.
+            // Eskiden burada liste FALLBACK ile EZİLİYORDU → ?symbol= ile gelmiş
+            // bir sembol dropdown'dan kaybolabiliyordu.
+            setSymbols((currentList) => {
+                const merged = new Set<string>([...currentList, ...FALLBACK_SYMBOLS]);
+                if (querySymbol) merged.add(querySymbol);
+                if (savedSymbol) merged.add(savedSymbol);
+                return [...merged].sort((a, b) => a.localeCompare(b));
+            });
             setInstances(filterIndicatorInstances(loadIndicators()));
             loadFromDb(savedSymbol);
         });
