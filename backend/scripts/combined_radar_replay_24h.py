@@ -185,11 +185,17 @@ def _metrics(name: str, signals: list[dict]) -> dict:
     nets = [float(s["net_pct"]) for s in measured]
     mfes = [float(s["mfe_pct"]) for s in measured if s.get("mfe_pct") is not None]
     maes = [float(s["mae_pct"]) for s in measured if s.get("mae_pct") is not None]
+    targets = [float(s["target_pct"]) for s in measured if s.get("target_pct")]
     confluence = [s for s in measured if s.get("confluence")]
     conf_wins = [s for s in confluence if (s.get("net_pct") or 0) > 0]
     reasons: dict[str, int] = defaultdict(int)
     for s in measured:
         reasons[str(s.get("exit_reason"))] += 1
+    avg_mfe = round(statistics.mean(mfes), 4) if mfes else None
+    avg_target = round(statistics.mean(targets), 4) if targets else None
+    # HEDEF/GEOMETRİ TEŞHİSİ: ortalama hedef, ortalama MFE'yi çok aşıyorsa TP
+    # ulaşılamaz demektir → sinyal gelir, fiyat hedefe gitmez, maliyet ödenir.
+    reach = round(avg_target / avg_mfe, 2) if (avg_target and avg_mfe) else None
     return {
         "stream": name,
         "signals": len(signals),
@@ -199,7 +205,9 @@ def _metrics(name: str, signals: list[dict]) -> dict:
         "avg_net_pct": round(statistics.mean(nets), 4) if nets else None,
         "median_net_pct": round(statistics.median(nets), 4) if nets else None,
         "total_net_pct": round(sum(nets), 3) if nets else None,
-        "avg_mfe_pct": round(statistics.mean(mfes), 4) if mfes else None,
+        "avg_target_pct": avg_target,
+        "avg_mfe_pct": avg_mfe,
+        "target_to_mfe_ratio": reach,
         "avg_mae_pct": round(statistics.mean(maes), 4) if maes else None,
         "avg_hold_minutes": round(statistics.mean(float(s["hold_minutes"]) for s in measured), 2)
             if measured else None,
@@ -510,8 +518,36 @@ def _report_text(result: dict) -> str:
     if base.get("avg_net_pct") is not None and comb.get("avg_net_pct") is not None:
         lift = comb["avg_net_pct"] - base["avg_net_pct"]
         lines.append(f"LIFT (combined - velocity-only) ort. net %: {lift:+.4f} puan")
-        verdict = "ENTEGRasyon İÇİN UYGUN" if lift >= 0 and comb["signals"] > 0 else "DAHA FAZLA KANIT GEREKLİ"
-        lines.append(f"Ön karar: {verdict}  (geçiş kriteri plan §GEÇİŞ KRİTERİ)")
+        # DÜRÜST KARAR (2026-09-16): pozitif lift TEK BAŞINA yetmez. Önceki kural
+        # yalnız `lift >= 0` bakıyordu; taban negatifken bu, gürültü seviyesinde
+        # bir farkı "ENTEGRE ET" diye yorumluyordu (gerçek koşumda velocity −0.16,
+        # combined −0.14 → "+0.0175 puan" ile onay veriyordu; oysa ÜÇ AKIŞ DA
+        # NEGATİFTİ ve combined'ın kazanma oranı belirgin biçimde DAHA KÖTÜYDÜ).
+        blockers: list[str] = []
+        if comb["avg_net_pct"] <= 0:
+            blockers.append("combined ort. net POZİTİF DEĞİL")
+        if base["avg_net_pct"] <= 0:
+            blockers.append("TABAN (velocity-only) POZİTİF DEĞİL — negatif tabanı "
+                            "birleştirmek onu pozitife çevirmez")
+        if (comb.get("win_rate") or 0) < (base.get("win_rate") or 0) - 2.0:
+            blockers.append(f"combined kazanma oranı DAHA KÖTÜ "
+                            f"({comb.get('win_rate')} vs {base.get('win_rate')})")
+        if blockers:
+            lines.append("Ön karar: ENTEGRASYON İÇİN UYGUN DEĞİL")
+            for item in blockers:
+                lines.append(f"   ✗ {item}")
+        else:
+            lines.append("Ön karar: ENTEGRASYON İÇİN UYGUN")
+    lines.append("")
+    lines.append("HEDEF/MFE GEOMETRİSİ (hedef ortalamayı aşıyorsa TP ulaşılamaz → maliyet ödenir):")
+    for key in ("velocity_only", "rising_only", "combined"):
+        m = streams.get(key) or {}
+        if m.get("target_to_mfe_ratio") is None:
+            continue
+        ratio = float(m["target_to_mfe_ratio"])
+        flag = "   ← TP BÜYÜK ÖLÇÜDE ULAŞILAMAZ" if ratio >= 1.5 else ""
+        lines.append(f"  {key:<14} hedef {m['avg_target_pct']:.2f}%  /  "
+                     f"ort.MFE {m['avg_mfe_pct']:.2f}%  = {ratio:.2f}×{flag}")
     lines.append("")
     lines.append("SINIRLAR (sonuçları okurken bil):")
     for line in result.get("limitations", []):
