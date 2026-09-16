@@ -122,8 +122,20 @@ function isDocumentRequest(request) {
   return request.destination === "document" || request.mode === "navigate";
 }
 
+// Next.js App Router'ın istemci-içi gezinme iskeleti (RSC payload) SÖZLEŞME DIŞI:
+// bu istekler önbelleğe alınırsa bir kez yazılır, sonraki gezinmelerde BAYAT RSC
+// döner → grafik eski sembolü (BTCTRY) gösterir, sonra görüntülenemez; yalnız tam
+// yenileme düzeltir. Bu yüzden RSC istekleri service worker'dan ÇIKARILIR
+// (ağa doğrudan gider; SW karışmaz).
+function isRscRequest(request) {
+  return request.method === "GET" &&
+    (request.headers.get("RSC") === "1" ||
+     request.headers.has("Next-Router-State-Tree"));
+}
+
 self.addEventListener("fetch", function (event) {
   const url = new URL(event.request.url);
+  if (isRscRequest(event.request)) return;
   const eligible = event.request.method === "GET" &&
     url.origin === self.location.origin && !url.pathname.startsWith("/api/");
   if (!eligible) return;
@@ -137,7 +149,12 @@ self.addEventListener("fetch", function (event) {
       return response;
     }).catch(function () {
       return caches.match(event.request).then(function (cached) {
-        return cached || caches.match("/");
+        return cached || caches.match("/").then(function (shell) {
+          // Çevrimdışı + hiçbir önbellek yoksa bile GEÇERLİ bir Response dön;
+          // `respondWith(undefined)` "Failed to convert value to 'Response'"
+          // fırlatır ve istemci-içi gezinmeyi kırar.
+          return shell || new Response("offline", { status: 503, statusText: "offline" });
+        });
       });
     }));
     return;
@@ -152,7 +169,8 @@ self.addEventListener("fetch", function (event) {
       }
       return response;
     }).catch(function () {
-      return cached;
+      // Ağ hatasında `cached` yoksa `undefined` döndürme → SW TypeError vermesin.
+      return cached || new Response("offline", { status: 503, statusText: "offline" });
     });
     return cached || network;
   }));
