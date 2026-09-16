@@ -1166,15 +1166,33 @@ async def _push_health_safe() -> dict:
     `subscribers == 0` iken backend `VAPID_PRIVATE_KEY` yapılandırılmış olsa bile
     tek bir push gitmez; bu sessiz arıza panelde "push yok" olarak görünür.
     Sayaç okunamazsa state yanıtı BOZULMAZ (0 döner).
+
+    2026-09-16 (yanlış alarm düzeltmesi): `vapid_public_key` eklendi. Tarayıcının
+    abone olurken kullandığı anahtarın backend'in private anahtarıyla eşleşip
+    eşleşmediği YALNIZCA iki değeri birden görebilen tarafta anlaşılır; frontend
+    kendi `NEXT_PUBLIC_VAPID_PUBLIC_KEY` değerini bununla karşılaştırır. Böylece
+    "push sessizce 401 alıyor" durumu panelde ayırt edilebilir hale gelir.
     """
     try:
         subscribers = int(await database.count_push_subscriptions() or 0)
     except Exception as exc:
         logger.debug("push sağlığı okunamadı: %s", exc)
         subscribers = 0
+    try:
+        from app.vapid import diagnose_vapid
+        diag = diagnose_vapid()
+        vapid_configured = bool(diag["configured"])
+        vapid_public_key = diag["effective_public_key"]
+    except Exception as exc:
+        logger.debug("vapid teşhisi okunamadı: %s", exc)
+        vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+        vapid_public_key = None
     return {
-        "backend_vapid_configured": bool(os.getenv("VAPID_PRIVATE_KEY", "").strip()),
+        "backend_vapid_configured": vapid_configured,
         "subscribers": subscribers,
+        # Tarayıcının abone olurken kullanması GEREKEN public anahtar
+        # (private'dan türetilir; frontend kendi anahtarıyla karşılaştırır).
+        "vapid_public_key": vapid_public_key,
     }
 
 
@@ -2170,10 +2188,15 @@ async def monitoring_background_loop():
     # olduğu TEK değişkeni belirtiyor ve private↔public uyuşmazlığını (sessiz 401)
     # yakalıyor. Eski uyarı VAPID_PUBLIC_KEY'i de zorunlu sanıyordu — backend için
     # zorunlu değildir (pywebpush public'i private'dan türetir).
+    # 2026-09-16 (yanlış alarm düzeltmesi): "VAPID_PUBLIC_KEY ayarlı değil" notu
+    # artık `info` içindedir; sağlıklı sistemde WARNING basmaz. Yalnızca gerçek
+    # arızalar (private yok/geçersiz, private↔public uyuşmazlığı) uyarı olur.
     from app.vapid import diagnose_vapid
     _vapid = diagnose_vapid()
     for _problem in _vapid["problems"]:
         logger.warning("Monitoring push: %s", _problem)
+    for _note in _vapid["info"]:
+        logger.info("Monitoring push: %s", _note)
     if not _vapid["configured"]:
         logger.warning(
             "Monitoring push: tarayıcı push bildirimleri GÖNDERİLMEYECEK "
