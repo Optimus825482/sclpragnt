@@ -1068,9 +1068,18 @@ function RadarSettingsPanel() {
     await put({ min_score: val }, "Eşik kaydedildi.");
   };
 
+  // Min hedef aralığı SUNUCUDAN gelir (tek doğruluk kaynağı). İstemci yalnız
+  // `val < 0` kontrol ederken aralık dışı bir değer kaydedilmeye çalışılıyor ve
+  // sunucu 422 dönüyordu — kullanıcı NEDENİNİ göremiyordu.
+  const targetMin = Number(settings?.min_target_pct_min ?? 1.5) || 1.5;
+  const targetMax = Number(settings?.min_target_pct_max ?? 6) || 6;
+
   const saveTargetPct = async () => {
     const val = Number(targetPctInput);
-    if (!Number.isFinite(val) || val < 0) { setError("Min hedef % geçersiz."); return; }
+    if (!Number.isFinite(val) || val < targetMin || val > targetMax) {
+      setError(`Min hedef % ${targetMin}-${targetMax} arasında olmalı (sunucu aralığı).`);
+      return;
+    }
     await put({ min_target_pct: val }, "Min hedef % kaydedildi.");
   };
 
@@ -1133,8 +1142,9 @@ function RadarSettingsPanel() {
           <div className="flex flex-wrap items-end gap-3">
             <div>
               <p className="eyebrow text-bunker-muted">MİN HEDEF %</p>
-              <input type="number" min={0} max={50} step={0.1} value={targetPctInput}
+              <input type="number" min={targetMin} max={targetMax} step={0.1} value={targetPctInput}
                 onChange={(e) => setTargetPctInput(e.target.value)} placeholder="—" className={numInputCls} />
+              <p className="text-[11px] text-bunker-muted mt-1">{targetMin}-{targetMax} arası</p>
             </div>
             <button type="button" onClick={saveTargetPct} disabled={saving}
               className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
