@@ -168,6 +168,124 @@ class AutoPaperTakeProfitTests(unittest.IsolatedAsyncioTestCase):
 
 
 # ---------------------------------------------------------------------------
+# B1-B3 (2026-09-14) — otonom çıkış merdiveni: TP birincil + dinamik koruma
+#
+# Plan: "TP'yi birincil çıkış yap; kâr korumasını trade'in GERÇEK hedefine bağla".
+# Bu testler, ilgili düzeltmeler geri alınırsa KIRILACAK şekilde yazılmıştır.
+# ---------------------------------------------------------------------------
+class AutoPaperExitLadderTests(unittest.IsolatedAsyncioTestCase):
+    """TP (B1) → breakeven (B2) → trailing (B2/B3) sırasının sözleşmesi."""
+
+    def _trade(self, entry=100.0, tp=104.0, sl=97.0, peak=None, **extra):
+        trade = {
+            "id": 1, "symbol": "APTEST", "status": "open",
+            "entry_price": entry, "quantity": 1.0,
+            "stop_loss": sl, "take_profit": tp,
+            "peak_price": entry if peak is None else peak,
+            "breakeven_activated": False, "breakeven_stop": None,
+            "trailing_activated": False, "trailing_stop": None,
+        }
+        trade.update(extra)
+        return trade
+
+    async def _manage(self, trade, price, settings):
+        """Pozisyonu tek turda yönet; (close_mock, breakeven_mock, trailing_mock) döndür."""
+        now = time.time()
+        market = MagicMock()
+        market.get_ticker = MagicMock(
+            return_value={"last_price": price, "timestamp": now * 1000})
+        close = AsyncMock(return_value=None)
+        be = AsyncMock(return_value=None)
+        trail = AsyncMock(return_value=None)
+        with patch("app.routers.auto_paper.market", market), \
+             patch.object(auto_paper, "_close_trade", close), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock(return_value=None)), \
+             patch.object(auto_paper.database, "update_auto_paper_breakeven", be), \
+             patch.object(auto_paper.database, "update_auto_paper_trailing", trail):
+            await auto_paper._manage_single_trade(trade, now, 1.5, settings)
+        return close, be, trail
+
+    # ---- B1: TP birincil ------------------------------------------------
+    async def test_tp_fill_uses_trigger_price_on_gap_through(self):
+        """Fiyat TP'nin üstüne gap atsa bile dolum TP fiyatından (D-08 sözleşmesi)."""
+        close, _, _ = await self._manage(self._trade(), 105.0, {})
+        close.assert_awaited()
+        self.assertEqual("take_profit", close.await_args.args[4])
+        self.assertEqual(104.0, close.await_args.args[2],
+                         "gap-through'da dolum TP tetik fiyatından olmalı")
+
+    async def test_tp_fires_even_when_trailing_already_activated(self):
+        """D-07 regresyonu: trailing devredeyken TP YİNE değerlendirilir.
+
+        Eski kodda trailing aktifleşince TP bir daha bakılmıyordu → hedef hiç
+        kullanılmıyordu. Şimdi TP her turda ilk kontrol.
+        """
+        trade = self._trade(tp=102.0, peak=103.0,
+                            trailing_activated=True, trailing_stop=101.5)
+        close, _, _ = await self._manage(trade, 105.0, {"trailing_enabled": True})
+        close.assert_awaited()
+        self.assertEqual("take_profit", close.await_args.args[4])
+        self.assertEqual(102.0, close.await_args.args[2])
+
+    async def test_tp_primary_can_be_disabled_from_settings(self):
+        """`tp_primary_exit_enabled=false` → TP yolu kapanır (geri dönüş anahtarı)."""
+        trade = self._trade(tp=102.0, peak=103.0,
+                            trailing_activated=True, trailing_stop=101.5)
+        close, _, _ = await self._manage(
+            trade, 105.0, {"trailing_enabled": True, "tp_primary_exit_enabled": False})
+        reasons = [c.args[4] for c in close.await_args_list] if close.await_count else []
+        self.assertNotIn("take_profit", reasons, "kapalıyken TP kullanılmamalı")
+
+    # ---- B2: koruma hedefe bağlı gecikir ---------------------------------
+    async def test_breakeven_trigger_deferred_to_tp_fraction(self):
+        """Hedef %4 → breakeven eşiği max(1.5, 4.0×0.7)=%2.8; altında devreye girmez."""
+        trade = self._trade()  # tp_gain = 4.0
+        _, be, _ = await self._manage(trade, 102.0, {})  # gross +2.0 < 2.8
+        be.assert_not_awaited()
+
+        trade = self._trade()
+        _, be, _ = await self._manage(trade, 102.9, {})  # gross +2.9 >= 2.8
+        be.assert_awaited()
+
+    async def test_breakeven_trigger_is_not_deferred_when_dynamic_disabled(self):
+        """`dynamic_breakeven_enabled=false` → eski sabit eşik (%1.5) geçerli."""
+        trade = self._trade()
+        _, be, _ = await self._manage(
+            trade, 102.0, {"dynamic_breakeven_enabled": False})
+        be.assert_awaited()
+
+    async def test_trailing_trigger_deferred_to_tp_fraction(self):
+        """Hedef %4 → trailing eşiği max(2.0, 4.0×0.8)=%3.2; altında devreye girmez."""
+        trade = self._trade()
+        _, _, trail = await self._manage(
+            trade, 102.5, {"trailing_enabled": True})  # gross +2.5 < 3.2
+        trail.assert_not_awaited()
+
+        trade = self._trade()
+        _, _, trail = await self._manage(
+            trade, 103.7, {"trailing_enabled": True})  # gross +3.7 >= 3.2
+        trail.assert_awaited()
+
+    # ---- B3: gap TP'ye yaklaşırken daralır --------------------------------
+    async def test_trailing_gap_halves_near_tp(self):
+        """gross >= hedefin %90'ı → gap yarılanır: kâr tepeye yakın kilitlenir."""
+        settings = {"trailing_enabled": True,
+                    "trailing_trigger_pct": 2.0, "trailing_gap_pct": 0.8}
+
+        # gross +3.5 (< %3.6 eşiği) → gap 0.8
+        trade = self._trade()
+        _, _, trail = await self._manage(trade, 103.5, dict(settings))
+        trail.assert_awaited()
+        self.assertAlmostEqual(103.5 * (1 - 0.008), trail.await_args.args[2], places=6)
+
+        # gross +3.7 (>= %3.6 eşiği) → gap 0.4
+        trade = self._trade()
+        _, _, trail = await self._manage(trade, 103.7, dict(settings))
+        trail.assert_awaited()
+        self.assertAlmostEqual(103.7 * (1 - 0.004), trail.await_args.args[2], places=6)
+
+
+# ---------------------------------------------------------------------------
 # D-08 — slippage (giriş+çıkış) ve TP/SL tetik dolumu
 # ---------------------------------------------------------------------------
 class TriggerFillPriceTests(unittest.TestCase):

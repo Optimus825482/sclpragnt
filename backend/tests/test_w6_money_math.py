@@ -136,8 +136,10 @@ class DynamicTargetPctTests(unittest.TestCase):
         self.assertEqual(4.0, dynamic_target_pct(95.0, 1.0))
 
     def test_middle_and_low_tiers(self):
-        self.assertEqual(2.5, dynamic_target_pct(75.0, 1.0))
-        self.assertEqual(2.0, dynamic_target_pct(55.0, 1.0))
+        # A3 (2026-09-14): bant eşikleri ham çalışma noktaları korunarak yeniden
+        # ankrajlandı → 74.0/71.5/68.2 (eski 90/70/50).
+        self.assertEqual(2.5, dynamic_target_pct(72.5, 1.0))
+        self.assertEqual(2.0, dynamic_target_pct(69.5, 1.0))
 
     def test_below_all_tiers_clamps_to_min(self):
         self.assertEqual(config.MONITORING_TARGET_PCT_MIN, dynamic_target_pct(10.0, 1.0))

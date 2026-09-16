@@ -261,7 +261,8 @@ async def init_db():
         # oluyordu (şema sürümlemesi yanıltıcıydı).
         migrations_dir = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations"))
         schema_sql = ""
-        for filename in ("001_pgvector_schema.sql", "002_macd_evidence_lift.sql"):
+        for filename in ("001_pgvector_schema.sql", "002_macd_evidence_lift.sql",
+                         "003_rising_signals.sql"):
             path = os.path.join(migrations_dir, filename)
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as schema_file:
@@ -298,6 +299,10 @@ async def init_db():
         # M4 (R2-03): bildirim skorunun normalize edildiği cap satır başına saklanır —
         # mutable `MONITORING_SCORE_NORM_CAP` değişse bile eski satır doğru ölçeklenir.
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS norm_cap DOUBLE PRECISION")
+        # A3 (2026-09-14): panel ölçek sürümü (1=lineer, 2=log). SKOR
+        # yorumlanırken hangi haritanın kullanılacağını belirler; etiket yoksa
+        # kayıt A3 öncesi (lineer) kabul edilir.
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS norm_version INTEGER")
         # M4 (R3-05/R2-05/R4-07): bildirim <-> velocity adayını ±60 sn + hedef eşleşmesi
         # yerine KALICI `candidate_id` ile bağlamak için kolon (hedef değişse de ölçülebilir).
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS candidate_id TEXT")
@@ -1016,6 +1021,196 @@ async def list_macd_monitor_alerts(limit: int = 100, symbol: str | None = None) 
             item["signals"] = _json_value(item.get("signals"), None)
             out.append(item)
         return out
+
+    return await _run_db(op)
+
+
+# ---------------------------------------------------------------------------
+# Yükseliş sinyalleri kanıt katmanı (R2, 2026-09-14) — `rising_alerts`
+# ---------------------------------------------------------------------------
+def _ensure_rising_evidence_schema(conn) -> None:
+    """Koşan dağıtımda tabloyu idempotent hazırla (migration sha'sına bağımlı kalma)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rising_alerts (
+          id BIGSERIAL PRIMARY KEY,
+          created_at DOUBLE PRECISION NOT NULL,
+          symbol TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          score DOUBLE PRECISION,
+          early_score INTEGER,
+          strength DOUBLE PRECISION,
+          green INTEGER,
+          proximity DOUBLE PRECISION,
+          gap_atr DOUBLE PRECISION,
+          signals JSONB,
+          price DOUBLE PRECISION,
+          expected_price DOUBLE PRECISION,
+          target_pct DOUBLE PRECISION,
+          tf TEXT,
+          source TEXT,
+          notified BOOLEAN NOT NULL DEFAULT FALSE,
+          sent_via_push BOOLEAN NOT NULL DEFAULT FALSE,
+          auto_paper_trade_id INTEGER,
+          outcome_state TEXT NOT NULL DEFAULT 'pending',
+          mfe_pct DOUBLE PRECISION,
+          mae_pct DOUBLE PRECISION,
+          peak_at DOUBLE PRECISION
+        )""")
+
+
+async def record_rising_alert(item: dict) -> int | None:
+    """Bir yükseliş sinyalini kanıt tablosuna yaz; satır id'si döner.
+
+    Kanıt katmanı KRİTİK YOL DEĞİL (MACD muadili ile aynı ilke): yazma başarısız
+    olsa bile bildirim/otonom akışı bozulmaz, yalnız debug loglanır.
+    """
+    def op(conn):
+        _ensure_rising_evidence_schema(conn)
+        row = conn.execute(
+            "INSERT INTO rising_alerts"
+            "(created_at, symbol, kind, score, early_score, strength, green,"
+            " proximity, gap_atr, signals, price, expected_price, target_pct, tf, source,"
+            " notified, sent_via_push, outcome_state) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending') RETURNING id",
+            (
+                float(item.get("created_at") or time.time()),
+                str(item.get("symbol") or "?").upper(),
+                str(item.get("kind") or "erken"),
+                item.get("score"),
+                (int(item["early_score"]) if item.get("early_score") is not None else None),
+                item.get("strength"),
+                (int(item["green"]) if item.get("green") is not None else None),
+                (item.get("signals") or {}).get("proximity") if isinstance(item.get("signals"), dict) else None,
+                (item.get("signals") or {}).get("gap_atr") if isinstance(item.get("signals"), dict) else None,
+                json.dumps(item.get("signals"), default=str) if item.get("signals") is not None else None,
+                item.get("price"),
+                item.get("expected_price"),
+                item.get("target_pct"),
+                item.get("tf"),
+                item.get("source"),
+                bool(item.get("notified", False)),
+                bool(item.get("sent_via_push", False)),
+            ),
+        ).fetchone()
+        conn.commit()
+        return int(row[0]) if row else None
+
+    try:
+        return await _run_db(op)
+    except Exception:
+        logging.getLogger("scalper.database").debug(
+            "rising_alerts kaydı başarısız: %s", item.get("symbol"), exc_info=True)
+        return None
+
+
+async def mark_rising_alert_notified(alert_id: int, sent_via_push: bool = False) -> None:
+    """Bildirim durumunu işaretle (push teslimi DÜRÜST yansıtılır)."""
+    if not alert_id:
+        return
+    def op(conn):
+        conn.execute(
+            "UPDATE rising_alerts SET notified=TRUE, sent_via_push=? WHERE id=?",
+            (bool(sent_via_push), int(alert_id)))
+        conn.commit()
+    try:
+        await _run_db(op)
+    except Exception:
+        logging.getLogger("scalper.database").debug(
+            "rising_alerts bildirim etiketi güncellenemedi: %s", alert_id, exc_info=True)
+
+
+async def mark_rising_alert_trade(alert_id: int, trade_id: int) -> None:
+    """Sinyalin açtığı otonom paper işlemini bağla (kanıt ↔ işlem izlenebilirliği)."""
+    if not alert_id or not trade_id:
+        return
+    def op(conn):
+        conn.execute("UPDATE rising_alerts SET auto_paper_trade_id=? WHERE id=?",
+                     (int(trade_id), int(alert_id)))
+        conn.commit()
+    try:
+        await _run_db(op)
+    except Exception:
+        logging.getLogger("scalper.database").debug(
+            "rising_alerts işlem bağı güncellenemedi: %s", alert_id, exc_info=True)
+
+
+async def list_rising_alerts(limit: int = 100, kind: str | None = None,
+                             symbol: str | None = None) -> list[dict]:
+    """Son yükseliş sinyalleri (en yeni önce)."""
+    limit = max(1, min(1000, int(limit)))
+    def op(conn):
+        _ensure_rising_evidence_schema(conn)
+        sql = "SELECT * FROM rising_alerts"
+        params: list = []
+        where = []
+        if kind:
+            where.append("kind=?")
+            params.append(str(kind))
+        if symbol:
+            where.append("symbol=?")
+            params.append(str(symbol).upper())
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["signals"] = _json_value(item.get("signals"), None)
+            out.append(item)
+        return out
+
+    return await _run_db(op)
+
+
+async def get_rising_stats(days: float = 7.0) -> dict:
+    """Yükseliş sinyali kalibrasyon özeti — Raporlar sekmesi için.
+
+    Dönen alanlar: toplam sinyal, sınıf dağılımı, ölçülen (evaluate edilmiş)
+    sayısı, **isabet oranı** (`touched` = MFE hedefi aştı), ortalama MFE/MAE.
+    İsabet, sinyalin `target_pct`ine göre değerlendirilir; henüz ölçülmemiş
+    satırlar orana GİRMEZ (uydurma başarı yok).
+    """
+    since = time.time() - max(0.0, float(days)) * 86400.0
+    def op(conn):
+        _ensure_rising_evidence_schema(conn)
+        rows = conn.execute(
+            "SELECT kind, target_pct, mfe_pct, mae_pct, outcome_state, created_at, peak_at "
+            "FROM rising_alerts WHERE created_at >= ?", (since,)).fetchall()
+        total = 0
+        by_kind: dict[str, int] = {}
+        measured = 0
+        hits = 0
+        mfe_values: list[float] = []
+        mae_values: list[float] = []
+        for row in rows:
+            item = dict(row)
+            total += 1
+            kind = str(item.get("kind") or "?")
+            by_kind[kind] = by_kind.get(kind, 0) + 1
+            mfe = item.get("mfe_pct")
+            if mfe is None:
+                continue
+            measured += 1
+            mfe_values.append(float(mfe))
+            if item.get("mae_pct") is not None:
+                mae_values.append(float(item["mae_pct"]))
+            target = item.get("target_pct")
+            if target is not None and float(mfe) >= float(target):
+                hits += 1
+        def _avg(values):
+            return round(sum(values) / len(values), 3) if values else None
+        return {
+            "days": float(days),
+            "total": total,
+            "by_kind": by_kind,
+            "measured": measured,
+            "hits": hits,
+            "hit_rate_pct": round(100.0 * hits / measured, 2) if measured else None,
+            "avg_mfe_pct": _avg(mfe_values),
+            "avg_mae_pct": _avg(mae_values),
+        }
 
     return await _run_db(op)
 
@@ -3249,6 +3444,9 @@ async def save_monitoring_notifications(entries):
     norm_cap (opsiyonel; R2-03) satırın normalize edildiği cap — varsa float,
     yoksa NULL. candidate_id (opsiyonel; R3-05) kaynak aday kimliği — varsa
     saklanır (ölçümde birebir eşleşme için).
+    norm_version (opsiyonel; A3) satırın yazıldığı panel ölçek sürümü (1=lineer,
+    2=log). Okuma tarafı (`monitoring._stored_panel_score`) sürüme göre doğru
+    haritayı uygular; etiket yoksa kayıt A3 öncesi (lineer) sayılır.
     Girdilerde 'id' yoksa kaydedilen satırın id'si entry'e eklenir (ertelenen
     push'un sonradan etiketlenmesi için; 2026-09-05).
     """
@@ -3260,6 +3458,15 @@ async def save_monitoring_notifications(entries):
             except (TypeError, ValueError):
                 return None
         return None
+
+    def _norm_version_value(e):
+        raw = e.get("norm_version")
+        if raw in (None, ""):
+            return None
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            return None
 
     def _candidate_id_value(e):
         cid = e.get("candidate_id")
@@ -3273,8 +3480,8 @@ async def save_monitoring_notifications(entries):
             row = conn.execute(
                 "INSERT INTO monitoring_notifications"
                 "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at,"
-                "ml_target_pct,ml_hit_probability,candidate_id,norm_cap)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                "ml_target_pct,ml_hit_probability,candidate_id,norm_cap,norm_version)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                 (
                     str(e.get("symbol") or "?"),
                     str(e.get("message") or ""),
@@ -3287,7 +3494,7 @@ async def save_monitoring_notifications(entries):
                     bool(e.get("sent_via_push", False)),
                     now,
                     e.get("ml_target_pct"), e.get("ml_hit_probability"),
-                    _candidate_id_value(e), _norm_cap_value(e),
+                    _candidate_id_value(e), _norm_cap_value(e), _norm_version_value(e),
                 ),
             ).fetchone()
             if row is not None and e.get("id") is None:
@@ -3338,7 +3545,7 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
         base_sql = (
             "SELECT id, symbol, mode, score, target_pct, price, expected_price,"
             " horizon_minutes, detected_at, sent_via_push, message, title,"
-            " candidate_id, norm_cap"
+            " candidate_id, norm_cap, norm_version"
             " FROM monitoring_notifications"
         )
         params: list = []

@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from collections import deque
@@ -36,6 +37,8 @@ _monitoring_state = {
     # "Hiçbir şey değişmedi" durumunu yakalamak için (zaman kapıları görmez).
     "notified_prices": {},
     "refire_blocked": 0,          # D-07: fiyat değişmediği için bastırılan yeniden tetikleme
+    "rr_blocked": 0,              # A4: R/R kapısı yüzünden bastırılan aday sayısı (ölçüm)
+    "rising_notified": 0,         # R3: bu oturumda bildirilen yükseliş/erken sinyali
     "risk_off": False,            # piyasa rejimi RISK_OFF
     "risk_off_unknown": False,    # F-14: referans verisi yetersiz → rejim BİLİNMİYOR
     "_db_latencies": [],              # notify query gecikmeleri (diagnostics icin, 2026-09-07) (gözlem bayrağı, eşiği etkilemez — 2026-09-04)
@@ -77,36 +80,93 @@ _STATE_SETTING_KEY = "monitoring_runtime_state"
 
 
 def _score_is_saturated(row: dict) -> bool:
-    """Panel skoru cap yuzunden 100'a KIRPILMIS mi? (D-08, 2026-09-14).
+    """Panel skoru tavan yüzünden KIRPILMIŞ mı? (D-08, güncellendi A3)
 
-    `normalize_score` sert kirpar: raw >= cap -> tam 100.00. Bu durumda
-    gosterilen skor SIRALAMA bilgisi tasimaz (104 tespitin 100'u 100.00).
-    Bayrak yalnizca GORUNURLUK icindir; esik/hedef davranisi degismez.
+    `linear` modda `normalize_score` raw >= CAP'te tam 100.00'a kırpar → gösterilen
+    skor SIRALAMA bilgisi taşımaz. `log` modda (A3 sonrası varsayılan) kırpma
+    yalnız raw >= REF'te olur ve REF gözlenen max'ın üstünde seçildiği için
+    pratikte hiç tetiklenmez.
+    Bayrak yalnızca GÖRÜNÜRLÜK içindir; eşik/hedef davranışı değişmez.
     """
     raw = row.get("raw_score")
     if raw is None:
         return False
     try:
-        return float(raw) >= float(_row_norm_cap(row))
+        raw_v = float(raw)
     except (TypeError, ValueError):
         return False
+    mode = _score_norm_mode()
+    if mode == "linear":
+        return raw_v >= float(_row_norm_cap(row))
+    ref = float(getattr(config, "MONITORING_SCORE_NORM_LOG_REF", 25000) or 0)
+    return ref > 0 and raw_v >= ref
 
 
-def normalize_score(raw_score: float) -> float:
-    """velocity_score 0-1000+ bandina cikabilir; MONITORING_SCORE_NORM_CAP (2000) ile
-    0-100 panel olcegine haritalanir. Cap astiysa 100, astiysa dogrusal (2026-09-07).
+def _score_norm_mode() -> str:
+    return str(getattr(config, "MONITORING_SCORE_NORM_MODE", "log") or "log").lower()
 
-    M1/P2 (R4-10): cap<=0 (hatalı env) artık ZeroDivisionError yerine ham skoru
-    0-100'e kelepçeleyerek döner — `_stored_panel_score` ile aynı fail-safe.
+
+# A3 (2026-09-14): panel ölçek SÜRÜMÜ. Satır başına `norm_version` yazılır; okuma
+# tarafı (`_stored_panel_score`) sürüme göre doğru haritayı uygular. Sürüm 1 =
+# lineer (min(100, raw/cap×100)), sürüm 2 = log (100×log1p(raw)/log1p(REF)).
+MONITORING_SCORE_NORM_VERSION = 2
+
+
+def _panel_from_raw(raw_score: float) -> float:
+    """Ham velocity_score → panel (0-100). Aktif ölçek moduna göre monoton harita.
+
+    `linear`: eski `min(100, raw/CAP×100)` — CAP üstünde SERT kırpar (sıralama kaybı).
+    `log`   : `100×log1p(raw)/log1p(REF)` — REF'e kadar kırpma YOK; bildirilen
+              banttaki yığılma biter (A3). REF gözlenen max'ın üstünde seçilir.
     """
     try:
         raw = float(raw_score or 0)
     except (TypeError, ValueError):
         return 0.0
-    cap = float(config.MONITORING_SCORE_NORM_CAP)
-    if not cap > 0:  # cap<=0/NaN → normalizasyon tanımsız; ham skoru kelepçele
+    if raw <= 0:
+        return 0.0
+    if _score_norm_mode() == "linear":
+        cap = float(getattr(config, "MONITORING_SCORE_NORM_CAP", 2000))
+        if not cap > 0:  # cap<=0/NaN → normalizasyon tanımsız; ham skoru kelepçele
+            return round(max(0.0, min(100.0, raw)), 1)
+        return round(max(0.0, min(100.0, raw / cap * 100)), 1)
+    ref = float(getattr(config, "MONITORING_SCORE_NORM_LOG_REF", 25000) or 0)
+    denom = math.log1p(ref) if ref > 0 else 0.0
+    if denom <= 0:  # REF<=0/NaN → log haritası tanımsız; ham skoru kelepçele
         return round(max(0.0, min(100.0, raw)), 1)
-    return round(max(0.0, min(100.0, raw / cap * 100)), 1)
+    return round(max(0.0, min(100.0, 100.0 * math.log1p(raw) / denom)), 1)
+
+
+def _raw_from_panel(panel_score: float) -> float:
+    """Panel (0-100) → ham velocity_score: `_panel_from_raw`'un TERSİ.
+
+    Admin eşikleri panel ölçeğinde girilir (`min_score`), aday kapısı ise ham
+    skorla karşılaştırır. Ters harita yanlış olursa admin eşiği sessizce kayar
+    (log modda doğrusal ters çevirme ~%15 hata verirdi: panel 70 → 1400 yerine
+    1195).
+    """
+    try:
+        panel = max(0.0, min(100.0, float(panel_score)))
+    except (TypeError, ValueError):
+        panel = 0.0
+    if _score_norm_mode() == "linear":
+        cap = float(getattr(config, "MONITORING_SCORE_NORM_CAP", 2000))
+        return panel / 100.0 * max(1e-9, cap)
+    ref = float(getattr(config, "MONITORING_SCORE_NORM_LOG_REF", 25000) or 0)
+    denom = math.log1p(ref) if ref > 0 else 0.0
+    if denom <= 0:
+        return panel
+    return math.expm1(panel / 100.0 * denom)
+
+
+def normalize_score(raw_score: float) -> float:
+    """Ham velocity_score → panel (0-100). Kanonik kaynak: `_panel_from_raw`.
+
+    NOT: `velocity._panel_score` bu formülün BİREBİR kopyasıdır (modül döngüsel
+    import nedeniyle monitoring import edilemez). İkisinin eşitliği
+    `test_d08_skor_doygunluk.py` parite testiyle kilitlidir.
+    """
+    return _panel_from_raw(raw_score)
 
 
 
@@ -136,6 +196,7 @@ async def _persist_runtime_state() -> None:
             "refire_min_move_pct": MONITORING_REFIRE_MIN_MOVE_PCT,
             "notified_prices": _monitoring_state["notified_prices"],
             "refire_blocked": int(_monitoring_state.get("refire_blocked", 0)),
+            "rr_blocked": int(_monitoring_state.get("rr_blocked", 0)),
             "risk_off": bool(_monitoring_state["risk_off"]),
             # M1/P2 (R4-11): rejim "BİLİNMİYOR" bayrağı da kalıcılaştırılır.
             "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
@@ -166,6 +227,7 @@ async def restore_runtime_state() -> None:
                 _monitoring_state["candidate_streak"] = payload.get("candidate_streak") or {}
                 _monitoring_state["notified_prices"] = payload.get("notified_prices") or {}
                 _monitoring_state["refire_blocked"] = int(payload.get("refire_blocked", 0) or 0)
+                _monitoring_state["rr_blocked"] = int(payload.get("rr_blocked", 0) or 0)
                 _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
                 # M1/P2 (R4-11): BİLİNMİYOR bayrağı geri yüklenir (restart sonrası
                 # ilk taramaya kadar "rejim biliniyor" yanılsaması olmasın).
@@ -238,11 +300,12 @@ def _effective_min_raw_score(settings) -> float:
 
     Öncelik sırası (dokümante):
       1. **Açık admin panel eşiği** (`min_score`, 0-100) verilmişse → ham eşik
-         `panel/100 × MONITORING_SCORE_NORM_CAP` olarak TÜRETİLİR. Admin panel
-         ölçeğinde düşünür; cap değişse de bu türetme tutarlıdır.
+         AKTİF ölçeğin TERS haritasıyla türetilir (`_raw_from_panel`; A3 sonrası
+         log modda `expm1(panel/100 × log1p(REF))`). Admin panel ölçeğinde
+         düşünür; ölçek/mode değişse de bu türetme tutarlıdır.
       2. Aksi halde → `config.MONITORING_MIN_RAW_SCORE` (varsayılan 1400). Bu mutlak
-         ham eşik cap'ten BAĞIMSIZDIR; böylece `MONITORING_SCORE_NORM_CAP` ileride
-         değişse bile aday kapısı sessizce kaymaz.
+         ham eşik ölçekten BAĞIMSIZDIR; böylece ölçek haritası ileride değişse bile
+         aday kapısı sessizce kaymaz.
 
     "Açık" belirleme: settings'te `min_score_explicit` işareti varsa o kullanılır
     (DB'den gelen ayarlar bu işareti taşır); yoksa `min_score` anahtarının
@@ -250,7 +313,6 @@ def _effective_min_raw_score(settings) -> float:
     varsayılan ham eşik devreye döner; testlerin/manuel sözlüklerin geriye
     dönük uyumu korunur).
     """
-    cap = float(config.MONITORING_SCORE_NORM_CAP)
     explicit = settings.get("min_score_explicit")
     if explicit is None:
         explicit = settings.get("min_score") is not None
@@ -258,7 +320,8 @@ def _effective_min_raw_score(settings) -> float:
         raw_panel = settings.get("min_score")
         panel = max(0.0, min(100.0, float(
             raw_panel if raw_panel is not None else config.MONITORING_MIN_SCORE_DEFAULT)))
-        return round(panel / 100.0 * max(1e-9, cap), 4)
+        # A3: panel → ham dönüşümü AKTİF ölçeğin tersi olmalı (log modda expm1).
+        return round(_raw_from_panel(panel), 4)
     return float(config.MONITORING_MIN_RAW_SCORE)
 
 
@@ -268,11 +331,16 @@ def _threshold_fields(settings) -> dict:
     `monitoring_min_raw_score`: aday kapısının karşılaştırdığı HAM skor eşiği.
     `monitoring_min_score_panel`: aynı eşiğin panel (0-100) karşılığı — gösterim.
     `effective_min_score`: geriye dönük uyumluluk (== panel eşiği).
+    A4 R/R kapısı alanları (`rr_*`) — panel/lejant bu kalibrasyonu gösterir.
     """
     return {
         "effective_min_score": _effective_min_score(settings),
         "monitoring_min_raw_score": _effective_min_raw_score(settings),
         "monitoring_min_score_panel": _effective_min_score(settings),
+        "rr_enabled": bool(getattr(config, "MONITORING_RR_ENABLED", True)),
+        "rr_min": float(getattr(config, "MONITORING_RR_MIN", 0.6)),
+        "rr_sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 3.0)),
+        "rr_blocked": int(_monitoring_state.get("rr_blocked", 0)),
     }
 
 
@@ -345,11 +413,15 @@ async def get_user_notification_settings() -> dict:
             "min_target_pct": float(settings.get("min_target_pct", 2.0)),
             "quiet_hours_start": settings.get("quiet_hours_start", None),
             "quiet_hours_end": settings.get("quiet_hours_end", None),
+            # A5: verilmezse config varsayılanı (AÇIK) — `_notify` ile aynı öncelik.
+            "macd_refire_gate": _coerce_bool(settings.get(
+                "macd_refire_gate", getattr(config, "MONITORING_MACD_REFIRE_GATE", True))),
         }
     except Exception:
         return {"enabled": True, "min_score": config.MONITORING_MIN_SCORE_DEFAULT,
                 "min_score_explicit": False,
-                "min_target_pct": 2.0, "quiet_hours_start": None, "quiet_hours_end": None}
+                "min_target_pct": 2.0, "quiet_hours_start": None, "quiet_hours_end": None,
+                "macd_refire_gate": bool(getattr(config, "MONITORING_MACD_REFIRE_GATE", True))}
 
 
 @router.get("/api/monitoring/settings")
@@ -419,7 +491,7 @@ async def update_monitoring_settings(payload: dict, request: Request):
         raise HTTPException(status_code=422, detail="Gövde bir JSON nesnesi olmalı")
     existing = await get_user_notification_settings()
     editable = ("enabled", "min_score", "min_target_pct",
-                "quiet_hours_start", "quiet_hours_end")
+                "quiet_hours_start", "quiet_hours_end", "macd_refire_gate")
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
 
     # --- Doğrulama (geçersiz girdi → 422, state BOZULMAZ) ---
@@ -463,6 +535,10 @@ async def update_monitoring_settings(payload: dict, request: Request):
         "min_target_pct": min_target,
         "quiet_hours_start": quiet_start,
         "quiet_hours_end": quiet_end,
+        # A5: MACD-teyitli yeniden bildirim kapısı (admin aç/kapa). Verilmezse
+        # config varsayılanı korunur — `_notify` aynı önceliği uygular.
+        "macd_refire_gate": _coerce_bool(merged.get(
+            "macd_refire_gate", getattr(config, "MONITORING_MACD_REFIRE_GATE", True))),
     }
     await database.set_llm_setting("monitoring_notification_settings", json.dumps(settings))
     await log_user_action(None, None, "monitoring", "MONITORING_SETTINGS_UPDATE",
@@ -572,6 +648,14 @@ async def _flush_deferred_push():
                     await database.mark_monitoring_push_sent(nid)
                 except Exception as exc:
                     logger.warning("push etiketi güncellenemedi %s: %s", nid, exc)
+            # R3: yükseliş bildiriminin kanıt satırı ayrı tabloda (`rising_alerts`);
+            # `id` yerine `alert_id` taşır → dürüstlük kuralı orada da uygulanır.
+            alert_id = notif.get("alert_id")
+            if alert_id:
+                try:
+                    await database.mark_rising_alert_notified(int(alert_id), True)
+                except Exception as exc:
+                    logger.debug("rising push etiketi güncellenemedi %s: %s", alert_id, exc)
         else:
             # Gönderilemedi; TTL'e kadar bir sonraki fırsatta yeniden dene.
             survivors.append(notif)
@@ -613,6 +697,41 @@ def _ticker_price(symbol: str) -> float | None:
     except (TypeError, ValueError):
         return None
     return price if price > 0 else None
+
+
+def _rr_ratio(target_pct: float) -> float | None:
+    """Adayın ödül/risk oranı: TP mesafesi / SL mesafesi (ikisi de YÜZDE).
+
+    SL dayanağı GERÇEK çıkış stop'udur (`MONITORING_RR_SL_PCT`, varsayılan %3 →
+    `AUTO_PAPER_SL_PCT_DEFAULT` ile hizalı; pozisyonlar `stop_loss =
+    fill_entry*(1-sl_pct)` ile açılır). Ölçülemeyen durumlarda None.
+    """
+    if not target_pct or target_pct <= 0:
+        return None
+    sl_pct = float(getattr(config, "MONITORING_RR_SL_PCT", 3.0) or 0.0)
+    if sl_pct <= 0:
+        return None
+    return float(target_pct) / sl_pct
+
+
+def _rr_gate_blocks(price: float, target_pct: float) -> bool:
+    """A4: düşük ödül/risk adayını bildirme (True → `_notify` continue eder).
+
+    Kalibrasyon (2026-09-14, gerçek DB): hedef bandı → dokunma oranı
+    %2.00 → %8.8 (n=13137), %3.00 → %11.5 (n=15889), %4.00 → %1.3 (n=204).
+    Yani yüksek hedef DAHA KÖTÜ vuruyor; "RR'yi yükselt" yönlü sıkı bir kapı
+    isabeti en düşük bandı seçer. Bu yüzden eşik (`MONITORING_RR_MIN`, 0.6)
+    yalnızca ödülü riskine göre anlamsız olan adayı eler (hedef < %1.8);
+    tipik %2.0/%3.0 hedefleri geçer. Detay: `config.py` A4 bloğu.
+    """
+    if not getattr(config, "MONITORING_RR_ENABLED", True):
+        return False
+    if not price or price <= 0:
+        return False
+    rr = _rr_ratio(target_pct)
+    if rr is None:
+        return False
+    return rr < float(getattr(config, "MONITORING_RR_MIN", 0.6))
 
 
 def _build_notification(sym, c, settings, first_price: float | None = None) -> dict:
@@ -665,6 +784,14 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         "horizon": horizon,
         "ml_hit_probability": ml_prob,
         "ml_target_pct": c.get("ml_target_pct"),
+        # A4: ödül/risk oranı ve dayanağı backend'den yayınlanır. Frontend
+        # kendi SL sabitini varsaymasın (kalibrasyon tek kaynaktan gelsin).
+        "rr": round(_rr_ratio(target), 3) if _rr_ratio(target) is not None else None,
+        "sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 3.0) or 0.0),
+        # A3: satırın yazıldığı ölçek sürümü + cap. Okuma tarafı bu etiketle
+        # doğru haritayı uygular (etiket yoksa kayıt lineer kabul edilir).
+        "norm_version": MONITORING_SCORE_NORM_VERSION,
+        "norm_cap": float(getattr(config, "MONITORING_SCORE_NORM_CAP", 2000) or 0),
         "settings_applied": {
             "min_score": settings.get("min_score"),
             "min_target_pct": settings.get("min_target_pct"),
@@ -690,6 +817,17 @@ def _row_norm_cap(row: dict) -> float:
     return float(config.MONITORING_SCORE_NORM_CAP)
 
 
+def _row_norm_version(row: dict) -> int | None:
+    """Satırın yazıldığı panel ölçek sürümü (A3). Yoksa None → A3 öncesi (lineer)."""
+    raw_version = row.get("norm_version")
+    if raw_version in (None, ""):
+        return None
+    try:
+        return int(float(raw_version))
+    except (TypeError, ValueError):
+        return None
+
+
 def _stored_panel_score(row: dict) -> float:
     """DB'deki score değerini panel (0-100) ölçeğine getirir.
 
@@ -702,6 +840,13 @@ def _stored_panel_score(row: dict) -> float:
     M1/P1 (R2-03): satırda opsiyonel `norm_cap` varsa (yazım anındaki cap)
     normalize bu cap ile yapılır; yoksa güncel cap'e düşülür. Böylece eski
     kayıtlar bugünkü cap ile yanlış yeniden ölçeklenmez.
+
+    A3 (2026-09-14): SINCE sonrası kayıtlar PANEL değeri taşır ama HANGİ ölçekte
+    yazıldıkları `norm_version` ile ayrılır. Satırın sürümü aktif sürümden farklıysa
+    (veya etiket yoksa = A3 öncesi lineer) ve `raw_score` mevcutsa değer AKTİF
+    haritayla yeniden hesaplanır — böylece rapor/eşik karşılaştırması tek ölçekte
+    yapılır. Ham skor yoksa (kırpılmış lineer değer geri alınamaz) eski değer
+    olduğu ölçekte bırakılır; bu bilinçli bir "en iyi çaba" sınırıdır.
     """
     try:
         detected = float(row.get("detected_at") or 0)
@@ -710,12 +855,19 @@ def _stored_panel_score(row: dict) -> float:
     if detected and detected < float(config.MONITORING_SCORE_NORM_SINCE):
         # Eski (yeni 0-100 formülü öncesi) ham skorları cap'e göre bir kez
         # panel ölçeğine çevir. Yeni kayıtlarda skor zaten 0-100'dür.
+        # NOT: bu kayıtlar yazıldıkları LİNEER ölçekte yorumlanır (satırın kendi
+        # norm_cap'i ile); A3 haritası bunlara uygulanmaz.
         try:
             raw = float(row.get("score") or 0)
         except (TypeError, ValueError):
             raw = 0.0
         cap = _row_norm_cap(row)
         return round(max(0.0, min(100.0, 100.0 * raw / cap)), 1) if cap > 0 else round(max(0.0, min(100.0, raw)), 1)
+    # A3: farklı ölçek sürümüyle yazılmış panel değeri → ham varsa aktif haritayla yeniden hesapla.
+    if _row_norm_version(row) != MONITORING_SCORE_NORM_VERSION:
+        raw_score = row.get("raw_score")
+        if raw_score is not None:
+            return _panel_from_raw(raw_score)
     try:
         return float(row.get("score") or 0)
     except (TypeError, ValueError):
@@ -858,11 +1010,28 @@ async def _notify(candidates_list, settings) -> list:
                 abs(base_px - last_px) / last_px * 100 < MONITORING_REFIRE_MIN_MOVE_PCT):
             _monitoring_state["refire_blocked"] = int(_monitoring_state.get("refire_blocked", 0)) + 1
             continue
+        # A4: R/R kapisi — dusuk risk/odul adayi yalnizca YENI bildirimde
+        # engellenir (mevcut BEKLIYOR bildirim guncellenmesi etkilenmez).
+        # Sayaç kaliibrasyon icin tutulur: "kac aday bastirildi" gorunur olmali.
+        if _rr_gate_blocks(base_px, float(c.get("target_pct") or 0) or 0.0):
+            _monitoring_state["rr_blocked"] = int(_monitoring_state.get("rr_blocked", 0)) + 1
+            continue
+        # A5: MACD-teyitli histerezis — skor yukselmedigi ve MACD teyidi zayif
+        # oldugunda yeniden bildirim basma. Anahtar SETTINGS'ten okunur (admin
+        # panelinden kapatilabilir); settings'te yoksa config varsayilanina duser.
+        if bool((settings or {}).get("macd_refire_gate",
+                                     getattr(config, "MONITORING_MACD_REFIRE_GATE", True))):
+            _ns = _monitoring_state.setdefault("notified_scores", {})
+            prev_score = _ns.get(sym)
+            macd_strong = bool(c.get("macd_bullish") or c.get("macd_rising"))
+            if prev_score is not None and not macd_strong and score <= float(prev_score):
+                continue
         notif = _build_notification(sym, c, settings)
         notif["updated"] = False
         new_entries.append(notif)
         notified.append(notif)
         _monitoring_state["notified_symbols"][sym] = now_mono
+        _monitoring_state.setdefault("notified_scores", {})[sym] = score
         if base_px > 0:
             _monitoring_state["notified_prices"][sym] = base_px
         _monitoring_state["candidate_streak"].pop(sym, None)
@@ -966,6 +1135,240 @@ async def _deliver_scan_notifications(notified: list) -> None:
         await ws_manager.broadcast({"type": "monitoring_alert", "data": notified})
     except Exception as exc:
         logger.warning("Monitoring WS broadcast hatasi: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# YÜKSELİŞ SİNYALLERİ (R3, 2026-09-14)
+#
+# MACD MONITOR'ün kanıtlanmış erken-öncüleri (`app/rising_signals.py`) radara
+# bağlanır. Tespit sunucu tarafındadır (eskiden istemci `/api/macd-monitor`
+# yanıtını yeniden yorumluyordu → bildirim/kanıt yoktu).
+#
+# Teslim zinciri radarın kardeşidir: push → WS `rising_alert` (global dialog) →
+# otonom paper. Sessiz saat/erteleme ve `sent_via_push` dürüstlüğü AYNEN korunur.
+# ---------------------------------------------------------------------------
+RISING_LABEL = {
+    "erken": "ERKEN SİNYAL (YAKLAŞIYOR)",
+    "yukselis": "YÜKSELİŞ EĞİLİMİ",
+}
+
+
+def _rising_summary_safe() -> dict | None:
+    """Yükseliş özeti + panelin gösterdiği fiyat/TP/SL bilgisi.
+
+    Fiyat burada eklenir çünkü `rising_signals` (tek doğruluk kaynağı) `monitoring`i
+    import EDEMEZ (döngü olurdu); fiyat zaten bu modülün taze-ticker kuralıyla
+    (`_ticker_price`) alınır. Hata durumunda state yanıtı BOZULMAZ (None döner).
+    """
+    try:
+        from app import rising_signals
+        payload = rising_signals.rising_summary_payload()
+    except Exception as exc:
+        logger.debug("rising özeti alınamadı: %s", exc)
+        return None
+    try:
+        sl_pct = float(getattr(config, "MONITORING_RR_SL_PCT", 3.0) or 0.0)
+        for cand in payload.get("candidates") or []:
+            price = _ticker_price(str(cand.get("symbol") or ""))
+            target = float(cand.get("target_pct") or 0)
+            cand["price"] = float(price) if price else None
+            cand["sl_pct"] = sl_pct
+            cand["rr"] = round(target / sl_pct, 3) if (sl_pct > 0 and target > 0) else None
+    except Exception as exc:
+        logger.debug("rising fiyat zenginleştirme: %s", exc)
+    return payload
+
+
+def _build_rising_notification(candidate: dict, price: float) -> dict:
+    """Yükseliş adayını `_send_push` + `try_open_from_notification` zarfına çevir.
+
+    Zarf alanları bilinçli olarak monitoring bildirimiyle AYNI tutulur
+    (`auto_paper.try_open_from_notification` değiştirilmeden kullanılabilsin).
+    """
+    symbol = str(candidate.get("symbol") or "").upper()
+    kind = str(candidate.get("kind") or "erken")
+    label = RISING_LABEL.get(kind, "YÜKSELİŞ SİNYALİ")
+    signals = candidate.get("signals") or {}
+    target = float(candidate.get("target_pct") or 2.0)
+    score = float(candidate.get("score") or 0.0)
+    proximity = signals.get("proximity")
+    prox_txt = ""
+    if isinstance(proximity, (int, float)):
+        prox_txt = f" · zirveye yakınlık %{round(float(proximity) * 100)}"
+    expected_price = price * (1 + target / 100) if price > 0 else 0.0
+    now = time.time()
+    message = (
+        f"📈 {symbol} | {label} | Skor {score:.0f}{prox_txt} | "
+        f"Anlık: {price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
+    )
+    return {
+        "symbol": symbol,
+        "message": message,
+        "title": f"📈 {symbol} · {label}",
+        "url": f"/charts?symbol={symbol}",
+        "tag": f"rising-{symbol}",
+        "detected_at": now,
+        "score": score,
+        "target_pct": target,
+        "price": price,
+        "expected_price": expected_price,
+        "horizon_minutes": 5,
+        "mode": "yukselis",
+        "kind": kind,
+        "signals": signals,
+        "early_score": candidate.get("early_score"),
+        "proximity": proximity,
+        "green": candidate.get("green"),
+        "strength": candidate.get("strength"),
+        # Aynı saat kovasında aynı sembol için TEK otonom giriş (churn koruması
+        # `auto_paper` tarafında `notification_key` ile uygulanır).
+        "notification_key": f"rising-{kind}-{symbol}-{int(now // 3600)}",
+        "updated": False,
+        "source": "rising",
+    }
+
+
+async def _rising_deliver(notified: list) -> None:
+    """Yükseliş teslimi: push + WS `rising_alert` + otonom paper.
+
+    MUTLAKA state kilidi DIŞINDA çağrılır (push ağ I/O'su + auto_paper DB işi).
+    """
+    if not notified:
+        return
+    quiet = bool((notified[0] or {}).get("quiet_hours"))
+    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    if vapid_configured and not quiet:
+        for notif in notified:
+            ok = await _send_push(notif)
+            notif["push_success"] = ok
+            if ok:
+                notif["sent_via_push"] = True
+            alert_id = notif.get("alert_id")
+            if alert_id:
+                try:
+                    await database.mark_rising_alert_notified(alert_id, bool(ok))
+                except Exception as exc:
+                    logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
+    elif quiet:
+        # Sessiz saat: push ERTELENİR (radar ile aynı kuyruk ve flush yolu).
+        for notif in notified:
+            _deferred_push.append(notif)
+    else:
+        logger.info("Yükseliş push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d sinyal)", len(notified))
+        for notif in notified:
+            notif["push_success"] = False
+            alert_id = notif.get("alert_id")
+            if alert_id:
+                try:
+                    await database.mark_rising_alert_notified(alert_id, False)
+                except Exception as exc:
+                    logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
+    # Otonom paper: yalnız yeni sinyaller; skor eşiği GEÇİLMELİ ve anahtar AÇIK.
+    if bool(getattr(config, "RISING_AUTONOMOUS_ENABLED", True)):
+        min_score = float(getattr(config, "RISING_AUTO_MIN_SCORE", 70) or 0)
+        try:
+            from app.routers.auto_paper import try_open_from_notification
+            for notif in notified:
+                if float(notif.get("score") or 0) < min_score:
+                    continue
+                try:
+                    opened = await try_open_from_notification(notif)
+                except Exception as exc:
+                    logger.debug("rising auto_paper %s: %s", notif.get("symbol"), exc)
+                    continue
+                if isinstance(opened, dict) and opened.get("trade_id") and notif.get("alert_id"):
+                    try:
+                        await database.mark_rising_alert_trade(int(notif["alert_id"]),
+                                                               int(opened["trade_id"]))
+                    except Exception as exc:
+                        logger.debug("rising işlem bağı: %s", exc)
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.warning("rising auto_paper toplu deneme hatası: %s", exc)
+    try:
+        await ws_manager.broadcast({"type": "rising_alert", "data": notified})
+    except Exception as exc:
+        logger.warning("Yükseliş WS broadcast hatası: %s", exc)
+
+
+async def _run_rising_scan() -> dict:
+    """Yükseliş taraması: tespit → fiyat → histerezis → kanıt → bildirim.
+
+    Dönüş: {"detected": n, "notified": n, "skipped_price": n, "stale": bool}
+    """
+    from app import rising_signals
+
+    summary = {"detected": 0, "notified": 0, "skipped_price": 0, "stale": False}
+    if not bool(getattr(config, "RISING_SIGNALS_ENABLED", True)):
+        return summary
+    settings = await get_user_notification_settings()
+    if not bool(settings.get("enabled", True)):
+        return summary
+    candidates = rising_signals.detect_rising_candidates()
+    summary["detected"] = len(candidates)
+    if not candidates:
+        summary["stale"] = rising_signals.rising_is_stale()
+        return summary
+    quiet = _in_quiet_hours(settings)
+    now = time.monotonic()
+    max_per_scan = max(1, int(getattr(config, "RISING_MAX_PER_SCAN", 3) or 3))
+    notify_enabled = bool(getattr(config, "RISING_NOTIFY_ENABLED", True))
+    notified: list = []
+    for candidate in candidates:
+        symbol = str(candidate.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        # Histerezis: AYNI öncü kümesi sürüyorsa yeni bilgi yoktur → ne kayıt ne
+        # bildirim (aksi halde kanıt tablosu her turda şişerdi).
+        prev_key = rising_signals.last_key(symbol)
+        cur_key = rising_signals.signal_key(candidate)
+        if prev_key is not None and not rising_signals.rising_edge_trigger(prev_key, cur_key):
+            continue
+        is_first_observation = prev_key is None
+        # Fiyat: bayat ticker ile bildirim/beklenti üretme (radar ile AYNI kural).
+        price = _ticker_price(symbol) if notify_enabled else None
+        if notify_enabled and (not price or price <= 0):
+            summary["skipped_price"] += 1
+            continue
+        # Sessiz arm (ilk gözlem): restart fırtınasını engelle ama sinyali KAYDET —
+        # panel ve rapor bundan beslenir, yalnız push/dialog yapılmaz.
+        fire = notify_enabled and not is_first_observation and rising_signals.should_fire(candidate, now)
+        if fire and len(notified) >= max_per_scan:
+            continue
+        notif = _build_rising_notification(candidate, float(price)) if notify_enabled else None
+        if notif is not None:
+            notif["quiet_hours"] = bool(quiet)
+        # Kanıt katmanı: bildirimden ÖNCE yazılır ki her sinyal ölçülebilir olsun.
+        alert_id = await database.record_rising_alert({
+            **candidate,
+            "price": float(price) if notify_enabled else None,
+            "expected_price": notif["expected_price"] if notif else None,
+            "created_at": time.time(),
+            "notified": bool(fire),
+        })
+        if not fire:
+            # Sessiz arm: durumu ilerlet (cooldown BAŞLATMA) ki cooldown'sız
+            # ilk turda birikme olmasın.
+            if is_first_observation:
+                rising_signals.observe(candidate)
+            continue
+        rising_signals.mark_fired(candidate, now)
+        if notif is None:
+            continue
+        if alert_id:
+            notif["alert_id"] = alert_id
+        notified.append(notif)
+    if notified:
+        _monitoring_state["rising_notified"] = int(_monitoring_state.get("rising_notified", 0)) + len(notified)
+        try:
+            await _rising_deliver(notified)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Yükseliş teslimi: %s", exc)
+    summary["notified"] = len(notified)
+    return summary
 
 
 def _check_pending_targets():
@@ -1309,6 +1712,11 @@ async def monitoring_state():
             "scope": "global_admin",
             "risk_off": _monitoring_state["risk_off"],
             "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
+            # R3 (2026-09-14): yükseliş/erken adayları SUNUCUDAN gelir. Eskiden
+            # istemci `/api/macd-monitor` yanıtını yeniden yorumluyordu (bildirim
+            # ve kanıt yoktu). Snapshot'tan türetilir → ağ isteği YOK, hızlı.
+            "rising": _rising_summary_safe(),
+            "rising_notified": int(_monitoring_state.get("rising_notified", 0)),
             # M1/P0: hem ham kapı hem panel gösterim eşiği açıkça raporlanır.
             **_threshold_fields(settings),
             # M1/P1 (R4-02): canlı görev kaydından gerçek liveness.
@@ -1758,6 +2166,15 @@ async def monitoring_background_loop():
             raise
         except Exception as exc:
             logger.warning("monitoring ertelenen push gönderimi: %s", exc)
+        # R3 (2026-09-14): yükseliş/erken sinyalleri — MACD snapshot'ından türetilir
+        # (ağ isteği yok). Her iki kilidin DIŞINDA: push ağ I/O'su + otonom paper
+        # DB işi GET /state ve /scan isteklerini bloklamamalı.
+        try:
+            await _run_rising_scan()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Yükseliş taraması hatası: %s", exc)
         await asyncio.sleep(SCAN_INTERVAL_SEC)
 
 

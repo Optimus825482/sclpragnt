@@ -44,6 +44,11 @@ def _reset_state():
     # (kapı doğru çalışıyor; test izolasyonu eksikti).
     monitoring._monitoring_state["notified_prices"] = {}
     monitoring._monitoring_state["refire_blocked"] = 0
+    # A5 (2026-09-14): MACD histerezis kapısı varsayılan AÇIK; skor hafızası da
+    # sıfırlanmazsa aynı sembolü kullanan ikinci test bastırılır (D-07 ile aynı
+    # izolasyon gerekçesi).
+    monitoring._monitoring_state["notified_scores"] = {}
+    monitoring._monitoring_state["rr_blocked"] = 0
     monitoring._deferred_push.clear()
 
 
@@ -72,20 +77,30 @@ class ScoreGateRawTests(unittest.TestCase):
 
     def test_explicit_admin_panel_overrides_default_raw(self):
         from app.routers import monitoring
-        from app.config import config
-        cap = config.MONITORING_SCORE_NORM_CAP
-        # Açık admin paneli 50 → ham eşik 50/100*cap.
+        # Açık admin panel eşiği → ham eşik AKTİF haritanın TERSİyle türetilir
+        # (A3 sonrası log modda `expm1(panel/100×log1p(REF))`, doğrusal DEĞİL).
         self.assertAlmostEqual(
             monitoring._effective_min_raw_score({"min_score": 50, "min_score_explicit": True}),
-            round(0.5 * cap, 4))
+            round(monitoring._raw_from_panel(50.0), 4))
 
     def test_backward_compat_panel_key_without_marker(self):
         from app.routers import monitoring
-        from app.config import config
         # `min_score` anahtarı varsa (testlerin/eski sözlüklerin) panel sayılır.
         self.assertAlmostEqual(
             monitoring._effective_min_raw_score({"min_score": 70.0}),
-            round(0.70 * config.MONITORING_SCORE_NORM_CAP, 4))
+            round(monitoring._raw_from_panel(70.0), 4))
+
+    def test_inverse_transform_is_not_linear_in_log_mode(self):
+        """Regresyon kilidi: log modda panel→ham doğrusal olsaydı eşik sessizce kayardı."""
+        from app.routers import monitoring
+        from app.config import config
+        panel = float(config.MONITORING_MIN_SCORE_DEFAULT)
+        linear_wrong = round(panel / 100.0 * float(config.MONITORING_SCORE_NORM_CAP), 4)
+        self.assertNotAlmostEqual(monitoring._raw_from_panel(panel), linear_wrong,
+                                  delta=1.0, msg="doğrusal ters çevirme kullanılmamalı")
+        # ve varsayılan eşiğin ham karşılığı korunmuş olmalı
+        self.assertAlmostEqual(1400.0, monitoring._raw_from_panel(panel),
+                               delta=1400.0 * 0.05)
 
     def test_run_scan_uses_raw_gate_source(self):
         from app.routers import monitoring
@@ -501,14 +516,28 @@ class ActiveNotificationScoreTests(unittest.IsolatedAsyncioTestCase):
 # ---------------------------------------------------------------------------
 class RobustnessTests(unittest.IsolatedAsyncioTestCase):
     def test_normalize_score_guards_zero_cap(self):
+        """`linear` modda cap<=0 → ZeroDivisionError değil, ham skor 0-100'e kelepçe."""
         from app.routers import monitoring
         from app.config import config
-        orig = config.MONITORING_SCORE_NORM_CAP
-        try:
-            config.MONITORING_SCORE_NORM_CAP = 0
-            self.assertEqual(monitoring.normalize_score(5.0), 5.0)  # ZeroDivisionError YOK
-        finally:
-            config.MONITORING_SCORE_NORM_CAP = orig
+        with patch.object(config, "MONITORING_SCORE_NORM_MODE", "linear"), \
+             patch.object(config, "MONITORING_SCORE_NORM_CAP", 0):
+            self.assertEqual(monitoring.normalize_score(5.0), 5.0)
+            self.assertEqual(monitoring.normalize_score(1000.0), 100.0)
+
+    def test_normalize_score_guards_zero_ref(self):
+        """A3: `log` modda REF<=0/bozuk → aynı fail-safe (ham skoru kelepçele)."""
+        from app.routers import monitoring
+        from app.config import config
+        with patch.object(config, "MONITORING_SCORE_NORM_LOG_REF", 0.0):
+            self.assertEqual(monitoring.normalize_score(5.0), 5.0)
+            self.assertEqual(monitoring.normalize_score(1000.0), 100.0)
+
+    def test_zero_ref_inverse_is_identity(self):
+        """REF bozuksa ters harita da patlamamalı (panel aynen döner)."""
+        from app.routers import monitoring
+        from app.config import config
+        with patch.object(config, "MONITORING_SCORE_NORM_LOG_REF", 0.0):
+            self.assertEqual(monitoring._raw_from_panel(42.0), 42.0)
 
     def test_effective_min_score_lower_clamped(self):
         from app.routers import monitoring

@@ -10,7 +10,7 @@ import { mergeMacdDelta } from "../lib/macdSnapshot";
 import { ML_PROB_CLASS, ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
 
 // R1-02: `min_score` artık BİLİNMİYOR olabilir (`null`) — başlangıçta backend
-// varsayılanı (70) dahil hiçbir sabit uydurulmaz; sunucunun `effective_min_score`
+// varsayılanı dahil hiçbir sabit uydurulmaz; sunucunun `effective_min_score`
 // alanı tek kaynaktır.
 type NotificationSettings = {
   enabled: boolean;
@@ -18,6 +18,9 @@ type NotificationSettings = {
   min_target_pct: number | null;
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
+  // A5: MACD-teyitli yeniden bildirim kapısı (histerezis). `null` = sunucu
+  // bildirmedi (henüz yüklenmedi) → arayüz "—" gösterir, varsaymaz.
+  macd_refire_gate: boolean | null;
 };
 
 type ProfileInfo = {
@@ -41,8 +44,14 @@ type Candidate = {
   horizon_minutes: number;
   ml_target_pct: number | null;
   ml_hit_probability: number | null;
+  // A4: backend'den gelen ödül/risk oranı ve SL dayanağı. Frontend SL'i kendi
+  // sabitinden varsaymaz — sunucu kalibrasyonu tek kaynaktır (aksi halde
+  // backend eşiği değişince ekrandaki R/R yalan olur).
+  rr?: number | null;
+  sl_pct?: number | null;
   block_reason?: string | null;
   profiles?: Record<string, ProfileInfo>;
+  status?: "bekliyor" | "tamamen" | "kismi" | "basarisiz" | null;
 };
 
 type MonitoringState = {
@@ -50,6 +59,50 @@ type MonitoringState = {
   scan_count: number;
   candidates: Candidate[];
   watchlist: Candidate[];
+};
+
+// R3 (2026-09-14): SUNUCU taraflı yükseliş/erken sinyalleri.
+// Eskiden bu panel `extractRisingCandidates` ile İSTEMCİDE `/api/macd-monitor`
+// yanıtından türetiliyordu → sunucuda tespit/bildirim/kanıt yoktu. Artık tek
+// doğruluk kaynağı `/api/monitoring/state` içindeki `rising` bloğudur; aynı
+// sinyaller bildirim + uygulama-içi dialog + otonom işlem de üretir.
+type RisingSignals = {
+  dip?: boolean;
+  approach?: boolean;
+  m1?: boolean;
+  pre_any?: boolean;
+  proximity?: number | null;
+  gap_atr?: number | null;
+  dip_hist?: number | null;
+  dip_delta?: number | null;
+  transition?: boolean;
+  squeeze_now?: boolean;
+  expand_now?: boolean;
+  break5?: boolean;
+  break15?: boolean;
+  buy_dominant?: boolean;
+};
+type RisingSignal = {
+  symbol: string;
+  kind: "erken" | "yukselis" | string;
+  score: number;
+  early_score: number | null;
+  strength: number | null;
+  green: number | null;
+  signals: RisingSignals;
+  target_pct: number;
+  // Sunucu state yanıtında zenginleştirilir (taze ticker + R/R dayanağı).
+  price?: number | null;
+  sl_pct?: number | null;
+  rr?: number | null;
+};
+type RisingBlock = {
+  enabled: boolean;
+  stale: boolean;
+  snapshot_age_sec: number | null;
+  count: number;
+  candidates: RisingSignal[];
+  thresholds: { min_strength: number; min_green: number; dip_gap_atr: number; cooldown_sec: number };
 };
 
 // R1-01: sunucu sağlık alanları (backend `monitoring.py:_monitoring_state`).
@@ -111,6 +164,7 @@ const parseSettings = (raw: unknown): NotificationSettings | null => {
     min_target_pct: numOrNull(value.min_target_pct),
     quiet_hours_start: (value.quiet_hours_start as string | null | undefined) ?? null,
     quiet_hours_end: (value.quiet_hours_end as string | null | undefined) ?? null,
+    macd_refire_gate: typeof value.macd_refire_gate === "boolean" ? value.macd_refire_gate : null,
   };
 };
 
@@ -119,12 +173,14 @@ const SCAN_INTERVAL_MS = 30_000;
 // 🔔 Son bildirimler geçmişi satırı (/api/monitoring/notifications → { history: [...] }).
 type NotificationRow = { symbol?: string; score?: number | null; target_pct?: number | null; detected_at?: number | null; sent_via_push?: boolean | null; mode?: string | null };
 
-// Backend normalize_score cap'i (config.MONITORING_SCORE_NORM_CAP, env ile
-// değişebilir; tipik ham skor 50-2000). Backend normalde `panel_score` alanını
-// gönderir ve asıl kaynak ODUR — buradaki sabit yalnızca `panel_score`
-// taşımayan eski/ara yanıtlar için emniyet ağıdır (H-21). Env değişirse
-// ekrandaki fallback değer backend'den sapabilir; backend'in gönderdiği
-// `panel_score` kullanıldığı sürece sapma olmaz.
+// Panel (0-100) ölçeğinin İSTEMCİ AYNASI. Backend normalde `panel_score` alanını
+// gönderir ve asıl kaynak ODUR — buradaki sabitler yalnızca `panel_score`
+// taşımayan eski/ara yanıtlar için emniyet ağıdır (H-21).
+// A3 (2026-09-14): backend haritası log'a geçti
+// (`panel = 100 × log1p(raw) / log1p(REF)`, REF = MONITORING_SCORE_NORM_LOG_REF).
+// `linear` yolu geri dönüş için korunur; ikisi backend ile hizalı tutulmalı.
+const SCORE_NORM_MODE: "log" | "linear" = "log";
+const SCORE_NORM_LOG_REF = 25000;
 const SCORE_NORM_CAP = 2000;
 
 // YÜKSELİŞ EĞİLİMİ ADAYLARI: MACD MONITOR GÜÇ skoru eşiği ve en az 5/6 zaman
@@ -137,40 +193,21 @@ const SCORE_NORM_CAP = 2000;
 // %2'si içinde" demektir; evren kompozisyonu değişince aynı ham veriyle liste
 // değişir. Eşik bilinçli olarak korunuyor (davranış değişikliği replay
 // gerektirir); yalnızca panel bunu "evren içi sıralama" olarak etiketler.
-const RISING_MIN_STRENGTH = 9.8;
-const RISING_MIN_GREEN = 5;
-const MACD_TFS = ["1m", "3m", "5m", "15m", "30m", "1h"];
-const MACD_TF_SHORT: Record<string, string> = { "1m": "1M", "3m": "3M", "5m": "5M", "15m": "15M", "30m": "30M", "1h": "1H" };
+// R3 (2026-09-14): eşikler artık SUNUCUDAN gelir (`rising.thresholds`) — istemci
+// sabiti KALDIRILDI. Aynı kural sunucuda hem paneli hem bildirimi hem de kanıt
+// kaydını besler; burada eşik tutmak sapma riskiydi (eskiden 9.8/5 ile birlikte
+// `MACD_TFS`/`extractRisingCandidates` de buradaydı; panel sunucuya taşındı).
 
-type RisingCandidate = {
-  symbol: string;
-  strength: number;
-  green: number;
-  dots: (boolean | null)[];
-};
-
-// Snapshot'tan eşiği geçen sembolleri çıkar (GÜÇ ≥ 9.8 VE en az 5/6 yeşil).
-const extractRisingCandidates = (payload: any): RisingCandidate[] => {
-  const symbols = payload?.symbols || {};
-  const universe = Array.isArray(payload?.universe) && payload.universe.length
-    ? payload.universe
-    : Object.keys(symbols);
-  const list: RisingCandidate[] = [];
-  for (const sym of universe) {
-    const row = symbols[sym] || {};
-    const tfs = row.tfs || {};
-    const dots = MACD_TFS.map((tf) => {
-      const cell = tfs[tf];
-      return cell ? Boolean(cell.green) : null;
-    });
-    const green = dots.filter((value) => value === true).length;
-    const strength = Number(row.strength);
-    if (!Number.isFinite(strength) || strength < RISING_MIN_STRENGTH) continue;
-    if (green < RISING_MIN_GREEN) continue;
-    list.push({ symbol: sym, strength, green, dots });
-  }
-  list.sort((a, b) => b.strength - a.strength || b.green - a.green);
-  return list;
+// R3: sunucu `rising` bloğundan sınıf filtresi + sıralama (istemci türetmesi YOK).
+const risingFlagIcons = (signals: RisingSignals | undefined): string => {
+  const s = signals || {};
+  return [
+    s.break5 || s.break15 ? "🚀" : "",
+    s.expand_now ? "⚡" : "",
+    s.squeeze_now ? "🧲" : "",
+    s.transition ? "🎯" : "",
+    s.buy_dominant ? "🐋" : "",
+  ].filter(Boolean).join(" ");
 };
 
 // SIRÇRAMA ADAYLARI: sıçrama skoru (0-100) ≥ eşik — kırılım/squeeze/hacim/agresör.
@@ -330,6 +367,69 @@ const HealthChip = ({ label, value, onText, offText, onTone, offTone }: {
   return <span className={`rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${HEALTH_TONE[tone]}`}>{label}: {text}</span>;
 };
 
+// C1: Canlılık / bayatlık rozeti.
+const LivenessBadge = ({ lastScanAt }: { lastScanAt: number | null }) => {
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    tick();
+    const timer = setInterval(tick, 10_000);
+    return () => clearInterval(timer);
+  }, []);
+  const ms = toMs(lastScanAt);
+  if (!ms || !now) {
+    return <span className={`rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${HEALTH_TONE.muted}`}>BAĞLANTI BİLİNMİYOR</span>;
+  }
+  const sec = Math.max(0, Math.round((now - ms) / 1000));
+  if (sec <= 90) {
+    return <span className={`rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${HEALTH_TONE.good}`}>CANLI · Tarama aktif</span>;
+  }
+  if (sec <= 300) {
+    return <span className={`rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${HEALTH_TONE.warn}`}>Veri bayat</span>;
+  }
+  return <span className={`rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${HEALTH_TONE.bad}`}>BAĞLANTI KESİLDİ</span>;
+};
+
+// C2: TP / SL / R:R hesaplayıcı.
+// A4: SL dayanağı ve R/R sunucudan gelir (`Candidate.sl_pct` / `Candidate.rr`);
+// ikisi de yoksa (eski/ara yanıt) hesaplanamaz → "—" gösterilir, uydurma
+// sabit (eski `0.03`) KULLANILMAZ.
+const computeTpSlRr = (c: Candidate) => {
+  const price = Number(c.price);
+  const targetPct = Number(c.target_pct) > 0 ? Number(c.target_pct) : Number(c.ml_target_pct);
+  const slPct = Number(c.sl_pct);
+  const serverRr = Number(c.rr);
+  const valid = Number.isFinite(price) && price > 0 && Number.isFinite(targetPct) && targetPct > 0;
+  if (!valid) return { tp: null as number | null, sl: null as number | null, rr: null as number | null };
+  const tp = price * (1 + targetPct / 100);
+  const hasSl = Number.isFinite(slPct) && slPct > 0;
+  const sl = hasSl ? price * (1 - slPct / 100) : null;
+  const rr = Number.isFinite(serverRr) && serverRr > 0
+    ? serverRr
+    : (hasSl ? targetPct / slPct : null);
+  return { tp, sl, rr };
+};
+
+// C4: Durum rozeti renkleri.
+const STATUS_STYLE: Record<string, string> = {
+  bekliyor: "border-bunker-600 bg-bunker-800/60 text-bunker-muted",
+  tamamen: "border-neon-green/40 bg-neon-green/10 text-neon-green",
+  kismi: "border-yellow-400/40 bg-yellow-400/10 text-yellow-300",
+  basarisiz: "border-neon-red/40 bg-neon-red/10 text-neon-red",
+};
+const STATUS_LABEL: Record<string, string> = {
+  bekliyor: "BEKLİYOR",
+  tamamen: "TAMAMEN",
+  kismi: "KISMI",
+  basarisiz: "BAŞARISIZ",
+};
+const StatusChip = ({ status }: { status?: string | null }) => {
+  const key = status ?? "bekliyor";
+  const style = STATUS_STYLE[key] ?? STATUS_STYLE.bekliyor;
+  const label = STATUS_LABEL[key] ?? STATUS_LABEL.bekliyor;
+  return <span className={`rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${style}`}>{label}</span>;
+};
+
 // Panel (0-100) ölçeği: admin eşiği ve bildirim skoru bu ölçekte; ham
 // velocity_score (0-200+) arayüzde artık gösterilmez (2026-09-04).
 // R1-07: skor BİLİNMİYORSA `null` döner — eskiden eksik skor `0`'a düşüp
@@ -343,12 +443,20 @@ const panelScore = (c: { panel_score?: number | null; velocity_score?: number | 
   if (c.velocity_score == null) return null;
   const raw = Number(c.velocity_score);
   if (!Number.isFinite(raw)) return null;
+  if (raw <= 0) return 0;
+  if (SCORE_NORM_MODE === "log") {
+    return Math.round(100 * Math.log1p(raw) / Math.log1p(SCORE_NORM_LOG_REF) * 10) / 10;
+  }
   return Math.round(100 * Math.min(1, raw / SCORE_NORM_CAP) * 10) / 10;
 };
 
 // Skor tonu: veri yok → nötr; yüksek → yeşil; orta → sarı; düşük → kırmızı.
+// A3 (2026-09-14): eşikler YENİ panel ölçeğine ankrajlıdır — eskiden 70/50 idi
+// (lineer ham 1400/1000); log haritada aynı ham noktalar 71.5/68.2'ye denk gelir.
+const SCORE_TONE_GREEN = 71.5;
+const SCORE_TONE_YELLOW = 68.2;
 const scoreColor = (score: number | null) =>
-  score == null ? "text-bunker-muted" : score >= 70 ? "text-neon-green" : score >= 50 ? "text-yellow-300" : "text-neon-red";
+  score == null ? "text-bunker-muted" : score >= SCORE_TONE_GREEN ? "text-neon-green" : score >= SCORE_TONE_YELLOW ? "text-yellow-300" : "text-neon-red";
 const scoreText = (score: number | null) => (score == null ? "—" : score.toFixed(1));
 
 // İzleme listesindeki sembolün aday olamama sebebi (velocity.py block_reason).
@@ -476,11 +584,21 @@ export default function MonitoringPage() {
   const [effectiveMinScore, setEffectiveMinScore] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
   // R1-02: eşik/ayar başlangıçta BİLİNMİYOR (`null`) — eski istemci sabiti
-  // `min_score: 50` backend varsayılanı 70 ile çelişiyordu ve fetch başarısız
-  // olursa kalıcı yanlış eşik gösteriliyordu. Tek kaynak sunucunun
-  // `effective_min_score` / `monitoring_min_score_panel` alanlarıdır.
+  // backend varsayılanıyla çelişiyordu ve fetch başarısız olursa kalıcı yanlış
+  // eşik gösteriliyordu. Tek kaynak sunucunun `effective_min_score` /
+  // `monitoring_min_score_panel` alanlarıdır.
   const [settings, setSettings] = useState<NotificationSettings | null>(null);
   const [thresholds, setThresholds] = useState<{ panel: number | null; raw: number | null }>({ panel: null, raw: null });
+  // A4: R/R kapısı kalibrasyonu (sunucudan). Panelde lejant olarak gösterilir:
+  // "hangi oran ve hangi SL dayanağı kullanılıyor, kaç aday bastırıldı".
+  const [rrGate, setRrGate] = useState<{ min: number | null; slPct: number | null; blocked: number | null; enabled: boolean | null }>(
+    { min: null, slPct: null, blocked: null, enabled: null },
+  );
+  // R3 (2026-09-14): sunucu taraflı yükseliş/erken sinyalleri (`state.rising`).
+  const [risingBlock, setRisingBlock] = useState<RisingBlock | null>(null);
+  // Panel filtresi/sıralaması — veri kaynağı SUNUCU; burada yalnız görünüm süzülür.
+  const [risingFilter, setRisingFilter] = useState<"all" | "erken" | "yukselis">("all");
+  const [risingSort, setRisingSort] = useState<"score" | "proximity" | "strength">("score");
   // R1-01: sunucu sağlığı + okuma hataları artık GÖRÜNÜR (yutulmaz).
   const [health, setHealth] = useState<ServerHealth>(EMPTY_HEALTH);
   const [stateError, setStateError] = useState<string | null>(null);
@@ -491,6 +609,10 @@ export default function MonitoringPage() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanNote, setScanNote] = useState<string | null>(null);
   const [selected, setSelected] = useState<{ c: Candidate; kind: "radar" | "watch" } | null>(null);
+  // C3: filtre / sıralama durumu.
+  const [filterSymbol, setFilterSymbol] = useState("");
+  const [filterMode, setFilterMode] = useState<"all" | "trend_devam" | "v_donusu" | "notr">("all");
+  const [sortBy, setSortBy] = useState<"score" | "target" | "rr" | "atr">("score");
   const [minScoreInput, setMinScoreInput] = useState<string>("");
   const [minScoreDirty, setMinScoreDirty] = useState(false);
   const [savingMinScore, setSavingMinScore] = useState(false);
@@ -573,6 +695,17 @@ export default function MonitoringPage() {
     const panel = numOrNull(data?.monitoring_min_score_panel ?? data?.settings?.monitoring_min_score_panel);
     const raw = numOrNull(data?.monitoring_min_raw_score ?? data?.settings?.monitoring_min_raw_score);
     if (panel != null || raw != null) setThresholds({ panel, raw });
+    // A4: R/R kapısı kalibrasyonu (sunucu tek kaynak; sabit varsayılmaz).
+    setRrGate({
+      min: numOrNull(data?.rr_min ?? data?.settings?.rr_min),
+      slPct: numOrNull(data?.rr_sl_pct ?? data?.settings?.rr_sl_pct),
+      blocked: numOrNull(data?.rr_blocked),
+      enabled: typeof (data?.rr_enabled ?? data?.settings?.rr_enabled) === "boolean"
+        ? Boolean(data?.rr_enabled ?? data?.settings?.rr_enabled)
+        : null,
+    });
+    // R3: yükseliş/erken sinyalleri — SUNUCU tespiti (istemci türetmesi kaldırıldı).
+    setRisingBlock(data?.rising ?? null);
     setStateError(null);
     setStateLoaded(true);
     setLastUpdatedAt(Date.now());
@@ -646,7 +779,24 @@ export default function MonitoringPage() {
     if (message.type === "monitoring_alert") { void loadState(); void loadHistory(); }
   }, [loadState, loadHistory]);
   useLiveMessages(onLiveMessage);
-  const rising = useMemo(() => extractRisingCandidates(macdData), [macdData]);
+  // R3: sunucudan gelen yükseliş/erken adayları — sınıf filtresi + sıralama.
+  const risingSignals = useMemo<RisingSignal[]>(() => {
+    const all = risingBlock?.candidates ?? [];
+    const filtered = risingFilter === "all" ? all : all.filter((item) => item.kind === risingFilter);
+    const list = [...filtered];
+    list.sort((a, b) => {
+      if (risingSort === "proximity") {
+        const pa = typeof a.signals?.proximity === "number" ? a.signals.proximity : -1;
+        const pb = typeof b.signals?.proximity === "number" ? b.signals.proximity : -1;
+        return pb - pa;
+      }
+      if (risingSort === "strength") {
+        return (Number(b.strength) || 0) - (Number(a.strength) || 0);
+      }
+      return (Number(b.score) || 0) - (Number(a.score) || 0);
+    });
+    return list;
+  }, [risingBlock, risingFilter, risingSort]);
   const jumpers = useMemo(() => extractJumpCandidates(macdData), [macdData]);
   const earlyCands = useMemo(() => extractEarlyCandidates(macdData), [macdData]);
   const jumpThreshold = Number(macdData?.jump_min ?? JUMP_MIN);
@@ -827,6 +977,40 @@ export default function MonitoringPage() {
   // değişince backend'in tuttuğu adayı gizleyebiliyordu.
   const candidates = state.candidates;
 
+  // C3: filtreleme + sıralama.
+  const filteredCandidates = useMemo(() => {
+    let list = [...candidates];
+    if (filterSymbol.trim()) {
+      const q = filterSymbol.trim().toUpperCase();
+      list = list.filter((c) => c.symbol.toUpperCase().includes(q));
+    }
+    if (filterMode !== "all") {
+      list = list.filter((c) => c.mode === filterMode);
+    }
+    list.sort((a, b) => {
+      if (sortBy === "score") {
+        const sa = panelScore(a) ?? -1;
+        const sb = panelScore(b) ?? -1;
+        return sb - sa;
+      }
+      if (sortBy === "target") {
+        const ta = Number(a.target_pct) || 0;
+        const tb = Number(b.target_pct) || 0;
+        return tb - ta;
+      }
+      if (sortBy === "rr") {
+        const ra = computeTpSlRr(a).rr ?? -1;
+        const rb = computeTpSlRr(b).rr ?? -1;
+        return rb - ra;
+      }
+      if (sortBy === "atr") {
+        return b.atr_pct - a.atr_pct;
+      }
+      return 0;
+    });
+    return list;
+  }, [candidates, filterSymbol, filterMode, sortBy]);
+
   return (
     <main className="page-shell">
       <div className="page-heading flex flex-wrap items-start justify-between gap-3">
@@ -834,6 +1018,9 @@ export default function MonitoringPage() {
           <p className="eyebrow text-neon-green">RADAR</p>
           <h1 className="font-mono text-2xl font-bold text-white">Otonom İzleme</h1>
           <p className="mt-1 text-sm text-bunker-muted">Yüksek potansiyelli sembolleri tarar, uygun olanları bildirir.</p>
+          <div className="mt-2">
+            <LivenessBadge lastScanAt={state.last_scan_at} />
+          </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {/* Tek eşik (2026-09-04): RISK_OFF çarpanı kaldırıldı; admin'in
@@ -946,6 +1133,21 @@ export default function MonitoringPage() {
                 className={`ui-button ui-button-secondary mt-1 font-mono ${settings?.enabled ? "text-neon-green" : "text-neon-red"}`}
               >
                 {settings?.enabled ? "AÇIK" : "KAPALI"}
+              </button>
+            </div>
+
+            {/* A5: MACD teyitli yeniden bildirim kapısı (histerezis). */}
+            <div>
+              <p className="eyebrow text-bunker-muted">MACD HİSTEREZİS</p>
+              <button
+                onClick={() => void putSettings(
+                  { macd_refire_gate: !settings?.macd_refire_gate },
+                  settings?.macd_refire_gate ? "MACD histerezisi kapatıldı." : "MACD histerezisi açıldı.")}
+                disabled={savingMinScore || settings?.macd_refire_gate == null}
+                title="Skor yükselmediği ve MACD teyidi zayıf olduğunda aynı sembolü yeniden bildirmeme"
+                className={`ui-button ui-button-secondary mt-1 font-mono ${settings?.macd_refire_gate ? "text-neon-green" : "text-bunker-muted"}`}
+              >
+                {settings?.macd_refire_gate == null ? "—" : settings.macd_refire_gate ? "AÇIK" : "KAPALI"}
               </button>
             </div>
 
@@ -1104,64 +1306,136 @@ export default function MonitoringPage() {
         </section>
       )}
 
-      {rising.length > 0 && (
-        <section className="card border-neon-green/30">
+      {/* R3: yükseliş & erken sinyaller — SUNUCU tespiti (bildirim + dialog + otonom
+          aynı kaynaktan beslenir). Eskiden istemcide `/api/macd-monitor` yanıtından
+          türetiliyordu; o panel kaldırıldı. */}
+      {risingBlock && (risingBlock.count > 0 || risingBlock.stale) && (
+        <section className={`card ${risingBlock.stale ? "border-yellow-400/40" : "border-neon-green/30"}`}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="eyebrow text-neon-green">📈 YÜKSELİŞ EĞİLİMİ ADAYLARI ({rising.length})</p>
-            <Link href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-neon-green">
-              MACD MONITOR&apos;DE GÖR →
+            <p className={`eyebrow ${risingBlock.stale ? "text-yellow-300" : "text-neon-green"}`}>
+              📈 YÜKSELİŞ &amp; ERKEN SİNYALLER ({risingSignals.length}/{risingBlock.count})
+            </p>
+            <Link href="/reports" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-neon-green">
+              RAPORDA GÖR →
             </Link>
           </div>
-          <p className="mt-1 text-xs text-bunker-muted">
-            <b>Evren içi normalize</b> trend gücü ≥ {RISING_MIN_STRENGTH}/10 (0-10 min-max; evrenin en güçlü sembolü 10.0 alır → 9.8 &quot;ham skorda evren zirvesinin %2&apos;si içinde&quot; demektir; 20 barlık lineer regresyon: R² × eğim/bar aralığı) ve en az {RISING_MIN_GREEN}/6 zaman diliminde MACD histogramı yeşil olan semboller — en güçlü yükseliş adayları.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {rising.map((item) => {
-              const dotsAria = MACD_TFS
-                .map((tf, index) => `${MACD_TF_SHORT[tf]} ${item.dots[index] === true ? "yeşil" : item.dots[index] === false ? "kırmızı" : "veri yok"}`)
-                .join(", ");
-              return (
-              <Link
-                key={item.symbol}
-                href={`/charts?symbol=${encodeURIComponent(item.symbol)}`}
-                className="group rounded-lg border border-neon-green/40 bg-neon-green/10 px-3 py-2 transition-colors hover:border-neon-green/70 hover:bg-neon-green/15"
-                title={`${item.symbol} grafiğini aç · GÜÇ ${item.strength.toFixed(1)} · ${item.green}/6 yeşil (6 zaman diliminden ${item.dots.filter((d) => d !== null).length} tanesi verili)`}
-              >
-                <span className="flex items-center gap-2 font-mono text-sm font-bold text-white">
-                  {item.symbol}
-                  <span className="rounded border border-neon-green/60 bg-neon-green/20 px-1.5 py-0.5 font-mono text-[10px] font-bold text-neon-green">
-                    GÜÇ {item.strength.toFixed(1)}
-                  </span>
-                  {/* R1-17: payda her yerde /6 (title da /6); R1-12: erişilebilir etiket. */}
-                  <span className="font-mono text-[10px] text-bunker-muted" aria-label={`6 zaman diliminden ${item.green} tanesi yeşil`}>{item.green}/6</span>
-                </span>
-                <span className="mt-1.5 flex gap-0.5" role="img" aria-label={`Zaman dilimi renkleri: ${dotsAria}`}>
-                  {item.dots.map((value, index) => (
-                    <span
-                      key={MACD_TFS[index]}
-                      aria-hidden="true"
-                      title={`${MACD_TF_SHORT[MACD_TFS[index]]}: ${value === true ? "yeşil" : value === false ? "kırmızı" : "veri yok"}`}
-                      className={`h-1.5 w-4 rounded-sm ${value === true ? "bg-neon-green" : value === false ? "bg-neon-red" : "bg-bunker-700"}`}
-                    />
-                  ))}
-                </span>
-              </Link>
-              );
-            })}
+          {risingBlock.stale ? (
+            <p className="mt-1 text-xs text-yellow-300">
+              ⚠ MACD beslemesi bayat (yaş {risingBlock.snapshot_age_sec != null ? `${risingBlock.snapshot_age_sec} sn` : "—"}) —
+              sinyal ÜRETİLMİYOR. MACD MONITOR döngüsü çalışmıyor olabilir.
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-bunker-muted">
+              🌱 <b>ERKEN</b>: MACD histogram dip dönüşü <b>+</b> 20-bar zirveye ≤{risingBlock.thresholds.dip_gap_atr} ATR yakınlık
+              (kanıt: 1.47-1.67× lift) · 📈 <b>YÜKSELİŞ</b>: güç ≥ {risingBlock.thresholds.min_strength}/10 ve ≥ {risingBlock.thresholds.min_green}/6 zaman dilimi yeşil.
+              Bu sinyaller bildirim + uygulama-içi dialog üretir ve otonom paper işlem açabilir.
+            </p>
+          )}
+          {/* Filtre / sıralama — veri kaynağı sunucu, burada yalnız görünüm süzülür. */}
+          <div className="mt-3 flex flex-wrap items-end gap-2">
+            <div>
+              <p className="eyebrow text-bunker-muted">Sınıf</p>
+              <select value={risingFilter} onChange={(e) => setRisingFilter(e.target.value as typeof risingFilter)}
+                className="mt-1 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none">
+                <option value="all">Tümü</option>
+                <option value="erken">🌱 Erken</option>
+                <option value="yukselis">📈 Yükseliş</option>
+              </select>
+            </div>
+            <div>
+              <p className="eyebrow text-bunker-muted">Sırala</p>
+              <select value={risingSort} onChange={(e) => setRisingSort(e.target.value as typeof risingSort)}
+                className="mt-1 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none">
+                <option value="score">Skor (yüksek)</option>
+                <option value="proximity">Zirveye yakınlık</option>
+                <option value="strength">Güç</option>
+              </select>
+            </div>
           </div>
+          {risingSignals.length === 0 ? (
+            <p className="mt-3 text-sm text-bunker-muted">Bu sınıfta sinyal yok.</p>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {risingSignals.map((item) => {
+                const isEarly = item.kind === "erken";
+                const proximityPct = typeof item.signals?.proximity === "number"
+                  ? Math.round(item.signals.proximity * 100) : null;
+                const price = Number(item.price);
+                const slPct = Number(item.sl_pct);
+                const targetPct = Number(item.target_pct) || 0;
+                const tp = Number.isFinite(price) && price > 0 ? price * (1 + targetPct / 100) : null;
+                const sl = Number.isFinite(price) && price > 0 && Number.isFinite(slPct) && slPct > 0
+                  ? price * (1 - slPct / 100) : null;
+                const rr = Number.isFinite(Number(item.rr)) && Number(item.rr) > 0 ? Number(item.rr) : null;
+                const icons = risingFlagIcons(item.signals);
+                const title = [
+                  `${item.symbol} grafiğini aç`,
+                  `sınıf: ${isEarly ? "ERKEN (dip+yakınlık)" : "YÜKSELİŞ (güç+yeşil)"}`,
+                  item.early_score != null ? `erken olgunluk ${item.early_score}/100` : null,
+                  proximityPct != null ? `zirveye yakınlık %${proximityPct}` : null,
+                  item.signals?.gap_atr != null ? `zirveye uzaklık ${Number(item.signals.gap_atr).toFixed(2)} ATR` : null,
+                  item.signals?.transition ? "sıkışma→genişleme geçişi" : null,
+                  item.signals?.buy_dominant ? "alıcı agresör baskın" : null,
+                ].filter(Boolean).join(" · ");
+                return (
+                  <div key={`${item.kind}-${item.symbol}`}
+                    className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 ${isEarly ? "border-sky-400/30 bg-sky-400/5" : "border-neon-green/30 bg-neon-green/5"}`}>
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] font-bold ${isEarly ? "border-sky-400/50 bg-sky-400/15 text-sky-300" : "border-neon-green/50 bg-neon-green/15 text-neon-green"}`}>
+                        {isEarly ? "🌱 ERKEN" : "📈 YÜKSELİŞ"}
+                      </span>
+                      <Link href={`/charts?symbol=${encodeURIComponent(item.symbol)}`} title={title}
+                        className="truncate font-mono text-sm font-bold text-white hover:text-neon-green">
+                        {item.symbol}
+                      </Link>
+                      {icons ? <span className="shrink-0 font-mono text-[11px]" title="sinyal işaretleri">{icons}</span> : null}
+                    </div>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2 sm:gap-3">
+                      <div className="text-right">
+                        <p className="font-mono text-[9px] text-bunker-muted">SKOR</p>
+                        <p className="font-mono text-xs font-bold text-amber-300">{Number(item.score).toFixed(0)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-mono text-[9px] text-bunker-muted">YAKINLIK</p>
+                        <p className="font-mono text-xs font-bold text-sky-300">{proximityPct != null ? `%${proximityPct}` : "—"}</p>
+                      </div>
+                      <div className="hidden text-right sm:block">
+                        <p className="font-mono text-[9px] text-bunker-muted">HEDEF</p>
+                        <p className="font-mono text-xs font-bold text-neon-green">+%{targetPct.toFixed(1)}</p>
+                      </div>
+                      <div className="hidden text-right md:block">
+                        <p className="font-mono text-[9px] text-bunker-muted">TP | SL | R/R</p>
+                        <p className="font-mono text-xs font-bold text-white">
+                          {tp != null ? formatPrice(tp) : "—"} <span className="text-bunker-muted">|</span> {sl != null ? formatPrice(sl) : "—"}
+                          <span className="text-bunker-muted"> |</span>{" "}
+                          <span className={rr != null && rr >= 1 ? "text-yellow-300" : "text-bunker-muted"}>{rr != null ? rr.toFixed(2) : "—"}</span>
+                        </p>
+                      </div>
+                      <Link href={`/charts?symbol=${encodeURIComponent(item.symbol)}`} className="ui-button ui-button-secondary">
+                        GRAFİK
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
 
       {earlyCands.length > 0 && (
         <section className="card border-sky-400/30">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="eyebrow text-sky-300">🌱 ERKEN SİNYAL · YAKLAŞIYOR ({earlyCands.length})</p>
+            <p className="eyebrow text-bunker-muted">🔎 MACD ÖNCÜLERİ · BAĞLAM (aktive DEĞİL) ({earlyCands.length})</p>
             <Link href="/macd-monitor" className="font-mono text-[10px] text-bunker-muted transition-colors hover:text-sky-300">
               MACD MONITOR&apos;DE GÖR →
             </Link>
           </div>
           <p className="mt-1 text-xs text-bunker-muted">
-            Kırılımdan ÖNCE öncüller: 🎯 M5 zirveye yaklaşıyor (≤0.5 ATR + aktivite) · 🕐 M1 öncü kırılım · 📈 MACD dip dönüşü. Kartlardaki sayı <b>erken sinyal olgunluğudur</b> (0-100, yalnız sıralama/teşhis — eşik DEĞİLDİR). Alarmlar Ayarlar → MACD/Sıçrama&apos;dan yönetilir.
+            Bu panel MACD MONITOR beslemesinin <b>tanımlayıcı</b> öncülerini gösterir: 🎯 M5 zirveye yaklaşıyor (≤0.5 ATR + aktivite) · 🕐 M1 öncü kırılım · 📈 MACD dip dönüşü.
+            <b> Bildirim/otonom işlem ÜRETMEZ</b> — kanıtta ters yönlü oldukları için (<code>approach</code> −0.082, <code>m1_breakout</code> −0.094) aktive edilmediler.
+            Aksiyon alınabilir sinyaller <b>yukarıdaki</b> &quot;YÜKSELİŞ &amp; ERKEN SİNYALLER&quot; panelindedir (dip + zirveye yakınlık).
+            Kartlardaki sayı <b>erken sinyal olgunluğudur</b> (0-100, yalnız sıralama/teşhis — eşik DEĞİLDİR).
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {earlyCands.map((item) => {
@@ -1267,47 +1541,130 @@ export default function MonitoringPage() {
       )}
 
       <section className="card">
-        <p className="eyebrow text-neon-green">🎯 UYGUN ADAYLAR ({candidates.length})</p>
-        {candidates.length === 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="eyebrow text-neon-green">🎯 UYGUN ADAYLAR ({filteredCandidates.length})</p>
+        </div>
+        {/* C4/A4: R/R kapısı lejantı — sunucudan gelen kalibrasyon. Kullanıcı
+            eşiğin NEREDEN geldiğini ve kaç adayın bastırıldığını görür. */}
+        <p className="mt-1 text-[11px] text-bunker-muted">
+          R/R = hedef ÷ stop mesafesi · SL dayanağı %{rrGate.slPct != null ? rrGate.slPct.toFixed(1) : "—"} ·
+          eşik ≥ {rrGate.min != null ? rrGate.min.toFixed(2) : "—"}
+          {rrGate.enabled === false ? " (kapı KAPALI)" : ""}
+          {rrGate.blocked != null && rrGate.blocked > 0 ? ` · bu oturumda ${rrGate.blocked} aday bastırıldı` : ""}
+        </p>
+        {/* C3: Filtre / sıralama çubuğu */}
+        <div className="mt-3 flex flex-wrap items-end gap-2">
+          <div>
+            <p className="eyebrow text-bunker-muted">Sembol</p>
+            <input
+              type="text"
+              value={filterSymbol}
+              onChange={(e) => setFilterSymbol(e.target.value)}
+              placeholder="Ara..."
+              className="mt-1 w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+            />
+          </div>
+          <div>
+            <p className="eyebrow text-bunker-muted">Mod</p>
+            <select
+              value={filterMode}
+              onChange={(e) => setFilterMode(e.target.value as typeof filterMode)}
+              className="mt-1 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+            >
+              <option value="all">Tümü</option>
+              <option value="trend_devam">Trend Devam</option>
+              <option value="v_donusu">V-Dönüşü</option>
+              <option value="notr">Nötr</option>
+            </select>
+          </div>
+          <div>
+            <p className="eyebrow text-bunker-muted">Sırala</p>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+              className="mt-1 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
+            >
+              <option value="score">Skor (yüksek)</option>
+              <option value="target">Hedef (yüksek)</option>
+              <option value="rr">R/R (yüksek)</option>
+              <option value="atr">ATR% (yüksek)</option>
+            </select>
+          </div>
+        </div>
+        {filteredCandidates.length === 0 ? (
           stateError && !stateLoaded ? (
             <p className="mt-3 text-sm text-neon-red">Sunucu verisi alınamadı — aday listesi BİLİNMİYOR. (Yukarıdan "YENİDEN DENE".)</p>
           ) : health.loop_active === false ? (
             <p className="mt-3 text-sm text-neon-red">Tarama döngüsü ÇALIŞMIYOR — arka plan tarayıcısı durmuş görünüyor; otonom izleme devam etmiyor.</p>
           ) : health.system_startup === true ? (
             <p className="mt-3 text-sm text-bunker-muted">Sunucu yeni başladı; ilk tarama henüz tamamlanmadı.</p>
-          ) : (
+          ) : candidates.length === 0 ? (
             <p className="mt-3 text-sm text-bunker-muted">Eşiği geçen aday yok (eşik: skor ≥ {effThreshold != null ? effThreshold : "—"}). Tarama devam ediyor…</p>
+          ) : (
+            <p className="mt-3 text-sm text-bunker-muted">Filtreye uyan aday yok.</p>
           )
         ) : (
           <div className="mt-3 space-y-2">
-            {candidates.map((c, i) => {
+            {filteredCandidates.map((c, i) => {
               const targetPct = Number(c.target_pct) > 0 ? Number(c.target_pct) : Number(c.ml_target_pct);
               const validTarget = Number.isFinite(targetPct) && targetPct > 0;
               const mlActive = Number(c.ml_target_pct) > 0 && c.ml_hit_probability != null;
               const score = panelScore(c);
+              const { tp, sl, rr } = computeTpSlRr(c);
+              const modeLabel = c.mode === "trend_devam" ? "TREND" : c.mode === "v_donusu" ? "V-DÖNÜŞÜ" : "NÖTR";
+              const modeClass = c.mode === "trend_devam" ? "bg-neon-green/15 text-neon-green" : c.mode === "v_donusu" ? "bg-yellow-400/15 text-yellow-300" : "bg-sky-400/15 text-sky-300";
               return (
                 <button key={c.symbol} type="button" onClick={() => setSelected({ c, kind: "radar" })} className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-bunker-800 bg-bunker-900/40 px-4 py-3 text-left transition-colors hover:border-neon-green/40 hover:bg-bunker-900/70">
-                  <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
                     <span className="w-6 shrink-0 text-center font-mono text-xs text-bunker-muted">{i + 1}</span>
                     <span className="truncate font-mono font-bold text-white">{c.symbol}</span>
                     {mlActive ? <span className="shrink-0 rounded border border-violet-400/40 bg-violet-400/10 px-1.5 py-0.5 font-mono text-[9px] text-violet-300" title={`ML hedef: %${Number(c.ml_target_pct).toFixed(1)}, olasılık: %${Math.round(Number(c.ml_hit_probability) * 100)}`}>ML</span> : null}
+                    <span className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px] font-bold ${modeClass}`}>{modeLabel}</span>
                   </div>
-                  {/* R1-14: dar ekranda HEDEF gizlenir, SKOR kalır; satır taşmaz. */}
-                  <div className="flex shrink-0 items-center gap-2 sm:gap-4">
+                  {/* C2 + C4 + C5: kompakt satır bilgileri */}
+                  <div className="flex shrink-0 flex-wrap items-center gap-2 sm:gap-3">
                     <div className="text-right">
-                      <p className="font-mono text-xs text-bunker-muted">SKOR</p>
-                      <p className={`font-mono text-sm font-bold ${scoreColor(score)}`}>{scoreText(score)}</p>
+                      <p className="font-mono text-[9px] text-bunker-muted">SKOR</p>
+                      <p className={`font-mono text-xs font-bold ${scoreColor(score)}`}>{scoreText(score)}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-mono text-[9px] text-bunker-muted">HEDEF</p>
+                      <p className={`font-mono text-xs font-bold ${validTarget ? "text-neon-green" : "text-bunker-muted"}`}>{validTarget ? `+%${targetPct.toFixed(1)}` : "—"}</p>
+                    </div>
+                    <div className="hidden text-right md:block">
+                      <p className="font-mono text-[9px] text-bunker-muted">TP | SL | R/R</p>
+                      <p className="font-mono text-xs font-bold text-white">
+                        {tp != null ? formatPrice(tp) : "—"} <span className="text-bunker-muted">|</span> {sl != null ? formatPrice(sl) : "—"} <span className="text-bunker-muted">|</span> <span className={rr != null && rr >= 2 ? "text-neon-green" : rr != null && rr >= 1 ? "text-yellow-300" : "text-bunker-muted"}>{rr != null ? rr.toFixed(1) : "—"}</span>
+                      </p>
                     </div>
                     <div className="hidden text-right sm:block">
-                      <p className="font-mono text-xs text-bunker-muted">HEDEF</p>
-                      <p className={`font-mono text-sm font-bold ${validTarget ? "text-neon-green" : "text-bunker-muted"}`}>{validTarget ? `+%${targetPct.toFixed(1)}` : "—"}</p>
+                      <p className="font-mono text-[9px] text-bunker-muted">ATR%</p>
+                      <p className="font-mono text-xs font-bold text-white">{c.atr_pct.toFixed(2)}%</p>
                     </div>
+                    <div className="hidden text-right sm:block">
+                      <StatusChip status={c.status} />
+                    </div>
+                    <Link
+                      href={`/charts?symbol=${encodeURIComponent(c.symbol)}`}
+                      target="_blank"
+                      onClick={(e) => e.stopPropagation()}
+                      className="shrink-0 rounded border border-bunker-700 bg-bunker-900 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green"
+                      title={`${c.symbol} grafiğini yeni sekmede aç`}
+                    >
+                      Grafik
+                    </Link>
                     <span className="font-mono text-xs text-bunker-muted">›</span>
                   </div>
                 </button>
               );
             })}
           </div>
+        )}
+        {/* C4: Durum açıklaması */}
+        {filteredCandidates.length > 0 && (
+          <p className="mt-3 text-xs text-bunker-muted">
+            Yeşil = TAMAMEN (hedefe ulaştı) · Sarı = KISMI · Kırmızı = BAŞARISIZ · Gri = BEKLİYOR
+          </p>
         )}
       </section>
 

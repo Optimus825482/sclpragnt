@@ -573,25 +573,17 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     if not ticker_ts or now * 1000 - ticker_ts > config.MAX_TICKER_AGE_SEC * 1000:
         return
 
+    # B1: TP is PRIMARY exit — evaluated before any trailing/breakeven logic.
+    tp_primary_exit_enabled = bool((settings or {}).get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", True)))
+    if tp_primary_exit_enabled and take_profit is not None and current_price >= take_profit:
+        # D-08 (2026-09-12): TP dolumu TETİK fiyatından (gap-through: min(price, tp)).
+        await _close_trade(trade_id, symbol, min(current_price, take_profit), now, "take_profit")
+        return
+
     # Peak güncelle
     peak_price = max(float(trade.get("peak_price") or entry_price), current_price)
     if peak_price > float(trade.get("peak_price") or entry_price):
         await database.update_auto_paper_peak(trade_id, peak_price)
-
-    # D-07 (2026-09-12): TP DEĞERLENDİRMESİ trailing AKTİVASYONUNDAN bağımsız.
-    # Eskiden `trailing_devrede = trailing_enabled and (activated or gross>=trigger)`
-    # idi ve TP kontrolünden ÖNCE hesaplanıyordu; varsayılan
-    # default_target_pct(2.0) == trailing_trigger_pct(2.0) olduğu için hedefe
-    # ulaşan tick'te "trailing devrede" sayılıp TP atlanıyordu → bildirimin
-    # dinamik hedefi (monitoring'in varlık sebebi %1.5-6) hiç uygulanmıyordu.
-    # Artık TP yalnızca trailing FİİLEN aktifleştiğinde (DB'de trailing_activated)
-    # devre dışı kalır. Aynı tick'te hem trigger hem TP'ye ulaşılırsa TP kazanır
-    # (trailing bloğu bu bloktan SONRA çalışır).
-    trailing_activated = bool(trade.get("trailing_activated", False))
-    # D-08 (2026-09-12): TP dolumu TETİK fiyatından (gap-through: min(price, tp)).
-    if not trailing_activated and take_profit is not None and current_price >= take_profit:
-        await _close_trade(trade_id, symbol, min(current_price, take_profit), now, "take_profit")
-        return
 
     # SL kontrolü — D-08: dolum tetik fiyatından (gap-through: max(price, sl)).
     if stop_loss is not None and current_price <= stop_loss:
@@ -609,7 +601,18 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     #     hemen kapanmasın: aktivasyon ertelenir, fiyat biraz daha yükselir.
     breakeven_activated = bool(trade.get("breakeven_activated", False))
     gross_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
-    breakeven_buffer_pct = 0.05
+
+    # B2: Dynamic profit-lock triggers tied to TP target
+    dynamic_breakeven_enabled = bool((settings or {}).get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", True)))
+    dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", True)))
+    tp_gain_pct = None
+    if take_profit is not None and entry_price > 0 and take_profit > entry_price:
+        tp_gain_pct = (take_profit - entry_price) / entry_price * 100
+    if tp_gain_pct is not None and dynamic_breakeven_enabled:
+        breakeven_trigger_pct = max(breakeven_trigger_pct, tp_gain_pct * 0.7)
+
+    # B4: Narrow breakeven buffer (admin-editable, default 0.02)
+    breakeven_buffer_pct = float((settings or {}).get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02)))
     BREAKEVEN_TRAIL_GAP_PCT = 0.60
     # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
     # kontrolü arasında gecikme olmasın.
@@ -644,6 +647,15 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     if trailing_enabled:
         trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT))
         trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT))
+
+        # B2: Dynamic trailing trigger tied to TP target
+        if tp_gain_pct is not None and dynamic_trailing_enabled:
+            trailing_trigger_pct = max(trailing_trigger_pct, tp_gain_pct * 0.8)
+
+        # B3: Dynamic trailing gap compatible with TP
+        if tp_gain_pct is not None and gross_pnl_pct >= tp_gain_pct * 0.9:
+            trailing_gap_pct = max(0.2, trailing_gap_pct * 0.5)
+
         trailing_activated = bool(trade.get("trailing_activated", False))
         current_trailing_stop = float(trade.get("trailing_stop") or 0)
 
@@ -874,6 +886,10 @@ async def get_default_settings() -> dict:
         "trailing_trigger_pct": config.AUTO_PAPER_TRAILING_TRIGGER_PCT,
         "trailing_gap_pct": config.AUTO_PAPER_TRAILING_GAP_PCT,
         "reopen_after_protect_close": config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE,
+        "tp_primary_exit_enabled": getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", True),
+        "dynamic_breakeven_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", True),
+        "dynamic_trailing_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", True),
+        "breakeven_buffer_pct": getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02),
     }
 
 
@@ -905,7 +921,9 @@ async def update_settings_endpoint(payload: dict, request: Request):
     editable = ("enabled", "min_score", "balance_pct", "stop_loss_pct",
                 "default_target_pct", "min_order_try", "breakeven_trigger_pct",
                 "trailing_enabled", "trailing_trigger_pct", "trailing_gap_pct",
-                "reopen_after_protect_close")
+                "reopen_after_protect_close",
+                "tp_primary_exit_enabled", "dynamic_breakeven_enabled",
+                "dynamic_trailing_enabled", "breakeven_buffer_pct")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
 
@@ -921,6 +939,10 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "trailing_trigger_pct": max(0.5, min(20.0, float(merged.get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT)))),
         "trailing_gap_pct": max(0.1, min(10.0, float(merged.get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT)))),
         "reopen_after_protect_close": bool(merged.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)),
+        "tp_primary_exit_enabled": bool(merged.get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", True))),
+        "dynamic_breakeven_enabled": bool(merged.get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", True))),
+        "dynamic_trailing_enabled": bool(merged.get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", True))),
+        "breakeven_buffer_pct": max(0.01, min(0.5, float(merged.get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02))))),
     }
 
     await database.set_llm_setting("auto_paper_settings", json.dumps(settings))

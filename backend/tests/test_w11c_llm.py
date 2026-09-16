@@ -181,7 +181,14 @@ class ChatLimitTests(unittest.TestCase):
         async def executor(name, arguments):
             return {"ok": True}
 
-        result = self._run(handler, {"TOOL_LOOP_TOTAL_TIMEOUT": 0},
+        # NEGATİF süre: "son tarih zaten geçmiş" durumunu KESİN olarak kurar.
+        # Eskiden 0 veriliyordu; `tool_deadline = monotonic() + 0` olur ve hemen
+        # altındaki `monotonic() > tool_deadline` kontrolü AYNI saat tick'inde
+        # çalıştığında False döner (Windows'ta `time.monotonic()` art arda
+        # okumalarda birebir aynı değeri verir — 2000/2000 ölçüldü). O durumda
+        # son tarih kapısı hiç ateşlenmez ve döngü 25-round tavanına düşer;
+        # test makine yüküne bağlı olarak KIRILGAN oluyordu.
+        result = self._run(handler, {"TOOL_LOOP_TOTAL_TIMEOUT": -1},
                            tools=[{"type": "function"}], tool_executor=executor)
         assert result["status"] == "error", result
         assert "toplam süre" in result["error"], result

@@ -145,9 +145,11 @@ class Config:
     # 30+ %50.0 (n=14) — 10 altı adaylarda açılış yapmak EV'yi düşürüyor.
     # 0 = filtre kapalı. ÖLÇEK (2026-09-12): bu eşik PANEL (0-100) ölçeğindedir
     # ve ham velocity_score ile karşılaştırılmadan `velocity._velocity_raw_score_gate`
-    # üzerinden ham ölçeğe çevrilir (ham = panel/100 × MONITORING_SCORE_NORM_CAP;
-    # varsayılan panel 10 → ham 200). Ham skor artık tipik 50-2000 bandında.
-    VELOCITY_AUTO_MIN_SCORE = float(os.getenv("VELOCITY_AUTO_MIN_SCORE", "10"))
+    # üzerinden ham ölçeğe çevrilir (aktif haritanın TERSİ).
+    # A3 (2026-09-14) ANKRAJI: eski panel 10 = ham 200 (lineer, cap 2000); log
+    # haritada aynı ham nokta panel 52.4'e denk gelir → DEĞER KORUNARAK yeniden
+    # ankrajlandı (aksi halde kapı ham 200'den ham ~1.8'e düşüp fiilen ölürdü).
+    VELOCITY_AUTO_MIN_SCORE = float(os.getenv("VELOCITY_AUTO_MIN_SCORE", "52.4"))
     # Otonom Hız Avcısı'nin açık pozisyon üst sınırı. Velocity pozisyonları
     # CHAT_PREDICTION stratejisi + signal_context.source=="velocity_auto"
     # işaretiyle taşınır (yönetim merdiveni ortak); bu cap yalnızca velocity
@@ -165,38 +167,67 @@ class Config:
     # radar verisine dayanır: skor >=70 kovasında ort. MFE ~%5.2 (hedef %3'ün
     # üstünde), skor <10 kovasında başarı %19 (gürültü).
     # Global bildirim eşiği: admin tek değer ayarlar, tüm kullanıcılar etkilenir.
-    MONITORING_MIN_SCORE_DEFAULT = float(os.getenv("MONITORING_MIN_SCORE_DEFAULT", "70"))
+    # A3 (2026-09-14): panel ölçeği DOYGUNLUĞU kaldırıldı.
+    # Eski harita `min(100, raw/CAP×100)` HAM 2000'de sert kırpıyordu; gerçek
+    # dağılım (n=42773): p50=3.0, p90=18.3, p99=159, p99.9=1024, max=21389.
+    # Tüm tabloda yalnız %0.06 satır kırpılıyor AMA bildirilen bant (ham ≥1400)
+    # tamamen kırpılan bölgede → kullanıcının tablosunda 104 tespitin 100'ü tam
+    # 100.00 görünüyordu (sıralama bilgisi kaybı; D-08 bulgusu).
+    # Yeni harita MONOTON ve REF'e kadar kırpma YOK:
+    #   panel = 100 × log1p(raw) / log1p(REF)
+    # `MONITORING_SCORE_NORM_MODE=linear` eski davranışı aynen korur (geri dönüş).
+    MONITORING_SCORE_NORM_MODE = os.getenv("MONITORING_SCORE_NORM_MODE", "log").lower()
+    # REF gözlenen max'ın (21389) üstünde seçildi → pratikte hiç kırpma olmaz
+    # (raw 21389 → panel 98.46). Dağılım değişirse bu değer YENİDEN ÖLÇÜLMELİ.
+    MONITORING_SCORE_NORM_LOG_REF = float(os.getenv("MONITORING_SCORE_NORM_LOG_REF", "25000"))
+    MONITORING_SCORE_NORM_CAP = float(os.getenv("MONITORING_SCORE_NORM_CAP", "2000"))  # yalnız `linear` modda kullanılır
+    # PANEL ölçeğindeki eşikler (admin girdisi bu ölçekte düşünür). Log moda
+    # geçerken HAM ÇALIŞMA NOKTALARI KORUNACAK şekilde yeniden ankrajlandı
+    # (strateji kayması olmasın). DİKKAT: panel skoru 1 ondalığa yuvarlanır, bu
+    # yüzden eşikler de 1 ondalık yazılır — 2 ondalıklı bir eşik (ör. 71.54)
+    # `_panel_score(1400)=71.5` ile KIL PAYI kaçırır ve bandı ölü bırakır.
+    #   eski panel 70 (%70×2000 = ham 1400) → yeni panel 71.5  (ham 1393.6)
+    #   eski panel 85 (ham 1700)            → yeni panel 73.5  (ham 1707.0)
+    #   eski panel 90 (ham 1800)            → yeni panel 74.0  (ham 1792.3)
+    #   eski panel 50 (ham 1000)            → yeni panel 68.2  (ham  999.0)
+    #   eski panel 10 (ham 200)             → yeni panel 52.4  (ham  200.9)
+    MONITORING_MIN_SCORE_DEFAULT = float(os.getenv("MONITORING_MIN_SCORE_DEFAULT", "71.5"))
     # velocity_score HAM ölçekte üretilir (formül: atr_ratio × bb_ratio × yapı ×
-    # momentum; saturation kaldırıldığından sınırsızdır). TİPİK BANT 50-2000'dir
-    # (2026-09-12 notu: eski "0-100, tipik 20-60" açıklaması saturation
-    # kaldırılmasından önceydi ve artık geçersizdir). Panel gösterimi ham/cap×100
-    # ile MONITORING_SCORE_NORM_CAP üzerinden 0-100'e normalize edilir;
-    # admin eşikleri (MONITORING_MIN_SCORE_DEFAULT, VELOCITY_AUTO_MIN_SCORE)
-    # PANEL ölçeğindedir ve kod tarafında ham ölçeğe çevrilir. Varsayılan eşik 70
-    # (panel): yalnızca yüksek güvenli adaylar bildirilir; admin
-    # PUT /api/monitoring/settings ile düşürebilir.
-    MONITORING_SCORE_NORM_CAP = float(os.getenv("MONITORING_SCORE_NORM_CAP", "2000"))  # 2026-09-07: saturation kaldirma sonrasi tipik skor 50-2000
+    # momentum; saturation kaldırıldığından sınırsızdır; ölçülen p50=3.0,
+    # p99=159, max=21389). Panel gösterimi yukarıdaki harita ile 0-100'e
+    # normalize edilir; admin eşikleri (MONITORING_MIN_SCORE_DEFAULT,
+    # VELOCITY_AUTO_MIN_SCORE) PANEL ölçeğindedir ve kod tarafında ham ölçeğe
+    # çevrilir (ters harita). Admin PUT /api/monitoring/settings ile düşürebilir.
     # M1/P0 (R2-01/R2-02/R3-01): ADAY KAPISI ham velocity_score üzerinden tanımlanır.
-    # Panel normalizasyonu (raw/cap×100) yalnızca GÖSTERİM ölçeğidir; cap değişince
-    # eşiğin anlamı sessizce kaymasın diye varsayılan kapı mutlak ham skora bağlandı.
-    # 1400 ≈ eski varsayılan (panel 70) × cap 2000; cap artık kapıyı HAREKET ETTİRMEZ.
+    # Panel normalizasyonu yalnızca GÖSTERİM ölçeğidir; ölçek değişince eşiğin
+    # anlamı sessizce kaymasın diye varsayılan kapı mutlak ham skora bağlandı.
+    # 1400 ≈ eski varsayılan (panel 70) × cap 2000; ölçek artık kapıyı HAREKET
+    # ETTİRMEZ (A3 sonrası da aynı ham nokta korunur).
     # Öncelik: açık admin panel eşiği (min_score) > bu varsayılan ham eşik.
     MONITORING_MIN_RAW_SCORE = float(os.getenv("MONITORING_MIN_RAW_SCORE", "1400"))
     # Hızlı şerit: bu skor üstü adaylar debounce beklemeden anında bildirilir
     # (yüksek skor hızlı pump'larda gelir; bekleme fırsatı kaçırır).
-    # M1/P1 (R2-04/R3-10/R5-C2.4): eşik varsayılan KAPI'nın (panel 70) KESİN ÜSTÜNDE
-    # (85) olmalı; aksi halde debounce bandı boş kalır ve gürültü filtresi hiç çalışmaz.
-    MONITORING_FAST_LANE_SCORE = float(os.getenv("MONITORING_FAST_LANE_SCORE", "85"))
+    # M1/P1 (R2-04/R3-10/R5-C2.4): eşik varsayılan KAPI'nın (panel 71.5) KESİN
+    # ÜSTÜNDE olmalı; aksi halde debounce bandı boş kalır ve gürültü filtresi hiç
+    # çalışmaz. 73.5 = eski 85'in ham karşılığı (ham ~1707) — A3 ankrajı.
+    MONITORING_FAST_LANE_SCORE = float(os.getenv("MONITORING_FAST_LANE_SCORE", "73.5"))
     # Debounce: fast-lane altı aday N ardışık taramada aday kalırsa bildirilir.
     MONITORING_DEBOUNCE_SCANS = max(1, int(os.getenv("MONITORING_DEBOUNCE_SCANS", "2")))
     # Bu andan itibaren monitoring bildirim skoru panel (0-100) ölçeğinde yazılır
     # (06d6a4d, 2026-09-04 18:11 +03). Öncesindeki kayıtlar ham velocity_score'tur;
     # rapor filtresi eski kayıtları tek kez normalize eder. Çift normalize uygulamak
     # eşiği fiilen 2.5× gevşetiyordu (panel 50 -> etkin 20), 2026-09-04 teşhis.
+    # A3 (2026-09-14): bu tarihten SONRAKİ kayıtlar lineer ölçekle yazılmış panel
+    # değerleri taşır. Ölçek sürümü satır başına `norm_version` ile taşınır
+    # (`_stored_panel_score` sürüme göre okur); SINCE yalnızca "ham mı panel mi"
+    # ayrımı için kalır.
     MONITORING_SCORE_NORM_SINCE = float(os.getenv("MONITORING_SCORE_NORM_SINCE", "1788534693"))
-    # Skor-bantlı dinamik hedef: "skor_esigi:hedef_pct" çiftleri virgülle; yüksekten
-    # düşüğe ilk eşleşen bant hedefi belirler (0 dönerse profil baz hedefi kalır).
-    MONITORING_TARGET_SCORE_TIERS = os.getenv("MONITORING_TARGET_SCORE_TIERS", "90:4.0,70:2.5,50:2.0")
+    # Skor-bantlı dinamik hedef: "skor_esigi:hedef_pct" çiftleri virgülle; eşiği
+    # karşılayan EN YÜKSEK bant hedefi belirler (A3 ankrajı: ham çalışma noktaları
+    # korunur — eski 90/70/50 = ham 1800/1400/1000 = yeni 74.0/71.5/68.2; 1 ondalık
+    # çünkü panel skoru 1 ondalığa yuvarlanır).
+    MONITORING_TARGET_SCORE_TIERS = os.getenv(
+        "MONITORING_TARGET_SCORE_TIERS", "74.0:4.0,71.5:2.5,68.2:2.0")
     # Dinamik hedef sınırları ve adaptif esnetme: sembolün journal'dan öğrenilmiş
     # (get_symbol_target_state) hedefi daha yüksekse hedef buraya kadar yükseltilir.
     MONITORING_TARGET_ADAPTIVE = os.getenv("MONITORING_TARGET_ADAPTIVE", "true").lower() == "true"
@@ -233,6 +264,94 @@ class Config:
     VELOCITY_PATTERN_G0_ATR = float(os.getenv("VELOCITY_PATTERN_G0_ATR", "0.5779"))
     VELOCITY_PATTERN_G1_ATR = float(os.getenv("VELOCITY_PATTERN_G1_ATR", "0.5432"))
     VELOCITY_PATTERN_G2_ATR = float(os.getenv("VELOCITY_PATTERN_G2_ATR", "0.5097"))
+    # MACD teyidi (radar skorlaması) — MACD MONITOR'un kanıta dayalı çoklu-TF /
+    # kapanmış-mum felsefesi radara taşınır. AÇIKKEN (varsayılan) aday skoru
+    # kapanmış 1m/5m MACD histogramına göre hafif çarpılır; derin negatif + düşüşteki
+    # aday geriye düşürülür (başarı odaklı ayıklama). Kapı değil, sıralama/skora
+    # etki eden fitre çarpanıdır — yenilik keskin eşik yapılmaz.
+    VELOCITY_MACD_CONFIRMATION_ENABLED = os.getenv("VELOCITY_MACD_CONFIRMATION_ENABLED", "true").lower() == "true"
+    # Hedef gerçekçiliği: düşük ML isabet olasılığındaki zayıf sinyallere agresif
+    # üst-bant hedef (4%) verilmesin — 5dk içinde dokunulması nadirdir ve başarıyı
+    # düşürür. Yalnızca güçlü MACD teyidi / yüksek ML olasılığı 4% üst bandını korur.
+    VELOCITY_TARGET_REALISM_ENABLED = os.getenv("VELOCITY_TARGET_REALISM_ENABLED", "true").lower() == "true"
+    VELOCITY_TARGET_REALISM_MAX_PCT = float(os.getenv("VELOCITY_TARGET_REALISM_MAX_PCT", "3.0"))
+    VELOCITY_TARGET_REALISM_MIN_ML_PROB = float(os.getenv("VELOCITY_TARGET_REALISM_MIN_ML_PROB", "0.5"))
+    # MACD dip-gate: histogram derin negatif + düşüşteki adayın skorunu
+    # baskılamak için kullanılan ATR çarpanı. hist < -dip_gate_atr * atr_pct
+    # ise fail-forward riski yüksek sayılır.
+    VELOCITY_MACD_DIP_GATE_ATR = float(os.getenv("VELOCITY_MACD_DIP_GATE_ATR", "0.5"))
+    # MACD-teyitli yeniden bildirim kapısı (histerezis): aynı sembol, ufuk dolduktan
+    # sonra tekrar aday olursa; MACD teyidi zayıf VE skor yükselmediyse yeniden
+    # bildirim basma (gürültü kesme). MACD MONITOR'ün isabet-histerezisi mantığı.
+    # Varsayılan AÇIK (2026-09-14): hedef #1 "radar başarı oranını artırmak" —
+    # aynı sinyalin tekrarı yeni bilgi taşımaz. Admin panelinden kapatılabilir
+    # (`monitoring_notification_settings.macd_refire_gate`); bu anahtar settings
+    # yolunda config'i ezer.
+    MONITORING_MACD_REFIRE_GATE = os.getenv("MONITORING_MACD_REFIRE_GATE", "true").lower() == "true"
+    # A4 (R/R kapisi): dusuk odul/risk adaylari bildirilmez.
+    # Oran = TP mesafesi / SL mesafesi. SL dayanagi GERCEK cikis stop'udur:
+    # `auto_paper._manage_single_trade` pozisyonu `stop_loss = fill_entry*(1-sl_pct)`
+    # ile acar ve `sl_pct` = `AUTO_PAPER_SL_PCT_DEFAULT` (asagida, %3.0) / settings
+    # `stop_loss_pct`. Ikisi ayrisirsa RR olcumu yalan olur → parite testi:
+    # `test_monitoring.CalibrationTests.test_rr_sl_basis_matches_real_exit_stop`.
+    MONITORING_RR_ENABLED = os.getenv("MONITORING_RR_ENABLED", "true").lower() == "true"
+    # KALIBRASYON (2026-09-14, gercek DB dagilimi):
+    #   velocity_candidates hedef bandi → dokunma (isabet) orani
+    #     hedef %2.00 → n=13137, isabet %8.8
+    #     hedef %3.00 → n=15889, isabet %11.5
+    #     hedef %4.00 → n=204,   isabet %1.3   <-- YUKSEK hedef DAHA KOTU vuruyor
+    # Yani "RR'yi yukselt" yonlu bir kapi, isabeti EN DUSUK bandi secer (eski
+    # varsayilan RR_MIN=1.2 / SL=%3 → hedef>=%3.6, bildirimlerin yalniz ~%27'si
+    # gecer ve secilen tek bant %1.3 isabetli olandi). Bu yuzden esik, odulu
+    # riskine gore ANLAMSIZ olan adayi elemekle sinirli tutulur:
+    #   RR_MIN=0.6 + SL=%3.0 → hedef >= %1.8 gerekir.
+    # Tipik hedefler (%2.0 → RR 0.667, %3.0 → 1.0) GECER; yalnizca hedefi
+    # gidis-donus maliyetine yaklasan band (MONITORING_TARGET_PCT_MIN=%1.5 →
+    # RR 0.5) elenir. Tek deger yeterli: 5dk (%2.0) ve 15dk (%3.0) profillerinin
+    # ikisi de esigi asar, ufuk bazli ayrim gerekmez.
+    MONITORING_RR_MIN = float(os.getenv("MONITORING_RR_MIN", "0.6"))
+    MONITORING_RR_SL_PCT = float(os.getenv("MONITORING_RR_SL_PCT", "3.0"))
+
+    # ---------------------------------------------------------------------
+    # YÜKSELİŞ SİNYALLERİ (R1, 2026-09-14): MACD MONITOR'ün kanıtlanmış
+    # erken-öncü sensörü radara taşınır (`app/rising_signals.py`).
+    #
+    # KANIT (macd_monitor.py:152-167 + outputs/erken_oncu_replay_kanit.md):
+    #   `approach`     → OOS lift −0.082 → kapıda YOK (yanlışlıkla aktive etme!)
+    #   `m1_breakout`  → OOS lift −0.094 → kapıda YOK
+    #   `dip` TEK BAŞINA → 0.76-0.86× (baseline ALTI, negatif EV)
+    #   `dip` + 20-bar zirveye ≤1.5 ATR yakınlık → 1.47-1.67× lift (n≈16k)
+    # Bu yüzden AKTİVE EDİLEN tek reçete BİRLEŞİK kapıdır (dip AND yakınlık).
+    # ---------------------------------------------------------------------
+    RISING_SIGNALS_ENABLED = os.getenv("RISING_SIGNALS_ENABLED", "true").lower() == "true"
+    RISING_EARLY_ENABLED = os.getenv("RISING_EARLY_ENABLED", "true").lower() == "true"
+    RISING_STRENGTH_ENABLED = os.getenv("RISING_STRENGTH_ENABLED", "true").lower() == "true"
+    # Snapshot alanları (`strength` 0-10 evren içi min-max, `green` 0-6 yeşil TF).
+    # Eşikler MACD MONITOR arayüzünün kullandığı değerlerle AYNI (monitoring/page.tsx
+    # eski istemci sabitleri: RISING_MIN_STRENGTH=9.8, RISING_MIN_GREEN=5).
+    RISING_MIN_STRENGTH = float(os.getenv("RISING_MIN_STRENGTH", "9.8"))
+    RISING_MIN_GREEN = int(os.getenv("RISING_MIN_GREEN", "5"))
+    # Yakınlık kapısı. Varsayılan `DIP_APPROACH_GAP_ATR` (1.5) ile AYNI olmalı —
+    # parite testi kilitler (`test_rising_signals.py`).
+    RISING_DIP_GAP_ATR = float(os.getenv("RISING_DIP_GAP_ATR", "1.5"))
+    # MACD snapshot'ı bu yaştan eskiyse tarama SESSİZCE atlanır (döngü kapalı/
+    # çökmüşse radar sahte sinyal üretmesin).
+    RISING_SNAPSHOT_MAX_AGE_SEC = float(os.getenv("RISING_SNAPSHOT_MAX_AGE_SEC", "120"))
+    # Sembol bazlı yeniden-ateşleme cooldown'ı (MACD jump cooldown'ı 30 dk ile hizalı).
+    RISING_COOLDOWN_SEC = float(os.getenv("RISING_COOLDOWN_SEC", "1800"))
+    RISING_MAX_PER_SCAN = max(1, int(os.getenv("RISING_MAX_PER_SCAN", "3")))
+    # Kullanıcıya push + uygulama-içi dialog (WS `rising_alert`).
+    RISING_NOTIFY_ENABLED = os.getenv("RISING_NOTIFY_ENABLED", "true").lower() == "true"
+    # Otonom paper girişi (kullanıcı kararı 2026-09-14: AÇIK). Kapatma anahtarı:
+    # kırılım ÖNCESİ girişin isabeti `rising_alerts` ile ölçülene kadar tek güvence.
+    RISING_AUTONOMOUS_ENABLED = os.getenv("RISING_AUTONOMOUS_ENABLED", "true").lower() == "true"
+    RISING_AUTO_MIN_SCORE = float(os.getenv("RISING_AUTO_MIN_SCORE", "70"))
+    # Bildirim/otonom hedefi: profil taban hedefi (5dk → %2.0). Yükseliş sinyalinde
+    # TP KADEME ESNETMESİ YAPILMAZ — kademe eşikleri velocity PANEL ölçeğinde
+    # kalibre; `strength` (0-10) ölçeğini panele eşlemek A3'te kaldırılan ölçek
+    # karışıklığını geri getirirdi (bkz. plan §4/R3).
+    RISING_TARGET_PCT = float(os.getenv("RISING_TARGET_PCT", "2.0"))
+
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     SYMBOL_ORDER_PCT = {}
@@ -327,7 +446,10 @@ class Config:
     MAX_CLUSTER_EXPOSURE_PCT = max(20.0, float(os.getenv("MAX_CLUSTER_EXPOSURE_PCT", "60.0")))
 
     # Otonom Paper Trade (monitoring bildiriminden tetiklenen, 2026-09-04)
-    AUTO_PAPER_MIN_SCORE_DEFAULT = float(os.getenv("AUTO_PAPER_MIN_SCORE", "50"))
+    # A3 (2026-09-14) ANKRAJI: `auto_paper` bu eşiği `monitoring.normalize_score`
+    # PANEL skoruyla karşılaştırır. Eski panel 50 = ham 1000 (lineer, cap 2000);
+    # log haritada aynı ham nokta panel 68.2 → DEĞER KORUNARAK yeniden ankrajlandı.
+    AUTO_PAPER_MIN_SCORE_DEFAULT = float(os.getenv("AUTO_PAPER_MIN_SCORE", "68.2"))
     AUTO_PAPER_BALANCE_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_BALANCE_PCT", "35"))
     AUTO_PAPER_SL_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_SL_PCT", "3.0"))
     AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "2.0"))
@@ -348,6 +470,11 @@ class Config:
     # zinciri cüzdanı tek turda tüketebiliyordu. Güvenli varsayılan artık 3;
     # açıkça 0 verilirse yine sınırsız. Env/DB (çalışma-anı ayarı) önceliklidir.
     AUTO_PAPER_MAX_OPEN_POSITIONS = max(0, int(os.getenv("AUTO_PAPER_MAX_OPEN_POSITIONS", "3")))
+    # B1-B5: otonom paper dinamik çıkış ayarları.
+    AUTO_PAPER_TP_PRIMARY_ENABLED = os.getenv("AUTO_PAPER_TP_PRIMARY_ENABLED", "true").lower() == "true"
+    AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", "true").lower() == "true"
+    AUTO_PAPER_DYNAMIC_TRAILING_ENABLED = os.getenv("AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", "true").lower() == "true"
+    AUTO_PAPER_BREAKEVEN_BUFFER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_BUFFER_PCT", "0.02"))
 
     # MACD MONITOR / SIRÇRAMA ADAYI ayarları (DB üzerinden değiştirilebilir;
     # burada yalnızca varsayılanlar). Eşik ve alarm/push anahtarları.

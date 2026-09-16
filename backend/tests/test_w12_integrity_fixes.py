@@ -154,13 +154,17 @@ class InitDbResilienceTests(unittest.TestCase):
         conn = self._run_init_db(_RoutedConn(routes=[("to_regclass", [[None]])]))
         assert any("macd_market_baseline" in s for s in conn.statements)
 
-    def test_schema_sha_covers_both_migrations(self):
-        # V-03: 002 ölü dosya değil; sha iki dosyanın birleşimidir.
+    def test_schema_sha_covers_all_migrations(self):
+        # V-03: her migration dosyası uygulanır; sha TÜM dosyaların birleşimidir.
+        # R2 (2026-09-14): liste artık SABİT DEĞİL, glob'lanır — yeni bir migration
+        # eklenip `init_db`'nin tuple'ına yazılmazsa test KIRILIR (002'nin bir zamanlar
+        # "ölü dosya" olması gibi sessiz bir boşluk oluşmasın).
         conn = self._run_init_db(_RoutedConn(routes=[("to_regclass", [[None]])]))
         # init_db ile AYNI okuma yolu (metin + evrensel satır sonu + utf-8).
+        names = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
+        assert names, "migration dosyası bulunamadı"
         schema_text = "".join(
-            (MIGRATIONS / name).read_text(encoding="utf-8") + "\n"
-            for name in ("001_pgvector_schema.sql", "002_macd_evidence_lift.sql"))
+            (MIGRATIONS / name).read_text(encoding="utf-8") + "\n" for name in names)
         expected = hashlib.sha256(schema_text.encode("utf-8")).hexdigest()
         recorded = [params[0] for sql, params in conn.calls
                     if "schema_sha256" in sql and params]
