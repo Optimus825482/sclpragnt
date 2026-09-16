@@ -648,13 +648,10 @@ export default function MonitoringPage() {
   const [filterSymbol, setFilterSymbol] = useState("");
   const [filterMode, setFilterMode] = useState<"all" | "trend_devam" | "v_donusu" | "notr">("all");
   const [sortBy, setSortBy] = useState<"score" | "target" | "rr" | "atr">("score");
-  const [minScoreInput, setMinScoreInput] = useState<string>("");
-  const [minScoreDirty, setMinScoreDirty] = useState(false);
-  const [savingMinScore, setSavingMinScore] = useState(false);
-  // Global admin ayarları (bildirim kartı): hedef % ve sessiz saatler.
-  const [targetPctInput, setTargetPctInput] = useState<string>("");
-  const [quietStart, setQuietStart] = useState<string>("");
-  const [quietEnd, setQuietEnd] = useState<string>("");
+  // NOT (2026-09-16): bildirim ayar editörleri (min skor, hedef %, sessiz saat,
+  // MACD histerezisi, birleşik radar anahtarları) Ayarlar > 📡 Radar sekmesine
+  // taşındı → ilgili state/handler'lar buradan kaldırıldı. `settings` state'i
+  // KALDI: salt-okunur eşik rozeti ve sağlığın sunucu değerini göstermek için.
   const [savingSettings, setSavingSettings] = useState(false);
   // 🔔 Son bildirimler geçmişi (null = henüz yüklenmedi).
   const [historyRows, setHistoryRows] = useState<NotificationRow[] | null>(null);
@@ -847,17 +844,6 @@ export default function MonitoringPage() {
   const earlyCands = useMemo(() => extractEarlyCandidates(macdData), [macdData]);
   const jumpThreshold = Number(macdData?.jump_min ?? JUMP_MIN);
 
-  // Admin girişteyken poll inputu ezmesin: yalnız düzenlenmemişken (dirty
-  // değilken) ve ayar YÜKLENDİĞİNDE sunucu değeriyle senkronlanır.
-  // Global admin ayar kartı girdileri (hedef %, sessiz saatler) da burada senkron.
-  useEffect(() => {
-    if (!settings) return;
-    if (!minScoreDirty && settings.min_score != null) setMinScoreInput(String(Math.round(settings.min_score)));
-    setTargetPctInput(settings.min_target_pct != null ? String(settings.min_target_pct) : "");
-    setQuietStart(settings.quiet_hours_start ?? "");
-    setQuietEnd(settings.quiet_hours_end ?? "");
-  }, [settings, minScoreDirty]);
-
   const loadSettings = useCallback(async (signal?: AbortSignal) => {
     try {
       const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, { cache: "no-store", signal });
@@ -877,39 +863,8 @@ export default function MonitoringPage() {
     }
   }, []);
 
-  // Genel ayar kaydedici: tüm global admin ayar güncellemeleri bu yoldan gider.
-  const putSettings = useCallback(async (patch: Record<string, unknown>, okMessage: string) => {
-    setSavingMinScore(true);
-    setSavingSettings(true);
-    setSettingsError(null);
-    try {
-      const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      // R1-04: yetki/oturum hataları sessizce yutulmaz.
-      if (res.status === 401 || res.status === 403) { setSettingsError("Ayarları yalnız yönetici değiştirebilir — yetkiniz yok."); return; }
-      if (!res.ok) throw new HttpStatusError(res.status);
-      if (okMessage) setScanNote(okMessage);
-      await loadSettings();
-    } catch (err) {
-      if (!mountedRef.current) return;
-      setSettingsError(`Ayar kaydedilemedi: ${humanizeError(err)}`);
-    } finally {
-      if (mountedRef.current) { setSavingMinScore(false); setSavingSettings(false); }
-    }
-  }, [loadSettings]);
-
-  const saveMinScore = useCallback(async () => {
-    const val = Number(minScoreInput);
-    if (!Number.isFinite(val) || val < 0 || val > 100) {
-      setSettingsError("Eşik 0-100 arasında bir sayı olmalı.");
-      return;
-    }
-    setMinScoreDirty(false);
-    await putSettings({ min_score: val }, "Eşik kaydedildi.");
-  }, [minScoreInput, putSettings]);
+  // NOT: `putSettings`/`saveMinScore` Ayarlar > 📡 Radar sekmesine taşındı
+  // (RadarSettingsPanel). Burada yalnız OKUMA (`loadSettings`) kalır.
 
   // 🩺 Teşhis: yalnız admin uç noktası (403 → humanizeError yetki mesajı verir).
   const loadDiag = useCallback(async () => {
@@ -1088,6 +1043,13 @@ export default function MonitoringPage() {
               🔒 ŞİMDİ TARA: yetkiniz yok
             </span>
           )}
+          {/* OPERATÖRLÜK eylemi (ayar-editörü DEĞİL): spam koruması sıfırlama.
+              Ayar editörleri artık Ayarlar > 📡 Radar sekmesinde (2026-09-16). */}
+          {isAdmin && (
+            <button onClick={() => void resetNotifications()} disabled={savingSettings}
+              title="Aynı semboller yeniden bildirilebilir — spam koruması sıfırlanır"
+              className="ui-button ui-button-secondary">BİLDİRİM SIFIRLA</button>
+          )}
         </div>
       </div>
 
@@ -1166,141 +1128,10 @@ export default function MonitoringPage() {
         </div>
       </section>
 
-      {/* ⚙️ GLOBAL ADMIN AYARLARI: eşik, bildirim aç/kapa, min hedef %, sessiz
-          saatler + bildirim spam koruması sıfırlama. Yalnız admin görür; tüm
-          yazım PUT /api/monitoring/settings üzerinden gider. */}
-      {isAdmin && (
-        <section className="card" aria-label="Global bildirim ayarları (yönetici)">
-          <p className="eyebrow text-neon-green">⚙️ BİLDİRİM AYARLARI · GLOBAL (YÖNETİCİ)</p>
-          <div className="mt-3 flex flex-wrap items-end gap-3">
-            <div>
-              <p className="eyebrow text-bunker-muted">MİN SKOR (0-100)</p>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                value={minScoreInput}
-                onChange={(e) => { setMinScoreInput(e.target.value); setMinScoreDirty(true); }}
-                title="Admin eşiği: radar listesi, bildirim, rapor ve otonom taramada aynen uygulanır"
-                placeholder="—"
-                className="mt-1 w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
-              />
-            </div>
-            <button
-              onClick={saveMinScore}
-              disabled={savingMinScore || !minScoreDirty || !minScoreInput || Number(minScoreInput) < 0 || Number(minScoreInput) > 100}
-              className="ui-button ui-button-primary"
-            >
-              {savingMinScore ? "KAYDEDİLİYOR…" : "EŞİĞİ KAYDET"}
-            </button>
-            <button
-              onClick={() => { setMinScoreDirty(false); void putSettings({ min_score: null }, "Eşik varsayılana sıfırlandı."); }}
-              disabled={savingMinScore || settings?.min_score == null}
-              title="Varsayılan ham eşik değerine dön (sunucu MONITORING_MIN_RAW_SCORE)"
-              className="ui-button ui-button-secondary"
-            >
-              SIFIRLA
-            </button>
-
-            <div>
-              <p className="eyebrow text-bunker-muted">BİLDİRİMLER</p>
-              <button
-                onClick={() => void putSettings({ enabled: !settings?.enabled }, settings?.enabled ? "Bildirimler kapatıldı." : "Bildirimler açıldı.")}
-                disabled={savingMinScore || settings == null}
-                title="Global bildirim anahtarı (tüm kullanıcılara uygulanır)"
-                className={`ui-button ui-button-secondary mt-1 font-mono ${settings?.enabled ? "text-neon-green" : "text-neon-red"}`}
-              >
-                {settings?.enabled ? "AÇIK" : "KAPALI"}
-              </button>
-            </div>
-
-            {/* A5: MACD teyitli yeniden bildirim kapısı (histerezis). */}
-            <div>
-              <p className="eyebrow text-bunker-muted">MACD HİSTEREZİS</p>
-              <button
-                onClick={() => void putSettings(
-                  { macd_refire_gate: !settings?.macd_refire_gate },
-                  settings?.macd_refire_gate ? "MACD histerezisi kapatıldı." : "MACD histerezisi açıldı.")}
-                disabled={savingMinScore || settings?.macd_refire_gate == null}
-                title="Skor yükselmediği ve MACD teyidi zayıf olduğunda aynı sembolü yeniden bildirmeme"
-                className={`ui-button ui-button-secondary mt-1 font-mono ${settings?.macd_refire_gate ? "text-neon-green" : "text-bunker-muted"}`}
-              >
-                {settings?.macd_refire_gate == null ? "—" : settings.macd_refire_gate ? "AÇIK" : "KAPALI"}
-              </button>
-            </div>
-
-            <div>
-              <p className="eyebrow text-bunker-muted">MİN HEDEF %</p>
-              <input
-                type="number"
-                min={0}
-                max={50}
-                step={0.1}
-                value={targetPctInput}
-                onChange={(e) => setTargetPctInput(e.target.value)}
-                title="Bildirim için gereken en düşük hedef yüzdesi"
-                placeholder="—"
-                className="mt-1 w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
-              />
-            </div>
-            <button
-              onClick={() => {
-                const val = Number(targetPctInput);
-                if (!Number.isFinite(val) || val < 0) { setSettingsError("Min hedef % geçersiz."); return; }
-                void putSettings({ min_target_pct: val }, "Min hedef % kaydedildi.");
-              }}
-              disabled={savingMinScore || !targetPctInput || (settings?.min_target_pct != null ? Number(targetPctInput) === settings.min_target_pct : false)}
-              className="ui-button ui-button-primary"
-            >
-              {savingMinScore ? "KAYDEDİLİYOR…" : "KAYDET"}
-            </button>
-
-            <div>
-              <p className="eyebrow text-bunker-muted">SESSİZ SAATLER</p>
-              <div className="mt-1 flex items-center gap-1.5">
-                <input
-                  type="time"
-                  value={quietStart}
-                  onChange={(e) => setQuietStart(e.target.value)}
-                  title="Bildirim sessiz saati başlangıcı"
-                  className="bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
-                />
-                <span className="font-mono text-xs text-bunker-muted">→</span>
-                <input
-                  type="time"
-                  value={quietEnd}
-                  onChange={(e) => setQuietEnd(e.target.value)}
-                  title="Bildirim sessiz saati bitişi"
-                  className="bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none"
-                />
-              </div>
-            </div>
-            <button
-              onClick={() => {
-                if ((quietStart && !quietEnd) || (!quietStart && quietEnd)) {
-                  setSettingsError("Sessiz saat başlangıç ve bitiş birlikte girilmeli.");
-                  return;
-                }
-                void putSettings({ quiet_hours_start: quietStart || null, quiet_hours_end: quietEnd || null }, "Sessiz saatler kaydedildi.");
-              }}
-              disabled={savingMinScore}
-              className="ui-button ui-button-primary"
-            >
-              {savingMinScore ? "KAYDEDİLİYOR…" : "KAYDET"}
-            </button>
-
-            <button
-              onClick={() => void resetNotifications()}
-              disabled={savingSettings}
-              title="Aynı semboller yeniden bildirilebilir — spam koruması sıfırlanır"
-              className="ui-button ui-button-secondary"
-            >
-              BİLDİRİM SIFIRLA
-            </button>
-          </div>
-        </section>
-      )}
+      {/* ⚙️ GLOBAL ADMIN AYARLARI → Ayarlar > 📡 Radar sekmesine TAŞINDI (2026-09-16).
+          Aynı uçlar (GET/PUT /api/monitoring/settings) kullanılır; burada yalnız
+          salt-okunur eşik rozeti (yukarıda) ve operatörlük eylemi (BİLDİRİM SIFIRLA)
+          kalır. Canlı veri burada beslenmeye devam eder. */}
 
       {/* 🩺 TEŞHİS: sunucu iç durumu (yalnız admin; uç nokta 403 verebilir). */}
       {isAdmin && (

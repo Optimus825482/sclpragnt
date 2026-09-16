@@ -3144,6 +3144,30 @@ async def get_velocity_candidates(limit=50, status=None):
     return await _run_db(op)
 
 
+async def list_velocity_candidates_since(since_epoch, until_epoch=None, limit: int = 20000):
+    """Zaman penceresine göre velocity journal satırları (BİRLEŞİK RADAR replay).
+
+    NEDEN AYRI FONKSİYON: `get_velocity_candidates` 500 satırla sınırlı ve yalnız
+    EN YENİleri döndürür. Birleşik radar 24h replay'ı "radarın gördüğü" tam zaman
+    çizelgesini kurmak zorunda — bildirim gönderilmeyen `watchlist` satırları DAHİL
+    (yazım bildirimden bağımsızdır, velocity.py `_record_candidates`).
+
+    Dönüş: `created_at` ARTAN sırada; `_velocity_row` ile aynı alanlar.
+    """
+    def op(conn):
+        clauses = ["created_at >= ?"]
+        values: list = [float(since_epoch)]
+        if until_epoch is not None:
+            clauses.append("created_at <= ?")
+            values.append(float(until_epoch))
+        values.append(max(1, min(int(limit), 200000)))
+        rows = conn.execute(
+            f"SELECT * FROM velocity_candidates WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at ASC LIMIT ?", values).fetchall()
+        return [_velocity_row(row) for row in rows]
+    return await _run_db(op)
+
+
 async def get_velocity_calibration_stats(profile: str | None = None):
     """Koşullu dokunuş oranı + bileşen bazlı istatistik; eşik otomatik kalibrasyonu bununla yapılır.
 

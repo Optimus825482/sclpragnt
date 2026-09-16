@@ -353,6 +353,36 @@ class Config:
     RISING_TARGET_PCT = float(os.getenv("RISING_TARGET_PCT", "2.0"))
 
     # ---------------------------------------------------------------------
+    # BİRLEŞİK RADAR (2026-09-16) — Hız Avcısı + Yükseliş + Radar tespitleri
+    #
+    # Bulgu: monitoring._run_scan DOĞRUDAN velocity.detect_velocity_candidates
+    # çağırır; yani "Radar Tespitleri" Velocity'nin bildirim koludur, ayrı bir
+    # motor değildir. Gerçek birleşme Velocity ↔ Yükseliş arasındadır.
+    # Bu blok o birleşimi yönetir: her kaynak KENDİ kalibre edilmiş kapısını
+    # korur, sembol herhangi birini geçerse adaydır (recall kaybı yok); iki kaynak
+    # da RADAR_CONFLUENCE_WINDOW_SEC içinde geçiyorsa `confluence=true` işaretlenir.
+    # YENİ EŞİK İCAT EDİLMEZ — yalnızca iki kanıtlı kapının birleşimi alınır.
+    #
+    # Bu değerler config VARSAYILANLARIDIR; admin `PUT /api/monitoring/settings`
+    # ile aynı anahtar adlarıyla üzerine yazabilir (ayar deposu tek: monitoring
+    # notification settings JSON). Aşama 1'de hiçbir üretim yolu etkilenmez.
+    # ---------------------------------------------------------------------
+    # Birleşik motoru etkinleştir (Aşama 2'de teslimat bunu kullanır). Aşama 1'de
+    # yalnız modül + replay vardır, bu yüzden varsayılan KAPALI.
+    RADAR_COMBINED_ENABLED = os.getenv("RADAR_COMBINED_ENABLED", "false").lower() == "true"
+    # İki kaynağın "aynı olay" sayılması için maksimum zaman aralığı (sn).
+    RADAR_CONFLUENCE_WINDOW_SEC = max(60, int(os.getenv("RADAR_CONFLUENCE_WINDOW_SEC", "1800")))
+    # Tek tip bildirim: tek zarf üreticisi + tek tag (`radar-{sym}`) + tek WS tipi;
+    # yükseliş artık ayrı `rising_alert` yayınlamaz (kirli/çift push kaldırılır).
+    RADAR_UNIFIED_NOTIFY = os.getenv("RADAR_UNIFIED_NOTIFY", "false").lower() == "true"
+    # Velocity'nin otonom döngüsünü auto_paper'a yönlendir: tüm paper pozisyonlar
+    # tek defterde (auto_paper_trades), tek sembol-tek pozisyon, max-open kapısı ve
+    # B1-B4 merdiveniyle kapanır. Kapalıysa eski doğrudan `analyzer.open_position`
+    # yolu aynen çalışır (davranış değişikliği YOK).
+    RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER = (
+        os.getenv("RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", "false").lower() == "true")
+
+    # ---------------------------------------------------------------------
     # SAKLAMA (RETENTION) PENCERELERİ — disk bütçesi (2026-09-16)
     #
     # Sunucu ölçümü: DB 21 GB ama CANLI veri ~1-2 GB; kalanı BUDANMIŞ ama

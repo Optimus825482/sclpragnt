@@ -43,7 +43,7 @@ export default function SettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "system-health">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "system-health">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -583,6 +583,7 @@ function SettingsPageInner() {
         <nav className="flex gap-2 overflow-x-auto border-b border-bunker-800 pb-2" aria-label="Ayar sekmeleri">
           {([
             ["symbols", "Semboller", "🪙"],
+            ["radar", "Radar", "📡"],
             ["app", "Uygulama Ayarları", "⚙️"],
             ["strategies", "Strateji Ayarları", "📈"],
             ["llm", "LLM / Provider", "🤖"],
@@ -600,6 +601,9 @@ function SettingsPageInner() {
 
       {cfg && (
         <>
+          <div className={`${activeTab !== "radar" ? "hidden" : ""}`}>
+            <RadarSettingsPanel />
+          </div>
           <div className={`${activeTab !== "system-health" ? "hidden" : ""}`}>
             <SystemHealthTab />
           </div>
@@ -983,6 +987,195 @@ function SettingsPageInner() {
             <div className="max-h-[44vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(mlBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(toMs(log.timestamp)).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(mlBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
             {mlBackfill.status === "complete" && mlBackfill.result && <div className="mt-4 rounded border border-neon-green/30 bg-neon-green/5 p-3 font-mono text-xs text-neon-green">Tamamlandı · güncellenen={mlBackfill.result.updated ?? 0} atlanan={mlBackfill.result.skipped ?? 0} sembol={mlBackfill.result.symbols ?? 0} · gölge (mevcut model)</div>}
             <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend&apos;de arka planda devam eder; tekrar açarak son durumu görebilirsiniz. İşlem, PnL ve pozisyonlar değişmez.</p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 📡 RADAR AYARLARI (2026-09-16) — Monitoring sayfasındaki global bildirim ayar
+ * kartı BURAYA taşındı (Ayarlar > Radar). Aynı uçlar kullanılır:
+ *   GET  /api/monitoring/settings   (okuma)
+ *   PUT  /api/monitoring/settings   (yazım — merge semantiği, yalnız gönderilenler)
+ * Ayrıca birleşik radar (Hız Avcısı + Yükseliş + Radar) anahtarları da buradadır:
+ *   radar_combined_enabled / radar_unified_notify /
+ *   radar_route_velocity_auto_through_auto_paper / radar_confluence_window_sec
+ * Kapalıyken hiçbir üretim davranışı değişmez — anahtarlar Aşama 2 teslimatı için.
+ *
+ * NOT: Bu bileşen Monitoring'deki CANLI göstergeleri içermez; eşik rozeti, sağlık
+ * çipleri, teşhis kartı ve "ŞİMDİ TARA"/"BİLDİRİM SIFIRLA" operatörlük eylemleri
+ * Monitoring'de kalır (orada sunucu state'i ile beslenmeye devam eder).
+ */
+function RadarSettingsPanel() {
+  const [settings, setSettings] = useState<any>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [minScoreInput, setMinScoreInput] = useState<string>("");
+  const [targetPctInput, setTargetPctInput] = useState<string>("");
+  const [quietStart, setQuietStart] = useState("");
+  const [quietEnd, setQuietEnd] = useState("");
+  const [confluenceInput, setConfluenceInput] = useState<string>("");
+
+  const load = async () => {
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setSettings(data && typeof data === "object" ? data : null);
+      if (data?.min_score != null) setMinScoreInput(String(data.min_score));
+      if (data?.min_target_pct != null) setTargetPctInput(String(data.min_target_pct));
+      if (data?.quiet_hours_start) setQuietStart(String(data.quiet_hours_start));
+      if (data?.quiet_hours_end) setQuietEnd(String(data.quiet_hours_end));
+      if (data?.radar_confluence_window_sec != null) setConfluenceInput(String(data.radar_confluence_window_sec));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Radar ayarları okunamadı");
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const put = async (patch: Record<string, unknown>, okMessage: string) => {
+    setSaving(true); setError(null); setNote(null);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (res.status === 401 || res.status === 403) { setError("Ayarları yalnız yönetici değiştirebilir — yetkiniz yok."); return; }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.detail || `HTTP ${res.status}`);
+      }
+      setNote(okMessage);
+      await load();
+    } catch (err) {
+      setError(`Ayar kaydedilemedi: ${err instanceof Error ? err.message : "bilinmeyen hata"}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveMinScore = async () => {
+    const val = Number(minScoreInput);
+    if (!Number.isFinite(val) || val < 0 || val > 100) { setError("Eşik 0-100 arasında bir sayı olmalı."); return; }
+    await put({ min_score: val }, "Eşik kaydedildi.");
+  };
+
+  const saveTargetPct = async () => {
+    const val = Number(targetPctInput);
+    if (!Number.isFinite(val) || val < 0) { setError("Min hedef % geçersiz."); return; }
+    await put({ min_target_pct: val }, "Min hedef % kaydedildi.");
+  };
+
+  const saveQuietHours = async () => {
+    if ((quietStart && !quietEnd) || (!quietStart && quietEnd)) { setError("Sessiz saat başlangıç ve bitiş birlikte girilmeli."); return; }
+    await put({ quiet_hours_start: quietStart || null, quiet_hours_end: quietEnd || null }, "Sessiz saatler kaydedildi.");
+  };
+
+  const saveConfluence = async () => {
+    const val = Number(confluenceInput);
+    if (!Number.isFinite(val) || val < 60 || val > 21600) { setError("Çakışma penceresi 60-21600 sn arasında olmalı."); return; }
+    await put({ radar_confluence_window_sec: Math.round(val) }, "Çakışma penceresi kaydedildi.");
+  };
+
+  const toggle = (key: string, current: boolean | null, onText: string, offText: string) => (
+    <button
+      type="button"
+      onClick={() => put({ [key]: !current }, `${onText}/${offText} kaydedildi.`)}
+      disabled={saving || current == null}
+      className={`ui-button ui-button-secondary mt-1 font-mono ${current ? "text-neon-green" : "text-bunker-muted"}`}
+    >
+      {current == null ? "—" : current ? "AÇIK" : "KAPALI"}
+    </button>
+  );
+
+  const numInputCls = "mt-1 w-24 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none";
+  const timeInputCls = "bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none";
+
+  return (
+    <div className="card bg-bunker-950">
+      <p className="eyebrow text-neon-green">⚙️ RADAR · BİLDİRİM AYARLARI (GLOBAL · YÖNETİCİ)</p>
+      <p className="text-xs text-bunker-muted mt-1">Radar eşiği radar listesi, bildirim, rapor ve otonom taramada aynen uygulanır. Değişiklik tüm kullanıcıları anında etkiler.</p>
+
+      {error && <p className="mt-3 font-mono text-xs text-neon-red">⚠ {error}</p>}
+      {note && <p className="mt-3 font-mono text-xs text-neon-green">✓ {note}</p>}
+      {!settings && !error && <p className="mt-3 font-mono text-xs text-bunker-muted animate-pulse">Yükleniyor...</p>}
+
+      {settings && (
+        <div className="mt-4 space-y-4">
+          {/* EŞİK + BİLDİRİM ANAHTARI */}
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <p className="eyebrow text-bunker-muted">MİN SKOR (0-100)</p>
+              <input type="number" min={0} max={100} step={1} value={minScoreInput}
+                onChange={(e) => setMinScoreInput(e.target.value)} placeholder="—" className={numInputCls} />
+            </div>
+            <button type="button" onClick={saveMinScore} disabled={saving}
+              className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "EŞİĞİ KAYDET"}</button>
+            <button type="button" onClick={() => put({ min_score: null }, "Eşik varsayılana sıfırlandı.")}
+              disabled={saving || settings.min_score_explicit === false}
+              title="Varsayılan ham eşik değerine dön (sunucu MONITORING_MIN_RAW_SCORE)"
+              className="ui-button ui-button-secondary">SIFIRLA</button>
+            <div>
+              <p className="eyebrow text-bunker-muted">BİLDİRİMLER</p>
+              {toggle("enabled", settings.enabled, "Bildirimler açıldı", "Bildirimler kapatıldı")}
+            </div>
+          </div>
+
+          {/* HEDEF + SESSİZ SAAT */}
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <p className="eyebrow text-bunker-muted">MİN HEDEF %</p>
+              <input type="number" min={0} max={50} step={0.1} value={targetPctInput}
+                onChange={(e) => setTargetPctInput(e.target.value)} placeholder="—" className={numInputCls} />
+            </div>
+            <button type="button" onClick={saveTargetPct} disabled={saving}
+              className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
+            <div>
+              <p className="eyebrow text-bunker-muted">SESSİZ SAATLER</p>
+              <div className="mt-1 flex items-center gap-1.5">
+                <input type="time" value={quietStart} onChange={(e) => setQuietStart(e.target.value)} className={timeInputCls} />
+                <span className="font-mono text-xs text-bunker-muted">→</span>
+                <input type="time" value={quietEnd} onChange={(e) => setQuietEnd(e.target.value)} className={timeInputCls} />
+              </div>
+            </div>
+            <button type="button" onClick={saveQuietHours} disabled={saving}
+              className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
+          </div>
+
+          {/* BİRLEŞİK RADAR (Aşama 1/2) */}
+          <div className="border-t border-bunker-800 pt-4">
+            <p className="eyebrow text-sky-300">BİRLEŞİK RADAR · HIZ AVCISI + YÜKSELİŞ + TESPİT</p>
+            <p className="text-xs text-bunker-muted mt-1">Üç sinyal kaynağı tek karar noktasında birleşir: her kaynak kendi kalibre eşiğini korur, sembol herhangi birini geçerse adaydır. İki kaynak aynı pencere içinde geçerse <span className="font-mono">confluence</span> işaretlenir. Yeni eşik icat edilmez.</p>
+            <div className="mt-3 flex flex-wrap items-end gap-3">
+              <div>
+                <p className="eyebrow text-bunker-muted">BİRLEŞİK MOTOR</p>
+                {toggle("radar_combined_enabled", settings.radar_combined_enabled, "Birleşik motor açıldı", "Birleşik motor kapatıldı")}
+              </div>
+              <div>
+                <p className="eyebrow text-bunker-muted">TEK TİP BİLDİRİM</p>
+                {toggle("radar_unified_notify", settings.radar_unified_notify, "Tek tip bildirim açıldı", "Tek tip bildirim kapatıldı")}
+                <p className="text-[11px] text-bunker-muted mt-1 max-w-[26ch]">Aynı sembol için iki ayrı push yerine tek bildirim (tag: radar-SEMBOLOLUŞUR).</p>
+              </div>
+              <div>
+                <p className="eyebrow text-bunker-muted">OTONOM → AUTO PAPER</p>
+                {toggle("radar_route_velocity_auto_through_auto_paper", settings.radar_route_velocity_auto_through_auto_paper, "Yönlendirme açıldı", "Yönlendirme kapatıldı")}
+                <p className="text-[11px] text-bunker-muted mt-1 max-w-[26ch]">Tüm otonom paper pozisyonları tek defterde; max 3 açık pozisyon ve B1-B4 merdiveniyle kapanır.</p>
+              </div>
+              <div>
+                <p className="eyebrow text-bunker-muted">ÇAKIŞMA PENCERESİ (SN)</p>
+                <input type="number" min={60} max={21600} step={60} value={confluenceInput}
+                  onChange={(e) => setConfluenceInput(e.target.value)} placeholder="1800"
+                  title="İki kaynağın aynı olay sayılması için maksimum aralık (60-21600 sn)"
+                  className={numInputCls} />
+              </div>
+              <button type="button" onClick={saveConfluence} disabled={saving}
+                className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
+            </div>
           </div>
         </div>
       )}
