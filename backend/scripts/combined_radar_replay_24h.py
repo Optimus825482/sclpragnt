@@ -158,8 +158,16 @@ def _simulate_ladder(rows, entry_price: float, target_pct: float, horizon_minute
         exit_price, exit_ms = float(rows[-1][4]), int(rows[-1][0])
 
     window = _post_signal_window(rows, first_ms, due_ms)
-    mfe = _mfe_from_window(window, entry)
-    mae = ((min(float(r[3]) for r in window) / entry - 1) * 100) if window else None
+    # MFE/MAE TEK TARAFLI olmalı (tanımları gereği): MFE "en iyi lehte hareket" ≥ 0,
+    # MAE "en kötü aleyhte hareket" ≤ 0. `_mfe_from_window` ORTAK CANLI yardımcıdır
+    # ve pencere sinyal barını hariç tuttuğu için ham tepe/dip farkı işaret
+    # değiştirebilir; canlı davranışı değiştirmemek için kırpma REPLAY sınırında
+    # yapılır. Kırpmasız hâli CSV'de imkânsız değerler üretiyordu (mfe −0.996,
+    # mae +0.043) ve hedef/MFE teşhisini sistematik olarak aşağı çekiyordu.
+    raw_mfe = _mfe_from_window(window, entry)
+    mfe = max(0.0, raw_mfe) if raw_mfe is not None else None
+    raw_mae = ((min(float(r[3]) for r in window) / entry - 1) * 100) if window else None
+    mae = min(0.0, raw_mae) if raw_mae is not None else None
     hold_minutes = max(0.0, (exit_ms - first_ms) / 60_000)
     gross_pct_exit = (exit_price / entry - 1) * 100
     net_pct = gross_pct_exit - round_trip_cost_pct()
@@ -223,6 +231,14 @@ def _metrics(name: str, signals: list[dict]) -> dict:
         "confluence_count": len(confluence),
         "confluence_win_rate": round(len(conf_wins) / len(confluence) * 100, 2)
             if confluence else None,
+        # KESİŞİM getirisi: birleştirmenin TEK savunulabilir gerekçesi budur —
+        # iki kaynağın aynı pencerede hemfikir olduğu alt küme. Sayı ve kazanma
+        # oranı tek başına yetmez; ortalamayı MEDYANLA birlikte yazıyoruz çünkü
+        # TP isabetleri kuyruk oluşturup ortalamayı şişirir.
+        "confluence_avg_net_pct": round(statistics.mean(
+            float(s["net_pct"]) for s in confluence), 4) if confluence else None,
+        "confluence_median_net_pct": round(statistics.median(
+            float(s["net_pct"]) for s in confluence), 4) if confluence else None,
         "exit_reasons": dict(sorted(reasons.items())),
     }
 
@@ -333,6 +349,11 @@ def _sweep_geometry(sim_inputs: list[dict], targets: list[float],
                         "win_rate": round(sum(1 for n in nets if n > 0) / len(nets) * 100, 2),
                     })
     return out
+
+
+def _pct(value, fmt: str = "{:+.3f}%") -> str:
+    """None-güvenli yüzde biçimleyici (rapor satırları için)."""
+    return fmt.format(value) if value is not None else "—"
 
 
 def _sweep_best(sweep: list[dict], stream: str) -> str:
@@ -632,7 +653,10 @@ def _report_text(result: dict) -> str:
     lines.append("=" * 88)
     lines.append("BİRLEŞİK RADAR REPLAY RAPORU".center(88))
     lines.append("=" * 88)
-    header = (f"{'akış':<14}{'sinyal':>8}{'ölçülen':>9}{'hedef%':>9}{'kazanma%':>10}"
+    # Sütun adı DÜRÜST olmalı: buradaki değer `target_hit_rate` (TP'ye dokunma
+    # oranı), ortalama hedef DEĞİL. Eskiden `hedef%` yazıyordu ve ortalama hedef
+    # sanılıyordu; ort. hedef ayrı (`avg_target_pct`) ve HEDEF/MFE bölümünde.
+    header = (f"{'akış':<14}{'sinyal':>8}{'ölçülen':>9}{'TP%':>9}{'kazanma%':>10}"
               f"{'ort.net%':>10}{'top.net%':>10}{'ort.MFE%':>10}{'çakışma':>9}")
     lines.append(header)
     lines.append("-" * 88)
@@ -690,6 +714,61 @@ def _report_text(result: dict) -> str:
         lines.append("")
         lines.append(f"  (velocity_only referans: en iyi "
                      f"{_sweep_best(result['sweep'], 'velocity_only')})")
+        lines.append("")
+
+    # MALİYET DUVARI: verdict'i iddia değil ARİTMETİK yapar. net = brüt − maliyet
+    # olduğu için brüt = net + maliyet; kâr için brüt > maliyet ŞART. Taramanın
+    # tavanı (en iyi hücrenin brütü) bile maliyetin altındaysa, hiçbir TP/SL
+    # geometrisi kâra geçemez → sorun geometri değil SEÇİCİLİK.
+    cost = round_trip_cost_pct()
+    lines.append("MALİYET DUVARI (net = brüt − gidiş-dönüş maliyet; kâr için brüt > maliyet):")
+    lines.append(f"  gidiş-dönüş maliyet {cost:.3f}%  ({cost / 2:.3f}%/bacak × 2: "
+                 f"komisyon + slipaj)")
+    for key in ("velocity_only", "rising_only", "combined"):
+        m = streams.get(key) or {}
+        if m.get("avg_net_pct") is None:
+            continue
+        gross = m["avg_net_pct"] + cost
+        lines.append(f"  {key:<14} net {m['avg_net_pct']:+.3f}%  →  brüt {gross:+.3f}%"
+                     f"   açık {gross - cost:+.3f} puan")
+    if result.get("sweep"):
+        tops: list[tuple[str, dict]] = []
+        for key in ("velocity_only", "rising_only", "combined"):
+            rows = [r for r in result["sweep"] if r["stream"] == key]
+            if rows:
+                tops.append((key, max(rows, key=lambda r: r["avg_net_pct"])))
+        if tops:
+            tkey, tbest = max(tops, key=lambda kv: kv[1]["avg_net_pct"])
+            tgross = tbest["avg_net_pct"] + cost
+            lines.append(f"  TARAMA TAVANI: brüt {tgross:+.3f}%  ({tkey} hedef "
+                         f"{tbest['target_pct']:.2f} / stop {tbest['sl_pct']:.2f} / "
+                         f"ratchet {tbest.get('gap_pct', 0.6):.2f})")
+            lines.append(
+                f"  → tavan maliyetin {cost - tgross:.3f} puan ALTINDA: hiçbir geometri bu "
+                f"açığı kapatamaz → sorun geometri değil SEÇİCİLİK."
+                if tgross <= cost else
+                f"  → tavan maliyeti {tgross - cost:.3f} puan AŞIYOR: geometri kâra "
+                f"çevirebilir, ÖNCE üretimde doğrula (tek dönem yeterli kanıt değil).")
+    lines.append("")
+    # KESİŞİM: birleştirmenin TEK savunulabilir gerekçesi "iki kaynak hemfikir"
+    # alt kümesidir. Akış ortalamaları negatifken bu alt küme pozitif çıkabilir;
+    # o zaman karar "birleştirme kötü" değil "birleştirmeyi KESİŞİME daralt"
+    # olur. Küçük n'de ortalamayı medyanla birlikte okumak şarttır.
+    conf_streams = [(k, streams.get(k) or {})
+                    for k in ("velocity_only", "rising_only", "combined")]
+    if any(m.get("confluence_count") for _k, m in conf_streams):
+        lines.append("ÇAKIŞMA ALT KÜMESİ (iki kaynak AYNI pencerede — birleşimin kesişimi):")
+        for key, m in conf_streams:
+            if not m.get("confluence_count"):
+                continue
+            lines.append(f"  {key:<14} n={m['confluence_count']:<5}"
+                         f"ort.net {_pct(m.get('confluence_avg_net_pct'))}  "
+                         f"medyan {_pct(m.get('confluence_median_net_pct'))}  "
+                         f"kazanma {_pct(m.get('confluence_win_rate'), '{:.2f}')}")
+            if m["confluence_count"] < 30:
+                lines.append(f"  ⚠ n={m['confluence_count']} < 30 → HİPOTEZ, karar verisi DEĞİL;"
+                             f" ortalamayı şişiren TP kuyruğu olabilir, MEDYANI oku ve daha"
+                             f" uzun pencereyle doğrula.")
         lines.append("")
     lines.append("SINIRLAR (sonuçları okurken bil):")
     for line in result.get("limitations", []):
