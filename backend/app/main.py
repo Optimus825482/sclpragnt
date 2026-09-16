@@ -1403,6 +1403,17 @@ async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200)
     if interval not in {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}:
         raise HTTPException(status_code=400, detail="Geçersiz timeframe")
     rows = await fetch_klines(symbol, interval, limit=max(20, min(int(limit), 500)))
+    # CANLI AKIS (2026-09-16): grafik bu (sembol, ufuk) çiftini görüntülüyor →
+    # WS canlı yayınına al. Böylece `ws_live_candles` OLUŞAN mumu yalnızca
+    # gerçekten bakılan çift için yayınlar (70 sembol × 6 ufuk = ~420 stream'in
+    # tamamı için yayın yapmak gereksiz yüktü). Kayıt TTL'lidir ve grafik bu uç
+    # noktayı zaten 10 sn'de bir çağırdığı için kendiliğinden tazelenir —
+    # istemci tarafında değişiklik GEREKMEZ.
+    try:
+        from app.ws_live_candles import note_viewed
+        note_viewed(symbol, interval)
+    except Exception as exc:
+        logger.debug("canlı mum aboneliği kaydedilemedi: %s", exc)
     return {"symbol": symbol.replace("_", "").upper(), "interval": interval,
             "candles": rows, "source": "binance_tr_public"}
 
