@@ -691,7 +691,7 @@ async def download_combined_radar_replay_csv(request: Request = None):
     stream = io.StringIO(newline="")
     writer = csv.writer(stream)
     writer.writerow(["stream", "symbol", "detected_at_unix", "price", "target_pct", "score",
-                     "confluence", "sources", "exit_reason", "exit_price",
+                     "confluence", "sources", "horizon_minutes", "exit_reason", "exit_price",
                      "gross_pct", "net_pct", "mfe_pct", "mae_pct", "hold_minutes"])
 
     def _src(value):
@@ -710,7 +710,8 @@ async def download_combined_radar_replay_csv(request: Request = None):
             writer.writerow([
                 s.get("stream"), s.get("symbol"), s.get("detected_at"), s.get("price"),
                 s.get("target_pct"), s.get("score"), s.get("confluence"),
-                _src(s.get("sources")), s.get("exit_reason"), s.get("exit_price"),
+                _src(s.get("sources")), s.get("horizon_minutes"),
+                s.get("exit_reason"), s.get("exit_price"),
                 s.get("gross_pct"), s.get("net_pct"), s.get("mfe_pct"), s.get("mae_pct"),
                 s.get("hold_minutes"),
             ])

@@ -56,14 +56,16 @@ from app.combined_radar import build_combined_events       # noqa: E402
 from app.config import config                              # noqa: E402
 from app.binance_tr_public import historical_klines        # noqa: E402
 from app.routers.velocity import (                         # noqa: E402
-    _post_signal_window, _mfe_from_window, round_trip_cost_pct,
+    _post_signal_window, _mfe_from_window, round_trip_cost_pct, _panel_score,
+    _velocity_horizon_from_candidate_id,
 )
 
 
 # ---------------------------------------------------------------------------
 # B1-B4 merdiven simülasyonu (auto_paper._manage_single_trade ile aynı sıra)
 # ---------------------------------------------------------------------------
-def _simulate_ladder(rows, entry_price: float, target_pct: float, horizon_minutes: float) -> dict:
+def _simulate_ladder(rows, entry_price: float, target_pct: float, horizon_minutes: float,
+                     signal_ms: int | None = None) -> dict:
     """auto_paper çıkış merdivenini 1m kline penceresi üzerinde oynatır.
 
     Sıra üretimle birebir: (1) TP kontrolü, (2) peak/MFE güncelle, (3) SL,
@@ -89,8 +91,12 @@ def _simulate_ladder(rows, entry_price: float, target_pct: float, horizon_minute
     peak = entry
     breakeven_stop = None
     trailing_stop = None
-    first_ms = int(rows[0][0])
-    due_ms = first_ms + int(horizon_minutes * 60_000)
+    # Ufuk SİNYAL ANINDAN ölçülür (ilk bardan değil): sinyal 12:00:30'da geldiyse
+    # ve ufuk 5 dk ise kapanış 12:05:30'dur. İlk bara göre hesaplamak ufku 1 dakikaya
+    # kadar uzatıp ölçümü kaydırıyordu.
+    base_ms = int(signal_ms) if signal_ms is not None else int(rows[0][0])
+    first_ms = base_ms
+    due_ms = base_ms + int(horizon_minutes * 60_000)
 
     exit_reason = "horizon_end"
     exit_price = None
@@ -216,14 +222,17 @@ def _emit(log, message: str) -> None:
 
 
 def _as_signal_row(item: dict, detected_at, confluence: bool = False,
-                   default_source: str | None = None) -> dict:
+                   default_source: str | None = None,
+                   default_horizon: float = 5.0) -> dict:
     """Bir olayı ölçüm satırına çevir.
 
     DİKKAT — `sources` HER ZAMAN dolu string listesi olmalıdır. Journal satırlarında
     (`velocity_candidates`) ne `sources` ne `source` alanı vardır; eski kod
     `item.get("sources") or [item.get("source")]` ile `[None]` üretiyordu ve CSV
-    üretimindeki `",".join(...)` **TypeError → HTTP 500** veriyordu. Bu yüzden
-    kaynak etiketi çağrıdan AÇIKÇA geçirilir ve boş değerler süzülür.
+    üretimindeki `",".join(...)` **TypeError → HTTP 500** veriyordu.
+
+    `horizon_minutes` de taşınır: ölçüm penceresi sinyalin KENDİ ufku olmalıdır
+    (yoksa 5dk sinyal 30dk ölçülür ve isabet oranı şişer).
     """
     sources = item.get("sources")
     if not sources:
@@ -231,10 +240,54 @@ def _as_signal_row(item: dict, detected_at, confluence: bool = False,
     sources = [str(s) for s in sources if s]
     if not sources:
         sources = [default_source or "unknown"]
+    horizon = item.get("horizon_minutes")
+    try:
+        horizon = float(horizon) if horizon is not None else float(default_horizon)
+    except (TypeError, ValueError):
+        horizon = float(default_horizon)
     return {"symbol": item.get("symbol"), "detected_at": detected_at,
             "price": item.get("price"), "target_pct": item.get("target_pct"),
             "score": item.get("score"), "confluence": bool(confluence),
-            "sources": sources}
+            "sources": sources, "horizon_minutes": horizon}
+
+
+def _resolve_horizon(signal: dict, cap_minutes: float) -> float:
+    """Sinyalin KENDİ ufkunu döndür (yoksa 5 dk); [1, cap] aralığına kırp.
+
+    NEDEN: eski kod `min(60, max(5.0, 30.0))` yazıyordu — bu ifade DAİMA 30.0 eder
+    ve sinyalin ufkunu tamamen yok sayardı. 5 dakikalık bir sinyali 30 dakika
+    ölçmek TP/SL'ye 6× fazla süre tanır; isabet oranını şişirir, MFE'yi yapay
+    büyütür ve "ufuk sonunda çık" kapanışını yanlış ana taşır.
+    """
+    try:
+        horizon = float(signal.get("horizon_minutes") or 5.0)
+    except (TypeError, ValueError):
+        horizon = 5.0
+    return min(float(cap_minutes), max(1.0, horizon))
+
+
+def _dedupe_signals(signals: list[dict]) -> list[dict]:
+    """Aynı (sembol, saniye, hedef) üçlüsünü TEK say.
+
+    Journal `velocity_candidates` aynı satırı iki kez taşıyabiliyor (5dk ve 15dk
+    profilleri aynı hedefe kalibre olduğunda birebir aynı sembol/zaman/hedef
+    oluşuyor). Ölçümde bu, örneklemi ~2× şişirip ortalamaları saptırıyordu;
+    üretimde aynı sembol için TEK bildirim gittiği için ölçüm de tek saymalı.
+    """
+    seen: set = set()
+    out: list[dict] = []
+    for signal in signals:
+        try:
+            key = (signal.get("symbol"), round(float(signal.get("detected_at") or 0), 0),
+                   round(float(signal.get("target_pct") or 0), 4))
+        except (TypeError, ValueError):
+            out.append(signal)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(signal)
+    return out
 
 
 async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
@@ -265,11 +318,29 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
 
     # --- Akış 1: velocity-only (üretim radar kapısının journal karşılığı) ---
     raw_gate = float(getattr(config, "MONITORING_MIN_RAW_SCORE", 1400))
-    velocity_events = [
-        r for r in velocity_rows
-        if r.get("passes") and r.get("velocity_score") is not None
-        and float(r["velocity_score"]) >= raw_gate
-    ]
+    velocity_events = []
+    for row in velocity_rows:
+        if not row.get("passes") or row.get("velocity_score") is None:
+            continue
+        raw = float(row["velocity_score"])
+        if raw < raw_gate:
+            continue
+        # ÖLÇEK DÜZELTMESİ (2026-09-16): journal satırı `score` DEĞİL `velocity_score`
+        # (HAM) taşır. Ham değeri olduğu gibi bırakmak iki şeyi bozuyordu:
+        #   (a) velocity satırlarının `score` kolonu BOŞ kalıyordu,
+        #   (b) `combined` akışında ham (binler) ile yükseliş paneli (0-100) AYNI
+        #       kolonda karışıyor, `primary` seçimi sayısal kıyasla yapıldığı için
+        #       velocity neredeyse her zaman kazanıyordu.
+        # Kanonik panel haritası (`velocity._panel_score`, tek kaynak) burada
+        # uygulanır → tüm akışlar 0-100 panel ölçeğinde kıyaslanabilir olur.
+        item = dict(row)
+        item["score"] = _panel_score(raw)
+        item["raw_score"] = raw
+        # Ufuk journal'da KOLON DEĞİL, `candidate_id` ön ekinde gömülüdür
+        # ("vel-5dk-..." / "vel-15dk-..."): kanonik çözücü kullanılır.
+        item["horizon_minutes"] = float(
+            _velocity_horizon_from_candidate_id(item.get("candidate_id")))
+        velocity_events.append(item)
     # --- Akış 2: rising-only ---
     rising_events = list(rising_rows)
 
@@ -278,13 +349,24 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
                                      confluence_window_sec=window)
 
     # Sanal giriş listeleri: ölçüm satırına çevir (kaynak etiketi AÇIKÇA verilir).
-    velocity_signals = [_as_signal_row(v, v.get("created_at"), default_source="velocity")
+    velocity_signals = [_as_signal_row(v, v.get("created_at"), default_source="velocity",
+                                       default_horizon=5.0)
                         for v in velocity_events]
-    rising_signals = [_as_signal_row(r, r.get("created_at"), default_source="rising")
+    rising_signals = [_as_signal_row(r, r.get("created_at"), default_source="rising",
+                                     default_horizon=5.0)
                       for r in rising_events]
     combined_signals = [_as_signal_row(c, c.get("detected_at"), c.get("confluence", False),
-                                       default_source="combined")
+                                       default_source="combined", default_horizon=5.0)
                         for c in combined]
+
+    # MÜKERRER SİNYAL TEMİZLİĞİ (2026-09-16): journal aynı (sembol, zaman, hedef)
+    # üçlüsünü iki kez taşıyabiliyor (5dk/15dk profilleri aynı hedefe kalibre
+    # olduğunda birebir aynı satırlar oluşuyor). Ölçümde bu örneklemi ~2× şişirip
+    # metrikleri saptırıyordu. Üretimde aynı sembol için tek bildirim gider; ölçüm
+    # de tek saymalıdır.
+    velocity_signals = _dedupe_signals(velocity_signals)
+    rising_signals = _dedupe_signals(rising_signals)
+    combined_signals = _dedupe_signals(combined_signals)
 
     for stream in (velocity_signals, rising_signals, combined_signals):
         stream[:] = [s for s in stream
@@ -344,14 +426,17 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
         symbol = signal["symbol"]
         detected = float(signal["detected_at"])
         target = float(signal["target_pct"])
-        horizon = min(horizon_cap_min, max(5.0, 30.0))
+        # UFUK: sinyalin KENDİ ufku (5dk/15dk), tavanla kırpılmış — sabit DEĞİL.
+        horizon = _resolve_horizon(signal, horizon_cap_min)
         rows = await _load_klines(symbol, detected, end_fetch, cache)
         window_rows = _post_signal_window(rows, int(detected * 1000),
                                           int((detected + horizon * 60) * 1000))
-        outcome = _simulate_ladder(window_rows, float(signal["price"]), target, horizon)
+        outcome = _simulate_ladder(window_rows, float(signal["price"]), target, horizon,
+                                   signal_ms=int(detected * 1000))
         outcome.update({k: signal[k] for k in
                         ("symbol", "detected_at", "price", "target_pct", "score",
                          "confluence", "sources")})
+        outcome["horizon_minutes"] = horizon
         outcome["stream"] = stream_name
         measured[stream_name].append(outcome)
         if progress:
