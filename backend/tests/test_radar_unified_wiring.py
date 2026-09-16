@@ -366,6 +366,30 @@ class ReplayMeasurementTests(unittest.TestCase):
     def test_dedupe_tolerates_missing_fields(self):
         self.assertEqual(1, len(self.script._dedupe_signals([{}, {}])))
 
+    # ---- (4) giriş çapası İLK sinyalden gelmeli ---------------------------
+    def test_cluster_entry_uses_first_event_price_and_target(self):
+        """Fiyat/zaman/hedef AYNI olaydan gelmeli — yoksa ölçüm tutarsız olur.
+
+        Gerçek CSV kanıtı: `combined,TLMTRY,...,0.0764` (primary fiyatı) ama aynı
+        anda velocity 0.0702'den girmişti → negatif MFE (-5.00 / -11.26).
+        """
+        from app.combined_radar import build_combined_events
+        velocity = [{"symbol": "TLMTRY", "velocity_score": 11021.0, "created_at": 1000.0,
+                     "price": 0.0702, "target_pct": 4.0, "horizon_minutes": 5.0,
+                     "candidate_id": "vel-5dk-%4-TLMTRY"}]
+        rising = [{"symbol": "TLMTRY", "score": 55.0, "created_at": 1300.0,
+                   "price": 0.0764, "target_pct": 2.0, "kind": "yukselis"}]
+        out = build_combined_events(velocity, rising, confluence_window_sec=1800)
+        self.assertEqual(1, len(out))
+        candidate = out[0]
+        self.assertTrue(candidate["confluence"])
+        # Giriş İLK olaydan (velocity, t=1000, 0.0702) gelmeli.
+        self.assertEqual(1000.0, candidate["detected_at"])
+        self.assertAlmostEqual(0.0702, candidate["price"], places=6)
+        self.assertEqual(4.0, candidate["target_pct"])
+        # Skor sıralaması için en iyiden gelmeye devam eder (velocity ham→panel).
+        self.assertIsNotNone(candidate["score"])
+
 
 def _replay_module():
     from app.routers import maintenance

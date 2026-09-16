@@ -218,14 +218,29 @@ def _merge_cluster(events: list[dict]) -> dict:
     )
     secondary = best("rising" if primary.get("source") == "velocity" else "velocity")
 
+    # GİRİŞ ÇAPASI (2026-09-16): fiyat/hedef/ufuk EN ERKEN olaydan alınır — skor
+    # sıralamasından DEĞİL. Eskiden hepsi `primary`den (en yüksek skorlu olay) ±
+    # alınıyordu; küme birden çok olayı birleştirdiğinde giriş fiyatı ile giriş
+    # ZAMANI farklı olaylardan geliyordu (ör. "0.0764'ten 0.0702 anında gir") ve
+    # ölçüm bozuluyordu (negatif MFE: -11.26%, -5.00%). Ticaret İLK sinyalde
+    # açılır; ölçüm de onu yansıtmalı.
+    entry_event = min(
+        events,
+        key=lambda e: (
+            e["detected_at"] is None,
+            e["detected_at"] if e.get("detected_at") is not None else 0.0,
+            _SOURCES.index(e.get("source")) if e.get("source") in _SOURCES else 99,
+        ),
+    )
+
     score = primary.get("score")
-    price = primary.get("price")
+    price = entry_event.get("price")
     if price is None and secondary:
         price = secondary.get("price")
-    target_pct = primary.get("target_pct")
+    target_pct = entry_event.get("target_pct")
     if target_pct is None and secondary:
         target_pct = secondary.get("target_pct")
-    horizon = primary.get("horizon_minutes")
+    horizon = entry_event.get("horizon_minutes")
     if horizon is None and secondary:
         horizon = secondary.get("horizon_minutes")
     detected_at = min((e["detected_at"] for e in events if e.get("detected_at") is not None),
