@@ -240,6 +240,8 @@ export default function ChartsPage() {
     const containerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+    // WS canlı verisi son işlendiği an (ms) — HTTP fallback'ın "WS ölü mü" kararı için.
+    const lastBarMessageAt = useRef(0);
     const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const overlaySeries = useRef<Map<string, ISeriesApi<"Line">[]>>(new Map());
     const paneSeries = useRef<Map<string, (ISeriesApi<"Line"> | ISeriesApi<"Histogram">)[]>>(new Map());
@@ -325,35 +327,53 @@ export default function ChartsPage() {
     }, []);
 
     // veri çekme
-    useEffect(() => {
-        let cancelled = false;
-        setLoading(true);
-        const load = async () => {
-            try {
-                const res = await apiRequest(`${API_BASE}/api/market-klines/${symbol}?interval=${interval}&limit=200`);
-                if (!res.ok) throw new Error(`kline HTTP ${res.status}`);
-                const payload = await res.json();
-                const data = payload.candles || [];
-                if (cancelled || !candleRef.current) return;
-                const candles: Bar[] = data.map((k: number[]) => ({
-                    time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5]
-                }));
-                setBars(candles);
-                candleRef.current.setData(candles.map((c) => ({ ...c, time: c.time as UTCTimestamp })));
-                const last = candles[candles.length - 1]?.close ?? 0;
-                candleRef.current.applyOptions({ priceFormat: chartPriceFormat(last) });
-                // fiyat ölçeğini sıfırla: önceki sembolün zoom/scale'i yeni sembole taşınmasın
-                chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
-                chartRef.current?.timeScale().fitContent();
-            } catch (e) {
-                console.error("kline hatası:", e);
-            } finally {
-                if (!cancelled) setLoading(false);
-            }
-        };
-        load();
-        return () => { cancelled = true; };
+    // Mum verisi İKİ kaynaktan gelir: birincil = Binance WS (anlık, düşük gecikme),
+    // yedek = HTTP (WS tutarsa/yoğunluk yetersizse). HTTP yalnız WS son mesajından
+    // FALLBACK_MS kadar sonra tetiklenir → WS çalışırken gereksiz istek atılmaz ve
+    // mum çizimi WS'in update() ile anlık kalır (HTTP setData tüm serileri söküp
+    // takındığından WS+setData birlikte kullanmak jank üretir, bunu W4'te
+    // belgelendiğimiz gibi kaçınıyoruz).
+    const reloadKlines = useCallback(async () => {
+        if (!symbol) return;
+        try {
+            const res = await apiRequest(`${API_BASE}/api/market-klines/${symbol}?interval=${interval}&limit=200`);
+            if (!res.ok) throw new Error(`kline HTTP ${res.status}`);
+            const payload = await res.json();
+            const data = payload.candles || [];
+            if (!candleRef.current) return;
+            const candles: Bar[] = data.map((k: number[]) => ({
+                time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5]
+            }));
+            setBars(candles);
+            candleRef.current.setData(candles.map((c) => ({ ...c, time: c.time as UTCTimestamp })));
+            const last = candles[candles.length - 1]?.close ?? 0;
+            candleRef.current.applyOptions({ priceFormat: chartPriceFormat(last) });
+            chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
+            chartRef.current?.timeScale().fitContent();
+        } catch (e) {
+            console.error("kline hatası:", e);
+        }
     }, [symbol, interval]);
+
+    useEffect(() => {
+        setLoading(true);
+        let cancelled = false;
+        reloadKlines().finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
+    }, [reloadKlines]);
+
+    // 2026-09-16 denetimi: grafik YALNIZCA Binance WS'ine bağlıydı; WS bağlantısı
+    // koparsa veya yoğunluk yetersizse grafik DONAR ve kullanıcıya bildirilmezdi.
+    // Bu yedek aralık WS son mum mesajından FALLBACK_MS sonra HTTP'le tazeler.
+    // WS çalışıyorsa zamanlayıcı ateşlemez (lastBarMessageAt WS mesajında
+    // güncellenir); sekme gizliyken de çalışmaz.
+    const fallbackMs = 120_000;
+    useVisibleInterval(() => {
+        const last = lastBarMessageAt.current;
+        if (last === 0 || Date.now() - last > fallbackMs) {
+            void reloadKlines();
+        }
+    }, 30_000);
 
     // Üst tahmin paneli: ML fiyat tahmini (LLM yok) + sembol tahmin geçmişi.
     // Sembol/TF değişince taze çek; yenile butonu fresh=1 ile yeni tahmin üretir.
@@ -424,6 +444,11 @@ export default function ChartsPage() {
         const t = setInterval(tick, 1000);
         return () => clearInterval(t);
     }, [monitorNotif]);
+    // Binance WS canlı akış durumu (2026-09-16): grafik canlı verisini yalnızca
+    // WS'e bağlıyordu; WS tutarsa grafik donar ve kullanıcı bunu göremezdi.
+    // Bu durum hem fallback'ın tetiklenmesini hem de aşağıdaki rozeti besler.
+    type WsState = "connecting" | "open" | "closed";
+    const [candleWsState, setCandleWsState] = useState<WsState>("connecting");
     useEffect(() => {
         let ws: WebSocket | null = null;
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -431,14 +456,15 @@ export default function ChartsPage() {
         let closed = false;
         // Race condition önleme: sembol/timeframe değiştiğinde eski mesajları yoksay
         const connId = JSON.stringify({ symbol: symbol.toLowerCase(), interval });
-        // Host NEXT_PUBLIC_BINANCE_WS_BASE ile geçersiz kılınabilir (bölge/host
-        // değişikliğinde dağıtımın kod değişikliği yapmadan uyum sağlaması için).
         const binanceWsBase = (process.env.NEXT_PUBLIC_BINANCE_WS_BASE || "wss://stream-cloud.binance.tr").replace(/\/$/, "");
         const connect = () => {
             if (closed) return;
+            setCandleWsState("connecting");
 
             ws = new WebSocket(`${binanceWsBase}/ws/${symbol.toLowerCase()}@kline_${interval}`);
+            ws.onopen = () => { attempt = 0; setCandleWsState("open"); };
             ws.onclose = () => {
+                setCandleWsState("closed");
                 if (!closed) {
                     attempt += 1;
                     retryTimer = setTimeout(connect, Math.min(30_000, 2_000 * 2 ** Math.min(attempt, 4)) + Math.random() * 1_000);
@@ -452,6 +478,8 @@ export default function ChartsPage() {
                 const msg = JSON.parse(ev.data);
                 const k = msg.k;
                 if (!k) return;
+                // CANLI AKIŞ: son WS mum mesajının zamanını kaydet (HTTP fallback bu değeri okur).
+                lastBarMessageAt.current = Date.now();
                 const bar: Bar = {
                     time: Math.floor(k.t / 1000),
                     open: +k.o, high: +k.h, low: +k.l, close: +k.c, volume: +k.v
@@ -1484,6 +1512,18 @@ export default function ChartsPage() {
                         </button>
                     ))}
                 </div>
+                {/* CANLI AKIŞ DURUMU (2026-09-16): grafik mum verisini Binance WS'inden
+                    alır. WS bağlı değilse veya yoğunluk yetersizse bu rozet sarı/boz
+                    olur ve grafik donabilir — artık görünür. WS açık yeşil (canlı). */}
+                <span className={`rounded border px-2 py-1 font-mono text-[10px] font-bold ${
+                    candleWsState === "open" ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
+                    : candleWsState === "connecting" ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300"
+                    : "border-neon-red/40 bg-neon-red/10 text-neon-red"
+                }`}>
+                    {candleWsState === "open" ? `● CANLI · ${interval}`
+                      : candleWsState === "connecting" ? "◌ Bağlanıyor"
+                      : "○ Bağlantı kesildi"}
+                </span>
                 <button
                     onClick={() => setPicking(true)}
                     className="px-4 py-2 min-h-10 rounded-lg border border-neon-green/40 bg-neon-green/10 font-mono text-sm text-neon-green hover:bg-neon-green/20 active:scale-[0.98] transition-transform"
