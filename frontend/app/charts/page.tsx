@@ -375,53 +375,10 @@ export default function ChartsPage() {
     // WS erişilemezse (çoğu bulut/kurumsal ağ) bağlantı hatası retry eder; bu
     // durumda grafik HTTP ile tazelenmeye devam eder, WS sadece "yeşil rozet"le
     // canlı moduna geçer. Kullanıcı donuk grafik GÖRMEZ.
-    useEffect(() => {
-        let ws: WebSocket | null = null;
-        let retryTimer: ReturnType<typeof setTimeout> | null = null;
-        let attempt = 0;
-        let closed = false;
-        const connId = JSON.stringify({ symbol: symbol.toLowerCase(), interval });
-        const binanceWsBase = (process.env.NEXT_PUBLIC_BINANCE_WS_BASE || "wss://stream-cloud.binance.tr").replace(/\/$/, "");
-        const connect = () => {
-            if (closed) return;
-            setCandleWsState("connecting");
-            ws = new WebSocket(`${binanceWsBase}/ws/${symbol.toLowerCase()}@kline_${interval}`);
-            ws.onopen = () => { attempt = 0; setCandleWsState("open"); };
-            ws.onclose = (ev) => {
-                setCandleWsState("closed");
-                if (!closed) {
-                    attempt += 1;
-                    retryTimer = setTimeout(connect, Math.min(30_000, 2_000 * 2 ** Math.min(attempt, 4)) + Math.random() * 1_000);
-                }
-            };
-            ws.onerror = () => { try { ws?.close(); } catch { /* zaten kapalı */ } };
-            ws.onmessage = (ev) => {
-            try {
-                if (JSON.stringify({ symbol: symbol.toLowerCase(), interval }) !== connId) return;
-                const msg = JSON.parse(ev.data);
-                const k = msg.k;
-                if (!k) return;
-                const bar: Bar = { time: Math.floor(k.t.t / 1000), open: +k.o, high: +k.h, low: +k.l, close: +k.c, volume: +k.v };
-                candleRef.current?.applyOptions({ priceFormat: chartPriceFormat(bar.close) });
-                setBars((prev) => {
-                    if (!prev.length) return prev;
-                    const last = prev[prev.length - 1];
-                    if (bar.time === last.time) { candleRef.current?.update(bar as any); return prev; }
-                    if (bar.time > last.time) { candleRef.current?.update(bar as any); return [...prev.slice(-199), bar]; }
-                    return prev;
-                });
-            } catch { /* parse hatası yoksay */ }
-        };
-        };
-        connect();
-        return () => {
-            closed = true;
-            if (retryTimer) clearTimeout(retryTimer);
-            if (ws) { ws.onclose = null; ws.onmessage = null; ws.onerror = null;
-                if (ws.readyState === WebSocket.CONNECTING) { const p = ws; ws.onopen = () => p.close(); }
-                else try { ws.close(); } catch { } }
-        };
-    }, [symbol, interval]);
+    // CANLI AKIS (2026-09-16): Binance WS KALDIRILDI. Grafik mum verisini artık
+    // doğrudan Binance'ye bağlanarak değil, backend'in sağlıklı WS kanalından
+    // (`kline` mesajları) ve HTTP fallback'ıyla (~10 sn) alır. WS açıkken backend
+    // mum başına canlı günceller; kapalıysa HTTP güvencesi vardır — grafik donmaz.
     // Sembol/TF değişince taze çek; yenile butonu fresh=1 ile yeni tahmin üretir.
     const loadForecast = useCallback(async (fresh: boolean) => {
         if (!symbol) { setForecast(null); return; }
@@ -493,8 +450,10 @@ export default function ChartsPage() {
     // Binance WS canlı akış durumu (2026-09-16): grafik canlı verisini yalnızca
     // WS'e bağlıyordu; WS tutarsa grafik donar ve kullanıcı bunu göremezdi.
     // Bu durum hem fallback'ın tetiklenmesini hem de aşağıdaki rozeti besler.
-    type CandleWsState = "connecting" | "open" | "closed";
-    const [candleWsState, setCandleWsState] = useState<CandleWsState>("connecting");
+    // CANLI AKIS (2026-09-16): backend'den kline mesajı alındı mı? Rozet için.
+    // Son alınan mumun backend zaman damgası; belirli süre içinde yeni mum gelmezse
+    // "TAZELEMEDE" olarak işaretlenir (backend'in WS'si o sembolde mum üretmiyor).
+    const [lastBarFromServer, setLastBarFromServer] = useState(false);
     // WebSocket anlık portföyü taşır; HTTP yalnızca bağlantı kopması için
     // düşük frekanslı geri dönüş yoludur. Manuel kapatma sonrası da buradan
     // tazelenir.
@@ -613,6 +572,33 @@ export default function ChartsPage() {
     useVisibleInterval(loadTimeframeTrends, 20_000);
 
     useLiveMessages(useCallback((message: any) => {
+        // CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): backend'den gelen mum
+        // mesajlarını işle. Grafik doğrudan Binance'ye bağlanmaz; backend'in sağlıklı
+        // WS'inden gelen klineleri kullanır (browser'dan Binance'ye erişilemez).
+        if (message.type === "kline") {
+            const d = message.data || {};
+            if (!d || typeof d !== "object") return;
+            if (String(d.symbol).toUpperCase() !== symbol.toUpperCase()
+                    || String(d.timeframe) !== interval) {
+                return;
+            }
+            const bar: Bar = {
+                time: Math.floor((d.time || 0) / 1000),
+                open: +d.open, high: +d.high, low: +d.low, close: +d.close, volume: +d.volume,
+            };
+            if (!Number.isFinite(bar.close) || bar.close <= 0 || !candleRef.current) return;
+            // Backend'den canlı mum geldi → rozeti yeşile çevir.
+            setLastBarFromServer(true);
+            candleRef.current.applyOptions({ priceFormat: chartPriceFormat(bar.close) });
+            setBars((prev) => {
+                if (!prev.length) return prev;
+                const last = prev[prev.length - 1];
+                if (bar.time === last.time) { candleRef.current?.update(bar as any); return prev; }
+                if (bar.time > last.time) { candleRef.current?.update(bar as any); return [...prev.slice(-199), bar]; }
+                return prev;
+            });
+            return;
+        }
         if (message.type === "portfolio") {
             setLivePortfolio(message.data as LivePortfolio);
             // Backend WS portfolio mesajı hem `positions` (ana paper) hem
@@ -1470,17 +1456,14 @@ export default function ChartsPage() {
                         </button>
                     ))}
                 </div>
-                {/* CANLI AKIŞ DURUMU (2026-09-16): grafik mum verisini Binance WS'inden
-                    alır. WS bağlı değilse veya yoğunluk yetersizse bu rozet sarı/boz
-                    olur ve grafik donabilir — artık görünür. WS açık yeşil (canlı). */}
+                {/* CANLI AKIS DURUMU (2026-09-16): grafik mum verisini Binance'den
+                    değil backend'den alır. WS bağlıyken CANLI (yeşil) rozeti; değilse
+                    HTTP fallback (~10 sn) grafiği tazeler (TAZELEMEDE rozeti). */}
                 <span className={`rounded border px-2 py-1 font-mono text-[10px] font-bold ${
-                    candleWsState === "open" ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
-                    : candleWsState === "connecting" ? "border-yellow-400/40 bg-yellow-400/10 text-yellow-300"
-                    : "border-neon-red/40 bg-neon-red/10 text-neon-red"
+                    lastBarFromServer ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
+                    : "border-yellow-400/40 bg-yellow-400/10 text-yellow-300"
                 }`}>
-                    {candleWsState === "open" ? `● CANLI · ${interval}`
-                      : candleWsState === "connecting" ? "◌ Bağlanıyor"
-                      : "○ Bağlantı kesildi"}
+                    {lastBarFromServer ? `● CANLI · ${interval}` : "◌ TAZELEMEDE"}
                 </span>
                 <button
                     onClick={() => setPicking(true)}

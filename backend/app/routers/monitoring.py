@@ -2166,11 +2166,18 @@ async def monitoring_background_loop():
     # Altyapı uyarısı: VAPID anahtarları yapılandırılmamışsa push bildirimleri
     # SESSİZCE hiç çalışmaz (uygulama sağlıklı görünür) — denetim maddesi.
     # Startup'ta bir kez görünür uyarı verilir; flush davranışı değişmez.
-    if not os.getenv("VAPID_PRIVATE_KEY", "").strip() or not os.getenv("VAPID_PUBLIC_KEY", "").strip():
+    # 2026-09-16: Teşhis artık yalnızca "eksik" demiyor; doğru anahtarın gerekli
+    # olduğu TEK değişkeni belirtiyor ve private↔public uyuşmazlığını (sessiz 401)
+    # yakalıyor. Eski uyarı VAPID_PUBLIC_KEY'i de zorunlu sanıyordu — backend için
+    # zorunlu değildir (pywebpush public'i private'dan türetir).
+    from app.vapid import diagnose_vapid
+    _vapid = diagnose_vapid()
+    for _problem in _vapid["problems"]:
+        logger.warning("Monitoring push: %s", _problem)
+    if not _vapid["configured"]:
         logger.warning(
-            "Monitoring push: VAPID_PRIVATE_KEY/VAPID_PUBLIC_KEY yapılandırılmamış — "
-            "tarayıcı push bildirimleri GÖNDERİLMEYECEK (sadece panel geçmişi çalışır). "
-            "Push için anahtarları docker-compose/.env içinde doldurun.")
+            "Monitoring push: tarayıcı push bildirimleri GÖNDERİLMEYECEK "
+            "(panel geçmişi ve uygulama içi iletişim çalışmaya devam eder).")
     await restore_runtime_state()
     while True:
         result = None

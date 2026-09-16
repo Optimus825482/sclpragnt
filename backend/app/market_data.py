@@ -111,6 +111,12 @@ class MarketData:
         self.history_loaded = False
         self.created_at = time.time()
 
+        # CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): kapanmış mumları
+        # dinleyicilere (callback) ilet. Backend WS bağlantısı (liveSocket) sağlıklı
+        # olduğundan, grafik doğrudan Binance'ye bağlanmak YERINE bu kanalı kullanır
+        # → browser'dan erişilemeyen WS adresi sorunu ortadan kalkar.
+        self._bar_listeners: list[callable] = []
+
         # Source-specific health prevents a healthy REST refresh from hiding a
         # dead WS stream (and vice versa). The legacy aggregate fields remain
         # for existing health endpoints until their response schema is updated.
@@ -138,6 +144,21 @@ class MarketData:
         # B-05: atlanan bozuk/işlenemeyen WS çerçevesi sayacı (gözlemlenebilirlik).
         self.ws_malformed_frames = 0
         self.WS_URL = f"{WS_BASE}/stream?streams={{}}"
+
+    # CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): kapanmış mum dinleyicileri.
+    # Grafik sayfası doğrudan Binance'ye (browser'dan ERİŞİLEMEYEN adres) bağlanmak
+    # yerine backend'in sağlıklı liveSocket kanalından mum alır; bu dinleyici
+    # `app/ws_live_candles.py` tarafından kaydedilir.
+    def add_bar_listener(self, listener: callable) -> None:
+        """Kapanmış mum dinleyicisi ekle: `listener(symbol, timeframe, bar_dict)`."""
+        if listener not in self._bar_listeners:
+            self._bar_listeners.append(listener)
+
+    def remove_bar_listener(self, listener: callable) -> None:
+        try:
+            self._bar_listeners.remove(listener)
+        except ValueError:
+            pass
 
     def _all_timeframes(self):
         return sorted(set(["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]))
@@ -851,6 +872,18 @@ class MarketData:
 
         if not candle.get("x", False):
             return
+        # CANLI AKIS: kapanmış mumu dinleyicilere ilet (grafik güncellemesi için).
+        if self._bar_listeners:
+            bar_payload = {
+                "symbol": symbol, "timeframe": tf,
+                "time": opened_at_ms, "open": opened, "high": high,
+                "low": low, "close": close, "volume": volume,
+            }
+            for listener in list(self._bar_listeners):
+                try:
+                    listener(symbol, tf, bar_payload)
+                except Exception:
+                    pass
         history = self.klines[tf][symbol]
         # B-02 savunması: bozuk/eksik bir geçmiş sözlüğü (ör. `timestamps`
         # yazılmadan `closes` doldurulmuş) seriyi kalıcı olarak desenkronize
