@@ -648,6 +648,16 @@ export default function ChartsPage() {
         // CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): backend'den gelen mum
         // mesajlarını işle. Grafik doğrudan Binance'ye bağlanmaz; backend'in sağlıklı
         // WS'inden gelen klineleri kullanır (browser'dan Binance'ye erişilemez).
+        //
+        // KRİTİK (2026-09-16): Bu callback identity'si sembol/ufuk DEĞİŞTİĞİNDE
+        // değişmelidir, yoksa canlı akış bozulur. Üç yardımcı fonksiyon boş [] ile
+        // memoize olduğundan callback identity'si sabit kalır → useLiveMessages
+        // içindeki `listenerRef.current = listener` efekti YENİDEN TETİKLENMEZ → ref
+        // ilk mount'taki closure'u (symbol="BTCTRY" varsayılanı) tutar. Kullanıcı
+        // başka bir sembole client-side navigasyonla gittiğinde sembol/interval
+        // state'i değişir ama WS handler hâlâ eski sembolü filtreler → canlı
+        // güncellemeler ÖLÜR (yalnızca 10 sn HTTP çalışır). symbol/interval
+        // bağımlılığa eklenince her değişimde yeni listener yayılanır ve ref güncellenir.
         if (message.type === "kline") {
             const d = message.data || {};
             if (!d || typeof d !== "object") return;
@@ -726,7 +736,7 @@ export default function ChartsPage() {
             fetchPositions();
             fetchAutoPaper();
         }
-    }, [loadPortfolioSummary, fetchPositions, fetchAutoPaper]));
+    }, [loadPortfolioSummary, fetchPositions, fetchAutoPaper, symbol, interval]));
 
     // mum serisi ilk yüklemede load() içinde setData ile kurulur,
     // canlı güncelleme WebSocket handler'ında update() ile yapılır (görünüm sıfırlanmaz)
