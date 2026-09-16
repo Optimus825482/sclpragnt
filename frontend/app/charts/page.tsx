@@ -240,8 +240,6 @@ export default function ChartsPage() {
     const containerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
-    // WS canlı verisi son işlendiği an (ms) — HTTP fallback'ın "WS ölü mü" kararı için.
-    const lastBarMessageAt = useRef(0);
     const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const overlaySeries = useRef<Map<string, ISeriesApi<"Line">[]>>(new Map());
     const paneSeries = useRef<Map<string, (ISeriesApi<"Line"> | ISeriesApi<"Histogram">)[]>>(new Map());
@@ -326,13 +324,23 @@ export default function ChartsPage() {
         };
     }, []);
 
-    // veri çekme
-    // Mum verisi İKİ kaynaktan gelir: birincil = Binance WS (anlık, düşük gecikme),
-    // yedek = HTTP (WS tutarsa/yoğunluk yetersizse). HTTP yalnız WS son mesajından
-    // FALLBACK_MS kadar sonra tetiklenir → WS çalışırken gereksiz istek atılmaz ve
-    // mum çizimi WS'in update() ile anlık kalır (HTTP setData tüm serileri söküp
-    // takındığından WS+setData birlikte kullanmak jank üretir, bunu W4'te
-    // belgelendiğimiz gibi kaçınıyoruz).
+    // Mum verisi AKIŞ MANTIĞI (2026-09-16, grafik-canlı-düzeltmesi):
+    //
+    // SORUN: Grafik mum verisini YALNIZCA doğrudan tarayıcı→Binance WS'ine
+    // (`wss://stream-cloud.binance.tr/...`) bağlıyordu. Bu adres browser'dan
+    // ERİŞİLEMEZ (backend aynı adrese sunucudan bağlanabiliyor ve "WS istemcisi
+    // bağlı" görünüyor; browser'dan TCP/TLS bağlantısı kurulamıyor → "WebSocket
+    // connection failed"). Sonuç: grafik ASLINDA hiç canlı güncellenmiyordu,
+    // benim önceki fallback'ım 120 sn sonra 30 sn'de bir HTTP tazeleyecekti.
+    //
+    // ÇÖZÜM: HTTP'yi BİRİNCİL ve GÜVENİLİR kaynak yap, WS'yi İSTEĞE BAĞLI
+    // İYİLEŞTİRME olarak ekle.
+    //   • HTTP her 10 sn'de tazelenir (güvenilir; WS erişilebilirliğinden bağımsız).
+    //   • WS açıksa mevcut mumu anlık `update()` ile çizer (state'i sıfırlamaz,
+    //     indikatörleri sökmez → jank yok) ve yeni mum açıldında ekler.
+    //   • WS kapalıysa/ölüyse grafik donmaz; HTTP ile her 10 sn tazelenir.
+    // Bu sayede WS'in erişilebilir olduğu ağlarda (ev/ofis) grafik gerçek anlık
+    // olur, erişilemediği ağlarda (bulut sunucu/VPN) en az 10 sn'de bir güncellenir.
     const reloadKlines = useCallback(async () => {
         if (!symbol) return;
         try {
@@ -355,27 +363,65 @@ export default function ChartsPage() {
         }
     }, [symbol, interval]);
 
+    // BİRİNCİL: HTTP ile sık tazelama (WS erişilebilirliğinden bağımsız, güvenilir).
+    // Sekme gizliyken durur. WS açık olsa da HTTP yedek olarak çalışır — WS anlık
+    // `update()` yapar, HTTP ise 10 sn'de bir tam seriyi tazeler (WS gecikmeli/
+    // düşük yoğunluklu olursa grafik hep taze kalır).
+    useVisibleInterval(reloadKlines, 10_000);
+    useEffect(() => { void reloadKlines(); }, [reloadKlines]);
+
+    // İSTEĞE BAĞLI İYİLEŞTİRME: Binance WS — yalnız erişilebilir ağlarda çalışır.
+    // Amaç: mevcut mumu anlık çizmek (state sıfırlanmaz → indikatör jank yok).
+    // WS erişilemezse (çoğu bulut/kurumsal ağ) bağlantı hatası retry eder; bu
+    // durumda grafik HTTP ile tazelenmeye devam eder, WS sadece "yeşil rozet"le
+    // canlı moduna geçer. Kullanıcı donuk grafik GÖRMEZ.
     useEffect(() => {
-        setLoading(true);
-        let cancelled = false;
-        reloadKlines().finally(() => { if (!cancelled) setLoading(false); });
-        return () => { cancelled = true; };
-    }, [reloadKlines]);
-
-    // 2026-09-16 denetimi: grafik YALNIZCA Binance WS'ine bağlıydı; WS bağlantısı
-    // koparsa veya yoğunluk yetersizse grafik DONAR ve kullanıcıya bildirilmezdi.
-    // Bu yedek aralık WS son mum mesajından FALLBACK_MS sonra HTTP'le tazeler.
-    // WS çalışıyorsa zamanlayıcı ateşlemez (lastBarMessageAt WS mesajında
-    // güncellenir); sekme gizliyken de çalışmaz.
-    const fallbackMs = 120_000;
-    useVisibleInterval(() => {
-        const last = lastBarMessageAt.current;
-        if (last === 0 || Date.now() - last > fallbackMs) {
-            void reloadKlines();
-        }
-    }, 30_000);
-
-    // Üst tahmin paneli: ML fiyat tahmini (LLM yok) + sembol tahmin geçmişi.
+        let ws: WebSocket | null = null;
+        let retryTimer: ReturnType<typeof setTimeout> | null = null;
+        let attempt = 0;
+        let closed = false;
+        const connId = JSON.stringify({ symbol: symbol.toLowerCase(), interval });
+        const binanceWsBase = (process.env.NEXT_PUBLIC_BINANCE_WS_BASE || "wss://stream-cloud.binance.tr").replace(/\/$/, "");
+        const connect = () => {
+            if (closed) return;
+            setCandleWsState("connecting");
+            ws = new WebSocket(`${binanceWsBase}/ws/${symbol.toLowerCase()}@kline_${interval}`);
+            ws.onopen = () => { attempt = 0; setCandleWsState("open"); };
+            ws.onclose = (ev) => {
+                setCandleWsState("closed");
+                if (!closed) {
+                    attempt += 1;
+                    retryTimer = setTimeout(connect, Math.min(30_000, 2_000 * 2 ** Math.min(attempt, 4)) + Math.random() * 1_000);
+                }
+            };
+            ws.onerror = () => { try { ws?.close(); } catch { /* zaten kapalı */ } };
+            ws.onmessage = (ev) => {
+            try {
+                if (JSON.stringify({ symbol: symbol.toLowerCase(), interval }) !== connId) return;
+                const msg = JSON.parse(ev.data);
+                const k = msg.k;
+                if (!k) return;
+                const bar: Bar = { time: Math.floor(k.t.t / 1000), open: +k.o, high: +k.h, low: +k.l, close: +k.c, volume: +k.v };
+                candleRef.current?.applyOptions({ priceFormat: chartPriceFormat(bar.close) });
+                setBars((prev) => {
+                    if (!prev.length) return prev;
+                    const last = prev[prev.length - 1];
+                    if (bar.time === last.time) { candleRef.current?.update(bar as any); return prev; }
+                    if (bar.time > last.time) { candleRef.current?.update(bar as any); return [...prev.slice(-199), bar]; }
+                    return prev;
+                });
+            } catch { /* parse hatası yoksay */ }
+        };
+        };
+        connect();
+        return () => {
+            closed = true;
+            if (retryTimer) clearTimeout(retryTimer);
+            if (ws) { ws.onclose = null; ws.onmessage = null; ws.onerror = null;
+                if (ws.readyState === WebSocket.CONNECTING) { const p = ws; ws.onopen = () => p.close(); }
+                else try { ws.close(); } catch { } }
+        };
+    }, [symbol, interval]);
     // Sembol/TF değişince taze çek; yenile butonu fresh=1 ile yeni tahmin üretir.
     const loadForecast = useCallback(async (fresh: boolean) => {
         if (!symbol) { setForecast(null); return; }
@@ -447,109 +493,8 @@ export default function ChartsPage() {
     // Binance WS canlı akış durumu (2026-09-16): grafik canlı verisini yalnızca
     // WS'e bağlıyordu; WS tutarsa grafik donar ve kullanıcı bunu göremezdi.
     // Bu durum hem fallback'ın tetiklenmesini hem de aşağıdaki rozeti besler.
-    type WsState = "connecting" | "open" | "closed";
-    const [candleWsState, setCandleWsState] = useState<WsState>("connecting");
-    useEffect(() => {
-        let ws: WebSocket | null = null;
-        let retryTimer: ReturnType<typeof setTimeout> | null = null;
-        let attempt = 0;
-        let closed = false;
-        // Race condition önleme: sembol/timeframe değiştiğinde eski mesajları yoksay
-        const connId = JSON.stringify({ symbol: symbol.toLowerCase(), interval });
-        const binanceWsBase = (process.env.NEXT_PUBLIC_BINANCE_WS_BASE || "wss://stream-cloud.binance.tr").replace(/\/$/, "");
-        const connect = () => {
-            if (closed) return;
-            setCandleWsState("connecting");
-
-            ws = new WebSocket(`${binanceWsBase}/ws/${symbol.toLowerCase()}@kline_${interval}`);
-            ws.onopen = () => { attempt = 0; setCandleWsState("open"); };
-            ws.onclose = (ev) => {
-                setCandleWsState("closed");
-                if (!closed) {
-                    attempt += 1;
-                    // WS BAŞARISIZ: anında HTTP tazele — kullanıcı donuk grafik görmesin.
-                    // (30 sn'lik periyodik fallback'ı bekleme; ilk mum gelmeden kapanırsa
-                    // lastBarMessageAt 0 kalır ve periyodik fallback'a da düşer, ama bu
-                    // daha hızlı.)
-                    if (lastBarMessageAt.current === 0) {
-                        void reloadKlines();
-                    }
-                    retryTimer = setTimeout(connect, Math.min(30_000, 2_000 * 2 ** Math.min(attempt, 4)) + Math.random() * 1_000);
-                }
-            };
-            ws.onerror = () => {
-                // Tarayıcı seviyesinde bağlantı hatası (DNS/TLS/yasak host). WS'i kapat
-                // ki onclose tetiklensin ve fallback devreye ginsin; aksi halde tarayıcı
-                // "WebSocket connection failed" konsol hatası basar ve fallback gecikir.
-                try { ws?.close(); } catch { /* zaten kapalı */ }
-            };
-
-            ws.onmessage = (ev) => {
-            try {
-                // Eski bağlantıdan gelen mesajları yoksay
-                if (JSON.stringify({ symbol: symbol.toLowerCase(), interval }) !== connId) return;
-                const msg = JSON.parse(ev.data);
-                const k = msg.k;
-                if (!k) return;
-                // CANLI AKIŞ: son WS mum mesajının zamanını kaydet (HTTP fallback bu değeri okur).
-                lastBarMessageAt.current = Date.now();
-                const bar: Bar = {
-                    time: Math.floor(k.t / 1000),
-                    open: +k.o, high: +k.h, low: +k.l, close: +k.c, volume: +k.v
-                };
-                // Fiyat, eşik aralıklarından birini geçerse sağ ölçeğin
-                // hassasiyeti de canlı olarak aynı kurala geçsin.
-                candleRef.current?.applyOptions({ priceFormat: chartPriceFormat(bar.close) });
-                setBars((prev) => {
-                    if (!prev.length) return prev;
-                    const last = prev[prev.length - 1];
-                    if (bar.time === last.time) {
-                        // Aynı mum güncelleniyor: canvas'a update() yeterli.
-                        // State'i her tick'te değiştirmek, [bars] effect'ini
-                        // tetikleyip TÜM indikatör serilerini söküp takıyor
-                        // (mobilde jank). Açık mum yalnız canvas'ta canlıdır;
-                        // kapanışta setBars ile state + indikatörler güncellenir.
-                        candleRef.current?.update(bar as any);
-                        return prev;
-                    }
-                    if (bar.time > last.time) {
-                        // yeni mum açıldı — update() son bara ekler; state'i de
-                        // güncelle ki indikatörler kapanmış son barla yeniden hesaplansın.
-                        candleRef.current?.update(bar as any);
-                        return [...prev.slice(-199), bar];
-                    }
-                    return prev;
-                });
-            } catch { /* parse hatası yoksay */ }
-        };
-        };
-        connect();
-        return () => {
-            closed = true;
-            if (retryTimer) clearTimeout(retryTimer);
-            if (ws) {
-                // Hijyen: handler'ları temizlemeden close etmek, CONNECTING
-                // durumundaki bağlantıda tarayıcının "closed before established"
-                // konsol uyarısına ek bir handler sızıntısı bırakırdı.
-                ws.onclose = null;
-                ws.onmessage = null;
-                ws.onerror = null;
-                // Uyarının kendisi de artık bastırılıyor: CONNECTING durumunda
-                // close() çağırmak tarayıcının "WebSocket is closed before the
-                // connection is established" satırını network seviyesinde
-                // bastırır (sembol/TF değişimi ve StrictMode çift çağrısında
-                // kaçış yoktu; gerçek bir bağlantı hatası DEĞİLDİR). Bağlantı
-                // kurulur kurulmaz kapatmak aynı sonucu sessizce verir.
-                if (ws.readyState === WebSocket.CONNECTING) {
-                    const pending = ws;
-                    ws.onopen = () => pending.close();
-                } else {
-                    ws.close();
-                }
-            }
-        };
-    }, [symbol, interval]);
-
+    type CandleWsState = "connecting" | "open" | "closed";
+    const [candleWsState, setCandleWsState] = useState<CandleWsState>("connecting");
     // WebSocket anlık portföyü taşır; HTTP yalnızca bağlantı kopması için
     // düşük frekanslı geri dönüş yoludur. Manuel kapatma sonrası da buradan
     // tazelenir.
