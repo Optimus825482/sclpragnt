@@ -289,6 +289,84 @@ class RadarEndpointRobustnessTests(unittest.TestCase):
         self.assertGreaterEqual(fields["min_target_pct_max"], 2.0)
 
 
+class ReplayMeasurementTests(unittest.TestCase):
+    """Ölçüm doğruluğu kilitleri (2026-09-16) — kullanıcının CSV'sinden çıkan 3 hata.
+
+    CSV kanıtı: (1) velocity satırlarında `score` BOŞ, combined'da 19893.9/28822.9
+    gibi HAM değerler; (2) tüm satırlarda `hold_minutes` 28-30 → ufuk daima 30 dk;
+    (3) birebir aynı satırlar iki kez.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.script = _replay_module()
+
+    # ---- (1) ufuk sinyalin KENDİ değeri olmalı ---------------------------
+    def test_horizon_uses_signal_value_not_a_constant(self):
+        self.assertEqual(5.0, self.script._resolve_horizon({}, 60.0))
+        self.assertEqual(15.0, self.script._resolve_horizon({"horizon_minutes": 15}, 60.0))
+        self.assertEqual(5.0, self.script._resolve_horizon({"horizon_minutes": 5}, 60.0))
+
+    def test_horizon_is_clamped(self):
+        self.assertEqual(60.0, self.script._resolve_horizon({"horizon_minutes": 999}, 60.0))
+        self.assertEqual(5.0, self.script._resolve_horizon({"horizon_minutes": 0}, 60.0))
+        self.assertEqual(5.0, self.script._resolve_horizon({"horizon_minutes": "abc"}, 60.0))
+
+    def test_signal_row_carries_horizon(self):
+        row = self.script._as_signal_row({"symbol": "BTCTRY", "horizon_minutes": 15},
+                                         1700000000.0, default_source="velocity")
+        self.assertEqual(15.0, row["horizon_minutes"])
+        defaulted = self.script._as_signal_row({"symbol": "BTCTRY"}, 1700000000.0,
+                                               default_source="rising", default_horizon=5.0)
+        self.assertEqual(5.0, defaulted["horizon_minutes"])
+
+    def test_ladder_horizon_is_measured_from_signal_time(self):
+        """Ufuk sinyal ANINDAN ölçülür; ilk bardan ölçmek pencereyi kaydırıyordu."""
+        t0 = 1_700_000_000_000
+        rows = [[t0, 100.0, 100.0, 99.9, 100.0, 1.0],
+                [t0 + 60_000, 100.2, 100.2, 100.1, 100.2, 1.0],
+                [t0 + 120_000, 100.1, 100.1, 100.0, 100.1, 1.0]]
+        # Sinyal t0+30s'te ve ufuk 1.5 dk → due t0+120s → İKİNCİ bar dahil.
+        with_signal = self.script._simulate_ladder(rows, 100.0, 2.0, 1.5,
+                                                   signal_ms=t0 + 30_000)
+        self.assertEqual("horizon_end", with_signal["exit_reason"])
+        self.assertAlmostEqual(100.2, with_signal["exit_price"], places=6)
+        # Sinyal anı verilmezse taban ilk bar olur → due t0+90s → İKİNCİ bar hariç.
+        without = self.script._simulate_ladder(rows, 100.0, 2.0, 1.5)
+        self.assertAlmostEqual(100.0, without["exit_price"], places=6)
+
+    # ---- (2) ölçek: velocity HAM → PANEL ---------------------------------
+    def test_velocity_journal_row_gets_panel_score(self):
+        """Journal satırı `score` değil `velocity_score` taşır; panel'e çevrilmeli."""
+        from app.routers import velocity
+        raw = 1400.0
+        item = {"symbol": "BTCTRY", "velocity_score": raw}
+        item["score"] = velocity._panel_score(raw)      # build_report'ın yaptığı
+        row = self.script._as_signal_row(item, 1700000000.0, default_source="velocity")
+        self.assertEqual(velocity._panel_score(raw), row["score"])
+        self.assertLessEqual(row["score"], 100.0, "panel skoru 100'ü aşmamalı")
+        self.assertGreater(row["score"], 0.0)
+
+    # ---- (3) mükerrer sinyal temizliği -----------------------------------
+    def test_dedupe_removes_exact_duplicates(self):
+        signals = [
+            {"symbol": "ACMTRY", "detected_at": 1789543660.085, "target_pct": 4.0},
+            {"symbol": "ACMTRY", "detected_at": 1789543660.085, "target_pct": 4.0},
+        ]
+        self.assertEqual(1, len(self.script._dedupe_signals(signals)))
+
+    def test_dedupe_keeps_distinct_targets_and_times(self):
+        signals = [
+            {"symbol": "SAGATRY", "detected_at": 1789512522.152, "target_pct": 3.0},
+            {"symbol": "SAGATRY", "detected_at": 1789512522.152, "target_pct": 2.5},
+            {"symbol": "ACMTRY", "detected_at": 1789543660.085, "target_pct": 4.0},
+        ]
+        self.assertEqual(3, len(self.script._dedupe_signals(signals)))
+
+    def test_dedupe_tolerates_missing_fields(self):
+        self.assertEqual(1, len(self.script._dedupe_signals([{}, {}])))
+
+
 def _replay_module():
     from app.routers import maintenance
     return maintenance._load_replay_module()
