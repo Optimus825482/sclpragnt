@@ -130,8 +130,11 @@ services:
       retries: 3
     logging: *default-logging
 
-  # Otomatik gece yedeği: her 24 saatte bir pg_dump, 7 günden eski
-  # dump'ları siler. ./local_backups host'a bağlanır (gitignored).
+  # Otomatik gece yedeği: her 24 saatte bir pg_dump. Saklama 1 GÜN (2026-09-16):
+  # 7 günlük pencere DB boyutunun 7 KATI yer tutuyordu (tek disk, %86 dolu) ve
+  # en güncel dump eski bir dump'tan daha değerlidir. Deploy öncesi elle yedek
+  # almak (aşağıdaki restore komutu) hâlâ önerilir.
+  # ./local_backups host'a bağlanır (gitignored).
   # Restore: `cat <dump> | docker exec -i <postgres> psql -U scalper scalper`
   db-backup:
     image: pgvector/pgvector:pg17-bookworm
@@ -161,7 +164,7 @@ services:
           else
             echo "[backup] $$ts BASARISIZ" >&2
           fi
-          find /backups -name 'scalper_*.dump' -mtime +7 -delete
+          find /backups -name 'scalper_*.dump' -mtime +1 -delete
           sleep 86400
         done
     logging: *default-logging
