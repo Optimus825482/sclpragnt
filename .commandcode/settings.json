@@ -29,7 +29,8 @@
       "mcp__jcodemunch__announce_model",
       "mcp__jcodemunch__order",
       "mcp__jcodemunch__menu",
-      "agent_output"
+      "agent_output",
+      "mcp__jcodemunch__route"
     ],
     "deny": [],
     "defaultMode": "default"

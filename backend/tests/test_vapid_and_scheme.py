@@ -13,7 +13,7 @@ import os
 import pathlib
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -103,6 +103,109 @@ class ForwardedSchemeTests(unittest.TestCase):
     def test_multi_value_forwarded_header_uses_first(self):
         scheme = self._scheme({"x-forwarded-proto": "https, http"}, "http")
         self.assertEqual("https", scheme)
+
+
+class VapidInfoVsProblemTests(unittest.TestCase):
+    """DÜZELTME KİLİDİ: "public key ayarlı değil" bir ARIZA DEĞİLDİR.
+
+    Gerçek olay (backend log'u): sistem TAMAMEN sağlıklıyken (private anahtar
+    geçerli, 4 abonelik kayıtlı, frontend'de public anahtar var) log'a şu
+    WARNING düşüyordu:
+
+        "Monitoring push: VAPID_PUBLIC_KEY ayarlı değil (backend için zorunlu
+         değil). Frontend'in NEXT_PUBLIC_VAPID_PUBLIC_KEY değerinin şu olması
+         gerekir: BKfhbaii..."
+
+    Bu bir bilgi notuydu ama `problems` listesinde durduğu için
+    `monitoring_background_loop` onu `logger.warning` ile basıyordu — yani
+    çalışan bir sistemde korkutucu bir uyarı. Ayrım artık yapısal:
+        problems = aksiyon gerektiren gerçek arızalar
+        info     = durum notları (INFO seviyesinde loglanır)
+    """
+
+    def test_unset_public_key_is_info_not_problem(self):
+        priv, pub = _make_keypair()
+        with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": priv, "VAPID_PUBLIC_KEY": ""}, clear=False):
+            diag = vapid_mod.diagnose_vapid()
+        self.assertTrue(diag["configured"], "public yok diye push engellenmemeli")
+        self.assertEqual([], diag["problems"],
+                         "sağlıklı sistem 'problem' üretmemeli (yanlış alarm)")
+        self.assertTrue(diag["info"], "bilgi notu kaybolmamalı")
+        self.assertTrue(any(pub in note for note in diag["info"]),
+                        "doğru public anahtar bilgi notunda verilmeli")
+
+    def test_effective_public_key_is_the_derived_one(self):
+        """Tarayıcının abone olması gereken anahtar HER ZAMAN private'dan türetilendir.
+
+        `alerting._send_push` pywebpush'a yalnızca `vapid_private_key` verir →
+        kütüphane public'i kendi türetir. Bu yüzden `VAPID_PUBLIC_KEY` env
+        değişkeni bu karşılaştırmada rol oynamaz.
+        """
+        priv, pub = _make_keypair()
+        with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": priv, "VAPID_PUBLIC_KEY": ""}, clear=False):
+            diag = vapid_mod.diagnose_vapid()
+        self.assertEqual(pub, diag["effective_public_key"])
+
+    def test_effective_key_stays_derived_when_configured_public_mismatches(self):
+        """Uyuşmayan env değeri 'efektif' anahtar SAYILMAMALI (yoksa panel yanlış karşılaştırır)."""
+        priv_a, _ = _make_keypair()
+        _, pub_b = _make_keypair()
+        with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": priv_a, "VAPID_PUBLIC_KEY": pub_b}, clear=False):
+            diag = vapid_mod.diagnose_vapid()
+        self.assertIs(False, diag["public_key_matches"])
+        self.assertNotEqual(pub_b, diag["effective_public_key"])
+        self.assertEqual(diag["derived_public_key"], diag["effective_public_key"])
+
+    def test_no_warning_logged_for_info_only_config(self):
+        """Sağlıklı yapılandırmada log'a WARNING düşmemeli — yanlış alarmın asıl kilidi."""
+        priv, _ = _make_keypair()
+        with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": priv, "VAPID_PUBLIC_KEY": ""}, clear=False):
+            with patch.object(vapid_mod.logger, "info"):
+                with patch.object(vapid_mod.logger, "warning") as warn:
+                    vapid_mod.log_vapid_diagnosis()
+        self.assertFalse(warn.called, f"sağlıklı sistemde beklenmeyen uyarı: {warn.call_args_list}")
+
+    def test_missing_private_key_still_warns(self):
+        """Gerçek arıza (push gönderilemez) uyarı üretmeye DEVAM etmeli."""
+        with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "", "VAPID_PUBLIC_KEY": ""}, clear=False):
+            with patch.object(vapid_mod.logger, "info"):
+                with patch.object(vapid_mod.logger, "warning") as warn:
+                    vapid_mod.log_vapid_diagnosis()
+        self.assertTrue(warn.called, "gerçek arıza artık uyarı üretmiyor")
+
+
+class PushHealthPayloadTests(unittest.TestCase):
+    """Panel sözleşmesi: `/state.push.vapid_public_key` frontend'e ULAŞMALI.
+
+    Uyuşma tespiti yalnızca iki değeri birden görebilen tarafta (frontend) yapılır;
+    backend kendi env'ini frontend'in BUILD argümanıyla karşılaştıramaz. Bu yüzden
+    backend'in türettiği anahtarı yayınlaması ŞARTTIR — bu test o sözleşmeyi kilitler.
+    """
+
+    def test_push_health_exposes_effective_key(self):
+        import asyncio
+        from app.routers import monitoring as mon
+
+        priv, pub = _make_keypair()
+        with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": priv, "VAPID_PUBLIC_KEY": ""}, clear=False):
+            with patch.object(mon.database, "count_push_subscriptions",
+                              new=AsyncMock(return_value=3)):
+                payload = asyncio.run(mon._push_health_safe())
+        self.assertEqual(3, payload["subscribers"])
+        self.assertTrue(payload["backend_vapid_configured"])
+        self.assertEqual(pub, payload["vapid_public_key"],
+                         "türetilen public anahtar panele ulaşmıyor")
+
+    def test_push_health_survives_vapid_failure(self):
+        """Teşhis patlarsa state yanıtı BOZULMAMALI (panel sağlığı düşmesin)."""
+        import asyncio
+        from app.routers import monitoring as mon
+
+        with patch.object(mon.database, "count_push_subscriptions",
+                          new=AsyncMock(side_effect=RuntimeError("db down"))):
+            payload = asyncio.run(mon._push_health_safe())
+        self.assertEqual(0, payload["subscribers"])
+        self.assertIsNone(payload["vapid_public_key"])
 
 
 if __name__ == "__main__":

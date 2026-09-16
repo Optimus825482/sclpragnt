@@ -117,6 +117,30 @@ type ServerHealth = {
 
 const EMPTY_HEALTH: ServerHealth = { loop_active: null, data_ready: null, system_startup: null, next_scan_in_sec: null };
 
+/**
+ * VAPID public anahtar DOĞRULAMASI (2026-09-16).
+ *
+ * NEDEN GEREKLİ: push gönderimi `VAPID_PRIVATE_KEY` ile imzalanır; pywebpush public
+ * anahtarı ondan türetir. Tarayıcı abone olurken kendi `applicationServerKey`
+ * değerini kullanır. İkisi AYNI çiftten değilse push servisi her isteği 401 ile
+ * reddeder, abonelikler kayıtlı görünür ve hiçbir yerde "VAPID" hatası çıkmaz —
+ * tanısı en zor arıza budur.
+ *
+ * Uyuşmayı tespit edebilecek TEK yer burasıdır: backend'in türettiği anahtar
+ * `/state` ile gelir, bu derlemenin gömülü anahtarı da buradadır. Backend kendi
+ * env'ini frontend'in BUILD argümanıyla karşılaştıramaz (göremez).
+ *
+ * Dönen `null` = iddia yok (backend anahtarı bilinmiyor) → panel uydurmaz.
+ */
+function compareVapidKey(backendKey: string | null): { ok: boolean; offText: string } | null {
+  if (!backendKey) return null;
+  const own = (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "").trim();
+  if (!own) return { ok: false, offText: "FRONTEND ANAHTARI YOK" };
+  return own === backendKey.trim()
+    ? { ok: true, offText: "" }
+    : { ok: false, offText: "UYUŞMUYOR — PUSH 401" };
+}
+
 // R1-01/R1-04: HTTP durumunu kullanıcıya gösterilebilir Türkçe mesaja çevir.
 class HttpStatusError extends Error {
   status: number;
@@ -601,7 +625,15 @@ export default function MonitoringPage() {
   const [risingSort, setRisingSort] = useState<"score" | "proximity" | "strength">("score");
   // PUSH SAĞLIĞI (2026-09-16): sunucudan gelir. `subscribers === 0` iken backend
   // VAPID'i yapılandırılmış olsa bile tek push gitmez — sessiz arızayı görünür kılar.
-  const [pushHealth, setPushHealth] = useState<{ subscribers: number | null; backend_vapid_configured: boolean } | null>(null);
+  // `vapid_public_key`: backend'in private anahtarından TÜRETTİĞİ public anahtar.
+  // Tarayıcının abone olurken kullanması gereken anahtar budur; aşağıda kendi
+  // `NEXT_PUBLIC_VAPID_PUBLIC_KEY` değerimizle karşılaştırılır. Uyuşmazlık = push
+  // servisinin her isteği 401 ile reddetmesi = abonelikler sessizce ölü.
+  const [pushHealth, setPushHealth] = useState<{
+    subscribers: number | null;
+    backend_vapid_configured: boolean;
+    vapid_public_key: string | null;
+  } | null>(null);
   // R1-01: sunucu sağlığı + okuma hataları artık GÖRÜNÜR (yutulmaz).
   const [health, setHealth] = useState<ServerHealth>(EMPTY_HEALTH);
   const [stateError, setStateError] = useState<string | null>(null);
@@ -712,7 +744,13 @@ export default function MonitoringPage() {
     // Push sağlığı: alan gelmezse `null` (uydurma "0 abone" göstermeyelim).
     const push = data?.push;
     setPushHealth(push && typeof push === "object"
-      ? { subscribers: numOrNull(push.subscribers), backend_vapid_configured: Boolean(push.backend_vapid_configured) }
+      ? {
+        subscribers: numOrNull(push.subscribers),
+        backend_vapid_configured: Boolean(push.backend_vapid_configured),
+        vapid_public_key: typeof push.vapid_public_key === "string" && push.vapid_public_key
+          ? String(push.vapid_public_key)
+          : null,
+      }
       : null);
     setStateError(null);
     setStateLoaded(true);
@@ -1099,6 +1137,26 @@ export default function MonitoringPage() {
               offTone="warn"
             />
           )}
+          {/* VAPID ANAHTAR DOĞRULAMASI (2026-09-16): backend'in private'dan
+              türettiği public anahtar ile bu derlemenin gömülü
+              NEXT_PUBLIC_VAPID_PUBLIC_KEY değeri karşılaştırılır. Uyuşmazlık =
+              push servisi her isteği 401 ile reddeder (abonelikler kayıtlı
+              görünür ama hiç push gitmez). Backend VAPID'i yoksa bu çip
+              gösterilmez — "VAPID YOK" çipi o durumu zaten anlatır. */}
+          {pushHealth?.backend_vapid_configured && (() => {
+            const verdict = compareVapidKey(pushHealth.vapid_public_key);
+            if (!verdict) return null;
+            return (
+              <HealthChip
+                label="VAPID anahtarı"
+                value={verdict.ok}
+                onText="UYUMLU"
+                offText={verdict.offText}
+                onTone="good"
+                offTone="bad"
+              />
+            );
+          })()}
           {health.next_scan_in_sec != null && (
             <span className="font-mono text-[11px] text-bunker-muted">sonraki tarama ~{health.next_scan_in_sec} sn</span>
           )}

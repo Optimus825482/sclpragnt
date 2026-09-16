@@ -82,6 +82,11 @@ function SettingsPageInner() {
   const [mlBackfillOpen, setMlBackfillOpen] = useState(false);
   const [mlBackfill, setMlBackfill] = useState<any>({ status: "idle", progress: 0, logs: [] });
   const [startingMlBackfill, setStartingMlBackfill] = useState(false);
+  // TEST BİLDİRİMİ (2026-09-16): push zincirini tek tuşla sına. Bildirim
+  // gelmediğinde NEREDE koptuğunu (VAPID yok / abone yok / teslim edilemedi)
+  // backend `detail` alanında söyler.
+  const [testingPush, setTestingPush] = useState(false);
+  const [pushTestResult, setPushTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
@@ -210,6 +215,36 @@ function SettingsPageInner() {
       setMonitoringMinScoreInput(String(Math.round(data.min_score ?? val)));
     } catch (err) { setError(err instanceof Error ? err.message : "Monitoring eşiği kaydedilemedi"); }
     finally { setSavingMonitoringMinScore(false); }
+  };
+
+  // TEST BİLDİRİMİ (2026-09-16): Ayarlar > Uygulama Ayarları'ndaki buton.
+  // Backend'e "tüm aboneliklere test push'u gönder" der ve sonucu (veya zincirin
+  // hangi katmanında koptuğunu) gösterir. Böylece kullanıcı push'un çalışıp
+  // çalışmadığını gerçek bir bildirimle doğrular; "sessizce ölü" hâl kalmaz.
+  const sendTestPush = async () => {
+    setTestingPush(true);
+    setPushTestResult(null);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/alerts/push-test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `Test bildirimi gönderilemedi (HTTP ${res.status})`);
+      const sent = Number(data.sent ?? 0);
+      const total = Number(data.total ?? 0);
+      const dead = Number(data.dead ?? 0);
+      setPushTestResult({
+        ok: true,
+        text: `✓ Gönderildi · ${sent}/${total} aboneye${dead > 0 ? ` · ${dead} ölü abonelik temizlendi` : ""}. `
+          + "Bildirim gelmediyse işletim sistemi/tarayıcı bildirim izinlerini ve Rahatsız Etme modunu kontrol edin.",
+      });
+    } catch (err) {
+      setPushTestResult({ ok: false, text: err instanceof Error ? err.message : "Test bildirimi gönderilemedi" });
+    } finally {
+      setTestingPush(false);
+    }
   };
 
   const refreshTopGainers = async () => {
@@ -886,6 +921,32 @@ function SettingsPageInner() {
               </span>
               <span className="px-3 py-1.5 rounded-full border border-neon-green/40 text-neon-green font-mono text-xs">PAPER · PUBLIC API</span>
             </div>
+          </div>
+
+          {/* TEST BİLDİRİMİ (2026-09-16): push zincirini UÇTAN UCA kanıtlar.
+              Bildirim gelmiyorsa backend kopan katmanı `detail` alanında söyler
+              (VAPID yok / kayıtlı abone yok / teslim edilemedi) — kullanıcı
+              "push çalışmıyor" demek yerine NEDENİNİ görür. */}
+          <div className={`card border-sky-400/30 bg-sky-400/5 ${activeTab !== "app" ? "hidden" : ""}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <p className="eyebrow text-sky-300">BİLDİRİM TESTİ</p>
+                <p className="text-xs text-bunker-muted mt-1">Tüm kayıtlı cihazlara bir test bildirimi gönderir. Ses, başlık ve tıklama davranışını (bildirime dokununca monitoring sayfası açılır) doğrular. Bildirim gelmezse önce tarayıcı bildirim iznini ve Rahatsız Etme modunu kontrol edin.</p>
+              </div>
+              <button
+                type="button"
+                onClick={sendTestPush}
+                disabled={testingPush || !isAdmin}
+                className="shrink-0 px-4 py-2 rounded-lg border border-sky-400/50 text-sky-300 font-mono text-xs hover:bg-sky-400/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {testingPush ? "GÖNDERİLİYOR…" : "TEST BİLDİRİMİ GÖNDER"}
+              </button>
+            </div>
+            {pushTestResult && (
+              <p className={`mt-3 font-mono text-xs ${pushTestResult.ok ? "text-neon-green" : "text-neon-red"}`}>
+                {pushTestResult.text}
+              </p>
+            )}
           </div>
         </>
       )}

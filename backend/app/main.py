@@ -1261,6 +1261,62 @@ async def save_alert_push_subscription(payload: dict):
         logger.warning("push subscription kaydedilemedi %s: %s", endpoint, exc, exc_info=True)
         raise HTTPException(status_code=502, detail=f"push kayit hatasi: {type(exc).__name__}")
 
+
+@app.post("/api/alerts/push-test")
+async def send_test_push_notification(request: Request):
+    """Test bildirimi gönder — Ayarlar > Uygulama Ayarları butonu.
+
+    NEDEN GEREKLİ (2026-09-16): push zinciri DÖRT ayrı katmandan oluşur:
+        1. backend `VAPID_PRIVATE_KEY` (yoksa hiç gönderilemez)
+        2. `push_subscriptions` tablosunda kayıtlı abonelik (yoksa kime gitsin)
+        3. tarayıcı bildirim izni
+        4. service worker (`sw.js` push olayı)
+    Herhangi biri bozuksa HİÇBİR bildirim gelmez ve hiçbir yerde hata görünmez —
+    kullanıcı yalnızca "push çalışmıyor" der, nedeni anlaşılmaz. Bu uç nokta
+    zinciri tek istekle sınar ve NEREDE koptuğunu açıkça söyler.
+
+    Yetki: YÖNETİCİ. İstemci zaten `RequireAdmin` ile korunuyor ama bu çağrı
+    TÜM aboneliklere bildirim gönderdiği için sunucu tarafında da zorunlu.
+    """
+    _require_admin(request)
+    actor, actor_role = _session_identity(request)
+    from app import alerting
+
+    result = await alerting.deliver_web_push(
+        "Test bildirimi — push zinciri çalışıyor.",
+        title="Scalper Agent · TEST",
+        url="/monitoring",
+        tag="scalper-test",
+        extra={"source": "settings_test"},
+    )
+
+    # Kopan katmanı ADIYLA söyle (frontend `detail` alanını gösterir).
+    if result.get("reason") == "vapid_not_configured":
+        raise HTTPException(
+            status_code=409,
+            detail="VAPID_PRIVATE_KEY ayarlı değil — sunucu push gönderemiyor. "
+                   "Backend ortamına VAPID_PRIVATE_KEY ekleyin.")
+    if result.get("error"):
+        raise HTTPException(status_code=502, detail=f"Push gönderilemedi: {result['error']}")
+
+    total = int(result.get("total") or 0)
+    sent = int(result.get("count") or 0)
+    if total == 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Kayıtlı push aboneliği yok — önce bu tarayıcıda bildirim iznini verin "
+                   "(Ayarlar veya tarayıcı bildirim izni).")
+    if sent == 0:
+        raise HTTPException(
+            status_code=502,
+            detail="Hiçbir aboneye teslim edilemedi — abonelikler ölü olabilir "
+                   "(tarayıcı iznini kapatıp yeniden açın).")
+
+    await log_user_action(actor, actor_role, "alert", "PUSH_TEST",
+                          target="push-test", request=request)
+    return {"ok": True, "sent": sent, "total": total,
+            "dead": int(result.get("dead_count") or 0), "paper_only": True}
+
 CONFIG_FIELDS = {
     "top_gainers_auto_activate": "TOP_GAINERS_AUTO_ACTIVATE",
     "top_gainers_limit": "TOP_GAINERS_LIMIT",

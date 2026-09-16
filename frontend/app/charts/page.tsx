@@ -342,7 +342,7 @@ export default function ChartsPage() {
     // Bu sayede WS'in erişilebilir olduğu ağlarda (ev/ofis) grafik gerçek anlık
     // olur, erişilemediği ağlarda (bulut sunucu/VPN) en az 10 sn'de bir güncellenir.
     const reloadKlines = useCallback(async () => {
-        if (!symbol) return;
+        if (!symbol) { setLoading(false); return; }
         try {
             const res = await apiRequest(`${API_BASE}/api/market-klines/${symbol}?interval=${interval}&limit=200`);
             if (!res.ok) throw new Error(`kline HTTP ${res.status}`);
@@ -360,6 +360,15 @@ export default function ChartsPage() {
             chartRef.current?.timeScale().fitContent();
         } catch (e) {
             console.error("kline hatası:", e);
+        } finally {
+            // PERDE KİLİDİ (2026-09-16): `loading` true ile doğuyordu ve `setLoading`
+            // HİÇBİR yerde çağrılmıyordu → "YÜKLENİYOR..." perdesi (absolute inset-0
+            // z-10, %70 opak) grafiği KALICI olarak örtüyordu. Mum verisi aslında
+            // 10 sn'de bir `setData` ile geliyordu ama kullanıcı loş/donuk bir grafik
+            // görüyordu ("grafik güncellenmiyor"). Perde artık İLK tur bitince kalkar;
+            // başarısız ilk turda da kalkar (hatayı console'a bırakıp grafiği
+            // gizlemek yerine gösterir, sonraki tur 10 sn içinde doldurur).
+            setLoading(false);
         }
     }, [symbol, interval]);
 
