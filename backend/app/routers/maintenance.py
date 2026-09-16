@@ -36,6 +36,10 @@ _velocity_ml_backfill = {"status": "idle", "phase": "idle", "progress": 0, "comp
                          "updated": 0, "skipped": 0, "current_symbol": None, "message": None,
                          "logs": [], "result": None, "started_at": None, "finished_at": None}
 _velocity_ml_backfill_task = None
+_combined_radar_replay = {"status": "idle", "progress": 0, "completed": 0, "total": 0,
+                          "message": None, "logs": [], "result": None,
+                          "started_at": None, "finished_at": None}
+_combined_radar_replay_task = None
 
 _symbol_history_backfills = set()
 
@@ -594,6 +598,104 @@ async def download_replay_parity_trade_csv(request: Request = None):
         ])
     return Response(content="\ufeff" + stream.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="paper-islem-detaylari-{time.strftime("%Y%m%d-%H%M%S")}.csv"'})
+
+
+# ---------------------------------------------------------------------------
+# BİRLEŞİK RADAR 24H REPLAY (Ayarlar > Radar sekmesi butonu, 2026-09-16)
+# ---------------------------------------------------------------------------
+def _combined_radar_replay_log(level: str, message: str) -> None:
+    _combined_radar_replay["logs"].append({"timestamp": time.time(), "level": level, "message": str(message)})
+    _combined_radar_replay["logs"] = _combined_radar_replay["logs"][-500:]
+
+
+def _load_replay_module():
+    """Replay çekirdeğini scripts/... dosyasından GEÇ yükler (döngü yok)."""
+    import importlib.util
+    import pathlib
+    script = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "combined_radar_replay_24h.py"
+    spec = importlib.util.spec_from_file_location("combined_radar_replay_24h", str(script))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def _run_combined_radar_replay(options: dict) -> None:
+    state = _combined_radar_replay
+    state.update({"status": "running", "progress": 0, "completed": 0, "total": 0,
+                  "message": "Replay hazırlanıyor", "result": None,
+                  "started_at": time.time(), "finished_at": None, "logs": []})
+    try:
+        replay = _load_replay_module()
+        hours = int(options.get("hours") or 24)
+        symbols = [str(s).strip() for s in str(options.get("symbols") or "").split(",") if s.strip()] or None
+        max_signals = int(options.get("max_signals") or 400)
+        confluence_window = options.get("confluence_window")
+        skip_fetch = bool(options.get("skip_fetch", False))
+
+        _combined_radar_replay_log("info", f"Birleşik radar replay başladı | pencere={hours}h | skip_fetch={skip_fetch}")
+
+        def on_progress(done: int, total: int) -> None:
+            state.update({"completed": done, "total": total,
+                          "progress": round(done / max(1, total) * 100, 1)})
+            state["message"] = f"{done}/{total} sinyal ölçüldü"
+
+        def on_log(message: str) -> None:
+            _combined_radar_replay_log("info", str(message))
+
+        result = await replay.build_report(
+            hours, symbols, max_signals, confluence_window, skip_fetch,
+            out_path=None, log=on_log, progress=on_progress)
+        state.update({"status": "complete", "progress": 100,
+                      "message": "Replay tamamlandı — rapor ve CSV hazır",
+                      "result": result, "finished_at": time.time()})
+        _combined_radar_replay_log("success", "Replay tamamlandı — rapor ve CSV hazır")
+    except Exception as exc:
+        state.update({"status": "error", "message": f"{type(exc).__name__}: {exc}",
+                      "finished_at": time.time()})
+        _combined_radar_replay_log("error", f"Replay durdu | {type(exc).__name__}: {exc}")
+
+
+@router.get("/api/combined-radar-replay/status")
+async def combined_radar_replay_status():
+    """Birleşik radar replay işinin canlı durumu (log + ilerleme + sonuç)."""
+    return {"ok": True, "paper_only": True, **_combined_radar_replay}
+
+
+@router.post("/api/combined-radar-replay/start")
+async def start_combined_radar_replay(payload: dict = None, request: Request = None):
+    """Birleşik radar 24h replay'ini arka planda başlat (yalnız admin)."""
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    global _combined_radar_replay_task
+    if _combined_radar_replay.get("status") == "running":
+        return {"ok": True, "already_running": True, "paper_only": True, **_combined_radar_replay}
+    _combined_radar_replay_task = _start_background(
+        partial(_run_combined_radar_replay, payload or {}), "combined-radar-replay", single_pass=True)
+    return {"ok": True, "paper_only": True, **_combined_radar_replay}
+
+
+@router.get("/api/combined-radar-replay/report.csv")
+async def download_combined_radar_replay_csv(request: Request = None):
+    """Replay'de ölçülen her sinyali CSV olarak indir (yalnız admin)."""
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    result = _combined_radar_replay.get("result") or {}
+    signals = result.get("signals") or []
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream)
+    writer.writerow(["stream", "symbol", "detected_at_unix", "price", "target_pct", "score",
+                     "confluence", "sources", "exit_reason", "exit_price",
+                     "gross_pct", "net_pct", "mfe_pct", "mae_pct", "hold_minutes"])
+    for s in signals:
+        writer.writerow([
+            s.get("stream"), s.get("symbol"), s.get("detected_at"), s.get("price"),
+            s.get("target_pct"), s.get("score"), s.get("confluence"),
+            ",".join(s.get("sources") or []), s.get("exit_reason"), s.get("exit_price"),
+            s.get("gross_pct"), s.get("net_pct"), s.get("mfe_pct"), s.get("mae_pct"),
+            s.get("hold_minutes"),
+        ])
+    return Response(content="\ufeff" + stream.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="birlesik-radar-replay-{time.strftime("%Y%m%d-%H%M%S")}.csv"'})
 
 
 async def backfill_missing_active_history():
