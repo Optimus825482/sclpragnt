@@ -65,7 +65,8 @@ from app.routers.velocity import (                         # noqa: E402
 # B1-B4 merdiven simülasyonu (auto_paper._manage_single_trade ile aynı sıra)
 # ---------------------------------------------------------------------------
 def _simulate_ladder(rows, entry_price: float, target_pct: float, horizon_minutes: float,
-                     signal_ms: int | None = None) -> dict:
+                     signal_ms: int | None = None, sl_pct: float | None = None,
+                     be_gap_pct: float | None = None) -> dict:
     """auto_paper çıkış merdivenini 1m kline penceresi üzerinde oynatır.
 
     Sıra üretimle birebir: (1) TP kontrolü, (2) peak/MFE güncelle, (3) SL,
@@ -80,11 +81,15 @@ def _simulate_ladder(rows, entry_price: float, target_pct: float, horizon_minute
                 "mae_pct": None, "hold_minutes": 0.0, "net_pct": None}
 
     tp = entry * (1 + float(target_pct) / 100.0)
-    sl = entry * (1 - float(config.AUTO_PAPER_SL_PCT_DEFAULT) / 100.0)
+    # STOP: varsayılan üretim değeri (%3) ama TARAMA için dışarıdan verilebilir.
+    # Sabit %3, tipik harekete göre geniş kalıyordu (velocity ort.MFE %1.96) →
+    # ters asimetri. Tarama, hangi SL'nin net'i pozitife çevirdiğini ölçer.
+    sl_pct_eff = float(sl_pct) if sl_pct is not None else float(config.AUTO_PAPER_SL_PCT_DEFAULT)
+    sl = entry * (1 - sl_pct_eff / 100.0)
     tp_gain_pct = (tp / entry - 1) * 100
     be_trigger = max(float(config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT), tp_gain_pct * 0.7)
     tr_trigger = max(float(config.AUTO_PAPER_TRAILING_TRIGGER_PCT), tp_gain_pct * 0.8)
-    be_gap = 0.60                       # auto_paper: BREAKEVEN_TRAIL_GAP_PCT
+    be_gap = float(be_gap_pct) if be_gap_pct is not None else 0.60   # auto_paper: BREAKEVEN_TRAIL_GAP_PCT
     be_buffer = float(config.AUTO_PAPER_BREAKEVEN_BUFFER_PCT)
     net_floor = entry * (1 + 2 * commission + be_buffer / 100)
 
@@ -221,10 +226,31 @@ def _metrics(name: str, signals: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 # Ana akış
 # ---------------------------------------------------------------------------
+def _enable_utf8_console() -> None:
+    """Windows konsolu (cp1254) rapordaki → ★ × ✗ karakterlerini basamıyordu.
+
+    Gerçek olay (2026-09-16): yerel `python scripts/combined_radar_replay_24h.py`
+    koşumu `UnicodeEncodeError: 'charmap' codec can't encode character '\\u2192'`
+    ile ÇÖKÜYORDU — raporda ok/çarpı/çarpı-kutusu ve Türkçe karakterler var.
+    Linux/sunucu (UTF-8) etkilenmiyordu ama yerel doğrulama imkânsız hale
+    geliyordu. Çözüm: stdout'u UTF-8'e al, eşlenemeyen karakteri '?' yap
+    (çökmek yerine okunur çıktı).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def _emit(log, message: str) -> None:
     """İlerleme çıktısı: CLI'da print, uygulama içi işte log callback."""
     if log is None:
-        print(message)
+        try:
+            print(message)
+        except UnicodeEncodeError:
+            # Konsol UTF-8'e alınamadıysa son çare: eşlenemeyeni düşür.
+            print(message.encode("utf-8", "replace").decode("utf-8", "replace"))
     else:
         log(message)
 
@@ -257,6 +283,91 @@ def _as_signal_row(item: dict, detected_at, confluence: bool = False,
             "price": item.get("price"), "target_pct": item.get("target_pct"),
             "score": item.get("score"), "confluence": bool(confluence),
             "sources": sources, "horizon_minutes": horizon}
+
+
+def _sweep_geometry(sim_inputs: list[dict], targets: list[float],
+                    sls: list[float], gaps: list[float] | None = None) -> list[dict]:
+    """Sabit (TP, SL, ratchet gap) ızgarasını AYNI kline pencereleri üzerinde dener.
+
+    AMAÇ: "hangi hedef/stop kombinasyonu net'i pozitife çevirir" sorusunu ölçüyle
+    cevaplamak. Per-sinyal MFE'ye göre hedef seçmek İLERİYE BAKIŞ (lookahead)
+    olurdu; bu yüzden TÜM sinyallere AYNI sabit oran uygulanır — dürüst politika.
+
+    3. boyut `gaps` = breakeven ratchet açıklığı (üretimde 0.60). Bu parametre
+    MFE'nin ne kadarının KORUNDUĞUNU belirler: velocity ort.MFE %1.96 iken ort.net
+    −0.16 → lehine hareketin neredeyse tamamı geri veriliyor. Ratchet çok sıkıysa
+    işlem erken kapanır, çok gevşekse kâr sıfıra döner.
+
+    `sim_inputs`: her sinyal için {stream, rows, entry, horizon, signal_ms}.
+    Dönen: her hücre için n / ort.net% / medyan / toplam / kazanma%.
+    """
+    grid_gaps = [float(g) for g in (gaps or [0.60])]
+    out: list[dict] = []
+    for target in targets:
+        for sl in sls:
+            for gap in grid_gaps:
+                per_stream: dict[str, list[float]] = defaultdict(list)
+                for item in sim_inputs:
+                    outcome = _simulate_ladder(
+                        item["rows"], item["entry"], target, item["horizon"],
+                        signal_ms=item["signal_ms"], sl_pct=sl, be_gap_pct=gap)
+                    net = outcome.get("net_pct")
+                    if net is not None:
+                        per_stream[item["stream"]].append(float(net))
+                for stream, nets in per_stream.items():
+                    if not nets:
+                        continue
+                    out.append({
+                        "target_pct": target,
+                        "sl_pct": sl,
+                        "gap_pct": gap,
+                        "stream": stream,
+                        "n": len(nets),
+                        "avg_net_pct": round(statistics.mean(nets), 4),
+                        "median_net_pct": round(statistics.median(nets), 4),
+                        "total_net_pct": round(sum(nets), 3),
+                        "win_rate": round(sum(1 for n in nets if n > 0) / len(nets) * 100, 2),
+                    })
+    return out
+
+
+def _sweep_best(sweep: list[dict], stream: str) -> str:
+    """Tek satırlık "en iyi nokta" özeti (referans akışlar için)."""
+    rows = [r for r in sweep if r["stream"] == stream]
+    if not rows:
+        return "yok"
+    best = max(rows, key=lambda r: r["avg_net_pct"])
+    return (f"hedef %{best['target_pct']:.2f} / stop %{best['sl_pct']:.2f} / "
+            f"ratchet %{best.get('gap_pct', 0.6):.2f} → "
+            f"{best['avg_net_pct']:+.3f}% (kazanma %{best['win_rate']:.1f}, n={best['n']})")
+
+
+def _sweep_lines(sweep: list[dict], stream: str = "combined", top: int = 8) -> list[str]:
+    """Tarama sonucunu okunur tabloya çevir + dürüst karar satırı."""
+    rows = [r for r in sweep if r["stream"] == stream]
+    if not rows:
+        return ["(tarama sonucu yok)"]
+    rows.sort(key=lambda r: r["avg_net_pct"], reverse=True)
+    lines = [f"  {'hedef%':>7}{'stop%':>7}{'ratchet%':>10}{'n':>6}"
+             f"{'ort.net%':>10}{'medyan%':>10}{'kazanma%':>10}"]
+    for row in rows[:top]:
+        lines.append(f"  {row['target_pct']:>7.2f}{row['sl_pct']:>7.2f}"
+                     f"{row.get('gap_pct', 0.6):>10.2f}{row['n']:>6}"
+                     f"{row['avg_net_pct']:>10.3f}{row['median_net_pct']:>10.3f}"
+                     f"{row['win_rate']:>10.2f}")
+    best = rows[0]
+    positives = [r for r in rows if r["avg_net_pct"] > 0]
+    lines.append("")
+    lines.append(f"  EN İYİ ({stream}): hedef %{best['target_pct']:.2f} / stop %{best['sl_pct']:.2f}"
+                 f" / ratchet %{best.get('gap_pct', 0.6):.2f} → ort.net {best['avg_net_pct']:+.3f}%"
+                 f" (kazanma %{best['win_rate']:.1f}, n={best['n']})")
+    if positives:
+        lines.append(f"  SONUÇ: {len(positives)}/{len(rows)} kombinasyon POZİTİF → geometri "
+                     f"düzeltmesi bu sinyal sınıfını kâra çevirebilir (yeniden ölçerek doğrula).")
+    else:
+        lines.append("  SONUÇ: HİÇBİR TP/SL kombinasyonu pozitif DEĞİL → bu sinyal sınıfında "
+                     "(bu ufukta) kenar YOK; geometri değil SEÇİCİLİK sorunu.")
+    return lines
 
 
 def _resolve_horizon(signal: dict, cap_minutes: float) -> float:
@@ -300,7 +411,10 @@ def _dedupe_signals(signals: list[dict]) -> list[dict]:
 
 async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
                        confluence_window: int | None, skip_fetch: bool,
-                       out_path: str | None = None, log=None, progress=None) -> dict:
+                       out_path: str | None = None, log=None, progress=None,
+                       sweep: bool = False, sweep_targets: list[float] | None = None,
+                       sweep_sls: list[float] | None = None,
+                       sweep_gaps: list[float] | None = None) -> dict:
     """Birleşik radar replay'inin ÇEKİRDEĞİ (DB bağlantısını AÇMAZ/KAPATMAZ).
 
     Uygulama içi arka plan işi bu fonksiyonu çağırır; CLI `run()` ise burayı
@@ -426,6 +540,9 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     end_fetch = until
     cache: dict[str, list] = {}
     measured: dict[str, list[dict]] = defaultdict(list)
+    # GEOMETRİ TARAMASI için: her sinyalin penceresi + girişi saklanır; ızgara aynı
+    # pencereler üzerinde koşar (yeniden REST çekimi YOK).
+    sim_inputs: list[dict] = []
     symbols_seen = sorted({s["symbol"] for _, s in all_signals})
     _emit(log, f"[replay] {len(symbols_seen)} sembol için 1m kline çekilecek (REST)…")
 
@@ -439,6 +556,9 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
         rows = await _load_klines(symbol, detected, end_fetch, cache)
         window_rows = _post_signal_window(rows, int(detected * 1000),
                                           int((detected + horizon * 60) * 1000))
+        sim_inputs.append({"stream": stream_name, "rows": window_rows,
+                           "entry": float(signal["price"]), "horizon": horizon,
+                           "signal_ms": int(detected * 1000)})
         outcome = _simulate_ladder(window_rows, float(signal["price"]), target, horizon,
                                    signal_ms=int(detected * 1000))
         outcome.update({k: signal[k] for k in
@@ -467,6 +587,12 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     ]
     result["measurement_horizon_minutes"] = horizon_cap_min
     result["symbols_fetched"] = symbols_seen
+    # GEOMETRİ TARAMASI: aynı pencereler, sabit TP/SL ızgarası.
+    if sweep:
+        grid_gaps = list(sweep_gaps or [0.60])
+        _emit(log, f"[replay] geometri taraması: {len(sweep_targets)}×{len(sweep_sls)}"
+                   f"×{len(grid_gaps)} kombinasyon × {len(sim_inputs)} sinyal…")
+        result["sweep"] = _sweep_geometry(sim_inputs, sweep_targets, sweep_sls, grid_gaps)
     result["report_text"] = _report_text(result)
     _emit(log, result["report_text"])
     if out_path:
@@ -477,7 +603,10 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
 
 
 async def run(hours: int, symbols: list[str] | None, max_signals: int,
-              confluence_window: int | None, skip_fetch: bool, out_path: str | None) -> dict:
+              confluence_window: int | None, skip_fetch: bool, out_path: str | None,
+              sweep: bool = False, sweep_targets: list[float] | None = None,
+              sweep_sls: list[float] | None = None,
+              sweep_gaps: list[float] | None = None) -> dict:
     """CLI sarmalayıcı: DB bağlantısını açar/kapatır, çekirdeği çağırır.
 
     Uygulama İÇİ arka plan işi bunu DEĞİL `build_report`'u kullanır — uygulama
@@ -486,7 +615,9 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
     await database.init_db()
     try:
         return await build_report(hours, symbols, max_signals, confluence_window,
-                                  skip_fetch, out_path=out_path)
+                                  skip_fetch, out_path=out_path,
+                                  sweep=sweep, sweep_targets=sweep_targets,
+                                  sweep_sls=sweep_sls, sweep_gaps=sweep_gaps)
     finally:
         await database.close_db()
 
@@ -549,6 +680,13 @@ def _report_text(result: dict) -> str:
         lines.append(f"  {key:<14} hedef {m['avg_target_pct']:.2f}%  /  "
                      f"ort.MFE {m['avg_mfe_pct']:.2f}%  = {ratio:.2f}×{flag}")
     lines.append("")
+    if result.get("sweep"):
+        lines.append("GEOMETRİ TARAMASI (sabit TP/SL ızgarası, AYNI pencereler — ileriye bakış YOK):")
+        lines.extend(_sweep_lines(result["sweep"], stream="combined", top=8))
+        lines.append("")
+        lines.append(f"  (velocity_only referans: en iyi "
+                     f"{_sweep_best(result['sweep'], 'velocity_only')})")
+        lines.append("")
     lines.append("SINIRLAR (sonuçları okurken bil):")
     for line in result.get("limitations", []):
         lines.append(f"  - {line}")
@@ -557,6 +695,7 @@ def _report_text(result: dict) -> str:
 
 
 def main() -> None:
+    _enable_utf8_console()
     parser = argparse.ArgumentParser(description="Birleşik radar 24h replay/backtest")
     parser.add_argument("--hours", type=int, default=24, help="geriye dönük pencere (saat)")
     parser.add_argument("--symbols", type=str, default="", help="virgülle ayrılmış sembol filtresi")
@@ -564,15 +703,28 @@ def main() -> None:
     parser.add_argument("--confluence-window", type=int, default=None, help="çakışma penceresi (sn)")
     parser.add_argument("--skip-fetch", action="store_true", help="kline çekmeden yalnız sayım")
     parser.add_argument("--out", type=str, default="", help="JSON çıktı yolu")
+    parser.add_argument("--sweep", action="store_true",
+                        help="sabit TP/SL ızgarasını aynı pencerelerde tara (kenar var mı?)")
+    parser.add_argument("--sweep-targets", type=str, default="0.5,0.75,1,1.5,2,3,4,6",
+                        help="tarama hedef% listesi (virgülle)")
+    parser.add_argument("--sweep-sls", type=str, default="0.5,0.75,1,1.5,2,3",
+                        help="tarama stop% listesi (virgülle)")
+    parser.add_argument("--sweep-gaps", type=str, default="0.3,0.6,1.0,1.5",
+                        help="tarama ratchet (breakeven gap) % listesi — MFE koruma boyutu")
     args = parser.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()] or None
     out_path = args.out or os.path.join("..", "work", f"combined_radar_replay_{args.hours}h.json")
+    sweep_targets = [float(x) for x in args.sweep_targets.split(",") if x.strip()]
+    sweep_sls = [float(x) for x in args.sweep_sls.split(",") if x.strip()]
+    sweep_gaps = [float(x) for x in args.sweep_gaps.split(",") if x.strip()]
 
     async def _main():
         try:
             await run(args.hours, symbols, args.max_signals, args.confluence_window,
-                      args.skip_fetch, out_path)
+                      args.skip_fetch, out_path, sweep=args.sweep,
+                      sweep_targets=sweep_targets, sweep_sls=sweep_sls,
+                      sweep_gaps=sweep_gaps)
         finally:
             await database.close_db()
 

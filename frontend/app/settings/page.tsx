@@ -1238,16 +1238,16 @@ function RadarReplayPanel() {
     }
   };
 
-  const downloadCsv = async () => {
+  const downloadCsv = async (path = "report.csv", fallback = "birlesik-radar-replay.csv") => {
     try {
-      const response = await apiRequest(`${API_BASE}/api/combined-radar-replay/report.csv`, { cache: "no-store" });
+      const response = await apiRequest(`${API_BASE}/api/combined-radar-replay/${path}`, { cache: "no-store" });
       if (!response.ok) throw new Error("Replay CSV indirilemedi");
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
       const disposition = response.headers.get("content-disposition") || "";
-      anchor.download = disposition.match(/filename="?([^";]+)"?/i)?.[1] || "birlesik-radar-replay.csv";
+      anchor.download = disposition.match(/filename="?([^";]+)"?/i)?.[1] || fallback;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -1308,9 +1308,15 @@ function RadarReplayPanel() {
               <pre className="mt-3 max-h-[28vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 font-mono text-[11px] text-bunker-muted whitespace-pre-wrap">{job.result.report_text}</pre>
             )}
             {complete && (
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <p className="text-[11px] text-bunker-muted">Sonuçları CSV olarak indir (sinyal bazlı: her satır bir ölçüm).</p>
-                <button onClick={downloadCsv} className="shrink-0 rounded-lg border border-neon-green/50 bg-neon-green/10 px-3 py-2 font-mono text-xs text-neon-green hover:bg-neon-green/20">CSV İNDİR</button>
+              <div className="mt-4 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] text-bunker-muted">Sinyal bazlı ölçüm (her satır bir sinyal: çıkış, net%, MFE/MAE).</p>
+                  <button onClick={() => downloadCsv("report.csv", "birlesik-radar-replay.csv")} className="shrink-0 rounded-lg border border-neon-green/50 bg-neon-green/10 px-3 py-2 font-mono text-xs text-neon-green hover:bg-neon-green/20">SİNYAL CSV</button>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] text-bunker-muted">Geometri taraması (hedef × stop ızgarası → hangi ayar net pozitife dönüyor).</p>
+                  <button onClick={() => downloadCsv("sweep.csv", "birlesik-radar-geometri-taramasi.csv")} className="shrink-0 rounded-lg border border-amber-300/50 bg-amber-300/10 px-3 py-2 font-mono text-xs text-amber-300 hover:bg-amber-300/20">TARAMA CSV</button>
+                </div>
               </div>
             )}
           </div>

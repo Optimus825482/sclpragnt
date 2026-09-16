@@ -608,6 +608,26 @@ def _combined_radar_replay_log(level: str, message: str) -> None:
     _combined_radar_replay["logs"] = _combined_radar_replay["logs"][-500:]
 
 
+def _parse_float_list(raw, default: list[float]) -> list[float]:
+    """İsteğe bağlı "1,1.5,2" (veya liste) girdisini pozitif float listesine çevirir.
+
+    Geçersiz/boş girdi varsayılana düşer; okuma yolunda ASLA hata fırlatmaz
+    (panelden gelen serbest metin 500 üretmemeli).
+    """
+    if raw in (None, ""):
+        return list(default)
+    items = list(raw) if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    out: list[float] = []
+    for item in items:
+        try:
+            value = float(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            out.append(value)
+    return out or list(default)
+
+
 def _load_replay_module():
     """Replay çekirdeğini scripts/... dosyasından GEÇ yükler (döngü yok)."""
     import importlib.util
@@ -631,6 +651,14 @@ async def _run_combined_radar_replay(options: dict) -> None:
         max_signals = int(options.get("max_signals") or 400)
         confluence_window = options.get("confluence_window")
         skip_fetch = bool(options.get("skip_fetch", False))
+        # GEOMETRİ TARAMASI: buton panelinden açılabilir (varsayılan AÇIK — asıl
+        # soru "kenar var mı" olduğu için tarama asıl çıktıdır).
+        sweep = bool(options.get("sweep", True))
+        sweep_targets = _parse_float_list(options.get("sweep_targets"),
+                                          [0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
+        sweep_sls = _parse_float_list(options.get("sweep_sls"), [0.5, 0.75, 1.0, 1.5, 2.0, 3.0])
+        # Ratchet açıklığı: MFE'nin ne kadarının korunduğunu belirleyen boyut.
+        sweep_gaps = _parse_float_list(options.get("sweep_gaps"), [0.3, 0.6, 1.0, 1.5])
 
         _combined_radar_replay_log("info", f"Birleşik radar replay başladı | pencere={hours}h | skip_fetch={skip_fetch}")
 
@@ -644,7 +672,9 @@ async def _run_combined_radar_replay(options: dict) -> None:
 
         result = await replay.build_report(
             hours, symbols, max_signals, confluence_window, skip_fetch,
-            out_path=None, log=on_log, progress=on_progress)
+            out_path=None, log=on_log, progress=on_progress,
+            sweep=sweep, sweep_targets=sweep_targets, sweep_sls=sweep_sls,
+            sweep_gaps=sweep_gaps)
         state.update({"status": "complete", "progress": 100,
                       "message": "Replay tamamlandı — rapor ve CSV hazır",
                       "result": result, "finished_at": time.time()})
@@ -722,6 +752,33 @@ async def download_combined_radar_replay_csv(request: Request = None):
         logger.warning("replay CSV: %d satır atlandı", skipped)
     return Response(content="\ufeff" + stream.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="birlesik-radar-replay-{time.strftime("%Y%m%d-%H%M%S")}.csv"'})
+
+
+@router.get("/api/combined-radar-replay/sweep.csv")
+async def download_combined_radar_replay_sweep_csv(request: Request = None):
+    """Geometri taraması (sabit TP/SL ızgarası) sonucunu CSV olarak indir (admin).
+
+    Raporun asıl karar çıktısı budur: her (hedef, stop, akış) hücresi için
+    n / ort.net% / medyan / toplam / kazanma%. Boş tarama 500 değil, başlık
+    satırından oluşan boş bir dosya döndürür (savunmacı).
+    """
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    result = _combined_radar_replay.get("result") or {}
+    sweep_rows = result.get("sweep") or []
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream)
+    writer.writerow(["hedef_pct", "stop_pct", "ratchet_gap_pct", "stream", "n", "ort_net_pct",
+                     "medyan_net_pct", "toplam_net_pct", "kazanma_pct"])
+    for row in sweep_rows:
+        if not isinstance(row, dict):
+            continue
+        writer.writerow([row.get("target_pct"), row.get("sl_pct"), row.get("gap_pct"),
+                         row.get("stream"), row.get("n"), row.get("avg_net_pct"),
+                         row.get("median_net_pct"), row.get("total_net_pct"),
+                         row.get("win_rate")])
+    return Response(content="\ufeff" + stream.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="birlesik-radar-geometri-taramasi-{time.strftime("%Y%m%d-%H%M%S")}.csv"'})
 
 
 async def backfill_missing_active_history():

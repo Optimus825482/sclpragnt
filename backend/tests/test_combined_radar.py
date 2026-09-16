@@ -260,6 +260,131 @@ class LadderParityTests(unittest.TestCase):
         self.assertEqual(2.85, metrics["avg_mfe_pct"])
         self.assertAlmostEqual(3.5 / 2.85, metrics["target_to_mfe_ratio"], places=2)
 
+    def test_sl_override_changes_outcome_on_same_window(self):
+        """TARAMA KANITI: aynı pencere, yalnız stop farklı → farklı çıkış.
+
+        Sabit %3 stop'un neden ters asimetri ürettiğini gösterir: -2%'lik normal
+        bir geri çekilme GENİŞ stopla atlatılır (işlem kâra döner), DAR stopla
+        STOP olur. Taramayı bu yüzden istiyoruz. (Mutasyon: `sl_pct` dışarıdan
+        verilmeyip sabit %3 kullanılsaydı iki sonuç birebir aynı olurdu.)
+        """
+        base = 1_700_000_000_000
+        rows = [
+            [base, 100.0, 100.2, 100.0, 100.1, 10.0],
+            [base + 60_000, 100.1, 100.3, 98.0, 98.5, 10.0],
+            [base + 120_000, 98.5, 105.0, 98.4, 104.0, 10.0],
+        ]
+        wide = self.replay._simulate_ladder(rows, 100.0, 4.0, 5.0, sl_pct=3.0)
+        narrow = self.replay._simulate_ladder(rows, 100.0, 4.0, 5.0, sl_pct=1.0)
+        self.assertEqual("take_profit", wide["exit_reason"])
+        self.assertGreater(wide["net_pct"], 0)
+        self.assertEqual("stop_loss", narrow["exit_reason"])
+        self.assertLess(narrow["net_pct"], 0)
+
+    def test_sweep_geometry_covers_grid_and_streams(self):
+        """Izgara = hedef × stop × akış; her hücre için tam bir metrik satırı."""
+        base = 1_700_000_000_000
+        rows = [[base, 100.0, 100.5, 99.8, 100.0, 10.0],
+                [base + 60_000, 100.0, 101.2, 99.9, 101.0, 10.0]]
+        inputs = [
+            {"stream": "combined", "rows": rows, "entry": 100.0,
+             "horizon": 5.0, "signal_ms": base},
+            {"stream": "combined", "rows": rows, "entry": 100.0,
+             "horizon": 5.0, "signal_ms": base + 1_000},
+            {"stream": "velocity_only", "rows": rows, "entry": 100.0,
+             "horizon": 5.0, "signal_ms": base},
+        ]
+        out = self.replay._sweep_geometry(inputs, [1.0, 2.0], [1.0])
+        self.assertEqual(4, len(out))   # 2 hedef × 1 stop × 2 akış
+        self.assertEqual({1.0, 2.0}, {r["target_pct"] for r in out})
+        self.assertEqual({"combined", "velocity_only"}, {r["stream"] for r in out})
+        # Her hücre KENDİ akışının sinyallerini biriktirir (combined=2, velocity=1).
+        counts = {r["stream"]: r["n"] for r in out}
+        self.assertEqual({"combined": 2, "velocity_only": 1}, counts)
+        for row in out:
+            self.assertIsNotNone(row["avg_net_pct"])
+            self.assertIsNotNone(row["win_rate"])
+
+    def test_ratchet_gap_governs_mfe_capture(self):
+        """RATCHET KANITI: aynı pencere, yalnız ratchet açıklığı farklı → farklı net.
+
+        MFE'nin ne kadarının KORUNDUĞUNU ratchet açıklığı belirler. velocity
+        ort.MFE %1.96 iken ort.net −0.16 → lehine hareketin neredeyse tamamı geri
+        veriliyor; bu yüzden ratchet taranabilir olmalı. (Mutasyon: `be_gap_pct`
+        yok sayılsaydı iki sonuç birebir aynı olurdu.)
+        """
+        base = 1_700_000_000_000
+        rows = [
+            [base, 100.0, 100.5, 99.9, 100.2, 10.0],
+            [base + 60_000, 100.2, 102.5, 100.4, 102.0, 10.0],
+        ]
+        tight = self.replay._simulate_ladder(rows, 100.0, 3.0, 5.0, be_gap_pct=0.3)
+        loose = self.replay._simulate_ladder(rows, 100.0, 3.0, 5.0, be_gap_pct=1.5)
+        self.assertEqual("breakeven_stop", tight["exit_reason"])
+        self.assertEqual("breakeven_stop", loose["exit_reason"])
+        # Sıkı ratchet zirveye daha yakın kilitler → daha çok MFE korunur.
+        self.assertGreater(tight["exit_price"], loose["exit_price"])
+        self.assertGreater(tight["net_pct"], loose["net_pct"])
+
+    def test_sweep_grid_includes_ratchet_dimension(self):
+        """Izgara ratchet boyutunu da tarar (3. boyut)."""
+        base = 1_700_000_000_000
+        rows = [[base, 100.0, 100.5, 99.8, 100.0, 10.0],
+                [base + 60_000, 100.0, 101.2, 99.9, 101.0, 10.0]]
+        inputs = [{"stream": "combined", "rows": rows, "entry": 100.0,
+                   "horizon": 5.0, "signal_ms": base}]
+        out = self.replay._sweep_geometry(inputs, [1.0, 2.0], [1.0], gaps=[0.3, 1.5])
+        self.assertEqual(4, len(out))   # 2 hedef × 1 stop × 2 gap × 1 akış
+        self.assertEqual({0.3, 1.5}, {r["gap_pct"] for r in out})
+        # Varsayılan (gaps verilmezse) üretim değeri 0.60 kullanılır.
+        default_out = self.replay._sweep_geometry(inputs, [1.0], [1.0])
+        self.assertEqual({0.6}, {r["gap_pct"] for r in default_out})
+
+    def test_emit_survives_non_ascii_report_text(self):
+        """Windows cp1254 konsolu rapordaki → ★ × ✗ karakterlerini basamıyordu.
+
+        Gerçek olay: yerel CLI koşumu `UnicodeEncodeError ... '\\u2192'` ile
+        çöküyordu. `_emit` artık asla UnicodeEncodeError sızdırmamalı.
+        """
+        captured: list[str] = []
+        self.replay._emit(lambda m: captured.append(m), "→ ★ × ✗ çakışma ölçüldü")
+        self.assertEqual(["→ ★ × ✗ çakışma ölçüldü"], captured)
+        self.replay._emit(None, "→ ★ × ✗ çakışma ölçüldü")   # print yolu çökmemeli
+
+    def test_report_text_contains_non_ascii_so_guard_is_needed(self):
+        """Guard'ın NEDENİ: rapor ASCII dışı karakter içeriyor (cp1254'te patlar)."""
+        text = self.replay._report_text({"streams": {}, "limitations": []})
+        self.assertTrue(any(ord(ch) > 127 for ch in text))
+
+    def test_sweep_verdict_flags_no_edge(self):
+        rows = [
+            {"target_pct": 1.0, "sl_pct": 1.0, "stream": "combined", "n": 10,
+             "avg_net_pct": -0.20, "median_net_pct": -0.30,
+             "total_net_pct": -2.0, "win_rate": 30.0},
+            {"target_pct": 2.0, "sl_pct": 0.5, "stream": "combined", "n": 10,
+             "avg_net_pct": -0.10, "median_net_pct": -0.20,
+             "total_net_pct": -1.0, "win_rate": 35.0},
+        ]
+        text = "\n".join(self.replay._sweep_lines(rows))
+        self.assertIn("HİÇBİR TP/SL kombinasyonu pozitif DEĞİL", text)
+
+    def test_sweep_verdict_flags_edge_and_picks_best(self):
+        """Pozitif hücre varsa EN İYİ açıkça yazılır (karar verisi)."""
+        rows = [
+            {"target_pct": 3.0, "sl_pct": 3.0, "stream": "combined", "n": 72,
+             "avg_net_pct": -0.14, "median_net_pct": -0.30,
+             "total_net_pct": -10.1, "win_rate": 26.39},
+            {"target_pct": 1.5, "sl_pct": 1.0, "stream": "combined", "n": 72,
+             "avg_net_pct": 0.42, "median_net_pct": 0.10,
+             "total_net_pct": 30.2, "win_rate": 58.3},
+        ]
+        text = "\n".join(self.replay._sweep_lines(rows))
+        self.assertIn("POZİTİF", text)
+        self.assertIn("EN İYİ (combined): hedef %1.50 / stop %1.00", text)
+        self.assertIn("+0.420%", text)
+        # Referans özeti: olmayan akış için "yok" demeli (KeyError değil).
+        self.assertEqual("yok", self.replay._sweep_best(rows, "rising_only"))
+
 
 async def auto_paper_defaults() -> dict:
     from app.routers import auto_paper
