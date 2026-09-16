@@ -341,6 +341,12 @@ def _threshold_fields(settings) -> dict:
         "rr_min": float(getattr(config, "MONITORING_RR_MIN", 0.6)),
         "rr_sl_pct": float(getattr(config, "MONITORING_RR_SL_PCT", 3.0)),
         "rr_blocked": int(_monitoring_state.get("rr_blocked", 0)),
+        # YAZMA doğrulamasının sınırları yayınlanır: istemci aynı aralığı
+        # uygulayabilsin (eskiden istemci yalnız `val < 0` kontrol ediyordu;
+        # aralık dışı bir değer kaydedilmeye çalışılınca sunucu 422 dönüyordu ve
+        # kullanıcı NEDENİNİ göremiyordu). Tek doğruluk kaynağı burasıdır.
+        "min_target_pct_min": float(getattr(config, "MONITORING_TARGET_PCT_MIN", 1.5)),
+        "min_target_pct_max": float(getattr(config, "MONITORING_TARGET_PCT_MAX", 6.0)),
     }
 
 
@@ -425,7 +431,7 @@ async def get_user_notification_settings() -> dict:
             "radar_route_velocity_auto_through_auto_paper": _coerce_bool(settings.get(
                 "radar_route_velocity_auto_through_auto_paper",
                 getattr(config, "RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", False))),
-            "radar_confluence_window_sec": _radar_confluence_window(settings.get(
+            "radar_confluence_window_sec": _clamp_confluence_window(settings.get(
                 "radar_confluence_window_sec",
                 getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))),
         }
@@ -489,11 +495,11 @@ def _validate_hhmm(value, field: str) -> str:
 
 
 def _radar_confluence_window(value) -> int:
-    """Birleşik radar çakışma penceresi (sn): 60 sn - 6 saat aralığına zorlanır.
+    """YAZMA yolu: birleşik radar çakışma penceresi (sn), 60 sn - 6 saat.
 
     Bu pencere "iki kaynağın aynı olay sayılması" için maksimum aralıktır; aşırı
     büyük bir değer alakasız sinyalleri çakışma sanıp raporu şişirir, bu yüzden
-    üst sınır konur (6 saat = en uzun radar ufkundan geniş).
+    üst sınır konur (6 saat = en uzun radar ufkundan geniş). Geçersiz girdi 422.
     """
     try:
         window = int(float(value))
@@ -501,6 +507,24 @@ def _radar_confluence_window(value) -> int:
         raise HTTPException(status_code=422, detail="radar_confluence_window_sec sayısal olmalı (sn)")
     if not (60 <= window <= 21600):
         raise HTTPException(status_code=422, detail="radar_confluence_window_sec 60-21600 sn (6 saat) aralığında olmalı")
+    return window
+
+
+def _clamp_confluence_window(value) -> int:
+    """OKUMA yolu: DOĞRULAMAZ, bozuk değeri varsayılana kırpar (asla fırlatmaz).
+
+    NEDEN AYRI: `get_user_notification_settings` bir OKUMA yoludur ve hem GET
+    uçları hem TESLİMAT döngüsü tarafından çağrılır. Orada 422 fırlatmak, DB'ye
+    bozuk bir değer düştüğünde `/api/monitoring/settings` GET+PUT'unu ve dolaylı
+    olarak bildirim teslimini komple kırıyordu. Doğrulama YAZMA yolunda kalır.
+    """
+    default = int(getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))
+    try:
+        window = int(float(value))
+    except (TypeError, ValueError):
+        return default
+    if not (60 <= window <= 21600):
+        return default
     return window
 
 

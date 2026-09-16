@@ -215,6 +215,28 @@ def _emit(log, message: str) -> None:
         log(message)
 
 
+def _as_signal_row(item: dict, detected_at, confluence: bool = False,
+                   default_source: str | None = None) -> dict:
+    """Bir olayı ölçüm satırına çevir.
+
+    DİKKAT — `sources` HER ZAMAN dolu string listesi olmalıdır. Journal satırlarında
+    (`velocity_candidates`) ne `sources` ne `source` alanı vardır; eski kod
+    `item.get("sources") or [item.get("source")]` ile `[None]` üretiyordu ve CSV
+    üretimindeki `",".join(...)` **TypeError → HTTP 500** veriyordu. Bu yüzden
+    kaynak etiketi çağrıdan AÇIKÇA geçirilir ve boş değerler süzülür.
+    """
+    sources = item.get("sources")
+    if not sources:
+        sources = [item.get("source") or default_source]
+    sources = [str(s) for s in sources if s]
+    if not sources:
+        sources = [default_source or "unknown"]
+    return {"symbol": item.get("symbol"), "detected_at": detected_at,
+            "price": item.get("price"), "target_pct": item.get("target_pct"),
+            "score": item.get("score"), "confluence": bool(confluence),
+            "sources": sources}
+
+
 async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
                        confluence_window: int | None, skip_fetch: bool,
                        out_path: str | None = None, log=None, progress=None) -> dict:
@@ -255,16 +277,13 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     combined = build_combined_events(velocity_events, rising_events,
                                      confluence_window_sec=window)
 
-    # Sanal giriş listeleri: (etiket, zaman, fiyat, hedef, confluence, sembol)
-    def _as_signal(item, detected_at, confluence=False):
-        return {"symbol": item["symbol"], "detected_at": detected_at,
-                "price": item.get("price"), "target_pct": item.get("target_pct"),
-                "score": item.get("score"), "confluence": confluence,
-                "sources": item.get("sources") or [item.get("source")]}
-
-    velocity_signals = [_as_signal(v, v.get("created_at")) for v in velocity_events]
-    rising_signals = [_as_signal(r, r.get("created_at")) for r in rising_events]
-    combined_signals = [_as_signal(c, c.get("detected_at"), c.get("confluence", False))
+    # Sanal giriş listeleri: ölçüm satırına çevir (kaynak etiketi AÇIKÇA verilir).
+    velocity_signals = [_as_signal_row(v, v.get("created_at"), default_source="velocity")
+                        for v in velocity_events]
+    rising_signals = [_as_signal_row(r, r.get("created_at"), default_source="rising")
+                      for r in rising_events]
+    combined_signals = [_as_signal_row(c, c.get("detected_at"), c.get("confluence", False),
+                                       default_source="combined")
                         for c in combined]
 
     for stream in (velocity_signals, rising_signals, combined_signals):

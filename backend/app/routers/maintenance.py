@@ -676,7 +676,14 @@ async def start_combined_radar_replay(payload: dict = None, request: Request = N
 
 @router.get("/api/combined-radar-replay/report.csv")
 async def download_combined_radar_replay_csv(request: Request = None):
-    """Replay'de ölçülen her sinyali CSV olarak indir (yalnız admin)."""
+    """Replay'de ölçülen her sinyali CSV olarak indir (yalnız admin).
+
+    SAVUNMACI (2026-09-16): satır şekli beklenmedik olsa bile 500 vermez. Eskiden
+    `",".join(s.get("sources") or [])` çağrısı `sources=[None]` geldiğinde
+    "TypeError: sequence item 0: expected str instance, NoneType found" ile
+    **500** üretiyordu (journal satırlarında `source` alanı yok). Artık tüm
+    değerler güvenli biçimde stringe çevrilir ve bozuk satır ATLANIR.
+    """
     from app.api_common import require_admin as _require_admin
     _require_admin(request)
     result = _combined_radar_replay.get("result") or {}
@@ -686,14 +693,32 @@ async def download_combined_radar_replay_csv(request: Request = None):
     writer.writerow(["stream", "symbol", "detected_at_unix", "price", "target_pct", "score",
                      "confluence", "sources", "exit_reason", "exit_price",
                      "gross_pct", "net_pct", "mfe_pct", "mae_pct", "hold_minutes"])
+
+    def _src(value):
+        if not value:
+            return ""
+        if isinstance(value, (list, tuple)):
+            return ",".join(str(item) for item in value if item)
+        return str(value)
+
+    skipped = 0
     for s in signals:
-        writer.writerow([
-            s.get("stream"), s.get("symbol"), s.get("detected_at"), s.get("price"),
-            s.get("target_pct"), s.get("score"), s.get("confluence"),
-            ",".join(s.get("sources") or []), s.get("exit_reason"), s.get("exit_price"),
-            s.get("gross_pct"), s.get("net_pct"), s.get("mfe_pct"), s.get("mae_pct"),
-            s.get("hold_minutes"),
-        ])
+        if not isinstance(s, dict):
+            skipped += 1
+            continue
+        try:
+            writer.writerow([
+                s.get("stream"), s.get("symbol"), s.get("detected_at"), s.get("price"),
+                s.get("target_pct"), s.get("score"), s.get("confluence"),
+                _src(s.get("sources")), s.get("exit_reason"), s.get("exit_price"),
+                s.get("gross_pct"), s.get("net_pct"), s.get("mfe_pct"), s.get("mae_pct"),
+                s.get("hold_minutes"),
+            ])
+        except Exception as exc:  # tek bozuk satır tüm indirmeyi düşürmesin
+            skipped += 1
+            logger.warning("replay CSV satırı atlandı (%s): %s", s.get("symbol"), exc)
+    if skipped:
+        logger.warning("replay CSV: %d satır atlandı", skipped)
     return Response(content="\ufeff" + stream.getvalue(), media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="birlesik-radar-replay-{time.strftime("%Y%m%d-%H%M%S")}.csv"'})
 

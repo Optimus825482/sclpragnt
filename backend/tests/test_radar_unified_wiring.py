@@ -11,6 +11,7 @@ Kilitleen davranış:
      auto_paper'a yönlendirilir; panel skor hamdan `_panel_score` ile türetilir.
 """
 import asyncio
+import json
 import os
 import pathlib
 import sys
@@ -191,6 +192,106 @@ class ReplayJobWiringTests(unittest.TestCase):
         with self.assertRaises(Exception) as ctx:
             asyncio.run(maintenance.start_combined_radar_replay({}, _Anon()))
         self.assertEqual(401, getattr(ctx.exception, "status_code", None))
+
+
+class RadarEndpointRobustnessTests(unittest.TestCase):
+    """422/500 regresyon kilidi (Ayarlar > Radar sekmesinin uçları).
+
+    Gerçek olay: `/api/monitoring/settings` 422, `/api/combined-radar-replay/report.csv`
+    500 dönüyordu.
+    """
+
+    # ---- 500: CSV `sources` boş/None olduğunda patlamamalı -----------------
+    def test_signal_row_always_has_string_sources(self):
+        """Journal satırında `source`/`sources` YOK → yine de dolu string liste."""
+        script = _replay_module()
+        row = script._as_signal_row(
+            {"symbol": "BTCTRY", "price": 100.0, "target_pct": 2.0, "velocity_score": 1500.0},
+            1700000000.0, default_source="velocity")
+        self.assertEqual(["velocity"], row["sources"])
+        self.assertTrue(all(isinstance(s, str) and s for s in row["sources"]))
+
+    def test_signal_row_filters_none_and_empty_sources(self):
+        script = _replay_module()
+        row = script._as_signal_row({"symbol": "BTCTRY", "sources": [None, "", "rising"]}, None)
+        self.assertEqual(["rising"], row["sources"])
+        row2 = script._as_signal_row({"symbol": "BTCTRY", "sources": [None]}, None,
+                                     default_source="combined")
+        self.assertEqual(["combined"], row2["sources"])
+
+    def test_csv_endpoint_survives_none_sources(self):
+        """CSV üretimi `sources=[None]` ile 500 VERMEMELİ (TypeError kaynağı)."""
+        from app.routers import maintenance
+        maintenance._combined_radar_replay["result"] = {
+            "signals": [
+                {"stream": "velocity_only", "symbol": "BTCTRY", "detected_at": 1.0,
+                 "price": 100.0, "target_pct": 2.0, "score": 74.0, "confluence": False,
+                 "sources": [None], "exit_reason": "take_profit", "exit_price": 102.0,
+                 "gross_pct": 2.0, "net_pct": 1.65, "mfe_pct": 2.1, "mae_pct": -0.3,
+                 "hold_minutes": 12.0},
+                {"stream": "rising_only", "symbol": "ETHTRY", "sources": None},
+                "bozuk-satır",
+            ],
+        }
+        with patch("app.api_common.require_admin",
+                   return_value={"username": "admin", "role": "admin"}):
+            response = asyncio.run(maintenance.download_combined_radar_replay_csv(object()))
+        self.assertEqual(200, response.status_code)
+        body = response.body.decode("utf-8")
+        self.assertIn("BTCTRY", body)
+        self.assertIn("velocity_only", body)
+
+    def test_csv_endpoint_handles_missing_result(self):
+        from app.routers import maintenance
+        maintenance._combined_radar_replay["result"] = None
+        with patch("app.api_common.require_admin",
+                   return_value={"username": "admin", "role": "admin"}):
+            response = asyncio.run(maintenance.download_combined_radar_replay_csv(object()))
+        self.assertEqual(200, response.status_code)
+
+    # ---- 422: OKUMA yolu doğrulama yüzünden patlamamalı -------------------
+    def test_reader_clamps_invalid_confluence_instead_of_raising(self):
+        """DB'de bozuk değer olsa bile GET ayarları okunabilmeli (422 YOK)."""
+        from app.routers import monitoring
+        for bad in (None, 0, -5, 999999, "abc", {}):
+            with patch.object(monitoring.database, "get_llm_setting",
+                              new=AsyncMock(return_value=json.dumps(
+                                  {"radar_confluence_window_sec": bad}))):
+                settings = asyncio.run(monitoring.get_monitoring_settings())
+            self.assertEqual(int(monitoring.config.RADAR_CONFLUENCE_WINDOW_SEC),
+                             settings["radar_confluence_window_sec"],
+                             f"bozuk değer ({bad!r}) kırpılmadı")
+
+    def test_writer_still_rejects_invalid_confluence(self):
+        from fastapi import HTTPException
+        from app.routers import monitoring
+        with self.assertRaises(HTTPException) as ctx:
+            monitoring._radar_confluence_window(None)
+        self.assertEqual(422, ctx.exception.status_code)
+
+    def test_clamp_never_raises(self):
+        from app.routers import monitoring
+        default = int(monitoring.config.RADAR_CONFLUENCE_WINDOW_SEC)
+        self.assertEqual(default, monitoring._clamp_confluence_window(None))
+        self.assertEqual(default, monitoring._clamp_confluence_window("abc"))
+        self.assertEqual(1800, monitoring._clamp_confluence_window(1800))
+        self.assertEqual(60, monitoring._clamp_confluence_window(60))
+
+    def test_threshold_fields_publish_target_range(self):
+        """İstemci doğrulaması sunucuyla AYNI aralığı kullanabilsin (422 önlenir)."""
+        from app.routers import monitoring
+        fields = monitoring._threshold_fields({"min_score": 71.5, "min_target_pct": 2.0})
+        self.assertIn("min_target_pct_min", fields)
+        self.assertIn("min_target_pct_max", fields)
+        self.assertLess(fields["min_target_pct_min"], fields["min_target_pct_max"])
+        # Varsayılan değer aralığın İÇİNDE olmalı — yoksa hiçbir kayıt geçemezdi.
+        self.assertLessEqual(fields["min_target_pct_min"], 2.0)
+        self.assertGreaterEqual(fields["min_target_pct_max"], 2.0)
+
+
+def _replay_module():
+    from app.routers import maintenance
+    return maintenance._load_replay_module()
 
 
 if __name__ == "__main__":
