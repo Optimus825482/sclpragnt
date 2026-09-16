@@ -604,6 +604,130 @@ class LadderParityTests(unittest.TestCase):
         self.assertAlmostEqual(0.25, m["confluence_median_net_pct"], places=4)
         self.assertAlmostEqual(50.0, m["confluence_win_rate"], places=2)
 
+    # ------------------------------------------------------------------
+    # KAPSAMA KAPISI: iki akış AYRI dönemleri kapsıyorsa akış-ötesi kıyas
+    # (LIFT, kazanma, tarama referansı) GEÇERSİZ olmalı. Gerçek bir koşumda
+    # velocity pencerenin başını, rising sonunu kapsıyordu (~25 saat boşluk):
+    # çakışma yapısal olarak 0 çıktı ve "+0.2763 puan LIFT" iki farklı
+    # piyasa dönemini kıyasladı.
+    # ------------------------------------------------------------------
+    V_SPAN = (1789344160.0, 1789459294.0)     # velocity: pencerenin BAŞI
+    R_SPAN = (1789549758.0, 1789600922.0)     # rising: pencerenin SONU (boşluklu)
+
+    def _coverage_result(self, v_span, r_span, **extra) -> dict:
+        result = {
+            "streams": {
+                "velocity_only": self._stream(first_seen_at=v_span[0],
+                                              last_seen_at=v_span[1]),
+                "rising_only": self._stream(signals=197, measured=197,
+                                            avg_net_pct=-0.38, win_rate=25.89,
+                                            first_seen_at=r_span[0], last_seen_at=r_span[1]),
+                "combined": self._stream(signals=107, measured=107,
+                                         avg_net_pct=-0.35, win_rate=30.84,
+                                         first_seen_at=v_span[0], last_seen_at=r_span[1]),
+            },
+            "limitations": [],
+        }
+        result.update(extra)
+        return result
+
+    def test_coverage_block_prints_each_stream_span(self):
+        """Her akışın GERÇEKTEN kapsadığı dönem yazılmalı (kör nokta bırakmasın)."""
+        text = self.replay._report_text(self._coverage_result(self.V_SPAN, self.R_SPAN))
+        self.assertIn("KAPSAMA", text)
+        self.assertIn("velocity_only", text)
+        self.assertIn("saat", text)      # kapsama uzunluğu saat cinsinden yazılır
+
+    def test_disjoint_coverage_invalidates_cross_stream_comparison(self):
+        """Örtüşmeyen kapsamada LIFT ve kazanma kıyası GEÇERSİZ ilan edilmeli."""
+        text = self.replay._report_text(self._coverage_result(self.V_SPAN, self.R_SPAN))
+        self.assertIn("GEÇERSİZ (kapsamalar örtüşmüyor)", text)
+        self.assertIn("KAPSAMA ÖRTÜŞMÜYOR", text)
+        self.assertIn("ENTEGRASYON İÇİN UYGUN DEĞİL", text)
+
+    def test_overlapping_coverage_keeps_comparison_valid(self):
+        """Örtüşen kapsamada bu uyarı ÇIKMAMALI (aksi hâlde uyarı anlamsızlaşır)."""
+        text = self.replay._report_text(self._coverage_result(
+            self.V_SPAN, (self.V_SPAN[0] + 3600, self.V_SPAN[1])))
+        self.assertIn("KAPSAMA", text)
+        self.assertNotIn("GEÇERSİZ (kapsamalar örtüşmüyor)", text)
+
+    def test_truncated_journal_is_reported_not_hidden(self):
+        """Bütçesi dolan akış 'tam veri' gibi sunulmamalı."""
+        result = self._coverage_result(self.V_SPAN, self.R_SPAN,
+                                       truncated={"velocity": True, "rising": False})
+        text = self.replay._report_text(result)
+        self.assertIn("bütçesi DOLDU", text)
+
+    def test_sweep_caveat_appears_when_coverage_is_disjoint(self):
+        """Izgaradaki akış-ötesi referans da kapsama bozuksa geçersiz sayılmalı."""
+        sweep = [{"target_pct": 4.0, "sl_pct": 1.0, "gap_pct": 0.3,
+                  "stream": "velocity_only", "n": 400, "avg_net_pct": -0.2334,
+                  "median_net_pct": -1.35, "total_net_pct": -93.3, "win_rate": 29.5}]
+        text = self.replay._report_text(self._coverage_result(self.V_SPAN, self.R_SPAN,
+                                                              sweep=sweep))
+        self.assertIn("ızgaradaki akış-ötesi kıyaslar", text)
+
+    def test_metrics_expose_stream_time_span(self):
+        """`_metrics` ilk/son tespit anını raporlar (kapsama kapısının verisi)."""
+        sigs = [{"net_pct": 0.1, "target_pct": 2.0, "mfe_pct": 0.2, "mae_pct": -0.1,
+                 "hold_minutes": 3.0, "confluence": False, "exit_reason": "horizon_end",
+                 "detected_at": t} for t in (100.0, 500.0, 300.0)]
+        m = self.replay._metrics("velocity_only", sigs)
+        self.assertEqual(100.0, m["first_seen_at"])
+        self.assertEqual(500.0, m["last_seen_at"])
+
+
+class RisingReaderContractTests(unittest.TestCase):
+    """`list_rising_alerts_since` velocity okuyucusuyla AYNI semantikte olmalı.
+
+    Sözleşme: zaman pencereli + `created_at` ARTAN sırada. Eski okuyucu
+    (`list_rising_alerts`) DESC + limit ile EN YENİ satırları döndürüyordu;
+    velocity ise ARTAN ilk N. İki akış böylece ayrı dönemleri kapsıyordu.
+    """
+
+    def _capture(self, since=1000.0, until=2000.0, limit=50) -> dict:
+        captured: dict = {"sqls": []}
+
+        class _Cursor:
+            def fetchall(self):
+                return []
+
+        class _Conn:
+            def execute(self, sql, params):
+                captured["sqls"].append(" ".join(str(sql).split()))
+                captured["params"] = list(params)
+                return _Cursor()
+
+        async def _fake_run_db(operation):
+            return operation(_Conn())
+
+        from unittest.mock import patch
+        from app import database
+        with patch.object(database, "_ensure_rising_evidence_schema", lambda conn: None), \
+                patch.object(database, "_run_db", _fake_run_db):
+            asyncio.run(database.list_rising_alerts_since(since, until, limit=limit))
+        return captured
+
+    def test_reads_ascending_like_velocity(self):
+        captured = self._capture()
+        select = next(s for s in captured["sqls"] if "FROM rising_alerts" in s)
+        self.assertTrue(select.endswith("ORDER BY created_at ASC LIMIT ?"),
+                        f"ARTAN sıra bekleniyordu: {select}")
+
+    def test_is_window_bounded(self):
+        captured = self._capture(1000.0, 2000.0, limit=50)
+        select = next(s for s in captured["sqls"] if "FROM rising_alerts" in s)
+        self.assertIn("created_at >= ?", select)
+        self.assertIn("created_at <= ?", select)
+        self.assertEqual([1000.0, 2000.0, 50], captured["params"])
+
+    def test_until_is_optional(self):
+        captured = self._capture(until=None, limit=7)
+        select = next(s for s in captured["sqls"] if "FROM rising_alerts" in s)
+        self.assertNotIn("created_at <= ?", select)
+        self.assertEqual([1000.0, 7], captured["params"])
+
 
 async def auto_paper_defaults() -> dict:
     from app.routers import auto_paper
