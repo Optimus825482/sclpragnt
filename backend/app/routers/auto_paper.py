@@ -669,6 +669,17 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         if tp_gain_pct is not None and gross_pnl_pct >= tp_gain_pct * 0.9:
             trailing_gap_pct = max(0.2, trailing_gap_pct * 0.5)
 
+        # SHADOW KİLİDİ (2026-09-16): breakeven ratchet açıklığı
+        # (BREAKEVEN_TRAIL_GAP_PCT = %0.60) hem trailing'den (%0.80) DAHA SIKI hem
+        # bu bloktan ÖNCE değerlendiriliyor. Sonuç: trailing'in ayarlanan açıklığı
+        # pratikte hiç uygulanmıyordu — kullanıcının 471 işlemlik gerçek replay
+        # CSV'sinde `trailing_stop` 0 kez tetiklendi (yalnız ~%0.2'lik bir bantta
+        # erişilebilirdi). KURAL: sıkı olan taraf kazanır. Trailing, breakeven'den
+        # daha GEVŞEK olamaz (gevşetmek net-zemin kilidini delip MFE'yi geri verir);
+        # daha SIKI olabilir (ör. 0.3) ve artık gerçekten etki eder. Ayar böylece
+        # sessizce yok sayılmak yerine dürüstçe kırpılır.
+        trailing_gap_pct = min(trailing_gap_pct, BREAKEVEN_TRAIL_GAP_PCT)
+
         trailing_activated = bool(trade.get("trailing_activated", False))
         current_trailing_stop = float(trade.get("trailing_stop") or 0)
 
@@ -950,7 +961,10 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "breakeven_trigger_pct": max(0.5, min(10.0, float(merged.get("breakeven_trigger_pct", config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT)))),
         "trailing_enabled": bool(merged.get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED)),
         "trailing_trigger_pct": max(0.5, min(20.0, float(merged.get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT)))),
-        "trailing_gap_pct": max(0.1, min(10.0, float(merged.get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT)))),
+        # Üst sınır 0.60: breakeven ratchet'i (BREAKEVEN_TRAIL_GAP_PCT) daha sıkı ve
+        # önce değerlendiriliyor, dolayısıyla daha gevşek bir trailing fiilen etkisiz
+        # olurdu. Ayarı kırpıyoruz ki ekrandaki değer gerçekten uygulanan değer olsun.
+        "trailing_gap_pct": max(0.1, min(0.6, float(merged.get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT)))),
         "reopen_after_protect_close": bool(merged.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)),
         "tp_primary_exit_enabled": bool(merged.get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", True))),
         "dynamic_breakeven_enabled": bool(merged.get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", True))),

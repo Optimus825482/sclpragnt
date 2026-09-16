@@ -518,7 +518,12 @@ class Config:
     # Varsayılan AÇIK; trailing_enabled=false ile kapatılabilir.
     AUTO_PAPER_TRAILING_ENABLED = os.getenv("AUTO_PAPER_TRAILING_ENABLED", "true").lower() == "true"
     AUTO_PAPER_TRAILING_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_TRAILING_TRIGGER_PCT", "2.0"))
-    AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "0.8"))
+    # 2026-09-16: varsayılan 0.8 → 0.6. 0.8 HİÇ UYGULANMIYORDU: breakeven
+    # ratchet'i (%0.60, aynı değer sabiti) hem daha sıkı hem önce kontrol edildiği
+    # için trailing her zaman gölgeleniyordu (471 işlemlik gerçek replay'de
+    # `trailing_stop` 0 kez). Etkin değer zaten 0.60'tı; varsayılan artık ekranda
+    # yalan söylemiyor. Sıkılaştırmak (ör. 0.3) gerçekten etki eder.
+    AUTO_PAPER_TRAILING_GAP_PCT = float(os.getenv("AUTO_PAPER_TRAILING_GAP_PCT", "0.6"))
     # Trailing/breakeven kapanışı sonrası aynı bildirimle yeniden açılış
     # (fiyat bildirim fiyatının üzerinde + ufuk süresi dolmadı + yükselme
     # eğilimi varsa). Varsayılan AÇIK; false ile kapatılabilir.

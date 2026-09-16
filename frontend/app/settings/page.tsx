@@ -1601,7 +1601,7 @@ function AutoPaperSettingsPanel() {
             </div>
             <div>
               <label className="text-xs font-mono text-bunker-muted block mb-1">Takip Mesafesi (%)</label>
-              <input type="number" min="0.1" max="10" step="0.1" disabled={pending} value={draft.trailing_gap_pct ?? 0.8} onChange={(e) => set("trailing_gap_pct", Number(e.target.value))} className="input" />
+              <input type="number" min="0.1" max="0.6" step="0.05" disabled={pending} value={draft.trailing_gap_pct ?? 0.6} onChange={(e) => set("trailing_gap_pct", Number(e.target.value))} className="input" />
             </div>
           </div>
         </div>

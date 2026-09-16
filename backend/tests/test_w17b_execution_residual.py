@@ -270,19 +270,43 @@ class AutoPaperExitLadderTests(unittest.IsolatedAsyncioTestCase):
     async def test_trailing_gap_halves_near_tp(self):
         """gross >= hedefin %90'ı → gap yarılanır: kâr tepeye yakın kilitlenir."""
         settings = {"trailing_enabled": True,
-                    "trailing_trigger_pct": 2.0, "trailing_gap_pct": 0.8}
+                    "trailing_trigger_pct": 2.0, "trailing_gap_pct": 0.6}
 
-        # gross +3.5 (< %3.6 eşiği) → gap 0.8
+        # gross +3.5 (< %3.6 eşiği) → gap 0.6 (kırpma zaten 0.6'da)
         trade = self._trade()
         _, _, trail = await self._manage(trade, 103.5, dict(settings))
         trail.assert_awaited()
-        self.assertAlmostEqual(103.5 * (1 - 0.008), trail.await_args.args[2], places=6)
+        self.assertAlmostEqual(103.5 * (1 - 0.006), trail.await_args.args[2], places=6)
 
-        # gross +3.7 (>= %3.6 eşiği) → gap 0.4
+        # gross +3.7 (>= %3.6 eşiği) → gap 0.3 (0.6'nın yarısı)
         trade = self._trade()
         _, _, trail = await self._manage(trade, 103.7, dict(settings))
         trail.assert_awaited()
-        self.assertAlmostEqual(103.7 * (1 - 0.004), trail.await_args.args[2], places=6)
+        self.assertAlmostEqual(103.7 * (1 - 0.003), trail.await_args.args[2], places=6)
+
+    async def test_trailing_gap_cannot_be_looser_than_breakeven(self):
+        """SHADOW KİLİDİ: gevşek ayar KIRPILIR, sıkı ayar etki eder.
+
+        Neden: breakeven ratchet'i (BREAKEVEN_TRAIL_GAP_PCT = %0.60) hem daha sıkı
+        hem bu bloktan ÖNCE değerlendiriliyor. 0.8'lik ayar pratikte hiç
+        uygulanmıyordu (471 işlemlik gerçek replay'de `trailing_stop` 0 kez); ayar
+        sessizce yok sayılmak yerine kırpılır. (Mutasyon: kırpma kaldırılırsa
+        aşağıdaki ilk beklenti 103.5*(1-0.015) olurdu.)
+        """
+        loose = {"trailing_enabled": True, "trailing_trigger_pct": 2.0,
+                 "trailing_gap_pct": 1.5}
+        trade = self._trade()
+        _, _, trail = await self._manage(trade, 103.5, dict(loose))
+        trail.assert_awaited()
+        self.assertAlmostEqual(103.5 * (1 - 0.006), trail.await_args.args[2], places=6)
+
+        # Sıkı ayar GERÇEKTEN etki eder: 0.3 → tepeye daha yakın kilitler.
+        tight = {"trailing_enabled": True, "trailing_trigger_pct": 2.0,
+                 "trailing_gap_pct": 0.3}
+        trade = self._trade()
+        _, _, trail = await self._manage(trade, 103.5, dict(tight))
+        trail.assert_awaited()
+        self.assertAlmostEqual(103.5 * (1 - 0.003), trail.await_args.args[2], places=6)
 
 
 # ---------------------------------------------------------------------------
