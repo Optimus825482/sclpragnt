@@ -29,7 +29,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-SCAN_DIRS = ("app", "scripts")
+SCAN_DIRS = ("app", "scripts", "tests")
 QUOTE_CHARS = ("'", '"')
 
 
@@ -132,7 +132,11 @@ class Pep701NestingGuard(unittest.TestCase):
         self.assertTrue(find_pep701_nesting(bad))
 
     def test_backend_app_is_python_311_compatible(self):
-        """Tüm backend/app/**/*.py dosyaları 3.11 f-string kurallarına uymalı."""
+        """Tüm backend `app/`, `scripts/` ve `tests/` dosyaları 3.11 kurallarına uymalı.
+
+        `tests/` de taranır çünkü CI artık ÜRETİM sürümünde (3.11) koşar: bir test
+        dosyasındaki 3.12+ sözdizimi CI'ı, dolayısıyla deploy'u bloklar.
+        """
         offenders: list[str] = []
         for base in SCAN_DIRS:
             for path in sorted((ROOT / base).rglob("*.py")):

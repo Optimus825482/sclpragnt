@@ -779,7 +779,10 @@ async def retention_loop():
                                                      microstructure_days=config.MICROSTRUCTURE_RETENTION_DAYS,
                                                      memory_days=config.MEMORY_RETENTION_DAYS,
                                                      history_days=config.HISTORY_RETENTION_DAYS,
-                                                     embedding_jobs_days=config.EMBEDDING_JOBS_RETENTION_DAYS)
+                                                     embedding_jobs_days=config.EMBEDDING_JOBS_RETENTION_DAYS,
+                                                     # DECISION-LOGS-01: `AUTO_PAPER` hariç
+                                                     # karar günlüğü budaması (bkz. config).
+                                                     decision_logs_days=config.DECISION_LOGS_RETENTION_DAYS)
             if any(deleted.values()):
                 print(f"[Retention] {deleted}", flush=True)
         except Exception as exc:

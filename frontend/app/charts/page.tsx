@@ -240,6 +240,14 @@ export default function ChartsPage() {
     const containerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+    // MUM AYNASI (2026-09-16): `bars` state'inin anlık yansıması. Canlı WS akışı
+    // saniyede bir mum basar; `setBars((prev) => ...)` updater'ının İÇİNDE
+    // `series.update()` çağırmak React 18'de GÜVENSZİZDİR (updater StrictMode'da
+    // ve eşzamanlı render'da birden çok kez çalıştırılabilir) → aynı mum için
+    // birden çok update ve sıra bozulunca lightweight-charts "Cannot update
+    // oldest data" fırlatırdı. Artık karar `barsRef` üzerinden yapılır, updater
+    // YOK; yan etki updater dışında, tam bir kez çalışır.
+    const barsRef = useRef<Bar[]>([]);
     // GÖRÜNÜM KİLİDİ (2026-09-16): `fitContent()` 10 sn'lik her HTTP turunda
     // çağrılıyordu → kullanıcının kaydırması/yakınlaştırması sürekli sıfırlanıyor
     // ve canlı güncellemeler "grafik zıplıyor" gibi görünüyordu. Artık yalnızca
@@ -355,10 +363,21 @@ export default function ChartsPage() {
             const payload = await res.json();
             const data = payload.candles || [];
             if (!candleRef.current) return;
+            if (!data.length) {
+                // BOŞ YANIT KORUMASI (2026-09-16): `setData([])` BÜTÜN MUMLARI SİLER.
+                // Yukarı akış (Binance) kısa süreliğine boş dönerse grafiğin tamamen
+                // silinmesi yerine MEVCUT mumlar korunur; bir sonraki tur (10 sn)
+                // doldurur. Eskiden koruma yoktu → ara sıra "mumlar kayboldu".
+                console.warn(`kline: ${symbol}/${interval} boş yanıt — mevcut mumlar korundu`);
+                return;
+            }
             const candles: Bar[] = data.map((k: number[]) => ({
                 time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5]
             }));
             setBars(candles);
+            // Ayna, state ile AYNI anda güncellenir: canlı akışın `barsRef` üzerinden
+            // verdiği karar, serideki gerçek son mumla tutarlı kalır.
+            barsRef.current = candles;
             candleRef.current.setData(candles.map((c) => ({ ...c, time: c.time as UTCTimestamp })));
             const last = candles[candles.length - 1]?.close ?? 0;
             candleRef.current.applyOptions({ priceFormat: chartPriceFormat(last) });
@@ -610,13 +629,32 @@ export default function ChartsPage() {
             // Backend'den canlı mum geldi → rozeti yeşile çevir.
             setLastBarFromServer(true);
             candleRef.current.applyOptions({ priceFormat: chartPriceFormat(bar.close) });
-            setBars((prev) => {
-                if (!prev.length) return prev;
-                const last = prev[prev.length - 1];
-                if (bar.time === last.time) { candleRef.current?.update(bar as any); return prev; }
-                if (bar.time > last.time) { candleRef.current?.update(bar as any); return [...prev.slice(-199), bar]; }
-                return prev;
-            });
+
+            // ZAMAN KAPISI (2026-09-16): karar `barsRef` üzerinden, setBars updater'ı YOK.
+            //   bar.time <  last → ESKİ mum (kapanmış tick)  → yok say
+            //   bar.time == last → OLUŞAN mum               → series.update() canlı tazele
+            //   bar.time >  last → YENİ bar açıldı          → serive state'e ekle
+            // ESKİDEN `update()` `setBars` updater'ının İÇİNDEYDİ. React 18 bir updater'ı
+            // birden çok kez çalıştırabilir (StrictMode'da iki kez, eşzamanlı render'da
+            // yeniden) → aynı mum için birden çok update ve sıra bozulunca
+            // lightweight-charts istisna fırlatırdı; updater render sırasında koştuğu
+            // için bu istisna BÜTÜN sayfayı patlatabilirdi (mumlar kaybolur).
+            const prev = barsRef.current;
+            const last = prev.length ? prev[prev.length - 1] : null;
+            if (!last || bar.time < last.time) return;
+            let ok = true;
+            try {
+                candleRef.current.update(bar as any);
+            } catch (err) {
+                // Seri/state kilidi bozulduysa sayfayı patlatmak yerine bu mumu atla;
+                // 10 sn'lik HTTP turu seriyi zaten `setData` ile yeniden kurar.
+                ok = false;
+                console.warn("kline update atlandı:", err);
+            }
+            if (!ok) return;
+            const next = bar.time === last.time ? prev : [...prev.slice(-199), bar];
+            barsRef.current = next;
+            setBars(next);
             return;
         }
         if (message.type === "portfolio") {

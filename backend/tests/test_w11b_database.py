@@ -462,3 +462,95 @@ class RetentionMemorySweepTests(unittest.TestCase):
             deleted = asyncio.run(database.prune_retention())
         assert deleted["memory_documents"] == 0
         assert "agent_traces" in deleted
+
+
+class DecisionLogRetentionTests(unittest.TestCase):
+    """DECISION-LOGS-01 — karar günlüğü budanmalı, ama `AUTO_PAPER` HARİÇ.
+
+    Neden: `decision_logs` budama listesinde DEĞİLDİ ve sınırsız büyüyordu
+    (~8.5k satır/gün; `metadata` JSONB yüzünden ölçümde 637k satır → 1.46 GB TOAST).
+    Disk denetiminde DB'nin en büyük canlı verisi buydu.
+
+    `AUTO_PAPER` satırları KORUNUR: otonom paper karar zinciri ve kalibrasyon onları
+    okur; ayrıca makine kanıtıdır ve yeniden üretilemez. Silinen tek şey ham gözlem
+    telemetrisidir.
+
+    EN SİNSİ TUZAK: `decision_logs.timestamp` SANİYE (DOUBLE PRECISION) tutar — mum
+    tablolarındaki `open_time`/`captured_at` gibi BIGINT MİLİSANİYE değil. Yanlış
+    birimle karşılaştırılırsa cutoff 1000× kayar ve budama SESSİZCE hiçbir şey
+    silmez (hata vermez). Bu yüzden pencere ayrıca ölçülür.
+    """
+
+    def _run(self, **kwargs):
+        conn = _RoutedConn()
+        with mock.patch.object(database, "_run_db", _patched_run_db(conn)):
+            import asyncio
+            deleted = asyncio.run(database.prune_retention(**kwargs))
+        return deleted, conn
+
+    def _decision_delete(self, conn):
+        """`decision_logs` budama ifadesini (SQL, params) olarak döndür."""
+        return next((sql, params) for sql, params in conn.calls
+                    if "DELETE FROM decision_logs" in sql and "COALESCE" in sql)
+
+    def test_decision_logs_are_pruned(self):
+        deleted, conn = self._run()
+        assert "decision_logs" in deleted
+        self._decision_delete(conn)          # ifade yoksa StopIteration ile patlar
+
+    def test_auto_paper_rows_are_excluded(self):
+        """Otonom satırlar silinmemeli — karar zinciri ve kalibrasyon onları okur."""
+        _, conn = self._run()
+        sql, _ = self._decision_delete(conn)
+        assert "'AUTO_PAPER'" in sql
+        assert "<>" in sql, "hariç tutma karşılaştırması yok"
+
+    def test_null_strategy_is_not_excluded_by_accident(self):
+        """`strategy` NULL olan insan/otomasyon satırları budanabilmeli (COALESCE)."""
+        _, conn = self._run()
+        sql, _ = self._decision_delete(conn)
+        assert "COALESCE" in sql, "NULL strategy satırları budanamaz hâle gelirdi"
+
+    def test_timestamp_is_compared_in_seconds_not_milliseconds(self):
+        """SANİYE/ms karışırsa cutoff 1000× kayar → budama sessiz no-op olur."""
+        _, conn = self._run(decision_logs_days=90)
+        _, params = self._decision_delete(conn)
+        age_days = (time.time() - params[0]) / 86400.0
+        assert 89.9 < age_days < 90.1, f"pencere yanlış: {age_days} gün (birim hatası?)"
+
+    def test_window_is_separate_from_the_general_window(self):
+        """Kendi (uzun) penceresini kullanmalı — genel 30 güne düşmemeli."""
+        _, conn = self._run(days=30, decision_logs_days=90)
+        _, params = self._decision_delete(conn)
+        age_days = (time.time() - params[0]) / 86400.0
+        assert 89.9 < age_days < 90.1
+
+    def test_decision_logs_is_vacuumed(self):
+        """1.46 GB TOAST birikmiş tablo VACUUM listesinde olmalı (ölü tuple).
+
+        `_RoutedConn` varsayılan olarak `autocommit` taşımaz; retention kodu onu
+        okuduğu için VACUUM yolu sessizce atlanırdı. Burada gerçek bir bağlantıyı
+        taklit ediyoruz ki ifade gerçekten üretilsin.
+        """
+        class _Conn(_RoutedConn):
+            autocommit = False
+
+        conn = _Conn()
+        with mock.patch.object(database, "_run_db", _patched_run_db(conn)):
+            import asyncio
+            asyncio.run(database.prune_retention())
+        vacuum = next(sql for sql in conn.statements if sql.startswith("VACUUM (ANALYZE)"))
+        assert "decision_logs" in vacuum
+
+    def test_default_window_matches_config(self):
+        """Varsayılan 90 gün, yapılandırılmış değerle aynı olmalı.
+
+        DİKKAT: `app.config` MODÜLÜ sınıf özniteliklerini taşımaz; ayarlar
+        `app.config.config` ÖRNEĞİ üzerinden okunur (`main` de öyle yapar).
+        """
+        import inspect
+        from app.config import config as settings
+
+        signature = inspect.signature(database.prune_retention)
+        assert signature.parameters["decision_logs_days"].default == 90
+        assert settings.DECISION_LOGS_RETENTION_DAYS == 90

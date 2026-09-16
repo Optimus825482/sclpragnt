@@ -8,6 +8,18 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    strategy:
+      # PYTHON SÜRÜMÜ = ÜRETİM SÜRÜMÜ OLMALI (2026-09-16).
+      # Üretim konteyneri `python:3.11-slim` (bkz. backend/Dockerfile). CI yalnız
+      # 3.13 koşarken 3.12+ sözdizimi CI'dan GEÇTİ ve üretimde SyntaxError üretti:
+      # `f"...{len(d.get("errors", []))}"` (PEP 701, iç içe aynı tırnak) → backend
+      # hiç import edilemedi → konteyner 2 sn'de öldü → "container backend is
+      # unhealthy" ile deploy düştü. 1116 test yeşilken üretim çöktü.
+      # Artık 3.11 (üretim) BİRİNCİL hedeftir; 3.13 ileri uyumluluk sinyalini
+      # korur. `fail-fast: false` ikisinin de sonucunu görmemizi sağlar.
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
     services:
       postgres:
         # Prod ile aynı imaj (pg17 + pgvector) — sürüm/extension drift olmasın.
@@ -30,7 +42,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
       - name: Install dependencies
         run: |
           pip install -r backend/requirements.txt
