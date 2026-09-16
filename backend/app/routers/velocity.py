@@ -1720,6 +1720,63 @@ def _rank_score(candidate: dict, touch_rates: dict[str, float]) -> float:
     return base * _quality_multiplier(rate)
 
 
+def _velocity_to_auto_paper_envelope(candidate: dict) -> dict:
+    """Velocity adayını auto_paper'ın beklediği bildirim zarfına çevirir.
+
+    auto_paper `score`u PANEL ölçeğinde karşılaştırır; velocity `velocity_score`
+    HAM taşır. Bu yüzden `_panel_score` ile ham→panel dönüşümü yapılır (radar
+    teslimatının kullandığı aynı eşleme). `notification_key` saat kovasıdır →
+    aynı sembol/saat için auto_paper churn koruması tek girişi garanti eder.
+    """
+    symbol = str(candidate.get("symbol") or "").upper()
+    raw = float(candidate.get("velocity_score") or 0)
+    panel = _panel_score(raw)
+    target_pct = float(candidate.get("target_pct") or 2.0)
+    horizon_minutes = int(candidate.get("horizon_minutes") or 5)
+    return {
+        "symbol": symbol,
+        "score": panel,
+        "target_pct": target_pct,
+        "price": candidate.get("price"),
+        "horizon_minutes": horizon_minutes,
+        "mode": "velocity",
+        "source": "velocity_auto",
+        "notification_key": f"velocity-auto-{symbol}-{int(time.time() // 3600)}",
+        "title": f"🎯 HIZ AVCISI · {symbol}",
+        "message": f"{symbol} hız avcısı otonom girişi · skor {panel:.1f} · hedef %{target_pct:.2f}",
+        "url": f"/charts?symbol={symbol}",
+        "paper_only": True,
+    }
+
+
+async def _route_velocity_through_auto_paper(candidate: dict) -> dict:
+    """BİRLEŞİK RADAR (D3): velocity otonom girişini auto_paper'a yönlendirir.
+
+    Böylece tüm paper pozisyonlar tek defterde (`auto_paper_trades`) tutulur:
+    tek sembol-tek pozisyon, `AUTO_PAPER_MAX_OPEN_POSITIONS` (3) kapısı, fail-closed
+    emir boyutu ve B1-B4 merdiveniyle kapanır. Bayrak kapalıyken (`RADAR_ROUTE_…`
+    default false) eski `analyzer.open_position` yolu AYNEN çalışır.
+    """
+    from app.routers.auto_paper import try_open_from_notification
+
+    envelope = _velocity_to_auto_paper_envelope(candidate)
+    try:
+        result = await try_open_from_notification(envelope)
+    except Exception as exc:
+        logger.warning("velocity→auto_paper yönlendirme hatası: %s", exc)
+        return {"symbol": envelope["symbol"], "status": "SKIPPED",
+                "reason": f"auto_paper_hata:{type(exc).__name__}"}
+    if isinstance(result, dict) and result.get("status") == "opened":
+        return {"symbol": envelope["symbol"], "status": "PAPER_OPENED",
+                "order_value_try": None, "entry": envelope.get("price"),
+                "stop_loss_pct": None, "take_profit_pct": envelope.get("target_pct"),
+                "horizon_minutes": envelope.get("horizon_minutes"), "via": "auto_paper",
+                "trade_id": result.get("trade_id")}
+    reason = (result or {}).get("reason") if isinstance(result, dict) else "kapı"
+    return {"symbol": envelope["symbol"], "status": "SKIPPED",
+            "reason": f"auto_paper:{reason}"}
+
+
 async def _open_velocity_position(candidate: dict) -> dict:
     """En iyi hız adayına serbest TL'nin %50'si ile paper pozisyon açar."""
     symbol = str(candidate["symbol"] or "").upper()
@@ -1934,7 +1991,13 @@ async def autonomous_velocity_loop():
                 pool.sort(key=lambda c: -_rank_score(c, touch_rates))
                 if pool:
                     best = pool[0]
-                    outcome = await _open_velocity_position(best)
+                    # BİRLEŞİK RADAR (D3): bayrak açıkken otonom giriş auto_paper'a
+                    # yönlendirilir (tek defter, max-open kapısı, B1-B4 kapanışı).
+                    # Kapalıyken eski analyzer yolu AYNEN çalışır.
+                    if getattr(config, "RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", False):
+                        outcome = await _route_velocity_through_auto_paper(best)
+                    else:
+                        outcome = await _open_velocity_position(best)
                     _velocity_auto_state["last_open"] = outcome
                     if outcome.get("status") == "PAPER_OPENED":
                         _velocity_auto_state["total_opened"] += 1

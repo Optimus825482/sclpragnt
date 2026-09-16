@@ -613,6 +613,20 @@ async def update_monitoring_settings(payload: dict, request: Request):
 # sent_via_push=True yazılıyordu — 2026-09-05 düzeltmesi.)
 _deferred_push = deque(maxlen=100)
 
+# BİRLEŞİK RADAR (2026-09-16, Aşama 2): tek tip bildirim bastırıcısı.
+# `radar_unified_notify=true` iken aynı turda aynı sembol için YALNIZCA BİR push
+# gider. Bu set, radar teslimatının bu turda push ettiği sembolleri tutar;
+# yükseliş teslimatı onları görüp İKİNCİ push'u atlar (çift bildirim ölür).
+_unified_pushed_symbols: set[str] = set()
+
+
+async def _radar_unified_enabled() -> bool:
+    """Tek tip bildirim modu açık mı (radar+yükseliş tek tag/tek push)."""
+    settings = await get_user_notification_settings()
+    return bool(settings.get("radar_unified_notify")
+                or getattr(config, "RADAR_UNIFIED_NOTIFY", False))
+
+
 async def _send_push(notif: dict) -> bool:
     """Tek bildirimi web push ile gönder; gerçek başarı durumunu döndür.
 
@@ -1150,6 +1164,18 @@ async def _deliver_scan_notifications(notified: list) -> None:
     new_notifs = [n for n in notified if not n.get("updated")]
     quiet = bool(notified[0].get("quiet_hours"))
     vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    # BİRLEŞİK RADAR (Aşama 2): tek tip bildirim. Radar push'u `radar-{sym}` tag'i
+    # ile gider ve bu turda push edilen semboller kaydedilir — yükseliş teslimatı
+    # aynı sembol için İKİNCİ push atmaz.
+    unified = await _radar_unified_enabled()
+    if unified:
+        for notif in new_notifs:
+            sym = str(notif.get("symbol") or "").upper()
+            notif["tag"] = f"radar-{sym}"
+            notif["sources"] = ["velocity"]
+            notif["unified"] = True
+            if sym:
+                _unified_pushed_symbols.add(sym)
     if new_notifs and not quiet and vapid_configured:
         for notif in new_notifs:
             ok = await _send_push(notif)
@@ -1331,33 +1357,78 @@ async def _rising_deliver(notified: list) -> None:
         return
     quiet = bool((notified[0] or {}).get("quiet_hours"))
     vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
-    if vapid_configured and not quiet:
+    unified = await _radar_unified_enabled()
+
+    if unified:
+        # TEK TİP BİLDİRİM: radar bu turda aynı sembolü ZATEN push ettiyse ikinci
+        # push YOK. Yükseliş ya "birincil" push olur (radar tetiklenmediyse) ya da
+        # bastırılır (radar push'u zaten aynı sembolü kapsadı). Her iki durumda da
+        # tag tek şemaya iner: `radar-{sym}`.
+        primary: list = []
+        suppressed: list = []
         for notif in notified:
-            ok = await _send_push(notif)
-            notif["push_success"] = ok
-            if ok:
-                notif["sent_via_push"] = True
-            alert_id = notif.get("alert_id")
-            if alert_id:
-                try:
-                    await database.mark_rising_alert_notified(alert_id, bool(ok))
-                except Exception as exc:
-                    logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
-    elif quiet:
-        # Sessiz saat: push ERTELENİR (radar ile aynı kuyruk ve flush yolu).
-        for notif in notified:
-            _deferred_push.append(notif)
-    else:
-        logger.info("Yükseliş push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d sinyal)", len(notified))
-        for notif in notified:
-            notif["push_success"] = False
+            sym = str(notif.get("symbol") or "").upper()
+            notif["tag"] = f"radar-{sym}"
+            notif["sources"] = ["rising"]
+            notif["unified"] = True
+            if sym in _unified_pushed_symbols:
+                notif["push_success"] = False
+                notif["suppressed_by_unified"] = True
+                suppressed.append(notif)
+            else:
+                primary.append(notif)
+        if vapid_configured and not quiet:
+            for notif in primary:
+                ok = await _send_push(notif)
+                notif["push_success"] = ok
+                if ok:
+                    notif["sent_via_push"] = True
+                alert_id = notif.get("alert_id")
+                if alert_id:
+                    try:
+                        await database.mark_rising_alert_notified(alert_id, bool(ok))
+                    except Exception as exc:
+                        logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
+        elif quiet:
+            for notif in primary:
+                _deferred_push.append(notif)
+        # Bastırılanlar: push denenmedi → `sent_via_push=False` dürüstçe yazılır.
+        for notif in suppressed:
             alert_id = notif.get("alert_id")
             if alert_id:
                 try:
                     await database.mark_rising_alert_notified(alert_id, False)
                 except Exception as exc:
-                    logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
+                    logger.debug("rising bastırma etiketi %s: %s", alert_id, exc)
+    else:
+        # ESKİ DAVRANIŞ (bayrak kapalı): ayrı push + ayrı `rising_alert` WS tipi.
+        if vapid_configured and not quiet:
+            for notif in notified:
+                ok = await _send_push(notif)
+                notif["push_success"] = ok
+                if ok:
+                    notif["sent_via_push"] = True
+                alert_id = notif.get("alert_id")
+                if alert_id:
+                    try:
+                        await database.mark_rising_alert_notified(alert_id, bool(ok))
+                    except Exception as exc:
+                        logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
+        elif quiet:
+            for notif in notified:
+                _deferred_push.append(notif)
+        else:
+            logger.info("Yükseliş push atlandı: VAPID_PRIVATE_KEY yapılandırılmamış (%d sinyal)", len(notified))
+            for notif in notified:
+                notif["push_success"] = False
+                alert_id = notif.get("alert_id")
+                if alert_id:
+                    try:
+                        await database.mark_rising_alert_notified(alert_id, False)
+                    except Exception as exc:
+                        logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
     # Otonom paper: yalnız yeni sinyaller; skor eşiği GEÇİLMELİ ve anahtar AÇIK.
+    # BİLDİRİM bastırılsa bile OTONOM İŞLEM AÇILMAYA DEVAM EDER (ikisi ayrı).
     if bool(getattr(config, "RISING_AUTONOMOUS_ENABLED", True)):
         min_score = float(getattr(config, "RISING_AUTO_MIN_SCORE", 70) or 0)
         try:
@@ -1380,10 +1451,20 @@ async def _rising_deliver(notified: list) -> None:
             pass
         except Exception as exc:
             logger.warning("rising auto_paper toplu deneme hatası: %s", exc)
-    try:
-        await ws_manager.broadcast({"type": "rising_alert", "data": notified})
-    except Exception as exc:
-        logger.warning("Yükseliş WS broadcast hatası: %s", exc)
+    if unified:
+        # Tek tip: yalnızca birincil yükseliş bildirimleri `monitoring_alert`
+        # kanalından gider (radar modalı zaten bunu dinler). Bastırılanlar radar'ın
+        # kendi `monitoring_alert` yayınında mevcut → ayrı `rising_alert` YOK.
+        if primary:
+            try:
+                await ws_manager.broadcast({"type": "monitoring_alert", "data": primary})
+            except Exception as exc:
+                logger.warning("Yükseliş birleşik WS broadcast hatası: %s", exc)
+    else:
+        try:
+            await ws_manager.broadcast({"type": "rising_alert", "data": notified})
+        except Exception as exc:
+            logger.warning("Yükseliş WS broadcast hatası: %s", exc)
 
 
 async def _run_rising_scan() -> dict:
@@ -2268,6 +2349,9 @@ async def monitoring_background_loop():
         # B5: bildirim teslimi (push/WS/otonom paper) state kilidi DIŞINDA —
         # yavaş push ağ I/O'su GET /state ve GET /scan isteklerini bloklamaz.
         if result:
+            # BİRLEŞİK RADAR: bu turda push edilen sembol kaydını sıfırla; aynı tur
+            # içinde radar + yükseliş çapraz bastırma bu sete göre çalışır.
+            _unified_pushed_symbols.clear()
             try:
                 await _deliver_scan_notifications(result["new_notifications"])
             except asyncio.CancelledError:
