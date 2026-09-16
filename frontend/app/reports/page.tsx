@@ -497,7 +497,136 @@ function VelocityTab() {
     </div>
   );
 }
-/* ---- LLM tahminleri sekmesi ---- */
+/* ---- YÜKSELİŞ EĞİLİMİ sekmesi (R4, 2026-09-14) ---- */
+// MACD MONITOR'ün kanıtlanmış öncülerinden (dip + 20-bar zirveye yakınlık) türeyen
+// erken/yükseliş sinyallerinin isabet ölçümü. Kaynak `rising_alerts` (ayrı tablo)
+// → `velocity_candidates` kalibrasyonundan BAĞIMSIZ.
+function RisingTab() {
+  const [report, setReport] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [days, setDays] = useState(7);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/reports/rising-signals?limit=100&days=${days}`, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Yükseliş raporu alınamadı");
+      setReport(data);
+      setError("");
+    } catch (e: any) {
+      setError(e.message || "Yükseliş raporu alınamadı");
+    } finally {
+      setLoading(false);
+    }
+  }, [days]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const stats = report?.stats || {};
+  const signals: any[] = report?.signals || [];
+  const live = report?.live;
+  const measured = Number(stats.measured) || 0;
+  const hits = Number(stats.hits) || 0;
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-end gap-2">
+        <div>
+          <p className="eyebrow text-bunker-muted">Dönem</p>
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))}
+            className="mt-1 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white focus:border-neon-green/50 outline-none">
+            <option value={1}>Son 1 gün</option>
+            <option value={7}>Son 7 gün</option>
+            <option value={30}>Son 30 gün</option>
+          </select>
+        </div>
+        <button type="button" onClick={() => { void load(); }} className="ui-button ui-button-secondary">YENİLE</button>
+        {live?.stale ? (
+          <span className="rounded border border-yellow-400/40 bg-yellow-400/10 px-2 py-1 font-mono text-[10px] text-yellow-300">
+            ⚠ MACD beslemesi bayat — canlı sinyal üretilmiyor
+          </span>
+        ) : (
+          <span className="rounded border border-neon-green/40 bg-neon-green/10 px-2 py-1 font-mono text-[10px] text-neon-green">
+            CANLI · {Number(live?.count ?? 0)} sinyal
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard label="TOPLAM SİNYAL" value={String(Number(stats.total) || 0)}
+          sub={`🌱 ${Number(stats.by_kind?.erken) || 0} erken · 📈 ${Number(stats.by_kind?.yukselis) || 0} yükseliş`} />
+        <StatCard label="ÖLÇÜLEN" value={String(measured)} sub="MFE hesaplanmış sinyaller" />
+        <StatCard label="HEDEFE ULAŞAN" value={`${hits}/${measured}`} tone="text-neon-green" />
+        <StatCard label="İSABET ORANI" value={stats.hit_rate_pct != null ? `%${Number(stats.hit_rate_pct).toFixed(1)}` : "—"}
+          tone="text-sky-300"
+          sub={`ort MFE ${stats.avg_mfe_pct != null ? `%${Number(stats.avg_mfe_pct).toFixed(2)}` : "—"} · ort MAE ${stats.avg_mae_pct != null ? `%${Number(stats.avg_mae_pct).toFixed(2)}` : "—"}`} />
+      </div>
+
+      <p className="text-xs text-bunker-muted">
+        🌱 <b>ERKEN</b> = MACD histogram dip dönüşü + 20-bar zirveye ≤ {live?.thresholds?.dip_gap_atr ?? "—"} ATR yakınlık
+        (kanıt: 1.47-1.67× lift). 📈 <b>YÜKSELİŞ</b> = güç ≥ {live?.thresholds?.min_strength ?? "—"}/10 ve ≥ {live?.thresholds?.min_green ?? "—"}/6 yeşil.
+        İsabet, sinyalin kendi hedefine göre ölçülür; henüz ölçülmemiş satırlar orana GİRMEZ.
+      </p>
+
+      <section className="card">
+        <p className="eyebrow text-neon-green">SON SİNYALLER</p>
+        {loading ? (
+          <p className="mt-3 text-sm text-bunker-muted">Yükleniyor…</p>
+        ) : error ? (
+          <p className="mt-3 text-sm text-neon-red">{error}</p>
+        ) : signals.length === 0 ? (
+          <p className="mt-3 text-sm text-bunker-muted">
+            Henüz yükseliş sinyali kaydedilmedi. Sinyaller sunucu taramasında otomatik birikir.
+          </p>
+        ) : (
+          <div className="mt-3 table-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Zaman</th><th>Sembol</th><th>Sınıf</th><th>Skor</th>
+                  <th>Yakınlık</th><th>Hedef</th><th>MFE</th><th>Sonuç</th><th>Bildirim</th>
+                </tr>
+              </thead>
+              <tbody>
+                {signals.map((s: any) => (
+                  <tr key={s.id}>
+                    <td className="font-mono text-xs text-bunker-muted">{fmtDt(s.created_at)}</td>
+                    <td><SymbolLink symbol={s.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
+                    <td>
+                      <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${s.kind === "erken"
+                        ? "border-sky-400/50 bg-sky-400/15 text-sky-300"
+                        : "border-neon-green/50 bg-neon-green/15 text-neon-green"}`}>
+                        {s.kind === "erken" ? "🌱 ERKEN" : "📈 YÜKSELİŞ"}
+                      </span>
+                    </td>
+                    <td className="font-mono text-xs text-amber-300">{s.score != null ? Number(s.score).toFixed(0) : "—"}</td>
+                    <td className="font-mono text-xs text-sky-300">{s.proximity != null ? `%${Math.round(Number(s.proximity) * 100)}` : "—"}</td>
+                    <td className="font-mono text-xs text-neon-green">{s.target_pct != null ? `+%${Number(s.target_pct).toFixed(2)}` : "—"}</td>
+                    <td className="font-mono text-xs text-white">{s.mfe_pct != null ? `%${Number(s.mfe_pct).toFixed(2)}` : "—"}</td>
+                    <td>
+                      {s.mfe_pct != null
+                        ? (Number(s.mfe_pct) >= Number(s.target_pct || 0)
+                          ? <Badge tone="ok">TAMAMEN</Badge>
+                          : <Badge tone="bad">BASARISIZ</Badge>)
+                        : <Badge>BEKLİYOR</Badge>}
+                    </td>
+                    <td className="font-mono text-[10px] text-bunker-muted">
+                      {s.notified ? (s.sent_via_push ? "push ✓" : "push ✗") : "—"}
+                      {s.auto_paper_trade_id ? ` · işlem #${s.auto_paper_trade_id}` : ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function LlmTab() {
   const [forecasts, setForecasts] = useState<any>(null);
   const [chat, setChat] = useState<any>(null);
@@ -1117,6 +1246,7 @@ function UserPositionsTab() {
 /* ---- Sayfa çerçevesi + sekmeler ---- */
 const ADMIN_TABS = [
   { id: "radar", label: "RADAR TESPİTLERİ" },
+  { id: "rising", label: "YÜKSELİŞ EĞİLİMİ" },
   { id: "positions", label: "OTONOM POZİSYONLAR" },
   { id: "overview", label: "ÖZET" },
   { id: "symbols", label: "SEMBOL BAZLI" },
@@ -1127,6 +1257,7 @@ const ADMIN_TABS = [
 ];
 const USER_TABS = [
   { id: "radar", label: "RADAR TESPİTLERİ" },
+  { id: "rising", label: "YÜKSELİŞ EĞİLİMİ" },
   { id: "positions", label: "OTONOM POZİSYONLAR" },
 ];
 
@@ -1165,6 +1296,7 @@ export default function ReportsPage() {
         {isAdmin ? (
           <>
             {tab === "radar" && <UserRadarTab />}
+            {tab === "rising" && <RisingTab />}
             {tab === "positions" && <UserPositionsTab />}
             {tab === "overview" && <OverviewTab />}
             {tab === "symbols" && <SymbolsTab />}
@@ -1176,6 +1308,7 @@ export default function ReportsPage() {
         ) : (
           <>
             {tab === "radar" && <UserRadarTab />}
+            {tab === "rising" && <RisingTab />}
             {tab === "positions" && <UserPositionsTab />}
           </>
         )}

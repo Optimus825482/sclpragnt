@@ -24,18 +24,30 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         # (aksi halde bir testin fiyatı diğerinin kapısını kapatır).
         monitoring._monitoring_state["notified_prices"] = {}
         monitoring._monitoring_state["refire_blocked"] = 0
+        # A5 (2026-09-14): skor hafızası da sıfırlanır. Histerezis kapısı varsayılan
+        # AÇIK olduğu için bu olmadan testler BİRBİRİNİN kapısını kapatıyor
+        # (sınıf tanım sırasına bağlı, kırılgan test sırası).
+        monitoring._monitoring_state["notified_scores"] = {}
+        monitoring._monitoring_state["rr_blocked"] = 0
         monitoring._monitoring_state["risk_off"] = False
 
     async def test_notify_respects_min_score_and_min_target(self):
-        """Eşik altı adaylar bildirilmemeli; eşiği geçenler bildirilmeli."""
+        """Eşik altı adaylar bildirilmemeli; eşiği geçenler bildirilmeli.
+
+        A3 (2026-09-14): `min_score` PANEL ölçeğindedir ve ham kapıya aktif
+        haritanın tersiyle çevrilir. panel 20 → ham 6.58; bu yüzden ham 2.0 olan
+        aday elenir, ham 50 olanlar geçer (eski lineer ölçekte panel 20 = ham 400
+        idi — ankraj ham çalışma noktalarını korur, ham GİRDİ değerleri değişir).
+        LOWTARGETTRY'nin HAM skoru yüksek tutulur ki tek elenme sebebi hedef olsun.
+        """
         from app.routers import monitoring
 
         self._reset_state()
-        settings = {"enabled": True, "min_score": 2.0, "min_target_pct": 2.0,
+        settings = {"enabled": True, "min_score": 20.0, "min_target_pct": 2.0,
                     "quiet_hours_start": None, "quiet_hours_end": None}
         candidates = [
             {"symbol": "LOWTRY", "velocity_score": 2.0, "target_pct": 5.0, "price": 1.0},
-            {"symbol": "LOWTARGETTRY", "velocity_score": 5.0, "target_pct": 0.5, "price": 1.0},
+            {"symbol": "LOWTARGETTRY", "velocity_score": 50.0, "target_pct": 0.5, "price": 1.0},
             {"symbol": "GOODTRY", "velocity_score": 50.0, "target_pct": 3.0, "price": 10.0},
         ]
         with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "test-key"}), \
@@ -43,14 +55,15 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
              patch.object(monitoring.database, "get_pending_monitoring_notifications", new_callable=AsyncMock, return_value={}), \
              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}) as push, \
              patch.object(monitoring, "_record_history", return_value=None), \
+             patch.object(monitoring.config, "MONITORING_RR_ENABLED", False), \
              patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
             result = await monitoring._notify(candidates, settings)
             # B5 refactoru: push gönderimi artık _deliver_scan_notifications'ta
             # (state kilidi dışı); _notify yalnızca bildirimleri üretir.
             await monitoring._deliver_scan_notifications(result)
-        # normalize_score(2.5, cap=40) = 6.25; min_score=2.0 → GOODTRY passes.
-        # LOWTRY normalize(0.5)=1.25 < 2.0 → filtered.
-        # LOWTARGETTRY normalize(2.5)=6.25 >= 2.0 but target=0.5 < min_target=2.0 → filtered.
+        # LOWTRY: ham 2.0 < ham kapı 6.58 → elenir.
+        # LOWTARGETTRY: ham 50 ≥ kapı ama target 0.5 < min_target 2.0 → elenir.
+        # GOODTRY: ikisini de geçer.
         self.assertEqual([n["symbol"] for n in result], ["GOODTRY"])
         self.assertEqual(push.call_count, 1)
         notif = result[0]
@@ -89,6 +102,7 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(monitoring.database, "save_monitoring_notifications", new_callable=AsyncMock, return_value=0) as save_mock, \
                  patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
                  patch.object(monitoring, "deliver_web_push") as push, \
+                 patch.object(monitoring.config, "MONITORING_RR_ENABLED", False), \
                  patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
                 monitoring._deferred_push.clear()
                 result = await monitoring._notify(candidates, settings)
@@ -113,6 +127,7 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
              patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}), \
              patch.object(monitoring, "_record_history", return_value=None), \
+             patch.object(monitoring.config, "MONITORING_RR_ENABLED", False), \
              patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
             first = await monitoring._notify(candidates, settings)
             second = await monitoring._notify(candidates, settings)
@@ -134,16 +149,24 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(st), 500)
 
     async def test_normalize_score_maps_velocity_to_panel(self):
-        """normalize_score velocity_score'u 0-100 paneline kelepçeler."""
+        """normalize_score ham velocity_score'u panel (0-100) ölçeğine haritalar.
+
+        A3 (2026-09-14): harita log (`100×log1p(raw)/log1p(REF)`) — kırpma yok.
+        Beklenen değerler kanonik haritadan türetilir (sabit gömülmez).
+        """
         from app.routers import monitoring
-        # Yeni formül skoru zaten 0-100 üretir; normalize_score yalnız taşmayı kırpar.
-        self.assertAlmostEqual(monitoring.normalize_score(40), 2.0, places=1)
-        self.assertAlmostEqual(monitoring.normalize_score(20), 1.0, places=1)
         self.assertAlmostEqual(monitoring.normalize_score(0), 0.0)
-        self.assertAlmostEqual(monitoring.normalize_score(80), 4.0, places=1)
-        self.assertAlmostEqual(monitoring.normalize_score(10), 0.5, places=1)
-        self.assertAlmostEqual(monitoring.normalize_score(150), 7.5, places=1)  # cap=2000: 150/2000*100=7.5
         self.assertAlmostEqual(monitoring.normalize_score(-5), 0.0)  # clipped
+        # monotonluk + kanonik harita tutarlılığı
+        vals = [monitoring.normalize_score(r) for r in (10, 40, 150, 1400, 2000, 21388.94)]
+        self.assertEqual(vals, sorted(vals))
+        for raw in (10, 40, 150, 1400, 2000, 21388.94):
+            self.assertAlmostEqual(monitoring._panel_from_raw(raw),
+                                   monitoring.normalize_score(raw), places=9)
+        # kırpma YOK: gözlenen max 100.00'a yığılmamalı
+        self.assertLess(monitoring.normalize_score(21388.94), 100.0)
+        # ve eski lineer değerle AYNI OLMAMALI (düzeltmenin özü: 150 → 7.5 idi)
+        self.assertNotAlmostEqual(7.5, monitoring.normalize_score(150), places=1)
 
     async def test_min_target_filter_blocks_low_target(self):
         """min_target_pct不足の候補は通知されない"""
@@ -160,6 +183,7 @@ class MonitoringNotifyTests(unittest.IsolatedAsyncioTestCase):
              patch.object(monitoring.database, "get_pending_monitoring_notification", new_callable=AsyncMock, return_value=None), \
              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}), \
              patch.object(monitoring, "_record_history", return_value=None), \
+             patch.object(monitoring.config, "MONITORING_RR_ENABLED", False), \
              patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
             result = await monitoring._notify(candidates, settings)
         self.assertEqual([n["symbol"] for n in result], ["GOODTRY"])
@@ -262,8 +286,8 @@ class MonitoringHelpersTests(unittest.IsolatedAsyncioTestCase):
                            "horizon_minutes": 5, "mode": "trend_devam"},
                 {"min_score": 1.0, "min_target_pct": 0.5},
             )
-        # normalize_score artık skoru 0-100'e kelepçeler; velocity_score=20 → 20
-        self.assertAlmostEqual(n["score"], 1.0, places=1)
+        # A3: skor kanonik haritadan gelir (ham 20 → panel 30.1; eski lineer 1.0'dı).
+        self.assertAlmostEqual(n["score"], monitoring._panel_from_raw(20.0), places=1)
 
 
 class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
@@ -563,10 +587,20 @@ class MonitoringSettingsTests(unittest.IsolatedAsyncioTestCase):
         # Simulate existing pending notification 
         existing = {"id": 123, "symbol": "UPDTRY", "price": 10.0, "detected_at": time.time() - 30,
                     "horizon_minutes": 5, "score": 12.5}
+        # A4 R/R kapısı varsayılan AÇIK; bu test güncelleme yolunu ölçtüğü için
+        # kapı ayrı bir context-manager girdisi olarak kapatılır. (Bu satır eskiden
+        # `update_monitoring_notification` çağrısının argüman listesinin ORTASINA
+        # girmişti → `new` konumsal + `new_callable` birlikte verilip mock
+        # "Cannot use 'new' and 'new_callable' together" fırlatıyordu.)
         with patch.object(monitoring.database, "save_monitoring_notifications",
-                          new_callable=AsyncMock, return_value=0),              patch.object(monitoring.database, "get_pending_monitoring_notifications",
-                          new_callable=AsyncMock, return_value={"UPDTRY": existing}),              patch.object(monitoring.database, "update_monitoring_notification",
-                          new_callable=AsyncMock, return_value=None),              patch.object(monitoring, "deliver_web_push", return_value={"ok": True}),              patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
+                          new_callable=AsyncMock, return_value=0), \
+             patch.object(monitoring.database, "get_pending_monitoring_notifications",
+                          new_callable=AsyncMock, return_value={"UPDTRY": existing}), \
+             patch.object(monitoring.database, "update_monitoring_notification",
+                          new_callable=AsyncMock, return_value=None), \
+             patch.object(monitoring.config, "MONITORING_RR_ENABLED", False), \
+             patch.object(monitoring, "deliver_web_push", return_value={"ok": True}), \
+             patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
             result = await monitoring._notify(candidates, settings)
        
         self.assertEqual(len(result), 1)
@@ -634,6 +668,219 @@ class MonitoringTickerFreshnessTests(unittest.TestCase):
             notif = monitoring._build_notification("ARKTRY", dict(self.CANDIDATE), {},
                                                    first_price=7.0)
         self.assertEqual(notif["price"], 7.0)
+
+
+# ---------------------------------------------------------------------------
+# A4 (2026-09-14) — R/R kapısı: kalibrasyon + gerçek SL dayanağı + sayaç
+#
+# Kanıt (gerçek DB): hedef bandı → dokunma oranı
+#   %2.00 → %8.8 (n=13137), %3.00 → %11.5 (n=15889), %4.00 → %1.3 (n=204)
+# Yani yüksek hedef daha kötü vuruyor → kapı "RR'yi yükselt" yönlü olamaz.
+# ---------------------------------------------------------------------------
+class RrGateTests(unittest.TestCase):
+    def setUp(self):
+        from app.routers import monitoring
+        self.m = monitoring
+
+    def test_sl_basis_matches_real_exit_stop(self):
+        """R/R'nin SL dayanağı pozisyonun GERÇEK stop'uyla aynı olmalı.
+
+        Pozisyonlar `stop_loss = fill_entry*(1-sl_pct)`, `sl_pct` =
+        `AUTO_PAPER_SL_PCT_DEFAULT` ile açılır. İki sabit ayrışırsa RR ölçümü
+        yanlış olur (gateletilen aday ile açılan pozisyon farklı risk taşır).
+        """
+        from app.config import config
+        self.assertAlmostEqual(float(config.AUTO_PAPER_SL_PCT_DEFAULT),
+                               float(config.MONITORING_RR_SL_PCT), places=9)
+
+    def test_ratio_is_target_over_stop(self):
+        from app.config import config
+        self.assertAlmostEqual(2.0 / 3.0, self.m._rr_ratio(2.0), places=6)
+        self.assertAlmostEqual(1.0, self.m._rr_ratio(float(config.MONITORING_RR_SL_PCT)), places=6)
+
+    def test_ratio_none_when_unmeasurable(self):
+        self.assertIsNone(self.m._rr_ratio(0))
+        self.assertIsNone(self.m._rr_ratio(None))
+        with patch.object(self.m.config, "MONITORING_RR_SL_PCT", 0.0):
+            self.assertIsNone(self.m._rr_ratio(2.0))
+
+    def test_gate_admits_typical_targets(self):
+        """Kritik kalibrasyon kilidi: %2.0 ve %3.0 hedefleri GEÇMELİ, kapı boğmamalı.
+
+        Eski varsayılan (RR_MIN=1.2, SL=%3 → hedef ≥ %3.6) bu iki bandı da
+        eliyordu; oysa isabetin taşındığı bantlar tam olarak bunlar.
+        """
+        self.assertFalse(self.m._rr_gate_blocks(10.0, 2.0),
+                         "hedef %2.0 (isabet %8.8) elenmemeli")
+        self.assertFalse(self.m._rr_gate_blocks(10.0, 3.0),
+                         "hedef %3.0 (isabet %11.5) elenmemeli")
+
+    def test_gate_blocks_reward_below_stop_floor(self):
+        """Ödülü riskinin `RR_MIN` katından küçük aday elenir (hedef < %1.8)."""
+        self.assertTrue(self.m._rr_gate_blocks(10.0, 1.5))
+
+    def test_gate_disabled_never_blocks(self):
+        with patch.object(self.m.config, "MONITORING_RR_ENABLED", False):
+            self.assertFalse(self.m._rr_gate_blocks(10.0, 1.5))
+
+    def test_gate_fails_open_without_price(self):
+        """Fiyat yoksa bastırma YOK (veri eksikliği sinyal öldürmemeli)."""
+        self.assertFalse(self.m._rr_gate_blocks(0.0, 2.0))
+        self.assertFalse(self.m._rr_gate_blocks(None, 2.0))
+
+    def test_notification_carries_rr_and_sl_basis(self):
+        """Frontend kendi SL sabitini varsaymasın: rr/sl_pct payload'da olmalı."""
+        with patch.object(self.m, "_ticker_price", return_value=None):
+            notif = self.m._build_notification(
+                "AAAATRY", {"target_pct": 3.0, "price": 10.0, "velocity_score": 100.0}, {})
+        self.assertAlmostEqual(1.0, notif["rr"], places=6)
+        self.assertAlmostEqual(float(self.m.config.MONITORING_RR_SL_PCT),
+                               notif["sl_pct"], places=6)
+
+    def test_notification_rr_none_when_target_missing(self):
+        with patch.object(self.m, "_ticker_price", return_value=None):
+            notif = self.m._build_notification(
+                "AAAATRY", {"target_pct": 0, "price": 10.0, "velocity_score": 100.0}, {})
+        self.assertIsNone(notif["rr"])
+
+
+class RrGateCounterTests(unittest.IsolatedAsyncioTestCase):
+    """`rr_blocked` sayacı: kalibrasyon sonrası "kaç aday bastırıldı" görünmeli."""
+
+    async def _notify(self, candidates):
+        from app.routers import monitoring
+        monitoring._monitoring_state["notified_symbols"] = {}
+        monitoring._monitoring_state["pending_targets"] = {}
+        monitoring._monitoring_state["notified_prices"] = {}
+        monitoring._monitoring_state["refire_blocked"] = 0
+        monitoring._monitoring_state["rr_blocked"] = 0
+        monitoring._monitoring_state["notified_scores"] = {}
+        settings = {"enabled": True, "min_score": 0.5, "min_target_pct": 0.5,
+                    "quiet_hours_start": None, "quiet_hours_end": None}
+        with patch.object(monitoring.database, "save_monitoring_notifications",
+                          new_callable=AsyncMock, return_value=0), \
+             patch.object(monitoring.database, "get_pending_monitoring_notifications",
+                          new_callable=AsyncMock, return_value={}), \
+             patch.object(monitoring, "deliver_web_push", return_value={"ok": True}), \
+             patch.object(monitoring, "_record_history", return_value=None), \
+             patch.object(monitoring, "_ticker_price", return_value=None), \
+             patch.object(monitoring.config, "MONITORING_DEBOUNCE_SCANS", 0):
+            return await monitoring._notify(candidates, settings)
+
+    async def test_low_rr_candidate_counted_and_not_notified(self):
+        from app.routers import monitoring
+        cands = [{"symbol": "WEAKTRY", "velocity_score": 50.0, "target_pct": 1.5,
+                  "price": 10.0, "horizon_minutes": 5}]
+        result = await self._notify(cands)
+        self.assertEqual([], result, "hedef < %1.8 bildirilmemeli")
+        self.assertEqual(1, monitoring._monitoring_state["rr_blocked"])
+
+    async def test_typical_target_is_notified_and_counter_untouched(self):
+        from app.routers import monitoring
+        cands = [{"symbol": "GOODTRY", "velocity_score": 50.0, "target_pct": 2.0,
+                  "price": 10.0, "horizon_minutes": 5}]
+        result = await self._notify(cands)
+        self.assertEqual(["GOODTRY"], [n["symbol"] for n in result])
+        self.assertEqual(0, monitoring._monitoring_state["rr_blocked"])
+
+
+# ---------------------------------------------------------------------------
+# A5 (2026-09-14) — MACD teyitli histerezis: aynı sinyalin tekrarını kes
+#
+# MACD MONITOR'ün isabet-histerezisi: skor yükselmediği VE MACD teyidi zayıf
+# olduğunda aynı sembol yeniden bildirilmez. Ayarlardan kapatılabilir.
+# ---------------------------------------------------------------------------
+class MacdRefireGateTests(unittest.IsolatedAsyncioTestCase):
+    SETTINGS = {"enabled": True, "min_score": 0.5, "min_target_pct": 0.5,
+                "quiet_hours_start": None, "quiet_hours_end": None}
+
+    def setUp(self):
+        from app.routers import monitoring
+        self.m = monitoring
+        # Test başına TÜM hafıza sıfırlanır (testler birbirinin kapısını kapatmasın).
+        for key in ("notified_symbols", "pending_targets", "notified_prices",
+                    "candidate_streak", "notified_scores"):
+            monitoring._monitoring_state[key] = {}
+        monitoring._monitoring_state["refire_blocked"] = 0
+        monitoring._monitoring_state["rr_blocked"] = 0
+
+    async def _notify(self, candidates, extra_settings=None):
+        """Yalnız ZAMAN kapıları temizlenir; FİYAT ve SKOR hafızası KORUNUR.
+
+        Histerezis tam olarak o hafızaya bakar (`notified_scores`); onu her
+        çağrıda silmek testi anlamsız kılardı.
+        """
+        m = self.m
+        m._monitoring_state["notified_symbols"] = {}
+        m._monitoring_state["pending_targets"] = {}
+        settings = {**self.SETTINGS, **(extra_settings or {})}
+        with patch.object(m.database, "save_monitoring_notifications",
+                          new_callable=AsyncMock, return_value=0), \
+             patch.object(m.database, "get_pending_monitoring_notifications",
+                          new_callable=AsyncMock, return_value={}), \
+             patch.object(m, "deliver_web_push", return_value={"ok": True}), \
+             patch.object(m, "_record_history", return_value=None), \
+             patch.object(m, "_ticker_price", return_value=None), \
+             patch.object(m.config, "MONITORING_DEBOUNCE_SCANS", 0):
+            return await m._notify(candidates, settings)
+
+    def _cand(self, price, score, macd_strong=False):
+        return {"symbol": "HISTTRY", "velocity_score": score, "target_pct": 2.0,
+                "price": price, "horizon_minutes": 5, "mode": "trend_devam",
+                "macd_bullish": macd_strong, "macd_rising": macd_strong}
+
+    async def test_refire_blocked_when_score_not_rising_and_macd_weak(self):
+        """Fiyat kımıldasa bile skor yükselmiyorsa + MACD zayıfsa tekrar bildirilmez."""
+        first = await self._notify([self._cand(10.0, 50.0)])
+        self.assertEqual(["HISTTRY"], [n["symbol"] for n in first])
+        second = await self._notify([self._cand(10.1, 45.0)])
+        self.assertEqual([], second, "aynı sinyal tekrar bildirildi (histerezis yok)")
+
+    async def test_refire_allowed_when_score_rises(self):
+        """Skor yükseliyorsa yeni bilgi var → bildirim geçer."""
+        await self._notify([self._cand(10.0, 50.0)])
+        second = await self._notify([self._cand(10.1, 60.0)])
+        self.assertEqual(["HISTTRY"], [n["symbol"] for n in second])
+
+    async def test_refire_allowed_when_macd_confirms(self):
+        """MACD teyidi güçlüyse skor sabit olsa da bildirim geçer."""
+        await self._notify([self._cand(10.0, 50.0)])
+        second = await self._notify([self._cand(10.1, 45.0, macd_strong=True)])
+        self.assertEqual(["HISTTRY"], [n["symbol"] for n in second])
+
+    async def test_gate_off_from_settings_allows_refire(self):
+        """Ayarlardan kapatılınca (macd_refire_gate=false) tekrar bildirim geçer."""
+        await self._notify([self._cand(10.0, 50.0)], {"macd_refire_gate": True})
+        second = await self._notify([self._cand(10.1, 45.0)], {"macd_refire_gate": False})
+        self.assertEqual(["HISTTRY"], [n["symbol"] for n in second])
+
+
+class MacdRefireGateSettingsTests(unittest.IsolatedAsyncioTestCase):
+    """Anahtarın settings sözleşmesi: varsayılan AÇIK + PUT ile değiştirilebilir."""
+
+    async def test_default_is_enabled_from_config(self):
+        from app.routers import monitoring
+        from app.config import config
+        self.assertTrue(bool(config.MONITORING_MACD_REFIRE_GATE),
+                        "A5 varsayılanı AÇIK olmalı (hedef #1: başarı oranı)")
+        with patch.object(monitoring.database, "get_llm_setting",
+                          AsyncMock(return_value="{}")):
+            settings = await monitoring.get_user_notification_settings()
+        self.assertTrue(settings["macd_refire_gate"])
+
+    async def test_explicit_setting_overrides_config(self):
+        from app.routers import monitoring
+        with patch.object(monitoring.database, "get_llm_setting",
+                          AsyncMock(return_value='{"macd_refire_gate": false}')):
+            settings = await monitoring.get_user_notification_settings()
+        self.assertFalse(settings["macd_refire_gate"])
+
+    async def test_editable_list_accepts_the_key(self):
+        """`editable` demetinde olmazsa admin paneli anahtarı kaydedemez."""
+        import inspect
+        from app.routers import monitoring
+        src = inspect.getsource(monitoring.update_monitoring_settings)
+        self.assertIn("macd_refire_gate", src)
 
 
 if __name__ == "__main__":

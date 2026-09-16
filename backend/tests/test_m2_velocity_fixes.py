@@ -35,8 +35,13 @@ _DEFAULT_TIERS = "90:4.0,70:2.5,50:2.0"
 
 
 def _raw_for_panel(panel: float) -> float:
-    """Panel skorunu (0-100) ham velocity_score'a çevirir (cap'e göre)."""
-    return float(panel) / 100.0 * float(config.MONITORING_SCORE_NORM_CAP)
+    """Panel skorunu (0-100) ham velocity_score'a çevirir — AKTİF haritanın tersi.
+
+    A3 (2026-09-14): harita log olduğundan ters dönüşüm doğrusal DEĞİL
+    (monitoring._raw_from_panel kanonik kaynak).
+    """
+    from app.routers.monitoring import _raw_from_panel
+    return float(_raw_from_panel(panel))
 
 
 class PanelScoreLockTests(unittest.TestCase):
@@ -52,33 +57,44 @@ class PanelScoreLockTests(unittest.TestCase):
                              msg=f"bozuk girdi {bad!r} için parite yok")
 
     def test_raw_to_target_mapping_uses_panel_scale(self):
-        """Ham skorun PANEL karşılığı doğru banda düşmeli (base 1.5 ile ayrışır)."""
+        """Ham skorun PANEL karşılığı doğru banda düşmeli (base 1.5 ile ayrışır).
+
+        A3 (2026-09-14) sonrası bant eşikleri: 74.0 → 4.0 | 71.5 → 2.5 | 68.2 → 2.0
+        (eski 90/70/50'nin ham çalışma noktaları korunarak yeniden ankrajlandı).
+        """
         base = float(config.MONITORING_TARGET_PCT_MIN)  # 1.5
         # panel 95 → üst bant (4.0)
         self.assertEqual(4.0, dynamic_target_pct(_panel_score(_raw_for_panel(95)), base))
-        # panel 75 → orta bant (2.5)
-        self.assertEqual(2.5, dynamic_target_pct(_panel_score(_raw_for_panel(75)), base))
-        # panel 55 → alt bant (2.0)
-        self.assertEqual(2.0, dynamic_target_pct(_panel_score(_raw_for_panel(55)), base))
+        # panel 72.5 → orta bant (2.5)
+        self.assertEqual(2.5, dynamic_target_pct(_panel_score(_raw_for_panel(72.5)), base))
+        # panel 69.5 → alt bant (2.0)
+        self.assertEqual(2.0, dynamic_target_pct(_panel_score(_raw_for_panel(69.5)), base))
         # panel 30 → hiçbir bant → baz (1.5'e kelepçeli taban)
         self.assertEqual(base, dynamic_target_pct(_panel_score(_raw_for_panel(30)), base))
 
     def test_gate_passing_raw_no_longer_always_hits_top_band(self):
-        """Kapıyı geçen (ham≥1400) ama panel<90 olan aday artık 4.0 ALMAZ.
+        """Kapıyı geçen (ham≥1400) ama panel<74.0 olan aday artık 4.0 ALMAZ.
 
         Eski kod ham skoru geçirdiğinden 1400 → 4.0 veriyordu; yeni kodda
-        ham 1400 = panel 70 → orta bant (2.5).
+        ham 1400 = panel 71.5 → orta bant (2.5).
         """
         self.assertEqual(2.5, dynamic_target_pct(_panel_score(1400), 2.0))
-        # ham 1800 = panel 90 → üst bant
+        # ham 1800 = panel 74.0 → üst bant
         self.assertEqual(4.0, dynamic_target_pct(_panel_score(1800), 2.0))
 
 
 class TierParserRobustnessTests(unittest.TestCase):
     """R5-C3.4 / R2-12: tüm bantlar ayrıştırılır; seçim sıradan bağımsız."""
 
+    def setUp(self):
+        # A3 (2026-09-14): tearDown'a SABİT bir varsayılan yazmak, `config`
+        # paylaşılan modül nesnesi olduğu için diğer test dosyalarına sızıyordu
+        # (varsayılan 90/70/50 → 74.0/71.5/68.2 değişti). Orijinali saklayıp
+        # geri koymak testleri SIRADAN BAĞIMSIZ yapar.
+        self._orig_tiers = config.MONITORING_TARGET_SCORE_TIERS
+
     def tearDown(self):
-        config.MONITORING_TARGET_SCORE_TIERS = _DEFAULT_TIERS
+        config.MONITORING_TARGET_SCORE_TIERS = self._orig_tiers
 
     def test_all_bands_parsed(self):
         self.assertEqual([(90.0, 4.0), (70.0, 2.5), (50.0, 2.0)],
@@ -193,10 +209,12 @@ class TargetCostFloorTests(unittest.TestCase):
 
 
 class DeterminismMonotonicityTests(unittest.TestCase):
-    """R5-C3.4: tekrarlı çağrı deterministik; varsayılan tier'da skorla monoton."""
+    """R5-C3.4: tekrarlı çağrı deterministik; varsayılan tier'da skorla monoton.
 
-    def tearDown(self):
-        config.MONITORING_TARGET_SCORE_TIERS = _DEFAULT_TIERS
+    Not: `patch.object` zaten geri alır; tearDown'a SABİT varsayılan yazmak
+    paylaşılan `config` nesnesi üzerinden diğer test dosyalarına sızıyordu
+    (A3 sonrası varsayılan 74.0/71.5/68.2 oldu).
+    """
 
     def test_repeated_calls_deterministic(self):
         with patch.object(config, "MONITORING_TARGET_SCORE_TIERS", _DEFAULT_TIERS):
@@ -288,13 +306,23 @@ class MfiBothZeroNeutralTests(unittest.TestCase):
 class VelocityRawScoreGateTests(unittest.IsolatedAsyncioTestCase):
     """VELOCITY_AUTO_MIN_SCORE panel (0-100) → ham ölçek dönüşümü."""
 
-    def test_default_panel_10_maps_to_raw_200(self):
-        self.assertAlmostEqual(200.0, _velocity_raw_score_gate(), places=9)
+    def test_default_panel_maps_to_previous_raw_anchor(self):
+        """A3 ankrajı: varsayılan panel eşiği ESKİ ham 200 noktasını korur.
 
-    def test_conversion_uses_cap(self):
+        Eski (lineer) panel 10 = ham 200. Log haritada panel 10 = ham ~1.8 olurdu
+        (kapı fiilen ölürdü) → varsayılan 52.4'e yeniden ankrajlandı.
+        """
+        self.assertAlmostEqual(200.0, _velocity_raw_score_gate(), delta=200.0 * 0.05)
+
+    def test_conversion_uses_inverse_transform_not_linear(self):
+        """Log modda panel→ham DOĞRUSAL olamaz (aksi halde eşik sessizce kayardı)."""
+        from app.routers.monitoring import _raw_from_panel
         with patch.object(config, "VELOCITY_AUTO_MIN_SCORE", 25.0), \
              patch.object(config, "MONITORING_SCORE_NORM_CAP", 1000.0):
-            self.assertAlmostEqual(250.0, _velocity_raw_score_gate(), places=9)
+            linear_wrong = 250.0
+            self.assertNotAlmostEqual(linear_wrong, _velocity_raw_score_gate(), delta=1.0,
+                                      msg="cap tabanlı doğrusal dönüşüm kullanılmamalı")
+            self.assertAlmostEqual(_raw_from_panel(25.0), _velocity_raw_score_gate(), places=6)
 
     async def test_gate_blocks_mid_band_raw_score(self):
         """Ham 150 (eski ölçekte 'yüksek') varsayılan kapının (ham 200) altında."""

@@ -62,7 +62,10 @@ class VelocitySymbolQualityTests(unittest.IsolatedAsyncioTestCase):
         from app.config import config
 
         old_min = config.VELOCITY_AUTO_MIN_SCORE
-        config.VELOCITY_AUTO_MIN_SCORE = 10.0
+        # A3 (2026-09-14): eşik PANEL ölçeğinde; ham kapıya ters haritayla çevrilir.
+        # panel 20 → ham ~6.58 > adayın ham 5.0 → elenmeli. (panel 10 artık ham
+        # ~1.75'e denk gelir ve ham 5.0'ı GEÇİRİRDİ — eski lineer varsayım.)
+        config.VELOCITY_AUTO_MIN_SCORE = 20.0
         try:
             result = await velocity._open_velocity_position({
                 "symbol": "LOWSCTRY", "price": 1.0, "velocity_score": 5.0,

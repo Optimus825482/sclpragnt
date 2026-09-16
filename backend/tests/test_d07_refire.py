@@ -25,7 +25,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 SETTINGS = {"enabled": True, "min_score": 0.5, "min_target_pct": 0.5,
-            "quiet_hours_start": None, "quiet_hours_end": None}
+            "quiet_hours_start": None, "quiet_hours_end": None,
+            # A5 (2026-09-14): MACD histerezis kapısı burada KAPATILIR. Bu dosya
+            # YALNIZCA fiyat kapısını (D-07) ölçer; A5 varsayılan açık olduğundan
+            # aksi halde aynı sinyalin ikinci turu A5 tarafından da bastırılır ve
+            # testin ölçtüğü şey belirsizleşir.
+            "macd_refire_gate": False}
 
 
 class RefireGateTests(unittest.IsolatedAsyncioTestCase):
@@ -37,6 +42,9 @@ class RefireGateTests(unittest.IsolatedAsyncioTestCase):
         monitoring._monitoring_state["candidate_streak"] = {}
         monitoring._monitoring_state["notified_prices"] = {}
         monitoring._monitoring_state["refire_blocked"] = 0
+        # A5 skor hafızası da temizlenir (kapı burada kapalı olsa da diğer
+        # dosyalardan sızan durum testi kırılgan yapmasın).
+        monitoring._monitoring_state["notified_scores"] = {}
         monitoring._monitoring_state["risk_off"] = False
 
     def _cand(self, symbol="FLATTRY", price=9.45, score=15.0, target=5.0):

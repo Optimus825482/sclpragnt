@@ -15,7 +15,7 @@ from app.state import market, analyzer
 from app.api_common import _start_background, _fresh_public_price, _background_tasks
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook, ticker_price
 from app.technical_analysis import (calculate_snapshot, _atr, _aroon, _bollinger,
-                                    _cci, _ema, _linreg_slope_pct, _mfi, _rsi, _sma)
+                                    _cci, _ema, _linreg_slope_pct, _mfi, _macd, _rsi, _sma)
 from app.market_intelligence import microstructure_snapshot
 from app.microflow import microflow
 from app import calibration as calibration_service
@@ -232,28 +232,55 @@ VELOCITY_PROFILES = {
 
 
 def _panel_score(raw_score: float) -> float:
-    """Ham ``velocity_score`` (cap'siz, tipik 50-2000+) → panel 0-100 ölçeği.
+    """Ham ``velocity_score`` (cap'siz, sınırlı değil) → panel 0-100 ölçeği.
 
     R2-01 / R3-03 (P0, 2026-09-12): ``MONITORING_TARGET_SCORE_TIERS``
-    ('90:4.0,70:2.5,50:2.0') ve admin eşiği (``MONITORING_MIN_SCORE_DEFAULT``=70)
-    **panel** ölçeğinde tanımlıdır. Eski kod ``dynamic_target_pct``'e HAM skoru
-    geçiriyordu; kapıyı geçen her aday ham ≥ ~1400 ≫ 90 olduğundan daima üst bant
-    (4.0%) seçiliyordu → hedef bantları fiilen ölüydü.
+    ('74.02:4.0,71.54:2.5,68.22:2.0') ve admin eşiği
+    (``MONITORING_MIN_SCORE_DEFAULT``) **panel** ölçeğinde tanımlıdır. Eski kod
+    ``dynamic_target_pct``'e HAM skoru geçiriyordu; kapıyı geçen her aday ham
+    ≥ ~1400 ≫ 90 olduğundan daima üst bant (4.0%) seçiliyordu → hedef bantları
+    fiilen ölüydü.
 
-    Formül, ``monitoring.normalize_score`` (kanonik kaynak) ile BİREBİR aynıdır:
-    ``round(max(0.0, min(100.0, raw / MONITORING_SCORE_NORM_CAP * 100)), 1)``.
+    A3 (2026-09-14): harita artık ``log`` modda ``100×log1p(raw)/log1p(REF)``.
+    Formül, ``monitoring._panel_from_raw`` (KANONİK kaynak) ile BİREBİR aynıdır.
     ``monitoring.py`` bu modülü import ettiği için burada ters yönde import
     döngü (cycle) yaratırdı; bu yüzden formül TEK kaynaktan replike edilir ve
-    ``tests/test_m2_velocity_fixes.py::PanelScoreLockTests`` eşitliği kilitler.
+    ``tests/test_d08_skor_doygunluk.py`` parite testi eşitliği kilitler.
     """
     try:
         raw = float(raw_score or 0)
     except (TypeError, ValueError):
         return 0.0
-    cap = float(config.MONITORING_SCORE_NORM_CAP or 0)
-    if cap <= 0:
+    if raw <= 0:
         return 0.0
-    return round(max(0.0, min(100.0, raw / cap * 100)), 1)
+    if str(getattr(config, "MONITORING_SCORE_NORM_MODE", "log") or "log").lower() == "linear":
+        cap = float(config.MONITORING_SCORE_NORM_CAP or 0)
+        if cap <= 0:
+            return 0.0
+        return round(max(0.0, min(100.0, raw / cap * 100)), 1)
+    ref = float(getattr(config, "MONITORING_SCORE_NORM_LOG_REF", 25000) or 0)
+    denom = math.log1p(ref) if ref > 0 else 0.0
+    if denom <= 0:
+        return 0.0
+    return round(max(0.0, min(100.0, 100.0 * math.log1p(raw) / denom)), 1)
+
+
+def _panel_to_raw_score(panel_score: float) -> float:
+    """Panel (0-100) → ham skor: ``_panel_score``'un TERSİ (A3).
+
+    Admin/eşik değerleri panel ölçeğinde; kapı karşılaştırması ham skorda yapılır.
+    """
+    try:
+        panel = max(0.0, min(100.0, float(panel_score or 0)))
+    except (TypeError, ValueError):
+        panel = 0.0
+    if str(getattr(config, "MONITORING_SCORE_NORM_MODE", "log") or "log").lower() == "linear":
+        return panel / 100.0 * float(config.MONITORING_SCORE_NORM_CAP or 0)
+    ref = float(getattr(config, "MONITORING_SCORE_NORM_LOG_REF", 25000) or 0)
+    denom = math.log1p(ref) if ref > 0 else 0.0
+    if denom <= 0:
+        return panel
+    return math.expm1(panel / 100.0 * denom)
 
 
 def _velocity_raw_score_gate() -> float:
@@ -262,10 +289,10 @@ def _velocity_raw_score_gate() -> float:
     Düzeltme (2026-09-12): eşik eski 0-100 skor ölçeğinde kalibre edilmişti
     (varsayılan 10), ama ham skor saturation kaldırıldıktan sonra tipik
     50-2000 bandında → `score < 10` kapısı hiçbir adayı elemiyordu. Panel→ham
-    dönüşümü monitoring paneliyle aynı formüldür: ham = panel / 100 × cap
-    (varsayılan: 10/100 × 2000 = 200 ham skor).
+    dönüşümü monitoring paneliyle aynı haritanın TERSİdir (A3: log modda expm1;
+    öncesinde panel/100×cap).
     """
-    return float(config.VELOCITY_AUTO_MIN_SCORE or 0) / 100.0 * float(config.MONITORING_SCORE_NORM_CAP or 0)
+    return _panel_to_raw_score(float(config.VELOCITY_AUTO_MIN_SCORE or 0))
 
 
 async def detect_velocity_candidates(args: dict | None = None, *, horizon_minutes: int = 5,
@@ -330,6 +357,13 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             highs = [float(r[2]) for r in rows]
             lows = [float(r[3]) for r in rows]
             vols = [float(r[5]) for r in rows]
+            # A1: Closed-M1 MACD histogram confirmation
+            _macd_res = _macd(closes)
+            _macd_prev = _macd(closes[:-1]) if len(closes) > 1 else None
+            macd_hist = _macd_res.get("histogram") if _macd_res else None
+            macd_hist_prev = _macd_prev.get("histogram") if _macd_prev else None
+            macd_bullish = bool(macd_hist is not None and macd_hist > 0)
+            macd_rising = bool(macd_hist is not None and macd_hist_prev is not None and macd_hist > macd_hist_prev)
             i = len(rows) - 1
             price = closes[-1]
             if price <= 0:
@@ -435,11 +469,20 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                                    * (0.2 + 0.8 * struct_ratio)
                                    * (0.5 + 0.5 * momentum_ratio)
                                    * (0.5 + 0.5 * min(1.0, volume_ratio / 2.0)), 2)
+            # A1: MACD histogram confirmation multiplier
+            if config.VELOCITY_MACD_CONFIRMATION_ENABLED:
+                if macd_bullish and macd_rising:
+                    velocity_score = round(velocity_score * 1.15, 2)
+                elif macd_bullish:
+                    velocity_score = round(velocity_score * 1.05, 2)
+                elif macd_hist is not None and macd_hist < -config.VELOCITY_MACD_DIP_GATE_ATR * atr_pct and not macd_rising:
+                    velocity_score = round(velocity_score * 0.85, 2)
             # ---- M5 momentum+volatilite deseni (7g replay: %66.8 başarı) ----
             # g0: en son kapanan M5 mumu; g1: ondan önceki; g2: iki önceki aralık.
             # Eşikler config.VELOCITY_PATTERN_* (24s/72s/7g doğrulandı).
             m5_pattern = None
             m5_pattern_ok = None
+            m5_macd_bullish = None
             # ML-01 (2026-09-12): eğitime özelliklerin üretildiği bar dayanağı
             # (5m kapanış) ile çıkarım AYNI olmalıdır. Model 5m kapanış barlarla
             # eğitildiği için ML özellikleri de kapanmış 5m serisinden üretilir;
@@ -492,6 +535,12 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     }
                     m5_pattern = {k: bool(v) for k, v in conds.items()}
                     m5_pattern_ok = all(conds.values())
+                    # A2: M5 MACD alignment context
+                    _m5_macd = _macd(m5_closes)
+                    m5_macd_hist = _m5_macd.get("histogram") if _m5_macd else None
+                    m5_macd_bullish = bool(m5_macd_hist is not None and m5_macd_hist > 0)
+                    if m5_macd_bullish and macd_rising:
+                        velocity_score = round(velocity_score * 1.10, 2)
             except Exception as exc:
                 logger.warning("velocity m5 pattern hesabı: %s", exc)
             # ---- M1/M3 öncü ATR deseni (araştırma: v2×M1/M3 kesişimi dokunuşu 2.5× artırıyor) ----
@@ -568,6 +617,14 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 learned_pct=learned_target,
                 ml_pct=ml_target if (ml_target is not None and ml_target > 0) else None,
             )
+            # Hedef gercekciligi (VELOCITY_TARGET_REALISM_*): guclu MACD teyidi veya
+            # yuksek ML olasiligi yoksa agresif ust-bant (4%) hedefi MAX_PCT'e indir;
+            # 5dk+ icinde dokunulmasi nadirdir ve basariyi dusurur.
+            if config.VELOCITY_TARGET_REALISM_ENABLED:
+                macd_strong = bool(macd_bullish or macd_rising)
+                prob = ml_hit_prob if ml_hit_prob is not None else 0.0
+                if not macd_strong and float(prob) < config.VELOCITY_TARGET_REALISM_MIN_ML_PROB:
+                    effective_target = min(effective_target, config.VELOCITY_TARGET_REALISM_MAX_PCT)
             # ML siralama bonusu KALDIRILDI (2026-09-07): yapay skor şişirmesi
             # zayıf sinyalleri eşik üstüne taşıyıp agresif hedef (%4.0) verdiriyor,
             # gerçek MFE yetişemiyordu. ML tahmini hedef belirlemede (dynamic_target_pct
@@ -588,6 +645,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     "ret3_pct": round(ret3, 3),
                     "velocity_score": velocity_score, "passes": passes,
                     "block_reason": block_reason,
+                    "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
+                    "macd_bullish": macd_bullish,
+                    "macd_rising": macd_rising,
+                    "m5_macd_bullish": m5_macd_bullish,
                     "m5_pattern": m5_pattern, "m5_pattern_ok": m5_pattern_ok,
                     # ML-01: gölge ML tahmininin girdisi. Bu sözlük KAPANMIŞ 5m
                     # seriden üretilir (eğitimle aynı dayanak). Aday satırındaki
@@ -631,9 +692,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     # Izleme listesi: geçmeyen ama kayda deger hareket sinyali olanlar.
     # Düzeltme (2026-09-12): eski `>= 0.6` eşiği 0-100 skor ölçeğinden kalma ve
     # ham ölçekte (tipik 50-2000) ölüydü — her elenen aday izlemeye düşüyordu.
-    # Aynı panel→ham dönüşümü (ham = panel/100 × cap) uygulanır: panel 0.6 →
-    # varsayılan cap ile 12 ham skor.
-    _watchlist_min_raw = 0.6 / 100.0 * float(config.MONITORING_SCORE_NORM_CAP or 0)
+    # Aynı panel→ham dönüşümü uygulanır (A3: aktif haritanın tersi; log modda
+    # expm1). Panel 0.6 paneli çok düşük olduğu için ham eşik de çok küçüktür —
+    # amaç "her elenen aday izlemeye düşmesin".
+    _watchlist_min_raw = _panel_to_raw_score(0.6)
     watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= _watchlist_min_raw]
     watchlist.sort(key=lambda r: r["velocity_score"] * r["micro_mult"], reverse=True)
     # Journal: geçenler + izleme listesi kaydedilir; ufuk süresi dolunca

@@ -297,6 +297,31 @@ async def get_report_overview():
     }
 
 
+@router.get("/api/reports/rising-signals")
+async def get_report_rising_signals(limit: int = 100, kind: str | None = None,
+                                    days: float = 7.0):
+    """YÜKSELİŞ EĞİLİMİ sekmesi (R4, 2026-09-14).
+
+    MACD MONITOR'ün kanıtlanmış öncülerinden türeyen erken/yükseliş sinyallerinin
+    isabet ölçümü. Kaynak `rising_alerts` tablosudur — `velocity_candidates`
+    kalibrasyon istatistiklerinden AYRI tutulur (eşik besleyicisi kirlenmesin).
+
+    `live`: MACD snapshot'ından şu an geçerli adaylar (canlı durum).
+    `stats`: seçilen dönem için toplam / ölçülen / isabet oranı / ort. MFE-MAE.
+    """
+    limit = max(1, min(500, int(limit)))
+    stats = await database.get_rising_stats(days=float(days))
+    signals = await database.list_rising_alerts(limit=limit, kind=kind or None)
+    try:
+        from app import rising_signals as rising
+        live = rising.rising_summary_payload()
+    except Exception as exc:
+        logger.debug("rising canlı özet alınamadı: %s", exc)
+        live = None
+    return {"paper_only": True, "generated_at": time.time(),
+            "stats": stats, "signals": signals, "live": live}
+
+
 @router.get("/api/reports/symbols")
 async def get_report_symbols(limit: int = 200):
     """Sembol bazlı detaylı rapor: net PnL, başarı, MFE/DD ve ilk/son işlem."""
