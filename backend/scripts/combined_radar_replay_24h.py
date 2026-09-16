@@ -208,6 +208,11 @@ def _metrics(name: str, signals: list[dict]) -> dict:
     reasons: dict[str, int] = defaultdict(int)
     for s in measured:
         reasons[str(s.get("exit_reason"))] += 1
+    # ZAMAN KAPSAMASI: iki akış AYNI dönemi kapsamıyorsa akış-ötesi her kıyas
+    # (LIFT, kazanma oranı karşılaştırması) geçersizdir. Bu yüzden ilk/son
+    # tespit anı raporlanır ve rapor kapsama çakışmasını KENDİ kontrol eder.
+    seen_times = [float(s["detected_at"]) for s in signals
+                  if s.get("detected_at") is not None]
     avg_mfe = round(statistics.mean(mfes), 4) if mfes else None
     avg_target = round(statistics.mean(targets), 4) if targets else None
     # HEDEF/GEOMETRİ TEŞHİSİ: ortalama hedef, ortalama MFE'yi çok aşıyorsa TP
@@ -239,6 +244,8 @@ def _metrics(name: str, signals: list[dict]) -> dict:
             float(s["net_pct"]) for s in confluence), 4) if confluence else None,
         "confluence_median_net_pct": round(statistics.median(
             float(s["net_pct"]) for s in confluence), 4) if confluence else None,
+        "first_seen_at": min(seen_times) if seen_times else None,
+        "last_seen_at": max(seen_times) if seen_times else None,
         "exit_reasons": dict(sorted(reasons.items())),
     }
 
@@ -451,11 +458,30 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     window = int(confluence_window or getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))
 
     _emit(log, f"[replay] pencere: son {hours} saat ({time.strftime('%Y-%m-%d %H:%M', time.localtime(since))} → şimdi)")
-    velocity_rows = await database.list_velocity_candidates_since(since, until)
-    rising_rows = await database.list_rising_alerts(limit=1000)
+    # KAPSAMA EŞLEŞMESİ (2026-09-16): iki akış AYNI okuma semantiğiyle ve AYNI
+    # bütçeyle okunmalı. Eskiden rising `list_rising_alerts(limit=1000)` ile EN
+    # YENİ, velocity ise ARTAN sırada İLK N satırla geliyordu → iki akış AYRI
+    # dönemleri kapsıyordu (aralarında ~25 saat boşluk ölçüldü), `confluence`
+    # yapısal olarak 0 çıkıyordu ve raporun LIFT satırı iki FARKLI dönemi
+    # kıyaslıyordu. Artık ikisi de zaman pencereli + ARTAN sırada.
+    journal_limit = 20000
+    velocity_rows = await database.list_velocity_candidates_since(
+        since, until, limit=journal_limit)
+    rising_rows = await database.list_rising_alerts_since(
+        since, until, limit=journal_limit)
 
-    rising_rows = [r for r in rising_rows
-                   if r.get("created_at") is not None and since <= float(r["created_at"]) <= until]
+    # KIRPILMA TESPİTİ: satır sayısı bütçeye dayandıysa akış EKSİKTİR (pencere
+    # sonuna ulaşılamamış olabilir) → raporda açıkça bildirilir, sessizce
+    # "tam veri" gibi sunulmaz.
+    truncated = {
+        "velocity": len(velocity_rows) >= journal_limit,
+        "rising": len(rising_rows) >= journal_limit,
+    }
+    if any(truncated.values()):
+        _emit(log, f"[replay] UYARI: journal bütçesi doldu (velocity="
+                   f"{len(velocity_rows)}, rising={len(rising_rows)} / {journal_limit}) "
+                   f"→ o akış pencerenin tamamını kapsamıyor olabilir.")
+
     if symbols:
         wanted = {str(s).replace("_", "").upper() for s in symbols}
         velocity_rows = [r for r in velocity_rows if str(r.get("symbol", "")).upper() in wanted]
@@ -612,6 +638,7 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     ]
     result["measurement_horizon_minutes"] = horizon_cap_min
     result["symbols_fetched"] = symbols_seen
+    result["truncated"] = truncated
     # GEOMETRİ TARAMASI: aynı pencereler, sabit TP/SL ızgarası.
     if sweep:
         grid_gaps = list(sweep_gaps or [0.60])
@@ -674,21 +701,63 @@ def _report_text(result: dict) -> str:
     lines.append("-" * 88)
     base = streams.get("velocity_only") or {}
     comb = streams.get("combined") or {}
+
+    # KAPSAMA KONTROLÜ (2026-09-16): akış-ötesi her kıyas (LIFT, kazanma oranı)
+    # yalnız iki akış AYNI dönemi kapsıyorsa anlamlıdır. Gerçek bir koşumda
+    # velocity pencerenin BAŞINI, rising SONUNU kapsıyordu (aralarında ~25 saat
+    # boşluk): `confluence` yapısal olarak 0 çıktı ve "+0.2763 puan LIFT" iki
+    # FARKLI piyasa dönemini kıyaslıyordu. Rapor bunu kendi tespit edip kıyası
+    # GEÇERSİZ ilan eder; aksi hâlde sayı doğru görünüp karar yanlış olur.
+    def _span(m: dict) -> tuple[float | None, float | None]:
+        return m.get("first_seen_at"), m.get("last_seen_at")
+
+    cover_ok = True
+    v_first, v_last = _span(base)
+    r_first, r_last = _span(streams.get("rising_only") or {})
+    if None not in (v_first, v_last, r_first, r_last):
+        overlap = min(v_last, r_last) - max(v_first, r_first)
+        cover_ok = overlap >= 0
+    lines.append("KAPSAMA (her akışın gerçekten kapsadığı dönem):")
+    for key in ("velocity_only", "rising_only", "combined"):
+        m = streams.get(key) or {}
+        first, last = _span(m)
+        if first is None:
+            continue
+        lines.append(f"  {key:<14} {time.strftime('%d.%m %H:%M', time.localtime(first))}"
+                     f" → {time.strftime('%d.%m %H:%M', time.localtime(last))}"
+                     f"   ({(last - first) / 3600:.1f} saat)")
+    for key, is_trunc in (result.get("truncated") or {}).items():
+        if is_trunc:
+            lines.append(f"  ⚠ {key} journal bütçesi DOLDU → bu akış pencerenin tamamını "
+                         f"kapsamıyor olabilir (okuma sırası ilk N). Saat sayısını "
+                         f"kısaltarak TAM kapsama al.")
+    if not cover_ok:
+        lines.append("  ✗ velocity ve rising AYNI dönemi kapsamiyor → akış-ötesi kıyas "
+                     "(LIFT/kazanma) GEÇERSİZ; çakışma alt kümesi yapısal olarak 0.")
+    lines.append("")
+
     if base.get("avg_net_pct") is not None and comb.get("avg_net_pct") is not None:
         lift = comb["avg_net_pct"] - base["avg_net_pct"]
-        lines.append(f"LIFT (combined - velocity-only) ort. net %: {lift:+.4f} puan")
+        if cover_ok:
+            lines.append(f"LIFT (combined - velocity-only) ort. net %: {lift:+.4f} puan")
+        else:
+            lines.append(f"LIFT (combined - velocity-only) ort. net %: {lift:+.4f} puan"
+                         f"   ← GEÇERSİZ (kapsamalar örtüşmüyor)")
         # DÜRÜST KARAR (2026-09-16): pozitif lift TEK BAŞINA yetmez. Önceki kural
         # yalnız `lift >= 0` bakıyordu; taban negatifken bu, gürültü seviyesinde
         # bir farkı "ENTEGRE ET" diye yorumluyordu (gerçek koşumda velocity −0.16,
         # combined −0.14 → "+0.0175 puan" ile onay veriyordu; oysa ÜÇ AKIŞ DA
         # NEGATİFTİ ve combined'ın kazanma oranı belirgin biçimde DAHA KÖTÜYDÜ).
         blockers: list[str] = []
+        if not cover_ok:
+            blockers.append("KAPSAMA ÖRTÜŞMÜYOR — akışlar farklı dönemlerden; kıyas "
+                            "geçersiz, düzeltip YENİDEN koş")
         if comb["avg_net_pct"] <= 0:
             blockers.append("combined ort. net POZİTİF DEĞİL")
         if base["avg_net_pct"] <= 0:
             blockers.append("TABAN (velocity-only) POZİTİF DEĞİL — negatif tabanı "
                             "birleştirmek onu pozitife çevirmez")
-        if (comb.get("win_rate") or 0) < (base.get("win_rate") or 0) - 2.0:
+        if cover_ok and (comb.get("win_rate") or 0) < (base.get("win_rate") or 0) - 2.0:
             blockers.append(f"combined kazanma oranı DAHA KÖTÜ "
                             f"({comb.get('win_rate')} vs {base.get('win_rate')})")
         if blockers:
@@ -714,6 +783,9 @@ def _report_text(result: dict) -> str:
         lines.append("")
         lines.append(f"  (velocity_only referans: en iyi "
                      f"{_sweep_best(result['sweep'], 'velocity_only')})")
+        if not cover_ok:
+            lines.append("  ✗ KAPSAMA ÖRTÜŞMÜYOR → ızgaradaki akış-ötesi kıyaslar "
+                         "(combined vs velocity referansı) GEÇERSİZ.")
         lines.append("")
 
     # MALİYET DUVARI: verdict'i iddia değil ARİTMETİK yapar. net = brüt − maliyet
@@ -749,6 +821,9 @@ def _report_text(result: dict) -> str:
                 if tgross <= cost else
                 f"  → tavan maliyeti {tgross - cost:.3f} puan AŞIYOR: geometri kâra "
                 f"çevirebilir, ÖNCE üretimde doğrula (tek dönem yeterli kanıt değil).")
+            if not cover_ok:
+                lines.append("  ✗ KAPSAMA ÖRTÜŞMÜYOR → tavan akışlar arası maksimumdur ve "
+                             "bu kıyas geçersizdir.")
     lines.append("")
     # KESİŞİM: birleştirmenin TEK savunulabilir gerekçesi "iki kaynak hemfikir"
     # alt kümesidir. Akış ortalamaları negatifken bu alt küme pozitif çıkabilir;

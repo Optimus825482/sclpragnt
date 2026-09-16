@@ -1164,6 +1164,40 @@ async def list_rising_alerts(limit: int = 100, kind: str | None = None,
     return await _run_db(op)
 
 
+async def list_rising_alerts_since(since_epoch, until_epoch=None, limit: int = 20000):
+    """Zaman penceresine göre yükseliş sinyalleri (BİRLEŞİK RADAR replay).
+
+    NEDEN AYRI FONKSİYON: `list_rising_alerts` **EN YENİ** satırları döndürür
+    (`ORDER BY created_at DESC LIMIT ?`). Replay onu 1000 satırla çağırınca
+    akış pencerenin SONUNDAN doluyordu; velocity okuyucusu ise ARTAN sırada
+    ilk 20000'i aldığı için pencerenin BAŞINDAN doluyordu. İki akış böylece
+    AYRI dönemleri kapsıyordu (ölçüldü: aralarında ~25 saat boşluk) →
+    `confluence` yapısal olarak 0 çıkıyor ve raporun LIFT satırı iki FARKLI
+    dönemi kıyaslıyordu.
+
+    Dönüş: `created_at` ARTAN sırada (velocity okuyucusuyla AYNI semantik).
+    """
+    def op(conn):
+        _ensure_rising_evidence_schema(conn)
+        clauses = ["created_at >= ?"]
+        values: list = [float(since_epoch)]
+        if until_epoch is not None:
+            clauses.append("created_at <= ?")
+            values.append(float(until_epoch))
+        values.append(max(1, min(int(limit), 200000)))
+        rows = conn.execute(
+            f"SELECT * FROM rising_alerts WHERE {' AND '.join(clauses)} "
+            "ORDER BY created_at ASC LIMIT ?", values).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["signals"] = _json_value(item.get("signals"), None)
+            out.append(item)
+        return out
+
+    return await _run_db(op)
+
+
 async def get_rising_stats(days: float = 7.0) -> dict:
     """Yükseliş sinyali kalibrasyon özeti — Raporlar sekmesi için.
 
