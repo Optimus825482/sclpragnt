@@ -239,6 +239,26 @@ class LadderParityTests(unittest.TestCase):
         metrics = self.replay._metrics("combined", [])
         self.assertEqual(0, metrics["signals"])
         self.assertIsNone(metrics["win_rate"])
+        self.assertIsNone(metrics["target_to_mfe_ratio"])
+
+    def test_metrics_expose_target_to_mfe_geometry(self):
+        """Hedef/MFE oranı raporlanır: hedef ortalamayı aşıyorsa TP ulaşılamaz.
+
+        Gerçek koşum kanıtı (2026-09-16): velocity ort. hedef ~%3.4 / ort. MFE
+        %1.96 → oran >1 → TP isabeti %12'de kaldı; rising hedef %2.0 / MFE %0.73
+        → oran 2.7× → TP isabeti %4.4. Yani SL (%3) tipik harekete göre GENİŞ,
+        TP ise ulaşılamaz yüksek: ters asimetri (negatif EV'nin kök nedeni).
+        """
+        signals = [
+            {"net_pct": -0.16, "target_pct": 3.0, "mfe_pct": 1.5,
+             "exit_reason": "horizon_end", "hold_minutes": 3.5},
+            {"net_pct": 3.65, "target_pct": 4.0, "mfe_pct": 4.2,
+             "exit_reason": "take_profit", "hold_minutes": 1.5},
+        ]
+        metrics = self.replay._metrics("velocity_only", signals)
+        self.assertEqual(3.5, metrics["avg_target_pct"])
+        self.assertEqual(2.85, metrics["avg_mfe_pct"])
+        self.assertAlmostEqual(3.5 / 2.85, metrics["target_to_mfe_ratio"], places=2)
 
 
 async def auto_paper_defaults() -> dict:
