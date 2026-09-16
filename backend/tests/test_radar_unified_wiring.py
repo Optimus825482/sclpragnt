@@ -170,6 +170,19 @@ class ReplayJobWiringTests(unittest.TestCase):
         mod = maintenance._load_replay_module()
         self.assertTrue(callable(mod.build_report), "build_report yüklenmedi")
         self.assertTrue(callable(mod._simulate_ladder), "_simulate_ladder yüklenmedi")
+        self.assertTrue(callable(mod._sweep_geometry), "_sweep_geometry yüklenmedi")
+
+    def test_parse_float_list_is_defensive(self):
+        """Panelden gelen serbest metin 500 üretmemeli; geçersizde varsayılan."""
+        from app.routers import maintenance
+        default = [1.0, 2.0]
+        self.assertEqual([1.5, 2.5], maintenance._parse_float_list("1.5, 2.5", default))
+        self.assertEqual([0.5, 1.0], maintenance._parse_float_list([0.5, 1.0], default))
+        self.assertEqual(default, maintenance._parse_float_list("", default))
+        self.assertEqual(default, maintenance._parse_float_list(None, default))
+        self.assertEqual(default, maintenance._parse_float_list("abc,-3,0", default))
+        # Geçerli kısım korunur, bozuk kısım atlanır (0 ve negatif elenir).
+        self.assertEqual([1.5], maintenance._parse_float_list("1.5,oops,-2", default))
 
     def test_status_endpoint_shape(self):
         from app.routers import maintenance
