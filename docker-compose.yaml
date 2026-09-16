@@ -156,15 +156,24 @@ services:
         # Ilk dump oncesi ek guvenlik penceresi (deploy/migration tamamen
         # dursun diye); sonraki donguler 86400s uyur, yarisma olmaz.
         sleep 300
+        # 2026-09-16 disk denetimi: `-mtime +1` YETMEDI. Iki neden:
+        #   1) `-mtime +1` "2 gunden eski" demektir → 2 gune kadar her sey kalir.
+        #   2) Temizlik yalnizca dump'tan SONRA, dongude bir kez kosuyordu; her
+        #      DEPLOY yeni konteyner actigi icin gunde birden fazla dump birikti
+        #      (14 Eylul'de 5 dump). Olcum: local_backups = 69 GB.
+        # Cozum: SAYI tabanli saklama — en yeni 2 dump kalir, yastan bagimsiz.
+        # Ayrica dongunun BASINDA da temizlenir ki redeploy firtinasinda birikmesin.
+        # Boyut sinirli kalir: ~2 x dump (bloat sonrasi ~725 MB -> ~1.5 GB).
         while true; do
           ts=$$(date +%Y%m%d_%H%M%S)
+          ls -1t /backups/scalper_*.dump 2>/dev/null | tail -n +3 | xargs -r rm -f
           echo "[backup] $$ts basliyor"
           if pg_dump -h postgres -U ${POSTGRES_USER:-scalper} -d ${POSTGRES_DB:-scalper} -Fc -f "/backups/scalper_$$ts.dump"; then
             echo "[backup] $$ts tamam"
           else
             echo "[backup] $$ts BASARISIZ" >&2
           fi
-          find /backups -name 'scalper_*.dump' -mtime +1 -delete
+          ls -1t /backups/scalper_*.dump 2>/dev/null | tail -n +3 | xargs -r rm -f
           sleep 86400
         done
     logging: *default-logging
