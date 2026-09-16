@@ -373,6 +373,12 @@ class Config:
     HISTORY_RETENTION_DAYS = max(1, int(os.getenv("HISTORY_RETENTION_DAYS", "21")))
     # Embedding işleri tam JSONB belge taşır; kuyruk telemetrisi.
     EMBEDDING_JOBS_RETENTION_DAYS = max(1, int(os.getenv("EMBEDDING_JOBS_RETENTION_DAYS", "14")))
+    # Karar günlüğü: satır sayısı ~8.5k/gün ve `metadata` JSONB'si satır başına
+    # ~2.4 KB (ölçüm: 637k satır → 1.46 GB TOAST). Budama listesinde HİÇ yoktu.
+    # OTONOM satırlar (`strategy='AUTO_PAPER'`) HARİÇ tutulur: otonom paper karar
+    # zinciri ve kalibrasyon onları okur; düşen yalnızca ham gözlem telemetrisidir.
+    # Disk baskısında `DECISION_LOGS_RETENTION_DAYS=30` güvenli bir alt sınırdır.
+    DECISION_LOGS_RETENTION_DAYS = max(1, int(os.getenv("DECISION_LOGS_RETENTION_DAYS", "90")))
 
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))

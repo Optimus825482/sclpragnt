@@ -3918,7 +3918,7 @@ async def get_research_patterns(status=None, timeframe=None, limit=30):
 
 async def prune_retention(days: int = 30, microstructure_days: int = 7,
                          memory_days: int = 180, history_days: int = 21,
-                         embedding_jobs_days: int = 14):
+                         embedding_jobs_days: int = 14, decision_logs_days: int = 90):
     """Delete high-volume observability rows older than ``days`` days.
 
     microstructure_snapshots grows one row per fresh symbol per second and
@@ -3942,6 +3942,16 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
         ölçümde 12 GB'lık `microstructure_snapshots` yalnız 2.4k satır taşıyordu
         (budanmış ama hiç vacuum edilmemiş). Bu adım ölü tuple birikimini
         sınırlar — TEK SEFERLİK geri kazanım için `VACUUM FULL` gerekir (elle).
+      * `decision_logs` (2026-09-16, ikinci tur): budama listesinde DEĞİLDİ ve
+        sınırsız büyüyordu (~8.5k satır/gün, `metadata` JSONB ~2.4 KB/satır =
+        ölçümde 1.46 GB TOAST). Kendi, daha uzun penceresiyle (`decision_logs_days`,
+        varsayılan 90) düşürülür.
+        ÖNEMLİ — OTONOM SATIRLAR KORUNUR: `strategy='AUTO_PAPER'` satırları
+        SİLİNMEZ. Otonom paper karar zinciri ve kalibrasyon onları okur; ayrıca
+        `AUTO_PAPER` satırları insan kararı değil makine kanıtıdır ve yeniden
+        üretilemez. Silinen tek şey ham gözlem telemetrisidir.
+        NOT: `decision_logs.timestamp` **SANİYE (DOUBLE PRECISION)** — mum
+        tablolarındaki gibi ms DEĞİL; birim karıştırılırsa budama sessiz no-op olur.
     """
     cutoff = time.time() - max(1, int(days)) * 86400
     micro_cutoff = time.time() - max(1, int(microstructure_days)) * 86400
@@ -3949,6 +3959,7 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
     memory_cutoff = time.time() - max(1, int(memory_days)) * 86400
     history_cutoff = time.time() - max(1, int(history_days)) * 86400
     embedding_cutoff = time.time() - max(1, int(embedding_jobs_days)) * 86400
+    decision_logs_cutoff = time.time() - max(1, int(decision_logs_days)) * 86400
     # Mum tabloları BIGINT MİLİSANİYE tutar (epoch sn değil).
     history_cutoff_ms = int(history_cutoff * 1000)
 
@@ -4013,6 +4024,23 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
         except Exception:
             conn.rollback()
             deleted["velocity_candidates"] = 0
+        # DECISION-LOGS-01 (2026-09-16): karar günlüğü budama listesinde değildi ve
+        # sınırsız büyüyordu (~8.5k satır/gün; `metadata` JSONB yüzünden ölçümde
+        # 1.46 GB TOAST). `timestamp` SANİYE'dir (DOUBLE PRECISION) — mum
+        # tablolarındaki gibi ms'e ÇEVRİLMEZ, aksi hâlde budama sessiz no-op olur.
+        # `AUTO_PAPER` HARİÇ: otonom paper karar zinciri ve kalibrasyon o satırları
+        # okur ve yeniden üretilemez (makine kanıtı). COALESCE, NULL `strategy`yi
+        # de kapsar ve PG/SQLite ikisinde de aynı davranır.
+        try:
+            cursor = conn.execute(
+                "DELETE FROM decision_logs WHERE timestamp < ? "
+                "AND COALESCE(strategy, '') <> 'AUTO_PAPER'",
+                (decision_logs_cutoff,))
+            conn.commit()
+            deleted["decision_logs"] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        except Exception:
+            conn.rollback()
+            deleted["decision_logs"] = 0
         # MEM-01: `_persist_chat_memory` HER sohbet isteğinde bir
         # `memory_documents` satırı (ve ON DELETE CASCADE ile
         # `memory_embeddings`) yazıyordu; bu tablolar hiç temizlenmiyordu ->
@@ -4046,7 +4074,8 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
                 conn.execute("VACUUM (ANALYZE) microstructure_snapshots, historical_candles,"
                              " historical_feature_snapshots, memory_documents, memory_embeddings,"
                              " velocity_candidates, embedding_jobs, agent_traces,"
-                             " monitoring_notifications, macd_monitor_alerts, rising_alerts")
+                             " monitoring_notifications, macd_monitor_alerts, rising_alerts,"
+                             " decision_logs")
             finally:
                 if raw is not None and previous is not None:
                     raw.autocommit = previous
