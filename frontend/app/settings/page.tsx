@@ -602,7 +602,10 @@ function SettingsPageInner() {
       {cfg && (
         <>
           <div className={`${activeTab !== "radar" ? "hidden" : ""}`}>
-            <RadarSettingsPanel />
+            <div className="space-y-4">
+              <RadarSettingsPanel />
+              <RadarReplayPanel />
+            </div>
           </div>
           <div className={`${activeTab !== "system-health" ? "hidden" : ""}`}>
             <SystemHealthTab />
@@ -1176,6 +1179,130 @@ function RadarSettingsPanel() {
               <button type="button" onClick={saveConfluence} disabled={saving}
                 className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 📡 BİRLEŞİK RADAR REPLAY (2026-09-16) — 24 saatlik backtest, canlı log + CSV.
+ * Backend: POST /api/combined-radar-replay/start + GET .../status + .../report.csv.
+ * Üretim davranışını DEĞİŞTİRMEZ; yalnız journal + geçmiş mumlarla ölçer.
+ */
+function RadarReplayPanel() {
+  const [job, setJob] = useState<any>({ status: "idle", progress: 0, completed: 0, total: 0, logs: [], result: null });
+  const [open, setOpen] = useState(false);
+  const [hours, setHours] = useState("24");
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    try {
+      const res = await apiRequest(`${API_BASE}/api/combined-radar-replay/status`, { cache: "no-store" });
+      if (res.ok) setJob(await res.json());
+    } catch { /* durum okunamadı — açık pencere poll ile tekrar dener */ }
+  };
+
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (!open) return;
+    const timer = setInterval(load, 2000);
+    return () => clearInterval(timer);
+  }, [open]);
+
+  const start = async () => {
+    setError(null);
+    setOpen(true);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/combined-radar-replay/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hours: Number(hours) || 24 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
+      setJob(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Replay başlatılamadı");
+    }
+  };
+
+  const downloadCsv = async () => {
+    try {
+      const response = await apiRequest(`${API_BASE}/api/combined-radar-replay/report.csv`, { cache: "no-store" });
+      if (!response.ok) throw new Error("Replay CSV indirilemedi");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      const disposition = response.headers.get("content-disposition") || "";
+      anchor.download = disposition.match(/filename="?([^";]+)"?/i)?.[1] || "birlesik-radar-replay.csv";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Replay CSV indirilemedi");
+    }
+  };
+
+  const running = job?.status === "running";
+  const complete = job?.status === "complete";
+  const pct = Math.max(0, Math.min(100, Number(job?.progress || 0)));
+
+  return (
+    <div className="card bg-bunker-950">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <p className="eyebrow text-amber-300">24 SAATLİK REPLAY / BACKTEST</p>
+          <p className="text-xs text-bunker-muted mt-1">Birleşik radarın (Hız Avcısı + Yükseliş + Tespit) son 24 saatteki başarısını, geçmiş mumlarla B1-B4 merdivenini simüle ederek ölçer. Üretim davranışını <span className="font-mono">DEĞİŞTİRMEZ</span>.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <input type="number" min={1} max={48} value={hours} onChange={(e) => setHours(e.target.value)}
+            title="Geriye dönük pencere (saat)"
+            className="w-20 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-amber-300/60 outline-none" />
+          <button type="button" onClick={start} disabled={running}
+            className="shrink-0 px-4 py-2 rounded-lg border border-amber-300/50 text-amber-300 font-mono text-xs hover:bg-amber-300/10 disabled:opacity-50 disabled:cursor-not-allowed">
+            {running ? "ÇALIŞIYOR…" : "REPLAY BAŞLAT"}
+          </button>
+        </div>
+      </div>
+      {error && <p className="mt-3 font-mono text-xs text-neon-red">⚠ {error}</p>}
+
+      {open && (
+        <div className="fixed inset-0 z-50 bg-black/70 p-4 flex items-center justify-center" onClick={() => setOpen(false)}>
+          <div className="card bg-bunker-950 w-full max-w-3xl max-h-[85vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-bunker-800 pb-3 mb-4">
+              <div>
+                <p className="eyebrow text-amber-300">BİRLEŞİK RADAR REPLAY</p>
+                <p className="font-mono text-sm text-white mt-1">{job?.message || "Hazırlanıyor..."}</p>
+              </div>
+              <button onClick={() => setOpen(false)} className="text-bunker-muted hover:text-white">✕</button>
+            </div>
+            <div className="grid grid-cols-3 gap-3 mb-4 text-xs font-mono">
+              <div><span className="text-bunker-muted">DURUM</span><p className="text-amber-300 mt-1">{String(job?.status || "idle").toUpperCase()}</p></div>
+              <div><span className="text-bunker-muted">İLERLEME</span><p className="text-white mt-1">{job?.completed ?? 0}/{job?.total ?? 0} · %{job?.progress ?? 0}</p></div>
+              <div><span className="text-bunker-muted">SONUÇ</span><p className="text-neon-green mt-1">{complete ? "RAPOR HAZIR" : "—"}</p></div>
+            </div>
+            <div className="h-2 rounded bg-bunker-800 mb-4"><div className="h-2 rounded bg-amber-400 transition-all" style={{ width: `${pct}%` }} /></div>
+            <div className="max-h-[26vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">
+              {(job?.logs || []).map((log: any, index: number) => (
+                <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>
+                  [{log.timestamp ? new Date(toMs(log.timestamp)).toLocaleTimeString("tr-TR") : "—"}] {log.message}
+                </p>
+              ))}
+              {!(job?.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}
+            </div>
+            {complete && job?.result?.report_text && (
+              <pre className="mt-3 max-h-[28vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 font-mono text-[11px] text-bunker-muted whitespace-pre-wrap">{job.result.report_text}</pre>
+            )}
+            {complete && (
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <p className="text-[11px] text-bunker-muted">Sonuçları CSV olarak indir (sinyal bazlı: her satır bir ölçüm).</p>
+                <button onClick={downloadCsv} className="shrink-0 rounded-lg border border-neon-green/50 bg-neon-green/10 px-3 py-2 font-mono text-xs text-neon-green hover:bg-neon-green/20">CSV İNDİR</button>
+              </div>
+            )}
           </div>
         </div>
       )}

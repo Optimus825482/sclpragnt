@@ -207,19 +207,30 @@ def _metrics(name: str, signals: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 # Ana akış
 # ---------------------------------------------------------------------------
-async def run(hours: int, symbols: list[str] | None, max_signals: int,
-              confluence_window: int | None, skip_fetch: bool, out_path: str | None) -> dict:
+def _emit(log, message: str) -> None:
+    """İlerleme çıktısı: CLI'da print, uygulama içi işte log callback."""
+    if log is None:
+        print(message)
+    else:
+        log(message)
+
+
+async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
+                       confluence_window: int | None, skip_fetch: bool,
+                       out_path: str | None = None, log=None, progress=None) -> dict:
+    """Birleşik radar replay'inin ÇEKİRDEĞİ (DB bağlantısını AÇMAZ/KAPATMAZ).
+
+    Uygulama içi arka plan işi bu fonksiyonu çağırır; CLI `run()` ise burayı
+    `init_db`/`close_db` ile sarar. `log(message)` verilirse ilerleme satırları
+    oraya akar (canlı log paneli için); verilmezse `print` kullanılır.
+    """
     until = time.time()
     since = until - max(1, int(hours)) * 3600
     window = int(confluence_window or getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))
 
-    print(f"[replay] pencere: son {hours} saat ({time.strftime('%Y-%m-%d %H:%M', time.localtime(since))} → şimdi)")
-    await database.init_db()
-    try:
-        velocity_rows = await database.list_velocity_candidates_since(since, until)
-        rising_rows = await database.list_rising_alerts(limit=1000)
-    finally:
-        pass
+    _emit(log, f"[replay] pencere: son {hours} saat ({time.strftime('%Y-%m-%d %H:%M', time.localtime(since))} → şimdi)")
+    velocity_rows = await database.list_velocity_candidates_since(since, until)
+    rising_rows = await database.list_rising_alerts(limit=1000)
 
     rising_rows = [r for r in rising_rows
                    if r.get("created_at") is not None and since <= float(r["created_at"]) <= until]
@@ -228,7 +239,7 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
         velocity_rows = [r for r in velocity_rows if str(r.get("symbol", "")).upper() in wanted]
         rising_rows = [r for r in rising_rows if str(r.get("symbol", "")).upper() in wanted]
 
-    print(f"[replay] journal: velocity={len(velocity_rows)} satır, rising={len(rising_rows)} satır")
+    _emit(log, f"[replay] journal: velocity={len(velocity_rows)} satır, rising={len(rising_rows)} satır")
 
     # --- Akış 1: velocity-only (üretim radar kapısının journal karşılığı) ---
     raw_gate = float(getattr(config, "MONITORING_MIN_RAW_SCORE", 1400))
@@ -286,7 +297,9 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
             "combined": _metrics("combined", combined_signals),
         }
         result["note"] = "kline çekilmedi (--skip-fetch) → yalnız sayım/isabet yapısal alanları"
-        _print_report(result)
+        result["signals"] = []
+        result["report_text"] = _report_text(result)
+        _emit(log, result["report_text"])
         return result
 
     # --- Kline pencereği + merdiven simülasyonu ---
@@ -294,8 +307,10 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
         + [("rising_only", s) for s in rising_signals] \
         + [("combined", s) for s in combined_signals]
     if not all_signals:
-        print("[replay] pencerede sinyal yok — ölçülecek bir şey bulunamadı.")
+        _emit(log, "[replay] pencerede sinyal yok — ölçülecek bir şey bulunamadı.")
         result["streams"] = {}
+        result["signals"] = []
+        result["report_text"] = _report_text(result)
         return result
 
     horizon_cap_min = 60.0     # tek ölçüm penceresi tavanı (radar ufkundan geniş)
@@ -303,7 +318,7 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
     cache: dict[str, list] = {}
     measured: dict[str, list[dict]] = defaultdict(list)
     symbols_seen = sorted({s["symbol"] for _, s in all_signals})
-    print(f"[replay] {len(symbols_seen)} sembol için 1m kline çekilecek (REST)…")
+    _emit(log, f"[replay] {len(symbols_seen)} sembol için 1m kline çekilecek (REST)…")
 
     per_symbol_horizon: dict[str, float] = defaultdict(lambda: horizon_cap_min)
     for idx, (stream_name, signal) in enumerate(all_signals):
@@ -320,8 +335,10 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
                          "confluence", "sources")})
         outcome["stream"] = stream_name
         measured[stream_name].append(outcome)
+        if progress:
+            progress(idx + 1, len(all_signals))
         if (idx + 1) % 25 == 0:
-            print(f"[replay] {idx + 1}/{len(all_signals)} sinyal ölçüldü…")
+            _emit(log, f"[replay] {idx + 1}/{len(all_signals)} sinyal ölçüldü…")
 
     result["streams"] = {
         "velocity_only": _metrics("velocity_only", measured["velocity_only"]),
@@ -332,48 +349,71 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
         name: sorted(stream, key=lambda s: -(s.get("net_pct") or 0))[:5]
         for name, stream in measured.items()
     }
+    # CSV için TEK satırda her ölçülen sinyal (stream etiketi dahil).
+    result["signals"] = [
+        s for stream in measured.values() for s in stream
+    ]
     result["measurement_horizon_minutes"] = horizon_cap_min
     result["symbols_fetched"] = symbols_seen
-    _print_report(result)
+    result["report_text"] = _report_text(result)
+    _emit(log, result["report_text"])
     if out_path:
         with open(out_path, "w", encoding="utf-8") as fh:
             json.dump(result, fh, ensure_ascii=False, default=str, indent=2)
-        print(f"[replay] JSON yazıldı: {out_path}")
+        _emit(log, f"[replay] JSON yazıldı: {out_path}")
     return result
 
 
-def _print_report(result: dict) -> None:
+async def run(hours: int, symbols: list[str] | None, max_signals: int,
+              confluence_window: int | None, skip_fetch: bool, out_path: str | None) -> dict:
+    """CLI sarmalayıcı: DB bağlantısını açar/kapatır, çekirdeği çağırır.
+
+    Uygulama İÇİ arka plan işi bunu DEĞİL `build_report`'u kullanır — uygulama
+    kendi paylaşımlı DB havuzunu kapatmamalıdır.
+    """
+    await database.init_db()
+    try:
+        return await build_report(hours, symbols, max_signals, confluence_window,
+                                  skip_fetch, out_path=out_path)
+    finally:
+        await database.close_db()
+
+
+def _report_text(result: dict) -> str:
     streams = result.get("streams") or {}
-    print("\n" + "=" * 88)
-    print("BİRLEŞİK RADAR REPLAY RAPORU".center(88))
-    print("=" * 88)
+    lines: list[str] = []
+    lines.append("=" * 88)
+    lines.append("BİRLEŞİK RADAR REPLAY RAPORU".center(88))
+    lines.append("=" * 88)
     header = (f"{'akış':<14}{'sinyal':>8}{'ölçülen':>9}{'hedef%':>9}{'kazanma%':>10}"
               f"{'ort.net%':>10}{'top.net%':>10}{'ort.MFE%':>10}{'çakışma':>9}")
-    print(header)
-    print("-" * 88)
+    lines.append(header)
+    lines.append("-" * 88)
     for key in ("velocity_only", "rising_only", "combined"):
         m = streams.get(key)
         if not m:
-            print(f"{key:<14}{'—':>8}")
+            lines.append(f"{key:<14}{'—':>8}")
             continue
         def _v(v, fmt="{:.2f}"):
             return fmt.format(v) if v is not None else "—"
-        print(f"{key:<14}{m['signals']:>8}{m['measured']:>9}"
-              f"{_v(m['target_hit_rate']):>9}{_v(m['win_rate']):>10}"
-              f"{_v(m['avg_net_pct']):>10}{_v(m['total_net_pct']):>10}"
-              f"{_v(m['avg_mfe_pct']):>10}{m['confluence_count']:>9}")
-    print("-" * 88)
+        lines.append(f"{key:<14}{m['signals']:>8}{m['measured']:>9}"
+                     f"{_v(m['target_hit_rate']):>9}{_v(m['win_rate']):>10}"
+                     f"{_v(m['avg_net_pct']):>10}{_v(m['total_net_pct']):>10}"
+                     f"{_v(m['avg_mfe_pct']):>10}{m['confluence_count']:>9}")
+    lines.append("-" * 88)
     base = streams.get("velocity_only") or {}
     comb = streams.get("combined") or {}
     if base.get("avg_net_pct") is not None and comb.get("avg_net_pct") is not None:
         lift = comb["avg_net_pct"] - base["avg_net_pct"]
-        print(f"LIFT (combined - velocity-only) ort. net %: {lift:+.4f} puan")
-        verdict = "ENTEGREasyon İÇİN UYGUN" if lift >= 0 and comb["signals"] > 0 else "DAHA FAZLA KANIT GEREKLİ"
-        print(f"Ön karar: {verdict}  (geçiş kriteri plan §GEÇİŞ KRİTERİ)")
-    print("\nSINIRLAR (sonuçları okurken bil):")
+        lines.append(f"LIFT (combined - velocity-only) ort. net %: {lift:+.4f} puan")
+        verdict = "ENTEGRasyon İÇİN UYGUN" if lift >= 0 and comb["signals"] > 0 else "DAHA FAZLA KANIT GEREKLİ"
+        lines.append(f"Ön karar: {verdict}  (geçiş kriteri plan §GEÇİŞ KRİTERİ)")
+    lines.append("")
+    lines.append("SINIRLAR (sonuçları okurken bil):")
     for line in result.get("limitations", []):
-        print(f"  - {line}")
-    print("=" * 88)
+        lines.append(f"  - {line}")
+    lines.append("=" * 88)
+    return "\n".join(lines)
 
 
 def main() -> None:

@@ -160,5 +160,38 @@ class VelocityRoutingTests(unittest.TestCase):
         self.assertIn("auto_paper_hata", outcome["reason"])
 
 
+class ReplayJobWiringTests(unittest.TestCase):
+    """Ayarlar > Radar sekmesindeki replay butonunun arka uç kablolaması."""
+
+    def test_replay_module_loads_from_scripts(self):
+        """scripts/... yolu packaged (Docker) düzende de çözülmeli — en kırılgan nokta."""
+        from app.routers import maintenance
+        mod = maintenance._load_replay_module()
+        self.assertTrue(callable(mod.build_report), "build_report yüklenmedi")
+        self.assertTrue(callable(mod._simulate_ladder), "_simulate_ladder yüklenmedi")
+
+    def test_status_endpoint_shape(self):
+        from app.routers import maintenance
+        data = asyncio.run(maintenance.combined_radar_replay_status())
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["paper_only"])
+        self.assertIn("status", data)
+        self.assertIn("progress", data)
+        self.assertIn("logs", data)
+        self.assertIn("result", data)
+
+    def test_start_endpoint_requires_admin(self):
+        """Replay tüm journal'ı okuyup ~140 REST isteği atar → admin kapısı ŞART."""
+        from app.routers import maintenance
+
+        class _Anon:
+            headers = {}
+            cookies = {}
+
+        with self.assertRaises(Exception) as ctx:
+            asyncio.run(maintenance.start_combined_radar_replay({}, _Anon()))
+        self.assertEqual(401, getattr(ctx.exception, "status_code", None))
+
+
 if __name__ == "__main__":
     unittest.main()
