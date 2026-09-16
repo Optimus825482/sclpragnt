@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { API_BASE, apiRequest } from "../lib/api";
-import { useLiveMessages } from "../lib/liveSocket";
+import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import { useUiMode } from "../lib/ui-mode";
 import SymbolLink from "../components/SymbolLink";
 import { formatSignedTL, formatTL, toMs } from "../lib/format";
@@ -44,6 +44,37 @@ const pnlTryText = (v?: number | null) => {
     const abs = Math.abs(v).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return v < 0 ? `-₺${abs}` : `+₺${abs}`;
 };
+
+/**
+ * Görünürlük-farkında periyodik yoklama (2026-09-16 denetimi).
+ *
+ * Sorun: sayfada ~8 poller vardı ve hepsi sekme ARKADA/gizliyken de çalışıyordu
+ * (tarayıcılar arka plan zamanlayıcılarını kıssa da gereksiz iş + gereksiz istek).
+ * Bu yardımcı aralığı YALNIZ sekme görünürken işletir; sekme tekrar görünür
+ * olduğunda aralık kaldığı yerden devam eder.
+ *
+ * `callback` bir ref'te tutulur → tüketicinin her render'da yeni bir inline
+ * fonksiyon geçmesi aralığı sıfırlamaz (monitoring sayfasındaki `useLiveMessages`
+ * ile aynı desen). İlk çağrıyı KENDİSİ YAPMAZ: mevcut efektler zaten mount'ta bir
+ * tur koşuyor, davranış değişmesin.
+ */
+function useVisibleInterval(callback: () => void, ms: number) {
+    const cbRef = useRef(callback);
+    useEffect(() => { cbRef.current = callback; }, [callback]);
+    useEffect(() => {
+        let timer: ReturnType<typeof setInterval> | null = null;
+        const start = () => { if (!timer) timer = setInterval(() => cbRef.current(), ms); };
+        const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
+        const onVisibility = () => {
+            if (typeof document === "undefined") return;
+            if (document.visibilityState === "visible") start(); else stop();
+        };
+        if (typeof document === "undefined" || document.visibilityState === "visible") start();
+        document.addEventListener("visibilitychange", onVisibility);
+        return () => { document.removeEventListener("visibilitychange", onVisibility); stop(); };
+    }, [ms]);
+}
+
 
 /**
  * H-08: mum kapanış geri sayımı. Sayacın kendi state'i vardır ve 250 ms
@@ -105,6 +136,8 @@ export default function ChartsPage() {
     const [patternTooltip, setPatternTooltip] = useState<{ x: number; y: number; pattern: PatternMarker } | null>(null);
     const [positions, setPositions] = useState<any[]>([]);
     const [autoPaperPositions, setAutoPaperPositions] = useState<any[]>([]);
+    // WS durumu: HTTP yedek-yol frekansını seçmek için (WS sağlıklıyken seyreltilir).
+    const liveStatus = useLiveStatus();
     // Radar bildirimi paneli: sembol için ufku dolmamış son monitoring bildirimi
     // (fiyat/hedef/skor/ufuk + geri sayım) ve grafik çizgisi göstergesi.
     const [monitorNotif, setMonitorNotif] = useState<any | null>(null);
@@ -155,18 +188,30 @@ export default function ChartsPage() {
     // (loadFromDb display bloklarını uygular). Bu effectin rolü bitti —
     // monitorDisplayReady loadFromDb'de true yapilir.
 
-    // Görünüm tercihleri DB'de (sembol bazlı) saklanır: toggle değişince anlık
-    // PATCH ile yazılır — localStorage/cache eski değer göstermez (2026-09-04).
+    // Görünüm tercihleri DB'de (sembol bazlı) saklanır: toggle değişince yazılır —
+    // localStorage/cache eski değer göstermez (2026-09-04).
+    // 2026-09-16: yazım DEBOUNCE edildi. Eskiden her toggle'da ANINDA PATCH
+    // gidiyordu; panelde art arda toggle açmak istek patlaması üretiyordu.
+    // 600 ms debounce ile tek istek yazılır. Unmount'ta bekleyen yazım iptal
+    // edilir, ama mount sırasında flush edilir (son değişiklik kaybolmaz).
+    const displaySaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     useEffect(() => {
         if (!symbol || !monitorDisplayReady) return;
-        try {
-            apiRequest(`${API}/${encodeURIComponent(symbol)}/display`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings }),
-            }).catch(() => undefined);
-        } catch { /* otomatik kayıt hatası görünmez */ }
+        if (displaySaveTimer.current) clearTimeout(displaySaveTimer.current);
+        const body = JSON.stringify({ display: { showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines } satisfies DisplaySettings });
+        displaySaveTimer.current = setTimeout(() => {
+            try {
+                void apiRequest(`${API}/${encodeURIComponent(symbol)}/display`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body,
+                }).catch(() => undefined);
+            } catch { /* otomatik kayıt hatası görünmez */ }
+        }, 600);
     }, [symbol, showPositions, showStopTakeProfit, showPatterns, showPressure, showMonitoringLines, monitorDisplayReady]);
+    useEffect(() => () => {
+        if (displaySaveTimer.current) clearTimeout(displaySaveTimer.current);
+    }, []);
 
     // Sembol rozeti /charts?symbol=...&timeframe=5m ile istemci içi
     // yönlendirme yapar. Sayfa unmount olmadığı için URL değişimini ayrıca
@@ -367,9 +412,9 @@ export default function ChartsPage() {
         setMonitorNotif(null);
         setMonitorRemainingSec(null);
         loadMonitorNotif();
-        const t = setInterval(loadMonitorNotif, 15_000);
-        return () => clearInterval(t);
     }, [loadMonitorNotif]);
+    // 15 sn'lik yoklama: sekme gizliyken durur (2026-09-16).
+    useVisibleInterval(loadMonitorNotif, 15_000);
 
     // Ufuk geri sayımı: expires_at'e kalan saniye, saniyelik tık.
     useEffect(() => {
@@ -528,13 +573,15 @@ export default function ChartsPage() {
     useEffect(() => {
         fetchPositions();
         fetchAutoPaper();
-        // /api/positions her istekte GÜNCEL piyasa fiyatıyla PnL hesaplar;
-        // WS (portfolio) kopsa bile açık pozisyonlar tablosu canlı kalsın.
-        // 3 sn poll + WS data birlikte tabloyu gerçek zamanlı tutar.
-        const t = setInterval(fetchPositions, 3_000);
-        const ap = setInterval(fetchAutoPaper, 3_000);
-        return () => { clearInterval(t); clearInterval(ap); };
     }, [fetchPositions, fetchAutoPaper]);
+    // 2026-09-16 denetimi: yukarıdaki yorum "HTTP yalnızca bağlantı kopması için
+    // DÜŞÜK FREKANSLI geri dönüş yoludur" diyordu ama kod koşulsuz 3 sn poll
+    // yapıyordu. Artık WS SAĞLIKLIYKEN yedek yol seyreltilir (30 sn), WS kapalıyken
+    // hızlı kalır (3 sn) — davranış korunur, gereksiz istek gider. Ayrıca sekme
+    // gizliyken aralık durur (`useVisibleInterval`).
+    const positionsPollMs = liveStatus === "open" ? 30_000 : 3_000;
+    useVisibleInterval(fetchPositions, positionsPollMs);
+    useVisibleInterval(fetchAutoPaper, positionsPollMs);
 
     const loadPortfolioSummary = useCallback(async () => {
         try {
@@ -549,25 +596,35 @@ export default function ChartsPage() {
 
     useEffect(() => {
         loadPortfolioSummary();
-        const timer = setInterval(loadPortfolioSummary, 30_000);
-        return () => clearInterval(timer);
     }, [loadPortfolioSummary]);
+    // 30 sn'lik portföy özeti: sekme gizliyken durur (2026-09-16).
+    useVisibleInterval(loadPortfolioSummary, 30_000);
 
-    useEffect(() => {
-        let cancelled = false;
-        const load = async () => {
-            try {
-                const response = await apiRequest(`${API_BASE}/api/chart/${encodeURIComponent(symbol)}/timeframe-trends`);
-                const result = await response.json();
-                if (!cancelled) setTimeframeTrends(Array.isArray(result.timeframes) ? result.timeframes : []);
-            } catch {
-                if (!cancelled) setTimeframeTrends([]);
-            }
-        };
-        load();
-        const timer = setInterval(load, 20_000);
-        return () => { cancelled = true; clearInterval(timer); };
+    // Zaman dilimi trendleri: sembole bağlı. Eski efekt hem `cancelled` bayrağı
+    // hem `setInterval` taşıyordu; aralık artık görünürlük-farkında yardımcıya
+    // taşındı ve bayat yanıt koruması SİMBOLE göre yapılıyor (hızlı sembol
+    // değişiminde eski yanıtın yenisini ezmesini engeller).
+    const symbolRef = useRef(symbol);
+    useEffect(() => { symbolRef.current = symbol; }, [symbol]);
+    const loadTimeframeTrends = useCallback(async () => {
+        const requested = symbol;
+        if (!requested) return;
+        try {
+            const response = await apiRequest(`${API_BASE}/api/chart/${encodeURIComponent(requested)}/timeframe-trends`);
+            const result = await response.json();
+            if (symbolRef.current !== requested) return; // sembol değişti → bayat yanıt
+            setTimeframeTrends(Array.isArray(result.timeframes) ? result.timeframes : []);
+        } catch {
+            if (symbolRef.current !== requested) return;
+            setTimeframeTrends([]);
+        }
     }, [symbol]);
+    useEffect(() => {
+        setTimeframeTrends([]);
+        loadTimeframeTrends();
+    }, [loadTimeframeTrends]);
+    // 20 sn'lik trend yoklaması: sekme gizliyken durur (2026-09-16).
+    useVisibleInterval(loadTimeframeTrends, 20_000);
 
     useLiveMessages(useCallback((message: any) => {
         if (message.type === "portfolio") {

@@ -3423,6 +3423,23 @@ async def list_push_subscriptions():
     def op(conn): return [_json_value(row["subscription"], {}) for row in conn.execute("SELECT subscription FROM push_subscriptions").fetchall()]
     return await _run_db(op)
 
+
+async def count_push_subscriptions() -> int:
+    """Push abone sayısı — push SAĞLIĞINI görünür kılar (2026-09-16 denetimi).
+
+    Ölçüm: 0 ise tarayıcı push'u hiç çalışmıyor demektir; backend `VAPID_PRIVATE_KEY`
+    yapılandırılmış olsa bile "push çalışıyor" yanılsaması oluşur. Sayaç panele
+    taşınır ki sessiz arıza görünür olsun.
+    """
+    def op(conn):
+        row = conn.execute("SELECT COUNT(*) FROM push_subscriptions").fetchone()
+        return int(row[0]) if row else 0
+    try:
+        return await _run_db(op)
+    except Exception:
+        # Tablo yoksa/erişilemezse sağlık bloğu state yanıtını BOZMASIN.
+        return 0
+
 async def remove_push_subscriptions(endpoints: list[str]):
     """Ölü (410/404) push aboneliklerini endpoint URL'sine göre temizler."""
     if not endpoints:

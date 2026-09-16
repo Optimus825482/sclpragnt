@@ -563,7 +563,14 @@ async def update_monitoring_settings(payload: dict, request: Request):
 _deferred_push = deque(maxlen=100)
 
 async def _send_push(notif: dict) -> bool:
-    """Tek bildirimi web push ile gönder; gerçek başarı durumunu döndür."""
+    """Tek bildirimi web push ile gönder; gerçek başarı durumunu döndür.
+
+    NOT: ek alanlar `.get()` ile okunur — bu yardımcı artık İKİ zarf şeklini
+    taşır: radar bildirimi (skor/hedef/ufuk dolu) ve ertelenmiş ALARM push'u
+    (`alerting.deliver_alert_push`; yalnız mesaj+başlık+url+tag taşır).
+    Abonelik okuması `notif["..."]` ile yapılsaydı alarm zarfı KeyError verip
+    sessizce gönderilemezdi.
+    """
     try:
         result = await deliver_web_push(
             notif["message"],
@@ -571,14 +578,14 @@ async def _send_push(notif: dict) -> bool:
             url=notif["url"],
             tag=notif["tag"],
             extra={
-                "symbol": notif["symbol"],
-                "score": notif["score"],
-                "target_pct": notif["target_pct"],
-                "price": notif["price"],
-                "expected_price": notif["expected_price"],
-                "detected_at": notif["detected_at"],
-                "horizon_minutes": notif["horizon_minutes"],
-                "source": "monitoring",
+                "symbol": notif.get("symbol"),
+                "score": notif.get("score"),
+                "target_pct": notif.get("target_pct"),
+                "price": notif.get("price"),
+                "expected_price": notif.get("expected_price"),
+                "detected_at": notif.get("detected_at"),
+                "horizon_minutes": notif.get("horizon_minutes"),
+                "source": notif.get("source", "monitoring"),
             },
         )
         ok = bool(result.get("ok", False))
@@ -1153,6 +1160,24 @@ RISING_LABEL = {
 }
 
 
+async def _push_health_safe() -> dict:
+    """Push sağlığı — panelde GÖRÜNÜR olsun (2026-09-16 denetimi).
+
+    `subscribers == 0` iken backend `VAPID_PRIVATE_KEY` yapılandırılmış olsa bile
+    tek bir push gitmez; bu sessiz arıza panelde "push yok" olarak görünür.
+    Sayaç okunamazsa state yanıtı BOZULMAZ (0 döner).
+    """
+    try:
+        subscribers = int(await database.count_push_subscriptions() or 0)
+    except Exception as exc:
+        logger.debug("push sağlığı okunamadı: %s", exc)
+        subscribers = 0
+    return {
+        "backend_vapid_configured": bool(os.getenv("VAPID_PRIVATE_KEY", "").strip()),
+        "subscribers": subscribers,
+    }
+
+
 def _rising_summary_safe() -> dict | None:
     """Yükseliş özeti + panelin gösterdiği fiyat/TP/SL bilgisi.
 
@@ -1693,6 +1718,11 @@ async def monitoring_scan_trigger(request: Request):
 async def monitoring_state():
     """Get current monitoring state (last scan results + notification history)."""
     settings = await get_user_notification_settings()
+    # R3/denetim (2026-09-16): push sağlığı bir DB sorgusudur (COUNT) → state
+    # kilidinin DIŞINDA hesaplanır. Dosyanın kendi kuralı: I/O kilit dışında
+    # (`_deliver_scan_notifications` gerekçesi), böylece GET /state kilidi
+    # gereksiz tutmaz.
+    push_health = await _push_health_safe()
     # M1/P2 (R2-18): okuma state kilidi altında; tutarlı snapshot.
     async with _locked_state():
         last_scan = _monitoring_state.get("last_scan_at")
@@ -1717,6 +1747,10 @@ async def monitoring_state():
             # ve kanıt yoktu). Snapshot'tan türetilir → ağ isteği YOK, hızlı.
             "rising": _rising_summary_safe(),
             "rising_notified": int(_monitoring_state.get("rising_notified", 0)),
+            # PUSH SAĞLIĞI (2026-09-16): 0 abone = tarayıcı push'u HİÇ çalışmıyor.
+            # Backend `VAPID_PRIVATE_KEY` yapılandırılmış olsa bile abonelik yoksa
+            # hiçbir push gitmez; bu blok o sessiz arızanın panelde görünmesini sağlar.
+            "push": push_health,
             # M1/P0: hem ham kapı hem panel gösterim eşiği açıkça raporlanır.
             **_threshold_fields(settings),
             # M1/P1 (R4-02): canlı görev kaydından gerçek liveness.
