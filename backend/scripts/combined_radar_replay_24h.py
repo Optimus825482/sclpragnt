@@ -139,7 +139,11 @@ def _simulate_ladder(rows, entry_price: float, target_pct: float, horizon_minute
             break
 
         # (5) trailing zeminini kur + breach (B3: TP'ye yakın aralık yarıya iner)
-        gap = float(config.AUTO_PAPER_TRAILING_GAP_PCT)
+        # PARİTE: üretimde breakeven ratchet'i (be_gap) daha sıkı olduğu için
+        # trailing ondan GEVŞEK olamaz; auto_paper aynı kırpmayı uygular. Eskiden
+        # simülatör ayarlanan değeri (0.80) kullanırken üretim fiilen 0.60
+        # uyguluyordu → replay BAŞKA bir merdiveni ölçüyordu.
+        gap = min(float(config.AUTO_PAPER_TRAILING_GAP_PCT), be_gap)
         if gross_pct >= tp_gain_pct * 0.9:
             gap = max(0.2, gap * 0.5)
         if gross_pct >= tr_trigger:

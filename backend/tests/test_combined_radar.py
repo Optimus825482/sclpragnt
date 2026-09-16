@@ -194,6 +194,15 @@ class LadderParityTests(unittest.TestCase):
         self.assertEqual(defaults["trailing_gap_pct"], config.AUTO_PAPER_TRAILING_GAP_PCT)
         self.assertEqual(defaults["breakeven_buffer_pct"], config.AUTO_PAPER_BREAKEVEN_BUFFER_PCT)
 
+    def test_trailing_gap_default_is_truthful(self):
+        """Varsayılan, GERÇEKTEN uygulanan değeri söylemeli.
+
+        Kanıt: breakeven ratchet'i (%0.60) hem daha sıkı hem önce değerlendirildiği
+        için 0.80'lik varsayılan hiç uygulanmıyordu (471 işlemlik gerçek replay'de
+        `trailing_stop` 0 kez). Etkin değer 0.60'tı; varsayılan artık onu söylüyor.
+        """
+        self.assertLessEqual(config.AUTO_PAPER_TRAILING_GAP_PCT, 0.6)
+
     def test_take_profit_is_detected(self):
         entry = 100.0
         rows = _bars(T0_MS, [100.0, 100.4, 103.0])       # 3. bar TP'yi aşar
