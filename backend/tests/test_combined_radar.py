@@ -394,6 +394,216 @@ class LadderParityTests(unittest.TestCase):
         # Referans özeti: olmayan akış için "yok" demeli (KeyError değil).
         self.assertEqual("yok", self.replay._sweep_best(rows, "rising_only"))
 
+    # ------------------------------------------------------------------
+    # RAPOR DÜRÜSTLÜĞÜ: yanlış etiketli sütun + verdict'ın aritmetikle
+    # kanıtlanması. Gerçek koşumda tabloda `hedef%` başlığı altında
+    # `target_hit_rate` (%11.52) basılıyordu ve ortalama hedef (%3.73)
+    # sanılıyordu.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _stream(**over) -> dict:
+        """Gerçek koşumun velocity_only satırı (2026-09-16, 24h)."""
+        base = {
+            "signals": 217, "measured": 217, "target_hit_rate": 11.52,
+            "win_rate": 42.86, "avg_net_pct": -0.19, "median_net_pct": -0.42,
+            "total_net_pct": -41.3, "avg_target_pct": 3.73, "avg_mfe_pct": 1.90,
+            "target_to_mfe_ratio": 1.96, "avg_mae_pct": -1.8,
+            "avg_hold_minutes": 3.5, "confluence_count": 0,
+            "confluence_win_rate": None, "exit_reasons": {},
+        }
+        base.update(over)
+        return base
+
+    def test_summary_table_labels_touch_rate_not_average_target(self):
+        """Sütun, bastığı ŞEYİ söylemeli: bu `target_hit_rate`, ortalama hedef değil."""
+        result = {"streams": {"velocity_only": self._stream()}, "limitations": []}
+        text = self.replay._report_text(result)
+        head = next(ln for ln in text.splitlines() if ln.startswith("akış"))
+        self.assertIn("TP%", head)
+        self.assertNotIn("hedef%", head)
+        row = next(ln for ln in text.splitlines()
+                   if ln.startswith("velocity_only") and "11.52" in ln)
+        self.assertIn("  11.52", row)     # dokunma oranı tabloda
+        self.assertNotIn("3.73", row)     # ortalama hedef tabloda DEĞİL
+
+    def test_cost_wall_states_gross_edge_arithmetic(self):
+        """Karar iddia değil ARİTMETİK: brüt = net + gidiş-dönüş maliyet."""
+        cost = self.replay.round_trip_cost_pct()
+        self.assertAlmostEqual(0.35, cost, places=9)   # YÜZDE ölçeği (kesir DEĞİL)
+        result = {"streams": {"velocity_only": self._stream()}, "limitations": []}
+        text = self.replay._report_text(result)
+        self.assertIn("MALİYET DUVARI", text)
+        self.assertIn(f"{-0.19 + cost:+.3f}%", text)   # brüt kenar
+        self.assertIn(f"{cost:.3f}%", text)            # maliyetin kendisi
+
+    def test_cost_wall_uses_configured_cost_not_a_hardcoded_number(self):
+        """Mutasyon kilidi: maliyet config'ten HESAPLANMALI, sabit yazılmamalı.
+
+        `config` bir ÖRNEK (`config = Config()`) ve `COMMISSION_PCT` SINIF
+        niteliği; bu yüzden sınıfı yamalıyoruz. Rapor, `cost`'u ve bacak
+        dökümünü AYNI sayıdan türetmeli — ayrı ayrı okurlarsa ayrışabilirler
+        (ölçüldü: örneği yamalamak `cost`'u değiştirmiyor, dökümü değiştiriyordu).
+        """
+        with patch.object(type(config), "COMMISSION_PCT", 0.01):
+            text = self.replay._report_text(
+                {"streams": {"velocity_only": self._stream()}, "limitations": []})
+        self.assertIn("2.050%", text)     # (0.01 + 0.00025) * 2 * 100
+        self.assertIn("1.025%/bacak", text)   # döküm = cost/2 (ayrışamaz)
+        self.assertNotIn("0.350%", text)      # varsayılan sabitlenmiş OLSAYDI burada çıkardı
+
+    def test_sweep_ceiling_below_cost_is_declared_unfixable(self):
+        """Tavan brütü maliyetin altındaysa: geometri değil SEÇİCİLİK denmeli."""
+        cost = self.replay.round_trip_cost_pct()
+        sweep = [{"target_pct": 4.0, "sl_pct": 1.5, "gap_pct": 0.3,
+                  "stream": "velocity_only", "n": 217,
+                  "avg_net_pct": -0.111, "median_net_pct": -1.5715,
+                  "total_net_pct": -24.1, "win_rate": 37.79}]
+        result = {"streams": {"velocity_only": self._stream()}, "sweep": sweep,
+                  "limitations": []}
+        text = self.replay._report_text(result)
+        self.assertIn("TARAMA TAVANI", text)
+        self.assertIn(f"{-0.111 + cost:+.3f}%", text)
+        self.assertIn("açığı kapatamaz", text)
+        self.assertIn("SEÇİCİLİK", text)
+
+    def test_sweep_ceiling_above_cost_does_not_claim_hopelessness(self):
+        """Tavan maliyeti AŞIYORSA 'kapatamaz' DENMEMELİ (üretimde doğrula demeli)."""
+        cost = self.replay.round_trip_cost_pct()
+        sweep = [{"target_pct": 3.0, "sl_pct": 1.5, "gap_pct": 0.3,
+                  "stream": "velocity_only", "n": 217,
+                  "avg_net_pct": 0.50, "median_net_pct": 0.10,
+                  "total_net_pct": 108.5, "win_rate": 55.0}]
+        result = {"streams": {"velocity_only": self._stream()}, "sweep": sweep,
+                  "limitations": []}
+        text = self.replay._report_text(result)
+        self.assertIn("TARAMA TAVANI", text)
+        self.assertIn(f"{0.50 + cost:+.3f}%", text)
+        self.assertIn("AŞIYOR", text)
+        self.assertNotIn("açığı kapatamaz", text)
+
+    def test_report_without_sweep_omits_ceiling_but_keeps_cost_wall(self):
+        """Tarama yokken (--sweep verilmedi) tavan satırı olmamalı, duvar kalmalı."""
+        result = {"streams": {"combined": self._stream(avg_net_pct=-0.22)},
+                  "limitations": []}
+        text = self.replay._report_text(result)
+        self.assertIn("MALİYET DUVARI", text)
+        self.assertNotIn("TARAMA TAVANI", text)
+
+    # ------------------------------------------------------------------
+    # MFE/MAE İŞARET SÖZLEŞMESİ: gerçek 24h artefaktında `mfe_pct` −0.996%,
+    # `mae_pct` +0.043% görüldü — ikisi de tanımları gereği imkânsız.
+    # ------------------------------------------------------------------
+    def test_mfe_is_never_negative_and_mae_never_positive(self):
+        """MFE "en iyi lehte" ≥ 0, MAE "en kötü aleyhte" ≤ 0.
+
+        Kök neden: pencere sinyal barını HARİÇ tutar (R5-C4.4), bu yüzden ham
+        tepe/dip farkı işaret değiştirebilir. Kırpma REPLAY sınırında yapılır;
+        ortak CANLI yardımcı `_mfe_from_window` değiştirilmez (ayrı test).
+        """
+        entry = 100.0
+        falls = self.replay._simulate_ladder(_bars(T0_MS, [99.0, 98.0, 97.0]),
+                                            entry, 4.0, 60.0)
+        self.assertEqual(0.0, falls["mfe_pct"])       # hiç lehte gitmedi
+        self.assertLess(falls["mae_pct"], 0.0)
+
+        rises = self.replay._simulate_ladder(_bars(T0_MS, [101.0, 102.0]),
+                                            entry, 4.0, 60.0)
+        self.assertEqual(0.0, rises["mae_pct"])       # hiç aleyhte gitmedi
+        self.assertGreater(rises["mfe_pct"], 0.0)
+
+    def test_live_mfe_helper_still_returns_raw_signed_value(self):
+        """Kırpma replay sınırındadır: ortak canlı yardımcı HAM değeri döndürür.
+
+        Mutasyon kilidi: kırpma yanlışlıkla `_mfe_from_window`'a taşınırsa
+        (canlı davranış değişir) bu test kırmızıya döner.
+        """
+        window = self.replay._post_signal_window(_bars(T0_MS, [99.0, 98.0]),
+                                                 T0_MS, T0_MS + 5 * 60_000)
+        self.assertLess(self.replay._mfe_from_window(window, 100.0), 0.0)
+
+    def test_excursion_invariant_holds_on_mixed_windows(self):
+        """Sıra değişmezi: her pencerede mae ≤ 0 ≤ mfe (kırpmadan sonra).
+
+        Listede HER İKİ uç da var: tüm barları girişin altında kalan pencere
+        (ham MFE < 0) ve tüm barları üstünde kalan pencere (ham MAE > 0) —
+        böylece bu test tek başına da kırpmayı yakalar.
+        """
+        for prices in ([100.0, 101.0], [100.0, 99.0], [99.0, 101.0], [102.0, 97.0],
+                       [99.0, 98.0],      # hiç lehte gitmedi → ham MFE < 0
+                       [101.0, 102.0]):   # hiç aleyhte gitmedi → ham MAE > 0
+            out = self.replay._simulate_ladder(_bars(T0_MS, prices), 100.0, 6.0, 60.0)
+            self.assertIsNotNone(out["mfe_pct"], prices)
+            self.assertIsNotNone(out["mae_pct"], prices)
+            self.assertGreaterEqual(out["mfe_pct"], 0.0, prices)
+            self.assertLessEqual(out["mae_pct"], 0.0, prices)
+            self.assertLessEqual(out["mae_pct"], out["mfe_pct"], prices)
+
+    # ------------------------------------------------------------------
+    # ÇAKIŞMA (kesişim) ALT KÜMESİ: birleştirmenin tek savunulabilir gerekçesi
+    # iki kaynağın hemfikir olduğu sinyallerdir. Akış ortalamaları negatifken
+    # bu alt küme pozitif çıkabilir → karar "birleştirme kötü" değil
+    # "birleştirmeyi KESİŞİME daralt" olur.
+    # ------------------------------------------------------------------
+    def _with_confluence(self, **over) -> dict:
+        base = {"confluence_count": 10, "confluence_avg_net_pct": 0.983,
+                "confluence_median_net_pct": 0.852, "confluence_win_rate": 70.0}
+        base.update(over)
+        return base
+
+    def test_confluence_subset_prints_mean_and_median(self):
+        """Kesişim getirisi basılmalı — ortalama VE medyan (kuyruk şişmesi)."""
+        conf = self._stream(**self._with_confluence())
+        text = self.replay._report_text({"streams": {"combined": conf},
+                                        "limitations": []})
+        self.assertIn("ÇAKIŞMA ALT KÜMESİ", text)
+        self.assertIn("+0.983%", text)
+        self.assertIn("+0.852%", text)
+        self.assertIn("70.00", text)
+
+    def test_small_confluence_sample_is_flagged_as_hypothesis(self):
+        """n<30 iken aşırı iyimserliği engelleyen uyarı ZORUNLU."""
+        conf = self._stream(**self._with_confluence())
+        text = self.replay._report_text({"streams": {"combined": conf},
+                                        "limitations": []})
+        self.assertIn("HİPOTEZ", text)
+        self.assertIn("MEDYANI oku", text)
+
+    def test_large_confluence_sample_drops_the_hypothesis_warning(self):
+        """n≥30 olunca uyarı DÜŞMELİ — yoksa uyarı anlamsızlaşır."""
+        conf = self._stream(**self._with_confluence(
+            confluence_count=42, confluence_avg_net_pct=0.40,
+            confluence_median_net_pct=0.35, confluence_win_rate=58.0))
+        text = self.replay._report_text({"streams": {"combined": conf},
+                                        "limitations": []})
+        self.assertIn("ÇAKIŞMA ALT KÜMESİ", text)
+        self.assertNotIn("HİPOTEZ", text)
+
+    def test_report_without_confluence_omits_subset_block(self):
+        """Hiç çakışma yoksa bölüm çıkmamalı (boş gürültü üretmesin)."""
+        text = self.replay._report_text(
+            {"streams": {"velocity_only": self._stream()}, "limitations": []})
+        self.assertNotIn("ÇAKIŞMA ALT KÜMESİ", text)
+
+    def test_confluence_metrics_exclude_non_confluence_signals(self):
+        """Kesişim istatistiği YALNIZ üyelerden hesaplanır.
+
+        Mutasyon kilidi: çakışma süzgeci düşerse 9.0'lik yabancı sinyal
+        ortalamaya girer ve bu test kırmızıya döner.
+        """
+        sigs = [
+            {"net_pct": 1.0, "target_pct": 2.0, "mfe_pct": 1.5, "mae_pct": -0.5,
+             "hold_minutes": 3.0, "confluence": True, "exit_reason": "take_profit"},
+            {"net_pct": -0.5, "target_pct": 2.0, "mfe_pct": 0.2, "mae_pct": -1.0,
+             "hold_minutes": 3.0, "confluence": True, "exit_reason": "horizon_end"},
+            {"net_pct": 9.0, "target_pct": 2.0, "mfe_pct": 0.2, "mae_pct": -1.0,
+             "hold_minutes": 3.0, "confluence": False, "exit_reason": "horizon_end"},
+        ]
+        m = self.replay._metrics("combined", sigs)
+        self.assertEqual(2, m["confluence_count"])
+        self.assertAlmostEqual(0.25, m["confluence_avg_net_pct"], places=4)
+        self.assertAlmostEqual(0.25, m["confluence_median_net_pct"], places=4)
+        self.assertAlmostEqual(50.0, m["confluence_win_rate"], places=2)
+
 
 async def auto_paper_defaults() -> dict:
     from app.routers import auto_paper
