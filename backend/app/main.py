@@ -879,23 +879,30 @@ async def startup_market_warmup():
         ready = int(hydration.get("hydrated", 0) or 0) + int(hydration.get("already_ready", 0) or 0)
         if ready:
             market.history_loaded = True
+        # DİKKAT (2026-09-16): Konteyner `python:3.11-slim` kullanır. f-string
+        # içinde AYNI TÜR tırnak kullanmak (PEP 701) 3.12+ özelliğidir ve 3.11'de
+        # SyntaxError verir → backend hiç import edilemez, konteyner anında ölür.
+        # `errors` sayısı bu yüzden önce ayrı değişkende hesaplanır.
+        error_count = len(hydration.get("errors", []) or [])
         print(
             f"[MarketData] startup warmup tamamlandı | timeframes={len(priority_timeframes)} "
-            f"ready_series={ready} errors={len(hydration.get("errors", []) or [])}",
+            f"ready_series={ready} errors={error_count}",
             flush=True,
         )
     except Exception as exc:
-        print(f"[MarketData] startup warmup hatası: %s", exc, flush=True)
+        print(f"[MarketData] startup warmup hatası: {exc}", flush=True)
 
     # CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): kapanmış mumları backend'in
     # sağlıklı liveSocket kanalı üzerinden yayınla. Böylece grafik sayfası doğrudan
     # Binance'ye (browser'dan ERİŞİLEMEYEN adres) bağlanmak yerine bu veriyi alır.
-    # `lightweight_subscription` modülü yoksa (opsiyonel bağımlılık) sessiz geç.
+    # SESSİZ GEÇME YOK: bu özellik zaten uzun süre sessizce ölü kaldığı için
+    # (grafik hiç canlı güncellenmiyordu) bir arıza artık görünür loglanır.
     try:
         from app.ws_live_candles import start_live_candle_broadcast
         start_live_candle_broadcast(market)
-    except ImportError:
-        pass
+    except Exception as exc:
+        print(f"[MarketData] canlı mum akışı BAŞLATILAMADI ({type(exc).__name__}: {exc}) — "
+              f"grafik yalnızca HTTP yoklamasıyla güncellenecek", flush=True)
 
 
 async def startup_services():
