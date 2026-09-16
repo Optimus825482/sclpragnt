@@ -262,7 +262,7 @@ async def init_db():
         migrations_dir = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations"))
         schema_sql = ""
         for filename in ("001_pgvector_schema.sql", "002_macd_evidence_lift.sql",
-                         "003_rising_signals.sql"):
+                         "003_rising_signals.sql", "004_bloat_prevention.sql"):
             path = os.path.join(migrations_dir, filename)
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as schema_file:
@@ -3900,7 +3900,8 @@ async def get_research_patterns(status=None, timeframe=None, limit=30):
     return await _run_db(op)
 
 async def prune_retention(days: int = 30, microstructure_days: int = 7,
-                         memory_days: int = 180):
+                         memory_days: int = 180, history_days: int = 21,
+                         embedding_jobs_days: int = 14):
     """Delete high-volume observability rows older than ``days`` days.
 
     microstructure_snapshots grows one row per fresh symbol per second and
@@ -3909,34 +3910,63 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
     microstructure_snapshots uses its own, tighter window (``microstructure_days``)
     and is deleted in batches so a large backlogs does not hold one long
     transaction. Returns per-table deleted row counts.
+
+    2026-09-16 (disk denetimi) — EKLENENLER ve NEDENİ:
+      * `historical_candles` + `historical_feature_snapshots` HİÇ budanmıyordu.
+        ML eğitimi yalnız `ML_TRAIN_LOOKBACK_DAYS` (10) geriye bakar; 21 günlük
+        pencere replay/parite payı bırakır. Bu ikisi sınırsız büyüyen asıl
+        tablolardı. NOT: `open_time`/`captured_at` **MİLİSANİYE** (BIGINT) —
+        cutoff ms'e çevrilir, aksi halde karşılaştırma anlamsız olur.
+      * `macd_monitor_alerts`, `memory_retrieval_logs`, `chat_messages`,
+        `alert_events`, `rising_alerts` de listede yoktu.
+      * `agent_trace_events` EKLENMEDİ: `agent_traces(trace_id)` üzerinden
+        `ON DELETE CASCADE` ile zaten temizleniyor.
+      * Sonda `VACUUM (ANALYZE)`: DELETE alanı işletim sistemine GERİ VERMEZ;
+        ölçümde 12 GB'lık `microstructure_snapshots` yalnız 2.4k satır taşıyordu
+        (budanmış ama hiç vacuum edilmemiş). Bu adım ölü tuple birikimini
+        sınırlar — TEK SEFERLİK geri kazanım için `VACUUM FULL` gerekir (elle).
     """
     cutoff = time.time() - max(1, int(days)) * 86400
     micro_cutoff = time.time() - max(1, int(microstructure_days)) * 86400
     # MEM-01: sohbet belleği kendi, daha uzun penceresiyle düşürülür.
     memory_cutoff = time.time() - max(1, int(memory_days)) * 86400
+    history_cutoff = time.time() - max(1, int(history_days)) * 86400
+    embedding_cutoff = time.time() - max(1, int(embedding_jobs_days)) * 86400
+    # Mum tabloları BIGINT MİLİSANİYE tutar (epoch sn değil).
+    history_cutoff_ms = int(history_cutoff * 1000)
 
     def op(conn):
         deleted = {}
         # Batched sweep: single DELETE on a 100M-row backlog holds a long
         # transaction and bloats WAL; 500k-row chunks commit incrementally.
-        deleted["microstructure_snapshots"] = 0
-        while True:
-            try:
-                cursor = conn.execute("""DELETE FROM microstructure_snapshots WHERE ctid IN (
-                    SELECT ctid FROM microstructure_snapshots WHERE captured_at < %s LIMIT 500000)""",
-                    (micro_cutoff,))
-                conn.commit()
-                batch = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-            except Exception:
-                conn.rollback()
-                break
-            deleted["microstructure_snapshots"] += batch
-            if batch < 500000:
-                break
+        for table, column, window, is_ms in (
+            ("microstructure_snapshots", "captured_at", micro_cutoff, False),
+            # Mum geçmişi: satır sayısı 10^6-10^7 olabilir → o da partili gider.
+            ("historical_candles", "open_time", history_cutoff_ms, True),
+            ("historical_feature_snapshots", "captured_at", history_cutoff_ms, True),
+        ):
+            deleted[table] = 0
+            while True:
+                try:
+                    cursor = conn.execute(
+                        f"""DELETE FROM {table} WHERE ctid IN (
+                            SELECT ctid FROM {table} WHERE {column} < %s LIMIT 500000)""",
+                        (window,))
+                    conn.commit()
+                    batch = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+                except Exception:
+                    conn.rollback()
+                    break
+                deleted[table] += batch
+                if batch < 500000:
+                    break
         for table, column in (
             ("llm_tool_logs", "timestamp"),
             ("analysis_snapshots", "captured_at"),
             ("monitoring_notifications", "detected_at"),
+            # 2026-09-16 eklendi (budama listesinde değillerdi):
+            ("macd_monitor_alerts", "created_at"),
+            ("rising_alerts", "created_at"),
         ):
             try:
                 cursor = conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff,))
@@ -3950,7 +3980,8 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
         # embedding_jobs.created_at TIMESTAMPTZ'dir (epoch double değil); yıkama
         # sorgusu epoch cutoff ile karşılaştırmak için EXTRACT(EPOCH) kullanır.
         try:
-            cursor = conn.execute("DELETE FROM embedding_jobs WHERE EXTRACT(EPOCH FROM created_at) < ?", (cutoff,))
+            cursor = conn.execute("DELETE FROM embedding_jobs WHERE EXTRACT(EPOCH FROM created_at) < ?",
+                                  (embedding_cutoff,))
             conn.commit()
             deleted["embedding_jobs"] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
         except Exception:
@@ -3974,6 +4005,9 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
         for table, column, window in (
             ("agent_traces", "started_at", cutoff),
             ("memory_documents", "created_at", memory_cutoff),
+            ("memory_retrieval_logs", "created_at", cutoff),
+            ("chat_messages", "created_at", memory_cutoff),
+            ("alert_events", "triggered_at", cutoff),
         ):
             try:
                 cursor = conn.execute(
@@ -3983,6 +4017,26 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
             except Exception:
                 conn.rollback()
                 deleted[table] = 0
+        # BLOATED-01: ölü tuple'ları geri kazan (FULL DEĞİL — kilit tutmaz).
+        # `VACUUM` transaction bloğunda çalışamaz → autocommit'e geçici geçilir.
+        try:
+            raw = getattr(conn, "conn", None)
+            previous = None
+            if raw is not None:
+                previous = raw.autocommit
+                raw.autocommit = True
+            try:
+                conn.execute("VACUUM (ANALYZE) microstructure_snapshots, historical_candles,"
+                             " historical_feature_snapshots, memory_documents, memory_embeddings,"
+                             " velocity_candidates, embedding_jobs, agent_traces,"
+                             " monitoring_notifications, macd_monitor_alerts, rising_alerts")
+            finally:
+                if raw is not None and previous is not None:
+                    raw.autocommit = previous
+            deleted["_vacuum"] = 1
+        except Exception as exc:
+            logging.getLogger("scalper.database").debug("retention VACUUM atlandı: %s", exc)
+            deleted["_vacuum"] = 0
         return deleted
 
     return await _run_db(op)

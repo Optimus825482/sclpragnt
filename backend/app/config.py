@@ -352,6 +352,28 @@ class Config:
     # karışıklığını geri getirirdi (bkz. plan §4/R3).
     RISING_TARGET_PCT = float(os.getenv("RISING_TARGET_PCT", "2.0"))
 
+    # ---------------------------------------------------------------------
+    # SAKLAMA (RETENTION) PENCERELERİ — disk bütçesi (2026-09-16)
+    #
+    # Sunucu ölçümü: DB 21 GB ama CANLI veri ~1-2 GB; kalanı BUDANMIŞ ama
+    # `VACUUM` edilmemiş ölü satırlar (microstructure_snapshots 12 GB / 2.4k
+    # satır, decision_logs 1.7 GB / 34 satır). Tek seferlik VACUUM FULL ile
+    # geri kazanılır; buradaki pencereler TEKRARINI engeller.
+    # ---------------------------------------------------------------------
+    RETENTION_DAYS = max(1, int(os.getenv("RETENTION_DAYS", "30")))
+    # Mikro yapı: saniyede bir satır üretir; en kısa pencere.
+    MICROSTRUCTURE_RETENTION_DAYS = max(1, int(os.getenv("MICROSTRUCTURE_RETENTION_DAYS", "7")))
+    # Sohbet belleği anlamsal hafızadır (LLM bağlamı) — ürün kararı, bu yüzden
+    # görece uzun. Disk baskısı varsa `MEMORY_RETENTION_DAYS=30` önerilir:
+    # `memory_embeddings` indeksi ölçümde 5 GB (377k belge, ~13 KB indeks/belge).
+    MEMORY_RETENTION_DAYS = max(1, int(os.getenv("MEMORY_RETENTION_DAYS", "180")))
+    # ML eğitimi yalnız `ML_TRAIN_LOOKBACK_DAYS` (10) geriye bakar; mum/özellik
+    # geçmişi bunun ÜSTÜNDE tutulur ki replay/parite kontrolü payı kalsın.
+    # ÖNEMLİ: bu iki tablo daha önce HİÇ budanmıyordu (sınırsız büyüme).
+    HISTORY_RETENTION_DAYS = max(1, int(os.getenv("HISTORY_RETENTION_DAYS", "21")))
+    # Embedding işleri tam JSONB belge taşır; kuyruk telemetrisi.
+    EMBEDDING_JOBS_RETENTION_DAYS = max(1, int(os.getenv("EMBEDDING_JOBS_RETENTION_DAYS", "14")))
+
     ORDER_PCT = float(os.getenv("ORDER_PCT", "0.10"))
     PYRAMIDING_LAYERS = max(1, int(os.getenv("PYRAMIDING_LAYERS", "2")))
     SYMBOL_ORDER_PCT = {}
