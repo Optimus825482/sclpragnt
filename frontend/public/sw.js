@@ -187,3 +187,21 @@ self.addEventListener("fetch", function (event) {
 
   // Diğer her şey (RSC, manifest, ikon, API-dışı GET): SW karışmasın.
 });
+
+// YENİ SÜRÜM AKTİF (2026-09-16): tarayıcı yeni sw.js'i kurup skipWaiting ile
+// aktifleştirdiğinde, hâlâ eski JS/HTML bellekte olan açık sayfalar yeni asset'leri
+// alamaz. Bu yüzden activate'te tüm kontrollü pencere istemcilerine "YENILE"
+// mesajı göndeririz; istemci tarafı bunu dinler ve location.reload() yapar.
+// Böylece her deploy'dan sonra ?v=<BUILD_ID> değişir → yeni SW kurulur → sayfalar
+// otomatik yenilenir → yeni JS/HTML yüklenir. Kullanıcı hard refresh yapmaz.
+self.addEventListener("activate", function (event) {
+  event.waitUntil(
+    self.clients.claim().then(function () {
+      return self.clients.matchAll({ type: "window" });
+    }).then(function (clients) {
+      clients.forEach(function (client) {
+        try { client.postMessage({ type: "SW_VERSION", build: BUILD }); } catch (_) { /* yok say */ }
+      });
+    })
+  );
+});
