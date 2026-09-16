@@ -54,7 +54,68 @@ self.addEventListener("push", function (event) {
 
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
-  event.waitUntil(clients.openWindow(event.notification.data?.url || "/alerts"));
+  var target = (event.notification.data && event.notification.data.url) || "/alerts";
+  // 2026-09-16: eskiden her tıklama `clients.openWindow` ile YENİ SEKME açıyordu.
+  // Doğrusu: açık bir pencere varsa onu ODAKLA ve hedef URL'e yönlendir; yoksa aç.
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        var client = list[i];
+        if (new URL(client.url).origin === self.location.origin) {
+          if ("navigate" in client) {
+            return client.navigate(target).then(function (navigated) {
+              return (navigated || client).focus();
+            });
+          }
+          return client.focus();
+        }
+      }
+      return clients.openWindow(target);
+    })
+  );
+});
+
+// PUSH-RESILIENCE (2026-09-16): tarayıcı aboneliği döndürürse (endpoint rotasyonu,
+// PWA yeniden kurulumu) eski endpoint ölür ve backend ölü aboneliği temizledikten
+// sonra push SESSİZCE susar. Bu olay o durumu yakalayıp yeni aboneliği backend'e
+// yazar. NOT: Chrome bu olayı güvenilir tetiklemez → istemci tarafında açılışta
+// `reconcilePushSubscription()` (lib/push.ts) ile birlikte çalışır; ikisi birlikte
+// hem olayı destekleyen hem desteklemeyen tarayıcıları kapsar.
+function swVapidKey() {
+  try { return new URL(self.location.href).searchParams.get("vapid") || ""; } catch (_) { return ""; }
+}
+
+function urlBase64ToUint8Array(base64String) {
+  var clean = base64String.trim().replace(/-/g, "+").replace(/_/g, "/");
+  var padded = clean + "=".repeat((4 - (clean.length % 4)) % 4);
+  var raw = atob(padded);
+  var out = new Uint8Array(raw.length);
+  for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function registerSubscription(subscription) {
+  if (!subscription) return Promise.resolve();
+  return fetch("/api/alerts/push-subscription", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(subscription.toJSON()),
+  }).catch(function () { /* çevrimdışı: sonraki açılışta uzlaştırma yakalar */ });
+}
+
+self.addEventListener("pushsubscriptionchange", function (event) {
+  var key = swVapidKey();
+  if (!key) return;
+  event.waitUntil(
+    Promise.resolve(event.newSubscription).then(function (existing) {
+      if (existing) return registerSubscription(existing);
+      return self.registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(key),
+      }).then(registerSubscription);
+    }).catch(function () { /* yeniden abone olunamadı: kullanıcı izni gerekebilir */ })
+  );
 });
 
 function isDocumentRequest(request) {

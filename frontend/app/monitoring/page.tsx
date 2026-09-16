@@ -599,6 +599,9 @@ export default function MonitoringPage() {
   // Panel filtresi/sıralaması — veri kaynağı SUNUCU; burada yalnız görünüm süzülür.
   const [risingFilter, setRisingFilter] = useState<"all" | "erken" | "yukselis">("all");
   const [risingSort, setRisingSort] = useState<"score" | "proximity" | "strength">("score");
+  // PUSH SAĞLIĞI (2026-09-16): sunucudan gelir. `subscribers === 0` iken backend
+  // VAPID'i yapılandırılmış olsa bile tek push gitmez — sessiz arızayı görünür kılar.
+  const [pushHealth, setPushHealth] = useState<{ subscribers: number | null; backend_vapid_configured: boolean } | null>(null);
   // R1-01: sunucu sağlığı + okuma hataları artık GÖRÜNÜR (yutulmaz).
   const [health, setHealth] = useState<ServerHealth>(EMPTY_HEALTH);
   const [stateError, setStateError] = useState<string | null>(null);
@@ -706,6 +709,11 @@ export default function MonitoringPage() {
     });
     // R3: yükseliş/erken sinyalleri — SUNUCU tespiti (istemci türetmesi kaldırıldı).
     setRisingBlock(data?.rising ?? null);
+    // Push sağlığı: alan gelmezse `null` (uydurma "0 abone" göstermeyelim).
+    const push = data?.push;
+    setPushHealth(push && typeof push === "object"
+      ? { subscribers: numOrNull(push.subscribers), backend_vapid_configured: Boolean(push.backend_vapid_configured) }
+      : null);
     setStateError(null);
     setStateLoaded(true);
     setLastUpdatedAt(Date.now());
@@ -1078,6 +1086,19 @@ export default function MonitoringPage() {
           <HealthChip label="Tarama döngüsü" value={health.loop_active} onText="AKTİF" offText="DURDU" onTone="good" offTone="bad" />
           <HealthChip label="Veri hazır" value={health.data_ready} onText="HAZIR" offText="YOK" onTone="good" offTone="warn" />
           <HealthChip label="Sistem başlangıcı" value={health.system_startup} onText="YENİ BAŞLADI" offText="OTURDU" onTone="warn" offTone="good" />
+          {/* PUSH SAĞLIĞI (2026-09-16): "push çalışıyor" yanılsamasını kırar.
+              0 abone iken backend VAPID'i yapılandırılmış olsa bile TEK push
+              gitmez; bu sessiz arıza artık panelde görünür. */}
+          {pushHealth != null && (
+            <HealthChip
+              label="Push bildirimi"
+              value={pushHealth.subscribers != null && pushHealth.subscribers > 0 && pushHealth.backend_vapid_configured}
+              onText={`${pushHealth.subscribers} ABONE`}
+              offText={pushHealth.backend_vapid_configured ? "ABONE YOK" : "VAPID YOK"}
+              onTone="good"
+              offTone="warn"
+            />
+          )}
           {health.next_scan_in_sec != null && (
             <span className="font-mono text-[11px] text-bunker-muted">sonraki tarama ~{health.next_scan_in_sec} sn</span>
           )}

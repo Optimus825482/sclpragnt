@@ -104,3 +104,29 @@ export async function ensurePushSubscription(): Promise<{ ok: boolean; reason?: 
     return { ok: false, reason: error instanceof Error ? error.message : "abonelik_hatasi" };
   }
 }
+
+/**
+ * SESSİZ UZLAŞTIRMA (2026-09-16 denetimi) — push'un kendiliğinden susmasını önler.
+ *
+ * Sorun: tarayıcı push aboneliğini döndürebilir (endpoint rotasyonu, PWA yeniden
+ * kurulumu, tarayıcı güncellemesi). Bu durumda backend'deki eski endpoint ölür ve
+ * push SESSİZCE durur. `pushsubscriptionchange` olayı bunu yakalamak için var ama
+ * Chrome onu güvenilir biçimde tetiklemez; bu yüzden uygulama açılışında aboneliği
+ * uzlaştırmak gerekir.
+ *
+ * `ensurePushSubscription`'dan farkı: **ASLA izin istemez** (açılışta izin
+ * penceresi açmak kabul edilemez). İzin zaten verilmişse mevcut aboneliği alıp
+ * backend'e yeniden kaydeder; yoksa oluşturur.
+ */
+export async function reconcilePushSubscription(): Promise<{ ok: boolean; reason?: string }> {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") {
+    return { ok: false, reason: "izin_yok" };
+  }
+  return ensurePushSubscription();
+}
+
+/** Backend'e kayıtlı abonelik var mı? (push sağlığını görünür kılmak için) */
+export function pushPermissionState(): NotificationPermission | "unsupported" {
+  if (typeof Notification === "undefined") return "unsupported";
+  return Notification.permission;
+}

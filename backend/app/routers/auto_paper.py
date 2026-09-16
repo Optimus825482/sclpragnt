@@ -362,11 +362,24 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             balance = await database.get_wallet_balance("TRY")
         if order_value is None:
             order_value = balance * balance_pct
+        # RİSK SİZİNG (2026-09-16 denetimi): ESKİDEN `order_value < min_order` iken
+        # `order_value = balance` yapılıyordu → tek pozisyona TÜM bakiye gidiyordu ve
+        # `balance_pct` fiilen baypas ediliyordu. Ölçülebilir örnek: bakiye 100 TRY,
+        # `balance_pct=%35`, `min_order_try=50` → 100 TRY açılış = riskin %100'ü.
+        # Bu hem risk kontrolünü hem boyut kanıtını (sizing raporu) bozar.
+        # Doğru davranış: risk bütçesi geçerli bir emir üretemiyorsa AÇMA (fail-closed)
+        # ve nedeni görünür kıl — operatör `balance_pct`/`min_order_try` ayarlarını
+        # kendisi hizalar. (R3-06 deseni: sessiz düşme yok.)
         if order_value < min_order:
-            order_value = balance
-            if order_value < min_order:
-                logger.info("auto_paper %s: bakiye yetersiz %.2f TRY", symbol, balance)
-                return None
+            logger.warning(
+                "auto_paper %s: risk bütçesi yetersiz (bakiye %.2f TRY × %%%.1f = %.2f TRY "
+                "< min emir %.2f TRY) — açılmadı; balance_pct/min_order_try ayarlayın",
+                symbol, balance, balance_pct * 100, order_value, min_order)
+            return _blocked(symbol, "order_below_min",
+                            order_value=round(order_value, 2),
+                            min_order=min_order,
+                            balance=round(balance, 2),
+                            balance_pct=round(balance_pct * 100, 2))
 
         sl_pct = float(settings.get("stop_loss_pct", config.AUTO_PAPER_SL_PCT_DEFAULT)) / 100.0
         target_pct = float(notification.get("target_pct") or 0)
