@@ -145,12 +145,14 @@ class MarketData:
         self.ws_malformed_frames = 0
         self.WS_URL = f"{WS_BASE}/stream?streams={{}}"
 
-    # CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): kapanmış mum dinleyicileri.
+    # CANLI AKIS (2026-09-16, grafik-canlı-düzeltmesi): mum dinleyicileri.
     # Grafik sayfası doğrudan Binance'ye (browser'dan ERİŞİLEMEYEN adres) bağlanmak
     # yerine backend'in sağlıklı liveSocket kanalından mum alır; bu dinleyici
     # `app/ws_live_candles.py` tarafından kaydedilir.
+    # DİKKAT: hem OLUŞAN hem KAPANMIŞ mumlar iletilir (`closed` alanı ile ayrılır).
+    # Yalnızca kapanmışları iletmek grafikte canlı güncelleme ÜRETMİYORDU.
     def add_bar_listener(self, listener: callable) -> None:
-        """Kapanmış mum dinleyicisi ekle: `listener(symbol, timeframe, bar_dict)`."""
+        """Mum dinleyicisi ekle: `listener(symbol, timeframe, bar_dict)`."""
         if listener not in self._bar_listeners:
             self._bar_listeners.append(listener)
 
@@ -870,20 +872,31 @@ class MarketData:
         self.tickers = tickers
         self._mark_ws_event()
 
-        if not candle.get("x", False):
-            return
-        # CANLI AKIS: kapanmış mumu dinleyicilere ilet (grafik güncellemesi için).
+        # CANLI AKIS (2026-09-16): mumu dinleyicilere ilet — HEM oluşan HEM kapanmış.
+        # Yalnızca KAPANMIŞ mumları iletmek grafiği canlı YAPMIYORDU: HTTP
+        # `/api/market-klines` son eleman olarak OLUŞAN mumu verir ve kapanmış bir
+        # mumun açılış zamanı ondan her zaman KÜÇÜKTÜR → istemcinin `setBars` kapısı
+        # onu "eski" sayıp düşürüyordu (grafik 10 sn'lik HTTP yoklamasına mahkûmdu).
+        # `closed` alanıyla dağıtıcı ikisini ayırt eder; oluşan mum YALNIZCA bakılan
+        # (sembol, ufuk) çifti için yayınlanır — gerekçe: app/ws_live_candles.py.
+        # DİKKAT: bu blok `if not candle["x"]: return` satırından ÖNCE gelmeli;
+        # sonraya alınırsa oluşan mum yayınlanmaz ve grafik canlılığını kaybeder
+        # (tests/test_ws_live_candles.py bunu kilitler).
         if self._bar_listeners:
             bar_payload = {
                 "symbol": symbol, "timeframe": tf,
                 "time": opened_at_ms, "open": opened, "high": high,
                 "low": low, "close": close, "volume": volume,
+                "closed": bool(candle.get("x", False)),
             }
             for listener in list(self._bar_listeners):
                 try:
                     listener(symbol, tf, bar_payload)
                 except Exception:
                     pass
+
+        if not candle.get("x", False):
+            return
         history = self.klines[tf][symbol]
         # B-02 savunması: bozuk/eksik bir geçmiş sözlüğü (ör. `timestamps`
         # yazılmadan `closes` doldurulmuş) seriyi kalıcı olarak desenkronize

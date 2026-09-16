@@ -240,6 +240,12 @@ export default function ChartsPage() {
     const containerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+    // GÖRÜNÜM KİLİDİ (2026-09-16): `fitContent()` 10 sn'lik her HTTP turunda
+    // çağrılıyordu → kullanıcının kaydırması/yakınlaştırması sürekli sıfırlanıyor
+    // ve canlı güncellemeler "grafik zıplıyor" gibi görünüyordu. Artık yalnızca
+    // sembol/ufuk DEĞİŞTİĞİNDE bir kez sığdırılır; sonrası kullanıcının görünümünde
+    // tazelenir (canlı mum akmaya devam eder, görünüm kaymaz).
+    const fittedForRef = useRef<string>("");
     const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
     const overlaySeries = useRef<Map<string, ISeriesApi<"Line">[]>>(new Map());
     const paneSeries = useRef<Map<string, (ISeriesApi<"Line"> | ISeriesApi<"Histogram">)[]>>(new Map());
@@ -357,7 +363,12 @@ export default function ChartsPage() {
             const last = candles[candles.length - 1]?.close ?? 0;
             candleRef.current.applyOptions({ priceFormat: chartPriceFormat(last) });
             chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
-            chartRef.current?.timeScale().fitContent();
+            // GÖRÜNÜM KİLİDİ: yalnızca sembol/ufuk değişince sığdır (yukarıya bak).
+            const viewKey = `${symbol}|${interval}`;
+            if (fittedForRef.current !== viewKey) {
+                fittedForRef.current = viewKey;
+                chartRef.current?.timeScale().fitContent();
+            }
         } catch (e) {
             console.error("kline hatası:", e);
         } finally {
