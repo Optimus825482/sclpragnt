@@ -3630,16 +3630,39 @@ async def save_push_subscription(subscription):
     NOT (2026-09-06): Postgres şeması TIMESTAMPTZ + JSONB kullanır; epoch float
     ve düz string yazımı psycopg'de hata veriyordu (push-subscription 500).
     Timestamp için now(), JSONB için ::jsonb cast kullanılır.
+
+    MÜKERRER BİLDİRİM ÖNLEMİ (2026-09-17): AYNI tarayıcı profilinin p256dh
+    anahtarı birden çok endpoint satırına düşerse (PWA yeniden kurulumu, SW
+    rotasyonu, VAPID anahtarı değişimi sonrası eski endpoint 410 almadan
+    kalırsa) her bildirim aynı cihaza N kez gider. Aynı `keys.p256dh` ile
+    gelen yeni kayıt ESKİ satırın endpoint'ini DEĞİŞTİRİR — ikinci satır
+    açılmaz. Farklı cihazların p256dh'si farklıdır → çoklu cihaz davranışı
+    korunur.
     """
     endpoint = str(subscription.get("endpoint") or "")
     if not endpoint: raise ValueError("push subscription endpoint gerekli")
+    p256dh = str(((subscription.get("keys") or {}).get("p256dh")) or "")
     def op(conn):
+        replaced = 0
+        if p256dh:
+            rows = conn.execute("SELECT endpoint, subscription FROM push_subscriptions").fetchall()
+            stale = []
+            for row in rows:
+                if str(row["endpoint"] or "") == endpoint:
+                    continue
+                keys = (_json_value(row["subscription"], {}) or {}).get("keys") or {}
+                if str(keys.get("p256dh") or "") == p256dh:
+                    stale.append(str(row["endpoint"] or ""))
+            if stale:
+                conn.executemany("DELETE FROM push_subscriptions WHERE endpoint = ?",
+                                 [(ep,) for ep in stale])
+                replaced = len(stale)
         conn.execute(
             "INSERT INTO push_subscriptions(endpoint,subscription,created_at,updated_at) "
             "VALUES(?::text,?::jsonb,now(),now()) "
             "ON CONFLICT(endpoint) DO UPDATE SET subscription=excluded.subscription,updated_at=now()",
             (endpoint, _json_safe_dumps(subscription)),
-        ); conn.commit(); return True
+        ); conn.commit(); return {"ok": True, "replaced_duplicates": replaced}
     return await _run_db(op)
 
 async def list_push_subscriptions():

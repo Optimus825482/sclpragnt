@@ -1263,7 +1263,11 @@ async def save_alert_push_subscription(payload: dict):
         raise HTTPException(status_code=422, detail="push subscription endpoint gerekli")
     try:
         saved = await database.save_push_subscription(payload)
-        return {"ok": saved, "paper_only": True}
+        return {"ok": bool(saved), "paper_only": True,
+                # Mükerrer endpoint temizliği görünür olsun (aynı p256dh ile
+                # gelen ikinci kayıt eski satırı ezer — çift bildirim ölür).
+                "replaced_duplicates": int((saved or {}).get("replaced_duplicates", 0)
+                                           if isinstance(saved, dict) else 0)}
     except Exception as exc:
         logger.warning("push subscription kaydedilemedi %s: %s", endpoint, exc, exc_info=True)
         raise HTTPException(status_code=502, detail=f"push kayit hatasi: {type(exc).__name__}")

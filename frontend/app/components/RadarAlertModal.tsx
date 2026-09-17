@@ -47,6 +47,9 @@ export type RadarAlertItem = {
   price?: number;
   expected_price?: number;
   mode?: string;
+  // 2026-09-17: `monitoring_alert` yayınlarında mevcut (hâlâ BEKLİYOR)
+  // bildirimin tazelemesini işaretler — modal bu satırları GÖSTERMEZ.
+  updated?: boolean;
   triggered_at?: number;
   detected_at?: number;
   horizon_minutes?: number;
@@ -117,7 +120,13 @@ export default function RadarAlertModal() {
     // varsayılıyordu → radar dialog'u sembol/skor olmadan jenerik açılıyordu.
     const payload = message.data;
     const rows = (Array.isArray(payload) ? payload : [payload]).filter(Boolean) as RadarAlertItem[];
-    const entries: RadarAlertItem[] = rows.map((raw) => ({
+    // MÜKERRER BİLDİRİM ÖNLEMİ (2026-09-17): `monitoring_alert` yayınları
+    // YENİ + GÜNCELLENEN kayıtları birlikte taşır. `updated=true` satırı zaten
+    // açık olan bir bildirimin (aynı sembol, hâlâ BEKLİYOR) her taramadaki
+    // tazelemesidir — modal'ı tekrar açıp sesi yeniden çalmamalı. Panel
+    // tablosu bu satırları yine kullanır (sayfa kendi `loadState` çağrısıyla).
+    const freshRows = rows.filter((r) => !r.updated);
+    const entries: RadarAlertItem[] = freshRows.map((raw) => ({
       ...raw,
       id: raw.id ?? (raw as any).event_key ?? `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       symbol: raw.symbol,
