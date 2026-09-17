@@ -122,6 +122,58 @@ class UnifiedNotifyTests(unittest.TestCase):
         self.assertNotIn("sources", pushed)
 
 
+class UnifiedCrossSuppressionTests(unittest.TestCase):
+    """Çapraz tekilleştirme (2026-09-17 canlı veri tespiti).
+
+    Gerçek olay (Raporlar > Radar): ONETRY 10:35 (radar turu push ✓) +
+    10:43 (MACD hızlı yolu push ✓) — 8 dk arayla İKİ bildirim. Radar turu
+    `note_notified` YAZMIYORDU; hızlı yolun `recently_notified` haritası radar
+    bildirimini göremiyordu, pending kapısı (ufuk+2dk = 7dk) de 8. dakikada
+    dolmuştu → ikinci push serbest kalıyordu.
+    """
+
+    def setUp(self):
+        from app import unified_signals
+        self.us = unified_signals
+        self.us._unified_notified_at.clear()
+        monitoring._unified_pushed_symbols.clear()
+        self.addCleanup(self.us._unified_notified_at.clear)
+        self.addCleanup(monitoring._unified_pushed_symbols.clear)
+
+    def _ctx(self, unified: bool):
+        settings = {"enabled": True, "radar_unified_notify": unified,
+                    "radar_combined_enabled": False}
+        auto_paper_fn = AsyncMock(return_value=None)
+        patches = [
+            patch.object(monitoring, "get_user_notification_settings",
+                         new=AsyncMock(return_value=settings)),
+            patch.object(monitoring, "_send_push", new=AsyncMock(return_value=True)),
+            patch.object(monitoring, "ws_manager",
+                         new=MagicMock(broadcast=AsyncMock(return_value=None))),
+            patch.object(auto_paper, "try_open_from_notification", new=auto_paper_fn),
+            patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "dummy-key"}, clear=False),
+        ]
+        return patches
+
+    def test_radar_delivery_marks_fast_path_cooldown(self):
+        """Radar turu bildirdi → hızlı yol `recently_notified` ile GÖRMELİ."""
+        for p in self._ctx(True):
+            p.start()
+            self.addCleanup(p.stop)
+        _run(monitoring._deliver_scan_notifications([_radar_notif("BTCTRY")]))
+        self.assertTrue(self.us.recently_notified("BTCTRY"),
+                        "radar bildirimi hızlı yol cooldown'una işlenmeli")
+
+    def test_fast_path_is_silent_after_radar_notification(self):
+        """Radar bildirdikten sonra MACD hızlı yolu AYNI sembolü push ETMEMELİ."""
+        self.us.note_notified("BTCTRY")
+        for p in self._ctx(True):
+            p.start()
+            self.addCleanup(p.stop)
+        outcome = _run(monitoring._unified_fast_notify_impl("BTCTRY", "jump", 85.0))
+        self.assertIsNone(outcome, "recently_notified iken hızlı yol sessiz kalmalı")
+
+
 class VelocityRoutingTests(unittest.TestCase):
     def test_envelope_maps_raw_score_to_panel(self):
         candidate = {"symbol": "BTCTRY", "velocity_score": 1400.0, "target_pct": 2.0,

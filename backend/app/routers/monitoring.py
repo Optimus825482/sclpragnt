@@ -1230,6 +1230,15 @@ async def _deliver_scan_notifications(notified: list) -> None:
             notif["unified"] = True
             if sym:
                 _unified_pushed_symbols.add(sym)
+                # ÇAPRAZ BASTIRMA (2026-09-17 düzeltmesi — canlı veri tespiti):
+                # radar turu bildirdiyse hızlı yol (MACD jump/early) aynı sembolü
+                # UNIFIED_FAST_COOLDOWN_SEC boyunca TEKRAR bildirmez. Teşhis:
+                # ONETRY 10:35 (radar) + 10:43 (hızlı yol) — 8 dk arayla İKİ push;
+                # hızlı yolun `recently_notified` haritası radar bildirimini
+                # görmüyordu, pending kapısı (ufuk+2dk=7dk) da 8. dakikada dolmuştu.
+                # Not: push başarısız olsa bile bildirim KAYDEDİLİP WS ile yayınlanır
+                # ve otonom paper açabilir → bastırma teslimden bağımsız işaretlenir.
+                unified_signals.note_notified(sym)
     if new_notifs and not quiet and vapid_configured:
         for notif in new_notifs:
             ok = await _send_push(notif)
@@ -1673,6 +1682,10 @@ async def _run_rising_scan() -> dict:
     quiet = _in_quiet_hours(settings)
     now = time.monotonic()
     max_per_scan = max(1, int(getattr(config, "RISING_MAX_PER_SCAN", 3) or 3))
+    # Çapraz bastırma yalnızca BİRLEŞİK moddayken: kullanıcı tek-bildirim modunu
+    # kapatırsa bayat `note_notified` kayıtları (≤30 dk) yükseliş push'unu
+    # engellememeli (mod değişimi anında sessizleşme hatası).
+    unified_mode = bool(settings.get("radar_unified_notify"))
     notify_enabled = bool(getattr(config, "RISING_NOTIFY_ENABLED", True))
     notified: list = []
     for candidate in candidates:
@@ -1698,7 +1711,7 @@ async def _run_rising_scan() -> dict:
         # kaydı (`rising_alerts`) yine yazılır, replay bunu kullanır.
         fire = (notify_enabled and not is_first_observation
                 and rising_signals.should_fire(candidate, now)
-                and not unified_signals.recently_notified(symbol))
+                and not (unified_mode and unified_signals.recently_notified(symbol)))
         if fire and len(notified) >= max_per_scan:
             continue
         notif = _build_rising_notification(candidate, float(price)) if notify_enabled else None
