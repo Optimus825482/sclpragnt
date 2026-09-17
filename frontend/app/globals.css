@@ -204,6 +204,14 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 .table-scroll { border-radius: .75rem; }
 .table-scroll, .message-table-wrap { max-width: 100%; }
 .table-scroll > table, .message-table-wrap > table { min-width: max-content; }
+/* Kompakt tablo (Raporlar > RADAR): yatay scroll ÇIKMASIN (kullanıcı kuralı).
+   `min-width: max-content` bu tabloda devre dışı — içerik genişliğine
+   zorlanmaz, birleştirilmiş sütunlarla konteynere sığar; dar dolgu + küçük
+   punto. Çok dar ekranlarda (mobil) güvenlik ağı olarak scroll kalır. */
+.table-scroll > table.table-compact { min-width: 0; }
+.data-table.table-compact { font-size: .72rem; }
+.data-table.table-compact th { padding: .55rem .6rem; font-size: .62rem; }
+.data-table.table-compact td { padding: .5rem .6rem; }
 
 .live-terminal { min-width: 0; }
 .live-terminal .trade-log-row { min-width: 0; overflow-wrap: anywhere; }

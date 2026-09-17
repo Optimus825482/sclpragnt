@@ -70,18 +70,29 @@ const SOURCE_BADGE_META: Record<string, { label: string; cls: string }> = {
   early: { label: "ERKEN SIRÇRAMA", cls: "border-violet-400/50 bg-violet-400/15 text-violet-300" },
   rising: { label: "YÜKSELİŞ", cls: "border-amber-400/50 bg-amber-400/15 text-amber-300" },
 };
-function SourceBadges({ sources }: { sources?: string[] | null }) {
+// Kompakt tablo modu: genişlik bütçesi dar (yatay scroll ÇIKMAYACAK kuralı) →
+// kısa etiketler; tam ad `title` ipucunda durur, bilgi kaybı yok.
+const SOURCE_BADGE_COMPACT: Record<string, string> = {
+  velocity: "RADAR",
+  jump: "SIÇR.",
+  early: "ERKEN",
+  rising: "YÜKS.",
+};
+function SourceBadges({ sources, compact = false }: { sources?: string[] | null; compact?: boolean }) {
   const list = (sources || []).filter((s) => typeof s === "string" && s);
   if (!list.length) {
     return <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${SOURCE_BADGE_META.velocity.cls}`}>RADAR</span>;
   }
+  // Kompakt modda rozetler DİKEY istiflenir → çok kaynaklu satır genişlik
+  // açmaz (satır yüksekliğiyle öder), tablo dar kalır.
   return (
-    <span className="inline-flex flex-wrap gap-1">
+    <span className={compact ? "inline-flex flex-col items-start gap-0.5" : "inline-flex flex-wrap gap-1"}>
       {list.map((s) => {
         const meta = SOURCE_BADGE_META[s] || { label: s.toUpperCase(), cls: "border-bunker-600 bg-bunker-800/50 text-bunker-muted" };
+        const label = compact ? (SOURCE_BADGE_COMPACT[s] || meta.label) : meta.label;
         return (
-          <span key={s} className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${meta.cls}`}>
-            {meta.label}
+          <span key={s} title={meta.label} className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${meta.cls}`}>
+            {label}
           </span>
         );
       })}
@@ -1150,19 +1161,20 @@ function UserRadarTab() {
         ) : (
           <>
             <div className="mt-3 table-scroll">
-              <table className="data-table">
+              {/* table-compact + birleştirilmiş sütunlar: yatay scroll ÇIKMASIN
+                  (kullanıcı kuralı). Tarih+Saat → Zaman; Skor+Ham Skor → Skor
+                  (ham skor satır içi soluk metin + tooltip). Veri kaybı yok. */}
+              <table className="data-table table-compact">
                 <thead>
                   <tr>
-                    <SortHeader label="Tarih" field="date" />
-                    <SortHeader label="Saat" field="time" />
+                    <SortHeader label="Zaman" field="time" />
                     <SortHeader label="Sembol" field="symbol" />
                     <th>Kaynak</th>
-                    <SortHeader label="Anlik Fiyat" field="price" />
+                    <SortHeader label="Fiyat" field="price" />
                     <SortHeader label="Skor" field="score" />
-                    <SortHeader label="Ham Skor" field="raw_score" />
                     <SortHeader label="Ufuk" field="horizon_minutes" />
-                    <SortHeader label="Sonuc (Max MFE)" field="mfe_pct" />
-                    <SortHeader label="Net (Cikis)" field="net_pct" />
+                    <SortHeader label="MFE" field="mfe_pct" />
+                    <SortHeader label="Net" field="net_pct" />
                     <th>Durum</th>
                   </tr>
                 </thead>
@@ -1182,13 +1194,18 @@ function UserRadarTab() {
                     const mfeTone = mfePct != null ? (mfePct >= 0 ? "text-neon-green" : "text-neon-red") : "text-bunker-muted";
                     return (
                       <tr key={`${n.id}-${n.symbol}-${n.detected_at}`}>
-                        <td className="font-mono text-xs text-bunker-muted">{dateStr}</td>
-                        <td className="font-mono text-xs text-bunker-muted">{timeStr}</td>
+                        <td className="font-mono text-xs text-bunker-muted" title={dateStr}>
+                          {dt.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit" })} {timeStr}
+                        </td>
                         <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
-                        <td><SourceBadges sources={n.sources} /></td>
+                        <td><SourceBadges sources={n.sources} compact /></td>
                         <td className="font-mono text-xs text-white">{n.price != null ? Number(n.price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
-                        <td className={`font-mono text-xs ${saturated ? "text-yellow-300" : "text-white"}`} title={saturated ? "Panel skoru cap nedeniyle 100'a kirpildi — gercek sirayi ham skor verir" : undefined}>{n.score != null ? Number(n.score).toFixed(2) : "—"}{saturated ? " ⚠" : ""}</td>
-                        <td className="font-mono text-xs text-bunker-muted">{rawScore != null ? `${saturated ? "≥" : ""}${rawScore.toFixed(0)}` : "—"}</td>
+                        <td className={`font-mono text-xs ${saturated ? "text-yellow-300" : "text-white"}`} title={saturated ? "Panel skoru cap nedeniyle 100'a kirpildi — gercek sirayi ham skor verir" : "Ham skor: sinyalin kalibre edilmemis ham değeridir"}>
+                          {n.score != null ? Number(n.score).toFixed(2) : "—"}{saturated ? " ⚠" : ""}
+                          {rawScore != null && (
+                            <span className="text-bunker-muted"> · {saturated ? "≥" : ""}{rawScore.toFixed(0)}</span>
+                          )}
+                        </td>
                         <td className="font-mono text-xs text-bunker-muted">{n.horizon_minutes ? `${n.horizon_minutes}dk` : "—"}</td>
                         <td className={`font-mono text-xs ${mfeTone}`}>{mfePct != null ? `%${mfePct.toFixed(2)}` : "—"}</td>
                         <td className={`font-mono text-xs ${netPct == null || !Number.isFinite(netPct) ? "text-bunker-muted" : netPct >= 0 ? "text-neon-green" : "text-neon-red"}`}>{netPct != null && Number.isFinite(netPct) ? `%${netPct.toFixed(2)}` : "—"}</td>
