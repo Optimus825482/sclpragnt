@@ -680,8 +680,15 @@ async def _run_combined_radar_replay(options: dict) -> None:
         sweep_sls = _parse_float_list(options.get("sweep_sls"), [0.5, 0.75, 1.0, 1.5, 2.0, 3.0])
         # Ratchet açıklığı: MFE'nin ne kadarının korunduğunu belirleyen boyut.
         sweep_gaps = _parse_float_list(options.get("sweep_gaps"), [0.3, 0.6, 1.0, 1.5])
+        # OUT-OF-SAMPLE: pencereyi geçmişe kaydırır. Tek dönemde ızgaranın
+        # MAKSİMUMUNU seçmek iyimser yanlıdır; aynı ızgara ikinci bir dönemde
+        # koşulup en iyi hücrenin DAYANIP DAYANMADIĞI ölçülür.
+        offset_hours = max(0.0, float(options.get("offset_hours") or 0))
 
-        _combined_radar_replay_log("info", f"Birleşik radar replay başladı | pencere={hours}h | skip_fetch={skip_fetch}")
+        _combined_radar_replay_log(
+            "info", f"Birleşik radar replay başladı | pencere={hours}h"
+                    + (f" | offset={offset_hours:g}h (out-of-sample)" if offset_hours else "")
+                    + f" | skip_fetch={skip_fetch}")
 
         def on_progress(done: int, total: int) -> None:
             state.update({"completed": done, "total": total,
@@ -695,7 +702,7 @@ async def _run_combined_radar_replay(options: dict) -> None:
             hours, symbols, max_signals, confluence_window, skip_fetch,
             out_path=None, log=on_log, progress=on_progress,
             sweep=sweep, sweep_targets=sweep_targets, sweep_sls=sweep_sls,
-            sweep_gaps=sweep_gaps)
+            sweep_gaps=sweep_gaps, offset_hours=offset_hours)
         state.update({"status": "complete", "progress": 100,
                       "message": "Replay tamamlandı — rapor ve CSV hazır",
                       "result": result, "finished_at": time.time()})

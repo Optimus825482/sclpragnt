@@ -382,6 +382,38 @@ DEFAULT_SWEEP_SLS = [0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
 DEFAULT_SWEEP_GAPS = [0.3, 0.6, 1.0, 1.5]
 
 
+def _sweep_region_lines(sweep: list[dict], stream: str) -> list[str]:
+    """En iyi hücrenin DAYANIKLILIĞINI ölç (tek hücre maksimumu İYİMSER YANLIDIR).
+
+    192 hücrenin maksimumunu seçmek her zaman "pozitif bir şey" bulur; asıl soru
+    pozitif bölgenin YAPISAL olup olmadığıdır. Pozitifler stop ekseninde bir
+    tavana kadar kümeleniyorsa ders "stop daraltmak"tır ve taşınabilir; tek bir
+    hücreyse gürültüdür ve başka bir dönemde doğrulanmadan kullanılamaz.
+    """
+    rows = [r for r in sweep if r["stream"] == stream]
+    if not rows:
+        return []
+    positive = [r for r in rows if r["avg_net_pct"] > 0]
+    if not positive:
+        return [f"  DAYANIKLILIK: 0/{len(rows)} hücre pozitif → bu akışta geometri çözüm "
+                f"DEĞİL (hangi TP/SL seçilirse seçilsin maliyet ödeniyor)."]
+    all_sls = sorted({r["sl_pct"] for r in rows})
+    pos_sls = sorted({r["sl_pct"] for r in positive})
+    lines = [f"  DAYANIKLILIK: {len(positive)}/{len(rows)} hücre pozitif; pozitiflerin "
+             f"stop aralığı {pos_sls[0]:.2f}–{pos_sls[-1]:.2f} "
+             f"(tüm eksen {all_sls[0]:.2f}–{all_sls[-1]:.2f})"]
+    if pos_sls[-1] < all_sls[-1]:
+        lines.append(f"    → {pos_sls[-1]:.2f} üstündeki TÜM stoplar negatif: bölge stop "
+                     f"ekseninde YAPISAL (kazananları değil KAYBEDENLERİ kesmek işe yarıyor).")
+    else:
+        lines.append("    → pozitifler stop ekseninin tamamına yayılıyor: bölge ZAYIF, "
+                     "stop tek başına belirleyici değil.")
+    if len(positive) <= 3:
+        lines.append(f"  ⚠ yalnız {len(positive)} hücre pozitif → ızgara maksimumu GÜRÜLTÜ "
+                     f"olabilir; BAŞKA bir dönemde doğrulanmadan KULLANMA.")
+    return lines
+
+
 def _sweep_lines(sweep: list[dict], stream: str = "combined", top: int = 8) -> list[str]:
     """Tarama sonucunu okunur tabloya çevir + dürüst karar satırı."""
     rows = [r for r in sweep if r["stream"] == stream]
@@ -407,6 +439,8 @@ def _sweep_lines(sweep: list[dict], stream: str = "combined", top: int = 8) -> l
     else:
         lines.append("  SONUÇ: HİÇBİR TP/SL kombinasyonu pozitif DEĞİL → bu sinyal sınıfında "
                      "(bu ufukta) kenar YOK; geometri değil SEÇİCİLİK sorunu.")
+    # Maksimumun kendisi kanıt değil: pozitif BÖLGENİN şekli kanıttır.
+    lines.extend(_sweep_region_lines(sweep, stream))
     return lines
 
 
@@ -454,18 +488,31 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
                        out_path: str | None = None, log=None, progress=None,
                        sweep: bool = False, sweep_targets: list[float] | None = None,
                        sweep_sls: list[float] | None = None,
-                       sweep_gaps: list[float] | None = None) -> dict:
+                       sweep_gaps: list[float] | None = None,
+                       offset_hours: float = 0) -> dict:
     """Birleşik radar replay'inin ÇEKİRDEĞİ (DB bağlantısını AÇMAZ/KAPATMAZ).
 
     Uygulama içi arka plan işi bu fonksiyonu çağırır; CLI `run()` ise burayı
     `init_db`/`close_db` ile sarar. `log(message)` verilirse ilerleme satırları
     oraya akar (canlı log paneli için); verilmezse `print` kullanılır.
+
+    `offset_hours` > 0 ise pencere geçmişe kaydırılır (out-of-sample dönem).
     """
-    until = time.time()
+    # OUT-OF-SAMPLE (2026-09-17): pencere eskiden HER ZAMAN "şimdi"de bitiyordu;
+    # bu yüzden aynı ızgarayı BAŞKA bir dönemde koşmak imkânsızdı. Tek dönemde 192
+    # hücrenin MAKSİMUMUNU seçmek iyimser yanlıdır ve rapor bunu "tek dönem yeterli
+    # kanıt değil" diye itiraf ediyordu ama düzeltemiyordu. `offset_hours` ile aynı
+    # ızgara ayrı bir dönemde koşulur; asıl soru "en iyi hücre DAYANIYOR mu" olur.
+    offset = max(0.0, float(offset_hours or 0))
+    until = time.time() - offset * 3600
     since = until - max(1, int(hours)) * 3600
     window = int(confluence_window or getattr(config, "RADAR_CONFLUENCE_WINDOW_SEC", 1800))
 
-    _emit(log, f"[replay] pencere: son {hours} saat ({time.strftime('%Y-%m-%d %H:%M', time.localtime(since))} → şimdi)")
+    period_label = (f"son {hours} saat" if offset <= 0
+                    else f"{hours} saat, {offset:g} saat ÖNCE (out-of-sample)")
+    _emit(log, f"[replay] pencere: {period_label} "
+               f"({time.strftime('%Y-%m-%d %H:%M', time.localtime(since))} → "
+               f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(until))})")
     # KAPSAMA EŞLEŞMESİ (2026-09-16): iki akış AYNI okuma semantiğiyle ve AYNI
     # bütçeyle okunmalı. Eskiden rising `list_rising_alerts(limit=1000)` ile EN
     # YENİ, velocity ise ARTAN sırada İLK N satırla geliyordu → iki akış AYRI
@@ -595,6 +642,13 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     result["truncated"] = truncated
     result["sweep"] = []
     result["funnel"] = funnel
+    # DÖNEM KİMLİĞİ burada da kurulur: out-of-sample koşumda hangi pencerenin
+    # ölçüldüğü sonuçta taşınmalı. Aşağıda (uzun yolda) kurulsaydı `skip_fetch` ve
+    # "0 sinyal" dönüşleri onu ATLARDI — tanıyı taşıyan alanlar her dönüş yolunda
+    # bulunmalı (aynı hata bir kez yaşandı). `result["sweep"]` yukarıda
+    # sıfırlandığı için tarama alanı da boş kalır; tarama yalnız uzun yolda dolar.
+    result["period"] = {"hours": int(hours), "offset_hours": offset,
+                        "since": since, "until": until, "label": period_label}
     # PENCERE BAĞIMSIZ journal aralığı: "0 sinyal" durumunda tek soru "pencere mi
     # veriyi kaçırıyor" olduğu için journal'ın GERÇEK son satır zamanı gerekir.
     try:
@@ -716,7 +770,8 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
               confluence_window: int | None, skip_fetch: bool, out_path: str | None,
               sweep: bool = False, sweep_targets: list[float] | None = None,
               sweep_sls: list[float] | None = None,
-              sweep_gaps: list[float] | None = None) -> dict:
+              sweep_gaps: list[float] | None = None,
+              offset_hours: float = 0) -> dict:
     """CLI sarmalayıcı: DB bağlantısını açar/kapatır, çekirdeği çağırır.
 
     Uygulama İÇİ arka plan işi bunu DEĞİL `build_report`'u kullanır — uygulama
@@ -727,7 +782,8 @@ async def run(hours: int, symbols: list[str] | None, max_signals: int,
         return await build_report(hours, symbols, max_signals, confluence_window,
                                   skip_fetch, out_path=out_path,
                                   sweep=sweep, sweep_targets=sweep_targets,
-                                  sweep_sls=sweep_sls, sweep_gaps=sweep_gaps)
+                                  sweep_sls=sweep_sls, sweep_gaps=sweep_gaps,
+                                  offset_hours=offset_hours)
     finally:
         await database.close_db()
 
@@ -738,6 +794,15 @@ def _report_text(result: dict) -> str:
     lines.append("=" * 88)
     lines.append("BİRLEŞİK RADAR REPLAY RAPORU".center(88))
     lines.append("=" * 88)
+    # DÖNEM SATIRI: out-of-sample koşumda rapor "24 saat" derse iki farklı koşum
+    # karıştırılır; hangi pencerenin ölçüldüğü raporun başında yazılı olmalı.
+    period = result.get("period") or {}
+    if period:
+        lines.append(f"DÖNEM: {period.get('label') or ''}  "
+                     f"({time.strftime('%d.%m %H:%M', time.localtime(period['since']))} → "
+                     f"{time.strftime('%d.%m %H:%M', time.localtime(period['until']))})"
+                     + ("   ← OUT-OF-SAMPLE" if (period.get("offset_hours") or 0) > 0 else ""))
+        lines.append("")
     # Sütun adı DÜRÜST olmalı: buradaki değer `target_hit_rate` (TP'ye dokunma
     # oranı), ortalama hedef DEĞİL. Eskiden `hedef%` yazıyordu ve ortalama hedef
     # sanılıyordu; ort. hedef ayrı (`avg_target_pct`) ve HEDEF/MFE bölümünde.
@@ -962,6 +1027,9 @@ def main() -> None:
     _enable_utf8_console()
     parser = argparse.ArgumentParser(description="Birleşik radar 24h replay/backtest")
     parser.add_argument("--hours", type=int, default=24, help="geriye dönük pencere (saat)")
+    parser.add_argument("--offset-hours", type=float, default=0.0,
+                        help="pencereyi geçmişe kaydır (saat) — out-of-sample doğrulama: "
+                             "aynı ızgarayı BAŞKA bir dönemde koş")
     parser.add_argument("--symbols", type=str, default="", help="virgülle ayrılmış sembol filtresi")
     parser.add_argument("--max-signals", type=int, default=400, help="akış başına ölçülecek en fazla sinyal")
     parser.add_argument("--confluence-window", type=int, default=None, help="çakışma penceresi (sn)")
@@ -978,7 +1046,10 @@ def main() -> None:
     args = parser.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()] or None
-    out_path = args.out or os.path.join("..", "work", f"combined_radar_replay_{args.hours}h.json")
+    # Varsayılan dosya adı DÖNEMİ içermeli: out-of-sample koşum aynı `24h.json`
+    # üzerine yazarsa elimizdeki tek kanıtı (baz dönem) sessizce kaybederdik.
+    _suffix = f"{args.hours}h" + (f"_oos{int(args.offset_hours)}h" if args.offset_hours else "")
+    out_path = args.out or os.path.join("..", "work", f"combined_radar_replay_{_suffix}.json")
     sweep_targets = [float(x) for x in args.sweep_targets.split(",") if x.strip()]
     sweep_sls = [float(x) for x in args.sweep_sls.split(",") if x.strip()]
     sweep_gaps = [float(x) for x in args.sweep_gaps.split(",") if x.strip()]
@@ -988,7 +1059,7 @@ def main() -> None:
             await run(args.hours, symbols, args.max_signals, args.confluence_window,
                       args.skip_fetch, out_path, sweep=args.sweep,
                       sweep_targets=sweep_targets, sweep_sls=sweep_sls,
-                      sweep_gaps=sweep_gaps)
+                      sweep_gaps=sweep_gaps, offset_hours=args.offset_hours)
         finally:
             await database.close_db()
 
