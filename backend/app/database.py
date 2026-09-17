@@ -1198,6 +1198,35 @@ async def list_rising_alerts_since(since_epoch, until_epoch=None, limit: int = 2
     return await _run_db(op)
 
 
+async def journal_coverage() -> dict:
+    """İki journal'ın GERÇEK zaman aralığı (pencere bağımsız).
+
+    NEDEN: replay "0 sinyal" ürettiğinde tek soru şudur — pencere mi veriyi
+    kaçırıyor, yoksa journal gerçekten boş mu? Bunu anlamak için penceresiz
+    min/max/count gerekir. Gerçek olay (2026-09-17): 24 saatlik koşum BOŞ CSV
+    üretti (yalnız başlık); journal'ın son satırı pencereden eskiyse bu tamamen
+    normaldir ve raporda açıkça yazmalıdır.
+    """
+    def op(conn):
+        out: dict = {}
+        for key, table in (("velocity", "velocity_candidates"), ("rising", "rising_alerts")):
+            try:
+                if table == "rising_alerts":
+                    _ensure_rising_evidence_schema(conn)
+                row = conn.execute(
+                    f"SELECT MIN(created_at) AS a, MAX(created_at) AS b, COUNT(*) AS n "
+                    f"FROM {table}").fetchone()
+                item = dict(row) if row is not None else {}
+                out[f"{key}_earliest"] = item.get("a")
+                out[f"{key}_latest"] = item.get("b")
+                out[f"{key}_count"] = int(item.get("n") or 0)
+            except Exception as exc:
+                out[f"{key}_error"] = f"{type(exc).__name__}: {exc}"
+        return out
+
+    return await _run_db(op)
+
+
 async def get_rising_stats(days: float = 7.0) -> dict:
     """Yükseliş sinyali kalibrasyon özeti — Raporlar sekmesi için.
 
