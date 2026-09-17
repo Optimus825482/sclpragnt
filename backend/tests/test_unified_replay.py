@@ -57,9 +57,28 @@ class BuildUnifiedEventsTests(unittest.TestCase):
         self.assertIn("jump", event["sources"])
         # Zaman: İLK olay (velocity t=1000) — sonraki teyitler zamanı KAYDIRMAZ.
         self.assertEqual(1000.0, event["detected_at"])
-        # Fiyat/hedef: velocity önceliklidir.
+        # Fiyat: İLK olayın fiyatı (velocity bu kümede en erken) — bildirim anı.
         self.assertAlmostEqual(0.0702, event["price"], places=6)
+        # Hedef: velocity hedefi (canlı bildirim velocity hedefini taşır).
         self.assertEqual(4.0, event["target_pct"])
+
+    def test_price_is_first_event_not_velocity_priority(self):
+        """MACD tetiklemesi velocity'den ÖNCE geldiyse fiyat MACD'ninkidir.
+
+        Canlı fast-path bildirimi İLK tetik anındaki ticker fiyatıyla gider;
+        sonradan gelen velocity fiyatı bildirim anında henüz YOKTU. Eski
+        velocity-öncelikli seçim t=900 girişini t=1200 fiyatıyla ölçüyordu.
+        """
+        out = script.build_unified_events(
+            [_velocity(ts=1200.0, price=0.0702)],
+            [],
+            [_macd(kind="early", score=70, price=0.0710, ts=900.0)],
+            confluence_window_sec=1800)
+        self.assertEqual(1, len(out))
+        self.assertEqual(900.0, out[0]["detected_at"])
+        self.assertAlmostEqual(0.0710, out[0]["price"], places=6)
+        # Hedef yine velocity'den (bildirimin taşıdığı hedef).
+        self.assertEqual(4.0, out[0]["target_pct"])
 
     def test_events_outside_window_form_separate_clusters(self):
         out = script.build_unified_events(

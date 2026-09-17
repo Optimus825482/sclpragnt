@@ -87,6 +87,7 @@ from app.routers.runtime import (  # noqa: F401
     _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status)
 from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop, load_velocity_atr_profiles  # noqa: F401
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
+from app.routers.monitoring import rising_evidence_loop  # noqa: F401
 from app.routers import monitoring  # noqa: F401
 
 try:
@@ -1000,6 +1001,9 @@ async def startup_services():
     _start_background(ws_broadcast_loop, "ws-broadcast")
     _start_background(alert_loop, "alert-engine")
     _start_background(monitoring_start_loop, "monitoring-start")
+    # Yükseliş sinyali kanıt doldurma: Raporlar > YÜKSELİŞ EĞİLİMİ Sonuç sütunu
+    # bu döngü olmadan sonsuza dek BEKLİYOR kalıyordu (kolonlar vardı, dolduran yok).
+    _start_background(rising_evidence_loop, "rising-evidence")
     _start_background(auto_paper_start_loop, "auto-paper-start")
     _start_background(macd_monitor_start_loop, "macd-monitor")
 

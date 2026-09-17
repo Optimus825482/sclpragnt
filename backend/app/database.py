@@ -1307,6 +1307,113 @@ async def get_rising_stats(days: float = 7.0) -> dict:
     return await _run_db(op)
 
 
+# Yükseliş sinyali sonuç ölçümü (2026-09-17). Ufuk: 30 dk (MACD kanıtı ile
+# AYNI pencere). Mum yoksa satır hemen expire EDİLMEZ — backfill mumları
+# getirene dek bekler; ömür sınırı dolduğunda 'expired' yazılır.
+_RISING_OUTCOME_WINDOW_SEC = 30 * 60.0
+_RISING_OUTCOME_EXPIRE_SEC = 6 * 3600.0
+
+
+async def fill_rising_alert_outcomes(limit: int = 200) -> int:
+    """Bekleyen yükseliş sinyallerinin MFE/MAE sonucunu 5m mumlarla doldur.
+
+    NEDEN VAR: `rising_alerts` tablosuna `mfe_pct`/`mae_pct`/`outcome_state`
+    kolonları eklendi ama bunları dolduran HİÇBİR döngü yoktu → Raporlar >
+    YÜKSELİŞ EĞİLİMİ sekmesindeki Sonuç sütunu her satırda sonsuza dek
+    BEKLİYOR gösteriyordu (2026-09-17 teşhisi; kullanıcı raporu).
+
+    Ölçüm semantiği MACD kanıt döngüsüyle AYNI (bkz. `fill_macd_monitor_alert_
+    outcomes`): yalnız t0'dan SONRA açılan kapanmış 5m mumlar ölçüye girer
+    (sinyal anının parsiyel mumu hariç), pencere t0+30dk'dır. Taban = sinyalin
+    KENDİ fiyatı (bildirim anı); yoksa t0'a eşit/önce açılmış son kapanmış mum.
+
+    Pencere tamamını kapsayan mum gelmeden satır MÜHÜRLENMEZ (erken MFE yalnız
+    alt sınır olurdu). Sinyal DAVRANIŞINI değiştirmez; yalnız kanıt zenginleştirir.
+    """
+    def op(conn):
+        _ensure_rising_evidence_schema(conn)
+        now = time.time()
+        # Yalnız ufku (30 dk) dolmuş satırlar adaydır — erken ölçüm yok.
+        pending = conn.execute(
+            "SELECT id, created_at, symbol, price FROM rising_alerts "
+            "WHERE outcome_state='pending' AND created_at <= ? "
+            "ORDER BY created_at ASC LIMIT ?",
+            (now - _RISING_OUTCOME_WINDOW_SEC,
+             max(1, min(2000, int(limit))))).fetchall()
+        filled = 0
+        touched = False
+        for row in pending:
+            values = dict(row)
+            alert_id = values["id"]
+            created = float(values.get("created_at") or 0)
+            try:
+                symbol = values["symbol"]
+                t0_ms = created * 1000.0
+                window_end_ms = t0_ms + _RISING_OUTCOME_WINDOW_SEC * 1000.0
+                candles = conn.execute(
+                    "SELECT open_time, high, low, close FROM historical_candles "
+                    "WHERE symbol=? AND timeframe='5m' AND open_time >= ? AND open_time <= ? "
+                    "ORDER BY open_time",
+                    (symbol, t0_ms - _MACD_BAR_MS, window_end_ms + _MACD_BAR_MS)).fetchall()
+                rows = [(float(dict(c)["open_time"]), float(dict(c)["high"] or 0),
+                         float(dict(c)["low"] or 0), float(dict(c)["close"])) for c in candles]
+                expired = now - created > _RISING_OUTCOME_EXPIRE_SEC
+                if not rows:
+                    if expired:
+                        conn.execute(
+                            "UPDATE rising_alerts SET outcome_state='expired', peak_at=? WHERE id=?",
+                            (now, alert_id))
+                        filled += 1
+                        touched = True
+                    continue
+                # Taban: sinyalin kendi fiyatı; yoksa t0 öncesi son kapanmış mum.
+                base = values.get("price")
+                try:
+                    base = float(base) if base is not None else None
+                except (TypeError, ValueError):
+                    base = None
+                if base is None or base <= 0:
+                    prior = [close for stamp, _h, _l, close in rows
+                             if stamp <= t0_ms and close > 0]
+                    base = prior[-1] if prior else None
+                if base is None or base <= 0:
+                    if expired:
+                        conn.execute(
+                            "UPDATE rising_alerts SET outcome_state='expired', peak_at=? WHERE id=?",
+                            (now, alert_id))
+                        filled += 1
+                        touched = True
+                    continue
+                # Pencere tamamını kapsayan KAPANMIŞ mum yoksa mühürleme —
+                # parsiyel serinin MFE'si alt sınır olurdu, kesin sonuç değil.
+                if rows[-1][0] + _MACD_BAR_MS < window_end_ms:
+                    continue
+                after = [(high, low) for stamp, high, low, _close in rows
+                         if t0_ms < stamp <= window_end_ms]
+                highs = [high for high, _low in after if high > 0]
+                lows = [low for _high, low in after if low > 0]
+                if not highs:
+                    continue
+                mfe = (max(highs) / base - 1.0) * 100.0
+                mae = (min(lows) / base - 1.0) * 100.0 if lows else None
+                conn.execute(
+                    "UPDATE rising_alerts SET mfe_pct=?, mae_pct=?, "
+                    "outcome_state='filled', peak_at=? WHERE id=?",
+                    (round(mfe, 4), round(mae, 4) if mae is not None else None,
+                     now, alert_id))
+                filled += 1
+                touched = True
+            except Exception:
+                # Tek bozuk satır partiyi iptal etmemeli (MACD muadili F-09 ilkesi).
+                logger.debug("yükseliş sonucu doldurulamadı (id=%s)",
+                             alert_id, exc_info=True)
+        if touched:
+            conn.commit()
+        return filled
+
+    return await _run_db(op)
+
+
 _MACD_BAR_MS = 5 * 60_000  # historical_candles yalnız kapanmış 5m bar tutar
 
 
