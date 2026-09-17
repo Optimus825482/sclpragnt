@@ -736,12 +736,21 @@ def _fuse_cluster(symbol: str, cluster: list[tuple]) -> dict:
             contexts[source] = context or {}
     score, sources = fusion_score(components)
     detected = min(e[0] for e in cluster)
-    # Fiyat/hedef önceliği: velocity (hedef bağlamlı) > rising > macd.
-    price, target, horizon = None, None, 5.0
+    # FİYAT: kümenin İLK (en erken) fiyatlı olayından (2026-09-17 düzeltmesi).
+    # Canlı fast-path bildirimi İLK tetik anındaki ticker fiyatıyla gider;
+    # velocity olayı SONRA geldiyse onun fiyatı bildirim anında henüz YOKTU.
+    # Eski "velocity öncelikli fiyat" t=1000'de giriş ölçüp t=1300 fiyatını
+    # kullanıyordu → velocity-içeren kümelerin ölçümü çarpıktı (24s koşum
+    # teşhisi). Hedef/ufuk önceliği velocity KALIR: canlı bildirim varsa
+    # velocity hedefini taşır (hedef sonraki teyitle iyileşebilir).
+    price = None
+    for _ts_val, _source, _value, context in sorted(cluster, key=lambda e: e[0]):
+        if (context or {}).get("price"):
+            price = context["price"]
+            break
+    target, horizon = None, 5.0
     for source in ("velocity", "rising", "jump", "early"):
         ctx = contexts.get(source) or {}
-        if price is None and ctx.get("price"):
-            price = ctx.get("price")
         if target is None and ctx.get("target_pct"):
             target = ctx.get("target_pct")
         if source == "velocity" and ctx.get("horizon"):

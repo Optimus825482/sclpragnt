@@ -1736,6 +1736,33 @@ async def _run_rising_scan() -> dict:
     return summary
 
 
+# Kanıt doldurma periyodu: ufuk 30 dk olduğundan 5 dakikalık tarama yeterli.
+_RISING_EVIDENCE_FILL_SEC = 300.0
+
+
+async def rising_evidence_loop():
+    """Bekleyen yükseliş sinyallerinin MFE/MAE sonucunu periyodik doldur.
+
+    `database.fill_rising_alert_outcomes` kapanmış 5m mumlarla ölçer (REST
+    çağrısı YOK; `historical_candles` okur). Sinyal DAVRANIŞINI değiştirmez.
+    Bu döngü olmadan Raporlar > YÜKSELİŞ EĞİLİMİ sekmesindeki Sonuç sütunu
+    sonsuza dek BEKLİYOR kalıyordu — kolonlar vardı ama dolduran yoktu
+    (2026-09-17 teşhisi, kullanıcı raporu).
+    """
+    logger.info("yükseliş kanıt doldurma döngüsü başladı")
+    await asyncio.sleep(180)
+    while True:
+        try:
+            filled = await database.fill_rising_alert_outcomes()
+            if filled:
+                logger.debug("rising kanıt: %d sinyal sonucu dolduruldu", filled)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("rising kanıt doldurma: %s", exc)
+        await asyncio.sleep(_RISING_EVIDENCE_FILL_SEC)
+
+
 def _check_pending_targets():
     """Beklenen fiyata ulaşan sembolleri tespit et ve pending listesinden çıkar.
 

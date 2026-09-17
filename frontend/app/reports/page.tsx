@@ -5,7 +5,6 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import SymbolLink from "../components/SymbolLink";
 import { formatSignedTL, formatTL, toMs, localDateInput } from "../lib/format";
-import { ML_PROB_CLASS, ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
 
 // H-04/H-15: TL biçimi tek kaynaktan. K/Z işaretli (`+₺12,34`), komisyon ve
 // bakiye işaretsiz (H-22: "komisyon +12,34₺" bir maliyeti gelir gibi
@@ -618,7 +617,7 @@ function RisingTab() {
       <p className="text-xs text-bunker-muted">
         🌱 <b>ERKEN</b> = MACD histogram dip dönüşü + 20-bar zirveye ≤ {live?.thresholds?.dip_gap_atr ?? "—"} ATR yakınlık
         (kanıt: 1.47-1.67× lift). 📈 <b>YÜKSELİŞ</b> = güç ≥ {live?.thresholds?.min_strength ?? "—"}/10 ve ≥ {live?.thresholds?.min_green ?? "—"}/6 yeşil.
-        İsabet, sinyalin kendi hedefine göre ölçülür; henüz ölçülmemiş satırlar orana GİRMEZ.
+        İsabet, sinyalin kendi hedefine göre ölçülür (30 dk ileri pencerede kapanmış 5m mumlarla MFE); henüz ölçülmemiş satırlar orana GİRMEZ.
       </p>
 
       <section className="card">
@@ -657,10 +656,11 @@ function RisingTab() {
                     <td className="font-mono text-xs text-neon-green">{s.target_pct != null ? `+%${Number(s.target_pct).toFixed(2)}` : "—"}</td>
                     <td className="font-mono text-xs text-white">{s.mfe_pct != null ? `%${Number(s.mfe_pct).toFixed(2)}` : "—"}</td>
                     <td>
-                      {s.mfe_pct != null
-                        ? (Number(s.mfe_pct) >= Number(s.target_pct || 0)
-                          ? <Badge tone="ok">TAMAMEN</Badge>
-                          : <Badge tone="bad">BASARISIZ</Badge>)
+                      {s.outcome_state === "expired" ? <Badge tone="warn">SÜRESİ DOLDU</Badge>
+                        : s.mfe_pct != null
+                          ? (Number(s.mfe_pct) >= Number(s.target_pct || 0)
+                            ? <Badge tone="ok">TAMAMEN</Badge>
+                            : <Badge tone="bad">BASARISIZ</Badge>)
                         : <Badge>BEKLİYOR</Badge>}
                     </td>
                     <td className="font-mono text-[10px] text-bunker-muted">
@@ -1158,11 +1158,8 @@ function UserRadarTab() {
                     <SortHeader label="Sembol" field="symbol" />
                     <th>Kaynak</th>
                     <SortHeader label="Anlik Fiyat" field="price" />
-                    <SortHeader label="Hedef Fiyat" field="expected_price" />
-                    <SortHeader label="Hedef %" field="target_pct" />
                     <SortHeader label="Skor" field="score" />
                     <SortHeader label="Ham Skor" field="raw_score" />
-                    <SortHeader label="ML Olasilik" field="ml_hit_probability" />
                     <SortHeader label="Ufuk" field="horizon_minutes" />
                     <SortHeader label="Sonuc (Max MFE)" field="mfe_pct" />
                     <SortHeader label="Net (Cikis)" field="net_pct" />
@@ -1182,7 +1179,6 @@ function UserRadarTab() {
                     const saturated = n.saturated === true;
                     // D-06: MFE ulasilamaz tepe; netPct gerceklesen cikis - maliyet.
                     const netPct = n.net_pct != null ? Number(n.net_pct) : null;
-                    const tgtPct = n.target_pct != null ? Number(n.target_pct) : null;
                     const mfeTone = mfePct != null ? (mfePct >= 0 ? "text-neon-green" : "text-neon-red") : "text-bunker-muted";
                     return (
                       <tr key={`${n.id}-${n.symbol}-${n.detected_at}`}>
@@ -1191,13 +1187,8 @@ function UserRadarTab() {
                         <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                         <td><SourceBadges sources={n.sources} /></td>
                         <td className="font-mono text-xs text-white">{n.price != null ? Number(n.price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
-                        <td className={`font-mono text-xs ${n.expected_price != null ? "text-neon-green" : "text-bunker-muted"}`}>{n.expected_price != null ? Number(n.expected_price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
-                        <td className={`font-mono text-xs ${tgtPct != null ? "text-neon-green" : "text-bunker-muted"}`}>{tgtPct != null ? `+%${tgtPct.toFixed(1)}` : "—"}</td>
                         <td className={`font-mono text-xs ${saturated ? "text-yellow-300" : "text-white"}`} title={saturated ? "Panel skoru cap nedeniyle 100'a kirpildi — gercek sirayi ham skor verir" : undefined}>{n.score != null ? Number(n.score).toFixed(2) : "—"}{saturated ? " ⚠" : ""}</td>
                         <td className="font-mono text-xs text-bunker-muted">{rawScore != null ? `${saturated ? "≥" : ""}${rawScore.toFixed(0)}` : "—"}</td>
-                        <td>
-                          <span className={ML_PROB_CLASS} title={ML_PROB_TITLE}>{formatMlProbability(n.ml_hit_probability)}</span>
-                        </td>
                         <td className="font-mono text-xs text-bunker-muted">{n.horizon_minutes ? `${n.horizon_minutes}dk` : "—"}</td>
                         <td className={`font-mono text-xs ${mfeTone}`}>{mfePct != null ? `%${mfePct.toFixed(2)}` : "—"}</td>
                         <td className={`font-mono text-xs ${netPct == null || !Number.isFinite(netPct) ? "text-bunker-muted" : netPct >= 0 ? "text-neon-green" : "text-neon-red"}`}>{netPct != null && Number.isFinite(netPct) ? `%${netPct.toFixed(2)}` : "—"}</td>
