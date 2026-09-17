@@ -1241,7 +1241,18 @@ function RadarReplayPanel() {
   const downloadCsv = async (path = "report.csv", fallback = "birlesik-radar-replay.csv") => {
     try {
       const response = await apiRequest(`${API_BASE}/api/combined-radar-replay/${path}`, { cache: "no-store" });
-      if (!response.ok) throw new Error("Replay CSV indirilemedi");
+      if (!response.ok) {
+        // Sunucunun SEBEBİNİ kaybetme: sonuç yokken uç 409 + açıklama döner
+        // ("replay hiç çalıştırılmadı" / "hâlâ çalışıyor" / "HATA ile durdu").
+        // Eskiden burada genel bir mesaj vardı ve kullanıcı boş dosyayı
+        // "replay çalıştı ama sonuç boş" sanıyordu.
+        let detail = "";
+        try {
+          const body = await response.json();
+          detail = typeof body?.detail === "string" ? body.detail : "";
+        } catch { /* gövde JSON değilse genel mesaja düş */ }
+        throw new Error(detail || `Replay CSV indirilemedi (HTTP ${response.status})`);
+      }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");

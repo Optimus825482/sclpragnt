@@ -677,6 +677,81 @@ class LadderParityTests(unittest.TestCase):
         self.assertEqual(100.0, m["first_seen_at"])
         self.assertEqual(500.0, m["last_seen_at"])
 
+    # ------------------------------------------------------------------
+    # BOŞ RAPOR: "0 sinyal" sessiz kalmamalı. Gerçek olay (2026-09-17):
+    # 24 saatlik koşum yalnız BAŞLIK satırı içeren CSV üretti; huninin
+    # neresinde düştüğü ve journal'ın son satır zamanı hiçbir yerde yoktu.
+    # ------------------------------------------------------------------
+    def test_zero_signal_report_explains_the_funnel(self):
+        result = {
+            "streams": {}, "signals": [], "limitations": [],
+            "window": {"hours": 24, "since": 1.0, "until": 2.0},
+            "funnel": {"journal_rows": {"velocity": 0, "rising": 0},
+                       "velocity_events_after_gate": 0, "combined_events": 0,
+                       "confluence_events": 0,
+                       "after_price_target_filter": {"velocity": 0, "rising": 0,
+                                                     "combined": 0}},
+            "journal_coverage": {"velocity_latest": 1789459294.0, "velocity_count": 50000,
+                                 "rising_latest": 1789600922.0, "rising_count": 1200},
+        }
+        text = self.replay._report_text(result)
+        self.assertIn("HİÇ SİNYAL YOK", text)
+        self.assertIn("journal son satır", text)
+        self.assertIn("saat sayısını ARTIR", text)
+        self.assertIn("velocity=0", text)
+
+    def test_zero_signal_report_flags_a_completely_empty_journal(self):
+        """Journal hiç yazılmamışsa bu, 'pencereyi büyüt' ile KARIŞTIRILMAMALI."""
+        result = {
+            "streams": {}, "signals": [], "limitations": [],
+            "window": {"hours": 24},
+            "funnel": {"journal_rows": {"velocity": 0, "rising": 0}},
+            "journal_coverage": {"velocity_count": 0, "rising_count": 0,
+                                 "velocity_latest": None, "rising_latest": None},
+        }
+        text = self.replay._report_text(result)
+        self.assertIn("TAMAMEN BOŞ", text)
+
+    def test_non_empty_report_has_no_zero_alarm(self):
+        """Uyarı yalnız gerçekten boş raporda çıkmalı (aksi hâlde gürültü olur)."""
+        result = self._coverage_result(self.V_SPAN, self.V_SPAN, signals=107)
+        result["signals"] = [{"stream": "combined"}]
+        text = self.replay._report_text(result)
+        self.assertNotIn("HİÇ SİNYAL YOK", text)
+
+    def test_empty_journal_run_still_carries_diagnostics(self):
+        """ERKEN DÖNÜŞ KİLİDİ: `if not all_signals: return` yolu TANILARI taşımalı.
+
+        Gerçek hata (2026-09-17): bu erken dönüş `funnel`/`journal_coverage`/`sweep`
+        kurmuyordu — yani tanının EN ÇOK gerektiği yolda tanı yoktu. Kullanıcı
+        sebebi olmayan başlık-only CSV indirdi ve "replay çalıştı ama sonuç boş"
+        diye okudu. Bu test, boş koşumda bu alanların varlığını ZORUNLU kılar.
+        """
+        from unittest.mock import patch
+        replay = self.replay
+
+        async def _empty(*args, **kwargs):
+            return []
+
+        async def _cov():
+            return {"velocity_count": 0, "rising_count": 0,
+                    "velocity_latest": None, "rising_latest": None}
+
+        with patch.object(replay.database, "list_velocity_candidates_since", _empty), \
+                patch.object(replay.database, "list_rising_alerts_since", _empty), \
+                patch.object(replay.database, "journal_coverage", _cov):
+            result = asyncio.run(replay.build_report(
+                hours=24, symbols=None, max_signals=400, confluence_window=None,
+                skip_fetch=False, out_path=None, log=lambda _m: None, sweep=True))
+
+        self.assertEqual([], result["signals"])
+        for key in ("funnel", "journal_coverage", "truncated", "sweep"):
+            self.assertIn(key, result, f"boş koşumda '{key}' tanısı kayıp")
+        self.assertEqual([], result["sweep"])
+        text = result.get("report_text") or replay._report_text(result)
+        self.assertIn("HİÇ SİNYAL YOK", text)
+        self.assertIn("TAMAMEN BOŞ", text)
+
 
 class RisingReaderContractTests(unittest.TestCase):
     """`list_rising_alerts_since` velocity okuyucusuyla AYNI semantikte olmalı.
@@ -727,6 +802,89 @@ class RisingReaderContractTests(unittest.TestCase):
         select = next(s for s in captured["sqls"] if "FROM rising_alerts" in s)
         self.assertNotIn("created_at <= ?", select)
         self.assertEqual([1000.0, 7], captured["params"])
+
+
+class JournalCoverageContractTests(unittest.TestCase):
+    """`journal_coverage` PENCERESİZ min/max/count okumalı.
+
+    "0 sinyal" tanısının çekirdeği budur: pencereli sorgu "satır yok" der ama
+    NEDEN'ini söylemez; penceresiz son satır zamanı ise "pencere veriyi kaçırıyor"
+    ile "journal hiç yazılmamış" ayrımını yapar.
+    """
+
+    def _capture(self) -> dict:
+        captured: dict = {"sqls": []}
+
+        class _Cursor:
+            def __init__(self, values):
+                self._values = values
+
+            def fetchone(self):
+                return self._values
+
+        class _Conn:
+            def execute(self, sql, params=None):
+                sql = " ".join(str(sql).split())
+                captured["sqls"].append(sql)
+                if "velocity_candidates" in sql:
+                    return _Cursor({"a": 10.0, "b": 20.0, "n": 7})
+                if "rising_alerts" in sql:
+                    return _Cursor({"a": 11.0, "b": 21.0, "n": 3})
+                return _Cursor(None)
+
+        async def _fake_run_db(operation):
+            return operation(_Conn())
+
+        from unittest.mock import patch
+        from app import database
+        with patch.object(database, "_ensure_rising_evidence_schema", lambda conn: None), \
+                patch.object(database, "_run_db", _fake_run_db):
+            captured["result"] = asyncio.run(database.journal_coverage())
+        return captured
+
+    def test_reads_min_max_count_without_a_time_window(self):
+        captured = self._capture()
+        for table in ("velocity_candidates", "rising_alerts"):
+            sql = next(s for s in captured["sqls"] if table in s)
+            self.assertIn("MIN(created_at)", sql)
+            self.assertIn("MAX(created_at)", sql)
+            self.assertIn("COUNT(*)", sql)
+            self.assertNotIn("WHERE", sql)   # pencere YOK — tüm aralık gerekir
+
+    def test_returns_both_journals_span_and_count(self):
+        cov = self._capture()["result"]
+        self.assertEqual(10.0, cov["velocity_earliest"])
+        self.assertEqual(20.0, cov["velocity_latest"])
+        self.assertEqual(7, cov["velocity_count"])
+        self.assertEqual(11.0, cov["rising_earliest"])
+        self.assertEqual(21.0, cov["rising_latest"])
+        self.assertEqual(3, cov["rising_count"])
+
+    def test_one_broken_table_does_not_break_the_other(self):
+        class _Cursor:
+            def __init__(self, values):
+                self._values = values
+
+            def fetchone(self):
+                return self._values
+
+        class _Conn:
+            def execute(self, sql, params=None):
+                sql = " ".join(str(sql).split())
+                if "velocity_candidates" in sql:
+                    raise RuntimeError("tablo yok")
+                return _Cursor({"a": 1.0, "b": 2.0, "n": 4})
+
+        async def _fake_run_db(operation):
+            return operation(_Conn())
+
+        from unittest.mock import patch
+        from app import database
+        with patch.object(database, "_ensure_rising_evidence_schema", lambda conn: None), \
+                patch.object(database, "_run_db", _fake_run_db):
+            cov = asyncio.run(database.journal_coverage())
+        self.assertIn("velocity_error", cov)
+        self.assertEqual(4, cov["rising_count"])
 
 
 async def auto_paper_defaults() -> dict:

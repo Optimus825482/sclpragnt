@@ -254,13 +254,43 @@ class RadarEndpointRobustnessTests(unittest.TestCase):
         self.assertIn("BTCTRY", body)
         self.assertIn("velocity_only", body)
 
-    def test_csv_endpoint_handles_missing_result(self):
+    def test_csv_endpoint_refuses_when_no_result(self):
+        """Sonuç yokken BOŞ CSV döndürme — 409 + açık sebep (sessiz boş dosya yok).
+
+        Gerçek olay (2026-09-17): kullanıcı yalnız başlık satırı içeren CSV indirdi
+        ve "replay çalıştı ama sonuç boş" sandı. Boş dosya iş bitmedi mi, hata mı
+        oldu hiçbir şey söylemiyordu.
+        """
+        from fastapi import HTTPException
         from app.routers import maintenance
-        maintenance._combined_radar_replay["result"] = None
+        cases = [("idle", "hiç çalıştırılmadı"), ("running", "hâlâ çalışıyor"),
+                 ("error", "HATA ile durdu")]
+        for status, expected in cases:
+            maintenance._combined_radar_replay.update(
+                {"status": status, "result": None, "message": "test"})
+            with patch("app.api_common.require_admin",
+                       return_value={"username": "admin", "role": "admin"}):
+                with self.assertRaises(HTTPException) as ctx:
+                    asyncio.run(maintenance.download_combined_radar_replay_csv(object()))
+                self.assertEqual(409, ctx.exception.status_code)
+                self.assertIn(expected, ctx.exception.detail)
+        # Geometri taraması da aynı kapıyı kullanmalı.
+        maintenance._combined_radar_replay.update({"status": "idle", "result": None})
+        with patch("app.api_common.require_admin",
+                   return_value={"username": "admin", "role": "admin"}):
+            with self.assertRaises(HTTPException) as ctx:
+                asyncio.run(maintenance.download_combined_radar_replay_sweep_csv(object()))
+            self.assertEqual(409, ctx.exception.status_code)
+
+    def test_csv_endpoint_serves_header_only_when_result_has_no_signals(self):
+        """Sonuç VAR ama sinyal yoksa 200 + yalnız başlık (bu meşru bir durum)."""
+        from app.routers import maintenance
+        maintenance._combined_radar_replay.update({"status": "complete", "result": {"signals": []}})
         with patch("app.api_common.require_admin",
                    return_value={"username": "admin", "role": "admin"}):
             response = asyncio.run(maintenance.download_combined_radar_replay_csv(object()))
         self.assertEqual(200, response.status_code)
+        self.assertEqual(1, len(response.body.decode("utf-8").strip().splitlines()))
 
     # ---- 422: OKUMA yolu doğrulama yüzünden patlamamalı -------------------
     def test_reader_clamps_invalid_confluence_instead_of_raising(self):

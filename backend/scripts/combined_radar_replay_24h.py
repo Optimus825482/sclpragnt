@@ -537,9 +537,21 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     # olduğunda birebir aynı satırlar oluşuyor). Ölçümde bu örneklemi ~2× şişirip
     # metrikleri saptırıyordu. Üretimde aynı sembol için tek bildirim gider; ölçüm
     # de tek saymalıdır.
+    # HUNİ SAYAÇLARI: "0 sinyal" bir hata mı, veri mi yok — tek bakışta
+    # anlaşılsın. Gerçek olay (2026-09-17): 24 saatlik koşum BOŞ CSV üretti ve
+    # huninin NERESİNDE düştüğü hiçbir yerde yazmıyordu.
+    funnel: dict = {
+        "journal_rows": {"velocity": len(velocity_rows), "rising": len(rising_rows)},
+        "velocity_events_after_gate": len(velocity_events),
+        "combined_events": len(combined),
+        "confluence_events": sum(1 for c in combined if c.get("confluence")),
+    }
     velocity_signals = _dedupe_signals(velocity_signals)
     rising_signals = _dedupe_signals(rising_signals)
     combined_signals = _dedupe_signals(combined_signals)
+    funnel["after_dedupe"] = {"velocity": len(velocity_signals),
+                              "rising": len(rising_signals),
+                              "combined": len(combined_signals)}
 
     for stream in (velocity_signals, rising_signals, combined_signals):
         stream[:] = [s for s in stream
@@ -549,6 +561,9 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
         stream.sort(key=lambda s: s["detected_at"])
         if max_signals and len(stream) > max_signals:
             stream[:] = stream[:max_signals]
+    funnel["after_price_target_filter"] = {"velocity": len(velocity_signals),
+                                           "rising": len(rising_signals),
+                                           "combined": len(combined_signals)}
 
     result: dict = {
         "window": {"since": since, "until": until, "hours": hours},
@@ -563,6 +578,21 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
             "mum içi sıra belirsiz: TP ve SL aynı barda ise SL önce varsayılır (kötümser)",
         ],
     }
+
+    # TANISAL ALANLAR ERKEN DÖNÜŞLERDEN ÖNCE KURULUR (2026-09-17): `if not
+    # all_signals: return` yolu tam olarak "0 sinyal" durumudur — yani tanının EN
+    # ÇOK gerektiği yol — ve bu alanlar orada ATLANIYORDU. Sonuç: boş koşumda huni
+    # ve journal aralığı kayboluyor, kullanıcı sebebi olmayan BOŞ bir CSV ile
+    # kalıyordu (yaşandı). Artık her dönüş yolu aynı tanıyı taşır.
+    result["truncated"] = truncated
+    result["sweep"] = []
+    result["funnel"] = funnel
+    # PENCERE BAĞIMSIZ journal aralığı: "0 sinyal" durumunda tek soru "pencere mi
+    # veriyi kaçırıyor" olduğu için journal'ın GERÇEK son satır zamanı gerekir.
+    try:
+        result["journal_coverage"] = await database.journal_coverage()
+    except Exception as exc:
+        result["journal_coverage"] = {"error": f"{type(exc).__name__}: {exc}"}
 
     if skip_fetch:
         result["streams"] = {
@@ -638,7 +668,6 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     ]
     result["measurement_horizon_minutes"] = horizon_cap_min
     result["symbols_fetched"] = symbols_seen
-    result["truncated"] = truncated
     # GEOMETRİ TARAMASI: aynı pencereler, sabit TP/SL ızgarası.
     if sweep:
         grid_gaps = list(sweep_gaps or [0.60])
@@ -701,6 +730,34 @@ def _report_text(result: dict) -> str:
     lines.append("-" * 88)
     base = streams.get("velocity_only") or {}
     comb = streams.get("combined") or {}
+
+    # SIFIR SİNYAL UYARISI: boş bir rapor sessizce "başarılı indirme" olmasın.
+    # Huninin neresinde düştüğü ve journal'ın GERÇEK son satır zamanı burada
+    # yazılır; kullanıcı "saat sayısını artır" mı "veri yok" mu olduğunu görür.
+    if not (result.get("signals") or []):
+        f = result.get("funnel") or {}
+        jr = f.get("journal_rows") or {}
+        cov = result.get("journal_coverage") or {}
+        lines.append("!! HİÇ SİNYAL YOK — indirilen CSV yalnız BAŞLIK satırı içerir.")
+        lines.append(f"   pencere       : son {result.get('window', {}).get('hours')} saat")
+        lines.append(f"   journal satırı: velocity={jr.get('velocity', 0)}, rising={jr.get('rising', 0)}")
+        for key in ("velocity", "rising"):
+            latest = cov.get(f"{key}_latest")
+            if latest is not None:
+                lines.append(f"   {key} journal son satır: "
+                             f"{time.strftime('%d.%m %H:%M', time.localtime(float(latest)))}"
+                             f"  (toplam {cov.get(f'{key}_count')} satır)")
+            elif cov.get(f"{key}_count") == 0:
+                lines.append(f"   {key} journal TAMAMEN BOŞ (0 satır) — replay için veri yok.")
+            elif cov.get(f"{key}_error"):
+                lines.append(f"   {key} journal okunamadı: {cov[f'{key}_error']}")
+        lines.append(f"   süzgeç öncesi : velocity_events={f.get('velocity_events_after_gate', 0)}, "
+                     f"combined_events={f.get('combined_events', 0)}, "
+                     f"çakışma={f.get('confluence_events', 0)}")
+        lines.append(f"   süzgeç sonrası: {f.get('after_price_target_filter')}")
+        lines.append("   → journal'ın son satırı pencereden ESKİYSE saat sayısını ARTIR; "
+                     "journal 0 satırsa veri hiç yazılmamıştır.")
+        lines.append("")
 
     # KAPSAMA KONTROLÜ (2026-09-16): akış-ötesi her kıyas (LIFT, kazanma oranı)
     # yalnız iki akış AYNI dönemi kapsıyorsa anlamlıdır. Gerçek bir koşumda

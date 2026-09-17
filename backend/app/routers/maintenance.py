@@ -639,6 +639,27 @@ def _load_replay_module():
     return module
 
 
+def _replay_result_or_conflict() -> dict:
+    """Birleşik radar replay sonucu — YOKSA 409 (boş CSV'yi 'başarılı' sayma).
+
+    Gerçek olay (2026-09-17): kullanıcı yalnız BAŞLIK satırı içeren bir CSV indirdi
+    ve bunu "replay çalıştı ama sonuç boş" diye okudu. Boş dosya HİÇBİR şey
+    söylemiyordu: iş bitmemiş de olabilir, hata ile durmuş da. Bu yüzden sonuç
+    yoksa indirme reddedilir ve durum + iş mesajı AÇIKÇA döner.
+    """
+    state = _combined_radar_replay
+    result = state.get("result")
+    if not result:
+        status = state.get("status")
+        reason = {"idle": "replay hiç çalıştırılmadı",
+                  "running": "replay hâlâ çalışıyor",
+                  "error": "replay HATA ile durdu"}.get(status, f"durum: {status}")
+        raise HTTPException(status_code=409, detail=(
+            f"Replay sonucu yok ({reason}). İş mesajı: {state.get('message') or '-'}. "
+            f"Önce REPLAY BAŞLAT ile koşumu tamamla."))
+    return result
+
+
 async def _run_combined_radar_replay(options: dict) -> None:
     state = _combined_radar_replay
     state.update({"status": "running", "progress": 0, "completed": 0, "total": 0,
@@ -716,7 +737,7 @@ async def download_combined_radar_replay_csv(request: Request = None):
     """
     from app.api_common import require_admin as _require_admin
     _require_admin(request)
-    result = _combined_radar_replay.get("result") or {}
+    result = _replay_result_or_conflict()
     signals = result.get("signals") or []
     stream = io.StringIO(newline="")
     writer = csv.writer(stream)
@@ -759,12 +780,13 @@ async def download_combined_radar_replay_sweep_csv(request: Request = None):
     """Geometri taraması (sabit TP/SL ızgarası) sonucunu CSV olarak indir (admin).
 
     Raporun asıl karar çıktısı budur: her (hedef, stop, akış) hücresi için
-    n / ort.net% / medyan / toplam / kazanma%. Boş tarama 500 değil, başlık
-    satırından oluşan boş bir dosya döndürür (savunmacı).
+    n / ort.net% / medyan / toplam / kazanma%. Sonuç YOKSA 409 döner (boş dosya
+    "başarılı indirme" gibi görünmesin); sonuç var ama tarama boşsa yalnız başlık
+    satırı yazılır.
     """
     from app.api_common import require_admin as _require_admin
     _require_admin(request)
-    result = _combined_radar_replay.get("result") or {}
+    result = _replay_result_or_conflict()
     sweep_rows = result.get("sweep") or []
     stream = io.StringIO(newline="")
     writer = csv.writer(stream)
