@@ -703,6 +703,24 @@ async def _run_combined_radar_replay(options: dict) -> None:
             out_path=None, log=on_log, progress=on_progress,
             sweep=sweep, sweep_targets=sweep_targets, sweep_sls=sweep_sls,
             sweep_gaps=sweep_gaps, offset_hours=offset_hours)
+        # OOS DOĞRULAMA: `offset_hours > 0` verildiğinde baz dönem de koşulur ve
+        # aynı hücre iki dönemde karşılaştırılır. İki raporu elle kıyaslamak
+        # yerine karar TEK raporda ve önceden sabitlenmiş kuralla verilir —
+        # böylece sonuç görüldükten sonra yorum değiştirilemez.
+        if offset_hours > 0:
+            _combined_radar_replay_log(
+                "info", f"OOS doğrulama: baz dönem (offset=0) ayrıca koşuluyor "
+                        f"— aynı ızgara, {offset_hours:g} saat kaydırılmış ikinci dönem.")
+            base_result = await replay.build_report(
+                hours, symbols, max_signals, confluence_window, skip_fetch,
+                out_path=None, log=on_log,
+                sweep=sweep, sweep_targets=sweep_targets, sweep_sls=sweep_sls,
+                sweep_gaps=sweep_gaps, offset_hours=0)
+            verdict_lines = replay.attach_oos_comparison(base_result, result)
+            result = base_result
+            for line in verdict_lines:
+                if line.strip():
+                    _combined_radar_replay_log("info", line)
         state.update({"status": "complete", "progress": 100,
                       "message": "Replay tamamlandı — rapor ve CSV hazır",
                       "result": result, "finished_at": time.time()})
