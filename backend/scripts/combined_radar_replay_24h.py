@@ -374,6 +374,14 @@ def _sweep_best(sweep: list[dict], stream: str) -> str:
             f"{best['avg_net_pct']:+.3f}% (kazanma %{best['win_rate']:.1f}, n={best['n']})")
 
 
+# Geçmiş mumlarla koşan geometri ızgarası. Bu değerler çağıran (buton paneli)
+# tarafın varsayılanlarıyla AYNI olmalıdır; ikisi de aynı soruyu ("hangi TP/SL
+# net pozitife dönüyor") sorduğu için tek kaynak burada tutulur.
+DEFAULT_SWEEP_TARGETS = [0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+DEFAULT_SWEEP_SLS = [0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
+DEFAULT_SWEEP_GAPS = [0.3, 0.6, 1.0, 1.5]
+
+
 def _sweep_lines(sweep: list[dict], stream: str = "combined", top: int = 8) -> list[str]:
     """Tarama sonucunu okunur tabloya çevir + dürüst karar satırı."""
     rows = [r for r in sweep if r["stream"] == stream]
@@ -648,6 +656,15 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
         outcome["horizon_minutes"] = horizon
         outcome["stream"] = stream_name
         measured[stream_name].append(outcome)
+        # KESİŞİM AYNASI (2026-09-17): iki kaynak aynı pencerede hemfikirse AYNI
+        # kline penceresi `confluence` akışı olarak da ölçülür. Gerçek koşumda tek
+        # POZİTİF alt küme buydu (n=11, ort +0.468%, medyan +0.530%, kazanma %72.7)
+        # ama geometri taramasında akış olarak YOKTU — yani "kesişim kârlı bir
+        # geometriye sahip mi" sorusu cevaplanamıyordu. Ek REST çekimi YOK: pencere
+        # ve giriş zaten bellekte.
+        if stream_name == "combined" and signal.get("confluence"):
+            sim_inputs.append({**sim_inputs[-1], "stream": "confluence"})
+            measured["confluence"].append({**outcome, "stream": "confluence"})
         if progress:
             progress(idx + 1, len(all_signals))
         if (idx + 1) % 25 == 0:
@@ -657,23 +674,35 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
         "velocity_only": _metrics("velocity_only", measured["velocity_only"]),
         "rising_only": _metrics("rising_only", measured["rising_only"]),
         "combined": _metrics("combined", measured["combined"]),
+        # Kesişim: birleşimin ALT KÜMESİ, ayrı akış olarak taşınır (tarama +
+        # rapor bunu kullanır). CSV'ye YAZILMAZ (aşağıya bak) — aynı sinyali iki
+        # kez saymak örneklemi şişirirdi.
+        "confluence": _metrics("confluence", measured["confluence"]),
     }
     result["samples"] = {
         name: sorted(stream, key=lambda s: -(s.get("net_pct") or 0))[:5]
-        for name, stream in measured.items()
+        for name, stream in measured.items() if name != "confluence"
     }
-    # CSV için TEK satırda her ölçülen sinyal (stream etiketi dahil).
+    # CSV için TEK satırda her ölçülen sinyal (stream etiketi dahil). `confluence`
+    # HARİÇ: kesişim satırları `combined` satırlarının BİREBİR kopyasıdır (aynı
+    # pencere, aynı giriş) → dahil etmek örneklemi ve net toplamı ikiye katlardı.
+    # Kesişimi CSV'de görmek için mevcut `confluence` kolonu süzülür.
     result["signals"] = [
-        s for stream in measured.values() for s in stream
+        s for name, stream in measured.items() if name != "confluence" for s in stream
     ]
     result["measurement_horizon_minutes"] = horizon_cap_min
     result["symbols_fetched"] = symbols_seen
     # GEOMETRİ TARAMASI: aynı pencereler, sabit TP/SL ızgarası.
     if sweep:
-        grid_gaps = list(sweep_gaps or [0.60])
-        _emit(log, f"[replay] geometri taraması: {len(sweep_targets)}×{len(sweep_sls)}"
+        # IZGARA VARSAYILANLARI: parametreler `None` gelebilir (doğrudan çağrı).
+        # Eksikken `len(None)` ile ÇÖKÜYORDU (2026-09-17'de testte yakalandı) —
+        # `sweep=True` verip ızgara vermemek makul bir çağrıdır.
+        grid_targets = list(sweep_targets or DEFAULT_SWEEP_TARGETS)
+        grid_sls = list(sweep_sls or DEFAULT_SWEEP_SLS)
+        grid_gaps = list(sweep_gaps or DEFAULT_SWEEP_GAPS)
+        _emit(log, f"[replay] geometri taraması: {len(grid_targets)}×{len(grid_sls)}"
                    f"×{len(grid_gaps)} kombinasyon × {len(sim_inputs)} sinyal…")
-        result["sweep"] = _sweep_geometry(sim_inputs, sweep_targets, sweep_sls, grid_gaps)
+        result["sweep"] = _sweep_geometry(sim_inputs, grid_targets, grid_sls, grid_gaps)
     result["report_text"] = _report_text(result)
     _emit(log, result["report_text"])
     if out_path:
@@ -834,6 +863,9 @@ def _report_text(result: dict) -> str:
         lines.append(f"  {key:<14} hedef {m['avg_target_pct']:.2f}%  /  "
                      f"ort.MFE {m['avg_mfe_pct']:.2f}%  = {ratio:.2f}×{flag}")
     lines.append("")
+    # Maliyet TEK yerde hesaplanır: hem kesişim bloğu hem MALİYET DUVARI kullanır
+    # (kesişim bloğu sweep'ten sonra, eski `cost` tanımından ÖNCE gelir).
+    cost = round_trip_cost_pct()
     if result.get("sweep"):
         lines.append("GEOMETRİ TARAMASI (sabit TP/SL ızgarası, AYNI pencereler — ileriye bakış YOK):")
         lines.extend(_sweep_lines(result["sweep"], stream="combined", top=8))
@@ -844,12 +876,29 @@ def _report_text(result: dict) -> str:
             lines.append("  ✗ KAPSAMA ÖRTÜŞMÜYOR → ızgaradaki akış-ötesi kıyaslar "
                          "(combined vs velocity referansı) GEÇERSİZ.")
         lines.append("")
+        # KESİŞİM GEOMETRİSİ: birleştirmenin tek savunulabilir gerekçesi "iki
+        # kaynak hemfikir" alt kümesidir. Akış ortalamaları negatifken bu alt küme
+        # pozitif çıkabiliyor; o hâlde karar "birleştirme kötü" değil "birleştirmeyi
+        # KESİŞİME daralt" olur. Bunun için kesişimin KENDİ ızgarası gerekir.
+        conf_rows = [r for r in result["sweep"] if r["stream"] == "confluence"]
+        if conf_rows:
+            lines.append("KESİŞİM GEOMETRİSİ (iki kaynak aynı pencere — birleşimin kesişimi):")
+            lines.extend(_sweep_lines(conf_rows, stream="confluence", top=8))
+            best = max(conf_rows, key=lambda r: r["avg_net_pct"])
+            bgross = best["avg_net_pct"] + cost
+            lines.append(f"  → kesişim tavanı brüt {bgross:+.3f}% / maliyet {cost:.3f}%"
+                         + ("  ⇒ MALİYETİ AŞIYOR: kesişime daraltılmış birleştirme "
+                            "aday; n büyüdükçe doğrula." if bgross > cost else
+                            "  ⇒ maliyetin ALTINDA: kesişim de kâra geçmiyor."))
+            if best["n"] < 30:
+                lines.append(f"  ⚠ n={best['n']} < 30 → ızgara maksimumu KÜÇÜK örneklemde "
+                             f"seçildi; TP kuyruğuna duyarlı. MEDYANI ve daha uzun pencereyi oku.")
+            lines.append("")
 
     # MALİYET DUVARI: verdict'i iddia değil ARİTMETİK yapar. net = brüt − maliyet
     # olduğu için brüt = net + maliyet; kâr için brüt > maliyet ŞART. Taramanın
     # tavanı (en iyi hücrenin brütü) bile maliyetin altındaysa, hiçbir TP/SL
     # geometrisi kâra geçemez → sorun geometri değil SEÇİCİLİK.
-    cost = round_trip_cost_pct()
     lines.append("MALİYET DUVARI (net = brüt − gidiş-dönüş maliyet; kâr için brüt > maliyet):")
     lines.append(f"  gidiş-dönüş maliyet {cost:.3f}%  ({cost / 2:.3f}%/bacak × 2: "
                  f"komisyon + slipaj)")

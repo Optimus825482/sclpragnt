@@ -712,6 +712,77 @@ class LadderParityTests(unittest.TestCase):
         text = self.replay._report_text(result)
         self.assertIn("TAMAMEN BOŞ", text)
 
+    def test_confluence_subset_is_measured_as_its_own_sweep_stream(self):
+        """KESİŞİM AYNASI: `confluence` taramada AKIŞ olmalı, CSV'ye yazılmamalı.
+
+        Gerçek koşum (2026-09-17): tek POZİTİF alt küme kesişimdi (n=11, ort
+        +0.468%, medyan +0.530%, kazanma %72.7) ama geometri taramasında akış
+        olarak YOKTU → "kesişim kârlı bir geometriye sahip mi" sorusu
+        cevaplanamıyordu. Kesişim satırları `combined` satırlarının birebir
+        kopyasıdır, bu yüzden CSV'ye (result["signals"]) yazılmaz: yazılsa
+        örneklem ve net toplam ikiye katlanırdı.
+        """
+        import time
+        from unittest.mock import patch
+        replay = self.replay
+        now = time.time()
+
+        def _row(sym, offset, velocity):
+            row = {"symbol": sym, "created_at": now - 3600 + offset, "price": 100.0,
+                   "target_pct": 2.0}
+            if velocity:
+                row.update({"passes": True, "velocity_score": 1800.0,
+                            "candidate_id": f"vel-5dk-{sym}"})
+            else:
+                row.update({"kind": "rising", "score": 70.0})
+            return row
+
+        vel = [_row("BTCTRY", 0, True), _row("ETHTRY", 0, True)]
+        ris = [_row("BTCTRY", 60, False), _row("ETHTRY", 60, False)]
+
+        async def _v(*_a, **_k):
+            return vel
+
+        async def _r(*_a, **_k):
+            return ris
+
+        async def _cov():
+            return {"velocity_count": 2, "rising_count": 2}
+
+        def _kline_rows(_symbol, _interval, _days, end_ms):
+            out: list = []
+            t = int((now - 7200) // 60 * 60)
+            price = 100.0
+            while t * 1000 <= end_ms:
+                close = price * 1.004
+                out.append([t * 1000, str(price), str(max(price, close)),
+                            str(min(price, close)), str(close), "10",
+                            t * 1000 + 59999, str(close), 1, "1", "1", "1"])
+                price, t = close, t + 60
+            return out
+
+        async def _klines(*args, **kwargs):
+            return _kline_rows(*args, **kwargs)
+
+        with patch.object(replay.database, "list_velocity_candidates_since", _v), \
+                patch.object(replay.database, "list_rising_alerts_since", _r), \
+                patch.object(replay.database, "journal_coverage", _cov), \
+                patch.object(replay, "historical_klines", _klines):
+            # Izgara parametreleri KASTEN verilmez: `sweep=True` + None ızgaranın
+            # çökmediğini de bu test kilitler (len(None) hatası burada yakalandı).
+            result = asyncio.run(replay.build_report(
+                hours=24, symbols=None, max_signals=400, confluence_window=None,
+                skip_fetch=False, out_path=None, log=lambda _m: None, sweep=True))
+
+        self.assertGreater(result["streams"]["confluence"]["signals"], 0,
+                           "kesişim akışı ölçülmemiş")
+        conf_rows = [r for r in result["sweep"] if r["stream"] == "confluence"]
+        self.assertTrue(conf_rows, "kesişim geometri taramasında akış olarak yok")
+        self.assertNotIn("confluence",
+                         {s.get("stream") for s in result["signals"]},
+                         "kesişim CSV'ye yazılmamalı (combined'in kopyası)")
+        self.assertIn("KESİŞİM GEOMETRİSİ", result["report_text"])
+
     def test_non_empty_report_has_no_zero_alarm(self):
         """Uyarı yalnız gerçekten boş raporda çıkmalı (aksi hâlde gürültü olur)."""
         result = self._coverage_result(self.V_SPAN, self.V_SPAN, signals=107)
