@@ -3,6 +3,7 @@ from urllib.error import HTTPError
 from urllib.request import Request
 from cryptography.fernet import Fernet
 from app import database
+from app.config import config
 from app.security import safe_provider_open, validate_provider_url, _validate_provider_url_sync
 
 # Sentinel returned by _json_load_lenient when no recovery strategy works;
@@ -376,6 +377,32 @@ async def analyze(snapshot, max_tokens=None):
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}
 
+# Sorgu embedding'i deterministik: aynı model + aynı metin → aynı vektör. Bellek
+# bağlamı sorguları (aynı sembol/soru) tekrar eder; her seferinde sağlayıcıya HTTP
+# gitmek ilk jetonu gereksiz bekletir (2026-09-17). TTL + sınırlı boy → şişme yok.
+_EMBED_CACHE: dict[tuple, tuple[float, dict]] = {}
+
+
+def _embed_cache_get(key):
+    item = _EMBED_CACHE.get(key)
+    if not item:
+        return None
+    stored_at, value = item
+    ttl = float(getattr(config, "LLM_EMBED_CACHE_TTL_SEC", 900) or 0)
+    if ttl <= 0 or (time.time() - stored_at) > ttl:
+        _EMBED_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _embed_cache_put(key, value):
+    limit = int(getattr(config, "LLM_EMBED_CACHE_MAX", 128) or 128)
+    if len(_EMBED_CACHE) >= limit:
+        oldest = min(_EMBED_CACHE, key=lambda item: _EMBED_CACHE[item][0])
+        _EMBED_CACHE.pop(oldest, None)
+    _EMBED_CACHE[key] = (time.time(), value)
+
+
 async def embedding(text, model_id=None):
     cfg = await database.get_embedding_llm_config(model_id)
     if not cfg: return {"status": "disabled", "error": "Aktif LLM yapılandırması yok"}
@@ -385,6 +412,14 @@ async def embedding(text, model_id=None):
     payload = {"model": model["name"], "input": text}
     base_url = _validate_provider_url_sync(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/embeddings") else base_url + "/embeddings"
+    # Anahtara SAĞLAYICI + model + BOYUT da girer: aynı adlı modelin boyutu
+    # değişirse (yönetim ayarı) bayat vektör servis edilmesin ve boyut
+    # doğrulaması atlanmasın (2026-09-17 — test_w11c_llm bunu yakaladı).
+    cache_key = (base_url, str(model["name"]), str(model.get("id")),
+                 int(model.get("dimensions") or 0), str(text))
+    cached = _embed_cache_get(cache_key)
+    if cached is not None:
+        return cached
     async def call():
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
         response = await safe_provider_open(req, timeout=30)
@@ -402,7 +437,9 @@ async def embedding(text, model_id=None):
             raise RuntimeError("Embedding modeli için `dimensions` tanımlı değil; boyut doğrulanamaz")
         if len(vector) != int(expected):
             raise RuntimeError(f"Dimension uyumsuzluğu: beklenen {expected}, gelen {len(vector)}")
-        return {"status":"ok", "model":model["name"], "model_id":model.get("id"), "dimensions":len(vector), "vector":vector, "latency_ms":None}
+        result = {"status":"ok", "model":model["name"], "model_id":model.get("id"), "dimensions":len(vector), "vector":vector, "latency_ms":None}
+        _embed_cache_put(cache_key, result)
+        return result
     except Exception as exc:
         return {"status":"error", "error":str(exc), "model":model.get("name")}
 
@@ -563,12 +600,16 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
     except Exception as exc:
         return {"enabled": True, "status": "error", "text": None, "error": str(exc)}
 
-async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None):
+async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None, max_tokens=None):
     """SSE-compatible chat path with the same tool loop as buffered chat.
 
     Providers differ in streaming tool-call support. When tools are supplied,
     execute the canonical tool loop first and expose its lifecycle as SSE;
     this prevents streaming mode from silently losing agent capabilities.
+
+    ``max_tokens``: yanıt uzunluğu üst sınırı (None = sınırsız, eski davranış).
+    Hızlı şerit kısa yanıt ister — uzun yanıt hem daha yavaş ilk-jeton hem boşa
+    maliyettir (2026-09-17).
     """
     if tools and tool_executor:
         result = await chat(snapshot, messages, tools, tool_executor, active_skills)
@@ -587,6 +628,8 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         if isinstance(item, dict):
             conversation.append({k: item[k] for k in ("role", "content") if k in item})
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation, "stream": True}
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
     base_url = await validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     try:

@@ -128,7 +128,12 @@ async def _persist_chat_memory(messages, **kwargs):
 async def _chat_memory_context(query: str, *, symbol=None, strategy=None, limit=6):
     if not _main_pg_pool() or not query.strip(): return {"enabled": False, "results": []}
     try:
-        embedded = await llm_analysis.embedding(query)
+        # Bellek bağlamı OPSİYONELDİR: embedding sağlayıcısı yavaşsa yanıtı
+        # bekletmemeli (çağrının kendi timeout'u 30 sn — ilk jetonu 30 sn'ye kadar
+        # geciktirebilirdi). Sorgu embedding'i ayrıca önbellekli (llm_analysis).
+        embedded = await asyncio.wait_for(
+            llm_analysis.embedding(query),
+            timeout=float(getattr(config, "LLM_MEMORY_EMBED_TIMEOUT_SEC", 4) or 4))
         if embedded.get("status") != "ok": return {"enabled": False, "results": [], "error": embedded.get("error")}
         async with _main_pg_pool().acquire() as conn:
             rows = await memory_service.retrieve(conn, embedded["vector"], limit=limit, symbol=symbol, strategy=strategy, model_id=embedded.get("model_id"), query_text=query)
@@ -137,6 +142,8 @@ async def _chat_memory_context(query: str, *, symbol=None, strategy=None, limit=
                 AND (symbol IS NULL OR symbol=$1) AND (strategy IS NULL OR strategy=$2)
                 ORDER BY confidence DESC,evidence_count DESC LIMIT 8""", symbol, strategy)
         return {"enabled": True, "results": rows, "instincts": [dict(row) for row in instincts], "model_id": embedded.get("model_id")}
+    except asyncio.TimeoutError:
+        return {"enabled": False, "results": [], "error": "embedding_timeout"}
     except Exception as exc:
         return {"enabled": False, "results": [], "error": str(exc)}
 
@@ -2342,6 +2349,156 @@ def _tool_activity_summary(name: str, args: dict) -> str:
     return f"{name} çalıştırılıyor{sym}"
 
 
+# ---------------------------------------------------------------------------
+# HIZLI ŞERİT (2026-09-17) — tek sembol + durum sorusu
+# ---------------------------------------------------------------------------
+# NEDEN: sembol sorusu ağır yoldan geçtiğinde yanıt GÖRÜNENE kadar sırayla
+# şunlar bitmek zorundaydı: `get_trades` (DB) → embedding + pgvector hafıza
+# (HTTP; embedding timeout'u 30 sn) → `get_chat_prediction_insights` (DB) →
+# `deep_analyze_symbol` (7× `calculate_snapshot` ≈ 153 ms senkron CPU, ölçüldü
+# + `get_velocity_symbol_quality_stats` TAM-TABLO agregasyonu + 2. embedding) →
+# tool döngüsü (her tur = 1 provider çağrısı). Üstelik araç listesi dolu olduğu
+# için `stream_chat` TAMPONLAR (llm_analysis.py:577): kullanıcı yanıtı TEK BLOK
+# olarak, bütün döngü bitince görür.
+# Hızlı şerit: yalnız HAZIR bellek önbellekleri (+2 indeksli tek-satır DB
+# okuması), ARAÇSIZ çağrı — araçsız yolda sağlayıcı akışı JETON JETON akar —
+# ve kısa yanıt sözleşmesi.
+_QUICK_LANE_DEPTH_RE = re.compile(
+    r"(detay|derin|tam\s+analiz|tüm\s+gösterge|tum\s+gosterge|rapor|backtest|"
+    r"geriye\s*dönük|geriye\s*donuk|simüle|simule|varsayımsal|varsayimsal|"
+    r"karşılaştır|karsilastir|işlem\s+plan|islem\s+plan|plan\s+oluştur|plan\s+olustur)"
+)
+_QUICK_LANE_MAX_WORDS = 12
+_QUICK_LANE_MACD_TFS = ("1m", "5m", "15m", "30m", "1h")
+
+
+def _quick_lane_symbol(symbols, text, *, trade_intent=None, research_only_intent=False):
+    """Hızlı şerit adayı: TEK sembol + durum sorusu; derinlik/emir niyeti yok.
+
+    Çoklu sembol (karşılaştırma), derinlik isteği, işlem/araştırma niyeti ve
+    uzun mesajlar AĞIR yolda kalır — hızlı şerit yalnız "şu an ne durumda"
+    sorusunu hedefler.
+    """
+    if not getattr(config, "LLM_QUICK_LANE_ENABLED", True):
+        return None
+    if not symbols or len(symbols) != 1:
+        return None
+    if trade_intent or research_only_intent:
+        return None
+    lowered = str(text or "").lower()
+    if _QUICK_LANE_DEPTH_RE.search(lowered):
+        return None
+    if len(lowered.split()) > _QUICK_LANE_MAX_WORDS:
+        return None
+    return str(symbols[0]).replace("_", "")
+
+
+def _quick_pick(source, keys):
+    """Yalnız VAR OLAN alanları al (bağlamı şişirmemek için)."""
+    out = {}
+    for key in keys:
+        value = (source or {}).get(key)
+        if value not in (None, "", [], {}):
+            out[key] = value
+    return out
+
+
+async def _symbol_quick_context(symbol: str) -> dict | None:
+    """Hazır bellek önbelleklerinden KOMPAKT sembol durumu (ağ/tam-tablo YOK).
+
+    Kaynaklar: ticker (WS bellek) · MACD snapshot (≤1 sn) · radar adayı (≤60 sn)
+    · aktif bildirim ve öğrenilmiş hedef (indeksli tek-satır DB okuması).
+    Hiçbir canlı kaynak yoksa None döner → çağıran AĞIR yola düşer (soğuk
+    başlangıçta davranış değişmez).
+    """
+    sym = str(symbol or "").upper()
+    if not sym:
+        return None
+    # Lazy import: döngüsel import riski yok, maliyeti yalnız ilk çağrıda.
+    from app.routers import macd_monitor
+    from app.routers import monitoring as monitoring_router
+    ticker = market.get_ticker(sym) or {}
+    macd_row = ((getattr(macd_monitor, "_SNAPSHOT", None) or {}).get("symbols") or {}).get(sym)
+    candidate = monitoring_router.get_cached_radar_candidate(sym)
+    if not ticker and not macd_row and not candidate:
+        return None
+    quick = {
+        "quick_lane": True,
+        "symbol": sym,
+        "generated_at": time.time(),
+        "data_policy": "Yalnız public OHLCV/ticker/mikro yapı. Eksik alan 'bilinmiyor'dur; uydurma yok.",
+        "answer_contract": (
+            "KISA yanıt ver (en fazla ~6 satır) ve ARAÇ ÇAĞIRMA. Sıra: "
+            "(1) ŞU AN: fiyat + trend/faz (tek cümle); "
+            "(2) SENARYO: en olası senaryo — yön, tetikleyici seviye (somut fiyat), "
+            "bozulma seviyesi ve güven; "
+            "(3) NEDEN: bu görüşü destekleyen TEK kanıt cümlesi; "
+            "(4) SONUÇ: tek cümle. Gösterge dökümü yazma."
+        ),
+    }
+    price = ticker.get("last_price")
+    if price:
+        quick["price"] = price
+        ts = ticker.get("timestamp")
+        if ts:
+            quick["price_age_sec"] = round(max(0.0, time.time() - float(ts) / 1000.0), 1)
+    if macd_row:
+        tfs = macd_row.get("tfs") or {}
+        quick["macd_state"] = {
+            **_quick_pick(macd_row, ("strength", "tier", "dir", "early_score", "pre_any")),
+            "green_by_tf": {tf: (tfs.get(tf) or {}).get("green") for tf in _QUICK_LANE_MACD_TFS if tfs.get(tf)},
+            "signals": _quick_pick(macd_row.get("sigs") or {}, ("5m", "15m")),
+            "cvd": _quick_pick(macd_row.get("cvd") or {}, ("buy_dominant", "buy_ratio", "whale_net")),
+            "setup": _quick_pick(macd_row.get("pre") or {}, ("dip", "approach", "m1", "pre_any")),
+            "setup_detail": _quick_pick(macd_row.get("pre_detail") or {},
+                                        ("proximity", "gap_atr", "squeeze_now", "expand_now",
+                                         "transition", "dip_hist", "dip_delta")),
+        }
+    if candidate:
+        quick["radar_candidate"] = _quick_pick(candidate, (
+            "mode", "panel_score", "velocity_score", "target_pct", "horizon_minutes",
+            "ml_target_pct", "ml_hit_probability", "volume_ratio", "atr_pct", "rsi", "mfi",
+            "m5_pattern_ok", "leading_ok", "block_reason", "unified_score", "unified_sources",
+        ))
+    try:
+        state = await database.get_symbol_target_state(sym)
+    except Exception:
+        state = None
+    if state:
+        quick["learned_target"] = _quick_pick(state, ("target_pct", "total_count", "success_rate"))
+    try:
+        pending = await database.get_pending_monitoring_notification(sym)
+    except Exception:
+        pending = None
+    if pending:
+        quick["active_notification"] = _quick_pick(
+            pending, ("target_pct", "price", "detected_at", "horizon_minutes"))
+    return quick
+
+
+def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str, messages):
+    """Hızlı şerit SSE: ARAÇSIZ `stream_chat` → sağlayıcı akışı jeton jeton akar."""
+    async def events():
+        started = time.perf_counter()
+        try:
+            async for event in llm_analysis.stream_chat(
+                    quick, messages or [], None, None, body.get("active_skills"),
+                    max_tokens=int(getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 600) or 0) or None):
+                yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
+            await _persist_chat_memory(messages, layer="strategy",
+                                       strategy=str(body.get("strategy") or "") or None,
+                                       session_id=session_id)
+            await finish_trace(_main_pg_pool(), trace_id)
+        except Exception as exc:
+            logger.warning("hızlı şerit hatası %s: %s", quick.get("symbol"), exc)
+            yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
+        finally:
+            # Gecikme kanıtı: hızlı şerit süresi loglanır (ölçüm/karşılaştırma).
+            logger.info("LLM hızlı şerit %s: %.2f sn", quick.get("symbol"), time.perf_counter() - started)
+    return StreamingResponse(events(), media_type="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
+
+
 @router.post("/api/strategies/llm/chat")
 async def strategies_llm_chat(payload: dict = None):
     body = payload or {}
@@ -2355,19 +2512,7 @@ async def strategies_llm_chat(payload: dict = None):
     watch_symbol = _price_watch_symbol(messages)
     if body.get("stream") is True and watch_symbol:
         return _price_watch_stream(watch_symbol, body, trace_id)
-    context = {"type": "strategy_research_tool_mode", "trace_id": trace_id, "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "decision_contract": "Bir paper pozisyonu önermeden önce veri tazeliği, rejim, mikro yapı ve calculate_trade_economics sonuçlarını değerlendir. Kararda expected_move, total_cost, edge_cost_ratio, supporting_evidence, counter_evidence ve invalidation alanlarını açıkça üret; maliyet sonrası avantaj yoksa işlemi reddet.", "live_analysis_contract": "Anlık sembol analizinde kullanıcı 'şu an ne oluyor, bundan sonra ne olabilir, kısaca neden' bilmek ister. 4-8 cümlelik kompakt bir analiz yaz; uzun gösterge dökümü yapma (RSI şu, MACD şu... diye sıralama) ama gerekçesiz de bırakma. Yapı: (1) ŞU AN: fiyat, trend/rejim ve hareketin türü (breakout, pullback, range) tek-iki cümle; (2) BUNDAN SONRA: en olası 1-2 senaryo — yön, tetikleyici seviye (somut fiyat), bozulma seviyesi ve güven; (3) NEDEN: bu görüşü destekleyen tek kanıt cümlesi (hacim/trend/mikro yapıdan biri); (4) SONUÇ: tek cümlelik net özet. Kullanıcı gerçek giriş ve miktar verirse brüt PnL'yi hesapla, komisyonun bilinmediğini belirt ve tam çık/kademeli azalt/bekle seçeneklerini riskleriyle sun. Belirsizliği klişe uyarılarla değil karşı senaryo ve güven seviyesiyle ifade et; kullanıcı istemedikçe sorumluluk veya garanti uyarısı yazma.", "user_persona": (f"Karşındaki kullanıcının adı '{username}'. Samimi ve doğal bir üslupla, yer yer adıyla hitap ederek yanıtla; ama mesajı yapay biçimde her cümleye sıkıştırma — yalnızca uygun yerlerde (karşılama, öneri, uyarı) kullan." if username else "Kullanıcı adı bilinmiyor; yalnızca doğal ve samimi bir üslup kullan, uydurma isim kullanma."), "note": "Use a tool only when the question requires its data.", "self_learning": build_learning_context(await database.get_trades(), limit=200)}
-    context["memory_context"] = await _chat_memory_context(last_text, strategy=str(body.get("strategy") or "") or None)
-    # Ölçülmüş chat tahmin sonuçlarından türetilen dersler; LLM'in kendi
-    # tahmin açıklamalarını sonraki yanıtlarında kanıt olarak görmesi için.
-    try:
-        learned = chat_prediction_learning.insight_summary(await database.get_chat_prediction_insights(limit=6), limit=6)
-        if learned:
-            context["learned_prediction_insights"] = {
-                "insights": learned,
-                "instruction": "Ölçülmüş chat tahmin sonuçlarından türetilmiştir. Yön/karar kuralı olarak değil, güven kalibrasyonu ve karşı kanıt üretmede bağlam olarak kullan.",
-            }
-    except Exception as exc:
-        logger.debug("learned_prediction_insights yuklenemedi: %s", exc)
+    # --- NİYET BAYRAKLARI (saf regex — mikrosaniye) AĞIR BAĞLAM KURULMADAN ÖNCE ---
     # Sembol + "analiz/incele/durum/değerlendir/yorumla/ne olabilir" kalıpları
     # trade niyeti DEĞİLDİR: kullanıcı işlem açmak istemiyor, yalnızca durum ve
     # senaryo istiyor. Trade araçlarını modele sunmak yanıtı 4 satırlık plana
@@ -2404,6 +2549,32 @@ async def strategies_llm_chat(payload: dict = None):
         trade_intent = True
     if research_only_intent:
         trade_intent = False
+
+    # --- HIZLI ŞERİT: tek sembol + durum sorusu ----
+    quick_symbol = _quick_lane_symbol(requested_symbols, last_text,
+                                      trade_intent=trade_intent,
+                                      research_only_intent=research_only_intent)
+    if body.get("stream") is True and quick_symbol:
+        quick = await _symbol_quick_context(quick_symbol)
+        if quick:
+            return _symbol_quick_stream(quick, body, trace_id, session_id, messages)
+
+    context = {"type": "strategy_research_tool_mode", "trace_id": trace_id, "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "decision_contract": "Bir paper pozisyonu önermeden önce veri tazeliği, rejim, mikro yapı ve calculate_trade_economics sonuçlarını değerlendir. Kararda expected_move, total_cost, edge_cost_ratio, supporting_evidence, counter_evidence ve invalidation alanlarını açıkça üret; maliyet sonrası avantaj yoksa işlemi reddet.", "live_analysis_contract": "Anlık sembol analizinde kullanıcı 'şu an ne oluyor, bundan sonra ne olabilir, kısaca neden' bilmek ister. 4-8 cümlelik kompakt bir analiz yaz; uzun gösterge dökümü yapma (RSI şu, MACD şu... diye sıralama) ama gerekçesiz de bırakma. Yapı: (1) ŞU AN: fiyat, trend/rejim ve hareketin türü (breakout, pullback, range) tek-iki cümle; (2) BUNDAN SONRA: en olası 1-2 senaryo — yön, tetikleyici seviye (somut fiyat), bozulma seviyesi ve güven; (3) NEDEN: bu görüşü destekleyen tek kanıt cümlesi (hacim/trend/mikro yapıdan biri); (4) SONUÇ: tek cümlelik net özet. Kullanıcı gerçek giriş ve miktar verirse brüt PnL'yi hesapla, komisyonun bilinmediğini belirt ve tam çık/kademeli azalt/bekle seçeneklerini riskleriyle sun. Belirsizliği klişe uyarılarla değil karşı senaryo ve güven seviyesiyle ifade et; kullanıcı istemedikçe sorumluluk veya garanti uyarısı yazma.", "user_persona": (f"Karşındaki kullanıcının adı '{username}'. Samimi ve doğal bir üslupla, yer yer adıyla hitap ederek yanıtla; ama mesajı yapay biçimde her cümleye sıkıştırma — yalnızca uygun yerlerde (karşılama, öneri, uyarı) kullan." if username else "Kullanıcı adı bilinmiyor; yalnızca doğal ve samimi bir üslup kullan, uydurma isim kullanma."), "note": "Use a tool only when the question requires its data.", "self_learning": build_learning_context(await database.get_trades(), limit=200)}
+    context["memory_context"] = await _chat_memory_context(last_text, strategy=str(body.get("strategy") or "") or None)
+    # Ölçülmüş chat tahmin sonuçlarından türetilen dersler; LLM'in kendi
+    # tahmin açıklamalarını sonraki yanıtlarında kanıt olarak görmesi için.
+    try:
+        learned = chat_prediction_learning.insight_summary(await database.get_chat_prediction_insights(limit=6), limit=6)
+        if learned:
+            context["learned_prediction_insights"] = {
+                "insights": learned,
+                "instruction": "Ölçülmüş chat tahmin sonuçlarından türetilmiştir. Yön/karar kuralı olarak değil, güven kalibrasyonu ve karşı kanıt üretmede bağlam olarak kullan.",
+            }
+    except Exception as exc:
+        logger.debug("learned_prediction_insights yuklenemedi: %s", exc)
+    # NİYET BAYRAKLARI yukarıda (ağır bağlam kurulmadan ÖNCE) hesaplandı:
+    # analysis_only_intent / trade_intent / research_only_intent /
+    # requested_symbols / market_opportunity_intent / has_trade_verb.
     if market_opportunity_intent and not requested_symbols:
         try:
             market_scan = await scan_market_snapshots({

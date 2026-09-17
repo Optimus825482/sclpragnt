@@ -503,6 +503,18 @@ class Config:
     LLM_PROFIT_REENTRY_COOLDOWN_SEC = max(60, int(os.getenv("LLM_PROFIT_REENTRY_COOLDOWN_SEC", str(5 * 60))))
     LLM_REENTRY_MIN_MOVE_PCT = max(0.001, float(os.getenv("LLM_REENTRY_MIN_MOVE_PCT", "0.005")))
     LLM_MARKET_SCAN_CACHE_SEC = max(0, int(os.getenv("LLM_MARKET_SCAN_CACHE_SEC", "5")))
+    # HIZLI ŞERİT (2026-09-17): tek sembol + durum sorusu ağır yolu (7× snapshot,
+    # embedding/pgvector, journal agregasyonu, araç döngüsü) ATLAR; tek provider
+    # çağrısı yapar ve araçsız yolda sağlayıcı akışı jeton jeton akar. Kısa yanıt
+    # için üst sınır: uzun cevap = daha yavaş ilk-jeton ve boşa maliyet.
+    LLM_QUICK_LANE_MAX_TOKENS = max(128, int(os.getenv("LLM_QUICK_LANE_MAX_TOKENS", "600")))
+    LLM_QUICK_LANE_ENABLED = os.getenv("LLM_QUICK_LANE_ENABLED", "true").lower() == "true"
+    # Bellek bağlamı OPSİYONEL bağlamdır; embedding sağlayıcısı yavaşsa yanıtı
+    # bekletmemeli (embedding çağrısının kendi timeout'u 30 sn).
+    LLM_MEMORY_EMBED_TIMEOUT_SEC = max(1.0, float(os.getenv("LLM_MEMORY_EMBED_TIMEOUT_SEC", "4")))
+    # Sorgu embedding'i deterministik: aynı sorgu tekrar sorulursa ağ çağrısı yok.
+    LLM_EMBED_CACHE_TTL_SEC = max(0.0, float(os.getenv("LLM_EMBED_CACHE_TTL_SEC", "900")))
+    LLM_EMBED_CACHE_MAX = max(8, int(os.getenv("LLM_EMBED_CACHE_MAX", "128")))
     
     HARD_STOP_LOSS_PCT = 0.012
     COOLDOWN_BARS = 2
