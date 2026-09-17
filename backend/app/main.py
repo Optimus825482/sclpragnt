@@ -2023,6 +2023,25 @@ async def get_positions():
     positions = _json_safe_positions(positions)
     return {"positions": positions, "auto_paper_error": auto_paper_error}
 
+def _snapshot_with_profiles(sym, price, klines, flow, ticker_24h, tf):
+    """`calculate_snapshot` + davranış/geçiş profilleri — saf CPU, THREAD'de koşar.
+
+    Ölçüm (2026-09-17): tek `calculate_snapshot` ~21.7 ms senkron CPU. Async
+    handler gövdesinde çağrıldığında event loop'u bloklar; `symbol_llm_context`
+    (llm_chat) bunu 7 timeframe için `gather`'lar → toplam ~153 ms KİLİTLENME
+    (gather senkron gövdeyi paralelleştiremez, sırayla koşar). `to_thread` ile
+    hem loop serbest kalır hem 7 çağrı gerçekten paralel olur.
+    """
+    snapshot = calculate_snapshot(sym, price, klines, flow, ticker_24h,
+                                  config.DEFAULT_ORDER_USDT, tf)
+    try:
+        snapshot["symbol_behavior"] = symbol_behavior_profile(snapshot, (klines or {}).get(tf, {}))
+        snapshot["regime_transition"] = regime_transition_signal(snapshot)
+    except Exception:
+        pass
+    return snapshot
+
+
 @app.get("/api/symbol-analysis/{symbol}")
 async def symbol_analysis(symbol: str, timeframe: str = ""):
     sym = symbol.upper()
@@ -2092,15 +2111,11 @@ async def symbol_analysis(symbol: str, timeframe: str = ""):
             # G-12: iç hata metni sızdırılmaz; sabit işaret + sunucu logu.
             logger.warning("/api/symbol-analysis/%s: orderbook alınamadı: %s", sym, exc)
             flow["rest_error"] = "orderbook_unavailable"
-    snapshot = calculate_snapshot(sym, ticker["last_price"], analysis_klines, flow, market.ticker_24h.get(sym, 0), config.DEFAULT_ORDER_USDT, tf)
+    # CPU thread'e alınır (event loop bloklanmasın) — gerekçe: `_snapshot_with_profiles`.
+    snapshot = await asyncio.to_thread(
+        _snapshot_with_profiles, sym, ticker["last_price"], analysis_klines, flow,
+        market.ticker_24h.get(sym, 0), tf)
     snapshot["analysis_build"] = "rest-fallback-v4"
-    # Sembol davranış profili ve range→trend geçiş sinyali; yalnız anlık
-    # snapshot alanlarından türetilir, yeni ağ çağrısı yapmaz.
-    try:
-        snapshot["symbol_behavior"] = symbol_behavior_profile(snapshot, market.klines.get(tf, {}).get(sym, {}))
-        snapshot["regime_transition"] = regime_transition_signal(snapshot)
-    except Exception:
-        pass
     return snapshot
 
 @app.get("/api/llm/config")
