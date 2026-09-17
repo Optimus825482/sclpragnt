@@ -454,6 +454,15 @@ def _cell_lookup(sweep: list[dict], stream: str, target: float, sl: float,
     return None
 
 
+def _stream_hours(result: dict, stream: str) -> float | None:
+    """Bir akışın GERÇEKTEN kapsadığı süre (saat); kapsama bilgisi yoksa None."""
+    m = (result.get("streams") or {}).get(stream) or {}
+    first, last = m.get("first_seen_at"), m.get("last_seen_at")
+    if first is None or last is None:
+        return None
+    return (float(last) - float(first)) / 3600.0
+
+
 def _oos_verdict(base: dict, oos: dict, stream: str = "velocity_only") -> list[str]:
     """Baz dönemin en iyi hücresini OOS dönemde AYNI hücrede doğrula.
 
@@ -491,17 +500,34 @@ def _oos_verdict(base: dict, oos: dict, stream: str = "velocity_only") -> list[s
              or abs(oos_best["target_pct"] - best["target_pct"]) > 1e-9)
     lines.append("    -> optimum YER DEGISTIRDI: 'en iyi hucre' donemden doneme geziyor."
                  if moved else "    -> optimum AYNI hucrede kaldi (yer kararli).")
+    # KAPSAMA DENETİMİ: kısa bir OOS penceresi negatif sonucu KANITLAMAZ. Gerçek
+    # koşumda baz 339 sinyal / OOS 193 sinyal çıktı; oran ~%57, yani OOS okuması
+    # 24 saatin yalnız ~11 saatini kapsıyor olabilir. Yarım pencere sessiz bir
+    # döneme denk gelirse "DAYANMADI" yanlış kesinlik taşır.
+    w = (oos.get("window") or {}).get("hours")
+    base_h, oos_h = _stream_hours(base, stream), _stream_hours(oos, stream)
+    if oos_h is not None:
+        lines.append(f"  OOS kapsamasi    : {oos_h:.1f} saat"
+                     + (f" (baz {base_h:.1f} saat)" if base_h else "")
+                     + (f" — nominal pencere {w:g} saat" if w else ""))
+    short = bool(base_h and oos_h and oos_h < 0.75 * base_h)
+    if short:
+        lines.append(f"    -> KAPSAMA KISA: OOS bazin %{100 * oos_h / base_h:.0f}'ini kapsiyor. "
+                     f"Bu kosum sonucu KESINLESTIRMEZ; --hours {int((w or 24) * 2)} "
+                     "(veya ONCE'yi kucultup pencereyi buyut) ile tekrarla.")
     ok_net = same["avg_net_pct"] > 0
     ok_reg = bool(pos) and len(pos) > 3 and \
         max(r["sl_pct"] for r in pos) < max(r["sl_pct"] for r in oos_rows)
+    tag = " (KAPSAMA KISA -> zayif kanit)" if short else ""
     if ok_net and ok_reg:
-        lines.append("  KARAR: DAYANDI -> olculmus bir sonraki adim mesru "
+        lines.append(f"  KARAR{tag}: DAYANDI -> olculmus bir sonraki adim mesru "
                      "(ONCE paper; uretim TP/SL ancak paper dogrulamasindan sonra).")
     elif ok_net:
-        lines.append("  KARAR: ZAYIF -> hucre pozitif ama bolge YAPISAL degil; "
+        lines.append(f"  KARAR{tag}: ZAYIF -> hucre pozitif ama bolge YAPISAL degil; "
                      "bir donem daha gerek. Uretime TASIMA.")
     else:
-        lines.append("  KARAR: DAYANMADI -> tek donem artefakti. Uretim TP/SL DEGISMEZ.")
+        lines.append(f"  KARAR{tag}: DAYANMADI -> tek donem artefakti. "
+                     "Uretim TP/SL DEGISMEZ.")
     lines.append("  NOT: iki donem CAKISMAMALI (pencere 24 saat + offset 24 saat). "
                  "Cakisiyorsa bu dogrulama DEGILDIR.")
     return lines
@@ -511,7 +537,7 @@ def attach_oos_comparison(base: dict, oos: dict,
                           stream: str = "velocity_only") -> list[str]:
     """OOS karşılaştırmasını baz sonuca iliştir (rapora + `result["oos"]`'a)."""
     lines = _oos_verdict(base, oos, stream)
-    verdict = next((ln.strip() for ln in lines if ln.strip().startswith("KARAR:")), "")
+    verdict = next((ln.strip() for ln in lines if ln.strip().startswith("KARAR")), "")
     base["oos"] = {"stream": stream, "period": oos.get("period"),
                    "verdict": verdict, "lines": lines}
     base["report_text"] = (base.get("report_text") or "") + "\n" + "\n".join(lines) + "\n"
