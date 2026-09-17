@@ -29,27 +29,55 @@ self.addEventListener("push", function (event) {
   var data = {};
   try { data = event.data ? event.data.json() : {}; } catch (_) { data = { title: "Scalper Agent", body: event.data ? event.data.text() : "Yeni alarm" }; }
 
-  // PWA kapalý olsa bile sesli bildirim: Android/Chrome ses dosyasý destekler,
-  // iOS Safari vibrate ile destekler; her ikisini birden saðlýyoruz.
-  var notifOpts = {
-    body: data.body || data.message || "Yeni market alarmý",
-    icon: "/icon.svg",
-    badge: "/icon.svg",
-    vibrate: [300, 150, 300, 150, 500, 150, 300],
-    tag: data.tag || "scalper-alert",
-    requireInteraction: true,
-    renotify: true,
-    silent: false,
-    data: { url: data.url || "/alerts" }
+  // MÜKERRER BİLDİRİM ÖNLEMİ (2026-09-17): uygulama ODAKLI ve GÖRÜNÜR bir
+  // pencereyle açıksa sayfa kendi modal + sesini zaten gösteriyor (WS
+  // `monitoring_alert`); OS push'u da göstermek AYNI bildirimi iki kez
+  // duyurur (modal sesi + bildirim sesi/titreşimi). Bu durumda push'u
+  // sessizce atla — sayfa kapanırsa/arka plana geçerse push yine gösterilir.
+  var skipWhenPageVisible = function () {
+    return clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        var c = list[i];
+        try {
+          if (new URL(c.url).origin === self.location.origin && c.visibilityState === "visible" && c.focused) {
+            return true;
+          }
+        } catch (_) { /* url çözülemedi: sayfayı gösterilen saymayalım */ }
+      }
+      return false;
+    });
   };
-  // Android/Chrome: ses dosyasý (sound alaný)
-  if (data.sound) notifOpts.sound = data.sound;
-  // ML olaslýk varsa baþlýða ekle
-  if (data.ml_hit_probability != null) {
-    var prob = Math.round(Number(data.ml_hit_probability) * 100);
-    notifOpts.body = "[ML %" + prob + "] " + (notifOpts.body || "");
-  }
-  event.waitUntil(self.registration.showNotification(data.title || "Scalper Agent alarmý", notifOpts));
+
+  var show = function () {
+    // PWA kapalý olsa bile sesli bildirim: Android/Chrome ses dosyasý destekler,
+    // iOS Safari vibrate ile destekler; her ikisini birden saðlýyoruz.
+    var notifOpts = {
+      body: data.body || data.message || "Yeni market alarmý",
+      icon: "/icon.svg",
+      badge: "/icon.svg",
+      vibrate: [300, 150, 300, 150, 500, 150, 300],
+      tag: data.tag || "scalper-alert",
+      requireInteraction: true,
+      renotify: true,
+      silent: false,
+      data: { url: data.url || "/alerts" }
+    };
+    // Android/Chrome: ses dosyasý (sound alaný)
+    if (data.sound) notifOpts.sound = data.sound;
+    // ML olaslýk varsa baþlýða ekle
+    if (data.ml_hit_probability != null) {
+      var prob = Math.round(Number(data.ml_hit_probability) * 100);
+      notifOpts.body = "[ML %" + prob + "] " + (notifOpts.body || "");
+    }
+    return self.registration.showNotification(data.title || "Scalper Agent alarmý", notifOpts);
+  };
+
+  event.waitUntil(
+    skipWhenPageVisible().then(function (pageVisible) {
+      if (pageVisible) return; // sayfa zaten modal ile duyurdu
+      return show();
+    })
+  );
 });
 
 self.addEventListener("notificationclick", function (event) {
