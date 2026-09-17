@@ -886,6 +886,44 @@ class LadderParityTests(unittest.TestCase):
         self.assertIn("ZAYIF",
                       "\n".join(replay.attach_oos_comparison(base3, oos_flat)))
 
+    def test_oos_short_coverage_downgrades_the_verdict(self):
+        """KISA OOS penceresi negatifi KESİNLEŞTİRMEMELİ.
+
+        Gerçek koşumda baz 339 sinyal / OOS 193 sinyal çıktı: oran ~%57, yani OOS
+        okuması 24 saatin ~11 saatini kapsıyor olabilir. Yarım pencere sessiz bir
+        döneme denk gelirse "DAYANMADI" yanlış kesinlik taşır; karar bunu söylemeli.
+        """
+        replay = self.replay
+        row = {"stream": "velocity_only", "target_pct": 6.0, "sl_pct": 1.5,
+               "gap_pct": 0.3, "n": 100, "win_rate": 38.0, "median_net_pct": 0.0,
+               "total_net_pct": 0.0, "avg_net_pct": 0.161}
+        base = {"sweep": [dict(row)], "report_text": "",
+                "streams": {"velocity_only": {"first_seen_at": 0.0, "last_seen_at": 72000.0}}}
+        # OOS yalnız 11 saat kapsıyor (baz 20 saat) → kısa
+        oos = {"sweep": [dict(row, avg_net_pct=-0.477)], "period": {},
+               "window": {"hours": 24},
+               "streams": {"velocity_only": {"first_seen_at": 0.0, "last_seen_at": 39600.0}}}
+        text = "\n".join(replay.attach_oos_comparison(base, oos))
+        self.assertIn("KAPSAMA KISA", text)
+        self.assertIn("KESINLESTIRMEZ", text)
+        self.assertIn("DAYANMADI", text)
+        self.assertIn("KAPSAMA KISA", base["oos"]["verdict"])
+
+    def test_oos_full_coverage_keeps_verdict_firm(self):
+        """Kapsama tam ise karar etiketi KİRLETİLMEMELİ (yanlış alarm yok)."""
+        replay = self.replay
+        row = {"stream": "velocity_only", "target_pct": 6.0, "sl_pct": 1.5,
+               "gap_pct": 0.3, "n": 100, "win_rate": 38.0, "median_net_pct": 0.0,
+               "total_net_pct": 0.0, "avg_net_pct": 0.161}
+        span = {"first_seen_at": 0.0, "last_seen_at": 72000.0}
+        base = {"sweep": [dict(row)], "report_text": "",
+                "streams": {"velocity_only": dict(span)}}
+        oos = {"sweep": [dict(row, avg_net_pct=-0.477)], "period": {},
+               "window": {"hours": 24}, "streams": {"velocity_only": dict(span)}}
+        lines = replay.attach_oos_comparison(base, oos)
+        self.assertNotIn("KAPSAMA KISA", "\n".join(lines))
+        self.assertTrue(base["oos"]["verdict"].startswith("KARAR:"))
+
     def test_oos_verdict_does_not_invent_when_grid_missing(self):
         """Karşılaştırma yapılamıyorsa YAPILAMADI demeli, karar uydurmamalı."""
         replay = self.replay
