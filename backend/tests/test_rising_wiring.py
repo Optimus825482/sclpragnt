@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from app.config import config                      # noqa: E402
 from app.routers import monitoring                 # noqa: E402
 from app import rising_signals as rs               # noqa: E402
+from app import unified_signals                    # noqa: E402
 
 SETTINGS = {"enabled": True, "min_score": 0.5, "min_target_pct": 0.5,
             "quiet_hours_start": None, "quiet_hours_end": None}
@@ -225,6 +226,74 @@ class RisingScanTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(config, "RISING_SIGNALS_ENABLED", False):
             summary = await monitoring._run_rising_scan()
         self.assertEqual(0, summary["detected"])
+
+
+class UnifiedCrossModeRisingTests(unittest.IsolatedAsyncioTestCase):
+    """Çapraz bastırma MOD KİLİDİ (2026-09-17).
+
+    `note_notified` kayıtları ≤30 dk bayat kalabilir; kullanıcı birleşik modu
+    KAPATTIYSA bu bayat kayıtlar yükseliş push'unu engellememeli (mod değişimi
+    anında 30 dk sessizleşme hatası). Birleşik mod AÇIKKEN bastırma çalışır ama
+    kanıt kaydı (`rising_alerts`) her zaman yazılır — replay bunu kullanır.
+    """
+
+    def setUp(self):
+        rs.reset_state_for_tests()
+        self.addCleanup(rs.reset_state_for_tests)
+        unified_signals._unified_notified_at.clear()
+        self.addCleanup(unified_signals._unified_notified_at.clear)
+
+    def _stack(self, settings, deliver, record=None):
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(config, "RISING_COOLDOWN_SEC", 0))
+        stack.enter_context(patch.object(monitoring, "get_user_notification_settings",
+                                         AsyncMock(return_value=dict(settings))))
+        stack.enter_context(patch.object(monitoring, "_ticker_price",
+                                         MagicMock(return_value=10.0)))
+        stack.enter_context(patch.object(monitoring.database, "record_rising_alert",
+                                         record or AsyncMock(return_value=501)))
+        stack.enter_context(patch.object(monitoring, "_rising_deliver", deliver))
+        return stack
+
+    async def _arm_then_grow(self, settings, deliver):
+        grown = _candidate()
+        grown["signals"] = {**grown["signals"], "break15": True}
+        with self._stack(settings, deliver) as stack:
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[_candidate()])))
+            await monitoring._run_rising_scan()                  # sessiz arm
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[grown])))
+            return await monitoring._run_rising_scan()
+
+    async def test_stale_unified_note_does_not_block_rising_in_legacy_mode(self):
+        unified_signals.note_notified("RISETRY")   # birleşik moddan kalan bayat kayıt
+        deliver = AsyncMock(return_value=None)
+        summary = await self._arm_then_grow(SETTINGS, deliver)
+        self.assertEqual(1, summary["notified"],
+                         "legacy modda bayat birleşik kaydı push'u engellememeli")
+        deliver.assert_awaited()
+
+    async def test_unified_note_blocks_push_but_keeps_evidence(self):
+        unified_signals.note_notified("RISETRY")   # radar/hızlı yol yeni bildirdi
+        unified_settings = {**SETTINGS, "radar_unified_notify": True}
+        deliver = AsyncMock(return_value=None)
+        record = AsyncMock(return_value=501)
+        grown = _candidate()
+        grown["signals"] = {**grown["signals"], "break15": True}
+        with self._stack(unified_settings, deliver, record) as stack:
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[_candidate()])))
+            await monitoring._run_rising_scan()                  # sessiz arm
+            stack.enter_context(patch.object(rs, "detect_rising_candidates",
+                                             MagicMock(return_value=[grown])))
+            summary = await monitoring._run_rising_scan()
+        self.assertEqual(0, summary["notified"],
+                         "birleşik modda yakın bildirim push'u bastırmalı")
+        deliver.assert_not_awaited()
+        record.assert_awaited()
+        self.assertFalse(record.await_args.args[0].get("notified"),
+                         "bastırılan sinyalin kanıtı notified=FALSE ile yazılmalı")
 
 
 class RisingDeliveryTests(unittest.IsolatedAsyncioTestCase):
