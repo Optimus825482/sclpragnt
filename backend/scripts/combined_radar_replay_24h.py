@@ -444,6 +444,80 @@ def _sweep_lines(sweep: list[dict], stream: str = "combined", top: int = 8) -> l
     return lines
 
 
+def _cell_lookup(sweep: list[dict], stream: str, target: float, sl: float,
+                 gap: float) -> dict | None:
+    """Aynı ızgara hücresini başka bir dönemin tarama sonucunda bul."""
+    for r in sweep:
+        if (r["stream"] == stream and abs(r["target_pct"] - target) < 1e-9
+                and abs(r["sl_pct"] - sl) < 1e-9 and abs(r["gap_pct"] - gap) < 1e-9):
+            return r
+    return None
+
+
+def _oos_verdict(base: dict, oos: dict, stream: str = "velocity_only") -> list[str]:
+    """Baz dönemin en iyi hücresini OOS dönemde AYNI hücrede doğrula.
+
+    KURAL ÖNCEDEN SABİT (sonucu gördükten sonra yorumlamamak için): baz dönemde
+    seçilen en iyi TP/SL hücresi OOS'ta (a) pozitif KALIYORSA ve (b) OOS bölgesi
+    YAPISAL ise bulgu DAYANDI; aksi halde tek dönem artefaktıdır ve üretime
+    TAŞINMAZ. Ayrıca optimumun YERİ karşılaştırılır: optimum dönemler arasında
+    geziyorsa yüzey kararsızdır ve "en iyi hücre" bir şans tepesidir.
+    """
+    base_rows = [r for r in (base.get("sweep") or []) if r["stream"] == stream]
+    oos_rows = [r for r in (oos.get("sweep") or []) if r["stream"] == stream]
+    lines = ["", "=" * 88,
+             "OUT-OF-SAMPLE DOGRULAMA (kural onceden sabitlendi)".center(88),
+             "=" * 88]
+    if not base_rows or not oos_rows:
+        lines.append("  Tarama verisi yok (sweep kapali ya da donemlerden biri bos) "
+                     "-> karsilastirma YAPILAMADI.")
+        return lines
+    best = max(base_rows, key=lambda r: r["avg_net_pct"])
+    lines.append(f"  BAZ en iyi hucre : hedef {best['target_pct']:.2f} / stop "
+                 f"{best['sl_pct']:.2f} / ratchet {best['gap_pct']:.2f} -> "
+                 f"{_pct(best['avg_net_pct'])} (kazanma %{best['win_rate']:.1f}, n={best['n']})")
+    same = _cell_lookup(oos_rows, stream, best["target_pct"], best["sl_pct"], best["gap_pct"])
+    if same is None:
+        lines.append("  O OOS izgarasinda YOK -> karsilastirma yapilamadi (izgaralar ayni mi?).")
+        return lines
+    pos = [r for r in oos_rows if r["avg_net_pct"] > 0]
+    oos_best = max(oos_rows, key=lambda r: r["avg_net_pct"])
+    lines.append(f"  OOS AYNI hucre   : {_pct(same['avg_net_pct'])} "
+                 f"(kazanma %{same['win_rate']:.1f}, n={same['n']})")
+    lines.append(f"  OOS bolgesi      : {len(pos)}/{len(oos_rows)} hucre pozitif")
+    lines.append(f"  OOS kendi en iyisi: hedef {oos_best['target_pct']:.2f} / stop "
+                 f"{oos_best['sl_pct']:.2f} -> {_pct(oos_best['avg_net_pct'])}")
+    moved = (abs(oos_best["sl_pct"] - best["sl_pct"]) > 1e-9
+             or abs(oos_best["target_pct"] - best["target_pct"]) > 1e-9)
+    lines.append("    -> optimum YER DEGISTIRDI: 'en iyi hucre' donemden doneme geziyor."
+                 if moved else "    -> optimum AYNI hucrede kaldi (yer kararli).")
+    ok_net = same["avg_net_pct"] > 0
+    ok_reg = bool(pos) and len(pos) > 3 and \
+        max(r["sl_pct"] for r in pos) < max(r["sl_pct"] for r in oos_rows)
+    if ok_net and ok_reg:
+        lines.append("  KARAR: DAYANDI -> olculmus bir sonraki adim mesru "
+                     "(ONCE paper; uretim TP/SL ancak paper dogrulamasindan sonra).")
+    elif ok_net:
+        lines.append("  KARAR: ZAYIF -> hucre pozitif ama bolge YAPISAL degil; "
+                     "bir donem daha gerek. Uretime TASIMA.")
+    else:
+        lines.append("  KARAR: DAYANMADI -> tek donem artefakti. Uretim TP/SL DEGISMEZ.")
+    lines.append("  NOT: iki donem CAKISMAMALI (pencere 24 saat + offset 24 saat). "
+                 "Cakisiyorsa bu dogrulama DEGILDIR.")
+    return lines
+
+
+def attach_oos_comparison(base: dict, oos: dict,
+                          stream: str = "velocity_only") -> list[str]:
+    """OOS karşılaştırmasını baz sonuca iliştir (rapora + `result["oos"]`'a)."""
+    lines = _oos_verdict(base, oos, stream)
+    verdict = next((ln.strip() for ln in lines if ln.strip().startswith("KARAR:")), "")
+    base["oos"] = {"stream": stream, "period": oos.get("period"),
+                   "verdict": verdict, "lines": lines}
+    base["report_text"] = (base.get("report_text") or "") + "\n" + "\n".join(lines) + "\n"
+    return lines
+
+
 def _resolve_horizon(signal: dict, cap_minutes: float) -> float:
     """Sinyalin KENDİ ufkunu döndür (yoksa 5 dk); [1, cap] aralığına kırp.
 
@@ -1030,6 +1104,9 @@ def main() -> None:
     parser.add_argument("--offset-hours", type=float, default=0.0,
                         help="pencereyi geçmişe kaydır (saat) — out-of-sample doğrulama: "
                              "aynı ızgarayı BAŞKA bir dönemde koş")
+    parser.add_argument("--compare-oos", action="store_true",
+                        help="baz dönemi de koş ve aynı hücreyi iki dönemde karşılaştır "
+                             "(--offset-hours > 0 gerektirir)")
     parser.add_argument("--symbols", type=str, default="", help="virgülle ayrılmış sembol filtresi")
     parser.add_argument("--max-signals", type=int, default=400, help="akış başına ölçülecek en fazla sinyal")
     parser.add_argument("--confluence-window", type=int, default=None, help="çakışma penceresi (sn)")
@@ -1056,10 +1133,21 @@ def main() -> None:
 
     async def _main():
         try:
-            await run(args.hours, symbols, args.max_signals, args.confluence_window,
-                      args.skip_fetch, out_path, sweep=args.sweep,
-                      sweep_targets=sweep_targets, sweep_sls=sweep_sls,
-                      sweep_gaps=sweep_gaps, offset_hours=args.offset_hours)
+            # Karşılaştırma isteniyorsa OOS koşumu dosyaya yazmaz; baz koşum yazar
+            # (aksi halde baz dönemin JSON'u OOS ile ezilirdi).
+            oos_path = None if (args.compare_oos and args.offset_hours) else out_path
+            oos = await run(args.hours, symbols, args.max_signals, args.confluence_window,
+                            args.skip_fetch, oos_path, sweep=args.sweep,
+                            sweep_targets=sweep_targets, sweep_sls=sweep_sls,
+                            sweep_gaps=sweep_gaps, offset_hours=args.offset_hours)
+            if args.compare_oos and args.offset_hours:
+                base = await run(args.hours, symbols, args.max_signals, args.confluence_window,
+                                 args.skip_fetch, out_path, sweep=args.sweep,
+                                 sweep_targets=sweep_targets, sweep_sls=sweep_sls,
+                                 sweep_gaps=sweep_gaps, offset_hours=0)
+                print("\n".join(attach_oos_comparison(base, oos)))
+            elif args.compare_oos:
+                print("UYARI: --compare-oos icin --offset-hours > 0 gerekir; atlandi.")
         finally:
             await database.close_db()
 

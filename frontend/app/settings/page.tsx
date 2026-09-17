@@ -1305,9 +1305,11 @@ function RadarReplayPanel() {
       </div>
       {Number(offsetHours) > 0 && (
         <p className="mt-3 font-mono text-[11px] text-amber-300/80">
-          OUT-OF-SAMPLE: {hours} saatlik pencere, {offsetHours} saat öncesinde bitecek.
-          Aynı ızgara ayrı bir dönemde koşulur — baz dönemin en iyi hücresi burada da
-          pozitif kalıyorsa bulgu DAYANIYOR, tek hücrede kalıyorsa GÜRÜLTÜ.
+          OUT-OF-SAMPLE DOĞRULAMA: <b>baz dönem de ayrıca koşulur</b> (iki dönem, aynı TP/SL
+          ızgarası) ve baz dönemin en iyi hücresi bu dönemde de pozitif kalıyor mu diye
+          karşılaştırılır. Karar raporun sonunda <span className="text-white">KARAR:</span>{" "}
+          satırında çıkar (kural önceden sabit — sonuca göre yorumlanamaz). Süre ~2× uzar.
+          İki dönem ÇAKIŞMAMALI: bu pencere {hours} saat olduğu için ÖNCE ≥ {hours} olmalı.
         </p>
       )}
       {error && <p className="mt-3 font-mono text-xs text-neon-red">⚠ {error}</p>}

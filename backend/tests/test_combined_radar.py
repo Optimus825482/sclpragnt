@@ -849,6 +849,57 @@ class LadderParityTests(unittest.TestCase):
         self.assertIn("DÖNEM:", result["report_text"])
         self.assertIn("OUT-OF-SAMPLE", result["report_text"])
 
+    def test_oos_verdict_dayandi_only_when_cell_holds_and_region_structural(self):
+        """OOS kararı ÖNCEDEN sabit kurala göre verilmeli, sonuca göre değil.
+
+        Üç dal: DAYANDI (hücre pozitif + bölge yapısal), ZAYIF (hücre pozitif ama
+        bölge yapısal değil), DAYANMADI (hücre OOS'ta negatif).
+        """
+        replay = self.replay
+
+        def grid(neg_sl_from: float, best_net: float, sls=(0.5, 1.5, 3.0)):
+            return [{"stream": "velocity_only", "target_pct": t, "sl_pct": sl,
+                     "gap_pct": 0.3, "n": 100, "win_rate": 40.0,
+                     "median_net_pct": 0.0, "total_net_pct": 2.0,
+                     "avg_net_pct": (best_net if (t == 6.0 and sl == 1.5)
+                                     else (0.2 if sl < neg_sl_from else -0.5))}
+                    for t in (3.0, 6.0) for sl in sls]
+
+        # Baz: en iyi hücre 6.00 / 1.50
+        base = {"sweep": grid(neg_sl_from=3.0, best_net=0.206)}
+        base["report_text"] = ""
+
+        # (a) DAYANDI: aynı hücre pozitif + yapısal bölge (stop 3.00 tamamen negatif)
+        oos_ok = {"sweep": grid(neg_sl_from=3.0, best_net=0.150), "period": {"offset_hours": 24}}
+        text = "\n".join(replay.attach_oos_comparison(base, oos_ok))
+        self.assertIn("DAYANDI", text)
+
+        # (b) DAYANMADI: aynı hücre OOS'ta NEGATİF (bölge yapısal olsa bile)
+        base2 = {"sweep": grid(neg_sl_from=3.0, best_net=0.206), "report_text": ""}
+        oos_bad = {"sweep": grid(neg_sl_from=3.0, best_net=-0.180), "period": {}}
+        self.assertIn("DAYANMADI",
+                      "\n".join(replay.attach_oos_comparison(base2, oos_bad)))
+
+        # (c) ZAYIF: hücre pozitif ama TÜM stoplar pozitif → bölge yapısal değil
+        base3 = {"sweep": grid(neg_sl_from=3.0, best_net=0.206), "report_text": ""}
+        oos_flat = {"sweep": grid(neg_sl_from=99.0, best_net=0.150), "period": {}}
+        self.assertIn("ZAYIF",
+                      "\n".join(replay.attach_oos_comparison(base3, oos_flat)))
+
+    def test_oos_verdict_does_not_invent_when_grid_missing(self):
+        """Karşılaştırma yapılamıyorsa YAPILAMADI demeli, karar uydurmamalı."""
+        replay = self.replay
+        base = {"sweep": [{"stream": "velocity_only", "target_pct": 6.0, "sl_pct": 1.5,
+                           "gap_pct": 0.3, "n": 10, "avg_net_pct": 0.2, "win_rate": 40.0,
+                           "median_net_pct": 0.0, "total_net_pct": 2.0}],
+                "report_text": ""}
+        lines = replay.attach_oos_comparison(base, {"sweep": [], "period": {}})
+        self.assertIn("YAPILAMADI", "\n".join(lines))
+        self.assertIn("KARAR:",
+                      "\n".join(replay.attach_oos_comparison(
+                          {"sweep": base["sweep"], "report_text": ""},
+                          {"sweep": base["sweep"], "period": {}})))
+
     def test_non_empty_report_has_no_zero_alarm(self):
         """Uyarı yalnız gerçekten boş raporda çıkmalı (aksi hâlde gürültü olur)."""
         result = self._coverage_result(self.V_SPAN, self.V_SPAN, signals=107)
