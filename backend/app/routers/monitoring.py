@@ -13,6 +13,7 @@ from app.config import config
 from app import database
 from app.api_common import log_user_action, _background_tasks, _start_background, get_task
 from app.state import market, analyzer
+from app import unified_signals
 from app.routers.velocity import (detect_velocity_candidates, upside_rank_score,
                                   _journal_touch_rates)
 from app.alerting import deliver_web_push
@@ -645,10 +646,16 @@ _unified_pushed_symbols: set[str] = set()
 
 
 async def _radar_unified_enabled() -> bool:
-    """Tek tip bildirim modu açık mı (radar+yükseliş tek tag/tek push)."""
+    """Tek tip bildirim modu açık mı (radar+yükseliş tek tag/tek push).
+
+    ÖNCELİK (2026-09-17 düzeltmesi): kayıtlı kullanıcı ayarı KAZANIR. Eski
+    `or config...` formu, kullanıcı DİKKATLE kapattığında config'i true yapınca
+    sessizce ezer ve kill switch'i öldürürdü (test kilidi yakaladı). Config
+    yalnızca ayar HİÇ kaydedilmemişse varsayılan olarak devreye girer —
+    `get_user_notification_settings` bu varsayılama zaten uygular.
+    """
     settings = await get_user_notification_settings()
-    return bool(settings.get("radar_unified_notify")
-                or getattr(config, "RADAR_UNIFIED_NOTIFY", False))
+    return bool(settings.get("radar_unified_notify"))
 
 
 async def _send_push(notif: dict) -> bool:
@@ -837,7 +844,15 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     Yoksa güncel fiyat kullanılır (yeni bildirim) — böylece API yanıtı ile DB'deki
     expected_price her zaman tutarlı olur (2026-09-06).
     """
-    score = normalize_score(c.get("velocity_score", 0))
+    # BİRLEŞİK SİNYAL (2026-09-17): füzyon-tek adayların skoru füzyon panel
+    # skorudur; radar adayları için davranış değişmez. `sources` + kaynak metni
+    # mesaja ve zarfa eklenir → kullanıcı TEK bildirimde hangi algoritmaların
+    # hemfikir olduğunu görür.
+    unified_pass = bool(c.get("unified_pass"))
+    score = (float(c.get("unified_score") or 0) if unified_pass
+             else normalize_score(c.get("velocity_score", 0)))
+    sources = list(c.get("unified_sources") or [])
+    source_txt = unified_signals.sources_text(sources) if sources else ""
     target = float(c.get("target_pct", 2.0) or 0)
     price = float(c.get("price", 0) or 0)
     if first_price is not None:
@@ -860,8 +875,9 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     horizon = int(c.get("horizon_minutes", 5) or 5)
     ml_prob = c.get("ml_hit_probability")
     ml_pct_str = f" | ML %{ml_prob * 100:.0f}" if ml_prob is not None else ""
+    src_str = f" | Kaynak: {source_txt}" if source_txt else ""
     message = (
-        f"🎯 {sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str} | "
+        f"🎯 {sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str}{src_str} | "
         f"Anlık: {base_price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
     )
     return {
@@ -872,6 +888,10 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         "tag": f"monitoring-{sym}",
         "detected_at": detected_at,
         "score": score,
+        # BİRLEŞİK SİNYAL: hangi tespit algoritmaları bu bildirimi üretti
+        # (DB `sources` kolonuna yazılır; rapor sayfası bunu gösterir).
+        "sources": sources or ["velocity"],
+        "unified": bool(sources),
         "target_pct": target,
         "price": base_price,
         "expected_price": expected_price,
@@ -1018,14 +1038,21 @@ async def _notify(candidates_list, settings) -> list:
         pending_by_symbol = {}
     for c in candidates_list:
         sym = str(c.get("symbol", "") or "").upper()
+        # BİRLEŞİK SİNYAL (2026-09-17): füzyon-tek adaylar (radar ham skor kapısını
+        # geçemeyip MACD öncüsüyle güçlü olanlar) `unified_pass` ile girer; skorları
+        # füzyon panel skoru (0-100) olur. Radar adaylarında davranış DEĞİŞMEZ.
+        unified_pass = bool(c.get("unified_pass"))
         # normalize_score'a geçilir (2026-09-04 teşhis). upside_rank yalnızca
         # SIRALAMA anahtarıdır (dk-başı yükseliş × kalite × mikro-yapı).
         raw = float(c.get("velocity_score", 0) or 0)
-        score = normalize_score(raw)
+        score = (float(c.get("unified_score") or 0) if unified_pass
+                 else normalize_score(raw))
         target = float(c.get("target_pct") or 2.0)
         min_target = float(settings.get("min_target_pct") or 0)
-        # M1/P0: kapı HAM skoru karşılaştırır (panel değil).
-        if not sym or raw < min_raw or (min_target > 0 and target < min_target):
+        # M1/P0: kapı HAM skoru karşılaştırır (panel değil); füzyon-tek aday
+        # bu kapıdan muaftır — kendi kapısı `UNIFIED_FUSION_MIN_SCORE` zaten
+        # `enrich_candidates` içinde uygulandı.
+        if not sym or (not unified_pass and raw < min_raw) or (min_target > 0 and target < min_target):
             continue
         # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
         # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
@@ -1196,7 +1223,10 @@ async def _deliver_scan_notifications(notified: list) -> None:
         for notif in new_notifs:
             sym = str(notif.get("symbol") or "").upper()
             notif["tag"] = f"radar-{sym}"
-            notif["sources"] = ["velocity"]
+            # Kaynak listesi `_build_notification`'dan gelir (füzyon sonrası
+            # ["velocity","jump","early"] olabilir); eski kayıtlar/yalnız-radar
+            # yolu ["velocity"] kalır.
+            notif.setdefault("sources", ["velocity"])
             notif["unified"] = True
             if sym:
                 _unified_pushed_symbols.add(sym)
@@ -1243,6 +1273,137 @@ async def _deliver_scan_notifications(notified: list) -> None:
         await ws_manager.broadcast({"type": "monitoring_alert", "data": notified})
     except Exception as exc:
         logger.warning("Monitoring WS broadcast hatasi: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# BİRLEŞİK SİNYAL HIZLI YOLU (2026-09-17)
+#
+# MACD MONITOR'ün sıçrama (jump) ve erken sıçrama (dip) alarmları artık KENDİ
+# push'unu ATMAZ; bu fonksiyonu çağırır. Burada velocity + MACD bileşenleri TEK
+# füzyon skorunda birleşir, kapılar (cooldown, açık pozisyon, BEKLİYOR, sessiz
+# saat) radar ile AYNI kurallardan geçer ve TEK bildirim gönderilir:
+# push + WS `monitoring_alert` + otonom paper. MACD MONITOR sayfası gözlem
+# için AYNEN çalışır (kanıt kaydı + sayfa-içi WS olayları korunur).
+# ---------------------------------------------------------------------------
+_unified_fast_last: dict[str, float] = {}   # symbol → son hızlı-yol zamanı (monotonik)
+
+
+async def unified_fast_notify(symbol: str, kind: str, score: float) -> dict | None:
+    """MACD tetiklemesinden birleşik TEK bildirim üret (veya sessizce atla).
+
+    kind: "jump" | "early". Dönüş: gönderilen bildirim zarfı veya None
+    (kapıya takıldı). Hiçbir durumda fırlatmaz — MACD döngüsü BOZULMAZ.
+    """
+    try:
+        return await _unified_fast_notify_impl(symbol, kind, score)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("unified fast notify %s/%s: %s", symbol, kind, exc)
+        return None
+
+
+async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dict | None:
+    if not unified_signals.enabled() or not await _radar_unified_enabled():
+        return None
+    sym = str(symbol or "").upper()
+    if not sym:
+        return None
+    # Aynı sembolde zaten birleşik bildirim VAR (hızlı-yol cooldown) → sessiz.
+    now_mono = time.monotonic()
+    last = _unified_fast_last.get(sym)
+    cooldown = float(getattr(config, "UNIFIED_FAST_COOLDOWN_SEC", 1800))
+    if last is not None and now_mono - last < cooldown:
+        return None
+    # Çapraz tekilleştirme: radar/yükseliş yakın zamanda bildirdiyse YENİ push yok.
+    if unified_signals.recently_notified(sym, ttl_sec=cooldown):
+        return None
+    # Kullanıcı bildirimleri kapalıysa veya sessiz saatse radar gibi davran:
+    # kayıt yapılmaz (erteleme kuyruğu radar turunun işidir; burada atlanır).
+    settings = await get_user_notification_settings()
+    if not bool(settings.get("enabled", True)):
+        return None
+    quiet = _in_quiet_hours(settings)
+    if quiet:
+        return None
+    # Açık pozisyonlu sembol: bot zaten yönetiyor — bildirim yok.
+    if sym in {str(s or "").upper() for s in (analyzer.positions or {})}:
+        return None
+    # Sonuçlanmamış (BEKLİYOR) bildirim varsa yenisi AÇILMAZ (radar kuralı).
+    try:
+        pending = await database.get_pending_monitoring_notification(sym)
+    except Exception:
+        pending = None
+    if pending:
+        horizon = int(pending.get("horizon_minutes") or 5)
+        if time.time() - float(pending.get("detected_at") or 0) < (horizon + 2) * 60:
+            return None
+    # Füzyon adayı: MACD bileşenleri + (varsa) son radar panel skoru.
+    velocity_row = get_cached_radar_candidate(sym)
+    candidate = unified_signals.build_fusion_candidate(sym, kind, velocity_row)
+    if not candidate:
+        return None
+    # Radar kuralı D-05: tazeliği doğrulanmış ticker yoksa adayın fiyatı.
+    tick_px = _ticker_price(sym)
+    if tick_px:
+        candidate["price"] = tick_px
+    if not candidate.get("price") or float(candidate["price"]) <= 0:
+        return None
+    notif = _build_notification(sym, candidate, settings)
+    notif["updated"] = False
+    notif["quiet_hours"] = False
+    notif["trigger"] = kind
+    notif["sent_via_push"] = False
+    # Kapıları işaretle: 60 sn'lik radar turu aynı sembolü tekrar push etmesin.
+    _unified_fast_last[sym] = now_mono
+    _monitoring_state["notified_symbols"][sym] = now_mono
+    _monitoring_state.setdefault("notified_scores", {})[sym] = float(notif.get("score") or 0)
+    base_px = float(notif.get("price") or 0)
+    if base_px > 0:
+        _monitoring_state["notified_prices"][sym] = base_px
+    expected = float(notif.get("expected_price") or 0)
+    if expected > 0:
+        _monitoring_state["pending_targets"][sym] = {
+            "expected": expected,
+            "horizon_minutes": int(candidate.get("horizon_minutes") or 5),
+            "set_at": time.time(),
+        }
+    unified_signals.note_notified(sym)
+    # Kalıcı kayıt (rapor/günlük takip sayfası buradan okur).
+    await _record_history([notif])
+    _monitoring_state["history"] = ([notif] + _monitoring_state["history"])[:HISTORY_LIMIT]
+    # Tek tip teslim: tag radar-{sym} + push + WS + otonom paper.
+    notif["tag"] = f"radar-{sym}"
+    notif["sources"] = list(notif.get("sources") or [])
+    if kind not in notif["sources"]:
+        notif["sources"].append(kind)
+    vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
+    if vapid_configured:
+        ok = await _send_push(notif)
+        notif["push_success"] = ok
+        if ok:
+            notif["sent_via_push"] = True
+            nid = notif.get("id")
+            if nid:
+                try:
+                    await database.mark_monitoring_push_sent(nid)
+                except Exception as exc:
+                    logger.debug("fast push etiketi %s: %s", nid, exc)
+    else:
+        notif["push_success"] = False
+    try:
+        from app.routers.auto_paper import try_open_from_notification
+        await try_open_from_notification(notif)
+    except Exception as exc:
+        logger.debug("fast auto_paper %s: %s", sym, exc)
+    try:
+        await ws_manager.broadcast({"type": "monitoring_alert", "data": [notif]})
+    except Exception as exc:
+        logger.debug("fast WS broadcast: %s", exc)
+    logger.info("BİRLEŞİK SİNYAL: %s tetik=%s füzyon=%.1f kaynak=%s",
+                sym, kind, float(candidate.get("unified_score") or 0),
+                "+".join(notif.get("sources") or []))
+    return notif
 
 
 # ---------------------------------------------------------------------------
@@ -1395,7 +1556,7 @@ async def _rising_deliver(notified: list) -> None:
             notif["tag"] = f"radar-{sym}"
             notif["sources"] = ["rising"]
             notif["unified"] = True
-            if sym in _unified_pushed_symbols:
+            if sym in _unified_pushed_symbols or unified_signals.recently_notified(sym):
                 notif["push_success"] = False
                 notif["suppressed_by_unified"] = True
                 suppressed.append(notif)
@@ -1532,7 +1693,12 @@ async def _run_rising_scan() -> dict:
             continue
         # Sessiz arm (ilk gözlem): restart fırtınasını engelle ama sinyali KAYDET —
         # panel ve rapor bundan beslenir, yalnız push/dialog yapılmaz.
-        fire = notify_enabled and not is_first_observation and rising_signals.should_fire(candidate, now)
+        # BİRLEŞİK SİNYAL (2026-09-17): hızlı-yol/radar yakın zamanda bu sembolü
+        # bildirdiyse rising push'u BASTIRILIR (tek bildirim kuralı) — kanıt
+        # kaydı (`rising_alerts`) yine yazılır, replay bunu kullanır.
+        fire = (notify_enabled and not is_first_observation
+                and rising_signals.should_fire(candidate, now)
+                and not unified_signals.recently_notified(symbol))
         if fire and len(notified) >= max_per_scan:
             continue
         notif = _build_rising_notification(candidate, float(price)) if notify_enabled else None
@@ -1757,6 +1923,41 @@ async def _run_scan() -> dict:
          if float(c.get("velocity_score", 0) or 0) >= effective_min_raw_score),
         key=lambda x: x.get("upside_rank", 0), reverse=True)
     watchlist_list = sorted(all_watchlist.values(), key=lambda x: x.get("upside_rank", 0), reverse=True)
+
+    # BİRLEŞİK SİNYAL MOTORU (2026-09-17): adaylar MACD jump/erken/yükseliş
+    # bileşenleriyle füzyonlanır; radar kapısını geçemeyip MACD öncüsüyle güçlü
+    # olanlar (füzyon-tek) listeye girer. Tek bildirim polymorfizması: hangi
+    # algoritma yakaladıysa `sources` alanında görünür, push TEK kez gider.
+    try:
+        fusion_only = unified_signals.enrich_candidates(candidates_list)
+        unified_signals.enrich_candidates(watchlist_list)
+    except Exception as exc:
+        logger.debug("unified füzyon zenginleştirme: %s", exc)
+        fusion_only = []
+    if fusion_only:
+        # Açık pozisyonlu semboller füzyon-tek yoldan da bildirim ALMAZ
+        # (radar yolundaki `filtered_candidates` kuralıyla aynı).
+        fusion_only = [c for c in fusion_only
+                       if str(c.get("symbol") or "").upper() not in open_symbols]
+        candidates_list = candidates_list + fusion_only
+        candidates_list.sort(key=lambda x: (float(x.get("unified_score") or 0),
+                                            x.get("upside_rank", 0)), reverse=True)
+        # Füzyon-tek adaylar journal'a da yazılır: MFE ölçümü (kapanmış M1
+        # mumlarla) ve Raporlar sayfası eşleşmesi (±60 sn + hedef) radar
+        # adaylarıyla AYNI mekanizmadan geçer — aksi halde bu bildirimler
+        # sonsuza dek BEKLİYOR görünürdü ve birleşik motorun başarısı
+        # TAKİP EDİLEMEZDİ. `passes=False` → velocity replay akışını kirletmez.
+        try:
+            await database.save_velocity_candidates([{
+                "candidate_id": c["candidate_id"],
+                "created_at": float(c.get("detected_at") or now),
+                "symbol": c["symbol"], "price": float(c.get("price") or 0),
+                "target_pct": float(c.get("target_pct") or 2.0),
+                "atr_pct": 0.0, "volume_ratio": 0.0, "ret3_pct": 0.0,
+                "velocity_score": 0.0, "passes": False, "rank": None,
+            } for c in fusion_only if c.get("price") and c.get("candidate_id")])
+        except Exception as exc:
+            logger.debug("unified journal kaydı: %s", exc)
 
     # Bu turdaki aday kümesi: eşik altında kalan sembollerin debounce sayacı sıfırlanır
     current_candidate_syms = set(filtered_candidates)
@@ -2018,6 +2219,21 @@ async def report_notifications(limit: int = 200, day: str = None):
             if _stored_panel_score(r) >= min_score]
     now = time.time()
     result = []
+
+    def _parse_sources(raw) -> list[str]:
+        """DB `sources` kolonunu listeye çevir (NULL/boş → tek kaynak: radar)."""
+        if not raw:
+            return ["velocity"]
+        if isinstance(raw, list):
+            return [str(s) for s in raw if s]
+        try:
+            parsed = json.loads(str(raw))
+            if isinstance(parsed, list) and parsed:
+                return [str(s) for s in parsed if s]
+        except (TypeError, ValueError):
+            pass
+        return ["velocity"]
+
     for row in rows:
         symbol = row.get("symbol")
         price = float(row.get("price") or 0)
@@ -2064,6 +2280,9 @@ async def report_notifications(limit: int = 200, day: str = None):
             "horizon_minutes": horizon,
             "detected_at": detected_at,
             "sent_via_push": row.get("sent_via_push"),
+            # BİRLEŞİK SİNYAL: bu bildirimi üreten tespit algoritmaları
+            # (["velocity","jump","early"] gibi; eski kayıtlar → ["velocity"]).
+            "sources": _parse_sources(row.get("sources")),
             "candidate_id": row.get("candidate_id"),
             "ml_hit_probability": row.get("ml_hit_probability"),
             # D-08: doygunlukta siralama bilgisi panel skordan KAYBOLUR
@@ -2083,6 +2302,30 @@ async def report_notifications(limit: int = 200, day: str = None):
     day_breakdown = {"counts": counts, "evaluated": evaluated,
                     "success_count": success,
                     "success_rate": (success / evaluated * 100) if evaluated else None}
+    # BİRLEŞİK SİNYAL (2026-09-17): hangi tespit algoritması ne kadar yakaladı?
+    # Kaynak başına sayım + çok-kaynaklı (birleşik teyit) başarı ayrıca raporlanır
+    # → "motor birleşince başarı düştü mü" sorusu tek bakışta yanıtlanır.
+    source_counts: dict[str, int] = {}
+    source_success: dict[str, int] = {}
+    multi_evaluated = 0
+    multi_success = 0
+    for item in result:
+        srcs = item.get("sources") or ["velocity"]
+        for src in srcs:
+            source_counts[src] = source_counts.get(src, 0) + 1
+            if item.get("status") == "TAMAMEN BAŞARILI":
+                source_success[src] = source_success.get(src, 0) + 1
+        if len(srcs) >= 2:
+            if item.get("status") in ("TAMAMEN BAŞARILI", "KISMİ", "BAŞARISIZ"):
+                multi_evaluated += 1
+                if item.get("status") == "TAMAMEN BAŞARILI":
+                    multi_success += 1
+    day_breakdown["by_source"] = source_counts
+    day_breakdown["multi_source"] = {
+        "evaluated": multi_evaluated,
+        "success_count": multi_success,
+        "success_rate": (multi_success / multi_evaluated * 100) if multi_evaluated else None,
+    }
     # R4-04: "genel (tüm zamanlar)" artık cap'siz (limit=None) — 1000 satırda sessizce kırpılmaz.
     all_rows = await database.get_monitoring_velocity_matches(limit=None, day=None)
     # Genel başarı da aynı global eşiğe tabi (gürültü oranları dışarıda kalır);

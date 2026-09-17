@@ -52,6 +52,13 @@ type Candidate = {
   block_reason?: string | null;
   profiles?: Record<string, ProfileInfo>;
   status?: "bekliyor" | "tamamen" | "kismi" | "basarisiz" | null;
+  // BİRLEŞİK SİNYAL (2026-09-17): radar + MACD füzyon alanları.
+  // `unified_pass` = aday radar ham skor kapısını değil, BİRLEŞİK füzyon
+  // skoruyla listede (MACD öncüsü güçlü); `unified_sources` = hemfikir
+  // tespit algoritmaları (velocity/jump/early/rising).
+  unified_score?: number | null;
+  unified_sources?: string[];
+  unified_pass?: boolean;
 };
 
 type MonitoringState = {
@@ -990,9 +997,11 @@ export default function MonitoringPage() {
     }
     list.sort((a, b) => {
       if (sortBy === "score") {
-        const sa = panelScore(a) ?? -1;
-        const sb = panelScore(b) ?? -1;
-        return sb - sa;
+        // BİRLEŞİK SİNYAL: füzyon-tek aday skoru `unified_score`'dur; radar
+        // adayları panel skoruyla aynı listede karşılaştırılabilir sıralanır.
+        const scoreOf = (c: Candidate) =>
+          c.unified_pass === true && c.unified_score != null ? Number(c.unified_score) : (panelScore(c) ?? -1);
+        return scoreOf(b) - scoreOf(a);
       }
       if (sortBy === "target") {
         const ta = Number(a.target_pct) || 0;
@@ -1519,7 +1528,12 @@ export default function MonitoringPage() {
               const targetPct = Number(c.target_pct) > 0 ? Number(c.target_pct) : Number(c.ml_target_pct);
               const validTarget = Number.isFinite(targetPct) && targetPct > 0;
               const mlActive = Number(c.ml_target_pct) > 0 && c.ml_hit_probability != null;
-              const score = panelScore(c);
+              // BİRLEŞİK SİNYAL: füzyon-tek adayın skoru BİRLEŞİK füzyon skorudur
+              // (radar ham kapısını geçmedi ama MACD öncüsü güçlü). Kaynak rozeti
+              // hemfikir algoritmaları gösterir (⚡2 = radar+sıçrama teyidi gibi).
+              const unifiedSources = (c.unified_sources || []).filter((s) => typeof s === "string" && s);
+              const isUnifiedPass = c.unified_pass === true;
+              const score = isUnifiedPass && c.unified_score != null ? Number(c.unified_score) : panelScore(c);
               const { tp, sl, rr } = computeTpSlRr(c);
               const modeLabel = c.mode === "trend_devam" ? "TREND" : c.mode === "v_donusu" ? "V-DÖNÜŞÜ" : "NÖTR";
               const modeClass = c.mode === "trend_devam" ? "bg-neon-green/15 text-neon-green" : c.mode === "v_donusu" ? "bg-yellow-400/15 text-yellow-300" : "bg-sky-400/15 text-sky-300";
@@ -1529,6 +1543,12 @@ export default function MonitoringPage() {
                     <span className="w-6 shrink-0 text-center font-mono text-xs text-bunker-muted">{i + 1}</span>
                     <span className="truncate font-mono font-bold text-white">{c.symbol}</span>
                     {mlActive ? <span className="shrink-0 rounded border border-violet-400/40 bg-violet-400/10 px-1.5 py-0.5 font-mono text-[9px] text-violet-300" title={`ML hedef: %${Number(c.ml_target_pct).toFixed(1)}, olasılık: %${Math.round(Number(c.ml_hit_probability) * 100)}`}>ML</span> : null}
+                    {unifiedSources.length >= 2 && (
+                      <span className="shrink-0 rounded border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-neon-green" title={`Birleşik tespit: ${unifiedSources.join(" + ")} hemfikir`}>⚡{unifiedSources.length}</span>
+                    )}
+                    {isUnifiedPass && (
+                      <span className="shrink-0 rounded border border-sky-400/50 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-sky-300" title="Bu aday radar ham skor kapısını değil, birleşik füzyon skoruyla listede (MACD sıçrama/erken sıçrama öncüsü güçlü)">BİRLEŞİK</span>
+                    )}
                     <span className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px] font-bold ${modeClass}`}>{modeLabel}</span>
                   </div>
                   {/* C2 + C4 + C5: kompakt satır bilgileri */}

@@ -306,6 +306,10 @@ async def init_db():
         # M4 (R3-05/R2-05/R4-07): bildirim <-> velocity adayını ±60 sn + hedef eşleşmesi
         # yerine KALICI `candidate_id` ile bağlamak için kolon (hedef değişse de ölçülebilir).
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS candidate_id TEXT")
+        # BİRLEŞİK SİNYAL (2026-09-17): bildirimi üreten tespit kaynakları (JSON dizi,
+        # ör. ["velocity","jump","early"]). Rapor/günlük takibi "hangi algoritma
+        # yakaladı" sorusunu bu kolonla yanıtlar; NULL = eski kayıt (tek kaynak radar).
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS sources TEXT")
         # M4 (R3-09): koruma kapanışı sonrası aynı bildirimin yeniden açılışı için
         # kalıcı "reopen" anahtarı. `notification_id` (bigint) string id taşıyamaz;
         # bu TEXT kolon reopen churn korumasını taşır.
@@ -1015,6 +1019,31 @@ async def list_macd_monitor_alerts(limit: int = 100, symbol: str | None = None) 
             rows = conn.execute(
                 "SELECT * FROM macd_monitor_alerts ORDER BY created_at DESC LIMIT ?",
                 (limit,)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["signals"] = _json_value(item.get("signals"), None)
+            out.append(item)
+        return out
+
+    return await _run_db(op)
+
+
+async def list_macd_monitor_alerts_since(since: float, until: float,
+                                         limit: int = 20000) -> list[dict]:
+    """Zaman pencereli MACD alarm kanıtı (ARTAN sırada — replay/parity için).
+
+    `list_macd_monitor_alerts` en-yeni-ilk sıralar ve pencere parametresi
+    almaz; birleşik sinyal replay'i (2026-09-17) üç journal'ı AYNI okuma
+    semantiğiyle (zaman pencereli + artan) okumak zorundadır — aksi halde
+    akışlar farklı dönemleri kapsar ve füzyon karşılaştırması geçersiz olur.
+    """
+    def op(conn):
+        rows = conn.execute(
+            "SELECT * FROM macd_monitor_alerts "
+            "WHERE created_at >= %s AND created_at <= %s "
+            "ORDER BY created_at ASC LIMIT %s",
+            (float(since), float(until), int(limit))).fetchall()
         out = []
         for row in rows:
             item = dict(row)
@@ -3575,6 +3604,20 @@ async def save_monitoring_notifications(entries):
     def _candidate_id_value(e):
         cid = e.get("candidate_id")
         return str(cid) if cid not in (None, "") else None
+
+    def _sources_value(e):
+        # BİRLEŞİK SİNYAL (2026-09-17): tespit kaynakları JSON dizi olarak saklanır.
+        # Eski çağıranlar (rising vs.) alanı göndermez → NULL kalır, okuma tarafı
+        # ["velocity"] varsayar (geriye dönük uyumluluk).
+        sources = e.get("sources") or e.get("unified_sources")
+        if not sources:
+            return None
+        if isinstance(sources, str):
+            sources = [s for s in sources.split(",") if s]
+        try:
+            return json.dumps([str(s) for s in sources])
+        except (TypeError, ValueError):
+            return None
     if not entries:
         return 0
     now = time.time()
@@ -3584,8 +3627,8 @@ async def save_monitoring_notifications(entries):
             row = conn.execute(
                 "INSERT INTO monitoring_notifications"
                 "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at,"
-                "ml_target_pct,ml_hit_probability,candidate_id,norm_cap,norm_version)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                "ml_target_pct,ml_hit_probability,candidate_id,norm_cap,norm_version,sources)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                 (
                     str(e.get("symbol") or "?"),
                     str(e.get("message") or ""),
@@ -3599,6 +3642,7 @@ async def save_monitoring_notifications(entries):
                     now,
                     e.get("ml_target_pct"), e.get("ml_hit_probability"),
                     _candidate_id_value(e), _norm_cap_value(e), _norm_version_value(e),
+                    _sources_value(e),
                 ),
             ).fetchone()
             if row is not None and e.get("id") is None:
@@ -3649,7 +3693,7 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
         base_sql = (
             "SELECT id, symbol, mode, score, target_pct, price, expected_price,"
             " horizon_minutes, detected_at, sent_via_push, message, title,"
-            " candidate_id, norm_cap, norm_version"
+            " candidate_id, norm_cap, norm_version, sources"
             " FROM monitoring_notifications"
         )
         params: list = []

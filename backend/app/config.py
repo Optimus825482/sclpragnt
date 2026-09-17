@@ -374,13 +374,43 @@ class Config:
     RADAR_CONFLUENCE_WINDOW_SEC = max(60, int(os.getenv("RADAR_CONFLUENCE_WINDOW_SEC", "1800")))
     # Tek tip bildirim: tek zarf üreticisi + tek tag (`radar-{sym}`) + tek WS tipi;
     # yükseliş artık ayrı `rising_alert` yayınlamaz (kirli/çift push kaldırılır).
-    RADAR_UNIFIED_NOTIFY = os.getenv("RADAR_UNIFIED_NOTIFY", "false").lower() == "true"
+    # 2026-09-17: varsayılan AÇIK — kullanıcı kararı: uygulama farklı fonksiyonlardan
+    # farklı bildirimler göndermez; tüm tespitler TEK birleşik bildirime iner.
+    RADAR_UNIFIED_NOTIFY = os.getenv("RADAR_UNIFIED_NOTIFY", "true").lower() == "true"
     # Velocity'nin otonom döngüsünü auto_paper'a yönlendir: tüm paper pozisyonlar
     # tek defterde (auto_paper_trades), tek sembol-tek pozisyon, max-open kapısı ve
     # B1-B4 merdiveniyle kapanır. Kapalıysa eski doğrudan `analyzer.open_position`
     # yolu aynen çalışır (davranış değişikliği YOK).
     RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER = (
         os.getenv("RADAR_ROUTE_VELOCITY_AUTO_THROUGH_AUTO_PAPER", "false").lower() == "true")
+
+    # ---------------------------------------------------------------------
+    # BİRLEŞİK SİNYAL MOTORU (2026-09-17) — app/unified_signals.py
+    #
+    # Radar velocity tespiti + MACD MONITOR'ün erken sıçrama (dip-turn) ve
+    # yükseliş/sıçrama (jump) fonksiyonları TEK füzyon skorunda birleşir;
+    # tüm kaynaklardan TEK bildirim gider (ayrı push/alert yağmuru yok).
+    # MACD MONITOR sayfası gözlem amaçlı AYNEN çalışmaya devam eder; yalnızca
+    # bildirim üretimi bu motora devredilir.
+    # ---------------------------------------------------------------------
+    # Motor ana anahtarı (kapalıysa eski ayrı-kaynak davranışı aynen sürer).
+    UNIFIED_SIGNALS_ENABLED = os.getenv("UNIFIED_SIGNALS_ENABLED", "true").lower() == "true"
+    # Füzyon skoru ağırlıkları (mevcut kaynaklar üzerinden normalize edilir;
+    # MACD evreninde olmayan sembolün skoru velocity paneline eşit kalır).
+    UNIFIED_W_VELOCITY = float(os.getenv("UNIFIED_W_VELOCITY", "0.50"))
+    UNIFIED_W_JUMP = float(os.getenv("UNIFIED_W_JUMP", "0.25"))
+    UNIFIED_W_EARLY = float(os.getenv("UNIFIED_W_EARLY", "0.25"))
+    # 2+ bağımsız kaynak aynı sembolde teyitliyse skor çarpanı (sinerji).
+    UNIFIED_SYNERGY_BONUS = float(os.getenv("UNIFIED_SYNERGY_BONUS", "1.15"))
+    # MACD hızlı yol (jump/dip tetiği): bu füzyon skoru altında BİLDİRİM YOK.
+    # 60 sn'lik radar turu ayrıca kendi kapısıyla değerlendirir; bu eşik yalnız
+    # tur arası ERKEN bildirim içindir (erken sıçrama avantajı).
+    UNIFIED_FAST_MIN_SCORE = float(os.getenv("UNIFIED_FAST_MIN_SCORE", "55"))
+    # Hızlı yol sembol cooldown'ı (sn, monotonik) — aynı sembol için fırtına yok.
+    UNIFIED_FAST_COOLDOWN_SEC = max(60, int(os.getenv("UNIFIED_FAST_COOLDOWN_SEC", "1800")))
+    # Füzyon-tek adayları (velocity kapısını geçemeyip dip/jump ile öne çıkanlar)
+    # radar listesine/bildirimine bu panel eşiğinden itibaren girer.
+    UNIFIED_FUSION_MIN_SCORE = float(os.getenv("UNIFIED_FUSION_MIN_SCORE", "60"))
 
     # ---------------------------------------------------------------------
     # SAKLAMA (RETENTION) PENCERELERİ — disk bütçesi (2026-09-16)

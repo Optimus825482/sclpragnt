@@ -59,6 +59,7 @@ from app.routers.velocity import (                         # noqa: E402
     _post_signal_window, _mfe_from_window, round_trip_cost_pct, _panel_score,
     _velocity_horizon_from_candidate_id,
 )
+from app.unified_signals import fusion_score               # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -561,10 +562,11 @@ def attach_oos_comparison(base: dict, oos: dict,
     """
     if streams is None:
         # Kapsam VERİYE GÖRE değil, raporun İDDİALARINA göre sabitlenir: taban
-        # (velocity), birleşim (combined) ve kesişim (confluence). `rising_only`
+        # (velocity), birleşim (combined), kesişim (confluence) ve birleşik
+        # sinyal motoru (unified — canlı üretim motorunun karşılığı). `rising_only`
         # bir aday değil, girdi ayağıdır (hedef/MFE 3.45× ile zaten elenmiş).
         present = {r.get("stream") for r in (base.get("sweep") or [])}
-        streams = [stream] + [s for s in ("combined", "confluence")
+        streams = [stream] + [s for s in ("combined", "confluence", "unified")
                               if s in present and s != stream]
     blocks: dict[str, dict] = {}
     all_lines: list[str] = []
@@ -631,6 +633,136 @@ def _dedupe_signals(signals: list[dict]) -> list[dict]:
     return out
 
 
+def build_unified_events(velocity_events: list[dict], rising_events: list[dict],
+                         macd_events: list[dict],
+                         confluence_window_sec: float) -> list[dict]:
+    """BİRLEŞİK SİNYAL akışı — canlı füzyon motorunun journal karşılığı.
+
+    Aynı sembolün velocity / rising / macd olayları `confluence_window_sec`
+    içinde kümelenir ve her küme TEK birleşik sinyale dönüşür:
+      * skor  = `unified_signals.fusion_score` — CANLI motorun SAF fonksiyonu.
+        PARİTE ŞARTI: replay başka bir formülü ölçerse sonucu ölüdür; bu yüzden
+        formül burada KOPYALANMAZ, import edilir.
+      * zaman = kümenin İLK olayı (önceden-bildirim semantiği: en erken tespit
+        anında giriş, sonraki teyitler skoru yükseltir ama zamanı kaydırmaz).
+      * hedef = velocity hedefi (yoksa rising; yoksa RISING_TARGET_PCT).
+      * fiyat = velocity fiyatı (yoksa rising → macd).
+    Tek ayaklı kümeler de dahildir (motor tek ayaktan da ateşleyebilir);
+    `sources` hangi ayakların katıldığını taşır, `confluence` 2+ ayak işaretler.
+
+    DÜRÜST SINIR: velocity/rising/macd journal'ları yalnız KAYITLI olayları
+    taşır; canlı motorda füzyon, kayıt öncesi ham adaylar üzerinden de yapılır.
+    Bu yüzden unified akışı canlı motorun ALT KÜMESİDİR (seçim yanlılığı
+    aynı yönde ve üç akış için de ortaktır → kıyas adil, mutlak sayı yaklaşık).
+    """
+    window = max(1.0, float(confluence_window_sec or 1800))
+
+    def _ts(item: dict, key: str = "created_at") -> float:
+        try:
+            return float(item.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # sembol → [(ts, source, bileşen skoru, bağlam)]
+    per_symbol: dict[str, list[tuple]] = defaultdict(list)
+    for item in velocity_events:
+        score = item.get("score")  # velocity_events zaten panel 0-100 ölçeğinde
+        if score is None and item.get("velocity_score") is not None:
+            # Ham journal satırı doğrudan verildiyse (build_report'ın
+            # normalizasyonundan geçmemişse) kanonik panel haritasını uygula.
+            score = _panel_score(float(item["velocity_score"]))
+        if score is None:
+            continue
+        per_symbol[str(item.get("symbol") or "").upper()].append(
+            (_ts(item), "velocity", float(score),
+             {"price": item.get("price"), "target_pct": item.get("target_pct"),
+              "horizon": item.get("horizon_minutes")}))
+    for item in rising_events:
+        score = item.get("score")
+        if score is None:
+            continue
+        kind = str(item.get("kind") or "")
+        source = "early" if kind == "erken" else "rising"
+        per_symbol[str(item.get("symbol") or "").upper()].append(
+            (_ts(item), source, float(score),
+             {"price": item.get("price"), "target_pct": item.get("target_pct"),
+              "horizon": None}))
+    for item in macd_events:
+        kind = str(item.get("kind") or "")
+        raw_score = item.get("score")
+        if kind == "early":
+            raw_score = item.get("early_score")
+            if raw_score is None:
+                raw_score = (item.get("signals") or {}).get("early_score")
+        if raw_score is None:
+            continue
+        try:
+            value = float(raw_score)
+        except (TypeError, ValueError):
+            continue
+        source = "jump" if kind == "jump" else "early"
+        per_symbol[str(item.get("symbol") or "").upper()].append(
+            (_ts(item), source, value,
+             {"price": item.get("price"), "target_pct": None, "horizon": None}))
+
+    out: list[dict] = []
+    for symbol, events in per_symbol.items():
+        events.sort(key=lambda e: e[0])
+        cluster: list[tuple] = []
+        cluster_start = None
+        for event in events:
+            if cluster_start is None or event[0] - cluster_start > window:
+                if cluster:
+                    out.append(_fuse_cluster(symbol, cluster))
+                cluster = [event]
+                cluster_start = event[0]
+            else:
+                cluster.append(event)
+        if cluster:
+            out.append(_fuse_cluster(symbol, cluster))
+    out.sort(key=lambda c: float(c.get("detected_at") or 0))
+    return out
+
+
+def _fuse_cluster(symbol: str, cluster: list[tuple]) -> dict:
+    """Kümeyi TEK birleşik sinyale çevir (fusion_score ile — canlı paritesi)."""
+    components: dict[str, float] = {}
+    contexts: dict[str, dict] = {}
+    for _ts_val, source, value, context in cluster:
+        # Aynı kaynaktan küme içinde birden çok olay varsa EN İYİSÜNÜ al
+        # (teyit artışı skoru düşürmemeli).
+        if source not in components or value > components[source]:
+            components[source] = value
+            contexts[source] = context or {}
+    score, sources = fusion_score(components)
+    detected = min(e[0] for e in cluster)
+    # Fiyat/hedef önceliği: velocity (hedef bağlamlı) > rising > macd.
+    price, target, horizon = None, None, 5.0
+    for source in ("velocity", "rising", "jump", "early"):
+        ctx = contexts.get(source) or {}
+        if price is None and ctx.get("price"):
+            price = ctx.get("price")
+        if target is None and ctx.get("target_pct"):
+            target = ctx.get("target_pct")
+        if source == "velocity" and ctx.get("horizon"):
+            try:
+                horizon = float(ctx["horizon"])
+            except (TypeError, ValueError):
+                pass
+    if target is None:
+        target = float(getattr(config, "RISING_TARGET_PCT", 2.0) or 2.0)
+    return {
+        "symbol": symbol,
+        "detected_at": detected,
+        "score": score,
+        "sources": sources,
+        "confluence": len(set(e[1] for e in cluster)) >= 2,
+        "price": price,
+        "target_pct": target,
+        "horizon_minutes": horizon,
+    }
+
+
 async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
                        confluence_window: int | None, skip_fetch: bool,
                        out_path: str | None = None, log=None, progress=None,
@@ -672,6 +804,15 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
         since, until, limit=journal_limit)
     rising_rows = await database.list_rising_alerts_since(
         since, until, limit=journal_limit)
+    # BİRLEŞİK SİNYAL (2026-09-17): üçüncü journal ayağı — MACD jump/early
+    # kanıtları. Aynı okuma semantiği (pencereli + artan) şart; bkz.
+    # `list_macd_monitor_alerts_since` docstring'i.
+    try:
+        macd_rows = await database.list_macd_monitor_alerts_since(
+            since, until, limit=journal_limit)
+    except Exception as exc:
+        _emit(log, f"[replay] macd journal okunamadı ({exc}) — unified akışı iki ayakla sürer")
+        macd_rows = []
 
     # KIRPILMA TESPİTİ: satır sayısı bütçeye dayandıysa akış EKSİKTİR (pencere
     # sonuna ulaşılamamış olabilir) → raporda açıkça bildirilir, sessizce
@@ -679,18 +820,21 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     truncated = {
         "velocity": len(velocity_rows) >= journal_limit,
         "rising": len(rising_rows) >= journal_limit,
+        "macd": len(macd_rows) >= journal_limit,
     }
     if any(truncated.values()):
         _emit(log, f"[replay] UYARI: journal bütçesi doldu (velocity="
-                   f"{len(velocity_rows)}, rising={len(rising_rows)} / {journal_limit}) "
-                   f"→ o akış pencerenin tamamını kapsamıyor olabilir.")
+                   f"{len(velocity_rows)}, rising={len(rising_rows)}, macd={len(macd_rows)}"
+                   f" / {journal_limit}) → o akış pencerenin tamamını kapsamıyor olabilir.")
 
     if symbols:
         wanted = {str(s).replace("_", "").upper() for s in symbols}
         velocity_rows = [r for r in velocity_rows if str(r.get("symbol", "")).upper() in wanted]
         rising_rows = [r for r in rising_rows if str(r.get("symbol", "")).upper() in wanted]
+        macd_rows = [r for r in macd_rows if str(r.get("symbol", "")).upper() in wanted]
 
-    _emit(log, f"[replay] journal: velocity={len(velocity_rows)} satır, rising={len(rising_rows)} satır")
+    _emit(log, f"[replay] journal: velocity={len(velocity_rows)} satır, "
+               f"rising={len(rising_rows)} satır, macd={len(macd_rows)} satır")
 
     # --- Akış 1: velocity-only (üretim radar kapısının journal karşılığı) ---
     raw_gate = float(getattr(config, "MONITORING_MIN_RAW_SCORE", 1400))
@@ -724,6 +868,10 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     combined = build_combined_events(velocity_events, rising_events,
                                      confluence_window_sec=window)
 
+    # --- Akış 4: unified (birleşik sinyal motoru — canlı füzyon paritesi) ---
+    unified_events = build_unified_events(velocity_events, rising_events,
+                                          macd_rows, window)
+
     # Sanal giriş listeleri: ölçüm satırına çevir (kaynak etiketi AÇIKÇA verilir).
     velocity_signals = [_as_signal_row(v, v.get("created_at"), default_source="velocity",
                                        default_horizon=5.0)
@@ -734,6 +882,9 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     combined_signals = [_as_signal_row(c, c.get("detected_at"), c.get("confluence", False),
                                        default_source="combined", default_horizon=5.0)
                         for c in combined]
+    unified_signals = [_as_signal_row(c, c.get("detected_at"), c.get("confluence", False),
+                                      default_source="unified", default_horizon=5.0)
+                       for c in unified_events]
 
     # MÜKERRER SİNYAL TEMİZLİĞİ (2026-09-16): journal aynı (sembol, zaman, hedef)
     # üçlüsünü iki kez taşıyabiliyor (5dk/15dk profilleri aynı hedefe kalibre
@@ -744,19 +895,24 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     # anlaşılsın. Gerçek olay (2026-09-17): 24 saatlik koşum BOŞ CSV üretti ve
     # huninin NERESİNDE düştüğü hiçbir yerde yazmıyordu.
     funnel: dict = {
-        "journal_rows": {"velocity": len(velocity_rows), "rising": len(rising_rows)},
+        "journal_rows": {"velocity": len(velocity_rows), "rising": len(rising_rows),
+                         "macd": len(macd_rows)},
         "velocity_events_after_gate": len(velocity_events),
         "combined_events": len(combined),
+        "unified_events": len(unified_events),
+        "unified_confluence_events": sum(1 for c in unified_events if c.get("confluence")),
         "confluence_events": sum(1 for c in combined if c.get("confluence")),
     }
     velocity_signals = _dedupe_signals(velocity_signals)
     rising_signals = _dedupe_signals(rising_signals)
     combined_signals = _dedupe_signals(combined_signals)
+    unified_signals = _dedupe_signals(unified_signals)
     funnel["after_dedupe"] = {"velocity": len(velocity_signals),
                               "rising": len(rising_signals),
-                              "combined": len(combined_signals)}
+                              "combined": len(combined_signals),
+                              "unified": len(unified_signals)}
 
-    for stream in (velocity_signals, rising_signals, combined_signals):
+    for stream in (velocity_signals, rising_signals, combined_signals, unified_signals):
         stream[:] = [s for s in stream
                      if s["price"] and float(s["price"]) > 0
                      and s["target_pct"] and float(s["target_pct"]) > 0
@@ -766,13 +922,16 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
             stream[:] = stream[:max_signals]
     funnel["after_price_target_filter"] = {"velocity": len(velocity_signals),
                                            "rising": len(rising_signals),
-                                           "combined": len(combined_signals)}
+                                           "combined": len(combined_signals),
+                                           "unified": len(unified_signals)}
 
     result: dict = {
         "window": {"since": since, "until": until, "hours": hours},
         "confluence_window_sec": window,
         "raw_score_gate": raw_gate,
-        "journal_counts": {"velocity_rows": len(velocity_rows), "rising_rows": len(rising_rows)},
+        "journal_counts": {"velocity_rows": len(velocity_rows),
+                           "rising_rows": len(rising_rows),
+                           "macd_rows": len(macd_rows)},
         "limits": {"yeni eşik icat edilmedi": "her akış kendi kalibre kapısını kullanır"},
         "limitations": [
             "MACD snapshot tarihsel olarak yeniden üretilemez → yükseliş ayağı yalnız kayıtlı kanıt",
@@ -809,6 +968,7 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
             "velocity_only": _metrics("velocity_only", velocity_signals),
             "rising_only": _metrics("rising_only", rising_signals),
             "combined": _metrics("combined", combined_signals),
+            "unified": _metrics("unified", unified_signals),
         }
         result["note"] = "kline çekilmedi (--skip-fetch) → yalnız sayım/isabet yapısal alanları"
         result["signals"] = []
@@ -819,7 +979,8 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
     # --- Kline pencereği + merdiven simülasyonu ---
     all_signals = [("velocity_only", s) for s in velocity_signals] \
         + [("rising_only", s) for s in rising_signals] \
-        + [("combined", s) for s in combined_signals]
+        + [("combined", s) for s in combined_signals] \
+        + [("unified", s) for s in unified_signals]
     if not all_signals:
         _emit(log, "[replay] pencerede sinyal yok — ölçülecek bir şey bulunamadı.")
         result["streams"] = {}
@@ -876,6 +1037,10 @@ async def build_report(hours: int, symbols: list[str] | None, max_signals: int,
         "velocity_only": _metrics("velocity_only", measured["velocity_only"]),
         "rising_only": _metrics("rising_only", measured["rising_only"]),
         "combined": _metrics("combined", measured["combined"]),
+        # BİRLEŞİK SİNYAL MOTORU: canlı füzyonun (velocity+MACD jump/early+
+        # rising, tek bildirim) journal üzerindeki karşılığı. Kesişim alt
+        # kümesi `unified.confluence_count` alanında taşınır.
+        "unified": _metrics("unified", measured["unified"]),
         # Kesişim: birleşimin ALT KÜMESİ, ayrı akış olarak taşınır (tarama +
         # rapor bunu kullanır). CSV'ye YAZILMAZ (aşağıya bak) — aynı sinyali iki
         # kez saymak örneklemi şişirirdi.
@@ -958,7 +1123,7 @@ def _report_text(result: dict) -> str:
               f"{'ort.net%':>10}{'top.net%':>10}{'ort.MFE%':>10}{'çakışma':>9}")
     lines.append(header)
     lines.append("-" * 88)
-    for key in ("velocity_only", "rising_only", "combined"):
+    for key in ("velocity_only", "rising_only", "combined", "unified"):
         m = streams.get(key)
         if not m:
             lines.append(f"{key:<14}{'—':>8}")
@@ -1017,7 +1182,7 @@ def _report_text(result: dict) -> str:
         overlap = min(v_last, r_last) - max(v_first, r_first)
         cover_ok = overlap >= 0
     lines.append("KAPSAMA (her akışın gerçekten kapsadığı dönem):")
-    for key in ("velocity_only", "rising_only", "combined"):
+    for key in ("velocity_only", "rising_only", "combined", "unified"):
         m = streams.get(key) or {}
         first, last = _span(m)
         if first is None:
@@ -1066,8 +1231,47 @@ def _report_text(result: dict) -> str:
         else:
             lines.append("Ön karar: ENTEGRASYON İÇİN UYGUN")
     lines.append("")
+    # BİRLEŞİK SİNYAL MOTORU KARARI (2026-09-17): unified akışı canlı üretim
+    # motorunun kendisidir (velocity + MACD jump/early + rising füzyonu, TEK
+    # bildirim). Soru net: motor tabana (velocity-only) göre daha mı iyi?
+    # Kural önceden sabit: (a) unified ort. net pozitif, (b) kazanma oranı
+    # tabandan belirgin düşük DEĞİL, (c) çok-kaynaklı (çakışma) alt küme tek
+    # kaynaklıdan iyi. Üçü de tutarsa motor MEŞRU; aksi halde eşik/ağırlık
+    # kalibrasyonu gerekir, üretim kapatılmaz (UNIFIED_SIGNALS_ENABLED=false).
+    uni = streams.get("unified") or {}
+    if uni.get("measured"):
+        lines.append("BİRLEŞİK SİNYAL MOTORU (unified = velocity+MACD füzyonu, canlı motorun karşılığı):")
+        lines.append(f"  unified: n={uni.get('measured')}  ort.net {_pct(uni.get('avg_net_pct'))}"
+                     f"  medyan {_pct(uni.get('median_net_pct'))}"
+                     f"  kazanma {_pct(uni.get('win_rate'))}"
+                     f"  çakışma alt kümesi n={uni.get('confluence_count')}"
+                     f" (ort.net {_pct(uni.get('confluence_avg_net_pct'))})")
+        if base.get("measured"):
+            lines.append(f"  taban (velocity-only): n={base.get('measured')}  ort.net "
+                         f"{_pct(base.get('avg_net_pct'))}  kazanma {_pct(base.get('win_rate'))}")
+        u_net = uni.get("avg_net_pct")
+        b_net = base.get("avg_net_pct")
+        u_win, b_win = uni.get("win_rate"), base.get("win_rate")
+        ublockers: list[str] = []
+        if u_net is None or u_net <= 0:
+            ublockers.append("unified ort. net POZİTİF DEĞİL")
+        if (u_net is not None and b_net is not None and u_net < b_net):
+            ublockers.append(f"unified tabandan DAHA KÖTÜ net ({u_net} vs {b_net})")
+        if (u_win is not None and b_win is not None
+                and u_win < b_win - 2.0):
+            ublockers.append(f"unified kazanma oranı belirgin düşük ({u_win} vs {b_win})")
+        if ublockers:
+            lines.append("  KARAR: MOTOR KALİBRASYON GEREKTİRİR →")
+            for item in ublockers:
+                lines.append(f"     ✗ {item}")
+            lines.append("     (ağırlıklar/eşikler UNIFIED_* ile ayarlanır; 24s VE 72s"
+                         " pencereyle yeniden ölçülmeden eşik DEĞİŞTİRİLMEZ)")
+        else:
+            lines.append("  KARAR: MOTOR TABANI GEÇTİ → birleşik tespit meşru;"
+                         " OOS bloğundaki unified satırı da DAYANDI ise üretim sürer.")
+    lines.append("")
     lines.append("HEDEF/MFE GEOMETRİSİ (hedef ortalamayı aşıyorsa TP ulaşılamaz → maliyet ödenir):")
-    for key in ("velocity_only", "rising_only", "combined"):
+    for key in ("velocity_only", "rising_only", "combined", "unified"):
         m = streams.get(key) or {}
         if m.get("target_to_mfe_ratio") is None:
             continue
@@ -1115,7 +1319,7 @@ def _report_text(result: dict) -> str:
     lines.append("MALİYET DUVARI (net = brüt − gidiş-dönüş maliyet; kâr için brüt > maliyet):")
     lines.append(f"  gidiş-dönüş maliyet {cost:.3f}%  ({cost / 2:.3f}%/bacak × 2: "
                  f"komisyon + slipaj)")
-    for key in ("velocity_only", "rising_only", "combined"):
+    for key in ("velocity_only", "rising_only", "combined", "unified"):
         m = streams.get(key) or {}
         if m.get("avg_net_pct") is None:
             continue
@@ -1124,7 +1328,7 @@ def _report_text(result: dict) -> str:
                      f"   açık {gross - cost:+.3f} puan")
     if result.get("sweep"):
         tops: list[tuple[str, dict]] = []
-        for key in ("velocity_only", "rising_only", "combined"):
+        for key in ("velocity_only", "rising_only", "combined", "unified"):
             rows = [r for r in result["sweep"] if r["stream"] == key]
             if rows:
                 tops.append((key, max(rows, key=lambda r: r["avg_net_pct"])))
