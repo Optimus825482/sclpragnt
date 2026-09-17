@@ -1314,7 +1314,7 @@ _RISING_OUTCOME_WINDOW_SEC = 30 * 60.0
 _RISING_OUTCOME_EXPIRE_SEC = 6 * 3600.0
 
 
-async def fill_rising_alert_outcomes(limit: int = 200) -> int:
+async def fill_rising_alert_outcomes(limit: int = 200) -> tuple[int, list[dict]]:
     """Bekleyen yükseliş sinyallerinin MFE/MAE sonucunu 5m mumlarla doldur.
 
     NEDEN VAR: `rising_alerts` tablosuna `mfe_pct`/`mae_pct`/`outcome_state`
@@ -1329,25 +1329,31 @@ async def fill_rising_alert_outcomes(limit: int = 200) -> int:
 
     Pencere tamamını kapsayan mum gelmeden satır MÜHÜRLENMEZ (erken MFE yalnız
     alt sınır olurdu). Sinyal DAVRANIŞINI değiştirmez; yalnız kanıt zenginleştirir.
+
+    DÖNÜŞ: (doldurulan satır sayısı, öğrenme kayıtları listesi).
+    Her kayıt: {"symbol": str, "success": bool, "achieved_pct": float}.
+    Çağıran `record_symbol_target_outcome` ile sembol hedef durumunu günceller.
     """
     def op(conn):
         _ensure_rising_evidence_schema(conn)
         now = time.time()
         # Yalnız ufku (30 dk) dolmuş satırlar adaydır — erken ölçüm yok.
         pending = conn.execute(
-            "SELECT id, created_at, symbol, price FROM rising_alerts "
+            "SELECT id, created_at, symbol, price, target_pct FROM rising_alerts "
             "WHERE outcome_state='pending' AND created_at <= ? "
             "ORDER BY created_at ASC LIMIT ?",
             (now - _RISING_OUTCOME_WINDOW_SEC,
              max(1, min(2000, int(limit))))).fetchall()
         filled = 0
         touched = False
+        learn_entries: list[dict] = []
         for row in pending:
             values = dict(row)
             alert_id = values["id"]
             created = float(values.get("created_at") or 0)
             try:
                 symbol = values["symbol"]
+                target_pct = float(values.get("target_pct") or 0.0)
                 t0_ms = created * 1000.0
                 window_end_ms = t0_ms + _RISING_OUTCOME_WINDOW_SEC * 1000.0
                 candles = conn.execute(
@@ -1403,15 +1409,29 @@ async def fill_rising_alert_outcomes(limit: int = 200) -> int:
                      now, alert_id))
                 filled += 1
                 touched = True
+                # SELF-LEARNING: sembol hedef durumunu gerçekleşen MFE ile güncelle.
+                success = target_pct > 0 and mfe >= target_pct
+                learn_entries.append({
+                    "symbol": symbol,
+                    "success": success,
+                    "achieved_pct": round(mfe, 3),
+                })
             except Exception:
                 # Tek bozuk satır partiyi iptal etmemeli (MACD muadili F-09 ilkesi).
                 logger.debug("yükseliş sonucu doldurulamadı (id=%s)",
                              alert_id, exc_info=True)
         if touched:
             conn.commit()
-        return filled
+        return filled, learn_entries
 
-    return await _run_db(op)
+    filled, learn_entries = await _run_db(op)
+    for entry in learn_entries:
+        try:
+            await record_symbol_target_outcome(
+                entry["symbol"], success=entry["success"], achieved_pct=entry["achieved_pct"])
+        except Exception:
+            logger.debug("rising sonucu hedef öğrenme kaydedilemedi %s", entry["symbol"], exc_info=True)
+    return filled, learn_entries
 
 
 _MACD_BAR_MS = 5 * 60_000  # historical_candles yalnız kapanmış 5m bar tutar
@@ -4718,18 +4738,56 @@ async def get_symbol_target_state(symbol: str) -> dict:
     return await _run_db(op)
 
 
-async def record_symbol_target_outcome(symbol: str, success: bool, achieved_pct: float = 0.0) -> dict:
-    """Sembol için bir tahmin sonucu kaydeder ve adaptif hedefi ayarlar.
+def _next_target_pct(current_target: float, achieved_pct: float | None, total_count: int) -> float:
+    """EMA tabanlı sembol hedefi güncellemesi (SAF — DB'siz test edilebilir).
 
-    Başarılıysa hedefi yükseltmeye başla (daha iddialı), başarısızsa düşür.
-    achieved_pct: gerçekleşen yükseliş yüzdesi (pozitif = hedefe yaklaşmış).
+    ``achieved_pct=None`` → gerçekleşen hareket ÖLÇÜLEMEDİ; hedef DEĞİŞMEZ
+    (yalnız sayaçlar işler). Radar/pending yolu gerçek MFE ölçemez, o yüzden
+    oradan hedef beslenmez: eskiden isabet `hedef` ve ıska `0.0` olarak
+    gönderiliyordu → uydurma değerler EMA'yı aşağı sürüklüyor, %100 isabet eden
+    sembolün hedefi bile düşüyordu (2026-09-17 teşhisi).
 
-    V-05: satırı garanti et + oku + güncelle **tek transaction** içinde
-    (`INSERT ... ON CONFLICT DO NOTHING` + `SELECT ... FOR UPDATE`). Eskiden
-    `get_symbol_target_state` (ayrı transaction) + ayrı `UPDATE` çağrılıyordu.
+    Taban HER ZAMAN mevcut hedeftir (ilk örnekte de): eski kod ilk örnekte
+    doğrudan ölçüme atlıyordu, tek bir erken ıska hedefi tabana çiviyordu.
+    Örnek arttıkça alfa düşer (1 örnek 0.5 → 10 örnek ~0.23 → 30+ 0.1).
+
+    Dönüş değeri HER İKİ dalda da tüketicinin kelepçesine
+    (``MONITORING_TARGET_PCT_MIN/MAX``) çekilir: eski sürüm [1.0, 10.0]
+    aralığında yazdığı için devralınan satırlar aralık dışında olabilir
+    (ör. 1.0) ve ölçüm gelmese bile kendini toparlar.
+    """
+    if achieved_pct is None:
+        new_target = float(current_target)
+    else:
+        conservative = min(float(achieved_pct), config.MONITORING_TARGET_PCT_MAX) * 0.8
+        alpha = max(0.1, min(0.5, 3.0 / max(1, int(total_count))))
+        new_target = current_target * (1 - alpha) + conservative * alpha
+    return max(config.MONITORING_TARGET_PCT_MIN,
+               min(config.MONITORING_TARGET_PCT_MAX, new_target))
+
+
+async def record_symbol_target_outcome(symbol: str, success: bool,
+                                       achieved_pct: float | None = None) -> dict:
+    """Sembol için bir tahmin sonucu kaydeder; ölçüm VARSA adaptif hedefi ayarlar.
+
+    GELİŞTİRİLMİŞ (2026-09-17): artık sadece başarı/başarısız saymıyor; gerçekleşen
+    MFE'nin (``achieved_pct``) üstel hareketli ortalamasını (EMA) tutuyor. Hedef,
+    gerçekleşen potansiyelin %80'i olarak İKİ YÖNLÜ güncellenir.
+
+    ``achieved_pct=None`` → ölçüm yok; hedefe dokunulmaz, yalnız sayaçlar işler.
+    Ölçüm yalnızca gerçek MFE üretebilen iki yol tarafından verilir:
+    ``fill_rising_alert_outcomes`` (kapanmış 5m mumlar) ve
+    ``velocity_learning_loop`` (``_mfe_from_window``). Radar/pending yolu uydurma
+    değer GÖNDERMEZ.
+
+    Ufuk (``horizon_minutes``) ÖĞRENİLMEZ: okuyan tek iki tüketici
+    (``velocity.detect_velocity_candidates``, ``monitoring._run_rising_scan``)
+    yalnız ``target_pct`` + ``total_count`` kullanır; kullanılmayan ufuk ayarı
+    yanıltıcı olduğu için kaldırıldı (2026-09-17 denetimi).
     """
     sym = str(symbol or "").strip().upper()
     now = time.time()
+
     def op(conn):
         conn.execute(
             "INSERT INTO symbol_target_state(symbol,target_pct,horizon_minutes,success_count,fail_count,total_count,last_adjusted_at,created_at) "
@@ -4741,24 +4799,18 @@ async def record_symbol_target_outcome(symbol: str, success: bool, achieved_pct:
         fail_count = int(state["fail_count"]) + (0 if success else 1)
         total_count = success_count + fail_count
         current_target = float(state["target_pct"])
-        current_horizon = int(state["horizon_minutes"])
-        # Adaptif ayar: başarı oranı %60+ ise hedefi artır, %40- ise azalt
+        horizon = int(state["horizon_minutes"])
+
+        new_target = _next_target_pct(current_target, achieved_pct, total_count)
         success_rate = success_count / total_count if total_count > 0 else 0.5
-        new_target = current_target
-        new_horizon = current_horizon
-        if total_count >= 3:
-            if success_rate >= 0.6:
-                new_target = min(10.0, current_target + 0.5)
-                new_horizon = min(15, current_horizon + 5)
-            elif success_rate <= 0.4:
-                new_target = max(1.0, current_target - 0.5)
-                new_horizon = max(5, current_horizon - 5)
+
         conn.execute("UPDATE symbol_target_state SET target_pct=%s, horizon_minutes=%s, success_count=%s, fail_count=%s, total_count=%s, last_adjusted_at=%s WHERE symbol=%s",
-                     (new_target, new_horizon, success_count, fail_count, total_count, now, sym))
+                     (round(new_target, 3), horizon, success_count, fail_count, total_count, now, sym))
         conn.commit()
-        return {"symbol": sym, "target_pct": new_target, "horizon_minutes": new_horizon,
+        return {"symbol": sym, "target_pct": round(new_target, 3), "horizon_minutes": horizon,
                 "success_count": success_count, "fail_count": fail_count, "total_count": total_count,
-                "success_rate": round(success_rate, 3)}
+                "success_rate": round(success_rate, 3),
+                "achieved_pct": (round(float(achieved_pct), 3) if achieved_pct is not None else None)}
     return await _run_db(op)
 
 

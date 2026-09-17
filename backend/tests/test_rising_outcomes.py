@@ -13,6 +13,9 @@ Kilitlenen davranış:
      alt sınır olurdu, mühürleme YOK.
   5. Ömür sınırı (6h) doldu ve mum hiç gelmedi → 'expired' (sonsuz pending yok).
   6. Ufku henüz dolmamış satır sorguya hiç GİRMEZ.
+  7. Dönüş değeri (filled, learn_entries) İKİLİSİDİR (2026-09-17): ölçülen MFE
+     satırları hedef öğrenmeye (record_symbol_target_outcome) girdi olur →
+     "rising ölçüm döngüsünden hedef öğrenme beslemesi" burada kilitlenir.
 
 Testler Postgres gerektirmez: `_run_db` in-memory SQLite'a yönlendirilir
 (test_w19_database_residual.py deseni).
@@ -107,13 +110,18 @@ class FillRisingOutcomesTests(unittest.IsolatedAsyncioTestCase):
         self._candle("TLMTRY", t0_ms + 6 * _BAR_MS, 102.0, 101.0, 101.5)
         self.conn.commit()
 
-        filled = await db.fill_rising_alert_outcomes(limit=50)
+        filled, learned = await db.fill_rising_alert_outcomes(limit=50)
         self.assertGreaterEqual(filled, 1)
         row = self._row(alert_id)
         self.assertEqual("filled", row["outcome_state"])
         self.assertAlmostEqual(4.0, float(row["mfe_pct"]), places=3)   # 104/100-1
         self.assertAlmostEqual(-1.0, float(row["mae_pct"]), places=3)  # 99/100-1
         self.assertIsNotNone(row["peak_at"])
+        # BESLEME KANITI (madde 4): MFE olcumu hedef ogrenmeye GIRDI olarak doner
+        # (donus (filled, learn_entries) ikilisi — 2026-09-17).
+        self.assertEqual(1, len(learned))
+        self.assertEqual("TLMTRY", learned[0]["symbol"])
+        self.assertAlmostEqual(4.0, float(learned[0]["achieved_pct"]), places=3)
 
     async def test_partial_candle_at_t0_excluded_from_measurement(self):
         """t0 ANINDA açılmış mum sinyal-öncesi sayılır — ölçüye GİRMEZ."""

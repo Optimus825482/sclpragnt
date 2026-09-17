@@ -156,5 +156,75 @@ class AutoPaperBroadcastStateTests(unittest.TestCase):
         self.assertEqual(auto_paper._AUTO_PAPER_STATE["total_pnl"], 0.0)
 
 
+class AutoPaperEffectiveTargetTests(unittest.TestCase):
+    """TP hedefi TEK KAYNAKTAN gelir: `target_pct` (madde 7 + 2026-09-17 düzeltmesi)."""
+
+    def test_target_pct_is_used_as_is(self):
+        self.assertEqual(2.0, auto_paper._effective_target_pct(_make_notification(target_pct=2.0)))
+
+    def test_raw_ml_target_is_not_re_applied(self):
+        """ML harmanda (`dynamic_target_pct`) zaten var; burada tekrar okunursa 2 kez uygulanır."""
+        notif = _make_notification(target_pct=2.0)
+        notif["ml_target_pct"] = 5.0
+        notif["ml_hit_probability"] = 0.9
+        self.assertEqual(2.0, auto_paper._effective_target_pct(notif))
+
+    def test_lowered_target_pct_is_respected(self):
+        """İki yönlü öğrenme hedefi aşağı çektiyse TP de o değeri alır."""
+        self.assertEqual(1.5, auto_paper._effective_target_pct(_make_notification(target_pct=1.5)))
+
+    def test_missing_target_falls_back_to_zero(self):
+        self.assertEqual(0.0, auto_paper._effective_target_pct({}))
+
+
+class _FakeDatabase:
+    """`update_auto_paper_trade_tp` çağrılarını yakalayan sahte DB modülü."""
+
+    def __init__(self, sink):
+        self.sink = sink
+
+    async def update_auto_paper_trade_tp(self, trade_id, new_tp, score, target_pct):
+        self.sink.append({"trade_id": trade_id, "new_tp": new_tp,
+                          "score": score, "target_pct": target_pct})
+
+
+class AutoPaperOpenPositionTpTests(unittest.IsolatedAsyncioTestCase):
+    """Açık pozisyonun TP'si YALNIZCA yukarı taşınır (ratchet) — madde 7."""
+
+    def setUp(self):
+        self.calls = []
+        self._orig_db = auto_paper.database
+        auto_paper.database = _FakeDatabase(self.calls)
+
+    def tearDown(self):
+        auto_paper.database = self._orig_db
+
+    async def test_higher_target_rewrites_tp(self):
+        trade = _make_open_trade(entry=100.0, target_pct=2.0)      # TP 102
+        out = await auto_paper._update_existing_trade(
+            trade, _make_notification(target_pct=4.0), 101.0)      # TP 104
+        self.assertEqual("tp_updated", out["status"])
+        self.assertEqual(1, len(self.calls))
+        self.assertAlmostEqual(104.0, self.calls[0]["new_tp"], places=6)
+
+    async def test_lower_target_does_not_rewrite_tp(self):
+        """Düşen hedef açık pozisyonun TP'sini aşağı çekmez (kârı sınırlandırırdı)."""
+        trade = _make_open_trade(entry=100.0, target_pct=4.0)      # TP 104
+        out = await auto_paper._update_existing_trade(
+            trade, _make_notification(target_pct=1.0), 101.0)      # TP 101
+        self.assertEqual("no_change", out["status"])
+        self.assertEqual([], self.calls)
+
+    async def test_raw_ml_target_does_not_raise_open_position_tp(self):
+        """Ham `ml_target_pct` TP'yi yukarı taşımaz — tek kaynak harmanlanmış hedeftir."""
+        trade = _make_open_trade(entry=100.0, target_pct=2.0)      # TP 102
+        notif = _make_notification(target_pct=2.0)
+        notif["ml_target_pct"] = 5.0
+        notif["ml_hit_probability"] = 0.9
+        out = await auto_paper._update_existing_trade(trade, notif, 101.0)
+        self.assertEqual("no_change", out["status"])
+        self.assertEqual([], self.calls)
+
+
 if __name__ == "__main__":
     unittest.main()

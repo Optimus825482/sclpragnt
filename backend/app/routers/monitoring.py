@@ -5,7 +5,8 @@ import logging
 import math
 import os
 import time
-from collections import deque
+from collections import deque, Counter
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -50,8 +51,10 @@ _monitoring_state = {
 # PWA kapalı olsa bile tarama ve bildirim sunucudan devam eder.
 SCAN_INTERVAL_SEC = 60.0
 HISTORY_LIMIT = 60
-NOTIFY_COOLDOWN_SEC = 300.0  # aynı sembol için tekrar bildirim engeli (5 dk)
-# D-07 (2026-09-14): yeniden tetikleme için ASGARİ fiyat hareketi (YÜZDE).
+NOTIFY_COOLDOWN_SEC = 60.0  # aynı sembol için asgari tekrar bildirim engeli (1 dk)
+# NOT (2026-09-17): eski 5 dk -> 1 dk. Hedefe ulaştıktan sonraki düzeltmede
+# sistemin tekrar yakalaması için 5 dk çok uzundu; `MONITORING_REFIRE_MIN_MOVE_PCT`
+# yine "değişen bir şey yoksa tekrarlama" korumasını sağlar.
 # Zaman kapıları (cooldown + ufuk) "değişen bir şey var mı" sorusunu SORMAZ;
 # donmuş/likit olmayan sembolde aynı fiyattan tekrar tekrar bildirim üretir.
 # Varsayılan = gidiş-dönüş maliyeti (%0.35): kâr ettirmeyecek bir hareket
@@ -417,7 +420,10 @@ async def get_user_notification_settings() -> dict:
             # M1/P0: admin `min_score` PANEL eşiğini AÇIKÇA set etti mi? Aday kapısı
             # önceliği buna bağlı (açık panel > varsayılan ham eşik).
             "min_score_explicit": settings.get("min_score") is not None,
-            "min_target_pct": float(settings.get("min_target_pct", 2.0)),
+            # Varsayılan = dinamik hedef TABANI: hedefler 1.5'e kadar inebiliyor,
+            # eski 2.0 varsayılanı bu adayları sessizce eliyordu (2026-09-17).
+            "min_target_pct": float(settings.get(
+                "min_target_pct", getattr(config, "MONITORING_TARGET_PCT_MIN", 1.5))),
             "quiet_hours_start": settings.get("quiet_hours_start", None),
             "quiet_hours_end": settings.get("quiet_hours_end", None),
             # A5: verilmezse config varsayılanı (AÇIK) — `_notify` ile aynı öncelik.
@@ -439,7 +445,8 @@ async def get_user_notification_settings() -> dict:
     except Exception:
         return {"enabled": True, "min_score": config.MONITORING_MIN_SCORE_DEFAULT,
                 "min_score_explicit": False,
-                "min_target_pct": 2.0, "quiet_hours_start": None, "quiet_hours_end": None,
+                "min_target_pct": float(getattr(config, "MONITORING_TARGET_PCT_MIN", 1.5)),
+                "quiet_hours_start": None, "quiet_hours_end": None,
                 "macd_refire_gate": bool(getattr(config, "MONITORING_MACD_REFIRE_GATE", True)),
                 # Hata durumunda da RADAR anahtarları VAR OLMALI — yoksa motor/teslimat
                 # anahtarı bulamayıp sessizce yanlış dala gider.
@@ -572,7 +579,8 @@ async def update_monitoring_settings(payload: dict, request: Request):
         if not (0.0 <= min_score <= 100.0):
             raise HTTPException(status_code=422, detail="min_score 0-100 aralığında olmalı")
     try:
-        min_target = float(merged.get("min_target_pct", 2.0))
+        min_target = float(merged.get(
+            "min_target_pct", getattr(config, "MONITORING_TARGET_PCT_MIN", 1.5)))
     except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail="min_target_pct sayısal olmalı")
     if not (config.MONITORING_TARGET_PCT_MIN <= min_target <= config.MONITORING_TARGET_PCT_MAX):
@@ -1160,6 +1168,8 @@ async def _notify(candidates_list, settings) -> list:
         _monitoring_state["candidate_streak"].pop(sym, None)
         expected_price = float(notif.get("expected_price") or 0)
         horizon_minutes = int(c.get("horizon_minutes") or 5)
+        # `target_pct` pending'e YAZILMAZ: hedef EMA'sı bu yoldan beslenmez
+        # (gerçekleşen MFE ölçülemiyor) — 2026-09-17 denetimi.
         if expected_price > 0:
             _monitoring_state["pending_targets"][sym] = {
                 "expected": expected_price,
@@ -1692,6 +1702,33 @@ async def _run_rising_scan() -> dict:
         symbol = str(candidate.get("symbol") or "").upper()
         if not symbol:
             continue
+        # DİNAMİK HEDEF (2026-09-17): yükseliş sinyalleri de sembol hedef öğrenme
+        # durumundan geçer. `panel_score=False`: sinyal skoru `strength × 10` ile
+        # SENTEZLENİR, velocity PANEL skoru değildir → PANEL ölçeğine bağlı bant ve
+        # zayıf-skor kelepçesi uygulanmaz (plan §4/R3 ölçek karışımı yasağı).
+        base_target = float(candidate.get("target_pct") or getattr(config, "RISING_TARGET_PCT", 1.5))
+        learned_target = None
+        learned_count = 0
+        if getattr(config, "MONITORING_TARGET_ADAPTIVE", True):
+            try:
+                state = await database.get_symbol_target_state(symbol)
+                if state:
+                    val = float(state.get("target_pct") or 0)
+                    learned_target = val if val > 0 else None
+                    learned_count = int(state.get("total_count") or 0)
+            except Exception:
+                learned_target = None
+                learned_count = 0
+        try:
+            from app.routers import velocity as _velocity
+            candidate["target_pct"] = _velocity.dynamic_target_pct(
+                float(candidate.get("score") or 0), base_target,
+                learned_pct=learned_target, learned_count=learned_count,
+                panel_score=False)
+        except Exception as exc:
+            # Sessiz yutma YOK: hedef öğrenmesi burada devre dışı kalırsa görünmeli.
+            logger.debug("yükseliş dinamik hedef uygulanamadı %s: %s", symbol, exc)
+            candidate["target_pct"] = base_target
         # Histerezis: AYNI öncü kümesi sürüyorsa yeni bilgi yoktur → ne kayıt ne
         # bildirim (aksi halde kanıt tablosu her turda şişerdi).
         prev_key = rising_signals.last_key(symbol)
@@ -1766,9 +1803,9 @@ async def rising_evidence_loop():
     await asyncio.sleep(180)
     while True:
         try:
-            filled = await database.fill_rising_alert_outcomes()
+            filled, _ = await database.fill_rising_alert_outcomes()
             if filled:
-                logger.debug("rising kanıt: %d sinyal sonucu dolduruldu", filled)
+                logger.debug("yükseliş kanıt: %d sinyal sonucu dolduruldu", filled)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1776,8 +1813,9 @@ async def rising_evidence_loop():
         await asyncio.sleep(_RISING_EVIDENCE_FILL_SEC)
 
 
-def _check_pending_targets():
-    """Beklenen fiyata ulaşan sembolleri tespit et ve pending listesinden çıkar.
+async def _check_pending_targets():
+    """Beklenen fiyata ulaşan sembolleri tespit et, pending listesinden çıkar
+    ve sembol hedef öğrenme durumunu güncelle.
 
     Her tarama turunda çağrılır: aday listesindeki sembollerin anlık fiyatı,
     kayıtlı expected_price'a eşit veya üstüyse hedefe ulaşılmış sayılır.
@@ -1801,8 +1839,19 @@ def _check_pending_targets():
         expected = float(info.get("expected") or 0)
         hit = price is not None and price > 0 and expected > 0 and price >= expected
         if expired or hit:
-            resolved.append(sym)
-    for sym in resolved:
+            resolved.append((sym, hit))
+            # SELF-LEARNING: radar/velocity sinyal sonucu YALNIZ başarı sayaçlarına
+            # işlenir. Gerçekleşen MFE bu yolda ÖLÇÜLEMEZ (sinyal penceresi
+            # saklanmıyor) → `achieved_pct` GÖNDERİLMEZ. Eskiden isabet `hedef`,
+            # ıska `0.0` olarak gönderiliyordu; uydurma değerler EMA'yı aşağı
+            # sürüklüyor ve %100 isabet eden sembolün hedefi bile düşüyordu
+            # (2026-09-17 denetimi). Hedef EMA'sını gerçek MFE üreten iki yol sürer:
+            # `fill_rising_alert_outcomes` ve `velocity_learning_loop`.
+            try:
+                await database.record_symbol_target_outcome(sym, success=hit)
+            except Exception:
+                logger.debug("pending target öğrenme kaydedilemedi %s", sym, exc_info=True)
+    for sym, _hit in resolved:
         _monitoring_state["pending_targets"].pop(sym, None)
 
 
@@ -2006,7 +2055,7 @@ async def _run_scan() -> dict:
             _monitoring_state["candidate_streak"].pop(sym, None)
 
     # Beklenen fiyata ulaşan veya süresi dolan sembolleri serbest bırak
-    _check_pending_targets()
+    await _check_pending_targets()
 
     new_notifications = await _notify(candidates_list, settings)
 
@@ -2330,6 +2379,14 @@ async def report_notifications(limit: int = 200, day: str = None):
             "raw_score": (float(row["raw_score"]) if row.get("raw_score") is not None else None),
             "saturated": _score_is_saturated(row),
         })
+    # SEMA ÇEŞİTLİLİĞİ (R5): seçilen dönemdeki bildirimlerin sembol dağılımı.
+    symbol_counter = Counter(item["symbol"] for item in result if item.get("symbol"))
+    unique_symbols = len(symbol_counter)
+    symbol_counts = [{"symbol": sym, "count": cnt} for sym, cnt in symbol_counter.most_common(5)]
+    top_symbol, top_count = symbol_counter.most_common(1)[0] if symbol_counter else (None, 0)
+    dominant_ratio = (top_count / len(result)) if result else 0.0
+    dominant_warning = dominant_ratio > 0.3
+
     counts = {"TAMAMEN BAŞARILI": 0, "BAŞARILI": 0, "KISMİ": 0,
               "BAŞARISIZ": 0, "BEKLİYOR": 0, "ÖLÇÜLEMEDİ": 0}
     for item in result:
@@ -2341,7 +2398,13 @@ async def report_notifications(limit: int = 200, day: str = None):
     success = counts["TAMAMEN BAŞARILI"]
     day_breakdown = {"counts": counts, "evaluated": evaluated,
                     "success_count": success,
-                    "success_rate": (success / evaluated * 100) if evaluated else None}
+                    "success_rate": (success / evaluated * 100) if evaluated else None,
+                    "unique_symbols": unique_symbols,
+                    "symbol_counts": symbol_counts,
+                    "dominant_symbol": top_symbol,
+                    "dominant_symbol_count": top_count,
+                    "dominant_symbol_ratio": dominant_ratio,
+                    "dominant_symbol_warning": dominant_warning}
     # BİRLEŞİK SİNYAL (2026-09-17): hangi tespit algoritması ne kadar yakaladı?
     # Kaynak başına sayım + çok-kaynaklı (birleşik teyit) başarı ayrıca raporlanır
     # → "motor birleşince başarı düştü mü" sorusu tek bakışta yanıtlanır.

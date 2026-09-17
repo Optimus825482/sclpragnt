@@ -264,15 +264,16 @@ class DynamicTargetWeakScoreClampTests(unittest.TestCase):
     """dynamic_target_pct aynı zayıf-skor kelepçesini uygulamalı (TP enflasyonu)."""
 
     def test_weak_score_ml_target_clamped(self):
-        # panel skor 5 + şişirilmiş ML hedefi 6.0 → kelepçe: min(6, 5*0.3=1.5)
+        # panel skor 5 + şişirilmiş ML hedefi 6.0 (güven yüksek) → kelepçe: min(6, 5*0.3=1.5)
         # → ardından maliyet tabanı (MIN 1.5) → 1.5; eski davranış 6.0 verirdi.
-        self.assertEqual(1.5, dynamic_target_pct(5.0, 2.0, ml_pct=6.0))
+        self.assertEqual(1.5, dynamic_target_pct(5.0, 2.0, ml_pct=6.0, ml_prob=0.9))
 
     def test_weak_score_learned_target_clamped(self):
-        self.assertEqual(1.5, dynamic_target_pct(5.0, 2.0, learned_pct=5.0))
+        # Yeterli örnek sayısıyla öğrenilmiş hedef uygulanır ve zayıf skorda kelepçelenir.
+        self.assertEqual(1.5, dynamic_target_pct(5.0, 2.0, learned_pct=5.0, learned_count=3))
 
     def test_strong_score_not_clamped(self):
-        self.assertEqual(4.0, dynamic_target_pct(95.0, 2.0, ml_pct=4.0))
+        self.assertEqual(4.0, dynamic_target_pct(95.0, 2.0, ml_pct=4.0, ml_prob=0.9))
 
 
 class MfiBothZeroNeutralTests(unittest.TestCase):

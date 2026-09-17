@@ -382,7 +382,7 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
                             balance_pct=round(balance_pct * 100, 2))
 
         sl_pct = float(settings.get("stop_loss_pct", config.AUTO_PAPER_SL_PCT_DEFAULT)) / 100.0
-        target_pct = float(notification.get("target_pct") or 0)
+        target_pct = _effective_target_pct(notification)
         if target_pct <= 0:
             target_pct = float(settings.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT))
 
@@ -489,7 +489,7 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
 async def _update_existing_trade(open_trade: dict, notification: dict, current_price: float) -> dict | None:
     """Açık pozisyon için TP'yi bildirimdeki yeni hedefle güncelle."""
     try:
-        target_pct = float(notification.get("target_pct") or 0)
+        target_pct = _effective_target_pct(notification)
         if target_pct <= 0:
             return None
 
@@ -497,7 +497,8 @@ async def _update_existing_trade(open_trade: dict, notification: dict, current_p
         new_tp = entry_price * (1 + target_pct / 100)
         old_tp = float(open_trade.get("take_profit") or 0)
 
-        # TP sadece yükseliyorsa güncelle
+        # TP sadece yükseliyorsa güncelle (hedefe ulaşıp düzeltmeden sonra
+        # yeni çıkış sinyali TP'yi yukarı taşır; aşağı çekmek kârı sınırlandırır).
         if new_tp > old_tp:
             await database.update_auto_paper_trade_tp(
                 open_trade["id"], new_tp, notification.get("score"), target_pct)
@@ -510,6 +511,18 @@ async def _update_existing_trade(open_trade: dict, notification: dict, current_p
     except Exception as exc:
         logger.exception("auto_paper %s TP güncelleme hatası: %s", open_trade.get("symbol"), exc)
         return None
+
+
+def _effective_target_pct(notification: dict) -> float:
+    """Bildirimden kullanılacak TP yüzdesi — TEK KAYNAK: ``target_pct``.
+
+    ``target_pct`` üretim tarafında (``velocity.dynamic_target_pct``) zaten
+    harmanlanmıştır: skor bandı + öğrenilmiş sembol hedefi + güvenli ML tahmini.
+    Burada ``ml_target_pct``'i TEKRAR okumak ML'i iki kez uygulardı — harman onu
+    bilinçli olarak seyreltirken ``max`` geri yükseltir (2026-09-17 denetimi).
+    ML davranışını değiştirmek isteyen tek yer ``dynamic_target_pct``dir.
+    """
+    return float(notification.get("target_pct") or 0)
 
 
 # ---------------------------------------------------------------------------
