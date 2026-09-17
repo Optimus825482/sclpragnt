@@ -695,7 +695,7 @@ class RrGateTests(unittest.TestCase):
 
     def test_ratio_is_target_over_stop(self):
         from app.config import config
-        self.assertAlmostEqual(2.0 / 3.0, self.m._rr_ratio(2.0), places=6)
+        self.assertAlmostEqual(2.0 / 1.5, self.m._rr_ratio(2.0), places=6)
         self.assertAlmostEqual(1.0, self.m._rr_ratio(float(config.MONITORING_RR_SL_PCT)), places=6)
 
     def test_ratio_none_when_unmeasurable(self):
@@ -716,12 +716,12 @@ class RrGateTests(unittest.TestCase):
                          "hedef %3.0 (isabet %11.5) elenmemeli")
 
     def test_gate_blocks_reward_below_stop_floor(self):
-        """Ödülü riskinin `RR_MIN` katından küçük aday elenir (hedef < %1.8)."""
-        self.assertTrue(self.m._rr_gate_blocks(10.0, 1.5))
+        """Ödülü riskinin `RR_MIN` katından küçük aday elenir (hedef < %0.9)."""
+        self.assertTrue(self.m._rr_gate_blocks(10.0, 0.8))
 
     def test_gate_disabled_never_blocks(self):
         with patch.object(self.m.config, "MONITORING_RR_ENABLED", False):
-            self.assertFalse(self.m._rr_gate_blocks(10.0, 1.5))
+            self.assertFalse(self.m._rr_gate_blocks(10.0, 0.8))
 
     def test_gate_fails_open_without_price(self):
         """Fiyat yoksa bastırma YOK (veri eksikliği sinyal öldürmemeli)."""
@@ -733,7 +733,7 @@ class RrGateTests(unittest.TestCase):
         with patch.object(self.m, "_ticker_price", return_value=None):
             notif = self.m._build_notification(
                 "AAAATRY", {"target_pct": 3.0, "price": 10.0, "velocity_score": 100.0}, {})
-        self.assertAlmostEqual(1.0, notif["rr"], places=6)
+        self.assertAlmostEqual(2.0, notif["rr"], places=6)
         self.assertAlmostEqual(float(self.m.config.MONITORING_RR_SL_PCT),
                                notif["sl_pct"], places=6)
 
@@ -769,10 +769,10 @@ class RrGateCounterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_low_rr_candidate_counted_and_not_notified(self):
         from app.routers import monitoring
-        cands = [{"symbol": "WEAKTRY", "velocity_score": 50.0, "target_pct": 1.5,
+        cands = [{"symbol": "WEAKTRY", "velocity_score": 50.0, "target_pct": 0.8,
                   "price": 10.0, "horizon_minutes": 5}]
         result = await self._notify(cands)
-        self.assertEqual([], result, "hedef < %1.8 bildirilmemeli")
+        self.assertEqual([], result, "hedef < %0.9 bildirilmemeli")
         self.assertEqual(1, monitoring._monitoring_state["rr_blocked"])
 
     async def test_typical_target_is_notified_and_counter_untouched(self):

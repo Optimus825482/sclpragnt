@@ -130,7 +130,14 @@ class ConfidenceMultiplierTests(unittest.TestCase):
 
 
 class DynamicTargetPctTests(unittest.TestCase):
-    """Hedef esnetme: bantlar yüksekten düşüğe; learned/ML yalnız YUKARI çeker."""
+    """Hedef esnetme: bantlar yüksekten düşüğe; learned/ML İKİ YÖNLÜ harmanlanır.
+
+    2026-09-17 sözleşme değişikliği (kullanıcı kararı): öğrenilmiş
+    (``learned_pct``) ve ML (``ml_pct``) hedefleri artık ``max()`` ile yalnız
+    yukarı çekmiyor; ağırlıklı harmanla AŞAĞI da çekebiliyor. Gerçekleşen MFE'si
+    banttan düşük sembollerde hedef düşer — bu bir strateji değişikliğidir,
+    testler onu burada çiviliyor.
+    """
 
     def test_top_tier_wins(self):
         self.assertEqual(4.0, dynamic_target_pct(95.0, 1.0))
@@ -144,18 +151,77 @@ class DynamicTargetPctTests(unittest.TestCase):
     def test_below_all_tiers_clamps_to_min(self):
         self.assertEqual(config.MONITORING_TARGET_PCT_MIN, dynamic_target_pct(10.0, 1.0))
 
-    def test_learned_only_raises(self):
-        self.assertEqual(5.0, dynamic_target_pct(95.0, 1.0, learned_pct=5.0))
-        self.assertEqual(4.0, dynamic_target_pct(95.0, 1.0, learned_pct=2.0))
+    def test_learned_moves_target_both_ways(self):
+        """12 örnek → ağırlık 0.6; learned banttan yüksekse yukarı, DÜŞÜKSE AŞAĞI."""
+        # 4.0*0.4 + 5.0*0.6 = 4.60   (yukarı)
+        self.assertAlmostEqual(
+            4.6, dynamic_target_pct(95.0, 1.0, learned_pct=5.0, learned_count=12), places=3)
+        # 4.0*0.4 + 2.0*0.6 = 2.80   (aşağı — eski sözleşmede 4.0 kalırdı)
+        self.assertAlmostEqual(
+            2.8, dynamic_target_pct(95.0, 1.0, learned_pct=2.0, learned_count=12), places=3)
 
-    def test_ml_only_raises_and_must_be_positive(self):
-        self.assertEqual(4.0, dynamic_target_pct(95.0, 1.0, ml_pct=0.5))
-        self.assertEqual(4.5, dynamic_target_pct(95.0, 1.0, ml_pct=4.5))
-        self.assertEqual(4.0, dynamic_target_pct(95.0, 1.0, ml_pct=-3.0))
+    def test_learned_weight_grows_with_sample_count(self):
+        """Ağırlık min(0.6, count/20): 3 örnekte 0.15, 12 örnekte 0.60."""
+        # 4.0*0.85 + 5.0*0.15 = 4.15
+        self.assertAlmostEqual(
+            4.15, dynamic_target_pct(95.0, 1.0, learned_pct=5.0, learned_count=3), places=3)
+        self.assertLess(
+            dynamic_target_pct(95.0, 1.0, learned_pct=5.0, learned_count=3),
+            dynamic_target_pct(95.0, 1.0, learned_pct=5.0, learned_count=12))
+
+    def test_learned_ignored_below_minimum_samples(self):
+        """3 örnekten az → öğrenme uygulanmaz (tek örnek hedefi zıplatmasın)."""
+        self.assertEqual(4.0, dynamic_target_pct(95.0, 1.0, learned_pct=5.0, learned_count=2))
+
+    def test_ml_requires_minimum_probability(self):
+        """Olasılık eşiğinin (ML_TARGET_MIN_PROB) altında ML hedefe girmez."""
+        self.assertEqual(4.0, dynamic_target_pct(
+            95.0, 1.0, ml_pct=6.0, ml_prob=config.ML_TARGET_MIN_PROB - 0.1))
+        # Olasılık hiç verilmezse de uygulanmaz.
+        self.assertEqual(4.0, dynamic_target_pct(95.0, 1.0, ml_pct=6.0))
+
+    def test_ml_moves_target_both_ways(self):
+        """Yüksek güven (>=ML_TARGET_HIGH_PROB) → ağırlık 0.5."""
+        # 4.0*0.5 + 6.0*0.5 = 5.00   (yukarı)
+        self.assertAlmostEqual(
+            5.0, dynamic_target_pct(95.0, 1.0, ml_pct=6.0, ml_prob=0.9), places=3)
+        # 4.0*0.5 + 2.0*0.5 = 3.00   (aşağı)
+        self.assertAlmostEqual(
+            3.0, dynamic_target_pct(95.0, 1.0, ml_pct=2.0, ml_prob=0.9), places=3)
+
+    def test_ml_weight_is_lower_between_threshold_and_high_confidence(self):
+        """Eşik ile yüksek güven eşiği arası → ağırlık 0.25 (4.0*0.75 + 6.0*0.25 = 4.5)."""
+        mid = (config.ML_TARGET_MIN_PROB + config.ML_TARGET_HIGH_PROB) / 2
+        self.assertAlmostEqual(
+            4.5, dynamic_target_pct(95.0, 1.0, ml_pct=6.0, ml_prob=mid), places=3)
+
+    def test_ml_must_be_positive(self):
+        """Negatif/düşüş tahmini hedefi aşağı çekemez (kanal yalnız pozitif)."""
+        self.assertEqual(4.0, dynamic_target_pct(95.0, 1.0, ml_pct=-3.0, ml_prob=0.9))
 
     def test_result_is_clamped_to_max(self):
         self.assertEqual(config.MONITORING_TARGET_PCT_MAX,
-                         dynamic_target_pct(95.0, 1.0, learned_pct=99.0))
+                         dynamic_target_pct(95.0, 1.0, learned_pct=99.0, learned_count=12))
+
+    def test_weak_score_cap_beats_learned_target(self):
+        """Zayıf skor kelepçesi (score*0.3) öğrenilmiş hedefi de sınırlar."""
+        # skor 5 → tavan 1.5; harman 4.6 üretse de cap 1.5'e iner → MIN'e kırpılır.
+        self.assertEqual(config.MONITORING_TARGET_PCT_MIN,
+                         dynamic_target_pct(5.0, 4.0, learned_pct=5.0, learned_count=12))
+
+    def test_panel_score_false_skips_tiers_and_weak_score_cap(self):
+        """`panel_score=False` (rising): PANEL ölçeğine bağlı iki kural da atlanır.
+
+        Rising skoru `strength × 10` ile sentezlenir, velocity PANEL skoru
+        değildir → bant seçimi ve zayıf-skor kelepçesi uygulanmaz (plan §4/R3).
+        """
+        # Bant devre dışı: skor 95 olsa bile hedef tabanda kalır → MIN'e kırpılır.
+        self.assertEqual(config.MONITORING_TARGET_PCT_MIN,
+                         dynamic_target_pct(95.0, 1.0, panel_score=False))
+        # Zayıf-skor kelepçesi devre dışı: skor 5 olsa da harman uygulanır.
+        # 4.0*0.4 + 5.0*0.6 = 4.6 (panel_score=True olsaydı 1.5'e inerdi)
+        self.assertAlmostEqual(4.6, dynamic_target_pct(
+            5.0, 4.0, learned_pct=5.0, learned_count=12, panel_score=False), places=3)
 
 
 class CommissionCrossLayerTests(unittest.TestCase):

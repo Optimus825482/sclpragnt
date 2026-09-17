@@ -597,25 +597,30 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             #    (04.09 radar verisi: skor >=70 kovasında ort. MFE ~%5.2, hedef %3
             #    yetersiz kalıyordu).
             # 3) Journal'dan öğrenilen sembol hedefi (get_symbol_target_state):
-            #    yalnızca yukarı çeker (adaptif esnetme, MONITORING_TARGET_ADAPTIVE).
+            #    yeterli örnek varsa iki yönlü harmanlanır (adaptif, MONITORING_TARGET_ADAPTIVE).
             # Sonuç MONITORING_TARGET_PCT_MIN/MAX'a kelepçelenir; monitoring bildirimi
             # VE bot TP (open_velocity_position) bu hedefi kullanır.
             learned_target = None
+            learned_count = 0
             if config.MONITORING_TARGET_ADAPTIVE:
                 try:
                     state = await database.get_symbol_target_state(symbol)
                     if state:
                         val = float(state.get("target_pct") or 0)
                         learned_target = val if val > 0 else None
+                        learned_count = int(state.get("total_count") or 0)
                 except Exception:
                     learned_target = None
+                    learned_count = 0
             # R2-01/R3-03 (P0): hEDEF bantları PANEL (0-100) ölçeğinde tanımlı;
             # buraya HAM skor değil PANEL skoru geçilir (aksi halde tüm adaylar
             # ham ≥1400 ≫ 90 olduğundan daima 4.0% alıyordu).
             effective_target = dynamic_target_pct(
                 _panel_score(velocity_score), float(base_target_pct),
                 learned_pct=learned_target,
+                learned_count=learned_count,
                 ml_pct=ml_target if (ml_target is not None and ml_target > 0) else None,
+                ml_prob=ml_hit_prob if (ml_hit_prob is not None and ml_hit_prob > 0) else None,
             )
             # Hedef gercekciligi (VELOCITY_TARGET_REALISM_*): guclu MACD teyidi veya
             # yuksek ML olasiligi yoksa agresif ust-bant (4%) hedefi MAX_PCT'e indir;
@@ -1673,7 +1678,10 @@ def round_trip_cost_pct() -> float:
 
 def dynamic_target_pct(score: float, base_target_pct: float,
                        learned_pct: float | None = None,
-                       ml_pct: float | None = None) -> float:
+                       learned_count: int = 0,
+                       ml_pct: float | None = None,
+                       ml_prob: float | None = None,
+                       panel_score: bool = True) -> float:
     """Skor bantlı dinamik hedef: yüksek skorlu adaylarda hedef esnetilir.
 
     ``score`` **PANEL** (0-100) ölçeğinde beklenir — çağıran taraf ham
@@ -1681,7 +1689,14 @@ def dynamic_target_pct(score: float, base_target_pct: float,
     Bantlar ``config.MONITORING_TARGET_SCORE_TIERS`` ('skor:hedef' çiftleri);
     eşiği karşılayan EN YÜKSEK skor bandı seçilir (girdi sırasından bağımsız;
     R5-C3.4). Journal'dan öğrenilen sembol hedefi (``learned_pct``) ve ML tahmini
-    (``ml_pct``) yalnızca yukarı çekebilir; sonuç MIN/MAX'a kelepçelenir.
+    (``ml_pct``) İKİ YÖNLÜ uygulanır; yalnızca yukarı çekmez. Düşük güvenli ML
+    tahminleri görmezden gelinir (``ml_prob >= config.ML_TARGET_MIN_PROB``).
+
+    ``panel_score=False`` → skor bir PANEL skoru DEĞİLDİR (ör. yükseliş
+    sinyalinde ``strength × 10`` ile sentezlenen 0-100 skor): PANEL ölçeğine
+    bağlı İKİ kural da atlanır — bant seçimi VE zayıf-skor kelepçesi. Bu ölçek
+    karışımı bilinçli olarak yapılmaz (plan §4/R3). Öğrenilmiş/ML harmanı ile
+    MIN/MAX kelepçesi (maliyet tabanı) yine uygulanır.
 
     Maliyet tabanı (R3-14): ``MONITORING_TARGET_PCT_MIN`` (1.5%) gidiş-dönüş
     maliyetinin üzerinde kalır — 1000 TRY'de ~%0.4, asgari emir (50 TRY) için
@@ -1689,26 +1704,35 @@ def dynamic_target_pct(score: float, base_target_pct: float,
     zemin ``tests/test_m2_velocity_fixes.py::TargetCostFloorTests`` ile kilitli.
     """
     target = float(base_target_pct)
-    # R5-C3.4 / R2-12: TÜM bantlar ayrıştırılır ve eşiği karşılayan EN YÜKSEK
-    # skor eşiğine sahip bant seçilir. Eski sürüm ilk eşleşen bantta `break`
-    # ediyordu → artan sıralı liste yanlış (monoton olmayan) hedef üretiyordu.
-    matched_threshold: float | None = None
-    for min_score, pct in _parse_target_tiers(config.MONITORING_TARGET_SCORE_TIERS):
-        if float(score) >= min_score and (matched_threshold is None or min_score > matched_threshold):
-            matched_threshold = min_score
-            target = max(target, pct)
-    if learned_pct and float(learned_pct) > target:
-        target = float(learned_pct)
-    if ml_pct and float(ml_pct) > 0 and float(ml_pct) > target:
-        target = float(ml_pct)
-    # Zayıf skor + iddialı hedef kelepçesi: ``upside_rank_score`` ile AYNI kural
-    # (skor < 10 → target ≤ skor×0.3; skor < 20 → target ≤ skor×0.25). Aksi halde
-    # şişirilmiş ML/journal hedefi zayıf adaya TP olarak 4-5% yazılabiliyordu.
-    # PANEL ölçeğindeki skor üzerinde uygulanır (fonksiyon sözleşmesi).
-    if float(score) < 10 and target > 4.0:
+    # PANEL ölçeği varsayımı 1/2 — bant seçimi.
+    if panel_score:
+        # R5-C3.4 / R2-12: TÜM bantlar ayrıştırılır ve eşiği karşılayan EN YÜKSEK
+        # skor eşiğine sahip bant seçilir. Eski sürüm ilk eşleşen bantta `break`
+        # ediyordu → artan sıralı liste yanlış (monoton olmayan) hedef üretiyordu.
+        matched_threshold: float | None = None
+        for min_score, pct in _parse_target_tiers(config.MONITORING_TARGET_SCORE_TIERS):
+            if float(score) >= min_score and (matched_threshold is None or min_score > matched_threshold):
+                matched_threshold = min_score
+                target = max(target, pct)
+
+    # Öğrenilmiş sembol hedefi: yeterli örnek varsa (>=LEARNED_TARGET_MIN_SAMPLES)
+    # iki yönlü harmanlanır; gerçek MFE'si banttan düşük sembollerde hedefi AŞAĞI
+    # çeker. Ölçüm yalnız gerçek MFE üreten yollardan gelir
+    # (bkz. database._next_target_pct — radar/pending uydurma değer GÖNDERMEZ).
+    if learned_pct and float(learned_pct) > 0 and learned_count >= config.LEARNED_TARGET_MIN_SAMPLES:
+        weight = min(0.6, learned_count / 20.0)  # 3 örnekte 0.15, 12 örnekte 0.6
+        target = target * (1 - weight) + float(learned_pct) * weight
+
+    # ML tahmini: güven yeterliyse hedefi ML öngörüsüne çek; yukarı veya aşağı.
+    if ml_pct and float(ml_pct) > 0 and ml_prob is not None and float(ml_prob) >= config.ML_TARGET_MIN_PROB:
+        ml_weight = 0.5 if float(ml_prob) >= config.ML_TARGET_HIGH_PROB else 0.25
+        target = target * (1 - ml_weight) + float(ml_pct) * ml_weight
+
+    # PANEL ölçeği varsayımı 2/2 — zayıf skor + iddialı hedef kelepçesi: hedef,
+    # panel skorunun 0.3 katını aşamaz (örn. skor 5 → hedef ≤ 1.5). Cap skorla
+    # birlikte monotonik büyür, bu yüzden tier geçişlerinde ani düşüş olmaz.
+    if panel_score:
         target = min(target, float(score) * 0.3)
-    elif float(score) < 20 and target > 5.0:
-        target = min(target, float(score) * 0.25)
     return round(max(config.MONITORING_TARGET_PCT_MIN,
                      min(config.MONITORING_TARGET_PCT_MAX, target)), 3)
 

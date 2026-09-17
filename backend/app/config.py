@@ -91,6 +91,13 @@ class Config:
     ML_TRAIN_LOOKBACK_DAYS = max(2, int(os.getenv("ML_TRAIN_LOOKBACK_DAYS", "10")))
     ML_MAX_BARS_PER_SYMBOL = max(500, int(os.getenv("ML_MAX_BARS_PER_SYMBOL", "3000")))
     ML_TARGET_QUANTILE = min(0.95, max(0.5, float(os.getenv("ML_TARGET_QUANTILE", "0.65"))))
+    # ML hedef tahmini dinamik hedefe hangi güvenle uygulanır. Düşük güvenli
+    # tahminler yukarı/aşağı sallantı yaratır; yalnızca güçlü tahminler aktif olsun.
+    ML_TARGET_MIN_PROB = min(0.95, max(0.5, float(os.getenv("ML_TARGET_MIN_PROB", "0.65"))))
+    # Yüksek güven eşiği: ML hedefi bu olasılığın ÜSTÜNDE daha güçlü (0.5), altında
+    # daha zayıf (0.25) harmanlanır. MIN_PROB'un altına inemez — aksi halde
+    # "yüksek güven" kademesi erişilemez olurdu (2026-09-17 denetimi).
+    ML_TARGET_HIGH_PROB = min(0.95, max(ML_TARGET_MIN_PROB, float(os.getenv("ML_TARGET_HIGH_PROB", "0.8"))))
     ML_JOURNAL_SAMPLE_WEIGHT = max(1.0, float(os.getenv("ML_JOURNAL_SAMPLE_WEIGHT", "3.0")))
     ML_HIT_TARGET_PCT = {5: 0.02, 15: 0.03}  # ufuk -> sınıflandırıcı hedefi (kesir)
     LLM_FORECAST_LESSON_MIN_SAMPLES = max(8, int(os.getenv("LLM_FORECAST_LESSON_MIN_SAMPLES", "12")))
@@ -229,8 +236,12 @@ class Config:
     MONITORING_TARGET_SCORE_TIERS = os.getenv(
         "MONITORING_TARGET_SCORE_TIERS", "74.0:4.0,71.5:2.5,68.2:2.0")
     # Dinamik hedef sınırları ve adaptif esnetme: sembolün journal'dan öğrenilmiş
-    # (get_symbol_target_state) hedefi daha yüksekse hedef buraya kadar yükseltilir.
+    # (get_symbol_target_state) hedefi İKİ YÖNLÜ harmanlanır — MFE'si banttan
+    # düşük sembollerde hedef aşağı da çekilir (2026-09-17).
     MONITORING_TARGET_ADAPTIVE = os.getenv("MONITORING_TARGET_ADAPTIVE", "true").lower() == "true"
+    # Öğrenilmiş sembol hedefi için ASGARİ örnek sayısı: bu sayının altında harman
+    # uygulanmaz (tek örnek hedefi zıplatmasın).
+    LEARNED_TARGET_MIN_SAMPLES = max(1, int(os.getenv("LEARNED_TARGET_MIN_SAMPLES", "3")))
     MONITORING_TARGET_PCT_MIN = float(os.getenv("MONITORING_TARGET_PCT_MIN", "1.5"))
     MONITORING_TARGET_PCT_MAX = float(os.getenv("MONITORING_TARGET_PCT_MAX", "6.0"))
     # Mikro-yapı sıralama çarpanları (kapı değil, yalnızca aday sıralaması).
@@ -310,7 +321,10 @@ class Config:
     # RR 0.5) elenir. Tek deger yeterli: 5dk (%2.0) ve 15dk (%3.0) profillerinin
     # ikisi de esigi asar, ufuk bazli ayrim gerekmez.
     MONITORING_RR_MIN = float(os.getenv("MONITORING_RR_MIN", "0.6"))
-    MONITORING_RR_SL_PCT = float(os.getenv("MONITORING_RR_SL_PCT", "3.0"))
+    # R/R gate SL dayanağı: AUTO_PAPER_SL_PCT_DEFAULT ile AYNI olmalı; ayrışırsa
+    # gatelettiğimiz adayla açılan pozisyon farklı risk taşır. Eski varsayılan 3.0
+    # → 1.5 (2026-09-17, Erkan kararı: replay geometrisi + canlı 50 işlem verisi).
+    MONITORING_RR_SL_PCT = float(os.getenv("MONITORING_RR_SL_PCT", "1.5"))
 
     # ---------------------------------------------------------------------
     # YÜKSELİŞ SİNYALLERİ (R1, 2026-09-14): MACD MONITOR'ün kanıtlanmış
@@ -346,11 +360,14 @@ class Config:
     # kırılım ÖNCESİ girişin isabeti `rising_alerts` ile ölçülene kadar tek güvence.
     RISING_AUTONOMOUS_ENABLED = os.getenv("RISING_AUTONOMOUS_ENABLED", "true").lower() == "true"
     RISING_AUTO_MIN_SCORE = float(os.getenv("RISING_AUTO_MIN_SCORE", "70"))
-    # Bildirim/otonom hedefi: profil taban hedefi (5dk → %2.0). Yükseliş sinyalinde
-    # TP KADEME ESNETMESİ YAPILMAZ — kademe eşikleri velocity PANEL ölçeğinde
-    # kalibre; `strength` (0-10) ölçeğini panele eşlemek A3'te kaldırılan ölçek
-    # karışıklığını geri getirirdi (bkz. plan §4/R3).
-    RISING_TARGET_PCT = float(os.getenv("RISING_TARGET_PCT", "2.0"))
+    # Bildirim/otonom hedefi: profil taban hedefi (5dk → %1.5). Yükseliş sinyali
+    # 2026-09-17'den beri dinamik hedeften GEÇER (öğrenilmiş sembol hedefiyle
+    # harmanlanır) ama PANEL KADEME ESNETMESİ YAPILMAZ: `monitoring._run_rising_scan`
+    # `dynamic_target_pct(..., panel_score=False)` çağırır. `strength` (0-10)
+    # ölçeğini panel bantlarına/zayıf-skor kelepçesine sokmak A3'te kaldırılan
+    # ölçek karışıklığını geri getirirdi (plan §4/R3).
+    # Eski varsayılan 2.0 → 1.5 (2026-09-17, Erkan kararı: replay geometrisi + canlı 50 işlem verisi).
+    RISING_TARGET_PCT = float(os.getenv("RISING_TARGET_PCT", "1.5"))
 
     # ---------------------------------------------------------------------
     # BİRLEŞİK RADAR (2026-09-16) — Hız Avcısı + Yükseliş + Radar tespitleri
@@ -539,8 +556,8 @@ class Config:
     # log haritada aynı ham nokta panel 68.2 → DEĞER KORUNARAK yeniden ankrajlandı.
     AUTO_PAPER_MIN_SCORE_DEFAULT = float(os.getenv("AUTO_PAPER_MIN_SCORE", "68.2"))
     AUTO_PAPER_BALANCE_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_BALANCE_PCT", "35"))
-    AUTO_PAPER_SL_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_SL_PCT", "3.0"))
-    AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "2.0"))
+    AUTO_PAPER_SL_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_SL_PCT", "1.5"))  # Eski varsayılan 3.0 → 1.5 (2026-09-17, Erkan kararı: replay geometrisi + canlı 50 işlem verisi).
+    AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "1.5"))  # Eski varsayılan 2.0 → 1.5 (2026-09-17, Erkan kararı: radar/velocity bildirimlerinin hedefi MFE tavanına otursun; replay geometrisi + canlı 50 işlem verisi).
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
     AUTO_PAPER_BREAKEVEN_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_TRIGGER_PCT", "1.5"))
     # Trailing stop modülü (kâr takibi): pozisyon trailing_trigger_pct kadar

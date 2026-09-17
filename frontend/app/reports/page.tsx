@@ -949,10 +949,37 @@ function SelfLearningTab() {
 }
 
 /* ---- Kullanıcı: Radar Tespitleri sekmesi (DataTable) ---- */
+
+interface SymbolCount {
+  symbol: string;
+  count: number;
+}
+
+interface RadarBreakdown {
+  counts?: Record<string, number>;
+  evaluated?: number;
+  success_count?: number;
+  success_rate?: number | null;
+  unique_symbols?: number;
+  symbol_counts?: SymbolCount[];
+  dominant_symbol?: string | null;
+  dominant_symbol_count?: number;
+  dominant_symbol_ratio?: number;
+  dominant_symbol_warning?: boolean;
+  by_source?: Record<string, number>;
+  multi_source?: { evaluated: number; success_count: number; success_rate?: number | null };
+}
+
+interface RadarOverall {
+  evaluated?: number;
+  success_count?: number;
+  success_rate?: number | null;
+}
+
 function UserRadarTab() {
   const [notifications, setNotifications] = useState<any[]>([]);
-  const [breakdown, setBreakdown] = useState<any>(null);
-  const [overall, setOverall] = useState<any>(null);
+  const [breakdown, setBreakdown] = useState<RadarBreakdown | null>(null);
+  const [overall, setOverall] = useState<RadarOverall | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [day, setDay] = useState<string>(() => localDateInput());
@@ -1132,6 +1159,44 @@ function UserRadarTab() {
               <p className="mt-1 font-mono text-[10px] text-bunker-muted">
                 Bu bildirimleri hangi tespit algoritmalari yakaladi (radar hizi + MACD sicrama/erken sicrama birlesik skoru).
               </p>
+            </div>
+          )}
+        </section>
+      )}
+
+      {breakdown && (
+        <section className="card">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="eyebrow text-neon-green">SEMBOL ÇEŞİTLİLİĞİ</p>
+            {breakdown.dominant_symbol_warning && (
+              <Badge tone="warn">TEK SEMBOL AĞIRLIĞI</Badge>
+            )}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard label="TOPLAM BİLDİRİM" value={String(notifications.length)} />
+            <StatCard label="FARKLI SEMBOL" value={String(breakdown.unique_symbols ?? 0)} />
+            <StatCard
+              label="EN YOĞUN SEMBOL"
+              value={breakdown.dominant_symbol || "—"}
+              sub={breakdown.dominant_symbol_count ? `${breakdown.dominant_symbol_count} bildirim` : ""}
+            />
+            <StatCard
+              label="YOĞUNLUK ORANI"
+              value={breakdown.dominant_symbol_ratio != null ? `%${(breakdown.dominant_symbol_ratio * 100).toFixed(1)}` : "—"}
+              tone={breakdown.dominant_symbol_warning ? "text-yellow-300" : "text-sky-300"}
+            />
+          </div>
+          {(breakdown.symbol_counts || []).length > 0 && (
+            <div className="mt-4 border-t border-bunker-700/60 pt-3">
+              <p className="eyebrow text-sky-300">EN ÇOK TEKRAR EDEN SEMBOLLER</p>
+              <div className="mt-2 space-y-1">
+                {(breakdown.symbol_counts || []).map((sc) => (
+                  <div key={sc.symbol} className="flex items-center justify-between font-mono text-xs">
+                    <SymbolLink symbol={sc.symbol} className="text-white hover:text-neon-green" />
+                    <span className="text-white">{sc.count}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </section>

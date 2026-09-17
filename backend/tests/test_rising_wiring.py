@@ -117,6 +117,40 @@ class RisingScanTests(unittest.IsolatedAsyncioTestCase):
         self.record_mock.assert_awaited()
         self.deliver_mock.assert_not_awaited()
 
+    async def test_rising_target_passes_through_learned_dynamic_target(self):
+        """Madde 6: rising hedefi de dinamik/öğrenilmiş hedeften geçer.
+
+        `panel_score=False` → bant YOK, taban 2.0. Öğrenilmiş hedef 1.2 (12 örnek)
+        → harman 2.0*0.4 + 1.2*0.6 = 1.52. Yani rising TP'si AŞAĞI çekilebiliyor.
+        """
+        state = {"symbol": "RISETRY", "target_pct": 1.2, "total_count": 12}
+        with patch.object(monitoring.database, "get_symbol_target_state",
+                          AsyncMock(return_value=state)):
+            await self._scan([_candidate(score=80.0)])
+        recorded = self.record_mock.await_args.args[0]
+        self.assertAlmostEqual(1.52, float(recorded["target_pct"]), places=3)
+
+    async def test_rising_target_does_not_flex_panel_score_tiers(self):
+        """§4/R3: `strength × 10` skoru PANEL bantlarına SOKULMAZ.
+
+        Skor 80 olsa da (velocity panelinde bu 4.0 bant demekti) rising hedefi
+        taban 2.0'da kalır — ölçek karışımı bilinçli olarak yapılmaz.
+        """
+        with patch.object(monitoring.database, "get_symbol_target_state",
+                          AsyncMock(return_value=None)):
+            await self._scan([_candidate(score=80.0)])
+        recorded = self.record_mock.await_args.args[0]
+        self.assertAlmostEqual(2.0, float(recorded["target_pct"]), places=3)
+
+    async def test_rising_target_untouched_below_minimum_samples(self):
+        """LEARNED_TARGET_MIN_SAMPLES altında öğrenme rising hedefini DEĞİŞTİRMEZ."""
+        state = {"symbol": "RISETRY", "target_pct": 1.2, "total_count": 2}
+        with patch.object(monitoring.database, "get_symbol_target_state",
+                          AsyncMock(return_value=state)):
+            await self._scan([_candidate(score=80.0)])
+        recorded = self.record_mock.await_args.args[0]
+        self.assertAlmostEqual(2.0, float(recorded["target_pct"]), places=3)
+
     async def test_new_precursor_after_arm_notifies(self):
         """Sessiz arm sonrası kümeye YENİ öncü eklenirse bildirim gider."""
         grown = _candidate()
