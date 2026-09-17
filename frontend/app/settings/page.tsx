@@ -1281,8 +1281,8 @@ function RadarReplayPanel() {
     <div className="card bg-bunker-950">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <p className="eyebrow text-amber-300">24 SAATLİK REPLAY / BACKTEST</p>
-          <p className="text-xs text-bunker-muted mt-1">Birleşik radarın (Hız Avcısı + Yükseliş + Tespit) son 24 saatteki başarısını, geçmiş mumlarla B1-B4 merdivenini simüle ederek ölçer. Üretim davranışını <span className="font-mono">DEĞİŞTİRMEZ</span>.</p>
+          <p className="eyebrow text-amber-300">REPLAY / BACKTEST (24s / 72s)</p>
+          <p className="text-xs text-bunker-muted mt-1">Birleşik radarın (Hız Avcısı + Yükseliş + MACD Sıçrama/Erken Sıçrama + <span className="font-mono">unified</span> füzyon) geçmiş başarısını, geçmiş mumlarla B1-B4 merdivenini simüle ederek ölçer. Üretim davranışını <span className="font-mono">DEĞİŞTİRMEZ</span>.</p>
         </div>
         <div className="flex items-center gap-2">
           {/* OUT-OF-SAMPLE: pencereyi geçmişe kaydırır. "24 saat + 24 saat önce"
@@ -1294,8 +1294,8 @@ function RadarReplayPanel() {
             <input type="number" min={0} max={720} value={offsetHours} onChange={(e) => setOffsetHours(e.target.value)}
               className="w-16 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-amber-300/60 outline-none" />
           </label>
-          <input type="number" min={1} max={48} value={hours} onChange={(e) => setHours(e.target.value)}
-            title="Geriye dönük pencere (saat)"
+          <input type="number" min={1} max={168} value={hours} onChange={(e) => setHours(e.target.value)}
+            title="Geriye dönük pencere (saat). 24 = son 24 saat, 72 = son 72 saat."
             className="w-20 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-amber-300/60 outline-none" />
           <button type="button" onClick={start} disabled={running}
             className="shrink-0 px-4 py-2 rounded-lg border border-amber-300/50 text-amber-300 font-mono text-xs hover:bg-amber-300/10 disabled:opacity-50 disabled:cursor-not-allowed">

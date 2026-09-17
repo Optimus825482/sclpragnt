@@ -62,6 +62,34 @@ function Badge({ children, tone = "neutral" }: { children: React.ReactNode; tone
   return <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${map[tone]}`}>{children}</span>;
 }
 
+// BİRLEŞİK SİNYAL (2026-09-17): bir bildirimi üreten tespit algoritmalarının
+// rozetleri. Backend `sources` alanı taşır (["velocity","jump","early"]);
+// eski kayıtlarda alan yoktur → tek "RADAR" rozeti gösterilir.
+const SOURCE_BADGE_META: Record<string, { label: string; cls: string }> = {
+  velocity: { label: "RADAR", cls: "border-neon-green/50 bg-neon-green/15 text-neon-green" },
+  jump: { label: "SIRÇRAMA", cls: "border-sky-400/50 bg-sky-400/15 text-sky-300" },
+  early: { label: "ERKEN SIRÇRAMA", cls: "border-violet-400/50 bg-violet-400/15 text-violet-300" },
+  rising: { label: "YÜKSELİŞ", cls: "border-amber-400/50 bg-amber-400/15 text-amber-300" },
+};
+function SourceBadges({ sources }: { sources?: string[] | null }) {
+  const list = (sources || []).filter((s) => typeof s === "string" && s);
+  if (!list.length) {
+    return <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${SOURCE_BADGE_META.velocity.cls}`}>RADAR</span>;
+  }
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {list.map((s) => {
+        const meta = SOURCE_BADGE_META[s] || { label: s.toUpperCase(), cls: "border-bunker-600 bg-bunker-800/50 text-bunker-muted" };
+        return (
+          <span key={s} className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${meta.cls}`}>
+            {meta.label}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 /* ---- Özet sekmesi ---- */
 function OverviewTab() {
   const [overview, setOverview] = useState<any>(null);
@@ -128,6 +156,28 @@ function OverviewTab() {
           <p className="mt-2 font-mono text-[10px] text-bunker-muted">
             Başarı, kapanmış M1 mumlarıyla ölçülen gerçek MFE ve hedef dokunuşuna dayanır; ufku dolmayan/ölçülemeyen kayıtlar BEKLIYOR sayılır.
           </p>
+          {(breakdown.by_source || breakdown.multi_source) && (
+            <div className="mt-3 border-t border-bunker-700/60 pt-3">
+              <p className="eyebrow text-sky-300">TESPİT KAYNAĞI KIRILIMI (BİRLEŞİK SİNYAL)</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-xs">
+                {Object.entries(breakdown.by_source || {}).map(([src, count]) => (
+                  <span key={src} className="flex items-center gap-1.5">
+                    <SourceBadges sources={[src]} />
+                    <span className="text-white">{String(count)}</span>
+                  </span>
+                ))}
+                {breakdown.multi_source && breakdown.multi_source.evaluated > 0 && (
+                  <span className="ml-2 rounded border border-sky-400/50 bg-sky-400/10 px-2 py-0.5 text-sky-300">
+                    ÇOK KAYNAKLI TEYİT: {breakdown.multi_source.success_count}/{breakdown.multi_source.evaluated} başarılı
+                    {breakdown.multi_source.success_rate != null ? ` (%${Number(breakdown.multi_source.success_rate).toFixed(1)})` : ""}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 font-mono text-[10px] text-bunker-muted">
+                Hangi tespit algoritması ne kadar yakaladı — birleşik bildirimde hemfikir algoritmalar birlikte görünür.
+              </p>
+            </div>
+          )}
         </section>
       )}
 
@@ -184,13 +234,14 @@ function OverviewTab() {
         ) : (
           <div className="mt-3 table-scroll">
             <table className="data-table">
-              <thead><tr><th>Zaman</th><th>Sembol</th><th>Mod</th><th>Hedef</th><th>Ölçülen MFE</th><th>Durum</th></tr></thead>
+              <thead><tr><th>Zaman</th><th>Sembol</th><th>Mod</th><th>Kaynak</th><th>Hedef</th><th>Ölçülen MFE</th><th>Durum</th></tr></thead>
               <tbody>
                 {notifications.map((n: any) => (
                   <tr key={`${n.id}-${n.symbol}-${n.detected_at}`}>
                     <td className="font-mono text-xs text-bunker-muted">{fmtDt(n.detected_at)}</td>
                     <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                     <td className="font-mono text-xs text-bunker-muted">{n.mode || "—"}</td>
+                    <td><SourceBadges sources={n.sources} /></td>
                     <td className={`font-mono text-xs ${n.target_pct ? "text-neon-green" : "text-bunker-muted"}`}>{n.target_pct ? `+%${Number(n.target_pct).toFixed(1)}` : "—"}</td>
                     <td className="font-mono text-xs text-white">{n.mfe_pct != null ? `%${Number(n.mfe_pct).toFixed(2)}` : "—"}</td>
                     <td>
@@ -1050,6 +1101,28 @@ function UserRadarTab() {
           <p className="mt-2 font-mono text-[10px] text-bunker-muted">
             Basari, kapannis M1 mumlariyla olculen gercek MFE ve hedef dokunusuna dayanir.
           </p>
+          {(breakdown.by_source || breakdown.multi_source) && (
+            <div className="mt-3 border-t border-bunker-700/60 pt-3">
+              <p className="eyebrow text-sky-300">TESPIT KAYNAGI KIRILIMI (BIRLESIK SINYAL)</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-xs">
+                {Object.entries(breakdown.by_source || {}).map(([src, count]) => (
+                  <span key={src} className="flex items-center gap-1.5">
+                    <SourceBadges sources={[src]} />
+                    <span className="text-white">{String(count)}</span>
+                  </span>
+                ))}
+                {breakdown.multi_source && breakdown.multi_source.evaluated > 0 && (
+                  <span className="ml-2 rounded border border-sky-400/50 bg-sky-400/10 px-2 py-0.5 text-sky-300">
+                    COK KAYNAKLI TEYIT: {breakdown.multi_source.success_count}/{breakdown.multi_source.evaluated} basarili
+                    {breakdown.multi_source.success_rate != null ? ` (%${Number(breakdown.multi_source.success_rate).toFixed(1)})` : ""}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 font-mono text-[10px] text-bunker-muted">
+                Bu bildirimleri hangi tespit algoritmalari yakaladi (radar hizi + MACD sicrama/erken sicrama birlesik skoru).
+              </p>
+            </div>
+          )}
         </section>
       )}
 
@@ -1083,6 +1156,7 @@ function UserRadarTab() {
                     <SortHeader label="Tarih" field="date" />
                     <SortHeader label="Saat" field="time" />
                     <SortHeader label="Sembol" field="symbol" />
+                    <th>Kaynak</th>
                     <SortHeader label="Anlik Fiyat" field="price" />
                     <SortHeader label="Hedef Fiyat" field="expected_price" />
                     <SortHeader label="Hedef %" field="target_pct" />
@@ -1115,6 +1189,7 @@ function UserRadarTab() {
                         <td className="font-mono text-xs text-bunker-muted">{dateStr}</td>
                         <td className="font-mono text-xs text-bunker-muted">{timeStr}</td>
                         <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
+                        <td><SourceBadges sources={n.sources} /></td>
                         <td className="font-mono text-xs text-white">{n.price != null ? Number(n.price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
                         <td className={`font-mono text-xs ${n.expected_price != null ? "text-neon-green" : "text-bunker-muted"}`}>{n.expected_price != null ? Number(n.expected_price).toLocaleString("tr-TR", { maximumFractionDigits: 6 }) : "—"}</td>
                         <td className={`font-mono text-xs ${tgtPct != null ? "text-neon-green" : "text-bunker-muted"}`}>{tgtPct != null ? `+%${tgtPct.toFixed(1)}` : "—"}</td>

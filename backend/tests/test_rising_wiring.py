@@ -228,9 +228,22 @@ class RisingScanTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RisingDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    """TESLİMAT (legacy yol) kilitleri.
+
+    NOT (2026-09-17): bu sınıf LEGACY teslimat yolunu (ayrı `rising_alert` WS
+    kanalı, `rising-{sym}` tag) kilitler. Birleşik tek-bildirim modu artık
+    VARSAYILAN (RADAR_UNIFIED_NOTIFY=true) olduğundan ayarlar mocked DEĞİL —
+    bu yolu deterministik kılmak için `_radar_unified_enabled` burada AÇIKÇA
+    kapatılır. Birleşik modun kilitleri `test_radar_unified_wiring.py`'dedir.
+    """
+
     def setUp(self):
         monitoring._deferred_push.clear()
         self.addCleanup(monitoring._deferred_push.clear)
+        unified_off = patch.object(monitoring, "_radar_unified_enabled",
+                                   AsyncMock(return_value=False))
+        unified_off.start()
+        self.addCleanup(unified_off.stop)
 
     def _notif(self, score=80.0, quiet=False):
         notif = monitoring._build_rising_notification(_candidate(score=score), price=10.0)

@@ -944,6 +944,12 @@ async def _maybe_fire_jump_alert(symbol: str, score: int, jump_min: int, setting
 
     alarms_enabled=false → hiçbir alarm üretilmez; push_enabled=false →
     yalnızca WS olayı (sayfa içi) yayınlanır, web push gönderilmez.
+
+    BİRLEŞİK SİNYAL (2026-09-17): motor aktifken bu fonksiyon KENDİ web
+    push'unu ATMAZ. Kanıt kaydı + sayfa-içi WS (`macd_monitor_alert`) aynen
+    çalışır (MACD MONITOR sayfası gözlem için sürer); bildirim üretimi
+    `monitoring.unified_fast_notify` hızlı yoluna devredilir — velocity+MACD
+    füzyonu TEK bildirimle gider, ayrı "sıçrama adayı" push'u YOK.
     """
     if not bool(settings.get("alerts_enabled", True)):
         return
@@ -969,6 +975,14 @@ async def _maybe_fire_jump_alert(symbol: str, score: int, jump_min: int, setting
         })
     except Exception as exc:
         logger.debug("macd_monitor alarm WS: %s", exc)
+    # BİRLEŞİK SİNYAL: tek bildirim hızlı yolu (kendi push'u yok).
+    if bool(getattr(config, "UNIFIED_SIGNALS_ENABLED", False)):
+        try:
+            from app.routers.monitoring import unified_fast_notify
+            await unified_fast_notify(symbol, "jump", float(score))
+        except Exception as exc:
+            logger.debug("unified fast (jump) %s: %s", symbol, exc)
+        return
     if not bool(settings.get("push_enabled", True)):
         return
     try:
@@ -1064,9 +1078,21 @@ async def _maybe_fire_early_alert(symbol: str, pre: dict, settings: dict):
         })
     except Exception as exc:
         logger.debug("macd_monitor erken alarm WS: %s", exc)
-    # Aşama 3 (paper-only): `dip` yalnızca kanıt katmanına + WS'ye yazılır.
-    # Kullanıcıya web-push gönderilmez — bu sinyal AKTİVE EDİLMEMİŞTİR
-    # (promotion kuralı: kanıt → replay → paper → ancak sonra aktivasyon).
+    # BİRLEŞİK SİNYAL AKTİVASYONU (2026-09-17): `dip` artık YALNIZ paper-only
+    # değil. Erken sıçrama öncüsü `monitoring.unified_fast_notify` hızlı
+    # yoluna beslenir; velocity+MACD füzyon skoru `UNIFIED_FAST_MIN_SCORE`
+    # üzerindeyse TEK birleşik bildirim olarak gönderilir. Bu, promotion
+    # kuralının (kanıt → replay → aktivasyon) son adımıdır: 24s/72s replay
+    # doğrulaması `combined_radar_replay` unified akışında ölçülür.
+    if bool(getattr(config, "UNIFIED_SIGNALS_ENABLED", False)):
+        try:
+            from app.routers.monitoring import unified_fast_notify
+            await unified_fast_notify(symbol, "early", 0.0)
+        except Exception as exc:
+            logger.debug("unified fast (early) %s: %s", symbol, exc)
+        return
+    # ESKİ DAVRANIŞ (motor kapalı): `dip` yalnızca kanıt katmanına + WS'ye
+    # yazılır; kullanıcıya web-push GÖNDERİLMEZ.
     _ = settings
 
 

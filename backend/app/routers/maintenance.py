@@ -669,7 +669,10 @@ async def _run_combined_radar_replay(options: dict) -> None:
         replay = _load_replay_module()
         hours = int(options.get("hours") or 24)
         symbols = [str(s).strip() for s in str(options.get("symbols") or "").split(",") if s.strip()] or None
-        max_signals = int(options.get("max_signals") or 400)
+        # 72 saatlik pencerede 400 sinyal tavanı akışları kırpardı (ölçüm
+        # eksik dönem kapsardı); pencereyle ölçeklenir, açık değer her zaman kazanır.
+        max_signals = int(options.get("max_signals")
+                          or (400 if hours <= 24 else 400 * max(1, hours // 24)))
         confluence_window = options.get("confluence_window")
         skip_fetch = bool(options.get("skip_fetch", False))
         # GEOMETRİ TARAMASI: buton panelinden açılabilir (varsayılan AÇIK — asıl
