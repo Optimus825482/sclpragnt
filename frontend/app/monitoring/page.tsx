@@ -39,7 +39,9 @@ type Candidate = {
   upside_rank?: number | null;
   target_pct: number;
   price: number;
-  atr_pct: number;
+  // BİRLEŞİK SİNYAL: füzyon-tek adaylar (unified_signals.enrich_candidates)
+  // radar taramasından geçmediği için ATR taşımaz — alan opsiyoneldir.
+  atr_pct?: number | null;
   mode: string;
   horizon_minutes: number;
   ml_target_pct: number | null;
@@ -1014,7 +1016,11 @@ export default function MonitoringPage() {
         return rb - ra;
       }
       if (sortBy === "atr") {
-        return b.atr_pct - a.atr_pct;
+        // ATR taşımayan (füzyon-tek) adaylar sona düşer — NaN karşılaştırması
+        // sıralamayı sessizce bozardı.
+        const aa = Number.isFinite(Number(a.atr_pct)) ? Number(a.atr_pct) : -1;
+        const ab = Number.isFinite(Number(b.atr_pct)) ? Number(b.atr_pct) : -1;
+        return ab - aa;
       }
       return 0;
     });
@@ -1527,6 +1533,9 @@ export default function MonitoringPage() {
             {filteredCandidates.map((c, i) => {
               const targetPct = Number(c.target_pct) > 0 ? Number(c.target_pct) : Number(c.ml_target_pct);
               const validTarget = Number.isFinite(targetPct) && targetPct > 0;
+              // Füzyon-tek adaylarda ATR yoktur → "—" (veri yok = nötr).
+              const atrPct = Number(c.atr_pct);
+              const hasAtr = Number.isFinite(atrPct);
               const mlActive = Number(c.ml_target_pct) > 0 && c.ml_hit_probability != null;
               // BİRLEŞİK SİNYAL: füzyon-tek adayın skoru BİRLEŞİK füzyon skorudur
               // (radar ham kapısını geçmedi ama MACD öncüsü güçlü). Kaynak rozeti
@@ -1569,7 +1578,7 @@ export default function MonitoringPage() {
                     </div>
                     <div className="hidden text-right sm:block">
                       <p className="font-mono text-[9px] text-bunker-muted">ATR%</p>
-                      <p className="font-mono text-xs font-bold text-white">{c.atr_pct.toFixed(2)}%</p>
+                      <p className={`font-mono text-xs font-bold ${hasAtr ? "text-white" : "text-bunker-muted"}`}>{hasAtr ? `${atrPct.toFixed(2)}%` : "—"}</p>
                     </div>
                     <div className="hidden text-right sm:block">
                       <StatusChip status={c.status} />
