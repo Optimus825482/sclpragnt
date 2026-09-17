@@ -1205,6 +1205,10 @@ function RadarReplayPanel() {
   const [job, setJob] = useState<any>({ status: "idle", progress: 0, completed: 0, total: 0, logs: [], result: null });
   const [open, setOpen] = useState(false);
   const [hours, setHours] = useState("24");
+  // OUT-OF-SAMPLE: pencereyi geçmişe kaydırır. Tek dönemde ızgaranın maksimumunu
+  // seçmek iyimser yanlıdır; aynı ızgara ikinci bir dönemde koşulup en iyi hücrenin
+  // DAYANIP DAYANMADIĞI ölçülür. 0 = kapat (şimdiye kadar).
+  const [offsetHours, setOffsetHours] = useState("0");
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
@@ -1228,7 +1232,8 @@ function RadarReplayPanel() {
       const res = await apiRequest(`${API_BASE}/api/combined-radar-replay/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hours: Number(hours) || 24 }),
+        body: JSON.stringify({ hours: Number(hours) || 24,
+                               offset_hours: Number(offsetHours) || 0 }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
@@ -1280,6 +1285,15 @@ function RadarReplayPanel() {
           <p className="text-xs text-bunker-muted mt-1">Birleşik radarın (Hız Avcısı + Yükseliş + Tespit) son 24 saatteki başarısını, geçmiş mumlarla B1-B4 merdivenini simüle ederek ölçer. Üretim davranışını <span className="font-mono">DEĞİŞTİRMEZ</span>.</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* OUT-OF-SAMPLE: pencereyi geçmişe kaydırır. "24 saat + 24 saat önce"
+              tamamen AYRI bir dönemi ölçer → tek dönemde seçilen en iyi TP/SL
+              hücresinin o dönemde DAYANIP DAYANMADIĞI görülür. */}
+          <label className="flex items-center gap-1.5"
+            title="Out-of-sample: pencereyi kaç saat geriye kaydır. 0 = şimdiye kadar. Örn. pencere=24 ve önce=24 → önceki gün (baz dönemle çakışmayan ayrı dönem).">
+            <span className="font-mono text-[10px] text-bunker-muted">ÖNCE</span>
+            <input type="number" min={0} max={720} value={offsetHours} onChange={(e) => setOffsetHours(e.target.value)}
+              className="w-16 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-amber-300/60 outline-none" />
+          </label>
           <input type="number" min={1} max={48} value={hours} onChange={(e) => setHours(e.target.value)}
             title="Geriye dönük pencere (saat)"
             className="w-20 bg-bunker-900 border border-bunker-700 rounded-lg px-2 py-1.5 font-mono text-sm text-white text-right focus:border-amber-300/60 outline-none" />
@@ -1289,6 +1303,13 @@ function RadarReplayPanel() {
           </button>
         </div>
       </div>
+      {Number(offsetHours) > 0 && (
+        <p className="mt-3 font-mono text-[11px] text-amber-300/80">
+          OUT-OF-SAMPLE: {hours} saatlik pencere, {offsetHours} saat öncesinde bitecek.
+          Aynı ızgara ayrı bir dönemde koşulur — baz dönemin en iyi hücresi burada da
+          pozitif kalıyorsa bulgu DAYANIYOR, tek hücrede kalıyorsa GÜRÜLTÜ.
+        </p>
+      )}
       {error && <p className="mt-3 font-mono text-xs text-neon-red">⚠ {error}</p>}
 
       {open && (

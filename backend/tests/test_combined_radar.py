@@ -783,6 +783,72 @@ class LadderParityTests(unittest.TestCase):
                          "kesişim CSV'ye yazılmamalı (combined'in kopyası)")
         self.assertIn("KESİŞİM GEOMETRİSİ", result["report_text"])
 
+    def test_sweep_region_separates_structural_edge_from_noise(self):
+        """Tek hücre maksimumu kanıt DEĞİL: pozitif BÖLGENİN şekli raporlanmalı.
+
+        192 hücrenin maksimumunu seçmek her zaman "pozitif bir şey" bulur. Asıl
+        soru pozitiflerin YAPISAL olup olmadığı: stop ekseninde bir tavana kadar
+        kümeleniyorsa ders "kaybedenleri kes" ve taşınabilir; tek hücreyse gürültü.
+        """
+        replay = self.replay
+        cells = [{"stream": "v", "target_pct": t, "sl_pct": sl, "gap_pct": 0.6,
+                  "n": 100, "avg_net_pct": 0.0}
+                 for t in (1.0, 2.0, 3.0) for sl in (0.5, 1.0, 3.0)]
+
+        # YAPISAL: dar stopların TAMAMI pozitif, geniş stop (3.0) negatif.
+        structural = [dict(c, avg_net_pct=(0.3 if c["sl_pct"] <= 1.0 else -0.5))
+                      for c in cells]
+        text = "\n".join(replay._sweep_region_lines(structural, "v"))
+        self.assertIn("6/9 hücre pozitif", text)
+        self.assertIn("YAPISAL", text)
+        self.assertNotIn("GÜRÜLTÜ", text)
+
+        # GÜRÜLTÜ: tek bir hücre pozitif → maksimum güvenilmez.
+        noise = [dict(c, avg_net_pct=(0.9 if (c["target_pct"] == 1.0
+                                              and c["sl_pct"] == 0.5) else -0.4))
+                 for c in cells]
+        ntext = "\n".join(replay._sweep_region_lines(noise, "v"))
+        self.assertIn("1/9 hücre pozitif", ntext)
+        self.assertIn("GÜRÜLTÜ", ntext)
+
+        # HİÇBİRİ: geometri çözüm değil.
+        none = [dict(c, avg_net_pct=-0.4) for c in cells]
+        self.assertIn("0/9 hücre pozitif",
+                      "\n".join(replay._sweep_region_lines(none, "v")))
+
+    def test_offset_hours_shifts_window_into_the_past(self):
+        """OUT-OF-SAMPLE: pencere geçmişe kaymalı ve rapor bunu AÇIKÇA yazmalı.
+
+        Pencere eskiden her zaman "şimdi"de bitiyordu → aynı ızgarayı BAŞKA bir
+        dönemde koşmak imkânsızdı, yani tek dönemlik maksimum doğrulanamıyordu.
+        """
+        import time
+        from unittest.mock import patch
+        replay = self.replay
+        before = time.time()
+
+        async def _empty(*_a, **_k):
+            return []
+
+        async def _cov():
+            return {}
+
+        with patch.object(replay.database, "list_velocity_candidates_since", _empty), \
+                patch.object(replay.database, "list_rising_alerts_since", _empty), \
+                patch.object(replay.database, "journal_coverage", _cov):
+            result = asyncio.run(replay.build_report(
+                hours=6, symbols=None, max_signals=10, confluence_window=None,
+                skip_fetch=True, out_path=None, log=lambda _m: None,
+                offset_hours=24))
+
+        period = result["period"]
+        self.assertEqual(period["offset_hours"], 24.0)
+        self.assertAlmostEqual(period["until"], before - 24 * 3600, delta=60)
+        self.assertAlmostEqual(period["since"], period["until"] - 6 * 3600, delta=60)
+        # "0 sinyal" dönüşünde de dönem taşınmalı (tanı erken dönüşte kaybolmasın).
+        self.assertIn("DÖNEM:", result["report_text"])
+        self.assertIn("OUT-OF-SAMPLE", result["report_text"])
+
     def test_non_empty_report_has_no_zero_alarm(self):
         """Uyarı yalnız gerçekten boş raporda çıkmalı (aksi hâlde gürültü olur)."""
         result = self._coverage_result(self.V_SPAN, self.V_SPAN, signals=107)
