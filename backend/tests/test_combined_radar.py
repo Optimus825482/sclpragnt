@@ -924,6 +924,73 @@ class LadderParityTests(unittest.TestCase):
         self.assertNotIn("KAPSAMA KISA", "\n".join(lines))
         self.assertTrue(base["oos"]["verdict"].startswith("KARAR:"))
 
+    def test_oos_validates_every_stream_the_report_calls_positive(self):
+        """OOS bloğu raporun 'aday' işaretlediği akışları da yargılamalı.
+
+        Gerçek koşumda yalnız velocity doğrulanıyordu; raporun tek POZİTİF bulgusu
+        kesişimdi (n=12, ort +0.719%) ve o hiç doğrulanmadan "aday" olarak
+        okunuyordu. Bir bulgu doğrulanmadan aday sayılmamalı.
+        """
+        replay = self.replay
+
+        def rows(stream, net, n=10):
+            out = []
+            for t in (2.0, 4.0):
+                for sl in (1.0, 3.0):
+                    out.append({"stream": stream, "target_pct": t, "sl_pct": sl,
+                                "gap_pct": 0.3, "n": n, "avg_net_pct": net,
+                                "median_net_pct": net, "total_net_pct": net * n,
+                                "win_rate": 60.0})
+            return out
+
+        base = {"report_text": "",
+                "streams": {"velocity_only": {"measured": 300},
+                            "combined": {"measured": 100},
+                            "confluence": {"measured": 12},
+                            "rising_only": {"measured": 200}},
+                "sweep": rows("velocity_only", 0.2, n=300) + rows("combined", 0.05, n=100)
+                         + rows("confluence", 0.7, n=12)}
+        oos = {"period": {"offset_hours": 24}, "window": {"hours": 24},
+               "streams": {"velocity_only": {"measured": 150},
+                           "combined": {"measured": 50},
+                           "confluence": {"measured": 6}},
+               "sweep": rows("velocity_only", -0.5, n=150) + rows("combined", -0.3, n=50)
+                        + rows("confluence", -0.9, n=6)}
+        text = "\n".join(replay.attach_oos_comparison(base, oos))
+        self.assertIn("velocity_only", text)
+        self.assertIn("confluence", text)
+        self.assertEqual(set(base["oos"]["streams"]),
+                         {"velocity_only", "combined", "confluence"})
+        # `rising_only` baz dönemde POZİTİF değil → doğrulama kapsamına alınmaz.
+        self.assertNotIn("rising_only", base["oos"]["streams"])
+        self.assertTrue(base["oos"]["streams"]["confluence"]["verdict"])
+
+    def test_oos_says_unverifiable_when_oos_has_no_samples_for_the_stream(self):
+        """OOS'ta kesişim sinyali YOKSA 'YAPILAMADI' demeli — sessizce atlamamalı.
+
+        Sessiz atlama "doğrulandı" izlenimi verirdi; oysa n=0 ile karşılaştırma
+        matematiksel olarak yapılamaz ve bulgu karar verisi değildir.
+        """
+        replay = self.replay
+        vel = {"stream": "velocity_only", "target_pct": 6.0, "sl_pct": 1.5,
+               "gap_pct": 0.3, "n": 345, "avg_net_pct": 0.117, "median_net_pct": 0.0,
+               "total_net_pct": 40.0, "win_rate": 35.9}
+        conf = {"stream": "confluence", "target_pct": 6.0, "sl_pct": 3.0,
+                "gap_pct": 0.3, "n": 12, "avg_net_pct": 0.719, "median_net_pct": -0.096,
+                "total_net_pct": 8.6, "win_rate": 50.0}
+        base = {"report_text": "", "sweep": [vel, conf],
+                "streams": {"velocity_only": {"measured": 345},
+                            "confluence": {"measured": 12}}}
+        oos = {"period": {}, "window": {"hours": 24},
+               "streams": {"velocity_only": {"measured": 193},
+                           "confluence": {"measured": 0}},
+               "sweep": [dict(vel, n=193, avg_net_pct=-0.505)]}
+        lines = replay.attach_oos_comparison(base, oos)
+        text = "\n".join(lines)
+        self.assertIn("YAPILAMADI", text)
+        self.assertIn("KARAR VERISI DEGIL", text)
+        self.assertEqual(base["oos"]["streams"]["confluence"]["oos_measured"], 0)
+
     def test_oos_verdict_does_not_invent_when_grid_missing(self):
         """Karşılaştırma yapılamıyorsa YAPILAMADI demeli, karar uydurmamalı."""
         replay = self.replay

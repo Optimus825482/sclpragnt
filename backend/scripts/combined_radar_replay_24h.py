@@ -475,7 +475,7 @@ def _oos_verdict(base: dict, oos: dict, stream: str = "velocity_only") -> list[s
     base_rows = [r for r in (base.get("sweep") or []) if r["stream"] == stream]
     oos_rows = [r for r in (oos.get("sweep") or []) if r["stream"] == stream]
     lines = ["", "=" * 88,
-             "OUT-OF-SAMPLE DOGRULAMA (kural onceden sabitlendi)".center(88),
+             f"OUT-OF-SAMPLE DOGRULAMA — {stream} (kural onceden sabitlendi)".center(88),
              "=" * 88]
     if not base_rows or not oos_rows:
         lines.append("  Tarama verisi yok (sweep kapali ya da donemlerden biri bos) "
@@ -533,15 +533,63 @@ def _oos_verdict(base: dict, oos: dict, stream: str = "velocity_only") -> list[s
     return lines
 
 
+def _oos_measured(result: dict, stream: str) -> int:
+    """Dönemde akışın ÖLÇÜLEN sinyal sayısı.
+
+    Öncelik `streams[*]["measured"]` (gerçek koşumda dolu); yoksa tarama
+    satırlarının `n`'i kullanılır — ki bu, `_oos_verdict`'ın "karşılaştırma
+    yapılabiliyor mu" kararını verdiği YERİN TA KENDİSİDİR. İkisini ayrı
+    kaynaklardan okumak (biri 0, diğeri dolu) çelişkili karar üretiyordu.
+    """
+    m = ((result.get("streams") or {}).get(stream) or {}).get("measured")
+    if m:
+        return int(m)
+    return max((int(r.get("n") or 0) for r in (result.get("sweep") or [])
+                if r.get("stream") == stream), default=0)
+
+
 def attach_oos_comparison(base: dict, oos: dict,
-                          stream: str = "velocity_only") -> list[str]:
-    """OOS karşılaştırmasını baz sonuca iliştir (rapora + `result["oos"]`'a)."""
-    lines = _oos_verdict(base, oos, stream)
-    verdict = next((ln.strip() for ln in lines if ln.strip().startswith("KARAR")), "")
-    base["oos"] = {"stream": stream, "period": oos.get("period"),
-                   "verdict": verdict, "lines": lines}
-    base["report_text"] = (base.get("report_text") or "") + "\n" + "\n".join(lines) + "\n"
-    return lines
+                          stream: str = "velocity_only",
+                          streams: list[str] | None = None) -> list[str]:
+    """OOS karşılaştırmasını baz sonuca iliştir (rapora + `result["oos"]`'a).
+
+    KAPSAM (2026-09-17): varsayılan artık YALNIZ `velocity_only` değil — raporun
+    POZİTİF diye işaretlediği akışlar da doğrulanır. Gerçek koşumda OOS bloğu
+    velocity'yi yargılarken raporun tek "aday" bulgusu KESİŞİM'di (n=12, ort
+    +0.719%) ve o HİÇ doğrulanmıyordu: aletin kendi kör noktası. Bir bulgu
+    doğrulanmadan "aday" olarak okunmamalı.
+    """
+    if streams is None:
+        # Kapsam VERİYE GÖRE değil, raporun İDDİALARINA göre sabitlenir: taban
+        # (velocity), birleşim (combined) ve kesişim (confluence). `rising_only`
+        # bir aday değil, girdi ayağıdır (hedef/MFE 3.45× ile zaten elenmiş).
+        present = {r.get("stream") for r in (base.get("sweep") or [])}
+        streams = [stream] + [s for s in ("combined", "confluence")
+                              if s in present and s != stream]
+    blocks: dict[str, dict] = {}
+    all_lines: list[str] = []
+    for name in streams:
+        if _oos_measured(oos, name) == 0:
+            # OOS'ta bu akıştan sinyal YOKSA karşılaştırma matematiksel olarak
+            # yapılamaz; sessizce atlamak "doğrulandı" izlenimi verirdi.
+            lines = ["", "=" * 88,
+                     f"OUT-OF-SAMPLE DOGRULAMA — {name} (kural onceden sabitlendi)".center(88),
+                     "=" * 88,
+                     f"  OOS doneminde bu akista OLCULEN sinyal YOK (n=0) "
+                     f"/ baz n={_oos_measured(base, name)}.",
+                     "  KARAR: YAPILAMADI -> OOS'ta ornek yok; bulgu KARAR VERISI DEGIL, "
+                     "daha uzun pencere gerekir."]
+        else:
+            lines = _oos_verdict(base, oos, name)
+        verdict = next((ln.strip() for ln in lines if ln.strip().startswith("KARAR")), "")
+        blocks[name] = {"stream": name, "period": oos.get("period"),
+                        "verdict": verdict, "lines": lines,
+                        "oos_measured": _oos_measured(oos, name)}
+        all_lines.extend(lines)
+    primary = blocks.get(stream) or next(iter(blocks.values()))
+    base["oos"] = {**primary, "streams": blocks}
+    base["report_text"] = (base.get("report_text") or "") + "\n" + "\n".join(all_lines) + "\n"
+    return all_lines
 
 
 def _resolve_horizon(signal: dict, cap_minutes: float) -> float:
