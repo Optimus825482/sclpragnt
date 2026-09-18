@@ -1,10 +1,14 @@
-import asyncio, ast, json, os, re, time
+import asyncio, ast, json, logging, os, re, time
 from urllib.error import HTTPError
 from urllib.request import Request
 from cryptography.fernet import Fernet
 from app import database
 from app.config import config
 from app.security import safe_provider_open, validate_provider_url, _validate_provider_url_sync
+
+# BOŞ-YANIT CEVRIMI (2026-09-18 düzeltmesi) bu modülde logger kullanır;
+# eskiden NameError ("name 'logger' is not defined") olarak ortaya çıktı.
+logger = logging.getLogger("scalper.llm_analysis")
 
 # Sentinel returned by _json_load_lenient when no recovery strategy works;
 # a real ``None`` payload is distinguishable from "undecodable".
