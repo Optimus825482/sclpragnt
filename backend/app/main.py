@@ -2156,10 +2156,23 @@ async def get_chat_last_response(session_id: str = "default"):
 
 BINANCE_API_KEY_SETTING = "binance_api_key_encrypted"
 BINANCE_SECRET_SETTING = "binance_api_secret_encrypted"
+# Gerçek satış panel anahtarı (SSH'siz, UI'dan aç/kapa) — Erkan kararı (2026-09-18):
+# env yoksa panel karar verir; env "1" ise her zaman açık, env "0"/diğer ise kapalı.
+BINANCE_REAL_SELL_SETTING = "binance_real_sell_enabled"
 
 
-def _real_sell_enabled():
-    return os.getenv("ENABLE_REAL_BINANCE_SELL", "0").strip().lower() in {"1", "true", "yes", "on"}
+async def _real_sell_state() -> tuple[bool, str]:
+    """Gerçek satış durumu + kaynağı: ("env"|"panel").
+
+    - ENABLE_REAL_BINANCE_SELL tanımlıysa ve "1" benzeriyse her zaman AÇIK.
+    - Tanımlıysa ve diğerine eşitse (0/diğer) KAPALI (açık geçersiz kılma).
+    - Hiç tanımlı değilse panel anahtarı (Ayarlar > Binance TR) karar verir.
+    """
+    env = os.getenv("ENABLE_REAL_BINANCE_SELL")
+    if env is not None:
+        return env.strip().lower() in {"1", "true", "yes", "on"}, "env"
+    raw = await database.get_llm_setting(BINANCE_REAL_SELL_SETTING, "0")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}, "panel"
 # Varlık -> (cache bitiş zamanı, {"avg_price": float, "quote": "TRY"|"USDT"})
 _binance_cost_cache: dict[str, tuple[float, dict]] = {}
 # Gün -> (cache bitiş zamanı, günün işlem listesi yanıtı)
@@ -2195,7 +2208,8 @@ async def get_binance_settings(request: Request):
     """Admin'in kayıtlı Binance API key bilgisi var mı döndür (key'in kendisi asla dönmez)."""
     _require_admin(request)
     enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
-    return {"configured": bool(enc_key), "sell_enabled": _real_sell_enabled()}
+    sell_ok, sell_source = await _real_sell_state()
+    return {"configured": bool(enc_key), "sell_enabled": sell_ok, "sell_source": sell_source}
 
 @app.post("/api/binance/settings")
 async def save_binance_settings(payload: dict, request: Request):
@@ -2213,16 +2227,23 @@ async def save_binance_settings(payload: dict, request: Request):
         BINANCE_SECRET_SETTING,
         llm_analysis.encrypt_key(api_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY"),
     )
+    # Gerçek satış panel anahtarı (isteğe bağlı gövde alanı) — Erkan kararı
+    # (2026-09-18): SSH'siz, Ayarlar'dan aç/kapa. env tanımlıysa env geçer.
+    if "real_sell_enabled" in payload:
+        val = bool(payload.get("real_sell_enabled"))
+        await database.set_llm_setting(BINANCE_REAL_SELL_SETTING, "1" if val else "0")
+    sell_ok, sell_source = await _real_sell_state()
     await log_user_action(
         admin.get("username"),
         admin.get("role"),
         "binance",
         "BINANCE_SETTINGS_SAVED",
         target="binance_tr",
-        details={"api_key_configured": True, "api_secret_configured": True, "real_sell_enabled": _real_sell_enabled()},
+        details={"api_key_configured": True, "api_secret_configured": True,
+                 "real_sell_enabled": sell_ok, "real_sell_source": sell_source},
         request=request,
     )
-    return {"ok": True, "configured": True}
+    return {"ok": True, "configured": True, "sell_enabled": sell_ok, "sell_source": sell_source}
 
 async def _decrypt_binance_creds(request) -> tuple[str, str]:
     """Şifreli Binance key/secret'ı çöz, yoksa hata fırlat."""
@@ -2417,8 +2438,11 @@ async def binance_sell(payload: dict, request: Request):
     {ASSET}_TRY, {ASSET}_USDT çiftlerinden mevcut olanıdır.
     """
     _require_admin(request)
-    if not _real_sell_enabled():
-        raise HTTPException(status_code=403, detail="Gerçek Binance satışı ENABLE_REAL_BINANCE_SELL=1 ile açık değil")
+    sell_ok, sell_source = await _real_sell_state()
+    if not sell_ok:
+        if sell_source == "panel":
+            raise HTTPException(status_code=403, detail="Gerçek satış kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla")
+        raise HTTPException(status_code=403, detail="Gerçek Binance satışı sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış (env override)")
     if str(payload.get("confirmation") or "").strip().upper() != "REAL_SELL":
         raise HTTPException(status_code=422, detail="REAL_SELL onayı gerekli")
     api_key, api_secret = await _decrypt_binance_creds(request)
@@ -2532,10 +2556,67 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
         results = await asyncio.gather(*tasks)
         for part in results:
             rows.extend(part)
+    # GÜNLÜK GERÇEKLEŞEN K/Z (FIFO) — Erkan kararı (2026-09-18): günün işlemleri
+    # tablosunda eşleşen ALIS->SATIS kar/zararı görünür; toplamı tablo üstündeki
+    # özet kutusunda. Her sembolde SATIS fill'leri gün içi ALIS lotlarıyla
+    # eşleştirilir; komisyon base-asset'tedir (örn. ONE) ve TRY değeri =
+    # komisyon × o bacağın fiyatı. Stoğu gün dışından gelen SATIS'ler
+    # eşleşmez (unmatched) — K/Z hücresi boş kalır.
+    wins = losses = unmatched = 0
+    daily_net = daily_gross = 0.0
+    by_symbol: dict[str, list[dict]] = {}
+    for f in rows:
+        by_symbol.setdefault(str(f.get("symbol") or ""), []).append(f)
+    for fills in by_symbol.values():
+        fills.sort(key=lambda f: (float(f.get("time") or 0), int(f.get("id") or 0)))
+        lots: list[dict] = []
+        for f in fills:
+            try:
+                qty = float(f.get("qty") or 0)
+                price = float(f.get("price") or 0)
+                comm = float(f.get("commission") or 0)
+            except (TypeError, ValueError):
+                continue
+            comm_try = comm * price  # base-asset komisyonunun TRY değeri
+            if f.get("isBuyer"):
+                lots.append({"price": price, "qty": qty, "comm_try": comm_try})
+                continue
+            remaining = qty
+            matched = 0.0
+            basis_cost = 0.0
+            basis_comm_try = 0.0
+            while remaining > 1e-12 and lots:
+                lot = lots[0]
+                take = min(lot["qty"], remaining)
+                basis_cost += lot["price"] * take
+                if lot["qty"] > 0:
+                    basis_comm_try += lot["comm_try"] * (take / lot["qty"])
+                lot["qty"] -= take
+                matched += take
+                remaining -= take
+                if lot["qty"] <= 1e-12:
+                    lots.pop(0)
+            if matched > 1e-12:
+                basis_vwap = basis_cost / matched
+                gross = (price - basis_vwap) * matched
+                net = gross - comm_try - basis_comm_try
+                f["basis_price"] = round(basis_vwap, 8)
+                f["realized_pnl_try"] = round(net, 2)
+                daily_net += net
+                daily_gross += gross
+                if net >= 0:
+                    wins += 1
+                else:
+                    losses += 1
+            else:
+                unmatched += 1  # stoğu gün dışından — gün içi eşleşme yok
     # En yeni işlemler en üstte (azalan: önce en son alım/satım).
     rows.sort(key=lambda t: (float(t.get("time") or 0), str(t.get("symbol") or "")), reverse=True)
     payload = {"trades": rows, "count": len(rows),
-               "symbols_scanned": len(tasks), "assets": len(assets)}
+               "symbols_scanned": len(tasks), "assets": len(assets),
+               "daily": {"realized_pnl_try": round(daily_net, 2),
+                         "gross_pnl_try": round(daily_gross, 2),
+                         "wins": wins, "losses": losses, "unmatched": unmatched}}
     _binance_day_trades_cache[date] = (now_ts + 60.0, payload)
     return payload
 

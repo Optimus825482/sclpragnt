@@ -28,7 +28,19 @@ type Trade = {
   commission: string;
   time: number;
   isBuyer: boolean;
+  basis_price?: number;
+  realized_pnl_try?: number;
 };
+
+type DailyPnl = {
+  realized_pnl_try: number;
+  gross_pnl_try: number;
+  wins: number;
+  losses: number;
+  unmatched: number;
+};
+
+const TR_PAGE_SIZE = 25;
 
 const fmtPrice = (v: string | number | null | undefined, d = 2) => {
   const n = typeof v === "string" ? parseFloat(v) : Number(v ?? 0);
@@ -60,6 +72,7 @@ export default function BinanceTrPage() {
 function BinanceTrPageInner() {
   const [configured, setConfigured] = useState(false);
   const [sellEnabled, setSellEnabled] = useState(false);
+  const [sellToggle, setSellToggle] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
@@ -82,6 +95,8 @@ function BinanceTrPageInner() {
 
   const [tradeDay, setTradeDay] = useState(() => localDateInput());
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [daily, setDaily] = useState<DailyPnl | null>(null);
+  const [trPage, setTrPage] = useState(1);
   const [trLoading, setTrLoading] = useState(false);
   const [trMeta, setTrMeta] = useState<{ count: number; symbols_scanned: number } | null>(null);
 
@@ -92,6 +107,7 @@ function BinanceTrPageInner() {
         const d = await r.json();
         setConfigured(d.configured);
         setSellEnabled(Boolean(d.sell_enabled));
+        setSellToggle(Boolean(d.sell_enabled));
       }
     } catch { /* */ }
   }, []);
@@ -143,6 +159,7 @@ function BinanceTrPageInner() {
       if (r.ok) {
         const d = await r.json();
         setTrades(d.trades || []);
+        setDaily(d.daily || null);
         setTrMeta({ count: d.count || 0, symbols_scanned: d.symbols_scanned || 0 });
       }
     } catch { /* */ }
@@ -150,6 +167,7 @@ function BinanceTrPageInner() {
   }, [tradeDay]);
 
   useEffect(() => { if (configured && tradeDay) loadTrades(); }, [configured, tradeDay, loadTrades]);
+  useEffect(() => { setTrPage(1); }, [tradeDay]);
 
   const saveKeys = async () => {
     if (!apiKey.trim() || !apiSecret.trim()) return;
@@ -159,7 +177,7 @@ function BinanceTrPageInner() {
       const r = await apiRequest(API_BASE + "/api/binance/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ api_key: apiKey.trim(), api_secret: apiSecret.trim() }),
+        body: JSON.stringify({ api_key: apiKey.trim(), api_secret: apiSecret.trim(), real_sell_enabled: sellToggle }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -170,6 +188,7 @@ function BinanceTrPageInner() {
       setApiSecret("");
       setConfigured(true);
       setSettingsOpen(false);
+      check();
       loadAcct();
       loadOrd();
     } catch (e) {
@@ -179,7 +198,34 @@ function BinanceTrPageInner() {
     }
   };
 
+  const saveSellSetting = async () => {
+    setSaving(true);
+    setKeyError("");
+    try {
+      const r = await apiRequest(API_BASE + "/api/binance/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ real_sell_enabled: sellToggle }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        throw new Error(d.detail || "Kaydedilemedi");
+      }
+      await check();
+      setSettingsOpen(false);
+    } catch (e) {
+      setKeyError(e instanceof Error ? e.message : "Kayit hatasi");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const nonZero = balances.filter((b) => parseFloat(b.free) > 0 || parseFloat(b.locked) > 0);
+
+  // Günün işlemleri sayfalama (25/sayfa)
+  const trTotalPages = Math.max(1, Math.ceil(trades.length / TR_PAGE_SIZE));
+  const trPageSafe = Math.min(trPage, trTotalPages);
+  const trPageRows = trades.slice((trPageSafe - 1) * TR_PAGE_SIZE, trPageSafe * TR_PAGE_SIZE);
 
   // 50 TL altını gizle (fiyatı çözülemeyenler gizlenmez — değeri bilinmiyor)
   const visibleHoldings = useMemo(() => {
@@ -230,7 +276,7 @@ function BinanceTrPageInner() {
         <div>
           <p className="eyebrow text-neon-green">BINANCE TR</p>
           <h1 className="font-mono text-2xl font-bold text-white">Canli Hesap</h1>
-          <p className="mt-1 text-sm text-bunker-muted">Gerçek Binance TR bakiyesi, TRY degerleri ve islem gecmisi — gerçek satış yalnızca {sellEnabled ? "bu ekrandan onayla" : "sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile açıkken"}</p>
+          <p className="mt-1 text-sm text-bunker-muted">Gerçek Binance TR bakiyesi, TRY degerleri ve islem gecmisi — gerçek satış {sellEnabled ? "açık: onay adımıyla SAT butonu piyasa emri gönderir" : "kapalı: Ayarlar > 'GERÇEK SATIŞ' anahtarından açılır"}</p>
         </div>
         <div className="flex items-center gap-2">
           {configured && !acctLoading && (
@@ -241,7 +287,7 @@ function BinanceTrPageInner() {
               {sellEnabled ? "GERÇEK SATIŞ AÇIK" : "GERÇEK SATIŞ KAPALI"}
             </span>
           )}
-          <button type="button" onClick={() => setSettingsOpen(true)} className="ui-button ui-button-secondary">AYARLAR</button>
+          <button type="button" onClick={() => { setSellToggle(sellEnabled); setKeyError(""); setSettingsOpen(true); }} className="ui-button ui-button-secondary">AYARLAR</button>
         </div>
       </div>
 
@@ -254,6 +300,17 @@ function BinanceTrPageInner() {
             </div>
             <p className="text-xs text-bunker-muted mb-4">Fernet sifreli kaydedilir. Satis emirleri yalnizca {sellEnabled ? "bu ekrandaki onay adimindan sonra" : "sunucuda ENABLE_REAL_BINANCE_SELL=1 etkinse"} gonderilir.</p>
             <div className="space-y-3">
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-yellow-300/30 bg-yellow-300/5 px-3 py-2.5">
+                <input type="checkbox" checked={sellToggle} onChange={(e) => setSellToggle(e.target.checked)}
+                  disabled={saving}
+                  className="mt-0.5 h-3.5 w-3.5 accent-[color:var(--yellow-300,#facc15)]" />
+                <span>
+                  <span className="eyebrow block text-yellow-300">GERÇEK SATIŞ — PANEL ANAHTARI</span>
+                  <span className="mt-0.5 block text-[11px] leading-snug text-bunker-muted">
+                    Gerçek emirler gönderilir ve iptal edilemez. SAT butonu ile hesaptaki varlıklar piyasa fiyatından satılır. SSH'siz aç/kapa: env yoksa panel karar verir, env "1" ise her zaman açık, env "0" ise kapalı.
+                  </span>
+                </span>
+              </label>
               <label>
                 <span className="eyebrow">API KEY</span>
                 <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Binance TR API Key" className="input mt-1 w-full font-mono text-xs" />
@@ -265,8 +322,12 @@ function BinanceTrPageInner() {
               {keyError && <p className="text-xs text-neon-red">{keyError}</p>}
               <div className="flex justify-end gap-2 pt-1">
                 <button type="button" onClick={() => setSettingsOpen(false)} className="ui-button ui-button-secondary">IPTAL</button>
+                <button type="button" onClick={saveSellSetting} disabled={saving}
+                  className="ui-button ui-button-secondary disabled:opacity-40">
+                  {saving ? "KAYDEDILIYOR..." : "SATIŞ ANAHTARINI UYGULA"}
+                </button>
                 <button type="button" onClick={saveKeys} disabled={saving || !apiKey.trim() || !apiSecret.trim()} className="ui-button ui-button-primary">
-                  {saving ? "KAYDEDILIYOR..." : "KAYDET"}
+                  {saving ? "KAYDEDILIYOR..." : "API ANAHTARLARINI KAYDET"}
                 </button>
               </div>
             </div>
@@ -416,31 +477,91 @@ function BinanceTrPageInner() {
                 </span>
               )}
             </div>
+            {/* Günlük kar/zarar özeti — tablonun üstünde (Erkan kararı, 18.09) */}
+            {daily && trades.length > 0 && !trLoading && (
+              <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <div className="card">
+                  <p className="eyebrow">GÜNLÜK NET K/Z</p>
+                  <p className={`mt-1 font-mono text-lg font-bold ${daily.realized_pnl_try >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                    {daily.realized_pnl_try >= 0 ? "+" : "−"}₺{fmtPrice(Math.abs(daily.realized_pnl_try))}
+                  </p>
+                </div>
+                <div className="card">
+                  <p className="eyebrow">BRÜT K/Z</p>
+                  <p className={`mt-1 font-mono text-lg font-bold ${daily.gross_pnl_try >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                    {daily.gross_pnl_try >= 0 ? "+" : "−"}₺{fmtPrice(Math.abs(daily.gross_pnl_try))}
+                  </p>
+                </div>
+                <div className="card">
+                  <p className="eyebrow">KAPANIŞ</p>
+                  <p className="mt-1 font-mono text-lg font-bold text-white">
+                    <span className="text-neon-green">{daily.wins} kazanç</span>
+                    {" · "}
+                    <span className="text-neon-red">{daily.losses} kayıp</span>
+                  </p>
+                </div>
+                <div className="card">
+                  <p className="eyebrow">EŞLEŞMEMİŞ</p>
+                  <p className="mt-1 font-mono text-lg font-bold text-bunker-muted">
+                    {daily.unmatched} satış
+                  </p>
+                  <p className="text-[10px] text-bunker-muted">stoğu gün dışından — K/Z gün içi eşleşme olmadan hesaplanmaz</p>
+                </div>
+              </div>
+            )}
             {trades.length === 0 && !trLoading ? (
               <div className="mt-3 rounded-lg border border-dashed border-bunker-700 bg-bunker-900/40 px-4 py-6 text-center text-sm text-bunker-muted">
                 Bu günde işlem yok.
               </div>
             ) : (
-              <div className="table-scroll mt-3">
-                <table className="data-table">
-                  <thead><tr><th>Zaman</th><th>Sembol</th><th>Yön</th><th>Fiyat</th><th>Miktar</th><th>Toplam</th><th>Komisyon</th></tr></thead>
-                  <tbody>
-                    {trades.map((t) => (
-                      <tr key={`${t.id}-${t.symbol}`}>
-                        <td className="font-mono text-xs text-bunker-muted">{fmtTime(t.time)}</td>
-                        <td><span className="font-mono font-bold text-white">{t.symbol}</span></td>
-                        <td className={"font-mono text-xs font-bold " + (t.isBuyer ? "text-neon-green" : "text-neon-red")}>
-                          {t.isBuyer ? "ALIS" : "SATIS"}
-                        </td>
-                        <td className="font-mono text-xs">{fmtPrice(t.price, Number(t.price) < 1 ? 6 : 2)}</td>
-                        <td className="font-mono text-xs">{fmtPrice(t.qty, 6)}</td>
-                        <td className="font-mono text-xs">{fmtPrice(t.quoteQty, Number(t.quoteQty) < 1 ? 6 : 2)}</td>
-                        <td className="font-mono text-xs text-bunker-muted">{fmtPrice(t.commission, 6)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <>
+                <div className="table-scroll mt-3">
+                  <table className="data-table">
+                    <thead><tr><th>Zaman</th><th>Sembol</th><th>Yön</th><th>Alış (Basis)</th><th>Fiyat</th><th>Miktar</th><th>Toplam</th><th>K/Z</th><th>Komisyon</th></tr></thead>
+                    <tbody>
+                      {trPageRows.map((t) => {
+                        const pnl = t.realized_pnl_try;
+                        const pnlCls = pnl == null ? "text-bunker-muted" : pnl >= 0 ? "text-neon-green" : "text-neon-red";
+                        return (
+                          <tr key={`${t.id}-${t.symbol}`}>
+                            <td className="font-mono text-xs text-bunker-muted">{fmtTime(t.time)}</td>
+                            <td><span className="font-mono font-bold text-white">{t.symbol}</span></td>
+                            <td className={"font-mono text-xs font-bold " + (t.isBuyer ? "text-neon-green" : "text-neon-red")}>
+                              {t.isBuyer ? "ALIS" : "SATIS"}
+                            </td>
+                            <td className="font-mono text-xs text-bunker-muted">
+                              {pnl != null && t.basis_price != null ? fmtPrice(t.basis_price, t.basis_price < 1 ? 6 : 2) : "—"}
+                            </td>
+                            <td className="font-mono text-xs">{fmtPrice(t.price, Number(t.price) < 1 ? 6 : 2)}</td>
+                            <td className="font-mono text-xs">{fmtPrice(t.qty, 6)}</td>
+                            <td className="font-mono text-xs">{fmtPrice(t.quoteQty, Number(t.quoteQty) < 1 ? 6 : 2)}</td>
+                            <td className={`font-mono text-xs font-bold ${pnlCls}`}>
+                              {pnl == null ? "—" : `${pnl >= 0 ? "+" : "−"}₺${fmtPrice(Math.abs(pnl))}`}
+                            </td>
+                            <td className="font-mono text-xs text-bunker-muted">{fmtPrice(t.commission, 6)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {/* Sayfalama: 25/sayfa (Erkan kararı, 18.09) */}
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-mono text-[10px] text-bunker-muted">
+                    Sayfa {trPageSafe} / {trTotalPages} · {trades.length} işlem · sayfada {trPageRows.length} adet
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button type="button" onClick={() => setTrPage(1)} disabled={trPageSafe <= 1}
+                      className="rounded border border-bunker-600 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40">« Ilk</button>
+                    <button type="button" onClick={() => setTrPage(trPageSafe - 1)} disabled={trPageSafe <= 1}
+                      className="rounded border border-bunker-600 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40">‹ Onceki</button>
+                    <button type="button" onClick={() => setTrPage(trPageSafe + 1)} disabled={trPageSafe >= trTotalPages}
+                      className="rounded border border-bunker-600 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40">Sonraki ›</button>
+                    <button type="button" onClick={() => setTrPage(trTotalPages)} disabled={trPageSafe >= trTotalPages}
+                      className="rounded border border-bunker-600 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40">Son »</button>
+                  </div>
+                </div>
+              </>
             )}
           </section>
         </>
