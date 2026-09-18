@@ -589,11 +589,34 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         else:
             # Loop break olmadan bütünce round'ı doldurdu — provider hatası
             raise RuntimeError(f"LLM araç döngüsü {TOOL_LOOP_MAX_ROUNDS} round'da kesildi (olası provider hatası)")
-        data = response_data(result)
-        if isinstance(data, str): return {"enabled": True, "status": "ok", "text": data, "tool_loop": {**tool_stats, "estimated_tokens": _estimate_tokens(conversation)}}
-        choices = data.get("choices", []) if isinstance(data, dict) else []
-        text = _message_text(choices[0].get("message") if choices else None) or (data.get("output_text") if isinstance(data, dict) else None)
-        if not text: raise RuntimeError("Provider chat yanıtında metin bulunamadı")
+        # BOŞ İÇERİK DÜZELTMESİ (2026-09-18, kullanıcı raporu: "AI ▶ Provider
+        # chat yanıtında metin bulunamadı" aralıklı geliyordu): GLM tipi
+        # reasoning modeller ara zamanlarda asistan mesajını content="" ile
+        # döndürüp metni reasoning_payload'a sıkıştırabiliyor. Eskiden bu
+        # turda RawError atılıyordu; şimdi (1) içerik düzeyinde 1 yeniden
+        # deneme, (2) son çare reasoning akışını yanıt olarak kullan.
+        choices: list = []
+        text = None
+        for content_attempt in (1, 2):
+            data = response_data(result)
+            if isinstance(data, str):
+                return {"enabled": True, "status": "ok", "text": data, "tool_loop": {**tool_stats, "estimated_tokens": _estimate_tokens(conversation)}}
+            choices = data.get("choices", []) if isinstance(data, dict) else []
+            final_message = choices[0].get("message") if choices else None
+            text = _message_text(final_message) or (data.get("output_text") if isinstance(data, dict) else None)
+            if text:
+                break
+            if content_attempt == 1:
+                logger.warning("sağlayıcı asistan içeriği boş döndürdü (round=%s, reasoning=%s) — içerik düzeyinde 1 yeniden deneme",
+                               tool_round, "var" if str((final_message or {}).get("reasoning_content") or "").strip() else "yok")
+                result = await call_with_retry()
+        if not text:
+            reasoning_text = str((choices[0].get("message") or {}).get("reasoning_content") or "").strip() if choices else ""
+            if reasoning_text:
+                text = reasoning_text
+                logger.warning("son çare: reasoning akışı yanıt olarak iletildi (%d karakter)", len(reasoning_text))
+            else:
+                raise RuntimeError("Sağlayıcı yanıtı 2 denemede de boş döndü — metin ve reasoning içeriği yok")
         tool_stats["estimated_tokens"] = _estimate_tokens(conversation)
         return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"],
                 "generated_at": time.time(), "tool_loop": tool_stats}
