@@ -2808,6 +2808,16 @@ async def binance_set_sl_tp(payload: dict, request: Request):
     min_qty = float((filters or {}).get("min_qty") or 0)
     tick = float((filters or {}).get("tick_size") or 0)
 
+    # Miktar step_size'a göre küçüğe yuvarlanmalı (ör. F_TRY stepSize=1 → 64972.395 → 64972)
+    if step and step > 0:
+        qty = math.floor(qty / step) * step
+        qty = round(qty, 10)  # kayan nokta hatalarını temizle
+
+    if qty <= 0:
+        raise HTTPException(status_code=422, detail="Miktar step_size'a yuvarlandıktan sonra 0 oldu")
+    if min_qty and qty < min_qty:
+        raise HTTPException(status_code=422, detail=f"Miktar minimum lot büyüklüğünden ({min_qty}) küçük")
+
     tp_price = float(payload.get("tp_price") or 0)
     sl_price = float(payload.get("sl_price") or 0)
     sl_limit_price = float(payload.get("sl_limit_price") or 0) if payload.get("sl_limit_price") else None

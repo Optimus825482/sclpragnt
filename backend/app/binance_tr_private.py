@@ -353,10 +353,10 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
 
     params = {
         "symbol": symbol_underscore,
-        "side": "SELL",
+        "side": 1,                       # doküman: 0=BUY, 1=SELL
         "quantity": qty_str,
-        "price": price_str,
-        "stopPrice": stop_price_str,
+        "price": price_str,              # Take-Profit limit fiyatı
+        "stopPrice": stop_price_str,     # SL tetik fiyatı
         "stopLimitPrice": stop_limit_price_str,
         "stopLimitTimeInForce": "GTC",
     }
@@ -395,8 +395,8 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
 
     params = {
         "symbol": symbol_underscore,
-        "side": "SELL",
-        "type": "STOP_LOSS_LIMIT",
+        "side": 1,                  # doküman: 0=BUY, 1=SELL
+        "type": 4,                  # doküman: 4=STOP_LOSS_LIMIT
         "quantity": qty_str,
         "price": stop_limit_price_str,
         "stopPrice": stop_price_str,
@@ -429,8 +429,8 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
 
     params = {
         "symbol": symbol_underscore,
-        "side": "SELL",
-        "type": "LIMIT",
+        "side": 1,           # doküman: 0=BUY, 1=SELL
+        "type": 1,           # doküman: 1=LIMIT (Take-Profit için)
         "quantity": qty_str,
         "price": price_str,
         "timeInForce": "GTC",
