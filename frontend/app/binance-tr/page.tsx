@@ -107,6 +107,7 @@ function BinanceTrPageInner() {
   const [sellQty, setSellQty] = useState("");
   const [sellBusy, setSellBusy] = useState(false);
   const [sellMsg, setSellMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [sellDone, setSellDone] = useState<{ order: string; asset: string; qty: string; price: string; total: string } | null>(null);
 
   // ---- ALIM YAP dialogu (piyasa-fiyatından alım, Binance TR stili) ----
   const [buyOpen, setBuyOpen] = useState(false);
@@ -134,6 +135,12 @@ function BinanceTrPageInner() {
     // oldugu icin eslesme gosterilen etiket uzerinden yapilir.
     return pairs.filter((p) => (p + "TRY").includes(q)).slice(0, 8);
   }, [buyInput, pairs]);
+
+  const sellQtyNum = useMemo(() => {
+    if (!sellFor) return 0;
+    const n = parseFloat(sellQty.replace(",", "."));
+    return Number.isFinite(n) ? Math.min(Math.max(n, 0), sellFor.free) : 0;
+  }, [sellQty, sellFor]);
 
   const [tradeDay, setTradeDay] = useState(() => localDateInput());
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -319,6 +326,8 @@ function BinanceTrPageInner() {
     return mergedHoldings.filter((h) => h.value_try == null || h.value_try >= 50);
   }, [mergedHoldings, hideSmall]);
 
+  const totalValueTry = useMemo(() => mergedHoldings.reduce((sum, h) => sum + (h.value_try || 0), 0), [mergedHoldings]);
+
   // Alım dialogu fiyatı: AYNI WS akışından (POST /watch katkısı); WS gecikirse
   // son polling fiyatına düşür.
   const buyPrice = buyAsset
@@ -329,6 +338,7 @@ function BinanceTrPageInner() {
     setSellFor(h);
     setSellQty(String(h.free));
     setSellMsg(null);
+    setSellDone(null);
   };
 
   const confirmSell = async () => {
@@ -352,7 +362,15 @@ function BinanceTrPageInner() {
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.ok) throw new Error(d.detail || `Satis emri gonderilemedi (HTTP ${r.status})`);
-      setSellMsg({ ok: true, text: `Satis emri gonderildi (emir no: ${d.order_id ?? "—"}).` });
+      const donePrice = sellFor.price_try ?? 0;
+      setSellDone({
+        order: d.order_id ?? "—",
+        asset: sellFor.asset,
+        qty: fmtPrice(qty, 6),
+        price: donePrice ? fmtPrice(donePrice, donePrice < 1 ? 6 : 2) : "—",
+        total: donePrice ? fmtPrice(qty * donePrice) : "—",
+      });
+      setSellMsg(null);
       loadAcct();
       loadOrd();
     } catch (e) {
@@ -693,6 +711,11 @@ function BinanceTrPageInner() {
                 </table>
               </div>
             )}
+            {/* Toplam TRY değeri — canlı fiyatlarla dinamik */}
+            <div className="mt-4 flex items-center justify-between rounded-lg border border-bunker-700 bg-bunker-900/40 px-4 py-3">
+              <span className="eyebrow">TOPLAM TRY DEĞERİ (TÜM VARLIKLAR)</span>
+              <span className="font-mono text-lg font-bold text-neon-green">₺{fmtPrice(totalValueTry)}</span>
+            </div>
           </section>
 
           {/* ---- Satış onay modalı ---- */}
@@ -703,33 +726,60 @@ function BinanceTrPageInner() {
                   <h2 className="font-mono text-lg font-bold text-white">
                     SAT: <span className="text-neon-red">{sellFor.asset}</span>
                   </h2>
-                  <button type="button" onClick={() => { setSellFor(null); setSellMsg(null); }} className="text-bunker-muted hover:text-white">X</button>
+                  <button type="button" onClick={() => { setSellFor(null); setSellMsg(null); setSellDone(null); }} className="text-bunker-muted hover:text-white">X</button>
                 </div>
-                <div className="mb-4 space-y-1 font-mono text-xs text-bunker-muted">
-                  <p>Anlık piyasa fiyatı: <span className="text-white">{sellFor.price_try != null ? `₺${fmtPrice(sellFor.price_try, sellFor.price_try < 1 ? 6 : 2)}` : "—"}</span></p>
-                  <p>Boşta bakiye: <span className="text-white">{fmtPrice(sellFor.free, 6)} {sellFor.asset}</span>{sellFor.locked > 0 ? ` · kilitli ${fmtPrice(sellFor.locked, 6)}` : ""}</p>
-                  <p>Tahmini tutar: <span className="text-white">
-                    ₺{fmtPrice((parseFloat(sellQty.replace(",", ".")) || 0) * (sellFor.price_try ?? 0))}
-                  </span></p>
-                </div>
-                <label>
-                  <span className="eyebrow">SATILACAK MİKTAR ({sellFor.asset})</span>
-                  <input value={sellQty} onChange={(e) => setSellQty(e.target.value)} inputMode="decimal"
-                    className="input mt-1 w-full font-mono text-sm" />
-                </label>
-                {sellMsg && (
-                  <p className={`mt-3 text-xs ${sellMsg.ok ? "text-neon-green" : "text-neon-red"}`}>{sellMsg.text}</p>
+                {sellDone ? (
+                  <div className="space-y-3">
+                    <div className="rounded-lg border border-neon-green/40 bg-neon-green/10 px-4 py-3">
+                      <p className="eyebrow text-neon-green">SATIŞ TAMAMLANDI</p>
+                      <p className="mt-1 font-mono text-sm text-white">
+                        {sellDone.asset}: şu fiyattan satıldı — ₺{sellDone.price} / birim · {sellDone.qty} {sellDone.asset} (toplam ₺{sellDone.total})
+                      </p>
+                      <p className="mt-0.5 font-mono text-[11px] text-bunker-muted">Emir no: {sellDone.order}</p>
+                    </div>
+                    <p className="text-[11px] text-bunker-muted">Bakiye ve açık pozisyonlar sayfa refresh olmadan yenilendi.</p>
+                    <div className="flex justify-end">
+                      <button type="button" onClick={() => { setSellFor(null); setSellDone(null); setSellMsg(null); }} className="ui-button ui-button-primary">TAMAM</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="mb-4 space-y-1 font-mono text-xs text-bunker-muted">
+                      <p>Anlık piyasa fiyatı: <span className="text-white">{sellFor.price_try != null ? `₺${fmtPrice(sellFor.price_try, sellFor.price_try < 1 ? 6 : 2)}` : "—"}</span></p>
+                      <p>Boşta bakiye: <span className="text-white">{fmtPrice(sellFor.free, 6)} {sellFor.asset}</span>{sellFor.locked > 0 ? ` · kilitli ${fmtPrice(sellFor.locked, 6)}` : ""}</p>
+                      <p>Tahmini tutar: <span className="text-white">
+                        ₺{fmtPrice(sellQtyNum * (sellFor.price_try ?? 0))}
+                      </span></p>
+                    </div>
+                    <label>
+                      <span className="eyebrow">SATILACAK MİKTAR ({sellFor.asset})</span>
+                      <input value={sellQty} onChange={(e) => setSellQty(e.target.value)} inputMode="decimal"
+                        className="input mt-1 w-full font-mono text-sm" />
+                      <input type="range" min={0} max={sellFor.free}
+                        step={Math.max(0.000001, Number((sellFor.free / 100).toFixed(6)))}
+                        value={sellQtyNum}
+                        onChange={(e) => setSellQty(e.target.value)}
+                        className="mt-2 w-full accent-[color:var(--neon-red,#ef4444)]" />
+                      <div className="flex justify-between font-mono text-[9px] text-bunker-muted">
+                        <span>0</span>
+                        <span>{fmtPrice(sellFor.free, 6)} {sellFor.asset}</span>
+                      </div>
+                    </label>
+                    {sellMsg && (
+                      <p className={`mt-3 text-xs ${sellMsg.ok ? "text-neon-green" : "text-neon-red"}`}>{sellMsg.text}</p>
+                    )}
+                    <p className="mt-3 font-mono text-[10px] text-yellow-300/80">
+                      Dikkat: GERÇEK piyasa emri gönderilir ve iptal edilemez. Emir MARKET tipinde, sembol {sellFor.asset}_TRY yoksa {sellFor.asset}_USDT üzerinde açılır. Sunucu tarafında gerçek satış {sellEnabled ? "AÇIK" : "KAPALI"}.
+                    </p>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button type="button" onClick={() => { setSellFor(null); setSellMsg(null); }} className="ui-button ui-button-secondary">IPTAL</button>
+                      <button type="button" onClick={confirmSell} disabled={sellBusy || !sellQty.trim()}
+                        className="rounded border border-neon-red/60 bg-neon-red/20 px-4 py-2 font-mono text-xs font-bold text-neon-red transition-colors hover:bg-neon-red/30 disabled:cursor-not-allowed disabled:opacity-40">
+                        {sellBusy ? "GONDERILIYOR..." : "ONAYLA — SAT"}
+                      </button>
+                    </div>
+                  </div>
                 )}
-                <p className="mt-3 font-mono text-[10px] text-yellow-300/80">
-                  Dikkat: GERÇEK piyasa emri gönderilir ve iptal edilemez. Emir MARKET tipinde, sembol {sellFor.asset}_TRY yoksa {sellFor.asset}_USDT üzerinde açılır. Sunucu tarafında gerçek satış {sellEnabled ? "AÇIK" : "KAPALI"}.
-                </p>
-                <div className="flex justify-end gap-2 pt-1">
-                  <button type="button" onClick={() => { setSellFor(null); setSellMsg(null); }} className="ui-button ui-button-secondary">IPTAL</button>
-                  <button type="button" onClick={confirmSell} disabled={sellBusy || !sellQty.trim()}
-                    className="rounded border border-neon-red/60 bg-neon-red/20 px-4 py-2 font-mono text-xs font-bold text-neon-red transition-colors hover:bg-neon-red/30 disabled:cursor-not-allowed disabled:opacity-40">
-                    {sellBusy ? "GONDERILIYOR..." : "ONAYLA — SAT"}
-                  </button>
-                </div>
               </section>
             </div>
           )}
