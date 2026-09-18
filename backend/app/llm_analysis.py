@@ -769,6 +769,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
 
         reader = asyncio.create_task(read_stream())
         emitted = False
+        reasoning_parts: list[str] = []
         stream_deadline = time.monotonic() + STREAM_TOTAL_TIMEOUT
         while True:
             if time.monotonic() > stream_deadline:
@@ -803,11 +804,36 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
             data = item.get("data", item) if isinstance(item, dict) else item
             choices = data.get("choices", []) if isinstance(data, dict) else []
             delta = choices[0].get("delta", {}) if choices else {}
+            # BOŞ YANIT DÜZELTMESİ (2026-09-18, kullanıcı raporu: "chat
+            # sayfasında LLM yanıtları boş geliyor"): ZORUNLU kural ("monolog
+            # gösterme") GLM interleaved-thinking'te metni reasoning_content
+            # delta'larına sıkıştırabiliyor; content delta hiç gelmiyor ve
+            # akış emitted=False ile done dönüyordu → istemci HATA GÖRMEDEN
+            # bomboş bırakıyordu. Deltas toplanır; content gelmezse son çare
+            # olarak kullanılır (aşağıda).
+            reasoning_delta = delta.get("reasoning_content") if isinstance(delta, dict) else None
+            if reasoning_delta:
+                reasoning_parts.append(str(reasoning_delta))
             text = _message_text(delta) or (choices[0].get("text") if choices else None)
             if text:
                 emitted = True
                 yield {"event": "delta", "data": {"text": text}}
         await reader
+        if not emitted:
+            reasoning_text = "".join(reasoning_parts).strip()
+            if reasoning_text and not _looks_english(reasoning_text):
+                # SON ÇARE (akış): sağlayıcı metni reasoning_content'te
+                # sıkıştırdı — Türkçe metin var; sessiz boş yerine yanıt
+                # olarak ilet (kural: düşünce gösterme, ama boş yanıt daha kötü).
+                yield {"event": "delta", "data": {"text": reasoning_text}}
+                emitted = True
+                logger.warning("son çare (akış): metin reasoning_content'te geliyordu (%d karakter)", len(reasoning_text))
+            elif reasoning_text:
+                # Görünür hata: sessiz boş bırakma (kullanıcı kuralı:
+                # Türkçeden başka dil kullanılmaz).
+                yield {"event": "error", "data": {"status": "error",
+                       "error": "Sağlayıcı yanıtı reasoning'de başka dilde üretti (kural: yanıt yalnızca Türkçe) — mesajı tekrar gönder"}}
+                return
         yield {"event": "done", "data": {"status": "ok", "model": cfg["model"]["name"], "generated_at": time.time(), "provider_stream": True, "emitted": emitted}}
     except Exception as exc:
         yield {"event": "error", "data": {"status": "error", "error": str(exc)}}
