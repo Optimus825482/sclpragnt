@@ -107,6 +107,22 @@ LLM_DASHBOARD_TOOL = {"type":"function","function":{"name":"get_dashboard_summar
 LLM_MONITORING_TOOL = {"type":"function","function":{"name":"get_monitoring_status","description":"Monitoring radar tarama sisteminin anlık durumunu getirir: son tarama zamanı, sıradaki aday sayısı, bildirim geçmişi ve tarama havuzu büyüklüğü. Salt okunur.","parameters":{"type":"object","properties":{},"required":[]}}}
 
 
+def _resolve_active_tools(body: dict, tools: list[dict]) -> list[dict]:
+    """Kullanıcı "Aktif Araçlar" tercihini genel sohbet için uygula.
+
+    UI, seçili araç adlarını ``active_tools`` içinde gönderir. Bu liste yalnız
+    bir tercihtir: model yalnızca ZATEN bu yüzeyin yetenek listesinde olan
+    araçlara daraltılır (kullanıcı isteyerek kendine yeni/yetkili bir araç
+    ekleyemez) ve executor/güvenlik sınırları değişmez. Tam liste yalnızca
+    istemci hiçbir tercih göndermediğinde kullanılır — eski davranış korunur.
+    """
+    requested = body.get("active_tools")
+    if not requested:
+        return tools
+    requested_names = {str(value) for value in requested}
+    return [tool for tool in tools if tool.get("function", {}).get("name") in requested_names]
+
+
 def _safe_session_id(value):
     """Keep session scopes bounded and free of control characters/path-like data."""
     normalized = re.sub(r"[^A-Za-z0-9:_-]", "_", str(value or "default"))[:160]
@@ -2913,10 +2929,10 @@ async def strategies_llm_chat(payload: dict = None):
         async def events():
             if not trade_intent or research_only_intent:
                 tools[:] = [tool for tool in tools if tool.get("function", {}).get("name") not in {"open_llm_paper_trade", "place_paper_order"}]
-            requested_tools = {str(value) for value in (body.get("active_tools") or [])}
-            # `active_tools` eski kullanıcı tercihidir; genel sohbetin ortak
-            # capability registry'sini daraltıp alarm/pozisyon araçlarını
-            # provider payload'ından çıkarmasına izin verme.
+            # Kullanıcı "Aktif Araçlar" tercihini uygula (yalnız mevcut
+            # capability listesine daraltır; yeni araç ekleyemez). Sembol
+            # sohbeti kendi listesini yönetir, burada yalnız genel sohbet.
+            tools[:] = _resolve_active_tools(body, tools)
             if any(tool.get("function", {}).get("name") == "open_llm_paper_trade" for tool in tools):
                 result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"))
                 # GÖRÜNÜRLÜK (2026-09-18): `chat()` hataları YUTAR —
@@ -2941,12 +2957,13 @@ async def strategies_llm_chat(payload: dict = None):
             except Exception as exc:
                 yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
-    active_tools = {str(value) for value in (body.get("active_tools") or [])}
     if not trade_intent or research_only_intent:
         tools = [tool for tool in tools if tool.get("function", {}).get("name") not in {"open_llm_paper_trade", "place_paper_order"}]
-    # Genel sohbet capability'leri kullanıcı ayarındaki eski/eksik listeyle
-    # daraltılmaz. `active_tools` yalnızca UI tercih bilgisidir; güvenlik ve
-    # paper-only sınırları executor içinde uygulanır.
+    # Kullanıcı "Aktif Araçlar" tercihi artık burada uygulanır. Daraltma yalnız
+    # bu yüzeyin ZATEN sahip olduğu capability listesiyle sınırlıdır; emir
+    # araçları yukarıda niyet bayrağıyla ayrıca elenir. Executor/paper-only
+    # sınırları değişmez.
+    tools = _resolve_active_tools(body, tools)
     result = await llm_analysis.chat(context, messages, tools, execute_tool, body.get("active_skills"))
     # GÖRÜNÜRLÜK (2026-09-18): buffer yolda da sağlayıcı hatası sessiz kalmasın —
     # {"status": "error"} dict'i istemcide boş yanıt gibi görünür. HTTP 502 ile
