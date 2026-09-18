@@ -976,6 +976,8 @@ async def startup_services():
     _start_background(lambda: market.connect(skip_history=True), "market-connect")
     _start_background(microstructure_snapshot_loop, "microstructure-snapshot")
     _start_background(strategy_loop, "strategy-loop")
+    # Canlı Hesap açık pozisyonları: WS fiyat + 24s hacim tick'leri (4 sn)
+    _start_background(binance_price_tick_loop, "binance-price-tick")
     _start_background(llm_forecast_evaluation_loop, "llm-forecast-evaluator")
     _start_background(chart_forecast_evaluation_loop, "chart-forecast-evaluator")
     _start_background(chat_prediction_learning_loop, "chat-prediction-learner")
@@ -2173,6 +2175,99 @@ async def _real_sell_state() -> tuple[bool, str]:
         return env.strip().lower() in {"1", "true", "yes", "on"}, "env"
     raw = await database.get_llm_setting(BINANCE_REAL_SELL_SETTING, "0")
     return raw.strip().lower() in {"1", "true", "yes", "on"}, "panel"
+
+
+# Canlı Hesap WS fiyat tick'leri — anahtar yapılandırma durumu 60 sn cache'lenir
+# (4 saniyelik döngüde her turda DB sorgusu yapılmasın).
+_binance_tick_config_cache: tuple[float, bool] = (0.0, False)
+
+
+async def _binance_ticks_configured() -> bool:
+    now_ts = time.time()
+    if _binance_tick_config_cache[0] > now_ts:
+        return _binance_tick_config_cache[1]
+    try:
+        enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+        ok = bool(enc_key)
+    except Exception:
+        ok = False
+    _binance_tick_config_cache = (now_ts + 60.0, ok)
+    return ok
+
+
+async def binance_price_tick_loop():
+    """Canlı Hesap açık pozisyonları için WS fiyat + 24s hacim tick'leri (4 sn).
+
+    Kaynak: /api/v3/ticker/24hr (batch'li, weight ~2/batch) — lastPrice +
+    quoteVolume tek istekte. Öncelik ASSETTRY çifti; TRY çifti yoksa ASSETUSDT
+    fiyatı USDTTRY ile TRY'ye çevrilir. Hacim de aynı kurala göre TRY'ye
+    çevrilir (USDT çiftinin quoteVolume'u USDT cinsindendir). Bağlı WS
+    istemcisi yokken broadcast no-op'tur; ağ hatası döngüyü öldürmez.
+    """
+    await asyncio.sleep(20)  # startup patlaması bitsin
+    while True:
+        try:
+            if not await _binance_ticks_configured():
+                await asyncio.sleep(30)
+                continue
+            assets = await _load_seen_binance_assets()
+            if not assets:
+                await asyncio.sleep(30)
+                continue
+            candidates: list[str] = []
+            for asset in sorted(assets):
+                if asset == "TRY":
+                    continue
+                candidates.extend([f"{asset}TRY", f"{asset}USDT"])
+            candidates.append("USDTTRY")
+            rows = await binance_tr_public.ticker_24h(candidates)
+            raw: dict[str, dict] = {}
+            for row in rows if isinstance(rows, list) else []:
+                symbol_u = str(row.get("symbol") or "").upper()
+                try:
+                    price = float(row.get("lastPrice") or row.get("price") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if price <= 0:
+                    continue
+                try:
+                    quote_volume = float(row.get("quoteVolume") or 0)
+                except (TypeError, ValueError):
+                    quote_volume = 0.0
+                if symbol_u == "USDTTRY":
+                    raw["USDTTRY"] = {"price_try": price, "symbol": symbol_u}
+                    continue
+                base = symbol_u[:-4] if symbol_u.endswith("TRY") else (symbol_u[:-5] if symbol_u.endswith("USDT") else symbol_u)
+                if not base:
+                    continue
+                entry = raw.setdefault(base, {})
+                if symbol_u.endswith("TRY"):
+                    entry.update({"price_try": price, "symbol": symbol_u, "qv_quote": "TRY", "qv": quote_volume})
+                else:
+                    entry.update({"price_usdt": price, "symbol_usdt": symbol_u, "qv_quote_usdt": quote_volume})
+            usdt_try = (raw.get("USDTTRY") or {}).get("price_try")
+            ticks: dict[str, dict] = {}
+            for base, entry in raw.items():
+                if base == "USDTTRY":
+                    continue
+                price_try = entry.get("price_try")
+                symbol_u = entry.get("symbol")
+                if price_try is None and entry.get("price_usdt") and usdt_try:
+                    price_try = entry["price_usdt"] * usdt_try
+                    symbol_u = entry.get("symbol_usdt")
+                if price_try is None or symbol_u is None:
+                    continue
+                quote_volume = entry.get("qv")
+                if quote_volume is None and entry.get("qv_quote_usdt") and usdt_try:
+                    quote_volume = entry["qv_quote_usdt"] * usdt_try
+                ticks[base] = {"price": round(price_try, 10), "symbol": symbol_u,
+                               "quote_volume_try": round(quote_volume, 0) if quote_volume else None}
+            if ticks:
+                await ws_manager.broadcast({"type": "binance_price", "data": {
+                    "ticks": ticks, "time": time.time()}})
+        except Exception as exc:
+            logger.debug("Canlı Hesap fiyat tick'i atlandı: %s", type(exc).__name__)
+        await asyncio.sleep(4)
 # Varlık -> (cache bitiş zamanı, {"avg_price": float, "quote": "TRY"|"USDT"})
 _binance_cost_cache: dict[str, tuple[float, dict]] = {}
 # Gün -> (cache bitiş zamanı, günün işlem listesi yanıtı)
