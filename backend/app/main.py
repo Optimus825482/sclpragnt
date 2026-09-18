@@ -2654,16 +2654,33 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
     # GÜNLÜK GERÇEKLEŞEN K/Z (FIFO) — Erkan kararı (2026-09-18): günün işlemleri
     # tablosunda eşleşen ALIS->SATIS kar/zararı görünür; toplamı tablo üstündeki
     # özet kutusunda. Her sembolde SATIS fill'leri gün içi ALIS lotlarıyla
-    # eşleştirilir; komisyon base-asset'tedir (örn. ONE) ve TRY değeri =
-    # komisyon × o bacağın fiyatı. Stoğu gün dışından gelen SATIS'ler
+    # eşleştirilir; komisyon TRY değeri BİRİME göre çevrilir (base → × fiyat,
+    # TRY → ×1, USDT → × USDTTRY). Stoğu gün dışından gelen SATIS'ler
     # eşleşmez (unmatched) — K/Z hücresi boş kalır.
     wins = losses = unmatched = 0
     daily_net = daily_gross = 0.0
+    # KOMİYON BİRİMİ DÜZELTMESİ (2026-09-18 13:22, kullanıcı raporu: brüt
+    # +2.853 ama net −10.778 — 13.631 ₺'lik "komisyon" boşluğu imkânsızdı):
+    # eski hesap TÜM komisyonları base-asset sanıp TRY'ye çeviriyordu
+    # (comm × fiyat). Fiat-ramp çiftlerde (MUBARAKTRY, AVAXTRY…) komisyon
+    # ZATEN TRY'dir; yüksek-fiyatlı coinlerde (AVAX ~365 ₺) comm × fiyat =
+    # 27 ₺ komisyona ~9.855 ₺ HAYALİ komisyon yazıyordu → tam o −13.6k.
+    # Doğru çevrim birime göre: base → × fiyat, TRY → ×1, USDT → × USDTTRY,
+    # bilinmeyen birim → TRY varsay (sınırlı küçük hata, hayalı yok).
+    usdt_try = 0.0
+    try:
+        usdt_rows = await binance_tr_public.ticker_price(["USDTTRY"])
+        for row in usdt_rows if isinstance(usdt_rows, list) else []:
+            if str(row.get("symbol") or "").upper() == "USDTTRY":
+                usdt_try = float(row.get("price") or 0)
+    except Exception:
+        usdt_try = 0.0
     by_symbol: dict[str, list[dict]] = {}
     for f in rows:
         by_symbol.setdefault(str(f.get("symbol") or ""), []).append(f)
     for fills in by_symbol.values():
         fills.sort(key=lambda f: (float(f.get("time") or 0), int(f.get("id") or 0)))
+        base_asset = str(fills[0].get("symbol") or "")[:-4] if fills else ""
         lots: list[dict] = []
         for f in fills:
             try:
@@ -2672,7 +2689,15 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
                 comm = float(f.get("commission") or 0)
             except (TypeError, ValueError):
                 continue
-            comm_try = comm * price  # base-asset komisyonunun TRY değeri
+            comm_asset = str(f.get("commissionAsset") or "").upper()
+            if comm_asset == base_asset and base_asset:
+                comm_try = comm * price
+            elif comm_asset == "USDT" and usdt_try > 0:
+                comm_try = comm * usdt_try
+            else:
+                # "TRY" ve bilinmeyen/eksik birim: komisyon değeri zaten TRY
+                # büyüklüğünde kabul edilir (sınırlı küçük hata).
+                comm_try = comm
             if f.get("isBuyer"):
                 lots.append({"price": price, "qty": qty, "comm_try": comm_try})
                 continue
