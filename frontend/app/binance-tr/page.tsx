@@ -44,8 +44,6 @@ type DailyPnl = {
   unmatched: number;
 };
 
-const TR_PAGE_SIZE = 25;
-
 // Hacim biçimlendirici: 1,2B / 340M / 12K / 840
 const fmtVolume = (v: number | null | undefined) => {
   const n = Number(v ?? 0);
@@ -142,10 +140,22 @@ function BinanceTrPageInner() {
     return Number.isFinite(n) ? Math.min(Math.max(n, 0), sellFor.free) : 0;
   }, [sellQty, sellFor]);
 
+  type SymbolSummary = {
+    symbol: string;
+    buy_qty: number;
+    buy_cost_try: number;
+    sell_qty: number;
+    sell_revenue_try: number;
+    realized_pnl_try: number;
+    commission_try: number;
+    fills: number;
+  };
+
   const [tradeDay, setTradeDay] = useState(() => localDateInput());
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [symbolSummary, setSymbolSummary] = useState<SymbolSummary[]>([]);
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
   const [daily, setDaily] = useState<DailyPnl | null>(null);
-  const [trPage, setTrPage] = useState(1);
   const [trLoading, setTrLoading] = useState(false);
   const [trMeta, setTrMeta] = useState<{ count: number; symbols_scanned: number } | null>(null);
 
@@ -208,6 +218,7 @@ function BinanceTrPageInner() {
       if (r.ok) {
         const d = await r.json();
         setTrades(d.trades || []);
+        setSymbolSummary((d.symbol_summary || []) as SymbolSummary[]);
         setDaily(d.daily || null);
         setTrMeta({ count: d.count || 0, symbols_scanned: d.symbols_scanned || 0 });
       }
@@ -216,7 +227,6 @@ function BinanceTrPageInner() {
   }, [tradeDay]);
 
   useEffect(() => { if (configured && tradeDay) loadTrades(); }, [configured, tradeDay, loadTrades]);
-  useEffect(() => { setTrPage(1); }, [tradeDay]);
 
   const saveKeys = async () => {
     if (!apiKey.trim() || !apiSecret.trim()) return;
@@ -314,11 +324,6 @@ function BinanceTrPageInner() {
   }), [holdings, liveTicks]);
 
   const nonZero = balances.filter((b) => parseFloat(b.free) > 0 || parseFloat(b.locked) > 0);
-
-  // Günün işlemleri sayfalama (25/sayfa)
-  const trTotalPages = Math.max(1, Math.ceil(trades.length / TR_PAGE_SIZE));
-  const trPageSafe = Math.min(trPage, trTotalPages);
-  const trPageRows = trades.slice((trPageSafe - 1) * TR_PAGE_SIZE, trPageSafe * TR_PAGE_SIZE);
 
   // 50 TL altını gizle (fiyatı çözülemeyenler gizlenmez — değeri bilinmiyor)
   const visibleHoldings = useMemo(() => {
@@ -805,7 +810,7 @@ function BinanceTrPageInner() {
                 </span>
               )}
             </div>
-            {/* Günlük kar/zarar özeti — tablonun üstünde (Erkan kararı, 18.09) */}
+            {/* Günlük kar/zarar özeti */}
             {daily && trades.length > 0 && !trLoading && (
               <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
                 <div className="card">
@@ -837,59 +842,79 @@ function BinanceTrPageInner() {
                 </div>
               </div>
             )}
-            {trades.length === 0 && !trLoading ? (
+            {symbolSummary.length === 0 && !trLoading ? (
               <div className="mt-3 rounded-lg border border-dashed border-bunker-700 bg-bunker-900/40 px-4 py-6 text-center text-sm text-bunker-muted">
                 Bu günde işlem yok.
               </div>
             ) : (
-              <>
-                <div className="table-scroll mt-3">
-                  <table className="data-table">
-                    <thead><tr><th>Zaman</th><th>Sembol</th><th>Yön</th><th>Alış (Basis)</th><th>Fiyat</th><th>Miktar</th><th>Toplam</th><th>K/Z</th><th>Komisyon</th></tr></thead>
-                    <tbody>
-                      {trPageRows.map((t) => {
-                        const pnl = t.realized_pnl_try;
-                        const pnlCls = pnl == null ? "text-bunker-muted" : pnl >= 0 ? "text-neon-green" : "text-neon-red";
-                        return (
-                          <tr key={`${t.id}-${t.symbol}`}>
-                            <td className="font-mono text-xs text-bunker-muted">{fmtTime(t.time)}</td>
-                            <td><span className="font-mono font-bold text-white">{t.symbol}</span></td>
-                            <td className={"font-mono text-xs font-bold " + (t.isBuyer ? "text-neon-green" : "text-neon-red")}>
-                              {t.isBuyer ? "ALIS" : "SATIS"}
+              <div className="table-scroll mt-3">
+                <table className="data-table">
+                  <thead><tr>
+                    <th>Sembol</th>
+                    <th className="text-right">Alış Miktar</th>
+                    <th className="text-right">Ort. Alış</th>
+                    <th className="text-right">Satış Miktar</th>
+                    <th className="text-right">Ort. Satış</th>
+                    <th className="text-right">Komisyon</th>
+                    <th className="text-right">Net K/Z</th>
+                    <th className="text-right">Fill</th>
+                    <th></th>
+                  </tr></thead>
+                  <tbody>
+                    {symbolSummary.map((s) => {
+                      const buyAvg = s.buy_qty > 0 ? s.buy_cost_try / s.buy_qty : 0;
+                      const sellAvg = s.sell_qty > 0 ? s.sell_revenue_try / s.sell_qty : 0;
+                      const pnlCls = s.realized_pnl_try >= 0 ? "text-neon-green" : "text-neon-red";
+                      const isExpanded = expandedSymbol === s.symbol;
+                      const detailRows = trades.filter((t) => t.symbol === s.symbol);
+                      return (
+                        <>
+                          <tr key={s.symbol}>
+                            <td><span className="font-mono font-bold text-white">{s.symbol}</span></td>
+                            <td className="font-mono text-xs text-right">{fmtPrice(s.buy_qty, s.buy_qty < 1 ? 6 : 3)}</td>
+                            <td className="font-mono text-xs text-right">{buyAvg ? `₺${fmtPrice(buyAvg, buyAvg < 1 ? 6 : 2)}` : "—"}</td>
+                            <td className="font-mono text-xs text-right">{fmtPrice(s.sell_qty, s.sell_qty < 1 ? 6 : 3)}</td>
+                            <td className="font-mono text-xs text-right">{sellAvg ? `₺${fmtPrice(sellAvg, sellAvg < 1 ? 6 : 2)}` : "—"}</td>
+                            <td className="font-mono text-xs text-right text-bunker-muted">₺{fmtPrice(s.commission_try)}</td>
+                            <td className={`font-mono text-xs font-bold text-right ${pnlCls}`}>
+                              {s.realized_pnl_try !== 0 ? `${s.realized_pnl_try >= 0 ? "+" : "−"}₺${fmtPrice(Math.abs(s.realized_pnl_try))}` : "—"}
                             </td>
-                            <td className="font-mono text-xs text-bunker-muted">
-                              {pnl != null && t.basis_price != null ? fmtPrice(t.basis_price, t.basis_price < 1 ? 6 : 2) : "—"}
+                            <td className="font-mono text-xs text-right text-bunker-muted">{s.fills}</td>
+                            <td className="text-right">
+                              <button type="button" onClick={() => setExpandedSymbol(isExpanded ? null : s.symbol)}
+                                className="rounded border border-bunker-600 px-1.5 py-0.5 font-mono text-[9px] text-bunker-muted transition-colors hover:text-white"
+                                title="Detay">{isExpanded ? "▲" : "▼"}</button>
                             </td>
-                            <td className="font-mono text-xs">{fmtPrice(t.price, Number(t.price) < 1 ? 6 : 2)}</td>
-                            <td className="font-mono text-xs">{fmtPrice(t.qty, 6)}</td>
-                            <td className="font-mono text-xs">{fmtPrice(t.quoteQty, Number(t.quoteQty) < 1 ? 6 : 2)}</td>
-                            <td className={`font-mono text-xs font-bold ${pnlCls}`}>
-                              {pnl == null ? "—" : `${pnl >= 0 ? "+" : "−"}₺${fmtPrice(Math.abs(pnl))}`}
-                            </td>
-                            <td className="font-mono text-xs text-bunker-muted">{fmtPrice(t.commission, 6)}</td>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                {/* Sayfalama: 25/sayfa (Erkan kararı, 18.09) */}
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-mono text-[10px] text-bunker-muted">
-                    Sayfa {trPageSafe} / {trTotalPages} · {trades.length} işlem · sayfada {trPageRows.length} adet
-                  </span>
-                  <div className="flex items-center gap-1">
-                    <button type="button" onClick={() => setTrPage(1)} disabled={trPageSafe <= 1}
-                      className="rounded border border-bunker-600 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40">« Ilk</button>
-                    <button type="button" onClick={() => setTrPage(trPageSafe - 1)} disabled={trPageSafe <= 1}
-                      className="rounded border border-bunker-600 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40">‹ Onceki</button>
-                    <button type="button" onClick={() => setTrPage(trPageSafe + 1)} disabled={trPageSafe >= trTotalPages}
-                      className="rounded border border-bunker-600 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40">Sonraki ›</button>
-                    <button type="button" onClick={() => setTrPage(trTotalPages)} disabled={trPageSafe >= trTotalPages}
-                      className="rounded border border-bunker-600 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:text-white disabled:cursor-not-allowed disabled:opacity-40">Son »</button>
-                  </div>
-                </div>
-              </>
+                          {isExpanded && detailRows.map((t) => {
+                            const pnl = t.realized_pnl_try;
+                            const pnlCls = pnl == null ? "text-bunker-muted" : pnl >= 0 ? "text-neon-green" : "text-neon-red";
+                            return (
+                              <tr key={`${s.symbol}-d-${t.id}`} className="bg-bunker-900/50">
+                                <td className="font-mono text-[10px] text-bunker-muted pl-4">{fmtTime(t.time)}</td>
+                        <td className={"font-mono text-[10px] text-right font-bold " + (t.isBuyer ? "text-neon-green" : "text-neon-red")}>
+                          {t.isBuyer ? "AL" : "SAT"} × {fmtPrice(t.qty, Number(t.qty) < 1 ? 6 : 3)}
+                        </td>
+                        <td className="font-mono text-[10px] text-right">
+                          {pnl != null && t.basis_price != null ? `basis ₺${fmtPrice(t.basis_price, t.basis_price < 1 ? 6 : 2)}` : (t.isBuyer ? "—" : "gün öncesi")}
+                        </td>
+                        <td className="font-mono text-[10px] text-right text-bunker-muted">{t.isBuyer ? "alım" : "satış"}</td>
+                        <td className="font-mono text-[10px] text-right">₺{fmtPrice(t.price, Number(t.price) < 1 ? 6 : 2)}</td>
+                        <td className="font-mono text-[10px] text-right text-bunker-muted">₺{fmtPrice(t.commission, 6)}</td>
+                        <td className={`font-mono text-[10px] font-bold text-right ${pnlCls}`}>
+                          {pnl == null ? "—" : `${pnl >= 0 ? "+" : "−"}₺${fmtPrice(Math.abs(pnl))}`}
+                        </td>
+                        <td className="font-mono text-[10px] text-right text-bunker-muted">{fmtPrice(t.quoteQty, 2)}</td>
+                        <td />
+                              </tr>
+                            );
+                          })}
+                        </>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
         </>
