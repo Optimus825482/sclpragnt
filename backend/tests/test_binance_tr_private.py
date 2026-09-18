@@ -202,6 +202,7 @@ def test_place_oco_sell_sends_correct_payload():
     assert params["price"] == "1200.00"
     assert params["stopPrice"] == "950.00"
     assert params["stopLimitPrice"] == "945.00"
+    assert "stopLimitTimeInForce" not in params  # Binance TR OCO'da bu parametre yoktur
     assert res["order_list_id"] == "1001"
     assert len(res["orders"]) == 2
 
@@ -217,6 +218,7 @@ def test_place_stop_loss_sell_sends_correct_payload():
     assert params["symbol"] == "SOL_TRY"
     assert params["side"] == 1        # doküman: 1=SELL
     assert params["type"] == 4        # doküman: 4=STOP_LOSS_LIMIT
+    assert params["timeInForce"] == 1 # doküman: INT: 1=GTC
     assert params["stopPrice"] == "5000.00"
     assert params["price"] == "4980.00"
     assert res["order_id"] == "505"
@@ -233,6 +235,7 @@ def test_place_limit_sell_sends_correct_payload():
     assert params["symbol"] == "SOL_TRY"
     assert params["side"] == 1        # doküman: 1=SELL
     assert params["type"] == 1        # doküman: 1=LIMIT
+    assert params["timeInForce"] == 1 # doküman: INT: 1=GTC
     assert params["price"] == "6500.00"
     assert res["order_id"] == "606"
 
