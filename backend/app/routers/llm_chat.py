@@ -2788,6 +2788,17 @@ async def strategies_llm_chat(payload: dict = None):
             # provider payload'ından çıkarmasına izin verme.
             if any(tool.get("function", {}).get("name") == "open_llm_paper_trade" for tool in tools):
                 result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"))
+                # GÖRÜNÜRLÜK (2026-09-18): `chat()` hataları YUTAR —
+                # {"status": "error"} veya {"status": "disabled"}; eskiden
+                # delta yerine düşük çözünürlüklü sabit mesaj ("Paper işlem
+                # planı oluşturulamadı.") gidiyor veya hiçbir şey görünmüyordu.
+                # Gerçek mesajı SSE hatası olarak istemciye taşı.
+                if result.get("status") == "error":
+                    yield f"event: error\ndata: {json.dumps({'status': 'error', 'error': result.get('error') or 'LLM yanıtı üretilemedi (sağlayıcı mesajı yok)'}, ensure_ascii=False)}\n\n"
+                    return
+                if result.get("status") == "disabled" or not result.get("text"):
+                    yield f"event: error\ndata: {json.dumps({'status': 'disabled', 'error': 'Aktif LLM yapilandirmasi yok — Ayarlar > LLM/Provider sekmesinden LLM etkinlestirin ve aktif sohbet modelini secin'}, ensure_ascii=False)}\n\n"
+                    return
                 yield f"event: delta\ndata: {json.dumps({'text': result.get('text') or 'Paper işlem planı oluşturulamadı.'}, ensure_ascii=False)}\n\n"
                 yield f"event: done\ndata: {json.dumps({'status': result.get('status', 'ok'), 'model': result.get('model')}, ensure_ascii=False)}\n\n"
                 return
@@ -2806,6 +2817,12 @@ async def strategies_llm_chat(payload: dict = None):
     # daraltılmaz. `active_tools` yalnızca UI tercih bilgisidir; güvenlik ve
     # paper-only sınırları executor içinde uygulanır.
     result = await llm_analysis.chat(context, messages, tools, execute_tool, body.get("active_skills"))
+    # GÖRÜNÜRLÜK (2026-09-18): buffer yolda da sağlayıcı hatası sessiz kalmasın —
+    # {"status": "error"} dict'i istemcide boş yanıt gibi görünür. HTTP 502 ile
+    # gerçek mesajı taşı.
+    if result.get("status") == "error":
+        await finish_trace(_main_pg_pool(), trace_id, "error")
+        raise HTTPException(status_code=502, detail=result.get("error") or "LLM yanıtı üretilemedi (sağlayıcı mesajı yok)")
     evaluation = evaluate_output(result.get("text"), intent=last_text, tool_errors=tool_error_count)
     await save_evaluation(_main_pg_pool(), trace_id, evaluation)
     if evaluation.get("passed"):
