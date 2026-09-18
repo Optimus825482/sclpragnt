@@ -455,9 +455,6 @@ function BinanceTrPageInner() {
           <p className="mt-1 text-sm text-bunker-muted">Gerçek Binance TR bakiyesi, TRY degerleri ve islem gecmisi — gerçek satış {sellEnabled ? "açık: onay adımıyla SAT butonu piyasa emri gönderir" : "kapalı: Ayarlar > 'GERÇEK SATIŞ' anahtarından açılır"}</p>
         </div>
         <div className="flex items-center gap-2">
-          {configured && !acctLoading && (
-            <span className="rounded border border-neon-green/40 bg-neon-green/10 px-2 py-1 font-mono text-[10px] text-neon-green">KEY TANIMLI</span>
-          )}
           {configured && (
             <span className={"rounded border px-2 py-1 font-mono text-[10px] " + (sellEnabled ? "border-yellow-300/50 bg-yellow-300/10 text-yellow-300" : "border-bunker-600 bg-bunker-800 text-bunker-muted")}>
               {sellEnabled ? "GERÇEK SATIŞ AÇIK" : "GERÇEK SATIŞ KAPALI"}
@@ -539,7 +536,7 @@ function BinanceTrPageInner() {
               </div>
             ) : (
               <div className="space-y-3">
-                <label className="relative block">
+                <div className="relative block">
                   <span className="eyebrow">SEMBOL</span>
                   <input value={buyInput} onChange={(e) => { setBuyInput(e.target.value); setBuyAsset(""); }}
                     placeholder="Ilk uc harfi gir — eslesenler listelenir"
@@ -547,7 +544,7 @@ function BinanceTrPageInner() {
                   {buyMatches.length > 0 && !buyAsset && (
                     <div className="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-bunker-600 bg-bunker-900 shadow-2xl">
                       {buyMatches.map((asset) => (
-                        <button key={asset} type="button" onMouseDown={(e) => { e.preventDefault(); selectBuyAsset(asset); }}
+                        <button key={asset} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => selectBuyAsset(asset)}
                           className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-bunker-800">
                           <span className="font-mono text-xs font-bold text-white">{asset}TRY</span>
                           <span className="font-mono text-[10px] text-bunker-muted">
@@ -557,7 +554,7 @@ function BinanceTrPageInner() {
                       ))}
                     </div>
                   )}
-                </label>
+                </div>
                 {/* WS anlık fiyat + TRY bakiyesi */}
                 <div className="grid grid-cols-2 gap-2">
                   <div className="rounded-lg border border-bunker-700 bg-bunker-900/60 px-3 py-2">
@@ -638,7 +635,7 @@ function BinanceTrPageInner() {
                   className="h-3.5 w-3.5 accent-[color:var(--neon-green,#22c55e)]" />
                 50 TL altını gizle
               </label>
-              {ordLoading && <span className="font-mono text-[10px] text-bunker-muted animate-pulse">Yukleniyor...</span>}
+              <span className={"font-mono text-[10px] text-bunker-muted animate-pulse" + (ordLoading ? "" : " invisible")} aria-hidden="true">Yukleniyor...</span>
             </div>
             {visibleHoldings.length === 0 ? (
               <div className="rounded-lg border border-dashed border-bunker-700 bg-bunker-900/40 px-4 py-6 text-center text-sm text-bunker-muted">
@@ -665,17 +662,17 @@ function BinanceTrPageInner() {
                           <td className="font-mono text-xs">{fmtPrice(h.free, 6)}</td>
                           <td className="font-mono text-xs text-bunker-muted">{h.locked > 0 ? fmtPrice(h.locked, 6) : "—"}</td>
                           <td className="font-mono text-xs text-bunker-muted">{h.avg_cost_try != null ? `₺${fmtPrice(h.avg_cost_try, h.avg_cost_try < 1 ? 6 : 2)}` : "—"}</td>
-                          <td className={`font-mono text-xs ${dir ? (dir === "up" ? "text-neon-green" : "text-neon-red") : "text-white"}`}>
+                          <td className={`font-mono text-xs tabular-nums whitespace-nowrap ${dir ? (dir === "up" ? "text-neon-green" : "text-neon-red") : "text-white"}`}>
                             {h.price_try != null ? `₺${fmtPrice(h.price_try, h.price_try < 1 ? 6 : 2)}` : "—"}
                           </td>
-                          <td className="font-mono text-xs text-bunker-muted">{h.asset === "TRY" ? "—" : fmtVolume(h.volume_try)}</td>
-                          <td className={`font-mono text-xs font-bold ${pnlToneCls}`}>
+                          <td className="font-mono text-xs text-bunker-muted tabular-nums whitespace-nowrap">{h.asset === "TRY" ? "—" : fmtVolume(h.volume_try)}</td>
+                          <td className={`font-mono text-xs font-bold tabular-nums whitespace-nowrap ${pnlToneCls}`}>
                             {h.pnl_try != null ? `₺${h.pnl_try >= 0 ? "+" : "−"}${fmtPrice(Math.abs(h.pnl_try))}` : "—"}
                             {h.pnl_pct != null ? (
                               <span className="ml-1 font-normal">({h.pnl_pct >= 0 ? "+" : "−"}%{fmtPrice(Math.abs(h.pnl_pct), 2)})</span>
                             ) : null}
                           </td>
-                          <td className={`font-mono text-xs font-bold ${h.value_try != null ? "text-white" : "text-bunker-muted"}`}>
+                          <td className={`font-mono text-xs font-bold tabular-nums whitespace-nowrap ${h.value_try != null ? "text-white" : "text-bunker-muted"}`}>
                             {h.value_try != null ? `₺${fmtPrice(h.value_try)}` : "fiyat yok"}
                           </td>
                           <td className="text-right">
