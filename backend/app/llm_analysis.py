@@ -613,8 +613,23 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
     """
     if tools and tool_executor:
         result = await chat(snapshot, messages, tools, tool_executor, active_skills)
-        if result.get("text"):
-            yield {"event": "delta", "data": {"text": result["text"]}}
+        # GÖRÜNÜRLÜK (2026-09-18, sohbet sayfası teşhisi): `chat()` hataları
+        # YUTAR — {"status": "error", "text": None} veya {"status": "disabled"}.
+        # Eskiden delta hiç gönderilmiyor, sadece `done` taşıyordu → istemci
+        # terminal kabul edip NE HATA NE YANIT gösteriyordu (kullanıcı raporu:
+        # "mesajlara yanıt gelmiyor, hata da yok"). "disabled" durumu özellikle
+        # sinsi: LLM anahtar kapalı/aktif model referansı kırık olduğunda
+        # döner ve sohbet sayfası bomboş kalır. Her iki durumu da SSE hatası
+        # olarak ilet — istemci UI'da gerçek mesajı görüntüler.
+        if result.get("status") == "error":
+            yield {"event": "error", "data": {"status": "error",
+                   "error": result.get("error") or "LLM yanıtı üretilemedi (sağlayıcı mesajı yok)"}}
+            return
+        if result.get("status") == "disabled" or not result.get("text"):
+            yield {"event": "error", "data": {"status": "disabled",
+                   "error": "Aktif LLM yapılandırması yok — Ayarlar > LLM/Provider sekmesinden LLM'i etkinleştirin ve aktif sohbet modelini seçin"}}
+            return
+        yield {"event": "delta", "data": {"text": result["text"]}}
         yield {"event": "done", "data": {**result, "provider_stream": False, "tool_loop": True}}
         return
     cfg = await database.get_active_llm_config()
