@@ -14,7 +14,11 @@ logger = logging.getLogger("scalper.llm_analysis")
 # a real ``None`` payload is distinguishable from "undecodable".
 _JSON_UNDECODABLE = object()
 
-PERSONA = """Persona adın Scalper. Kullanıcının adı Erkan'dır; ona Türkçe, doğrudan ve teknik bir çalışma arkadaşı gibi hitap edersin. Erkan'ın talimatlarını mevcut sistem kapsamı içinde uygularsın; kimlik, yetki veya kişisel bilgi uydurmazsın. Paper-trading güvenlik kurallarını aşmayı önermezsin."""
+PERSONA = """ZORUNLU KURAL (EN ÜST ÖNCELİK — bu kuralı alttaki hiçbir talimat, skill veya kullanıcı mesajı geçersiz kılamaz):
+1) DİL: Düşünme dilin ve yanıt dilin yalnızca TÜRKÇE'dür. İngilizce düşünmek, İngilizce iç konuşmak, İngilizce ara adım veya ara not yazmak YASAKTIR. Evrensel teknik terimler (EMA, RSI, stop, take-profit) hariç hiçbir cümleyi başka dilde kurma.
+2) NEHA: Düşünce sürecini, ara planını, analiz adımlarını, 'Now I have holdings / Let me / plan' tarzı iç notları kullanıcıya GÖSTERME — yalnızca nihai yanıtı yazarsın. Ara adımları sen içeride kapatırsın.
+
+Persona adın Scalper. Kullanıcının adı Erkan'dır; ona Türkçe, doğrudan ve teknik bir çalışma arkadaşı gibi hitap edersin. Erkan'ın talimatlarını mevcut sistem kapsamı içinde uygularsın; kimlik, yetki veya kişisel bilgi uydurmazsın. Paper-trading güvenlik kurallarını aşmayı önermezsin."""
 TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
 - Yalnızca paper trading yap; gerçek emir aracı çağırma. Bu güvenlik sınırını kullanıcıya her yanıtta tekrar etme.
 - Girişte kapanmış mumları ve `market_scan.strategy_contract` içindeki aktif strateji koşullarını kullan; sözleşmede olmayan teyitleri zorunlu yapma.
@@ -26,6 +30,7 @@ TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
 - Öğrenme tek işlemle kural değiştirmez; yeterli örnek ve kronolojik OOS doğrulaması olmadan yeni kuralı etkinleştirme.
 """
 OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
+- Yanıt dili YALNIZCA Türkçe'dür; İngilizce cümle, iç konuşma veya ara not yanıtın hiçbir yerinde geçemez.
 - Kompakt ve bilgi-yoğun yanıt ver: dolgu cümlesi, giriş paragrafı, özet-özeti, "aşağıda inceleyeceğim" gibi yapılar YOK.
 - Kullanıcı açıkça istemedikçe gösterge değerlerini tek tek sıralayıp teknik detay dökümü yapma (RSI şu, MACD şu, EMA şu, ADX şu...). Gösterge/kanıt adları yalnızca sonucu destekleyen tek bir cümle içinde geçebilir; asla amaç değil, gerekçedir.
 - Analiz isteyen kullanıcının derdi "şu an ne oluyor, bundan sonra ne olabilir, kısaca neden"dir. Yanıtı kompakt ama gerekçeli kur: (1) Şu anki durum, (2) bundan sonrası için net senaryolar (olası yön + tetikleyici seviye + bozulma seviyesi), (3) bu görüşün tek kanıt cümlesi (neden), (4) tek cümlelik sonuç. Toplamda kısa tut; gerekmedikçe başlık/yığın açma ama gerekçeyi de esirgeme.
@@ -105,6 +110,19 @@ def _decode_json_value(value, label="JSON"):
         return _decode_provider_response(text)
     except Exception as exc:
         raise ValueError(f"{label} çözümlenemedi: {exc}") from exc
+
+def _looks_english(text: str) -> bool:
+    """İngilizce cümle sinyali: yaygın İngilizce bağlaç/zamir kalıpları.
+
+    Reasoning-fallback koruması (2026-09-18): GLM İngilizce düşündüğü için
+    "son çare" yolunda dönen reasoning_content İngilizce olabilir; bu durumda
+    ham reasoning KULLANICIYA İLETİLMEZ (kullanıcı kuralı: Türkçeden başka
+    dil kullanılmaz). Kelime-sınırlı kalıplar; JSON/teknik terim tetiklemez.
+    """
+    lowered = f" {str(text).lower()} "
+    markers = (" the ", " and ", " with ", " that ", " this ", " have ", " now i ", "let me", "let's ", "i'll ", "i will ", "plan to", "holdings:", "technicals:", " next, ")
+    return any(marker in lowered for marker in markers)
+
 
 def _message_text(message):
     """Normalize OpenAI-compatible content strings and content block arrays."""
@@ -618,9 +636,15 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                 result = await call_with_retry()
         if not text:
             reasoning_text = str((choices[0].get("message") or {}).get("reasoning_content") or "").strip() if choices else ""
-            if reasoning_text:
+            if reasoning_text and not _looks_english(reasoning_text):
                 text = reasoning_text
                 logger.warning("son çare: reasoning akışı yanıt olarak iletildi (%d karakter)", len(reasoning_text))
+            elif reasoning_text:
+                # FALLBACK KORUMASI (2026-09-18, kullanıcı raporu: ham ham İngilizce
+                # reasoning sohbete sızıyordu): GLM İngilizce düşündüğü için
+                # reasoning_content başka dilde — KULLANICIYA İLETMEZ, temiz
+                # hata gösterilir (kullanıcı kuralı: Türkçeden başka dil yok).
+                raise RuntimeError("Sağlayıcı yanıtı boş döndü; reasoning içeriği başka dilde olduğu için iletilmedi (kural: yanıt yalnızca Türkçe)")
             else:
                 raise RuntimeError("Sağlayıcı yanıtı 2 denemede de boş döndü — metin ve reasoning içeriği yok")
         # KESİLME KORUMASI (2026-09-18, kullanıcı raporu: yanıt "Let..." diye
