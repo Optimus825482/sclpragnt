@@ -2828,6 +2828,11 @@ async def binance_set_sl_tp(payload: dict, request: Request):
                 raise HTTPException(status_code=422, detail="OCO için hem Kâr Al (TP) hem Zarar Kes (SL) fiyatı girilmelidir")
             if tp_price <= sl_price:
                 raise HTTPException(status_code=422, detail="Kâr Al (TP) fiyatı Zarar Kes (SL) fiyatından büyük olmalıdır")
+            if filters and filters.get("oco_enable") is False:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{symbol_u} paritesinde Binance TR OCO emri desteklenmiyor (ocoEnable=0). Lütfen 'Zarar Kes (SL)' veya 'Kâr Al (TP)' modunu tekil olarak kullanın."
+                )
             res = await asyncio.to_thread(
                 place_oco_sell, api_key, api_secret, symbol_u, qty, tp_price, sl_price, sl_limit_price, step, tick
             )

@@ -224,7 +224,11 @@ def _load_symbol_list_locked(api_key: str, api_secret: str) -> None:
             sym = r.get("symbol")
             if not sym:
                 continue
-            entry = {"quote_asset": str(r.get("quoteAsset") or "").upper()}
+            entry = {
+                "quote_asset": str(r.get("quoteAsset") or "").upper(),
+                "oco_enable": bool(int(r.get("ocoEnable") if r.get("ocoEnable") is not None else 1)),
+                "order_types": r.get("orderTypes") or [],
+            }
             for f in r.get("filters", []) or []:
                 ft = f.get("filterType")
                 if ft == "LOT_SIZE":
@@ -373,7 +377,6 @@ def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quanti
         "price": price_str,              # Take-Profit limit fiyatı
         "stopPrice": stop_price_str,     # SL tetik fiyatı
         "stopLimitPrice": stop_limit_price_str,
-        "stopLimitTimeInForce": "GTC",
     }
     data = _signed_request("POST", "/open/v1/orders/oco", params, api_key, api_secret)
     order_list_id = data.get("orderListId") if isinstance(data, dict) else None
@@ -415,7 +418,7 @@ def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, 
         "quantity": qty_str,
         "price": stop_limit_price_str,
         "stopPrice": stop_price_str,
-        "timeInForce": "GTC",
+        "timeInForce": 1,           # doküman: INT: 1=GTC, 2=IOC, 3=FOK, 4=GTX
     }
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret)
     order_id = data.get("orderId") if isinstance(data, dict) else None
@@ -448,7 +451,7 @@ def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quan
         "type": 1,           # doküman: 1=LIMIT (Take-Profit için)
         "quantity": qty_str,
         "price": price_str,
-        "timeInForce": "GTC",
+        "timeInForce": 1,    # doküman: INT: 1=GTC
     }
     data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret)
     order_id = data.get("orderId") if isinstance(data, dict) else None
