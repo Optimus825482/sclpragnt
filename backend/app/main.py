@@ -47,7 +47,9 @@ from app import ml_forecast
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app import llm_analysis
-from app.binance_tr_private import get_account_balance, get_trade_history, get_symbol_filters, place_market_sell, place_market_buy
+from app.binance_tr_private import (get_account_balance, get_trade_history, get_symbol_filters,
+                                    place_market_sell, place_market_buy, place_oco_sell,
+                                    place_stop_loss_sell, place_limit_sell, cancel_order, get_open_orders)
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
 from app import memory_service
@@ -2468,6 +2470,33 @@ async def binance_positions(request: Request):
             h["pnl_try"] = None
             h["pnl_pct"] = None
         holdings.append(h)
+
+    # Açık emirleri çekip varlıklara iliştir (SL / TP takibi ve koruma durumu)
+    try:
+        open_orders = await asyncio.to_thread(get_open_orders, api_key, api_secret)
+    except Exception as exc:
+        logger.info("Pozisyonlara açık emirler iliştirilemedi: %s", exc)
+        open_orders = []
+
+    orders_by_asset: dict[str, list[dict]] = {}
+    for o in open_orders:
+        sym = (o.get("symbol") or "").upper().replace("_", "")
+        for h in holdings:
+            asset = h["asset"]
+            if sym.startswith(asset) and sym in (f"{asset}TRY", f"{asset}USDT"):
+                orders_by_asset.setdefault(asset, []).append(o)
+                break
+
+    for h in holdings:
+        asset = h["asset"]
+        asset_orders = orders_by_asset.get(asset, [])
+        h["active_orders"] = asset_orders
+        h["has_active_order"] = len(asset_orders) > 0
+        sl_order = next((o for o in asset_orders if float(o.get("stopPrice") or 0) > 0), None)
+        tp_order = next((o for o in asset_orders if (o.get("side") in ("SELL", 1, "1")) and float(o.get("price") or 0) > 0 and float(o.get("stopPrice") or 0) == 0), None)
+        h["active_sl_price"] = float(sl_order.get("stopPrice")) if sl_order else None
+        h["active_tp_price"] = float(tp_order.get("price")) if tp_order else None
+
     holdings.sort(key=lambda h: (h["value_try"] is None, -(h["value_try"] or 0)))
     return {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
 
@@ -2687,6 +2716,133 @@ async def binance_buy(payload: dict, request: Request):
     await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_BUY",
                           target=asset, details={"asset": asset, **result}, request=request)
     return {"ok": True, **result}
+
+
+@app.get("/api/binance/open-orders")
+async def binance_open_orders(request: Request, symbol: str = ""):
+    """Binance TR açık/bekleyen emirler listesi (admin-only)."""
+    _require_admin(request)
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    try:
+        orders = await asyncio.to_thread(get_open_orders, api_key, api_secret, symbol)
+        return {"ok": True, "orders": orders, "count": len(orders)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Açık emirler alınamadı: {exc}")
+
+
+@app.post("/api/binance/cancel-order")
+async def binance_cancel_order(payload: dict, request: Request):
+    """Binance TR açık emrini iptal eder (admin-only)."""
+    _require_admin(request)
+    order_id = payload.get("order_id") or payload.get("orderId")
+    if not order_id:
+        raise HTTPException(status_code=422, detail="order_id zorunludur")
+    symbol = str(payload.get("symbol") or "")
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    try:
+        res = await asyncio.to_thread(cancel_order, api_key, api_secret, order_id, symbol)
+        _actor, _actor_role = _session_identity(request)
+        await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_CANCEL_ORDER",
+                              target=str(order_id), details={"order_id": order_id, "symbol": symbol}, request=request)
+        return {"ok": True, "result": res}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Emir iptal edilemedi: {exc}")
+
+
+@app.post("/api/binance/set-sl-tp")
+async def binance_set_sl_tp(payload: dict, request: Request):
+    """Açık pozisyona Stop-Loss (SL) ve/veya Take-Profit (TP) / OCO emri kurar (admin-only)."""
+    _require_admin(request)
+    sell_ok, sell_source = await _real_sell_state()
+    if not sell_ok:
+        if sell_source == "panel":
+            raise HTTPException(status_code=403, detail="Gerçek emir gönderimi kapalı — Ayarlar > 'GERÇEK SATIŞ' anahtarını açın")
+        raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış")
+
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    asset = str(payload.get("asset") or "").upper().strip()
+    if not asset or asset == "TRY":
+        raise HTTPException(status_code=422, detail="Geçersiz varlık")
+
+    mode = str(payload.get("mode") or "OCO").upper().strip()
+    if mode not in ("OCO", "SL_ONLY", "TP_ONLY"):
+        raise HTTPException(status_code=422, detail="Geçersiz mod (OCO, SL_ONLY veya TP_ONLY olmalı)")
+
+    # Sembol ve filtreleri çöz
+    symbol_u, filters = None, None
+    for quote in ("TRY", "USDT"):
+        cand = f"{asset}_{quote}"
+        f = await asyncio.to_thread(get_symbol_filters, api_key, api_secret, cand)
+        if f:
+            symbol_u, filters = cand, f
+            break
+    if not symbol_u:
+        raise HTTPException(status_code=422, detail=f"{asset} için uygun işlem çifti (TRY/USDT) bulunamadı")
+
+    # Mevcut açık satış emirlerini iptal etme (cancel_existing=True)
+    if payload.get("cancel_existing"):
+        try:
+            existing = await asyncio.to_thread(get_open_orders, api_key, api_secret, symbol_u)
+            for ex in existing:
+                if str(ex.get("side")).upper() in ("SELL", "1") and ex.get("orderId"):
+                    await asyncio.to_thread(cancel_order, api_key, api_secret, ex["orderId"], symbol_u)
+        except Exception as exc:
+            logger.warning("Eski emirler temizlenirken uyarı: %s", exc)
+
+    # Bakiye kontrolü
+    balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+    row = next((b for b in balances if str(b.get("asset") or "").upper() == asset), None)
+    free = float(row.get("free", 0) or 0) if row else 0.0
+
+    req_qty = payload.get("quantity")
+    try:
+        qty = free if req_qty in (None, "", "all") else float(req_qty)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Geçersiz miktar")
+    if qty <= 0:
+        raise HTTPException(status_code=422, detail="Miktar 0'dan büyük olmalı")
+    if qty > free + 1e-9:
+        raise HTTPException(status_code=422, detail=f"Boşta bakiye yetersiz ({free:.6f} {asset} boşta). Mevcut açık emir varsa 'Önceki emirleri iptal et' seçeneğini işaretleyin.")
+
+    step = float((filters or {}).get("step_size") or 0)
+    min_qty = float((filters or {}).get("min_qty") or 0)
+    tick = float((filters or {}).get("tick_size") or 0)
+
+    tp_price = float(payload.get("tp_price") or 0)
+    sl_price = float(payload.get("sl_price") or 0)
+    sl_limit_price = float(payload.get("sl_limit_price") or 0) if payload.get("sl_limit_price") else None
+
+    try:
+        if mode == "OCO":
+            if tp_price <= 0 or sl_price <= 0:
+                raise HTTPException(status_code=422, detail="OCO için hem Kâr Al (TP) hem Zarar Kes (SL) fiyatı girilmelidir")
+            if tp_price <= sl_price:
+                raise HTTPException(status_code=422, detail="Kâr Al (TP) fiyatı Zarar Kes (SL) fiyatından büyük olmalıdır")
+            res = await asyncio.to_thread(
+                place_oco_sell, api_key, api_secret, symbol_u, qty, tp_price, sl_price, sl_limit_price, step, tick
+            )
+        elif mode == "SL_ONLY":
+            if sl_price <= 0:
+                raise HTTPException(status_code=422, detail="Zarar Kes (SL) fiyatı girilmelidir")
+            res = await asyncio.to_thread(
+                place_stop_loss_sell, api_key, api_secret, symbol_u, qty, sl_price, sl_limit_price, step, tick
+            )
+        else: # TP_ONLY
+            if tp_price <= 0:
+                raise HTTPException(status_code=422, detail="Kâr Al (TP) fiyatı girilmelidir")
+            res = await asyncio.to_thread(
+                place_limit_sell, api_key, api_secret, symbol_u, qty, tp_price, step, tick
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Emir gönderilemedi: {exc}")
+
+    _actor, _actor_role = _session_identity(request)
+    await log_user_action(_actor, _actor_role, "trade", f"BINANCE_TR_SET_{mode}",
+                          target=asset, details={"asset": asset, "mode": mode, **res}, request=request)
+    return {"ok": True, "mode": mode, **res}
+
 
 
 @app.get("/api/binance/trades-day")
