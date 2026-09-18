@@ -8,11 +8,12 @@ import {
   IChartApi,
   ISeriesApi,
   IPriceLine,
-  Time,
+  UTCTimestamp,
   LineStyle,
 } from "lightweight-charts";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
+import { commissionPct } from "../lib/pnl";
 
 export type Holding = {
   asset: string;
@@ -42,7 +43,7 @@ interface Props {
 type Timeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
 
 interface CandleBar {
-  time: Time;
+  time: UTCTimestamp;
   open: number;
   high: number;
   low: number;
@@ -51,9 +52,11 @@ interface CandleBar {
 
 // Bollinger Bands hesaplayıcı (20, 2)
 function calculateBollingerBands(bars: CandleBar[], period = 20, multiplier = 2) {
-  const upper: { time: Time; value: number }[] = [];
-  const middle: { time: Time; value: number }[] = [];
-  const lower: { time: Time; value: number }[] = [];
+  const upper: { time: UTCTimestamp; value: number }[] = [];
+  const middle: { time: UTCTimestamp; value: number }[] = [];
+  const lower: { time: UTCTimestamp; value: number }[] = [];
+
+  if (bars.length < period) return { upper, middle, lower };
 
   for (let i = period - 1; i < bars.length; i++) {
     let sum = 0;
@@ -69,9 +72,11 @@ function calculateBollingerBands(bars: CandleBar[], period = 20, multiplier = 2)
     const stdDev = Math.sqrt(varianceSum / period);
 
     const time = bars[i].time;
-    middle.push({ time, value: sma });
-    upper.push({ time, value: sma + multiplier * stdDev });
-    lower.push({ time, value: sma - multiplier * stdDev });
+    if (Number.isFinite(time) && Number.isFinite(sma) && Number.isFinite(stdDev)) {
+      middle.push({ time, value: Number(sma.toFixed(6)) });
+      upper.push({ time, value: Number((sma + multiplier * stdDev).toFixed(6)) });
+      lower.push({ time, value: Number((sma - multiplier * stdDev).toFixed(6)) });
+    }
   }
 
   return { upper, middle, lower };
@@ -152,38 +157,54 @@ export default function BinancePositionChartModal({
       const res = await apiRequest(
         `${API_BASE}/api/market-klines/${symbolConcat}?interval=${tf}&limit=250`
       );
+      if (!res.ok) {
+        console.warn(`Kline yüklenemedi: HTTP ${res.status}`);
+        return;
+      }
       const data = await res.json();
-      if (Array.isArray(data?.candles)) {
-        // Binance TR /api/v3/klines returns arrays: [openTime, open, high, low, close, vol, ...]
-        // Each element c is either a number[] (raw Binance format) or already a dict.
-        const parsed: CandleBar[] = data.candles
-          .map((c: any) => {
-            if (Array.isArray(c)) {
-              return {
-                time: Math.floor(Number(c[0]) / 1000) as Time,
-                open: Number(c[1]),
-                high: Number(c[2]),
-                low: Number(c[3]),
-                close: Number(c[4]),
-              };
+      if (Array.isArray(data?.candles) && data.candles.length > 0) {
+        const parsed: CandleBar[] = [];
+        const seen = new Set<number>();
+        for (const c of data.candles) {
+          let timeSec = 0;
+          let open = 0, high = 0, low = 0, close = 0;
+          if (Array.isArray(c)) {
+            const rawT = Number(c[0]);
+            timeSec = rawT > 1e11 ? Math.floor(rawT / 1000) : Math.floor(rawT);
+            open = Number(c[1]);
+            high = Number(c[2]);
+            low = Number(c[3]);
+            close = Number(c[4]);
+          } else if (c && typeof c === "object") {
+            const rawT = Number(c.time ?? c.open_time ?? c.openTime ?? c.t ?? 0);
+            timeSec = rawT > 1e11 ? Math.floor(rawT / 1000) : Math.floor(rawT);
+            open = Number(c.open ?? c.o ?? 0);
+            high = Number(c.high ?? c.h ?? 0);
+            low = Number(c.low ?? c.l ?? 0);
+            close = Number(c.close ?? c.c ?? 0);
+          }
+          if (Number.isFinite(timeSec) && timeSec > 0 && Number.isFinite(close) && close > 0) {
+            if (!seen.has(timeSec)) {
+              seen.add(timeSec);
+              parsed.push({
+                time: timeSec as UTCTimestamp,
+                open: Number.isFinite(open) && open > 0 ? open : close,
+                high: Number.isFinite(high) && high > 0 ? high : close,
+                low: Number.isFinite(low) && low > 0 ? low : close,
+                close,
+              });
             }
-            // Fallback: dict format (time may be seconds or ms)
-            const t = Number(c.time ?? c.open_time ?? 0);
-            return {
-              time: (t > 1e11 ? Math.floor(t / 1000) : t) as Time,
-              open: Number(c.open),
-              high: Number(c.high),
-              low: Number(c.low),
-              close: Number(c.close),
-            };
-          })
-          .filter((c: CandleBar) => Number(c.time) > 0)
-          .sort((a: CandleBar, b: CandleBar) => Number(a.time) - Number(b.time));
+          }
+        }
+        parsed.sort((a, b) => Number(a.time) - Number(b.time));
 
-        setCandles(parsed);
         if (parsed.length > 0) {
+          setCandles(parsed);
           const lastClose = parsed[parsed.length - 1].close;
           setCurrentPrice(lastClose);
+          setTimeout(() => {
+            chartApiRef.current?.timeScale().fitContent();
+          }, 60);
         }
       }
     } catch (err) {
@@ -294,17 +315,31 @@ export default function BinancePositionChartModal({
   useEffect(() => {
     if (!candleSeriesRef.current || candles.length === 0) return;
 
-    candleSeriesRef.current.setData(candles as any);
+    try {
+      candleSeriesRef.current.setData(candles as any);
+    } catch (e) {
+      console.error("candleSeries.setData hatası:", e);
+    }
 
     // Bollinger Bantları Güncelleme
     if (showBB && upperBbRef.current && middleBbRef.current && lowerBbRef.current) {
       const { upper, middle, lower } = calculateBollingerBands(candles, 20, 2);
-      upperBbRef.current.setData(upper as any);
-      middleBbRef.current.setData(middle as any);
-      lowerBbRef.current.setData(lower as any);
-      upperBbRef.current.applyOptions({ visible: true });
-      middleBbRef.current.applyOptions({ visible: true });
-      lowerBbRef.current.applyOptions({ visible: true });
+      if (upper.length > 0) {
+        try {
+          upperBbRef.current.setData(upper as any);
+          middleBbRef.current.setData(middle as any);
+          lowerBbRef.current.setData(lower as any);
+          upperBbRef.current.applyOptions({ visible: true });
+          middleBbRef.current.applyOptions({ visible: true });
+          lowerBbRef.current.applyOptions({ visible: true });
+        } catch (e) {
+          console.error("BB.setData hatası:", e);
+        }
+      } else {
+        upperBbRef.current.applyOptions({ visible: false });
+        middleBbRef.current.applyOptions({ visible: false });
+        lowerBbRef.current.applyOptions({ visible: false });
+      }
     } else if (upperBbRef.current && middleBbRef.current && lowerBbRef.current) {
       upperBbRef.current.applyOptions({ visible: false });
       middleBbRef.current.applyOptions({ visible: false });
@@ -420,27 +455,31 @@ export default function BinancePositionChartModal({
           const bar = klineData;
           if (!bar || !candleSeriesRef.current) return;
           try {
-            let formatted: CandleBar;
+            let timeSec = 0;
+            let open = 0, high = 0, low = 0, close = 0;
             if (Array.isArray(bar)) {
-              // Raw Binance array: [openTime, open, high, low, close, ...]
-              formatted = {
-                time: Math.floor(Number(bar[0]) / 1000) as Time,
-                open: Number(bar[1]),
-                high: Number(bar[2]),
-                low: Number(bar[3]),
-                close: Number(bar[4]),
-              };
-            } else {
-              const t = Number(bar.time ?? bar.open_time ?? 0);
-              formatted = {
-                time: (t > 1e11 ? Math.floor(t / 1000) : t) as Time,
-                open: Number(bar.open),
-                high: Number(bar.high),
-                low: Number(bar.low),
-                close: Number(bar.close),
-              };
+              const rawT = Number(bar[0]);
+              timeSec = rawT > 1e11 ? Math.floor(rawT / 1000) : Math.floor(rawT);
+              open = Number(bar[1]);
+              high = Number(bar[2]);
+              low = Number(bar[3]);
+              close = Number(bar[4]);
+            } else if (typeof bar === "object") {
+              const rawT = Number(bar.time ?? bar.open_time ?? bar.openTime ?? bar.t ?? 0);
+              timeSec = rawT > 1e11 ? Math.floor(rawT / 1000) : Math.floor(rawT);
+              open = Number(bar.open ?? bar.o ?? 0);
+              high = Number(bar.high ?? bar.h ?? 0);
+              low = Number(bar.low ?? bar.l ?? 0);
+              close = Number(bar.close ?? bar.c ?? 0);
             }
-            if (Number(formatted.time) <= 0) return; // skip malformed ticks
+            if (!Number.isFinite(timeSec) || timeSec <= 0 || !Number.isFinite(close) || close <= 0) return;
+            const formatted: CandleBar = {
+              time: timeSec as UTCTimestamp,
+              open: Number.isFinite(open) && open > 0 ? open : close,
+              high: Number.isFinite(high) && high > 0 ? high : close,
+              low: Number.isFinite(low) && low > 0 ? low : close,
+              close,
+            };
             candleSeriesRef.current.update(formatted as any);
             setCurrentPrice(formatted.close);
           } catch (e) {
@@ -589,6 +628,32 @@ export default function BinancePositionChartModal({
     setUpdateError(null);
   };
 
+  const handleBreakEven = () => {
+    if (!entryPrice || entryPrice <= 0) {
+      showToast("Giriş maliyeti bulunamadı.", "error");
+      return;
+    }
+    const curP = currentPrice ?? holding.price_try;
+    if (!curP || curP <= entryPrice) {
+      showToast("Fiyat henüz alış maliyetinin üzerine (kâra) geçmedi.", "info");
+      return;
+    }
+
+    const commRate = 2 * commissionPct(); // Gidiş-dönüş komisyon oranı
+    const profitBuffer = 0.05 / 100; // %0.05 net kâr kilidi
+    const bePrice = entryPrice * (1 + commRate + profitBuffer);
+
+    if (bePrice >= curP) {
+      showToast(`Fiyat kârda ancak kâr kilidi seviyesinin (₺${fmtPrice(bePrice)}) altında.`, "info");
+      return;
+    }
+
+    const precision = curP < 1 ? 6 : 2;
+    const finalPrice = Number(bePrice.toFixed(precision));
+    setPendingSl(finalPrice);
+    showToast(`🔒 Break-Even stop belirlendi: ₺${fmtPrice(finalPrice)}. Kaydetmek için 'Onayla ve Kaydet'e tıklayın.`, "success");
+  };
+
   // Metrik Hesaplamaları
   const curPnlTry =
     entryPrice && currentPrice ? (currentPrice - entryPrice) * holding.total : null;
@@ -713,6 +778,18 @@ export default function BinancePositionChartModal({
             >
               ⛶ Sığdır
             </button>
+
+            {/* Break-Even (Kârı Kilitle) Butonu */}
+            {entryPrice && currentPrice && currentPrice > entryPrice && (
+              <button
+                type="button"
+                onClick={handleBreakEven}
+                className="flex items-center gap-1 rounded-lg border border-amber-500/50 bg-amber-500/15 px-2.5 py-1 text-[11px] font-mono font-bold text-amber-300 hover:bg-amber-500/30 hover:border-amber-400 transition-all shadow-sm"
+                title="Giriş maliyeti + komisyon + %0.05 kâr kilidi ile SL ayarla"
+              >
+                <span>🔒 Break-Even</span>
+              </button>
+            )}
           </div>
 
           {/* Sağ: Kapat Butonu */}
@@ -870,6 +947,20 @@ export default function BinancePositionChartModal({
                 <span>🎯</span>
                 <span>Buraya Kâr Al (TP) Koy</span>
               </button>
+
+              {entryPrice && currentPrice && currentPrice > entryPrice && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleBreakEven();
+                    closeContextMenu();
+                  }}
+                  className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-left text-amber-300 hover:bg-amber-500/20 transition-colors"
+                >
+                  <span>🔒</span>
+                  <span>Break-Even Kâr Kilidi Koy</span>
+                </button>
+              )}
 
               <div className="my-1 border-t border-bunker-800" />
 

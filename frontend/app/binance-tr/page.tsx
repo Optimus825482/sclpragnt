@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { API_BASE, apiRequest } from "../lib/api";
 import { localDateInput } from "../lib/format";
 import { useLiveMessages } from "../lib/liveSocket";
+import { commissionPct } from "../lib/pnl";
 import RequireAdmin from "../components/RequireAdmin";
 
 const BinancePositionChartModal = dynamic(() => import("./BinancePositionChartModal"), { ssr: false });
@@ -658,6 +659,49 @@ function BinanceTrPageInner() {
     setSltpSlLimitPrice((target * 0.995).toFixed(currentTargetPrice < 1 ? 6 : 2));
   };
 
+  const applyBreakEven = () => {
+    if (!sltpTarget) return;
+    const entryPrice = Number(sltpTarget.avg_cost_try || 0);
+    const curPrice = Number(currentTargetPrice || liveTicks[sltpTarget.asset]?.price || sltpTarget.price_try || 0);
+
+    if (!entryPrice || entryPrice <= 0) {
+      setSltpMsg({ ok: false, text: "Break-Even hesaplanamadı: Alış maliyeti (giriş fiyatı) bulunamadı." });
+      return;
+    }
+
+    if (curPrice <= entryPrice) {
+      setSltpMsg({
+        ok: false,
+        text: `Fiyat henüz kâra geçmedi. Güncel: ₺${fmtPrice(curPrice)}, Alış Maliyeti: ₺${fmtPrice(entryPrice)}`,
+      });
+      return;
+    }
+
+    // Komisyon oranı (gidiş-dönüş: 2 * komisyon) + %0.05 net kâr kilidi
+    const commRate = 2 * commissionPct();
+    const profitBuffer = 0.05 / 100;
+    const bePrice = entryPrice * (1 + commRate + profitBuffer);
+
+    if (bePrice >= curPrice) {
+      setSltpMsg({
+        ok: false,
+        text: `Fiyat kârda ancak kâr kilidi seviyesinin (₺${fmtPrice(bePrice)}) altında. Güncel fiyatın biraz daha yükselmesi gerekiyor.`,
+      });
+      return;
+    }
+
+    const precision = curPrice < 1 ? 6 : 2;
+    const slStr = bePrice.toFixed(precision);
+    const slLimitStr = (bePrice * 0.995).toFixed(precision);
+
+    setSltpSlPrice(slStr);
+    setSltpSlLimitPrice(slLimitStr);
+    setSltpMsg({
+      ok: true,
+      text: `🔒 Break-Even kâr kilidi ayarlandı: ₺${fmtPrice(bePrice)} (Maliyet: ₺${fmtPrice(entryPrice)} + Komisyon: %${(commRate * 100).toFixed(2)} + Net Kâr: %0.05)`,
+    });
+  };
+
   const applyQtyPct = (pct: number) => {
     if (!sltpTarget) return;
     const base = sltpTarget.free > 0 ? sltpTarget.free : sltpTarget.total;
@@ -1055,7 +1099,6 @@ function BinanceTrPageInner() {
                           <th>Boşta / Kilitli Miktar</th>
                           <th>Alış Maliyeti</th>
                           <th>Güncel Fiyat</th>
-                          <th>24s Hacim</th>
                           <th>Anlık K/Z</th>
                           <th>TRY Değeri</th>
                           <th>SL / TP Durumu</th>
@@ -1118,9 +1161,6 @@ function BinanceTrPageInner() {
                               </td>
                               <td className={`font-mono text-xs tabular-nums font-medium whitespace-nowrap ${dir ? (dir === "up" ? "text-neon-green" : "text-neon-red") : "text-white"}`}>
                                 {h.price_try != null ? `₺${fmtPrice(h.price_try, h.price_try < 1 ? 6 : 2)}` : "—"}
-                              </td>
-                              <td className="font-mono text-xs text-bunker-muted tabular-nums whitespace-nowrap">
-                                {h.asset === "TRY" ? "—" : fmtVolume(h.volume_try)}
                               </td>
                               <td className={`font-mono text-xs font-bold tabular-nums whitespace-nowrap ${pnlToneCls}`}>
                                 {h.pnl_try != null ? (
@@ -1591,7 +1631,15 @@ function BinanceTrPageInner() {
                         placeholder="Örn: 950.00"
                         className="input flex-1 font-mono text-xs"
                       />
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={applyBreakEven}
+                          title="Fiyat kârdaysa; alış maliyeti + komisyon + %0.05 kâr kilidi ile stop belirle"
+                          className="rounded border border-amber-500/50 bg-amber-500/15 px-2 py-1 font-mono text-[10px] font-bold text-amber-300 hover:bg-amber-500/30 hover:border-amber-400 transition-all shadow-sm flex items-center gap-1"
+                        >
+                          <span>🔒 Break-Even</span>
+                        </button>
                         {[2, 3, 5, 7, 10].map((pct) => (
                           <button
                             key={pct}
