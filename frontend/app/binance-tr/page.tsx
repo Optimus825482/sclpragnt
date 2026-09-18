@@ -115,6 +115,7 @@ function BinanceTrPageInner() {
   const [buyAmount, setBuyAmount] = useState("100"); // TRY tutarı (manuel + slider)
   const [buyBusy, setBuyBusy] = useState(false);
   const [buyMsg, setBuyMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const MATCH_MIN_CHARS = 3;  // Daha garanti eslesme: ilk 3 harften sonra listele (Erkan, 18.09)
   const [buyDone, setBuyDone] = useState<{ order: string; asset: string; qty: string; price: string } | null>(null);
   const [pairs, setPairs] = useState<string[]>([]);  // base varlık listesi (autocomplete)
   const buyAssetRef = useRef("");
@@ -128,8 +129,10 @@ function BinanceTrPageInner() {
   }, [buyAmount, buyTryFree]);
   const buyMatches = useMemo(() => {
     const q = buyInput.trim().toUpperCase();
-    if (q.length < 2) return [];
-    return pairs.filter((p) => p.includes(q)).slice(0, 8);
+    if (q.length < MATCH_MIN_CHARS) return [];
+    // Liste base varlik ("G") tutar; kullanicinin gordugu etiket "GTRY"
+    // oldugu icin eslesme gosterilen etiket uzerinden yapilir.
+    return pairs.filter((p) => (p + "TRY").includes(q)).slice(0, 8);
   }, [buyInput, pairs]);
 
   const [tradeDay, setTradeDay] = useState(() => localDateInput());
@@ -539,7 +542,7 @@ function BinanceTrPageInner() {
                 <label className="relative block">
                   <span className="eyebrow">SEMBOL</span>
                   <input value={buyInput} onChange={(e) => { setBuyInput(e.target.value); setBuyAsset(""); }}
-                    placeholder="Ilk iki harfi gir — eslesenler listelenir (örn. 'MI')"
+                    placeholder="Ilk uc harfi gir — eslesenler listelenir"
                     className="input mt-1 w-full font-mono text-xs" />
                   {buyMatches.length > 0 && !buyAsset && (
                     <div className="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-bunker-600 bg-bunker-900 shadow-2xl">
