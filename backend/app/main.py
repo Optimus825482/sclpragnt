@@ -2846,6 +2846,13 @@ async def binance_set_sl_tp(payload: dict, request: Request):
     except HTTPException:
         raise
     except Exception as exc:
+        import traceback
+        logger.error(
+            "BINANCE_SET_SL_TP HATA | asset=%s mode=%s qty=%s tp=%s sl=%s | %s\n%s",
+            asset, mode, qty,
+            payload.get("tp_price"), payload.get("sl_price"),
+            exc, traceback.format_exc()
+        )
         raise HTTPException(status_code=502, detail=f"Emir gönderilemedi: {exc}")
 
     _actor, _actor_role = _session_identity(request)
