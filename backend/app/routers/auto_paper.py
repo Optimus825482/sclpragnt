@@ -503,6 +503,13 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
 
 async def _update_existing_trade(open_trade: dict, notification: dict, current_price: float) -> dict | None:
     """Açık pozisyon için TP'yi bildirimdeki yeni hedefle güncelle."""
+    # ERKAN İSTEĞİ (2026-09-18): trailing devreye girdiği pozisyonda TP kaldırılır;
+    # yeni bildirim TP'yi geri YAZMAZ — geri yazmak kaldırma kararını bozar ve
+    # fiyat tahmin edilen artışın üzerinde yükselirken çıkışı keser. Pozisyonun
+    # çıkışı artık tamamen trailing stop'a aittir.
+    if open_trade.get("trailing_activated"):
+        return {"status": "no_change", "trade_id": open_trade["id"],
+                "symbol": open_trade["symbol"], "reason": "trailing_active"}
     try:
         target_pct = _effective_target_pct(notification)
         if target_pct <= 0:
@@ -735,6 +742,20 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
                 await database.update_auto_paper_trailing(trade_id, True, applied_trailing)
                 current_trailing_stop = applied_trailing
                 logger.info("auto_paper %s: trailing stop=%.6f (gross=%+.2f%%)", symbol, applied_trailing, gross_pnl_pct)
+
+            # ERKAN İSTEĞİ (2026-09-18): trailing devreye girdiği AN TP kaldırılır —
+            # çıkış tamamen trailing stop'a devredilir. Böylece fiyat tahmin edilen
+            # artışın üzerinde yükselirse pozisyon taşınmaya devam eder (maksimum
+            # kar); küçük geri çekilmelerde zirvenin %gap gerisindeki stop kilitler.
+            # Kapanıştan EN ÜSTTEKI TP-birincil çıkışı (TP-primary) aktivasyon
+            # turundan İTİBAREN devre dışı kalır (DB'de take_profit=NULL).
+            if take_profit is not None:
+                try:
+                    await database.update_auto_paper_trade_tp(trade_id, None)
+                    take_profit = None
+                    logger.info("auto_paper %s: trailing aktivasyonu — TP kaldırıldı, çıkış trailing stop'a devredildi", symbol)
+                except Exception as tp_exc:
+                    logger.warning("auto_paper %s: TP kaldırılamadı (trailing yine de aktif): %s", symbol, tp_exc)
 
         # Trailing stop koruması: aktifse ve fiyat stopa düştüyse kapat.
         # D-08: stop dolumu tetik fiyatından (gap-through: max(price, stop)).
