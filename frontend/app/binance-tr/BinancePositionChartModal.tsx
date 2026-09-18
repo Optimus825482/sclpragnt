@@ -39,7 +39,7 @@ interface Props {
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
-type Timeframe = "1m" | "3m" | "5m" | "15m" | "1h" | "4h" | "1d";
+type Timeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
 
 interface CandleBar {
   time: Time;
@@ -154,14 +154,30 @@ export default function BinancePositionChartModal({
       );
       const data = await res.json();
       if (Array.isArray(data?.candles)) {
+        // Binance TR /api/v3/klines returns arrays: [openTime, open, high, low, close, vol, ...]
+        // Each element c is either a number[] (raw Binance format) or already a dict.
         const parsed: CandleBar[] = data.candles
-          .map((c: any) => ({
-            time: (c.time > 1e11 ? Math.floor(c.time / 1000) : c.time) as Time,
-            open: Number(c.open),
-            high: Number(c.high),
-            low: Number(c.low),
-            close: Number(c.close),
-          }))
+          .map((c: any) => {
+            if (Array.isArray(c)) {
+              return {
+                time: Math.floor(Number(c[0]) / 1000) as Time,
+                open: Number(c[1]),
+                high: Number(c[2]),
+                low: Number(c[3]),
+                close: Number(c[4]),
+              };
+            }
+            // Fallback: dict format (time may be seconds or ms)
+            const t = Number(c.time ?? c.open_time ?? 0);
+            return {
+              time: (t > 1e11 ? Math.floor(t / 1000) : t) as Time,
+              open: Number(c.open),
+              high: Number(c.high),
+              low: Number(c.low),
+              close: Number(c.close),
+            };
+          })
+          .filter((c: CandleBar) => Number(c.time) > 0)
           .sort((a: CandleBar, b: CandleBar) => Number(a.time) - Number(b.time));
 
         setCandles(parsed);
@@ -393,22 +409,38 @@ export default function BinancePositionChartModal({
       (msg) => {
         if (!msg) return;
 
-        // Mum Akışı
-        if (
-          msg.type === "kline" &&
-          (msg as any).symbol === symbolConcat &&
-          (msg as any).interval === timeframe
-        ) {
-          const bar = (msg as any).data;
+        // Mum Akışı — backend yayın formatı: { type:"kline", data:{ symbol, timeframe, time, open, ... } }
+        if (msg.type === "kline") {
+          const klineData = (msg as any).data;
+          // Sembol ve timeframe eşleşmesini msg.data içinde kontrol et
+          const msgSymbol = klineData?.symbol ?? (msg as any).symbol;
+          const msgTimeframe = klineData?.timeframe ?? klineData?.interval ?? (msg as any).interval;
+          if (msgSymbol !== symbolConcat || msgTimeframe !== timeframe) return;
+
+          const bar = klineData;
           if (!bar || !candleSeriesRef.current) return;
           try {
-            const formatted = {
-              time: (bar.time > 1e11 ? Math.floor(bar.time / 1000) : bar.time) as Time,
-              open: Number(bar.open),
-              high: Number(bar.high),
-              low: Number(bar.low),
-              close: Number(bar.close),
-            };
+            let formatted: CandleBar;
+            if (Array.isArray(bar)) {
+              // Raw Binance array: [openTime, open, high, low, close, ...]
+              formatted = {
+                time: Math.floor(Number(bar[0]) / 1000) as Time,
+                open: Number(bar[1]),
+                high: Number(bar[2]),
+                low: Number(bar[3]),
+                close: Number(bar[4]),
+              };
+            } else {
+              const t = Number(bar.time ?? bar.open_time ?? 0);
+              formatted = {
+                time: (t > 1e11 ? Math.floor(t / 1000) : t) as Time,
+                open: Number(bar.open),
+                high: Number(bar.high),
+                low: Number(bar.low),
+                close: Number(bar.close),
+              };
+            }
+            if (Number(formatted.time) <= 0) return; // skip malformed ticks
             candleSeriesRef.current.update(formatted as any);
             setCurrentPrice(formatted.close);
           } catch (e) {
@@ -642,7 +674,7 @@ export default function BinancePositionChartModal({
           <div className="flex items-center gap-1.5">
             {/* TF Seçici */}
             <div className="flex items-center rounded-lg border border-bunker-800 bg-bunker-900/80 p-0.5">
-              {(["1m", "3m", "5m", "15m", "1h", "4h", "1d"] as Timeframe[]).map((tf) => (
+              {(["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as Timeframe[]).map((tf) => (
                 <button
                   key={tf}
                   type="button"
