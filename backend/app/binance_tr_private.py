@@ -284,6 +284,17 @@ def get_account_balance(api_key: str, api_secret: str) -> list[dict]:
     ]
 
 
+def get_spot_account_raw(api_key: str, api_secret: str) -> dict:
+    """GET /open/v1/account/spot — TÜM ham veri (zarfsız).
+
+    Doküman 2026-04-07 itibarıyla cevap TRY fiat çiftleri için
+    fiatMakerCommission / fiatTakerCommission da taşıyor; LLM işlem
+    değerlendirmesi gerçek komisyon oranını buradan okur.
+    """
+    data = _signed_request("GET", "/open/v1/account/spot", None, api_key, api_secret)
+    return data if isinstance(data, dict) else {}
+
+
 def get_open_orders(api_key: str, api_secret: str, symbol: str = "") -> list[dict]:
     """Açık emirler (type=1). Dokümanda /open/v1/orders için symbol zorunlu;
     sembolsüz çağrı önce denenir, reddedilirse tüm semboller taranır (30 sn cache)."""

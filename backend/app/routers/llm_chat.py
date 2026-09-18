@@ -2,6 +2,7 @@
 import asyncio
 import json
 import math
+import os
 import re
 import time
 import logging
@@ -20,6 +21,7 @@ from app.routers.llm_position_tools import (LLM_POSITION_CONTEXT_TOOL, LLM_UPDAT
                             LLM_LIST_SYMBOL_GUARDS_TOOL)
 from app.routers.maintenance import backfill_symbol_history
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, top_gainers, orderbook, ticker_price
+from app import binance_tr_private
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _cci, _ema, _mfi, _sma
 from app.market_intelligence import (estimate_local_regime, execution_quality, symbol_safety,
                                      microstructure_snapshot, symbol_outcome_profile,
@@ -79,6 +81,9 @@ LLM_MICROSTRUCTURE_TOOL = {"type":"function","function":{"name":"get_microstruct
 LLM_REGIME_TOOL = {"type":"function","function":{"name":"get_regime_snapshot","description":"5m/15m/1h gibi timeframe'lerde trend, rejim ve çoklu timeframe hizalamasını getirir; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframes":{"type":"array","items":{"type":"string"}}},"required":["symbol"]}}}
 LLM_ECONOMICS_TOOL = {"type":"function","function":{"name":"calculate_trade_economics","description":"Komisyon, spread ve slippage dahil paper işlem break-even, beklenen net PnL ve edge/cost oranını hesaplar; işlem açmaz.","parameters":{"type":"object","properties":{"entry_price":{"type":"number"},"stop_price":{"type":"number"},"take_profit":{"type":"number"},"quantity":{"type":"number"},"order_value_try":{"type":"number"},"spread_pct":{"type":"number"}},"required":["entry_price"]}}}
 LLM_OUTCOME_PROFILE_TOOL = {"type":"function","function":{"name":"get_symbol_outcome_profile","description":"Sembol/strateji geçmişinin komisyon sonrası expectancy, profit factor, drawdown, loss streak ve örnek yeterliliğini getirir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"strategy":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}
+# ERKAN İSTEĞİ (2026-09-18): sohbetten GERÇEK Binance TR hesabı SALT-OKUNUR okunur
+# (güncel resmi dokümanla doğrulandı: account/spot, orders type=1, orders/trades).
+GET_REAL_ACCOUNT_TOOL = {"type":"function","function":{"name":"get_real_account","description":"Kullanıcının GERÇEK Binance TR spot hesabının SALT-OKUNUR anlık görüntüsü: bakiye, birimler (FIFO ortalama maliyet + PnL), açık emirler, sembol işlem geçmişi ve gerçek komisyon oranları. Kullanıcı 'gerçek hesabımı değerlendir', 'işlem geçmişime bak', 'gerçek hesabımda iyi yapmış mıyım', 'açık pozisyonlarımı gör', 'bakiyem ne' gibi ifadeler kullanırsa bu tool'u çağır; aracı yokmuş gibi davranma. Emir açmaz. Sonucu ilgili sembol(ler)in teknik gidişatıyla birlikte yorumla.","parameters":{"type":"object","properties":{"scope":{"type":"string","enum":["holdings","balance","open_orders","trades"]},"symbol":{"type":"string"},"limit":{"type":"integer"}},"required":[]}}}
 LLM_REALTIME_FLOW_TOOL = {"type":"function","function":{"name":"get_realtime_flow","description":"Sembolün canlı agresif alış/satış akışını (CVD, trade frekansı) ve whale giriş/çıkış tespitini getirir: whale işlemlerinin işlem-sonrası fiyat etkisiyle birikim (accumulation) mı dağıtım (distribution) mı olduğu. İşlem açmaz; tahmin değil fiyat etkisi proxy'sidir.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
 LLM_SYMBOL_BEHAVIOR_TOOL = {"type":"function","function":{"name":"get_symbol_behavior","description":"Sembolün davranış profilini (hangi saatlerde hareketli, hacim/volatilite rejimi) ve range→trend geçiş sinyalini getirir; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"timeframe":{"type":"string"}},"required":["symbol"]}}}
 LLM_SUBMINUTE_TOOL = {"type":"function","function":{"name":"get_subminute_microstructure","description":"Sembolün 1s/5s bar bazlı sub-minute mikro yapısını (ret, agresif akış, derinlik) ve whale birikim/dağıtım tespitini getirir; işlem açmaz.","parameters":{"type":"object","properties":{"symbol":{"type":"string"},"depth_limit":{"type":"integer"}},"required":["symbol"]}}}
@@ -2141,6 +2146,105 @@ async def safe_read_only_sql(args: dict):
                 "error_code": type(exc).__name__, "error": str(exc),
                 "retryable": False, "hint": "query_database aracını veya izinli tablo/sütunları kullan"}
 
+def _llm_binance_read_enabled() -> bool:
+    # Gerçek hesap okuma izni (Erkan isteği, 2026-09-18): sohbetten gerçek
+    # Binance TR hesabının SALT-OKUNUR görüntüsü. Kapatmak için env=0.
+    return os.getenv("ENABLE_REAL_BINANCE_LLM_READ", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def _get_real_account_tool(args: dict) -> dict:
+    """Gerçek Binance TR hesabı — SALT-OKUNUR anlık görüntü.
+
+    Emir açmaz; yalnızca belgelenmiş okuma uçlarını çağırır (güncel resmi
+    dokümanla doğrulandı: account/spot, orders type=1, orders/trades ve
+    fromId ile birlikte direct zorunluluğu — adapter bunları zaten karşılar).
+    """
+    if not _llm_binance_read_enabled():
+        return {"ok": False, "read_only": True, "retryable": False,
+                "error": "Gerçek hesap okuma izni kapalı (ENABLE_REAL_BINANCE_LLM_READ=0)"}
+    enc_key = await database.get_llm_setting("binance_api_key_encrypted", "")
+    enc_secret = await database.get_llm_setting("binance_api_secret_encrypted", "")
+    if not enc_key or not enc_secret:
+        return {"ok": False, "read_only": True, "retryable": False,
+                "error": "Binance API anahtarları kayıtlı değil — Ayarlar > Admin > Binance API bölümünden ekle"}
+    try:
+        api_key = llm_analysis.decrypt_key(enc_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+        api_secret = llm_analysis.decrypt_key(enc_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+    except Exception as exc:
+        return {"ok": False, "read_only": True, "retryable": False,
+                "error": f"Binance anahtarları çözülemedi: {type(exc).__name__} — şifreleme anahtarı uyumsuz olabilir"}
+    scope = str(args.get("scope") or "holdings").strip().lower()
+    try:
+        if scope == "open_orders":
+            orders = await asyncio.to_thread(binance_tr_private.get_open_orders, api_key, api_secret)
+            return {"ok": True, "scope": "open_orders", "count": len(orders), "orders": orders[:50], "read_only": True}
+        if scope == "trades":
+            symbol = str(args.get("symbol") or "").upper()
+            if not symbol:
+                return {"ok": False, "read_only": True, "retryable": False,
+                        "error": "trades kapsamı için sembol gerekli (örn. GTRY)"}
+            limit = max(1, min(int(args.get("limit", 100)), 300))
+            trades = await asyncio.to_thread(binance_tr_private.get_trade_history, api_key, api_secret, symbol, None, None, limit, 0)
+            return {"ok": True, "scope": "trades", "symbol": symbol, "count": len(trades), "trades": trades, "read_only": True}
+        if scope == "balance":
+            balances = await asyncio.to_thread(binance_tr_private.get_account_balance, api_key, api_secret)
+            non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
+            return {"ok": True, "scope": "balance", "balances": non_zero, "read_only": True}
+        # Varsayılan: holdings (bakiye + TRY değeri + FIFO maliyeti + PnL)
+        account = await asyncio.to_thread(binance_tr_private.get_spot_account_raw, api_key, api_secret)
+        meta = {k: v for k, v in account.items() if k != "accountAssets"}
+        held = []
+        for b in account.get("accountAssets") or []:
+            free = float(b.get("free", 0) or 0); locked = float(b.get("locked", 0) or 0)
+            total = free + locked
+            if total <= 0: continue
+            held.append({"asset": str(b.get("asset") or "").upper(), "free": free, "locked": locked, "total": total})
+        if not held:
+            return {"ok": True, "scope": "holdings", "holdings": [], "total_value_try": 0,
+                    "account_meta": meta, "note": "hesapta non-zero varlık yok", "read_only": True}
+        from app.main import _avg_buy_cost  # dairesel içe aktarmayı önlemek için fonksiyon-düzeyi
+        candidates = []
+        for h in held:
+            if h["asset"] != "TRY": candidates.extend([f"{h['asset']}TRY", f"{h['asset']}USDT"])
+        if any(h["asset"] == "USDT" for h in held): candidates.append("USDTTRY")
+        price_by_symbol: dict[str, float] = {}
+        for i in range(0, len(candidates), 50):
+            try:
+                rows = await ticker_price(candidates[i:i + 50])
+                for row in rows if isinstance(rows, list) else []:
+                    try: price_by_symbol[str(row.get("symbol") or "").upper()] = float(row.get("price") or 0)
+                    except (TypeError, ValueError): continue
+            except Exception:
+                continue
+        usdt_try = price_by_symbol.get("USDTTRY", 0.0)
+        now_ts = time.time()
+        out = []
+        for h in held:
+            asset = h["asset"]
+            if asset == "TRY": price_try, symbol_concat = 1.0, None
+            elif price_by_symbol.get(f"{asset}TRY"): price_try, symbol_concat = price_by_symbol[f"{asset}TRY"], f"{asset}TRY"
+            elif price_by_symbol.get(f"{asset}USDT") and usdt_try: price_try, symbol_concat = price_by_symbol[f"{asset}USDT"] * usdt_try, f"{asset}USDT"
+            else: price_try, symbol_concat = None, None
+            row = {"asset": asset, "total": h["total"], "free": h["free"], "locked": h["locked"], "price_try": price_try,
+                   "value_try": round(h["total"] * price_try, 2) if price_try is not None else None}
+            if asset != "TRY" and symbol_concat:
+                cost = await asyncio.to_thread(_avg_buy_cost, api_key, api_secret, asset, symbol_concat, now_ts)
+                if cost and cost.get("avg_price"):
+                    avg_try = cost["avg_price"] if cost.get("quote") == "TRY" else (cost["avg_price"] * usdt_try if (cost.get("quote") == "USDT" and usdt_try) else None)
+                    if avg_try:
+                        row["avg_cost_try"] = round(avg_try, 8)
+                        if price_try:
+                            row["pnl_try"] = round((price_try - avg_try) * h["total"], 2)
+                            row["pnl_pct"] = round((price_try - avg_try) / avg_try * 100, 2)
+            out.append(row)
+        out.sort(key=lambda r: (r["value_try"] is None, -(r["value_try"] or 0)))
+        return {"ok": True, "scope": "holdings", "holdings": out,
+                "total_value_try": round(sum(r["value_try"] or 0 for r in out), 2),
+                "account_meta": meta, "read_only": True}
+    except Exception as exc:
+        return {"ok": False, "read_only": True, "retryable": True, "error": f"Gerçek hesap okunamadı: {exc}"}
+
+
 @router.post("/api/symbol-analysis/{symbol}/llm/chat")
 async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     body = payload or {}
@@ -2211,7 +2315,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
     # (expectancy/profit-factor profili) GÜRÜLTÜ — bu yüzeyden LLM_OUTCOME_PROFILE_TOOL
     # kaldırıldı. Kullanıcı sembolü fiyattan trend/faz + göstergelerle görmek istiyor.
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL,
-                  LLM_ECONOMICS_TOOL, LLM_REALTIME_FLOW_TOOL,
+                  LLM_ECONOMICS_TOOL, LLM_REALTIME_FLOW_TOOL, GET_REAL_ACCOUNT_TOOL,
                   LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL,
                   LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
@@ -2231,6 +2335,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         if name == "scan_market_snapshots": return await scan_market_snapshots(args)
         if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
         if name == "get_data_quality": return await get_data_quality(args)
+        if name == "get_real_account": return await _get_real_account_tool(args)
         if name == "run_pattern_universe_research": return await pattern_research.run_universe_research(args)
         if name == "get_pattern_research_runs": return await pattern_research.get_runs(args)
         if name == "save_research_pattern": return await pattern_research.save_pattern(args)
@@ -2319,6 +2424,7 @@ def _tool_activity_summary(name: str, args: dict) -> str:
     if name == "get_regime_snapshot": return f"{symbol} piyasa rejimi belirleniyor"
     if name == "calculate_trade_economics": return f"{symbol} işlem ekonomisi hesaplanıyor · maliyet/kâr analizi"
     if name == "get_symbol_outcome_profile": return f"{symbol} geçmiş işlem başarısı çıkarılıyor"
+    if name == "get_real_account": return "Gerçek Binance TR hesabı okunuyor · bakiye/işlem görüntüsü (salt-okunur)"
     if name == "get_realtime_flow": return f"{symbol} agresif alış/satış akışı okunuyor · whale tespiti"
     if name == "get_symbol_behavior": return f"{symbol} davranış profili ve rejim sinyali hesaplanıyor"
     if name == "get_subminute_microstructure": return f"{symbol} 1s/5s mikro yapı akışı başlatılıyor"
@@ -2624,6 +2730,7 @@ async def strategies_llm_chat(payload: dict = None):
             if name == "detect_5m_upside_candidates": return await detect_5m_upside_candidates(args)
             if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
             if name == "get_data_quality": return await get_data_quality(args)
+            if name == "get_real_account": return await _get_real_account_tool(args)
             if name == "run_pattern_universe_research": return await pattern_research.run_universe_research(args)
             if name == "get_pattern_research_runs": return await pattern_research.get_runs(args)
             if name == "save_research_pattern": return await pattern_research.save_pattern(args)
@@ -2768,6 +2875,7 @@ async def strategies_llm_chat(payload: dict = None):
         LLM_MARKET_SCAN_TOOL, LLM_15M_UPSIDE_TOOL, LLM_5M_UPSIDE_TOOL, LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL,
         LLM_DEEP_SYMBOL_TOOL,
         LLM_DATA_QUALITY_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
+        GET_REAL_ACCOUNT_TOOL,
         # ERKAN İSTEĞİ (2026-09-18): genel sohbet yüzeyinden de "geçmiş işlem
         # başarısı" profili kaldırıldı (anlık sembol gidişatı gürültüsü).
         LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL,
