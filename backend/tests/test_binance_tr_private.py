@@ -108,8 +108,8 @@ def test_open_orders_no_symbol_accepted():
         orders = btp.get_open_orders("k", "s")
     assert orders == [{
         "orderId": 21, "symbol": "ADA_USDT", "side": "BUY", "type": "LIMIT",
-        "price": "0.1", "origQty": "10", "executedQty": "0", "status": "NEW",
-        "time": 1572862581000,
+        "price": "0.1", "stopPrice": "0", "origQty": "10", "executedQty": "0",
+        "status": "NEW", "time": 1572862581000, "orderListId": -1, "clientOrderId": "",
     }]
 
 
@@ -177,3 +177,75 @@ def test_get_symbol_filters_parses_lot_size():
     assert filters["min_qty"] == 0.0001
     assert filters["min_notional"] == 10
     assert filters["quote_asset"] == "USDT"
+
+
+def test_fmt_price_rounds_to_tick_size():
+    assert btp._fmt_price(123.4567, 0.01) == "123.46"
+    assert btp._fmt_price(0.001234, 0.0001) == "0.0012"
+    assert btp._fmt_price(55.0, 0.5) == "55.0"
+
+
+def test_place_oco_sell_sends_correct_payload():
+    mock_resp = {
+        "orderListId": "1001",
+        "orders": [{"orderId": "1"}, {"orderId": "2"}],
+    }
+    with mock.patch.object(btp, "_signed_request", return_value=mock_resp) as sr:
+        res = btp.place_oco_sell("k", "s", "AVAX_TRY", 10.5, price=1200.0, stop_price=950.0, stop_limit_price=945.0)
+    args = sr.call_args
+    assert args[0][0] == "POST"
+    assert args[0][1] == "/open/v1/orders/oco"
+    params = args[0][2]
+    assert params["symbol"] == "AVAX_TRY"
+    assert params["side"] == "SELL"
+    assert params["quantity"] == "10.5"
+    assert params["price"] == "1200.00"
+    assert params["stopPrice"] == "950.00"
+    assert params["stopLimitPrice"] == "945.00"
+    assert res["order_list_id"] == "1001"
+    assert len(res["orders"]) == 2
+
+
+def test_place_stop_loss_sell_sends_correct_payload():
+    mock_resp = {"orderId": "505"}
+    with mock.patch.object(btp, "_signed_request", return_value=mock_resp) as sr:
+        res = btp.place_stop_loss_sell("k", "s", "SOL_TRY", 2.0, stop_price=5000.0, stop_limit_price=4980.0)
+    args = sr.call_args
+    assert args[0][0] == "POST"
+    assert args[0][1] == "/open/v1/orders"
+    params = args[0][2]
+    assert params["symbol"] == "SOL_TRY"
+    assert params["side"] == "SELL"
+    assert params["type"] == "STOP_LOSS_LIMIT"
+    assert params["stopPrice"] == "5000.00"
+    assert params["price"] == "4980.00"
+    assert res["order_id"] == "505"
+
+
+def test_place_limit_sell_sends_correct_payload():
+    mock_resp = {"orderId": "606"}
+    with mock.patch.object(btp, "_signed_request", return_value=mock_resp) as sr:
+        res = btp.place_limit_sell("k", "s", "SOL_TRY", 1.5, price=6500.0)
+    args = sr.call_args
+    assert args[0][0] == "POST"
+    assert args[0][1] == "/open/v1/orders"
+    params = args[0][2]
+    assert params["symbol"] == "SOL_TRY"
+    assert params["side"] == "SELL"
+    assert params["type"] == "LIMIT"
+    assert params["price"] == "6500.00"
+    assert res["order_id"] == "606"
+
+
+def test_cancel_order_sends_cancel_request():
+    mock_resp = {"orderId": 999, "status": "CANCELED"}
+    with mock.patch.object(btp, "_signed_request", return_value=mock_resp) as sr:
+        res = btp.cancel_order("k", "s", 999, "BTC_TRY")
+    args = sr.call_args
+    assert args[0][0] == "POST"
+    assert args[0][1] == "/open/v1/orders/cancel"
+    params = args[0][2]
+    assert params["orderId"] == 999
+    assert params["symbol"] == "BTC_TRY"
+    assert res["status"] == "CANCELED"
+

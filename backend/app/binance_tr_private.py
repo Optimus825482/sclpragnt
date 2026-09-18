@@ -217,6 +217,10 @@ def _load_symbol_list_locked(api_key: str, api_secret: str) -> None:
                     entry["min_qty"] = float(f.get("minQty") or 0)
                 elif ft == "NOTIONAL":
                     entry["min_notional"] = float(f.get("minNotional") or f.get("notional") or 0)
+                elif ft == "PRICE_FILTER":
+                    entry["tick_size"] = float(f.get("tickSize") or 0)
+                    entry["min_price"] = float(f.get("minPrice") or 0)
+                    entry["max_price"] = float(f.get("maxPrice") or 0)
             filters[sym] = entry
         _symbols_cache.update({
             "symbols": symbols,
@@ -311,6 +315,151 @@ def _fmt_quantity(q: float, step_size: float | None = None) -> str:
     return f"{q:.8f}".rstrip("0").rstrip(".")
 
 
+def _fmt_price(p: float, tick_size: float | None = None) -> str:
+    """Fiyatı sembolün tick_size adımına göre yuvarlar ve string formatlar."""
+    p_val = float(p)
+    if tick_size and tick_size > 0:
+        p_val = round(p_val / tick_size) * tick_size
+        tick_str = f"{tick_size:.10f}".rstrip("0")
+        decimals = len(tick_str.split(".")[1]) if "." in tick_str else 0
+        return f"{p_val:.{decimals}f}"
+    if p_val >= 1:
+        return f"{p_val:.2f}"
+    return f"{p_val:.6f}".rstrip("0").rstrip(".")
+
+
+def place_oco_sell(api_key: str, api_secret: str, symbol_underscore: str, quantity: float,
+                   price: float, stop_price: float, stop_limit_price: float | None = None,
+                   step_size: float | None = None, tick_size: float | None = None) -> dict:
+    """Spot OCO SELL emri (Take-Profit LIMIT + Stop-Loss LIMIT).
+
+    POST /open/v1/orders/oco
+    Kural: price (TP) > son fiyat > stop_price (SL trigger).
+    stop_limit_price verilmezse stop_price * 0.995 (slippage korumalı) kullanılır.
+    """
+    if step_size is None or tick_size is None:
+        with _symbols_lock:
+            entry = _symbols_cache["filters"].get(symbol_underscore) or {}
+        step_size = step_size or float(entry.get("step_size") or 0) or None
+        tick_size = tick_size or float(entry.get("tick_size") or 0) or None
+
+    if stop_limit_price is None or stop_limit_price <= 0:
+        stop_limit_price = stop_price * 0.995
+
+    qty_str = _fmt_quantity(quantity, step_size)
+    price_str = _fmt_price(price, tick_size)
+    stop_price_str = _fmt_price(stop_price, tick_size)
+    stop_limit_price_str = _fmt_price(stop_limit_price, tick_size)
+
+    params = {
+        "symbol": symbol_underscore,
+        "side": "SELL",
+        "quantity": qty_str,
+        "price": price_str,
+        "stopPrice": stop_price_str,
+        "stopLimitPrice": stop_limit_price_str,
+        "stopLimitTimeInForce": "GTC",
+    }
+    data = _signed_request("POST", "/open/v1/orders/oco", params, api_key, api_secret)
+    order_list_id = data.get("orderListId") if isinstance(data, dict) else None
+    orders = data.get("orders") if isinstance(data, dict) else []
+    logger.info("Binance TR OCO SELL gönderildi: %s qty=%s tp=%s sl=%s orderListId=%s",
+                symbol_underscore, qty_str, price_str, stop_price_str, order_list_id)
+    return {
+        "order_list_id": str(order_list_id) if order_list_id is not None else None,
+        "symbol": symbol_underscore,
+        "quantity": qty_str,
+        "tp_price": price_str,
+        "sl_price": stop_price_str,
+        "sl_limit_price": stop_limit_price_str,
+        "orders": orders,
+    }
+
+
+def place_stop_loss_sell(api_key: str, api_secret: str, symbol_underscore: str, quantity: float,
+                         stop_price: float, stop_limit_price: float | None = None,
+                         step_size: float | None = None, tick_size: float | None = None) -> dict:
+    """Tekil STOP_LOSS_LIMIT SELL emri gönderir (POST /open/v1/orders)."""
+    if step_size is None or tick_size is None:
+        with _symbols_lock:
+            entry = _symbols_cache["filters"].get(symbol_underscore) or {}
+        step_size = step_size or float(entry.get("step_size") or 0) or None
+        tick_size = tick_size or float(entry.get("tick_size") or 0) or None
+
+    if stop_limit_price is None or stop_limit_price <= 0:
+        stop_limit_price = stop_price * 0.995
+
+    qty_str = _fmt_quantity(quantity, step_size)
+    stop_price_str = _fmt_price(stop_price, tick_size)
+    stop_limit_price_str = _fmt_price(stop_limit_price, tick_size)
+
+    params = {
+        "symbol": symbol_underscore,
+        "side": "SELL",
+        "type": "STOP_LOSS_LIMIT",
+        "quantity": qty_str,
+        "price": stop_limit_price_str,
+        "stopPrice": stop_price_str,
+        "timeInForce": "GTC",
+    }
+    data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret)
+    order_id = data.get("orderId") if isinstance(data, dict) else None
+    logger.info("Binance TR STOP_LOSS_LIMIT SELL gönderildi: %s qty=%s sl=%s orderId=%s",
+                symbol_underscore, qty_str, stop_price_str, order_id)
+    return {
+        "order_id": str(order_id) if order_id is not None else None,
+        "symbol": symbol_underscore,
+        "quantity": qty_str,
+        "sl_price": stop_price_str,
+        "sl_limit_price": stop_limit_price_str,
+    }
+
+
+def place_limit_sell(api_key: str, api_secret: str, symbol_underscore: str, quantity: float,
+                     price: float, step_size: float | None = None, tick_size: float | None = None) -> dict:
+    """Tekil LIMIT (Take-Profit) SELL emri gönderir (POST /open/v1/orders)."""
+    if step_size is None or tick_size is None:
+        with _symbols_lock:
+            entry = _symbols_cache["filters"].get(symbol_underscore) or {}
+        step_size = step_size or float(entry.get("step_size") or 0) or None
+        tick_size = tick_size or float(entry.get("tick_size") or 0) or None
+
+    qty_str = _fmt_quantity(quantity, step_size)
+    price_str = _fmt_price(price, tick_size)
+
+    params = {
+        "symbol": symbol_underscore,
+        "side": "SELL",
+        "type": "LIMIT",
+        "quantity": qty_str,
+        "price": price_str,
+        "timeInForce": "GTC",
+    }
+    data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret)
+    order_id = data.get("orderId") if isinstance(data, dict) else None
+    logger.info("Binance TR LIMIT SELL gönderildi: %s qty=%s price=%s orderId=%s",
+                symbol_underscore, qty_str, price_str, order_id)
+    return {
+        "order_id": str(order_id) if order_id is not None else None,
+        "symbol": symbol_underscore,
+        "quantity": qty_str,
+        "price": price_str,
+    }
+
+
+def cancel_order(api_key: str, api_secret: str, order_id: int | str, symbol_underscore: str = "") -> dict:
+    """POST /open/v1/orders/cancel — Belirtilen orderId'li emri iptal eder."""
+    params: dict = {"orderId": int(order_id)}
+    if symbol_underscore:
+        params["symbol"] = symbol_underscore
+    data = _signed_request("POST", "/open/v1/orders/cancel", params, api_key, api_secret)
+    with _open_orders_lock:
+        _open_orders_cache["expires"] = 0.0
+    logger.info("Binance TR emir iptal edildi: orderId=%s symbol=%s", order_id, symbol_underscore)
+    return data if isinstance(data, dict) else {"order_id": str(order_id), "status": "CANCELED"}
+
+
+
 def get_account_balance(api_key: str, api_secret: str) -> list[dict]:
     """GET /open/v1/account/spot → data.accountAssets [{asset, free, locked}]."""
     data = _signed_request("GET", "/open/v1/account/spot", None, api_key, api_secret)
@@ -349,10 +498,13 @@ def get_open_orders(api_key: str, api_secret: str, symbol: str = "") -> list[dic
                 "side": o.get("side", ""),
                 "type": o.get("type", ""),
                 "price": o.get("price", "0"),
+                "stopPrice": o.get("stopPrice") or "0",
                 "origQty": o.get("origQty", "0"),
                 "executedQty": o.get("executedQty", "0"),
                 "status": o.get("status", ""),
-                "time": int(o.get("createTime") or 0),
+                "time": int(o.get("createTime") or o.get("time") or 0),
+                "orderListId": int(o.get("orderListId") or -1),
+                "clientOrderId": str(o.get("clientOrderId") or ""),
             })
         return out
 
