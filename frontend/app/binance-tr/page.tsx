@@ -1,10 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { API_BASE, apiRequest } from "../lib/api";
 import { localDateInput } from "../lib/format";
 import { useLiveMessages } from "../lib/liveSocket";
 import RequireAdmin from "../components/RequireAdmin";
+
+const BinancePositionChartModal = dynamic(() => import("./BinancePositionChartModal"), { ssr: false });
 
 type Balance = { asset: string; free: string; locked: string };
 
@@ -170,6 +173,9 @@ function BinanceTrPageInner() {
   const [sltpCancelExisting, setSltpCancelExisting] = useState(true);
   const [sltpBusy, setSltpBusy] = useState(false);
   const [sltpMsg, setSltpMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // İnteraktif Pozisyon Grafik Modalı
+  const [chartFor, setChartFor] = useState<Holding | null>(null);
 
   // Toast Bildirim Sistemi
   const [toast, setToast] = useState<{ id: number; text: string; type: "success" | "error" | "info" } | null>(null);
@@ -1044,6 +1050,7 @@ function BinanceTrPageInner() {
                     <table className="data-table">
                       <thead>
                         <tr>
+                          <th className="w-10 text-center">Grafik</th>
                           <th>Varlık</th>
                           <th>Boşta / Kilitli Miktar</th>
                           <th>Alış Maliyeti</th>
@@ -1064,9 +1071,33 @@ function BinanceTrPageInner() {
 
                           return (
                             <tr key={h.asset} className="hover:bg-bunker-900/60 transition-colors">
+                              <td className="text-center">
+                                {h.asset !== "TRY" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setChartFor(h)}
+                                    title={`${h.asset}/TRY Canlı Pozisyon Grafiği (M5, Bollinger Bands, SL/TP Sürükle-Bırak)`}
+                                    className="inline-flex items-center justify-center rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-cyan-300 hover:bg-cyan-500/25 hover:border-cyan-400 hover:scale-105 shadow-sm transition-all"
+                                  >
+                                    <span className="text-xs font-mono font-bold">📈</span>
+                                  </button>
+                                ) : (
+                                  <span className="text-bunker-muted text-xs">—</span>
+                                )}
+                              </td>
                               <td>
                                 <div className="flex items-center gap-1.5">
-                                  <span className="font-mono text-sm font-bold text-white">{h.asset}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => h.asset !== "TRY" && setChartFor(h)}
+                                    className={`font-mono text-sm font-bold text-white transition-colors text-left flex items-center gap-1 ${
+                                      h.asset !== "TRY" ? "hover:text-cyan-300 cursor-pointer" : ""
+                                    }`}
+                                    title={h.asset !== "TRY" ? `${h.asset}/TRY Grafiğini Aç` : undefined}
+                                  >
+                                    <span>{h.asset}</span>
+                                    {h.asset !== "TRY" && <span className="text-[10px] text-cyan-400/70">↗</span>}
+                                  </button>
                                   {dir && h.asset !== "TRY" && (
                                     <span className={`font-mono text-[10px] font-bold ${dir === "up" ? "text-neon-green" : "text-neon-red"}`}>
                                       {dir === "up" ? "▲" : "▼"}
@@ -1943,6 +1974,20 @@ function BinanceTrPageInner() {
                 </div>
               </section>
             </div>
+          )}
+          {/* MODAL: İNTERAKTİF POZİSYON GRAFİĞİ (TRADINGVIEW TARZI) */}
+          {chartFor && (
+            <BinancePositionChartModal
+              holding={chartFor}
+              onClose={() => setChartFor(null)}
+              onOrderUpdated={() => {
+                loadAcct();
+                loadOrd();
+                loadOpenOrders();
+              }}
+              sellEnabled={sellEnabled}
+              showToast={showToast}
+            />
           )}
         </>
       )}
