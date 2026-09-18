@@ -1,11 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { localDateInput } from "../lib/format";
+import { useLiveMessages } from "../lib/liveSocket";
 import RequireAdmin from "../components/RequireAdmin";
 
 type Balance = { asset: string; free: string; locked: string };
+
+type LiveTick = { price?: number; symbol?: string; quote_volume_try?: number | null };
 
 type Holding = {
   asset: string;
@@ -17,6 +20,7 @@ type Holding = {
   avg_cost_try?: number | null;
   pnl_try?: number | null;
   pnl_pct?: number | null;
+  volume_try?: number | null;
 };
 
 type Trade = {
@@ -41,6 +45,17 @@ type DailyPnl = {
 };
 
 const TR_PAGE_SIZE = 25;
+
+// Hacim biçimlendirici: 1,2B / 340M / 12K / 840
+const fmtVolume = (v: number | null | undefined) => {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  const fmt = (d: number) => n.toLocaleString("tr-TR", { minimumFractionDigits: 0, maximumFractionDigits: d });
+  if (n >= 1e9) return fmt(1) + "B";
+  if (n >= 1e6) return fmt(1) + "M";
+  if (n >= 1e3) return fmt(0) + "K";
+  return fmt(0);
+};
 
 const fmtPrice = (v: string | number | null | undefined, d = 2) => {
   const n = typeof v === "string" ? parseFloat(v) : Number(v ?? 0);
@@ -220,6 +235,48 @@ function BinanceTrPageInner() {
     }
   };
 
+  // ---- Canlı fiyat tick'leri (WS) ----
+  // Açık pozisyon kolonları anlık güncellenir: fiyat, TRY değeri, K/Z (durum
+  // renkli) ve 24s hacim. Yön nabzı için önceki fiyat ref'te tutulur.
+  const [liveTicks, setLiveTicks] = useState<Record<string, LiveTick>>({});
+  const [tickDir, setTickDir] = useState<Record<string, "up" | "down">>({});
+  const pricesRef = useRef<Record<string, number>>({});
+
+  useLiveMessages((message) => {
+    if (message?.type !== "binance_price") return;
+    const d = message.data as { ticks?: Record<string, LiveTick>; time?: number } | null;
+    if (!d?.ticks) return;
+    const dirs: Record<string, "up" | "down"> = {};
+    for (const [asset, t] of Object.entries(d.ticks)) {
+      const price = Number(t.price || 0);
+      if (!price) continue;
+      const old = pricesRef.current[asset];
+      if (old) dirs[asset] = price >= old ? "up" : "down";
+      pricesRef.current[asset] = price;
+    }
+    setLiveTicks(d.ticks);
+    if (Object.keys(dirs).length) setTickDir((prev) => ({ ...prev, ...dirs }));
+  });
+
+  // Polling değerleriyle canlı tick'leri birleştir — WS kapalıysa otomatik
+  // polling değerine düşer (holdings her 10 sn'de yenileniyor).
+  const mergedHoldings = useMemo(() => holdings.map((h) => {
+    const t = liveTicks[h.asset];
+    const price = h.asset === "TRY" ? 1.0 : Number(t?.price || 0);
+    if (!price) return { ...h, volume_try: t?.quote_volume_try ?? null };
+    const cost = h.avg_cost_try;
+    const pnl_try = cost ? (price - cost) * h.total : h.pnl_try;
+    const pnl_pct = cost ? (price - cost) / cost * 100 : h.pnl_pct;
+    return {
+      ...h,
+      price_try: price,
+      value_try: h.total * price,
+      pnl_try,
+      pnl_pct,
+      volume_try: t?.quote_volume_try ?? null,
+    };
+  }), [holdings, liveTicks]);
+
   const nonZero = balances.filter((b) => parseFloat(b.free) > 0 || parseFloat(b.locked) > 0);
 
   // Günün işlemleri sayfalama (25/sayfa)
@@ -229,9 +286,9 @@ function BinanceTrPageInner() {
 
   // 50 TL altını gizle (fiyatı çözülemeyenler gizlenmez — değeri bilinmiyor)
   const visibleHoldings = useMemo(() => {
-    if (!hideSmall) return holdings;
-    return holdings.filter((h) => h.value_try == null || h.value_try >= 50);
-  }, [holdings, hideSmall]);
+    if (!hideSmall) return mergedHoldings;
+    return mergedHoldings.filter((h) => h.value_try == null || h.value_try >= 50);
+  }, [mergedHoldings, hideSmall]);
 
   const openSell = (h: Holding) => {
     setSellFor(h);
@@ -377,17 +434,28 @@ function BinanceTrPageInner() {
             ) : (
               <div className="table-scroll mt-3">
                 <table className="data-table">
-                  <thead><tr><th>Sembol</th><th>Miktar</th><th>Kilitli</th><th>Alım Maliyeti</th><th>Güncel Fiyat</th><th>Anlık K/Z</th><th>TRY Deger</th><th></th></tr></thead>
+                  <thead><tr><th>Sembol</th><th>Miktar</th><th>Kilitli</th><th>Alım Maliyeti</th><th>Güncel Fiyat</th><th>24s Hacim</th><th>Anlık K/Z</th><th>TRY Deger</th><th></th></tr></thead>
                   <tbody>
                     {visibleHoldings.map((h) => {
                       const pnlToneCls = h.pnl_try == null ? "" : h.pnl_try >= 0 ? "text-neon-green" : "text-neon-red";
+                      const dir = tickDir[h.asset];
                       return (
                         <tr key={h.asset}>
-                          <td><span className="font-mono font-bold text-white">{h.asset}</span></td>
+                          <td>
+                            <span className="font-mono font-bold text-white">{h.asset}</span>
+                            {dir && h.asset !== "TRY" && (
+                              <span className={`ml-1.5 font-mono text-[9px] ${dir === "up" ? "text-neon-green" : "text-neon-red"}`}>
+                                {dir === "up" ? "▲" : "▼"}
+                              </span>
+                            )}
+                          </td>
                           <td className="font-mono text-xs">{fmtPrice(h.free, 6)}</td>
                           <td className="font-mono text-xs text-bunker-muted">{h.locked > 0 ? fmtPrice(h.locked, 6) : "—"}</td>
                           <td className="font-mono text-xs text-bunker-muted">{h.avg_cost_try != null ? `₺${fmtPrice(h.avg_cost_try, h.avg_cost_try < 1 ? 6 : 2)}` : "—"}</td>
-                          <td className="font-mono text-xs text-white">{h.price_try != null ? `₺${fmtPrice(h.price_try, h.price_try < 1 ? 6 : 2)}` : "—"}</td>
+                          <td className={`font-mono text-xs ${dir ? (dir === "up" ? "text-neon-green" : "text-neon-red") : "text-white"}`}>
+                            {h.price_try != null ? `₺${fmtPrice(h.price_try, h.price_try < 1 ? 6 : 2)}` : "—"}
+                          </td>
+                          <td className="font-mono text-xs text-bunker-muted">{h.asset === "TRY" ? "—" : fmtVolume(h.volume_try)}</td>
                           <td className={`font-mono text-xs font-bold ${pnlToneCls}`}>
                             {h.pnl_try != null ? `₺${h.pnl_try >= 0 ? "+" : "−"}${fmtPrice(Math.abs(h.pnl_try))}` : "—"}
                             {h.pnl_pct != null ? (
@@ -402,7 +470,7 @@ function BinanceTrPageInner() {
                               type="button"
                               onClick={() => openSell(h)}
                               disabled={!sellEnabled || h.free <= 0 || h.asset === "TRY" || h.price_try == null}
-                              title={!sellEnabled ? "Gerçek satış kapalı (ENABLE_REAL_BINANCE_SELL)" : h.asset === "TRY" ? "TRY satılamaz" : h.price_try == null ? "Piyasa fiyatı bulunamadı" : h.free <= 0 ? "Boşta bakiye yok" : "Piyasa fiyatından sat"}
+                              title={!sellEnabled ? "Gerçek satış kapalı (Ayarlar > GERÇEK SATIŞ)" : h.asset === "TRY" ? "TRY satılamaz" : h.price_try == null ? "Piyasa fiyatı bulunamadı" : h.free <= 0 ? "Boşta bakiye yok" : "Piyasa fiyatından sat"}
                               className="rounded border border-neon-red/50 bg-neon-red/10 px-2.5 py-1 font-mono text-[11px] font-bold text-neon-red transition-colors hover:bg-neon-red/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               {sellEnabled ? "SAT" : "SAT (KAPALI)"}
