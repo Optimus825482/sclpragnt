@@ -2238,9 +2238,16 @@ async def _get_real_account_tool(args: dict) -> dict:
                             row["pnl_pct"] = round((price_try - avg_try) / avg_try * 100, 2)
             out.append(row)
         out.sort(key=lambda r: (r["value_try"] is None, -(r["value_try"] or 0)))
+        # DEĞERLENDİRME KAPSAMI (Erkan kararı, 2026-09-18 13:31): teknik
+        # değerlendirmede yalnızca 50 ₺ üzeri TRY değerine sahip açık semboller
+        # katılır (toz pozisyonlar değerlendirmeyi gürültüler). TRY bakiyesi
+        # her zaman taşınır (alım gücü). UI'daki "50 TL altını gizle" ile aynı eşik.
+        before_scope = len(out)
+        out = [r for r in out if r["asset"] == "TRY" or (r["value_try"] or 0) >= 50]
         return {"ok": True, "scope": "holdings", "holdings": out,
                 "total_value_try": round(sum(r["value_try"] or 0 for r in out), 2),
-                "account_meta": meta, "read_only": True}
+                "account_meta": meta, "read_only": True,
+                "scope_note": f"değerlendirme kapsamı: 50 ₺ üzeri açık semboller ({before_scope} varlıktan {len(out)} katılır; TRY bakiyesi her zaman taşınır)"}
     except Exception as exc:
         return {"ok": False, "read_only": True, "retryable": True, "error": f"Gerçek hesap okunamadı: {exc}"}
 

@@ -261,6 +261,43 @@ def place_market_sell(api_key: str, api_secret: str, symbol_underscore: str, qua
             "symbol": symbol_underscore, "quantity": params["quantity"]}
 
 
+def place_market_buy(api_key: str, api_secret: str, symbol_underscore: str, quote_qty: float,
+                     min_notional: float | None = None) -> dict:
+    """MARKET BUY emri — harcanacak QUOTE miktarıyla (POST /open/v1/orders;
+    side=0, type=2).
+
+    Doküman (güncel hizalama, 2026-09-18): MARKET alışta `quoteOrderQty`
+    = kullanıcı quote asset'te harcamak istediği miktar; doğru quantity
+    piyasa likiditesinden belirlenir (quoteOrderQty KULLAN, quantity'yi
+    DEĞİL — ikisi birden gönderilemez).
+    Cevap: {"order_id": ..., "symbol": ..., "quote_qty": ..., "executed_qty": ...,
+    "avg_price": ...} (son ikisi proxy cevabında taşıyorsa dolu).
+    """
+    if min_notional is not None and min_notional > 0 and quote_qty < min_notional:
+        raise ValueError(f"Tutar minimum emrin altında (min {min_notional})")
+    params = {
+        "symbol": symbol_underscore,
+        "side": 0,           # doküman: 0=BUY, 1=SELL
+        "type": 2,           # doküman: 2=MARKET
+        "quoteOrderQty": f"{float(quote_qty):.2f}",  # quote asset (TRY) büyüklüğü
+    }
+    data = _signed_request("POST", "/open/v1/orders", params, api_key, api_secret)
+    order_id = data.get("orderId") if isinstance(data, dict) else None
+    logger.info("Binance TR MARKET BUY gönderildi: %s quote=%s orderId=%s", symbol_underscore, params["quoteOrderQty"], order_id)
+    out = {"order_id": str(order_id) if order_id is not None else None,
+           "symbol": symbol_underscore, "quote_qty": params["quoteOrderQty"]}
+    # Full cevapta doldurma bilgisi varsa ortalamayı hesapla (confirm dialogu).
+    try:
+        executed = float(data.get("executedQty") or 0) if isinstance(data, dict) else 0.0
+        filled_quote = float(data.get("cummulativeQuoteQty") or data.get("cumulativeQuoteQty") or 0) if isinstance(data, dict) else 0.0
+        if executed > 0 and filled_quote > 0:
+            out["executed_qty"] = executed
+            out["avg_price"] = filled_quote / executed
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
 def _fmt_quantity(q: float, step_size: float | None = None) -> str:
     """Miktarı API'nin beklediği ondalık string'e çevir (bilimsel gösterim yok).
 
