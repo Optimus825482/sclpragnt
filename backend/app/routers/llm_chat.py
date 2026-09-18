@@ -2534,9 +2534,20 @@ async def _symbol_quick_context(symbol: str) -> dict | None:
     from app.routers import macd_monitor
     from app.routers import monitoring as monitoring_router
     ticker = market.get_ticker(sym) or {}
+    # Hızlı şerit yalnızca bellekten okuduğunda pasif sembollerde fiyat
+    # eski veya hiç olmayabiliyor; public ticker REST ile güncelle.
+    try:
+        if not ticker.get("last_price"):
+            fresh = await ticker_price([sym])
+            row = next((r for r in fresh if str(r.get("symbol") or "").upper() == sym), None)
+            if row:
+                ticker = {"last_price": float(row.get("price") or 0), "timestamp": time.time() * 1000,
+                          "source": "binance_tr_public_rest_ticker_price"}
+    except Exception:
+        pass
     macd_row = ((getattr(macd_monitor, "_SNAPSHOT", None) or {}).get("symbols") or {}).get(sym)
     candidate = monitoring_router.get_cached_radar_candidate(sym)
-    if not ticker and not macd_row and not candidate:
+    if not ticker.get("last_price") and not macd_row and not candidate:
         return None
     quick = {
         "quick_lane": True,
