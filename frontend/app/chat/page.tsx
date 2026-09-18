@@ -99,6 +99,7 @@ const TOOL_GROUPS = [
     [
       "scan_market_snapshots",
       "detect_15m_upside_candidates",
+      "detect_5m_upside_candidates",
       "deep_analyze_symbol",
       "get_data_quality",
       "get_microstructure_snapshot",
@@ -115,12 +116,18 @@ const TOOL_GROUPS = [
       "save_research_pattern",
       "list_research_patterns",
       "list_indicator_research_catalog",
-      "get_auto_paper_status",
-      "get_dashboard_summary",
-      "get_monitoring_status",
       "activate_coin",
       "place_paper_order",
       "open_llm_paper_trade",
+    ],
+  ],
+  [
+    "Sistem & Hesap",
+    [
+      "get_auto_paper_status",
+      "get_dashboard_summary",
+      "get_monitoring_status",
+      "get_real_account",
     ],
   ],
   [
