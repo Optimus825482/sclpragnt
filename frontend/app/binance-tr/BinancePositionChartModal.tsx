@@ -14,6 +14,12 @@ import {
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
 import { commissionPct } from "../lib/pnl";
+import IndicatorPicker, {
+  findIndicatorEntry,
+  CUSTOM_INDICATOR_ENTRIES,
+} from "../charts/IndicatorPicker";
+import IndicatorSettings from "../charts/IndicatorSettings";
+import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "../charts/types";
 
 export type Holding = {
   asset: string;
@@ -41,6 +47,17 @@ interface Props {
 }
 
 type Timeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
+
+// Timeframe'den saniye cinsinden periyot
+const TF_SECONDS: Record<Timeframe, number> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "30m": 1800,
+  "1h": 3600,
+  "4h": 14400,
+  "1d": 86400,
+};
 
 interface CandleBar {
   time: UTCTimestamp;
@@ -91,6 +108,19 @@ function fmtPrice(v?: number | null, decimals = 4): string {
   return v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Kalan süreyi MM:SS formatına çevir
+function fmtCountdown(seconds: number): string {
+  if (seconds <= 0) return "00:00";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}s ${String(m).padStart(2, "0")}d ${String(s).padStart(2, "0")}s`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+// Eklenen indikatörleri lightweight-charts serileri olarak yönet
+type IndicatorSeriesMap = Map<string, ISeriesApi<"Line">[]>;
+
 export default function BinancePositionChartModal({
   holding,
   onClose,
@@ -103,6 +133,10 @@ export default function BinancePositionChartModal({
   const [showBB, setShowBB] = useState(true); // Varsayılan Bollinger Bands AÇIK
   const [candles, setCandles] = useState<CandleBar[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Mum Kapanışına Kalan Süre
+  const [countdown, setCountdown] = useState<number>(0);
+  const lastCandleTimeRef = useRef<number>(0);
 
   // Canlı Fiyat & Tick Durumu
   const [currentPrice, setCurrentPrice] = useState<number | null>(holding.price_try);
@@ -130,6 +164,12 @@ export default function BinancePositionChartModal({
     price: number;
   } | null>(null);
 
+  // İndikatör paneli durumu
+  const [showIndicatorPicker, setShowIndicatorPicker] = useState(false);
+  const [pickerSelectedEntry, setPickerSelectedEntry] = useState<RegistryEntry | null>(null);
+  const [editingIndicator, setEditingIndicator] = useState<IndicatorInstance | null>(null);
+  const [indicators, setIndicators] = useState<IndicatorInstance[]>([]);
+
   // DOM & Grafik Referansları
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartApiRef = useRef<IChartApi | null>(null);
@@ -142,6 +182,9 @@ export default function BinancePositionChartModal({
   const entryLineRef = useRef<IPriceLine | null>(null);
   const tpLineRef = useRef<IPriceLine | null>(null);
   const slLineRef = useRef<IPriceLine | null>(null);
+
+  // İndikatör serisi map'i (uid -> seri listesi)
+  const indicatorSeriesMapRef = useRef<IndicatorSeriesMap>(new Map());
 
   // Çizgilerin piksel koordinatları (Drag tutamaçları için)
   const [lineCoords, setLineCoords] = useState<{
@@ -201,6 +244,7 @@ export default function BinancePositionChartModal({
         if (parsed.length > 0) {
           setCandles(parsed);
           const lastClose = parsed[parsed.length - 1].close;
+          lastCandleTimeRef.current = Number(parsed[parsed.length - 1].time);
           setCurrentPrice(lastClose);
           setTimeout(() => {
             chartApiRef.current?.timeScale().fitContent();
@@ -217,6 +261,22 @@ export default function BinancePositionChartModal({
   useEffect(() => {
     loadKlines(timeframe);
   }, [timeframe, loadKlines]);
+
+  // Mum Kapanışına Kalan Süre Sayacı
+  useEffect(() => {
+    const tfSecs = TF_SECONDS[timeframe];
+    const tick = () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (lastCandleTimeRef.current > 0) {
+        const candleClose = lastCandleTimeRef.current + tfSecs;
+        const remaining = Math.max(0, candleClose - nowSec);
+        setCountdown(remaining);
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [timeframe, candles]);
 
   // 2. Grafik Kurulumu (lightweight-charts)
   useEffect(() => {
@@ -308,6 +368,7 @@ export default function BinancePositionChartModal({
       entryLineRef.current = null;
       tpLineRef.current = null;
       slLineRef.current = null;
+      indicatorSeriesMapRef.current.clear();
     };
   }, []);
 
@@ -418,6 +479,90 @@ export default function BinancePositionChartModal({
     updateLineCoordinates();
   }, [candles, showBB, entryPrice, tpPrice, slPrice, pendingTp, pendingSl, holding]);
 
+  // 4. İndikatörleri Grafikte Güncelle
+  useEffect(() => {
+    if (!chartApiRef.current || candles.length === 0) return;
+    const chart = chartApiRef.current;
+
+    // Silinmiş indikatörlerin serilerini temizle
+    const activeUids = new Set(indicators.map((i) => i.uid));
+    for (const [uid, series] of indicatorSeriesMapRef.current.entries()) {
+      if (!activeUids.has(uid)) {
+        series.forEach((s) => { try { chart.removeSeries(s); } catch {} });
+        indicatorSeriesMapRef.current.delete(uid);
+      }
+    }
+
+    // Her aktif indikatörü işle
+    for (const ind of indicators) {
+      const entry = findIndicatorEntry(ind.registryId);
+      if (!entry) continue;
+
+      let result: any;
+      try {
+        result = entry.calculate(candles, ind.params);
+      } catch (e) {
+        console.warn("İndikatör hesaplama hatası:", ind.name, e);
+        continue;
+      }
+
+      const plots = result?.plots ?? {};
+      const plotKeys = Object.keys(plots);
+      const existing = indicatorSeriesMapRef.current.get(ind.uid) ?? [];
+
+      // Eğer seri sayısı değişmişse önce hepsini temizle
+      if (existing.length !== plotKeys.length) {
+        existing.forEach((s) => { try { chart.removeSeries(s); } catch {} });
+        indicatorSeriesMapRef.current.delete(ind.uid);
+      }
+
+      const seriesList: ISeriesApi<"Line">[] = indicatorSeriesMapRef.current.get(ind.uid) ?? [];
+
+      plotKeys.forEach((key, plotIdx) => {
+        const plotData = plots[key];
+        if (!Array.isArray(plotData) || plotData.length === 0) return;
+
+        const color = ind.style.colors[plotIdx] ?? "#10b981";
+        const lw = (ind.style.lineWidths?.[plotIdx] ?? ind.style.lineWidth ?? 2) as 1 | 2 | 3 | 4;
+
+        // Seriyi oluştur ya da güncelle
+        let s = seriesList[plotIdx];
+        if (!s) {
+          s = chart.addSeries(LineSeries, {
+            color,
+            lineWidth: lw,
+            priceLineVisible: ind.style.showPriceLine,
+            lastValueVisible: true,
+            title: plotIdx === 0 ? ind.name : "",
+          });
+          seriesList[plotIdx] = s;
+        } else {
+          s.applyOptions({ color, lineWidth: lw });
+        }
+
+        // Veriyi formatla
+        const formattedData = plotData
+          .filter((pt: any) => pt && Number.isFinite(pt.time) && pt.time > 0)
+          .map((pt: any) => ({
+            time: (pt.time > 1e11 ? Math.floor(pt.time / 1000) : Math.floor(pt.time)) as UTCTimestamp,
+            value: pt.value != null && Number.isFinite(pt.value) ? pt.value : null,
+            ...(pt.color ? { color: pt.color } : {}),
+          }))
+          .filter((pt) => pt.value != null);
+
+        if (formattedData.length > 0) {
+          try {
+            s.setData(formattedData as any);
+          } catch (e) {
+            console.debug("İndikatör setData skip:", e);
+          }
+        }
+      });
+
+      indicatorSeriesMapRef.current.set(ind.uid, seriesList);
+    }
+  }, [indicators, candles]);
+
   // Çizgilerin dikey piksel koordinatlarını bul (Tutamaçları yerleştirmek için)
   const updateLineCoordinates = useCallback(() => {
     if (!candleSeriesRef.current) return;
@@ -438,16 +583,15 @@ export default function BinancePositionChartModal({
     setLineCoords(coords);
   }, [entryPrice, tpPrice, slPrice, pendingTp, pendingSl]);
 
-  // 4. WebSocket Canlı Güncellemeler (useLiveMessages)
+  // 5. WebSocket Canlı Güncellemeler (useLiveMessages)
   useLiveMessages(
     useCallback(
       (msg) => {
         if (!msg) return;
 
-        // Mum Akışı — backend yayın formatı: { type:"kline", data:{ symbol, timeframe, time, open, ... } }
+        // Mum Akışı
         if (msg.type === "kline") {
           const klineData = (msg as any).data;
-          // Sembol ve timeframe eşleşmesini msg.data içinde kontrol et
           const msgSymbol = klineData?.symbol ?? (msg as any).symbol;
           const msgTimeframe = klineData?.timeframe ?? klineData?.interval ?? (msg as any).interval;
           if (msgSymbol !== symbolConcat || msgTimeframe !== timeframe) return;
@@ -481,6 +625,10 @@ export default function BinancePositionChartModal({
               close,
             };
             candleSeriesRef.current.update(formatted as any);
+            // Son mum zamanını güncelle
+            if (timeSec > lastCandleTimeRef.current) {
+              lastCandleTimeRef.current = timeSec;
+            }
             setCurrentPrice(formatted.close);
           } catch (e) {
             console.debug("Live kline update skip:", e);
@@ -503,7 +651,7 @@ export default function BinancePositionChartModal({
     )
   );
 
-  // 5. Sürükle-Bırak (Drag & Drop) Fare Olayları
+  // 6. Sürükle-Bırak (Drag & Drop) Fare Olayları
   const handleMouseDownOnHandle = (target: "TP" | "SL", e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -545,7 +693,7 @@ export default function BinancePositionChartModal({
     };
   }, [draggingTarget, updateLineCoordinates]);
 
-  // 6. Sağ Tık Bağlam Menüsü (Context Menu)
+  // 7. Sağ Tık Bağlam Menüsü (Context Menu)
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     if (!chartContainerRef.current || !candleSeriesRef.current) return;
@@ -564,7 +712,7 @@ export default function BinancePositionChartModal({
 
   const closeContextMenu = () => setContextMenu(null);
 
-  // 7. Değişiklikleri Binance TR API'ye Gönderme
+  // 8. Değişiklikleri Binance TR API'ye Gönderme
   const handleSaveOrders = async () => {
     const finalTp = pendingTp ?? tpPrice;
     const finalSl = pendingSl ?? slPrice;
@@ -654,6 +802,49 @@ export default function BinancePositionChartModal({
     showToast(`🔒 Break-Even stop belirlendi: ₺${fmtPrice(finalPrice)}. Kaydetmek için 'Onayla ve Kaydet'e tıklayın.`, "success");
   };
 
+  // İndikatör Yönetimi
+  const handleIndicatorSelect = (entry: RegistryEntry) => {
+    setShowIndicatorPicker(false);
+    setPickerSelectedEntry(entry);
+  };
+
+  const handleIndicatorAdd = (entry: RegistryEntry, params: Record<string, any>, style: IndicatorStyle) => {
+    const newInd: IndicatorInstance = {
+      uid: `${entry.id}_${Date.now()}`,
+      registryId: entry.id,
+      name: entry.shortName,
+      overlay: entry.overlay,
+      params,
+      style,
+    };
+    setIndicators((prev) => [...prev, newInd]);
+    setPickerSelectedEntry(null);
+    showToast(`${entry.shortName} eklendi`, "success");
+  };
+
+  const handleIndicatorRemove = (uid: string) => {
+    // Grafik serilerini temizle
+    const chart = chartApiRef.current;
+    if (chart) {
+      const series = indicatorSeriesMapRef.current.get(uid) ?? [];
+      series.forEach((s) => { try { chart.removeSeries(s); } catch {} });
+      indicatorSeriesMapRef.current.delete(uid);
+    }
+    setIndicators((prev) => prev.filter((i) => i.uid !== uid));
+  };
+
+  const handleIndicatorEdit = (ind: IndicatorInstance) => {
+    setEditingIndicator(ind);
+  };
+
+  const handleIndicatorUpdate = (params: Record<string, any>, style: IndicatorStyle) => {
+    if (!editingIndicator) return;
+    setIndicators((prev) =>
+      prev.map((i) => i.uid === editingIndicator.uid ? { ...i, params, style } : i)
+    );
+    setEditingIndicator(null);
+  };
+
   // Metrik Hesaplamaları
   const curPnlTry =
     entryPrice && currentPrice ? (currentPrice - entryPrice) * holding.total : null;
@@ -670,6 +861,9 @@ export default function BinancePositionChartModal({
     if (risk <= 0 || reward <= 0) return null;
     return (reward / risk).toFixed(2);
   }, [entryPrice, effectiveTpVal, effectiveSlVal]);
+
+  // Mevcut indikatör entry'sini bul (settings modal için)
+  const editingEntry = editingIndicator ? findIndicatorEntry(editingIndicator.registryId) : null;
 
   return (
     <div
@@ -735,7 +929,7 @@ export default function BinancePositionChartModal({
             </div>
           </div>
 
-          {/* Orta: Timeframe ve İndikatör Butonları */}
+          {/* Orta: Timeframe, İndikatör ve Diğer Butonlar */}
           <div className="flex items-center gap-1.5">
             {/* TF Seçici */}
             <div className="flex items-center rounded-lg border border-bunker-800 bg-bunker-900/80 p-0.5">
@@ -767,6 +961,21 @@ export default function BinancePositionChartModal({
               title="Bollinger Bantları (20, 2)"
             >
               <span>📊 BB (20,2)</span>
+            </button>
+
+            {/* İndikatör Ekleme Butonu */}
+            <button
+              type="button"
+              onClick={() => setShowIndicatorPicker(true)}
+              className="relative flex items-center gap-1.5 rounded-lg border border-violet-500/50 bg-violet-500/10 px-2.5 py-1 text-[11px] font-mono font-bold text-violet-300 hover:bg-violet-500/25 hover:border-violet-400 transition-all"
+              title="İndikatör Ekle"
+            >
+              <span>📈 İndikatör</span>
+              {indicators.length > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-violet-500 text-[9px] font-black text-white">
+                  {indicators.length}
+                </span>
+              )}
             </button>
 
             {/* Görünümü Sığdır */}
@@ -804,6 +1013,39 @@ export default function BinancePositionChartModal({
             </svg>
           </button>
         </div>
+
+        {/* Aktif İndikatör Listesi (Varsa) */}
+        {indicators.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap border-b border-violet-900/40 bg-violet-950/20 px-4 py-1.5">
+            <span className="text-[10px] font-mono text-violet-400 font-bold mr-1">İNDİKATÖRLER:</span>
+            {indicators.map((ind) => (
+              <div
+                key={ind.uid}
+                className="flex items-center gap-1 rounded-full border border-violet-700/50 bg-violet-900/30 px-2 py-0.5 font-mono text-[10px] text-violet-200"
+              >
+                <span
+                  className="inline-block h-2 w-2 rounded-full"
+                  style={{ backgroundColor: ind.style.colors[0] ?? "#10b981" }}
+                />
+                <span>{ind.name}</span>
+                <button
+                  onClick={() => handleIndicatorEdit(ind)}
+                  className="text-violet-400 hover:text-white ml-0.5"
+                  title="Ayarlar"
+                >
+                  ⚙
+                </button>
+                <button
+                  onClick={() => handleIndicatorRemove(ind.uid)}
+                  className="text-red-400 hover:text-red-300 ml-0.5"
+                  title="Kaldır"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* BEKLEYEN DEĞİŞİKLİK BİLDİRİMİ / ONAY BARI */}
         {(pendingTp != null || pendingSl != null) && (
@@ -863,6 +1105,30 @@ export default function BinancePositionChartModal({
 
           {/* lightweight-charts DOM konteyneri */}
           <div ref={chartContainerRef} className="w-full h-full" />
+
+          {/* MUM KAPANIŞINA KALAN SÜRE OVERLAY */}
+          {!loading && countdown > 0 && (
+            <div className="absolute top-3 left-3 z-10 pointer-events-none">
+              <div className="flex items-center gap-1.5 rounded-lg border border-bunker-700/60 bg-bunker-950/80 backdrop-blur-sm px-2.5 py-1.5 font-mono shadow-lg">
+                <svg className="w-3 h-3 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="text-[10px] text-bunker-muted font-bold">{timeframe.toUpperCase()} kapanış:</span>
+                <span
+                  className={`text-xs font-black tabular-nums ${
+                    countdown <= 10
+                      ? "text-red-400 animate-pulse"
+                      : countdown <= 30
+                      ? "text-amber-400"
+                      : "text-cyan-300"
+                  }`}
+                >
+                  {fmtCountdown(countdown)}
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* İNTERAKTİF SÜRÜKLEME (DRAG HANDLE) BUTONLARI (Fiyat Cetvelinin Yanı) */}
           <div className="absolute top-0 right-16 bottom-0 w-24 pointer-events-none z-10 overflow-hidden">
@@ -1033,6 +1299,35 @@ export default function BinancePositionChartModal({
           </div>
         </div>
       </div>
+
+      {/* İNDİKATÖR SEÇİCİ MODAL */}
+      {showIndicatorPicker && (
+        <IndicatorPicker
+          onSelect={handleIndicatorSelect}
+          onClose={() => setShowIndicatorPicker(false)}
+        />
+      )}
+
+      {/* İNDİKATÖR AYAR MODAL (Yeni ekleme) */}
+      {pickerSelectedEntry && (
+        <IndicatorSettings
+          entry={pickerSelectedEntry}
+          onAdd={(params, style) => handleIndicatorAdd(pickerSelectedEntry, params, style)}
+          onClose={() => setPickerSelectedEntry(null)}
+        />
+      )}
+
+      {/* İNDİKATÖR AYAR MODAL (Düzenleme) */}
+      {editingIndicator && editingEntry && (
+        <IndicatorSettings
+          entry={editingEntry}
+          initialParams={editingIndicator.params}
+          initialStyle={editingIndicator.style}
+          editing
+          onAdd={handleIndicatorUpdate}
+          onClose={() => setEditingIndicator(null)}
+        />
+      )}
     </div>
   );
 }
