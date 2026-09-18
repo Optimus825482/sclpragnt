@@ -108,6 +108,30 @@ function BinanceTrPageInner() {
   const [sellBusy, setSellBusy] = useState(false);
   const [sellMsg, setSellMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // ---- ALIM YAP dialogu (piyasa-fiyatından alım, Binance TR stili) ----
+  const [buyOpen, setBuyOpen] = useState(false);
+  const [buyInput, setBuyInput] = useState("");      // sembol arama metni
+  const [buyAsset, setBuyAsset] = useState("");      // seçili base varlık
+  const [buyAmount, setBuyAmount] = useState("100"); // TRY tutarı (manuel + slider)
+  const [buyBusy, setBuyBusy] = useState(false);
+  const [buyMsg, setBuyMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [buyDone, setBuyDone] = useState<{ order: string; asset: string; qty: string; price: string } | null>(null);
+  const [pairs, setPairs] = useState<string[]>([]);  // base varlık listesi (autocomplete)
+  const buyAssetRef = useRef("");
+  const buyTryFree = useMemo(() => {
+    const r = balances.find((b) => b.asset === "TRY");
+    return parseFloat(r?.free || "0");
+  }, [balances]);
+  const buyAmountNum = useMemo(() => {
+    const n = parseFloat(buyAmount.replace(",", "."));
+    return Number.isFinite(n) ? Math.min(Math.max(n, 0), buyTryFree) : 0;
+  }, [buyAmount, buyTryFree]);
+  const buyMatches = useMemo(() => {
+    const q = buyInput.trim().toUpperCase();
+    if (q.length < 2) return [];
+    return pairs.filter((p) => p.includes(q)).slice(0, 8);
+  }, [buyInput, pairs]);
+
   const [tradeDay, setTradeDay] = useState(() => localDateInput());
   const [trades, setTrades] = useState<Trade[]>([]);
   const [daily, setDaily] = useState<DailyPnl | null>(null);
@@ -238,6 +262,8 @@ function BinanceTrPageInner() {
   // ---- Canlı fiyat tick'leri (WS) ----
   // Açık pozisyon kolonları anlık güncellenir: fiyat, TRY değeri, K/Z (durum
   // renkli) ve 24s hacim. Yön nabzı için önceki fiyat ref'te tutulur.
+  // Alım dialogu da AYNI akışı okur: seçili sembol POST /watch ile 120 sn
+  // WS akışına eklenir, delta buradan gelir.
   const [liveTicks, setLiveTicks] = useState<Record<string, LiveTick>>({});
   const [tickDir, setTickDir] = useState<Record<string, "up" | "down">>({});
   const pricesRef = useRef<Record<string, number>>({});
@@ -290,6 +316,12 @@ function BinanceTrPageInner() {
     return mergedHoldings.filter((h) => h.value_try == null || h.value_try >= 50);
   }, [mergedHoldings, hideSmall]);
 
+  // Alım dialogu fiyatı: AYNI WS akışından (POST /watch katkısı); WS gecikirse
+  // son polling fiyatına düşür.
+  const buyPrice = buyAsset
+    ? Number(liveTicks[buyAsset]?.price || mergedHoldings.find((x) => x.asset === buyAsset)?.price_try || 0)
+    : 0;
+
   const openSell = (h: Holding) => {
     setSellFor(h);
     setSellQty(String(h.free));
@@ -327,6 +359,90 @@ function BinanceTrPageInner() {
     }
   };
 
+  // ---- ALIM YAP dialogu işlemleri ----
+  const openBuy = async () => {
+    setBuyOpen(true);
+    setBuyMsg(null);
+    setBuyDone(null);
+    setBuyInput("");
+    setBuyAsset("");
+    setBuyAmount("100");
+    try {
+      const r = await apiRequest(API_BASE + "/api/market-symbols");
+      const d = await r.json().catch(() => ({}));
+      const list = (Array.isArray(d.symbols) ? d.symbols : [])
+        .map((s: string) => String(s).toUpperCase().replace(/TRY$/, ""))
+        .filter((s: string) => s && s !== "TRY");
+      setPairs(Array.from(new Set(list)));
+    } catch { /* autocomplete boş kalır; manuel yazıp seçemez ama hata balonu şart değil */ }
+  };
+
+  const selectBuyAsset = async (asset: string) => {
+    setBuyAsset(asset);
+    setBuyInput(asset);
+    setBuyMsg(null);
+    // WS akışına kat: delta aynı binance_price deltasından gelir (60 sn'de bir tazele).
+    buyAssetRef.current = asset;
+    try {
+      await apiRequest(API_BASE + "/api/binance/watch", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: asset }),
+      });
+    } catch { /* WS katkısı başarısızsa anlık fiyat polling'e düşer */ }
+  };
+
+  // Dialog açıkken seçili sembolü 60 sn'de bir WS akışında tut.
+  useEffect(() => {
+    if (!buyOpen || !buyAsset) return;
+    const t = setInterval(() => {
+      const asset = buyAssetRef.current;
+      if (asset) {
+        apiRequest(API_BASE + "/api/binance/watch", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbol: asset }),
+        }).catch(() => { /* sessiz */ });
+      }
+    }, 60000);
+    return () => clearInterval(t);
+  }, [buyOpen, buyAsset]);
+
+  const confirmBuy = async () => {
+    if (buyBusy) return;
+    const asset = buyAsset || buyInput.trim().toUpperCase().replace(/TRY$/, "");
+    if (!asset) {
+      setBuyMsg({ ok: false, text: "Once eslesen sembolu sec." });
+      return;
+    }
+    if (!Number.isFinite(buyAmountNum) || buyAmountNum < 10) {
+      setBuyMsg({ ok: false, text: "Tutar gecerli degil (minimum ₺10)." });
+      return;
+    }
+    if (buyAmountNum > buyTryFree + 1e-9) {
+      setBuyMsg({ ok: false, text: `TRY bakiyesi yetersiz (bosta ₺${fmtPrice(buyTryFree)}).` });
+      return;
+    }
+    setBuyBusy(true);
+    setBuyMsg(null);
+    try {
+      const r = await apiRequest(API_BASE + "/api/binance/buy", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset, amount_try: buyAmountNum, confirmation: "REAL_BUY" }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) throw new Error(d.detail || `Alim emri gonderilemedi (HTTP ${r.status})`);
+      const qty = d.executed_qty != null ? fmtPrice(d.executed_qty, 6) : (buyPrice ? fmtPrice(buyAmountNum / buyPrice, 6) : "—");
+      const price = d.avg_price != null ? fmtPrice(d.avg_price, d.avg_price < 1 ? 6 : 2) : (buyPrice ? fmtPrice(buyPrice, buyPrice < 1 ? 6 : 2) : "—");
+      setBuyDone({ order: d.order_id ?? "—", asset, qty, price });
+      // Sayfa refresh OLMADAN bilgiler yenilenir (Erkan talebi).
+      loadAcct();
+      loadTrades();
+    } catch (e) {
+      setBuyMsg({ ok: false, text: e instanceof Error ? e.message : "Alim emri gonderilemedi" });
+    } finally {
+      setBuyBusy(false);
+    }
+  };
+
   return (
     <main className="page-shell">
       <div className="page-heading flex flex-wrap items-start justify-between gap-3">
@@ -344,6 +460,9 @@ function BinanceTrPageInner() {
               {sellEnabled ? "GERÇEK SATIŞ AÇIK" : "GERÇEK SATIŞ KAPALI"}
             </span>
           )}
+          <button type="button" onClick={openBuy} disabled={!configured || !sellEnabled}
+            title={!configured ? "Once API anahtari gir" : !sellEnabled ? "Gercek islem kapali (Ayarlar > GERCEK SATIS)" : "Piyasa fiyatindan alim yap"}
+            className="ui-button ui-button-primary disabled:opacity-40">ALIM YAP</button>
           <button type="button" onClick={() => { setSellToggle(sellEnabled); setKeyError(""); setSettingsOpen(true); }} className="ui-button ui-button-secondary">AYARLAR</button>
         </div>
       </div>
@@ -388,6 +507,97 @@ function BinanceTrPageInner() {
                 </button>
               </div>
             </div>
+          </section>
+        </div>
+      )}
+
+      {/* ALIM YAP dialogu — Binance TR stili: sembol autocomplete + WS anlık fiyat +
+          TRY bakiyesi + manuel/slider TRY tutarı + piyasa alımı + başarılı confirm */}
+      {buyOpen && (
+        <div className="fixed inset-0 z-[210] grid place-items-center bg-black/80 p-4" role="dialog" aria-modal="true">
+          <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-mono text-lg font-bold text-white">Alım Yap</h2>
+              <button type="button" onClick={() => setBuyOpen(false)} className="text-bunker-muted hover:text-white">X</button>
+            </div>
+            {buyDone ? (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-neon-green/40 bg-neon-green/10 px-4 py-3">
+                  <p className="eyebrow text-neon-green">ALIM TAMAMLANDI</p>
+                  <p className="mt-1 font-mono text-sm text-white">
+                    {buyDone.asset}: şu fiyattan alındı — ₺{buyDone.price} / birim · {buyDone.qty} {buyDone.asset}
+                  </p>
+                  <p className="mt-0.5 font-mono text-[11px] text-bunker-muted">Emir no: {buyDone.order}</p>
+                </div>
+                <p className="text-[11px] text-bunker-muted">Bakiye ve günün işlemleri sayfa refresh olmadan yenilendi.</p>
+                <div className="flex justify-end">
+                  <button type="button" onClick={() => { setBuyOpen(false); setBuyDone(null); }} className="ui-button ui-button-primary">TAMAM</button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <label className="relative block">
+                  <span className="eyebrow">SEMBOL</span>
+                  <input value={buyInput} onChange={(e) => { setBuyInput(e.target.value); setBuyAsset(""); }}
+                    placeholder="Ilk iki harfi gir — eslesenler listelenir (örn. 'MI')"
+                    className="input mt-1 w-full font-mono text-xs" />
+                  {buyMatches.length > 0 && !buyAsset && (
+                    <div className="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-bunker-600 bg-bunker-900 shadow-2xl">
+                      {buyMatches.map((asset) => (
+                        <button key={asset} type="button" onMouseDown={(e) => { e.preventDefault(); selectBuyAsset(asset); }}
+                          className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-bunker-800">
+                          <span className="font-mono text-xs font-bold text-white">{asset}TRY</span>
+                          <span className="font-mono text-[10px] text-bunker-muted">
+                            {liveTicks[asset]?.price ? `₺${fmtPrice(Number(liveTicks[asset]?.price), Number(liveTicks[asset]?.price) < 1 ? 6 : 2)}` : ""}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </label>
+                {/* WS anlık fiyat + TRY bakiyesi */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-lg border border-bunker-700 bg-bunker-900/60 px-3 py-2">
+                    <p className="eyebrow">ANLIK FIYAT</p>
+                    <p className={`mt-0.5 font-mono text-sm font-bold ${buyPrice ? (tickDir[buyAsset] === "down" ? "text-neon-red" : "text-neon-green") : "text-bunker-muted"}`}>
+                      {buyPrice ? `₺${fmtPrice(buyPrice, buyPrice < 1 ? 6 : 2)}` : "—"}
+                      {buyPrice ? <span className="ml-1 text-[9px] font-normal text-bunker-muted">WS</span> : null}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-bunker-700 bg-bunker-900/60 px-3 py-2">
+                    <p className="eyebrow">TRY BAKIYESI</p>
+                    <p className="mt-0.5 font-mono text-sm font-bold text-white">₺{fmtPrice(buyTryFree)}</p>
+                  </div>
+                </div>
+                {/* TRY tutarı: manuel kutu + soldan-sağa slider */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="eyebrow">ALIM TUTARI (TRY)</span>
+                    <span className="font-mono text-[10px] text-bunker-muted">
+                      ~{buyPrice ? fmtPrice(buyAmountNum / buyPrice, 6) : "—"} {buyAsset || "birim"}
+                    </span>
+                  </div>
+                  <input type="number" min="10" step="10" value={buyAmount}
+                    onChange={(e) => setBuyAmount(e.target.value)}
+                    className="input mt-1 w-full font-mono text-xs" />
+                  <input type="range" min="10" max={Math.max(10, Math.floor(buyTryFree))} step="10"
+                    value={Math.min(buyAmountNum || 10, Math.max(10, Math.floor(buyTryFree)))}
+                    onChange={(e) => setBuyAmount(e.target.value)}
+                    className="mt-2 w-full accent-[color:var(--neon-green,#22c55e)]" />
+                  <div className="flex justify-between font-mono text-[9px] text-bunker-muted">
+                    <span>₺10</span><span>₺{fmtPrice(Math.max(10, Math.floor(buyTryFree)))}</span>
+                  </div>
+                </div>
+                {buyMsg && <p className={"text-xs " + (buyMsg.ok ? "text-neon-green" : "text-neon-red")}>{buyMsg.text}</p>}
+                <div className="flex justify-end gap-2 pt-1">
+                  <button type="button" onClick={() => setBuyOpen(false)} className="ui-button ui-button-secondary">IPTAL</button>
+                  <button type="button" onClick={confirmBuy} disabled={buyBusy || !(buyAsset || buyInput.trim())}
+                    className="ui-button ui-button-primary disabled:opacity-40">
+                    {buyBusy ? "GONDERILIYOR..." : `AL — ₺${fmtPrice(buyAmountNum)} PİYASA EMRİ`}
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
         </div>
       )}

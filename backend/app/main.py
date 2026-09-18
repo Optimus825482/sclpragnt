@@ -47,7 +47,7 @@ from app import ml_forecast
 from app import chat_prediction_learning
 from app import chat_prediction_replay
 from app import llm_analysis
-from app.binance_tr_private import get_account_balance, get_trade_history, get_symbol_filters, place_market_sell
+from app.binance_tr_private import get_account_balance, get_trade_history, get_symbol_filters, place_market_sell, place_market_buy
 from app.embedding_worker import worker as embedding_worker, trade_document, signal_document
 from app.memory_service import build_document
 from app import memory_service
@@ -2181,6 +2181,17 @@ async def _real_sell_state() -> tuple[bool, str]:
 # (4 saniyelik döngüde her turda DB sorgusu yapılmasın).
 _binance_tick_config_cache: tuple[float, bool] = (0.0, False)
 
+# Alım dialogu WS extra-watch (base varlık -> TTL monotonic): 120 sn'lik
+# geçici semboller tick akışına katılır (POST /api/binance/watch).
+_binance_extra_watch: dict[str, float] = {}
+
+
+def _extra_watch_assets(now_mono: float) -> list[str]:
+    expired = [k for k, v in _binance_extra_watch.items() if v <= now_mono]
+    for k in expired:
+        del _binance_extra_watch[k]
+    return list(_binance_extra_watch.keys())
+
 
 async def _binance_ticks_configured() -> bool:
     now_ts = time.time()
@@ -2210,7 +2221,9 @@ async def binance_price_tick_loop():
             if not await _binance_ticks_configured():
                 await asyncio.sleep(30)
                 continue
-            assets = await _load_seen_binance_assets()
+            seen_assets = await _load_seen_binance_assets()
+            extra = _extra_watch_assets(time.monotonic())
+            assets = sorted(set(seen_assets) | set(extra))
             if not assets:
                 await asyncio.sleep(30)
                 continue
@@ -2586,6 +2599,92 @@ async def binance_sell(payload: dict, request: Request):
         raise HTTPException(status_code=502, detail=f"Satış emri gönderilemedi: {exc}")
     _actor, _actor_role = _session_identity(request)
     await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_SELL",
+                          target=asset, details={"asset": asset, **result}, request=request)
+    return {"ok": True, **result}
+
+
+@app.post("/api/binance/watch")
+async def binance_watch(payload: dict, request: Request):
+    """Alım dialogu için sembolü 120 sn'liğine WS fiyat akışına ekle (public fiyat).
+
+    Gövde: {"symbol": "BTC"} — base varlık. Dialog açıkken frontend 60 sn'de
+    bir yeniler; TTL dolunca akıştan düşer. TRY bakiyesi tick loop'ta zaten var.
+    """
+    _require_admin(request)
+    base = str(payload.get("symbol") or "").upper().strip()
+    if not base or base == "TRY":
+        raise HTTPException(status_code=422, detail="Geçersiz sembol")
+    now_ts = time.monotonic()
+    expires = now_ts + 120.0
+    for key in [k for k, v in _binance_extra_watch.items() if v <= now_ts]:
+        del _binance_extra_watch[key]
+    _binance_extra_watch[base] = expires
+    return {"ok": True, "symbol": base, "ttl_sec": 120}
+
+
+@app.post("/api/binance/buy")
+async def binance_buy(payload: dict, request: Request):
+    """Kullanıcı onaylı MARKET BUY — harcanacak TRY tutarıyla (admin-only, gerçek emir).
+
+    Gövde: {"asset": "BTC", "amount_try": 500, "confirmation": "REAL_BUY"}.
+    Sembol: {ASSET}_TRY öncelikli, yoksa {ASSET}_USDT (USDT bakiyesinden
+    değil — USDT çifti seçildiyse tutar USDT cinsinden harcanır). Doküman
+    hizalı: MARKET alış quoteOrderQty ile gönderilir. Başarılı cevapta
+    emir no + (proxy taşıyorsa) doldurma ortalaması döner.
+    """
+    _require_admin(request)
+    sell_ok, sell_source = await _real_sell_state()
+    if not sell_ok:
+        if sell_source == "panel":
+            raise HTTPException(status_code=403, detail="Gerçek işlem kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla")
+        raise HTTPException(status_code=403, detail="Gerçek Binance işlemleri sunucu tarafında ENABLE_REAL_BINANCE_SELL=1 ile kapatılmış (env override)")
+    if str(payload.get("confirmation") or "").strip().upper() != "REAL_BUY":
+        raise HTTPException(status_code=422, detail="REAL_BUY onayı gerekli")
+    api_key, api_secret = await _decrypt_binance_creds(request)
+    asset = str(payload.get("asset") or "").upper().strip()
+    if not asset or asset == "TRY":
+        raise HTTPException(status_code=422, detail="Geçersiz varlık")
+    try:
+        amount = float(payload.get("amount_try"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Geçersiz tutar")
+    if not (amount > 0):
+        raise HTTPException(status_code=422, detail="Geçersiz tutar")
+
+    symbol_u, filters = None, None
+    for quote in ("TRY", "USDT"):
+        cand = f"{asset}_{quote}"
+        f = await asyncio.to_thread(get_symbol_filters, api_key, api_secret, cand)
+        if f:
+            symbol_u, filters = cand, f
+            break
+    if not symbol_u:
+        raise HTTPException(status_code=422, detail=f"{asset} için alım çifti bulunamadı (TRY/USDT)")
+
+    quote_asset = str((filters or {}).get("quote_asset") or symbol_u.rsplit("_", 1)[-1])
+    quote_qty = float(f"{amount:.2f}")
+    min_notional = float((filters or {}).get("min_notional") or 0)
+    if quote_asset == "TRY":
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+        try_row = next((b for b in balances if str(b.get("asset") or "").upper() == "TRY"), None)
+        try_free = float(try_row.get("free", 0) or 0) if try_row else 0.0
+        if quote_qty > try_free + 1e-9:
+            raise HTTPException(status_code=422, detail=f"TRY bakiyesi yetersiz (boşta ₺{try_free:.2f})")
+    if quote_asset == "USDT":
+        balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+        usdt_row = next((b for b in balances if str(b.get("asset") or "").upper() == "USDT"), None)
+        usdt_free = float(usdt_row.get("free", 0) or 0) if usdt_row else 0.0
+        if quote_qty > usdt_free + 1e-9:
+            raise HTTPException(status_code=422, detail=f"USDT bakiyesi yetersiz (boşta {usdt_free:.2f} USDT)")
+
+    try:
+        result = await asyncio.to_thread(
+            place_market_buy, api_key, api_secret, symbol_u, quote_qty,
+            min_notional if quote_asset != "USDT" else None)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Alım emri gönderilemedi: {exc}")
+    _actor, _actor_role = _session_identity(request)
+    await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_BUY",
                           target=asset, details={"asset": asset, **result}, request=request)
     return {"ok": True, **result}
 
