@@ -4864,7 +4864,12 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
         # ile bu insert arasında yarış penceresi vardı — eşzamanlı tarama
         # tetiklerinde AUTO_PAPER_MAX_OPEN_POSITIONS+1 pozisyon açılabilirdi.
         # Sayım artık advisory xact_lock'lu bu op içinde yapılır → atomik.
-        global_max = int(getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0) or 0)
+        # D-11/Erkan (2026-09-18): çalışma-anı sınırı signal'dan yeğlenir
+        # (Ayarlar > Otonom Paper Trade > Max açık pozisyon); yoksa sınıf
+        # varsayılanı. 0 = sınırsız.
+        global_max = int(signal.get("max_open_positions")
+                         if signal.get("max_open_positions") is not None
+                         else getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0) or 0)
         if global_max > 0:
             cnt = conn.execute(
                 "SELECT COUNT(*) FROM auto_paper_trades WHERE status='open'"

@@ -313,14 +313,18 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         if open_trade:
             # Açık pozisyon var → TP güncelle (bildirim hedefini takip et)
             return await _update_existing_trade(open_trade, notification, current_price)
-        # Global maksimum açık pozisyon sınırı (0 = sınırsız, varsayılan 3).
+        # Global maksimum açık pozisyon sınırı (varsayılan 8 — Erkan kararı,
+        # 2026-09-18). ÖNCE çalışma-anı DB ayarı (Ayarlar > Otonom Paper Trade
+        # > Max açık pozisyon); yoksa sınıf varsayılanı. 0 = sınırsız (yalnız
+        # env ile verilir; UI 0'a izin vermez).
         # R3-06 (c): sembol-başı sınır yukarıda `open_trade` ile korunur; global
         # sınır ise burada. Engel NEDENÎ ile döndürülür (sessiz düşme yok).
         # Denetim notu (atomiklik): bu sayım ile `_open_new_trade` içindeki insert
         # arasında yarış penceresi VAR; kök neden düzeltmesi DB katmanında —
         # `insert_auto_paper_trade` advisory xact_lock'lu op içinde global limiti
         # yeniden sayar (aşağıdaki `_AUTO_PAPER_GLOBAL_LIMIT_NOTE`).
-        max_open = int(getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0))
+        max_open = int(settings.get("max_open_positions",
+                     getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0)))
         if max_open > 0:
             open_count = len(await database.list_auto_paper_trades(status="open"))
             if open_count >= max_open:
@@ -440,6 +444,10 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             "reason": f"AUTO_PAPER skor {notification.get('score', 0):.1f} hedef +%{target_pct:.1f} TP={take_profit_price:.6f} SL={stop_loss_price:.6f}",
             "strategy": "AUTO_PAPER",
             "trade_id": None,  # insert sonrası id bilinir; DB'de dolduramayız, reason yeterli
+            # D-11/Erkan (2026-09-18): çalışma-anı sınırını DB katmanının
+            # advisory-lock'lu ikinci savunmasına taşı (yarış penceresi kapanır).
+            "max_open_positions": int(settings.get("max_open_positions",
+                                     getattr(config, "AUTO_PAPER_MAX_OPEN_POSITIONS", 0))),
         }
         trade, status = await database.open_auto_paper_trade(trade_data, signal)
 
@@ -927,6 +935,7 @@ async def get_default_settings() -> dict:
         "dynamic_breakeven_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", True),
         "dynamic_trailing_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", True),
         "breakeven_buffer_pct": getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02),
+        "max_open_positions": config.AUTO_PAPER_MAX_OPEN_POSITIONS,
     }
 
 
@@ -960,7 +969,8 @@ async def update_settings_endpoint(payload: dict, request: Request):
                 "trailing_enabled", "trailing_trigger_pct", "trailing_gap_pct",
                 "reopen_after_protect_close",
                 "tp_primary_exit_enabled", "dynamic_breakeven_enabled",
-                "dynamic_trailing_enabled", "breakeven_buffer_pct")
+                "dynamic_trailing_enabled", "breakeven_buffer_pct",
+                "max_open_positions")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
 
@@ -983,6 +993,10 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "dynamic_breakeven_enabled": bool(merged.get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", True))),
         "dynamic_trailing_enabled": bool(merged.get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", True))),
         "breakeven_buffer_pct": max(0.01, min(0.5, float(merged.get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02))))),
+        # D-11/Erkan (2026-09-18): UI'dan değiştirilebilir global maksimum açık
+        # pozisyon. 1..30 aralığı; 0'a izin verilmez (yanlışlıkla sınırsız
+        # bırakma koruması — sınırsız gerekirse env ile verilir).
+        "max_open_positions": max(1, min(30, int(merged.get("max_open_positions", config.AUTO_PAPER_MAX_OPEN_POSITIONS)))),
     }
 
     await database.set_llm_setting("auto_paper_settings", json.dumps(settings))

@@ -589,9 +589,11 @@ class Config:
     AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE = os.getenv("AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE", "true").lower() == "true"
     # D-11 (2026-09-12): otonom paper için global maksimum açık pozisyon sayısı.
     # Eskiden varsayılan 0 (= sınırsız) idi; farklı sembollerden gelen bildirim
-    # zinciri cüzdanı tek turda tüketebiliyordu. Güvenli varsayılan artık 3;
-    # açıkça 0 verilirse yine sınırsız. Env/DB (çalışma-anı ayarı) önceliklidir.
-    AUTO_PAPER_MAX_OPEN_POSITIONS = max(0, int(os.getenv("AUTO_PAPER_MAX_OPEN_POSITIONS", "3")))
+    # zinciri cüzdanı tek turda tüketebiliyordu. Güvenli varsayılan 3 idi;
+    # Erkan kararı (2026-09-18) ile 8 — UI (Ayarlar > Otonom Paper Trade)
+    # üzerinden de değiştirilebilir (DB `auto_paper_settings.max_open_positions`
+    # önceliklidir; açıkça 0 verilirse sınırsız).
+    AUTO_PAPER_MAX_OPEN_POSITIONS = max(0, int(os.getenv("AUTO_PAPER_MAX_OPEN_POSITIONS", "8")))
     # B1-B5: otonom paper dinamik çıkış ayarları.
     AUTO_PAPER_TP_PRIMARY_ENABLED = os.getenv("AUTO_PAPER_TP_PRIMARY_ENABLED", "true").lower() == "true"
     AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", "true").lower() == "true"
