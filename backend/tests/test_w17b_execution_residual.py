@@ -506,7 +506,9 @@ class CrossSubsystemPositionTests(unittest.IsolatedAsyncioTestCase):
 class PositionLimitDefaultTests(unittest.TestCase):
     def test_defaults_are_finite_not_unlimited(self):
         self.assertEqual(5, Config.MAX_OPEN_POSITIONS)
-        self.assertEqual(3, Config.AUTO_PAPER_MAX_OPEN_POSITIONS)
+        # Erkan kararı (2026-09-18): otonom paper global limiti 3 -> 8
+        # (UI'dan da değiştirilebilir: Ayarlar > Otonom Paper Trade).
+        self.assertEqual(8, Config.AUTO_PAPER_MAX_OPEN_POSITIONS)
 
     def test_defaults_are_env_overridable(self):
         for key in ("MAX_OPEN_POSITIONS", "AUTO_PAPER_MAX_OPEN_POSITIONS"):

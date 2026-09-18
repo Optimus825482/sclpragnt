@@ -1615,6 +1615,13 @@ function AutoPaperSettingsPanel() {
           <input type="number" min="10" disabled={pending} value={draft.min_order_try ?? 50} onChange={(e) => set("min_order_try", Number(e.target.value))} className="input" />
         </div>
         <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Max Açık Pozisyon (1-30)</label>
+          {/* D-11/Erkan (2026-09-18): global maksimum açık otonom pozisyon;
+              eskiden 3 sabitti. Çalışma-anı DB ayarı — kaydettikten sonra
+              anında geçerli (deploy yenilemesine gerek yok). */}
+          <input type="number" min="1" max="30" disabled={pending} value={draft.max_open_positions ?? 8} onChange={(e) => set("max_open_positions", Number(e.target.value))} className="input" />
+        </div>
+        <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Breakeven Tetikleme (%)</label>
           <input type="number" min="0.5" max="10" step="0.1" disabled={pending} value={draft.breakeven_trigger_pct ?? 1.5} onChange={(e) => set("breakeven_trigger_pct", Number(e.target.value))} className="input" />
         </div>
