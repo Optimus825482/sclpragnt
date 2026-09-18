@@ -403,7 +403,14 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             return None
 
         net_order_value = fill_entry * quantity
-        take_profit_price = fill_entry * (1 + target_pct / 100)
+        # ERKAN İSTEĞİ (2026-09-18): TP hedefi NET olacak — gidiş-dönüş komisyon
+        # + SATIŞ kayması mark-up'a eklenir (giriş kayması zaten fill_entry
+        # çapasında). Bildirimdeki +%2.0 hedefi artık net +%2.0 realize eder:
+        # TP brüt = 2.0 + 2×0.15 + 0.025 ≈ +2.325%. Kapanış muhasebesi
+        # (`_close_trade`) ZATEN komisyon+ kaymayı düşüyor; çapası da
+        # mark-up'lı olmalı ki bildirimdeki hedef gerçekten realize edilsin.
+        cost_markup = 2 * commission_pct + float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        take_profit_price = fill_entry * (1 + target_pct / 100 + cost_markup)
         stop_loss_price = fill_entry * (1 - sl_pct)
         now = time.time()
         # R3-09 (P0): `notification_id` bigint kolonuna yalnızca TAM SAYI yazılır.
@@ -502,7 +509,11 @@ async def _update_existing_trade(open_trade: dict, notification: dict, current_p
             return None
 
         entry_price = float(open_trade["entry_price"])
-        new_tp = entry_price * (1 + target_pct / 100)
+        # ERKAN İSTEĞİ (2026-09-18): TP-güncelleme de NET hedefe göre — giriş
+        # kapasıyla AYNI mark-up (`_open_new_trade` ile tutarlı); aksi halde
+        # güncellenen pozisyonun hedefi mark-up'sız kalırdı.
+        cost_markup = 2 * config.COMMISSION_PCT + float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        new_tp = entry_price * (1 + target_pct / 100 + cost_markup)
         old_tp = float(open_trade.get("take_profit") or 0)
 
         # TP sadece yükseliyorsa güncelle (hedefe ulaşıp düzeltmeden sonra
@@ -653,7 +664,11 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     current_breakeven_stop = float(trade.get("breakeven_stop") or 0)
 
     if gross_pnl_pct >= breakeven_trigger_pct:
-        net_floor = entry_price * (1 + 2 * commission_pct + breakeven_buffer_pct / 100)
+        # NET taban (2026-09-18 hassasiyeti): gidiş-dönüş komisyon + SATIŞ dolum
+        # kayması dahil (giriş kayması zaten çapa fill_entry'de). Bu fiyattan
+        # satış, `_close_trade` muhasebesi sonrası daima pozitif net verir.
+        exit_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+        net_floor = entry_price * (1 + 2 * commission_pct + exit_slip + breakeven_buffer_pct / 100)
         trail_stop = peak_price * (1 - BREAKEVEN_TRAIL_GAP_PCT / 100)
         new_breakeven = max(net_floor, trail_stop)
         applied_breakeven = max(new_breakeven, current_breakeven_stop)

@@ -31,6 +31,9 @@ def _make_notification(symbol="APTEST", score=60.0, target_pct=2.0, price=100.0,
 
 
 def _make_open_trade(symbol="APTEST", entry=100.0, target_pct=2.0, sl_pct=3.0):
+    # Erkan kararı (2026-09-18): açılış TP'si işaretlidir (NET hedef) — mark-up =
+    # gidiş-dönüş komisyon + SATIŞ dolma payı. Fixture bunu birebir saklar.
+    markup = 2 * config.COMMISSION_PCT + config.ESTIMATED_SLIPPAGE_PCT
     return {
         "id": 1,
         "symbol": symbol,
@@ -38,7 +41,7 @@ def _make_open_trade(symbol="APTEST", entry=100.0, target_pct=2.0, sl_pct=3.0):
         "entry_price": entry,
         "quantity": 1.0,
         "stop_loss": entry * (1 - sl_pct / 100),
-        "take_profit": entry * (1 + target_pct / 100),
+        "take_profit": entry * (1 + target_pct / 100 + markup),
         "peak_price": entry,
         "breakeven_activated": False,
         "breakeven_stop": None,
@@ -205,7 +208,10 @@ class AutoPaperOpenPositionTpTests(unittest.IsolatedAsyncioTestCase):
             trade, _make_notification(target_pct=4.0), 101.0)      # TP 104
         self.assertEqual("tp_updated", out["status"])
         self.assertEqual(1, len(self.calls))
-        self.assertAlmostEqual(104.0, self.calls[0]["new_tp"], places=6)
+        # Erkan kararı (2026-09-18): TP NET hedeftir — mark-up = gidiş-dönüş
+        # komisyon (2×%0.15) + SATIŞ dolma payı (%0.025): %4 hedef → 104.325
+        expected_tp = 100.0 * (1 + 4.0 / 100 + 2 * config.COMMISSION_PCT + config.ESTIMATED_SLIPPAGE_PCT)
+        self.assertAlmostEqual(expected_tp, self.calls[0]["new_tp"], places=6)
 
     async def test_lower_target_does_not_rewrite_tp(self):
         """Düşen hedef açık pozisyonun TP'sini aşağı çekmez (kârı sınırlandırırdı)."""
