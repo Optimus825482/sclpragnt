@@ -2363,8 +2363,21 @@ def _avg_buy_cost(api_key: str, api_secret: str, asset: str, symbol_concat: str,
         # FIFO kuyruğu: (fiyat, miktar). Sıralı alışlar eklenir, satışlar kuyruğun
         # başından (en eski alıştan) düşülür. Kalan bakiye ve kalan alışların
         # toplam maliyeti, elde tutulan kısmın gerçek ortalama maliyetini verir.
+        # SIRA DÜZELTMESİ (2026-09-18, kullanıcı raporu: açık pozisyonlarda alım
+        # maliyeti yanlıştı): Binance fill listesini YENİDEN-ESKİYE döndürür;
+        # kronolojik sanıp bu sırayla işlemek FIFO'yu TERS kuruyordu — satışlar
+        # EN YENİ lotları düşüyordu, elde kalan havuz eski ucuz lotlardan
+        # oluşuyor ve maliyet suni düşük (+kâr şişkin) görünüyordu. Örnek:
+        # G pozisyonu 0,366 alımından geliyor; sayfa 0,223 gösteriyordu.
+        # Fix: fill'ler KRONOLOJİK (eski→yeni) sıraya alınır — alışlar eskiden
+        # başa eklenir, satışlar başından (en eski) düşer; elde kalan havuz
+        # EN YENİ lotlardan oluşur (gerçek pozisyon maliyeti).
         fifo: list[tuple[float, float]] = []
-        for t in trades if isinstance(trades, list) else []:
+        chronological = sorted(
+            (t for t in trades if isinstance(trades, list)) if isinstance(trades, list) else [],
+            key=lambda t: (float(t.get("time") or 0), int(t.get("id") or 0)),
+        )
+        for t in chronological:
             try:
                 t_qty = float(t.get("qty") or 0)
                 t_price = float(t.get("price") or 0)
