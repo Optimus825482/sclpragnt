@@ -128,14 +128,31 @@ def _message_text(message):
     """Normalize OpenAI-compatible content strings and content block arrays."""
     content = (message or {}).get("content") if isinstance(message, dict) else message
     if isinstance(content, str):
-        return content.strip()
+        text = content.strip()
+        return text or None
     if isinstance(content, list):
         parts = []
         for block in content:
-            if isinstance(block, str): parts.append(block)
-            elif isinstance(block, dict) and block.get("text"): parts.append(str(block["text"]))
-        return "".join(parts).strip() or None
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("text"):
+                parts.append(str(block["text"]))
+        return _join_text_parts(parts)
     return None
+
+
+def _join_text_parts(parts):
+    """Join content blocks without losing spaces between segmented provider chunks."""
+    out = []
+    for part in parts:
+        part = str(part).strip()
+        if not part:
+            continue
+        if out and not out[-1][-1].isspace() and not part[0].isspace():
+            out.append(" ")
+        out.append(part)
+    joined = "".join(out).strip()
+    return joined or None
 
 
 def _brace_scan(text: str):
@@ -833,6 +850,11 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
                 # Türkçeden başka dil kullanılmaz).
                 yield {"event": "error", "data": {"status": "error",
                        "error": "Sağlayıcı yanıtı reasoning'de başka dilde üretti (kural: yanıt yalnızca Türkçe) — mesajı tekrar gönder"}}
+                return
+            else:
+                # Hiç içerik gelmedi: sessiz boş bırakma yerine açık hata göster.
+                yield {"event": "error", "data": {"status": "error",
+                       "error": "Sağlayıcı yanıtı boş döndü; mesajı tekrar gönderin veya LLM sağlayıcı ayarlarını kontrol edin"}}
                 return
         yield {"event": "done", "data": {"status": "ok", "model": cfg["model"]["name"], "generated_at": time.time(), "provider_stream": True, "emitted": emitted}}
     except Exception as exc:
