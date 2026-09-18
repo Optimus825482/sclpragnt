@@ -452,7 +452,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     selected = set(str(value) for value in (active_skills or []))
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"] and (not selected or str(s["id"]) in selected or s["name"] in selected))
-    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Kullanıcı bir coin için analiz istediğinde gösterge değerlerini tek tek sıralayıp onu boğma ama gerekçesiz de bırakma: kompakt bir analiz yaz — 'şu an ne oluyor', 'bundan sonra ne olabilir' (yön + seviye + bozulma), 'kısaca neden' ve tek cümlelik sonuç. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
+    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Kullanıcı bir coin için analiz istediğinde gösterge değerlerini tek tek sıralayıp onu boğma ama gerekçesiz de bırakma: kompakt bir analiz yaz — 'şu an ne oluyor', 'bundan sonra ne olabilir' (yön + seviye + bozulma), 'kısaca neden' ve tek cümlelik sonuç. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     context_messages, _estimated_tokens = _context_window_messages(messages)
     for item in context_messages:
@@ -601,12 +601,14 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         # deneme, (2) son çare reasoning akışını yanıt olarak kullan.
         choices: list = []
         text = None
+        finish_rule = None
         for content_attempt in (1, 2):
             data = response_data(result)
             if isinstance(data, str):
                 return {"enabled": True, "status": "ok", "text": data, "tool_loop": {**tool_stats, "estimated_tokens": _estimate_tokens(conversation)}}
             choices = data.get("choices", []) if isinstance(data, dict) else []
             final_message = choices[0].get("message") if choices else None
+            finish_rule = choices[0].get("finish_reason") if choices else None
             text = _message_text(final_message) or (data.get("output_text") if isinstance(data, dict) else None)
             if text:
                 break
@@ -621,6 +623,35 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
                 logger.warning("son çare: reasoning akışı yanıt olarak iletildi (%d karakter)", len(reasoning_text))
             else:
                 raise RuntimeError("Sağlayıcı yanıtı 2 denemede de boş döndü — metin ve reasoning içeriği yok")
+        # KESİLME KORUMASI (2026-09-18, kullanıcı raporu: yanıt "Let..." diye
+        # yarıda kalmıştı): GLM tipi interleaved-thinking modeller İngilizce iç
+        # konuşmasını content'e döküyor; verbose monolog bütçeyi tüketip
+        # finish_rule "length" ile ortadan kesiliyor ve sohbet yolu kesilme
+        # SESSİZ kabul ediyordu (metin olduğu için hiçbir kontrol yoktu).
+        # Artık: metin varsa tek "devam" turu ile kapatılır.
+        if finish_rule == "length":
+            continue_messages = list(conversation)
+            if text:
+                continue_messages.append({"role": "assistant", "content": text})
+                continue_prompt = "Kaldığın yerden kaldığın cümleyi kesintisiz kapatıp devam et. Ara monolog ekleme; sadece final yanıtı tamamla."
+            else:
+                continue_prompt = "Final yanıtı tamamla; ara monolog ekleme."
+            continue_messages.append({"role": "user", "content": continue_prompt})
+            continue_payload = {**payload, "messages": continue_messages}
+            try:
+                cont_req = Request(url, data=json.dumps(continue_payload).encode(),
+                                   headers={"Content-Type": "application/json",
+                                            "Authorization": "Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])},
+                                   method="POST")
+                cont_response = await safe_provider_open(cont_req, timeout=45)
+                cont_data = response_data(_decode_provider_response(cont_response.read()))
+                cont_choices = cont_data.get("choices", []) if isinstance(cont_data, dict) else []
+                cont_text = _message_text(cont_choices[0].get("message") if cont_choices else None) or (cont_data.get("output_text") if isinstance(cont_data, dict) else None)
+                if cont_text:
+                    text = (text + cont_text) if text else cont_text
+                    logger.warning("kesilme koruması: devam turu uygulandı (round=%s, +%d karakter)", tool_round, len(cont_text))
+            except Exception as cont_exc:
+                logger.warning("kesilme koruması: devam turu başarısız — mevcut metin iletildi (%s)", type(cont_exc).__name__)
         tool_stats["estimated_tokens"] = _estimate_tokens(conversation)
         return {"enabled": True, "status": "ok", "text": text, "model": cfg["model"]["name"],
                 "generated_at": time.time(), "tool_loop": tool_stats}
@@ -664,7 +695,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         yield {"event": "error", "data": {"status": "disabled", "error": "Aktif LLM yapılandırması yok"}}
         return
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme. Coin analizinde kullanıcıyı gösterge detayıyla boğma ama gerekçesiz bırakma: önce durumu, sonra olası senaryoları (yön + seviye + bozulma), sonra tek neden cümlesi, en sonda net sonucu söyle.\n" + skills
+    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme. Coin analizinde kullanıcıyı gösterge detayıyla boğma ama gerekçesiz bırakma: önce durumu, sonra olası senaryoları (yön + seviye + bozulma), sonra tek neden cümlesi, en sonda net sonucu söyle.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Güncel snapshot:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     for item in (messages or [])[-12:]:
         if isinstance(item, dict):
