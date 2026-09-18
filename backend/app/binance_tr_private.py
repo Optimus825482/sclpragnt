@@ -137,7 +137,21 @@ def _signed_request(method: str, path: str, params: dict | None,
                        else _http_get_json(url, headers))
             return _unwrap(payload)
         except HTTPError as exc:
-            last_error = exc
+            # Binance TR 4xx hataları JSON body'sinde {code, msg} taşır.
+            # Body'yi okuyup anlamlı bir mesaja çeviriyoruz; başarısız olursa ham HTTP hata kodu kullanılır.
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+                parsed = json.loads(body)
+                api_code = parsed.get("code") or parsed.get("status")
+                api_msg = parsed.get("msg") or parsed.get("message") or body[:200]
+                binance_err = RuntimeError(f"Binance TR API hatası {api_code}: {api_msg}")
+                logger.error("Binance TR HTTP %s | path=%s | code=%s msg=%s | params=%s",
+                             exc.code, path, api_code, api_msg, base_params)
+            except Exception:
+                binance_err = RuntimeError(f"Binance TR HTTP {exc.code}: {exc.reason}")
+                logger.error("Binance TR HTTP %s | path=%s | reason=%s | params=%s",
+                             exc.code, path, exc.reason, base_params)
+            last_error = binance_err
             if exc.code == 418:
                 # Ban sinyali: uzun geri çekilme, anında raise YOK.
                 if attempt == REST_MAX_ATTEMPTS:
@@ -149,7 +163,8 @@ def _signed_request(method: str, path: str, params: dict | None,
                     break
                 time.sleep(_private_retry_delay(attempt))
                 continue
-            raise
+            # 4xx hataları (400, 401, 403, vb.) — anlamlı hatayla raise
+            raise binance_err
         except (URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as exc:
             last_error = exc
             if attempt == REST_MAX_ATTEMPTS:
