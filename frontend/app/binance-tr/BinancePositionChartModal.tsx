@@ -139,7 +139,7 @@ export default function BinancePositionChartModal({
   useEffect(() => { timeframeRef.current = timeframe; }, [timeframe]);
   useEffect(() => { loadingRef.current = loading; }, [loading]);
   const [showBB, setShowBB] = useState(true); // Varsayılan Bollinger Bands AÇIK
-  const [showSupertrend, setShowSupertrend] = useState(true); // Varsayılan Supertrend AÇIK
+  const [showSupertrend, setShowSupertrend] = useState(false); // Varsayılan KAPALI (kullanıcı tercihi 2026-09-19)
   const [supertrendTrend, setSupertrendTrend] = useState<"UP" | "DOWN" | null>(null);
   const [candles, setCandles] = useState<CandleBar[]>([]);
 
@@ -759,6 +759,19 @@ export default function BinancePositionChartModal({
               close = Number(bar.close ?? bar.c ?? 0);
             }
             if (!Number.isFinite(timeSec) || timeSec <= 0 || !Number.isFinite(close) || close <= 0) return;
+            // KLINE BUCKET DÜZELTMESİ (2026-09-19): gelen mumun açılışı,
+            // görüntülenen TF'in AKTİF bucket'ından eskiyse (ör. kapanmış
+            // mum tekrarı) seriyi karıştırma; yalnız son mumun zaman
+            // damgasını ileri taşı. Yeni bucket Geldiyse update() yeni mumu
+            // kendiliğinden oluşturur (lightweight-charts davranışı).
+            const tfSecs = TF_SECONDS[timeframeRef.current] || 0;
+            const nowSec = Math.floor(Date.now() / 1000);
+            const activeBucket = tfSecs > 0 ? Math.floor(nowSec / tfSecs) * tfSecs : timeSec;
+            if (tfSecs > 0 && timeSec < activeBucket) {
+              // Kapanmış mum tekrarı/geriye giden bar → yalnız fiyatı tazele.
+              setCurrentPrice(close);
+              return;
+            }
             const formatted: CandleBar = {
               time: timeSec as UTCTimestamp,
               open: Number.isFinite(open) && open > 0 ? open : close,
@@ -787,28 +800,43 @@ export default function BinancePositionChartModal({
               setTickDir((prev) => (currentPrice ? (newPrice >= currentPrice ? "up" : "down") : null));
               setCurrentPrice(newPrice);
 
-              // Canlı mum iğne/gövde güncellemesi. TF YARIŞI DÜZELTMESİ (2026-09-19):
-              // timeframeRef (fresh ref) kullanılır — stale closure'daki eski
-              // TF'in son mumu yeni TF serisine karışıp mumları bozuyordu.
-              // Ayrıca yükleniyor sırasında seriye dokunulmaz: TF değişiminde
-              // setCandles([]) ile temizlenen serinin üstüne eski TF fiyatı
-              // yazılmaz (mumların "aynı yerde garip çizilmesi"nin kök nedeni).
-              if (!loadingRef.current && candleSeriesRef.current && lastCandleRef.current) {
-                const c = lastCandleRef.current;
-                // Son mum, görüntülenen TF'in açık mumu olmalı (interval hizası).
+              // Canlı mum güncellemesi + YENİ MUM OLUŞTURMA. DONMA DÜZELTMESİ
+              // (2026-09-19): eski kod yalnız mevcut son mumu güncelliyordu;
+              // mum kapanıp yenisi başladığında hiçbir yerde yeni mum
+              // OLUŞTURULMUYORDU → 2×TF hizalama penceresi dolduğunda tik'ler
+              // tamamen susuyor ve grafik DONUYORDU. Doğru davranış: gelen
+              // fiyat, son mumun kapanışından SONRA yeni bir mum başlatır.
+              if (!loadingRef.current && candleSeriesRef.current) {
                 const tfSecs = TF_SECONDS[timeframeRef.current] || 0;
-                if (tfSecs > 0 && Date.now() / 1000 - Number(c.time) < tfSecs * 2) {
-                  const updatedBar: CandleBar = {
-                    time: c.time,
-                    open: c.open,
-                    high: Math.max(c.high, newPrice),
-                    low: Math.min(c.low, newPrice),
-                    close: newPrice,
-                  };
-                  lastCandleRef.current = updatedBar;
-                  try {
-                    candleSeriesRef.current.update(updatedBar as any);
-                  } catch {}
+                const nowSec = Math.floor(Date.now() / 1000);
+                const last = lastCandleRef.current;
+                if (tfSecs > 0) {
+                  // Görüntülenen TF'in mevcut (açık) mumunun açılış zamanı.
+                  const bucket = Math.floor(nowSec / tfSecs) * tfSecs;
+                  if (last && Number(last.time) === bucket) {
+                    // Açık mum: iğne/gövde güncelle.
+                    const updatedBar: CandleBar = {
+                      time: last.time,
+                      open: last.open,
+                      high: Math.max(last.high, newPrice),
+                      low: Math.min(last.low, newPrice),
+                      close: newPrice,
+                    };
+                    lastCandleRef.current = updatedBar;
+                    try { candleSeriesRef.current.update(updatedBar as any); } catch {}
+                  } else if (!last || bucket > Number(last.time)) {
+                    // YENİ MUM BAŞLADI: bucket açılışıyla yeni mum oluştur.
+                    const freshBar: CandleBar = {
+                      time: bucket as UTCTimestamp,
+                      open: last ? last.close : newPrice,
+                      high: newPrice,
+                      low: newPrice,
+                      close: newPrice,
+                    };
+                    lastCandleRef.current = freshBar;
+                    try { candleSeriesRef.current.update(freshBar as any); } catch {}
+                  }
+                  // bucket < last.time → eski TF kalıntısı, seriye dokunma.
                 }
               }
             }
@@ -1439,15 +1467,12 @@ export default function BinancePositionChartModal({
           {/* lightweight-charts DOM konteyneri */}
           <div ref={chartContainerRef} className="w-full h-full" />
 
-          {/* MUM KAPANIŞINA KALAN SÜRE OVERLAY */}
+          {/* MUM KAPANIŞINA KALAN SÜRE — FİYAT ÖLÇEĞİ TARAFINDA (kullanıcı tercihi
+              2026-09-19): sağ üst köşe, fiyat cetvelinin hizasında. */}
           {!loading && countdown > 0 && (
-            <div className="absolute top-3 left-3 z-10 pointer-events-none">
-              <div className="flex items-center gap-1.5 rounded-lg border border-bunker-700/60 bg-bunker-950/80 backdrop-blur-sm px-2.5 py-1.5 font-mono shadow-lg">
-                <svg className="w-3 h-3 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span className="text-[10px] text-bunker-muted font-bold">{timeframe.toUpperCase()} kapanış:</span>
+            <div className="absolute top-2 right-16 sm:right-[72px] z-10 pointer-events-none">
+              <div className="flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-bunker-950/90 backdrop-blur-sm px-2 py-1 font-mono shadow-lg">
+                <span className="text-[9px] text-bunker-muted font-bold">{timeframe.toUpperCase()}</span>
                 <span
                   className={`text-xs font-black tabular-nums ${
                     countdown <= 10
