@@ -17,6 +17,7 @@ import { commissionPct } from "../lib/pnl";
 import IndicatorPicker, {
   findIndicatorEntry,
   CUSTOM_INDICATOR_ENTRIES,
+  SUPERTREND_ENTRY,
 } from "../charts/IndicatorPicker";
 import IndicatorSettings from "../charts/IndicatorSettings";
 import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "../charts/types";
@@ -131,8 +132,25 @@ export default function BinancePositionChartModal({
   const symbolConcat = `${holding.asset}TRY`;
   const [timeframe, setTimeframe] = useState<Timeframe>("5m"); // Varsayılan M5
   const [showBB, setShowBB] = useState(true); // Varsayılan Bollinger Bands AÇIK
+  const [showSupertrend, setShowSupertrend] = useState(true); // Varsayılan Supertrend AÇIK
+  const [supertrendTrend, setSupertrendTrend] = useState<"UP" | "DOWN" | null>(null);
   const [candles, setCandles] = useState<CandleBar[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Canlı Tahta (Orderbook) Metrikleri
+  const [orderbook, setOrderbook] = useState<{
+    bidTotal: number;
+    askTotal: number;
+    bidPct: number;
+    askPct: number;
+    spread: number;
+    spreadPct: number;
+    bestBid: number | null;
+    bestAsk: number | null;
+  } | null>(null);
+
+  // Son Mum Takip Referansı (Anlık iğne / canlı tik güncellemeleri için)
+  const lastCandleRef = useRef<CandleBar | null>(null);
 
   // Mum Kapanışına Kalan Süre
   const [countdown, setCountdown] = useState<number>(0);
@@ -146,6 +164,15 @@ export default function BinancePositionChartModal({
   const entryPrice = holding.avg_cost_try && holding.avg_cost_try > 0 ? holding.avg_cost_try : null;
   const [tpPrice, setTpPrice] = useState<number | null>(holding.active_tp_price || null);
   const [slPrice, setSlPrice] = useState<number | null>(holding.active_sl_price || null);
+  // Ref mirror'lar — drag mouseUp closure stale değerleri okumas›n diye
+  const tpPriceRef = useRef<number | null>(holding.active_tp_price || null);
+  const slPriceRef = useRef<number | null>(holding.active_sl_price || null);
+  // State değişimlerini ref'e yansıt (harici güncelleme için)
+  useEffect(() => { tpPriceRef.current = tpPrice; }, [tpPrice]);
+  useEffect(() => { slPriceRef.current = slPrice; }, [slPrice]);
+  // State + ref'i aynı anda güncelleyen wrapper'lar
+  const commitTpPrice = useCallback((v: number | null) => { tpPriceRef.current = v; setTpPrice(v); }, []);
+  const commitSlPrice = useCallback((v: number | null) => { slPriceRef.current = v; setSlPrice(v); }, []);
 
   // Değişiklik/Onay Durumu (Drag & Drop sonrasında bekleyen değişiklikler)
   const [pendingTp, setPendingTp] = useState<number | null>(null);
@@ -177,6 +204,7 @@ export default function BinancePositionChartModal({
   const upperBbRef = useRef<ISeriesApi<"Line"> | null>(null);
   const middleBbRef = useRef<ISeriesApi<"Line"> | null>(null);
   const lowerBbRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const supertrendSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
 
   // Fiyat Çizgileri Referansları
   const entryLineRef = useRef<IPriceLine | null>(null);
@@ -243,9 +271,10 @@ export default function BinancePositionChartModal({
 
         if (parsed.length > 0) {
           setCandles(parsed);
-          const lastClose = parsed[parsed.length - 1].close;
-          lastCandleTimeRef.current = Number(parsed[parsed.length - 1].time);
-          setCurrentPrice(lastClose);
+          const lastBar = parsed[parsed.length - 1];
+          lastCandleRef.current = lastBar;
+          lastCandleTimeRef.current = Number(lastBar.time);
+          setCurrentPrice(lastBar.close);
           setTimeout(() => {
             chartApiRef.current?.timeScale().fitContent();
           }, 60);
@@ -256,6 +285,51 @@ export default function BinancePositionChartModal({
     } finally {
       setLoading(false);
     }
+  }, [symbolConcat]);
+
+  // Canlı Derinlik (Orderbook) Verisi Takibi
+  useEffect(() => {
+    let active = true;
+    const fetchDepth = async () => {
+      try {
+        const res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${symbolConcat}&limit=20`);
+        if (!res.ok || !active) return;
+        const data = await res.json();
+        if (data && Array.isArray(data.bids) && Array.isArray(data.asks) && data.bids.length > 0 && data.asks.length > 0) {
+          const bidTotal = data.bids.reduce((sum: number, b: any) => sum + Number(b[0]) * Number(b[1]), 0);
+          const askTotal = data.asks.reduce((sum: number, a: any) => sum + Number(a[0]) * Number(a[1]), 0);
+          const sum = bidTotal + askTotal;
+          const bidPct = sum > 0 ? (bidTotal / sum) * 100 : 50;
+          const askPct = 100 - bidPct;
+          const bestBid = Number(data.bids[0][0]);
+          const bestAsk = Number(data.asks[0][0]);
+          const spread = bestAsk > bestBid ? bestAsk - bestBid : 0;
+          const spreadPct = bestBid > 0 ? (spread / bestBid) * 100 : 0;
+
+          if (active) {
+            setOrderbook({
+              bidTotal,
+              askTotal,
+              bidPct,
+              askPct,
+              spread,
+              spreadPct,
+              bestBid,
+              bestAsk,
+            });
+          }
+        }
+      } catch {
+        // Ağ kesintisinde sessiz kal
+      }
+    };
+
+    fetchDepth();
+    const interval = setInterval(fetchDepth, 2500);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, [symbolConcat]);
 
   useEffect(() => {
@@ -343,11 +417,21 @@ export default function BinancePositionChartModal({
       lastValueVisible: false,
     });
 
+    // Supertrend Serisi (10, 3)
+    const supertrendSeries = chart.addSeries(LineSeries, {
+      color: "#10b981",
+      lineWidth: 2,
+      title: "Supertrend (10,3)",
+      priceLineVisible: false,
+      lastValueVisible: true,
+    });
+
     chartApiRef.current = chart;
     candleSeriesRef.current = candleSeries;
     upperBbRef.current = upperBb;
     middleBbRef.current = middleBb;
     lowerBbRef.current = lowerBb;
+    supertrendSeriesRef.current = supertrendSeries;
 
     // ResizeObserver
     const ro = new ResizeObserver(() => {
@@ -365,6 +449,7 @@ export default function BinancePositionChartModal({
       chart.remove();
       chartApiRef.current = null;
       candleSeriesRef.current = null;
+      supertrendSeriesRef.current = null;
       entryLineRef.current = null;
       tpLineRef.current = null;
       slLineRef.current = null;
@@ -372,7 +457,7 @@ export default function BinancePositionChartModal({
     };
   }, []);
 
-  // 3a. Mum Verisi + Bollinger Bantları (sadece candles/showBB değişince)
+  // 3a. Mum Verisi + Bollinger Bantları + Supertrend
   useEffect(() => {
     if (!candleSeriesRef.current || candles.length === 0) return;
 
@@ -405,7 +490,39 @@ export default function BinancePositionChartModal({
       middleBbRef.current.applyOptions({ visible: false });
       lowerBbRef.current.applyOptions({ visible: false });
     }
-  }, [candles, showBB]);
+
+    // Supertrend (10, 3)
+    if (showSupertrend && supertrendSeriesRef.current && candles.length > 10) {
+      try {
+        const res = SUPERTREND_ENTRY.calculate(candles, { period: 10, multiplier: 3 });
+        const plot0 = res?.plots?.plot0 ?? [];
+        if (plot0.length > 0) {
+          const formatted = plot0.map((pt) => ({
+            time: (pt.time > 1e11 ? Math.floor(pt.time / 1000) : Math.floor(pt.time)) as UTCTimestamp,
+            value: pt.value,
+            color: pt.color,
+          }));
+          supertrendSeriesRef.current.setData(formatted as any);
+          supertrendSeriesRef.current.applyOptions({ visible: true });
+          const lastPoint = plot0[plot0.length - 1];
+          setSupertrendTrend(lastPoint.color === "#10b981" ? "UP" : "DOWN");
+        } else {
+          supertrendSeriesRef.current.applyOptions({ visible: false });
+          setSupertrendTrend(null);
+        }
+      } catch (e) {
+        console.error("Supertrend setData hatası:", e);
+      }
+    } else if (supertrendSeriesRef.current) {
+      supertrendSeriesRef.current.applyOptions({ visible: false });
+      setSupertrendTrend(null);
+    }
+    // setData() lightweight-charts'ta mevcut price line'ları siler
+    // → ref'leri null'la ki 3b effect yeniden createPriceLine yapsın
+    entryLineRef.current = null;
+    tpLineRef.current = null;
+    slLineRef.current = null;
+  }, [candles, showBB, showSupertrend]);
 
   // 3b. Pozisyon Çizgileri (candles'a dokunmaz — sadece fiyat/pending değişince)
   useEffect(() => {
@@ -490,7 +607,7 @@ export default function BinancePositionChartModal({
       setLineCoords(coords);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entryPrice, tpPrice, slPrice, pendingTp, pendingSl, holding]);
+  }, [entryPrice, tpPrice, slPrice, pendingTp, pendingSl, holding, candles]);
 
   // 4. İndikatörleri Grafikte Güncelle
   useEffect(() => {
@@ -638,6 +755,7 @@ export default function BinancePositionChartModal({
               close,
             };
             candleSeriesRef.current.update(formatted as any);
+            lastCandleRef.current = formatted;
             // Son mum zamanını güncelle
             if (timeSec > lastCandleTimeRef.current) {
               lastCandleTimeRef.current = timeSec;
@@ -656,6 +774,44 @@ export default function BinancePositionChartModal({
             if (newPrice > 0) {
               setTickDir((prev) => (currentPrice ? (newPrice >= currentPrice ? "up" : "down") : null));
               setCurrentPrice(newPrice);
+
+              // Canlı mum iğne ve gövde anlık güncellemesi (Real-time wicking)
+              if (candleSeriesRef.current && lastCandleRef.current) {
+                const c = lastCandleRef.current;
+                const updatedBar: CandleBar = {
+                  time: c.time,
+                  open: c.open,
+                  high: Math.max(c.high, newPrice),
+                  low: Math.min(c.low, newPrice),
+                  close: newPrice,
+                };
+                lastCandleRef.current = updatedBar;
+                try {
+                  candleSeriesRef.current.update(updatedBar as any);
+                } catch {}
+              }
+            }
+          }
+        }
+
+        // Tahta / BookTicker Akışı
+        if (msg.type === "bookTicker" || msg.type === "depth") {
+          const d = msg.data as any;
+          if (d && (d.symbol === symbolConcat || d.s === symbolConcat)) {
+            const b = Number(d.bid || d.b || d.bestBid || 0);
+            const a = Number(d.ask || d.a || d.bestAsk || 0);
+            if (b > 0 && a > 0) {
+              setOrderbook((prev) => {
+                const spr = a > b ? a - b : 0;
+                const sprPct = b > 0 ? (spr / b) * 100 : 0;
+                return prev ? {
+                  ...prev,
+                  bestBid: b,
+                  bestAsk: a,
+                  spread: spr,
+                  spreadPct: sprPct,
+                } : null;
+              });
             }
           }
         }
@@ -705,9 +861,9 @@ export default function BinancePositionChartModal({
       // Drag bitti → mevcut emri iptal edip yeni emri otomatik gönder
       if (!finalDragPrice || !target || !sellEnabled) return;
 
-      // Hangi fiyatın ne olduğunu belirle
-      const finalTp = target === "TP" ? finalDragPrice : (tpPrice ?? undefined);
-      const finalSl = target === "SL" ? finalDragPrice : (slPrice ?? undefined);
+      // Hangi fiyatın ne olduğunu belirle — ref kullan (stale closure sorunu önlenir)
+      const finalTp = target === "TP" ? finalDragPrice : (tpPriceRef.current ?? undefined);
+      const finalSl = target === "SL" ? finalDragPrice : (slPriceRef.current ?? undefined);
 
       if (!finalTp && !finalSl) return;
       if (finalTp && finalSl && finalTp <= finalSl) {
@@ -740,8 +896,8 @@ export default function BinancePositionChartModal({
         if (!res.ok || !d.ok) throw new Error(d.detail || `Hata (${res.status})`);
 
         // Başarı — state'i kesinleştir, pending'i temizle
-        if (target === "TP") { setTpPrice(finalDragPrice); setPendingTp(null); }
-        else { setSlPrice(finalDragPrice); setPendingSl(null); }
+        if (target === "TP") { commitTpPrice(finalDragPrice); setPendingTp(null); }
+        else { commitSlPrice(finalDragPrice); setPendingSl(null); }
         showToast(`${target} güncellendi → ₺${fmtPrice(finalDragPrice)}`, "success");
         onOrderUpdated();
       } catch (err: any) {
@@ -827,8 +983,8 @@ export default function BinancePositionChartModal({
       }
 
       showToast(`${holding.asset} için ${mode} emri başarıyla güncellendi!`, "success");
-      setTpPrice(finalTp);
-      setSlPrice(finalSl);
+      commitTpPrice(finalTp ?? null);
+      commitSlPrice(finalSl ?? null);
       setPendingTp(null);
       setPendingSl(null);
       onOrderUpdated();
@@ -1033,6 +1189,31 @@ export default function BinancePositionChartModal({
               <span>📊 BB (20,2)</span>
             </button>
 
+            {/* Supertrend (10, 3) Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowSupertrend(!showSupertrend)}
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-mono font-bold transition-all ${
+                showSupertrend
+                  ? "border-emerald-500/60 bg-emerald-500/20 text-emerald-300 shadow-sm shadow-emerald-500/20"
+                  : "border-bunker-800 bg-bunker-900/60 text-bunker-muted hover:text-white"
+              }`}
+              title="Supertrend (10, 3) Trend Göstergesi"
+            >
+              <span>⚡ Supertrend</span>
+              {showSupertrend && supertrendTrend && (
+                <span
+                  className={`text-[9px] px-1 py-0.2 rounded font-black ${
+                    supertrendTrend === "UP"
+                      ? "bg-emerald-500/30 text-emerald-300"
+                      : "bg-red-500/30 text-red-300"
+                  }`}
+                >
+                  {supertrendTrend === "UP" ? "▲ BOĞA" : "▼ AYI"}
+                </span>
+              )}
+            </button>
+
             {/* İndikatör Ekleme Butonu */}
             <button
               type="button"
@@ -1083,6 +1264,44 @@ export default function BinancePositionChartModal({
             </svg>
           </button>
         </div>
+
+        {/* CANLI TAHTA GÜÇ DENGESİ / ORDERBOOK DEPTH BARI */}
+        {orderbook && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800/80 bg-bunker-950/90 px-4 py-1.5 font-mono text-[11px]">
+            <div className="flex items-center gap-2">
+              <span className="text-bunker-muted text-[10px] font-bold">TAHTA BASKISI:</span>
+              <div className="w-36 sm:w-48 h-2 rounded-full overflow-hidden flex bg-bunker-900 border border-bunker-800">
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-300"
+                  style={{ width: `${Math.min(Math.max(orderbook.bidPct, 5), 95)}%` }}
+                  title={`Alıcı Hacim Ağırlığı: %${orderbook.bidPct.toFixed(1)}`}
+                />
+                <div
+                  className="h-full bg-gradient-to-r from-red-400 to-red-600 transition-all duration-300"
+                  style={{ width: `${Math.min(Math.max(orderbook.askPct, 5), 95)}%` }}
+                  title={`Satıcı Hacim Ağırlığı: %${orderbook.askPct.toFixed(1)}`}
+                />
+              </div>
+              <span className="text-emerald-400 font-bold">%{orderbook.bidPct.toFixed(0)} Alıcı</span>
+              <span className="text-bunker-600">/</span>
+              <span className="text-red-400 font-bold">%{orderbook.askPct.toFixed(0)} Satıcı</span>
+            </div>
+
+            <div className="flex items-center gap-3 text-bunker-muted text-[10px]">
+              {orderbook.bestBid && orderbook.bestAsk && (
+                <span>
+                  Alış: <strong className="text-emerald-300">₺{fmtPrice(orderbook.bestBid)}</strong> | Satış: <strong className="text-red-300">₺{fmtPrice(orderbook.bestAsk)}</strong>
+                </span>
+              )}
+              <span>
+                Spread: <strong className="text-cyan-300">₺{fmtPrice(orderbook.spread)}</strong> (%{orderbook.spreadPct.toFixed(2)})
+              </span>
+              <span className="hidden sm:inline">
+                20-Derinlik: <strong className="text-white">₺{fmtPrice(orderbook.bidTotal + orderbook.askTotal, 0)}</strong>
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Aktif İndikatör Listesi (Varsa) */}
         {indicators.length > 0 && (
@@ -1201,7 +1420,7 @@ export default function BinancePositionChartModal({
           )}
 
           {/* İNTERAKTİF SÜRÜKLEME (DRAG HANDLE) BUTONLARI (Fiyat Cetvelinin Yanı) */}
-          <div className="absolute top-0 right-16 bottom-0 w-24 pointer-events-none z-10 overflow-hidden">
+          <div className="absolute top-0 right-16 bottom-0 w-64 pointer-events-none z-10 overflow-hidden">
             {/* TP Drag Handle */}
             {lineCoords.tp != null && (
               <div
@@ -1210,8 +1429,14 @@ export default function BinancePositionChartModal({
                 onMouseDown={(e) => handleMouseDownOnHandle("TP", e)}
                 title="Kâr Al (TP) çizgisini yukarı/aşağı sürükleyin"
               >
-                <div className="flex items-center gap-1 rounded border border-emerald-400 bg-emerald-950/90 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-300 shadow-md group-hover:scale-105 group-hover:bg-emerald-800 transition-all">
+                <div className="flex items-center gap-1.5 rounded border border-emerald-400 bg-emerald-950/95 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-300 shadow-lg group-hover:scale-105 group-hover:bg-emerald-800 transition-all">
                   <span>↕ TP</span>
+                  {effectiveTpVal && (
+                    <span className="text-emerald-200 font-semibold">
+                      ₺{fmtPrice(effectiveTpVal)}
+                      {entryPrice ? ` (+${(((effectiveTpVal - entryPrice) / entryPrice) * 100).toFixed(1)}%)` : ""}
+                    </span>
+                  )}
                 </div>
               </div>
             )}
@@ -1224,8 +1449,14 @@ export default function BinancePositionChartModal({
                 onMouseDown={(e) => handleMouseDownOnHandle("SL", e)}
                 title="Zarar Kes (SL) çizgisini yukarı/aşağı sürükleyin"
               >
-                <div className="flex items-center gap-1 rounded border border-red-400 bg-red-950/90 px-2 py-0.5 font-mono text-[10px] font-bold text-red-300 shadow-md group-hover:scale-105 group-hover:bg-red-800 transition-all">
+                <div className="flex items-center gap-1.5 rounded border border-red-400 bg-red-950/95 px-2 py-0.5 font-mono text-[10px] font-bold text-red-300 shadow-lg group-hover:scale-105 group-hover:bg-red-800 transition-all">
                   <span>↕ SL</span>
+                  {effectiveSlVal && (
+                    <span className="text-red-200 font-semibold">
+                      ₺{fmtPrice(effectiveSlVal)}
+                      {entryPrice ? ` (${(((effectiveSlVal - entryPrice) / entryPrice) * 100).toFixed(1)}%)` : ""}
+                    </span>
+                  )}
                 </div>
               </div>
             )}
@@ -1253,11 +1484,12 @@ export default function BinancePositionChartModal({
           {contextMenu && (
             <div
               style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
-              className="fixed z-50 min-w-[220px] rounded-xl border border-bunker-700 bg-bunker-950/95 p-1.5 font-mono text-xs text-white shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-100"
+              className="fixed z-50 min-w-[240px] rounded-xl border border-bunker-700 bg-bunker-950/95 p-1.5 font-mono text-xs text-white shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-100"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="px-2.5 py-1 border-b border-bunker-800 text-[10px] text-bunker-muted font-bold">
-                FİYAT: ₺{fmtPrice(contextMenu.price)}
+              <div className="px-2.5 py-1 border-b border-bunker-800 text-[10px] text-bunker-muted font-bold flex justify-between">
+                <span>SEÇİLEN FİYAT:</span>
+                <span className="text-cyan-300 font-black">₺{fmtPrice(contextMenu.price)}</span>
               </div>
 
               <button
@@ -1284,6 +1516,21 @@ export default function BinancePositionChartModal({
                 <span>Buraya Kâr Al (TP) Koy</span>
               </button>
 
+              <button
+                type="button"
+                onClick={() => {
+                  const baseP = currentPrice ?? contextMenu.price;
+                  setPendingTp(Number((baseP * 1.02).toFixed(4)));
+                  setPendingSl(Number((baseP * 0.98).toFixed(4)));
+                  closeContextMenu();
+                  showToast("Simetrik OCO (±%2) seviyeleri belirlendi.", "info");
+                }}
+                className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-left text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+              >
+                <span>⚡</span>
+                <span>Simetrik OCO (±%2) Kur</span>
+              </button>
+
               {entryPrice && currentPrice && currentPrice > entryPrice && (
                 <button
                   type="button"
@@ -1295,6 +1542,20 @@ export default function BinancePositionChartModal({
                 >
                   <span>🔒</span>
                   <span>Break-Even Kâr Kilidi Koy</span>
+                </button>
+              )}
+
+              {(pendingTp != null || pendingSl != null) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleCancelPending();
+                    closeContextMenu();
+                  }}
+                  className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-left text-amber-200/80 hover:bg-amber-500/20 transition-colors"
+                >
+                  <span>↩️</span>
+                  <span>Bekleyen Çizgileri Sıfırla</span>
                 </button>
               )}
 
