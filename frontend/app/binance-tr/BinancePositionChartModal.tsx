@@ -203,6 +203,13 @@ export default function BinancePositionChartModal({
   const [editingIndicator, setEditingIndicator] = useState<IndicatorInstance | null>(null);
   const [indicators, setIndicators] = useState<IndicatorInstance[]>([]);
 
+  // POZİYON KAPAT (GİRİŞ çizgisindeki ✕ → onay modalı) — kullanıcı tercihi 2026-09-19
+  const [closeModalOpen, setCloseModalOpen] = useState(false);
+  const [closeQtyInput, setCloseQtyInput] = useState("");
+  const [closeUnit, setCloseUnit] = useState<"asset" | "try">("asset");
+  const [closeBusy, setCloseBusy] = useState(false);
+  const [closeMsg, setCloseMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
   // DOM & Grafik Referansları
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartApiRef = useRef<IChartApi | null>(null);
@@ -1141,6 +1148,57 @@ export default function BinancePositionChartModal({
     setEditingIndicator(null);
   };
 
+  // ---- POZİYON KAPAT (GİRİŞ çizgisi ✕) ----
+  const priceNow = currentPrice ?? holding.price_try ?? 0;
+  const closeQtyNum = useMemo(() => {
+    const n = parseFloat(closeQtyInput.replace(",", "."));
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    if (closeUnit === "asset") return Math.min(n, holding.free);
+    // TRY modu: tutarı anlık fiyata bölerek adede çevir (satışta uç fark minimum).
+    return priceNow > 0 ? Math.min(n / priceNow, holding.free) : 0;
+  }, [closeQtyInput, closeUnit, priceNow, holding.free]);
+
+  const openCloseModal = () => {
+    setCloseUnit("asset");
+    setCloseMsg(null);
+    setCloseQtyInput(String(Number(holding.free.toFixed(6))));
+    setCloseModalOpen(true);
+  };
+
+  const confirmClosePosition = async () => {
+    if (closeBusy) return;
+    if (!sellEnabled) {
+      setCloseMsg({ ok: false, text: "Gerçek emir gönderimi kapalı — Ayarlar'dan 'GERÇEK SATIŞ' anahtarını açın." });
+      return;
+    }
+    if (closeQtyNum <= 0) {
+      setCloseMsg({ ok: false, text: "Geçerli bir miktar girin." });
+      return;
+    }
+    if (closeQtyNum > holding.free + 1e-9) {
+      setCloseMsg({ ok: false, text: `Satılabilir bakiye yetersiz (boşta ${fmtPrice(holding.free, 6)} ${holding.asset}).` });
+      return;
+    }
+    setCloseBusy(true);
+    setCloseMsg(null);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/binance/sell`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset: holding.asset, quantity: closeQtyNum, confirmation: "REAL_SELL" }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) throw new Error(d.detail || `Satış gönderilemedi (${res.status})`);
+      showToast(`${holding.asset} pozisyonu kapatıldı: ${fmtPrice(closeQtyNum, 6)} adet satıldı.`, "success");
+      setCloseModalOpen(false);
+      onOrderUpdated();
+    } catch (err: any) {
+      setCloseMsg({ ok: false, text: err.message || "Satış gönderilemedi" });
+    } finally {
+      setCloseBusy(false);
+    }
+  };
+
   // Metrik Hesaplamaları
   const curPnlTry =
     entryPrice && currentPrice ? (currentPrice - entryPrice) * holding.total : null;
@@ -1490,6 +1548,26 @@ export default function BinancePositionChartModal({
 
           {/* İNTERAKTİF SÜRÜKLEME (DRAG HANDLE) BUTONLARI (Fiyat Cetvelinin Yanı) */}
           <div className="absolute top-0 right-14 sm:right-16 bottom-0 w-64 pointer-events-none z-10 overflow-hidden">
+            {/* POZİYON KAPAT (✕) — GİRİŞ çizgisi hizasında (kullanıcı tercihi 2026-09-19).
+                Klik: miktar + birim girilebilen onay modalını açar. */}
+            {lineCoords.entry != null && holding.asset !== "TRY" && (
+              <div
+                style={{ top: `${lineCoords.entry - 14}px` }}
+                className="absolute left-1 pointer-events-auto"
+              >
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); openCloseModal(); }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
+                  title="Pozisyonu Kapat (kısmi/tam satış)"
+                  className="flex h-7 w-7 items-center justify-center rounded-full border border-cyan-400 bg-cyan-950/95 font-mono text-[13px] font-black leading-none text-cyan-200 shadow-lg transition-all hover:scale-110 hover:bg-cyan-800 hover:text-white active:scale-95 select-none"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             {/* TP Drag Handle */}
             {lineCoords.tp != null && (
               <div
@@ -1710,6 +1788,157 @@ export default function BinancePositionChartModal({
           </div>
         </div>
       </div>
+
+      {/* POZİYON KAPAT ONAY MODALI (GİRİŞ ✕) */}
+      {closeModalOpen && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+          onClick={() => !closeBusy && setCloseModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-cyan-500/40 bg-bunker-950 p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-bunker-800 pb-3">
+              <div>
+                <span className="eyebrow text-cyan-300">POZİSYONU KAPAT</span>
+                <h2 className="font-mono text-lg font-bold text-white">
+                  {holding.asset} Satışı
+                  {entryPrice && priceNow > 0 && (
+                    <span className={`ml-2 text-sm ${priceNow >= entryPrice ? "text-neon-green" : "text-neon-red"}`}>
+                      {priceNow >= entryPrice ? "+" : "−"}%{Math.abs(((priceNow - entryPrice) / entryPrice) * 100).toFixed(2)}
+                    </span>
+                  )}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => !closeBusy && setCloseModalOpen(false)}
+                className="text-bunker-muted hover:text-white"
+                aria-label="Kapat"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-3 grid grid-cols-3 gap-2 font-mono text-[11px]">
+              <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 p-2">
+                <p className="text-bunker-muted">FİYAT</p>
+                <p className="font-bold text-white">₺{fmtPrice(priceNow)}</p>
+              </div>
+              <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 p-2">
+                <p className="text-bunker-muted">BOŞTA</p>
+                <p className="font-bold text-white">{fmtPrice(holding.free, 6)}</p>
+              </div>
+              <div className="rounded-lg border border-bunker-800 bg-bunker-900/60 p-2">
+                <p className="text-bunker-muted">TOPLAM</p>
+                <p className="font-bold text-white">{fmtPrice(holding.total, 6)}</p>
+              </div>
+            </div>
+
+            {/* Birim seçimi: Sembol adedi / TRY tutarı */}
+            <div className="mt-3 flex items-center rounded-lg border border-bunker-700 bg-bunker-900/60 p-0.5 font-mono text-xs">
+              {(["asset", "try"] as const).map((unit) => (
+                <button
+                  key={unit}
+                  type="button"
+                  onClick={() => setCloseUnit(unit)}
+                  className={`flex-1 rounded-md px-3 py-1.5 font-bold transition-colors ${
+                    closeUnit === unit
+                      ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/50"
+                      : "text-bunker-muted hover:text-white"
+                  }`}
+                >
+                  {unit === "asset" ? `${holding.asset} ADEDİ` : "₺ TRY TUTARI"}
+                </button>
+              ))}
+            </div>
+
+            <label className="mt-3 block">
+              <span className="eyebrow">
+                {closeUnit === "asset" ? `SATILACAK MİKTAR (${holding.asset})` : "SATILACAK TUTAR (₺)"}
+              </span>
+              <input
+                value={closeQtyInput}
+                onChange={(e) => setCloseQtyInput(e.target.value.replace(/[^0-9.,]/g, ""))}
+                inputMode="decimal"
+                placeholder={closeUnit === "asset" ? `Örn: ${fmtPrice(holding.free, 6)}` : "Örn: 500"}
+                className="input mt-1 w-full font-mono text-sm"
+              />
+              <p className="mt-1 font-mono text-[10px] text-bunker-muted">
+                {closeQtyNum > 0 ? (
+                  <>
+                    ≈ {fmtPrice(closeQtyNum, 6)} {holding.asset}
+                    {closeUnit === "try" ? "" : ` ≈ ₺${fmtPrice(closeQtyNum * priceNow)}`}
+                  </>
+                ) : "Miktar girin"}
+              </p>
+            </label>
+
+            {/* Hızlı % slider çipleri */}
+            <div className="mt-2.5 grid grid-cols-4 gap-1.5">
+              {[25, 50, 75, 100].map((pct) => (
+                <button
+                  key={pct}
+                  type="button"
+                  onClick={() => {
+                    const base = holding.free;
+                    const q = (base * pct) / 100;
+                    setCloseUnit("asset");
+                    setCloseQtyInput(String(Number(q.toFixed(6))));
+                  }}
+                  className={`rounded-lg border px-2 py-2 font-mono text-[11px] font-bold transition-colors ${
+                    pct === 100
+                      ? "border-neon-red/50 bg-neon-red/10 text-neon-red hover:bg-neon-red/25"
+                      : "border-bunker-700 bg-bunker-900/60 text-bunker-muted hover:border-cyan-400/40 hover:text-cyan-300"
+                  }`}
+                >
+                  %{pct}
+                </button>
+              ))}
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={holding.free}
+              step={Math.max(0.000001, Number((holding.free / 100).toFixed(6)))}
+              value={closeUnit === "asset" ? (closeQtyNum || 0) : holding.free}
+              onChange={(e) => { setCloseUnit("asset"); setCloseQtyInput(e.target.value); }}
+              className="mt-2 w-full accent-[color:var(--neon-red,#ef4444)]"
+            />
+
+            {closeMsg && (
+              <p className={`mt-2 text-xs ${closeMsg.ok ? "text-neon-green" : "text-neon-red"}`}>
+                {closeMsg.text}
+              </p>
+            )}
+
+            <p className="mt-2 font-mono text-[10px] text-yellow-300/80">
+              Dikkat: Piyasa (MARKET) satışı gönderilir — anlık fiyattan gerçekleşir ve iptal edilemez.
+            </p>
+
+            <div className="mt-3 flex justify-end gap-2 border-t border-bunker-800 pt-3">
+              <button
+                type="button"
+                onClick={() => !closeBusy && setCloseModalOpen(false)}
+                disabled={closeBusy}
+                className="ui-button ui-button-secondary disabled:opacity-40"
+              >
+                İptal
+              </button>
+              <button
+                type="button"
+                onClick={confirmClosePosition}
+                disabled={closeBusy || closeQtyNum <= 0 || !sellEnabled}
+                className="rounded-lg border border-neon-red/60 bg-neon-red/20 px-4 py-2 font-mono text-xs font-bold text-neon-red hover:bg-neon-red/30 disabled:opacity-40 transition-colors"
+                title={!sellEnabled ? "Gerçek emir gönderimi kapalı (Ayarlar)" : "Girilen miktar kadar piyasa satışı gönder"}
+              >
+                {closeBusy ? "GÖNDERİLİYOR…" : `SAT — ${closeUnit === "asset" ? `${fmtPrice(closeQtyNum, 6)} ${holding.asset}` : `₺${fmtPrice(closeQtyNum * priceNow)}`}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* İNDİKATÖR SEÇİCİ MODAL */}
       {showIndicatorPicker && (
