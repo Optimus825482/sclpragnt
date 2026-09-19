@@ -372,7 +372,7 @@ export default function BinancePositionChartModal({
     };
   }, []);
 
-  // 3. Veri Güncelleme & Çizgi Senkronizasyonu
+  // 3a. Mum Verisi + Bollinger Bantları (sadece candles/showBB değişince)
   useEffect(() => {
     if (!candleSeriesRef.current || candles.length === 0) return;
 
@@ -382,7 +382,6 @@ export default function BinancePositionChartModal({
       console.error("candleSeries.setData hatası:", e);
     }
 
-    // Bollinger Bantları Güncelleme
     if (showBB && upperBbRef.current && middleBbRef.current && lowerBbRef.current) {
       const { upper, middle, lower } = calculateBollingerBands(candles, 20, 2);
       if (upper.length > 0) {
@@ -406,8 +405,11 @@ export default function BinancePositionChartModal({
       middleBbRef.current.applyOptions({ visible: false });
       lowerBbRef.current.applyOptions({ visible: false });
     }
+  }, [candles, showBB]);
 
-    // Pozisyon Çizgilerini Yeniden Çiz
+  // 3b. Pozisyon Çizgileri (candles'a dokunmaz — sadece fiyat/pending değişince)
+  useEffect(() => {
+    if (!candleSeriesRef.current) return;
     const series = candleSeriesRef.current;
 
     // Giriş Fiyatı Çizgisi
@@ -475,9 +477,20 @@ export default function BinancePositionChartModal({
       slLineRef.current = null;
     }
 
-    // Piksel koordinatlarını güncelle
-    updateLineCoordinates();
-  }, [candles, showBB, entryPrice, tpPrice, slPrice, pendingTp, pendingSl, holding]);
+    // Piksel koordinatlarını güncelle (updateLineCoordinates ile aynı mantık)
+    // Not: updateLineCoordinates useCallback henüz tanımlanmadığı için inline
+    if (candleSeriesRef.current) {
+      const s = candleSeriesRef.current;
+      const coords: { entry?: number | null; tp?: number | null; sl?: number | null } = {};
+      if (entryPrice && entryPrice > 0) coords.entry = s.priceToCoordinate(entryPrice);
+      const curTp2 = pendingTp ?? tpPrice;
+      if (curTp2 && curTp2 > 0) coords.tp = s.priceToCoordinate(curTp2);
+      const curSl2 = pendingSl ?? slPrice;
+      if (curSl2 && curSl2 > 0) coords.sl = s.priceToCoordinate(curSl2);
+      setLineCoords(coords);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entryPrice, tpPrice, slPrice, pendingTp, pendingSl, holding]);
 
   // 4. İndikatörleri Grafikte Güncelle
   useEffect(() => {
@@ -652,9 +665,14 @@ export default function BinancePositionChartModal({
   );
 
   // 6. Sürükle-Bırak (Drag & Drop) Fare Olayları
+  // Drag sırasındaki fiyatı ref'te tut — mouseUp callback'i stale closure'dan etkilenmesin
+  const dragPriceRef = useRef<number | null>(null);
+  const draggingTargetRef = useRef<"TP" | "SL" | null>(null);
+
   const handleMouseDownOnHandle = (target: "TP" | "SL", e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    draggingTargetRef.current = target;
     setDraggingTarget(target);
   };
 
@@ -665,24 +683,75 @@ export default function BinancePositionChartModal({
       if (!chartContainerRef.current || !candleSeriesRef.current) return;
       const rect = chartContainerRef.current.getBoundingClientRect();
       const relY = e.clientY - rect.top;
-
       const priceAtY = candleSeriesRef.current.coordinateToPrice(relY);
       if (priceAtY && priceAtY > 0) {
-        setDragYPrice(Number(priceAtY));
-
-        // Canlı çizgi güncelleme
-        if (draggingTarget === "TP") {
-          setPendingTp(Number(priceAtY));
-        } else if (draggingTarget === "SL") {
-          setPendingSl(Number(priceAtY));
-        }
+        const p = Number(priceAtY);
+        dragPriceRef.current = p;
+        setDragYPrice(p);
+        if (draggingTarget === "TP") setPendingTp(p);
+        else if (draggingTarget === "SL") setPendingSl(p);
       }
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = async () => {
+      const finalDragPrice = dragPriceRef.current;
+      const target = draggingTargetRef.current;
+      draggingTargetRef.current = null;
+      dragPriceRef.current = null;
       setDraggingTarget(null);
       setDragYPrice(null);
       updateLineCoordinates();
+
+      // Drag bitti → mevcut emri iptal edip yeni emri otomatik gönder
+      if (!finalDragPrice || !target || !sellEnabled) return;
+
+      // Hangi fiyatın ne olduğunu belirle
+      const finalTp = target === "TP" ? finalDragPrice : (tpPrice ?? undefined);
+      const finalSl = target === "SL" ? finalDragPrice : (slPrice ?? undefined);
+
+      if (!finalTp && !finalSl) return;
+      if (finalTp && finalSl && finalTp <= finalSl) {
+        showToast("TP, SL'den büyük olmalıdır — emir gönderilmedi.", "error");
+        // Çizgiyi eski yerine döndür
+        if (target === "TP") setPendingTp(null);
+        else setPendingSl(null);
+        return;
+      }
+
+      const mode: "OCO" | "SL_ONLY" | "TP_ONLY" =
+        finalTp && finalSl ? "OCO" : finalSl ? "SL_ONLY" : "TP_ONLY";
+
+      setIsUpdating(true);
+      try {
+        const res = await apiRequest(`${API_BASE}/api/binance/set-sl-tp`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            asset: holding.asset,
+            mode,
+            quantity: holding.total,
+            tp_price: finalTp || undefined,
+            sl_price: finalSl || undefined,
+            sl_limit_price: finalSl ? finalSl * 0.995 : undefined,
+            cancel_existing: true,
+          }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || !d.ok) throw new Error(d.detail || `Hata (${res.status})`);
+
+        // Başarı — state'i kesinleştir, pending'i temizle
+        if (target === "TP") { setTpPrice(finalDragPrice); setPendingTp(null); }
+        else { setSlPrice(finalDragPrice); setPendingSl(null); }
+        showToast(`${target} güncellendi → ₺${fmtPrice(finalDragPrice)}`, "success");
+        onOrderUpdated();
+      } catch (err: any) {
+        // Hata — çizgiyi eski fiyata döndür
+        if (target === "TP") setPendingTp(null);
+        else setPendingSl(null);
+        showToast(err.message || "Emir gönderilemedi", "error");
+      } finally {
+        setIsUpdating(false);
+      }
     };
 
     window.addEventListener("mousemove", handleMouseMove);
@@ -691,7 +760,8 @@ export default function BinancePositionChartModal({
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [draggingTarget, updateLineCoordinates]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draggingTarget]);
 
   // 7. Sağ Tık Bağlam Menüsü (Context Menu)
   const handleContextMenu = (e: React.MouseEvent) => {
