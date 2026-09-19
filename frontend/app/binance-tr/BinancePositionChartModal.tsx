@@ -109,6 +109,21 @@ function fmtPrice(v?: number | null, decimals = 4): string {
   return v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Grafik fiyat cetveli hassasiyeti — SEMBOL FİYATINA GÖRE (kullanıcı tercihi
+// 2026-09-19): tek bir 2-basamak cetvel, 0.05 gibi kuruş-altı sembolleri
+// yanlış gösteriyordu (tüm mumlar aynı fiyat gibi). Binance tick mantığına
+// yakın fiyat aralığı basamakları: <0.01→6, <0.1→5, <1→4, <10→3, <100→3,
+// <1000→2, ≥1000→2 (uzun çift haneleri binlik ayraç taşır).
+function priceScalePrecision(price: number | null | undefined): number {
+  const p = Number(price ?? 0);
+  if (!Number.isFinite(p) || p <= 0) return 2;
+  if (p < 0.01) return 6;
+  if (p < 0.1) return 5;
+  if (p < 1) return 4;
+  if (p < 1000) return 3;
+  return 2;
+}
+
 // Kalan süreyi MM:SS formatına çevir
 function fmtCountdown(seconds: number): string {
   if (seconds <= 0) return "00:00";
@@ -410,13 +425,20 @@ export default function BinancePositionChartModal({
       },
     });
 
-    // Mum Serisi
+    // Mum Serisi — fiyat cetveli hassasiyeti SEMBOL FİYATINA GÖRE
+    // (kullanıcı tercihi 2026-09-19): 0.05'lik sembollerde 2 basamak
+    // cetvel tüm mumları aynı fiyata sabitliyordu.
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: "#10b981",
       downColor: "#ef4444",
       borderVisible: false,
       wickUpColor: "#10b981",
       wickDownColor: "#ef4444",
+      priceFormat: {
+        type: "price",
+        precision: priceScalePrecision(holding.price_try),
+        minMove: Math.pow(10, -priceScalePrecision(holding.price_try)),
+      },
     });
 
     // Bollinger Bantları (Üst, Orta, Alt)
@@ -487,6 +509,15 @@ export default function BinancePositionChartModal({
   // 3a. Mum Verisi + Bollinger Bantları + Supertrend
   useEffect(() => {
     if (!candleSeriesRef.current || candles.length === 0) return;
+
+    // Fiyat cetveli hassasiyeti: sembol fiyatı (güncel kapanış) değişen
+    // aralığa girerse (ör. ilk yüklemede price_try null idi) seriyi güncelle.
+    try {
+      const prec = priceScalePrecision(candles[candles.length - 1].close);
+      candleSeriesRef.current.applyOptions({
+        priceFormat: { type: "price", precision: prec, minMove: Math.pow(10, -prec) },
+      });
+    } catch { /* */ }
 
     try {
       candleSeriesRef.current.setData(candles as any);
@@ -901,7 +932,8 @@ export default function BinancePositionChartModal({
       const priceAtY = candleSeriesRef.current.coordinateToPrice(relY);
       if (priceAtY && priceAtY > 0) {
         const raw = Number(priceAtY);
-        const precision = raw < 0.1 ? 6 : raw < 10 ? 4 : 2;
+        // Hassasiyet fiyat cetveliyle AYNI tabloya bağlı (sembol fiyatına göre).
+        const precision = priceScalePrecision(raw);
         const p = Number(raw.toFixed(precision));
         dragPriceRef.current = p;
         setDragYPrice(p);
