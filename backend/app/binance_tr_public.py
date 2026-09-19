@@ -334,6 +334,73 @@ async def top_gainers(symbol_count: int = 20, *, quote_asset: str = "TRY",
     candidates.sort(key=lambda item: item["priceChangePercent"], reverse=True)
     return candidates[:max(1, min(int(symbol_count), 50))]
 
+
+async def active_movers_pool(symbol_count: int = 15, *, quote_asset: str = "TRY",
+                             min_quote_volume: float | None = None,
+                             _ticker_rows: list | None = None):
+    """Aktif, akışı olan ve gün içi yükseliş/volatilite gösteren TRY çiftleri.
+
+    H-01 / T-01: Yalnızca 24h net değişime bakıldığında sabah düşüp son 1-2 saatte
+    patlayan veya günün zirvesine doğru güçlü atak yapan semboller kaçırılıyordu.
+    Bu fonksiyon; işlem sayısı (trade count), gün içi zirveye yakınlık (range position),
+    volatilite aralığı ve hacim akışını birleştirerek durağan olmayan aktif sembolleri seçer.
+    """
+    rows = list(_ticker_rows) if _ticker_rows else await ticker_24h()
+    info = await trading_symbols(quote_asset)
+    trading = set(info)
+    floor = (MIN_TOP_GAINER_QUOTE_VOLUME_TRY * 0.5 if min_quote_volume is None
+             else float(min_quote_volume))
+    suffix = quote_asset.upper()
+    movers = []
+
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol.endswith(suffix) or symbol not in trading:
+            continue
+        try:
+            last_p = float(row.get("lastPrice") or 0)
+            high_p = float(row.get("highPrice") or 0)
+            low_p = float(row.get("lowPrice") or 0)
+            q_vol = float(row.get("quoteVolume") or 0)
+            trades = float(row.get("count") or 0)
+            change = float(row.get("priceChangePercent") or 0)
+        except (TypeError, ValueError):
+            continue
+
+        if q_vol < floor or last_p <= 0 or high_p <= low_p:
+            continue
+
+        # Gün içi konum: 0.0 (günün dibi) -> 1.0 (günün zirvesi)
+        range_pos = (last_p - low_p) / (high_p - low_p)
+        # Gün içi dalgalanma yüzdesi
+        day_range_pct = ((high_p - low_p) / low_p) * 100.0
+
+        # Durağan coinleri ele: gün içi aralık en az %1.0 ve zirveye göre en az %40 yukarıda olmalı
+        if day_range_pct < 1.0 or range_pos < 0.40:
+            continue
+
+        # İntraday aktivite & yükseliş ivmesi skoru
+        # Zirveye yakınlık + işlem adedi akışı + hacim çarpanı
+        activity_score = (
+            (range_pos * 40.0) +
+            (min(1.0, q_vol / 25_000_000.0) * 30.0) +
+            (min(1.0, trades / 5_000.0) * 30.0)
+        ) * (1.0 + min(1.0, day_range_pct / 10.0))
+
+        movers.append({
+            "symbol": symbol,
+            "activity_score": round(activity_score, 2),
+            "range_pos": round(range_pos, 3),
+            "day_range_pct": round(day_range_pct, 2),
+            "priceChangePercent": change,
+            "quoteVolume": q_vol,
+            "trades": trades,
+            "lastPrice": last_p
+        })
+
+    movers.sort(key=lambda item: item["activity_score"], reverse=True)
+    return movers[:max(1, min(int(symbol_count), 50))]
+
 async def orderbook(symbol: str, limit: int = 5):
     """Read-only best bid/ask depth from Binance TR public API."""
     normalized = symbol.replace("_", "").upper()

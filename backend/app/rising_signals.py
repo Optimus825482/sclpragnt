@@ -96,13 +96,33 @@ def green_count(row: dict) -> int:
 # ---------------------------------------------------------------------------
 # Saf kararlar (unit-test edilebilir)
 # ---------------------------------------------------------------------------
-def strength_qualifies(strength, green) -> bool:
-    """YÜKSELİŞ sınıfı eşiği: GÜÇ ≥ RISING_MIN_STRENGTH VE yeşil ≥ RISING_MIN_GREEN."""
+def strength_qualifies(strength, green, raw=None, row: dict | None = None) -> bool:
+    """YÜKSELİŞ sınıfı eşiği: GÜÇ ≥ RISING_MIN_STRENGTH VE yeşil ≥ RISING_MIN_GREEN.
+
+    H-02: Evren-içi min-max normalizasyonu, evrene yeni bir coin girdiğinde veya
+    çıktığında diğer sembollerin skorunu yapay olarak yukarı ya da aşağı kaydırır.
+    Bu nedenle hem standart (9.8 / 5) eşik hem de kararlı mutlak ham eşik
+    (raw >= RISING_MIN_RAW_SCORE) desteklenir; ikisinden biri geçerli ve yeşil TF
+    yeterli ise sembol yükseliş adayı olarak nitelenir.
+    """
     try:
-        if strength is None or green is None:
+        if green is None or int(green) < int(config.RISING_MIN_GREEN):
             return False
-        return (float(strength) >= float(config.RISING_MIN_STRENGTH)
-                and int(green) >= int(config.RISING_MIN_GREEN))
+
+        # 1. Standart bağıl eşik (geriye dönük test uyumlu)
+        if strength is not None and float(strength) >= float(config.RISING_MIN_STRENGTH):
+            return True
+
+        # 2. Mutlak ham skor eşiği (H-02 kararlı yükseliş koruması)
+        raw_score = raw
+        if raw_score is None and row and isinstance(row, dict):
+            raw_score = row.get("raw") or row.get("raw_score")
+        if raw_score is not None:
+            min_raw = float(getattr(config, "RISING_MIN_RAW_SCORE", 25.0))
+            if float(raw_score) >= min_raw:
+                return True
+
+        return False
     except (TypeError, ValueError):
         return False
 
@@ -275,7 +295,7 @@ def detect_rising_candidates(now: float | None = None) -> list[dict]:
         if bool(getattr(config, "RISING_EARLY_ENABLED", True)) and bool((row.get("pre") or {}).get("dip")):
             out.append(_candidate(symbol, row, KIND_EARLY))
         elif bool(getattr(config, "RISING_STRENGTH_ENABLED", True)) \
-                and strength_qualifies(row.get("strength"), green_count(row)):
+                and strength_qualifies(row.get("strength"), green_count(row), raw=row.get("raw"), row=row):
             out.append(_candidate(symbol, row, KIND_STRENGTH))
     out.sort(key=lambda item: (-float(item.get("score") or 0.0), -int(item.get("green") or 0),
                                str(item.get("symbol"))))
@@ -285,14 +305,17 @@ def detect_rising_candidates(now: float | None = None) -> list[dict]:
 def rising_summary_payload() -> dict:
     """Panel/state için hafif özet (bildirim ÜRETMEZ)."""
     candidates = detect_rising_candidates()
+    snap = _macd._SNAPSHOT or {}
     return {
         "enabled": bool(getattr(config, "RISING_SIGNALS_ENABLED", True)),
         "stale": rising_is_stale(),
         "snapshot_age_sec": (lambda age: None if age is None else round(age, 1))(snapshot_age_sec()),
+        "universe_size": len(snap.get("universe") or []),
         "count": len(candidates),
         "candidates": candidates,
         "thresholds": {
             "min_strength": float(getattr(config, "RISING_MIN_STRENGTH", 9.8)),
+            "min_raw_score": float(getattr(config, "RISING_MIN_RAW_SCORE", 25.0)),
             "min_green": int(getattr(config, "RISING_MIN_GREEN", 5)),
             "dip_gap_atr": float(getattr(config, "RISING_DIP_GAP_ATR", 1.5)),
             "cooldown_sec": float(getattr(config, "RISING_COOLDOWN_SEC", 1800)),

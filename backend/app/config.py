@@ -157,6 +157,13 @@ class Config:
     # haritada aynı ham nokta panel 52.4'e denk gelir → DEĞER KORUNARAK yeniden
     # ankrajlandı (aksi halde kapı ham 200'den ham ~1.8'e düşüp fiilen ölürdü).
     VELOCITY_AUTO_MIN_SCORE = float(os.getenv("VELOCITY_AUTO_MIN_SCORE", "52.4"))
+    # Otonom Hız Avcısı M1/M3 öncü ATR çarpanı (1.50 -> 1.15, aşırı manipülasyonu önler)
+    VELOCITY_LEADING_MULTIPLIER = float(os.getenv("VELOCITY_LEADING_MULTIPLIER", "1.15"))
+    # İntraday aktif ve akışı olan sembolleri dinamik havuza dahil etme
+    DYNAMIC_ACTIVE_POOL_ENABLED = os.getenv("DYNAMIC_ACTIVE_POOL_ENABLED", "true").lower() == "true"
+    DYNAMIC_ACTIVE_POOL_LIMIT = max(5, min(50, int(os.getenv("DYNAMIC_ACTIVE_POOL_LIMIT", "15"))))
+    # Boot anında bildirim fırtınasını önleyici grace period süresi (sn)
+    BOOT_SUPPRESS_SECONDS = int(os.getenv("BOOT_SUPPRESS_SECONDS", "60"))
     # Otonom Hız Avcısı'nin açık pozisyon üst sınırı. Velocity pozisyonları
     # CHAT_PREDICTION stratejisi + signal_context.source=="velocity_auto"
     # işaretiyle taşınır (yönetim merdiveni ortak); bu cap yalnızca velocity
@@ -345,6 +352,8 @@ class Config:
     # eski istemci sabitleri: RISING_MIN_STRENGTH=9.8, RISING_MIN_GREEN=5).
     RISING_MIN_STRENGTH = float(os.getenv("RISING_MIN_STRENGTH", "9.8"))
     RISING_MIN_GREEN = int(os.getenv("RISING_MIN_GREEN", "5"))
+    # H-02: Min-max bağımlılığını kaldıran mutlak ham skor eşiği
+    RISING_MIN_RAW_SCORE = float(os.getenv("RISING_MIN_RAW_SCORE", "25.0"))
     # Yakınlık kapısı. Varsayılan `DIP_APPROACH_GAP_ATR` (1.5) ile AYNI olmalı —
     # parite testi kilitler (`test_rising_signals.py`).
     RISING_DIP_GAP_ATR = float(os.getenv("RISING_DIP_GAP_ATR", "1.5"))

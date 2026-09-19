@@ -575,7 +575,7 @@ def _methodology_analysis(opens, highs, lows, closes, volumes, adx=None, alignme
     regime_confidence = min(0.95, max(0.35, 0.45 + min(adx_value, 50) / 100 + (0.1 if volume_ratio and volume_ratio > 1.2 else 0)))
     fib_high, fib_low = max(highs[-55:]), min(lows[-55:]); span = fib_high - fib_low
     fib = {"0.236": fib_high - span * 0.236, "0.382": fib_high - span * 0.382, "0.5": fib_high - span * 0.5, "0.618": fib_high - span * 0.618, "0.786": fib_high - span * 0.786, "swing_high": fib_high, "swing_low": fib_low}
-    turtle = {"entry_high_20": max(highs[-21:-1]), "entry_low_20": min(lows[-21:-1]), "exit_high_10": max(highs[-11:-1]), "exit_low_10": min(lows[-11:-1]), "entry_high_55": max(highs[-56:-1]), "entry_low_55": min(lows[-56:-1])}
+    turtle = {"entry_high_20": max(highs[-20:]), "entry_low_20": min(lows[-20:]), "exit_high_10": max(highs[-10:]), "exit_low_10": min(lows[-10:]), "entry_high_55": max(highs[-55:]), "entry_low_55": min(lows[-55:])}
     turtle["breakout"] = "up_20" if price > turtle["entry_high_20"] else "down_20" if price < turtle["entry_low_20"] else "none"
     body = abs(closes[-1] - opens[-1]); range_value = max(highs[-1] - lows[-1], 1e-12); close_location = (closes[-1] - lows[-1]) / range_value
     effort = (volume_ratio or 1.0); wyckoff_event = "none"

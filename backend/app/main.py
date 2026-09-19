@@ -1432,6 +1432,16 @@ async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200)
     return {"symbol": symbol.replace("_", "").upper(), "interval": interval,
             "candles": rows, "source": "binance_tr_public"}
 
+@app.get("/api/market-depth/{symbol}")
+async def get_market_depth(symbol: str, limit: int = 20):
+    """Binance TR canlı tahta derinliğini frontend için güvenli ve CORS'suz proxy eder."""
+    try:
+        from app.binance_tr_public import depth as fetch_depth
+        data = await fetch_depth(symbol, limit=max(5, min(int(limit), 100)))
+        return data
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Tahta derinliği alınamadı: {exc}")
+
 @app.get("/api/radar/gainers")
 async def gainers_radar(execute: bool = False):
     """Coalesce concurrent dashboard and background radar scans.
