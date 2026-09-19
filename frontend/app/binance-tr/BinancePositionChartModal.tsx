@@ -292,7 +292,13 @@ export default function BinancePositionChartModal({
     let active = true;
     const fetchDepth = async () => {
       try {
-        const res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${symbolConcat}&limit=20`);
+        let res = await fetch(`${API_BASE}/api/market-depth/${symbolConcat}?limit=20`);
+        if (!res.ok) {
+          res = await fetch(`https://api.binance.me/api/v3/depth?symbol=${symbolConcat}&limit=20`);
+        }
+        if (!res.ok) {
+          res = await fetch(`https://api.binance.com/api/v3/depth?symbol=${symbolConcat}&limit=20`);
+        }
         if (!res.ok || !active) return;
         const data = await res.json();
         if (data && Array.isArray(data.bids) && Array.isArray(data.asks) && data.bids.length > 0 && data.asks.length > 0) {
@@ -440,6 +446,7 @@ export default function BinancePositionChartModal({
           width: chartContainerRef.current.clientWidth,
           height: chartContainerRef.current.clientHeight,
         });
+        updateLineCoordinates();
       }
     });
     ro.observe(chartContainerRef.current);
@@ -820,14 +827,17 @@ export default function BinancePositionChartModal({
     )
   );
 
-  // 6. Sürükle-Bırak (Drag & Drop) Fare Olayları
+  // 6. Sürükle-Bırak (Drag & Drop) Fare ve Dokunmatik Olayları
   // Drag sırasındaki fiyatı ref'te tut — mouseUp callback'i stale closure'dan etkilenmesin
   const dragPriceRef = useRef<number | null>(null);
   const draggingTargetRef = useRef<"TP" | "SL" | null>(null);
 
-  const handleMouseDownOnHandle = (target: "TP" | "SL", e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleMouseDownOnHandle = (
+    target: "TP" | "SL",
+    e?: { preventDefault?: () => void; stopPropagation?: () => void }
+  ) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
     draggingTargetRef.current = target;
     setDraggingTarget(target);
   };
@@ -835,13 +845,15 @@ export default function BinancePositionChartModal({
   useEffect(() => {
     if (!draggingTarget) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handleMouseMove = (e: MouseEvent | { clientY: number }) => {
       if (!chartContainerRef.current || !candleSeriesRef.current) return;
       const rect = chartContainerRef.current.getBoundingClientRect();
       const relY = e.clientY - rect.top;
       const priceAtY = candleSeriesRef.current.coordinateToPrice(relY);
       if (priceAtY && priceAtY > 0) {
-        const p = Number(priceAtY);
+        const raw = Number(priceAtY);
+        const precision = raw < 0.1 ? 6 : raw < 10 ? 4 : 2;
+        const p = Number(raw.toFixed(precision));
         dragPriceRef.current = p;
         setDragYPrice(p);
         if (draggingTarget === "TP") setPendingTp(p);
@@ -910,11 +922,27 @@ export default function BinancePositionChartModal({
       }
     };
 
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length > 0) {
+        if (e.cancelable) e.preventDefault();
+        handleMouseMove({ clientY: e.touches[0].clientY });
+      }
+    };
+    const handleTouchEnd = () => {
+      void handleMouseUp();
+    };
+
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
+    window.addEventListener("touchmove", handleTouchMove, { passive: false });
+    window.addEventListener("touchend", handleTouchEnd);
+    window.addEventListener("touchcancel", handleTouchEnd);
     return () => {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+      window.removeEventListener("touchcancel", handleTouchEnd);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draggingTarget]);
@@ -1093,23 +1121,23 @@ export default function BinancePositionChartModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-2 md:p-4 animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-0 sm:p-4 animate-in fade-in duration-200"
       onClick={closeContextMenu}
     >
       <div
-        className="relative w-full max-w-7xl h-[92vh] flex flex-col rounded-2xl border border-bunker-700/80 bg-[#080b10] shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden"
+        className="relative w-full max-w-7xl h-[100dvh] sm:h-[92vh] flex flex-col rounded-none sm:rounded-2xl border-0 sm:border border-bunker-700/80 bg-[#080b10] shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* ÜST BİLGİ VE KONTROL BARI */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-bunker-800/80 bg-bunker-950/80 px-4 py-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800/80 bg-bunker-950/90 px-3 sm:px-4 py-2">
           {/* Sol: Varlık Bilgileri & Canlı Fiyat */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
             <div className="flex items-center gap-2">
-              <span className="text-lg font-black tracking-wider text-white">
+              <span className="text-base sm:text-lg font-black tracking-wider text-white">
                 {holding.asset}
                 <span className="text-xs text-bunker-muted font-normal ml-1">/ TRY</span>
               </span>
-              <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-400 border border-emerald-500/30">
+              <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono text-[9px] sm:text-[10px] font-bold text-emerald-400 border border-emerald-500/30">
                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 CANLI WS
               </span>
@@ -1118,7 +1146,7 @@ export default function BinancePositionChartModal({
             {/* Anlık Fiyat */}
             <div className="flex items-baseline gap-2 font-mono">
               <span
-                className={`text-base font-black tabular-nums transition-colors ${
+                className={`text-sm sm:text-base font-black tabular-nums transition-colors ${
                   tickDir === "up"
                     ? "text-neon-green"
                     : tickDir === "down"
@@ -1130,7 +1158,7 @@ export default function BinancePositionChartModal({
               </span>
               {curPnlPct != null && (
                 <span
-                  className={`text-xs font-bold tabular-nums ${
+                  className={`text-[11px] sm:text-xs font-bold tabular-nums ${
                     curPnlPct >= 0 ? "text-neon-green" : "text-neon-red"
                   }`}
                 >
@@ -1155,8 +1183,8 @@ export default function BinancePositionChartModal({
             </div>
           </div>
 
-          {/* Orta: Timeframe, İndikatör ve Diğer Butonlar */}
-          <div className="flex items-center gap-1.5">
+          {/* Orta: Timeframe, İndikatör ve Diğer Butonlar (Mobilde Yatay Kaydırılabilir) */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar w-full sm:w-auto py-1">
             {/* TF Seçici */}
             <div className="flex items-center rounded-lg border border-bunker-800 bg-bunker-900/80 p-0.5">
               {(["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as Timeframe[]).map((tf) => (
@@ -1267,10 +1295,10 @@ export default function BinancePositionChartModal({
 
         {/* CANLI TAHTA GÜÇ DENGESİ / ORDERBOOK DEPTH BARI */}
         {orderbook && (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-bunker-800/80 bg-bunker-950/90 px-4 py-1.5 font-mono text-[11px]">
-            <div className="flex items-center gap-2">
-              <span className="text-bunker-muted text-[10px] font-bold">TAHTA BASKISI:</span>
-              <div className="w-36 sm:w-48 h-2 rounded-full overflow-hidden flex bg-bunker-900 border border-bunker-800">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 border-b border-bunker-800/80 bg-bunker-950/90 px-3 sm:px-4 py-1.5 font-mono text-[11px]">
+            <div className="flex items-center justify-between sm:justify-start gap-2">
+              <span className="text-bunker-muted text-[10px] font-bold shrink-0">TAHTA:</span>
+              <div className="w-28 sm:w-48 h-2 rounded-full overflow-hidden flex bg-bunker-900 border border-bunker-800 shrink-0">
                 <div
                   className="h-full bg-gradient-to-r from-emerald-600 to-emerald-400 transition-all duration-300"
                   style={{ width: `${Math.min(Math.max(orderbook.bidPct, 5), 95)}%` }}
@@ -1282,21 +1310,23 @@ export default function BinancePositionChartModal({
                   title={`Satıcı Hacim Ağırlığı: %${orderbook.askPct.toFixed(1)}`}
                 />
               </div>
-              <span className="text-emerald-400 font-bold">%{orderbook.bidPct.toFixed(0)} Alıcı</span>
-              <span className="text-bunker-600">/</span>
-              <span className="text-red-400 font-bold">%{orderbook.askPct.toFixed(0)} Satıcı</span>
+              <div className="flex items-center gap-1.5 text-[10px] font-bold">
+                <span className="text-emerald-400">%{orderbook.bidPct.toFixed(0)} Alıcı</span>
+                <span className="text-bunker-600">/</span>
+                <span className="text-red-400">%{orderbook.askPct.toFixed(0)} Satıcı</span>
+              </div>
             </div>
 
-            <div className="flex items-center gap-3 text-bunker-muted text-[10px]">
+            <div className="flex items-center justify-between sm:justify-end gap-2.5 text-bunker-muted text-[10px]">
               {orderbook.bestBid && orderbook.bestAsk && (
-                <span>
+                <span className="truncate">
                   Alış: <strong className="text-emerald-300">₺{fmtPrice(orderbook.bestBid)}</strong> | Satış: <strong className="text-red-300">₺{fmtPrice(orderbook.bestAsk)}</strong>
                 </span>
               )}
-              <span>
+              <span className="shrink-0">
                 Spread: <strong className="text-cyan-300">₺{fmtPrice(orderbook.spread)}</strong> (%{orderbook.spreadPct.toFixed(2)})
               </span>
-              <span className="hidden sm:inline">
+              <span className="hidden md:inline shrink-0">
                 20-Derinlik: <strong className="text-white">₺{fmtPrice(orderbook.bidTotal + orderbook.askTotal, 0)}</strong>
               </span>
             </div>
@@ -1338,28 +1368,28 @@ export default function BinancePositionChartModal({
 
         {/* BEKLEYEN DEĞİŞİKLİK BİLDİRİMİ / ONAY BARI */}
         {(pendingTp != null || pendingSl != null) && (
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cyan-500/40 bg-cyan-950/40 px-4 py-2 text-xs font-mono text-cyan-200 animate-in slide-in-from-top-2">
-            <div className="flex items-center gap-2">
-              <span className="flex h-2 w-2 rounded-full bg-cyan-400 animate-ping" />
-              <span className="font-bold">Grafik Üzerinden Seviye Güncellendi:</span>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-cyan-500/40 bg-cyan-950/50 px-3 sm:px-4 py-2 text-xs font-mono text-cyan-200 animate-in slide-in-from-top-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="flex h-2.5 w-2.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
+              <span className="font-bold text-[11px] sm:text-xs">Seviye Güncellendi:</span>
               {pendingTp != null && (
-                <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-emerald-300 font-bold border border-emerald-500/40">
-                  🎯 Yeni TP: ₺{fmtPrice(pendingTp)}
+                <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-emerald-300 font-bold border border-emerald-500/40 text-[11px]">
+                  🎯 TP: ₺{fmtPrice(pendingTp)}
                 </span>
               )}
               {pendingSl != null && (
-                <span className="rounded bg-red-500/20 px-2 py-0.5 text-red-300 font-bold border border-red-500/40">
-                  🛑 Yeni SL: ₺{fmtPrice(pendingSl)}
+                <span className="rounded bg-red-500/20 px-2 py-0.5 text-red-300 font-bold border border-red-500/40 text-[11px]">
+                  🛑 SL: ₺{fmtPrice(pendingSl)}
                 </span>
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 justify-end">
               <button
                 type="button"
                 onClick={handleCancelPending}
                 disabled={isUpdating}
-                className="rounded border border-bunker-700 bg-bunker-800/80 px-3 py-1 font-bold text-bunker-muted hover:text-white transition-colors"
+                className="rounded-lg border border-bunker-700 bg-bunker-800/90 px-3.5 py-1.5 font-bold text-bunker-muted hover:text-white transition-colors min-h-[38px] flex items-center justify-center touch-target"
               >
                 İptal Et
               </button>
@@ -1367,7 +1397,7 @@ export default function BinancePositionChartModal({
                 type="button"
                 onClick={handleSaveOrders}
                 disabled={isUpdating || !sellEnabled}
-                className="flex items-center gap-1.5 rounded border border-emerald-500 bg-emerald-600 px-4 py-1 font-bold text-white shadow-lg hover:bg-emerald-500 disabled:opacity-50 transition-colors"
+                className="flex items-center justify-center gap-1.5 rounded-lg border border-emerald-500 bg-emerald-600 px-4 py-1.5 font-bold text-white shadow-lg hover:bg-emerald-500 disabled:opacity-50 transition-colors min-h-[38px] touch-target"
               >
                 {isUpdating ? "Emir Gönderiliyor..." : "✓ Emirleri Güncelle"}
               </button>
@@ -1420,16 +1450,20 @@ export default function BinancePositionChartModal({
           )}
 
           {/* İNTERAKTİF SÜRÜKLEME (DRAG HANDLE) BUTONLARI (Fiyat Cetvelinin Yanı) */}
-          <div className="absolute top-0 right-16 bottom-0 w-64 pointer-events-none z-10 overflow-hidden">
+          <div className="absolute top-0 right-14 sm:right-16 bottom-0 w-64 pointer-events-none z-10 overflow-hidden">
             {/* TP Drag Handle */}
             {lineCoords.tp != null && (
               <div
-                style={{ top: `${lineCoords.tp - 12}px` }}
-                className="absolute right-1 pointer-events-auto flex items-center gap-1 cursor-ns-resize group transition-transform"
+                style={{ top: `${lineCoords.tp - 22}px` }}
+                className="absolute right-1 pointer-events-auto flex items-center h-11 cursor-ns-resize group transition-transform touch-none"
                 onMouseDown={(e) => handleMouseDownOnHandle("TP", e)}
+                onTouchStart={(e) => {
+                  if (e.cancelable) e.preventDefault();
+                  handleMouseDownOnHandle("TP", e);
+                }}
                 title="Kâr Al (TP) çizgisini yukarı/aşağı sürükleyin"
               >
-                <div className="flex items-center gap-1.5 rounded border border-emerald-400 bg-emerald-950/95 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-300 shadow-lg group-hover:scale-105 group-hover:bg-emerald-800 transition-all">
+                <div className="flex items-center gap-1.5 rounded-lg border border-emerald-400 bg-emerald-950/95 px-2.5 py-1.5 font-mono text-[11px] sm:text-[10px] font-bold text-emerald-300 shadow-xl group-hover:scale-105 group-hover:bg-emerald-800 transition-all select-none">
                   <span>↕ TP</span>
                   {effectiveTpVal && (
                     <span className="text-emerald-200 font-semibold">
@@ -1444,12 +1478,16 @@ export default function BinancePositionChartModal({
             {/* SL Drag Handle */}
             {lineCoords.sl != null && (
               <div
-                style={{ top: `${lineCoords.sl - 12}px` }}
-                className="absolute right-1 pointer-events-auto flex items-center gap-1 cursor-ns-resize group transition-transform"
+                style={{ top: `${lineCoords.sl - 22}px` }}
+                className="absolute right-1 pointer-events-auto flex items-center h-11 cursor-ns-resize group transition-transform touch-none"
                 onMouseDown={(e) => handleMouseDownOnHandle("SL", e)}
+                onTouchStart={(e) => {
+                  if (e.cancelable) e.preventDefault();
+                  handleMouseDownOnHandle("SL", e);
+                }}
                 title="Zarar Kes (SL) çizgisini yukarı/aşağı sürükleyin"
               >
-                <div className="flex items-center gap-1.5 rounded border border-red-400 bg-red-950/95 px-2 py-0.5 font-mono text-[10px] font-bold text-red-300 shadow-lg group-hover:scale-105 group-hover:bg-red-800 transition-all">
+                <div className="flex items-center gap-1.5 rounded-lg border border-red-400 bg-red-950/95 px-2.5 py-1.5 font-mono text-[11px] sm:text-[10px] font-bold text-red-300 shadow-xl group-hover:scale-105 group-hover:bg-red-800 transition-all select-none">
                   <span>↕ SL</span>
                   {effectiveSlVal && (
                     <span className="text-red-200 font-semibold">
@@ -1483,7 +1521,10 @@ export default function BinancePositionChartModal({
           {/* SAĞ TIK BAĞLAMSAL MENÜ (Context Menu) */}
           {contextMenu && (
             <div
-              style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+              style={{
+                top: `${typeof window !== "undefined" ? Math.min(contextMenu.y, window.innerHeight - 300) : contextMenu.y}px`,
+                left: `${typeof window !== "undefined" ? Math.min(contextMenu.x, window.innerWidth - 260) : contextMenu.x}px`,
+              }}
               className="fixed z-50 min-w-[240px] rounded-xl border border-bunker-700 bg-bunker-950/95 p-1.5 font-mono text-xs text-white shadow-2xl backdrop-blur-md animate-in fade-in zoom-in-95 duration-100"
               onClick={(e) => e.stopPropagation()}
             >

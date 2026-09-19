@@ -1304,31 +1304,41 @@ export default function MonitoringPage() {
                 ].filter(Boolean).join(" · ");
                 return (
                   <div key={`${item.kind}-${item.symbol}`}
-                    className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 ${isEarly ? "border-sky-400/30 bg-sky-400/5" : "border-neon-green/30 bg-neon-green/5"}`}>
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <span className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] font-bold ${isEarly ? "border-sky-400/50 bg-sky-400/15 text-sky-300" : "border-neon-green/50 bg-neon-green/15 text-neon-green"}`}>
-                        {isEarly ? "🌱 ERKEN" : "📈 YÜKSELİŞ"}
-                      </span>
-                      <Link href={`/charts?symbol=${encodeURIComponent(item.symbol)}`} title={title}
-                        className="truncate font-mono text-sm font-bold text-white hover:text-neon-green">
-                        {item.symbol}
-                      </Link>
-                      {icons ? <span className="shrink-0 font-mono text-[11px]" title="sinyal işaretleri">{icons}</span> : null}
+                    className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl border p-3 sm:py-2.5 sm:px-4 transition-all ${isEarly ? "border-sky-400/30 bg-sky-400/5 hover:border-sky-400/60" : "border-neon-green/30 bg-neon-green/5 hover:border-neon-green/60"}`}>
+                    <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={`shrink-0 rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${isEarly ? "border-sky-400/50 bg-sky-400/15 text-sky-300" : "border-neon-green/50 bg-neon-green/15 text-neon-green"}`}>
+                          {isEarly ? "🌱 ERKEN" : "📈 YÜKSELİŞ"}
+                        </span>
+                        <Link href={`/charts?symbol=${encodeURIComponent(item.symbol)}`} title={title}
+                          className="truncate font-mono text-base sm:text-sm font-black text-white hover:text-neon-green">
+                          {item.symbol}
+                        </Link>
+                        {icons ? <span className="shrink-0 font-mono text-xs" title="sinyal işaretleri">{icons}</span> : null}
+                      </div>
+
+                      {/* Mobilde sağ üstte skor */}
+                      <div className="sm:hidden flex items-center gap-2">
+                        <span className="font-mono text-xs font-bold text-amber-300 bg-amber-400/10 border border-amber-400/30 px-2 py-0.5 rounded">
+                          Skor {Number(item.score).toFixed(0)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-2 sm:gap-3">
-                      <div className="text-right">
+
+                    <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-4 pt-1 sm:pt-0 border-t sm:border-t-0 border-bunker-800/60">
+                      <div className="hidden sm:block text-right">
                         <p className="font-mono text-[9px] text-bunker-muted">SKOR</p>
                         <p className="font-mono text-xs font-bold text-amber-300">{Number(item.score).toFixed(0)}</p>
                       </div>
-                      <div className="text-right">
+                      <div className="text-left sm:text-right">
                         <p className="font-mono text-[9px] text-bunker-muted">YAKINLIK</p>
                         <p className="font-mono text-xs font-bold text-sky-300">{proximityPct != null ? `%${proximityPct}` : "—"}</p>
                       </div>
-                      <div className="hidden text-right sm:block">
+                      <div className="text-left sm:text-right">
                         <p className="font-mono text-[9px] text-bunker-muted">HEDEF</p>
-                        <p className="font-mono text-xs font-bold text-neon-green">+%{targetPct.toFixed(1)}</p>
+                        <p className="font-mono text-xs font-bold text-neon-green">+{targetPct.toFixed(1)}%</p>
                       </div>
-                      <div className="hidden text-right md:block">
+                      <div className="hidden md:block text-right">
                         <p className="font-mono text-[9px] text-bunker-muted">TP | SL | R/R</p>
                         <p className="font-mono text-xs font-bold text-white">
                           {tp != null ? formatPrice(tp) : "—"} <span className="text-bunker-muted">|</span> {sl != null ? formatPrice(sl) : "—"}
@@ -1336,7 +1346,7 @@ export default function MonitoringPage() {
                           <span className={rr != null && rr >= 1 ? "text-yellow-300" : "text-bunker-muted"}>{rr != null ? rr.toFixed(2) : "—"}</span>
                         </p>
                       </div>
-                      <Link href={`/charts?symbol=${encodeURIComponent(item.symbol)}`} className="ui-button ui-button-secondary">
+                      <Link href={`/charts?symbol=${encodeURIComponent(item.symbol)}`} className="ui-button ui-button-secondary py-1 px-3 text-xs sm:text-[11px] touch-target flex items-center justify-center">
                         GRAFİK
                       </Link>
                     </div>
@@ -1547,52 +1557,68 @@ export default function MonitoringPage() {
               const modeLabel = c.mode === "trend_devam" ? "TREND" : c.mode === "v_donusu" ? "V-DÖNÜŞÜ" : "NÖTR";
               const modeClass = c.mode === "trend_devam" ? "bg-neon-green/15 text-neon-green" : c.mode === "v_donusu" ? "bg-yellow-400/15 text-yellow-300" : "bg-sky-400/15 text-sky-300";
               return (
-                <button key={c.symbol} type="button" onClick={() => setSelected({ c, kind: "radar" })} className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-bunker-800 bg-bunker-900/40 px-4 py-3 text-left transition-colors hover:border-neon-green/40 hover:bg-bunker-900/70">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="w-6 shrink-0 text-center font-mono text-xs text-bunker-muted">{i + 1}</span>
-                    <span className="truncate font-mono font-bold text-white">{c.symbol}</span>
-                    {mlActive ? <span className="shrink-0 rounded border border-violet-400/40 bg-violet-400/10 px-1.5 py-0.5 font-mono text-[9px] text-violet-300" title={`ML hedef: %${Number(c.ml_target_pct).toFixed(1)}, olasılık: %${Math.round(Number(c.ml_hit_probability) * 100)}`}>ML</span> : null}
-                    {unifiedSources.length >= 2 && (
-                      <span className="shrink-0 rounded border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-neon-green" title={`Birleşik tespit: ${unifiedSources.join(" + ")} hemfikir`}>⚡{unifiedSources.length}</span>
-                    )}
-                    {isUnifiedPass && (
-                      <span className="shrink-0 rounded border border-sky-400/50 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-sky-300" title="Bu aday radar ham skor kapısını değil, birleşik füzyon skoruyla listede (MACD sıçrama/erken sıçrama öncüsü güçlü)">BİRLEŞİK</span>
-                    )}
-                    <span className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[9px] font-bold ${modeClass}`}>{modeLabel}</span>
+                <button key={c.symbol} type="button" onClick={() => setSelected({ c, kind: "radar" })}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 w-full rounded-xl border border-bunker-800 bg-bunker-900/40 p-3 sm:px-4 sm:py-3 text-left transition-all hover:border-neon-green/50 hover:bg-bunker-900/80 active:scale-[0.99]">
+                  <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="w-5 text-center font-mono text-xs font-bold text-bunker-muted">#{i + 1}</span>
+                      <span className="truncate font-mono text-base sm:text-sm font-black text-white">{c.symbol}</span>
+                      {mlActive ? <span className="shrink-0 rounded border border-violet-400/40 bg-violet-400/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-violet-300">ML</span> : null}
+                      {unifiedSources.length >= 2 && (
+                        <span className="shrink-0 rounded border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-neon-green">⚡{unifiedSources.length}</span>
+                      )}
+                      {isUnifiedPass && (
+                        <span className="shrink-0 rounded border border-sky-400/50 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-sky-300">BİRLEŞİK</span>
+                      )}
+                      <span className={`shrink-0 rounded px-2 py-0.5 font-mono text-[9px] font-bold ${modeClass}`}>{modeLabel}</span>
+                    </div>
+
+                    {/* Mobilde sağ üstte Skor ve Durum */}
+                    <div className="sm:hidden flex items-center gap-2">
+                      <StatusChip status={c.status} />
+                      <span className={`font-mono text-xs font-black ${scoreColor(score)} bg-bunker-950 px-2 py-0.5 rounded border border-bunker-700`}>
+                        {scoreText(score)}
+                      </span>
+                    </div>
                   </div>
-                  {/* C2 + C4 + C5: kompakt satır bilgileri */}
-                  <div className="flex shrink-0 flex-wrap items-center gap-2 sm:gap-3">
-                    <div className="text-right">
+
+                  {/* Metrikler ve Aksiyon */}
+                  <div className="flex items-center justify-between sm:justify-end gap-2 sm:gap-4 pt-1.5 sm:pt-0 border-t sm:border-t-0 border-bunker-800/60">
+                    <div className="hidden sm:block text-right">
                       <p className="font-mono text-[9px] text-bunker-muted">SKOR</p>
                       <p className={`font-mono text-xs font-bold ${scoreColor(score)}`}>{scoreText(score)}</p>
                     </div>
-                    <div className="text-right">
+                    <div className="text-left sm:text-right">
                       <p className="font-mono text-[9px] text-bunker-muted">HEDEF</p>
-                      <p className={`font-mono text-xs font-bold ${validTarget ? "text-neon-green" : "text-bunker-muted"}`}>{validTarget ? `+%${targetPct.toFixed(1)}` : "—"}</p>
+                      <p className={`font-mono text-xs font-bold ${validTarget ? "text-neon-green" : "text-bunker-muted"}`}>{validTarget ? `+${targetPct.toFixed(1)}%` : "—"}</p>
                     </div>
-                    <div className="hidden text-right md:block">
+                    {c.price > 0 && (
+                      <div className="text-left sm:text-right">
+                        <p className="font-mono text-[9px] text-bunker-muted">FİYAT</p>
+                        <p className="font-mono text-xs font-bold text-white">₺{formatPrice(c.price)}</p>
+                      </div>
+                    )}
+                    <div className="hidden md:block text-right">
                       <p className="font-mono text-[9px] text-bunker-muted">TP | SL | R/R</p>
                       <p className="font-mono text-xs font-bold text-white">
                         {tp != null ? formatPrice(tp) : "—"} <span className="text-bunker-muted">|</span> {sl != null ? formatPrice(sl) : "—"} <span className="text-bunker-muted">|</span> <span className={rr != null && rr >= 2 ? "text-neon-green" : rr != null && rr >= 1 ? "text-yellow-300" : "text-bunker-muted"}>{rr != null ? rr.toFixed(1) : "—"}</span>
                       </p>
                     </div>
-                    <div className="hidden text-right sm:block">
-                      <p className="font-mono text-[9px] text-bunker-muted">ATR%</p>
-                      <p className={`font-mono text-xs font-bold ${hasAtr ? "text-white" : "text-bunker-muted"}`}>{hasAtr ? `${atrPct.toFixed(2)}%` : "—"}</p>
-                    </div>
-                    <div className="hidden text-right sm:block">
+                    <div className="hidden sm:block">
                       <StatusChip status={c.status} />
                     </div>
-                    <Link
-                      href={`/charts?symbol=${encodeURIComponent(c.symbol)}`}
-                      target="_blank"
-                      onClick={(e) => e.stopPropagation()}
-                      className="shrink-0 rounded border border-bunker-700 bg-bunker-900 px-2 py-1 font-mono text-[10px] text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green"
-                      title={`${c.symbol} grafiğini yeni sekmede aç`}
-                    >
-                      Grafik
-                    </Link>
-                    <span className="font-mono text-xs text-bunker-muted">›</span>
+                    <div className="flex items-center gap-1.5">
+                      <Link
+                        href={`/charts?symbol=${encodeURIComponent(c.symbol)}`}
+                        target="_blank"
+                        onClick={(e) => e.stopPropagation()}
+                        className="rounded border border-bunker-700 bg-bunker-900 px-2.5 py-1.5 font-mono text-[11px] text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green"
+                        title={`${c.symbol} grafiğini yeni sekmede aç`}
+                      >
+                        Grafik
+                      </Link>
+                      <span className="font-mono text-sm text-bunker-muted">›</span>
+                    </div>
                   </div>
                 </button>
               );

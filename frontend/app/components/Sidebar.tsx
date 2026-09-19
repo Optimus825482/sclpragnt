@@ -82,6 +82,11 @@ export default function Sidebar() {
     }, []);
     useEffect(() => setOpen(false), [pathname]);
     useEffect(() => {
+        const handleOpen = () => setOpen(true);
+        window.addEventListener("open-mobile-menu", handleOpen);
+        return () => window.removeEventListener("open-mobile-menu", handleOpen);
+    }, []);
+    useEffect(() => {
         const load = () => apiFetch("/api/alerts")
             .then((data) => setNotifications((data.events || []).slice(0, 30)))
             .catch(() => undefined);

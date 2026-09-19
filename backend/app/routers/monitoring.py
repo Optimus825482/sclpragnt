@@ -1223,6 +1223,21 @@ async def _deliver_scan_notifications(notified: list) -> None:
     if not notified:
         return
     new_notifs = [n for n in notified if not n.get("updated")]
+
+    # O-02: Boot anında grace period (ilk BOOT_SUPPRESS_SECONDS sn içinde toplu push/spam engelle)
+    boot_time = _monitoring_state.get("_boot_time")
+    if boot_time is None:
+        _monitoring_state["_boot_time"] = time.time()
+        boot_time = _monitoring_state["_boot_time"]
+    boot_suppress = float(getattr(config, "BOOT_SUPPRESS_SECONDS", 60))
+    in_boot_grace = (time.time() - boot_time) < boot_suppress
+
+    if in_boot_grace and new_notifs:
+        logger.info("Monitoring boot grace period aktif (kalan: %.0f sn) — %d adet push bildirimi bastırıldı (WS/DB hazır).",
+                    max(0.0, boot_suppress - (time.time() - boot_time)), len(new_notifs))
+        # WS yayını devam eder, yalnız harici push fırtınası bastırılır
+        new_notifs = []
+
     quiet = bool(notified[0].get("quiet_hours"))
     vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
     # BİRLEŞİK RADAR (Aşama 2): tek tip bildirim. Radar push'u `radar-{sym}` tag'i

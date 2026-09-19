@@ -474,3 +474,23 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
     scroll-behavior: auto !important;
   }
 }
+
+/* Mobil ve Dokunmatik UX İyileştirmeleri */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+@media (max-width: 768px) {
+  .content-shell {
+    padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px)) !important;
+  }
+  .mobile-card-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+}

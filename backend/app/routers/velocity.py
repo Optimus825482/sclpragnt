@@ -19,7 +19,7 @@ from app.technical_analysis import (calculate_snapshot, _atr, _aroon, _bollinger
 from app.market_intelligence import microstructure_snapshot
 from app.microflow import microflow
 from app import calibration as calibration_service
-from app.binance_tr_public import top_gainers, ticker_24h
+from app.binance_tr_public import top_gainers, ticker_24h, active_movers_pool
 from app.embedding_worker import worker as embedding_worker
 from app.memory_service import build_document
 from app import ml_forecast
@@ -309,18 +309,39 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     profile = VELOCITY_PROFILES.get(horizon_minutes) or VELOCITY_PROFILES[5]
     base_target_pct = float(profile["target_pct"])
     now_ms = int(time.time() * 1000)
+    all_ticker_rows = []
     try:
         await _velocity_rate_acquire()
-        gainer_rows = await top_gainers(config.VELOCITY_POOL_SIZE)
+        all_ticker_rows = await ticker_24h()
+    except Exception as exc:
+        logger.warning("velocity scan: ticker_24h hatası: %s", exc)
+
+    try:
+        gainer_rows = await top_gainers(config.VELOCITY_POOL_SIZE, _ticker_rows=all_ticker_rows)
     except Exception as exc:
         logger.warning("velocity scan: top_gainers hatası: %s", exc)
         gainer_rows = []
-    # Havuz: top_gainers + config.SYMBOLS (aktif semboller) + extra_symbols.
-    # 24h değişimi düşük olsa bile aktif semboller her turda taranır (kısa vadeli
-    # momentumu yakalamak için, 2026-09-06). Ayrıca kullanıcının izleme listesi
-    # (extra_symbols) zorunlu eklenir.
+
+    active_rows = []
+    if getattr(config, "DYNAMIC_ACTIVE_POOL_ENABLED", True):
+        try:
+            active_rows = await active_movers_pool(
+                getattr(config, "DYNAMIC_ACTIVE_POOL_LIMIT", 15),
+                _ticker_rows=all_ticker_rows
+            )
+        except Exception as exc:
+            logger.warning("velocity scan: active_movers_pool hatası: %s", exc)
+            active_rows = []
+
+    # Havuz: top_gainers + active_movers_pool (intraday akış) + config.SYMBOLS + extra_symbols.
+    # 24h değişimi düşük olsa bile aktif/hacimli ve yükselen semboller taranır (H-01/T-01).
     pool = [item["symbol"] for item in gainer_rows]
     _pool_set = set(pool)
+    for item in active_rows:
+        sym = item["symbol"]
+        if sym not in _pool_set:
+            pool.append(sym)
+            _pool_set.add(sym)
     for sym in (str(s).upper() for s in config.SYMBOLS):
         if sym not in _pool_set:
             pool.append(sym)
@@ -456,11 +477,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 _reversal_slope = (((closes[-1] - closes[-4]) / _ret3_base) * 100 / 3
                                    if len(closes) >= 4 and abs(_ret3_base) > 1e-12 else 0.0)
                 momentum = max(0.0, _reversal_slope)
-            momentum_ratio = momentum / 4.0  # cap kaldirildi (2026-09-07)
-            # Hacim teyidi: son bar hacminin son 20 bar ortalamasina orani.
-            # Dusuk hacimli pump ayrimi icin skor carpani (2026-09-07).
-            if len(vols) >= 21:
-                _avg_vol = sum(vols[-21:-1]) / 20
+            # Hacim teyidi: son 20 kapanmış bar ortalamasına oranı (O-03 düzeltmesi)
+            if len(vols) >= 20:
+                _avg_vol = sum(vols[-20:]) / 20.0
                 _vol_ratio = vols[-1] / _avg_vol if _avg_vol > 0 else 0.0
             else:
                 _vol_ratio = 0.0
@@ -565,9 +584,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 leading_ok = bool(m1_atr_prev is not None and m3_atr_prev is not None
                                   and m1_atr_prev > 1.0 and m3_atr_prev > 1.0)
                 # Kesişim deseni dokunuşu ~2.5× artırıyor (araştırma run 14); skor
-                # çarpanı aday sıralamasında önceliklendirir.
+                # çarpanı aday sıralamasında önceliklendirir (O-01 dengelendi).
                 if leading_ok:
-                    velocity_score = round(velocity_score * 1.5, 2)
+                    _lead_mult = float(getattr(config, "VELOCITY_LEADING_MULTIPLIER", 1.15))
+                    velocity_score = round(velocity_score * _lead_mult, 2)
             except Exception as exc:
                 logger.warning("velocity m1/m3 leading hesabı: %s", exc)
                 m1_atr_prev = m3_atr_prev = None
