@@ -140,6 +140,14 @@ function BinanceTrPageInner() {
   // Aktif Sekme (positions | openOrders | trades)
   const [activeTab, setActiveTab] = useState<"positions" | "openOrders" | "trades">("positions");
 
+  // Trade Defteri sıralama (kullanıcı tercihi 2026-09-19): sütun başlığına
+  // tıkla → asc; tekrar tıkla → desc; başka sütuna tıkla → o sütun asc.
+  type TradesSortKey = "symbol" | "buy_qty" | "buy_avg" | "sell_qty" | "sell_avg" | "commission" | "pnl" | "fills";
+  type SortDir = "asc" | "desc";
+  const [tradesSort, setTradesSort] = useState<{ key: TradesSortKey; dir: SortDir }>({ key: "pnl", dir: "desc" });
+  const toggleTradesSort = (key: TradesSortKey) =>
+    setTradesSort((prev) => (prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+
   // Hesap & Bakiye
   const [balances, setBalances] = useState<Balance[]>([]);
   const [acctLoading, setAcctLoading] = useState(false);
@@ -390,6 +398,33 @@ function BinanceTrPageInner() {
   const totalCoinPositions = useMemo(() => {
     return mergedHoldings.filter((h) => h.asset !== "TRY" && (h.value_try == null || h.value_try >= 10)).length;
   }, [mergedHoldings]);
+
+  // Trade Defteri sıralı özet satırları (kullanıcı tercihi 2026-09-19).
+  const sortedSymbolSummary = useMemo(() => {
+    const buyAvgOf = (s: SymbolSummary) => (s.buy_qty > 0 ? s.buy_cost_try / s.buy_qty : 0);
+    const sellAvgOf = (s: SymbolSummary) => (s.sell_qty > 0 ? s.sell_revenue_try / s.sell_qty : 0);
+    const val = (s: SymbolSummary): number | string => {
+      switch (tradesSort.key) {
+        case "symbol": return s.symbol;
+        case "buy_qty": return s.buy_qty;
+        case "buy_avg": return buyAvgOf(s);
+        case "sell_qty": return s.sell_qty;
+        case "sell_avg": return sellAvgOf(s);
+        case "commission": return s.commission_try;
+        case "pnl": return s.realized_pnl_try;
+        case "fills": return s.fills;
+      }
+    };
+    const dir = tradesSort.dir === "asc" ? 1 : -1;
+    return [...symbolSummary].sort((a, b) => {
+      const va = val(a);
+      const vb = val(b);
+      if (typeof va === "string" || typeof vb === "string") {
+        return dir * String(va).localeCompare(String(vb), "tr");
+      }
+      return dir * ((va as number) - (vb as number));
+    });
+  }, [symbolSummary, tradesSort]);
 
   // Alım Modalı Hesaplamaları
   const buyTryFree = tryFreeBalance;
@@ -1577,19 +1612,36 @@ function BinanceTrPageInner() {
                     <table className="data-table">
                       <thead>
                         <tr>
-                          <th>Sembol</th>
-                          <th className="text-right">Alış Miktar</th>
-                          <th className="text-right">Ort. Alış</th>
-                          <th className="text-right">Satış Miktar</th>
-                          <th className="text-right">Ort. Satış</th>
-                          <th className="text-right">Komisyon</th>
-                          <th className="text-right">Net K/Z</th>
-                          <th className="text-right">Fill Adedi</th>
+                          {([
+                            ["symbol", "Sembol", false],
+                            ["buy_qty", "Alış Miktar", true],
+                            ["buy_avg", "Ort. Alış", true],
+                            ["sell_qty", "Satış Miktar", true],
+                            ["sell_avg", "Ort. Satış", true],
+                            ["commission", "Komisyon", true],
+                            ["pnl", "Net K/Z", true],
+                            ["fills", "Fill Adedi", true],
+                          ] as [TradesSortKey, string, boolean][]).map(([key, label, right]) => {
+                            const active = tradesSort.key === key;
+                            return (
+                              <th
+                                key={key}
+                                onClick={() => toggleTradesSort(key)}
+                                className={`${right ? "text-right" : ""} cursor-pointer select-none hover:text-neon-green transition-colors ${active ? "text-neon-green" : ""}`}
+                                title={`${label} sütununa göre sırala (tekrar tıkla: ters çevir)`}
+                              >
+                                {label}
+                                <span className="ml-1 text-[9px] opacity-80">
+                                  {active ? (tradesSort.dir === "asc" ? "▲" : "▼") : "⇅"}
+                                </span>
+                              </th>
+                            );
+                          })}
                           <th></th>
                         </tr>
                       </thead>
                       <tbody>
-                        {symbolSummary.map((s) => {
+                        {sortedSymbolSummary.map((s) => {
                           const buyAvg = s.buy_qty > 0 ? s.buy_cost_try / s.buy_qty : 0;
                           const sellAvg = s.sell_qty > 0 ? s.sell_revenue_try / s.sell_qty : 0;
                           const pnlCls = s.realized_pnl_try >= 0 ? "text-neon-green" : "text-neon-red";
