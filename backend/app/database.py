@@ -262,7 +262,8 @@ async def init_db():
         migrations_dir = os.path.abspath(os.path.join(_APP_DIR, "..", "migrations"))
         schema_sql = ""
         for filename in ("001_pgvector_schema.sql", "002_macd_evidence_lift.sql",
-                         "003_rising_signals.sql", "004_bloat_prevention.sql"):
+                         "003_rising_signals.sql", "004_bloat_prevention.sql",
+                         "005_user_binance_keys.sql"):
             path = os.path.join(migrations_dir, filename)
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as schema_file:
@@ -4482,6 +4483,83 @@ async def count_users() -> int:
     def op(conn):
         row = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
         return int(row["n"]) if row else 0
+    return await _run_db(op)
+
+
+# ---------------------------------------------------------------------------
+# Kullanıcı bazlı Binance API anahtarları (2026-09-19, migration 005)
+# Her kullanıcı kendi Binance TR key/secret'ını Fernet şifreli saklar;
+# admin için satır yoksa main.py eski global llm_settings anahtarına düşer.
+# ---------------------------------------------------------------------------
+def _user_binance_keys_row(row) -> dict | None:
+    if row is None:
+        return None
+    return {"user_id": int(row["user_id"]),
+            "api_key_encrypted": row["api_key_encrypted"],
+            "api_secret_encrypted": row["api_secret_encrypted"],
+            "real_sell_enabled": bool(row["real_sell_enabled"]),
+            "created_at": float(row["created_at"] or 0),
+            "updated_at": float(row["updated_at"] or 0)}
+
+
+async def get_user_binance_keys(user_id: int) -> dict | None:
+    def op(conn):
+        row = conn.execute("SELECT * FROM user_binance_keys WHERE user_id=%s", (int(user_id),)).fetchone()
+        return _user_binance_keys_row(row)
+    return await _run_db(op)
+
+
+async def get_user_binance_real_sell(user_id: int) -> bool:
+    def op(conn):
+        row = conn.execute("SELECT real_sell_enabled FROM user_binance_keys WHERE user_id=%s", (int(user_id),)).fetchone()
+        return bool(row and row["real_sell_enabled"])
+    return await _run_db(op)
+
+
+async def save_user_binance_keys(user_id: int, enc_key: str, enc_secret: str,
+                                 real_sell_enabled: bool | None = None) -> dict:
+    now = time.time()
+
+    def op(conn):
+        if real_sell_enabled is None:
+            # Yalnız anahtarları güncelle; mevcut satır yoksa varsayılanla oluştur.
+            conn.execute(
+                "INSERT INTO user_binance_keys(user_id,api_key_encrypted,api_secret_encrypted,real_sell_enabled,created_at,updated_at) "
+                "VALUES(%s,%s,%s,FALSE,%s,%s) "
+                "ON CONFLICT(user_id) DO UPDATE SET api_key_encrypted=excluded.api_key_encrypted, "
+                "api_secret_encrypted=excluded.api_secret_encrypted, updated_at=excluded.updated_at",
+                (int(user_id), enc_key, enc_secret, now, now))
+        else:
+            conn.execute(
+                "INSERT INTO user_binance_keys(user_id,api_key_encrypted,api_secret_encrypted,real_sell_enabled,created_at,updated_at) "
+                "VALUES(%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT(user_id) DO UPDATE SET api_key_encrypted=excluded.api_key_encrypted, "
+                "api_secret_encrypted=excluded.api_secret_encrypted, real_sell_enabled=excluded.real_sell_enabled, "
+                "updated_at=excluded.updated_at",
+                (int(user_id), enc_key, enc_secret, bool(real_sell_enabled), now, now))
+        conn.commit()
+        row = conn.execute("SELECT * FROM user_binance_keys WHERE user_id=%s", (int(user_id),)).fetchone()
+        return _user_binance_keys_row(row)
+
+    return await _run_db(op)
+
+
+async def set_user_binance_real_sell(user_id: int, enabled: bool) -> bool:
+    """Yalnız real_sell bayrağını güncelle; anahtar satırı yoksa False döner."""
+    def op(conn):
+        cur = conn.execute(
+            "UPDATE user_binance_keys SET real_sell_enabled=%s, updated_at=%s WHERE user_id=%s",
+            (bool(enabled), time.time(), int(user_id)))
+        conn.commit()
+        return cur.rowcount > 0
+    return await _run_db(op)
+
+
+async def delete_user_binance_keys(user_id: int) -> bool:
+    def op(conn):
+        cur = conn.execute("DELETE FROM user_binance_keys WHERE user_id=%s", (int(user_id),))
+        conn.commit()
+        return cur.rowcount > 0
     return await _run_db(op)
 
 

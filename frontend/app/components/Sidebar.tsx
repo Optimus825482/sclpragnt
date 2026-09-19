@@ -16,6 +16,7 @@ const MENU_BASE = [
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Sinyal ve işlem raporları" },
     { href: "/monitoring", label: "Radar", icon: "📡", desc: "Otonom izleme ve hız avcısı" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
+    { href: "/binance-tr", label: "Binance TR", icon: "🏛️", desc: "Kendi Binance TR hesabında canlı işlem" },
     { href: "/profile", label: "Profil", icon: "👤", desc: "Hesap ve şifre" },
 ];
 // Admin-only menü öğeleri: normal kullanıcılar göremez.
@@ -23,7 +24,6 @@ const MENU_ADMIN = [
     { href: "/users", label: "Kullanıcı Yönetimi", icon: "👥", desc: "Kullanıcı ekle/düzenle/sil" },
     { href: "/audit-logs", label: "Olay Kayıtları", icon: "🛡", desc: "Giriş ve kullanıcı hareketleri" },
     { href: "/settings", label: "Ayarlar", icon: "⚙️", desc: "Bot konfigürasyonu" },
-    { href: "/binance-tr", label: "Binance TR", icon: "🏛️", desc: "Canlı bakiye ve işlemler" },
     { href: "/database", label: "Veritabanı", icon: "🗄️", desc: "Tablo verileri, CSV/SQL indirme" },
     { href: "/chat", label: "Chat", icon: "💬", desc: "LLM chat merkezi (admin)" },
 ];

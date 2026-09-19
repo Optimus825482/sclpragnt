@@ -6,7 +6,8 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { localDateInput } from "../lib/format";
 import { useLiveMessages } from "../lib/liveSocket";
 import { commissionPct } from "../lib/pnl";
-import RequireAdmin from "../components/RequireAdmin";
+import { useAuth } from "../lib/auth";
+import Link from "next/link";
 
 const BinancePositionChartModal = dynamic(() => import("./BinancePositionChartModal"), { ssr: false });
 
@@ -107,11 +108,22 @@ const fmtTime = (ts: number | null | undefined) => {
 };
 
 export default function BinanceTrPage() {
-  return (
-    <RequireAdmin>
-      <BinanceTrPageInner />
-    </RequireAdmin>
-  );
+  const { username } = useAuth();
+  if (!username) {
+    return (
+      <main className="page-shell">
+        <div className="card mt-10 flex flex-col items-center gap-4 border-cyan-500/30 bg-cyan-500/5 px-6 py-12 text-center">
+          <p className="eyebrow">OTURUM GEREKLİ</p>
+          <h1 className="font-mono text-xl font-bold text-white">Binance TR Terminali için giriş yapın</h1>
+          <p className="max-w-md text-sm text-bunker-muted">
+            Her kullanıcı kendi Binance TR API anahtarlarıyla kendi hesabında işlem yapar. Giriş yaptıktan sonra anahtarlarınızı Ayarlar'dan bağlayabilirsiniz.
+          </p>
+          <Link href="/" className="ui-button ui-button-primary">ANA SAYFAYA DÖN</Link>
+        </div>
+      </main>
+    );
+  }
+  return <BinanceTrPageInner />;
 }
 
 function BinanceTrPageInner() {
@@ -223,9 +235,13 @@ function BinanceTrPageInner() {
       const r = await apiRequest(`${API_BASE}/api/binance/settings`, { cache: "no-store" });
       if (r.ok) {
         const d = await r.json();
-        setConfigured(d.configured);
+        setConfigured(Boolean(d.configured));
         setSellEnabled(Boolean(d.sell_enabled));
         setSellToggle(Boolean(d.sell_enabled));
+      } else if (r.status === 404) {
+        // Anahtar hiç bağlı değil → onboarding ekranına düş (hata gösterme).
+        setConfigured(false);
+        setSellEnabled(false);
       }
     } catch { /* */ }
   }, []);
@@ -465,6 +481,42 @@ function BinanceTrPageInner() {
       loadOrd();
     } catch (e) {
       setKeyError(e instanceof Error ? e.message : "Kayıt hatası");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Onboarding tek tık: anahtarlar doluyken kaydet + gerçek emri aç.
+  const saveKeysWithRealSell = async (realSell: boolean) => {
+    if (!apiKey.trim() || !apiSecret.trim()) {
+      // Anahtarlar boş → normal modalı aç (kullanıcı girebilsin)
+      setSellToggle(realSell);
+      setSettingsOpen(true);
+      return;
+    }
+    setSaving(true);
+    setKeyError("");
+    try {
+      const r = await apiRequest(`${API_BASE}/api/binance/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: apiKey.trim(), api_secret: apiSecret.trim(), real_sell_enabled: realSell }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        throw new Error(d.detail || "Kaydedilemedi");
+      }
+      setApiKey("");
+      setApiSecret("");
+      setConfigured(true);
+      showToast(realSell ? "Hesap bağlandı, gerçek emir gönderimi AÇIK." : "Hesap bağlandı.", "success");
+      check();
+      loadAcct();
+      loadOrd();
+    } catch (e) {
+      setKeyError(e instanceof Error ? e.message : "Kayıt hatası");
+      setSellToggle(realSell);
+      setSettingsOpen(true);
     } finally {
       setSaving(false);
     }
@@ -880,15 +932,44 @@ function BinanceTrPageInner() {
       </div>
 
       {!configured ? (
-        <section className="card mt-6 flex flex-col items-center gap-4 py-16 text-center">
-          <p className="text-5xl">🔑</p>
-          <h2 className="font-mono text-xl font-bold text-white">Binance TR API Bağlantısı Gerekli</h2>
-          <p className="max-w-md text-sm text-bunker-muted">
-            Canlı hesap bakiyenizi görmek, açık pozisyonlarınıza Stop-Loss & Take-Profit emirleri girmek ve trade takip ekranını kullanmak için API anahtarlarınızı yapılandırın.
-          </p>
-          <button type="button" onClick={() => setSettingsOpen(true)} className="ui-button ui-button-primary">
-            API ANAHTARINI GİR
-          </button>
+        <section className="card mt-6 grid gap-6 py-10 px-6 text-center md:grid-cols-[1fr_auto] md:text-left md:items-center">
+          <div className="flex flex-col items-center gap-4 md:items-start">
+            <p className="text-5xl">🔑</p>
+            <h2 className="font-mono text-xl font-bold text-white">Binance TR Hesabını Bağla</h2>
+            <p className="max-w-lg text-sm text-bunker-muted">
+              Canlı bakiyenizi görmek, pozisyonlarınıza Stop-Loss & Take-Profit emirleri girmek ve hızlı alım/satım yapmak için
+              <span className="text-white font-bold"> kendi API anahtarlarınızı</span> bağlayın. Anahtarlarınız şifrelenerek
+              yalnız sizin hesabınıza kaydedilir — kimse ile paylaşılmaz.
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2 md:justify-start">
+              <button type="button" onClick={() => setSettingsOpen(true)} className="ui-button ui-button-primary">
+                ⚡ HESABI BAĞLA
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setSellToggle(true);
+                  await saveKeysWithRealSell(true);
+                }}
+                disabled={saving}
+                className="ui-button ui-button-secondary disabled:opacity-40"
+                title="Anahtarları kaydet ve gerçek emir gönderimini hemen aç"
+              >
+                {saving ? "..." : "BAĞLA + GERÇEK EMİR AÇ"}
+              </button>
+            </div>
+          </div>
+          <div className="rounded-xl border border-bunker-700 bg-bunker-900/60 p-4 text-left space-y-2 max-w-sm">
+            <p className="eyebrow text-cyan-300">API ANAHTARI İZİNLERİ</p>
+            <ul className="space-y-1.5 font-mono text-[11px] text-bunker-muted">
+              <li>✅ <span className="text-neon-green font-bold">Read</span> — bakiye ve pozisyon okuma</li>
+              <li>✅ <span className="text-cyan-300 font-bold">Spot Trade</span> — alım/satım emirleri</li>
+              <li>⛔ <span className="text-neon-red font-bold">Withdrawals</span> — KAPALI tutun (gerekmez, güvenli olur)</li>
+            </ul>
+            <p className="border-t border-bunker-800 pt-2 text-[11px] text-bunker-muted">
+              Binance TR → Hesabım → API Yönetimi'nden yeni anahtar oluşturun.
+            </p>
+          </div>
         </section>
       ) : (
         <>
@@ -1083,8 +1164,116 @@ function BinanceTrPageInner() {
                 </div>
               </div>
 
-              {/* Pozisyonlar Tablosu */}
-              <div className="card !p-0 overflow-hidden">
+              {/* Pozisyonlar — Mobil Kart Görünümü (sm altı) */}
+              <div className="space-y-2.5 sm:hidden">
+                {visibleHoldings.length === 0 ? (
+                  <div className="card p-6 text-center font-mono text-sm text-bunker-muted">
+                    Filtreye uygun açık pozisyon bulunamadı.
+                  </div>
+                ) : (
+                  visibleHoldings.map((h) => {
+                    const pnlToneCls = h.pnl_try == null ? "text-bunker-muted" : h.pnl_try >= 0 ? "text-neon-green" : "text-neon-red";
+                    const hasSl = h.active_sl_price != null && h.active_sl_price > 0;
+                    const hasTp = h.active_tp_price != null && h.active_tp_price > 0;
+                    const protectedPos = h.asset === "TRY" || hasSl || hasTp || h.has_active_order;
+                    if (h.asset === "TRY") {
+                      return (
+                        <div key={h.asset} className="rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-3.5">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <span className="font-mono text-base font-black text-white">TRY</span>
+                              <span className="ml-2 rounded bg-cyan-500/15 px-1.5 py-0.5 font-mono text-[9px] font-bold text-cyan-300 border border-cyan-500/30">NAKİT</span>
+                            </div>
+                            <span className="font-mono text-base font-black text-cyan-300">₺{fmtPrice(h.total)}</span>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div key={h.asset} className="rounded-xl border border-bunker-800 bg-bunker-900/40 p-3.5">
+                        {/* Üst satır: sembol + K/Z */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-base font-black text-white">{h.asset}</span>
+                            <span className={`text-sm ${tickDir[h.asset] === "up" ? "text-neon-green" : tickDir[h.asset] === "down" ? "text-neon-red" : "text-bunker-muted"}`}>
+                              {tickDir[h.asset] === "up" ? "▲" : tickDir[h.asset] === "down" ? "▼" : ""}
+                            </span>
+                          </div>
+                          <div className="text-right">
+                            <p className={`font-mono text-sm font-black ${pnlToneCls}`}>
+                              {h.pnl_try != null ? `${h.pnl_try >= 0 ? "+" : "−"}₺${fmtPrice(Math.abs(h.pnl_try))}` : "—"}
+                            </p>
+                            {h.pnl_pct != null && (
+                              <p className={`font-mono text-[10px] font-bold ${pnlToneCls}`}>
+                                {h.pnl_pct >= 0 ? "+" : "−"}%{fmtPrice(Math.abs(h.pnl_pct), 2)}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        {/* Orta satır: fiyat + değer + miktar */}
+                        <div className="mt-2 grid grid-cols-3 gap-2 rounded-lg border border-bunker-800/70 bg-bunker-950/60 p-2 font-mono text-[10px]">
+                          <div>
+                            <p className="text-bunker-muted">FİYAT</p>
+                            <p className="font-bold text-white">{h.price_try != null ? `₺${fmtPrice(h.price_try, h.price_try < 1 ? 6 : 2)}` : "—"}</p>
+                          </div>
+                          <div>
+                            <p className="text-bunker-muted">DEĞER</p>
+                            <p className="font-bold text-white">{h.value_try != null ? `₺${fmtPrice(h.value_try)}` : "—"}</p>
+                          </div>
+                          <div>
+                            <p className="text-bunker-muted">MİKTAR</p>
+                            <p className="font-bold text-white">{fmtPrice(h.free, 6)}</p>
+                          </div>
+                        </div>
+                        {/* Koruma durumu */}
+                        <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                          {protectedPos ? (
+                            <>
+                              {hasTp && <span className="rounded bg-neon-green/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-neon-green border border-neon-green/30">🎯 TP ₺{fmtPrice(h.active_tp_price, (h.active_tp_price ?? 0) < 1 ? 6 : 2)}</span>}
+                              {hasSl && <span className="rounded bg-neon-red/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-neon-red border border-neon-red/30">🛑 SL ₺{fmtPrice(h.active_sl_price, (h.active_sl_price ?? 0) < 1 ? 6 : 2)}</span>}
+                              {!hasSl && !hasTp && h.has_active_order && <span className="rounded bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-cyan-300 border border-cyan-500/30">📋 Emir var</span>}
+                            </>
+                          ) : (
+                            <span className="rounded bg-yellow-400/10 px-2 py-0.5 font-mono text-[9px] font-bold text-yellow-300 border border-yellow-400/30">⚠️ Korumasız</span>
+                          )}
+                        </div>
+                        {/* Aksiyonlar */}
+                        <div className="mt-3 flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setChartFor(h)}
+                            title={`${h.asset}/TRY canlı grafik`}
+                            className="flex h-10 flex-1 items-center justify-center rounded-lg border border-cyan-500/40 bg-cyan-500/10 font-mono text-[11px] font-bold text-cyan-300 hover:bg-cyan-500/25 transition-colors touch-target"
+                          >
+                            📈 Grafik
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSltpModal(h)}
+                            disabled={!sellEnabled}
+                            title="SL/TP kur veya güncelle"
+                            className="flex h-10 flex-1 items-center justify-center rounded-lg border border-cyan-500/50 bg-cyan-500/10 font-mono text-[11px] font-bold text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-40 transition-colors touch-target"
+                          >
+                            🛡️ SL/TP
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSell(h)}
+                            disabled={!sellEnabled || h.free <= 0 || h.price_try == null}
+                            title="Piyasa fiyatından hızlı sat"
+                            className="flex h-10 flex-1 items-center justify-center rounded-lg border border-neon-red/50 bg-neon-red/10 font-mono text-[11px] font-bold text-neon-red hover:bg-neon-red/20 disabled:opacity-30 transition-colors touch-target"
+                          >
+                            ⚡ Sat
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Pozisyonlar Tablosu (Masaüstü) */}
+              <div className="card !p-0 overflow-hidden hidden sm:block">
                 {visibleHoldings.length === 0 ? (
                   <div className="p-8 text-center font-mono text-sm text-bunker-muted">
                     Filtreye uygun açık pozisyon bulunamadı.
@@ -1221,6 +1410,16 @@ function BinanceTrPageInner() {
                                   >
                                     ⚡ SAT
                                   </button>
+                                  {h.asset !== "TRY" && (h.avg_cost_try ?? 0) > 0 && h.has_active_order && (
+                                    <button
+                                      type="button"
+                                      onClick={() => { openSltpModal(h); }}
+                                      title="Kâr kilitli (Break-Even) — SL güncellemek için tıkla"
+                                      className="rounded border border-amber-400/50 bg-amber-400/10 px-2 py-1 font-mono text-[11px] font-bold text-amber-300 hover:bg-amber-400/25 transition-colors"
+                                    >
+                                      🔒 BE
+                                    </button>
+                                  )}
                                 </div>
                               </td>
                             </tr>
@@ -1796,6 +1995,23 @@ function BinanceTrPageInner() {
                         <span>0</span>
                         <span>{fmtPrice(sellFor.free, 6)} {sellFor.asset}</span>
                       </div>
+                      {/* Hızlı % çipleri (mobil-first: tek dokunuşla miktar doldur) */}
+                      <div className="mt-2 grid grid-cols-4 gap-1.5">
+                        {[25, 50, 75, 100].map((pct) => (
+                          <button
+                            key={pct}
+                            type="button"
+                            onClick={() => setSellQty(String(Number((sellFor.free * pct) / 100).toFixed(6)))}
+                            className={`rounded-lg border px-2 py-1.5 font-mono text-[11px] font-bold transition-colors ${
+                              pct === 100
+                                ? "border-neon-red/50 bg-neon-red/10 text-neon-red hover:bg-neon-red/25"
+                                : "border-bunker-700 bg-bunker-900/60 text-bunker-muted hover:border-neon-red/40 hover:text-neon-red"
+                            }`}
+                          >
+                            %{pct}
+                          </button>
+                        ))}
+                      </div>
                     </label>
 
                     {sellMsg && (
@@ -1917,6 +2133,37 @@ function BinanceTrPageInner() {
                         onChange={(e) => setBuyAmount(e.target.value)}
                         className="input mt-1 w-full font-mono text-xs"
                       />
+                      {/* Hızlı tutar çipleri (mobil-first: tek dokunuşla tutar doldur) */}
+                      <div className="mt-2 grid grid-cols-4 gap-1.5">
+                        {[250, 500, 1000, 2000].map((amt) => (
+                          <button
+                            key={amt}
+                            type="button"
+                            onClick={() => setBuyAmount(String(Math.min(amt, Math.floor(buyTryFree))))}
+                            disabled={buyTryFree < 10}
+                            className="rounded-lg border border-bunker-700 bg-bunker-900/60 px-2 py-1.5 font-mono text-[11px] font-bold text-bunker-muted hover:border-cyan-400/40 hover:text-cyan-300 disabled:opacity-30 transition-colors"
+                          >
+                            ₺{amt}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="mt-1.5 grid grid-cols-3 gap-1.5">
+                        {[25, 50, 100].map((pct) => (
+                          <button
+                            key={pct}
+                            type="button"
+                            onClick={() => setBuyAmount(String(Math.max(10, Math.floor((buyTryFree * pct) / 100))))}
+                            disabled={buyTryFree < 10}
+                            className={`rounded-lg border px-2 py-1.5 font-mono text-[11px] font-bold transition-colors ${
+                              pct === 100
+                                ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-300 hover:bg-cyan-400/25"
+                                : "border-bunker-700 bg-bunker-900/60 text-bunker-muted hover:border-cyan-400/40 hover:text-cyan-300"
+                            } disabled:opacity-30`}
+                          >
+                            %{pct}
+                          </button>
+                        ))}
+                      </div>
                       <input
                         type="range"
                         min="10"
@@ -1972,7 +2219,8 @@ function BinanceTrPageInner() {
                     <span>
                       <span className="eyebrow block text-yellow-300">GERÇEK İŞLEM & EMİR ANAHTARI</span>
                       <span className="mt-0.5 block text-[11px] leading-snug text-bunker-muted">
-                        Etkinleştirildiğinde piyasa satışı ve Stop-Loss / Take-Profit (OCO) emirleri doğrudan Binance TR borsasına iletilir.
+                        Etkinleştirildiğinde piyasa satışı ve Stop-Loss / Take-Profit (OCO) emirleri doğrudan
+                        <span className="text-white font-bold"> sizin</span> Binance TR hesabınıza iletilir. Bu anahtar yalnız kendi hesabınızı etkiler.
                       </span>
                     </span>
                   </label>
@@ -2002,21 +2250,24 @@ function BinanceTrPageInner() {
 
                   <div className="flex justify-end gap-2 pt-2">
                     <button type="button" onClick={() => setSettingsOpen(false)} className="ui-button ui-button-secondary">İptal</button>
-                    <button
-                      type="button"
-                      onClick={saveSellSetting}
-                      disabled={saving}
-                      className="ui-button ui-button-secondary disabled:opacity-40"
-                    >
-                      {saving ? "..." : "İŞLEM DURUMUNU KAYDET"}
-                    </button>
+                    {configured && (
+                      <button
+                        type="button"
+                        onClick={saveSellSetting}
+                        disabled={saving}
+                        className="ui-button ui-button-secondary disabled:opacity-40"
+                        title="Gerçek emir anahtarını aç/kapat (API anahtarlarına dokunmaz)"
+                      >
+                        {saving ? "..." : "İŞLEM DURUMUNU KAYDET"}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={saveKeys}
                       disabled={saving || !apiKey.trim() || !apiSecret.trim()}
                       className="ui-button ui-button-primary"
                     >
-                      {saving ? "Kaydediliyor..." : "API ANAHTARLARINI KAYDET"}
+                      {saving ? "Kaydediliyor..." : configured ? "API ANAHTARLARINI GÜNCELLE" : "BAĞLA VE BAŞLA"}
                     </button>
                   </div>
                 </div>
