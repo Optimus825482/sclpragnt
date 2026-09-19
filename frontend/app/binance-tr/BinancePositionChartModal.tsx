@@ -524,8 +524,17 @@ export default function BinancePositionChartModal({
       supertrendSeriesRef.current.applyOptions({ visible: false });
       setSupertrendTrend(null);
     }
-    // setData() lightweight-charts'ta mevcut price line'ları siler
-    // → ref'leri null'la ki 3b effect yeniden createPriceLine yapsın
+    // setData() sonrası price line ref'leri TAZELENMELİ. DÜZELTME (2026-09-19):
+    // eskiden yalnız `= null` yapılıyordu — eski çizgi seriden SİLİNMEDİĞİ için
+    // 3b effect yeni bir çizgi daha oluşturuyor ve "GİRİŞ" grafikte İKİ KEZ
+    // yazılıyordu (BB/Supertrend toggle ve timeframe değişiminde de çoğalıyordu).
+    // Doğrusu: önce removePriceLine, sonra null.
+    const lineSeries = candleSeriesRef.current;
+    if (lineSeries) {
+      if (entryLineRef.current) { try { lineSeries.removePriceLine(entryLineRef.current); } catch {} }
+      if (tpLineRef.current) { try { lineSeries.removePriceLine(tpLineRef.current); } catch {} }
+      if (slLineRef.current) { try { lineSeries.removePriceLine(slLineRef.current); } catch {} }
+    }
     entryLineRef.current = null;
     tpLineRef.current = null;
     slLineRef.current = null;
@@ -536,69 +545,52 @@ export default function BinancePositionChartModal({
     if (!candleSeriesRef.current) return;
     const series = candleSeriesRef.current;
 
-    // Giriş Fiyatı Çizgisi
+    // Giriş Fiyatı Çizgisi — DÜZELTME (2026-09-19): her zaman önce mevcut
+    // çizgiyi KALDIR, sonra oluştur. Eski applyOptions/cREATE karışımı,
+    // 3a null'lama sırası ve StrictMode çift-effect birleşince "GİRİŞ"
+    // etiketi grafikte iki kez görünüyor ve toggle'larda çoğalıyordu.
+    if (entryLineRef.current) { try { series.removePriceLine(entryLineRef.current); } catch {} entryLineRef.current = null; }
     if (entryPrice && entryPrice > 0) {
-      if (entryLineRef.current) {
-        entryLineRef.current.applyOptions({
-          price: entryPrice,
-          title: `GİRİŞ: ₺${fmtPrice(entryPrice)} (${holding.total.toLocaleString("tr-TR")} ${holding.asset})`,
-        });
-      } else {
-        entryLineRef.current = series.createPriceLine({
-          price: entryPrice,
-          color: "#00f3ff",
-          lineWidth: 2,
-          lineStyle: LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: `GİRİŞ: ₺${fmtPrice(entryPrice)} (${holding.total.toLocaleString("tr-TR")} ${holding.asset})`,
-        });
-      }
+      entryLineRef.current = series.createPriceLine({
+        price: entryPrice,
+        color: "#00f3ff",
+        lineWidth: 2,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: `GİRİŞ: ₺${fmtPrice(entryPrice)} (${holding.total.toLocaleString("tr-TR")} ${holding.asset})`,
+      });
     }
 
-    // Take-Profit (TP) Çizgisi
+    // Take-Profit (TP) Çizgisi — önce kaldır / sonra oluştur (çift çizgi önlemi)
     const effectiveTp = pendingTp ?? tpPrice;
+    if (tpLineRef.current) { try { series.removePriceLine(tpLineRef.current); } catch {} tpLineRef.current = null; }
     if (effectiveTp && effectiveTp > 0) {
       const diffPct = entryPrice ? ((effectiveTp - entryPrice) / entryPrice) * 100 : 0;
       const profitTry = entryPrice ? (effectiveTp - entryPrice) * holding.total : 0;
-      const title = `🎯 TP: ₺${fmtPrice(effectiveTp)} (+${diffPct.toFixed(2)}% | +₺${fmtPrice(profitTry)})`;
-      if (tpLineRef.current) {
-        tpLineRef.current.applyOptions({ price: effectiveTp, title, color: pendingTp ? "#22c55e" : "#10b981" });
-      } else {
-        tpLineRef.current = series.createPriceLine({
-          price: effectiveTp,
-          color: "#10b981",
-          lineWidth: 2,
-          lineStyle: LineStyle.Solid,
-          axisLabelVisible: true,
-          title,
-        });
-      }
-    } else if (tpLineRef.current) {
-      series.removePriceLine(tpLineRef.current);
-      tpLineRef.current = null;
+      tpLineRef.current = series.createPriceLine({
+        price: effectiveTp,
+        color: pendingTp ? "#22c55e" : "#10b981",
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: `🎯 TP: ₺${fmtPrice(effectiveTp)} (+${diffPct.toFixed(2)}% | +₺${fmtPrice(profitTry)})`,
+      });
     }
 
-    // Stop-Loss (SL) Çizgisi
+    // Stop-Loss (SL) Çizgisi — önce kaldır / sonra oluştur (çift çizgi önlemi)
     const effectiveSl = pendingSl ?? slPrice;
+    if (slLineRef.current) { try { series.removePriceLine(slLineRef.current); } catch {} slLineRef.current = null; }
     if (effectiveSl && effectiveSl > 0) {
       const diffPct = entryPrice ? ((effectiveSl - entryPrice) / entryPrice) * 100 : 0;
       const lossTry = entryPrice ? (effectiveSl - entryPrice) * holding.total : 0;
-      const title = `🛑 SL: ₺${fmtPrice(effectiveSl)} (${diffPct.toFixed(2)}% | ₺${fmtPrice(lossTry)})`;
-      if (slLineRef.current) {
-        slLineRef.current.applyOptions({ price: effectiveSl, title, color: pendingSl ? "#f87171" : "#ef4444" });
-      } else {
-        slLineRef.current = series.createPriceLine({
-          price: effectiveSl,
-          color: "#ef4444",
-          lineWidth: 2,
-          lineStyle: LineStyle.Solid,
-          axisLabelVisible: true,
-          title,
-        });
-      }
-    } else if (slLineRef.current) {
-      series.removePriceLine(slLineRef.current);
-      slLineRef.current = null;
+      slLineRef.current = series.createPriceLine({
+        price: effectiveSl,
+        color: pendingSl ? "#f87171" : "#ef4444",
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: `🛑 SL: ₺${fmtPrice(effectiveSl)} (${diffPct.toFixed(2)}% | ₺${fmtPrice(lossTry)})`,
+      });
     }
 
     // Piksel koordinatlarını güncelle (updateLineCoordinates ile aynı mantık)
