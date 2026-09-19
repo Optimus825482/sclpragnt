@@ -162,9 +162,99 @@ export const SLING_SHOT_ENTRY: RegistryEntry = {
     },
 };
 
+// Supertrend: ATR tabanlı dinamik trend ve tersine dönüş indikatörü
+export const SUPERTREND_ENTRY: RegistryEntry = {
+    id: "supertrend",
+    name: "Supertrend (ATR Trend)",
+    shortName: "Supertrend",
+    category: "Trend",
+    group: "custom",
+    overlay: true,
+    inputConfig: [
+        { id: "period", type: "number", title: "ATR Periyodu", defval: 10, min: 2, max: 100, step: 1 },
+        { id: "multiplier", type: "number", title: "ATR Çarpanı", defval: 3, min: 0.5, max: 10, step: 0.5 },
+    ],
+    calculate: (bars: any[], params: any) => {
+        const period = Math.max(2, Number(params.period ?? 10));
+        const multiplier = Math.max(0.5, Number(params.multiplier ?? 3));
+        if (!bars || bars.length <= period) {
+            return { metadata: { overlay: true }, plots: { plot0: [] } };
+        }
+
+        // 1. True Range (TR)
+        const trList: number[] = [];
+        trList.push(Number(bars[0].high) - Number(bars[0].low));
+        for (let i = 1; i < bars.length; i++) {
+            const high = Number(bars[i].high);
+            const low = Number(bars[i].low);
+            const prevClose = Number(bars[i - 1].close);
+            const hl = high - low;
+            const hpc = Math.abs(high - prevClose);
+            const lpc = Math.abs(low - prevClose);
+            trList.push(Math.max(hl, hpc, lpc));
+        }
+
+        // 2. Wilder's ATR
+        let atr = 0;
+        for (let i = 0; i < period; i++) {
+            atr += trList[i];
+        }
+        atr /= period;
+
+        const plot0: { time: number; value: number | null; color?: string }[] = [];
+        let prevUpperBand = 0;
+        let prevLowerBand = 0;
+        let direction: "UP" | "DOWN" = "UP";
+
+        for (let i = period; i < bars.length; i++) {
+            atr = ((atr * (period - 1)) + trList[i]) / period;
+            const high = Number(bars[i].high);
+            const low = Number(bars[i].low);
+            const close = Number(bars[i].close);
+            const prevClose = Number(bars[i - 1].close);
+            const hl2 = (high + low) / 2;
+
+            const basicUpper = hl2 + (multiplier * atr);
+            const basicLower = hl2 - (multiplier * atr);
+
+            const finalUpper = (basicUpper < prevUpperBand || prevClose > prevUpperBand)
+                ? basicUpper : prevUpperBand;
+            const finalLower = (basicLower > prevLowerBand || prevClose < prevLowerBand)
+                ? basicLower : prevLowerBand;
+
+            if (direction === "UP" && close < finalLower) {
+                direction = "DOWN";
+            } else if (direction === "DOWN" && close > finalUpper) {
+                direction = "UP";
+            }
+
+            const superTrendVal = direction === "UP" ? finalLower : finalUpper;
+            const rawTime = bars[i].time;
+            const timeSec = rawTime > 1e11 ? Math.floor(rawTime / 1000) : Math.floor(rawTime);
+
+            plot0.push({
+                time: timeSec,
+                value: Number(superTrendVal.toFixed(6)),
+                color: direction === "UP" ? "#10b981" : "#ef4444",
+            });
+
+            prevUpperBand = finalUpper;
+            prevLowerBand = finalLower;
+        }
+
+        return {
+            metadata: { overlay: true },
+            plots: {
+                plot0,
+            },
+        };
+    },
+};
+
 // Uygulama içi özel kayıtlar da paket registry'siyle aynı kaynaktan seçilebilmeli.
 // Aksi halde picker'da görünen ancak grafik renderer'ında bulunamayan indikatörler oluşuyordu.
 export const CUSTOM_INDICATOR_ENTRIES: RegistryEntry[] = [
+    SUPERTREND_ENTRY,
     SLING_SHOT_ENTRY,
     EMA_PULLBACK_ENTRY,
     VWAP_MACD_ENTRY,
