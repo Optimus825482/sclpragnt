@@ -250,8 +250,10 @@ export default function BinancePositionChartModal({
   }>({});
 
   // 1. Mum Verisi Yükleme
-  const loadKlines = useCallback(async (tf: Timeframe) => {
-    setLoading(true);
+  // silent=true: loading overlay YOK, fitContent YOK — arka plan tazelemesi
+  // (anti-freeze watchdog ve TTL yenileme) zoom'u bozmasın diye.
+  const loadKlines = useCallback(async (tf: Timeframe, opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const res = await apiRequest(
         `${API_BASE}/api/market-klines/${symbolConcat}?interval=${tf}&limit=250`
@@ -298,20 +300,49 @@ export default function BinancePositionChartModal({
         parsed.sort((a, b) => Number(a.time) - Number(b.time));
 
         if (parsed.length > 0) {
-          setCandles(parsed);
           const lastBar = parsed[parsed.length - 1];
+          const newCandles = opts?.silent
+            ? (prev: CandleBar[]) => {
+                // Sessiz tazeleme: yalnız son mum değiştiyse state'i güncelle.
+                // Tam setData yerine son-mum update'i zoom/kaydırma pozisyonunu
+                // korur. İlk yükleme dışında tam setData çağrısı gerekmez.
+                const old = prev[prev.length - 1];
+                if (old && Number(old.time) === Number(lastBar.time) &&
+                    old.open === lastBar.open && old.close === lastBar.close &&
+                    old.high === lastBar.high && old.low === lastBar.low) {
+                  return prev; // değişiklik yok — gereksiz render yok
+                }
+                if (old && Number(lastBar.time) >= Number(old.time)) {
+                  // Kuyrukta değişiklik: son barı (ve varsa yeni barı) uygula.
+                  try {
+                    candleSeriesRef.current?.update(lastBar as any);
+                  } catch { /* */ }
+                  lastCandleRef.current = lastBar;
+                  return [...prev.slice(0, -1), lastBar];
+                }
+                // Uzun boşluk (kapanmış mumlar eklendi): sessiz setData.
+                try {
+                  candleSeriesRef.current?.setData(parsed as any);
+                } catch { /* */ }
+                lastCandleRef.current = lastBar;
+                return parsed;
+              }
+            : parsed;
+          setCandles(newCandles as CandleBar[]);
           lastCandleRef.current = lastBar;
           lastCandleTimeRef.current = Number(lastBar.time);
           setCurrentPrice(lastBar.close);
-          setTimeout(() => {
-            chartApiRef.current?.timeScale().fitContent();
-          }, 60);
+          if (!opts?.silent) {
+            setTimeout(() => {
+              chartApiRef.current?.timeScale().fitContent();
+            }, 60);
+          }
         }
       }
     } catch (err) {
       console.error("Kline yüklenemedi:", err);
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [symbolConcat]);
 
@@ -376,6 +407,20 @@ export default function BinancePositionChartModal({
     lastCandleTimeRef.current = 0;
     loadKlines(timeframe);
   }, [timeframe, loadKlines]);
+
+  // ANTİ-FREEZE WATCHDOG (2026-09-19, kök neden): backend ws_live_candles yalnız
+  // "/api/market-klines son 90 sn içinde çağrıldıysa" OLUŞAN mumu canlı yayınlar
+  // (VIEWED_TTL_SEC=90). Frontend klines'ı BİR KEZ çekiyordu → ~90 sn sonra
+  // backend "kimse bakmıyor" sanıp açık mum yayınını kesiyor; WS sessizleşince
+  // grafik 2.-3. mumda DONUYOR. 60 sn'de bir sessiz yenile hem TTL'i tazeler
+  // (yayın akışı hiç durmaz) hem de WS sessiz kaldıysa veriyi yine güncel tutar.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.hidden) return; // arka plan sekmesinde gereksiz istek yok
+      void loadKlines(timeframeRef.current, { silent: true });
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [loadKlines]);
 
   // Mum Kapanışına Kalan Süre Sayacı
   useEffect(() => {
