@@ -77,8 +77,8 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   };
 
   const authValue = useMemo(
-    () => ({ username: status?.username ?? null, role: status?.role ?? null }),
-    [status?.username, status?.role],
+    () => ({ username: status?.username ?? null, role: status?.role ?? null, logout }),
+    [status?.username, status?.role, logout],
   );
 
   if (!status?.authenticated) return <main className="grid min-h-screen place-items-center bg-bunker-950 p-5">
@@ -99,7 +99,6 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider value={authValue}>
-      <button type="button" onClick={logout} disabled={busy} className="fixed bottom-4 right-4 z-[90] rounded-lg border border-bunker-700 bg-bunker-950/90 px-3 py-2 font-mono text-[11px] text-bunker-muted shadow-lg hover:border-neon-red/50 hover:text-neon-red">OTURUMU KAPAT</button>
       {children}
       {/* Admin hariç tüm kullanıcılara girişte sorumluluk reddi (z-[200] en üstte) */}
       <DisclaimerModal />

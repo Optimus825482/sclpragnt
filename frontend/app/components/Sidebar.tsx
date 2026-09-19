@@ -38,10 +38,11 @@ const formatNotificationDate = (value: unknown) => {
 
 export default function Sidebar() {
     const pathname = usePathname();
-    const { username, role } = useAuth();
+    const { username, role, logout } = useAuth();
     const isAdmin = role === "admin";
     const canViewMacd = canViewMacdMonitor(role, username);
     const [open, setOpen] = useState(false);
+    const [busyLogout, setBusyLogout] = useState(false);
     const [installEvent, setInstallEvent] = useState<any>(null);
     const [installed, setInstalled] = useState(false);
     const [notifications, setNotifications] = useState<any[]>([]);
@@ -162,12 +163,23 @@ export default function Sidebar() {
 
             <div className="p-4 border-t border-bunker-800">
                 {username && (
-                    <Link href="/profile" title="Profili düzenle (şifre güncelle)" className="mb-2 flex items-center gap-1.5 rounded-lg border border-transparent px-1 py-1 font-mono text-[11px] text-bunker-muted transition-colors hover:border-bunker-700 hover:bg-bunker-800/60 hover:text-white">
-                        <span className="w-1.5 h-1.5 rounded-full bg-neon-green" />
-                        <span className="truncate">{username}</span>
-                        <span className={`rounded px-1.5 py-0.5 font-mono text-[9px] ${isAdmin ? "border border-neon-green/50 text-neon-green" : "border border-bunker-600 text-bunker-muted"}`}>{isAdmin ? "ADMIN" : "USER"}</span>
-                        <span className="ml-auto text-[10px] opacity-60">⚙</span>
-                    </Link>
+                    <div className="mb-3">
+                        <Link href="/profile" title="Profili düzenle (şifre güncelle)" className="mb-1 flex items-center gap-1.5 rounded-lg border border-transparent px-1 py-1 font-mono text-[11px] text-bunker-muted transition-colors hover:border-bunker-700 hover:bg-bunker-800/60 hover:text-white">
+                            <span className="w-1.5 h-1.5 rounded-full bg-neon-green" />
+                            <span className="truncate">{username}</span>
+                            <span className={`rounded px-1.5 py-0.5 font-mono text-[9px] ${isAdmin ? "border border-neon-green/50 text-neon-green" : "border border-bunker-600 text-bunker-muted"}`}>{isAdmin ? "ADMIN" : "USER"}</span>
+                            <span className="ml-auto text-[10px] opacity-60">⚙</span>
+                        </Link>
+                        <button
+                            type="button"
+                            onClick={async () => { setBusyLogout(true); try { await logout?.(); } finally { setBusyLogout(false); } }}
+                            disabled={busyLogout}
+                            className="flex w-full items-center justify-center gap-2 rounded-lg border border-bunker-700 bg-bunker-950/70 px-3 py-2 font-mono text-[11px] font-bold text-bunker-muted transition-colors hover:border-neon-red/60 hover:bg-neon-red/10 hover:text-neon-red disabled:opacity-50"
+                            title="Oturumu kapat ve giriş ekranına dön"
+                        >
+                            {busyLogout ? "ÇIKILIYOR…" : "⏻ OTURUMU KAPAT"}
+                        </button>
+                    </div>
                 )}
                 <Button variant={installEvent ? "primary" : "secondary"} onClick={install} disabled={!installEvent} className="w-full mb-4">⬇ {installEvent ? "UYGULAMA OLARAK YÜKLE" : "YÜKLEME İÇİN TARAYICI MENÜSÜ"}</Button>
                 {!installed && !installEvent && !isStandalone && (
