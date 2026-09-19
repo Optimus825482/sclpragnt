@@ -278,6 +278,23 @@ def _require_admin(request: Request):
     return security.require_admin(request)
 
 
+def _require_user(request: Request):
+    """Oturum açmış TÜM kullanıcılar (Binance TR çok kullanıcılı, 2026-09-19).
+
+    Auth middleware zaten tüm /api/* isteklerinde oturum zorunlu tuttuğu için
+    burada yalnız principal'ın çözülüp çözülmediği doğrulanır. Admin dahil her
+    kullanıcı kendi Binance anahtarlarını kullanır — kullanıcılar birbirinin
+    bakiyesini/emrini göremez. ``request=None`` testlerde principal atlamak
+    için kullanılır (G-27 testleri request'siz çağırır).
+    """
+    if request is None:
+        return {"username": "admin", "role": "admin"}
+    user = _session_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kimlik doğrulama gerekli")
+    return user
+
+
 @app.get("/api/auth/status")
 async def auth_status(request: Request):
     user = _session_user(request)
@@ -2189,6 +2206,20 @@ async def _real_sell_state() -> tuple[bool, str]:
     return raw.strip().lower() in {"1", "true", "yes", "on"}, "panel"
 
 
+async def _real_sell_state_for(user_id: int) -> tuple[bool, str]:
+    """Kullanıcı bazlı gerçek emir anahtarı (çok kullanıcılı, 2026-09-19).
+
+    - env ENABLE_REAL_BINANCE_SELL tanımlıysa sunucu geneli ÜST KAPI olarak
+      tüm kullanıcıları bağlar (mevcut davranış korunur).
+    - Tanımlı değilse her kullanıcı user_binance_keys.real_sell_enabled
+      bayrağıyla kendi emir gönderimini açar/kapatır; satır yoksa kapalı.
+    """
+    env = os.getenv("ENABLE_REAL_BINANCE_SELL")
+    if env is not None:
+        return env.strip().lower() in {"1", "true", "yes", "on"}, "env"
+    return await database.get_user_binance_real_sell(user_id), "panel"
+
+
 # Canlı Hesap WS fiyat tick'leri — anahtar yapılandırma durumu 60 sn cache'lenir
 # (4 saniyelik döngüde her turda DB sorgusu yapılmasın).
 _binance_tick_config_cache: tuple[float, bool] = (0.0, False)
@@ -2233,7 +2264,15 @@ async def binance_price_tick_loop():
             if not await _binance_ticks_configured():
                 await asyncio.sleep(30)
                 continue
-            seen_assets = await _load_seen_binance_assets()
+            # Çok kullanıcılı (2026-09-19): tüm kullanıcıların görülmüş
+            # varlık havuzları birleştirilir — tek global tick yayınını
+            # (WS broadcast) korumak için.
+            usernames = [str(u.get("username") or "") for u in await database.list_users() if u.get("is_active")]
+            seen_assets: set[str] = set()
+            for uname in usernames:
+                if not uname:
+                    continue
+                seen_assets |= await _load_seen_binance_assets(uname)
             extra = _extra_watch_assets(time.monotonic())
             assets = sorted(set(seen_assets) | set(extra))
             if not assets:
@@ -2294,95 +2333,148 @@ async def binance_price_tick_loop():
             logger.debug("Canlı Hesap fiyat tick'i atlandı: %s", type(exc).__name__)
         await asyncio.sleep(4)
 # Varlık -> (cache bitiş zamanı, {"avg_price": float, "quote": "TRY"|"USDT"})
-_binance_cost_cache: dict[str, tuple[float, dict]] = {}
+# ÇOK KULLANICILI (2026-09-19): anahtar (user_id, asset) — kullanıcıların FIFO
+# alım maliyetleri birbirine karışmasın (eski anahtar yalnız asset'ti ve tek
+# admin hesabı için güvenliydi).
+_binance_cost_cache: dict[tuple[int, str], tuple[float, dict]] = {}
 # Gün -> (cache bitiş zamanı, günün işlem listesi yanıtı)
-_binance_day_trades_cache: dict[str, tuple[float, dict]] = {}
-# Hesapta görülmüş tüm varlıklar (tamamen satılmışlar dahil) — gün işlemleri
-# sorgusu bunları da tarasın diye llm_settings'te kalıcı tutulur.
-_binance_seen_assets: set[str] | None = None
+# ÇOK KULLANICILI: anahtar (user_id, date) — A kullanıcısının gün işlemleri
+# B kullanıcısına sızmasın.
+_binance_day_trades_cache: dict[tuple[int, str], tuple[float, dict]] = {}
 
 
-async def _load_seen_binance_assets() -> set[str]:
-    global _binance_seen_assets
-    if _binance_seen_assets is not None:
-        return _binance_seen_assets
+async def _load_seen_binance_assets(username: str) -> set[str]:
+    """Kullanıcıya özel 'görülmüş varlık' havuzu (llm_settings anahtarı: username)."""
     try:
-        raw = await database.get_llm_setting("binance_seen_assets", "[]")
-        _binance_seen_assets = {str(a).upper() for a in json.loads(raw or "[]") if a}
+        raw = await database.get_llm_setting(f"binance_seen_assets_{str(username).lower()}", "[]")
+        return {str(a).upper() for a in json.loads(raw or "[]") if a}
     except Exception:
-        _binance_seen_assets = set()
-    return _binance_seen_assets
+        return set()
 
 
-async def _save_seen_binance_assets(assets: set[str]) -> None:
-    global _binance_seen_assets
+async def _save_seen_binance_assets(username: str, assets: set[str]) -> None:
     trimmed = {a for a in assets if a and len(a) <= 16}
-    _binance_seen_assets = trimmed
     try:
-        await database.set_llm_setting("binance_seen_assets", json.dumps(sorted(trimmed)))
+        await database.set_llm_setting(f"binance_seen_assets_{str(username).lower()}", json.dumps(sorted(trimmed)))
     except Exception:
         pass
 
 @app.get("/api/binance/settings")
 async def get_binance_settings(request: Request):
-    """Admin'in kayıtlı Binance API key bilgisi var mı döndür (key'in kendisi asla dönmez)."""
-    _require_admin(request)
-    enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
-    sell_ok, sell_source = await _real_sell_state()
-    return {"configured": bool(enc_key), "sell_enabled": sell_ok, "sell_source": sell_source}
+    """Oturumdaki kullanıcının Binance key durumu (key'in kendisi asla dönmez)."""
+    principal = _require_user(request)
+    username = str(principal.get("username") or "").strip()
+    user = await database.get_user_by_username(username)
+    configured = False
+    if user:
+        keys = await database.get_user_binance_keys(int(user["id"]))
+        if keys and keys.get("api_key_encrypted") and keys.get("api_secret_encrypted"):
+            configured = True
+        elif principal.get("role") == "admin":
+            enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+            configured = bool(enc_key)
+    sell_ok, sell_source = (await _real_sell_state_for(int(user["id"]))
+                            if user else (False, "panel"))
+    return {"configured": configured, "sell_enabled": sell_ok, "sell_source": sell_source,
+            "is_admin": principal.get("role") == "admin"}
 
 @app.post("/api/binance/settings")
 async def save_binance_settings(payload: dict, request: Request):
-    """Binance API key/secret'ı Fernet şifreleyip kaydet (admin-only)."""
-    admin = _require_admin(request)
+    """Binance API key/secret'ı Fernet şifreleyip KULLANICIYA kaydet (çok kullanıcılı).
+
+    Her kullanıcı kendi anahtarlarını user_binance_keys tablosuna saklar.
+    Admin kaydederse eski global llm_settings anahtarları da güncellenir
+    (admin fallback akışı canlı kalsın diye çift yazma).
+
+    YAMALI GÖVDE (2026-09-19): gövdede api_key/api_secret YOKSA yalnız
+    real_sell_enabled bayrağı güncellenir (Ayarlar modalındaki "İşlem Durumunu
+    Kaydet" butonu böyle çağırır). Anahtar alanları AÇIKÇA boş string ise
+    mevcut 422 davranışı korunur (yanlışlıkla anahtar silmeyi engeller).
+    """
+    principal = _require_user(request)
+    username = str(principal.get("username") or "").strip()
+    user = await database.get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    user_id = int(user["id"])
+
+    has_key_fields = "api_key" in payload or "api_secret" in payload
     api_key = str(payload.get("api_key") or "").strip()
     api_secret = str(payload.get("api_secret") or "").strip()
-    if not api_key or not api_secret:
-        raise HTTPException(status_code=422, detail="API key ve secret gerekli")
-    await database.set_llm_setting(
-        BINANCE_API_KEY_SETTING,
-        llm_analysis.encrypt_key(api_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY"),
-    )
-    await database.set_llm_setting(
-        BINANCE_SECRET_SETTING,
-        llm_analysis.encrypt_key(api_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY"),
-    )
-    # Gerçek satış panel anahtarı (isteğe bağlı gövde alanı) — Erkan kararı
-    # (2026-09-18): SSH'siz, Ayarlar'dan aç/kapa. env tanımlıysa env geçer.
-    if "real_sell_enabled" in payload:
-        val = bool(payload.get("real_sell_enabled"))
-        await database.set_llm_setting(BINANCE_REAL_SELL_SETTING, "1" if val else "0")
-    sell_ok, sell_source = await _real_sell_state()
+
+    real_val: bool | None = bool(payload.get("real_sell_enabled")) if "real_sell_enabled" in payload else None
+
+    if has_key_fields:
+        if not api_key or not api_secret:
+            raise HTTPException(status_code=422, detail="API key ve secret gerekli")
+        enc_key = llm_analysis.encrypt_key(api_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+        enc_secret = llm_analysis.encrypt_key(api_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+        await database.save_user_binance_keys(user_id, enc_key, enc_secret, real_val)
+        # Admin çift yazma: eski global anahtarlar da tazelenir (backcompat).
+        if principal.get("role") == "admin":
+            await database.set_llm_setting(BINANCE_API_KEY_SETTING, enc_key)
+            await database.set_llm_setting(BINANCE_SECRET_SETTING, enc_secret)
+            if real_val is not None:
+                await database.set_llm_setting(BINANCE_REAL_SELL_SETTING, "1" if real_val else "0")
+    elif real_val is not None:
+        # Yalnız işlem anahtarı güncelleniyor (anahtar alanları gönderilmedi).
+        await database.set_user_binance_real_sell(user_id, real_val)
+
+    sell_ok, sell_source = await _real_sell_state_for(user_id)
     await log_user_action(
-        admin.get("username"),
-        admin.get("role"),
+        principal.get("username"),
+        principal.get("role"),
         "binance",
         "BINANCE_SETTINGS_SAVED",
         target="binance_tr",
-        details={"api_key_configured": True, "api_secret_configured": True,
+        details={"api_key_updated": has_key_fields and bool(api_key and api_secret),
                  "real_sell_enabled": sell_ok, "real_sell_source": sell_source},
         request=request,
     )
     return {"ok": True, "configured": True, "sell_enabled": sell_ok, "sell_source": sell_source}
 
 async def _decrypt_binance_creds(request) -> tuple[str, str]:
-    """Şifreli Binance key/secret'ı çöz, yoksa hata fırlat."""
-    _require_admin(request)
-    enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
-    enc_secret = await database.get_llm_setting(BINANCE_SECRET_SETTING, "")
-    if not enc_key or not enc_secret:
-        raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış")
-    try:
-        api_key = llm_analysis.decrypt_key(enc_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
-        api_secret = llm_analysis.decrypt_key(enc_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
-        return api_key, api_secret
-    except Exception as exc:
-        logger.error("Binance API key çözülemedi: %s — LLM_ENCRYPTION_KEY ortam değişkenini kontrol et", exc)
-        raise HTTPException(status_code=502, detail=f"Binance API anahtarları çözülemedi. LLM_ENCRYPTION_KEY uyumsuz olabilir: {type(exc).__name__}")
+    """Oturumdaki kullanıcının Binance key/secret'ını çöz (çok kullanıcılı).
+
+    Öncelik: user_binance_keys(user_id) → yoksa admin fallback (eski global
+    llm_settings anahtarları, admin'in mevcut kurulumu çalışmaya devam eder).
+    Her kullanıcı yalnız KENDİ hesabına erişir; key/secret asla istemciye dönmez.
+    """
+    principal = _require_user(request)
+    username = str(principal.get("username") or "").strip()
+    user = await database.get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+
+    keys = await database.get_user_binance_keys(int(user["id"]))
+    if keys and keys.get("api_key_encrypted") and keys.get("api_secret_encrypted"):
+        try:
+            api_key = llm_analysis.decrypt_key(keys["api_key_encrypted"], primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+            api_secret = llm_analysis.decrypt_key(keys["api_secret_encrypted"], primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+            return api_key, api_secret
+        except Exception as exc:
+            logger.error("Kullanıcı Binance API key çözülemedi (user=%s): %s", username, exc)
+            raise HTTPException(status_code=502, detail=f"Binance API anahtarları çözülemedi. LLM_ENCRYPTION_KEY uyumsuz olabilir: {type(exc).__name__}")
+
+    # Admin fallback: eski global anahtarlar (yalnız admin'e açıktı, onun
+    # mevcut kurulumı bozulmasın). Normal kullanıcı buraya düşerse 404.
+    if principal.get("role") == "admin":
+        enc_key = await database.get_llm_setting(BINANCE_API_KEY_SETTING, "")
+        enc_secret = await database.get_llm_setting(BINANCE_SECRET_SETTING, "")
+        if enc_key and enc_secret:
+            try:
+                api_key = llm_analysis.decrypt_key(enc_key, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+                api_secret = llm_analysis.decrypt_key(enc_secret, primary_env="BINANCE_ENCRYPTION_KEY", fallback_env="LLM_ENCRYPTION_KEY")
+                return api_key, api_secret
+            except Exception as exc:
+                logger.error("Binance API key çözülemedi: %s — LLM_ENCRYPTION_KEY ortam değişkenini kontrol et", exc)
+                raise HTTPException(status_code=502, detail=f"Binance API anahtarları çözülemedi. LLM_ENCRYPTION_KEY uyumsuz olabilir: {type(exc).__name__}")
+
+    raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış — Ayarlar'dan kendi API anahtarlarınızı girin")
 
 @app.get("/api/binance/account")
 async def binance_account(request: Request):
-    """Binance TR hesap bakiyesi (salt okunur, admin-only)."""
+    """Binance TR hesap bakiyesi (salt okunur, oturum açmış kullanıcı)."""
     api_key, api_secret = await _decrypt_binance_creds(request)
     try:
         balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
@@ -2393,12 +2485,17 @@ async def binance_account(request: Request):
 
 @app.get("/api/binance/positions")
 async def binance_positions(request: Request):
-    """Binance TR sembol bakiyeleri + TRY değerleri (salt okunur, admin-only).
+    """Binance TR sembol bakiyeleri + TRY değerleri (salt okunur, oturum açmış kullanıcı).
 
     "Pozisyon" burada açık emir değil, hesaptaki varlıklardır: her non-zero
     varlık için TRY piyasa fiyatı ({ASSET}TRY çifti, yoksa {ASSET}USDT × USDTTRY)
     bulunup TRY değeri hesaplanır.
     """
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    user_id = int(user["id"])
     api_key, api_secret = await _decrypt_binance_creds(request)
     try:
         balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
@@ -2418,10 +2515,10 @@ async def binance_positions(request: Request):
         held.append({"asset": asset, "free": free, "locked": locked, "total": total})
     # Görülen varlıkları kalıcı havuza ekle (gün işlemleri sorgusu bunları tarar)
     if held:
-        seen = await _load_seen_binance_assets()
+        seen = await _load_seen_binance_assets(str(principal.get("username") or ""))
         new_assets = {h["asset"] for h in held} - seen
         if new_assets:
-            await _save_seen_binance_assets(seen | new_assets)
+            await _save_seen_binance_assets(str(principal.get("username") or ""), seen | new_assets)
 
     # Fiyat tablosu: her varlık için önce TRY, sonra USDT çiftini sor (≤50/istek).
     candidates: list[str] = []
@@ -2464,7 +2561,7 @@ async def binance_positions(request: Request):
         # 60 sn cache'li). TRY çifti yoksa USDT maliyeti USDTTRY ile TRY'ye çevrilir.
         avg_cost_try = None
         if asset != "TRY" and symbol_concat:
-            cost = await asyncio.to_thread(_avg_buy_cost, api_key, api_secret, asset, symbol_concat, now_ts)
+            cost = await asyncio.to_thread(_avg_buy_cost, user_id, api_key, api_secret, asset, symbol_concat, now_ts)
             if cost and cost.get("avg_price"):
                 quote = cost.get("quote")
                 if quote == "TRY":
@@ -2511,7 +2608,7 @@ async def binance_positions(request: Request):
     return {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
 
 
-def _avg_buy_cost(api_key: str, api_secret: str, asset: str, symbol_concat: str, now: float) -> dict | None:
+def _avg_buy_cost(user_id: int, api_key: str, api_secret: str, asset: str, symbol_concat: str, now: float) -> dict | None:
     """Elde tutulan miktarın ortalama alış maliyeti (FIFO, 60 sn cache).
 
     Önceki sürüm son 1000 fill'in TÜM alışlarının VWAP'ını hesaplıyordu;
@@ -2521,8 +2618,11 @@ def _avg_buy_cost(api_key: str, api_secret: str, asset: str, symbol_concat: str,
     alıştan düşüp ELDE KALAN bakiye için gerçek ortalama maliyeti bulmaktır
     (FIFO envanter yaklaşımı). Kaba gösterge değil: bu, o günkü gerçek pozisyon
     maliyetini güncel fiyatla birlikte doğru PnL üretir.
+
+    ÇOK KULLANICILI (2026-09-19): cache anahtarı (user_id, asset) — farklı
+    kullanıcıların aynı varlık için FIFO maliyetleri karışmaz.
     """
-    cached = _binance_cost_cache.get(asset)
+    cached = _binance_cost_cache.get((user_id, asset))
     if cached and cached[0] > now:
         return cached[1]
     info: dict = {"avg_price": None, "quote": "TRY" if symbol_concat.endswith("TRY") else "USDT"}
@@ -2572,20 +2672,23 @@ def _avg_buy_cost(api_key: str, api_secret: str, asset: str, symbol_concat: str,
             info["held_quantity"] = held_qty
     except Exception as exc:
         logger.warning("Binance TR alım geçmişi okunamadı (%s): %s", asset, exc)
-    _binance_cost_cache[asset] = (now + 60.0, info)
+    _binance_cost_cache[(user_id, asset)] = (now + 60.0, info)
     return info
 
 @app.post("/api/binance/sell")
 async def binance_sell(payload: dict, request: Request):
-    """Kullanıcı onaylı MARKET SELL (admin-only, gerçek emir).
+    """Kullanıcı onaylı MARKET SELL (oturum açmış kullanıcı, gerçek emir).
 
     Gövde: {"asset": "BTC", "quantity": 0.01 | null}. quantity yok/boşsa
     varlığın satılabilir (free) tamamı satılır. Miktar sembolün LOT_SIZE
     stepSize'ına aşağı yuvarlanır; min lot altı reddedilir. Sembol sırasıyla
     {ASSET}_TRY, {ASSET}_USDT çiftlerinden mevcut olanıdır.
     """
-    _require_admin(request)
-    sell_ok, sell_source = await _real_sell_state()
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
     if not sell_ok:
         if sell_source == "panel":
             raise HTTPException(status_code=403, detail="Gerçek satış kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla")
@@ -2649,7 +2752,7 @@ async def binance_watch(payload: dict, request: Request):
     Gövde: {"symbol": "BTC"} — base varlık. Dialog açıkken frontend 60 sn'de
     bir yeniler; TTL dolunca akıştan düşer. TRY bakiyesi tick loop'ta zaten var.
     """
-    _require_admin(request)
+    _require_user(request)
     base = str(payload.get("symbol") or "").upper().strip()
     if not base or base == "TRY":
         raise HTTPException(status_code=422, detail="Geçersiz sembol")
@@ -2663,7 +2766,7 @@ async def binance_watch(payload: dict, request: Request):
 
 @app.post("/api/binance/buy")
 async def binance_buy(payload: dict, request: Request):
-    """Kullanıcı onaylı MARKET BUY — harcanacak TRY tutarıyla (admin-only, gerçek emir).
+    """Kullanıcı onaylı MARKET BUY — harcanacak TRY tutarıyla (oturum açmış kullanıcı, gerçek emir).
 
     Gövde: {"asset": "BTC", "amount_try": 500, "confirmation": "REAL_BUY"}.
     Sembol: {ASSET}_TRY öncelikli, yoksa {ASSET}_USDT (USDT bakiyesinden
@@ -2671,8 +2774,11 @@ async def binance_buy(payload: dict, request: Request):
     hizalı: MARKET alış quoteOrderQty ile gönderilir. Başarılı cevapta
     emir no + (proxy taşıyorsa) doldurma ortalaması döner.
     """
-    _require_admin(request)
-    sell_ok, sell_source = await _real_sell_state()
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
     if not sell_ok:
         if sell_source == "panel":
             raise HTTPException(status_code=403, detail="Gerçek işlem kapalı — Ayarlar > Binance TR API > 'GERÇEK SATIŞ' anahtarını aç veya sunucuda ENABLE_REAL_BINANCE_SELL=1 tanımla")
@@ -2730,8 +2836,8 @@ async def binance_buy(payload: dict, request: Request):
 
 @app.get("/api/binance/open-orders")
 async def binance_open_orders(request: Request, symbol: str = ""):
-    """Binance TR açık/bekleyen emirler listesi (admin-only)."""
-    _require_admin(request)
+    """Binance TR açık/bekleyen emirler listesi (oturum açmış kullanıcı)."""
+    _require_user(request)
     api_key, api_secret = await _decrypt_binance_creds(request)
     try:
         orders = await asyncio.to_thread(get_open_orders, api_key, api_secret, symbol)
@@ -2742,8 +2848,8 @@ async def binance_open_orders(request: Request, symbol: str = ""):
 
 @app.post("/api/binance/cancel-order")
 async def binance_cancel_order(payload: dict, request: Request):
-    """Binance TR açık emrini iptal eder (admin-only)."""
-    _require_admin(request)
+    """Binance TR açık emrini iptal eder (oturum açmış kullanıcı)."""
+    _require_user(request)
     order_id = payload.get("order_id") or payload.get("orderId")
     if not order_id:
         raise HTTPException(status_code=422, detail="order_id zorunludur")
@@ -2761,9 +2867,12 @@ async def binance_cancel_order(payload: dict, request: Request):
 
 @app.post("/api/binance/set-sl-tp")
 async def binance_set_sl_tp(payload: dict, request: Request):
-    """Açık pozisyona Stop-Loss (SL) ve/veya Take-Profit (TP) / OCO emri kurar (admin-only)."""
-    _require_admin(request)
-    sell_ok, sell_source = await _real_sell_state()
+    """Açık pozisyona SL/TP/OCO emri kurar (oturum açmış kullanıcı)."""
+    principal = _require_user(request)
+    user = await database.get_user_by_username(str(principal.get("username") or ""))
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
+    sell_ok, sell_source = await _real_sell_state_for(int(user["id"]))
     if not sell_ok:
         if sell_source == "panel":
             raise HTTPException(status_code=403, detail="Gerçek emir gönderimi kapalı — Ayarlar > 'GERÇEK SATIŞ' anahtarını açın")
@@ -2895,8 +3004,14 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
     start_ms = int(day_start.timestamp() * 1000)
     end_ms = int(day_end.timestamp() * 1000)
 
+    # ÇOK KULLANICILI (2026-09-19): cache ve görülmüş varlık havuzu kullanıcıya özel.
+    principal = _require_user(request)
+    username = str(principal.get("username") or "").strip()
+    user = await database.get_user_by_username(username)
+    user_id = int(user["id"]) if user else 0
+
     now_ts = time.time()
-    cache = _binance_day_trades_cache.get(date)
+    cache = _binance_day_trades_cache.get((user_id, date))
     if cache and cache[0] > now_ts:
         return cache[1]
 
@@ -2908,9 +3023,9 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
         raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
     current_assets = {str(b.get("asset") or "").upper() for b in balances
                       if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0)}
-    known_assets = await _load_seen_binance_assets()
+    known_assets = await _load_seen_binance_assets(username)
     assets = sorted(current_assets | known_assets | {"USDT"})
-    await _save_seen_binance_assets(current_assets | known_assets)
+    await _save_seen_binance_assets(username, current_assets | known_assets)
 
     # Varlık → mevcut sembol çiftleri (sıra: TRY önce)
     sem: asyncio.Semaphore = asyncio.Semaphore(8)
@@ -3050,7 +3165,7 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
                "daily": {"realized_pnl_try": round(daily_net, 2),
                          "gross_pnl_try": round(daily_gross, 2),
                          "wins": wins, "losses": losses, "unmatched": unmatched}}
-    _binance_day_trades_cache[date] = (now_ts + 60.0, payload)
+    _binance_day_trades_cache[(user_id, date)] = (now_ts + 60.0, payload)
     return payload
 
 
@@ -3058,7 +3173,8 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
 async def binance_trades(request: Request, symbol: str = "",
                          start_time: int = 0, end_time: int = 0,
                          limit: int = 100, offset: int = 0):
-    """Binance TR geçmiş işlemler (salt okunur, admin-only, pagination)."""
+    """Binance TR geçmiş işlemler (salt okunur, oturum açmış kullanıcı, pagination)."""
+    _require_user(request)
     api_key, api_secret = await _decrypt_binance_creds(request)
     # G-27: limit clamp'sizdi; `limit=10**9` Binance TR'ye geçersiz istek → 502.
     limit = max(1, min(int(limit), 1000))
