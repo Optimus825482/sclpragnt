@@ -131,11 +131,17 @@ export default function BinancePositionChartModal({
 }: Props) {
   const symbolConcat = `${holding.asset}TRY`;
   const [timeframe, setTimeframe] = useState<Timeframe>("5m"); // Varsayılan M5
+  const [loading, setLoading] = useState(true);
+  // TF YARIŞI DÜZELTMESİ (2026-09-19): WS callback'leri stale closure'da eski
+  // timeframe görebildiği için fresh ref'ler tutulur.
+  const timeframeRef = useRef<Timeframe>("5m");
+  const loadingRef = useRef(true);
+  useEffect(() => { timeframeRef.current = timeframe; }, [timeframe]);
+  useEffect(() => { loadingRef.current = loading; }, [loading]);
   const [showBB, setShowBB] = useState(true); // Varsayılan Bollinger Bands AÇIK
   const [showSupertrend, setShowSupertrend] = useState(true); // Varsayılan Supertrend AÇIK
   const [supertrendTrend, setSupertrendTrend] = useState<"UP" | "DOWN" | null>(null);
   const [candles, setCandles] = useState<CandleBar[]>([]);
-  const [loading, setLoading] = useState(true);
 
   // Canlı Tahta (Orderbook) Metrikleri
   const [orderbook, setOrderbook] = useState<{
@@ -339,6 +345,13 @@ export default function BinancePositionChartModal({
   }, [symbolConcat]);
 
   useEffect(() => {
+    // TF DEĞİŞİM TEMİZLİĞİ (2026-09-19): eski TF'in candles'ı ve lastCandleRef'i
+    // anında temizlenir; aksi halde (1) 3a effect yeni veri gelene dek ESKİ
+    // mumları çizmeye devam eder ve (2) canlı tik güncellemesi eski TF'in son
+    // mumunu yeni seriye karıştırır (mumların "aynı yerde garip çizilmesi").
+    setCandles([]);
+    lastCandleRef.current = null;
+    lastCandleTimeRef.current = 0;
     loadKlines(timeframe);
   }, [timeframe, loadKlines]);
 
@@ -774,20 +787,29 @@ export default function BinancePositionChartModal({
               setTickDir((prev) => (currentPrice ? (newPrice >= currentPrice ? "up" : "down") : null));
               setCurrentPrice(newPrice);
 
-              // Canlı mum iğne ve gövde anlık güncellemesi (Real-time wicking)
-              if (candleSeriesRef.current && lastCandleRef.current) {
+              // Canlı mum iğne/gövde güncellemesi. TF YARIŞI DÜZELTMESİ (2026-09-19):
+              // timeframeRef (fresh ref) kullanılır — stale closure'daki eski
+              // TF'in son mumu yeni TF serisine karışıp mumları bozuyordu.
+              // Ayrıca yükleniyor sırasında seriye dokunulmaz: TF değişiminde
+              // setCandles([]) ile temizlenen serinin üstüne eski TF fiyatı
+              // yazılmaz (mumların "aynı yerde garip çizilmesi"nin kök nedeni).
+              if (!loadingRef.current && candleSeriesRef.current && lastCandleRef.current) {
                 const c = lastCandleRef.current;
-                const updatedBar: CandleBar = {
-                  time: c.time,
-                  open: c.open,
-                  high: Math.max(c.high, newPrice),
-                  low: Math.min(c.low, newPrice),
-                  close: newPrice,
-                };
-                lastCandleRef.current = updatedBar;
-                try {
-                  candleSeriesRef.current.update(updatedBar as any);
-                } catch {}
+                // Son mum, görüntülenen TF'in açık mumu olmalı (interval hizası).
+                const tfSecs = TF_SECONDS[timeframeRef.current] || 0;
+                if (tfSecs > 0 && Date.now() / 1000 - Number(c.time) < tfSecs * 2) {
+                  const updatedBar: CandleBar = {
+                    time: c.time,
+                    open: c.open,
+                    high: Math.max(c.high, newPrice),
+                    low: Math.min(c.low, newPrice),
+                    close: newPrice,
+                  };
+                  lastCandleRef.current = updatedBar;
+                  try {
+                    candleSeriesRef.current.update(updatedBar as any);
+                  } catch {}
+                }
               }
             }
           }
