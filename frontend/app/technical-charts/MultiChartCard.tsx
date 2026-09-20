@@ -55,17 +55,18 @@ interface MultiChartCardProps {
 }
 
 const INTERVALS = [
-    { v: "1m", l: "1D" },
-    { v: "5m", l: "5D" },
+    { v: "1m",  l: "1D" },
+    { v: "3m",  l: "3D" },
+    { v: "5m",  l: "5D" },
     { v: "15m", l: "15D" },
     { v: "30m", l: "30D" },
-    { v: "1h", l: "1S" },
-    { v: "4h", l: "4S" },
-    { v: "1d", l: "1G" },
+    { v: "1h",  l: "1S" },
+    { v: "4h",  l: "4S" },
+    { v: "1d",  l: "1G" },
 ];
 
 const INTERVAL_MS: Record<string, number> = {
-    "1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+    "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
     "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
 };
 
@@ -322,6 +323,7 @@ const INDICATOR_DEFS: IndicatorDef[] = [
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function MultiChartCard({ config, availableSymbols, isMaximized, onToggleMaximize, onUpdateConfig }: MultiChartCardProps) {
+    const cardRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -333,8 +335,41 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
     const [indicatorCat, setIndicatorCat] = useState<string>("Tümü");
     const [priceData, setPriceData] = useState<{ last: number; changePct: number; high: number; low: number } | null>(null);
     const [hoverLegend, setHoverLegend] = useState<{ open: number; high: number; low: number; close: number } | null>(null);
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    const [isDark, setIsDark] = useState(true); // dark varsayılan
     const klineReqIdRef = useRef(0);
     const lastBarsRef = useRef<Bar[]>([]);
+
+    // Fullscreen API handler
+    const toggleFullscreen = useCallback(() => {
+        if (!cardRef.current) return;
+        if (!document.fullscreenElement) {
+            cardRef.current.requestFullscreen().catch(err => console.warn("Fullscreen hata:", err));
+        } else {
+            document.exitFullscreen();
+        }
+    }, []);
+
+    useEffect(() => {
+        const handler = () => setIsFullscreen(!!document.fullscreenElement);
+        document.addEventListener("fullscreenchange", handler);
+        return () => document.removeEventListener("fullscreenchange", handler);
+    }, []);
+
+    // Tema değişikliği
+    useEffect(() => {
+        if (!chartRef.current) return;
+        chartRef.current.applyOptions({
+            layout: {
+                background: { type: ColorType.Solid, color: isDark ? "#06080d" : "#ffffff" },
+                textColor: isDark ? "#9ca3af" : "#374151",
+            },
+            grid: {
+                vertLines: { color: isDark ? "rgba(31,41,55,0.4)" : "rgba(229,231,235,0.8)" },
+                horzLines: { color: isDark ? "rgba(31,41,55,0.4)" : "rgba(229,231,235,0.8)" },
+            },
+        });
+    }, [isDark]);
 
     const filteredSymbols = availableSymbols.filter(s => s.toLowerCase().includes(searchFilter.toLowerCase().trim()));
 
@@ -382,11 +417,18 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
             const bars: Bar[] = candlesRaw.map((k: number[]) => ({ time: Math.floor(k[0] / 1000), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5] }));
             lastBarsRef.current = bars;
             candleSeriesRef.current.setData(bars.map(b => ({ time: b.time as UTCTimestamp, open: b.open, high: b.high, low: b.low, close: b.close })));
-            const last = bars[bars.length - 1], first = bars[0];
+            const last = bars[bars.length - 1];
             if (last) {
                 const precision = pricePrecision(last.close);
                 candleSeriesRef.current.applyOptions({ priceFormat: { type: "price", precision, minMove: 1 / Math.pow(10, precision) } });
-                setPriceData({ last: last.close, changePct: first?.open ? ((last.close - first.open) / first.open) * 100 : 0, high: last.high, low: last.low });
+                // changePct: son mumun açılış→kapanış değişimi (gerçek mum hareketi)
+                const lastChangePct = last.open > 0 ? ((last.close - last.open) / last.open) * 100 : 0;
+                // 24 saatlik değişim için ~288 mum (1m) veya ~96 mum (15m) geriye git
+                const barsPerDay = Math.round(86_400_000 / (INTERVAL_MS[config.interval] || 60_000));
+                const refIdx = Math.max(0, bars.length - 1 - barsPerDay);
+                const refBar = bars[refIdx];
+                const dayChangePct = refBar?.open > 0 ? ((last.close - refBar.open) / refBar.open) * 100 : lastChangePct;
+                setPriceData({ last: last.close, changePct: dayChangePct, high: last.high, low: last.low });
             }
             rebuildIndicators(bars);
             setLoading(false);
@@ -568,9 +610,16 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
     const visibleDefs = indicatorCat === "Tümü" ? INDICATOR_DEFS : INDICATOR_DEFS.filter(d => d.category === indicatorCat);
 
     return (
-        <div className={`flex flex-col bg-bunker-950 border border-bunker-800 rounded-xl overflow-hidden shadow-lg transition-all ${isMaximized ? "col-span-full row-span-full h-full" : "h-full min-h-[300px]"}`}>
+        <div
+            ref={cardRef}
+            className={`flex flex-col border border-bunker-800 rounded-xl overflow-hidden shadow-lg transition-all ${
+                isDark ? "bg-bunker-950" : "bg-white"
+            } ${isMaximized ? "col-span-full row-span-full h-full" : "h-full min-h-[300px]"} ${
+                isFullscreen ? "fixed inset-0 z-[9999] rounded-none border-none" : ""
+            }`}
+        >
             {/* ── Header ─────────────────────────────────────────────────────── */}
-            <div className="flex flex-wrap items-center justify-between gap-1.5 px-3 py-2 bg-bunker-900/90 border-b border-bunker-800 shrink-0 text-xs">
+            <div className={`flex flex-wrap items-center justify-between gap-1.5 px-3 py-2 border-b shrink-0 text-xs ${isDark ? "bg-bunker-900/90 border-bunker-800" : "bg-gray-50 border-gray-200"}`}>
                 {/* Left: ID + Symbol */}
                 <div className="flex items-center gap-2">
                     <span className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-neon-green/15 text-neon-green border border-neon-green/30 shrink-0">#{config.id}</span>
@@ -684,11 +733,42 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                         )}
                     </div>
 
-                    <button type="button" onClick={() => { setLoading(true); fetchKlines(); }} className="p-1 rounded text-bunker-muted hover:text-white hover:bg-bunker-800 transition-colors" title="Yenile">↻</button>
-                    <button type="button" onClick={onToggleMaximize}
+                    {/* Yenile */}
+                    <button
+                        type="button"
+                        onClick={() => { setLoading(true); fetchKlines(); }}
+                        className="p-1 rounded text-bunker-muted hover:text-white hover:bg-bunker-800 transition-colors"
+                        title="Yenile"
+                    >↻</button>
+
+                    {/* Tema Toggle */}
+                    <button
+                        type="button"
+                        onClick={() => setIsDark(d => !d)}
+                        className={`p-1 rounded text-xs transition-colors ${isDark ? "text-bunker-muted hover:text-yellow-400 hover:bg-bunker-800" : "text-yellow-500 bg-yellow-50 border border-yellow-200"}`}
+                        title={isDark ? "Aydınlık Temaya Geç" : "Karanlık Temaya Geç"}
+                    >
+                        {isDark ? "☀️" : "🌙"}
+                    </button>
+
+                    {/* Kart Büyüt */}
+                    <button
+                        type="button"
+                        onClick={onToggleMaximize}
                         className={`p-1 rounded text-xs transition-colors ${isMaximized ? "bg-neon-green text-bunker-950 font-bold" : "text-bunker-muted hover:text-white hover:bg-bunker-800"}`}
-                        title={isMaximized ? "Küçült" : "Büyüt"}>
+                        title={isMaximized ? "Küçült" : "Kartı Büyüt"}
+                    >
                         {isMaximized ? "🗗" : "⛶"}
+                    </button>
+
+                    {/* Tam Ekran (Fullscreen API) */}
+                    <button
+                        type="button"
+                        onClick={toggleFullscreen}
+                        className={`p-1 rounded text-xs transition-colors ${isFullscreen ? "bg-neon-green/20 text-neon-green border border-neon-green/40 font-bold" : "text-bunker-muted hover:text-white hover:bg-bunker-800"}`}
+                        title={isFullscreen ? "Tam Ekrandan Çık (Esc)" : "Tam Ekran"}
+                    >
+                        {isFullscreen ? "⊠" : "⊡"}
                     </button>
                 </div>
             </div>

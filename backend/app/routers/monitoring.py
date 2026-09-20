@@ -51,10 +51,11 @@ _monitoring_state = {
 # PWA kapalı olsa bile tarama ve bildirim sunucudan devam eder.
 SCAN_INTERVAL_SEC = 60.0
 HISTORY_LIMIT = 60
-NOTIFY_COOLDOWN_SEC = 60.0  # aynı sembol için asgari tekrar bildirim engeli (1 dk)
-# NOT (2026-09-17): eski 5 dk -> 1 dk. Hedefe ulaştıktan sonraki düzeltmede
-# sistemin tekrar yakalaması için 5 dk çok uzundu; `MONITORING_REFIRE_MIN_MOVE_PCT`
-# yine "değişen bir şey yoksa tekrarlama" korumasını sağlar.
+NOTIFY_COOLDOWN_SEC = 300.0  # aynı sembol için asgari tekrar bildirim engeli (5 dk)
+# NOT (2026-09-20): eski 5 dk → 1 dk → geri 5 dk. 1 dk cooldown,
+# MONITORING_REFIRE_MIN_MOVE_PCT=%0.35 fiyat kapısıyla birleşince hızlı
+# hareket eden sembollerde 2-3 dk arayla tekrar bildirim üretiyordu. Fiyat
+# kapısı "gerçek değişiklik" koruyucusudur; 5 dk taban gereksiz tekrarı keser.
 # Zaman kapıları (cooldown + ufuk) "değişen bir şey var mı" sorusunu SORMAZ;
 # donmuş/likit olmayan sembolde aynı fiyattan tekrar tekrar bildirim üretir.
 # Varsayılan = gidiş-dönüş maliyeti (%0.35): kâr ettirmeyecek bir hareket
@@ -1732,6 +1733,12 @@ async def _run_rising_scan() -> dict:
     """Yükseliş taraması: tespit → fiyat → histerezis → kanıt → bildirim.
 
     Dönüş: {"detected": n, "notified": n, "skipped_price": n, "stale": bool}
+
+    Sinyal yolları:
+    - KIND_EARLY (erken): PUSH YOK. Sadece kanıt kaydı + ERKEN izleme listesi.
+      Bir sonraki KIND_STRENGTH (yukselis) sinyaline öncelik kazandırır.
+    - KIND_STRENGTH (yukselis): Cooldown dolmadı + horizon geçmedi ise
+      koşullar değiştiyse (hedef/skor) UPDATE push gönderir; aksi normal push.
     """
     from app import rising_signals
 
@@ -1786,6 +1793,32 @@ async def _run_rising_scan() -> dict:
             # Sessiz yutma YOK: hedef öğrenmesi burada devre dışı kalırsa görünmeli.
             logger.debug("yükseliş dinamik hedef uygulanamadı %s: %s", symbol, exc)
             candidate["target_pct"] = base_target
+
+        # ── ERKEN (KIND_EARLY) sinyali ──────────────────────────────────────────
+        # Push GÖNDERILMEZ. Kanıt kaydı yapılır, ERKEN izleme listesine eklenir.
+        # Bu sembol için sonraki KIND_STRENGTH sinyali "erken uyarılı" olarak
+        # işaretlenir → YÜKSELİŞ bildirimi daha anlamlı olur.
+        kind = str(candidate.get("kind") or "")
+        if kind == rising_signals.KIND_EARLY:
+            price = _ticker_price(symbol) if notify_enabled else None
+            if notify_enabled and (not price or price <= 0):
+                summary["skipped_price"] += 1
+                continue
+            # Kanıt kaydı (ölçüm / panel görünümü için)
+            await database.record_rising_alert({
+                **candidate,
+                "price": float(price) if price else None,
+                "expected_price": None,
+                "created_at": time.time(),
+                "notified": False,
+            })
+            # ERKEN izleme listesine kaydet (koşullar değişirse YÜKSELİŞ hızlanır)
+            rising_signals.register_early_watch(candidate)
+            # Histerezis anahtarını ilerlet (flood önleme)
+            rising_signals.advance_key(candidate)
+            continue  # ← PUSH YOK
+
+        # ── YÜKSELİŞ (KIND_STRENGTH) sinyali ───────────────────────────────────
         # Histerezis: AYNI öncü kümesi sürüyorsa yeni bilgi yoktur → ne kayıt ne
         # bildirim (aksi halde kanıt tablosu her turda şişerdi).
         prev_key = rising_signals.last_key(symbol)
@@ -1793,11 +1826,13 @@ async def _run_rising_scan() -> dict:
         if prev_key is not None and not rising_signals.rising_edge_trigger(prev_key, cur_key):
             continue
         is_first_observation = prev_key is None
+
         # Fiyat: bayat ticker ile bildirim/beklenti üretme (radar ile AYNI kural).
         price = _ticker_price(symbol) if notify_enabled else None
         if notify_enabled and (not price or price <= 0):
             summary["skipped_price"] += 1
             continue
+
         # Sessiz arm (ilk gözlem): restart fırtınasını engelle ama sinyali KAYDET —
         # panel ve rapor bundan beslenir, yalnız push/dialog yapılmaz.
         # BİRLEŞİK SİNYAL (2026-09-17): hızlı-yol/radar yakın zamanda bu sembolü
@@ -1806,11 +1841,48 @@ async def _run_rising_scan() -> dict:
         fire = (notify_enabled and not is_first_observation
                 and rising_signals.should_fire(candidate, now)
                 and not (unified_mode and unified_signals.recently_notified(symbol)))
+
+        # ── UPDATE BİLDİRİMİ: cooldown/horizon içindeyken koşullar değiştiyse ──
+        # Rising cooldown hâlâ aktifse (should_fire → False) ama önceki bildirimden
+        # bu yana hedef veya sinyal gücü anlamlı değiştiyse kullanıcıya UPDATE push
+        # gönder. Bu "neden tekrar bildirim?" sorusunun asıl cevabıdır:
+        # ya yeni bir sinyal (cooldown dolmuş) ya da değişim güncellemesi.
+        update_change = None
+        if not fire and not is_first_observation and notify_enabled:
+            update_change = rising_signals.changed_since_last_fire(
+                candidate, float(price or 0))
+            if update_change and len(notified) < max_per_scan:
+                if not (unified_mode and unified_signals.recently_notified(symbol)):
+                    fire = True   # UPDATE modunda ateşle
+                    candidate["_update_change"] = update_change  # mesaj için
+
         if fire and len(notified) >= max_per_scan:
             continue
         notif = _build_rising_notification(candidate, float(price)) if notify_enabled else None
         if notif is not None:
             notif["quiet_hours"] = bool(quiet)
+            # ERKEN izleme bayrağı: push metnine "Erken uyarıdan güçlendi" notu ekle
+            early_entry = rising_signals.is_early_watch(symbol)
+            if early_entry:
+                notif["early_watch"] = True
+                notif["early_detected_at"] = early_entry.get("detected_at")
+            # UPDATE etiketi ve değişim bilgisi
+            if update_change:
+                notif["updated"] = True
+                notif["update_reason"] = update_change.get("reason", "")
+                notif["target_delta"] = update_change.get("target_delta")
+                notif["score_delta"] = update_change.get("score_delta")
+                # UPDATE metnini zenginleştir
+                notif["title"] = f"🔄 GÜNCELLEME · {symbol}"
+                reason_txt = update_change.get("reason", "")
+                notif["message"] = (
+                    f"🔄 {symbol} | {reason_txt} | "
+                    f"Hedef: %{candidate.get('target_pct', 0):.2f} | "
+                    f"Skor: {candidate.get('score', 0):.0f}"
+                )
+            else:
+                notif["updated"] = False
+
         # Kanıt katmanı: bildirimden ÖNCE yazılır ki her sinyal ölçülebilir olsun.
         alert_id = await database.record_rising_alert({
             **candidate,
@@ -1824,8 +1896,15 @@ async def _run_rising_scan() -> dict:
             # ilk turda birikme olmasın.
             if is_first_observation:
                 rising_signals.observe(candidate)
+            else:
+                # Kanıt kaydı yazıldı ama ateşleme olmadı (cooldown/unified bastırma).
+                # Histerezis anahtarını güncel konuma ilerlet ki aynı key osilaston
+                # (CVD/break5 flip) tekrar histerezisi geçip yeni kayıt üretmesin.
+                rising_signals.advance_key(candidate)
             continue
         rising_signals.mark_fired(candidate, now)
+        # Son bildirim ayrıntısını kaydet (sonraki UPDATE kontrolü için)
+        rising_signals.record_fired_detail(candidate, float(price or 0))
         if notif is None:
             continue
         if alert_id:

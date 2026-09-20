@@ -23,7 +23,7 @@ SETTINGS = {"enabled": True, "min_score": 0.5, "min_target_pct": 0.5,
             "quiet_hours_start": None, "quiet_hours_end": None}
 
 
-def _candidate(symbol="RISETRY", kind=rs.KIND_EARLY, score=80.0):
+def _candidate(symbol="RISETRY", kind=rs.KIND_STRENGTH, score=80.0):
     return {
         "symbol": symbol,
         "kind": kind,
@@ -39,6 +39,11 @@ def _candidate(symbol="RISETRY", kind=rs.KIND_EARLY, score=80.0):
         "tf": "5m",
         "source": "macd_snapshot",
     }
+
+
+def _early_candidate(symbol="RISETRY", score=80.0):
+    """KIND_EARLY aday — push ÜRETMEZ, sadece kanıt + izleme listesi."""
+    return {**_candidate(symbol=symbol, score=score), "kind": rs.KIND_EARLY}
 
 
 class EnvelopeTests(unittest.TestCase):
@@ -57,7 +62,7 @@ class EnvelopeTests(unittest.TestCase):
         notif = monitoring._build_rising_notification(_candidate(), price=10.0)
         # `try_open_from_notification` notification_key + target_pct + price bekler.
         self.assertIn("notification_key", notif)
-        self.assertTrue(str(notif["notification_key"]).startswith("rising-erken-RISETRY-"))
+        self.assertTrue(str(notif["notification_key"]).startswith("rising-yukselis-RISETRY-"))
         self.assertEqual(2.0, notif["target_pct"])
 
     def test_label_differs_per_kind(self):
@@ -235,6 +240,25 @@ class RisingScanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, summary["notified"])
         self.assertEqual(1, summary["skipped_price"])
         self.record_mock.assert_not_awaited()
+
+    async def test_early_kind_records_evidence_but_no_push(self):
+        """KIND_EARLY: kanıt kaydı yazılır ama push/deliver HİÇ ateşlenmez."""
+        summary = await self._scan([_early_candidate()])
+        self.assertEqual(0, summary["notified"],
+                         "ERKEN sinyal push üretmemeli — öncelik izleme listesidir")
+        self.record_mock.assert_awaited_once()  # kanıt yazıldı
+        self.deliver_mock.assert_not_awaited()  # teslim olmadı
+
+    async def test_early_kind_repeated_does_not_push_on_second_scan(self):
+        """KIND_EARLY iki taramada da push üretmez (her koşulda sessiz)."""
+        with contextlib.ExitStack() as stack:
+            for item in self._patches([_early_candidate()]):
+                stack.enter_context(item)
+            await monitoring._run_rising_scan()
+            # İkinci tarama için de aynı aday
+            summary = await monitoring._run_rising_scan()
+        self.assertEqual(0, summary["notified"])
+        self.deliver_mock.assert_not_awaited()
 
     async def test_same_signal_key_is_not_recorded_again(self):
         """Aynı öncü kümesi sürüyorsa ne kayıt ne bildirim (tablo şişmez)."""

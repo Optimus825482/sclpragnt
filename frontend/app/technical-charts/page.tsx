@@ -20,12 +20,12 @@ const MultiChartCard = dynamic(() => import("./MultiChartCard"), {
 });
 
 const DEFAULT_INDICATORS: ChartIndicators = {
-    ema9: true,
-    ema21: true,
+    ema9: false,
+    ema21: false,
     ema50: false,
     ema200: false,
     bollinger: false,
-    volume: true,
+    volume: false,
     vwap: false,
     obv: false,
     mfi: false,
@@ -40,9 +40,9 @@ const DEFAULT_INDICATORS: ChartIndicators = {
 
 const DEFAULT_SLOTS: MultiChartConfig[] = [
     { id: 1, symbol: "BTCTRY",  interval: "1m",  indicators: { ...DEFAULT_INDICATORS } },
-    { id: 2, symbol: "ETHTRY",  interval: "5m",  indicators: { ...DEFAULT_INDICATORS } },
-    { id: 3, symbol: "SOLTRY",  interval: "15m", indicators: { ...DEFAULT_INDICATORS, rsi: true } },
-    { id: 4, symbol: "AVAXTRY", interval: "1h",  indicators: { ...DEFAULT_INDICATORS, macd: true } },
+    { id: 2, symbol: "BTCTRY",  interval: "3m",  indicators: { ...DEFAULT_INDICATORS } },
+    { id: 3, symbol: "BTCTRY",  interval: "5m",  indicators: { ...DEFAULT_INDICATORS } },
+    { id: 4, symbol: "BTCTRY",  interval: "15m", indicators: { ...DEFAULT_INDICATORS } },
 ];
 
 
@@ -64,8 +64,8 @@ const FALLBACK_SYMBOLS = [
     "BNBTRY",
 ];
 
-const LS_KEY_SLOTS = "scalper_tech_charts_slots_v1";
-const LS_KEY_LAYOUT = "scalper_tech_charts_layout_v1";
+const LS_KEY_SLOTS = "scalper_tech_charts_slots_v2";
+const LS_KEY_LAYOUT = "scalper_tech_charts_layout_v2";
 
 type LayoutType = "grid4" | "split2_h" | "split2_v" | "single";
 
@@ -153,7 +153,7 @@ export default function TechnicalChartsPage() {
     // Quick MTF (Multi-Timeframe) Template: Apply 1m, 5m, 15m, 1h to the 4 slots with the same symbol
     const applyMtfTemplate = () => {
         const targetSymbol = globalSymbol || slots[0]?.symbol || "BTCTRY";
-        const mtfIntervals = ["1m", "5m", "15m", "1h"];
+        const mtfIntervals = ["1m", "3m", "5m", "15m"];
         setSlots((prev) => {
             const next = prev.map((s, idx) => ({
                 ...s,

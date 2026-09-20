@@ -671,22 +671,28 @@ class EarlyDetailTests(_MacdTestBase):
         self.assertFalse(detail["break"])
 
     async def test_early_score_components_add_up(self):
-        """Öncü 15'er + yakınlık 25 + agresör 15 + üst-TF 15 = 100 tavanı."""
+        """Kanıt düzeltmesi: dip 45 + yakınlık 30 + agresör 15 + üst-TF 10 = 100 tavanı.
+
+        approach/m1 ters-yönlü (OOS −0.082/−0.094): artık skora GİRMEZ.
+        Eski: her öncü 15 puan (approach/m1/dip). Yeni: yalnız dip 45 puan.
+        """
         full = mm._early_score(
             {"approach": True, "m1": True, "dip": True},
             {"proximity": 1.0}, {"buy_dominant": True},
             6, {"15m": {"green": True}, "1h": {"green": True}})
         self.assertEqual(100, full)
+        # approach=True ama approach artık skora girmez → 0
         only_approach_far = mm._early_score(
             {"approach": True, "m1": False, "dip": False},
             {"proximity": 0.0}, {}, 1, {})
-        self.assertEqual(15, only_approach_far)
+        self.assertEqual(0, only_approach_far)
         self.assertEqual(0, mm._early_score({}, {}, {}, 0, {}))
 
     async def test_early_score_is_not_a_gate(self):
         """Skor 0 olsa bile öncü varsa kapı AÇIK kalır (skor karar vermez)."""
+        # dip=True, proximity=0 → 45+0=45 (eski 15, yeni 45 çünkü dip=45 pt)
         proximity_zero = mm._early_score({"dip": True}, {"proximity": 0.0}, {}, 0, {})
-        self.assertEqual(15, proximity_zero)
+        self.assertEqual(45, proximity_zero)
         pre = {"approach": False, "m1": False, "dip": True}
         self.assertTrue(mm._early_trigger(
             tuple(sorted(k for k, v in pre.items() if v)), (), False))

@@ -145,11 +145,22 @@ class DynamicTargetPctTests(unittest.TestCase):
     def test_middle_and_low_tiers(self):
         # A3 (2026-09-14): bant eşikleri ham çalışma noktaları korunarak yeniden
         # ankrajlandı → 74.0/71.5/68.2 (eski 90/70/50).
-        self.assertEqual(2.5, dynamic_target_pct(72.5, 1.0))
-        self.assertEqual(2.0, dynamic_target_pct(69.5, 1.0))
+        # NOT: bant çıktısı (2.5 / 2.0) net_profit_floor(~3.0) ile karşılaştırılır;
+        # net_floor büyük → her iki durumda da sonuç ~3.0.
+        from app.routers.velocity import round_trip_cost_pct
+        spr = getattr(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.65)
+        net_floor = round(getattr(config, "SCALPING_NET_TARGET_PCT", 2.0) + round_trip_cost_pct() + spr, 3)
+        self.assertAlmostEqual(net_floor, dynamic_target_pct(72.5, 1.0), places=3)
+        self.assertAlmostEqual(net_floor, dynamic_target_pct(69.5, 1.0), places=3)
 
     def test_below_all_tiers_clamps_to_min(self):
-        self.assertEqual(config.MONITORING_TARGET_PCT_MIN, dynamic_target_pct(10.0, 1.0))
+        # Bant eşiği altında: bant katkısı yok, taban net_profit_floor'a yükseltilir.
+        # net_profit_floor = SCALPING_NET_TARGET_PCT + round_trip + spread (~3.0)
+        # Bu değer MONITORING_TARGET_PCT_MIN(1.5)'ten büyük → net_floor seçilir.
+        from app.routers.velocity import round_trip_cost_pct
+        spr = getattr(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.65)
+        net_floor = round(getattr(config, "SCALPING_NET_TARGET_PCT", 2.0) + round_trip_cost_pct() + spr, 3)
+        self.assertEqual(net_floor, dynamic_target_pct(10.0, 1.0))
 
     def test_learned_moves_target_both_ways(self):
         """12 örnek → ağırlık 0.6; learned banttan yüksekse yukarı, DÜŞÜKSE AŞAĞI."""
@@ -204,10 +215,20 @@ class DynamicTargetPctTests(unittest.TestCase):
                          dynamic_target_pct(95.0, 1.0, learned_pct=99.0, learned_count=12))
 
     def test_weak_score_cap_beats_learned_target(self):
-        """Zayıf skor kelepçesi (score*0.3) öğrenilmiş hedefi de sınırlar."""
-        # skor 5 → tavan 1.5; harman 4.6 üretse de cap 1.5'e iner → MIN'e kırpılır.
-        self.assertEqual(config.MONITORING_TARGET_PCT_MIN,
-                         dynamic_target_pct(5.0, 4.0, learned_pct=5.0, learned_count=12))
+        """Zayıf skor kelepçesi (score*0.3) öğrenilmiş hedefi de sınırlar.
+
+        skor 5 → tavan max(5*0.3=1.5, net_floor*0.75); harman 4.6 üretse de
+        bu cap'e iner → sonra MIN kelepçe.
+        """
+        from app.routers.velocity import round_trip_cost_pct
+        spr = getattr(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.65)
+        net_floor = getattr(config, "SCALPING_NET_TARGET_PCT", 2.0) + round_trip_cost_pct() + spr
+        weak_cap = max(5.0 * 0.3, net_floor * 0.75)
+        # harman: net_floor*0.4 + 5.0*0.6 (12 örnek → ağırlık 0.6), sonra cap
+        blend = net_floor * 0.4 + 5.0 * 0.6
+        expected = round(max(config.MONITORING_TARGET_PCT_MIN,
+                             min(config.MONITORING_TARGET_PCT_MAX, min(blend, weak_cap))), 3)
+        self.assertEqual(expected, dynamic_target_pct(5.0, 4.0, learned_pct=5.0, learned_count=12))
 
     def test_panel_score_false_skips_tiers_and_weak_score_cap(self):
         """`panel_score=False` (rising): PANEL ölçeğine bağlı iki kural da atlanır.
@@ -215,11 +236,16 @@ class DynamicTargetPctTests(unittest.TestCase):
         Rising skoru `strength × 10` ile sentezlenir, velocity PANEL skoru
         değildir → bant seçimi ve zayıf-skor kelepçesi uygulanmaz (plan §4/R3).
         """
-        # Bant devre dışı: skor 95 olsa bile hedef tabanda kalır → MIN'e kırpılır.
-        self.assertEqual(config.MONITORING_TARGET_PCT_MIN,
-                         dynamic_target_pct(95.0, 1.0, panel_score=False))
+        from app.routers.velocity import round_trip_cost_pct
+        spr = getattr(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.65)
+        net_floor = getattr(config, "SCALPING_NET_TARGET_PCT", 2.0) + round_trip_cost_pct() + spr
+        # Bant devre dışı: skor 95 olsa bile bant uygulanmaz → net_floor'a çekilir.
+        expected_no_tier = round(max(config.MONITORING_TARGET_PCT_MIN,
+                                     min(config.MONITORING_TARGET_PCT_MAX, net_floor)), 3)
+        self.assertEqual(expected_no_tier, dynamic_target_pct(95.0, 1.0, panel_score=False))
         # Zayıf-skor kelepçesi devre dışı: skor 5 olsa da harman uygulanır.
-        # 4.0*0.4 + 5.0*0.6 = 4.6 (panel_score=True olsaydı 1.5'e inerdi)
+        # base=4.0 > net_floor(~3.0) → target=4.0; harman: 4.0*0.4 + 5.0*0.6 = 4.6
+        # (panel_score=True olsaydı weak_cap(~2.25)'e inerdi)
         self.assertAlmostEqual(4.6, dynamic_target_pct(
             5.0, 4.0, learned_pct=5.0, learned_count=12, panel_score=False), places=3)
 

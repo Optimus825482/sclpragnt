@@ -1311,20 +1311,29 @@ def _early_score(pre: dict, detail: dict, cvd: dict, green: int, row_tfs: dict) 
     adayın daha "olgun" olduğu sıralanamıyor. Bu skor yalnızca ölçüm/UI
     sıralaması içindir; eşik olarak KULLANILMAZ (kullanmak kanıt gerektirir).
 
-    Bileşenler (toplam 100):
-      öncü sayısı 45 (her öncü 15) · yakınlık 25 (proximity×25)
-      · alıcı agresör 15 · üst-TF hizası 15 (M15+H1 yeşil → 7.5'er)
+    Bileşenler (toplam 100) — Kanıt düzeltmesi:
+      dip öncüsü 45 (tek kanıtlanmış pozitif-lift öncü, +0.018 OOS)
+      · yakınlık 30 (proximity×30, zirveye ne kadar yakın)
+      · alıcı agresör 15 (CVD buy_dominant)
+      · üst-TF hizası 10 (M15 yeşil → 5, H1 yeşil → 5)
+
+    NOT: `approach` (OOS lift −0.082) ve `m1` (OOS lift −0.094) eski
+    formülde her biri +15 puan katkıda bulunuyordu. Bu öncüler ters-yönlü
+    (contrarian) olduğu kanıtlandığı için skora artık GİRMEZ; `pre` sözlüğünde
+    tanımlayıcı olarak yaşamaya devam ederler (kanıt katmanı onları görür).
     """
     score = 0.0
-    score += 15.0 * sum(1 for key in ("approach", "m1", "dip") if pre.get(key))
+    # Yalnız kanıtlanmış pozitif-lift öncü: dip (MACD hist dip dönüşü + yakınlık)
+    if pre.get("dip"):
+        score += 45.0
     proximity = detail.get("proximity")
     if proximity is not None:
-        score += 25.0 * max(0.0, min(1.0, float(proximity)))
+        score += 30.0 * max(0.0, min(1.0, float(proximity)))
     if (cvd or {}).get("buy_dominant"):
         score += 15.0
     for tf in ("15m", "1h"):
         if (row_tfs.get(tf) or {}).get("green"):
-            score += 7.5
+            score += 5.0
     return int(min(100.0, round(score)))
 
 
