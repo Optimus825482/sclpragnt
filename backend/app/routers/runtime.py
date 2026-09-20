@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from app.config import config
 from app import database
 from app.state import market, analyzer
-from app.api_common import _start_background
+from app.api_common import _start_background, _fresh_public_price
 from app.circuit_breaker import breaker as strategy_breaker
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, ticker_24h, top_gainers
 from app.ws_runtime import ws_manager
@@ -744,6 +744,37 @@ def _m1_activity_features(indicator_analyzer: ScalpAnalyzer, bars: dict, now_ms:
         "atr_ema_13_pct": round(atr_ema_13 / price * 100, 5) if atr_ema_13 is not None and price else None,
     }
 
+async def _close_positions_on_passivation(passive_symbols):
+    """Pasife düşen sembollerdeki açık paper pozisyonları PnL'den bağımsız kapat.
+
+    Pasif sembolde giriş filtresi yeni pozisyon açmayı zaten engeller; mevcut
+    pozisyon ise strateji çıkış kriterlerine takılmadan fiyatsız askıda kalır.
+    Backtest --passive-direct-exit'in canlı karşılığı: kapat → sonra pasifleştir.
+    Kapanamayan pozisyon (fiyat alınamadı vb.) sonraki aktivite turunda yeniden
+    denenir; sembol pasif kaldığı sürece listede yer alır.
+    """
+    stuck = sorted(symbol for symbol in passive_symbols if symbol in analyzer.positions)
+    if not stuck:
+        return
+    for symbol in stuck:
+        try:
+            price, _ = await _fresh_public_price(symbol)
+        except Exception as exc:
+            print(f"[Activity passive exit] {symbol}: fiyat alınamadı: {exc}", flush=True)
+            continue
+        if not price:
+            print(f"[Activity passive exit] {symbol}: fiyat yok, sonraki turda tekrar denenecek", flush=True)
+            continue
+        try:
+            sig = await analyzer.close_position(symbol, price, "symbol_activity_passive_exit")
+        except Exception as exc:
+            print(f"[Activity passive exit] {symbol}: kapatma başarısız: {exc}", flush=True)
+            continue
+        if sig:
+            await ws_manager.broadcast({"type": "signal", "data": sig})
+            print(f"[Activity passive exit] {symbol} pasif; açık pozisyon PnL'den bağımsız kapatıldı @ {price}", flush=True)
+    invalidate_wallet_caches()
+
 async def refresh_symbol_activity():
     """Refresh the full Binance TR TRY universe and mark inactive symbols."""
     known_try = set(await trading_symbols("TRY"))
@@ -883,7 +914,12 @@ async def refresh_symbol_activity():
             "reason": "active" if active else (comprehensive.get("combined_reason", flat_reason if not m1_flat_ok else "volume_or_liquidity_below_threshold")),
             "checked_at": time.time(),
         }
-    config.PASSIVE_SYMBOLS = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
+    passive_symbols = {symbol for symbol, item in statuses.items() if item["status"] == "PASSIVE"}
+    # Kapat → sonra pasifleştir: pasife düşen semboldeki açık pozisyon askıda
+    # kalmasın. Başarısız kapanış sonraki turda yeniden denenir.
+    if config.SYMBOL_ACTIVITY_PASSIVE_EXIT:
+        await _close_positions_on_passivation(passive_symbols)
+    config.PASSIVE_SYMBOLS = passive_symbols
     config.SYMBOL_ACTIVITY_STATUS = statuses
     await database.set_llm_setting("symbol_activity_status", json.dumps(statuses, ensure_ascii=False))
     active_count = sum(1 for item in statuses.values() if item["status"] == "ACTIVE")

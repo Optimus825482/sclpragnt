@@ -319,6 +319,11 @@ async def init_db():
         # kapanis (gerceklestirilebilir), `net_pct` gidis/donus maliyeti dusulmus hali.
         conn.execute("ALTER TABLE velocity_candidates ADD COLUMN IF NOT EXISTS exit_pct DOUBLE PRECISION")
         conn.execute("ALTER TABLE velocity_candidates ADD COLUMN IF NOT EXISTS net_pct DOUBLE PRECISION")
+        # ADMIN İŞLEM BİLDİRİMİ (2026-09-20): aboneliğin hangi kullanıcıya ait
+        # olduğu. Eski kayıtlar NULL kalır; uygulama açılışındaki reconcile
+        # bunları kullanıcı adıyla yeniden yazar. Seçili alıcılara hedefli
+        # push bu kolonla filtrelenir.
+        conn.execute("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS username TEXT")
         # V-04: MACD kanıt şeması artık OKUMA yolunda değil, açılışta bir kez
         # hazırlanır (istatistik uçları DDL/INSERT/COMMIT yapmaz).
         _ensure_macd_evidence_schema(conn)
@@ -3687,8 +3692,11 @@ async def get_alert_events(limit=100):
         return result
     return await _run_db(op)
 
-async def save_push_subscription(subscription):
+async def save_push_subscription(subscription, username=None):
     """Web push aboneliğini kaydet/güncelle.
+
+    `username` verilirse abonelik o kullanıcıya bağlanır (admin işlem
+    bildiriminin seçili alıcılara hedeflenmesi bununla çalışır).
 
     NOT (2026-09-06): Postgres şeması TIMESTAMPTZ + JSONB kullanır; epoch float
     ve düz string yazımı psycopg'de hata veriyordu (push-subscription 500).
@@ -3705,6 +3713,9 @@ async def save_push_subscription(subscription):
     endpoint = str(subscription.get("endpoint") or "")
     if not endpoint: raise ValueError("push subscription endpoint gerekli")
     p256dh = str(((subscription.get("keys") or {}).get("p256dh")) or "")
+    # Oturumlu kayıtta abonelik kullanıcıya bağlanır (hedefli push için);
+    # oturumsuz/None çağrılar mevcut username'i SİLMEMELİ (COALESCE).
+    username = str(username or "").strip() or None
     def op(conn):
         replaced = 0
         if p256dh:
@@ -3721,15 +3732,30 @@ async def save_push_subscription(subscription):
                                  [(ep,) for ep in stale])
                 replaced = len(stale)
         conn.execute(
-            "INSERT INTO push_subscriptions(endpoint,subscription,created_at,updated_at) "
-            "VALUES(?::text,?::jsonb,now(),now()) "
-            "ON CONFLICT(endpoint) DO UPDATE SET subscription=excluded.subscription,updated_at=now()",
-            (endpoint, _json_safe_dumps(subscription)),
+            "INSERT INTO push_subscriptions(endpoint,subscription,username,created_at,updated_at) "
+            "VALUES(?::text,?::jsonb,?::text,now(),now()) "
+            "ON CONFLICT(endpoint) DO UPDATE SET subscription=excluded.subscription,"
+            "username=COALESCE(excluded.username,push_subscriptions.username),updated_at=now()",
+            (endpoint, _json_safe_dumps(subscription), username),
         ); conn.commit(); return {"ok": True, "replaced_duplicates": replaced}
     return await _run_db(op)
 
-async def list_push_subscriptions():
-    def op(conn): return [_json_value(row["subscription"], {}) for row in conn.execute("SELECT subscription FROM push_subscriptions").fetchall()]
+async def list_push_subscriptions(usernames=None):
+    """Tüm push abonelikleri; `usernames` verilirse yalnız o kullanıcılarınkiler.
+
+    `username` NULL olan (kullanıcı bağlaması öncesi) kayıtlar filtrede düşer —
+    uygulama açılışındaki reconcile bunları oturum sahibiyle yeniden kaydeder.
+    """
+    wanted = sorted({str(u or "").strip() for u in (usernames or []) if str(u or "").strip()})
+    def op(conn):
+        if wanted:
+            placeholders = ",".join("?" for _ in wanted)
+            rows = conn.execute(
+                f"SELECT subscription FROM push_subscriptions WHERE username IN ({placeholders})",
+                tuple(wanted)).fetchall()
+        else:
+            rows = conn.execute("SELECT subscription FROM push_subscriptions").fetchall()
+        return [_json_value(row["subscription"], {}) for row in rows]
     return await _run_db(op)
 
 
