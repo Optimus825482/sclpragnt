@@ -507,6 +507,10 @@ class Config:
     SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT = max(0.0, float(os.getenv("SYMBOL_ACTIVITY_M1_FLAT_MAX_RANGE_PCT", "0")))
     SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT = max(1, min(5, int(os.getenv("SYMBOL_ACTIVITY_M1_FLAT_5M_MAX_COUNT", "4"))))
     SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT = max(1, min(30, int(os.getenv("SYMBOL_ACTIVITY_M1_FLAT_30M_MAX_COUNT", "18"))))
+    # Pasife düşen sembolde açık paper pozisyon varsa PnL'den bağımsız kapat
+    # (backtest --passive-direct-exit'in canlı karşılığı). Pasif sembolde giriş
+    # filtresi yeni pozisyon açmayı zaten engeller; aksi halde pozisyon fiyatsız askıda kalır.
+    SYMBOL_ACTIVITY_PASSIVE_EXIT = os.getenv("SYMBOL_ACTIVITY_PASSIVE_EXIT", "true").lower() == "true"
     PASSIVE_SYMBOLS = set()
     SYMBOL_ACTIVITY_STATUS = {}
     # Radar yalnızca gözlem/ranking yüzeyidir; otomatik pozisyon açmaz.

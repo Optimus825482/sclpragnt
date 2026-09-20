@@ -128,6 +128,7 @@ export default function BinanceTrPage() {
 }
 
 function BinanceTrPageInner() {
+  const { role } = useAuth();
   // Sistem Ayarları & API
   const [configured, setConfigured] = useState(false);
   const [sellEnabled, setSellEnabled] = useState(false);
@@ -181,6 +182,9 @@ function BinanceTrPageInner() {
   const [buyBusy, setBuyBusy] = useState(false);
   const [buyMsg, setBuyMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [buyDone, setBuyDone] = useState<{ order: string; asset: string; qty: string; price: string } | null>(null);
+  // ADMIN İŞLEM BİLDİRİMİ: seçiliyse emir sonrası Bildirim Ayarları'ndaki
+  // kullanıcılara "{sembol} {fiyat} pozisyon açıldı" push'u gider.
+  const [buyNotify, setBuyNotify] = useState(false);
   const [pairs, setPairs] = useState<string[]>([]);
   const buyAssetRef = useRef("");
 
@@ -671,7 +675,7 @@ function BinanceTrPageInner() {
       const r = await apiRequest(`${API_BASE}/api/binance/buy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset, amount_try: buyAmountNum, confirmation: "REAL_BUY" }),
+        body: JSON.stringify({ asset, amount_try: buyAmountNum, confirmation: "REAL_BUY", notify: buyNotify }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.ok) throw new Error(d.detail || `Alım emri gönderilemedi (HTTP ${r.status})`);
@@ -2269,6 +2273,23 @@ function BinanceTrPageInner() {
                       <p className={`text-xs ${buyMsg.ok ? "text-neon-green" : "text-neon-red"}`}>
                         {buyMsg.text}
                       </p>
+                    )}
+
+                    {(role || "").toLowerCase() === "admin" && (
+                      <label className="flex cursor-pointer select-none items-center gap-2 rounded-lg border border-bunker-700 bg-bunker-900/60 px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={buyNotify}
+                          onChange={(e) => setBuyNotify(e.target.checked)}
+                          className="h-4 w-4 accent-[color:var(--neon-green,#22c55e)]"
+                        />
+                        <span className="font-mono text-xs text-bunker-muted">
+                          Bildirim gönder
+                          <span className="mt-0.5 block text-[10px] text-bunker-muted/70">
+                            Bildirim Ayarları&apos;nda seçili kullanıcılara sembol + fiyat bildirilir (tutar gönderilmez)
+                          </span>
+                        </span>
+                      </label>
                     )}
 
                     <div className="flex justify-end gap-2 pt-2">

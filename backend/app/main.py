@@ -1271,19 +1271,22 @@ async def delete_alert(alert_id: int, request: Request):
     return {"ok": await database.delete_alert_rule(alert_id), "paper_only": True}
 
 @app.post("/api/alerts/push-subscription")
-async def save_alert_push_subscription(payload: dict):
+async def save_alert_push_subscription(payload: dict, request: Request = None):
     """Web Push aboneliğini kaydet (frontend PushSubscription.toJSON()).
 
     body: { endpoint, expirationTime?, keys?: {p256dh, auth} }
     Hata durumunda 500 yerine {ok:false, detail} döner; frontend hatayı gösterir.
+    Oturum varsa abonelik kullanıcı adına bağlanır (admin işlem bildirimi
+    alıcı filtresi bununla çalışır; oturumsuz çağrı mevcut bağlamayı korur).
     """
     if not isinstance(payload, dict):
         raise HTTPException(status_code=422, detail="gecersiz payload")
     endpoint = str(payload.get("endpoint") or "").strip()
     if not endpoint:
         raise HTTPException(status_code=422, detail="push subscription endpoint gerekli")
+    username, _role = _session_identity(request)
     try:
-        saved = await database.save_push_subscription(payload)
+        saved = await database.save_push_subscription(payload, username=username)
         return {"ok": bool(saved), "paper_only": True,
                 # Mükerrer endpoint temizliği görünür olsun (aynı p256dh ile
                 # gelen ikinci kayıt eski satırı ezer — çift bildirim ölür).
@@ -1348,6 +1351,49 @@ async def send_test_push_notification(request: Request):
                           target="push-test", request=request)
     return {"ok": True, "sent": sent, "total": total,
             "dead": int(result.get("dead_count") or 0), "paper_only": True}
+
+
+# --- ADMIN İŞLEM BİLDİRİMİ: alıcı yönetimi ---------------------------------
+# Ayarlar > Bildirim Ayarları sekmesi bu uçlarla yönetilir. Admin, Binance TR
+# sayfasından gerçek pozisyon açarken "Bildirim Gönder" seçerse push yalnız
+# burada seçilen kullanıcılara gider.
+ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY = "admin_trade_notify_recipients"
+
+
+def _parse_recipients(raw) -> list[str]:
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    except (TypeError, ValueError):
+        value = []
+    if not isinstance(value, list):
+        return []
+    return sorted({str(u or "").strip() for u in value if str(u or "").strip()})
+
+
+@app.get("/api/notifications/recipients")
+async def get_admin_trade_notify_recipients(request: Request):
+    _require_admin(request)
+    recipients = _parse_recipients(
+        await database.get_llm_setting(ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY, "[]"))
+    return {"ok": True, "recipients": recipients, "paper_only": True}
+
+
+@app.post("/api/notifications/recipients")
+async def set_admin_trade_notify_recipients(payload: dict, request: Request):
+    admin = _require_admin(request)
+    usernames = (payload or {}).get("recipients")
+    if not isinstance(usernames, list):
+        raise HTTPException(status_code=422, detail="recipients liste olmalı")
+    recipients = _parse_recipients(usernames)
+    known = {str(u.get("username") or "") for u in await database.list_users()}
+    unknown = [u for u in recipients if u not in known]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Bilinmeyen kullanıcı(lar): {', '.join(unknown)}")
+    await database.set_llm_setting(ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY, json.dumps(recipients))
+    await log_user_action(admin.get("username"), admin.get("role"), "settings",
+                          "ADMIN_TRADE_NOTIFY_RECIPIENTS",
+                          details={"recipients": recipients}, request=request)
+    return {"ok": True, "recipients": recipients, "paper_only": True}
 
 CONFIG_FIELDS = {
     "top_gainers_auto_activate": "TOP_GAINERS_AUTO_ACTIVATE",
@@ -1432,7 +1478,9 @@ async def get_market_symbols():
 @app.get("/api/market-klines/{symbol}")
 async def get_market_klines(symbol: str, interval: str = "5m", limit: int = 200):
     """Single public market-data adapter used by all UI candle consumers."""
-    if interval not in {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}:
+    # "3m" (M3): teknik grafik sayfası seçilebilir ufuklar arasında sunuyor;
+    # listede yoktu ve uç 400 dönüyordu → M3 grafiği BOŞ çiziyordu.
+    if interval not in {"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"}:
         raise HTTPException(status_code=400, detail="Geçersiz timeframe")
     rows = await fetch_klines(symbol, interval, limit=max(20, min(int(limit), 500)))
     # CANLI AKIS (2026-09-16): grafik bu (sembol, ufuk) çiftini görüntülüyor →
@@ -2785,11 +2833,15 @@ async def binance_watch(payload: dict, request: Request):
 async def binance_buy(payload: dict, request: Request):
     """Kullanıcı onaylı MARKET BUY — harcanacak TRY tutarıyla (oturum açmış kullanıcı, gerçek emir).
 
-    Gövde: {"asset": "BTC", "amount_try": 500, "confirmation": "REAL_BUY"}.
+    Gövde: {"asset": "BTC", "amount_try": 500, "confirmation": "REAL_BUY",
+    "notify": true}.
     Sembol: {ASSET}_TRY öncelikli, yoksa {ASSET}_USDT (USDT bakiyesinden
     değil — USDT çifti seçildiyse tutar USDT cinsinden harcanır). Doküman
     hizalı: MARKET alış quoteOrderQty ile gönderilir. Başarılı cevapta
     emir no + (proxy taşıyorsa) doldurma ortalaması döner.
+    notify=true ise Ayarlar > Bildirim Ayarları'nda seçili kullanıcılara
+    "{kullanıcı} {SEMBOLOLUŞUR} sembolünde {fiyat} fiyatla pozisyon açtı"
+    push'u gider (tutar/miktar YOK — yalnız sembol + fiyat).
     """
     principal = _require_user(request)
     user = await database.get_user_by_username(str(principal.get("username") or ""))
@@ -2848,7 +2900,37 @@ async def binance_buy(payload: dict, request: Request):
     _actor, _actor_role = _session_identity(request)
     await log_user_action(_actor, _actor_role, "trade", "BINANCE_TR_BUY",
                           target=asset, details={"asset": asset, **result}, request=request)
-    return {"ok": True, **result}
+    notify_requested = bool(payload.get("notify"))
+    notification_result = None
+    if notify_requested:
+        try:
+            recipients = _parse_recipients(await database.get_llm_setting(
+                ADMIN_TRADE_NOTIFY_RECIPIENTS_KEY, "[]"))
+            if recipients:
+                try:
+                    price = float(result.get("avg_price") or 0) or None
+                except (TypeError, ValueError):
+                    price = None
+                price_txt = _fmt_tr_price(price) if price else "—"
+                from app import alerting
+                notification_result = await alerting.deliver_web_push(
+                    f"{principal.get('username')} kullanıcısı "
+                    f"{str(symbol_u).replace('_', '')} sembolünde "
+                    f"{price_txt} fiyatla pozisyon açtı",
+                    title="Scalper Agent · İşlem Bildirimi",
+                    url="/binance-tr", tag="admin-trade",
+                    extra={"source": "admin_real_buy", "symbol": symbol_u},
+                    usernames=recipients)
+        except Exception as notify_exc:
+            # Bildirim arızası başarılı emri BOZMAMALI; yalnız loglanır.
+            logger.warning("Admin işlem bildirimi gönderilemedi: %s", notify_exc)
+    return {"ok": True, "notify": notification_result, **result}
+
+
+def _fmt_tr_price(value: float) -> str:
+    """0.72 → '0,72' (Türkçe ondalık virgül; sondaki sıfırlar atılır)."""
+    text = f"{float(value):.8f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
 
 
 @app.get("/api/binance/open-orders")

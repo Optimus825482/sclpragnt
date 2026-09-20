@@ -762,5 +762,185 @@ class I10DeadFunctionTests(unittest.TestCase):
         self.assertTrue(callable(getattr(main, "_create_postgres_backup", None)))
 
 
+# ---------------------------------------------------------------------------
+# Aktivite pasif çıkışı — pasife düşen sembolde açık pozisyon PnL'den
+# bağımsız kapatılır (kapat → sonra pasifleştir)
+# ---------------------------------------------------------------------------
+class ActivityPassiveExitTests(unittest.IsolatedAsyncioTestCase):
+    async def test_passive_symbol_open_position_is_closed(self):
+        from app.routers import runtime as runtime_routes
+
+        positions = {"FLATTRYY": {"entry_price": 10.0}}
+        close_mock = AsyncMock(return_value={"symbol": "FLATTRYY", "action": "CLOSE_LONG"})
+        broadcast_mock = AsyncMock()
+        price_mock = AsyncMock(return_value=(9.7, {}))
+        with patch.object(runtime_routes, "analyzer", MagicMock(positions=positions, close_position=close_mock)), \
+             patch.object(runtime_routes, "_fresh_public_price", price_mock), \
+             patch.object(runtime_routes, "ws_manager", MagicMock(broadcast=broadcast_mock)), \
+             patch.object(runtime_routes, "invalidate_wallet_caches"):
+            await runtime_routes._close_positions_on_passivation({"FLATTRYY", "IDLETRY"})
+        close_mock.assert_awaited_once_with("FLATTRYY", 9.7, "symbol_activity_passive_exit")
+        broadcast_mock.assert_awaited_once()
+
+    async def test_positionless_passive_symbol_is_untouched(self):
+        from app.routers import runtime as runtime_routes
+
+        close_mock = AsyncMock()
+        with patch.object(runtime_routes, "analyzer", MagicMock(positions={}, close_position=close_mock)), \
+             patch.object(runtime_routes, "_fresh_public_price", AsyncMock(return_value=(1.0, {}))):
+            await runtime_routes._close_positions_on_passivation({"IDLETRY"})
+        close_mock.assert_not_awaited()
+
+    async def test_price_failure_leaves_position_for_next_cycle(self):
+        from app.routers import runtime as runtime_routes
+
+        close_mock = AsyncMock()
+        positions = {"FLATTRYY": {"entry_price": 10.0}}
+        with patch.object(runtime_routes, "analyzer", MagicMock(positions=positions, close_position=close_mock)), \
+             patch.object(runtime_routes, "_fresh_public_price", AsyncMock(return_value=(0.0, {}))):
+            await runtime_routes._close_positions_on_passivation({"FLATTRYY"})
+        close_mock.assert_not_awaited()
+
+    def test_refresh_closes_before_passivation_and_flag_exists(self):
+        """Kaynak kilidi: PASSIVE_SYMBOLS atanmadan ÖNCE kapatma denenir."""
+        from app.routers import runtime as runtime_routes
+
+        src = inspect.getsource(runtime_routes.refresh_symbol_activity)
+        self.assertIn("await _close_positions_on_passivation(passive_symbols)", src)
+        self.assertIn("config.SYMBOL_ACTIVITY_PASSIVE_EXIT", src)
+        self.assertLess(src.index("_close_positions_on_passivation(passive_symbols)"),
+                        src.index("config.PASSIVE_SYMBOLS = passive_symbols"))
+        config_src = (_APP / "config.py").read_text(encoding="utf-8")
+        self.assertIn("SYMBOL_ACTIVITY_PASSIVE_EXIT", config_src)
+
+    def test_exit_reason_is_not_an_llm_legacy_blocked_prefix(self):
+        """Pasif çıkış nedeni, LLM_PAPER legacy çıkış bloğuna takılmamalı."""
+        from app.analyzer import ScalpAnalyzer
+
+        blocked_prefixes = ("time_decay_", "early_failure", "stale_position", "max_hold_")
+        self.assertFalse("symbol_activity_passive_exit".startswith(blocked_prefixes))
+
+
+# ---------------------------------------------------------------------------
+# ADMIN İŞLEM BİLDİRİMİ — alıcı seçimi + hedefli push + abonelik kullanıcı bağlama
+# ---------------------------------------------------------------------------
+class AdminTradeNotifyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recipients_roundtrip_normalizes_and_persists(self):
+        from app import main
+
+        saved = {}
+        async def fake_set(key, value): saved[key] = value
+        async def fake_get(key, default=None): return saved.get(key, default)
+        admin = MagicMock(return_value={"username": "admin", "role": "admin"})
+        with patch("app.main._require_admin", admin), \
+             patch("app.main.database.list_users", new=AsyncMock(return_value=[{"username": "ali"}, {"username": "veli"}])), \
+             patch("app.main.database.set_llm_setting", new=fake_set), \
+             patch("app.main.log_user_action", new=AsyncMock()):
+            result = await main.set_admin_trade_notify_recipients({"recipients": ["veli", " ali "]}, request=None)
+        self.assertEqual(["ali", "veli"], result["recipients"])
+        self.assertEqual(["ali", "veli"], json.loads(saved["admin_trade_notify_recipients"]))
+        with patch("app.main._require_admin", admin), \
+             patch("app.main.database.get_llm_setting", new=fake_get):
+            got = await main.get_admin_trade_notify_recipients(request=None)
+        self.assertEqual(["ali", "veli"], got["recipients"])
+
+    async def test_recipients_rejects_unknown_user(self):
+        from app import main
+
+        with patch("app.main._require_admin", MagicMock(return_value={"username": "admin", "role": "admin"})), \
+             patch("app.main.database.list_users", new=AsyncMock(return_value=[{"username": "ali"}])):
+            with self.assertRaises(HTTPException) as ctx:
+                await main.set_admin_trade_notify_recipients({"recipients": ["hacker"]}, request=None)
+        self.assertEqual(422, ctx.exception.status_code)
+
+    async def test_recipients_endpoints_are_admin_gated(self):
+        from app import main
+
+        with patch("app.main._require_admin", MagicMock(side_effect=HTTPException(403, "admin only"))):
+            with self.assertRaises(HTTPException):
+                await main.get_admin_trade_notify_recipients(request=None)
+            with self.assertRaises(HTTPException):
+                await main.set_admin_trade_notify_recipients({"recipients": []}, request=None)
+
+    async def test_push_subscription_binds_session_username(self):
+        from app import main
+
+        seen = {}
+        async def fake_save(sub, username=None):
+            seen["username"] = username
+            return {"ok": True}
+        request = MagicMock(headers={}, cookies={})
+        with patch("app.security.request_user", return_value={"username": "ali", "role": "user"}), \
+             patch("app.main.database.save_push_subscription", new=fake_save):
+            result = await main.save_alert_push_subscription({"endpoint": "https://push.example/1"}, request=request)
+        self.assertTrue(result["ok"])
+        self.assertEqual("ali", seen["username"])
+
+    async def test_deliver_web_push_targets_selected_users_only(self):
+        from app import alerting
+
+        seen = {}
+        async def fake_list(usernames=None):
+            seen["usernames"] = usernames
+            return [{"endpoint": "https://push.example/1"}]
+        with patch.dict(os.environ, {"VAPID_PRIVATE_KEY": "test-key"}), \
+             patch("app.database.list_push_subscriptions", new=fake_list), \
+             patch("pywebpush.webpush", MagicMock()):
+            result = await alerting.deliver_web_push("admin BTCTRY 0,72", usernames=["ali", "veli"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(["ali", "veli"], seen["usernames"])
+
+    async def test_tr_price_format_uses_comma_and_trims_zeros(self):
+        from app.main import _fmt_tr_price
+
+        self.assertEqual("0,72", _fmt_tr_price(0.72))
+        self.assertEqual("142530,5", _fmt_tr_price(142530.50))
+        self.assertEqual("1", _fmt_tr_price(1.0))
+
+    def test_buy_flow_sends_amountless_targeted_notification(self):
+        """Kaynak kilidi: buy ucunda notify → seçili alıcılara, tutarsız mesaj."""
+        from app import alerting, main
+
+        src = inspect.getsource(main.binance_buy)
+        self.assertIn('bool(payload.get("notify"))', src)
+        self.assertIn("usernames=recipients", src)
+        self.assertIn("fiyatla pozisyon açtı", src)
+        self.assertIn("list_push_subscriptions", inspect.getsource(alerting.deliver_web_push))
+        tail = src[src.index("notify_requested"):]
+        self.assertNotIn("amount_try", tail)
+
+    def test_push_subscription_schema_binds_username(self):
+        from app import database
+
+        self.assertIn("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS username TEXT",
+                      inspect.getsource(database.init_db))
+        self.assertIn("COALESCE(excluded.username,push_subscriptions.username)",
+                      inspect.getsource(database.save_push_subscription))
+        list_src = inspect.getsource(database.list_push_subscriptions)
+        self.assertIn("usernames", list_src)
+        self.assertIn("WHERE username IN", list_src)
+
+
+# ---------------------------------------------------------------------------
+# M3 GRAFİK — market-klines ucu 3m ufku kabul etmeli (teknik grafik M3 boştu)
+# ---------------------------------------------------------------------------
+class MarketKlinesIntervalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_3m_interval_is_served(self):
+        from app import main
+
+        rows = [[1_700_000_000_000, "1", "2", "0.5", "1.5", "10", 1_700_000_180_000]]
+        with patch("app.main.fetch_klines", new=AsyncMock(return_value=rows)):
+            result = await main.get_market_klines("BTCTRY", interval="3m", limit=50)
+        self.assertEqual("3m", result["interval"])
+        self.assertEqual(rows, result["candles"])
+
+    async def test_unknown_interval_still_rejected(self):
+        from app import main
+
+        with self.assertRaises(HTTPException) as ctx:
+            await main.get_market_klines("BTCTRY", interval="2m", limit=50)
+        self.assertEqual(400, ctx.exception.status_code)
+
+
 if __name__ == "__main__":
     unittest.main()

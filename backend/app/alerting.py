@@ -66,12 +66,14 @@ def _rule_value(rule, market, ticker):
     return (last_price / closes[-2] - 1.0) * 100.0
 
 
-async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=None):
+async def deliver_web_push(message, *, title=None, url=None, tag=None, extra=None, usernames=None):
     vapid_private, subject = os.getenv("VAPID_PRIVATE_KEY", "").strip(), os.getenv("VAPID_SUBJECT", "mailto:alerts@example.com").strip()
     if not vapid_private: return {"ok": False, "skipped": True, "reason": "vapid_not_configured"}
     try:
         from pywebpush import webpush
-        subscriptions = await database.list_push_subscriptions()
+        # usernames verilirse yalnız seçili alıcıların abonelikleri hedeflenir
+        # (admin işlem bildirimi); None → tüm abonelikler (mevcut davranış).
+        subscriptions = await database.list_push_subscriptions(usernames)
         payload_obj = {
             "title": title or "Scalper Agent alarmı",
             "body": message,

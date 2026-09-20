@@ -43,7 +43,7 @@ export default function SettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "macd">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -98,7 +98,7 @@ function SettingsPageInner() {
     }
   }, []);
 
-  const selectTab = (key: "symbols" | "radar" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "macd") => {
+  const selectTab = (key: "symbols" | "radar" | "app" | "notifications" | "strategies" | "llm" | "chat" | "auto-paper" | "macd") => {
     setActiveTab(key);
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
@@ -614,6 +614,7 @@ function SettingsPageInner() {
             ["symbols", "Semboller", "🪙"],
             ["radar", "Radar", "📡"],
             ["app", "Uygulama Ayarları", "⚙️"],
+            ["notifications", "Bildirim Ayarları", "🔔"],
             ["strategies", "Strateji Ayarları", "📈"],
             ["auto-paper", "Otonom Paper", "🤖"],
             ["macd", "MACD / Sıçrama", "🚀"],
@@ -634,6 +635,9 @@ function SettingsPageInner() {
               <RadarSettingsPanel />
               <RadarReplayPanel />
             </div>
+          </div>
+          <div className={`${activeTab !== "notifications" ? "hidden" : ""}`}>
+            <NotificationSettingsPanel />
           </div>
           <div className={`${activeTab !== "chat" ? "hidden" : ""}`}>
             <ChatSettingsPanel />
@@ -1298,6 +1302,117 @@ function RadarSettingsPanel() {
                 className="ui-button ui-button-primary">{saving ? "KAYDEDİLİYOR…" : "KAYDET"}</button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 🔔 BİLDİRİM AYARLARI (2026-09-20) — Admin gerçek işlem bildirimi alıcıları.
+ * Binance TR sayfasından pozisyon açılırken "Bildirim Gönder" işaretlenirse
+ * push yalnız burada seçilen kullanıcılara gider:
+ *   GET/POST /api/notifications/recipients  (alıcı listesi — admin)
+ *   GET      /api/admin/users               (kullanıcı listesi — admin)
+ * Bildirim "{kullanıcı} {SEMBOLOLUŞUR} sembolünde {fiyat} fiyatla pozisyon
+ * açtı" biçimindedir; tutar/miktar İÇERMEZ. Teslimat yalnız oturum açmış ve
+ * push izni vermiş kullanıcıların kayıtlı cihazlarına yapılır.
+ */
+function NotificationSettingsPanel() {
+  const [users, setUsers] = useState<{ username: string; role: string; is_active: boolean }[]>([]);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [usersRes, recRes] = await Promise.all([
+        apiRequest(`${API_BASE}/api/admin/users`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/notifications/recipients`, { cache: "no-store" }),
+      ]);
+      if (!usersRes.ok) throw new Error(`Kullanıcı listesi alınamadı (HTTP ${usersRes.status})`);
+      if (!recRes.ok) throw new Error(`Alıcılar okunamadı (HTTP ${recRes.status})`);
+      const usersData = await usersRes.json().catch(() => ({}));
+      const recData = await recRes.json().catch(() => ({}));
+      setUsers(Array.isArray(usersData.users) ? usersData.users : []);
+      setSelected(Array.isArray(recData.recipients) ? recData.recipients : []);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Bildirim ayarları okunamadı");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const toggleUser = (username: string) => {
+    setSelected((prev) => (prev.includes(username) ? prev.filter((u) => u !== username) : [...prev, username]));
+  };
+
+  const save = async () => {
+    setSaving(true); setError(null); setNote(null);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/notifications/recipients`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recipients: selected }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json().catch(() => ({}));
+      if (Array.isArray(data.recipients)) setSelected(data.recipients);
+      setNote("Bildirim alıcıları kaydedildi.");
+    } catch (err) {
+      setError(`Kaydedilemedi: ${err instanceof Error ? err.message : "bilinmeyen hata"}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="card bg-bunker-950">
+      <p className="eyebrow text-neon-green">🔔 BİLDİRİM AYARLARI · YÖNETİCİ İŞLEM BİLDİRİMİ</p>
+      <p className="text-xs text-bunker-muted mt-1">
+        Yönetici Binance TR sayfasından gerçek pozisyon açarken <span className="text-white font-bold">“Bildirim gönder”</span> seçeneğini işaretlerse,
+        seçili kullanıcılara sembol ve açılış fiyatı bildirilir (tutar/miktar gönderilmez). Bildirim yalnız uygulamada oturum açmış ve push izni vermiş kullanıcılara iletilir.
+      </p>
+
+      {error && <p className="mt-3 font-mono text-xs text-neon-red">⚠ {error}</p>}
+      {note && <p className="mt-3 font-mono text-xs text-neon-green">✓ {note}</p>}
+      {loading && <p className="mt-3 font-mono text-xs text-bunker-muted animate-pulse">Yükleniyor...</p>}
+
+      {!loading && (
+        <div className="mt-4 space-y-3">
+          <p className="eyebrow text-bunker-muted">BİLDİRİM ALACAK KULLANICILAR · {selected.length}</p>
+          {users.length === 0 && <p className="text-xs text-bunker-muted font-mono">Kullanıcı bulunamadı.</p>}
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {users.map((u) => {
+              const active = selected.includes(u.username);
+              return (
+                <label key={u.username} className={`flex cursor-pointer select-none items-center gap-2 rounded-lg border px-3 py-2 transition-colors ${active ? "border-neon-green/60 bg-neon-green/10" : "border-bunker-700 bg-bunker-900/60 hover:border-bunker-600"}`}>
+                  <input
+                    type="checkbox"
+                    checked={active}
+                    onChange={() => toggleUser(u.username)}
+                    className="h-4 w-4 accent-[color:var(--neon-green,#22c55e)]"
+                  />
+                  <span className={`font-mono text-xs ${active ? "text-neon-green font-bold" : "text-bunker-muted"}`}>{u.username}</span>
+                  {String(u.role || "").toLowerCase() === "admin" && (
+                    <span className="ml-auto rounded bg-sky-400/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-300">ADMIN</span>
+                  )}
+                  {u.is_active === false && <span className="ml-auto rounded bg-neon-red/15 px-1.5 py-0.5 font-mono text-[10px] text-neon-red">PASİF</span>}
+                </label>
+              );
+            })}
+          </div>
+          <button type="button" onClick={save} disabled={saving} className="ui-button ui-button-primary">
+            {saving ? "KAYDEDİLİYOR…" : "ALICILARI KAYDET"}
+          </button>
         </div>
       )}
     </div>
