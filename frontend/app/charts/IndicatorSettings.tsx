@@ -130,9 +130,9 @@ export default function IndicatorSettings({ entry, initialParams, initialStyle, 
     };
 
     return (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center pt-16 px-3" onClick={onClose}>
-            <div className="bg-bunker-900 border border-bunker-700 rounded-xl w-full max-w-[480px] min-w-0" onClick={(e) => e.stopPropagation()}>
-                <div className="p-4 border-b border-bunker-800 flex justify-between items-center">
+        <div className="fixed inset-0 z-50 bg-black/75 grid place-items-center p-3 overflow-y-auto" onClick={onClose}>
+            <div className="bg-bunker-900 border border-bunker-700 rounded-xl w-full max-w-[480px] max-h-[90vh] flex flex-col min-w-0 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <div className="p-4 border-b border-bunker-800 flex justify-between items-center shrink-0">
                     <div>
                         <p className="font-mono text-sm font-bold text-white">
                             {entry.shortName} {editing && <span className="text-neon-green">— AYARLAR</span>}
@@ -141,10 +141,10 @@ export default function IndicatorSettings({ entry, initialParams, initialStyle, 
                             {entry.overlay ? "Grafik üstü (overlay)" : "Ayrı panel (pane)"} · {plotCount} çizgi
                         </p>
                     </div>
-                    <button onClick={onClose} className="text-bunker-muted hover:text-white text-lg leading-none">✕</button>
+                    <button onClick={onClose} className="min-h-11 min-w-11 flex items-center justify-center text-bunker-muted hover:text-white text-lg leading-none rounded-lg" aria-label="Kapat">✕</button>
                 </div>
 
-                <div className="p-4 space-y-4 max-h-[55vh] overflow-y-auto">
+                <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto flex-1">
                     {/* GİRİŞLER */}
                     <div className="space-y-3">
                         <p className="eyebrow !text-[10px]">GİRİŞLER</p>
@@ -236,13 +236,13 @@ export default function IndicatorSettings({ entry, initialParams, initialStyle, 
                     </div>
                 </div>
 
-                <div className="p-4 border-t border-bunker-800 flex justify-end gap-2">
-                    <button onClick={onClose} className="px-4 py-2 rounded-lg border border-bunker-700 font-mono text-sm text-bunker-muted hover:text-white">
+                <div className="p-4 border-t border-bunker-800 flex justify-end gap-2 shrink-0">
+                    <button onClick={onClose} className="px-4 py-2 min-h-11 touch-target rounded-lg border border-bunker-700 font-mono text-sm text-bunker-muted hover:text-white flex items-center justify-center">
                         İPTAL
                     </button>
                     <button
                         onClick={() => onAdd(params, style)}
-                        className="px-5 py-2 rounded-lg bg-neon-green/15 border border-neon-green/40 font-mono text-sm text-neon-green hover:bg-neon-green/25"
+                        className="px-5 py-2 min-h-11 touch-target rounded-lg bg-neon-green/15 border border-neon-green/40 font-mono text-sm text-neon-green hover:bg-neon-green/25 flex items-center justify-center font-bold"
                     >
                         {editing ? "UYGULA" : "EKLE"}
                     </button>

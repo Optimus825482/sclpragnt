@@ -278,8 +278,8 @@ export default function AuditLogsPage() {
         </p>
 
         {confirmPurge && (
-          <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4" onClick={() => setConfirmPurge(false)} role="dialog" aria-modal="true" aria-labelledby="purge-title">
-            <section className="w-full max-w-sm rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={() => setConfirmPurge(false)} role="dialog" aria-modal="true" aria-labelledby="purge-title">
+            <section className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
               <div className="p-5">
                 <h2 id="purge-title" className="font-mono text-lg font-bold text-white">Eski kayıtları temizle</h2>
                 <p className="mt-2 text-sm text-bunker-muted">
@@ -291,7 +291,7 @@ export default function AuditLogsPage() {
                 {notice?.kind === "err" && <p role="alert" className="mt-3 rounded-lg border border-neon-red/40 bg-neon-red/10 px-3 py-2 text-sm text-neon-red">{notice.text}</p>}
                 <div className="mt-5 flex justify-end gap-2">
                   <button type="button" onClick={() => setConfirmPurge(false)} className="ui-button ui-button-secondary">VAZGEÇ</button>
-                  <button type="button" onClick={runPurge} disabled={purgeBusy || !(purgeDays > 0)} className="ui-button" style={{ borderColor: "rgb(255 49 49 / .5)", background: "rgb(255 49 49 / .12)", color: "#ff3131" }}>{purgeBusy ? "SİLİNİYOR…" : "EVET, TEMİZLE"}</button>
+                  <button type="button" onClick={runPurge} disabled={purgeBusy || !(purgeDays > 0)} className="ui-button ui-button-danger">{purgeBusy ? "SİLİNİYOR…" : "EVET, TEMİZLE"}</button>
                 </div>
               </div>
             </section>

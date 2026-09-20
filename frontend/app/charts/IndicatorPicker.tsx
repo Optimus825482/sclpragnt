@@ -290,9 +290,9 @@ export default function IndicatorPicker({ onSelect, onClose }: Props) {
     );
 
     return (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center pt-16" onClick={onClose}>
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center sm:items-start justify-center p-3 sm:pt-16 overflow-y-auto" onClick={onClose}>
             <div
-                className="bg-bunker-900 border border-bunker-700 rounded-xl w-[600px] max-w-[95vw] max-h-[75vh] flex flex-col"
+                className="bg-bunker-900 border border-bunker-700 rounded-xl w-[600px] max-w-[95vw] max-h-[85vh] flex flex-col shadow-2xl"
                 onClick={(e) => e.stopPropagation()}
             >
                 <div className="p-4 border-b border-bunker-800">

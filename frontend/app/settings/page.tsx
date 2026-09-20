@@ -4,7 +4,6 @@ import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
 import { formatSignedTL, toMs } from "../lib/format";
 import LlmManagement from "./LlmManagement";
-import SystemHealthTab from "./SystemHealthTab";
 import SymbolLink from "../components/SymbolLink";
 
 type Config = {
@@ -43,7 +42,7 @@ export default function SettingsPage() {
   return <RequireAdmin><SettingsPageInner /></RequireAdmin>;
 }
 function SettingsPageInner() {
-  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "macd" | "system-health">("symbols");
+  const [activeTab, setActiveTab] = useState<"symbols" | "radar" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "macd">("symbols");
   const [cfg, setCfg] = useState<Config | null>(null);
   const [draft, setDraft] = useState<Partial<Config>>({});
   const [saving, setSaving] = useState(false);
@@ -92,9 +91,20 @@ function SettingsPageInner() {
   const [pushTestResult, setPushTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
-    const tab = new URLSearchParams(window.location.search).get("tab");
-    if (tab === "strategies") setActiveTab("strategies");
+    const tab = new URLSearchParams(window.location.search).get("tab") as any;
+    if (tab && ["symbols", "radar", "app", "strategies", "auto-paper", "macd", "llm", "chat"].includes(tab)) {
+      setActiveTab(tab);
+    }
   }, []);
+
+  const selectTab = (key: "symbols" | "radar" | "app" | "strategies" | "llm" | "chat" | "auto-paper" | "macd") => {
+    setActiveTab(key);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", key);
+      window.history.replaceState({}, "", url.pathname + url.search);
+    }
+  };
 
   useEffect(() => {
     apiRequest(`${API_BASE}/api/config`)
@@ -613,19 +623,18 @@ function SettingsPageInner() {
       )}
 
       {cfg && (
-        <nav className="flex gap-2 overflow-x-auto border-b border-bunker-800 pb-2" aria-label="Ayar sekmeleri">
+        <nav className="flex gap-2 overflow-x-auto border-b border-bunker-800 pb-2 no-scrollbar scrollbar-none touch-pan-x" aria-label="Ayar sekmeleri">
           {([
             ["symbols", "Semboller", "🪙"],
             ["radar", "Radar", "📡"],
             ["app", "Uygulama Ayarları", "⚙️"],
             ["strategies", "Strateji Ayarları", "📈"],
-            ["llm", "LLM / Provider", "🤖"],
-            ["chat", "Chat Ayarları", "✦"],
             ["auto-paper", "Otonom Paper", "🤖"],
             ["macd", "MACD / Sıçrama", "🚀"],
-            ["system-health", "Sistem Sağlığı", "🩺"],
+            ["llm", "LLM / Provider", "🤖"],
+            ["chat", "Chat Ayarları", "✦"],
           ] as const).map(([key, label, icon]) => (
-            <button key={key} onClick={() => setActiveTab(key)} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors ${activeTab === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green" : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>
+            <button key={key} onClick={() => selectTab(key)} className={`shrink-0 px-4 py-2 rounded-lg border font-mono text-xs transition-colors touch-target ${activeTab === key ? "border-neon-green/60 bg-neon-green/15 text-neon-green font-bold shadow-sm" : "border-bunker-700 bg-bunker-900 text-bunker-muted hover:text-white"}`}>
               {icon} {label}
             </button>
           ))}
@@ -639,9 +648,6 @@ function SettingsPageInner() {
               <RadarSettingsPanel />
               <RadarReplayPanel />
             </div>
-          </div>
-          <div className={`${activeTab !== "system-health" ? "hidden" : ""}`}>
-            <SystemHealthTab />
           </div>
           <div className={`${activeTab !== "chat" ? "hidden" : ""}`}>
             <ChatSettingsPanel />
@@ -915,20 +921,7 @@ function SettingsPageInner() {
                   className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
                 />
               </div>
-              <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
-                <div className="min-w-0">
-                  <p className="font-mono text-sm text-white">Hard Stop Loss</p>
-                  <p className="text-xs text-bunker-muted mt-0.5">Spot modelde kullanılmaz</p>
-                </div>
-                <input
-                  type="number"
-                  step={0.1}
-                  min={0.1}
-                  value={num(draft.hard_stop_loss_pct) * 100}
-                  onChange={(e) => setDraft((d) => ({ ...d, hard_stop_loss_pct: (e.target.value === "" ? NaN : Number(e.target.value)) / 100 }))}
-                  className="w-28 bg-bunker-900 border border-bunker-700 rounded-lg px-3 py-1.5 font-mono text-sm text-white text-right focus:border-neon-green/50 outline-none"
-                />
-              </div>
+
               <div className="flex items-center justify-between gap-4 border-b border-bunker-800/50 pb-3">
                 <div className="min-w-0">
                   <p className="font-mono text-sm text-white">Take Profit</p>

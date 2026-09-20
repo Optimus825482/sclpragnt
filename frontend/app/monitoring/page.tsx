@@ -538,12 +538,12 @@ const CandidateDetail = ({ c, kind, onClose }: { c: Candidate; kind: "radar" | "
   };
   const score = panelScore(c);
   return (
-    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="candidate-detail-title">
+    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="candidate-detail-title">
       <section
         ref={dialogRef}
         tabIndex={-1}
         onKeyDown={trapFocus}
-        className="w-full max-w-sm rounded-xl border border-neon-green/40 bg-bunker-950 shadow-2xl outline-none"
+        className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-xl border border-neon-green/40 bg-bunker-950 shadow-2xl outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-bunker-800 bg-neon-green/5 px-5 py-4">

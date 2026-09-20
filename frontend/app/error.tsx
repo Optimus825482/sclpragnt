@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 export default function ErrorPage({
   error,
   reset,
@@ -16,10 +18,10 @@ export default function ErrorPage({
           {error.message || "Bilinmeyen hata"}
         </p>
         <div className="flex gap-3">
-          <button type="button" className="ui-button ui-button-primary" onClick={reset}>
+          <button type="button" className="ui-button ui-button-primary touch-target" onClick={reset}>
             TEKRAR DENE
           </button>
-          <a href="/" className="ui-button">ANA SAYFAYA DÖN</a>
+          <Link href="/" className="ui-button touch-target flex items-center justify-center">ANA SAYFAYA DÖN</Link>
         </div>
       </div>
     </main>

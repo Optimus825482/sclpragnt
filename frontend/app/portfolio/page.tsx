@@ -616,7 +616,7 @@ export default function PortfolioPage() {
               setDecisionsExpanded(next);
               if (next) loadDecisions(200);
             }}
-            className="rounded border border-bunker-700 px-2 py-1 font-mono text-[11px] text-bunker-muted hover:border-neon-green/40 hover:text-neon-green"
+            className="rounded-lg border border-bunker-700 px-3 py-1.5 font-mono text-xs text-bunker-muted hover:border-neon-green/40 hover:text-neon-green transition-colors"
           >
             {decisionsExpanded ? "DARALT" : `TÜMÜ (${decisions.length})`}
           </button>
@@ -702,7 +702,7 @@ export default function PortfolioPage() {
               type="button"
               disabled={apHistoryPage === 0}
               onClick={() => setApHistoryPage((p) => Math.max(0, p - 1))}
-              className="rounded border border-bunker-700 px-3 py-1.5 font-mono text-xs text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-lg border border-bunker-700 px-3.5 py-2 font-mono text-xs text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green touch-target disabled:cursor-not-allowed disabled:opacity-40 flex items-center justify-center"
             >
               ← ÖNCEKİ
             </button>
@@ -711,7 +711,7 @@ export default function PortfolioPage() {
               type="button"
               disabled={apHistory.length < AP_HISTORY_PAGE_SIZE}
               onClick={() => setApHistoryPage((p) => p + 1)}
-              className="rounded border border-bunker-700 px-3 py-1.5 font-mono text-xs text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-lg border border-bunker-700 px-3.5 py-2 font-mono text-xs text-bunker-muted transition-colors hover:border-neon-green/40 hover:text-neon-green touch-target disabled:cursor-not-allowed disabled:opacity-40 flex items-center justify-center"
             >
               SONRAKİ →
             </button>

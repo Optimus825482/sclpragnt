@@ -1707,7 +1707,7 @@ function BinanceTrPageInner() {
           {/* ========================================================= */}
           {sltpModalOpen && sltpTarget && (
             <div className="fixed inset-0 z-[220] grid place-items-center bg-black/85 p-4 overflow-y-auto" role="dialog" aria-modal="true">
-              <section className="w-full max-w-lg rounded-xl border border-bunker-700 bg-bunker-950 p-6 shadow-2xl backdrop-blur-xl">
+              <section className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-6 shadow-2xl backdrop-blur-xl">
                 {/* Modal Başlık */}
                 <div className="flex items-center justify-between border-b border-bunker-800 pb-3">
                   <div>
@@ -1976,8 +1976,8 @@ function BinanceTrPageInner() {
 
           {/* MODAL: SATIŞ ONAY MODALI (MARKET SELL) */}
           {sellFor && sellEnabled && (
-            <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4" role="dialog" aria-modal="true">
-              <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
+            <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4 overflow-y-auto" role="dialog" aria-modal="true">
+              <section className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="font-mono text-lg font-bold text-white">
                     Piyasa Satışı: <span className="text-neon-red">{sellFor.asset}</span>
@@ -2104,8 +2104,8 @@ function BinanceTrPageInner() {
 
           {/* MODAL: ALIM YAP (BUY) */}
           {buyOpen && (
-            <div className="fixed inset-0 z-[210] grid place-items-center bg-black/80 p-4" role="dialog" aria-modal="true">
-              <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
+            <div className="fixed inset-0 z-[210] grid place-items-center bg-black/80 p-4 overflow-y-auto" role="dialog" aria-modal="true">
+              <section className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="font-mono text-lg font-bold text-white">Piyasa Alımı Yap</h2>
                   <button type="button" onClick={() => setBuyOpen(false)} className="text-bunker-muted hover:text-white">✕</button>
@@ -2252,8 +2252,8 @@ function BinanceTrPageInner() {
 
           {/* MODAL: AYARLAR (SETTINGS) */}
           {settingsOpen && (
-            <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4" role="dialog" aria-modal="true">
-              <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
+            <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4 overflow-y-auto" role="dialog" aria-modal="true">
+              <section className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="font-mono text-lg font-bold text-white">Binance TR API Ayarları</h2>
                   <button type="button" onClick={() => setSettingsOpen(false)} className="text-bunker-muted hover:text-white">✕</button>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import Link from "next/link";
 import SymbolLink from "../components/SymbolLink";
 import { useAuth } from "../lib/auth";
 import { canViewMacdMonitor } from "../lib/macdAccess";
@@ -294,7 +295,7 @@ function MacdAccessGate({ children }: { children: ReactNode }) {
         <p className="max-w-md text-sm text-bunker-muted">
           MACD MONITOR yalnız sistem yöneticisine ve yetkilendirilmiş kullanıcılara açıktır.
         </p>
-        <a href="/" className="ui-button ui-button-primary">ANA SAYFAYA DÖN</a>
+        <Link href="/" className="ui-button ui-button-primary touch-target flex items-center justify-center">ANA SAYFAYA DÖN</Link>
       </div>
     </main>
   );

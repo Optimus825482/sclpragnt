@@ -7,6 +7,7 @@
  * Gelişmiş modda (varsayılan) otonom pozisyonlar + strateji performansı eklenir.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { API_BASE, apiRequest } from "./lib/api";
 import { useAuth } from "./lib/auth";
 import { useLiveMessages as useLiveSocketMessages, useLiveStatus } from "./lib/liveSocket";
@@ -157,6 +158,62 @@ export default function Home() {
         <MetricCard label="AÇIK POZİSYON" value={String(s?.portfolio.open_positions ?? 0)} hint={s?.portfolio.open_positions ? "pozisyon var" : "yok"} />
       </div>
 
+      {/* Hızlı modül erişim paneli */}
+      <nav className="grid grid-cols-2 sm:grid-cols-4 gap-2.5" aria-label="Hızlı Modül Erişimi">
+        <Link
+          href="/portfolio"
+          className="flex items-center justify-between p-3 rounded-xl border border-bunker-800 bg-bunker-900/60 hover:border-neon-green/40 hover:bg-bunker-900 transition-all touch-target group"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl">💼</span>
+            <div>
+              <p className="font-mono text-xs font-bold text-white group-hover:text-neon-green transition-colors">Sanal Portföy</p>
+              <p className="text-[10px] text-bunker-muted">Otonom & manuel</p>
+            </div>
+          </div>
+          <span className="font-mono text-xs text-bunker-muted group-hover:text-white transition-colors">→</span>
+        </Link>
+        <Link
+          href="/monitoring"
+          className="flex items-center justify-between p-3 rounded-xl border border-bunker-800 bg-bunker-900/60 hover:border-neon-green/40 hover:bg-bunker-900 transition-all touch-target group"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl">📡</span>
+            <div>
+              <p className="font-mono text-xs font-bold text-white group-hover:text-neon-green transition-colors">Radar</p>
+              <p className="text-[10px] text-bunker-muted">Hız & fırsat avcısı</p>
+            </div>
+          </div>
+          <span className="font-mono text-xs text-bunker-muted group-hover:text-white transition-colors">→</span>
+        </Link>
+        <Link
+          href="/charts"
+          className="flex items-center justify-between p-3 rounded-xl border border-bunker-800 bg-bunker-900/60 hover:border-neon-green/40 hover:bg-bunker-900 transition-all touch-target group"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl">📈</span>
+            <div>
+              <p className="font-mono text-xs font-bold text-white group-hover:text-neon-green transition-colors">Grafik</p>
+              <p className="text-[10px] text-bunker-muted">Canlı mum grafiği</p>
+            </div>
+          </div>
+          <span className="font-mono text-xs text-bunker-muted group-hover:text-white transition-colors">→</span>
+        </Link>
+        <Link
+          href="/binance-tr"
+          className="flex items-center justify-between p-3 rounded-xl border border-bunker-800 bg-bunker-900/60 hover:border-neon-green/40 hover:bg-bunker-900 transition-all touch-target group"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl">🏛️</span>
+            <div>
+              <p className="font-mono text-xs font-bold text-white group-hover:text-neon-green transition-colors">Binance TR</p>
+              <p className="text-[10px] text-bunker-muted">Canlı hesap işlemi</p>
+            </div>
+          </div>
+          <span className="font-mono text-xs text-bunker-muted group-hover:text-white transition-colors">→</span>
+        </Link>
+      </nav>
+
       {/* Otonom açık pozisyonlar (yalnız varsa) */}
       {autoPaperOpen.length > 0 && (
         <section className="card">
@@ -199,7 +256,7 @@ export default function Home() {
         <section className="card">
           <div className="ui-section-header">
             <div><p className="eyebrow">📊 STRATEJİ PERFORMANSI</p></div>
-            <a href="/reports" className="font-mono text-[11px] text-bunker-muted hover:text-neon-green underline-offset-2 underline">{">"} Raporlar</a>
+            <Link href="/reports" className="font-mono text-[11px] text-bunker-muted hover:text-neon-green underline-offset-2 underline">{">"} Raporlar</Link>
           </div>
           <div className="mt-2 flex flex-wrap gap-3">
             <APStatCard label="Bugün sinyal" value={String(s?.signals_today.total ?? 0)} />
@@ -230,7 +287,7 @@ export default function Home() {
         </div>
         {(liveSignals.length > 4 || isAdvanced) && (
           <div className="border-t border-bunker-800 px-4 py-2 text-center">
-            <a href="/reports" className="font-mono text-[10px] text-bunker-muted hover:text-neon-green underline-offset-2 underline">Tümünü gör →</a>
+            <Link href="/reports" className="font-mono text-[10px] text-bunker-muted hover:text-neon-green underline-offset-2 underline">Tümünü gör →</Link>
           </div>
         )}
       </section>
