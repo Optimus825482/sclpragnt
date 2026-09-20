@@ -38,12 +38,23 @@ _rising_last_key: dict[str, tuple] = {}
 _rising_alerted_at: dict[str, float] = {}
 _stale_warned = False
 
+# --- ERKEN izleme kaydı: push gönderilmez, öncelikli tarama listesidir -----------
+# KIND_EARLY sinyali tespit edildiğinde güncellenir. Buradan YÜKSELİŞ sinyali
+# için boost / öncelikli bildirim kuyruğuna girme kararı alınır.
+# yapı: symbol → {"detected_at": wall_time, "score": float, "proximity": float|None}
+_early_watch: dict[str, dict] = {}
+# symbol → son push edilen bildirim snapshot'ı (YÜKSELİŞ update kontrolü için)
+# yapı: symbol → {"detected_at": float, "score": float, "target_pct": float, "price": float}
+_last_fired_detail: dict[str, dict] = {}
+
 
 def reset_state_for_tests() -> None:
     """Test izolasyonu: modül durumunu sıfırla (üretimde çağrılmaz)."""
     global _stale_warned
     _rising_last_key.clear()
     _rising_alerted_at.clear()
+    _early_watch.clear()
+    _last_fired_detail.clear()
     _stale_warned = False
 
 
@@ -172,6 +183,21 @@ def observe(candidate: dict) -> None:
         _rising_last_key[symbol] = key
 
 
+def advance_key(candidate: dict) -> None:
+    """Histerezis anahtarını COOLDOWN BAŞLATMADAN ilerlet.
+
+    Cooldown aktifken anahtar değiştiğinde çağrılır: `_rising_last_key`
+    güncellenir ama `_rising_alerted_at` dokunulmaz. Bu olmadan sembol
+    anahtarı mark_fired'ın yazdığı konumda kalır → anahtar eski konuma
+    döndüğünde histerezis tekrar geçilir → her sinyal osilaston kanıt
+    tablosuna yeni kayıt düşer (JUPTRY/AVAXTRY/NILTRY tekrar fırtınası).
+    """
+    symbol = str(candidate.get("symbol") or "")
+    key = signal_key(candidate)
+    if symbol and key:
+        _rising_last_key[symbol] = key
+
+
 def should_fire(candidate: dict, now: float) -> bool:
     """Aday YENİ bilgi taşıyor mu? (histerezis + cooldown)"""
     symbol = str(candidate.get("symbol") or "")
@@ -191,12 +217,121 @@ def mark_fired(candidate: dict, now: float) -> None:
     _rising_alerted_at[symbol] = now
 
 
+def register_early_watch(candidate: dict) -> None:
+    """ERKEN sinyali öncelik izleme kaydına ekle (push üretmez).
+
+    KIND_EARLY tespit edildiğinde çağrılır. Bu kayıt:
+    - Sonraki YÜKSELİŞ sinyalinin daha hızlı tetiklenmesini sağlar (öncelik skoru).
+    - `is_early_watch(symbol)` ile sorgulanabilir: "bu sembol zaten erken uyarıda".
+    - 30 dakika sonra bayat sayılır (cooldown süresine hizalı).
+    """
+    symbol = str(candidate.get("symbol") or "")
+    if not symbol:
+        return
+    signals = candidate.get("signals") or {}
+    _early_watch[symbol] = {
+        "detected_at": time.time(),
+        "score": float(candidate.get("score") or 0.0),
+        "proximity": signals.get("proximity"),
+        "kind": str(candidate.get("kind") or "erken"),
+    }
+    # Bellek sınırı: 300 sembol yeterli
+    if len(_early_watch) > 300:
+        oldest = sorted(_early_watch, key=lambda s: _early_watch[s].get("detected_at", 0))
+        for s in oldest[:50]:
+            _early_watch.pop(s, None)
+
+
+def is_early_watch(symbol: str, max_age_sec: float = 1800.0) -> dict | None:
+    """Sembol aktif ERKEN izlemede mi? (bayat değilse kayıt döner, yoksa None)"""
+    entry = _early_watch.get(str(symbol or ""))
+    if entry is None:
+        return None
+    age = time.time() - float(entry.get("detected_at") or 0)
+    return entry if age < max_age_sec else None
+
+
+def get_early_watch_symbols() -> dict:
+    """Aktif (bayat olmayan) tüm ERKEN izleme kayıtlarını döner."""
+    now = time.time()
+    return {s: e for s, e in _early_watch.items()
+            if now - float(e.get("detected_at") or 0) < 1800.0}
+
+
+def record_fired_detail(candidate: dict, price: float) -> None:
+    """Son push edilen YÜKSELİŞ bildirimi ayrıntısını kaydet (UPDATE kontrolü için)."""
+    symbol = str(candidate.get("symbol") or "")
+    if not symbol:
+        return
+    _last_fired_detail[symbol] = {
+        "detected_at": time.time(),
+        "score": float(candidate.get("score") or 0.0),
+        "target_pct": float(candidate.get("target_pct") or 0.0),
+        "price": float(price or 0.0),
+    }
+    if len(_last_fired_detail) > 500:
+        oldest = sorted(_last_fired_detail,
+                        key=lambda s: _last_fired_detail[s].get("detected_at", 0))
+        for s in oldest[:100]:
+            _last_fired_detail.pop(s, None)
+
+
+def get_last_fired_detail(symbol: str) -> dict | None:
+    """Sembolün son push edilen bildirim ayrıntısını döner."""
+    return _last_fired_detail.get(str(symbol or ""))
+
+
+def changed_since_last_fire(candidate: dict, price: float,
+                             min_target_change_pct: float = 0.2,
+                             min_score_change: float = 5.0) -> dict | None:
+    """Son bildirime göre anlamlı değişim var mı? (UPDATE kararı)
+
+    Dönüş:
+    - None → değişim yok (UPDATE gönderme)
+    - dict → değişim bilgisi (UPDATE mesajına ekle):
+      {"target_delta": ±float, "score_delta": ±float, "reason": str}
+    """
+    symbol = str(candidate.get("symbol") or "")
+    last = _last_fired_detail.get(symbol)
+    if last is None:
+        return None
+    new_target = float(candidate.get("target_pct") or 0.0)
+    new_score = float(candidate.get("score") or 0.0)
+    old_target = float(last.get("target_pct") or 0.0)
+    old_score = float(last.get("score") or 0.0)
+
+    target_delta = new_target - old_target
+    score_delta = new_score - old_score
+
+    reasons = []
+    if old_target > 0 and abs(target_delta) >= min_target_change_pct:
+        direction = "arttı ▲" if target_delta > 0 else "azaldı ▼"
+        reasons.append(f"Hedef {direction} %{abs(target_delta):.2f}")
+    if abs(score_delta) >= min_score_change:
+        direction = "güçlendi ▲" if score_delta > 0 else "zayıfladı ▼"
+        reasons.append(f"Sinyal {direction} ({score_delta:+.0f})")
+
+    if not reasons:
+        return None
+    return {
+        "target_delta": round(target_delta, 4),
+        "score_delta": round(score_delta, 2),
+        "reason": " · ".join(reasons),
+    }
+
+
 def signal_key(candidate: dict) -> tuple:
     """Öncü KİMLİK imzası: hangi sinyaller açık? (sıralı tuple → determinizm)
 
     Açık bir öncü kümesi değişmediği sürece yeni bilgi yoktur. Yalnız
     `approach`/`m1` gibi TANIMLAYICI alanlar değil, kapıyı oluşturan sinyaller
     (`dip`, `transition`, `break`, `buy_dominant`) imzaya girer.
+
+    KIND_STRENGTH için ek: güç skoru 0-10 ölçeğinde 0.5 adımlı bucket.
+    Bu olmadan KIND_STRENGTH imzası daima `("strength",)` sabitine eşit olur;
+    CVD veya break5 flip'i anahtarı değiştirip histerezisi bypass eder ama
+    gerçek güç artışı kaçırılır. Bucket yalnızca YÜKSELİŞ sinyallerinin gerçek
+    momentum büyümesini yeniden tetikleyebilmesi içindir.
     """
     signals = candidate.get("signals") or {}
     keys = []
@@ -211,7 +346,13 @@ def signal_key(candidate: dict) -> tuple:
     if signals.get("buy_dominant"):
         keys.append("buy_dominant")
     if candidate.get("kind") == KIND_STRENGTH:
-        keys.append("strength")
+        # 0.5 adımlı strength bucket: gerçek güç değişimi imzayı değiştirir.
+        try:
+            strength_val = float(candidate.get("strength") or 0.0)
+            bucket = round(round(strength_val * 2) / 2.0, 1)  # 0.5 adımlar
+        except (TypeError, ValueError):
+            bucket = 0.0
+        keys.append(f"strength_{bucket}")
     return tuple(sorted(keys))
 
 
