@@ -134,6 +134,41 @@ function calcRSI(bars: Bar[], period = 14): Point[] {
     return result;
 }
 
+// ADX-14 (Wilder): TR/+DM/-DM Wilder yumuşatması → DI+/DI- → DX → ADX.
+// Başlıktaki canlı değer son ADX'i döndürür; seri çizilmez.
+function calcADXLatest(bars: Bar[], period = 14): number | null {
+    if (bars.length < period * 2 + 1) return null;
+    const trs: number[] = [], plusDM: number[] = [], minusDM: number[] = [];
+    for (let i = 1; i < bars.length; i++) {
+        const up = bars[i].high - bars[i - 1].high;
+        const down = bars[i - 1].low - bars[i].low;
+        plusDM.push(up > down && up > 0 ? up : 0);
+        minusDM.push(down > up && down > 0 ? down : 0);
+        trs.push(Math.max(bars[i].high - bars[i].low, Math.abs(bars[i].high - bars[i - 1].close), Math.abs(bars[i].low - bars[i - 1].close)));
+    }
+    const dxOf = (tr: number, pdm: number, mdm: number) => {
+        const pdi = tr > 0 ? (100 * pdm) / tr : 0;
+        const mdi = tr > 0 ? (100 * mdm) / tr : 0;
+        const sum = pdi + mdi;
+        return sum > 0 ? (100 * Math.abs(pdi - mdi)) / sum : 0;
+    };
+    let tr = 0, pdm = 0, mdm = 0;
+    for (let i = 0; i < period; i++) { tr += trs[i]; pdm += plusDM[i]; mdm += minusDM[i]; }
+    const dxs: number[] = [dxOf(tr, pdm, mdm)];
+    for (let i = period; i < trs.length; i++) {
+        tr = tr - tr / period + trs[i];
+        pdm = pdm - pdm / period + plusDM[i];
+        mdm = mdm - mdm / period + minusDM[i];
+        dxs.push(dxOf(tr, pdm, mdm));
+    }
+    if (dxs.length < period) return null;
+    let adx = 0;
+    for (let i = 0; i < period; i++) adx += dxs[i];
+    adx /= period;
+    for (let i = period; i < dxs.length; i++) adx = (adx * (period - 1) + dxs[i]) / period;
+    return adx;
+}
+
 function calcMACD(bars: Bar[], fast = 12, slow = 26, signal = 9) {
     if (bars.length < slow + signal) return { macd: [] as Point[], signal: [] as Point[], histogram: [] as (Point & { color: string })[] };
     const fEma = calcEMA(bars, fast), sEma = calcEMA(bars, slow);
@@ -333,7 +368,9 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
     const [indicatorMenuOpen, setIndicatorMenuOpen] = useState(false);
     const [searchFilter, setSearchFilter] = useState("");
     const [indicatorCat, setIndicatorCat] = useState<string>("Tümü");
-    const [priceData, setPriceData] = useState<{ last: number; changePct: number; high: number; low: number } | null>(null);
+    const [priceData, setPriceData] = useState<{ last: number; changePct: number } | null>(null);
+    // Seçili TF'nin son mumlarından hesaplanan canlı momentum değerleri.
+    const [momentum, setMomentum] = useState<{ rsi14: number | null; adx14: number | null } | null>(null);
     const [hoverLegend, setHoverLegend] = useState<{ open: number; high: number; low: number; close: number } | null>(null);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [isDark, setIsDark] = useState(true); // dark varsayılan
@@ -428,8 +465,14 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                 const refIdx = Math.max(0, bars.length - 1 - barsPerDay);
                 const refBar = bars[refIdx];
                 const dayChangePct = refBar?.open > 0 ? ((last.close - refBar.open) / refBar.open) * 100 : lastChangePct;
-                setPriceData({ last: last.close, changePct: dayChangePct, high: last.high, low: last.low });
+                setPriceData({ last: last.close, changePct: dayChangePct });
             }
+            // Başlık göstergeleri: seçili TF'nin son mumlarından RSI-14 / ADX-14.
+            const rsiSeries = calcRSI(bars, 14);
+            setMomentum({
+                rsi14: rsiSeries.length ? rsiSeries[rsiSeries.length - 1].value : null,
+                adx14: calcADXLatest(bars, 14),
+            });
             rebuildIndicators(bars);
             setLoading(false);
         } catch (err) {
@@ -783,11 +826,16 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                         <span>Y: <strong className="text-neon-green">{formatPrice(hoverLegend.high)}</strong></span>
                         <span>D: <strong className="text-neon-red">{formatPrice(hoverLegend.low)}</strong></span>
                         <span>K: <strong className="text-white">{formatPrice(hoverLegend.close)}</strong></span>
-                    </>) : priceData ? (<>
-                        <span>Son: <strong className="text-white">{formatPrice(priceData.last)}</strong></span>
-                        <span>Yük: <strong className="text-neon-green">{formatPrice(priceData.high)}</strong></span>
-                        <span>Düş: <strong className="text-neon-red">{formatPrice(priceData.low)}</strong></span>
-                    </>) : null}
+                    </>) : (<>
+                        {priceData && <span>Son: <strong className="text-white">{formatPrice(priceData.last)}</strong></span>}
+                        {/* RSI-14 / ADX-14: seçili TF'nin son mumlarından, her veri tazelemesinde güncellenir */}
+                        {momentum?.rsi14 != null && (
+                            <span>RSI-14: <strong className={momentum.rsi14 >= 50 ? "text-neon-green" : "text-neon-red"}>{momentum.rsi14.toFixed(1)}</strong></span>
+                        )}
+                        {momentum?.adx14 != null && (
+                            <span>ADX-14: <strong className={momentum.adx14 >= 25 ? "text-neon-green" : momentum.adx14 >= 20 ? "text-yellow-300" : "text-bunker-muted"}>{momentum.adx14.toFixed(1)}</strong></span>
+                        )}
+                    </>)}
                 </div>
                 <div ref={containerRef} className="w-full h-full" />
                 {loading && (
