@@ -121,11 +121,15 @@ class RisingScanTests(unittest.IsolatedAsyncioTestCase):
         """Madde 6: rising hedefi de dinamik/öğrenilmiş hedeften geçer.
 
         `panel_score=False` → bant YOK, taban 2.0. Öğrenilmiş hedef 1.2 (12 örnek)
-        → harman 2.0*0.4 + 1.2*0.6 = 1.52. Yani rising TP'si AŞAĞI çekilebiliyor.
+        → harman 2.0*0.4 + 1.2*0.6 = 1.52. Maliyet tabanı (2026-09-19 net-kâr
+        güvencesi): hedef en az SCALPING_NET_TARGET_PCT + spread + round_trip
+        olacak — bu test config'i bilinçli olarak sade tutup tabanı kilitler.
         """
         state = {"symbol": "RISETRY", "target_pct": 1.2, "total_count": 12}
         with patch.object(monitoring.database, "get_symbol_target_state",
-                          AsyncMock(return_value=state)):
+                          AsyncMock(return_value=state)), \
+             patch.object(config, "SCALPING_NET_TARGET_PCT", 0.0), \
+             patch.object(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.0):
             await self._scan([_candidate(score=80.0)])
         recorded = self.record_mock.await_args.args[0]
         self.assertAlmostEqual(1.52, float(recorded["target_pct"]), places=3)
@@ -137,7 +141,9 @@ class RisingScanTests(unittest.IsolatedAsyncioTestCase):
         taban 2.0'da kalır — ölçek karışımı bilinçli olarak yapılmaz.
         """
         with patch.object(monitoring.database, "get_symbol_target_state",
-                          AsyncMock(return_value=None)):
+                          AsyncMock(return_value=None)), \
+             patch.object(config, "SCALPING_NET_TARGET_PCT", 0.0), \
+             patch.object(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.0):
             await self._scan([_candidate(score=80.0)])
         recorded = self.record_mock.await_args.args[0]
         self.assertAlmostEqual(2.0, float(recorded["target_pct"]), places=3)
@@ -146,10 +152,27 @@ class RisingScanTests(unittest.IsolatedAsyncioTestCase):
         """LEARNED_TARGET_MIN_SAMPLES altında öğrenme rising hedefini DEĞİŞTİRMEZ."""
         state = {"symbol": "RISETRY", "target_pct": 1.2, "total_count": 2}
         with patch.object(monitoring.database, "get_symbol_target_state",
-                          AsyncMock(return_value=state)):
+                          AsyncMock(return_value=state)), \
+             patch.object(config, "SCALPING_NET_TARGET_PCT", 0.0), \
+             patch.object(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.0):
             await self._scan([_candidate(score=80.0)])
         recorded = self.record_mock.await_args.args[0]
         self.assertAlmostEqual(2.0, float(recorded["target_pct"]), places=3)
+
+    async def test_rising_target_covers_costs_and_keeps_net_profit(self):
+        """Kullanıcı kuralı (2026-09-19): hedef = net kâr + spread + komisyon.
+
+        SCALPING_NET_TARGET_PCT=2.0, spread 0.65, round_trip %0.35 → taban
+        hedef en az 2.0 + 0.65 + 0.35 = %3.00 olmalı (maliyet sonrası net %2.0).
+        """
+        with patch.object(monitoring.database, "get_symbol_target_state",
+                          AsyncMock(return_value=None)):
+            await self._scan([_candidate(score=80.0)])
+        recorded = self.record_mock.await_args.args[0]
+        expected_floor = round(config.SCALPING_NET_TARGET_PCT
+                               + config.DEFAULT_ESTIMATED_SPREAD_PCT
+                               + float(config.round_trip_cost()) * 100, 3)
+        self.assertGreaterEqual(float(recorded["target_pct"]), expected_floor)
 
     async def test_new_precursor_after_arm_notifies(self):
         """Sessiz arm sonrası kümeye YENİ öncü eklenirse bildirim gider."""

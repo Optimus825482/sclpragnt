@@ -426,6 +426,7 @@ class Config:
     UNIFIED_W_VELOCITY = float(os.getenv("UNIFIED_W_VELOCITY", "0.50"))
     UNIFIED_W_JUMP = float(os.getenv("UNIFIED_W_JUMP", "0.25"))
     UNIFIED_W_EARLY = float(os.getenv("UNIFIED_W_EARLY", "0.25"))
+    UNIFIED_W_RISING = float(os.getenv("UNIFIED_W_RISING", "0.25"))
     # 2+ bağımsız kaynak aynı sembolde teyitliyse skor çarpanı (sinerji).
     UNIFIED_SYNERGY_BONUS = float(os.getenv("UNIFIED_SYNERGY_BONUS", "1.15"))
     # MACD hızlı yol (jump/dip tetiği): bu füzyon skoru altında BİLDİRİM YOK.
@@ -437,6 +438,17 @@ class Config:
     # Füzyon-tek adayları (velocity kapısını geçemeyip dip/jump ile öne çıkanlar)
     # radar listesine/bildirimine bu panel eşiğinden itibaren girer.
     UNIFIED_FUSION_MIN_SCORE = float(os.getenv("UNIFIED_FUSION_MIN_SCORE", "60"))
+
+    # Net Kâr Hedefi & Maliyet Güvencesi (Kullanıcı Kuralı 2026-09-19):
+    # %2.0 hedeflenen scalping işleminde komisyon + spread maliyetleri (~%1.0)
+    # düşüldükten SONRA net %2.0 kâr kalacak şekilde brüt hedef (TP) hesaplanır.
+    SCALPING_NET_TARGET_PCT = float(os.getenv("SCALPING_NET_TARGET_PCT", "2.0"))
+    DEFAULT_ESTIMATED_SPREAD_PCT = float(os.getenv("DEFAULT_ESTIMATED_SPREAD_PCT", "0.65"))
+    MAX_ALLOWABLE_SPREAD_RATIO = float(os.getenv("MAX_ALLOWABLE_SPREAD_RATIO", "0.35"))
+    ML_MIN_EXECUTION_PROB = float(os.getenv("ML_MIN_EXECUTION_PROB", "0.35"))
+    # Sinyal terfisi (upgrade): yeni sinyal, son bildirim skorundan bu kadar
+    # yüksekse cooldown bastırması aşılarak "sinyal güçlendi" push'u izinli olur.
+    UNIFIED_UPGRADE_MIN_GAIN = float(os.getenv("UNIFIED_UPGRADE_MIN_GAIN", "10.0"))
 
     # ---------------------------------------------------------------------
     # SAKLAMA (RETENTION) PENCERELERİ — disk bütçesi (2026-09-16)

@@ -1487,6 +1487,19 @@ async def _gainers_radar_uncached(execute: bool = False):
     rows = []
     radar_analyzer = ScalpAnalyzer(None)
     auto_added = []
+    # GERÇEK 24h DEĞİŞİM HARİTASI (2026-09-19 düzeltmesi): eskiden ret_24h
+    # 5m kline dizisinin İLK kapanışından hesaplanıyordu; seri 25-100 bar
+    # tuttuğunda bu 2-8 saatlik bir değişimdi ve 24h filtresi yanıltıcıydı.
+    # Doğrusu: ticker_24h priceChangePercent (borsanın resmi 24s rolu).
+    ticker_change_24h: dict[str, float] = {}
+    try:
+        for item in await ticker_24h():
+            sym_u = str(item.get("symbol", "")).upper()
+            chg = float(item.get("priceChangePercent", 0) or 0)
+            if sym_u:
+                ticker_change_24h[sym_u] = chg
+    except Exception as exc:
+        print(f"[Radar] ticker_24h haritası alınamadı (kline fallback devrede): {exc}")
     try:
         all_tickers = await ticker_24h()
         known_try = set(await trading_symbols("TRY"))
@@ -1514,7 +1527,11 @@ async def _gainers_radar_uncached(execute: bool = False):
         price = closes[-1]
         ret_5m = (closes[-1] / closes[-2] - 1) * 100
         ret_1h = (closes[-1] / closes[-13] - 1) * 100 if len(closes) >= 13 else 0
-        ret_24h = (closes[-1] / closes[0] - 1) * 100
+        # GERÇEK 24h değişim (düzeltme 2026-09-19): ticker priceChangePercent
+        # öncelikli; eksikse fallback olarak kline penceresi kullanılır.
+        ret_24h = ticker_change_24h.get(symbol)
+        if ret_24h is None:
+            ret_24h = (closes[-1] / closes[0] - 1) * 100
         avg_volume = sum(volumes[-21:-1]) / 20
         volume_ratio = volumes[-1] / avg_volume if avg_volume else 0
         flow = market.get_orderflow(symbol)

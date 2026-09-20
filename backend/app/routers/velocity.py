@@ -15,7 +15,8 @@ from app.state import market, analyzer
 from app.api_common import _start_background, _fresh_public_price, _background_tasks
 from app.binance_tr_public import klines as fetch_klines, historical_klines, trading_symbols, orderbook, ticker_price
 from app.technical_analysis import (calculate_snapshot, _atr, _aroon, _bollinger,
-                                    _cci, _ema, _linreg_slope_pct, _mfi, _macd, _rsi, _sma)
+                                    _cci, _ema, _linreg_slope_pct, _mfi, _macd, _rsi, _sma,
+                                    _wick_rejection_zscore)
 from app.market_intelligence import microstructure_snapshot
 from app.microflow import microflow
 from app import calibration as calibration_service
@@ -374,6 +375,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             last_age_sec = (now_ms - (int(rows[-1][0]) + 59_999)) / 1000
             if last_age_sec > 180:
                 return None
+            opens = [float(r[1]) for r in rows]
             closes = [float(r[4]) for r in rows]
             highs = [float(r[2]) for r in rows]
             lows = [float(r[3]) for r in rows]
@@ -429,8 +431,17 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             # yoksa global varsayılan kullanılır.
             prof_key = "5m" if horizon_minutes == 5 else "15m"
             prof_atr = _velocity_profile_atr.get(prof_key) or VELOCITY_MIN_ATR_PCT
+            # Üst fitil (Rejection Wick / Boğa Tuzağı) kontrolü (2026-09-19):
+            # Satıcıların tepeye yığılıp sert bastığı (shooting star/pin bar) barlarda
+            # pump tepesi tuzağına düşülmesini engeller.
+            wick_info = _wick_rejection_zscore(opens, highs, lows, closes) if len(closes) >= 21 else {}
+            upper_wick_ratio = float(wick_info.get("upper_wick_ratio", 0.0)) if isinstance(wick_info, dict) else 0.0
+            upper_zscore = float(wick_info.get("upper_zscore", 0.0)) if isinstance(wick_info, dict) else 0.0
+            rejection_wick = bool(wick_info.get("signal") == "bearish_rejection" or (upper_wick_ratio >= 0.45 and upper_zscore >= 1.5))
+
             # notr modu (RSI 35-60) da aday olabilir: yalnızca yapısal teyit (struct_ok) aranir.
             passes = (exhausted is None and
+                      not rejection_wick and
                       atr_pct >= prof_atr and
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
                       mode is not None and
@@ -444,6 +455,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             if not passes:
                 if exhausted:
                     block_reason = exhausted  # örn. mfi_asiri_alim:85
+                elif rejection_wick:
+                    block_reason = f"ust_fitil_tuzagi:wick_{upper_wick_ratio:.2f}_z{upper_zscore:.1f}"
                 elif atr_pct < prof_atr:
                     block_reason = f"atr_yetersiz:{atr_pct:.2f}%<{prof_atr:.2f}%"
                 elif bb_width is None or bb_width < VELOCITY_MIN_BB_WIDTH_PCT:
@@ -484,6 +497,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             else:
                 _vol_ratio = 0.0
             volume_ratio = _vol_ratio
+            # Momentum normalizasyonu (NameError: momentum_ratio düzeltmesi 2026-09-19)
+            _mom_ref = max(prof_atr, 0.4)
+            momentum_ratio = min(2.5, max(0.0, momentum / _mom_ref))
             velocity_score = round(100.0 * atr_ratio * bb_ratio
                                    * (0.2 + 0.8 * struct_ratio)
                                    * (0.5 + 0.5 * momentum_ratio)
@@ -611,15 +627,21 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     ml_hit_prob = float(ml_pred.get("hit_probability") or 0)
             except Exception as exc:
                 logger.debug("velocity ML tahmin hatası %s: %s", symbol, exc)
-            # Hedef kurali: EN AZ base hedef (5dk:%2 / 15dk:%3). Uzerine üc katman:
-            # 1) ML tahmini daha iddialıysa o kullanılır (düşük tahminler asamaz).
-            # 2) Skor-bantlı dinamik hedef: yüksek skorlu adaylarda hedef esnetilir
-            #    (04.09 radar verisi: skor >=70 kovasında ort. MFE ~%5.2, hedef %3
-            #    yetersiz kalıyordu).
-            # 3) Journal'dan öğrenilen sembol hedefi (get_symbol_target_state):
-            #    yeterli örnek varsa iki yönlü harmanlanır (adaptif, MONITORING_TARGET_ADAPTIVE).
-            # Sonuç MONITORING_TARGET_PCT_MIN/MAX'a kelepçelenir; monitoring bildirimi
-            # VE bot TP (open_velocity_position) bu hedefi kullanır.
+
+            # --- Spread okuma + ek kapılar (2026-09-19) ---
+            # 1) SPREAD KAPISI: spread hedefin oranını aşarsa işlem maliyeti
+            #    kârı yutacağı için sinyal elenir (kullanıcı kuralı).
+            # 2) ML OLASILIK KAPISI: model %config.ML_MIN_EXECUTION_PROB altında
+            #    isabet öngörüyorsa tuzak sinyal bildirime gitmez.
+            flow_snap = (market.orderflow.get(symbol) or {})
+            spread_pct = None
+            try:
+                _sp = flow_snap.get("spread_pct")
+                spread_pct = float(_sp) if _sp is not None and float(_sp) > 0 else None
+            except (TypeError, ValueError):
+                spread_pct = None
+
+            # --- Hedef kuralı: EN AZ base hedef + net-kâr maliyet tabanı ---
             learned_target = None
             learned_count = 0
             if config.MONITORING_TARGET_ADAPTIVE:
@@ -632,16 +654,60 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 except Exception:
                     learned_target = None
                     learned_count = 0
-            # R2-01/R3-03 (P0): hEDEF bantları PANEL (0-100) ölçeğinde tanımlı;
-            # buraya HAM skor değil PANEL skoru geçilir (aksi halde tüm adaylar
-            # ham ≥1400 ≫ 90 olduğundan daima 4.0% alıyordu).
+            # R2-01/R3-03 (P0): hedef bantları PANEL (0-100) ölçeğinde tanımlı;
+            # buraya HAM skor değil PANEL skoru geçilir.
             effective_target = dynamic_target_pct(
                 _panel_score(velocity_score), float(base_target_pct),
                 learned_pct=learned_target,
                 learned_count=learned_count,
                 ml_pct=ml_target if (ml_target is not None and ml_target > 0) else None,
                 ml_prob=ml_hit_prob if (ml_hit_prob is not None and ml_hit_prob > 0) else None,
+                spread_pct=spread_pct,
             )
+            # KAPİ 1 — SpreadGate: spread, hedefin izinli oranını aşıyorsa elenir.
+            # Kullanıcı kuralı: "%X hedefte spread+komisyon sonrası net hedef kalmalı";
+            # spread hedefin %MAX_ALLOWABLE_SPREAD_RATIO'sundan fazlaysa maliyet
+            # kârı yutar → sinyal geçersiz.
+            if spread_pct is not None:
+                _max_spread = float(effective_target) * float(getattr(config, "MAX_ALLOWABLE_SPREAD_RATIO", 0.35))
+                if spread_pct > _max_spread:
+                    return {"symbol": symbol, "price": price, "volume_ratio": round(volume_ratio, 2),
+                            "atr_pct": round(atr_pct, 3),
+                            "bb_width_pct": round(bb_width, 2) if bb_width else None,
+                            "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
+                            "mode": mode, "exhausted": exhausted,
+                            "linreg_slope10_pct": round(ml_slope, 3) if ml_slope is not None else None,
+                            "horizon_minutes": horizon_minutes,
+                            "target_pct": round(effective_target, 3),
+                            "spread_pct": round(spread_pct, 3),
+                            "velocity_score": velocity_score, "passes": False,
+                            "block_reason": f"asiri_spread:{spread_pct:.2f}%>{_max_spread:.2f}%_siniri",
+                            "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
+                            "macd_bullish": macd_bullish,
+                            "macd_rising": macd_rising,
+                            "leading_ok": leading_ok,
+                            "base_hit_pct": VELOCITY_BASE_RATE_PCT,
+                            "last_closed_at": rows[-1][0]}
+            # KAPİ 2 — ML düşük olasılık: model eğitimliyse ve isabet öngörüsü
+            # MIN altındaysa tuzak sinyaldir → elenir (bildirim/otonom işleme gitmez).
+            if ml_hit_prob is not None and ml_hit_prob > 0 and ml_hit_prob < float(getattr(config, "ML_MIN_EXECUTION_PROB", 0.35)):
+                return {"symbol": symbol, "price": price, "volume_ratio": round(volume_ratio, 2),
+                        "atr_pct": round(atr_pct, 3),
+                        "bb_width_pct": round(bb_width, 2) if bb_width else None,
+                        "rsi": round(rsi, 1) if rsi else None, "mfi": round(mfi, 1) if mfi else None,
+                        "mode": mode, "exhausted": exhausted,
+                        "linreg_slope10_pct": round(ml_slope, 3) if ml_slope is not None else None,
+                        "horizon_minutes": horizon_minutes,
+                        "target_pct": round(effective_target, 3),
+                        "ml_hit_probability": round(ml_hit_prob, 3),
+                        "velocity_score": velocity_score, "passes": False,
+                        "block_reason": f"ml_dusuk_olasilik:{ml_hit_prob:.2f}<{getattr(config, 'ML_MIN_EXECUTION_PROB', 0.35):.2f}",
+                        "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
+                        "macd_bullish": macd_bullish,
+                        "macd_rising": macd_rising,
+                        "leading_ok": leading_ok,
+                        "base_hit_pct": VELOCITY_BASE_RATE_PCT,
+                        "last_closed_at": rows[-1][0]}
             # Hedef gercekciligi (VELOCITY_TARGET_REALISM_*): guclu MACD teyidi veya
             # yuksek ML olasiligi yoksa agresif ust-bant (4%) hedefi MAX_PCT'e indir;
             # 5dk+ icinde dokunulmasi nadirdir ve basariyi dusurur.
@@ -724,8 +790,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     watchlist = [r for r in results if r and not r["passes"] and r["velocity_score"] >= _watchlist_min_raw]
     watchlist.sort(key=lambda r: r["velocity_score"] * r["micro_mult"], reverse=True)
     # Journal: geçenler + izleme listesi kaydedilir; ufuk süresi dolunca
-    # kapanmış M1 mumlarla gerçek dokunuş ölçülüp eşikler kalibre edilir.
     candidate_id_prefix = f"vel-{profile['label']}-{int(now_ms)}"
+    for r in candidates + watchlist:
+        r["candidate_id"] = f"{candidate_id_prefix}-{r['symbol']}"
     # Adaylar için tekil WS mikro yapı akışını başlat; 1s/5s bar ve agresif
     # akış, aday izleme sırasında LLM/panelin gerçek zamanlı görüntü almasını
     # sağlar. En fazla 3 aday, sembol sayısı sınırlı olduğu için bağlantı
@@ -736,8 +803,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
     except Exception as exc:
         logger.warning("velocity microflow aday başlatma: %s", exc)
     try:
+        # Journal: geçenler (en az ilk 20) + izleme listesi kaydedilir; böylece
+        # monitoring_notifications'a giren hiçbir aday journal kayıtsız kalmaz.
         journal_rows = [{
-            "candidate_id": f"{candidate_id_prefix}-{r['symbol']}",
+            "candidate_id": r["candidate_id"],
             "created_at": now_ms / 1000, "symbol": r["symbol"], "price": r["price"],
             "target_pct": r.get("target_pct") or base_target_pct, "atr_pct": r["atr_pct"], "volume_ratio": 0.0,
             "ret3_pct": r["ret3_pct"], "velocity_score": r["velocity_score"],
@@ -746,7 +815,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             "ml_hit_probability": r.get("ml_hit_probability"),
             "m5_pattern": r.get("m5_pattern"), "m5_pattern_ok": r.get("m5_pattern_ok"),
             "leading_ok": r.get("leading_ok"),
-        } for r in (candidates[:limit] + watchlist[:5])]
+        } for r in (candidates[:max(limit, 20)] + watchlist[:5])]
         # Mikro yapı (whale dağıtım sinyali, CVD) aday satırından journal'a
         # taşınır; filtreler kapalıyken dahi ileride canlı istatistik üretmek
         # için kaydedilir.
@@ -955,7 +1024,12 @@ async def velocity_learning_loop():
                 # katar. Pencere süresi dolduysa ufuk × %60 mum yeterli — aksi
                 # halde kayıt sonsuza dek 'pending' kalıyordu.
                 window = _post_signal_window(rows, created_ms, due_ms)
-                if time.time() * 1000 < due_ms or len(window) < horizon * 3 // 5:
+                # Ufuk süresi dolmadan değerlendirme yapılmaz
+                if time.time() * 1000 < due_ms:
+                    continue
+                # İllikit sembollerde bazı dakikalarda işlem olmasa dahi eldeki kapanmış barlarla
+                # ölçüm tamamlanır; böylece kayıtlar aylarca 'pending' kalıp 'expired' olmaz.
+                if not window:
                     continue
                 entry = float(candidate["price"])
                 if entry <= 0:
@@ -1701,7 +1775,8 @@ def dynamic_target_pct(score: float, base_target_pct: float,
                        learned_count: int = 0,
                        ml_pct: float | None = None,
                        ml_prob: float | None = None,
-                       panel_score: bool = True) -> float:
+                       panel_score: bool = True,
+                       spread_pct: float | None = None) -> float:
     """Skor bantlı dinamik hedef: yüksek skorlu adaylarda hedef esnetilir.
 
     ``score`` **PANEL** (0-100) ölçeğinde beklenir — çağıran taraf ham
@@ -1718,27 +1793,30 @@ def dynamic_target_pct(score: float, base_target_pct: float,
     karışımı bilinçli olarak yapılmaz (plan §4/R3). Öğrenilmiş/ML harmanı ile
     MIN/MAX kelepçesi (maliyet tabanı) yine uygulanır.
 
-    Maliyet tabanı (R3-14): ``MONITORING_TARGET_PCT_MIN`` (1.5%) gidiş-dönüş
-    maliyetinin üzerinde kalır — 1000 TRY'de ~%0.4, asgari emir (50 TRY) için
-    ~%1.35. Bu yüzden hiçbir hedef yapısal olarak zarar-garantili olamaz; bu
-    zemin ``tests/test_m2_velocity_fixes.py::TargetCostFloorTests`` ile kilitli.
+    Maliyet tabanı & Net Kâr Garantisi (Kullanıcı Kuralı 2026-09-19):
+    Komisyon (~%0.35) ve spread (~%0.65) toplam maliyeti (~%1.0) düşüldükten SONRA
+    geriye net kâr (config.SCALPING_NET_TARGET_PCT, varsayılan %2.0) kalacak şekilde
+    brüt hedef (TP) hesaplanır (örn. Net %2.0 + %1.0 maliyet = %3.0 brüt hedef).
     """
     target = float(base_target_pct)
     # PANEL ölçeği varsayımı 1/2 — bant seçimi.
     if panel_score:
-        # R5-C3.4 / R2-12: TÜM bantlar ayrıştırılır ve eşiği karşılayan EN YÜKSEK
-        # skor eşiğine sahip bant seçilir. Eski sürüm ilk eşleşen bantta `break`
-        # ediyordu → artan sıralı liste yanlış (monoton olmayan) hedef üretiyordu.
         matched_threshold: float | None = None
         for min_score, pct in _parse_target_tiers(config.MONITORING_TARGET_SCORE_TIERS):
             if float(score) >= min_score and (matched_threshold is None or min_score > matched_threshold):
                 matched_threshold = min_score
                 target = max(target, pct)
 
+    # Net Kâr Tabanı: spread + komisyon maliyeti sonrası net hedefin altında kalmasın
+    spr = float(spread_pct) if (spread_pct is not None and float(spread_pct) > 0) else getattr(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.65)
+    total_cost = round_trip_cost_pct() + spr
+    net_target = getattr(config, "SCALPING_NET_TARGET_PCT", 2.0)
+    net_profit_floor = net_target + total_cost
+    target = max(target, net_profit_floor)
+
     # Öğrenilmiş sembol hedefi: yeterli örnek varsa (>=LEARNED_TARGET_MIN_SAMPLES)
     # iki yönlü harmanlanır; gerçek MFE'si banttan düşük sembollerde hedefi AŞAĞI
-    # çeker. Ölçüm yalnız gerçek MFE üreten yollardan gelir
-    # (bkz. database._next_target_pct — radar/pending uydurma değer GÖNDERMEZ).
+    # çeker. Ölçüm yalnız gerçek MFE üreten yollardan gelir.
     if learned_pct and float(learned_pct) > 0 and learned_count >= config.LEARNED_TARGET_MIN_SAMPLES:
         weight = min(0.6, learned_count / 20.0)  # 3 örnekte 0.15, 12 örnekte 0.6
         target = target * (1 - weight) + float(learned_pct) * weight
@@ -1748,11 +1826,10 @@ def dynamic_target_pct(score: float, base_target_pct: float,
         ml_weight = 0.5 if float(ml_prob) >= config.ML_TARGET_HIGH_PROB else 0.25
         target = target * (1 - ml_weight) + float(ml_pct) * ml_weight
 
-    # PANEL ölçeği varsayımı 2/2 — zayıf skor + iddialı hedef kelepçesi: hedef,
-    # panel skorunun 0.3 katını aşamaz (örn. skor 5 → hedef ≤ 1.5). Cap skorla
-    # birlikte monotonik büyür, bu yüzden tier geçişlerinde ani düşüş olmaz.
+    # PANEL ölçeği varsayımı 2/2 — zayıf skor + iddialı hedef kelepçesi:
+    # Çok düşük skorlarda hedefi sınırlar ama yine de maliyet tabanını korur.
     if panel_score:
-        target = min(target, float(score) * 0.3)
+        target = min(target, max(float(score) * 0.3, net_profit_floor * 0.75))
     return round(max(config.MONITORING_TARGET_PCT_MIN,
                      min(config.MONITORING_TARGET_PCT_MAX, target)), 3)
 

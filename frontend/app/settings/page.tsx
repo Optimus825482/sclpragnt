@@ -82,6 +82,9 @@ function SettingsPageInner() {
   const [mlBackfillOpen, setMlBackfillOpen] = useState(false);
   const [mlBackfill, setMlBackfill] = useState<any>({ status: "idle", progress: 0, logs: [] });
   const [startingMlBackfill, setStartingMlBackfill] = useState(false);
+  const [radarBackfillOpen, setRadarBackfillOpen] = useState(false);
+  const [radarBackfill, setRadarBackfill] = useState<any>({ status: "idle", progress: 0, logs: [] });
+  const [startingRadarBackfill, setStartingRadarBackfill] = useState(false);
   // TEST BİLDİRİMİ (2026-09-16): push zincirini tek tuşla sına. Bildirim
   // gelmediğinde NEREDE koptuğunu (VAPID yok / abone yok / teslim edilemedi)
   // backend `detail` alanında söyler.
@@ -169,6 +172,16 @@ function SettingsPageInner() {
     const timer = window.setInterval(load, 1500);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [mlBackfillOpen]);
+
+  useEffect(() => {
+    if (!radarBackfillOpen) return;
+    let cancelled = false;
+    const load = () => apiRequest(`${API_BASE}/api/radar-outcomes-backfill/status`, { cache: "no-store" })
+      .then((r) => r.json()).then((d) => { if (!cancelled) setRadarBackfill(d); }).catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 1500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [radarBackfillOpen]);
 
   useEffect(() => {
     const load = () => apiRequest(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()).then((d) => setActivity(d.statuses || {})).catch(() => undefined);
@@ -424,6 +437,26 @@ function SettingsPageInner() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "ML geri doldurma başlatılamadı");
     } finally { setStartingMlBackfill(false); }
+  };
+
+  const startRadarOutcomesBackfill = async () => {
+    if (!window.confirm("Ölçülemeyen ('ÖLÇÜLEMEDİ') ve eksik radar/birleşik sinyal bildirimleri Binance TR arşiv 1m mumlarıyla geriye dönük hesaplanacak. Raporlar sayfasındaki başarı oranları güncellenecektir. Devam edilsin mi?")) return;
+    setStartingRadarBackfill(true);
+    try {
+      const response = await apiRequest(`${API_BASE}/api/radar-outcomes-backfill/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: false }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.detail || "Radar backfill başlatılamadı");
+      setRadarBackfillOpen(true);
+      setRadarBackfill(body);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Radar backfill başlatılamadı");
+    } finally {
+      setStartingRadarBackfill(false);
+    }
   };
 
   const downloadParityTradeCsv = async () => {
@@ -955,6 +988,41 @@ function SettingsPageInner() {
               </p>
             )}
           </div>
+
+          {/* RADAR ÖLÇÜMLERİNİ YENİDEN HESAPLA (BACKFILL / REPLAY) */}
+          <div className={`card border-neon-green/30 bg-neon-green/5 ${activeTab !== "app" ? "hidden" : ""}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <p className="eyebrow text-neon-green">RADAR ÖLÇÜMLERİNİ YENİDEN HESAPLA (BACKFILL / REPLAY)</p>
+                <p className="text-xs text-bunker-muted mt-1">
+                  Ufku dolmuş ancak geçmişte ölçülememiş (&quot;ÖLÇÜLEMEDİ&quot; kalmış) tüm radar ve birleşik sinyal bildirimlerini Binance TR 1m arşiv mumlarıyla geriye dönük tarar. Gerçek MFE, çıkış yüzdesi ve hedef dokunuşunu hesaplayarak Raporlar sayfasındaki başarı tablosunu günceller.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={startRadarOutcomesBackfill}
+                disabled={startingRadarBackfill || !isAdmin || radarBackfill.status === "running"}
+                className="shrink-0 px-4 py-2 rounded-lg border border-neon-green/50 text-neon-green font-mono text-xs hover:bg-neon-green/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {startingRadarBackfill || radarBackfill.status === "running" ? "HESAPLANIYOR…" : "RADAR ÖLÇÜMLERİNİ YENİDEN HESAPLA"}
+              </button>
+            </div>
+            {radarBackfill.status === "running" && (
+              <div className="mt-3 flex items-center gap-3">
+                <div className="flex-1 h-2 rounded bg-bunker-800">
+                  <div className="h-2 rounded bg-neon-green transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(radarBackfill.progress || 0)))}%` }} />
+                </div>
+                <span className="font-mono text-xs text-neon-green">%{radarBackfill.progress || 0}</span>
+                <button
+                  type="button"
+                  onClick={() => setRadarBackfillOpen(true)}
+                  className="font-mono text-xs text-bunker-muted underline hover:text-white"
+                >
+                  Detayları Göster
+                </button>
+              </div>
+            )}
+          </div>
         </>
       )}
       {mtfBackfillOpen && (
@@ -990,6 +1058,67 @@ function SettingsPageInner() {
             <div className="max-h-[44vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">{(mlBackfill.logs || []).map((log: any, index: number) => <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>[{log.timestamp ? new Date(toMs(log.timestamp)).toLocaleTimeString("tr-TR") : "—"}] {log.message}</p>)}{!(mlBackfill.logs || []).length && <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>}</div>
             {mlBackfill.status === "complete" && mlBackfill.result && <div className="mt-4 rounded border border-neon-green/30 bg-neon-green/5 p-3 font-mono text-xs text-neon-green">Tamamlandı · güncellenen={mlBackfill.result.updated ?? 0} atlanan={mlBackfill.result.skipped ?? 0} sembol={mlBackfill.result.symbols ?? 0} · gölge (mevcut model)</div>}
             <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da job backend&apos;de arka planda devam eder; tekrar açarak son durumu görebilirsiniz. İşlem, PnL ve pozisyonlar değişmez.</p>
+          </div>
+        </div>
+      )}
+      {radarBackfillOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 p-4 flex items-center justify-center" onClick={() => setRadarBackfillOpen(false)}>
+          <div className="card bg-bunker-950 w-full max-w-3xl max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-bunker-800 pb-3 mb-4">
+              <div>
+                <p className="eyebrow text-neon-green">RADAR ÖLÇÜM YENİDEN HESAPLAMA (BACKFILL)</p>
+                <p className="font-mono text-sm text-white mt-1">{radarBackfill.message || "Hazırlanıyor..."}</p>
+              </div>
+              <button onClick={() => setRadarBackfillOpen(false)} className="text-bunker-muted hover:text-white">✕</button>
+            </div>
+            <div className="grid grid-cols-4 gap-3 mb-4 text-xs font-mono">
+              <div>
+                <span className="text-bunker-muted">DURUM</span>
+                <p className="text-neon-green mt-1">{String(radarBackfill.status || "idle").toUpperCase()}</p>
+              </div>
+              <div>
+                <span className="text-bunker-muted">İLERLEME</span>
+                <p className="text-white mt-1">{radarBackfill.completed ?? 0}/{radarBackfill.total ?? 0} · %{radarBackfill.progress ?? 0}</p>
+              </div>
+              <div>
+                <span className="text-bunker-muted">GÜNCELLENEN</span>
+                <p className="text-neon-green mt-1">{radarBackfill.updated ?? 0}</p>
+              </div>
+              <div>
+                <span className="text-bunker-muted">ATLANAN</span>
+                <p className="text-yellow-300 mt-1">{radarBackfill.skipped ?? 0}</p>
+              </div>
+            </div>
+            <div className="h-2 rounded bg-bunker-800 mb-4">
+              <div className="h-2 rounded bg-neon-green transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(radarBackfill.progress || 0)))}%` }} />
+            </div>
+            {radarBackfill.current_symbol && (
+              <p className="font-mono text-xs text-neon-green mb-3">İşlenen: {radarBackfill.current_symbol}</p>
+            )}
+            <div className="max-h-[44vh] overflow-auto rounded border border-bunker-800 bg-black/20 p-3 space-y-1">
+              {(radarBackfill.logs || []).map((log: any, index: number) => (
+                <p key={`${log.timestamp}-${index}`} className={`font-mono text-[11px] ${log.level === "error" ? "text-red-300" : log.level === "success" ? "text-neon-green" : log.level === "warning" ? "text-yellow-300" : "text-bunker-muted"}`}>
+                  [{log.timestamp ? new Date(toMs(log.timestamp)).toLocaleTimeString("tr-TR") : "—"}] {log.message}
+                </p>
+              ))}
+              {!(radarBackfill.logs || []).length && (
+                <p className="font-mono text-xs text-bunker-muted">Log bekleniyor...</p>
+              )}
+            </div>
+            {radarBackfill.status === "complete" && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border border-neon-green/30 bg-neon-green/5 p-3">
+                <p className="font-mono text-xs text-neon-green">
+                  Yeniden hesaplama tamamlandı! {radarBackfill.updated ?? 0} bildirim başarıyla güncellendi.
+                </p>
+                <a
+                  href="/reports"
+                  className="shrink-0 rounded-lg border border-neon-green/50 bg-neon-green/10 px-3 py-1.5 font-mono text-xs text-neon-green hover:bg-neon-green/20"
+                >
+                  RAPORLARI GÖRÜNTÜLE →
+                </a>
+              </div>
+            )}
+            <p className="text-[11px] text-bunker-muted mt-3">Pencereyi kapatsanız da işlem arka planda devam eder; tekrar açarak son durumu görebilirsiniz.</p>
           </div>
         </div>
       )}
