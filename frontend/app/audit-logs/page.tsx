@@ -150,7 +150,9 @@ export default function AuditLogsPage() {
   }, [load]);
 
   useEffect(() => {
-    timerRef.current = window.setInterval(() => load(), 30_000);
+    timerRef.current = window.setInterval(() => {
+      if (typeof document !== "undefined" && !document.hidden) load();
+    }, 30_000);
     return () => {
       if (timerRef.current !== null) window.clearInterval(timerRef.current);
     };

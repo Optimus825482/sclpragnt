@@ -27,6 +27,7 @@ export default function GainerRadar() {
     // Passive viewing must not mutate bot config or fire paper executions:
     // those stay explicit operator actions (see the apply buttons below).
     const loadItems = () => {
+      if (typeof document !== "undefined" && document.hidden) return;
       setLoading(true);
       apiRequest(`${API_BASE}/api/radar/gainers`).then((r) => r.json()).then((d) => {
         if (!active) return;
@@ -40,16 +41,31 @@ export default function GainerRadar() {
     // Bu yüzden istek korunur ama (a) arka plan sekmesinde atlanır, (b) 5 dk'ya
     // seyreltilir → görüntüleme amaçlı otomatik yazma yükü 30 sn yerine 300 sn.
     const loadRegime = () => {
-      if (document.hidden) return;
+      if (typeof document !== "undefined" && document.hidden) return;
       apiRequest(`${API_BASE}/api/market-snapshot-scan`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeframes: ["5m", "15m", "1h"], limit: 5 }) })
         .then((r) => r.json()).then((scan) => { if (active) setRegime(scan.market_regime || {}); }).catch(() => { if (active) setRegime({}); });
     };
     loadItems();
     loadRegime();
-    const countdown = setInterval(() => setSecondsLeft((value) => value > 0 ? value - 1 : 30), 1000);
+    const countdown = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      setSecondsLeft((value) => value > 0 ? value - 1 : 30);
+    }, 1000);
     const refresh = setInterval(loadItems, 30000);
     const regimeRefresh = setInterval(loadRegime, 300_000);
-    return () => { active = false; clearInterval(countdown); clearInterval(refresh); clearInterval(regimeRefresh); };
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && !document.hidden) {
+        loadItems();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      active = false;
+      clearInterval(countdown);
+      clearInterval(refresh);
+      clearInterval(regimeRefresh);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
   const autoAddSymbols = added.length > 0;
   return <div className="gainer-radar card bg-bunker-950 overflow-hidden">

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 
 export default function SystemHealthTab() {
   const [data, setData] = useState<any>(null);
@@ -18,9 +19,8 @@ export default function SystemHealthTab() {
 
   useEffect(() => {
     load();
-    const id = window.setInterval(load, 10_000);
-    return () => window.clearInterval(id);
   }, [load]);
+  useVisibleInterval(load, 10_000);
 
   const healthy = data?.status === "ok" && liveStatus === "open";
   return <section aria-label="Sistem sağlığı" className="space-y-4">

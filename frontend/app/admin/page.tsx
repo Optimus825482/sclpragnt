@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useAuth } from "../lib/auth";
@@ -75,6 +75,17 @@ export default function AdminPage() {
   );
 }
 
+type AdminTab = "database" | "audit-logs" | "macd-monitor" | "users" | "chat" | "system-health";
+
+const ALL_ADMIN_TABS: { key: AdminTab; label: string; icon: string; adminOnly: boolean }[] = [
+  { key: "database", label: "Veritabanı", icon: "🗄️", adminOnly: true },
+  { key: "audit-logs", label: "Olay Kayıtları", icon: "🛡️", adminOnly: true },
+  { key: "macd-monitor", label: "MACD Monitör", icon: "📊", adminOnly: false },
+  { key: "users", label: "Kullanıcı Yönetimi", icon: "👥", adminOnly: true },
+  { key: "chat", label: "Chat Merkezi", icon: "💬", adminOnly: true },
+  { key: "system-health", label: "Sistem Sağlığı", icon: "🩺", adminOnly: true },
+];
+
 function AdminPageInner() {
   const { role, username } = useAuth();
   const isAdmin = role === "admin";
@@ -82,18 +93,10 @@ function AdminPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  type AdminTab = "database" | "audit-logs" | "macd-monitor" | "users" | "chat" | "system-health";
-
-  const allTabs: { key: AdminTab; label: string; icon: string; adminOnly: boolean }[] = [
-    { key: "database", label: "Veritabanı", icon: "🗄️", adminOnly: true },
-    { key: "audit-logs", label: "Olay Kayıtları", icon: "🛡️", adminOnly: true },
-    { key: "macd-monitor", label: "MACD Monitör", icon: "📊", adminOnly: false },
-    { key: "users", label: "Kullanıcı Yönetimi", icon: "👥", adminOnly: true },
-    { key: "chat", label: "Chat Merkezi", icon: "💬", adminOnly: true },
-    { key: "system-health", label: "Sistem Sağlığı", icon: "🩺", adminOnly: true },
-  ];
-
-  const visibleTabs = allTabs.filter((t) => (isAdmin ? true : canMacd && !t.adminOnly));
+  const visibleTabs = useMemo(
+    () => ALL_ADMIN_TABS.filter((t) => (isAdmin ? true : canMacd && !t.adminOnly)),
+    [isAdmin, canMacd]
+  );
 
   const tabParam = searchParams.get("tab") as AdminTab | null;
   const initialTab: AdminTab =

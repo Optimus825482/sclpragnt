@@ -7,6 +7,7 @@ import { localDateInput } from "../lib/format";
 import { useLiveMessages } from "../lib/liveSocket";
 import { commissionPct } from "../lib/pnl";
 import { useAuth } from "../lib/auth";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 import Link from "next/link";
 
 const BinancePositionChartModal = dynamic(() => import("./BinancePositionChartModal"), { ssr: false });
@@ -217,10 +218,24 @@ function BinanceTrPageInner() {
   const [trLoading, setTrLoading] = useState(false);
   const [trMeta, setTrMeta] = useState<{ count: number; symbols_scanned: number } | null>(null);
 
-  // Canlı WS Fiyat Akışı
+  // Canlı WS Fiyat Akışı (Throttled + Tab-Visibility Aware)
   const [liveTicks, setLiveTicks] = useState<Record<string, LiveTick>>({});
   const [tickDir, setTickDir] = useState<Record<string, "up" | "down">>({});
   const pricesRef = useRef<Record<string, number>>({});
+  const pendingTicksRef = useRef<{ ticks: Record<string, LiveTick>; dirs: Record<string, "up" | "down"> } | null>(null);
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushTicks = useCallback(() => {
+    if (throttleTimerRef.current) {
+      clearTimeout(throttleTimerRef.current);
+      throttleTimerRef.current = null;
+    }
+    const pending = pendingTicksRef.current;
+    if (!pending) return;
+    pendingTicksRef.current = null;
+    setLiveTicks(pending.ticks);
+    if (Object.keys(pending.dirs).length) setTickDir((prev) => ({ ...prev, ...pending.dirs }));
+  }, []);
 
   useLiveMessages((message) => {
     if (message?.type !== "binance_price") return;
@@ -234,9 +249,33 @@ function BinanceTrPageInner() {
       if (old) dirs[asset] = price >= old ? "up" : "down";
       pricesRef.current[asset] = price;
     }
-    setLiveTicks(d.ticks);
-    if (Object.keys(dirs).length) setTickDir((prev) => ({ ...prev, ...dirs }));
+    const prevPending = pendingTicksRef.current;
+    pendingTicksRef.current = {
+      ticks: { ...(prevPending?.ticks || {}), ...d.ticks },
+      dirs: { ...(prevPending?.dirs || {}), ...dirs },
+    };
+
+    if (typeof document !== "undefined" && document.hidden) {
+      return;
+    }
+
+    if (!throttleTimerRef.current) {
+      throttleTimerRef.current = setTimeout(flushTicks, 120);
+    }
   });
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && !document.hidden) {
+        flushTicks();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (throttleTimerRef.current) clearTimeout(throttleTimerRef.current);
+    };
+  }, [flushTicks]);
 
   const check = useCallback(async () => {
     try {
@@ -261,11 +300,11 @@ function BinanceTrPageInner() {
     setAcctError("");
     try {
       const r = await apiRequest(`${API_BASE}/api/binance/account`, { cache: "no-store" });
+      const d = await r.json().catch(() => ({}));
       if (!r.ok) {
-        const d = await r.json().catch(() => ({}));
         throw new Error(d.detail || "Hesap bilgisi alınamadı");
       }
-      setBalances((await r.json()).balances || []);
+      setBalances(d.balances || []);
     } catch (e) {
       setAcctError(e instanceof Error ? e.message : "Hesap bilgisi alınamadı");
     } finally {
@@ -312,20 +351,19 @@ function BinanceTrPageInner() {
     finally { setTrLoading(false); }
   }, [tradeDay]);
 
-  useEffect(() => {
+  const refreshAccountData = useCallback(() => {
     if (!configured) return;
     loadAcct();
     loadOrd();
     loadOpenOrders();
-    const a = setInterval(loadAcct, 10_000);
-    const o = setInterval(loadOrd, 10_000);
-    const oo = setInterval(loadOpenOrders, 10_000);
-    return () => {
-      clearInterval(a);
-      clearInterval(o);
-      clearInterval(oo);
-    };
   }, [configured, loadAcct, loadOrd, loadOpenOrders]);
+
+  useEffect(() => {
+    if (!configured) return;
+    refreshAccountData();
+  }, [configured, refreshAccountData]);
+
+  useVisibleInterval(refreshAccountData, configured ? 10_000 : null);
 
   useEffect(() => {
     if (configured && tradeDay) loadTrades();

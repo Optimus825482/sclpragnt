@@ -6,6 +6,7 @@ import { Button } from "./ui";
 import { apiFetch } from "../lib/api";
 import { toMs } from "../lib/format";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 import SymbolLink from "./SymbolLink";
 import { useAuth } from "../lib/auth";
 import { canViewMacdMonitor } from "../lib/macdAccess";
@@ -97,17 +98,11 @@ export default function Sidebar() {
             .catch(() => undefined);
         load();
     }, []);
-    useEffect(() => {
-        const load = () => {
-            // Sekme arka plandayken health poll'unu atla — her sayfada her 10 sn'de
-            // çalışan bu istek, görünmeyen sekmelerde ağ/CPU israfıydı.
-            if (document.hidden) return;
-            apiFetch("/api/system/health").then(setHealth).catch(() => setHealth(null));
-        };
-        load();
-        const timer = window.setInterval(load, 10_000);
-        return () => window.clearInterval(timer);
+    const loadHealth = useCallback(() => {
+        apiFetch("/api/system/health").then(setHealth).catch(() => setHealth(null));
     }, []);
+    useEffect(() => { loadHealth(); }, [loadHealth]);
+    useVisibleInterval(loadHealth, 10_000);
     const isStandalone = typeof window !== "undefined" && (window.matchMedia?.("(display-mode: standalone)").matches || (window.navigator as any)?.standalone === true);
     const install = async () => {
         if (!installEvent) return;

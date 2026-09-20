@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
-import { toMs } from "../lib/format";
+import { formatSignedTL, formatTL, toMs } from "../lib/format";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import SymbolLink from "./SymbolLink";
 
@@ -15,8 +15,7 @@ export default function LiveTerminal() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const liveStatus = useLiveStatus();
   // Guarded formatters: a malformed WS/API payload must not crash the page.
-  // H-02: veri yoksa (null/NaN) "—" ve NÖTR renk. Eskiden `safeNumber` null'u
-  // 0'a çeviriyordu → ölçülmemiş bir pozisyon yeşil "+0,00%" görünüyordu.
+  // H-02: veri yoksa (null/NaN) "—" ve NÖTR renk.
   const pctText = (pct: unknown) => {
     if (pct == null || !Number.isFinite(Number(pct))) return "—";
     const value = Number(pct);
@@ -28,13 +27,15 @@ export default function LiveTerminal() {
       : Number(pnl) >= 0 ? "text-neon-green" : "text-neon-red";
   const tryText = (v: unknown) => {
     if (v == null || !Number.isFinite(Number(v))) return "—";
-    const value = Number(v);
-    return `${value >= 0 ? "+" : "-"}₺${formatTL(Math.abs(value))}`;
+    return formatSignedTL(Number(v));
   };
   const logEndRef = useRef<HTMLDivElement | null>(null);
   const onLiveMessage = useCallback((msg: any) => {
     if (msg.type === "signal") setSignals((current) => [...current, msg.data].slice(-100));
-    else if (msg.type === "portfolio") setPortfolio(msg.data);
+    else if (msg.type === "portfolio") {
+      if (typeof document !== "undefined" && document.hidden) return;
+      setPortfolio(msg.data);
+    }
   }, []);
   useLiveMessages(onLiveMessage);
 
@@ -60,7 +61,9 @@ export default function LiveTerminal() {
   }, []);
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (typeof document !== "undefined" && !document.hidden) {
+      logEndRef.current?.scrollIntoView({ behavior: "auto", block: "nearest" });
+    }
   }, [signals]);
 
   // H-02: pnl_try'si olmayan pozisyon toplama 0 olarak girmez; hiçbiri yoksa
@@ -73,10 +76,7 @@ export default function LiveTerminal() {
     return values.reduce((total, v) => total + v, 0);
   })();
 
-  const pricePrec = (v: number) => { const a = Math.abs(v); return a < 1 ? 8 : a < 100 ? 4 : a < 1000 ? 3 : 2; };
-  const formatTL = (v?: number | null) =>
-    v == null ? "—" : v.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: Math.max(2, pricePrec(v)) });
-  const tryAmount = (v?: number | null) => (v == null ? "—" : `₺${formatTL(v)}`);
+  const tryAmount = (v?: number | null) => (v == null ? "—" : formatTL(v));
 
   return (
     <div className="live-terminal grid lg:grid-cols-3 gap-6">
@@ -127,7 +127,7 @@ export default function LiveTerminal() {
             <div className="text-right font-mono">
               <p className="text-[10px] text-bunker-muted">TOPLAM PnL</p>
               <p className={`text-sm font-bold ${pnlColor(openPnl)}`}>
-                {openPnl == null ? "—" : `${openPnl >= 0 ? "+" : "-"}₺${formatTL(Math.abs(openPnl))}`}
+                {formatSignedTL(openPnl)}
               </p>
             </div>
           </div>

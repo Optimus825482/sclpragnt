@@ -9,6 +9,7 @@ import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import { apiFetch } from "../lib/api";
 import { formatPrice, toMs } from "../lib/format";
 import { mergeMacdDelta } from "../lib/macdSnapshot";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 
 // ---------------------------------------------------------------------------
 // MACD MONITOR — aktif sembollerin M1/M3/M5/M15/M30/H1 MACD histogram yönü.
@@ -346,15 +347,11 @@ export default function MacdMonitorPage() {
 
   useEffect(() => {
     loadSnapshot();
-    const timer = window.setInterval(loadSnapshot, POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [loadSnapshot]);
-
-  useEffect(() => {
     loadAlerts();
-    const timer = window.setInterval(loadAlerts, ALERT_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [loadAlerts]);
+  }, [loadSnapshot, loadAlerts]);
+
+  useVisibleInterval(loadSnapshot, POLL_MS);
+  useVisibleInterval(loadAlerts, ALERT_POLL_MS);
 
   // A3: olay çalışması — öncü seçimi değiştiğinde yeniden çekilir.
   useEffect(() => {

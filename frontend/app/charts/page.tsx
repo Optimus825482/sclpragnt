@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
 import { useUiMode } from "../lib/ui-mode";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 import SymbolLink from "../components/SymbolLink";
 import { formatSignedTL, formatTL, toMs } from "../lib/format";
 import { netOpenPnlPct, netOpenPnlTry, applyCommissionPct } from "../lib/pnl";
@@ -44,36 +45,6 @@ const pnlTryText = (v?: number | null) => {
     const abs = Math.abs(v).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return v < 0 ? `-₺${abs}` : `+₺${abs}`;
 };
-
-/**
- * Görünürlük-farkında periyodik yoklama (2026-09-16 denetimi).
- *
- * Sorun: sayfada ~8 poller vardı ve hepsi sekme ARKADA/gizliyken de çalışıyordu
- * (tarayıcılar arka plan zamanlayıcılarını kıssa da gereksiz iş + gereksiz istek).
- * Bu yardımcı aralığı YALNIZ sekme görünürken işletir; sekme tekrar görünür
- * olduğunda aralık kaldığı yerden devam eder.
- *
- * `callback` bir ref'te tutulur → tüketicinin her render'da yeni bir inline
- * fonksiyon geçmesi aralığı sıfırlamaz (monitoring sayfasındaki `useLiveMessages`
- * ile aynı desen). İlk çağrıyı KENDİSİ YAPMAZ: mevcut efektler zaten mount'ta bir
- * tur koşuyor, davranış değişmesin.
- */
-function useVisibleInterval(callback: () => void, ms: number) {
-    const cbRef = useRef(callback);
-    useEffect(() => { cbRef.current = callback; }, [callback]);
-    useEffect(() => {
-        let timer: ReturnType<typeof setInterval> | null = null;
-        const start = () => { if (!timer) timer = setInterval(() => cbRef.current(), ms); };
-        const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
-        const onVisibility = () => {
-            if (typeof document === "undefined") return;
-            if (document.visibilityState === "visible") start(); else stop();
-        };
-        if (typeof document === "undefined" || document.visibilityState === "visible") start();
-        document.addEventListener("visibilitychange", onVisibility);
-        return () => { document.removeEventListener("visibilitychange", onVisibility); stop(); };
-    }, [ms]);
-}
 
 
 /**
@@ -702,6 +673,7 @@ export default function ChartsPage() {
             return;
         }
         if (message.type === "portfolio") {
+            if (typeof document !== "undefined" && document.hidden) return;
             setLivePortfolio(message.data as LivePortfolio);
             // Backend WS portfolio mesajı hem `positions` (ana paper) hem
             // `auto_paper_positions` (otonom) alanlarını taşır. Her saniye
