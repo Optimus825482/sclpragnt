@@ -76,12 +76,11 @@ export default function HistoryPage() {
     };
 
     return (
-        <div className="max-w-7xl mx-auto space-y-6">
-            <header>
-                <h1 className="font-mono text-xl font-bold tracking-tight">
-                    <span className="text-neon-green">İŞLEM</span> GEÇMİŞİ
-                </h1>
-                <p className="eyebrow mt-1">Kapanan pozisyonlar · detaylı tablo</p>
+        <main className="page-shell space-y-6">
+            <header className="page-heading">
+                <p className="eyebrow text-neon-green">KAPANAN POZİSYONLAR</p>
+                <h1 className="font-mono text-2xl font-bold text-white">İşlem Geçmişi</h1>
+                <p className="mt-1 text-sm text-bunker-muted">Gerçekleşmiş kâr/zarar, strateji performansları ve komisyon dökümü.</p>
                 <p className={`mt-2 font-mono text-xs ${complete ? "text-neon-green" : "text-yellow-300"}`}>
                     {complete ? "Mevcut offset sayfaları yüklendi · canlı insert sırasında snapshot garantisi yok" : "10.000 kayıt sınırına ulaşıldı; backend keyset/aggregate endpoint'i gerekli"}
                 </p>
@@ -116,12 +115,12 @@ export default function HistoryPage() {
                                 <th className="p-3">SEMBOL</th>
                                 <th className="p-3">STRATEJİ</th>
                                 <th className="p-3">YÖN</th>
-                                <th className="p-3">GİRİŞ</th>
-                                <th className="p-3">ÇIKIŞ</th>
-                                <th className="p-3">MIKTAR</th>
-                                <th className="p-3">KOMİSYON</th>
-                                <th className="p-3">PnL</th>
-                                <th className="p-3">PnL %</th>
+                                <th className="p-3 text-right">GİRİŞ</th>
+                                <th className="p-3 text-right">ÇIKIŞ</th>
+                                <th className="p-3 text-right">MİKTAR</th>
+                                <th className="p-3 text-right">KOMİSYON</th>
+                                <th className="p-3 text-right">PnL</th>
+                                <th className="p-3 text-right">PnL %</th>
                                 <th className="p-3">KAPANIŞ NEDENİ</th>
                                 <th className="p-3">AÇILIŞ</th>
                                 <th className="p-3">KAPANIŞ</th>
@@ -139,21 +138,21 @@ export default function HistoryPage() {
                             )}
                             {pageRows.map((t) => (
                                 <tr key={t.id} className="border-b border-bunker-800/50 hover:bg-bunker-800/30">
-                                <td className="p-3 font-bold"><Link href={`/charts?symbol=${encodeURIComponent(t.symbol)}&timeframe=5m`} className="text-white hover:text-neon-green">{t.symbol}</Link></td>
+                                    <td className="p-3 font-bold"><Link href={`/charts?symbol=${encodeURIComponent(t.symbol)}&timeframe=5m`} className="text-white hover:text-neon-green">{t.symbol}</Link></td>
                                     <td className="p-3 text-neon-yellow">{STRATEGY_LABEL[t.strategy] ?? t.strategy}</td>
                                     <td className="p-3">
                                         <span className={`px-2 py-0.5 rounded text-xs font-bold ${t.side === "LONG" ? "bg-neon-green/15 text-neon-green" : "bg-neon-red/15 text-neon-red"}`}>
                                             {t.side === "LONG" ? "LONG" : "SHORT"}
                                         </span>
                                     </td>
-                                    <td className="p-3 text-bunker-muted">₺{formatPrice(t.entry_price)}</td>
-                                    <td className="p-3 text-bunker-muted">₺{formatPrice(t.exit_price)}</td>
-                                    <td className="p-3 text-bunker-muted">{Number.isFinite(Number(t.quantity)) ? Number(t.quantity).toFixed(6) : "—"}</td>
-                                    <td className="p-3 text-neon-yellow">{t.commission == null ? "—" : formatCurrency(t.commission)}</td>
-                                    <td className={`p-3 font-bold ${t.pnl == null ? "text-bunker-muted" : t.pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                                    <td className="p-3 text-right tabular-nums text-bunker-muted">₺{formatPrice(t.entry_price)}</td>
+                                    <td className="p-3 text-right tabular-nums text-bunker-muted">₺{formatPrice(t.exit_price)}</td>
+                                    <td className="p-3 text-right tabular-nums text-bunker-muted">{Number.isFinite(Number(t.quantity)) ? Number(t.quantity).toFixed(6) : "—"}</td>
+                                    <td className="p-3 text-right tabular-nums text-neon-yellow">{t.commission == null ? "—" : formatCurrency(t.commission)}</td>
+                                    <td className={`p-3 text-right tabular-nums font-bold ${t.pnl == null ? "text-bunker-muted" : t.pnl >= 0 ? "text-neon-green" : "text-neon-red"}`}>
                                         {t.pnl == null ? "—" : formatCurrency(t.pnl)}
                                     </td>
-                                    <td className={`p-3 font-bold ${t.pnl_pct == null ? "text-bunker-muted" : t.pnl_pct >= 0 ? "text-neon-green" : "text-neon-red"}`}>
+                                    <td className={`p-3 text-right tabular-nums font-bold ${t.pnl_pct == null ? "text-bunker-muted" : t.pnl_pct >= 0 ? "text-neon-green" : "text-neon-red"}`}>
                                         {t.pnl_pct == null ? "—" : `${t.pnl_pct > 0 ? "+" : ""}${t.pnl_pct.toFixed(2)}%`}
                                     </td>
                                     <td className="p-3 text-neon-yellow text-xs whitespace-nowrap">{t.reason || "-"}</td>
@@ -182,6 +181,6 @@ export default function HistoryPage() {
                     </div>
                 )}
             </div>
-        </div>
+        </main>
     );
 }

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 import SymbolLink from "../components/SymbolLink";
 import { Badge, Button, Card as UiCard, SectionHeader, StatCard, Tabs } from "../components/ui";
 
@@ -62,14 +63,16 @@ export default function SymbolAnalysisPage() {
       setSymbol(new URLSearchParams(location.search).get("symbol") || list[0] || "BTCTRY");
     }).catch(() => setError("Konfigürasyon alınamadı"));
   }, []);
+  const loadSymbolData = useCallback(() => {
+    apiRequest(`${API_BASE}/api/symbol-analysis/${symbol}?timeframe=${timeframe}`, { cache: "no-store" })
+      .then(r => r.json()).then(setData).catch(() => setError("Sembol analizi alınamadı"));
+  }, [symbol, timeframe]);
+
   useEffect(() => {
     setData(null);
-    const load = () => apiRequest(`${API_BASE}/api/symbol-analysis/${symbol}?timeframe=${timeframe}`, { cache: "no-store" })
-      .then(r => r.json()).then(setData).catch(() => setError("Sembol analizi alınamadı"));
-    load();
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
-  }, [symbol, timeframe]);
+    loadSymbolData();
+  }, [loadSymbolData]);
+  useVisibleInterval(loadSymbolData, 5000);
   useEffect(() => {
     apiRequest(`${API_BASE}/api/symbol-analysis/${symbol}/forecasts?limit=12`, { cache: "no-store" })
       .then(r => r.json()).then(setForecastHistory).catch(() => undefined);
@@ -103,8 +106,9 @@ export default function SymbolAnalysisPage() {
     <header className="space-y-4">
       <div className="flex flex-wrap justify-between gap-3">
         <div>
-          <h1 className="font-mono text-xl font-bold"><span className="text-neon-green">SEMBOL</span> ANALİZİ</h1>
-          <p className="eyebrow mt-1"><SymbolLink symbol={symbol} className="text-bunker-muted hover:text-neon-green" /> · {timeframe} · canlı public data</p>
+          <p className="eyebrow text-neon-green">TEKNİK &amp; LLM ANALİZİ</p>
+          <h1 className="font-mono text-2xl font-bold text-white">Sembol Analizi</h1>
+          <p className="mt-1 text-xs text-bunker-muted"><SymbolLink symbol={symbol} className="text-white hover:text-neon-green font-bold" /> · {timeframe} · canlı public veriler</p>
         </div>
         <select value={symbol} onChange={e => setSymbol(e.target.value)} className="input max-w-40">{symbols.map(s => <option key={s}>{s}</option>)}</select>
       </div>

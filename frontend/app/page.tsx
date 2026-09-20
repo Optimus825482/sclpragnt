@@ -12,6 +12,7 @@ import { API_BASE, apiRequest } from "./lib/api";
 import { useAuth } from "./lib/auth";
 import { useLiveMessages as useLiveSocketMessages, useLiveStatus } from "./lib/liveSocket";
 import { useUiMode } from "./lib/ui-mode";
+import { useVisibleInterval } from "./lib/useVisibleInterval";
 import { formatPrice, formatSignedTL, formatTL, toMs } from "./lib/format";
 import { netOpenPnlPct, netOpenPnlTry } from "./lib/pnl";
 
@@ -84,7 +85,8 @@ export default function Home() {
     setLoadError(failed === 0 ? null : failed === 3 ? "Backend'e bağlanılamadı — veriler alınamıyor." : "Bazı veriler alınamadı.");
   }, []);
 
-  useEffect(() => { load(); const t = setInterval(load, 15000); return () => clearInterval(t); }, [load]);
+  useEffect(() => { load(); }, [load]);
+  useVisibleInterval(load, 15_000);
 
   // WS
   useLiveSocketMessages(useCallback((msg: any) => {

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 
 export default function SystemHealth() {
   const [data, setData] = useState<any>(null);
@@ -15,7 +16,8 @@ export default function SystemHealth() {
     if (["reset", "trade_updated"].includes(message.type)) load();
   }, [load]);
   useLiveMessages(onLiveMessage);
-  useEffect(() => { load(); const id = window.setInterval(load, 10_000); return () => window.clearInterval(id); }, [load]);
+  useEffect(() => { load(); }, [load]);
+  useVisibleInterval(load, 10_000);
 
   const healthy = data?.status === "ok" && liveStatus === "open";
   return (

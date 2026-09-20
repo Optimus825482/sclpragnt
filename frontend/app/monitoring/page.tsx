@@ -812,24 +812,39 @@ export default function MonitoringPage() {
     }
   }, []);
 
-  const onLiveMessage = useCallback((message: any) => {
+  const pendingMacdRef = useRef<any>(null);
+  const pendingAlertRef = useRef(false);
+
+  const applyMacdMessage = useCallback((message: any) => {
     if (message.type === "macd_monitor" && message.data) {
       setMacdData(message.data);
       // WS tam snapshot beslemenin sağlıklı olduğunu kanıtlar → REST hatası bayat.
       setMacdError(null);
     }
-    // Delta yayını da birleştirilmeli (B9): backend çoğu turda yalnızca DEĞİŞEN
-    // sembolleri yayınlar; yalnız `macd_monitor` dinlenirse panel her 5. pass'a
-    // (≈5 sn) düşer. R1-05: `mergeMacdDelta` değişiklik yoksa AYNI referansı
-    // döner → üç `useMemo` boşuna (tüm evrende) yeniden hesaplanmaz.
     if (message.type === "macd_monitor_delta" && message.data?.symbols) {
       setMacdData((prev: any) => mergeMacdDelta(prev, message.data));
       setMacdError(null);
     }
+  }, []);
+
+  const onLiveMessage = useCallback((message: any) => {
+    if (typeof document !== "undefined" && document.hidden) {
+      if (message.type === "macd_monitor" || message.type === "macd_monitor_delta") {
+        pendingMacdRef.current = message;
+        return;
+      }
+      if (message.type === "monitoring_alert") {
+        pendingAlertRef.current = true;
+        return;
+      }
+    }
+    if (message.type === "macd_monitor" || message.type === "macd_monitor_delta") {
+      applyMacdMessage(message);
+    }
     // H-20/R1-14: arka plan taraması yeni radar bildirimi yayınladığında aday
     // listesi + sağlık alanları anında tazelenir (tek okuma yolu).
     if (message.type === "monitoring_alert") { void loadState(); void loadHistory(); }
-  }, [loadState, loadHistory]);
+  }, [applyMacdMessage, loadState, loadHistory]);
   useLiveMessages(onLiveMessage);
   // R3: sunucudan gelen yükseliş/erken adayları — sınıf filtresi + sıralama.
   const risingSignals = useMemo<RisingSignal[]>(() => {
@@ -966,7 +981,19 @@ export default function MonitoringPage() {
       }, delayMs);
     };
     schedule(SCAN_INTERVAL_MS);
-    const onVisibility = () => { if (!document.hidden) void loadState(); };
+    const onVisibility = () => {
+      if (!document.hidden) {
+        if (pendingMacdRef.current) {
+          applyMacdMessage(pendingMacdRef.current);
+          pendingMacdRef.current = null;
+        }
+        if (pendingAlertRef.current) {
+          pendingAlertRef.current = false;
+          void loadHistory();
+        }
+        void loadState();
+      }
+    };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       mountedRef.current = false;
@@ -974,7 +1001,7 @@ export default function MonitoringPage() {
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [loadState, loadSettings, loadHistory]);
+  }, [applyMacdMessage, loadState, loadSettings, loadHistory]);
 
   // R1-02/R1-09: TEK eşik kaynağı sunucunun etkin eşiğidir. Sunucudan gelene
   // kadar "—" gösterilir; istemci sabiti (eski 50) KALDIRILDI. M1 ile gelen

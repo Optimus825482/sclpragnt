@@ -218,15 +218,15 @@ function OverviewTab() {
         ) : (
           <div className="mt-3 table-scroll">
             <table className="data-table">
-              <thead><tr><th>Sembol</th><th>İşlem</th><th>Başarı</th><th>Net PnL</th><th>Komisyon</th></tr></thead>
+              <thead><tr><th>Sembol</th><th className="text-right">İşlem</th><th className="text-right">Başarı</th><th className="text-right">Net PnL</th><th className="text-right">Komisyon</th></tr></thead>
               <tbody>
                 {symbols.map((s: any) => (
                   <tr key={s.symbol}>
                     <td><SymbolLink symbol={s.symbol} className="font-mono text-xs text-white hover:text-neon-green" /></td>
-                    <td>{s.trade_count}</td>
-                    <td className="font-mono text-xs text-white">{s.win_rate == null ? "—" : `%${Number(s.win_rate).toFixed(1)}`}</td>
-                    <td className={`font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
-                    <td className="font-mono text-xs text-bunker-muted">{plainMoney(s.commission)}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-white">{s.trade_count}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-white">{s.win_rate == null ? "—" : `%${Number(s.win_rate).toFixed(1)}`}</td>
+                    <td className={`text-right tabular-nums font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-bunker-muted">{plainMoney(s.commission)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -315,8 +315,8 @@ function SymbolsTab() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Sembol</th><th>İşlem</th><th>Başarı</th><th>Net PnL</th>
-                <th>Ort. MFE</th><th>Ort. DD</th><th>Vel. Değer</th><th>Vel. Dokunuş</th><th>Son İşlem</th>
+                <th>Sembol</th><th className="text-right">İşlem</th><th className="text-right">Başarı</th><th className="text-right">Net PnL</th>
+                <th className="text-right">Ort. MFE</th><th className="text-right">Ort. DD</th><th className="text-right">Vel. Değer</th><th className="text-right">Vel. Dokunuş</th><th>Son İşlem</th>
               </tr>
             </thead>
             <tbody>
@@ -326,13 +326,13 @@ function SymbolsTab() {
                 return (
                   <tr key={s.symbol}>
                     <td><SymbolLink symbol={s.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
-                    <td>{tr}</td>
-                    <td className="font-mono text-xs text-white">{tr > 0 ? `%${((wins / tr) * 100).toFixed(1)}` : "—"}</td>
-                    <td className={`font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
-                    <td className="font-mono text-xs text-bunker-muted">{pct(s.avg_mfe_pct)}</td>
-                    <td className="font-mono text-xs text-bunker-muted">{pct(s.avg_dd_pct)}</td>
-                    <td className="font-mono text-xs">{rl(s.velocity_evaluated) || "—"}</td>
-                    <td className="font-mono text-xs text-white">{s.velocity_touch_rate != null ? `%${Number(s.velocity_touch_rate).toFixed(0)}` : "—"}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-white">{tr}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-white">{tr > 0 ? `%${((wins / tr) * 100).toFixed(1)}` : "—"}</td>
+                    <td className={`text-right tabular-nums font-mono text-xs ${pnlTone(s.net_pnl)}`}>{money(s.net_pnl)}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-bunker-muted">{pct(s.avg_mfe_pct)}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-bunker-muted">{pct(s.avg_dd_pct)}</td>
+                    <td className="text-right tabular-nums font-mono text-xs">{rl(s.velocity_evaluated) || "—"}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-white">{s.velocity_touch_rate != null ? `%${Number(s.velocity_touch_rate).toFixed(0)}` : "—"}</td>
                     <td className="font-mono text-xs text-bunker-muted">{s.last_seen ? fmtDt(s.last_seen) : "—"}</td>
                   </tr>
                 );
@@ -410,14 +410,14 @@ function AutonomousTab() {
         <p className="eyebrow text-neon-green">OTONOM KARAR AKIŞI ({rows.length})</p>
         <div className="mt-3 table-scroll">
           <table className="data-table">
-            <thead><tr><th>Zaman</th><th>Sembol</th><th>Eylem</th><th>Fiyat</th><th>Strateji</th><th>Neden</th></tr></thead>
+            <thead><tr><th>Zaman</th><th>Sembol</th><th>Eylem</th><th className="text-right">Fiyat</th><th>Strateji</th><th>Neden</th></tr></thead>
             <tbody>
               {rows.map((r: any, i: number) => (
                 <tr key={`${r.timestamp}-${r.symbol}-${i}`}>
                   <td className="font-mono text-xs text-bunker-muted">{fmtDt(r.timestamp)}</td>
                   <td><SymbolLink symbol={r.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                   <td className="font-mono text-xs text-white">{r.action}</td>
-                  <td className="font-mono text-xs text-bunker-muted">{num(r.price)}</td>
+                  <td className="text-right tabular-nums font-mono text-xs text-bunker-muted">{num(r.price)}</td>
                   <td className="font-mono text-xs text-bunker-muted">{strategyLabel(r.strategy)}</td>
                   <td className="max-w-60 truncate font-mono text-xs text-bunker-muted" title={r.reason}>{r.reason || "—"}</td>
                 </tr>
@@ -1346,16 +1346,16 @@ function UserPositionsTab() {
         ) : (
           <div className="mt-3 table-scroll">
             <table className="data-table">
-              <thead><tr><th>Sembol</th><th>Strateji</th><th>Giriş</th><th>Güncel</th><th>PnL</th><th>PnL %</th></tr></thead>
+              <thead><tr><th>Sembol</th><th>Strateji</th><th className="text-right">Giriş</th><th className="text-right">Güncel</th><th className="text-right">PnL</th><th className="text-right">PnL %</th></tr></thead>
               <tbody>
                 {positions.map((p: any) => (
                   <tr key={p.symbol}>
                     <td><SymbolLink symbol={p.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                     <td className="font-mono text-xs text-bunker-muted">{strategyLabel(p.strategy)}</td>
-                    <td className="font-mono text-xs text-white">{num(p.entry)}</td>
-                    <td className="font-mono text-xs text-white">{num(p.current)}</td>
-                    <td className={`font-mono text-xs ${pnlTone(p.pnl_try)}`}>{money(p.pnl_try)}</td>
-                    <td className={`font-mono text-xs ${pnlTone(p.pnl_pct)}`}>{p.pnl_pct != null ? `${p.pnl_pct >= 0 ? "+" : ""}${Number(p.pnl_pct).toFixed(2)}%` : "—"}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-white">{num(p.entry)}</td>
+                    <td className="text-right tabular-nums font-mono text-xs text-white">{num(p.current)}</td>
+                    <td className={`text-right tabular-nums font-mono text-xs ${pnlTone(p.pnl_try)}`}>{money(p.pnl_try)}</td>
+                    <td className={`text-right tabular-nums font-mono text-xs ${pnlTone(p.pnl_pct)}`}>{p.pnl_pct != null ? `${p.pnl_pct >= 0 ? "+" : ""}${Number(p.pnl_pct).toFixed(2)}%` : "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1371,15 +1371,15 @@ function UserPositionsTab() {
         ) : (
           <div className="mt-3 table-scroll">
             <table className="data-table">
-              <thead><tr><th>Zaman</th><th>Sembol</th><th>Strateji</th><th>PnL</th><th>PnL %</th></tr></thead>
+              <thead><tr><th>Zaman</th><th>Sembol</th><th>Strateji</th><th className="text-right">PnL</th><th className="text-right">PnL %</th></tr></thead>
               <tbody>
                 {trades.map((t: any) => (
                   <tr key={t.id}>
                     <td className="font-mono text-xs text-bunker-muted">{fmtDt(t.exit_time || t.entry_time)}</td>
                     <td><SymbolLink symbol={t.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
                     <td className="font-mono text-xs text-bunker-muted">{strategyLabel(t.strategy)}</td>
-                    <td className={`font-mono text-xs ${pnlTone(t.pnl)}`}>{money(t.pnl)}</td>
-                    <td className={`font-mono text-xs ${pnlTone(t.pnl_pct)}`}>{t.pnl_pct != null ? `${t.pnl_pct >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%` : "—"}</td>
+                    <td className={`text-right tabular-nums font-mono text-xs ${pnlTone(t.pnl)}`}>{money(t.pnl)}</td>
+                    <td className={`text-right tabular-nums font-mono text-xs ${pnlTone(t.pnl_pct)}`}>{t.pnl_pct != null ? `${t.pnl_pct >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%` : "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1414,9 +1414,26 @@ export default function ReportsPage() {
   const isAdmin = role === "admin";
   const tabs = isAdmin ? ADMIN_TABS : USER_TABS;
   const [tab, setTab] = useState(isAdmin ? "overview" : "radar");
+
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      const qTab = new URLSearchParams(window.location.search).get("tab");
+      if (qTab && tabs.some((t) => t.id === qTab)) {
+        setTab(qTab);
+        return;
+      }
+    }
     if (!tabs.some((t) => t.id === tab)) setTab(isAdmin ? "overview" : "radar");
-  }, [role]);
+  }, [role, isAdmin]);
+
+  const selectTab = (id: string) => {
+    setTab(id);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", id);
+      window.history.replaceState({}, "", url.pathname + url.search);
+    }
+  };
 
   return (
       <main className="page-shell">
@@ -1435,7 +1452,7 @@ export default function ReportsPage() {
         <div className="section-tabs mb-5" role="tablist" aria-label="Rapor sekmesi">
           {tabs.map((item) => (
             <button key={item.id} type="button" role="tab" aria-selected={tab === item.id}
-              className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
+              className={tab === item.id ? "active" : ""} onClick={() => selectTab(item.id)}>
               {item.label}
             </button>
           ))}

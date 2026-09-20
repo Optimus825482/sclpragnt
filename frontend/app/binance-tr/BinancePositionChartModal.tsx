@@ -350,6 +350,7 @@ export default function BinancePositionChartModal({
   useEffect(() => {
     let active = true;
     const fetchDepth = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
       try {
         let res = await fetch(`${API_BASE}/api/market-depth/${symbolConcat}?limit=20`);
         if (!res.ok) {

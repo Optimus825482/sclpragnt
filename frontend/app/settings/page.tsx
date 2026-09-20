@@ -1,7 +1,8 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages } from "../lib/liveSocket";
+import { useVisibleInterval } from "../lib/useVisibleInterval";
 import { formatSignedTL, toMs } from "../lib/format";
 import LlmManagement from "./LlmManagement";
 import SymbolLink from "../components/SymbolLink";
@@ -142,63 +143,48 @@ function SettingsPageInner() {
     loadMlStatus();
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => apiRequest(`${API_BASE}/api/market/top-gainers`, { cache: "no-store" })
+  const loadTopGainers = useCallback(() => {
+    apiRequest(`${API_BASE}/api/market/top-gainers`, { cache: "no-store" })
       .then((r) => r.json())
-      .then((d) => { if (!cancelled) setTopGainers(d); })
+      .then((d) => setTopGainers(d))
       .catch(() => undefined);
-    load();
-    const timer = window.setInterval(load, 60000);
-    return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
+  useEffect(() => { loadTopGainers(); }, [loadTopGainers]);
+  useVisibleInterval(loadTopGainers, 60000);
 
-  useEffect(() => {
-    if (!mtfBackfillOpen) return;
-    let cancelled = false;
-    const load = () => apiRequest(`${API_BASE}/api/historical-mtf-backfill/status`, { cache: "no-store" })
-      .then((r) => r.json()).then((d) => { if (!cancelled) setMtfBackfill(d); }).catch(() => undefined);
-    load();
-    const timer = window.setInterval(load, 1500);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [mtfBackfillOpen]);
-
-  useEffect(() => {
-    if (!parityBackfillOpen) return;
-    let cancelled = false;
-    const load = () => apiRequest(`${API_BASE}/api/replay-parity-backfill/status`, { cache: "no-store" })
-      .then((r) => r.json()).then((d) => { if (!cancelled) setParityBackfill(d); }).catch(() => undefined);
-    load();
-    const timer = window.setInterval(load, 1500);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [parityBackfillOpen]);
-
-  useEffect(() => {
-    if (!mlBackfillOpen) return;
-    let cancelled = false;
-    const load = () => apiRequest(`${API_BASE}/api/velocity-ml-backfill/status`, { cache: "no-store" })
-      .then((r) => r.json()).then((d) => { if (!cancelled) setMlBackfill(d); }).catch(() => undefined);
-    load();
-    const timer = window.setInterval(load, 1500);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [mlBackfillOpen]);
-
-  useEffect(() => {
-    if (!radarBackfillOpen) return;
-    let cancelled = false;
-    const load = () => apiRequest(`${API_BASE}/api/radar-outcomes-backfill/status`, { cache: "no-store" })
-      .then((r) => r.json()).then((d) => { if (!cancelled) setRadarBackfill(d); }).catch(() => undefined);
-    load();
-    const timer = window.setInterval(load, 1500);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [radarBackfillOpen]);
-
-  useEffect(() => {
-    const load = () => apiRequest(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()).then((d) => setActivity(d.statuses || {})).catch(() => undefined);
-    load();
-    const timer = window.setInterval(load, 60000);
-    return () => window.clearInterval(timer);
+  const loadMtf = useCallback(() => {
+    apiRequest(`${API_BASE}/api/historical-mtf-backfill/status`, { cache: "no-store" })
+      .then((r) => r.json()).then((d) => setMtfBackfill(d)).catch(() => undefined);
   }, []);
+  useEffect(() => { if (mtfBackfillOpen) loadMtf(); }, [mtfBackfillOpen, loadMtf]);
+  useVisibleInterval(loadMtf, mtfBackfillOpen ? 1500 : null);
+
+  const loadParity = useCallback(() => {
+    apiRequest(`${API_BASE}/api/replay-parity-backfill/status`, { cache: "no-store" })
+      .then((r) => r.json()).then((d) => setParityBackfill(d)).catch(() => undefined);
+  }, []);
+  useEffect(() => { if (parityBackfillOpen) loadParity(); }, [parityBackfillOpen, loadParity]);
+  useVisibleInterval(loadParity, parityBackfillOpen ? 1500 : null);
+
+  const loadMl = useCallback(() => {
+    apiRequest(`${API_BASE}/api/velocity-ml-backfill/status`, { cache: "no-store" })
+      .then((r) => r.json()).then((d) => setMlBackfill(d)).catch(() => undefined);
+  }, []);
+  useEffect(() => { if (mlBackfillOpen) loadMl(); }, [mlBackfillOpen, loadMl]);
+  useVisibleInterval(loadMl, mlBackfillOpen ? 1500 : null);
+
+  const loadRadar = useCallback(() => {
+    apiRequest(`${API_BASE}/api/radar-outcomes-backfill/status`, { cache: "no-store" })
+      .then((r) => r.json()).then((d) => setRadarBackfill(d)).catch(() => undefined);
+  }, []);
+  useEffect(() => { if (radarBackfillOpen) loadRadar(); }, [radarBackfillOpen, loadRadar]);
+  useVisibleInterval(loadRadar, radarBackfillOpen ? 1500 : null);
+
+  const loadActivity = useCallback(() => {
+    apiRequest(`${API_BASE}/api/symbol-activity`, { cache: "no-store" }).then((r) => r.json()).then((d) => setActivity(d.statuses || {})).catch(() => undefined);
+  }, []);
+  useEffect(() => { loadActivity(); }, [loadActivity]);
+  useVisibleInterval(loadActivity, 60000);
 
   // H-20: `symbol_activity` WS mesajı yalnızca manuel aktivasyon yenilemesinde
   // yayınlanır ve daha önce hiç tüketilmiyordu → başka bir sekmede yapılan
@@ -1333,19 +1319,15 @@ function RadarReplayPanel() {
   const [offsetHours, setOffsetHours] = useState("0");
   const [error, setError] = useState<string | null>(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const res = await apiRequest(`${API_BASE}/api/combined-radar-replay/status`, { cache: "no-store" });
       if (res.ok) setJob(await res.json());
     } catch { /* durum okunamadı — açık pencere poll ile tekrar dener */ }
-  };
+  }, []);
 
-  useEffect(() => { load(); }, []);
-  useEffect(() => {
-    if (!open) return;
-    const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
-  }, [open]);
+  useEffect(() => { load(); }, [load]);
+  useVisibleInterval(load, open ? 2000 : null);
 
   const start = async () => {
     setError(null);

@@ -4,13 +4,14 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { getUiMode, setUiMode } from "../lib/ui-mode";
+import { useUiMode } from "../lib/ui-mode";
 import { fmtDate as fmtDateOnly } from "../lib/format";
 
 type Notice = { kind: "ok" | "err"; text: string } | null;
 
 export default function ProfilePage() {
   const { username, role } = useAuth();
+  const [uiMode, toggleUiMode] = useUiMode();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -73,8 +74,8 @@ export default function ProfilePage() {
     <main className="page-shell">
       <div className="page-heading">
         <p className="eyebrow text-neon-green">KULLANICI PROFİLİ</p>
-        <h1>Profil</h1>
-        <p className="text-bunker-muted">Hesap bilgileriniz ve şifre güncelleme.</p>
+        <h1 className="font-mono text-2xl font-bold text-white">Profil</h1>
+        <p className="mt-1 text-sm text-bunker-muted">Hesap bilgileriniz ve şifre güncelleme.</p>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -174,8 +175,11 @@ export default function ProfilePage() {
               <p className="font-mono text-[11px] text-bunker-muted">Basit modda temel metrikler gösterilir, gelişmiş modda tüm kontroller</p>
             </div>
             <select
-              value={getUiMode()}
-              onChange={(e) => { setUiMode(e.target.value as "simple" | "advanced"); window.location.reload(); }}
+              value={uiMode}
+              onChange={(e) => {
+                const target = e.target.value as "simple" | "advanced";
+                if (target !== uiMode) toggleUiMode();
+              }}
               className="rounded border border-bunker-700 bg-bunker-950 px-3 py-2 font-mono text-sm text-white"
             >
               <option value="simple">🔵 Basit</option>

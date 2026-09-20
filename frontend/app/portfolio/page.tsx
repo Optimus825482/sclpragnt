@@ -243,34 +243,52 @@ export default function PortfolioPage() {
 
   useEffect(() => {
     // Sekme arka plandayken poll'ları atla (görünmeyen sekmede REST israfı).
-    const hidden = () => document.hidden;
+    const hidden = () => typeof document !== "undefined" && document.hidden;
     const openPoll = () => {
       if (!hidden()) {
         loadMain();
-        // Açık otonom pozisyonlar da REST'ten tazelenmeli: yalnız WS
-        // auto_paper_trade olayına kalırlarsa sayfa yüklendikten sonra açılan
-        // olaylar kaçırılınca liste sonsuza kadar boş kalıyordu.
         loadAutoPaperOpen();
       }
     };
     const detailPoll = () => { if (!hidden()) loadAutoPaperDetail(); };
     openPoll();
     loadAutoPaperDetail();
-    loadAutoPaperHistory(apHistoryPage);
     loadDecisions();
     // Açık pozisyonlar 5 sn'de bir (WS kopukken canlı kalsın), detay 15 sn'de bir.
     const openTimer = window.setInterval(openPoll, 5_000);
     const detailTimer = window.setInterval(detailPoll, 15_000);
     const decisionTimer = window.setInterval(() => { if (!hidden()) loadDecisions(); }, 30_000);
-    return () => { window.clearInterval(openTimer); window.clearInterval(detailTimer); window.clearInterval(decisionTimer); };
-  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions, apHistoryPage]);
+    const onVisibility = () => {
+      if (!hidden()) {
+        openPoll();
+        detailPoll();
+        loadDecisions();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(openTimer);
+      window.clearInterval(detailTimer);
+      window.clearInterval(decisionTimer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail, loadDecisions]);
+
+  useEffect(() => {
+    loadAutoPaperHistory(apHistoryPage);
+  }, [apHistoryPage, loadAutoPaperHistory]);
 
   // WS bağlantısı yoksa portföy özetini REST'ten tazele (15 sn).
   useEffect(() => {
     if (liveStatus === "open") return;
     if (!document.hidden) loadPortfolioFallback();
     const t = window.setInterval(() => { if (!document.hidden) loadPortfolioFallback(); }, 15_000);
-    return () => window.clearInterval(t);
+    const onVis = () => { if (!document.hidden) loadPortfolioFallback(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [liveStatus, loadPortfolioFallback]);
 
   // auto_paper_trade WS olayı seri gelebilir (açılış+kapanış) — her olayda
@@ -306,7 +324,10 @@ export default function PortfolioPage() {
   }, [loadMain, loadAutoPaperOpen, loadAutoPaperDetail, loadAutoPaperHistory, loadDecisions]);
 
   const onLiveMessage = useCallback((message: any) => {
-    if (message.type === "portfolio") setPortfolio(message.data);
+    if (message.type === "portfolio") {
+      if (typeof document !== "undefined" && document.hidden) return;
+      setPortfolio(message.data);
+    }
     if (message.type === "auto_paper_trade") {
       const d = message.data || {};
       const action = d.action === "OPENED" ? "açıldı" : d.action === "CLOSED" ? "kapatıldı" : "güncellendi";
@@ -487,13 +508,13 @@ export default function PortfolioPage() {
                 <thead>
                   <tr>
                     <th>Sembol</th>
-                    <th>Giriş</th>
-                    <th>Güncel</th>
-                    <th>Hedef (TP)</th>
-                    <th>Stop (SL)</th>
-                    <th>K/Z</th>
-                    <th>%</th>
-                    <th>Süre</th>
+                    <th className="text-right">Giriş</th>
+                    <th className="text-right">Güncel</th>
+                    <th className="text-right">Hedef (TP)</th>
+                    <th className="text-right">Stop (SL)</th>
+                    <th className="text-right">K/Z</th>
+                    <th className="text-right">%</th>
+                    <th className="text-right">Süre</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -511,13 +532,13 @@ export default function PortfolioPage() {
                     return (
                       <tr key={t.id}>
                         <td><SymbolLink symbol={t.symbol} className="font-bold text-white hover:text-neon-green" /></td>
-                        <td className="font-mono text-xs">{formatPrice(entry)}</td>
-                        <td className={`font-mono text-xs ${tpDist !== null && tpDist <= 0 ? "text-neon-green font-bold" : ""}`}>{current == null ? "—" : formatPrice(current)}</td>
-                        <td className={`font-mono text-xs ${t.take_profit ? "text-neon-green" : "text-bunker-muted"}`}>{t.take_profit ? formatPrice(Number(t.take_profit)) : "—"}</td>
-                        <td className={`font-mono text-xs ${t.stop_loss ? "text-neon-red" : "text-bunker-muted"}`}>{t.stop_loss ? formatPrice(Number(t.stop_loss)) : "—"}</td>
-                        <td className={`font-mono text-xs ${tone(pnl)}`}>{signedMoney(pnl)}</td>
-                        <td className={`font-mono text-xs ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
-                        <td className="font-mono text-xs text-bunker-muted">{held != null ? `${held} dk` : "—"}</td>
+                        <td className="font-mono text-xs text-right tabular-nums">{formatPrice(entry)}</td>
+                        <td className={`font-mono text-xs text-right tabular-nums ${tpDist !== null && tpDist <= 0 ? "text-neon-green font-bold" : ""}`}>{current == null ? "—" : formatPrice(current)}</td>
+                        <td className={`font-mono text-xs text-right tabular-nums ${t.take_profit ? "text-neon-green" : "text-bunker-muted"}`}>{t.take_profit ? formatPrice(Number(t.take_profit)) : "—"}</td>
+                        <td className={`font-mono text-xs text-right tabular-nums ${t.stop_loss ? "text-neon-red" : "text-bunker-muted"}`}>{t.stop_loss ? formatPrice(Number(t.stop_loss)) : "—"}</td>
+                        <td className={`font-mono text-xs text-right tabular-nums ${tone(pnl)}`}>{signedMoney(pnl)}</td>
+                        <td className={`font-mono text-xs text-right tabular-nums ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
+                        <td className="font-mono text-xs text-right tabular-nums text-bunker-muted">{held != null ? `${held} dk` : "—"}</td>
                       </tr>
                     );
                   })}
@@ -572,7 +593,14 @@ export default function PortfolioPage() {
           <div className="table-scroll mt-3">
             <table className="data-table">
               <thead>
-                <tr><th>Sembol</th><th>Strateji</th><th>Giriş</th><th>Güncel</th><th>K/Z</th><th>%</th></tr>
+                <tr>
+                  <th>Sembol</th>
+                  <th>Strateji</th>
+                  <th className="text-right">Giriş</th>
+                  <th className="text-right">Güncel</th>
+                  <th className="text-right">K/Z</th>
+                  <th className="text-right">%</th>
+                </tr>
               </thead>
               <tbody>
                 {displayMain.map((p) => {
@@ -586,10 +614,10 @@ export default function PortfolioPage() {
                     <tr key={p.symbol}>
                       <td><SymbolLink symbol={p.symbol} className="font-bold text-white hover:text-neon-green" /></td>
                       <td className="text-xs">{STRATEGY_LABEL[p.strategy || ""] || p.strategy || "—"}</td>
-                      <td className="font-mono text-xs">{formatPrice(Number(p.entry || 0))}</td>
-                      <td className="font-mono text-xs">{p.current == null ? "—" : formatPrice(p.current)}</td>
-                      <td className={`font-mono text-xs ${tone(pnl)}`}>{signedMoney(pnl)}</td>
-                      <td className={`font-mono text-xs ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
+                      <td className="font-mono text-xs text-right tabular-nums">{formatPrice(Number(p.entry || 0))}</td>
+                      <td className="font-mono text-xs text-right tabular-nums">{p.current == null ? "—" : formatPrice(p.current)}</td>
+                      <td className={`font-mono text-xs text-right tabular-nums ${tone(pnl)}`}>{signedMoney(pnl)}</td>
+                      <td className={`font-mono text-xs text-right tabular-nums ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
                     </tr>
                   );
                 })}
@@ -669,8 +697,14 @@ export default function PortfolioPage() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Sembol</th><th>Giriş Zamanı</th><th>Giriş</th><th>Çıkış</th>
-                  <th>K/Z</th><th>%</th><th>Sebep</th><th>Süre</th>
+                  <th>Sembol</th>
+                  <th>Giriş Zamanı</th>
+                  <th className="text-right">Giriş</th>
+                  <th className="text-right">Çıkış</th>
+                  <th className="text-right">K/Z</th>
+                  <th className="text-right">%</th>
+                  <th>Sebep</th>
+                  <th className="text-right">Süre</th>
                 </tr>
               </thead>
               <tbody>
@@ -682,12 +716,12 @@ export default function PortfolioPage() {
                     <tr key={t.id}>
                       <td><SymbolLink symbol={t.symbol} className="font-bold text-white hover:text-neon-green" /></td>
                       <td className="font-mono text-xs text-bunker-muted">{fmtDay(t.entry_time)}</td>
-                      <td className="font-mono text-xs">{formatPrice(Number(t.entry_price || 0))}</td>
-                      <td className="font-mono text-xs">{formatPrice(Number(t.exit_price || 0))}</td>
-                      <td className={`font-mono text-xs font-bold ${tone(pnl)}`}>{signedMoney(pnl)}</td>
-                      <td className={`font-mono text-xs ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
+                      <td className="font-mono text-xs text-right tabular-nums">{formatPrice(Number(t.entry_price || 0))}</td>
+                      <td className="font-mono text-xs text-right tabular-nums">{formatPrice(Number(t.exit_price || 0))}</td>
+                      <td className={`font-mono text-xs text-right tabular-nums font-bold ${tone(pnl)}`}>{signedMoney(pnl)}</td>
+                      <td className={`font-mono text-xs text-right tabular-nums ${tone(pnlPct)}`}>{pctText(pnlPct)}</td>
                       <td className="text-xs">{REASON_LABEL[t.exit_reason || ""] || t.exit_reason || "—"}</td>
-                      <td className="font-mono text-xs text-bunker-muted">{holdMin != null ? `${holdMin} dk` : "—"}</td>
+                      <td className="font-mono text-xs text-right tabular-nums text-bunker-muted">{holdMin != null ? `${holdMin} dk` : "—"}</td>
                     </tr>
                   );
                 })}
