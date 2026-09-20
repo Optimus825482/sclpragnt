@@ -61,16 +61,20 @@ class PanelScoreLockTests(unittest.TestCase):
 
         A3 (2026-09-14) sonrası bant eşikleri: 74.0 → 4.0 | 71.5 → 2.5 | 68.2 → 2.0
         (eski 90/70/50'nin ham çalışma noktaları korunarak yeniden ankrajlandı).
+        Maliyet tabanı (2026-09-19) bant ayrışmasını gölgelemesin diye
+        maliyet bileşenleri sıfırlanır — bu test bant haritasını kilitler.
         """
         base = float(config.MONITORING_TARGET_PCT_MIN)  # 1.5
-        # panel 95 → üst bant (4.0)
-        self.assertEqual(4.0, dynamic_target_pct(_panel_score(_raw_for_panel(95)), base))
-        # panel 72.5 → orta bant (2.5)
-        self.assertEqual(2.5, dynamic_target_pct(_panel_score(_raw_for_panel(72.5)), base))
-        # panel 69.5 → alt bant (2.0)
-        self.assertEqual(2.0, dynamic_target_pct(_panel_score(_raw_for_panel(69.5)), base))
-        # panel 30 → hiçbir bant → baz (1.5'e kelepçeli taban)
-        self.assertEqual(base, dynamic_target_pct(_panel_score(_raw_for_panel(30)), base))
+        with patch.object(config, "SCALPING_NET_TARGET_PCT", 0.0), \
+             patch.object(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.0):
+            # panel 95 → üst bant (4.0)
+            self.assertEqual(4.0, dynamic_target_pct(_panel_score(_raw_for_panel(95)), base))
+            # panel 72.5 → orta bant (2.5)
+            self.assertEqual(2.5, dynamic_target_pct(_panel_score(_raw_for_panel(72.5)), base))
+            # panel 69.5 → alt bant (2.0)
+            self.assertEqual(2.0, dynamic_target_pct(_panel_score(_raw_for_panel(69.5)), base))
+            # panel 30 → hiçbir bant → baz (1.5'e kelepçeli taban)
+            self.assertEqual(base, dynamic_target_pct(_panel_score(_raw_for_panel(30)), base))
 
     def test_gate_passing_raw_no_longer_always_hits_top_band(self):
         """Kapıyı geçen (ham≥1400) ama panel<74.0 olan aday artık 4.0 ALMAZ.
@@ -78,9 +82,11 @@ class PanelScoreLockTests(unittest.TestCase):
         Eski kod ham skoru geçirdiğinden 1400 → 4.0 veriyordu; yeni kodda
         ham 1400 = panel 71.5 → orta bant (2.5).
         """
-        self.assertEqual(2.5, dynamic_target_pct(_panel_score(1400), 2.0))
-        # ham 1800 = panel 74.0 → üst bant
-        self.assertEqual(4.0, dynamic_target_pct(_panel_score(1800), 2.0))
+        with patch.object(config, "SCALPING_NET_TARGET_PCT", 0.0), \
+             patch.object(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.0):
+            self.assertEqual(2.5, dynamic_target_pct(_panel_score(1400), 2.0))
+            # ham 1800 = panel 74.0 → üst bant
+            self.assertEqual(4.0, dynamic_target_pct(_panel_score(1800), 2.0))
 
 
 class TierParserRobustnessTests(unittest.TestCase):
@@ -92,9 +98,17 @@ class TierParserRobustnessTests(unittest.TestCase):
         # (varsayılan 90/70/50 → 74.0/71.5/68.2 değişti). Orijinali saklayıp
         # geri koymak testleri SIRADAN BAĞIMSIZ yapar.
         self._orig_tiers = config.MONITORING_TARGET_SCORE_TIERS
+        # Maliyet tabanı (2026-09-19 net-kâr güvencesi) bant ayrışmasını
+        # gölgelemesin: bu testler yalnız tier/bant davranışını kilitler.
+        self._orig_net = config.SCALPING_NET_TARGET_PCT
+        self._orig_spread = config.DEFAULT_ESTIMATED_SPREAD_PCT
+        config.SCALPING_NET_TARGET_PCT = 0.0
+        config.DEFAULT_ESTIMATED_SPREAD_PCT = 0.0
 
     def tearDown(self):
         config.MONITORING_TARGET_SCORE_TIERS = self._orig_tiers
+        config.SCALPING_NET_TARGET_PCT = self._orig_net
+        config.DEFAULT_ESTIMATED_SPREAD_PCT = self._orig_spread
 
     def test_all_bands_parsed(self):
         self.assertEqual([(90.0, 4.0), (70.0, 2.5), (50.0, 2.0)],
@@ -261,19 +275,63 @@ class UpsideRankClampTests(unittest.TestCase):
 
 
 class DynamicTargetWeakScoreClampTests(unittest.TestCase):
-    """dynamic_target_pct aynı zayıf-skor kelepçesini uygulamalı (TP enflasyonu)."""
+    """dynamic_target_pct aynı zayıf-skor kelepçesini uygulamalı (TP enflasyonu).
+
+    Zayıf skorlarda kelepçe maliyet tabanının %75'ine sabitlenir (floor*0.75);
+    TP, tabanın ÜSTÜNE taşamaz ama taban*0.75 altına da inmez (R3-14 korunur).
+    """
+
+    def setUp(self):
+        self._floor = round(config.SCALPING_NET_TARGET_PCT + config.DEFAULT_ESTIMATED_SPREAD_PCT
+                            + float(config.round_trip_cost()) * 100, 3)
 
     def test_weak_score_ml_target_clamped(self):
-        # panel skor 5 + şişirilmiş ML hedefi 6.0 (güven yüksek) → kelepçe: min(6, 5*0.3=1.5)
-        # → ardından maliyet tabanı (MIN 1.5) → 1.5; eski davranış 6.0 verirdi.
-        self.assertEqual(1.5, dynamic_target_pct(5.0, 2.0, ml_pct=6.0, ml_prob=0.9))
+        # panel skor 5 + şişirilmiş ML hedefi 6.0 (güven yüksek) → kelepçe
+        # floor*0.75; eski davranış 6.0 (TP enflasyonu) ya da 1.5 verirdi.
+        self.assertEqual(round(self._floor * 0.75, 3),
+                         dynamic_target_pct(5.0, 2.0, ml_pct=6.0, ml_prob=0.9))
 
     def test_weak_score_learned_target_clamped(self):
-        # Yeterli örnek sayısıyla öğrenilmiş hedef uygulanır ve zayıf skorda kelepçelenir.
-        self.assertEqual(1.5, dynamic_target_pct(5.0, 2.0, learned_pct=5.0, learned_count=3))
+        # Yeterli örnek sayısıyla öğrenilmiş hedef uygulanır ve zayıf skorda
+        # kelepçelenir — kelepçe yine maliyet tabanının altına inmez.
+        self.assertEqual(round(self._floor * 0.75, 3),
+                         dynamic_target_pct(5.0, 2.0, learned_pct=5.0, learned_count=3))
 
     def test_strong_score_not_clamped(self):
         self.assertEqual(4.0, dynamic_target_pct(95.0, 2.0, ml_pct=4.0, ml_prob=0.9))
+
+
+class NetProfitFloorTests(unittest.TestCase):
+    """Kullanıcı kuralı (2026-09-19): maliyet sonrası NET kâr garantili hedef.
+
+    Brüt hedef (TP) = SCALPING_NET_TARGET_PCT + spread + round_trip maliyet.
+    Varsayılan: 2.0 + 0.65 + 0.35 = %3.00 → maliyet sonrası net %2.00 kalır.
+    """
+
+    def test_floor_equals_net_plus_costs_in_mid_band(self):
+        # Skor 70 → alt bant 2.0 seçilir ama net-kâr tabanı (3.0) onu AŞAR →
+        # dönen hedef birebir taban olmalı.
+        expected = round(config.SCALPING_NET_TARGET_PCT + config.DEFAULT_ESTIMATED_SPREAD_PCT
+                         + float(config.round_trip_cost()) * 100, 3)
+        self.assertEqual(expected, dynamic_target_pct(70.0, 1.0))
+
+    def test_strong_band_stays_above_floor(self):
+        # Üst bant (4.0) tabanın üstünde kalır — floor yalnız taban, tavan değil.
+        self.assertGreaterEqual(
+            dynamic_target_pct(95.0, 1.0),
+            round(config.SCALPING_NET_TARGET_PCT + config.DEFAULT_ESTIMATED_SPREAD_PCT
+                  + float(config.round_trip_cost()) * 100, 3))
+
+    def test_spread_is_used_when_provided(self):
+        # Gerçek spread daha genişse taban da büyür (spread maliyeti gerçekten alınır).
+        expected = round(config.SCALPING_NET_TARGET_PCT + 1.20
+                         + float(config.round_trip_cost()) * 100, 3)
+        self.assertEqual(expected, dynamic_target_pct(70.0, 1.0, spread_pct=1.20))
+
+    def test_floor_never_below_panel_min(self):
+        # Taban MONITORING_TARGET_PCT_MIN'den küçük olamaz (R3-14 korunur).
+        self.assertGreaterEqual(
+            dynamic_target_pct(30.0, 1.0), float(config.MONITORING_TARGET_PCT_MIN))
 
 
 class MfiBothZeroNeutralTests(unittest.TestCase):

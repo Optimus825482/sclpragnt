@@ -55,18 +55,55 @@ SOURCE_LABELS = {
 # ve `_rising_deliver` bastırması bu haritaya bakar; radar turu başına temizlenen
 # `_unified_pushed_symbols`'tan FARKLI olarak tur SIRASINDA korunur.
 _unified_notified_at: dict[str, float] = {}
+# Sembolün SON bildirim skoru (sinyal terfisi kapısı için; 2026-09-19).
+_unified_notified_score: dict[str, float] = {}
 
 
 def reset_state_for_tests() -> None:
     """Test izolasyonu: modül durumunu sıfırla (üretimde çağrılmaz)."""
     _unified_notified_at.clear()
+    _unified_notified_score.clear()
 
 
-def note_notified(symbol: str, at: float | None = None) -> None:
-    """Birleşik bildirim gönderildi — çapraz bastırma için kaydet."""
+def note_notified(symbol: str, at: float | None = None, score: float | None = None) -> None:
+    """Birleşik bildirim gönderildi — çapraz bastırma için kaydet.
+
+    ``score`` verilirse sembolün SON bildirim skorunu da saklar; sinyal
+    terfisi (upgrade) kapısı bununla karşılaştırır: yeni sinyal öncekinden
+    belirgin güçlüyse (config.UNIFIED_UPGRADE_MIN_GAIN) bastırma yerine
+    güncelleme push'u izinli olur.
+    """
     sym = str(symbol or "").upper()
     if sym:
         _unified_notified_at[sym] = float(at if at is not None else time.time())
+        if score is not None:
+            try:
+                _unified_notified_score[sym] = float(score)
+            except (TypeError, ValueError):
+                pass
+
+
+def last_notified_score(symbol: str) -> float | None:
+    """Sembolün son bildirim skorunu döndürür (sinyal terfisi için)."""
+    return _unified_notified_score.get(str(symbol or "").upper())
+
+
+def should_upgrade_signal(symbol: str, new_score: float,
+                          min_gain: float | None = None) -> bool:
+    """Sinyal terfisi kapısı (kullanıcı iyileştirmesi 2026-09-19).
+
+    Erken sinyal sonrası cooldown'da gelen güçlü teyit (jump/rising) eskiden
+    tamamen yutuluyordu. Artık yeni skor, son bildirim skorundan
+    ``min_gain`` (varsayılan config.UNIFIED_UPGRADE_MIN_GAIN = 10) kadar
+    yüksekse "sinyal güçlendi" güncellemesi izinli sayılır.
+    """
+    sym = str(symbol or "").upper()
+    prev = _unified_notified_score.get(sym)
+    if prev is None:
+        return True  # önceki kayıt yok → bastırma kapısı zaten geçmez
+    gain = float(min_gain if min_gain is not None
+                 else getattr(config, "UNIFIED_UPGRADE_MIN_GAIN", 10.0))
+    return float(new_score) >= float(prev) + gain
 
 
 def recently_notified(symbol: str, ttl_sec: float | None = None) -> bool:
@@ -109,7 +146,7 @@ def fusion_score(components: dict[str, float | None]) -> tuple[float, list[str]]
         SOURCE_VELOCITY: float(getattr(config, "UNIFIED_W_VELOCITY", 0.50)),
         SOURCE_JUMP: float(getattr(config, "UNIFIED_W_JUMP", 0.25)),
         SOURCE_EARLY: float(getattr(config, "UNIFIED_W_EARLY", 0.25)),
-        SOURCE_RISING: float(getattr(config, "UNIFIED_W_EARLY", 0.25)),
+        SOURCE_RISING: float(getattr(config, "UNIFIED_W_RISING", 0.25)),
     }
     active: list[tuple[str, float, float]] = []
     for source, value in components.items():

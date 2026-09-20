@@ -408,17 +408,18 @@ export default function BinancePositionChartModal({
     loadKlines(timeframe);
   }, [timeframe, loadKlines]);
 
-  // ANTİ-FREEZE WATCHDOG (2026-09-19, kök neden): backend ws_live_candles yalnız
-  // "/api/market-klines son 90 sn içinde çağrıldıysa" OLUŞAN mumu canlı yayınlar
-  // (VIEWED_TTL_SEC=90). Frontend klines'ı BİR KEZ çekiyordu → ~90 sn sonra
-  // backend "kimse bakmıyor" sanıp açık mum yayınını kesiyor; WS sessizleşince
-  // grafik 2.-3. mumda DONUYOR. 60 sn'de bir sessiz yenile hem TTL'i tazeler
-  // (yayın akışı hiç durmaz) hem de WS sessiz kaldıysa veriyi yine güncel tutar.
+  // ANTİ-FREEZE WATCHDOG (2026-09-19, İKİ katman):
+  //   1) WS canlı akış TTL'i (backend VIEWED_TTL_SEC=90) canlı kalsın diye,
+  //   2) WS herhangi bir sebeple sessiz kalırsa grafik yine de donmasın diye —
+  // 10 sn'de bir sessiz tam-seri tazeleme (charts sayfasının kanıtlanmış modeli:
+  // "HTTP birincil, WS anlık bonus"). Sessiz mod: loading overlay YOK,
+  // fitContent YOK (zoom/kaydırma pozisyonu korunur), değişiklik yoksa seriye
+  // dokunulmaz. Arka plan sekmesinde durur.
   useEffect(() => {
     const timer = setInterval(() => {
-      if (document.hidden) return; // arka plan sekmesinde gereksiz istek yok
+      if (document.hidden) return;
       void loadKlines(timeframeRef.current, { silent: true });
-    }, 60_000);
+    }, 10_000);
     return () => clearInterval(timer);
   }, [loadKlines]);
 

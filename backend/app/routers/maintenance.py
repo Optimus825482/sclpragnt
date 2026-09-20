@@ -16,7 +16,9 @@ from fastapi.responses import Response
 from app.technical_analysis import calculate_snapshot, _atr, _bollinger, _ema
 from app.ml_forecast import predict_target
 from app.routers.velocity import (_velocity_ml_feature_dict,
-                                  _velocity_horizon_from_candidate_id)
+                                  _velocity_horizon_from_candidate_id,
+                                  _post_signal_window, _mfe_from_window,
+                                  _exit_pct_from_window, round_trip_cost_pct)
 
 from app.config import config
 from app import database
@@ -40,7 +42,10 @@ _combined_radar_replay = {"status": "idle", "progress": 0, "completed": 0, "tota
                           "message": None, "logs": [], "result": None,
                           "started_at": None, "finished_at": None}
 _combined_radar_replay_task = None
-
+_radar_outcomes_backfill = {"status": "idle", "phase": "idle", "progress": 0, "completed": 0, "total": 0,
+                            "updated": 0, "skipped": 0, "current_symbol": None, "message": None,
+                            "logs": [], "result": None, "started_at": None, "finished_at": None}
+_radar_outcomes_backfill_task = None
 _symbol_history_backfills = set()
 
 def _replay_parity_config_snapshot():
@@ -851,5 +856,155 @@ async def backfill_missing_active_history():
     print(f"[History] başlangıç historical kontrolü | symbols={len(config.SYMBOLS)} timeframe=5m", flush=True)
     await asyncio.gather(*(inspect(symbol) for symbol in list(config.SYMBOLS)))
     print("[History] başlangıç historical kontrolü tamamlandı", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# RADAR ÖLÇÜMLERİ YENİDEN HESAPLAMA (BACKFILL / REPLAY)
+# ---------------------------------------------------------------------------
+def _radar_outcomes_log(level: str, message: str) -> None:
+    _radar_outcomes_backfill["logs"].append({
+        "timestamp": time.time(),
+        "level": level,
+        "message": str(message)
+    })
+    _radar_outcomes_backfill["logs"] = _radar_outcomes_backfill["logs"][-500:]
+
+
+async def _run_radar_outcomes_backfill(payload: dict):
+    _radar_outcomes_backfill.update({
+        "status": "running", "phase": "fetching", "progress": 0, "completed": 0,
+        "total": 0, "updated": 0, "skipped": 0, "current_symbol": None,
+        "message": "Ölçülemeyen bildirimler taranıyor...",
+        "logs": [], "result": None, "started_at": time.time(), "finished_at": None,
+    })
+    _radar_outcomes_log("info", "Radar bildirimleri ölçüm yeniden hesaplama süreci başlatıldı.")
+    day = payload.get("day")
+    force = bool(payload.get("force", False))
+    now = time.time()
+    try:
+        matches = await database.get_monitoring_velocity_matches(limit=None, day=day if day and day != "all" else None)
+        unmeasured = []
+        for row in matches:
+            detected_at = float(row.get("detected_at") or 0)
+            horizon = int(row.get("horizon_minutes") or 5)
+            window_closed = bool(detected_at and horizon and (now - detected_at) >= (horizon + 1) * 60)
+            cstatus = row.get("candidate_status")
+            mfe = row.get("mfe_pct")
+            if window_closed and (force or cstatus != "evaluated" or mfe is None):
+                unmeasured.append(row)
+
+        total = len(unmeasured)
+        if total == 0:
+            _radar_outcomes_log("info", "Ölçülecek eksik bildirim bulunamadı. Tüm bildirimler güncel.")
+            _radar_outcomes_backfill.update({
+                "status": "complete", "phase": "done", "progress": 100,
+                "message": "Ölçülecek eksik bildirim bulunamadı.",
+                "finished_at": time.time(), "result": {"total": 0, "updated": 0, "skipped": 0}
+            })
+            return
+
+        _radar_outcomes_backfill.update({
+            "phase": "evaluating", "total": total,
+            "message": f"Toplam {total} adet bildirim ölçülüyor..."
+        })
+        _radar_outcomes_log("info", f"Toplam {total} adet ölçülmemiş bildirim bulundu. Binance TR 1m barları taranıyor...")
+
+        done = 0
+        updated = 0
+        skipped = 0
+
+        for item in unmeasured:
+            notif_id = item.get("id")
+            symbol = str(item.get("symbol") or "").upper()
+            detected_at = float(item.get("detected_at") or 0)
+            horizon = int(item.get("horizon_minutes") or 5)
+            target = float(item.get("target_pct") or 2.0)
+            price = float(item.get("price") or 0)
+            timestr = time.strftime('%d/%m %H:%M', time.localtime(detected_at))
+            _radar_outcomes_backfill["current_symbol"] = f"{symbol} ({timestr})"
+
+            created_ms = int(detected_at * 1000)
+            due_ms = created_ms + horizon * 60_000
+            rows = None
+            try:
+                rows = await fetch_klines(symbol, "1m", horizon + 15, created_ms, due_ms + 65_000)
+            except Exception as exc:
+                _radar_outcomes_log("warning", f"{symbol} ({timestr}): kline çekilemedi: {exc}")
+
+            window = _post_signal_window(rows, created_ms, due_ms) if rows else []
+            if not window and rows:
+                window = [r for r in rows if int(r[0]) >= created_ms - 30_000 and int(r[0]) <= due_ms + 60_000]
+
+            if window:
+                entry = price if price > 0 else float(window[0][1])
+                mfe_pct = _mfe_from_window(window, entry)
+                exit_pct = _exit_pct_from_window(window, entry)
+                net_pct = (exit_pct - round_trip_cost_pct()) if exit_pct is not None else None
+                touched = (mfe_pct >= target) if (mfe_pct is not None and target > 0) else False
+
+                cand_id = item.get("candidate_id") or f"backfill-{int(created_ms)}-{symbol}"
+                await database.upsert_evaluated_velocity_candidate(
+                    cand_id,
+                    symbol=symbol,
+                    created_at=detected_at,
+                    price=entry,
+                    target_pct=target,
+                    mfe_pct=round(mfe_pct, 4) if mfe_pct is not None else 0.0,
+                    touched_target=touched,
+                    exit_pct=round(exit_pct, 4) if exit_pct is not None else None,
+                    net_pct=round(net_pct, 4) if net_pct is not None else None,
+                    details={"window_bars": len(window), "entry": entry, "backfill": True},
+                    notification_id=notif_id
+                )
+                updated += 1
+                status_txt = "TAMAMEN BAŞARILI" if touched else "KISMİ" if (mfe_pct is not None and mfe_pct > 0) else "BAŞARISIZ"
+                mfe_str = f"%{mfe_pct:.2f}" if mfe_pct is not None else "0.00"
+                _radar_outcomes_log("success", f"✓ {symbol} ({timestr}) | MFE: {mfe_str} | Hedef: %{target:g} -> {status_txt}")
+            else:
+                skipped += 1
+                _radar_outcomes_log("warning", f"⚠ {symbol} ({timestr}): Bu ufukta kapanmış M1 mum bulunamadı.")
+
+            done += 1
+            progress = int((done / total) * 100)
+            _radar_outcomes_backfill.update({
+                "completed": done, "updated": updated, "skipped": skipped,
+                "progress": progress,
+                "message": f"{done}/{total} bildirim işlendi ({updated} güncellendi, {skipped} atlandı)"
+            })
+            await asyncio.sleep(0.05)
+
+        _radar_outcomes_backfill.update({
+            "status": "complete", "phase": "done", "progress": 100,
+            "current_symbol": None, "finished_at": time.time(),
+            "message": f"Tamamlandı: {updated} bildirim ölçüldü, {skipped} atlandı.",
+            "result": {"total": total, "updated": updated, "skipped": skipped}
+        })
+        _radar_outcomes_log("success", f"Radar ölçüm backfill tamamlandı! {updated}/{total} bildirim başarıyla değerlendirildi.")
+    except Exception as exc:
+        logger.exception("radar outcomes backfill hatası: %s", exc)
+        _radar_outcomes_backfill.update({
+            "status": "error", "phase": "error", "finished_at": time.time(),
+            "message": f"Hata oluştu: {exc}"
+        })
+        _radar_outcomes_log("error", f"İşlem sırasında hata: {exc}")
+
+
+@router.get("/api/radar-outcomes-backfill/status")
+async def radar_outcomes_backfill_status():
+    return {"ok": True, "paper_only": True, **_radar_outcomes_backfill}
+
+
+@router.post("/api/radar-outcomes-backfill/start")
+async def start_radar_outcomes_backfill(payload: dict = None, request: Request = None):
+    from app.api_common import require_admin as _require_admin
+    _require_admin(request)
+    global _radar_outcomes_backfill_task
+    if _radar_outcomes_backfill.get("status") == "running":
+        return {"ok": True, "already_running": True, "paper_only": True, **_radar_outcomes_backfill}
+    _radar_outcomes_backfill_task = _start_background(
+        partial(_run_radar_outcomes_backfill, payload or {}),
+        "radar-outcomes-backfill", single_pass=True
+    )
+    return {"ok": True, "status": "queued", "paper_only": True}
 
 

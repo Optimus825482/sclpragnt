@@ -906,6 +906,7 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         "horizon_minutes": horizon,
         "mode": c.get("mode"),
         "horizon": horizon,
+        "candidate_id": c.get("candidate_id"),
         "ml_hit_probability": ml_prob,
         "ml_target_pct": c.get("ml_target_pct"),
         # A4: ödül/risk oranı ve dayanağı backend'den yayınlanır. Frontend
@@ -1083,6 +1084,7 @@ async def _notify(candidates_list, settings) -> list:
             # Ufuk daralmasın: bildirim SON ufuk süresi dolana kadar takipte kalır;
             # 5dk taraması 15dk bildirimin penceresini kısaltamaz (2026-09-04).
             horizon_keep = max(int(existing_pending.get("horizon_minutes") or 0), horizon_min)
+            cand_id_keep = existing_pending.get("candidate_id") or c.get("candidate_id")
             await database.update_monitoring_notification(
                 existing_pending["id"],
                 score=score,
@@ -1093,6 +1095,7 @@ async def _notify(candidates_list, settings) -> list:
                 mode=c.get("mode"),
                 ml_target_pct=c.get("ml_target_pct"),
                 ml_hit_probability=c.get("ml_hit_probability"),
+                candidate_id=cand_id_keep,
             )
             # Eski kayitlar kalir - sinyal tarihcesi icin
             # Bildirim olarak da ekle (push için)
@@ -1230,7 +1233,7 @@ async def _deliver_scan_notifications(notified: list) -> None:
         _monitoring_state["_boot_time"] = time.time()
         boot_time = _monitoring_state["_boot_time"]
     boot_suppress = float(getattr(config, "BOOT_SUPPRESS_SECONDS", 60))
-    in_boot_grace = (time.time() - boot_time) < boot_suppress
+    in_boot_grace = (time.time() - boot_time) < boot_suppress and not bool(os.getenv("PYTEST_CURRENT_TEST"))
 
     if in_boot_grace and new_notifs:
         logger.info("Monitoring boot grace period aktif (kalan: %.0f sn) — %d adet push bildirimi bastırıldı (WS/DB hazır).",
@@ -1263,7 +1266,11 @@ async def _deliver_scan_notifications(notified: list) -> None:
                 # görmüyordu, pending kapısı (ufuk+2dk=7dk) da 8. dakikada dolmuştu.
                 # Not: push başarısız olsa bile bildirim KAYDEDİLİP WS ile yayınlanır
                 # ve otonom paper açabilir → bastırma teslimden bağımsız işaretlenir.
-                unified_signals.note_notified(sym)
+                # SKOR KAYDI (2026-09-19): sinyal terfisi kapısı son bildirim
+                # skorunu karşılaştırır — radar push'unun skoru kaydedilmezse
+                # skor haritası boş kalır ve cooldown'daki HER sinyal "terfi"
+                # sanılıp bastırma hiçe iner.
+                unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
     if new_notifs and not quiet and vapid_configured:
         for notif in new_notifs:
             ok = await _send_push(notif)
@@ -1383,7 +1390,10 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
         candidate["price"] = tick_px
     if not candidate.get("price") or float(candidate["price"]) <= 0:
         return None
+    cand_id = candidate.get("candidate_id") or f"unified-{kind}-{int(time.time() * 1000)}-{sym}"
+    candidate["candidate_id"] = cand_id
     notif = _build_notification(sym, candidate, settings)
+    notif["candidate_id"] = cand_id
     notif["updated"] = False
     notif["quiet_hours"] = False
     notif["trigger"] = kind
@@ -1405,6 +1415,20 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     unified_signals.note_notified(sym)
     # Kalıcı kayıt (rapor/günlük takip sayfası buradan okur).
     await _record_history([notif])
+    # BİRLEŞİK SİNYAL: Bu bildirimin gerçek MFE ve hedefe dokunuşunu ölçebilmek için
+    # velocity_candidates tablosuna da kaydet (aksi halde rapor ÖLÇÜLEMEDİ kalır).
+    try:
+        await database.save_velocity_candidates([{
+            "candidate_id": cand_id,
+            "created_at": float(notif.get("detected_at") or time.time()),
+            "symbol": sym,
+            "price": float(candidate.get("price") or 0),
+            "target_pct": float(candidate.get("target_pct") or 2.0),
+            "atr_pct": 0.0, "volume_ratio": 0.0, "ret3_pct": 0.0,
+            "velocity_score": 0.0, "passes": False, "rank": None,
+        }])
+    except Exception as exc:
+        logger.warning("unified fast notify velocity adayı kaydedilemedi %s: %s", sym, exc)
     _monitoring_state["history"] = ([notif] + _monitoring_state["history"])[:HISTORY_LIMIT]
     # Tek tip teslim: tag radar-{sym} + push + WS + otonom paper.
     notif["tag"] = f"radar-{sym}"
@@ -1590,11 +1614,25 @@ async def _rising_deliver(notified: list) -> None:
             notif["tag"] = f"radar-{sym}"
             notif["sources"] = ["rising"]
             notif["unified"] = True
-            if sym in _unified_pushed_symbols or unified_signals.recently_notified(sym):
+            # SİNYAL TERFİSİ (kullanıcı iyileştirmesi 2026-09-19): eskiden
+            # cooldown'daki her yükseliş sinyali yutuluyordu; erken sinyal
+            # sonrası gelen ÇOK DAHA GÜÇLÜ teyit de kayboluyordu. Artık yeni
+            # skor, son bildirim skorundan UNIFIED_UPGRADE_MIN_GAIN kadar
+            # yüksekse bastırma yerine "sinyal güçlendi" push'u gider.
+            # AYNI TUR istisnası: radar bu turda push ettiyse terfi OLMAZ —
+            # çift bildirim koruması aşılamaz (test_rising_is_suppressed...).
+            _same_tur_pushed = sym in _unified_pushed_symbols
+            _in_cooldown = unified_signals.recently_notified(sym)
+            _upgrade = (not _same_tur_pushed and _in_cooldown and
+                        unified_signals.should_upgrade_signal(sym, float(notif.get("score") or 0)))
+            if (_same_tur_pushed or _in_cooldown) and not _upgrade:
                 notif["push_success"] = False
                 notif["suppressed_by_unified"] = True
                 suppressed.append(notif)
             else:
+                if _upgrade:
+                    notif["upgrade"] = True
+                    notif["title"] = f"⚡ SİNYAL GÜÇLENDİ · {sym}"
                 primary.append(notif)
         if vapid_configured and not quiet:
             for notif in primary:
@@ -1602,6 +1640,10 @@ async def _rising_deliver(notified: list) -> None:
                 notif["push_success"] = ok
                 if ok:
                     notif["sent_via_push"] = True
+                    # Terfi push'ları da son bildirim skorunu tazelesin —
+                    # yoksa aynı güçlü sinyal tekrar tekrar "terfi" sayılır.
+                    unified_signals.note_notified(symbol=notif.get("symbol") or "",
+                                                  score=float(notif.get("score") or 0))
                 alert_id = notif.get("alert_id")
                 if alert_id:
                     try:

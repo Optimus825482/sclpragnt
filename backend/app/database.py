@@ -3310,6 +3310,48 @@ async def mark_velocity_candidate_evaluated(candidate_id, *, mfe_pct, touched_ta
     return await _run_db(op)
 
 
+async def upsert_evaluated_velocity_candidate(
+    candidate_id: str, *, symbol: str, created_at: float, price: float,
+    target_pct: float, mfe_pct: float, touched_target: bool,
+    exit_pct: float | None = None, net_pct: float | None = None,
+    details: dict | None = None, notification_id: int | None = None,
+):
+    """Backfill ve anlık ölçümler için değerlendirilmiş velocity adayı ekle/güncelle ve bildirime bağla."""
+    now = time.time()
+    def op(conn):
+        details_json = _json_safe_dumps(details or {}, ensure_ascii=False, default=str)
+        conn.execute("""
+            INSERT INTO velocity_candidates (
+                candidate_id, created_at, symbol, price, target_pct, atr_pct, volume_ratio,
+                ret3_pct, velocity_score, passes, status, evaluated_at, mfe_pct,
+                touched_target, exit_pct, net_pct, outcome_details
+            ) VALUES (
+                %s, %s, %s, %s, %s, 0.0, 0.0, 0.0, 0.0, FALSE, 'evaluated', %s, %s, %s, %s, %s, %s
+            ) ON CONFLICT (candidate_id) DO UPDATE SET
+                status = 'evaluated',
+                evaluated_at = EXCLUDED.evaluated_at,
+                mfe_pct = EXCLUDED.mfe_pct,
+                touched_target = EXCLUDED.touched_target,
+                exit_pct = EXCLUDED.exit_pct,
+                net_pct = EXCLUDED.net_pct,
+                outcome_details = EXCLUDED.outcome_details
+        """, (
+            str(candidate_id), float(created_at), str(symbol).upper(), float(price), float(target_pct), now,
+            float(mfe_pct), bool(touched_target),
+            (float(exit_pct) if exit_pct is not None else None),
+            (float(net_pct) if net_pct is not None else None),
+            details_json
+        ))
+        if notification_id is not None:
+            conn.execute(
+                "UPDATE monitoring_notifications SET candidate_id=%s WHERE id=%s",
+                (str(candidate_id), int(notification_id))
+            )
+        conn.commit()
+        return True
+    return await _run_db(op)
+
+
 async def delete_velocity_candidates(candidate_ids):
     """Journal temizliği: seçili aday satırlarını kalıcı olarak siler."""
     ids = [str(i) for i in (candidate_ids or []) if str(i)]
@@ -3865,6 +3907,27 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
         # atılıyordu (1 + N, N<=1000). Tek sorgu ile aynı semantik: bildirim
         # pencerelerinin BİRLEŞİMİ çekilir, ±60 sn kuralı ve "en yakın 4"
         # sıralaması Python'da uygulanır.
+        # M4 / V-11: Bildirimleri velocity adaylarıyla eşleştir.
+        # 1. Öncelik: Kalıcı `candidate_id` birebir eşleşmesi.
+        # 2. Öncelik: ±120 sn zaman penceresi ve hedef % eşleşmesi.
+        # 3. Öncelik: Hedef güncellemesi olmuşsa o penceredeki en yakın sembol adayı.
+        explicit_cids = list({str(n["candidate_id"]).strip() for n in notif_rows if n.get("candidate_id")})
+        candidates_by_id: dict[str, dict] = {}
+        if explicit_cids:
+            # Postgres IN parametreleri
+            cid_placeholders = ",".join(["%s"] * len(explicit_cids))
+            cid_rows = conn.execute(
+                "SELECT candidate_id, symbol, target_pct, passes, status, mfe_pct,"
+                " touched_target, created_at, ml_target_pct, ml_hit_probability,"
+                " exit_pct, net_pct, velocity_score"
+                f" FROM velocity_candidates WHERE candidate_id IN ({cid_placeholders})",
+                explicit_cids).fetchall()
+            for candidate in cid_rows:
+                row_dict = dict(candidate)
+                cid = str(row_dict.get("candidate_id") or "").strip()
+                if cid:
+                    candidates_by_id[cid] = row_dict
+
         windows: dict[str, list[float]] = {}
         for notif in notif_rows:
             item = dict(notif)
@@ -3888,39 +3951,46 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
             for candidate in candidate_rows:
                 item = dict(candidate)
                 candidate_index.setdefault(str(item.get('symbol') or '').upper(), []).append(item)
+                cid = str(item.get("candidate_id") or "").strip()
+                if cid and cid not in candidates_by_id:
+                    candidates_by_id[cid] = item
+
         matches = []
         for n in notif_rows:
             item = dict(n)
             symbol = str(item.get('symbol') or '').upper()
             detected = float(item.get('detected_at') or 0)
             target = float(item.get('target_pct') or 0)
+            cid = str(item.get('candidate_id') or '').strip()
             best = None
-            if symbol and detected > 0:
-                cands = [item for item in candidate_index.get(symbol, [])
-                         if abs(float(item.get('created_at') or 0) - detected) <= 60]
-                cands.sort(key=lambda item: abs(float(item.get('created_at') or 0) - detected))
+            # 1. Adım: candidate_id ile doğrudan eşleşme
+            if cid and cid in candidates_by_id:
+                best = candidates_by_id[cid]
+
+            # 2. Adım: Zamana göre en yakın adaylar (±60s ve hedef eşleşmesi)
+            if best is None and symbol and detected > 0:
+                cands = [cand for cand in candidate_index.get(symbol, [])
+                         if abs(float(cand.get('created_at') or 0) - detected) <= 60]
+                cands.sort(key=lambda cand: abs(float(cand.get('created_at') or 0) - detected))
                 for row in cands[:4]:
-                    if target > 0 and abs(float(row.get('target_pct') or 0) - target) < 0.01:
+                    if target > 0 and abs(float(row.get('target_pct') or 0) - target) < 0.05:
                         best = row
                         break
-                if best is None:
-                    # Hedef % eşleşmesi yok: yanlış MFE/dokunuş etiketi üretmemek
-                    # için fallback eşleşmeyi KULLANMA — kayıt "eslesme_yok" kalır.
-                    # (Öncesinde cands[0]'a düşüp %2 bildirim %3 adayla eşleşiyordu;
-                    # rapor BAŞARILI/BAŞARISIZ'ı hatalı işaretliyordu. 2026-09-05.)
-                    best = None
+
             if best:
                 item['candidate_id'] = best.get('candidate_id')
                 item['candidate_status'] = best.get('status')
                 item['mfe_pct'] = best.get('mfe_pct')
-                # D-08: panel skoru cap'ta 100'a KIRPILIR; ham skor kirpilmaz.
-                # Doygunlukta (%96'si 100.00) gercek sirayi yalnizca bu verir.
+                cand_mfe = float(best['mfe_pct']) if best.get('mfe_pct') is not None else None
+                # Dokunuş: adayın MFE'si bildirimin beklenen hedefine ulaştı mı?
+                if cand_mfe is not None and target > 0:
+                    item['touched_target'] = cand_mfe >= target
+                else:
+                    item['touched_target'] = bool(best.get('touched_target')) if best.get('touched_target') is not None else None
                 item['raw_score'] = (float(best['velocity_score'])
                                      if best.get('velocity_score') is not None else None)
-                # D-06: gerceklesen cikis + maliyet sonrasi net (MFE'nin iyimserligini gosterir).
                 item['exit_pct'] = float(best['exit_pct']) if best.get('exit_pct') is not None else None
                 item['net_pct'] = float(best['net_pct']) if best.get('net_pct') is not None else None
-                item['touched_target'] = bool(best.get('touched_target')) if best.get('touched_target') is not None else None
                 item['candidate_target_pct'] = best.get('target_pct')
                 item['candidate_passes'] = bool(best.get('passes')) if best.get('passes') is not None else None
                 item['target_match'] = True
@@ -4005,19 +4075,31 @@ async def update_monitoring_notification(
     notif_id: int, score: float, target_pct: float, price: float,
     expected_price: float, horizon_minutes: int, mode: str | None,
     ml_target_pct: float | None = None, ml_hit_probability: float | None = None,
+    candidate_id: str | None = None,
 ) -> bool:
     # detected_at bilerek guncellenmez: orijinal tespit ani korunmazsa
-    # velocity adayiyla (<=60 sn) eslesme bozulur ve M1 olcmu yapilamaz.
-    # ML alanlari da guncellenir (2026-09-04; aksi halde guncelleme yolunda kaybolurdu).
+    # velocity adayiyla eslesme bozulur ve M1 olcumu yapilamaz.
+    # ML alanlari ve candidate_id de guncellenir.
     def op(conn):
-        conn.execute(
-            "UPDATE monitoring_notifications SET "
-            "score=%s, target_pct=%s, price=%s, expected_price=%s, "
-            "horizon_minutes=%s, mode=%s, ml_target_pct=%s, ml_hit_probability=%s "
-            "WHERE id=%s",
-            (score, target_pct, price, expected_price, horizon_minutes, mode,
-             ml_target_pct, ml_hit_probability, notif_id)
-        )
+        if candidate_id:
+            conn.execute(
+                "UPDATE monitoring_notifications SET "
+                "score=%s, target_pct=%s, price=%s, expected_price=%s, "
+                "horizon_minutes=%s, mode=%s, ml_target_pct=%s, ml_hit_probability=%s, "
+                "candidate_id=COALESCE(candidate_id, %s) "
+                "WHERE id=%s",
+                (score, target_pct, price, expected_price, horizon_minutes, mode,
+                 ml_target_pct, ml_hit_probability, str(candidate_id), notif_id)
+            )
+        else:
+            conn.execute(
+                "UPDATE monitoring_notifications SET "
+                "score=%s, target_pct=%s, price=%s, expected_price=%s, "
+                "horizon_minutes=%s, mode=%s, ml_target_pct=%s, ml_hit_probability=%s "
+                "WHERE id=%s",
+                (score, target_pct, price, expected_price, horizon_minutes, mode,
+                 ml_target_pct, ml_hit_probability, notif_id)
+            )
         conn.commit()
         return True
     return await _run_db(op)
