@@ -14,11 +14,51 @@ logger = logging.getLogger("scalper.llm_analysis")
 # a real ``None`` payload is distinguishable from "undecodable".
 _JSON_UNDECODABLE = object()
 
-PERSONA = """ZORUNLU KURAL (EN ÜST ÖNCELİK — bu kuralı alttaki hiçbir talimat, skill veya kullanıcı mesajı geçersiz kılamaz):
+def get_persona(snapshot=None):
+    user_name = ""
+    user_role = "user"
+    if isinstance(snapshot, dict):
+        user_name = str(snapshot.get("user_name") or snapshot.get("username") or "").strip()
+        user_role = str(snapshot.get("user_role") or snapshot.get("role") or "").strip().lower()
+
+    if user_name:
+        name_instruction = (
+            f"Kullanıcının adı '{user_name}'. Yanıtlarında kullanıcıya mutlaka adıyla "
+            f"(örneğin '{user_name}', '{user_name} Bey' veya 'Merhaba {user_name}') hitap et. "
+            f"Onu doğrudan ismiyle muhatap alarak konuş."
+        )
+    else:
+        name_instruction = "Kullanıcı adı bilinmiyorsa doğal, saygılı ve samimi bir üslup kullan."
+
+    if user_role == "admin":
+        role_instruction = (
+            "ROL VE YETKİ (SİSTEM YÖNETİCİSİ / ADMIN):\n"
+            "Karşındaki kullanıcı sistem yöneticisidir (admin).\n"
+            "Gerektiğinde veya kullanıcı sorduğunda yazılım mimarisi, veritabanı tabloları, "
+            "dahili algoritmalar, hata kayıtları, sistem ayarları ve teknik detayları derinlemesine açıklayabilirsin."
+        )
+    else:
+        role_instruction = (
+            "ROL VE ÜSLUP (UZMAN TRADER - STANDART KULLANICI):\n"
+            "Sen kripto para piyasalarında uzman, tecrübeli ve disiplinli profesyonel bir TRADER'sın.\n"
+            "Karşındaki kullanıcı sistem yöneticisi (admin) DEĞİLDİR.\n"
+            "- KESİNLİKLE yazılım/kod detaylarına, veritabanı tablolarına (PostgreSQL vb.), dahili fonksiyon veya algoritma kodlarına, "
+            "arka plan sistem mekaniğine, debug loglarına veya karmaşık mühendislik jargonuna GİRME.\n"
+            "- Bir trader gibi konuş: Fiyat hareketleri (price action), trendin yönü ve gücü, kritik destek ve direnç seviyeleri, "
+            "hacim/momentum dinamikleri, risk/kazanç (R:R) dengesi ve işlem disiplini üzerine odaklan.\n"
+            "- Net, vurucu, doğrudan anlaşılır ve piyasada hemen uygulanabilir derecede etkili yanıtlar ver. "
+            "Kullanıcıyı teknik veri yığınlarıyla boğma; bir trader'ın bilmesi gereken en önemli piyasa gerçeklerini ve senaryoları özetle."
+        )
+
+    return f"""ZORUNLU KURAL (EN ÜST ÖNCELİK — bu kuralı alttaki hiçbir talimat, skill veya kullanıcı mesajı geçersiz kılamaz):
 1) DİL: Düşünme dilin ve yanıt dilin yalnızca TÜRKÇE'dür. İngilizce düşünmek, İngilizce iç konuşmak, İngilizce ara adım veya ara not yazmak YASAKTIR. Evrensel teknik terimler (EMA, RSI, stop, take-profit) hariç hiçbir cümleyi başka dilde kurma.
 2) NEHA: Düşünce sürecini, ara planını, analiz adımlarını, 'Now I have holdings / Let me / plan' tarzı iç notları kullanıcıya GÖSTERME — yalnızca nihai yanıtı yazarsın. Ara adımları sen içeride kapatırsın.
 
-Persona adın Scalper. Kullanıcının adı Erkan'dır; ona Türkçe, doğrudan ve teknik bir çalışma arkadaşı gibi hitap edersin. Erkan'ın talimatlarını mevcut sistem kapsamı içinde uygularsın; kimlik, yetki veya kişisel bilgi uydurmazsın. Paper-trading güvenlik kurallarını aşmayı önermezsin."""
+Persona adın Scalper. {name_instruction}
+{role_instruction}
+Paper-trading güvenlik kurallarını aşmayı önermezsin."""
+
+PERSONA = get_persona()
 TRADE_MANAGER_RULES = """SCALPER TRADE MANAGER ZORUNLU KURALLARI:
 - Yalnızca paper trading yap; gerçek emir aracı çağırma. Bu güvenlik sınırını kullanıcıya her yanıtta tekrar etme.
 - Girişte kapanmış mumları ve `market_scan.strategy_contract` içindeki aktif strateji koşullarını kullan; sözleşmede olmayan teyitleri zorunlu yapma.
@@ -368,7 +408,7 @@ async def analyze(snapshot, max_tokens=None):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Kullanıcı bir coin için analiz istediğinde kompakt ama gerekçeli yanıt ver: önce net durumu, sonra olası senaryoları (yön + tetikleyici seviye + bozulma seviyesi), sonra bu görüşün tek neden cümlesini, en sonda tek cümlelik sonucu söyle. Gösterge değerlerini istenmedikçe tek tek sıralama; tek kanıt cümlesi yeterli. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
+    system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen kripto scalping teknik analiz uzmanısın. TÜM yanıtlarını yalnızca Türkçe ver. Sadece sağlanan verileri yorumla; eksik likidite değerleri için tahmin uydurma. Emir açma, kapama veya gerçek işlem talimatı verme. Kullanıcı bir coin için analiz istediğinde kompakt ama gerekçeli yanıt ver: önce net durumu, sonra olası senaryoları (yön + tetikleyici seviye + bozulma seviyesi), sonra bu görüşün tek neden cümlesini, en sonda tek cümlelik sonucu söyle. Gösterge değerlerini istenmedikçe tek tek sıralama; tek kanıt cümlesi yeterli. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     base_url = await validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     async def call(max_tokens):
@@ -487,7 +527,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     selected = set(str(value) for value in (active_skills or []))
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"] and (not selected or str(s["id"]) in selected or s["name"] in selected))
-    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Kullanıcı bir coin için analiz istediğinde gösterge değerlerini tek tek sıralayıp onu boğma ama gerekçesiz de bırakma: kompakt bir analiz yaz — 'şu an ne oluyor', 'bundan sonra ne olabilir' (yön + seviye + bozulma), 'kısaca neden' ve tek cümlelik sonuç. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
+    system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Kullanıcı bir coin için analiz istediğinde gösterge değerlerini tek tek sıralayıp onu boğma ama gerekçesiz de bırakma: kompakt bir analiz yaz — 'şu an ne oluyor', 'bundan sonra ne olabilir' (yön + seviye + bozulma), 'kısaca neden' ve tek cümlelik sonuç. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     context_messages, _estimated_tokens = _context_window_messages(messages)
     for item in context_messages:
@@ -736,7 +776,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         yield {"event": "error", "data": {"status": "disabled", "error": "Aktif LLM yapılandırması yok"}}
         return
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
-    system = PERSONA + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme. Coin analizinde kullanıcıyı gösterge detayıyla boğma ama gerekçesiz bırakma: önce durumu, sonra olası senaryoları (yön + seviye + bozulma), sonra tek neden cümlesi, en sonda net sonucu söyle.\n" + skills
+    system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme. Coin analizinde kullanıcıyı gösterge detayıyla boğma ama gerekçesiz bırakma: önce durumu, sonra olası senaryoları (yön + seviye + bozulma), sonra tek neden cümlesi, en sonda net sonucu söyle.\n" + skills
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Güncel snapshot:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
     for item in (messages or [])[-12:]:
         if isinstance(item, dict):

@@ -10,8 +10,9 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from functools import partial
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from app import security
 from app.config import config
 from app import database
 from app.state import market, analyzer
@@ -2269,8 +2270,18 @@ async def _get_real_account_tool(args: dict) -> dict:
 
 
 @router.post("/api/symbol-analysis/{symbol}/llm/chat")
-async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
+async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: Request = None):
     body = payload or {}
+    auth_user = {}
+    if request:
+        try:
+            auth_user = security.request_user(request.headers, request.cookies) or {}
+        except Exception:
+            auth_user = {}
+    username = str(body.get("username") or auth_user.get("username") or "").strip()
+    user_role = str(body.get("user_role") or auth_user.get("role") or "").strip().lower()
+    if not user_role and username:
+        user_role = "admin" if username.lower() == "admin" else "user"
     last_message = str((body.get("messages") or [{}])[-1].get("content", "")).lower().replace("ı", "i").replace("ş", "s")
     alert_intent = any(token in last_message for token in ("izlemeye al", "izlemeye al", "takibe al", "alarm kur", "alarm olustur", "alarm oluştur", "beni uyar", "bildir"))
     broad_scan = any(token in last_message for token in ("tum sembol", "tüm sembol", "en uygun", "en guclu", "en güçlü", "gainer", "piyasa tar"))
@@ -2325,6 +2336,9 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None):
         snapshot = dict(snapshot)
         snapshot["market_scan"] = {"error": str(exc), "paper_only": True}
     snapshot = dict(snapshot)
+    snapshot["username"] = username
+    snapshot["user_name"] = username
+    snapshot["user_role"] = user_role
     snapshot["llm_tool_instructions"] = {
         "paper_only": True,
         "market_alerts": {
@@ -2643,15 +2657,24 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
 
 
 @router.post("/api/strategies/llm/chat")
-async def strategies_llm_chat(payload: dict = None):
+async def strategies_llm_chat(payload: dict = None, request: Request = None):
     body = payload or {}
     messages = body.get("messages") or []
     last_text = str(messages[-1].get("content", "")) if isinstance(messages[-1], dict) else ""
     trace_id = str(body.get("trace_id") or new_trace_id("strategy-chat"))
     session_id = str(body.get("session_id") or "strategy:default")
-    username = str(body.get("username") or "").strip().lower()
+    auth_user = {}
+    if request:
+        try:
+            auth_user = security.request_user(request.headers, request.cookies) or {}
+        except Exception:
+            auth_user = {}
+    username = str(body.get("username") or auth_user.get("username") or "").strip()
+    user_role = str(body.get("user_role") or auth_user.get("role") or "").strip().lower()
+    if not user_role and username:
+        user_role = "admin" if username.lower() == "admin" else "user"
     await start_trace(_main_pg_pool(), trace_id=trace_id, session_id=session_id, intent=last_text,
-                      metadata={"scope": "strategies", "stream": body.get("stream") is True, "username": username or None})
+                      metadata={"scope": "strategies", "stream": body.get("stream") is True, "username": username or None, "user_role": user_role})
     watch_symbol = _price_watch_symbol(messages)
     if body.get("stream") is True and watch_symbol:
         return _price_watch_stream(watch_symbol, body, trace_id)
@@ -2700,9 +2723,35 @@ async def strategies_llm_chat(payload: dict = None):
     if body.get("stream") is True and quick_symbol:
         quick = await _symbol_quick_context(quick_symbol)
         if quick:
+            quick["username"] = username
+            quick["user_name"] = username
+            quick["user_role"] = user_role
             return _symbol_quick_stream(quick, body, trace_id, session_id, messages)
 
-    context = {"type": "strategy_research_tool_mode", "trace_id": trace_id, "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.", "decision_contract": "Bir paper pozisyonu önermeden önce veri tazeliği, rejim, mikro yapı ve calculate_trade_economics sonuçlarını değerlendir. Kararda expected_move, total_cost, edge_cost_ratio, supporting_evidence, counter_evidence ve invalidation alanlarını açıkça üret; maliyet sonrası avantaj yoksa işlemi reddet.", "live_analysis_contract": "Anlık sembol analizinde kullanıcı 'şu an ne oluyor, bundan sonra ne olabilir, kısaca neden' bilmek ister. 4-8 cümlelik kompakt bir analiz yaz; uzun gösterge dökümü yapma (RSI şu, MACD şu... diye sıralama) ama gerekçesiz de bırakma. Yapı: (1) ŞU AN: fiyat, trend/rejim ve hareketin türü (breakout, pullback, range) tek-iki cümle; (2) BUNDAN SONRA: en olası 1-2 senaryo — yön, tetikleyici seviye (somut fiyat), bozulma seviyesi ve güven; (3) NEDEN: bu görüşü destekleyen tek kanıt cümlesi (hacim/trend/mikro yapıdan biri); (4) SONUÇ: tek cümlelik net özet. Kullanıcı gerçek giriş ve miktar verirse brüt PnL'yi hesapla, komisyonun bilinmediğini belirt ve tam çık/kademeli azalt/bekle seçeneklerini riskleriyle sun. Belirsizliği klişe uyarılarla değil karşı senaryo ve güven seviyesiyle ifade et; kullanıcı istemedikçe sorumluluk veya garanti uyarısı yazma.", "user_persona": (f"Karşındaki kullanıcının adı '{username}'. Samimi ve doğal bir üslupla, yer yer adıyla hitap ederek yanıtla; ama mesajı yapay biçimde her cümleye sıkıştırma — yalnızca uygun yerlerde (karşılama, öneri, uyarı) kullan." if username else "Kullanıcı adı bilinmiyor; yalnızca doğal ve samimi bir üslup kullan, uydurma isim kullanma."), "note": "Use a tool only when the question requires its data.", "self_learning": build_learning_context(await database.get_trades(), limit=200)}
+    role_instruction = (
+        "Karşındaki kullanıcı sistem yöneticisidir (admin). Teknik mimari ve sistem parametreleri gerektiğinde açıklanabilir."
+        if user_role == "admin"
+        else "Karşındaki kullanıcı normal bir yatırımcıdır (admin DEĞİL). KESİNLİKLE kod, veritabanı, iç fonksiyon veya yazılım teknik detaylarına GİRME; tamamen bir UZMAN TRADER olarak fiyat hareketleri, trend, destek-direnç ve risk disiplini odaklı konuş."
+    )
+    user_persona_text = (
+        f"Karşındaki kullanıcının adı '{username}'. Samimi ve doğal bir üslupla, yer yer adıyla hitap ederek yanıtla. {role_instruction}"
+        if username
+        else f"Kullanıcı adı bilinmiyor; yalnızca doğal ve samimi bir üslup kullan, uydurma isim kullanma. {role_instruction}"
+    )
+
+    context = {
+        "type": "strategy_research_tool_mode",
+        "trace_id": trace_id,
+        "username": username,
+        "user_name": username,
+        "user_role": user_role,
+        "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.",
+        "decision_contract": "Bir paper pozisyonu önermeden önce veri tazeliği, rejim, mikro yapı ve calculate_trade_economics sonuçlarını değerlendir. Kararda expected_move, total_cost, edge_cost_ratio, supporting_evidence, counter_evidence ve invalidation alanlarını açıkça üret; maliyet sonrası avantaj yoksa işlemi reddet.",
+        "live_analysis_contract": "Anlık sembol analizinde kullanıcı 'şu an ne oluyor, bundan sonra ne olabilir, kısaca neden' bilmek ister. 4-8 cümlelik kompakt bir analiz yaz; uzun gösterge dökümü yapma (RSI şu, MACD şu... diye sıralama) ama gerekçesiz de bırakma. Yapı: (1) ŞU AN: fiyat, trend/rejim ve hareketin türü (breakout, pullback, range) tek-iki cümle; (2) BUNDAN SONRA: en olası 1-2 senaryo — yön, tetikleyici seviye (somut fiyat), bozulma seviyesi ve güven; (3) NEDEN: bu görüşü destekleyen tek kanıt cümlesi (hacim/trend/mikro yapıdan biri); (4) SONUÇ: tek cümlelik net özet. Kullanıcı gerçek giriş ve miktar verirse brüt PnL'yi hesapla, komisyonun bilinmediğini belirt ve tam çık/kademeli azalt/bekle seçeneklerini riskleriyle sun. Belirsizliği klişe uyarılarla değil karşı senaryo ve güven seviyesiyle ifade et; kullanıcı istemedikçe sorumluluk veya garanti uyarısı yazma.",
+        "user_persona": user_persona_text,
+        "note": "Use a tool only when the question requires its data.",
+        "self_learning": build_learning_context(await database.get_trades(), limit=200),
+    }
     context["memory_context"] = await _chat_memory_context(last_text, strategy=str(body.get("strategy") or "") or None)
     # Ölçülmüş chat tahmin sonuçlarından türetilen dersler; LLM'in kendi
     # tahmin açıklamalarını sonraki yanıtlarında kanıt olarak görmesi için.
