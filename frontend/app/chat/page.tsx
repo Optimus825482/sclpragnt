@@ -272,6 +272,8 @@ function ChatPageInner() {
   const [speechTranscript, setSpeechTranscript] = useState("");
   const [speechInterim, setSpeechInterim] = useState("");
   const recognitionRef = useRef<any>(null);
+  // finalTransRef: recognition closure'dan state stale olmadan erişim için
+  const finalTransRef = useRef<string>("");
 
   // Model akışı: arka plan etkinliklerinin canlı logu (en yeni üstte)
   const [activities, setActivities] = useState<{ key: string; kind: string; text: string; time: string; success?: boolean; duration_ms?: number }[]>([]);
@@ -390,11 +392,13 @@ function ChatPageInner() {
       recognition.maxAlternatives = 1;
 
       let finalTrans = "";
+      finalTransRef.current = "";
 
       recognition.onstart = () => {
         setIsListening(true);
         setSpeechTranscript("");
         setSpeechInterim("");
+        finalTransRef.current = "";
         setError("");
       };
 
@@ -408,6 +412,7 @@ function ChatPageInner() {
             interim += trans;
           }
         }
+        finalTransRef.current = finalTrans;
         setSpeechTranscript(finalTrans);
         setSpeechInterim(interim);
       };
@@ -441,9 +446,13 @@ function ChatPageInner() {
     }
     setIsListening(false);
 
-    const fullText = (speechTranscript + (speechInterim ? " " + speechInterim : "")).trim();
+    // finalTransRef.current: React state'in stale kalmaması için ref'i okuyoruz
+    const refText = finalTransRef.current || "";
+    const interimText = speechInterim || "";
+    const fullText = (refText + (interimText ? " " + interimText : "")).trim();
     setSpeechTranscript("");
     setSpeechInterim("");
+    finalTransRef.current = "";
 
     if (action === "cancel" || !fullText) return;
 
@@ -455,7 +464,15 @@ function ChatPageInner() {
   };
 
   const handleVoiceSend = (transcript: string) => {
-    stopListening("cancel");
+    // Önce recognition'ı durdur ama state'i temizleme (cancel değil)
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch {}
+      recognitionRef.current = null;
+    }
+    setIsListening(false);
+    setSpeechTranscript("");
+    setSpeechInterim("");
+    // Transcript'i temizlemeden ÖNCE kopyaladık, şimdi gönder
     if (transcript.trim()) {
       void sendMessage(transcript.trim());
     }
@@ -1054,10 +1071,10 @@ function ChatPageInner() {
                     <button
                       type="button"
                       onClick={() => {
-                        const fullText = (speechTranscript + (speechInterim ? " " + speechInterim : "")).trim();
+                        const fullText = ((speechTranscript || "") + (speechInterim ? " " + speechInterim : "")).trim();
                         handleVoiceSend(fullText);
                       }}
-                      disabled={!(speechTranscript || speechInterim).trim()}
+                      disabled={!((speechTranscript || "") + (speechInterim || "")).trim()}
                       className="text-xs text-black bg-neon-green hover:bg-emerald-400 px-3 py-1 rounded font-mono font-bold transition-all disabled:opacity-40 flex items-center gap-1"
                     >
                       <span>➤</span>
