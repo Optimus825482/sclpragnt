@@ -136,6 +136,82 @@ button, a { touch-action: manipulation; }
 .chat-tool-chips { display:flex; flex-wrap:wrap; gap:.35rem; max-height:8rem; overflow-y:auto; }
 .chat-log-panel { margin-top:1rem; border-top:1px solid rgb(51 65 85 / .65); padding-top:1rem; }
 
+/* Sesli Mesaj & Mikrofon Animasyonları */
+.chat-mic-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.65rem;
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  background: rgba(15, 23, 42, 0.85);
+  color: #94a3b8;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.chat-mic-btn:hover:not(:disabled) {
+  border-color: rgba(52, 211, 153, 0.6);
+  color: #79f2b4;
+  background: rgba(16, 185, 129, 0.12);
+}
+.chat-mic-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.chat-mic-btn.is-active {
+  border-color: rgba(239, 68, 68, 0.8);
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  box-shadow: 0 0 14px rgba(239, 68, 68, 0.45);
+}
+.mic-pulse-ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: 0.8rem;
+  border: 2px solid rgba(239, 68, 68, 0.6);
+  animation: mic-pulse 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+@keyframes mic-pulse {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  60% { transform: scale(1.2); opacity: 0; }
+  100% { transform: scale(1.25); opacity: 0; }
+}
+
+.animate-voice-bar-1 { animation: voice-bar 0.7s ease-in-out infinite alternate; }
+.animate-voice-bar-2 { animation: voice-bar 0.9s ease-in-out 0.15s infinite alternate; }
+.animate-voice-bar-3 { animation: voice-bar 0.6s ease-in-out 0.3s infinite alternate; }
+.animate-voice-bar-4 { animation: voice-bar 0.8s ease-in-out 0.1s infinite alternate; }
+.animate-voice-bar-5 { animation: voice-bar 0.75s ease-in-out 0.25s infinite alternate; }
+@keyframes voice-bar {
+  0% { height: 4px; }
+  100% { height: 16px; }
+}
+
+.chat-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.7rem;
+  font-family: ui-monospace, monospace;
+  color: #94a3b8;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(51, 65, 85, 0.6);
+  border-radius: 0.4rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.chat-action-btn:hover {
+  color: #79f2b4;
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+
 
 .velocity-table { overflow-x:auto; -webkit-overflow-scrolling:touch; }
 .velocity-table table { min-width:30rem; border-collapse:collapse; }

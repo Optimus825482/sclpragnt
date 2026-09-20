@@ -104,6 +104,9 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         self.radar_patch = patch.object(monitoring, "get_cached_radar_candidate", lambda symbol: None)
         self.radar_patch.start()
         self.addCleanup(self.radar_patch.stop)
+        self.ticker_patch = patch.object(llm_chat, "ticker_price", new=AsyncMock(return_value=[]))
+        self.ticker_patch.start()
+        self.addCleanup(self.ticker_patch.stop)
 
     async def test_returns_none_without_live_sources(self):
         llm_chat.market = _FakeMarket({})
