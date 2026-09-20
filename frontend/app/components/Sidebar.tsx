@@ -17,6 +17,7 @@ const MENU_ITEMS = [
     { href: "/portfolio", label: "Sanal Portföy", icon: "💼", desc: "Canlı sanal portföy ve otonom işlemler" },
     { href: "/monitoring", label: "Radar", icon: "📡", desc: "Otonom izleme ve hız avcısı" },
     { href: "/charts", label: "Grafik", icon: "📈", desc: "Mum grafikleri" },
+    { href: "/technical-charts", label: "Teknik Grafik", icon: "🖥️", desc: "4'lü çoklu TradingView ekranı", adminOnly: true },
     { href: "/binance-tr", label: "Binance TR", icon: "🏛️", desc: "Kendi Binance TR hesabında canlı işlem" },
     { href: "/reports", label: "Raporlar", icon: "📋", desc: "Sinyal ve işlem raporları" },
     { href: "/chat", label: "Chat", icon: "💬", desc: "Uzman trader LLM asistanı" },

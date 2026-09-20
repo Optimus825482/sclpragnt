@@ -6,6 +6,7 @@ const labels: Record<string, string> = {
   "/portfolio": "Sanal Portföy",
   "/monitoring": "Radar & Hız Avcısı",
   "/charts": "Grafik",
+  "/technical-charts": "Teknik Grafik (4'lü Ekran)",
   "/binance-tr": "Binance TR Canlı İşlem",
   "/reports": "Raporlar",
   "/reports/forecasts": "Fiyat Tahminleri",

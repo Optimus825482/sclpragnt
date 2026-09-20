@@ -2550,12 +2550,11 @@ def _quick_pick(source, keys):
 
 
 async def _symbol_quick_context(symbol: str) -> dict | None:
-    """Hazır bellek önbelleklerinden KOMPAKT sembol durumu (ağ/tam-tablo YOK).
+    """Hazır bellek önbelleklerinden KOMPAKT sembol durumu; yoksa canlı veri çeker.
 
     Kaynaklar: ticker (WS bellek) · MACD snapshot (≤1 sn) · radar adayı (≤60 sn)
     · aktif bildirim ve öğrenilmiş hedef (indeksli tek-satır DB okuması).
-    Hiçbir canlı kaynak yoksa None döner → çağıran AĞIR yola düşer (soğuk
-    başlangıçta davranış değişmez).
+    Bellek yoksa Binance TR public API'den canlı veri alır (tüm TRY sembolleri desteklenir).
     """
     sym = str(symbol or "").upper()
     if not sym:
@@ -2577,7 +2576,14 @@ async def _symbol_quick_context(symbol: str) -> dict | None:
         pass
     macd_row = ((getattr(macd_monitor, "_SNAPSHOT", None) or {}).get("symbols") or {}).get(sym)
     candidate = monitoring_router.get_cached_radar_candidate(sym)
-    if not ticker.get("last_price") and not macd_row and not candidate:
+    # Config.SYMBOLS dışındaki semboller için canlı kline snapshot çek
+    live_snapshot = None
+    if sym not in config.SYMBOLS:
+        try:
+            live_snapshot = await deep_analyze_symbol({"symbol": sym, "timeframe": "5m"})
+        except Exception:
+            pass
+    if not ticker.get("last_price") and not macd_row and not candidate and not live_snapshot:
         return None
     quick = {
         "quick_lane": True,
@@ -2585,12 +2591,13 @@ async def _symbol_quick_context(symbol: str) -> dict | None:
         "generated_at": time.time(),
         "data_policy": "Yalnız public OHLCV/ticker/mikro yapı. Eksik alan 'bilinmiyor'dur; uydurma yok.",
         "answer_contract": (
-            "KISA yanıt ver (en fazla ~6 satır) ve ARAÇ ÇAĞIRMA. Sıra: "
+            "Kompakt teknik analiz yaz (en fazla ~8 satır). Sıra: "
             "(1) ŞU AN: fiyat + trend/faz (tek cümle); "
             "(2) SENARYO: en olası senaryo — yön, tetikleyici seviye (somut fiyat), "
             "bozulma seviyesi ve güven; "
             "(3) NEDEN: bu görüşü destekleyen TEK kanıt cümlesi; "
-            "(4) SONUÇ: tek cümle. Gösterge dökümü yazma."
+            "(4) SONUÇ: tek cümle. Gösterge dökümü yazma. "
+            "Eğer bağlamdaki veri yetmezse deep_analyze_symbol aracını çağır."
         ),
     }
     price = ticker.get("last_price")
@@ -2599,6 +2606,8 @@ async def _symbol_quick_context(symbol: str) -> dict | None:
         ts = ticker.get("timestamp")
         if ts:
             quick["price_age_sec"] = round(max(0.0, time.time() - float(ts) / 1000.0), 1)
+    if live_snapshot:
+        quick["symbol_data"] = live_snapshot
     if macd_row:
         tfs = macd_row.get("tfs") or {}
         quick["macd_state"] = {
@@ -2634,13 +2643,24 @@ async def _symbol_quick_context(symbol: str) -> dict | None:
 
 
 def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str, messages):
-    """Hızlı şerit SSE: ARAÇSIZ `stream_chat` → sağlayıcı akışı jeton jeton akar."""
+    """Hızlı şerit SSE: `deep_analyze_symbol` aracıyla desteklenmiş `stream_chat`."""
     async def events():
         started = time.perf_counter()
         try:
+            # Hızlı şerit artık tek araç izniyle akış yapar:
+            # LLM context'teki veriler yetmezse `deep_analyze_symbol` çağırabilir.
+            quick_tools = [LLM_DEEP_SYMBOL_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL]
+            async def quick_executor(name, args):
+                if name == "deep_analyze_symbol":
+                    return await deep_analyze_symbol(args)
+                if name == "get_microstructure_snapshot":
+                    return await get_microstructure_snapshot(args)
+                if name == "get_regime_snapshot":
+                    return await get_regime_snapshot(args)
+                return {"error": f"Araç '{name}' hızlı şeritte desteklenmiyor"}
             async for event in llm_analysis.stream_chat(
-                    quick, messages or [], None, None, body.get("active_skills"),
-                    max_tokens=int(getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 600) or 0) or None):
+                    quick, messages or [], quick_tools, quick_executor, body.get("active_skills"),
+                    max_tokens=int(getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 900) or 0) or None):
                 yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
             await _persist_chat_memory(messages, layer="strategy",
                                        strategy=str(body.get("strategy") or "") or None,
