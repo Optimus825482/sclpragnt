@@ -861,7 +861,7 @@ export default function ChatPage() {
         <div className="card mt-10 flex flex-col items-center gap-4 border-neon-red/30 bg-neon-red/5 px-6 py-12 text-center">
           <p className="eyebrow">YETKİSİZ ERİŞİM</p>
           <h1 className="font-mono text-xl font-bold text-white">Chat merkezi yalnız sistem yöneticisine açıktır</h1>
-          <a href="/" className="ui-button ui-button-primary">ANA SAYFAYA DÖN</a>
+          <Link href="/" className="ui-button ui-button-primary touch-target flex items-center justify-center">ANA SAYFAYA DÖN</Link>
         </div>
       </main>
     );

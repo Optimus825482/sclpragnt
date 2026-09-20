@@ -1630,24 +1630,24 @@ export default function ChartsPage() {
                 </button>
             </div>
 
-            {analysisOpen && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 sm:p-6" onClick={() => setAnalysisOpen(false)}>
-                <section className="w-full max-w-7xl h-[92vh] overflow-hidden rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="symbol-analysis-modal-title">
-                    <div className="flex items-center justify-between border-b border-bunker-800 px-4 py-3">
+            {analysisOpen && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 sm:p-6 overflow-y-auto" onClick={() => setAnalysisOpen(false)}>
+                <section className="w-full max-w-7xl h-[92vh] max-h-[92vh] overflow-hidden rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl flex flex-col" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="symbol-analysis-modal-title">
+                    <div className="flex items-center justify-between border-b border-bunker-800 px-4 py-3 shrink-0">
                         <h2 id="symbol-analysis-modal-title" className="font-mono text-sm font-bold text-white"><SymbolLink symbol={symbol} className="text-neon-green hover:text-white" /> · SEMBOL ANALİZİ</h2>
-                        <button type="button" onClick={() => setAnalysisOpen(false)} className="px-3 py-1 text-bunker-muted hover:text-white" aria-label="Sembol analizini kapat">✕</button>
+                        <button type="button" onClick={() => setAnalysisOpen(false)} className="min-h-11 min-w-11 px-3 py-1 flex items-center justify-center text-bunker-muted hover:text-white rounded-lg" aria-label="Sembol analizini kapat">✕</button>
                     </div>
-                    <iframe title={`${symbol} sembol analizi`} src={`/symbol-analysis?symbol=${encodeURIComponent(symbol)}&embedded=1`} className="h-[calc(92vh-52px)] w-full border-0" />
+                    <iframe title={`${symbol} sembol analizi`} src={`/symbol-analysis?symbol=${encodeURIComponent(symbol)}&embedded=1`} className="flex-1 w-full border-0" />
                 </section>
             </div>}
 
-            {chartSettingsOpen && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 sm:p-6" onClick={() => setChartSettingsOpen(false)}>
+            {chartSettingsOpen && <div className="fixed inset-0 z-[90] grid place-items-center bg-black/75 p-3 sm:p-6 overflow-y-auto" onClick={() => setChartSettingsOpen(false)}>
                 <section className="flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="chart-settings-modal-title">
                     <div className="flex shrink-0 items-center justify-between border-b border-bunker-800 px-4 py-2.5">
                         <div>
                             <h2 id="chart-settings-modal-title" className="font-mono text-sm font-bold text-white">GRAFİK AYARLARI</h2>
                             <p className="mt-1 text-xs text-bunker-muted"><SymbolLink symbol={symbol} className="text-neon-green" /> · görünüm tercihleri</p>
                         </div>
-                        <button type="button" onClick={() => setChartSettingsOpen(false)} className="min-h-10 min-w-10 rounded-lg text-bunker-muted hover:bg-bunker-900 hover:text-white" aria-label="Grafik ayarlarını kapat">✕</button>
+                        <button type="button" onClick={() => setChartSettingsOpen(false)} className="min-h-11 min-w-11 touch-target rounded-lg flex items-center justify-center text-bunker-muted hover:bg-bunker-900 hover:text-white" aria-label="Grafik ayarlarını kapat">✕</button>
                     </div>
                     <div className="grid grid-cols-1 gap-2 overflow-y-auto p-3 sm:grid-cols-2">
                         {[

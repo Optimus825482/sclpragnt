@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useLiveMessages } from "../lib/liveSocket";
 import { fmtDateTime, formatPrice } from "../lib/format";
 import SymbolLink from "./SymbolLink";
@@ -156,8 +157,8 @@ export default function RadarAlertModal() {
   const proximityPct = typeof item.proximity === "number" ? Math.round(item.proximity * 100) : null;
 
   return (
-    <div className="fixed inset-0 z-[120] grid place-items-center bg-black/75 p-4" onClick={close} role="alertdialog" aria-modal="true" aria-labelledby="radar-alert-title">
-      <section className={`w-full max-w-md overflow-hidden rounded-xl border ${meta.accent} bg-bunker-950 shadow-2xl`} onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[120] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={close} role="alertdialog" aria-modal="true" aria-labelledby="radar-alert-title">
+      <section className={`w-full max-w-md max-h-[90vh] flex flex-col overflow-y-auto rounded-xl border ${meta.accent} bg-bunker-950 shadow-2xl`} onClick={(e) => e.stopPropagation()}>
           <div className={`flex items-center justify-between border-b border-bunker-800 px-5 py-4 ${meta.accent}`}>
             <div className="flex items-center gap-2">
               <span className="text-xl">{meta.icon}</span>
@@ -221,9 +222,9 @@ export default function RadarAlertModal() {
               </p>
               <div className="flex gap-2">
                 {item.symbol && (
-                  <a href={`/charts?symbol=${item.symbol}`} onClick={close} className="ui-button ui-button-secondary">GRAFİĞE GİT</a>
+                  <Link href={`/charts?symbol=${item.symbol}`} onClick={close} className="ui-button ui-button-secondary touch-target flex items-center justify-center">GRAFİĞE GİT</Link>
                 )}
-                <button type="button" onClick={close} className="ui-button ui-button-primary">ANLAŞILDI</button>
+                <button type="button" onClick={close} className="ui-button ui-button-primary touch-target">ANLAŞILDI</button>
               </div>
             </div>
           </div>

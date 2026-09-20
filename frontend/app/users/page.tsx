@@ -54,8 +54,8 @@ function UserModal({ mode, initial, onClose, onSaved }: {
   };
 
   return (
-    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
-      <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="user-modal-title">
+      <section className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-bunker-800 px-5 py-4">
           <h2 id="user-modal-title" className="font-mono text-lg font-bold text-white">{mode === "create" ? "Kullanıcı Ekle" : "Kullanıcı Düzenle"}</h2>
           <button type="button" onClick={onClose} className="text-bunker-muted hover:text-white" aria-label="Kapat">✕</button>
@@ -97,15 +97,15 @@ function ConfirmModal({ username, onClose, onConfirm }: { username: string; onCl
     try { await onConfirm(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Silme başarısız"); setBusy(false); }
   };
   return (
-    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="confirm-title">
-      <section className="w-full max-w-sm rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[110] grid place-items-center bg-black/75 p-4 overflow-y-auto" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <section className="w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="p-5">
           <h2 id="confirm-title" className="font-mono text-lg font-bold text-white">Kullanıcıyı sil</h2>
           <p className="mt-2 text-sm text-bunker-muted"><strong className="text-white">{username}</strong> kullanıcısını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.</p>
           {error && <p role="alert" className="mt-3 rounded-lg border border-neon-red/40 bg-neon-red/10 px-3 py-2 text-sm text-neon-red">{error}</p>}
           <div className="mt-5 flex justify-end gap-2">
             <button type="button" onClick={onClose} className="ui-button ui-button-secondary">VAZGEÇ</button>
-            <button type="button" onClick={confirm} disabled={busy} className="ui-button" style={{ borderColor: "rgb(255 49 49 / .5)", background: "rgb(255 49 49 / .12)", color: "#ff3131" }}>{busy ? "SİLİNİYOR…" : "EVET, SİL"}</button>
+            <button type="button" onClick={confirm} disabled={busy} className="ui-button ui-button-danger">{busy ? "SİLİNİYOR…" : "EVET, SİL"}</button>
           </div>
         </div>
       </section>

@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { getUiMode, setUiMode } from "../lib/ui-mode";
@@ -154,10 +155,12 @@ export default function ProfilePage() {
       {/* Hızlı erişim */}
       <section className="card mt-4">
         <p className="eyebrow text-neon-green">HIZLI ERİŞİM</p>
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          <a href="/" className="ui-button justify-center text-center">⚡ Scalping Ana Sayfa</a>
-          <a href="/monitoring" className="ui-button justify-center text-center">📡 Monitoring Radar</a>
-          <a href="/reports" className="ui-button justify-center text-center">📋 Performans</a>
+        <div className="mt-3 grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+          <Link href="/portfolio" className="ui-button ui-button-secondary justify-center text-center touch-target">💼 Sanal Portföy</Link>
+          <Link href="/monitoring" className="ui-button ui-button-secondary justify-center text-center touch-target">📡 Radar</Link>
+          <Link href="/charts" className="ui-button ui-button-secondary justify-center text-center touch-target">📈 Grafik</Link>
+          <Link href="/binance-tr" className="ui-button ui-button-secondary justify-center text-center touch-target">🏛️ Binance TR</Link>
+          <Link href="/reports" className="ui-button ui-button-secondary justify-center text-center touch-target">📋 Raporlar</Link>
         </div>
       </section>
 
