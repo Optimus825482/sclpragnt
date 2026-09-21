@@ -112,6 +112,14 @@ LLM_MASTER_SURGE_TOOL = {"type":"function","function":{"name":"get_master_surge_
 LLM_ML_FORECAST_TOOL = {"type":"function","function":{"name":"get_ml_price_forecast","description":"Sembolün 5m kapanış verilerine dayalı Makine Öğrenimi (ML) fiyat hedefi tahminini getirir: 5 dakika ve 15 dakika ufukları için hedef yüzde artışı (target_pct), beklenen fiyat ve hedefe dokunma olasılığı (hit_probability). Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
 LLM_SURGE_BIAS_TOOL = {"type":"function","function":{"name":"get_surge_learning_bias","description":"Sembolün geçmiş yükseliş sinyallerindeki gerçek başarı karnesini ve öğrenilmiş adaptif bias puanını getirir (kazanma oranı, örnek sayısı, güven seviyesi). Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
 
+# Çok Boyutlu Piyasa İstihbarat Araçları (2026-09-22): Türev, Makro, Tahta Baskısı, İşlem Hafızası ve Haberler
+LLM_DERIVATIVES_TOOL = {"type":"function","function":{"name":"get_derivatives_intel","description":"Sembolün vadeli (futures) Açık Pozisyon (Open Interest), Fonlama Oranı (Funding Rate), piyasa kaldıracı ve long/short tasfiye riskini getirir: Aşırı şişkin long tuzağı mı yoksa short squeeze potansiyeli mi olduğunu gösterir. Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
+LLM_MACRO_SENTIMENT_TOOL = {"type":"function","function":{"name":"get_macro_market_sentiment","description":"Kripto piyasası genel duygu durumunu (Korku ve Açgözlülük İndeksi - Fear & Greed) ve Bitcoin'in anlık 5m/15m yönü ile piyasa stres seviyesini (BTC Pusulası) getirir. Salt okunur.","parameters":{"type":"object","properties":{}}}}
+LLM_ORDERBOOK_PRESSURE_TOOL = {"type":"function","function":{"name":"get_orderbook_pressure","description":"Sembolün tahta ilk %1-%2 derinlikteki alış/satış dengesini (bid-ask imbalance), alıcı ve satıcı duvarlarını, anlık spread durumunu getirir. Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
+LLM_RECENT_OUTCOMES_TOOL = {"type":"function","function":{"name":"get_symbol_recent_outcomes","description":"Sembolün sistemde son 48 saatte açılan işlemlerindeki gerçek sonuçlarını ve deneyim hafızasını getirir (kâr/zarar nedenleri, stop veya TP alma geçmişi). Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
+LLM_CRYPTO_NEWS_TOOL = {"type":"function","function":{"name":"get_crypto_news_catalysts","description":"Kripto piyasası veya ilgili sembole dair son haber başlıklarını, duyuruları ve katalizör olayları getirir. Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}}}}}
+
+
 
 def _resolve_active_tools(body: dict, tools: list[dict]) -> list[dict]:
     """Kullanıcı "Aktif Araçlar" tercihini genel sohbet için uygula.
@@ -2334,6 +2342,131 @@ async def _get_surge_bias_tool(args: dict) -> dict:
         return {"ok": False, "symbol": sym, "error": f"Öğrenme bias karnesi alınamadı: {exc}"}
 
 
+async def _get_derivatives_tool(args: dict) -> dict:
+    """Vadeli Açık Pozisyon (OI) ve Fonlama Oranını LLM aracına sağlar."""
+    sym = str(args.get("symbol") or "").replace("_", "").upper()
+    if not sym:
+        return {"ok": False, "error": "symbol parametresi gerekli"}
+    try:
+        from app.derivatives_service import get_derivatives_intel
+        res = await get_derivatives_intel(sym)
+        return {"ok": True, "symbol": sym, "derivatives": res}
+    except Exception as exc:
+        return {"ok": False, "symbol": sym, "error": f"Türev istihbaratı alınamadı: {exc}"}
+
+
+async def _get_macro_sentiment_tool(args: dict = None) -> dict:
+    """Korku & Açgözlülük İndeksi ve BTC pusulasını LLM aracına sağlar."""
+    try:
+        from app.macro_sentiment_service import get_macro_sentiment
+        res = await get_macro_sentiment()
+        return {"ok": True, "macro_sentiment": res}
+    except Exception as exc:
+        return {"ok": False, "error": f"Makro duygu verisi alınamadı: {exc}"}
+
+
+async def _get_orderbook_pressure_tool(args: dict) -> dict:
+    """Tahta ilk %1-%2 derinlik baskısını ve alıcı duvarlarını LLM aracına sağlar."""
+    sym = str(args.get("symbol") or "").replace("_", "").upper()
+    if not sym:
+        return {"ok": False, "error": "symbol parametresi gerekli"}
+    try:
+        flow = market.get_orderflow(sym) or {}
+        bid_px = float(flow.get("bid_price") or 0.0)
+        ask_px = float(flow.get("ask_price") or 0.0)
+        bid_qty = float(flow.get("bid_qty") or 0.0)
+        ask_qty = float(flow.get("ask_qty") or 0.0)
+        spread_pct = float(flow.get("spread_pct") or 0.0)
+        if spread_pct == 0.0 and bid_px > 0 and ask_px > 0:
+            spread_pct = round((ask_px - bid_px) / bid_px * 100.0, 3)
+
+        imbalance_ratio = round(bid_qty / ask_qty, 2) if ask_qty > 0 else (2.0 if bid_qty > 0 else 1.0)
+        wall_summary = "Dengeli tahta"
+        if imbalance_ratio >= 1.4:
+            wall_summary = f"Güçlü alıcı duvarı (%{imbalance_ratio:.2f} alış baskısı)"
+        elif imbalance_ratio <= 0.6:
+            wall_summary = f"Ağır satıcı duvarı (%{imbalance_ratio:.2f} satış baskısı)"
+
+        return {
+            "ok": True,
+            "symbol": sym,
+            "bid_price": bid_px,
+            "ask_price": ask_px,
+            "bid_qty": bid_qty,
+            "ask_qty": ask_qty,
+            "spread_pct": spread_pct,
+            "bid_ask_ratio": imbalance_ratio,
+            "wall_status": wall_summary,
+            "buyer_dominant": imbalance_ratio > 1.15,
+        }
+    except Exception as exc:
+        return {"ok": False, "symbol": sym, "error": f"Tahta baskısı ölçülemedi: {exc}"}
+
+
+async def _get_recent_outcomes_tool(args: dict) -> dict:
+    """Sembolün son işlemlerindeki sonuçları ve öğrenilen deneyimleri LLM aracına sağlar."""
+    sym = str(args.get("symbol") or "").replace("_", "").upper()
+    if not sym:
+        return {"ok": False, "error": "symbol parametresi gerekli"}
+    try:
+        trades = await database.list_auto_paper_trades(limit=200)
+        sym_trades = [t for t in trades if str(t.get("symbol") or "").upper() == sym]
+        recent = sym_trades[:5]
+        wins = sum(1 for t in sym_trades if float(t.get("pnl_pct") or 0) > 0)
+        total = len(sym_trades)
+        win_rate = round(wins / total * 100.0, 1) if total > 0 else None
+        return {
+            "ok": True,
+            "symbol": sym,
+            "total_trades_evaluated": total,
+            "win_rate": win_rate,
+            "recent_trades": [
+                {
+                    "side": t.get("side"),
+                    "entry_price": t.get("entry_price"),
+                    "exit_price": t.get("exit_price"),
+                    "pnl_pct": t.get("pnl_pct"),
+                    "exit_reason": t.get("exit_reason"),
+                    "duration_sec": t.get("duration_sec"),
+                }
+                for t in recent
+            ],
+            "experience_lesson": "Geçmişte benzer sinyallerde başarı oranı " + (f"%{win_rate}" if win_rate is not None else "yeterli veri yok"),
+        }
+    except Exception as exc:
+        return {"ok": False, "symbol": sym, "error": f"İşlem geçmişi hafızası okunamadı: {exc}"}
+
+
+async def _get_crypto_news_tool(args: dict = None) -> dict:
+    """Kripto piyasası ve sembolle ilgili son haber katalizörlerini LLM aracına sağlar."""
+    args = args or {}
+    sym = str(args.get("symbol") or "").replace("_", "").upper().replace("TRY", "").replace("USDT", "")
+    try:
+        import xml.etree.ElementTree as ET
+        def _fetch_rss():
+            url = "https://cointelegraph.com/rss"
+            req = Request(url, headers={"User-Agent": "ScalperAgent/4.0"})
+            with urlopen(req, timeout=3.5) as resp:
+                root = ET.fromstring(resp.read())
+                items = root.findall("./channel/item")
+                headlines = []
+                for it in items[:25]:
+                    title = (it.find("title").text or "").strip()
+                    link = (it.find("link").text or "").strip()
+                    if not sym or (sym and sym in title.upper()):
+                        headlines.append({"title": title, "link": link})
+                    if len(headlines) >= 5:
+                        break
+                if not headlines and sym:
+                    for it in items[:4]:
+                        headlines.append({"title": (it.find("title").text or "").strip()})
+                return headlines
+        news = await asyncio.to_thread(_fetch_rss)
+        return {"ok": True, "symbol": sym or "MARKET", "count": len(news), "headlines": news}
+    except Exception as exc:
+        return {"ok": False, "symbol": sym, "error": f"Haber akışı okunamadı: {exc}", "headlines": []}
+
+
 @router.post("/api/symbol-analysis/{symbol}/llm/chat")
 async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: Request = None):
     body = payload or {}
@@ -2433,9 +2566,16 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
                   LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
                   LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
                   LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
-                  LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL])
+                  LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL,
+                  LLM_DERIVATIVES_TOOL, LLM_MACRO_SENTIMENT_TOOL, LLM_ORDERBOOK_PRESSURE_TOOL,
+                  LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL])
 
     async def execute_tool(name, args):
+        if name == "get_derivatives_intel": return await _get_derivatives_tool({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_macro_market_sentiment": return await _get_macro_sentiment_tool(args)
+        if name == "get_orderbook_pressure": return await _get_orderbook_pressure_tool({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_symbol_recent_outcomes": return await _get_recent_outcomes_tool({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_crypto_news_catalysts": return await _get_crypto_news_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_master_surge_prediction": return await _get_master_surge_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_ml_price_forecast": return await _get_ml_forecast_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "get_surge_learning_bias": return await _get_surge_bias_tool({**args, "symbol": args.get("symbol") or symbol})
@@ -2537,6 +2677,11 @@ def _tool_activity_summary(name: str, args: dict) -> str:
     if name == "get_subminute_microstructure": return f"{symbol} 1s/5s mikro yapı akışı başlatılıyor"
     if name == "get_historical_slippage": return f"{symbol} tarihsel slippage dağılımı hesaplanıyor"
     if name == "get_trades": return "Kapanmış işlem geçmişi okunuyor"
+    if name == "get_derivatives_intel": return f"{symbol} vadeli piyasa ve fonlama durumu taranıyor"
+    if name == "get_macro_market_sentiment": return "Kripto piyasa duygu durumu ve BTC yönü alınıyor"
+    if name == "get_orderbook_pressure": return f"{symbol} tahta alış/satış dengesi analiz ediliyor"
+    if name == "get_symbol_recent_outcomes": return f"{symbol} son işlem ve başarı geçmişi inceleniyor"
+    if name == "get_crypto_news_catalysts": return f"{symbol} son haberler ve katalizörler taranıyor"
     if name == "get_signals": return "Sinyal kayıtları okunuyor"
     if name == "get_decision_logs": return "Karar logları inceleniyor"
     if name == "get_strategy_stats": return "Strateji başarı istatistikleri hesaplanıyor"
@@ -2772,6 +2917,36 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None) -> dict |
     except Exception:
         pass
 
+    # Vadeli Piyasa İstihbaratı Özeti (Binance Futures)
+    try:
+        from app.derivatives_service import get_cached_derivatives_intel
+        deriv = get_cached_derivatives_intel(sym)
+        if deriv:
+            quick["derivatives_intel"] = {
+                "futures_symbol": deriv.get("futures_symbol"),
+                "funding_rate_pct": round(float(deriv.get("funding_rate", 0)) * 100, 4),
+                "funding_state": deriv.get("funding_state"),
+                "open_interest": deriv.get("open_interest"),
+                "bonus": deriv.get("surge_score_bonus"),
+            }
+    except Exception:
+        pass
+
+    # Makro Piyasa ve BTC Duyarlılığı Özeti
+    try:
+        from app.macro_sentiment_service import get_cached_macro_sentiment
+        macro = get_cached_macro_sentiment()
+        if macro:
+            quick["macro_market"] = {
+                "fear_and_greed_score": macro.get("fear_and_greed_score"),
+                "fear_and_greed_label": macro.get("fear_and_greed_label"),
+                "btc_trend": macro.get("btc_trend"),
+                "btc_panic": macro.get("is_btc_panic"),
+                "regime": macro.get("macro_regime"),
+            }
+    except Exception:
+        pass
+
     return quick
 
 
@@ -2781,11 +2956,13 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
         started = time.perf_counter()
         try:
             # Hızlı şerit yetenekli araç listesi:
-            # Derin analiz, mikro yapı, rejim ve tahmin motorları
+            # Derin analiz, mikro yapı, rejim ve tahmin motorları + piyasa istihbaratı
             quick_tools = [
                 LLM_DEEP_SYMBOL_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL,
                 LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL,
                 LLM_REALTIME_FLOW_TOOL,
+                LLM_DERIVATIVES_TOOL, LLM_MACRO_SENTIMENT_TOOL, LLM_ORDERBOOK_PRESSURE_TOOL,
+                LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL,
             ]
             async def quick_executor(name, args):
                 sym = str(args.get("symbol") or quick.get("symbol") or "")
@@ -2797,6 +2974,16 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
                     return await _get_surge_bias_tool({**args, "symbol": sym})
                 if name == "get_realtime_flow":
                     return await get_realtime_flow({**args, "symbol": sym})
+                if name == "get_derivatives_intel":
+                    return await _get_derivatives_tool({**args, "symbol": sym})
+                if name == "get_macro_market_sentiment":
+                    return await _get_macro_sentiment_tool(args)
+                if name == "get_orderbook_pressure":
+                    return await _get_orderbook_pressure_tool({**args, "symbol": sym})
+                if name == "get_symbol_recent_outcomes":
+                    return await _get_recent_outcomes_tool({**args, "symbol": sym})
+                if name == "get_crypto_news_catalysts":
+                    return await _get_crypto_news_tool({**args, "symbol": sym})
                 if name == "deep_analyze_symbol":
                     return await deep_analyze_symbol(args)
                 if name == "get_microstructure_snapshot":
@@ -2971,7 +3158,10 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
     tools.extend([LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL, LLM_ECONOMICS_TOOL,
                   LLM_OUTCOME_PROFILE_TOOL, LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL,
                   LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL, LLM_DATA_QUALITY_TOOL,
-                  LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL])
+                  LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL,
+                  LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL,
+                  LLM_DERIVATIVES_TOOL, LLM_MACRO_SENTIMENT_TOOL, LLM_ORDERBOOK_PRESSURE_TOOL,
+                  LLM_RECENT_OUTCOMES_TOOL, LLM_CRYPTO_NEWS_TOOL])
     tool_error_count = 0
     failed_tool_calls = set()
 
@@ -2979,6 +3169,11 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         nonlocal tool_error_count
         started = time.perf_counter(); success = True
         try:
+            if name == "get_derivatives_intel": return await _get_derivatives_tool(args)
+            if name == "get_macro_market_sentiment": return await _get_macro_sentiment_tool(args)
+            if name == "get_orderbook_pressure": return await _get_orderbook_pressure_tool(args)
+            if name == "get_symbol_recent_outcomes": return await _get_recent_outcomes_tool(args)
+            if name == "get_crypto_news_catalysts": return await _get_crypto_news_tool(args)
             if name == "get_master_surge_prediction": return await _get_master_surge_tool(args)
             if name == "get_ml_price_forecast": return await _get_ml_forecast_tool(args)
             if name == "get_surge_learning_bias": return await _get_surge_bias_tool(args)

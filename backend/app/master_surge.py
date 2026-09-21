@@ -115,7 +115,7 @@ def evaluate_layer1_liquidity(
             "reason": f"shallow_depth ({depth_try:.0f} < {min_depth:.0f} TRY)",
         }
 
-    # Skorlama (0-100): Dar spread ve yüksek derinlik yüksek skor alır
+    # Skorlama (0-100): Dar spread, yüksek derinlik ve alıcı duvarı yüksek skor alır
     score = 70.0  # Taban geçer puan
     if spread_val is not None:
         if spread_val <= 0.15:
@@ -130,11 +130,21 @@ def evaluate_layer1_liquidity(
     elif depth_try >= 10_000.0:
         score += 5.0
 
+    # Tahta Alış/Satış Derinlik Oranı (Buyer Wall Power)
+    depth_ratio = None
+    if bid_qty > 0 and ask_qty > 0:
+        depth_ratio = round(bid_qty / ask_qty, 2)
+        if depth_ratio >= 1.25:
+            score += 10.0  # Alıcı duvarı satıcıların 1.25 katından kalın
+        elif depth_ratio <= 0.40:
+            score -= 10.0  # Satıcı duvarı çok ağır
+
     return {
         "passed": True,
         "score": round(max(50.0, min(100.0, score)), 1),
         "spread_pct": round(spread_val, 4) if spread_val is not None else None,
         "depth_try": round(depth_try, 2),
+        "bid_ask_ratio": depth_ratio,
         "quote_volume_24h": round(quote_vol, 2),
         "reason": "ok",
     }
@@ -420,15 +430,13 @@ def evaluate_master_surge(
     macd_row: dict | None = None,
     market_instance=None,
     surge_bias: dict | None = None,
+    derivatives_intel: dict | None = None,
+    macro_sentiment: dict | None = None,
 ) -> dict:
     """Master Surge Engine Ana Değerlendirmesi (Composite Surge Index).
 
-    4 katmanı çalıştırır, 4'lü Teyit (Confluence) mutabakatını saptar ve
-    birleşik füzyon skoru ile uyarlanabilir hedefleri hesaplar.
-
-    surge_bias: surge_learning.compute_symbol_bias() çıktısı. Geçmişten
-                öğrenilen sembol bazlı skor düzeltmesi (±15 puan, confidence
-                gated). 4'lü confluence zorunluluğuna asla dokunmaz.
+    4 katmanı çalıştırır, 4'lü Teyit (Confluence) mutabakatını saptar,
+    türev piyasa açık pozisyon/fonlama teyidini ve BTC makro kapısını uygular.
     """
     sym = str(symbol or "").replace("_", "").upper()
     if not sym:
@@ -492,17 +500,29 @@ def evaluate_master_surge(
     composite_index = round(min(100.0, max(0.0, w_score)), 1)
     raw_composite_index = composite_index  # Bias öncesi ham skor (denetim için)
 
+    # Türev & Fonlama İstihbaratı Entegrasyonu
+    applied_derivatives: dict | None = None
+    if derivatives_intel and isinstance(derivatives_intel, dict) and derivatives_intel.get("futures_available"):
+        bonus = int(derivatives_intel.get("surge_score_bonus") or 0)
+        crowded_long = bool(derivatives_intel.get("crowded_long_danger"))
+        if bonus != 0:
+            composite_index = round(min(100.0, max(0.0, composite_index + bonus)), 1)
+        applied_derivatives = {
+            "futures_symbol": derivatives_intel.get("futures_symbol"),
+            "funding_rate_pct": derivatives_intel.get("funding_rate_pct"),
+            "funding_state": derivatives_intel.get("funding_state"),
+            "derivatives_bias": derivatives_intel.get("derivatives_bias"),
+            "surge_bonus_applied": bonus,
+            "crowded_long_danger": crowded_long,
+        }
+
     # Self-Learning Adaptif Skor Düzeltmesi
-    # surge_bias, surge_learning.compute_symbol_bias() çıktısıdır.
-    # confidence >= 0.30 ve bias_pct != 0 ise composite_index'e eklenir.
-    # 4'lü confluence zorunluluğuna asla dokunulmaz.
     applied_bias: dict | None = None
     if surge_bias and isinstance(surge_bias, dict):
         bias_conf = float(surge_bias.get("confidence", 0))
         bias_pct = float(surge_bias.get("bias_pct", 0))
         from app.surge_learning import MIN_CONFIDENCE, MAX_BIAS_PCT
         if bias_conf >= MIN_CONFIDENCE and bias_pct != 0.0:
-            # Sınır koruması: uygulama ±MAX_BIAS_PCT ile kısıtlı
             clamped = max(-MAX_BIAS_PCT, min(MAX_BIAS_PCT, bias_pct))
             composite_index = round(min(100.0, max(0.0, composite_index + clamped)), 1)
             applied_bias = {
@@ -514,10 +534,12 @@ def evaluate_master_surge(
                 "reason": surge_bias.get("reason", ""),
                 "raw_composite_before_bias": raw_composite_index,
             }
-            logger.debug(
-                "surge_learning bias applied %s: %.1f → %.1f (bias=%.2f conf=%.2f)",
-                sym, raw_composite_index, composite_index, clamped, bias_conf,
-            )
+
+    # BTC Makro Panik Kapısı (BTC Compass Gate)
+    btc_panic_blocked = False
+    if macro_sentiment and isinstance(macro_sentiment, dict):
+        if macro_sentiment.get("is_btc_panic") and sym not in ("BTCTRY", "BTCUSDT"):
+            btc_panic_blocked = True
 
     # ATR bilgisi
     atr_pct = None
@@ -535,6 +557,15 @@ def evaluate_master_surge(
 
     min_score = float(getattr(config, "MASTER_SURGE_MIN_SCORE", 70.0))
     passed = (composite_index >= min_score) and (not getattr(config, "MASTER_SURGE_REQUIRE_4WAY", True) or confluence_4way)
+    block_reason = None
+
+    # Koruma filtreleri: BTC panik şelalesi veya aşırı şişkin long tasfiye riski
+    if passed and btc_panic_blocked:
+        passed = False
+        block_reason = "BTC_PANIC_DOWNTREND"
+    elif passed and applied_derivatives and applied_derivatives.get("funding_state") == "EXTREME_LONG":
+        passed = False
+        block_reason = "CROWDED_LONG_LIQUIDATION_RISK"
 
     result: dict = {
         "symbol": sym,
@@ -551,6 +582,17 @@ def evaluate_master_surge(
         },
         "adaptive_targets": targets,
     }
+    if block_reason:
+        result["block_reason"] = block_reason
+    if applied_derivatives:
+        result["derivatives"] = applied_derivatives
+    if macro_sentiment:
+        result["macro_sentiment"] = {
+            "btc_trend_state": macro_sentiment.get("btc_trend_state"),
+            "btc_15m_change_pct": macro_sentiment.get("btc_15m_change_pct"),
+            "market_stress_level": macro_sentiment.get("market_stress_level"),
+            "is_btc_panic": macro_sentiment.get("is_btc_panic"),
+        }
     if applied_bias:
         result["learning_bias"] = applied_bias
     return result

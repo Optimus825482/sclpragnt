@@ -270,12 +270,20 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
         try:
             from app import master_surge
             from app.surge_learning import get_cached_surge_biases
+            from app.derivatives_service import symbol_to_futures, _DERIVATIVES_CACHE
+            from app.macro_sentiment_service import _BTC_COMPASS_CACHE
             _biases = get_cached_surge_biases()
             _sym_bias = _biases.get(sym)   # None ise bias uygulanmaz
+            _fsym = symbol_to_futures(sym)
+            _deriv = _DERIVATIVES_CACHE.get(_fsym)[1] if _DERIVATIVES_CACHE.get(_fsym) else None
+            _macro = _BTC_COMPASS_CACHE[1] if _BTC_COMPASS_CACHE else None
             surge_eval = master_surge.evaluate_master_surge(
-                sym, velocity_candidate=candidate, surge_bias=_sym_bias
+                sym, velocity_candidate=candidate, surge_bias=_sym_bias,
+                derivatives_intel=_deriv, macro_sentiment=_macro
             )
             candidate["master_surge"] = surge_eval
+            if surge_eval.get("block_reason"):
+                candidate["block_reason"] = surge_eval["block_reason"]
             if surge_eval.get("confluence_4way"):
                 candidate["confluence_4way"] = True
                 # 4'lü teyit durumunda kompozit indeks skoru güçlendirir
@@ -286,9 +294,11 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
                 candidate["adaptive_targets"] = surge_eval["adaptive_targets"]
                 candidate["tp1_scalp_pct"] = surge_eval["adaptive_targets"].get("tp1_scalp_pct")
                 candidate["tp2_runner_pct"] = surge_eval["adaptive_targets"].get("tp2_runner_pct")
-            # Self-Learning bias bilgisini bildirim payload'ına taşı
+            # Self-Learning bias ve türev bilgisini bildirim payload'ına taşı
             if surge_eval.get("learning_bias"):
                 candidate["learning_bias"] = surge_eval["learning_bias"]
+            if surge_eval.get("derivatives"):
+                candidate["derivatives"] = surge_eval["derivatives"]
         except Exception as surge_exc:
             logger.debug("master surge adayı zenginleştirme %s: %s", sym, surge_exc)
 
@@ -344,15 +354,23 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
         try:
             from app import master_surge
             from app.surge_learning import get_cached_surge_biases
+            from app.derivatives_service import symbol_to_futures, _DERIVATIVES_CACHE
+            from app.macro_sentiment_service import _BTC_COMPASS_CACHE
             _biases = get_cached_surge_biases()
+            _fsym = symbol_to_futures(sym)
+            _deriv = _DERIVATIVES_CACHE.get(_fsym)[1] if _DERIVATIVES_CACHE.get(_fsym) else None
+            _macro = _BTC_COMPASS_CACHE[1] if _BTC_COMPASS_CACHE else None
             surge_eval = master_surge.evaluate_master_surge(
                 sym, velocity_candidate=cand_dict, macd_row=row,
-                surge_bias=_biases.get(sym)
+                surge_bias=_biases.get(sym),
+                derivatives_intel=_deriv, macro_sentiment=_macro
             )
             # Katman 1 (Likidite): Sığ veya yüksek spread'li coin'leri baştan ele
             if surge_eval.get("failed_layer") == 1:
                 continue
             cand_dict["master_surge"] = surge_eval
+            if surge_eval.get("block_reason"):
+                cand_dict["block_reason"] = surge_eval["block_reason"]
             if surge_eval.get("confluence_4way"):
                 cand_dict["confluence_4way"] = True
                 comp_idx = float(surge_eval.get("composite_index") or 0)
@@ -364,6 +382,8 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
                 cand_dict["tp2_runner_pct"] = surge_eval["adaptive_targets"].get("tp2_runner_pct")
             if surge_eval.get("learning_bias"):
                 cand_dict["learning_bias"] = surge_eval["learning_bias"]
+            if surge_eval.get("derivatives"):
+                cand_dict["derivatives"] = surge_eval["derivatives"]
         except Exception as surge_exc:
             logger.debug("fusion_only master surge %s: %s", sym, surge_exc)
         fusion_only.append(cand_dict)

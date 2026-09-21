@@ -20,6 +20,8 @@ const QUICK_PROMPTS = [
   { label: "📊 Genel Durum", query: "Bu coinde şu an genel durum nedir? Yükselme isteği var mı?" },
   { label: "🎯 Tahmin Motoru", query: "Sistemin Master Surge ve ML tahmin motorları bu coin için ne öngörüyor?" },
   { label: "🐋 Büyük Alıcılar", query: "Büyük cüzdanlar veya balinalar tahtada aktif mi, alım mı satım mı yapıyorlar?" },
+  { label: "⚡ Vadeli Pozisyonlar", query: "Vadeli piyasada durum ne, yatırımcılar aşırı long mu açmış, fonlama ve açık pozisyon ne söylüyor?" },
+  { label: "🌐 Piyasa & Bitcoin", query: "Kripto piyasasında genel hava, korku endeksi ve Bitcoin'in yönü bu coini nasıl etkiliyor?" },
   { label: "⚠️ Alım Riski", query: "Şu an bu seviyeden pozisyon almak güvenli mi yoksa riskli mi, neyi beklemeliyim?" },
 ];
 
