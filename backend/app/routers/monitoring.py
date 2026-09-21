@@ -1025,6 +1025,7 @@ async def _notify(candidates_list, settings) -> list:
     # Tek eşik: aday kapısı HAM velocity_score üzerinden (M1/P0 — R2-01/R2-02/R3-01).
     # Panel (0-100) yalnızca gösterim ölçeğidir; cap değişince kapı kaymaz.
     min_raw = _effective_min_raw_score(settings)
+    eff_min_score = _effective_min_score(settings)
     quiet = _in_quiet_hours(settings)
     # F-07: `now` duvar saati — KALICI/yayınlanan alanlar (detected_at,
     # pending_targets.set_at, DB horizon karşılaştırması) buna bağlı.
@@ -1063,10 +1064,18 @@ async def _notify(candidates_list, settings) -> list:
                  else normalize_score(raw))
         target = float(c.get("target_pct") or 2.0)
         min_target = float(settings.get("min_target_pct") or 0)
-        # M1/P0: kapı HAM skoru karşılaştırır (panel değil); füzyon-tek aday
-        # bu kapıdan muaftır — kendi kapısı `UNIFIED_FUSION_MIN_SCORE` zaten
-        # `enrich_candidates` içinde uygulandı.
-        if not sym or (not unified_pass and raw < min_raw) or (min_target > 0 and target < min_target):
+        # EŞİK KONTROLÜ (2026-09-21): Kullanıcının belirlediği panel eşiği (eff_min_score)
+        # tüm adaylar için bağlayıcıdır. Skor altındaki hiçbir zayıf fırsat bildirilmez.
+        # Normal radar adayları ayrıca ham skor kapısını (min_raw) da geçmelidir.
+        if not sym:
+            continue
+        if unified_pass:
+            if score < eff_min_score:
+                continue
+        else:
+            if raw < min_raw or score < eff_min_score:
+                continue
+        if min_target > 0 and target < min_target:
             continue
         # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
         # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
@@ -1389,6 +1398,14 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     candidate = unified_signals.build_fusion_candidate(sym, kind, velocity_row)
     if not candidate:
         return None
+    # EŞİK KONTROLÜ (2026-09-21): admin/kullanıcı min_score altındaki zayıf sinyaller push atmaz.
+    eff_min_score = _effective_min_score(settings)
+    cand_score = float(candidate.get("unified_score") or 0)
+    if cand_score < eff_min_score:
+        return None
+    min_target = float(settings.get("min_target_pct") or 0)
+    if min_target > 0 and float(candidate.get("target_pct") or 0) < min_target:
+        return None
     # Radar kuralı D-05: tazeliği doğrulanmış ticker yoksa adayın fiyatı.
     tick_px = _ticker_price(sym)
     if tick_px:
@@ -1572,7 +1589,7 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
     return {
         "symbol": symbol,
         "message": message,
-        "title": f"🎯 {symbol} +%{target:g} potansiyel",
+        "title": f"🎯 {symbol} · {label} +%{target:g} potansiyel",
         "url": f"/charts?symbol={symbol}",
         "tag": f"rising-{symbol}",
         "detected_at": now,
@@ -1856,7 +1873,7 @@ async def _run_rising_scan() -> dict:
         # gönder. Bu "neden tekrar bildirim?" sorusunun asıl cevabıdır:
         # ya yeni bir sinyal (cooldown dolmuş) ya da değişim güncellemesi.
         update_change = None
-        if not fire and not is_first_observation and notify_enabled:
+        if not fire and not is_first_observation and notify_enabled and score_qualifies:
             update_change = rising_signals.changed_since_last_fire(
                 candidate, float(price or 0))
             if update_change and len(notified) < max_per_scan:
@@ -2147,6 +2164,7 @@ async def _run_scan() -> dict:
     # M1/P0 (R2-01/R2-02/R3-01): aday kapısı HAM velocity_score ile karşılaştırılır —
     # panel skoru yalnızca GÖSTERİM ölçeğidir. Cap değişse bile kapı sessizce kaymaz.
     effective_min_raw_score = _effective_min_raw_score(settings)
+    effective_min_score = _effective_min_score(settings)
     # Admin eşiği altındaki adaylar listede GÖSTERILMEZ (2026-09-04 kullanıcı
     # kararı; RISK_OFF çarpanı kaldırıldı — _effective_min_raw_score aynen uygulanır).
     # _notify aynı eşiği zaten uyguladığından bildirim davranışı değişmez; yalnız
@@ -2162,8 +2180,8 @@ async def _run_scan() -> dict:
     # olanlar (füzyon-tek) listeye girer. Tek bildirim polymorfizması: hangi
     # algoritma yakaladıysa `sources` alanında görünür, push TEK kez gider.
     try:
-        fusion_only = unified_signals.enrich_candidates(candidates_list)
-        unified_signals.enrich_candidates(watchlist_list)
+        fusion_only = unified_signals.enrich_candidates(candidates_list, min_fusion_score=effective_min_score)
+        unified_signals.enrich_candidates(watchlist_list, min_fusion_score=effective_min_score)
     except Exception as exc:
         logger.debug("unified füzyon zenginleştirme: %s", exc)
         fusion_only = []
@@ -2171,7 +2189,8 @@ async def _run_scan() -> dict:
         # Açık pozisyonlu semboller füzyon-tek yoldan da bildirim ALMAZ
         # (radar yolundaki `filtered_candidates` kuralıyla aynı).
         fusion_only = [c for c in fusion_only
-                       if str(c.get("symbol") or "").upper() not in open_symbols]
+                       if str(c.get("symbol") or "").upper() not in open_symbols
+                       and float(c.get("unified_score") or 0) >= effective_min_score]
         candidates_list = candidates_list + fusion_only
         candidates_list.sort(key=lambda x: (float(x.get("unified_score") or 0),
                                             x.get("upside_rank", 0)), reverse=True)
