@@ -10,6 +10,7 @@ import pathlib
 import sys
 import time
 import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -257,5 +258,71 @@ class AutoPaperConfluenceAndProtectionTests(unittest.IsolatedAsyncioTestCase):
             auto_paper.market.ticker_freshness = orig_fresh
 
 
+class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
+    """Maksimum süre (60 dk) aşımı ve sembol pasife alma testleri (2026-09-21 Erkan kuralı)."""
+
+    def _sample_trade(self, symbol="APTEST", entry_time=None, entry=100.0, peak=102.0):
+        now = time.time()
+        return {
+            "id": 42,
+            "symbol": symbol,
+            "status": "open",
+            "entry_price": entry,
+            "quantity": 10.0,
+            "take_profit": 105.0,
+            "stop_loss": 97.0,
+            "peak_price": peak,
+            "entry_time": entry_time if entry_time is not None else now,
+            "breakeven_activated": False,
+            "trailing_activated": False,
+        }
+
+    async def test_trade_closes_when_hold_time_exceeds_max_hold_minutes(self):
+        """60 dk dolduğunda pozisyon kâr/zarara ve ticker'a bakılmaksızın max_duration ile kapatılır."""
+        now = time.time()
+        # 65 dakika önce açılmış trade
+        trade = self._sample_trade(entry_time=now - 65 * 60)
+        close_mock = AsyncMock(return_value=None)
+
+        with patch.object(auto_paper, "_close_trade", close_mock):
+            await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
+
+        close_mock.assert_awaited_once()
+        args = close_mock.await_args.args
+        self.assertEqual(args[0], 42)               # trade_id
+        self.assertEqual(args[1], "APTEST")           # symbol
+        self.assertEqual(args[4], "max_duration")     # reason
+
+    async def test_trade_closes_when_symbol_is_passive(self):
+        """Sembol PASSIVE_SYMBOLS içindeyse süreye bakılmaksızın symbol_deactivated ile kapatılır."""
+        now = time.time()
+        trade = self._sample_trade(symbol="PASSTEST", entry_time=now - 10 * 60)
+        close_mock = AsyncMock(return_value=None)
+
+        with patch.object(config, "PASSIVE_SYMBOLS", {"PASSTEST"}), \
+             patch.object(auto_paper, "_close_trade", close_mock):
+            await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
+
+        close_mock.assert_awaited_once()
+        self.assertEqual(close_mock.await_args.args[4], "symbol_deactivated")
+
+    async def test_trade_closes_when_symbol_dropped_from_market_symbols(self):
+        """Sembol market.symbols listesinden çıkarılmışsa symbol_deactivated ile kapatılır."""
+        now = time.time()
+        trade = self._sample_trade(symbol="DROPPEDTRY", entry_time=now - 5 * 60)
+        close_mock = AsyncMock(return_value=None)
+        mock_market = MagicMock()
+        mock_market.symbols = ["btctry", "ethtry"]
+        mock_market.get_ticker = MagicMock(return_value=None)
+
+        with patch("app.routers.auto_paper.market", mock_market), \
+             patch.object(auto_paper, "_close_trade", close_mock):
+            await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
+
+        close_mock.assert_awaited_once()
+        self.assertEqual(close_mock.await_args.args[4], "symbol_deactivated")
+
+
 if __name__ == "__main__":
     unittest.main()
+
