@@ -419,11 +419,16 @@ def evaluate_master_surge(
     velocity_candidate: dict | None = None,
     macd_row: dict | None = None,
     market_instance=None,
+    surge_bias: dict | None = None,
 ) -> dict:
     """Master Surge Engine Ana Değerlendirmesi (Composite Surge Index).
 
     4 katmanı çalıştırır, 4'lü Teyit (Confluence) mutabakatını saptar ve
     birleşik füzyon skoru ile uyarlanabilir hedefleri hesaplar.
+
+    surge_bias: surge_learning.compute_symbol_bias() çıktısı. Geçmişten
+                öğrenilen sembol bazlı skor düzeltmesi (±15 puan, confidence
+                gated). 4'lü confluence zorunluluğuna asla dokunmaz.
     """
     sym = str(symbol or "").replace("_", "").upper()
     if not sym:
@@ -485,6 +490,34 @@ def evaluate_master_surge(
         w_score *= float(getattr(config, "UNIFIED_SYNERGY_BONUS", 1.15))
 
     composite_index = round(min(100.0, max(0.0, w_score)), 1)
+    raw_composite_index = composite_index  # Bias öncesi ham skor (denetim için)
+
+    # Self-Learning Adaptif Skor Düzeltmesi
+    # surge_bias, surge_learning.compute_symbol_bias() çıktısıdır.
+    # confidence >= 0.30 ve bias_pct != 0 ise composite_index'e eklenir.
+    # 4'lü confluence zorunluluğuna asla dokunulmaz.
+    applied_bias: dict | None = None
+    if surge_bias and isinstance(surge_bias, dict):
+        bias_conf = float(surge_bias.get("confidence", 0))
+        bias_pct = float(surge_bias.get("bias_pct", 0))
+        from app.surge_learning import MIN_CONFIDENCE, MAX_BIAS_PCT
+        if bias_conf >= MIN_CONFIDENCE and bias_pct != 0.0:
+            # Sınır koruması: uygulama ±MAX_BIAS_PCT ile kısıtlı
+            clamped = max(-MAX_BIAS_PCT, min(MAX_BIAS_PCT, bias_pct))
+            composite_index = round(min(100.0, max(0.0, composite_index + clamped)), 1)
+            applied_bias = {
+                "bias_pct_applied": round(clamped, 2),
+                "confidence": round(bias_conf, 3),
+                "sample_size": surge_bias.get("sample_size", 0),
+                "win_rate": surge_bias.get("win_rate"),
+                "tp1_hit_rate": surge_bias.get("tp1_hit_rate"),
+                "reason": surge_bias.get("reason", ""),
+                "raw_composite_before_bias": raw_composite_index,
+            }
+            logger.debug(
+                "surge_learning bias applied %s: %.1f → %.1f (bias=%.2f conf=%.2f)",
+                sym, raw_composite_index, composite_index, clamped, bias_conf,
+            )
 
     # ATR bilgisi
     atr_pct = None
@@ -503,7 +536,7 @@ def evaluate_master_surge(
     min_score = float(getattr(config, "MASTER_SURGE_MIN_SCORE", 70.0))
     passed = (composite_index >= min_score) and (not getattr(config, "MASTER_SURGE_REQUIRE_4WAY", True) or confluence_4way)
 
-    return {
+    result: dict = {
         "symbol": sym,
         "passed": passed,
         "composite_index": composite_index,
@@ -518,6 +551,9 @@ def evaluate_master_surge(
         },
         "adaptive_targets": targets,
     }
+    if applied_bias:
+        result["learning_bias"] = applied_bias
+    return result
 
 
 def is_4way_confluence(sources_or_layers: list | None) -> bool:

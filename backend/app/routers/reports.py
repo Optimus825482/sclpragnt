@@ -288,11 +288,19 @@ async def get_report_overview():
         "open_positions": (ap_stats or {}).get("open", 0) or 0,
         "try_balance": balance or 0,
     }
+    # Self-Learning Bias Özeti
+    try:
+        from app.surge_learning import bias_summary
+        learning_bias_summary = bias_summary()
+    except Exception:
+        learning_bias_summary = {"enabled": False, "symbol_count": 0}
+
     return {
         "paper_only": True,
         "generated_at": now,
         "overall": overall,
         "master_surge_stats": master_surge_stats,
+        "learning_bias": learning_bias_summary,
         "symbols": symbols,
         "decision_summary": decision_summary[:40],
         "open_positions": [],

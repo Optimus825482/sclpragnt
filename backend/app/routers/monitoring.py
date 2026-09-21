@@ -2920,6 +2920,9 @@ async def monitoring_background_loop():
             "Monitoring push: tarayıcı push bildirimleri GÖNDERİLMEYECEK "
             "(panel geçmişi ve uygulama içi iletişim çalışmaya devam eder).")
     await restore_runtime_state()
+    # Self-Learning Bias: İlk taramadan önce bir kez başlat
+    _surge_bias_last_refresh: float = 0.0
+    _SURGE_BIAS_REFRESH_INTERVAL: float = 600.0   # 10 dakika
     while True:
         result = None
         try:
@@ -2960,6 +2963,24 @@ async def monitoring_background_loop():
             raise
         except Exception as exc:
             logger.warning("Yükseliş taraması hatası: %s", exc)
+
+        # Self-Learning Bias Yenileme (her 10 dakikada bir — scan döngüsü kilitlerinden bağımsız)
+        _now_mono = __import__("time").monotonic()
+        if _now_mono - _surge_bias_last_refresh >= _SURGE_BIAS_REFRESH_INTERVAL:
+            try:
+                from app.surge_learning import refresh_biases, is_cache_stale
+                from app import database as _db
+                _closed_trades = await _db.list_auto_paper_trades(status="closed", limit=500)
+                _radar_rows = await _db.get_monitoring_velocity_matches(limit=500)
+                refresh_biases(_closed_trades, _radar_rows)
+                _surge_bias_last_refresh = _now_mono
+                logger.info("surge_learning: Bias önbelleği yenilendi (%d trade, %d radar satırı).",
+                            len(_closed_trades), len(_radar_rows))
+            except asyncio.CancelledError:
+                raise
+            except Exception as _bias_exc:
+                logger.warning("surge_learning bias yenileme hatası: %s", _bias_exc)
+
         await asyncio.sleep(SCAN_INTERVAL_SEC)
 
 
