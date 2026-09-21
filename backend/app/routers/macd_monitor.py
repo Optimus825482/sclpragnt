@@ -1484,7 +1484,10 @@ async def _compute_pass_locked(pass_no: int) -> dict:
         try:
             raw_map[sym], extras[sym] = _symbol_trend_and_signals(sym, snapshot_symbols)
         except Exception as exc:
-            logger.warning("macd_monitor trend hatası %s: %s", sym, exc)
+            if "trend verisi yok" in str(exc):
+                logger.debug("macd_monitor trend henüz hazır değil %s: %s", sym, exc)
+            else:
+                logger.warning("macd_monitor trend hatası %s: %s", sym, exc)
             continue
         _trend_cache[sym] = (raw_map[sym], extras[sym])
         _trend_recomputed_at[sym] = now_mono
