@@ -315,6 +315,10 @@ async def init_db():
         # kalıcı "reopen" anahtarı. `notification_id` (bigint) string id taşıyamaz;
         # bu TEXT kolon reopen churn korumasını taşır.
         conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS notification_key TEXT")
+        # MASTER SURGE ENGINE (2026-09-21): 4 katmanlı teyit ve uyarlanabilir hedefler (TP1/TP2)
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS tp1_scalp_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS tp2_runner_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE auto_paper_trades ADD COLUMN IF NOT EXISTS confluence_4way BOOLEAN")
         # D-06 (2026-09-14): MFE ulasilamaz bir TEPE. `exit_pct` ufuk sonundaki
         # kapanis (gerceklestirilebilir), `net_pct` gidis/donus maliyeti dusulmus hali.
         conn.execute("ALTER TABLE velocity_candidates ADD COLUMN IF NOT EXISTS exit_pct DOUBLE PRECISION")
@@ -5128,7 +5132,12 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
                  signal.get("reason"), signal.get("price"), _json_safe_dumps(signal, default=str))
             )
         conn.commit()
-        return (dict(row) if row else None, "opened")
+        row_dict = dict(row) if row else None
+        if row_dict is not None:
+            for k in ("tp1_scalp_pct", "tp2_runner_pct", "confluence_4way", "trailing_gap_pct"):
+                if k in trade and k not in row_dict:
+                    row_dict[k] = trade[k]
+        return (row_dict, "opened")
 
     try:
         return await _run_db(op)

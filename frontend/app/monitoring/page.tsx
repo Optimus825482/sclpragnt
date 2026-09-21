@@ -47,6 +47,10 @@ type Candidate = {
   unified_score?: number | null;
   unified_sources?: string[];
   unified_pass?: boolean;
+  confluence_4way?: boolean;
+  tp1_scalp_pct?: number | null;
+  tp2_runner_pct?: number | null;
+  master_surge?: any;
 };
 
 type MonitoringState = {
@@ -1097,11 +1101,15 @@ export default function MonitoringPage() {
                           {modeLabel}
                         </span>
 
-                        {unifiedSources.length >= 2 && (
+                        {(unifiedSources.length >= 4 || c.confluence_4way) ? (
+                          <span className="shrink-0 rounded-md border border-amber-400/60 bg-amber-400/20 px-2 py-0.5 font-mono text-[10px] font-black text-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.25)] animate-pulse" title="Master Surge: 4'lü Tam Mutabakat (Yüksek Hassasiyet)">
+                            ⚡ 4&apos;lü Teyit (Master Surge)
+                          </span>
+                        ) : unifiedSources.length >= 2 ? (
                           <span className="shrink-0 rounded-md border border-neon-green/50 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-neon-green" title={`Çoklu Gösterge Teyidi: ${unifiedSources.length} sinyal destekliyor`}>
                             ⚡ {unifiedSources.length}&apos;li Teyit
                           </span>
-                        )}
+                        ) : null}
 
                         {mlActive && (
                           <span className="shrink-0 rounded-md border border-violet-400/40 bg-violet-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-violet-300" title={`Yapay Zeka Tahmin Modeli: %${((c.ml_hit_probability ?? 0) * 100).toFixed(0)} Güven`}>

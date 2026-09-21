@@ -107,6 +107,9 @@ class QuickLaneContextTests(unittest.IsolatedAsyncioTestCase):
         self.ticker_patch = patch.object(llm_chat, "ticker_price", new=AsyncMock(return_value=[]))
         self.ticker_patch.start()
         self.addCleanup(self.ticker_patch.stop)
+        self.deep_patch = patch.object(llm_chat, "deep_analyze_symbol", new=AsyncMock(return_value={"data_ready": False}))
+        self.deep_patch.start()
+        self.addCleanup(self.deep_patch.stop)
 
     async def test_returns_none_without_live_sources(self):
         llm_chat.market = _FakeMarket({})

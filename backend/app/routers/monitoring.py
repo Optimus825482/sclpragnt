@@ -889,14 +889,17 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     horizon = int(c.get("horizon_minutes", 5) or 5)
     ml_prob = c.get("ml_hit_probability")
     ml_pct_str = f" | ML %{ml_prob * 100:.0f}" if ml_prob is not None else ""
+    is_4way = bool(c.get("confluence_4way") or len(sources) >= 4)
+    prefix_str = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
+    title_prefix = "⚡ 4'LÜ TEYİT · " if is_4way else "🎯 "
     message = (
-        f"🎯 {sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str} | "
+        f"{prefix_str}{sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str} | "
         f"Anlık: {base_price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
     )
     return {
         "symbol": sym,
         "message": message,
-        "title": f"🎯 {sym} +%{target:g} potansiyel{ml_pct_str}",
+        "title": f"{title_prefix}{sym} +%{target:g} potansiyel{ml_pct_str}",
         "url": f"/charts?symbol={sym}",
         "tag": f"monitoring-{sym}",
         "detected_at": detected_at,
@@ -905,6 +908,10 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
         # (DB `sources` kolonuna yazılır; rapor sayfası bunu gösterir).
         "sources": sources or ["velocity"],
         "unified": bool(sources),
+        "confluence_4way": is_4way,
+        "master_surge": c.get("master_surge"),
+        "tp1_scalp_pct": c.get("tp1_scalp_pct"),
+        "tp2_runner_pct": c.get("tp2_runner_pct"),
         "target_pct": target,
         "price": base_price,
         "expected_price": expected_price,
