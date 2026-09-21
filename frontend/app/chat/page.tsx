@@ -649,6 +649,8 @@ function ChatPageInner() {
           session_id: sessionId,
           username: username,
           user_role: role || "user",
+          plain_turkish: true,
+          max_tokens: 4096,
         },
         {
           signal: controller.signal,

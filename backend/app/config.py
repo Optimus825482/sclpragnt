@@ -551,7 +551,7 @@ class Config:
     # embedding/pgvector, journal agregasyonu, araç döngüsü) ATLAR; tek provider
     # çağrısı yapar ve araçsız yolda sağlayıcı akışı jeton jeton akar. Kısa yanıt
     # için üst sınır: uzun cevap = daha yavaş ilk-jeton ve boşa maliyet.
-    LLM_QUICK_LANE_MAX_TOKENS = max(128, int(os.getenv("LLM_QUICK_LANE_MAX_TOKENS", "600")))
+    LLM_QUICK_LANE_MAX_TOKENS = max(128, int(os.getenv("LLM_QUICK_LANE_MAX_TOKENS", "4096")))
     LLM_QUICK_LANE_ENABLED = os.getenv("LLM_QUICK_LANE_ENABLED", "true").lower() == "true"
     # Bellek bağlamı OPSİYONEL bağlamdır; embedding sağlayıcısı yavaşsa yanıtı
     # bekletmemeli (embedding çağrısının kendi timeout'u 30 sn).

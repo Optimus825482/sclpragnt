@@ -108,7 +108,7 @@ export default function ChartAssistantDrawer({
           plain_turkish: true,
           chart_assistant: true,
           current_symbol: symbol,
-          max_tokens: 450,
+          max_tokens: 4096,
         },
         {
           signal: controller.signal,
