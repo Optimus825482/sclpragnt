@@ -405,7 +405,7 @@ TOOL_RESULT_MAX_CHARS = max(2_000, int(os.getenv("LLM_TOOL_RESULT_MAX_CHARS", "4
 # LLM-02 (2026-09-12): chat yolunda `max_tokens` HİÇ set edilmiyordu;
 # provider sınırsız uzunlukta yanıt döndürebiliyor, maliyet ve latency
 # için üst sınır kalmıyordu. 0 = sınırsız (eski davranış).
-CHAT_MAX_TOKENS = max(0, int(os.getenv("LLM_CHAT_MAX_TOKENS", "2048")))
+CHAT_MAX_TOKENS = max(0, int(os.getenv("LLM_CHAT_MAX_TOKENS", "4096")))
 # Araç döngüsü round başına 45 sn × 2 deneme × 25 round ile teorik
 # olarak saatlerce sürebilir; toplam süreye mutlak sınır konur.
 TOOL_LOOP_TOTAL_TIMEOUT = max(30, int(os.getenv("LLM_TOOL_TOTAL_TIMEOUT", "300")))
@@ -858,6 +858,8 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation, "stream": True}
     if max_tokens:
         payload["max_tokens"] = int(max_tokens)
+    elif CHAT_MAX_TOKENS:
+        payload["max_tokens"] = CHAT_MAX_TOKENS
     base_url = await validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     try:

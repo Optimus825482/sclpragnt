@@ -2645,16 +2645,17 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
             return {"count": len(rows), "results": rows}
         return {"error": "Bilinmeyen araç"}
     tools.extend([LLM_DATA_QUALITY_TOOL, LLM_VALIDATE_PLAN_TOOL])
+    effective_max = int(body.get("max_tokens") or getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
     if body.get("stream") is True:
         async def events():
             try:
-                async for event in llm_analysis.stream_chat(snapshot, body.get("messages", []), tools, execute_tool):
+                async for event in llm_analysis.stream_chat(snapshot, body.get("messages", []), tools, execute_tool, max_tokens=effective_max):
                     yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
             except Exception as exc:
                 yield f"event: error\ndata: {json.dumps({'error': str(exc)}, ensure_ascii=False)}\n\n"
         return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control":"no-cache", "Connection":"keep-alive", "X-Accel-Buffering":"no"})
-    result = await llm_analysis.chat(snapshot, body.get("messages", []), tools, execute_tool)
+    result = await llm_analysis.chat(snapshot, body.get("messages", []), tools, execute_tool, max_tokens=effective_max)
     await _persist_chat_memory(body.get("messages", []), layer="symbol", symbol=symbol.upper(), session_id=str(body.get("session_id") or "symbol:" + symbol.upper()))
     return result
 
@@ -2982,11 +2983,9 @@ def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str
                 if name == "get_regime_snapshot":
                     return await get_regime_snapshot(args)
                 return {"error": f"Araç '{name}' hızlı şeritte desteklenmiyor"}
-            is_assistant = bool(quick.get("plain_turkish") or body.get("chart_assistant") or body.get("plain_turkish"))
-            default_max = 450 if is_assistant else 600
             user_max = int(body.get("max_tokens") or 0)
-            configured_max = int(getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", default_max) or default_max)
-            effective_max = user_max if (0 < user_max <= configured_max) else (450 if is_assistant else configured_max)
+            configured_max = int(getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
+            effective_max = user_max if user_max > 0 else configured_max
             async for event in llm_analysis.stream_chat(
                     quick, messages or [], quick_tools, quick_executor, body.get("active_skills"),
                     max_tokens=effective_max):
@@ -3363,7 +3362,8 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
             # sohbeti kendi listesini yönetir, burada yalnız genel sohbet.
             tools[:] = _resolve_active_tools(body, tools)
             if any(tool.get("function", {}).get("name") == "open_llm_paper_trade" for tool in tools):
-                result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"))
+                effective_max = int(body.get("max_tokens") or getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
+                result = await llm_analysis.chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"), max_tokens=effective_max)
                 # GÖRÜNÜRLÜK (2026-09-18): `chat()` hataları YUTAR —
                 # {"status": "error"} veya {"status": "disabled"}; eskiden
                 # delta yerine düşük çözünürlüklü sabit mesaj ("Paper işlem
@@ -3379,8 +3379,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
                 yield f"event: done\ndata: {json.dumps({'status': result.get('status', 'ok'), 'model': result.get('model')}, ensure_ascii=False)}\n\n"
                 return
             try:
-                is_assistant = bool(body.get("chart_assistant") or body.get("plain_turkish"))
-                effective_max = int(body.get("max_tokens") or (450 if is_assistant else 800))
+                effective_max = int(body.get("max_tokens") or getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
                 async for event in llm_analysis.stream_chat(context, body.get("messages", []), tools, execute_tool, body.get("active_skills"), max_tokens=effective_max):
                     yield f"event: {event['event']}\ndata: {json.dumps(event['data'], ensure_ascii=False)}\n\n"
                 await _persist_chat_memory(messages, layer="strategy", strategy=str(body.get("strategy") or "") or None, session_id=session_id)
@@ -3395,8 +3394,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
     # araçları yukarıda niyet bayrağıyla ayrıca elenir. Executor/paper-only
     # sınırları değişmez.
     tools = _resolve_active_tools(body, tools)
-    is_assistant = bool(body.get("chart_assistant") or body.get("plain_turkish"))
-    effective_max = int(body.get("max_tokens") or (450 if is_assistant else 800))
+    effective_max = int(body.get("max_tokens") or getattr(config, "LLM_QUICK_LANE_MAX_TOKENS", 4096) or 4096)
     result = await llm_analysis.chat(context, messages, tools, execute_tool, body.get("active_skills"), max_tokens=effective_max)
     # GÖRÜNÜRLÜK (2026-09-18): buffer yolda da sağlayıcı hatası sessiz kalmasın —
     # {"status": "error"} dict'i istemcide boş yanıt gibi görünür. HTTP 502 ile
