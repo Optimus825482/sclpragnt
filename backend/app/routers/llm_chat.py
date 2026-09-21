@@ -107,6 +107,11 @@ LLM_AUTO_PAPER_TOOL = {"type":"function","function":{"name":"get_auto_paper_stat
 LLM_DASHBOARD_TOOL = {"type":"function","function":{"name":"get_dashboard_summary","description":"Bugünün sinyal istatistiklerini (üretilen BUY_SIGNAL/CLOSE sayısı), otonom işlem özetini ve portföy durumunu (bakiye, açık pozisyon, toplam değer) tek çağrıda getirir. Salt okunur.","parameters":{"type":"object","properties":{},"required":[]}}}
 LLM_MONITORING_TOOL = {"type":"function","function":{"name":"get_monitoring_status","description":"Monitoring radar tarama sisteminin anlık durumunu getirir: son tarama zamanı, sıradaki aday sayısı, bildirim geçmişi ve tarama havuzu büyüklüğü. Salt okunur.","parameters":{"type":"object","properties":{},"required":[]}}}
 
+# Tahmin Motoru Tool'ları (2026-09-22): Master Surge, ML Fiyat Tahmini ve Öğrenme Karnesi
+LLM_MASTER_SURGE_TOOL = {"type":"function","function":{"name":"get_master_surge_prediction","description":"Sembolün 4 katmanlı Master Surge yükseliş potansiyeli analizini getirir: Katman 1 Likidite ve spread durumu, Katman 2 Volatilite Sıkışması ve Dip Dönüşü, Katman 3 Emir Akışı & Balina CVD Alıcı Baskısı, Katman 4 Trend Uyumu, 4'lü Teyit (Confluence) mutabakatı, Composite Surge Index puanı ve TP1/TP2 hedefleri. Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
+LLM_ML_FORECAST_TOOL = {"type":"function","function":{"name":"get_ml_price_forecast","description":"Sembolün 5m kapanış verilerine dayalı Makine Öğrenimi (ML) fiyat hedefi tahminini getirir: 5 dakika ve 15 dakika ufukları için hedef yüzde artışı (target_pct), beklenen fiyat ve hedefe dokunma olasılığı (hit_probability). Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
+LLM_SURGE_BIAS_TOOL = {"type":"function","function":{"name":"get_surge_learning_bias","description":"Sembolün geçmiş yükseliş sinyallerindeki gerçek başarı karnesini ve öğrenilmiş adaptif bias puanını getirir (kazanma oranı, örnek sayısı, güven seviyesi). Salt okunur.","parameters":{"type":"object","properties":{"symbol":{"type":"string"}},"required":["symbol"]}}}
+
 
 def _resolve_active_tools(body: dict, tools: list[dict]) -> list[dict]:
     """Kullanıcı "Aktif Araçlar" tercihini genel sohbet için uygula.
@@ -2269,6 +2274,66 @@ async def _get_real_account_tool(args: dict) -> dict:
         return {"ok": False, "read_only": True, "retryable": True, "error": f"Gerçek hesap okunamadı: {exc}"}
 
 
+async def _get_master_surge_tool(args: dict) -> dict:
+    """Master Surge Engine analiz çıktısını LLM aracına sağlar."""
+    sym = str(args.get("symbol") or "").replace("_", "").upper()
+    if not sym:
+        return {"ok": False, "error": "symbol parametresi gerekli"}
+    try:
+        from app.master_surge import evaluate_master_surge
+        from app.surge_learning import get_cached_surge_biases
+        bias = get_cached_surge_biases().get(sym)
+        res = evaluate_master_surge(sym, surge_bias=bias)
+        return {"ok": True, "symbol": sym, "surge": res}
+    except Exception as exc:
+        return {"ok": False, "symbol": sym, "error": f"Master Surge analizi üretilemedi: {exc}"}
+
+
+async def _get_ml_forecast_tool(args: dict) -> dict:
+    """ML fiyat hedefi tahminini (5dk ve 15dk) LLM aracına sağlar."""
+    sym = str(args.get("symbol") or "").replace("_", "").upper()
+    if not sym:
+        return {"ok": False, "error": "symbol parametresi gerekli"}
+    try:
+        from app.routers.chart_forecast import collect_forecast_features, HORIZONS
+        feat = await collect_forecast_features(sym)
+        if not feat:
+            return {"ok": False, "symbol": sym, "error": "Yeterli veya taze 5m mum verisi bulunamadı"}
+        price = float(feat.get("close_price") or 0.0)
+        forecasts = {}
+        for h in HORIZONS:
+            pred = ml_forecast.predict_target(feat, horizon_minutes=h, current_price=price)
+            if pred:
+                forecasts[f"{h}m"] = {
+                    "horizon_minutes": h,
+                    "target_pct": pred.get("target_pct"),
+                    "target_price": pred.get("target_price"),
+                    "hit_probability": pred.get("hit_probability"),
+                    "direction": "up",
+                }
+        return {"ok": True, "symbol": sym, "current_price": price, "forecasts": forecasts}
+    except Exception as exc:
+        return {"ok": False, "symbol": sym, "error": f"ML tahmini üretilemedi: {exc}"}
+
+
+async def _get_surge_bias_tool(args: dict) -> dict:
+    """Sembolün geçmiş başarı karnesini ve öğrenilmiş bias puanını LLM aracına sağlar."""
+    sym = str(args.get("symbol") or "").replace("_", "").upper()
+    if not sym:
+        return {"ok": False, "error": "symbol parametresi gerekli"}
+    try:
+        from app.surge_learning import compute_symbol_bias, get_cached_surge_biases
+        cached = get_cached_surge_biases().get(sym)
+        if cached:
+            return {"ok": True, "symbol": sym, "bias": cached}
+        trades = await database.list_auto_paper_trades(limit=1000)
+        history = await database.get_monitoring_velocity_matches(limit=1000)
+        bias = compute_symbol_bias(sym, trades=trades, history_signals=history)
+        return {"ok": True, "symbol": sym, "bias": bias}
+    except Exception as exc:
+        return {"ok": False, "symbol": sym, "error": f"Öğrenme bias karnesi alınamadı: {exc}"}
+
+
 @router.post("/api/symbol-analysis/{symbol}/llm/chat")
 async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: Request = None):
     body = payload or {}
@@ -2356,7 +2421,8 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
                   LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
                   LLM_CREATE_ALERT_TOOL, LLM_UPDATE_ALERT_TOOL, LLM_REMOVE_ALERT_TOOL, LLM_LIST_ALERTS_TOOL, LLM_VALIDATE_PLAN_TOOL,
                   LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
-                  LLM_AUTO_PAPER_TOOL, LLM_DASHBOARD_TOOL, LLM_MONITORING_TOOL])
+                  LLM_AUTO_PAPER_TOOL, LLM_DASHBOARD_TOOL, LLM_MONITORING_TOOL,
+                  LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL])
     tools.extend([{"type":"function","function":{"name":"get_symbol_analysis","description":"Seçili sembolün güncel teknik analizini ve istenen timeframe snapshot'ını getirir.","parameters":{"type":"object","properties":{"timeframe":{"type":"string"}},"required":[]}}}, {"type":"function","function":{"name":"get_historical_klines","description":"Binance TR public API'den seçili sembol için geçmiş mumları getirir. En fazla 1000 mum.","parameters":{"type":"object","properties":{"interval":{"type":"string","enum":["1m","5m","15m","1h","4h","1d"]},"limit":{"type":"integer"}},"required":[]}}}, {"type":"function","function":{"name":"get_symbol_trades","description":"Seçili sembolün geçmiş işlemlerini getirir.","parameters":{"type":"object","properties":{"limit":{"type":"integer"}},"required":[]}}}, LLM_DATABASE_TOOL, LLM_READONLY_SQL_TOOL, {"type":"function","function":{"name":"search_memory","description":"Seçili sembolle ilgili geçmiş konuşma, işlem ve karar hafızasını arar.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}}}])
     # The symbol-chat route builds a second base list below; append alert and
     # research tools after that list so they are not lost when the list is
@@ -2366,9 +2432,13 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
                   LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL, LLM_LIST_SYMBOL_GUARDS_TOOL,
                   LLM_POSITION_CONTEXT_TOOL, LLM_UPDATE_POSITION_TOOL, LLM_CLOSE_POSITION_TOOL,
                   LLM_PATTERN_SCAN_TOOL, LLM_PATTERN_RUNS_TOOL, LLM_PATTERN_SAVE_TOOL, LLM_PATTERN_LIST_TOOL, LLM_INDICATOR_CATALOG_TOOL,
-                  LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL])
+                  LLM_REALTIME_FLOW_TOOL, LLM_SYMBOL_BEHAVIOR_TOOL, LLM_SUBMINUTE_TOOL, LLM_SLIPPAGE_TOOL,
+                  LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL])
 
     async def execute_tool(name, args):
+        if name == "get_master_surge_prediction": return await _get_master_surge_tool({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_ml_price_forecast": return await _get_ml_forecast_tool({**args, "symbol": args.get("symbol") or symbol})
+        if name == "get_surge_learning_bias": return await _get_surge_bias_tool({**args, "symbol": args.get("symbol") or symbol})
         if name == "scan_market_snapshots": return await scan_market_snapshots(args)
         if name == "deep_analyze_symbol": return await deep_analyze_symbol(args)
         if name == "get_data_quality": return await get_data_quality(args)
@@ -2549,11 +2619,11 @@ def _quick_pick(source, keys):
     return out
 
 
-async def _symbol_quick_context(symbol: str) -> dict | None:
+async def _symbol_quick_context(symbol: str, body: dict | None = None) -> dict | None:
     """Hazır bellek önbelleklerinden KOMPAKT sembol durumu; yoksa canlı veri çeker.
 
     Kaynaklar: ticker (WS bellek) · MACD snapshot (≤1 sn) · radar adayı (≤60 sn)
-    · aktif bildirim ve öğrenilmiş hedef (indeksli tek-satır DB okuması).
+    · Master Surge Motoru · ML Fiyat Hedefi Tahmini · aktif bildirim ve öğrenilmiş hedef.
     Bellek yoksa Binance TR public API'den canlı veri alır (tüm TRY sembolleri desteklenir).
     """
     sym = str(symbol or "").upper()
@@ -2585,20 +2655,39 @@ async def _symbol_quick_context(symbol: str) -> dict | None:
             pass
     if not ticker.get("last_price") and not macd_row and not candidate and not (live_snapshot and live_snapshot.get("data_ready")):
         return None
-    quick = {
-        "quick_lane": True,
-        "symbol": sym,
-        "generated_at": time.time(),
-        "data_policy": "Yalnız public OHLCV/ticker/mikro yapı. Eksik alan 'bilinmiyor'dur; uydurma yok.",
-        "answer_contract": (
+    
+    is_plain = bool(body and body.get("plain_turkish"))
+    
+    if is_plain:
+        contract = (
+            "DİL VE ÜSLUP KURALI (KESİNLİKLE UYGULA): "
+            "KULLANICIYA YANIT VERİRKEN KESİNLİKLE HİÇBİR TEKNİK TERİM VEYA KISALTMA KULLANMA! "
+            "RSI, MACD, Bollinger, EMA, ATR, CVD, MFE, MAE, Keltner, Stokastik gibi teknik terimler KESİNLİKLE YASAKTIR. "
+            "Tamamen günlük, sade ve anlaşılır bir yatırımcı diliyle konuş: "
+            "(1) ŞU ANKİ DURUM: Fiyat ne yapıyor? (Örn: 'Fiyat son saatlerde hızlı yükselmiş, şu an biraz dinlenme ve soluklanma bölgesinde.') "
+            "(2) BÜYÜK ALICILAR VE GÜÇ: Piyasadaki alıcıların iştahı nasıl? (Örn: 'Büyük alıcılar tahtada aktif, satış emirlerini kolayca eritiyorlar.') "
+            "(3) TAHMİN MOTORLARI NE DİYOR: Sistemin tahmin algoritmaları bu hareketin devamını bekliyor mu, potansiyel nedir? "
+            "(4) RİSK VE TAVSİYE: Şimdi girmek güvenli mi, riskli mi, neyi beklemeli? "
+            "Kısa, net ve Erkan'ın doğrudan anlayıp karar vermesini sağlayacak bir üslupla yaz."
+        )
+    else:
+        contract = (
             "Kompakt teknik analiz yaz (en fazla ~8 satır). Sıra: "
             "(1) ŞU AN: fiyat + trend/faz (tek cümle); "
             "(2) SENARYO: en olası senaryo — yön, tetikleyici seviye (somut fiyat), "
             "bozulma seviyesi ve güven; "
             "(3) NEDEN: bu görüşü destekleyen TEK kanıt cümlesi; "
             "(4) SONUÇ: tek cümle. Gösterge dökümü yazma. "
-            "Eğer bağlamdaki veri yetmezse deep_analyze_symbol aracını çağır."
-        ),
+            "Eğer bağlamdaki veri yetmezse deep_analyze_symbol veya tahmin motoru araçlarını çağır."
+        )
+
+    quick = {
+        "quick_lane": True,
+        "symbol": sym,
+        "generated_at": time.time(),
+        "plain_turkish": is_plain,
+        "data_policy": "Yalnız public OHLCV/ticker/mikro yapı. Eksik alan 'bilinmiyor'dur; uydurma yok.",
+        "answer_contract": contract,
     }
     price = ticker.get("last_price")
     if price:
@@ -2639,18 +2728,71 @@ async def _symbol_quick_context(symbol: str) -> dict | None:
     if pending:
         quick["active_notification"] = _quick_pick(
             pending, ("target_pct", "price", "detected_at", "horizon_minutes"))
+
+    # Master Surge Analiz Özeti
+    try:
+        from app.master_surge import evaluate_master_surge
+        from app.surge_learning import get_cached_surge_biases
+        bias = get_cached_surge_biases().get(sym)
+        surge_res = evaluate_master_surge(sym, surge_bias=bias)
+        if surge_res:
+            quick["master_surge"] = {
+                "composite_index": surge_res.get("composite_index"),
+                "confluence_4way": surge_res.get("confluence_4way"),
+                "confluence_count": surge_res.get("confluence_count"),
+                "passed": surge_res.get("passed"),
+                "layer_scores": {k: v.get("score") for k, v in (surge_res.get("layers") or {}).items() if isinstance(v, dict)},
+                "tp1_pct": surge_res.get("tp1_pct"),
+                "tp2_pct": surge_res.get("tp2_pct"),
+            }
+    except Exception:
+        pass
+
+    # ML Fiyat Tahmini Özeti
+    try:
+        from app.routers.chart_forecast import collect_forecast_features, HORIZONS
+        feat = await collect_forecast_features(sym)
+        if feat:
+            cprice = float(feat.get("close_price") or price or 0.0)
+            fc = {}
+            for h in HORIZONS:
+                p = ml_forecast.predict_target(feat, horizon_minutes=h, current_price=cprice)
+                if p:
+                    fc[f"{h}m"] = {
+                        "target_pct": p.get("target_pct"),
+                        "target_price": p.get("target_price"),
+                        "hit_probability": p.get("hit_probability"),
+                    }
+            if fc:
+                quick["ml_forecast"] = fc
+    except Exception:
+        pass
+
     return quick
 
 
 def _symbol_quick_stream(quick: dict, body: dict, trace_id: str, session_id: str, messages):
-    """Hızlı şerit SSE: `deep_analyze_symbol` aracıyla desteklenmiş `stream_chat`."""
+    """Hızlı şerit SSE: teknik ve tahmin araçlarıyla desteklenmiş `stream_chat`."""
     async def events():
         started = time.perf_counter()
         try:
-            # Hızlı şerit artık tek araç izniyle akış yapar:
-            # LLM context'teki veriler yetmezse `deep_analyze_symbol` çağırabilir.
-            quick_tools = [LLM_DEEP_SYMBOL_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL]
+            # Hızlı şerit yetenekli araç listesi:
+            # Derin analiz, mikro yapı, rejim ve tahmin motorları
+            quick_tools = [
+                LLM_DEEP_SYMBOL_TOOL, LLM_MICROSTRUCTURE_TOOL, LLM_REGIME_TOOL,
+                LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL,
+                LLM_REALTIME_FLOW_TOOL,
+            ]
             async def quick_executor(name, args):
+                sym = str(args.get("symbol") or quick.get("symbol") or "")
+                if name == "get_master_surge_prediction":
+                    return await _get_master_surge_tool({**args, "symbol": sym})
+                if name == "get_ml_price_forecast":
+                    return await _get_ml_forecast_tool({**args, "symbol": sym})
+                if name == "get_surge_learning_bias":
+                    return await _get_surge_bias_tool({**args, "symbol": sym})
+                if name == "get_realtime_flow":
+                    return await get_realtime_flow({**args, "symbol": sym})
                 if name == "deep_analyze_symbol":
                     return await deep_analyze_symbol(args)
                 if name == "get_microstructure_snapshot":
@@ -2741,7 +2883,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
                                       trade_intent=trade_intent,
                                       research_only_intent=research_only_intent)
     if body.get("stream") is True and quick_symbol:
-        quick = await _symbol_quick_context(quick_symbol)
+        quick = await _symbol_quick_context(quick_symbol, body=body)
         if quick:
             quick["username"] = username
             quick["user_name"] = username
@@ -2828,6 +2970,9 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         nonlocal tool_error_count
         started = time.perf_counter(); success = True
         try:
+            if name == "get_master_surge_prediction": return await _get_master_surge_tool(args)
+            if name == "get_ml_price_forecast": return await _get_ml_forecast_tool(args)
+            if name == "get_surge_learning_bias": return await _get_surge_bias_tool(args)
             if name == "scan_market_snapshots": return await scan_market_snapshots(args)
             if name == "detect_15m_upside_candidates": return await detect_15m_upside_candidates(args)
             if name == "detect_5m_upside_candidates": return await detect_5m_upside_candidates(args)
@@ -2988,6 +3133,7 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         LLM_DEACTIVATE_TOOL, LLM_READONLY_SQL_TOOL, LLM_SET_SYMBOL_GUARD_TOOL, LLM_REMOVE_SYMBOL_GUARD_TOOL,
         LLM_LIST_SYMBOL_GUARDS_TOOL,
         LLM_AUTO_PAPER_TOOL, LLM_DASHBOARD_TOOL, LLM_MONITORING_TOOL,
+        LLM_MASTER_SURGE_TOOL, LLM_ML_FORECAST_TOOL, LLM_SURGE_BIAS_TOOL,
     ])
     # Provider'lara aynı isimli function iki kez gönderilmesini engelle.
     unique_tools = {}
