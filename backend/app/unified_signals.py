@@ -269,7 +269,12 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
         # Master Surge Engine (Ana Yükselme Potansiyeli Algoritması — 4 Katmanlı Değerlendirme)
         try:
             from app import master_surge
-            surge_eval = master_surge.evaluate_master_surge(sym, velocity_candidate=candidate)
+            from app.surge_learning import get_cached_surge_biases
+            _biases = get_cached_surge_biases()
+            _sym_bias = _biases.get(sym)   # None ise bias uygulanmaz
+            surge_eval = master_surge.evaluate_master_surge(
+                sym, velocity_candidate=candidate, surge_bias=_sym_bias
+            )
             candidate["master_surge"] = surge_eval
             if surge_eval.get("confluence_4way"):
                 candidate["confluence_4way"] = True
@@ -281,6 +286,9 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
                 candidate["adaptive_targets"] = surge_eval["adaptive_targets"]
                 candidate["tp1_scalp_pct"] = surge_eval["adaptive_targets"].get("tp1_scalp_pct")
                 candidate["tp2_runner_pct"] = surge_eval["adaptive_targets"].get("tp2_runner_pct")
+            # Self-Learning bias bilgisini bildirim payload'ına taşı
+            if surge_eval.get("learning_bias"):
+                candidate["learning_bias"] = surge_eval["learning_bias"]
         except Exception as surge_exc:
             logger.debug("master surge adayı zenginleştirme %s: %s", sym, surge_exc)
 
@@ -335,7 +343,12 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
         }
         try:
             from app import master_surge
-            surge_eval = master_surge.evaluate_master_surge(sym, velocity_candidate=cand_dict, macd_row=row)
+            from app.surge_learning import get_cached_surge_biases
+            _biases = get_cached_surge_biases()
+            surge_eval = master_surge.evaluate_master_surge(
+                sym, velocity_candidate=cand_dict, macd_row=row,
+                surge_bias=_biases.get(sym)
+            )
             # Katman 1 (Likidite): Sığ veya yüksek spread'li coin'leri baştan ele
             if surge_eval.get("failed_layer") == 1:
                 continue
@@ -349,6 +362,8 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
                 cand_dict["adaptive_targets"] = surge_eval["adaptive_targets"]
                 cand_dict["tp1_scalp_pct"] = surge_eval["adaptive_targets"].get("tp1_scalp_pct")
                 cand_dict["tp2_runner_pct"] = surge_eval["adaptive_targets"].get("tp2_runner_pct")
+            if surge_eval.get("learning_bias"):
+                cand_dict["learning_bias"] = surge_eval["learning_bias"]
         except Exception as surge_exc:
             logger.debug("fusion_only master surge %s: %s", sym, surge_exc)
         fusion_only.append(cand_dict)
@@ -415,7 +430,11 @@ def build_fusion_candidate(symbol: str, kind: str,
     }
     try:
         from app import master_surge
-        surge_eval = master_surge.evaluate_master_surge(sym, velocity_candidate=velocity_candidate)
+        from app.surge_learning import get_cached_surge_biases
+        _biases = get_cached_surge_biases()
+        surge_eval = master_surge.evaluate_master_surge(
+            sym, velocity_candidate=velocity_candidate, surge_bias=_biases.get(sym)
+        )
         cand_dict["master_surge"] = surge_eval
         if surge_eval.get("confluence_4way"):
             cand_dict["confluence_4way"] = True
@@ -426,6 +445,8 @@ def build_fusion_candidate(symbol: str, kind: str,
             cand_dict["adaptive_targets"] = surge_eval["adaptive_targets"]
             cand_dict["tp1_scalp_pct"] = surge_eval["adaptive_targets"].get("tp1_scalp_pct")
             cand_dict["tp2_runner_pct"] = surge_eval["adaptive_targets"].get("tp2_runner_pct")
+        if surge_eval.get("learning_bias"):
+            cand_dict["learning_bias"] = surge_eval["learning_bias"]
     except Exception as surge_exc:
         logger.debug("build_fusion_candidate master surge: %s", surge_exc)
     return cand_dict

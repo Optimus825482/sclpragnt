@@ -242,6 +242,108 @@ function OverviewTab() {
         </section>
       )}
 
+      {/* Öğrenme Bias Haritası — Self-Learning → Master Surge Entegrasyonu */}
+      {overview?.learning_bias?.enabled && (
+        <section className="card p-5 rounded-2xl border border-purple-500/40 bg-purple-500/5 shadow-xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-bunker-800 pb-3">
+            <div>
+              <h2 className="font-mono text-base font-black text-purple-300 flex items-center gap-2">
+                <span>🧠</span> ÖĞRENME BIAS HARİTASI
+              </h2>
+              <p className="mt-0.5 text-xs text-bunker-muted">
+                Geçmiş paper trade ve radar sinyal başarılarından öğrenilen sembol bazlı skor düzeltmeleri.
+                Yeşil semboller bonus, kırmızılar ceza alıyor. Maksimum ±15 puan.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="rounded-full bg-purple-500/20 border border-purple-500/40 px-3 py-1 font-mono text-xs font-bold text-purple-300">
+                🧠 {overview.learning_bias.symbol_count} Sembol Öğrendi
+              </span>
+              {overview.learning_bias.cache_age_s != null && (
+                <span className="font-mono text-[11px] text-bunker-muted">
+                  Son güncelleme: {overview.learning_bias.cache_age_s < 60
+                    ? `${Math.round(overview.learning_bias.cache_age_s)}s önce`
+                    : `${Math.round(overview.learning_bias.cache_age_s / 60)}dk önce`}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Pozitif Bias — Bonus Alan Semboller */}
+            <div className="space-y-2">
+              <p className="font-mono text-xs font-bold text-neon-green flex items-center gap-1.5">
+                <span>🟢</span> BONUS ALANLAR ({overview.learning_bias.positive_bias_count})
+                <span className="font-normal text-bunker-muted">— Geçmişte yüksek başarı</span>
+              </p>
+              {(overview.learning_bias.positive || []).length === 0 ? (
+                <p className="font-mono text-xs text-bunker-muted py-3 text-center">Henüz yeterli veri yok.</p>
+              ) : (
+                <div className="space-y-1">
+                  {(overview.learning_bias.positive as any[]).slice(0, 8).map((b: any) => (
+                    <div key={b.symbol} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-neon-green/5 border border-neon-green/20">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <SymbolLink symbol={b.symbol} className="font-mono text-xs font-bold text-white hover:text-neon-green truncate" />
+                        {b.win_rate != null && (
+                          <span className="font-mono text-[10px] text-bunker-muted">W:{Math.round(b.win_rate * 100)}%</span>
+                        )}
+                        {b.tp1_hit_rate != null && (
+                          <span className="font-mono text-[10px] text-bunker-muted">TP1:{Math.round(b.tp1_hit_rate * 100)}%</span>
+                        )}
+                        <span className="font-mono text-[10px] text-bunker-muted">{b.sample_size}ör.</span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-mono text-xs font-black text-neon-green">+{b.bias_pct.toFixed(1)}p</span>
+                        <span className="font-mono text-[10px] text-bunker-muted">%{Math.round(b.confidence * 100)} güven</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Negatif Bias — Ceza Alan Semboller */}
+            <div className="space-y-2">
+              <p className="font-mono text-xs font-bold text-neon-red flex items-center gap-1.5">
+                <span>🔴</span> CEZA ALANLAR ({overview.learning_bias.negative_bias_count})
+                <span className="font-normal text-bunker-muted">— Yüksek stop oranı</span>
+              </p>
+              {(overview.learning_bias.negative || []).length === 0 ? (
+                <p className="font-mono text-xs text-bunker-muted py-3 text-center">Ceza alan sembol yok.</p>
+              ) : (
+                <div className="space-y-1">
+                  {(overview.learning_bias.negative as any[]).slice(0, 8).map((b: any) => (
+                    <div key={b.symbol} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-neon-red/5 border border-neon-red/20">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <SymbolLink symbol={b.symbol} className="font-mono text-xs font-bold text-white hover:text-neon-red truncate" />
+                        {b.win_rate != null && (
+                          <span className="font-mono text-[10px] text-bunker-muted">W:{Math.round(b.win_rate * 100)}%</span>
+                        )}
+                        {b.tp1_hit_rate != null && (
+                          <span className="font-mono text-[10px] text-bunker-muted">TP1:{Math.round(b.tp1_hit_rate * 100)}%</span>
+                        )}
+                        <span className="font-mono text-[10px] text-bunker-muted">{b.sample_size}ör.</span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="font-mono text-xs font-black text-neon-red">{b.bias_pct.toFixed(1)}p</span>
+                        <span className="font-mono text-[10px] text-bunker-muted">%{Math.round(b.confidence * 100)} güven</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-bunker-800/80 text-[11px] font-mono text-bunker-muted flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span>📌 Maksimum bias: ±15 puan</span>
+            <span>📌 Min güven: %30</span>
+            <span>📌 Min örnek: 5 işlem</span>
+            <span>📌 4&apos;lü confluence zorunluluğu asla yumuşatılmaz</span>
+          </div>
+        </section>
+      )}
+
       {/* İki Kolonlu Alt Grid: Sembol Performansı ve Son Bildirimler */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Sembol Performansı */}
