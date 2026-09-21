@@ -367,6 +367,25 @@ async def refresh_top_gainer_symbols():
         previous_active = set(str(symbol).upper() for symbol in market.symbols)
         if not active:
             raise RuntimeError("Binance TR top-gainer TRY listesi boş döndü")
+        dropped_symbols = previous_active - set(active)
+        if dropped_symbols:
+            # 2026-09-21 Erkan kararı: Sembol pasife alınırken/listeden düşerken
+            # varsa açık otonom paper pozisyonu kâr/zarara bakılmaksızın kapatılır.
+            try:
+                from app.routers import auto_paper as _ap
+                open_auto_trades = await database.list_auto_paper_trades(status="open")
+                for trade in open_auto_trades:
+                    sym = str(trade.get("symbol") or "").upper()
+                    if sym in dropped_symbols:
+                        trade_id = int(trade["id"])
+                        tk = market.get_ticker(sym)
+                        price = float(tk.get("last_price") or 0) if tk else 0
+                        if not price:
+                            price = float(trade.get("peak_price") or trade.get("entry_price") or 0)
+                        await _ap._close_trade(trade_id, sym, price, time.time(), "symbol_deactivated")
+                        print(f"[Top Gainers] Pasife düşen {sym} için auto_paper pozisyonu ({trade_id}) kapatıldı @ {price}", flush=True)
+            except Exception as exc:
+                print(f"[Top Gainers] auto_paper pasif kapatma hatası: {exc}", flush=True)
         config.SYMBOLS = active
         market.symbols = [symbol.lower() for symbol in active]
         # Newly activated symbols would otherwise wait ~4.6h on the WS alone
@@ -753,26 +772,48 @@ async def _close_positions_on_passivation(passive_symbols):
     Kapanamayan pozisyon (fiyat alınamadı vb.) sonraki aktivite turunda yeniden
     denenir; sembol pasif kaldığı sürece listede yer alır.
     """
+    # 1. analyzer açık pozisyonları kapat
     stuck = sorted(symbol for symbol in passive_symbols if symbol in analyzer.positions)
-    if not stuck:
-        return
-    for symbol in stuck:
-        try:
-            price, _ = await _fresh_public_price(symbol)
-        except Exception as exc:
-            print(f"[Activity passive exit] {symbol}: fiyat alınamadı: {exc}", flush=True)
-            continue
-        if not price:
-            print(f"[Activity passive exit] {symbol}: fiyat yok, sonraki turda tekrar denenecek", flush=True)
-            continue
-        try:
-            sig = await analyzer.close_position(symbol, price, "symbol_activity_passive_exit")
-        except Exception as exc:
-            print(f"[Activity passive exit] {symbol}: kapatma başarısız: {exc}", flush=True)
-            continue
-        if sig:
-            await ws_manager.broadcast({"type": "signal", "data": sig})
-            print(f"[Activity passive exit] {symbol} pasif; açık pozisyon PnL'den bağımsız kapatıldı @ {price}", flush=True)
+    if stuck:
+        for symbol in stuck:
+            try:
+                price, _ = await _fresh_public_price(symbol)
+            except Exception as exc:
+                print(f"[Activity passive exit] {symbol}: fiyat alınamadı: {exc}", flush=True)
+                continue
+            if not price:
+                print(f"[Activity passive exit] {symbol}: fiyat yok, sonraki turda tekrar denenecek", flush=True)
+                continue
+            try:
+                sig = await analyzer.close_position(symbol, price, "symbol_activity_passive_exit")
+            except Exception as exc:
+                print(f"[Activity passive exit] {symbol}: kapatma başarısız: {exc}", flush=True)
+                continue
+            if sig:
+                await ws_manager.broadcast({"type": "signal", "data": sig})
+                print(f"[Activity passive exit] {symbol} pasif; açık pozisyon PnL'den bağımsız kapatıldı @ {price}", flush=True)
+
+    # 2. Otonom paper trade açık pozisyonları kapat (2026-09-21 Erkan kararı)
+    try:
+        from app.routers import auto_paper as _ap
+        open_auto_trades = await database.list_auto_paper_trades(status="open")
+        for trade in open_auto_trades:
+            sym = str(trade.get("symbol") or "").upper()
+            if sym in passive_symbols:
+                trade_id = int(trade["id"])
+                try:
+                    price, _ = await _fresh_public_price(sym)
+                except Exception:
+                    price = None
+                if not price:
+                    tk = market.get_ticker(sym)
+                    price = float(tk.get("last_price") or 0) if tk else 0
+                if not price:
+                    price = float(trade.get("peak_price") or trade.get("entry_price") or 0)
+                await _ap._close_trade(trade_id, sym, price, time.time(), "symbol_deactivated")
+                print(f"[Activity passive exit] auto_paper {sym} pasif; pozisyon ({trade_id}) kapatıldı @ {price}", flush=True)
+    except Exception as exc:
+        print(f"[Activity passive exit] auto_paper kontrol hatası: {exc}", flush=True)
     invalidate_wallet_caches()
 
 async def refresh_symbol_activity():

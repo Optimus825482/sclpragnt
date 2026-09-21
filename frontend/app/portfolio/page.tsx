@@ -108,7 +108,11 @@ const REASON_LABEL: Record<string, string> = {
   take_profit: "Hedefe ulaştı",
   stop_loss: "Stop",
   breakeven_stop: "Başabaş koruması",
+  trailing_stop: "Takip eden stop",
+  max_duration: "Zaman aşımı (60 dk)",
+  symbol_deactivated: "Sembol pasife alındı",
   reset: "Portföy sıfırlama",
+  manual_close: "Manuel kapatma",
 };
 
 function MetricCard({ label, value, toneClass = "", hint }: { label: string; value: React.ReactNode; toneClass?: string; hint?: string }) {

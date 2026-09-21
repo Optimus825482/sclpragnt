@@ -626,6 +626,9 @@ class Config:
     AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", "false").lower() == "true"
     AUTO_PAPER_DYNAMIC_TRAILING_ENABLED = os.getenv("AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", "false").lower() == "true"
     AUTO_PAPER_BREAKEVEN_BUFFER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_BUFFER_PCT", "0.02"))
+    # Otonom Paper maksimum pozisyon açık kalma süresi (dakika, 2026-09-21 Erkan kararı).
+    # 60 dk sonunda kâr/zarar durumuna bakılmadan pozisyon piyasa fiyatından kapatılır (scalp bakiyesini kilitlemez).
+    AUTO_PAPER_MAX_HOLD_MINUTES = float(os.getenv("AUTO_PAPER_MAX_HOLD_MINUTES", "60.0"))
 
     # MACD MONITOR / SIRÇRAMA ADAYI ayarları (DB üzerinden değiştirilebilir;
     # burada yalnızca varsayılanlar). Eşik ve alarm/push anahtarları.

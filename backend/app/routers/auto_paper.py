@@ -627,6 +627,38 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     # Güncel fiyat
     ticker = market.get_ticker(symbol)
     current_price = float(ticker.get("last_price") or 0) if ticker else 0
+
+    # 1. SÜRE KONTROLÜ (2026-09-21 Erkan kararı: Maksimum 60 dk):
+    # Fiyat bayat veya ticker boş olsa bile 60 dk dolmuşsa pozisyon kâr/zarara bakılmaksızın kapatılır.
+    entry_time = float(trade.get("entry_time") or trade.get("created_at") or 0)
+    hold_minutes = (now - entry_time) / 60.0 if entry_time > 0 else 0.0
+    max_hold_minutes = float((settings or {}).get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 60.0)))
+    if max_hold_minutes > 0 and hold_minutes >= max_hold_minutes:
+        exit_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
+        logger.info("auto_paper %s: MAKSİMUM SÜRE DOLDU (%.1f dk >= %.1f dk) — pozisyon kapatılıyor (çıkış=%.6f)",
+                    symbol, hold_minutes, max_hold_minutes, exit_price)
+        await _close_trade(trade_id, symbol, exit_price, now, "max_duration")
+        return
+
+    # 2. SEMBOL PASİFE ALINMIŞ MI? (2026-09-21 Erkan kararı: Pasife alınan sembolün pozisyonu kapatılır):
+    # Sembol aktif listede değilse veya pasif semboller arasındaysa kâr/zarara bakılmaksızın kapatılır.
+    passive_symbols = getattr(config, "PASSIVE_SYMBOLS", None)
+    is_passive = bool(passive_symbols and symbol in passive_symbols)
+
+    market_symbols = getattr(market, "symbols", None)
+    is_dropped = False
+    if isinstance(market_symbols, (list, set, tuple)) and len(market_symbols) > 0:
+        symbols_lower = {str(s).lower() for s in market_symbols if isinstance(s, str)}
+        if symbol.lower() not in symbols_lower:
+            is_dropped = True
+
+    if is_passive or is_dropped:
+        exit_price = current_price if current_price > 0 else float(trade.get("peak_price") or entry_price)
+        logger.info("auto_paper %s: SEMBOL PASİFE ALINMIŞ (passive=%s, dropped=%s) — açık pozisyon kapatılıyor (çıkış=%.6f)",
+                    symbol, is_passive, is_dropped, exit_price)
+        await _close_trade(trade_id, symbol, exit_price, now, "symbol_deactivated")
+        return
+
     if current_price <= 0:
         return
     # Bayat fiyatla TP/SL değerlendirmesi yanlış fill fiyatı üretir; analyzer
@@ -984,6 +1016,7 @@ async def get_default_settings() -> dict:
         "dynamic_trailing_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False),
         "breakeven_buffer_pct": getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02),
         "max_open_positions": config.AUTO_PAPER_MAX_OPEN_POSITIONS,
+        "max_hold_minutes": getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 60.0),
     }
 
 
@@ -1018,7 +1051,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
                 "reopen_after_protect_close",
                 "tp_primary_exit_enabled", "dynamic_breakeven_enabled",
                 "dynamic_trailing_enabled", "breakeven_buffer_pct",
-                "max_open_positions")
+                "max_open_positions", "max_hold_minutes")
     existing = await get_auto_paper_settings()
     merged = {**existing, **{k: payload[k] for k in editable if k in payload}}
 
@@ -1045,6 +1078,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
         # pozisyon. 1..30 aralığı; 0'a izin verilmez (yanlışlıkla sınırsız
         # bırakma koruması — sınırsız gerekirse env ile verilir).
         "max_open_positions": max(1, min(30, int(merged.get("max_open_positions", config.AUTO_PAPER_MAX_OPEN_POSITIONS)))),
+        "max_hold_minutes": max(5.0, min(1440.0, float(merged.get("max_hold_minutes", getattr(config, "AUTO_PAPER_MAX_HOLD_MINUTES", 60.0))))),
     }
 
     await database.set_llm_setting("auto_paper_settings", json.dumps(settings))
