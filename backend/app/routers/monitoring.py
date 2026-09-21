@@ -2813,6 +2813,8 @@ async def reset_monitoring_notifications(request: Request):
         _monitoring_state["notified_symbols"].clear()
         _monitoring_state["pending_targets"].clear()
         _monitoring_state["candidate_streak"].clear()
+        _monitoring_state.get("notified_scores", {}).clear()  # MACD refire gate temizle
+        _monitoring_state.get("notified_prices", {}).clear()  # fiyat değişim gate temizle
         _deferred_push.clear()
         await _persist_runtime_state()
     await log_user_action(None, None, "monitoring", "MONITORING_NOTIFICATIONS_RESET",
