@@ -84,6 +84,10 @@ class RisingScanTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         rs.reset_state_for_tests()
         self.addCleanup(rs.reset_state_for_tests)
+        # Production default is False; tests verify notification wiring so force True.
+        self._orig_notify = getattr(config, "RISING_NOTIFY_ENABLED", True)
+        config.RISING_NOTIFY_ENABLED = True
+        self.addCleanup(setattr, config, "RISING_NOTIFY_ENABLED", self._orig_notify)
 
     def _patches(self, candidates, price=10.0, record=None, deliver=None, cooldown=None):
         # Mock'lar yamalama bittikten SONRA da doğrulanabilsin diye self'e konur
@@ -323,6 +327,10 @@ class UnifiedCrossModeRisingTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(rs.reset_state_for_tests)
         unified_signals._unified_notified_at.clear()
         self.addCleanup(unified_signals._unified_notified_at.clear)
+        # Production default is False; notify tests need True.
+        self._orig_notify = getattr(config, "RISING_NOTIFY_ENABLED", True)
+        config.RISING_NOTIFY_ENABLED = True
+        self.addCleanup(setattr, config, "RISING_NOTIFY_ENABLED", self._orig_notify)
 
     def _stack(self, settings, deliver, record=None):
         stack = contextlib.ExitStack()

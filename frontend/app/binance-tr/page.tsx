@@ -1434,7 +1434,7 @@ function BinanceTrPageInner() {
                                   <>
                                     <span>{h.pnl_try >= 0 ? "+" : "−"}₺{fmtPrice(Math.abs(h.pnl_try))}</span>
                                     {h.pnl_pct != null && (
-                                      <span className="ml-1 text-[11px] font-normal">
+                                      <span className={`ml-1 text-[11px] font-normal ${pnlToneCls}`}>
                                         ({h.pnl_pct >= 0 ? "+" : "−"}%{fmtPrice(Math.abs(h.pnl_pct), 2)})
                                       </span>
                                     )}
