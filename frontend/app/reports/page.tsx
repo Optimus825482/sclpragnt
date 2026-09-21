@@ -74,21 +74,21 @@ function SourceBadges({ sources, compact = false }: { sources?: string[] | null;
   const list = (sources || []).filter((s) => typeof s === "string" && s);
   if (list.length >= 4) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-md border border-amber-400/60 bg-amber-400/20 px-2 py-0.5 font-mono text-[10px] font-black text-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.3)] animate-pulse" title="Master Surge: 4'lü Tam Mutabakat (Yüksek Hassasiyet)">
-        ⚡ 4&apos;lü Teyit (Master Surge)
+      <span className="inline-flex items-center gap-1 rounded-md border border-amber-400/60 bg-amber-400/20 px-2 py-0.5 font-mono text-[10px] font-black text-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.3)] animate-pulse" title="Master Surge: Ana Tarama Algoritması Tam Onayı">
+        ⚡ Ana Motor (Master Surge)
       </span>
     );
   }
   if (list.length >= 2) {
     return (
-      <span className="inline-flex items-center gap-1 rounded border border-neon-green/40 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-neon-green" title={`Çoklu Gösterge Teyidi: ${list.length} sinyal destekliyor`}>
-        ⚡ {list.length}&apos;li Teyit
+      <span className="inline-flex items-center gap-1 rounded border border-bunker-700 bg-bunker-800/80 px-1.5 py-0.5 font-mono text-[10px] text-bunker-muted" title={`Eski sistem kaydı (${list.length}'li Teyit)`}>
+        Eski ({list.length}&apos;li)
       </span>
     );
   }
   return (
     <span className="inline-flex items-center rounded border border-sky-400/40 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-300">
-      Ana Algoritma
+      Temel Radar
     </span>
   );
 }
