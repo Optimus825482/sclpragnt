@@ -652,6 +652,17 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
     const cats = ["Tümü", ...Array.from(new Set(INDICATOR_DEFS.map(d => d.category)))];
     const visibleDefs = indicatorCat === "Tümü" ? INDICATOR_DEFS : INDICATOR_DEFS.filter(d => d.category === indicatorCat);
 
+    const handleSelectSymbol = (raw: string) => {
+        let clean = raw.trim().toUpperCase();
+        if (!clean) return;
+        if (!clean.endsWith("TRY") && availableSymbols.includes(clean + "TRY")) {
+            clean = clean + "TRY";
+        }
+        onUpdateConfig({ symbol: clean });
+        setSymbolSearchOpen(false);
+        setSearchFilter("");
+    };
+
     return (
         <div
             ref={cardRef}
@@ -672,23 +683,52 @@ export default function MultiChartCard({ config, availableSymbols, isMaximized, 
                             {config.symbol} <span className="text-[9px] text-bunker-muted">▼</span>
                         </button>
                         {symbolSearchOpen && (
-                            <div className="absolute left-0 top-full mt-1.5 z-50 w-60 bg-bunker-900 border border-bunker-700 rounded-xl shadow-2xl p-2.5">
+                            <div className="absolute left-0 top-full mt-1.5 z-50 w-64 bg-bunker-900 border border-bunker-700 rounded-xl shadow-2xl p-2.5">
                                 <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-bunker-800">
-                                    <span className="font-mono text-[11px] font-bold text-white">Sembol Seç</span>
+                                    <span className="font-mono text-[11px] font-bold text-white">Sembol Seç ({availableSymbols.length})</span>
                                     <button type="button" onClick={() => setSymbolSearchOpen(false)} className="text-bunker-muted hover:text-white text-xs">✕</button>
                                 </div>
-                                <input autoFocus type="text" value={searchFilter} onChange={e => setSearchFilter(e.target.value)} placeholder="Ara..." className="w-full bg-bunker-950 border border-bunker-700 rounded-lg px-2.5 py-1.5 font-mono text-xs text-white placeholder-bunker-500 focus:border-neon-green/50 outline-none mb-2" />
+                                <input
+                                    autoFocus
+                                    type="text"
+                                    value={searchFilter}
+                                    onChange={e => setSearchFilter(e.target.value)}
+                                    onKeyDown={e => {
+                                        if (e.key === "Enter") {
+                                            e.preventDefault();
+                                            if (filteredSymbols.length > 0) {
+                                                handleSelectSymbol(filteredSymbols[0]);
+                                            } else if (searchFilter.trim()) {
+                                                handleSelectSymbol(searchFilter);
+                                            }
+                                        }
+                                    }}
+                                    placeholder="Ara (örn. SAGA)..."
+                                    className="w-full bg-bunker-950 border border-bunker-700 rounded-lg px-2.5 py-1.5 font-mono text-xs text-white placeholder-bunker-500 focus:border-neon-green/50 outline-none mb-2"
+                                />
+                                {searchFilter.trim() && (
+                                    <button
+                                        type="button"
+                                        onClick={() => handleSelectSymbol(searchFilter)}
+                                        className="w-full text-left px-2 py-1 mb-2 rounded text-[11px] font-mono bg-neon-green/15 text-neon-green hover:bg-neon-green/25 font-bold border border-neon-green/30 transition-colors"
+                                    >
+                                        ⚡ {(() => {
+                                            const up = searchFilter.trim().toUpperCase();
+                                            return !up.endsWith("TRY") && availableSymbols.includes(up + "TRY") ? up + "TRY" : up;
+                                        })()} Aç
+                                    </button>
+                                )}
                                 <div className="flex flex-wrap gap-1 mb-2">
                                     {["BTCTRY","ETHTRY","SOLTRY","AVAXTRY","PEPETRY","XRPTRY"].map(s => (
-                                        <button key={s} type="button" onClick={() => { onUpdateConfig({ symbol: s }); setSymbolSearchOpen(false); setSearchFilter(""); }}
+                                        <button key={s} type="button" onClick={() => handleSelectSymbol(s)}
                                             className={`px-1.5 py-0.5 rounded text-[10px] font-mono border transition-colors ${config.symbol === s ? "bg-neon-green/20 border-neon-green/50 text-neon-green font-bold" : "bg-bunker-800/60 border-bunker-700 text-bunker-muted hover:text-white"}`}>
                                             {s.replace("TRY","")}
                                         </button>
                                     ))}
                                 </div>
-                                <div className="max-h-48 overflow-y-auto space-y-0.5">
-                                    {filteredSymbols.map(s => (
-                                        <button key={s} type="button" onClick={() => { onUpdateConfig({ symbol: s }); setSymbolSearchOpen(false); setSearchFilter(""); }}
+                                <div className="max-h-56 overflow-y-auto space-y-0.5">
+                                    {filteredSymbols.slice(0, 50).map(s => (
+                                        <button key={s} type="button" onClick={() => handleSelectSymbol(s)}
                                             className={`w-full text-left px-2.5 py-1.5 rounded font-mono text-xs flex items-center justify-between transition-colors ${config.symbol === s ? "bg-neon-green/15 text-neon-green font-bold" : "text-bunker-muted hover:bg-bunker-800 hover:text-white"}`}>
                                             <span>{s}</span>{config.symbol === s && <span>✓</span>}
                                         </button>

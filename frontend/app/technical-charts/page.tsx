@@ -150,6 +150,20 @@ export default function TechnicalChartsPage() {
             if (savedSidebar === "1") setSidebarHidden(true);
         } catch { }
 
+        // Binance TR'deki tüm aktif TRY işlem çiftlerini yükle (ör. SAGATRY)
+        apiRequest(`${API_BASE}/api/market-symbols`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                const list = data?.symbols;
+                if (Array.isArray(list) && list.length > 0) {
+                    setAvailableSymbols((curr) => {
+                        const merged = new Set([...curr, ...list]);
+                        return [...merged].sort((a, b) => a.localeCompare(b));
+                    });
+                }
+            })
+            .catch(() => { });
+
         apiRequest(`${API_BASE}/api/config`)
             .then((r) => (r.ok ? r.json() : null))
             .then((data) => {
@@ -181,8 +195,11 @@ export default function TechnicalChartsPage() {
 
     // ── Global sembolü 4 grafiğe uygula ───────────────────────────────────────
     const applyGlobalSymbolToAll = (sym: string) => {
-        const clean = sym.trim().toUpperCase();
+        let clean = sym.trim().toUpperCase();
         if (!clean) return;
+        if (!clean.endsWith("TRY") && availableSymbols.includes(clean + "TRY")) {
+            clean = clean + "TRY";
+        }
         setSlots((prev) => {
             const next = prev.map((s) => ({ ...s, symbol: clean }));
             try { localStorage.setItem(LS_KEY_SLOTS, JSON.stringify(next)); } catch { }
@@ -335,39 +352,61 @@ export default function TechnicalChartsPage() {
                                         setGlobalSymbolInput(e.target.value.toUpperCase());
                                         setGlobalSearchOpen(true);
                                     }}
+                                    onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                            e.preventDefault();
+                                            applyGlobalSymbolToAll(globalSymbolInput);
+                                        }
+                                    }}
                                     onFocus={() => setGlobalSearchOpen(true)}
-                                    placeholder="Sembol..."
-                                    className="w-24 md:w-28 px-2.5 py-1 font-mono text-xs text-white bg-transparent outline-none uppercase placeholder-bunker-600"
+                                    placeholder="Sembol (örn. SAGA)..."
+                                    className="w-28 md:w-36 px-2.5 py-1 font-mono text-xs text-white bg-transparent outline-none uppercase placeholder-bunker-600"
                                 />
                                 <button
                                     type="button"
                                     onClick={() => applyGlobalSymbolToAll(globalSymbolInput)}
                                     className="px-2.5 py-1 bg-neon-green/20 hover:bg-neon-green/30 text-neon-green border-l border-bunker-700 font-mono text-xs font-bold transition-colors"
-                                    title="Bu sembolü 4 grafiğe birden yükle"
+                                    title="Bu sembolü 4 grafiğe birden yükle (Enter)"
                                 >
                                     ⚡ TÜMÜNE
                                 </button>
                             </div>
 
                             {globalSearchOpen && (
-                                <div className="absolute left-0 top-full mt-1.5 z-50 w-52 bg-bunker-900 border border-bunker-700 rounded-xl shadow-2xl p-2 max-h-48 overflow-y-auto">
-                                    <div className="flex items-center justify-between pb-1 mb-1 border-b border-bunker-800">
-                                        <span className="text-[10px] font-mono text-bunker-muted font-bold">Hızlı Sembol Seç</span>
+                                <div className="absolute left-0 top-full mt-1.5 z-50 w-60 bg-bunker-900 border border-bunker-700 rounded-xl shadow-2xl p-2 max-h-64 overflow-y-auto">
+                                    <div className="flex items-center justify-between pb-1 mb-1.5 border-b border-bunker-800">
+                                        <span className="text-[10px] font-mono text-bunker-muted font-bold">Sembol Seç ({availableSymbols.length} adet)</span>
                                         <button type="button" onClick={() => setGlobalSearchOpen(false)} className="text-bunker-muted hover:text-white text-xs">✕</button>
                                     </div>
+                                    {globalSymbolInput.trim() && (
+                                        <button
+                                            type="button"
+                                            onClick={() => applyGlobalSymbolToAll(globalSymbolInput)}
+                                            className="w-full text-left px-2 py-1.5 mb-1.5 rounded text-xs font-mono bg-neon-green/15 text-neon-green hover:bg-neon-green/25 font-bold border border-neon-green/30 transition-colors"
+                                        >
+                                            ⚡ {(() => {
+                                                const q = globalSymbolInput.trim().toUpperCase();
+                                                return !q.endsWith("TRY") && availableSymbols.includes(q + "TRY") ? q + "TRY" : q;
+                                            })()} Aç
+                                        </button>
+                                    )}
                                     {availableSymbols
-                                        .filter((s) => s.includes(globalSymbolInput.trim()))
-                                        .slice(0, 15)
+                                        .filter((s) => s.toLowerCase().includes(globalSymbolInput.trim().toLowerCase()))
+                                        .slice(0, 30)
                                         .map((s) => (
                                             <button
                                                 key={s}
                                                 type="button"
                                                 onClick={() => applyGlobalSymbolToAll(s)}
-                                                className="w-full text-left px-2 py-1 rounded text-xs font-mono text-bunker-muted hover:bg-bunker-800 hover:text-white transition-colors"
+                                                className="w-full text-left px-2 py-1 rounded text-xs font-mono text-bunker-muted hover:bg-bunker-800 hover:text-white transition-colors flex items-center justify-between"
                                             >
-                                                {s}
+                                                <span>{s}</span>
+                                                {globalSymbol === s && <span className="text-neon-green text-[10px]">Aktif</span>}
                                             </button>
                                         ))}
+                                    {availableSymbols.filter((s) => s.toLowerCase().includes(globalSymbolInput.trim().toLowerCase())).length === 0 && (
+                                        <p className="text-center text-[11px] text-bunker-muted py-2 font-mono">Sembol listesinde bulunamadı</p>
+                                    )}
                                 </div>
                             )}
                         </div>
