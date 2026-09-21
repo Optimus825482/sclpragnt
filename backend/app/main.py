@@ -3154,36 +3154,79 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
             rows.extend(part)
     # GÜNLÜK GERÇEKLEŞEN K/Z (FIFO) — Erkan kararı (2026-09-18): günün işlemleri
     # tablosunda eşleşen ALIS->SATIS kar/zararı görünür; toplamı tablo üstündeki
-    # özet kutusunda. Her sembolde SATIS fill'leri gün içi ALIS lotlarıyla
+    # özet kutusunda. Her sembolde SATIS fill'leri gün içi ve geçmiş ALIS lotlarıyla
     # eşleştirilir; komisyon TRY değeri BİRİME göre çevrilir (base → × fiyat,
-    # TRY → ×1, USDT → × USDTTRY). Stoğu gün dışından gelen SATIS'ler
-    # eşleşmez (unmatched) — K/Z hücresi boş kalır.
+    # TRY → ×1, USDT → × USDTTRY, BNB → × BNBTRY).
     wins = losses = unmatched = 0
     daily_net = daily_gross = 0.0
-    # KOMİYON BİRİMİ DÜZELTMESİ (2026-09-18 13:22, kullanıcı raporu: brüt
-    # +2.853 ama net −10.778 — 13.631 ₺'lik "komisyon" boşluğu imkânsızdı):
-    # eski hesap TÜM komisyonları base-asset sanıp TRY'ye çeviriyordu
-    # (comm × fiyat). Fiat-ramp çiftlerde (MUBARAKTRY, AVAXTRY…) komisyon
-    # ZATEN TRY'dir; yüksek-fiyatlı coinlerde (AVAX ~365 ₺) comm × fiyat =
-    # 27 ₺ komisyona ~9.855 ₺ HAYALİ komisyon yazıyordu → tam o −13.6k.
-    # Doğru çevrim birime göre: base → × fiyat, TRY → ×1, USDT → × USDTTRY,
-    # bilinmeyen birim → TRY varsay (sınırlı küçük hata, hayalı yok).
+
     usdt_try = 0.0
+    bnb_try = 0.0
     try:
-        usdt_rows = await binance_tr_public.ticker_price(["USDTTRY"])
-        for row in usdt_rows if isinstance(usdt_rows, list) else []:
-            if str(row.get("symbol") or "").upper() == "USDTTRY":
+        rates = await binance_tr_public.ticker_price(["USDTTRY", "BNBTRY"])
+        for row in rates if isinstance(rates, list) else []:
+            s = str(row.get("symbol") or "").upper().replace("_", "")
+            if s == "USDTTRY":
                 usdt_try = float(row.get("price") or 0)
+            elif s == "BNBTRY":
+                bnb_try = float(row.get("price") or 0)
     except Exception:
-        usdt_try = 0.0
+        pass
+    if bnb_try == 0.0 and usdt_try > 0:
+        try:
+            bnb_u = await binance_tr_public.ticker_price(["BNBUSDT"])
+            for row in bnb_u if isinstance(bnb_u, list) else []:
+                if str(row.get("symbol") or "").upper().replace("_", "") == "BNBUSDT":
+                    bnb_try = float(row.get("price") or 0) * usdt_try
+        except Exception:
+            pass
+
     by_symbol: dict[str, list[dict]] = {}
     for f in rows:
         by_symbol.setdefault(str(f.get("symbol") or ""), []).append(f)
+
+    # Eğer sembolde gün içi satış (isBuyer == False) varsa, maliyet tabanını (cost basis)
+    # doğru kurabilmek için o sembolün geçmiş işlemlerini de çekip FIFO kuyruğuna alıyoruz.
+    sym_need_hist = [
+        sym for sym, fills in by_symbol.items()
+        if any(not f.get("isBuyer") for f in fills)
+    ]
+    hist_map: dict[str, list[dict]] = {}
+    if sym_need_hist:
+        async def fetch_hist(s: str):
+            async with sem:
+                try:
+                    return s, await asyncio.to_thread(
+                        get_trade_history, api_key, api_secret, s, None, end_ms, 1000, 0
+                    )
+                except Exception as exc:
+                    logger.debug("Binance TR geçmiş işlem çekme hatası %s: %s", s, exc)
+                    return s, []
+        hist_results = await asyncio.gather(*(fetch_hist(s) for s in sym_need_hist))
+        for s, h_trades in hist_results:
+            hist_map[s] = h_trades
+
     # Sembol bazlı özet: alış/satış miktar ve VWAP'ları + K/Z + komisyon (tek satır)
     symbol_summary: list[dict] = []
     for symbol, fills in by_symbol.items():
-        fills.sort(key=lambda f: (float(f.get("time") or 0), int(f.get("id") or 0)))
-        base_asset = str(fills[0].get("symbol") or "")[:-4] if fills else ""
+        clean_sym = symbol.replace("_", "").upper()
+        if clean_sym.endswith("TRY"):
+            base_asset = clean_sym[:-3]
+            quote_asset = "TRY"
+            rate_to_try = 1.0
+        elif clean_sym.endswith("USDT"):
+            base_asset = clean_sym[:-4]
+            quote_asset = "USDT"
+            rate_to_try = usdt_try if usdt_try > 0 else 1.0
+        elif "_" in symbol:
+            parts = symbol.upper().split("_")
+            base_asset, quote_asset = parts[0], parts[1]
+            rate_to_try = usdt_try if quote_asset == "USDT" and usdt_try > 0 else 1.0
+        else:
+            base_asset = clean_sym
+            quote_asset = "TRY"
+            rate_to_try = 1.0
+
         summary: dict = {
             "symbol": symbol,
             "buy_qty": 0.0,
@@ -3194,35 +3237,73 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
             "commission_try": 0.0,
             "fills": len(fills),
         }
-        lots: list[dict] = []
+
+        # Geçmiş işlemler ile günün işlemlerini birleştir (id bazlı tekilleştirme)
+        all_trade_dict: dict[int, dict] = {}
+        for t in hist_map.get(symbol, []):
+            tid = int(t.get("id") or 0)
+            if tid:
+                all_trade_dict[tid] = t
         for f in fills:
+            tid = int(f.get("id") or 0)
+            if tid:
+                all_trade_dict[tid] = f
+            else:
+                all_trade_dict[id(f)] = f
+
+        all_symbol_trades = list(all_trade_dict.values())
+        all_symbol_trades.sort(key=lambda f: (float(f.get("time") or 0), int(f.get("id") or 0)))
+
+        lots: list[dict] = []
+        for f in all_symbol_trades:
             try:
                 qty = float(f.get("qty") or 0)
                 price = float(f.get("price") or 0)
                 comm = float(f.get("commission") or 0)
+                t_time = float(f.get("time") or 0)
             except (TypeError, ValueError):
                 continue
+
+            is_today = (start_ms <= t_time < end_ms)
+
             comm_asset = str(f.get("commissionAsset") or "").upper()
-            if comm_asset == base_asset and base_asset:
-                comm_try = comm * price
+            if comm_asset == "TRY":
+                comm_try = comm
             elif comm_asset == "USDT" and usdt_try > 0:
                 comm_try = comm * usdt_try
+            elif comm_asset == "BNB" and bnb_try > 0:
+                comm_try = comm * bnb_try
+            elif comm_asset == base_asset and base_asset:
+                comm_try = comm * price * rate_to_try
             else:
                 comm_try = comm
-            summary["commission_try"] += comm_try
+
+            if is_today:
+                summary["commission_try"] += comm_try
+
             if f.get("isBuyer"):
-                lots.append({"price": price, "qty": qty, "comm_try": comm_try})
-                summary["buy_qty"] += qty
-                summary["buy_cost_try"] += qty * price
+                lots.append({
+                    "price": price,
+                    "price_try": price * rate_to_try,
+                    "qty": qty,
+                    "comm_try": comm_try,
+                })
+                if is_today:
+                    summary["buy_qty"] += qty
+                    summary["buy_cost_try"] += qty * price * rate_to_try
                 continue
+
+            # SATIŞ İŞLEMİ (FIFO EŞLEŞTİRME)
             remaining = qty
             matched = 0.0
-            basis_cost = 0.0
+            basis_cost_orig = 0.0
+            basis_cost_try = 0.0
             basis_comm_try = 0.0
             while remaining > 1e-12 and lots:
                 lot = lots[0]
                 take = min(lot["qty"], remaining)
-                basis_cost += lot["price"] * take
+                basis_cost_orig += lot["price"] * take
+                basis_cost_try += lot["price_try"] * take
                 if lot["qty"] > 0:
                     basis_comm_try += lot["comm_try"] * (take / lot["qty"])
                 lot["qty"] -= take
@@ -3230,23 +3311,27 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
                 remaining -= take
                 if lot["qty"] <= 1e-12:
                     lots.pop(0)
-            summary["sell_qty"] += qty
-            summary["sell_revenue_try"] += qty * price
-            if matched > 1e-12:
-                basis_vwap = basis_cost / matched
-                gross = (price - basis_vwap) * matched
-                net = gross - comm_try - basis_comm_try
-                f["basis_price"] = round(basis_vwap, 8)
-                f["realized_pnl_try"] = round(net, 2)
-                daily_net += net
-                daily_gross += gross
-                summary["realized_pnl_try"] += net
-                if net >= 0:
-                    wins += 1
+
+            if is_today:
+                summary["sell_qty"] += qty
+                summary["sell_revenue_try"] += qty * price * rate_to_try
+                if matched > 1e-12:
+                    basis_vwap_orig = basis_cost_orig / matched
+                    basis_vwap_try = basis_cost_try / matched
+                    gross_try = (price * rate_to_try - basis_vwap_try) * matched
+                    net_try = gross_try - comm_try - basis_comm_try
+                    f["basis_price"] = round(basis_vwap_orig, 8)
+                    f["realized_pnl_try"] = round(net_try, 2)
+                    daily_net += net_try
+                    daily_gross += gross_try
+                    summary["realized_pnl_try"] += net_try
+                    if net_try >= 0:
+                        wins += 1
+                    else:
+                        losses += 1
                 else:
-                    losses += 1
-            else:
-                unmatched += 1
+                    unmatched += 1
+
         summary["buy_qty"] = round(summary["buy_qty"], 8)
         summary["buy_cost_try"] = round(summary["buy_cost_try"], 4)
         summary["sell_qty"] = round(summary["sell_qty"], 8)
@@ -3254,6 +3339,7 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
         summary["realized_pnl_try"] = round(summary["realized_pnl_try"], 2)
         summary["commission_try"] = round(summary["commission_try"], 4)
         symbol_summary.append(summary)
+
     # Özet tablo: yüksek K/Z önce (azalan)
     symbol_summary.sort(key=lambda s: abs(s["realized_pnl_try"]), reverse=True)
     # En yeni işlemler en üstte (azalan: önce en son alım/satım).
@@ -3264,7 +3350,9 @@ async def binance_trades_day(request: Request, date: str, limit_per_symbol: int 
                "daily": {"realized_pnl_try": round(daily_net, 2),
                          "gross_pnl_try": round(daily_gross, 2),
                          "wins": wins, "losses": losses, "unmatched": unmatched}}
-    _binance_day_trades_cache[(user_id, date)] = (now_ts + 60.0, payload)
+    today_str = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
+    cache_ttl = 20.0 if date == today_str else 300.0
+    _binance_day_trades_cache[(user_id, date)] = (now_ts + cache_ttl, payload)
     return payload
 
 

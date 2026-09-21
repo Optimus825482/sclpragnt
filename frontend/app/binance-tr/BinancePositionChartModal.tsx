@@ -45,6 +45,7 @@ interface Props {
   onOrderUpdated: () => void;
   sellEnabled: boolean;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
+  livePrice?: number | null;
 }
 
 type Timeframe = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
@@ -60,41 +61,40 @@ const TF_SECONDS: Record<Timeframe, number> = {
   "1d": 86400,
 };
 
-interface CandleBar {
+// Lightweight Charts için mum tipi
+type CandleBar = {
   time: UTCTimestamp;
   open: number;
   high: number;
   low: number;
   close: number;
-}
+};
 
-// Bollinger Bands hesaplayıcı (20, 2)
-function calculateBollingerBands(bars: CandleBar[], period = 20, multiplier = 2) {
+// Basit Bollinger Bantları Hesabı (Periyot: 20, StdDev: 2)
+function calculateBollingerBands(
+  candles: CandleBar[],
+  period = 20,
+  stdDevMultiplier = 2
+) {
   const upper: { time: UTCTimestamp; value: number }[] = [];
   const middle: { time: UTCTimestamp; value: number }[] = [];
   const lower: { time: UTCTimestamp; value: number }[] = [];
 
-  if (bars.length < period) return { upper, middle, lower };
+  if (candles.length < period) return { upper, middle, lower };
 
-  for (let i = period - 1; i < bars.length; i++) {
-    let sum = 0;
-    for (let j = i - period + 1; j <= i; j++) {
-      sum += bars[j].close;
-    }
-    const sma = sum / period;
+  for (let i = period - 1; i < candles.length; i++) {
+    const slice = candles.slice(i - period + 1, i + 1);
+    const sum = slice.reduce((acc, c) => acc + c.close, 0);
+    const mean = sum / period;
 
-    let varianceSum = 0;
-    for (let j = i - period + 1; j <= i; j++) {
-      varianceSum += Math.pow(bars[j].close - sma, 2);
-    }
-    const stdDev = Math.sqrt(varianceSum / period);
+    const variance =
+      slice.reduce((acc, c) => acc + Math.pow(c.close - mean, 2), 0) / period;
+    const stdDev = Math.sqrt(variance);
 
-    const time = bars[i].time;
-    if (Number.isFinite(time) && Number.isFinite(sma) && Number.isFinite(stdDev)) {
-      middle.push({ time, value: Number(sma.toFixed(6)) });
-      upper.push({ time, value: Number((sma + multiplier * stdDev).toFixed(6)) });
-      lower.push({ time, value: Number((sma - multiplier * stdDev).toFixed(6)) });
-    }
+    const time = candles[i].time;
+    middle.push({ time, value: mean });
+    upper.push({ time, value: mean + stdDevMultiplier * stdDev });
+    lower.push({ time, value: mean - stdDevMultiplier * stdDev });
   }
 
   return { upper, middle, lower };
@@ -143,6 +143,7 @@ export default function BinancePositionChartModal({
   onOrderUpdated,
   sellEnabled,
   showToast,
+  livePrice,
 }: Props) {
   const symbolConcat = `${holding.asset}TRY`;
   const [timeframe, setTimeframe] = useState<Timeframe>("5m"); // Varsayılan M5
@@ -178,8 +179,55 @@ export default function BinancePositionChartModal({
   const lastCandleTimeRef = useRef<number>(0);
 
   // Canlı Fiyat & Tick Durumu
-  const [currentPrice, setCurrentPrice] = useState<number | null>(holding.price_try);
+  const [currentPrice, setCurrentPrice] = useState<number | null>(livePrice ?? holding.price_try);
   const [tickDir, setTickDir] = useState<"up" | "down" | null>(null);
+
+  // Canlı Fiyat Tik Güncellemesi: hem WebSocket hem prop'tan beslenir
+  const applyPriceTick = useCallback((newPrice: number) => {
+    if (!newPrice || !Number.isFinite(newPrice) || newPrice <= 0) return;
+    setCurrentPrice((prev) => {
+      if (prev != null && prev > 0 && Math.abs(newPrice - prev) > 1e-9) {
+        setTickDir(newPrice >= prev ? "up" : "down");
+      }
+      return newPrice;
+    });
+
+    if (!loadingRef.current && candleSeriesRef.current) {
+      const tfSecs = TF_SECONDS[timeframeRef.current] || 0;
+      const nowSec = Math.floor(Date.now() / 1000);
+      const last = lastCandleRef.current;
+      if (tfSecs > 0) {
+        const bucket = Math.floor(nowSec / tfSecs) * tfSecs;
+        if (last && Number(last.time) === bucket) {
+          const updatedBar: CandleBar = {
+            time: last.time,
+            open: last.open,
+            high: Math.max(last.high, newPrice),
+            low: Math.min(last.low, newPrice),
+            close: newPrice,
+          };
+          lastCandleRef.current = updatedBar;
+          try { candleSeriesRef.current.update(updatedBar as any); } catch {}
+        } else if (!last || bucket > Number(last.time)) {
+          const freshBar: CandleBar = {
+            time: bucket as UTCTimestamp,
+            open: last ? last.close : newPrice,
+            high: newPrice,
+            low: newPrice,
+            close: newPrice,
+          };
+          lastCandleRef.current = freshBar;
+          try { candleSeriesRef.current.update(freshBar as any); } catch {}
+        }
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (livePrice != null && Number(livePrice) > 0) {
+      applyPriceTick(Number(livePrice));
+    }
+  }, [livePrice, applyPriceTick]);
 
   // Pozisyon Çizgi Değerleri
   const entryPrice = holding.avg_cost_try && holding.avg_cost_try > 0 ? holding.avg_cost_try : null;
@@ -819,9 +867,10 @@ export default function BinancePositionChartModal({
         // Mum Akışı
         if (msg.type === "kline") {
           const klineData = (msg as any).data;
-          const msgSymbol = klineData?.symbol ?? (msg as any).symbol;
+          const msgSymbol = String(klineData?.symbol ?? (msg as any).symbol ?? "").replace(/_/g, "").toUpperCase();
+          const targetSym = symbolConcat.replace(/_/g, "").toUpperCase();
           const msgTimeframe = klineData?.timeframe ?? klineData?.interval ?? (msg as any).interval;
-          if (msgSymbol !== symbolConcat || msgTimeframe !== timeframe) return;
+          if (msgSymbol !== targetSym || (msgTimeframe && msgTimeframe !== timeframeRef.current)) return;
 
           const bar = klineData;
           if (!bar || !candleSeriesRef.current) return;
@@ -876,54 +925,22 @@ export default function BinancePositionChartModal({
           }
         }
 
-        // Fiyat Tik Akışı
-        if (msg.type === "price_tick" || msg.type === "binance_price") {
+        // Fiyat Tik Akışı (binance_price veya price_tick)
+        if (msg.type === "binance_price") {
+          const d = msg.data as any;
+          const tick = d?.ticks?.[holding.asset];
+          if (tick) {
+            const newPrice = Number(tick.price || tick.price_try);
+            if (newPrice > 0) {
+              applyPriceTick(newPrice);
+            }
+          }
+        } else if (msg.type === "price_tick") {
           const d = msg.data as any;
           if (d && (d.symbol === symbolConcat || d.asset === holding.asset)) {
             const newPrice = Number(d.price || d.price_try);
             if (newPrice > 0) {
-              setTickDir((prev) => (currentPrice ? (newPrice >= currentPrice ? "up" : "down") : null));
-              setCurrentPrice(newPrice);
-
-              // Canlı mum güncellemesi + YENİ MUM OLUŞTURMA. DONMA DÜZELTMESİ
-              // (2026-09-19): eski kod yalnız mevcut son mumu güncelliyordu;
-              // mum kapanıp yenisi başladığında hiçbir yerde yeni mum
-              // OLUŞTURULMUYORDU → 2×TF hizalama penceresi dolduğunda tik'ler
-              // tamamen susuyor ve grafik DONUYORDU. Doğru davranış: gelen
-              // fiyat, son mumun kapanışından SONRA yeni bir mum başlatır.
-              if (!loadingRef.current && candleSeriesRef.current) {
-                const tfSecs = TF_SECONDS[timeframeRef.current] || 0;
-                const nowSec = Math.floor(Date.now() / 1000);
-                const last = lastCandleRef.current;
-                if (tfSecs > 0) {
-                  // Görüntülenen TF'in mevcut (açık) mumunun açılış zamanı.
-                  const bucket = Math.floor(nowSec / tfSecs) * tfSecs;
-                  if (last && Number(last.time) === bucket) {
-                    // Açık mum: iğne/gövde güncelle.
-                    const updatedBar: CandleBar = {
-                      time: last.time,
-                      open: last.open,
-                      high: Math.max(last.high, newPrice),
-                      low: Math.min(last.low, newPrice),
-                      close: newPrice,
-                    };
-                    lastCandleRef.current = updatedBar;
-                    try { candleSeriesRef.current.update(updatedBar as any); } catch {}
-                  } else if (!last || bucket > Number(last.time)) {
-                    // YENİ MUM BAŞLADI: bucket açılışıyla yeni mum oluştur.
-                    const freshBar: CandleBar = {
-                      time: bucket as UTCTimestamp,
-                      open: last ? last.close : newPrice,
-                      high: newPrice,
-                      low: newPrice,
-                      close: newPrice,
-                    };
-                    lastCandleRef.current = freshBar;
-                    try { candleSeriesRef.current.update(freshBar as any); } catch {}
-                  }
-                  // bucket < last.time → eski TF kalıntısı, seriye dokunma.
-                }
-              }
+              applyPriceTick(newPrice);
             }
           }
         }
@@ -950,7 +967,7 @@ export default function BinancePositionChartModal({
           }
         }
       },
-      [symbolConcat, timeframe, holding.asset, currentPrice]
+      [symbolConcat, holding.asset, applyPriceTick]
     )
   );
 
