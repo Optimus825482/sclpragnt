@@ -7,6 +7,7 @@ import { fmtDateTime, formatPrice, toMs } from "../lib/format";
 import { useAuth } from "../lib/auth";
 import { useLiveMessages } from "../lib/liveSocket";
 import { ML_PROB_TITLE, formatMlProbability } from "../lib/mlProbability";
+import AppLoader from "../components/AppLoader";
 
 type NotificationSettings = {
   enabled: boolean;
@@ -181,7 +182,7 @@ const HealthChip = ({ label, value, onText, offText, onTone, offTone }: {
   return <span className={`rounded-lg border px-2.5 py-1 font-mono text-[11px] font-bold ${HEALTH_TONE[tone]}`}>{label}: {text}</span>;
 };
 
-const LivenessBadge = ({ lastScanAt }: { lastScanAt: number | null }) => {
+const LivenessBadge = ({ lastScanAt, loading }: { lastScanAt: number | null; loading?: boolean }) => {
   const [now, setNow] = useState(0);
   useEffect(() => {
     const tick = () => setNow(Date.now());
@@ -189,9 +190,22 @@ const LivenessBadge = ({ lastScanAt }: { lastScanAt: number | null }) => {
     const timer = setInterval(tick, 10_000);
     return () => clearInterval(timer);
   }, []);
+  if (loading) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-400/40 bg-sky-400/10 px-2.5 py-0.5 font-mono text-[10px] font-bold text-sky-300">
+        <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+        SENKRONİZE EDİLİYOR…
+      </span>
+    );
+  }
   const ms = toMs(lastScanAt);
   if (!ms || !now) {
-    return <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[10px] font-bold ${HEALTH_TONE.muted}`}>BAĞLANTI BİLİNMİYOR</span>;
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-400/40 bg-sky-400/10 px-2.5 py-0.5 font-mono text-[10px] font-bold text-sky-300">
+        <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+        İLK TARAMA BEKLENİYOR
+      </span>
+    );
   }
   const sec = Math.max(0, Math.round((now - ms) / 1000));
   if (sec <= 90) {
@@ -483,12 +497,12 @@ export default function MonitoringPage() {
     nextPollMsRef.current = nextIn != null ? Math.max(15_000, Math.round(nextIn) * 1000) : SCAN_INTERVAL_MS;
   }, []);
 
-  const loadState = useCallback(async (signal?: AbortSignal) => {
-    if (stateInFlightRef.current || scanInFlightRef.current) return;
+  const loadState = useCallback(async (opts?: { signal?: AbortSignal; force?: boolean }) => {
+    if (!opts?.force && (stateInFlightRef.current || scanInFlightRef.current)) return;
     stateInFlightRef.current = true;
     const reqId = ++stateReqIdRef.current;
     try {
-      const res = await apiRequest(`${API_BASE}/api/monitoring/state`, { cache: "no-store", signal });
+      const res = await apiRequest(`${API_BASE}/api/monitoring/state`, { cache: "no-store", signal: opts?.signal });
       if (reqId !== stateReqIdRef.current || !mountedRef.current) return;
       if (!res.ok) throw new HttpStatusError(res.status);
       const data = await res.json();
@@ -626,10 +640,9 @@ export default function MonitoringPage() {
 
   useEffect(() => {
     mountedRef.current = true;
-    const controller = new AbortController();
-    void loadSettings(controller.signal);
-    void loadState(controller.signal);
-    void loadHistory(controller.signal);
+    void loadSettings();
+    void loadState({ force: true });
+    void loadHistory();
 
     let timer: ReturnType<typeof setTimeout> | null = null;
     const schedule = (delayMs: number) => {
@@ -644,14 +657,13 @@ export default function MonitoringPage() {
 
     const onVisibility = () => {
       if (!document.hidden) {
-        void loadState();
+        void loadState({ force: true });
         void loadHistory();
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       mountedRef.current = false;
-      controller.abort();
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
@@ -695,6 +707,32 @@ export default function MonitoringPage() {
     });
     return list;
   }, [candidates, filterSymbol, filterMode, sortBy]);
+
+  if (!stateLoaded && !stateError) {
+    return (
+      <main className="page-shell space-y-6">
+        <div className="page-heading flex flex-wrap items-start justify-between gap-4 border-b border-bunker-800 pb-5">
+          <div>
+            <div className="flex items-center gap-2">
+              <p className="eyebrow text-neon-green">OTONOM PİYASA RADARI</p>
+              <LivenessBadge lastScanAt={null} loading={true} />
+            </div>
+            <h1 className="font-mono text-2xl sm:text-3xl font-black text-white mt-1">Radar &amp; Hız Avcısı</h1>
+            <p className="mt-1 text-sm text-bunker-muted max-w-2xl">
+              Piyasadaki en güçlü ivme ve yükselme potansiyeli taşıyan semboller filtrelenir, doğrulanmış fırsatlar anlık olarak listelenir ve bildirilir.
+            </p>
+          </div>
+        </div>
+
+        <AppLoader
+          variant="radar"
+          label="OTONOM PİYASA RADARI SENKRONİZE EDİLİYOR…"
+          sublabel="Tüm Binance TR işlem çiftleri derinlik, hacim, ATR ve momentum filtrelerinden geçiriliyor"
+          minHeight="min-h-[55vh]"
+        />
+      </main>
+    );
+  }
 
   return (
     <main className="page-shell space-y-6">
@@ -773,7 +811,7 @@ export default function MonitoringPage() {
             ⚠ {stateError ?? settingsError}
             {lastUpdatedAt != null && <span className="text-bunker-muted text-xs"> (Son okuma: {fmtDateTime(lastUpdatedAt)})</span>}
           </p>
-          <button type="button" onClick={() => { void loadSettings(); void loadState(); }} className="ui-button ui-button-secondary text-xs py-1 px-3">YENİDEN DENE</button>
+          <button type="button" onClick={() => { void loadSettings(); void loadState({ force: true }); }} className="ui-button ui-button-secondary text-xs py-1 px-3">YENİDEN DENE</button>
         </div>
       )}
 
@@ -1007,7 +1045,19 @@ export default function MonitoringPage() {
               ) : health.loop_active === false ? (
                 <p className="text-sm text-neon-red font-mono">Tarama döngüsü çalışmıyor — otonom tarayıcı durdurulmuş.</p>
               ) : health.system_startup === true ? (
-                <p className="text-sm text-bunker-muted font-mono">Sistem yeni başlatıldı, ilk tarama bekleniyor…</p>
+                <div className="space-y-3 py-4">
+                  <div className="monitoring-radar mx-auto scale-75">
+                    <div className="monitoring-radar-ring monitoring-radar-ring-1" />
+                    <div className="monitoring-radar-ring monitoring-radar-ring-2" />
+                    <div className="monitoring-radar-ring monitoring-radar-ring-3" />
+                    <div className="monitoring-radar-sweep" />
+                    <div className="monitoring-radar-center" />
+                  </div>
+                  <p className="text-sm text-neon-green font-mono font-bold tracking-wide">RADAR AKTİF · İLK PİYASA TARAMASI YÜRÜTÜLÜYOR…</p>
+                  <p className="text-xs text-bunker-muted font-mono max-w-md mx-auto">
+                    Tüm Binance TR çiftleri analiz ediliyor. Kriterleri sağlayan onaylı sinyaller birazdan burada listelenecek.
+                  </p>
+                </div>
               ) : candidates.length === 0 ? (
                 <p className="text-sm text-bunker-muted font-mono">
                   Şu an için eşiği (Skor ≥ {effThreshold != null ? effThreshold : "—"}) geçen aday bulunmuyor. Sistem periyodik olarak taramaya devam ediyor.

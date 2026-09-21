@@ -7,6 +7,7 @@ import NotificationPermissionModal from "./NotificationPermissionModal";
 import PushOnboardingModal from "./PushOnboardingModal";
 import DisclaimerModal from "./DisclaimerModal";
 import { isMobileDevice } from "../lib/push";
+import AppLoader from "./AppLoader";
 
 type AuthStatus = { configured: boolean; authenticated: boolean; username?: string | null; role?: string | null };
 
@@ -85,7 +86,11 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     <section className="w-full max-w-md rounded-xl border border-bunker-700 bg-bunker-900 p-6 shadow-2xl">
       <p className="eyebrow">SCALPERAGENT · PAPER ONLY</p>
       <h1 className="mt-2 font-mono text-2xl font-bold text-white">Oturum açın</h1>
-      {!status && !error && <p className="mt-4 font-mono text-sm text-bunker-muted">Backend doğrulanıyor…</p>}
+      {!status && !error && (
+        <div className="mt-4">
+          <AppLoader variant="default" label="OTURUM DOĞRULANIYOR…" sublabel="Scalper Agent v4 güvenlik bağlantısı kontrol ediliyor" minHeight="min-h-[160px]" />
+        </div>
+      )}
       {status && !status.configured && <div className="mt-5 rounded-lg border border-neon-red/40 bg-neon-red/10 p-4 text-sm text-neon-red"><strong>Kimlik doğrulama yapılandırılmamış.</strong><p className="mt-2 text-bunker-muted">Backend için SCALPER_ADMIN_PASSWORD ve SCALPER_SESSION_SECRET değerlerini tanımlayın.</p></div>}
       {status?.configured && <form onSubmit={login} className="mt-5 space-y-3">
         <label className="block"><span className="eyebrow">KULLANICI ADI</span><input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required autoFocus className="input mt-2 w-full" placeholder="admin" /></label>
