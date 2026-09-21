@@ -1324,12 +1324,16 @@ async def _deliver_scan_notifications(notified: list) -> None:
         logger.info("Monitoring: sessiz saatlerde %d bildirim push kuyruğuna alındı", len(new_notifs))
         for notif in new_notifs:
             _deferred_push.append(notif)
-    # Otonom Paper Trade: sadece YENI bildirimlerde (güncellemelerde pozisyon
-    # zaten açık veya hiç açılmamış; güncelleme her turda tetiklenir — gereksiz
-    # sorgu + hesaplamayı önlemek için yok sayılır, 2026-09-06).
+    # Otonom Paper Trade: YALNIZCA PUSH İLETİLEN bildirimlerde pozisyon aç.
+    # 2026-09-21 Erkan kararı: sent_via_push=True olmayan sinyaller (PANEL UYARISI)
+    # otonom işlem açmaz — yalnızca kullanıcıya push ulaştığında sistem devreye girer.
     try:
         from app.routers.auto_paper import try_open_from_notification
         for notif in new_notifs:
+            if not notif.get("sent_via_push"):
+                logger.debug("auto_paper atlandı (%s): sent_via_push=False (PANEL UYARISI)",
+                             notif.get("symbol"))
+                continue
             try:
                 await try_open_from_notification(notif)
             except Exception as exc:
@@ -1488,7 +1492,10 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
         notif["push_success"] = False
     try:
         from app.routers.auto_paper import try_open_from_notification
-        await try_open_from_notification(notif)
+        if notif.get("sent_via_push"):
+            await try_open_from_notification(notif)
+        else:
+            logger.debug("fast auto_paper atlandı (%s): sent_via_push=False", sym)
     except Exception as exc:
         logger.debug("fast auto_paper %s: %s", sym, exc)
     try:
@@ -1725,13 +1732,16 @@ async def _rising_deliver(notified: list) -> None:
                         await database.mark_rising_alert_notified(alert_id, False)
                     except Exception as exc:
                         logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
-    # Otonom paper: yalnız yeni sinyaller; skor eşiği GEÇİLMELİ ve anahtar AÇIK.
-    # BİLDİRİM bastırılsa bile OTONOM İŞLEM AÇILMAYA DEVAM EDER (ikisi ayrı).
+    # Otonom paper: YALNIZCA PUSH İLETİLEN sinyallerde. (2026-09-21 Erkan kararı)
+    # sent_via_push=True olmayan yükseliş sinyalleri otonom işlem açmaz.
     if bool(getattr(config, "RISING_AUTONOMOUS_ENABLED", True)):
         min_score = float(getattr(config, "RISING_AUTO_MIN_SCORE", 70) or 0)
         try:
             from app.routers.auto_paper import try_open_from_notification
             for notif in notified:
+                if not notif.get("sent_via_push"):
+                    logger.debug("rising auto_paper atlandı (%s): sent_via_push=False", notif.get("symbol"))
+                    continue
                 if float(notif.get("score") or 0) < min_score:
                     continue
                 try:
@@ -1749,6 +1759,7 @@ async def _rising_deliver(notified: list) -> None:
             pass
         except Exception as exc:
             logger.warning("rising auto_paper toplu deneme hatası: %s", exc)
+
     if unified:
         # Tek tip: yalnızca birincil yükseliş bildirimleri `monitoring_alert`
         # kanalından gider (radar modalı zaten bunu dinler). Bastırılanlar radar'ın
