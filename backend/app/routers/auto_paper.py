@@ -434,6 +434,14 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             notification_id_val = int(raw_nid)
         notification_key = notification.get("notification_key")
 
+        # Master Surge iki kademeli hedefleme:
+        # Eğer bildirimde TP2 koşucu hedefi varsa (+%3-%6.5+), nihai TP hedefi TP2'ye
+        # ayarlanır; TP1 scalp kilidi (+%1.2-%1.8) ise koruma stop'u olarak devralır.
+        tp1_scalp_val = notification.get("tp1_scalp_pct")
+        tp2_runner_val = notification.get("tp2_runner_pct")
+        if tp2_runner_val and float(tp2_runner_val) > target_pct:
+            target_pct = float(tp2_runner_val)
+
         trade_data = {
             "symbol": symbol,
             "side": "LONG",
@@ -450,6 +458,10 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
             "notification_score": notification.get("score"),
             "notification_target_pct": target_pct,
             "notification_expected_price": notification.get("expected_price"),
+            "tp1_scalp_pct": float(tp1_scalp_val) if tp1_scalp_val is not None else None,
+            "tp2_runner_pct": float(tp2_runner_val) if tp2_runner_val is not None else None,
+            "confluence_4way": bool(notification.get("confluence_4way")),
+            "trailing_gap_pct": float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40)) if notification.get("confluence_4way") else None,
             "created_at": now,
             "updated_at": now,
         }
@@ -702,14 +714,30 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     tp_gain_pct = None
     if take_profit is not None and entry_price > 0 and take_profit > entry_price:
         tp_gain_pct = (take_profit - entry_price) / entry_price * 100
-    if tp_gain_pct is not None and dynamic_breakeven_enabled:
-        # Dinamik breakeven TP'ye göre erken tetiklenebilir ancak kâr koruma eşiği
-        # ASLA baz breakeven_trigger_pct'nin üstüne çıkarılamaz (kârın geri verilmesini engeller).
+
+    # Master Surge Dinamik Uyarlanabilir Hedef Kilidi (2026-09-21):
+    # 158 sinyallik testte gözlenen %71 kısmi kazancı (+%1.0-%3.7) korumak için
+    # TP1 seviyesine (+%1.2-%1.8) ulaşıldığında kâr kilidi derhal devreye girer.
+    # Standart (Master Surge olmayan) işlemler gerileme koruması gereği etkilenmez.
+    raw_tp1 = trade.get("tp1_scalp_pct")
+    is_master_surge = bool(trade.get("confluence_4way") or (raw_tp1 is not None and float(raw_tp1) > 0))
+    if is_master_surge:
+        tp1_scalp = float(raw_tp1 or getattr(config, "MASTER_SURGE_TP1_MIN_PCT", 1.2))
+        if gross_pnl_pct >= tp1_scalp:
+            breakeven_trigger_pct = min(breakeven_trigger_pct, tp1_scalp)
+    elif tp_gain_pct is not None and dynamic_breakeven_enabled:
         breakeven_trigger_pct = min(breakeven_trigger_pct, max(0.8, tp_gain_pct * 0.5))
 
     # B4: Narrow breakeven buffer (admin-editable, default 0.02)
     breakeven_buffer_pct = float((settings or {}).get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02)))
-    BREAKEVEN_TRAIL_GAP_PCT = 0.60
+    # Standart taban açıklık %0.60; Master Surge veya özel tanımlı işlemde sıkı takip (%0.40)
+    custom_gap = trade.get("trailing_gap_pct")
+    if custom_gap is not None and float(custom_gap) > 0:
+        BREAKEVEN_TRAIL_GAP_PCT = float(custom_gap)
+    elif is_master_surge:
+        BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40))
+    else:
+        BREAKEVEN_TRAIL_GAP_PCT = 0.60
     # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
     # kontrolü arasında gecikme olmasın.
     current_breakeven_stop = float(trade.get("breakeven_stop") or 0)

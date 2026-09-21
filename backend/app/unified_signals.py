@@ -266,6 +266,24 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
         candidate["unified_sources"] = sources
         candidate["macd_context"] = context
 
+        # Master Surge Engine (Ana Yükselme Potansiyeli Algoritması — 4 Katmanlı Değerlendirme)
+        try:
+            from app import master_surge
+            surge_eval = master_surge.evaluate_master_surge(sym, velocity_candidate=candidate)
+            candidate["master_surge"] = surge_eval
+            if surge_eval.get("confluence_4way"):
+                candidate["confluence_4way"] = True
+                # 4'lü teyit durumunda kompozit indeks skoru güçlendirir
+                comp_idx = float(surge_eval.get("composite_index") or 0)
+                if comp_idx > score:
+                    candidate["unified_score"] = comp_idx
+            if surge_eval.get("adaptive_targets"):
+                candidate["adaptive_targets"] = surge_eval["adaptive_targets"]
+                candidate["tp1_scalp_pct"] = surge_eval["adaptive_targets"].get("tp1_scalp_pct")
+                candidate["tp2_runner_pct"] = surge_eval["adaptive_targets"].get("tp2_runner_pct")
+        except Exception as surge_exc:
+            logger.debug("master surge adayı zenginleştirme %s: %s", sym, surge_exc)
+
     fusion_only: list[dict] = []
     if not enabled():
         return fusion_only
@@ -296,7 +314,7 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
             base_target_pct=float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2),
             panel_score=True,
         )
-        fusion_only.append({
+        cand_dict = {
             "symbol": sym,
             "velocity_score": 0.0,
             "unified_score": score,
@@ -314,7 +332,26 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
             # (±60 sn + hedef) ve MFE ölçümü radar adaylarıyla AYNI yoldan
             # geçer. "uni-" öneki `vel-` ayrıştırıcısında 5dk varsayılır.
             "candidate_id": f"uni-5dk-{int(time.time() * 1000)}-{sym}",
-        })
+        }
+        try:
+            from app import master_surge
+            surge_eval = master_surge.evaluate_master_surge(sym, velocity_candidate=cand_dict, macd_row=row)
+            # Katman 1 (Likidite): Sığ veya yüksek spread'li coin'leri baştan ele
+            if surge_eval.get("failed_layer") == 1:
+                continue
+            cand_dict["master_surge"] = surge_eval
+            if surge_eval.get("confluence_4way"):
+                cand_dict["confluence_4way"] = True
+                comp_idx = float(surge_eval.get("composite_index") or 0)
+                if comp_idx > score:
+                    cand_dict["unified_score"] = comp_idx
+            if surge_eval.get("adaptive_targets"):
+                cand_dict["adaptive_targets"] = surge_eval["adaptive_targets"]
+                cand_dict["tp1_scalp_pct"] = surge_eval["adaptive_targets"].get("tp1_scalp_pct")
+                cand_dict["tp2_runner_pct"] = surge_eval["adaptive_targets"].get("tp2_runner_pct")
+        except Exception as surge_exc:
+            logger.debug("fusion_only master surge %s: %s", sym, surge_exc)
+        fusion_only.append(cand_dict)
     fusion_only.sort(key=lambda c: (-float(c.get("unified_score") or 0), str(c.get("symbol"))))
     return fusion_only
 
@@ -361,7 +398,7 @@ def build_fusion_candidate(symbol: str, kind: str,
             base_target_pct=float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2),
             panel_score=True,
         )
-    return {
+    cand_dict = {
         "symbol": sym,
         "unified_score": score,
         "unified_sources": sources,
@@ -376,6 +413,22 @@ def build_fusion_candidate(symbol: str, kind: str,
         "upside_rank": 0.0,
         "passes": False,
     }
+    try:
+        from app import master_surge
+        surge_eval = master_surge.evaluate_master_surge(sym, velocity_candidate=velocity_candidate)
+        cand_dict["master_surge"] = surge_eval
+        if surge_eval.get("confluence_4way"):
+            cand_dict["confluence_4way"] = True
+            comp_idx = float(surge_eval.get("composite_index") or 0)
+            if comp_idx > score:
+                cand_dict["unified_score"] = comp_idx
+        if surge_eval.get("adaptive_targets"):
+            cand_dict["adaptive_targets"] = surge_eval["adaptive_targets"]
+            cand_dict["tp1_scalp_pct"] = surge_eval["adaptive_targets"].get("tp1_scalp_pct")
+            cand_dict["tp2_runner_pct"] = surge_eval["adaptive_targets"].get("tp2_runner_pct")
+    except Exception as surge_exc:
+        logger.debug("build_fusion_candidate master surge: %s", surge_exc)
+    return cand_dict
 
 
 def sources_text(sources: list[str] | None) -> str:

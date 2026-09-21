@@ -451,6 +451,22 @@ class Config:
     UNIFIED_UPGRADE_MIN_GAIN = float(os.getenv("UNIFIED_UPGRADE_MIN_GAIN", "10.0"))
 
     # ---------------------------------------------------------------------
+    # MASTER SURGE ENGINE (Ana Yükselme Potansiyeli Algoritması — 2026-09-21)
+    # 4 Katmanlı Hibrit Mimari + Dinamik Uyarlanabilir Hedefler (TP1/TP2)
+    # ---------------------------------------------------------------------
+    MASTER_SURGE_ENABLED = os.getenv("MASTER_SURGE_ENABLED", "true").lower() == "true"
+    MASTER_SURGE_MIN_SCORE = float(os.getenv("MASTER_SURGE_MIN_SCORE", "70.0"))
+    MASTER_SURGE_REQUIRE_4WAY = os.getenv("MASTER_SURGE_REQUIRE_4WAY", "true").lower() == "true"
+    MASTER_SURGE_MAX_SPREAD_PCT = float(os.getenv("MASTER_SURGE_MAX_SPREAD_PCT", "0.45"))
+    MASTER_SURGE_MIN_24H_VOLUME_TRY = float(os.getenv("MASTER_SURGE_MIN_24H_VOLUME_TRY", "150000.0"))
+    MASTER_SURGE_MIN_DEPTH_TRY = float(os.getenv("MASTER_SURGE_MIN_DEPTH_TRY", "5000.0"))
+    MASTER_SURGE_TP1_MIN_PCT = float(os.getenv("MASTER_SURGE_TP1_MIN_PCT", "1.2"))
+    MASTER_SURGE_TP1_MAX_PCT = float(os.getenv("MASTER_SURGE_TP1_MAX_PCT", "1.8"))
+    MASTER_SURGE_TP2_MIN_PCT = float(os.getenv("MASTER_SURGE_TP2_MIN_PCT", "3.0"))
+    MASTER_SURGE_TP2_MAX_PCT = float(os.getenv("MASTER_SURGE_TP2_MAX_PCT", "6.5"))
+    MASTER_SURGE_BE_GAP_PCT = float(os.getenv("MASTER_SURGE_BE_GAP_PCT", "0.40"))
+
+    # ---------------------------------------------------------------------
     # SAKLAMA (RETENTION) PENCERELERİ — disk bütçesi (2026-09-16)
     #
     # Sunucu ölçümü: DB 21 GB ama CANLI veri ~1-2 GB; kalanı BUDANMIŞ ama
