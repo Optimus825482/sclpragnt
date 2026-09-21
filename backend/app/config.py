@@ -375,8 +375,8 @@ class Config:
     # `dynamic_target_pct(..., panel_score=False)` çağırır. `strength` (0-10)
     # ölçeğini panel bantlarına/zayıf-skor kelepçesine sokmak A3'te kaldırılan
     # ölçek karışıklığını geri getirirdi (plan §4/R3).
-    # Eski varsayılan 2.0 → 1.5 (2026-09-17, Erkan kararı: replay geometrisi + canlı 50 işlem verisi).
-    RISING_TARGET_PCT = float(os.getenv("RISING_TARGET_PCT", "1.5"))
+    # Varsayılan 2.2 (Net %1.5 + komisyon ve spread maliyet tabanı)
+    RISING_TARGET_PCT = float(os.getenv("RISING_TARGET_PCT", "2.2"))
 
     # ---------------------------------------------------------------------
     # BİRLEŞİK RADAR (2026-09-16) — Hız Avcısı + Yükseliş + Radar tespitleri

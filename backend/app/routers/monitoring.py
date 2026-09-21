@@ -1775,7 +1775,7 @@ async def _run_rising_scan() -> dict:
         # durumundan geçer. `panel_score=False`: sinyal skoru `strength × 10` ile
         # SENTEZLENİR, velocity PANEL skoru değildir → PANEL ölçeğine bağlı bant ve
         # zayıf-skor kelepçesi uygulanmaz (plan §4/R3 ölçek karışımı yasağı).
-        base_target = float(candidate.get("target_pct") or getattr(config, "RISING_TARGET_PCT", 1.5))
+        base_target = float(candidate.get("target_pct") or getattr(config, "RISING_TARGET_PCT", 2.2))
         learned_target = None
         learned_count = 0
         if getattr(config, "MONITORING_TARGET_ADAPTIVE", True):

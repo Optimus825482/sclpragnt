@@ -663,6 +663,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                 ml_pct=ml_target if (ml_target is not None and ml_target > 0) else None,
                 ml_prob=ml_hit_prob if (ml_hit_prob is not None and ml_hit_prob > 0) else None,
                 spread_pct=spread_pct,
+                atr_pct=atr_pct,
             )
             # KAPİ 1 — SpreadGate: spread, hedefin izinli oranını aşıyorsa elenir.
             # Kullanıcı kuralı: "%X hedefte spread+komisyon sonrası net hedef kalmalı";
@@ -1776,29 +1777,21 @@ def dynamic_target_pct(score: float, base_target_pct: float,
                        ml_pct: float | None = None,
                        ml_prob: float | None = None,
                        panel_score: bool = True,
-                       spread_pct: float | None = None) -> float:
-    """Skor bantlı dinamik hedef: yüksek skorlu adaylarda hedef esnetilir.
+                       spread_pct: float | None = None,
+                       atr_pct: float | None = None) -> float:
+    """Skor ve sembol potansiyeline (ATR) dayalı dinamik hedef.
 
-    ``score`` **PANEL** (0-100) ölçeğinde beklenir — çağıran taraf ham
-    ``velocity_score``'u ``_panel_score`` ile normalize etmelidir (R2-01/R3-03).
-    Bantlar ``config.MONITORING_TARGET_SCORE_TIERS`` ('skor:hedef' çiftleri);
-    eşiği karşılayan EN YÜKSEK skor bandı seçilir (girdi sırasından bağımsız;
-    R5-C3.4). Journal'dan öğrenilen sembol hedefi (``learned_pct``) ve ML tahmini
-    (``ml_pct``) İKİ YÖNLÜ uygulanır; yalnızca yukarı çekmez. Düşük güvenli ML
-    tahminleri görmezden gelinir (``ml_prob >= config.ML_TARGET_MIN_PROB``).
+    Komisyon ve Maliyet Garantisi (Kullanıcı Kuralı 2026-09-21):
+    Al-sat komisyonları (iki yönlü ~%0.35) ve alış-satış spread maliyeti (~%0.35)
+    hedefin içine DAHİL EDİLİR; böylece hedefe ulaşıldığında kullanıcıya kalan kâr
+    net olur (Net Kâr Tabanı = Net Hedef + Komisyon + Spread).
 
-    ``panel_score=False`` → skor bir PANEL skoru DEĞİLDİR (ör. yükseliş
-    sinyalinde ``strength × 10`` ile sentezlenen 0-100 skor): PANEL ölçeğine
-    bağlı İKİ kural da atlanır — bant seçimi VE zayıf-skor kelepçesi. Bu ölçek
-    karışımı bilinçli olarak yapılmaz (plan §4/R3). Öğrenilmiş/ML harmanı ile
-    MIN/MAX kelepçesi (maliyet tabanı) yine uygulanır.
-
-    Maliyet tabanı & Net Kâr Garantisi (Kullanıcı Kuralı 2026-09-19):
-    Komisyon (~%0.35) ve spread (~%0.65) toplam maliyeti (~%1.0) düşüldükten SONRA
-    geriye net kâr (config.SCALPING_NET_TARGET_PCT, varsayılan %2.0) kalacak şekilde
-    brüt hedef (TP) hesaplanır (örn. Net %2.0 + %1.0 maliyet = %3.0 brüt hedef).
+    Sembolün Oynaklık Potansiyeli (ATR):
+    Sembolün ATR oranı yüksekse hedef dinamik olarak yukarı esnetilir;
+    düşük volatilitede ise net kâr maliyet tabanında korunur.
     """
     target = float(base_target_pct)
+
     # PANEL ölçeği varsayımı 1/2 — bant seçimi.
     if panel_score:
         matched_threshold: float | None = None
@@ -1807,16 +1800,20 @@ def dynamic_target_pct(score: float, base_target_pct: float,
                 matched_threshold = min_score
                 target = max(target, pct)
 
-    # Net Kâr Tabanı: spread + komisyon maliyeti sonrası net hedefin altında kalmasın
+    # Net Kâr Tabanı: komisyon (%0.35) + spread maliyeti hedefe eklenir
     spr = float(spread_pct) if (spread_pct is not None and float(spread_pct) > 0) else getattr(config, "DEFAULT_ESTIMATED_SPREAD_PCT", 0.65)
     total_cost = round_trip_cost_pct() + spr
     net_target = getattr(config, "SCALPING_NET_TARGET_PCT", 2.0)
-    net_profit_floor = net_target + total_cost
+    net_profit_floor = net_target + total_cost  # örn: 2.0 + 0.35 + 0.65 = %3.00
     target = max(target, net_profit_floor)
 
+    # Sembol Oynaklık Potansiyeli (ATR): Yüksek volatilitede hedef genişler
+    if atr_pct is not None and float(atr_pct) > 0:
+        atr_potential = float(atr_pct) * 1.35
+        target = max(target, atr_potential)
+
     # Öğrenilmiş sembol hedefi: yeterli örnek varsa (>=LEARNED_TARGET_MIN_SAMPLES)
-    # iki yönlü harmanlanır; gerçek MFE'si banttan düşük sembollerde hedefi AŞAĞI
-    # çeker. Ölçüm yalnız gerçek MFE üreten yollardan gelir.
+    # iki yönlü harmanlanır; gerçek MFE'si banttan düşük sembollerde hedefi dengeler.
     if learned_pct and float(learned_pct) > 0 and learned_count >= config.LEARNED_TARGET_MIN_SAMPLES:
         weight = min(0.6, learned_count / 20.0)  # 3 örnekte 0.15, 12 örnekte 0.6
         target = target * (1 - weight) + float(learned_pct) * weight
@@ -1826,10 +1823,13 @@ def dynamic_target_pct(score: float, base_target_pct: float,
         ml_weight = 0.5 if float(ml_prob) >= config.ML_TARGET_HIGH_PROB else 0.25
         target = target * (1 - ml_weight) + float(ml_pct) * ml_weight
 
-    # PANEL ölçeği varsayımı 2/2 — zayıf skor + iddialı hedef kelepçesi:
-    # Çok düşük skorlarda hedefi sınırlar ama yine de maliyet tabanını korur.
+    # PANEL ölçeği varsayımı 2/2 — zayıf skor kelepçesi:
+    # Çok düşük skorlarda aşırı hedefleri sınırlar (en az floor * 0.75).
     if panel_score:
         target = min(target, max(float(score) * 0.3, net_profit_floor * 0.75))
+    else:
+        target = max(target, net_profit_floor)
+
     return round(max(config.MONITORING_TARGET_PCT_MIN,
                      min(config.MONITORING_TARGET_PCT_MAX, target)), 3)
 
