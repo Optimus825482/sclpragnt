@@ -359,6 +359,7 @@ function UserRadarTab() {
   const [day, setDay] = useState<string>(() => localDateInput());
   const [search, setSearch] = useState("");
   const [minScore, setMinScore] = useState<number | null>(null);
+  const [scoreFilter, setScoreFilter] = useState<"system" | "high" | "all">("system");
   const [sortKey, setSortKey] = useState<string>("detected_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(0);
@@ -371,6 +372,11 @@ function UserRadarTab() {
       const params = new URLSearchParams();
       params.set("limit", "1000");
       params.set("day", day);
+      if (scoreFilter === "all") {
+        params.set("min_score", "0");
+      } else if (scoreFilter === "high") {
+        params.set("min_score", "85");
+      }
       const ntRes = await apiRequest(`${API_BASE}/api/reports/notifications?${params}`, { cache: "no-store" });
       const nt = await ntRes.json();
       if (ntRes.ok) {
@@ -391,7 +397,7 @@ function UserRadarTab() {
     } finally {
       setLoading(false);
     }
-  }, [day]);
+  }, [day, scoreFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -529,16 +535,57 @@ function UserRadarTab() {
             )}
           </div>
 
-          <div className="relative">
-            <input
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-              placeholder="Sembol, mod veya durum ara…"
-              className="w-48 sm:w-60 bg-bunker-900 border border-bunker-700 rounded-xl px-3 py-1.5 font-mono text-xs text-white placeholder-bunker-muted focus:border-neon-green/50 outline-none"
-            />
-            {search && (
-              <button type="button" onClick={() => setSearch("")} className="absolute right-2 top-1.5 text-bunker-muted hover:text-white text-xs">✕</button>
-            )}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
+              <button
+                type="button"
+                onClick={() => { setScoreFilter("system"); setPage(0); }}
+                className={`rounded-lg px-2.5 py-1 transition-all ${
+                  scoreFilter === "system"
+                    ? "bg-neon-green/20 text-neon-green font-bold border border-neon-green/40 shadow-sm"
+                    : "text-bunker-muted hover:text-white"
+                }`}
+                title="Yalnızca sistem eşiği (≥70) ve üstü bildirimler"
+              >
+                🎯 Eşik (≥{minScore != null ? Math.round(minScore) : 70})
+              </button>
+              <button
+                type="button"
+                onClick={() => { setScoreFilter("high"); setPage(0); }}
+                className={`rounded-lg px-2.5 py-1 transition-all ${
+                  scoreFilter === "high"
+                    ? "bg-sky-400/20 text-sky-300 font-bold border border-sky-400/40 shadow-sm"
+                    : "text-bunker-muted hover:text-white"
+                }`}
+                title="Yalnızca çok yüksek güvenli (≥85) bildirimler"
+              >
+                🔥 Yüksek (≥85)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setScoreFilter("all"); setPage(0); }}
+                className={`rounded-lg px-2.5 py-1 transition-all ${
+                  scoreFilter === "all"
+                    ? "bg-amber-400/20 text-amber-300 font-bold border border-amber-400/40 shadow-sm"
+                    : "text-bunker-muted hover:text-white"
+                }`}
+                title="Tüm sinyal bildirimlerini göster"
+              >
+                📋 Tümü
+              </button>
+            </div>
+
+            <div className="relative">
+              <input
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+                placeholder="Sembol, mod ara…"
+                className="w-40 sm:w-48 bg-bunker-900 border border-bunker-700 rounded-xl px-3 py-1.5 font-mono text-xs text-white placeholder-bunker-muted focus:border-neon-green/50 outline-none"
+              />
+              {search && (
+                <button type="button" onClick={() => setSearch("")} className="absolute right-2 top-1.5 text-bunker-muted hover:text-white text-xs">✕</button>
+              )}
+            </div>
           </div>
         </div>
 

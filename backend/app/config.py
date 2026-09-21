@@ -205,7 +205,7 @@ class Config:
     #   eski panel 90 (ham 1800)            → yeni panel 74.0  (ham 1792.3)
     #   eski panel 50 (ham 1000)            → yeni panel 68.2  (ham  999.0)
     #   eski panel 10 (ham 200)             → yeni panel 52.4  (ham  200.9)
-    MONITORING_MIN_SCORE_DEFAULT = float(os.getenv("MONITORING_MIN_SCORE_DEFAULT", "71.5"))
+    MONITORING_MIN_SCORE_DEFAULT = float(os.getenv("MONITORING_MIN_SCORE_DEFAULT", "70.0"))
     # velocity_score HAM ölçekte üretilir (formül: atr_ratio × bb_ratio × yapı ×
     # momentum; saturation kaldırıldığından sınırsızdır; ölçülen p50=3.0,
     # p99=159, max=21389). Panel gösterimi yukarıdaki harita ile 0-100'e
@@ -432,7 +432,7 @@ class Config:
     # MACD hızlı yol (jump/dip tetiği): bu füzyon skoru altında BİLDİRİM YOK.
     # 60 sn'lik radar turu ayrıca kendi kapısıyla değerlendirir; bu eşik yalnız
     # tur arası ERKEN bildirim içindir (erken sıçrama avantajı).
-    UNIFIED_FAST_MIN_SCORE = float(os.getenv("UNIFIED_FAST_MIN_SCORE", "55"))
+    UNIFIED_FAST_MIN_SCORE = float(os.getenv("UNIFIED_FAST_MIN_SCORE", "70.0"))
     # Hızlı yol sembol cooldown'ı (sn, monotonik) — aynı sembol için fırtına yok.
     UNIFIED_FAST_COOLDOWN_SEC = max(60, int(os.getenv("UNIFIED_FAST_COOLDOWN_SEC", "1800")))
     # Füzyon-tek adayları (velocity kapısını geçemeyip dip/jump ile öne çıkanlar)
