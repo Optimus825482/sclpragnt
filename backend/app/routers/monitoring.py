@@ -199,9 +199,11 @@ async def _persist_runtime_state() -> None:
             "notified_prices": _monitoring_state["notified_prices"],
             "refire_blocked": int(_monitoring_state.get("refire_blocked", 0)),
             "refire_min_move_pct": MONITORING_REFIRE_MIN_MOVE_PCT,
-            "notified_prices": _monitoring_state["notified_prices"],
-            "refire_blocked": int(_monitoring_state.get("refire_blocked", 0)),
             "rr_blocked": int(_monitoring_state.get("rr_blocked", 0)),
+            # P1-5.10: MACD histerezis kapısının restart sonrası çalışması için
+            # son bildirim skorları kalıcılaştırılır (eskiden kayboluyordu →
+            # restart sonrası tüm semboller "yeni" sayılıp tekrar bildirim üretiyordu).
+            "notified_scores": _monitoring_state.get("notified_scores", {}),
             "risk_off": bool(_monitoring_state["risk_off"]),
             # M1/P2 (R4-11): rejim "BİLİNMİYOR" bayrağı da kalıcılaştırılır.
             "risk_off_unknown": bool(_monitoring_state.get("risk_off_unknown", False)),
@@ -233,6 +235,9 @@ async def restore_runtime_state() -> None:
                 _monitoring_state["notified_prices"] = payload.get("notified_prices") or {}
                 _monitoring_state["refire_blocked"] = int(payload.get("refire_blocked", 0) or 0)
                 _monitoring_state["rr_blocked"] = int(payload.get("rr_blocked", 0) or 0)
+                # P1-5.10: MACD histerezis kapısının restart sonrası çalışması için
+                # son bildirim skorları geri yüklenir.
+                _monitoring_state["notified_scores"] = payload.get("notified_scores") or {}
                 _monitoring_state["risk_off"] = bool(payload.get("risk_off", False))
                 # M1/P2 (R4-11): BİLİNMİYOR bayrağı geri yüklenir (restart sonrası
                 # ilk taramaya kadar "rejim biliniyor" yanılsaması olmasın).
@@ -1413,7 +1418,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
             "horizon_minutes": int(candidate.get("horizon_minutes") or 5),
             "set_at": time.time(),
         }
-    unified_signals.note_notified(sym)
+    unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
     # Kalıcı kayıt (rapor/günlük takip sayfası buradan okur).
     await _record_history([notif])
     # BİRLEŞİK SİNYAL: Bu bildirimin gerçek MFE ve hedefe dokunuşunu ölçebilmek için
