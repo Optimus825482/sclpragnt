@@ -165,6 +165,16 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                         symbol, score, min_score)
             return None
 
+        # Sinyal teyit / gürültü filtresi (P1 - 2026-09-21 Erkan kararı):
+        # Çoklu gösterge teyitlerinde 3'lü teyit ve altındaki sinyallere pozisyon AÇILMAZ.
+        # Yalnızca 4 bağımsız algoritmanın (velocity + jump + early + rising)
+        # tam mutabakat sağladığı 4'lü teyit sinyallerine otonom alım yapılır.
+        sources = notification.get("sources")
+        if sources is not None and isinstance(sources, list) and 1 < len(sources) < 4:
+            logger.info("auto_paper %s: teyit sayısı %d < 4 — yalnızca 4'lü teyit işleme alınır, açılmadı",
+                        symbol, len(sources))
+            return _blocked(symbol, "low_confluence", sources_count=len(sources))
+
         # R3-08 (P1): aday PANEL EŞİĞİNİ geçmiş olmalı (passing-only). Monitoring
         # yalnızca passing adayları bildirir; burada `passes` bayrağı açıkça False
         # erse giriş engellenir. Guard (koruma) metriği kanıtlarsa engellenmez;
@@ -654,14 +664,16 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
     breakeven_activated = bool(trade.get("breakeven_activated", False))
     gross_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
 
-    # B2: Dynamic profit-lock triggers tied to TP target
-    dynamic_breakeven_enabled = bool((settings or {}).get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", True)))
-    dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", True)))
+    # B2: Dynamic profit-lock triggers tied to TP target (Tavan korumalı)
+    dynamic_breakeven_enabled = bool((settings or {}).get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False)))
+    dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False)))
     tp_gain_pct = None
     if take_profit is not None and entry_price > 0 and take_profit > entry_price:
         tp_gain_pct = (take_profit - entry_price) / entry_price * 100
     if tp_gain_pct is not None and dynamic_breakeven_enabled:
-        breakeven_trigger_pct = max(breakeven_trigger_pct, tp_gain_pct * 0.7)
+        # Dinamik breakeven TP'ye göre erken tetiklenebilir ancak kâr koruma eşiği
+        # ASLA baz breakeven_trigger_pct'nin üstüne çıkarılamaz (kârın geri verilmesini engeller).
+        breakeven_trigger_pct = min(breakeven_trigger_pct, max(0.8, tp_gain_pct * 0.5))
 
     # B4: Narrow breakeven buffer (admin-editable, default 0.02)
     breakeven_buffer_pct = float((settings or {}).get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02)))
@@ -704,9 +716,9 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         trailing_trigger_pct = float((settings or {}).get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT))
         trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT))
 
-        # B2: Dynamic trailing trigger tied to TP target
+        # B2: Dynamic trailing trigger tied to TP target (Tavan korumalı)
         if tp_gain_pct is not None and dynamic_trailing_enabled:
-            trailing_trigger_pct = max(trailing_trigger_pct, tp_gain_pct * 0.8)
+            trailing_trigger_pct = min(trailing_trigger_pct, max(1.2, tp_gain_pct * 0.6))
 
         # B3: Dynamic trailing gap compatible with TP
         if tp_gain_pct is not None and gross_pnl_pct >= tp_gain_pct * 0.9:
@@ -968,8 +980,8 @@ async def get_default_settings() -> dict:
         "trailing_gap_pct": config.AUTO_PAPER_TRAILING_GAP_PCT,
         "reopen_after_protect_close": config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE,
         "tp_primary_exit_enabled": getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", True),
-        "dynamic_breakeven_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", True),
-        "dynamic_trailing_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", True),
+        "dynamic_breakeven_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False),
+        "dynamic_trailing_enabled": getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False),
         "breakeven_buffer_pct": getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02),
         "max_open_positions": config.AUTO_PAPER_MAX_OPEN_POSITIONS,
     }
@@ -1026,8 +1038,8 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "trailing_gap_pct": max(0.1, min(0.6, float(merged.get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT)))),
         "reopen_after_protect_close": bool(merged.get("reopen_after_protect_close", config.AUTO_PAPER_REOPEN_AFTER_PROTECT_CLOSE)),
         "tp_primary_exit_enabled": bool(merged.get("tp_primary_exit_enabled", getattr(config, "AUTO_PAPER_TP_PRIMARY_ENABLED", True))),
-        "dynamic_breakeven_enabled": bool(merged.get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", True))),
-        "dynamic_trailing_enabled": bool(merged.get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", True))),
+        "dynamic_breakeven_enabled": bool(merged.get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False))),
+        "dynamic_trailing_enabled": bool(merged.get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False))),
         "breakeven_buffer_pct": max(0.01, min(0.5, float(merged.get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02))))),
         # D-11/Erkan (2026-09-18): UI'dan değiştirilebilir global maksimum açık
         # pozisyon. 1..30 aralığı; 0'a izin verilmez (yanlışlıkla sınırsız

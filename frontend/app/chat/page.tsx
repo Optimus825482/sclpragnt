@@ -10,6 +10,7 @@ import { useLiveMessages } from "../lib/liveSocket";
 import Link from "next/link";
 import { Badge, Button, Card } from "../components/ui";
 import { useAuth } from "../lib/auth";
+import AppLoader from "../components/AppLoader";
 
 type ScoutCandidate = {
   symbol: string;
@@ -959,9 +960,13 @@ function ChatPageInner() {
             })}
 
             {busy && (
-              <div className="chat-thinking flex items-center gap-2 text-xs font-mono text-amber-300 py-1">
-                <span className="status-dot animate-pulse" />
-                <span>Model yanıtı hazırlanıyor…</span>
+              <div className="my-3 transition-all duration-300">
+                <AppLoader
+                  variant="card"
+                  label="SCALPER AI YANITI HAZIRLANIYOR…"
+                  sublabel="Piyasa verileri, teknik seviyeler ve emir defteri derinliği analiz ediliyor"
+                  className="!p-6 !bg-bunker-900/80 border-emerald-500/30"
+                />
               </div>
             )}
 

@@ -236,34 +236,25 @@ class AutoPaperExitLadderTests(unittest.IsolatedAsyncioTestCase):
         reasons = [c.args[4] for c in close.await_args_list] if close.await_count else []
         self.assertNotIn("take_profit", reasons, "kapalıyken TP kullanılmamalı")
 
-    # ---- B2: koruma hedefe bağlı gecikir ---------------------------------
+    # ---- B2: koruma tavan korumalıdır (2026-09-21 düzeltmesi) ------------
     async def test_breakeven_trigger_deferred_to_tp_fraction(self):
-        """Hedef %4 → breakeven eşiği max(1.5, 4.0×0.7)=%2.8; altında devreye girmez."""
+        """Hedef %4 → 2026-09-21: breakeven kâr korumayı geciktirmez; +%2.0'de kilitler."""
         trade = self._trade()  # tp_gain = 4.0
-        _, be, _ = await self._manage(trade, 102.0, {})  # gross +2.0 < 2.8
-        be.assert_not_awaited()
-
-        trade = self._trade()
-        _, be, _ = await self._manage(trade, 102.9, {})  # gross +2.9 >= 2.8
+        _, be, _ = await self._manage(trade, 102.0, {})  # gross +2.0 >= 1.5 baz eşik
         be.assert_awaited()
 
     async def test_breakeven_trigger_is_not_deferred_when_dynamic_disabled(self):
-        """`dynamic_breakeven_enabled=false` → eski sabit eşik (%1.5) geçerli."""
+        """`dynamic_breakeven_enabled=false` → sabit eşik (%1.5) geçerli."""
         trade = self._trade()
         _, be, _ = await self._manage(
             trade, 102.0, {"dynamic_breakeven_enabled": False})
         be.assert_awaited()
 
     async def test_trailing_trigger_deferred_to_tp_fraction(self):
-        """Hedef %4 → trailing eşiği max(2.0, 4.0×0.8)=%3.2; altında devreye girmez."""
+        """Hedef %4 → trailing 2026-09-21 güncellemesi ile tavan korumalıdır (gecikmez)."""
         trade = self._trade()
         _, _, trail = await self._manage(
-            trade, 102.5, {"trailing_enabled": True})  # gross +2.5 < 3.2
-        trail.assert_not_awaited()
-
-        trade = self._trade()
-        _, _, trail = await self._manage(
-            trade, 103.7, {"trailing_enabled": True})  # gross +3.7 >= 3.2
+            trade, 102.5, {"trailing_enabled": True})  # gross +2.5 >= 2.0 (tavan korumalı)
         trail.assert_awaited()
 
     # ---- B3: gap TP'ye yaklaşırken daralır --------------------------------

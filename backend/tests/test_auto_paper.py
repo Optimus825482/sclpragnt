@@ -232,5 +232,30 @@ class AutoPaperOpenPositionTpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], self.calls)
 
 
+class AutoPaperConfluenceAndProtectionTests(unittest.IsolatedAsyncioTestCase):
+    """Teyit filtresi ve kâr koruma tavanı birim testleri (2026-09-21)."""
+
+    async def test_low_confluence_below_4_blocked(self):
+        """Teyit sayısı < 4 olan sinyallerde pozisyon açılmamalı (yalnızca 4'lü teyit)."""
+        notif = _make_notification(symbol="LOWCONF", score=88.0)
+        notif["sources"] = ["velocity", "jump", "early"]  # 3'lü teyit
+        res = await auto_paper.try_open_from_notification(notif)
+        self.assertIsNotNone(res)
+        self.assertEqual(res.get("status"), "blocked")
+        self.assertEqual(res.get("reason"), "low_confluence")
+
+    async def test_confluence_4_allowed_with_normal_score(self):
+        """4'lü teyit olduğunda min_score üzerindeki sinyal teyit filtresine takılmaz."""
+        notif = _make_notification(symbol="FOURCONF", score=75.0)
+        notif["sources"] = ["velocity", "jump", "early", "rising"]  # 4'lü teyit
+        orig_fresh = auto_paper.market.ticker_freshness
+        auto_paper.market.ticker_freshness = lambda sym, max_age_sec=None: {"fresh": False}
+        try:
+            res = await auto_paper.try_open_from_notification(notif)
+            self.assertNotEqual(res.get("reason") if res else None, "low_confluence")
+        finally:
+            auto_paper.market.ticker_freshness = orig_fresh
+
+
 if __name__ == "__main__":
     unittest.main()
