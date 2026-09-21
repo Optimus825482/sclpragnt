@@ -139,7 +139,7 @@ export default function ChartAssistantDrawer({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-[95] flex flex-col w-[94vw] sm:w-[440px] h-[600px] max-h-[85vh] rounded-2xl border border-cyan-500/40 bg-bunker-950/95 backdrop-blur-md shadow-2xl shadow-cyan-950/50 overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200">
+    <div className="fixed bottom-16 md:bottom-4 right-3 md:right-4 z-[95] flex flex-col w-[94vw] sm:w-[440px] h-[580px] max-h-[75vh] md:max-h-[85vh] rounded-2xl border border-cyan-500/40 bg-bunker-950/95 backdrop-blur-md shadow-2xl shadow-cyan-950/50 overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-200">
       {/* Üst Başlık Çubuğu */}
       <div className="flex items-center justify-between border-b border-bunker-800/80 bg-bunker-900/60 px-4 py-3 shrink-0">
         <div className="flex items-center gap-2.5 min-w-0">
