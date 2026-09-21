@@ -997,6 +997,8 @@ async def startup_services():
     _start_background(strategy_loop, "strategy-loop")
     # Canlı Hesap açık pozisyonları: WS fiyat + 24s hacim tick'leri (4 sn)
     _start_background(binance_price_tick_loop, "binance-price-tick")
+    # Binance TR hesap + pozisyon verisi: 15 sn'de bir WS push (REST polling yerine)
+    _start_background(binance_account_push_loop, "binance-account-push")
     _start_background(llm_forecast_evaluation_loop, "llm-forecast-evaluator")
     _start_background(chart_forecast_evaluation_loop, "chart-forecast-evaluator")
     _start_background(chat_prediction_learning_loop, "chat-prediction-learner")
@@ -2314,6 +2316,100 @@ async def _binance_ticks_configured() -> bool:
     return ok
 
 
+async def binance_account_push_loop():
+    """Binance TR hesap + pozisyon verisini 15 sn'de bir WS ile tüm istemcilere push eder.
+
+    REST polling yerine (her sekme 10 sn'de bir istek → rate limit 502):
+    Tek sunucu-tarafı istek → ws_manager.broadcast → tüm açık sekmeler anında güncellenir.
+    Bağlı WS istemcisi yokken broadcast no-op'tur; ağ hatası döngüyü öldürmez.
+    """
+    await asyncio.sleep(25)  # startup bitmeden bekleme
+    while True:
+        try:
+            if not ws_manager.active_connections:
+                await asyncio.sleep(15)
+                continue
+            # Tüm aktif kullanıcıları al
+            users = [u for u in await database.list_users() if u.get("is_active")]
+            for user in users:
+                try:
+                    user_id = int(user["id"])
+                    username = str(user.get("username") or "")
+                    enc = await database.get_llm_setting(f"binance_api_key_{username}", "")
+                    if not enc:
+                        continue
+                    # Şifrelenmiş anahtarları çöz
+                    from app.llm_utils import decrypt_value
+                    api_key = decrypt_value(enc)
+                    enc_sec = await database.get_llm_setting(f"binance_api_secret_{username}", "")
+                    api_secret = decrypt_value(enc_sec) if enc_sec else ""
+                    if not api_key:
+                        continue
+                    # Bakiye
+                    balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
+                    non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
+                    # Önbelleği de güncelle (REST fallback için)
+                    _binance_account_cache[api_key] = (time.time() + _BINANCE_ACCOUNT_CACHE_TTL, non_zero)
+                    # Pozisyonlar — fiyat tablosu
+                    held = []
+                    for b in balances:
+                        free = float(b.get("free", 0) or 0)
+                        locked = float(b.get("locked", 0) or 0)
+                        total = free + locked
+                        if total <= 0:
+                            continue
+                        asset = str(b.get("asset") or "").upper()
+                        if asset:
+                            held.append({"asset": asset, "free": free, "locked": locked, "total": total})
+                    candidates: list[str] = []
+                    for h in held:
+                        if h["asset"] != "TRY":
+                            candidates.extend([f"{h['asset']}TRY", f"{h['asset']}USDT"])
+                    if any(h["asset"] == "USDT" for h in held):
+                        candidates.append("USDTTRY")
+                    price_by_symbol: dict[str, float] = {}
+                    for i in range(0, len(candidates), 50):
+                        try:
+                            rows = await binance_tr_public.ticker_price(candidates[i:i + 50])
+                            for row in rows if isinstance(rows, list) else []:
+                                try:
+                                    price_by_symbol[str(row.get("symbol") or "").upper()] = float(row.get("price") or 0)
+                                except (TypeError, ValueError):
+                                    continue
+                        except Exception:
+                            pass
+                    usdt_try = price_by_symbol.get("USDTTRY", 0.0)
+                    holdings_ws = []
+                    for h in held:
+                        asset = h["asset"]
+                        if asset == "TRY":
+                            holdings_ws.append({**h, "price_try": 1.0, "value_try": h["total"], "pnl_try": None, "pnl_pct": None})
+                            continue
+                        price = price_by_symbol.get(f"{asset}TRY") or (
+                            (price_by_symbol.get(f"{asset}USDT", 0) * usdt_try) if usdt_try else 0)
+                        value_try = round(price * h["total"], 4) if price else None
+                        holdings_ws.append({**h, "price_try": price or None, "value_try": value_try, "pnl_try": None, "pnl_pct": None})
+                    # WS broadcast — user_id ile istemci filtresi (ileride; şimdi broadcast)
+                    await ws_manager.broadcast({
+                        "type": "binance_account_update",
+                        "data": {
+                            "user_id": user_id,
+                            "balances": non_zero,
+                            "holdings": holdings_ws,
+                            "time": time.time(),
+                        }
+                    })
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("binance_account_push kullanıcı %s: %s", user.get("username"), exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("binance_account_push_loop hata: %s", exc)
+        await asyncio.sleep(15)
+
+
 async def binance_price_tick_loop():
     """Canlı Hesap açık pozisyonları için WS fiyat + 24s hacim tick'leri (4 sn).
 
@@ -2537,15 +2633,30 @@ async def _decrypt_binance_creds(request) -> tuple[str, str]:
 
     raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış — Ayarlar'dan kendi API anahtarlarınızı girin")
 
+
+# Hesap bakiyesi önbelleği: (api_key → (expire_ts, payload))
+# Binance TR rate limit'ten kaynaklanan aralıklı 502'leri önler.
+_binance_account_cache: dict[str, tuple[float, list]] = {}
+_BINANCE_ACCOUNT_CACHE_TTL = 30.0  # saniye
+
 @app.get("/api/binance/account")
 async def binance_account(request: Request):
     """Binance TR hesap bakiyesi (salt okunur, oturum açmış kullanıcı)."""
     api_key, api_secret = await _decrypt_binance_creds(request)
+    now_ts = time.time()
+    cached = _binance_account_cache.get(api_key)
+    if cached and cached[0] > now_ts:
+        return {"balances": cached[1], "cached": True}
     try:
         balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
         non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
+        _binance_account_cache[api_key] = (now_ts + _BINANCE_ACCOUNT_CACHE_TTL, non_zero)
         return {"balances": non_zero}
     except Exception as exc:
+        # Önbellekte eski veri varsa döndür (geçici Binance hatası)
+        if cached:
+            logger.warning("Binance TR hesap bilgisi alınamadı, önbellek kullanılıyor: %s", exc)
+            return {"balances": cached[1], "cached": True, "stale": True}
         raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
 
 @app.get("/api/binance/positions")
@@ -2562,9 +2673,17 @@ async def binance_positions(request: Request):
         raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
     user_id = int(user["id"])
     api_key, api_secret = await _decrypt_binance_creds(request)
+    now_ts = time.time()
+    _pos_cache_key = (api_key, user_id)
+    _pos_cached = getattr(app.state, "_binance_positions_cache", {}).get(_pos_cache_key)
+    if _pos_cached and _pos_cached[0] > now_ts:
+        return {"holdings": _pos_cached[1], "cached": True}
     try:
         balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
     except Exception as exc:
+        if _pos_cached:
+            logger.warning("Binance TR hesap bilgisi alınamadı, pozisyon önbelleği kullanılıyor: %s", exc)
+            return {"holdings": _pos_cached[1], "cached": True, "stale": True}
         raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
     holdings: list[dict] = []
     held = []
@@ -2670,7 +2789,12 @@ async def binance_positions(request: Request):
         h["active_tp_price"] = float(tp_order.get("price")) if tp_order else None
 
     holdings.sort(key=lambda h: (h["value_try"] is None, -(h["value_try"] or 0)))
-    return {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
+    result_payload = {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
+    # Önbelleğe kaydet
+    if not hasattr(app.state, "_binance_positions_cache"):
+        app.state._binance_positions_cache = {}
+    app.state._binance_positions_cache[_pos_cache_key] = (time.time() + _BINANCE_ACCOUNT_CACHE_TTL, holdings)
+    return result_payload
 
 
 def _avg_buy_cost(user_id: int, api_key: str, api_secret: str, asset: str, symbol_concat: str, now: float) -> dict | None:
