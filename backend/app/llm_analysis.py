@@ -94,6 +94,7 @@ OUTPUT_RULES = """ÇIKTI BİÇİMİ KURALLARI:
 - Açık mumdan sinyal üretme; teyit kapanışını bekle. Chop/range ortasında ve "no man's land" bölgelerinde setup skorunu düşür veya `watch/avoid` de.
 - Kırılımı kapanış teyidi olmadan onaylama; false-break/fakey ile gerçek breakout'u ayır ve belirsizliği açıkça belirt.
 - Kullanıcı işlem fikri istediğinde giriş bölgesi, teyit, invalidasyon/stop, hedef, risk ve güven seviyesini doğrudan ver.
+- KARŞIT TEZ / BOĞA-AYI DEBAT KURALI (ADVERSARIAL THESIS): Analiz yaparken körlemesine tek taraflı iyimserlikten veya aşırı kötümserlikten kaçın; iki zıt tezi açıkça tart: (1) Boğa Tezi: Yükselişi ne destekliyor? (Alıcı baskısı, derinlik desteği, vadeli açık pozisyon artışı, dip dönüşü). (2) Ayı / Tuzak Tezi: Yükselişi ne tehdit ediyor? (Aşırı kalabalık long tasfiye riski / yüksek fonlama oranı, Bitcoin ani gerilemesi/panik satışı, derinlikte satış duvarı, hacimsiz fakey kırılım). (3) Hakem Kararı: Bu iki karşıt tezi çarpıştırarak net, dengeli ve gerekçeli tek bir karar ver (Uygun Giriş / Pusu / Riskli / Bekle).
 - Kullanıcı özellikle istemedikçe "yatırım tavsiyesi değildir", "garanti verilemez", "her öneriyi uygulamayın" gibi tekrarlayan sorumluluk uyarıları ekleme. Belirsizliği ayrı bir uyarı cümlesiyle değil, senaryo olasılığı, karşı kanıt ve invalidasyon seviyesiyle göster.
 """
 
@@ -558,6 +559,22 @@ async def embedding(text, model_id=None):
     except Exception as exc:
         return {"status":"error", "error":str(exc), "model":model.get("name")}
 
+def _build_plain_turkish_instruction():
+    return (
+        "\n\n🚨 ÖNEMLİ KURAL (KESİNLİKLE UYULACAK): KULLANICIYA YANIT VERİRKEN KESİNLİKLE HİÇBİR TEKNİK TERİM VEYA KISALTMA KULLANMA!\n"
+        "RSI, MACD, Bollinger, EMA, SMA, ATR, CVD, MFE, MAE, Keltner, Stokastik, Fibonacci, Orderbook Imbalance, Funding Rate, Open Interest gibi teknik terimler KESİNLİKLE YASAKTIR.\n"
+        "Bunun yerine tamamen günlük, anlaşılır, yatırımcı diliyle konuş:\n"
+        "- Göstergelerin sayısal değerlerini ve kod adlarını ASLA yazma (örneğin 'RSI 65' yerine 'fiyat son dönemde oldukça hızlı yükselmiş, dinlenme ihtiyacı var' de).\n"
+        "- 'MACD pozitif kesişti' yerine 'fiyatın yukarı yönlü tırmanma isteği güçleniyor' de.\n"
+        "- 'CVD whale alımı' yerine 'büyük cüzdanlar ve yüklü alıcılar piyasaya giriyor, satışları eritiyor' de.\n"
+        "- 'Bollinger sıkışması' yerine 'fiyat yay gibi gerilmiş, sert bir hareket hazırlığında' de.\n"
+        "- 'Funding rate yüksek / crowded long' yerine 'vadeli piyasada herkes aynı yöne aşırı yüklenmiş, ani bir silkeleme ve düzeltme riski var' de.\n"
+        "- 'Orderbook buyer pressure' yerine 'emir tahtasında alıcılar güçlü bir baraj kurmuş, satıcıları karşılıyor' de.\n"
+        "- 'Bitcoin panic dump' yerine 'lider kripto para Bitcoin sert geriliyor, piyasanın genelini de aşağı çekebilir' de.\n"
+        "- Boğa ve Ayı tezlerini sade dille 'Alıcıların Gücü' ve 'Olası Tuzaklar/Riskler' olarak tartıp sonuca bağla.\n"
+        "- Kullanıcıya doğrudan karar aldıracak netlikte; yön, alıcı gücü, tahmin motorlarının genel beklentisi ve risk durumunu sade Türkçe ile özetle.\n"
+    )
+
 async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None, *, json_mode=False, max_tokens=None):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
@@ -565,16 +582,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"] and (not selected or str(s["id"]) in selected or s["name"] in selected))
     plain_turkish_instruction = ""
     if isinstance(snapshot, dict) and snapshot.get("plain_turkish"):
-        plain_turkish_instruction = (
-            "\n\n🚨 ÖNEMLİ KURAL (KESİNLİKLE UYULACAK): KULLANICIYA YANIT VERİRKEN KESİNLİKLE HİÇBİR TEKNİK TERİM VEYA KISALTMA KULLANMA!\n"
-            "RSI, MACD, Bollinger, EMA, SMA, ATR, CVD, MFE, MAE, Keltner, Stokastik, Fibonacci, Orderbook Imbalance gibi teknik terimler KESİNLİKLE YASAKTIR.\n"
-            "Bunun yerine tamamen günlük, anlaşılır, yatırımcı diliyle konuş:\n"
-            "- Göstergelerin sayısal değerlerini ve kod adlarını ASLA yazma (örneğin 'RSI 65' yerine 'fiyat son dönemde oldukça hızlı yükselmiş, dinlenme ihtiyacı var' de).\n"
-            "- 'MACD pozitif kesişti' yerine 'fiyatın yukarı yönlü tırmanma isteği güçleniyor' de.\n"
-            "- 'CVD whale alımı' yerine 'büyük cüzdanlar ve yüklü alıcılar piyasaya giriyor, satışları eritiyor' de.\n"
-            "- 'Bollinger sıkışması' yerine 'fiyat yay gibi gerilmiş, sert bir hareket hazırlığında' de.\n"
-            "- Kullanıcıya doğrudan karar aldıracak netlikte; yön, alıcı gücü, tahmin motorlarının genel beklentisi ve risk durumunu sade Türkçe ile özetle.\n"
-        )
+        plain_turkish_instruction = _build_plain_turkish_instruction()
     system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Kullanıcı bir coin için analiz istediğinde gösterge değerlerini tek tek sıralayıp onu boğma ama gerekçesiz de bırakma: kompakt bir analiz yaz — 'şu an ne oluyor', 'bundan sonra ne olabilir' (yön + seviye + bozulma), 'kısaca neden' ve tek cümlelik sonuç. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills + plain_turkish_instruction
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + _compact_json_dumps(snapshot)}]
     context_messages, _estimated_tokens = _context_window_messages(messages)
@@ -828,16 +836,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
     skills = "\n\n".join(s["instructions"] for s in cfg["skills"] if s["enabled"])
     plain_turkish_instruction = ""
     if isinstance(snapshot, dict) and snapshot.get("plain_turkish"):
-        plain_turkish_instruction = (
-            "\n\n🚨 ÖNEMLİ KURAL (KESİNLİKLE UYULACAK): KULLANICIYA YANIT VERİRKEN KESİNLİKLE HİÇBİR TEKNİK TERİM VEYA KISALTMA KULLANMA!\n"
-            "RSI, MACD, Bollinger, EMA, SMA, ATR, CVD, MFE, MAE, Keltner, Stokastik, Fibonacci, Orderbook Imbalance gibi teknik terimler KESİNLİKLE YASAKTIR.\n"
-            "Bunun yerine tamamen günlük, anlaşılır, yatırımcı diliyle konuş:\n"
-            "- Göstergelerin sayısal değerlerini ve kod adlarını ASLA yazma (örneğin 'RSI 65' yerine 'fiyat son dönemde oldukça hızlı yükselmiş, dinlenme ihtiyacı var' de).\n"
-            "- 'MACD pozitif kesişti' yerine 'fiyatın yukarı yönlü tırmanma isteği güçleniyor' de.\n"
-            "- 'CVD whale alımı' yerine 'büyük cüzdanlar ve yüklü alıcılar piyasaya giriyor, satışları eritiyor' de.\n"
-            "- 'Bollinger sıkışması' yerine 'fiyat yay gibi gerilmiş, sert bir hareket hazırlığında' de.\n"
-            "- Kullanıcıya doğrudan karar aldıracak netlikte; yön, alıcı gücü, tahmin motorlarının genel beklentisi ve risk durumunu sade Türkçe ile özetle.\n"
-        )
+        plain_turkish_instruction = _build_plain_turkish_instruction()
     system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme. Coin analizinde kullanıcıyı gösterge detayıyla boğma ama gerekçesiz bırakma: önce durumu, sonra olası senaryoları (yön + seviye + bozulma), sonra tek neden cümlesi, en sonda net sonucu söyle.\n" + skills + plain_turkish_instruction
     conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Güncel snapshot:\n" + _compact_json_dumps(snapshot)}]
     for item in (messages or [])[-12:]:
