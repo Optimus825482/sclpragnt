@@ -242,29 +242,40 @@ function BinanceTrPageInner() {
   }, []);
 
   useLiveMessages((message) => {
-    if (message?.type !== "binance_price") return;
-    const d = message.data as { ticks?: Record<string, LiveTick>; time?: number } | null;
-    if (!d?.ticks) return;
-    const dirs: Record<string, "up" | "down"> = {};
-    for (const [asset, t] of Object.entries(d.ticks)) {
-      const price = Number(t.price || 0);
-      if (!price) continue;
-      const old = pricesRef.current[asset];
-      if (old) dirs[asset] = price >= old ? "up" : "down";
-      pricesRef.current[asset] = price;
+    // Canlı fiyat tick'leri
+    if (message?.type === "binance_price") {
+      const d = message.data as { ticks?: Record<string, LiveTick>; time?: number } | null;
+      if (d?.ticks) {
+        const dirs: Record<string, "up" | "down"> = {};
+        for (const [asset, t] of Object.entries(d.ticks)) {
+          const price = Number(t.price || 0);
+          if (!price) continue;
+          const old = pricesRef.current[asset];
+          if (old) dirs[asset] = price >= old ? "up" : "down";
+          pricesRef.current[asset] = price;
+        }
+        const prevPending = pendingTicksRef.current;
+        pendingTicksRef.current = {
+          ticks: { ...(prevPending?.ticks || {}), ...d.ticks },
+          dirs: { ...(prevPending?.dirs || {}), ...dirs },
+        };
+        if (typeof document !== "undefined" && document.hidden) return;
+        if (!throttleTimerRef.current) {
+          throttleTimerRef.current = setTimeout(flushTicks, 120);
+        }
+      }
     }
-    const prevPending = pendingTicksRef.current;
-    pendingTicksRef.current = {
-      ticks: { ...(prevPending?.ticks || {}), ...d.ticks },
-      dirs: { ...(prevPending?.dirs || {}), ...dirs },
-    };
 
-    if (typeof document !== "undefined" && document.hidden) {
-      return;
-    }
-
-    if (!throttleTimerRef.current) {
-      throttleTimerRef.current = setTimeout(flushTicks, 120);
+    // Hesap + pozisyon push (REST polling yerine — 15 sn'de bir sunucu iter)
+    if (message?.type === "binance_account_update") {
+      const d = message.data as {
+        balances?: typeof balances;
+        holdings?: typeof holdings;
+        user_id?: number;
+      } | null;
+      if (!d) return;
+      if (d.balances) setBalances(d.balances);
+      if (d.holdings) setHoldings(d.holdings);
     }
   });
 
@@ -367,7 +378,9 @@ function BinanceTrPageInner() {
     refreshAccountData();
   }, [configured, refreshAccountData]);
 
-  useVisibleInterval(refreshAccountData, configured ? 10_000 : null);
+  // WS push birincil kaynak (binance_account_push_loop, 15 sn).
+  // Polling yalnızca WS kesilirse yedek — 60 sn yeterli.
+  useVisibleInterval(refreshAccountData, configured ? 60_000 : null);
   useVisibleInterval(loadTrades, configured && tradeDay ? 20_000 : null);
 
   useEffect(() => {
