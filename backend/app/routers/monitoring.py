@@ -1287,6 +1287,13 @@ async def _deliver_scan_notifications(notified: list) -> None:
                 unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
     if new_notifs and not quiet and vapid_configured:
         for notif in new_notifs:
+            # 2026-09-21 Erkan kararı: Çoklu gösterge teyitlerinde 3'lü teyit veya altındaki
+            # sinyallere push bildirimi ATILMAZ. Yalnızca 4'lü teyit (tam mutabakat) bildirilir.
+            sources = notif.get("sources")
+            if isinstance(sources, list) and 1 < len(sources) < 4:
+                logger.info("monitoring push atlandı (%s): teyit sayısı %d < 4 (yalnızca 4'lü teyit bildirilir)",
+                            notif.get("symbol"), len(sources))
+                continue
             ok = await _send_push(notif)
             notif["push_success"] = ok
             if ok:
@@ -1458,7 +1465,8 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     if kind not in notif["sources"]:
         notif["sources"].append(kind)
     vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
-    if vapid_configured:
+    sources = notif.get("sources")
+    if vapid_configured and isinstance(sources, list) and len(sources) >= 4:
         ok = await _send_push(notif)
         notif["push_success"] = ok
         if ok:
