@@ -2534,6 +2534,7 @@ async def symbol_analysis_llm_chat(symbol: str, payload: dict = None, request: R
         snapshot = dict(snapshot)
         snapshot["market_scan"] = {"error": str(exc), "paper_only": True}
     snapshot = dict(snapshot)
+    snapshot["plain_turkish"] = True
     snapshot["username"] = username
     snapshot["user_name"] = username
     snapshot["user_role"] = user_role
@@ -2803,28 +2804,18 @@ async def _symbol_quick_context(symbol: str, body: dict | None = None) -> dict |
     
     is_plain = bool(body and body.get("plain_turkish"))
     
-    if is_plain:
-        contract = (
-            "DİL VE ÜSLUP KURALI (KESİNLİKLE UYGULA): "
-            "KULLANICIYA YANIT VERİRKEN KESİNLİKLE HİÇBİR TEKNİK TERİM VEYA KISALTMA KULLANMA! "
-            "RSI, MACD, Bollinger, EMA, ATR, CVD, MFE, MAE, Keltner, Stokastik gibi teknik terimler KESİNLİKLE YASAKTIR. "
-            "Tamamen günlük, sade ve anlaşılır bir yatırımcı diliyle konuş: "
-            "(1) ŞU ANKİ DURUM: Fiyat ne yapıyor? (Örn: 'Fiyat son saatlerde hızlı yükselmiş, şu an biraz dinlenme ve soluklanma bölgesinde.') "
-            "(2) BÜYÜK ALICILAR VE GÜÇ: Piyasadaki alıcıların iştahı nasıl? (Örn: 'Büyük alıcılar tahtada aktif, satış emirlerini kolayca eritiyorlar.') "
-            "(3) TAHMİN MOTORLARI NE DİYOR: Sistemin tahmin algoritmaları bu hareketin devamını bekliyor mu, potansiyel nedir? "
-            "(4) RİSK VE TAVSİYE: Şimdi girmek güvenli mi, riskli mi, neyi beklemeli? "
-            "Kısa, net ve Erkan'ın doğrudan anlayıp karar vermesini sağlayacak bir üslupla yaz."
-        )
-    else:
-        contract = (
-            "Kompakt teknik analiz yaz (en fazla ~8 satır). Sıra: "
-            "(1) ŞU AN: fiyat + trend/faz (tek cümle); "
-            "(2) SENARYO: en olası senaryo — yön, tetikleyici seviye (somut fiyat), "
-            "bozulma seviyesi ve güven; "
-            "(3) NEDEN: bu görüşü destekleyen TEK kanıt cümlesi; "
-            "(4) SONUÇ: tek cümle. Gösterge dökümü yazma. "
-            "Eğer bağlamdaki veri yetmezse deep_analyze_symbol veya tahmin motoru araçlarını çağır."
-        )
+    is_plain = True
+    contract = (
+        "ZORUNLU KURAL (SIFIR TEKNİK TERİM DÖKÜMÜ): "
+        "KULLANICIYA YANIT VERİRKEN KESİNLİKLE HİÇBİR TEKNİK TERİM, İNDİKATÖR KODU VEYA KISALTMA KULLANMA! "
+        "RSI, MACD, EMA, SMA, ADX, DI, Supertrend, Aroon, Vortex, CCI, Bollinger, BB, ATR, CVD, MFE, MAE, Keltner, Stokastik, bear_quiet, bull_quiet, trade imbalance, depth imbalance gibi terimler KESİNLİKLE YASAKTIR. "
+        "Asla gösterge listesi ve ham sayı sıralama! Tamamen günlük, yalın ve profesyonel trader diliyle konuş: "
+        "(1) Şu Anki Durum: Fiyat ne yapıyor, nereden nereye geldi? "
+        "(2) Alıcı & Satıcı Dengesi: Büyük cüzdanlar ve tahtadaki güç dengesi ne durumda? "
+        "(3) Yükselme İsteği: Yükseliş potansiyeli var mı, hangi fiyat seviyesi geçilmeli, risk nerede? "
+        "(4) Net Karar: Şu an girmek uygun mu, beklenmeli mi? "
+        "Kısa, net ve kullanıcının doğrudan anlayıp karar vermesini sağlayacak şekilde yaz."
+    )
 
     quick = {
         "quick_lane": True,
@@ -3050,6 +3041,14 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
     if research_only_intent:
         trade_intent = False
     requested_symbols = [token.upper() for token in re.findall(r"\b[A-Za-z]{2,12}TRY\b", last_text.upper())]
+    for s in (body.get("symbols") or []):
+        sym_clean = str(s).replace("_", "").upper()
+        if sym_clean and sym_clean not in requested_symbols:
+            requested_symbols.append(sym_clean)
+    if body.get("symbol"):
+        sym_clean = str(body.get("symbol")).replace("_", "").upper()
+        if sym_clean and sym_clean not in requested_symbols:
+            requested_symbols.append(sym_clean)
     market_opportunity_intent = bool(re.search(
         r"(güncel|guncel|fırsat|firsat|piyasa|tarama|sembol|art(?:ar|ış|is)|%\s*5|h1|m30|30m|1h|momentum|yüksel|yuksel)",
         last_text.lower(),
@@ -3087,9 +3086,8 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
             return _symbol_quick_stream(quick, body, trace_id, session_id, messages)
 
     role_instruction = (
-        "Karşındaki kullanıcı sistem yöneticisidir (admin). Teknik mimari ve sistem parametreleri gerektiğinde açıklanabilir."
-        if user_role == "admin"
-        else "Karşındaki kullanıcı normal bir yatırımcıdır (admin DEĞİL). KESİNLİKLE kod, veritabanı, iç fonksiyon veya yazılım teknik detaylarına GİRME; tamamen bir UZMAN TRADER olarak fiyat hareketleri, trend, destek-direnç ve risk disiplini odaklı konuş."
+        "KESİNLİKLE gösterge, indikatör dökümü (RSI, MACD, EMA, ADX, Supertrend, Aroon, Vortex, Bollinger, BB, ATR, CVD, bear_quiet vb.) YAPMA! "
+        "Yatırımcıya tamamen bir UZMAN TRADER olarak fiyat hareketleri, alıcı-satıcı gücü, kritik seviyeler ve net karar odaklı, yalın günlük Türkçe ile konuş."
     )
     user_persona_text = (
         f"Karşındaki kullanıcının adı '{username}'. Samimi ve doğal bir üslupla, yer yer adıyla hitap ederek yanıtla. {role_instruction}"
@@ -3103,9 +3101,21 @@ async def strategies_llm_chat(payload: dict = None, request: Request = None):
         "username": username,
         "user_name": username,
         "user_role": user_role,
+        "plain_turkish": True,
+        "chart_assistant": bool(body.get("chart_assistant")),
         "data_policy": "Paper trading/public data. Use net PnL after commission; missing fields are unknown.",
         "decision_contract": "Bir paper pozisyonu önermeden önce veri tazeliği, rejim, mikro yapı ve calculate_trade_economics sonuçlarını değerlendir. Kararda expected_move, total_cost, edge_cost_ratio, supporting_evidence, counter_evidence ve invalidation alanlarını açıkça üret; maliyet sonrası avantaj yoksa işlemi reddet.",
-        "live_analysis_contract": "Anlık sembol analizinde kullanıcı 'şu an ne oluyor, bundan sonra ne olabilir, kısaca neden' bilmek ister. 4-8 cümlelik kompakt bir analiz yaz; uzun gösterge dökümü yapma (RSI şu, MACD şu... diye sıralama) ama gerekçesiz de bırakma. Yapı: (1) ŞU AN: fiyat, trend/rejim ve hareketin türü (breakout, pullback, range) tek-iki cümle; (2) BUNDAN SONRA: en olası 1-2 senaryo — yön, tetikleyici seviye (somut fiyat), bozulma seviyesi ve güven; (3) NEDEN: bu görüşü destekleyen tek kanıt cümlesi (hacim/trend/mikro yapıdan biri); (4) SONUÇ: tek cümlelik net özet. Kullanıcı gerçek giriş ve miktar verirse brüt PnL'yi hesapla, komisyonun bilinmediğini belirt ve tam çık/kademeli azalt/bekle seçeneklerini riskleriyle sun. Belirsizliği klişe uyarılarla değil karşı senaryo ve güven seviyesiyle ifade et; kullanıcı istemedikçe sorumluluk veya garanti uyarısı yazma.",
+        "live_analysis_contract": (
+            "ZORUNLU KURAL (SIFIR TEKNİK TERİM DÖKÜMÜ): KESİNLİKLE gösterge, indikatör kodları "
+            "(EMA, SMA, ADX, DI, RSI, MACD, CCI, Supertrend, Aroon, Vortex, Bollinger, BB, ATR, CVD, "
+            "bear_quiet, bull_quiet, trade imbalance, depth imbalance vb.) DÖKÜMÜ YAPMA! "
+            "Kullanıcıya ham gösterge listesi vermek KESİNLİKLE YASAKTIR. "
+            "Doğrudan sade Türkçe ile 4 başlık altında özetle: "
+            "(1) Şu Anki Durum: Fiyat hareketi, nereden döndüğü; "
+            "(2) Alıcı & Satıcı Dengesi: Büyük oyuncular ve tahta durumu (sade dil); "
+            "(3) Yükselme İsteği: Yükseliş potansiyeli, aşılması gereken seviye ve risk; "
+            "(4) Net Sonuç: Şu an girmek mantıklı mı, ne beklenmeli?"
+        ),
         "user_persona": user_persona_text,
         "note": "Use a tool only when the question requires its data.",
         "self_learning": build_learning_context(await database.get_trades(), limit=200),
