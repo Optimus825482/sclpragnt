@@ -18,6 +18,7 @@ import { filterIndicatorInstances, findIndicatorEntry } from "./IndicatorPicker"
 // yüklenir. Senkron yardımcılar (filter/find) yukarıdaki statik import'tan gelir.
 const IndicatorPicker = dynamic(() => import("./IndicatorPicker").then((m) => m.default), { ssr: false });
 const IndicatorSettings = dynamic(() => import("./IndicatorSettings"), { ssr: false });
+const ChartAssistantDrawer = dynamic(() => import("./ChartAssistantDrawer"), { ssr: false });
 import type { IndicatorInstance, IndicatorStyle, RegistryEntry } from "./types";
 import {
     FALLBACK_SYMBOLS, INTERVALS, INTERVAL_MS, PALETTE, TOTAL_HEIGHT, MAIN_MIN,
@@ -79,6 +80,7 @@ export default function ChartsPage() {
     const [symbol, setSymbol] = useState<string>("BTCTRY");
     const [symbols, setSymbols] = useState<string[]>(FALLBACK_SYMBOLS);
     const [analysisOpen, setAnalysisOpen] = useState(false);
+    const [assistantOpen, setAssistantOpen] = useState(false);
     const [interval, setTf] = useState<string>("5m");
     const [loading, setLoading] = useState(true);
     const [mode] = useUiMode();
@@ -1523,6 +1525,18 @@ export default function ChartsPage() {
                 >
                     🔬 ANALİZ
                 </button>
+                <button
+                    type="button"
+                    onClick={() => setAssistantOpen((prev) => !prev)}
+                    className={`px-3 py-2 rounded-lg border font-mono text-xs transition-all flex items-center gap-1.5 shadow-sm ${
+                        assistantOpen
+                            ? "border-cyan-400 bg-cyan-500/25 text-cyan-300 ring-2 ring-cyan-400/40"
+                            : "border-cyan-500/50 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400"
+                    }`}
+                    title="Grafik Asistanı (Sade Dille Sembol ve Tahmin Yorumu)"
+                >
+                    🤖 ASİSTAN
+                </button>
                 <div className="chart-intervals max-w-full overflow-x-auto flex rounded-lg border border-bunker-700">
                     {INTERVALS.map((i) => (
                         <button
@@ -1991,6 +2005,27 @@ export default function ChartsPage() {
                     }
                     onClose={() => setEditTarget(null)}
                 />
+            )}
+
+            {/* Grafik Asistanı Çekmecesi / Penceresi */}
+            <ChartAssistantDrawer
+                isOpen={assistantOpen}
+                onClose={() => setAssistantOpen(false)}
+                symbol={symbol}
+                currentPrice={bars.length ? bars[bars.length - 1].close : null}
+            />
+
+            {/* Asistan Kapalıyken Sağ Alttaki Hızlı Açma Butonu (Floating FAB) */}
+            {!assistantOpen && (
+                <button
+                    type="button"
+                    onClick={() => setAssistantOpen(true)}
+                    className="fixed bottom-5 right-5 z-[80] flex items-center gap-2 rounded-full border border-cyan-400/60 bg-cyan-600/90 hover:bg-cyan-500 text-white px-4 py-2.5 shadow-xl shadow-cyan-950/60 transition-all hover:scale-105 active:scale-95 font-sans font-bold text-xs"
+                    title={`${symbol} Grafik Asistanını Aç`}
+                >
+                    <span className="text-base">🤖</span>
+                    <span>Asistan</span>
+                </button>
             )}
         </div>
     );
