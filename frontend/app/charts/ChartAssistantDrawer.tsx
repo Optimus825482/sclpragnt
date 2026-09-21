@@ -83,9 +83,12 @@ export default function ChartAssistantDrawer({
       // Boş bir asistan mesajı ekle
       setMessages([...nextMessages, { role: "assistant", content: "", time: nowTime }]);
 
+      // Token optimizasyonu: Bağlam şişmesini ve aşırı maliyeti önlemek için son 6 mesajı gönder
+      const boundedContext = nextMessages.slice(-6).map((m) => ({ role: m.role, content: m.content }));
+
       await streamChat(
         `${API_BASE}/api/strategies/llm/chat`,
-        nextMessages.map((m) => ({ role: m.role, content: m.content })),
+        boundedContext,
         (delta) => {
           setMessages((current) => {
             const last = current[current.length - 1];
@@ -103,6 +106,7 @@ export default function ChartAssistantDrawer({
           plain_turkish: true,
           chart_assistant: true,
           current_symbol: symbol,
+          max_tokens: 450,
         },
         {
           signal: controller.signal,

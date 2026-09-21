@@ -328,16 +328,52 @@ def _json_load_lenient(value, *, _visited: int = 0) -> object:
         return _JSON_UNDECODABLE
 
 
-def _context_window_messages(messages, token_budget=900_000):
-    """Keep the newest conversation messages inside the 1M-token model window.
+def _prune_empty_and_truncate(data, depth=0):
+    """Recursively strip None/empty fields, round floats, and drop huge raw candle/depth arrays."""
+    if depth > 5:
+        return None
+    if isinstance(data, dict):
+        cleaned = {}
+        for k, v in data.items():
+            if v is None or v == "" or v == [] or v == {}:
+                continue
+            # Token koruması: prompt şişiren ham klines/derinlik dizilerini düşür
+            if k in ("klines", "raw_klines", "candles", "orderbook", "depth", "bids", "asks", "raw_data", "raw_candles"):
+                continue
+            pruned = _prune_empty_and_truncate(v, depth + 1)
+            if pruned is not None:
+                cleaned[k] = pruned
+        return cleaned if cleaned else None
+    elif isinstance(data, list):
+        pruned_list = []
+        for x in data[:15]:
+            p = _prune_empty_and_truncate(x, depth + 1)
+            if p is not None:
+                pruned_list.append(p)
+        return pruned_list if pruned_list else None
+    elif isinstance(data, float):
+        return round(data, 4)
+    return data
+
+
+def _compact_json_dumps(data) -> str:
+    """Serialize snapshot with minimal whitespace and pruned empty/raw fields."""
+    pruned = _prune_empty_and_truncate(data)
+    return json.dumps(pruned or {}, ensure_ascii=False, separators=(',', ':'), default=str)
+
+
+def _context_window_messages(messages, token_budget=24_000, max_messages=12):
+    """Keep the newest conversation messages inside bounded token and message limits.
 
     The frontend persists the complete session. The provider request keeps the
-    newest messages up to a conservative budget so system/context instructions
-    and the model response still have headroom.
+    newest messages up to a conservative budget (max 12 messages) so system/context
+    instructions and the model response still have ample headroom without quadratic
+    token growth in long chats.
     """
     selected = []
     used = 0
-    for item in reversed([message for message in (messages or []) if isinstance(message, dict)]):
+    valid_messages = [message for message in (messages or []) if isinstance(message, dict)]
+    for item in reversed(valid_messages[-max_messages:]):
         content = str(item.get("content") or "")
         estimated = max(1, (len(content) + 24) // 4)
         if selected and used + estimated > token_budget:
@@ -412,7 +448,7 @@ async def analyze(snapshot, max_tokens=None):
     base_url = await validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     async def call(max_tokens):
-        payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False, default=str)}]}
+        payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": [{"role": "system", "content": system}, {"role": "user", "content": _compact_json_dumps(snapshot)}]}
         if max_tokens: payload["max_tokens"] = int(max_tokens)
         req = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type":"application/json", "Authorization":"Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}, method="POST")
         response = await safe_provider_open(req, timeout=90)
@@ -522,7 +558,7 @@ async def embedding(text, model_id=None):
     except Exception as exc:
         return {"status":"error", "error":str(exc), "model":model.get("name")}
 
-async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None, *, json_mode=False):
+async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills=None, *, json_mode=False, max_tokens=None):
     cfg = await database.get_active_llm_config()
     if not cfg: return {"enabled": False, "status": "disabled", "text": None}
     selected = set(str(value) for value in (active_skills or []))
@@ -540,7 +576,7 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
             "- Kullanıcıya doğrudan karar aldıracak netlikte; yön, alıcı gücü, tahmin motorlarının genel beklentisi ve risk durumunu sade Türkçe ile özetle.\n"
         )
     system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. TÜM yanıtlarını kesinlikle Türkçe ver. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Bu uygulama, PostgreSQL/pgvector üzerinde sohbet, işlem, sinyal, karar ve teknik snapshot kayıtlarını arayabildiğin katmanlı bir sistem hafızasına sahiptir. Bu kişisel veya sınırsız bir hafıza değildir: yalnızca sisteme kaydedilmiş ve araçların döndürdüğü verilere erişebilirsin. İşlem, sinyal, açık pozisyon veya ayar bilgisi gerekiyorsa önce uygun veritabanı/arama aracını çağır; araç çağırmadan veri uydurma. İleri incelemede yalnızca gerektiğinde read_only_sql aracını kullan ve sadece dönen satırlara dayan. Kullanıcı istemedikçe geçmiş verileri çekme. Kullanıcı bir coin için analiz istediğinde gösterge değerlerini tek tek sıralayıp onu boğma ama gerekçesiz de bırakma: kompakt bir analiz yaz — 'şu an ne oluyor', 'bundan sonra ne olabilir' (yön + seviye + bozulma), 'kısaca neden' ve tek cümlelik sonuç. Paper-trading ve fiyat hedefiyle ilgili genel uyarı/not cümlelerini her yanıtta tekrarlama; yalnızca kullanıcı özellikle sorarsa veya somut bir veri sınırlaması analizi doğrudan etkiliyorsa belirt.\n" + skills + plain_turkish_instruction
-    conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
+    conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Kullanılabilir araçlar ve özet context:\n" + _compact_json_dumps(snapshot)}]
     context_messages, _estimated_tokens = _context_window_messages(messages)
     for item in context_messages:
         if not isinstance(item, dict):
@@ -553,7 +589,9 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
             if key in item: message[key] = item[key]
         conversation.append(message)
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation}
-    if CHAT_MAX_TOKENS:
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    elif CHAT_MAX_TOKENS:
         # LLM-02: üst sınır — provider'ın sınırsız uzun yanıt üretmesini engeller.
         payload["max_tokens"] = CHAT_MAX_TOKENS
     if tools: payload["tools"] = tools; payload["tool_choice"] = "auto"
@@ -763,7 +801,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
     maliyettir (2026-09-17).
     """
     if tools and tool_executor:
-        result = await chat(snapshot, messages, tools, tool_executor, active_skills)
+        result = await chat(snapshot, messages, tools, tool_executor, active_skills, max_tokens=max_tokens)
         # GÖRÜNÜRLÜK (2026-09-18, sohbet sayfası teşhisi): `chat()` hataları
         # YUTAR — {"status": "error", "text": None} veya {"status": "disabled"}.
         # Eskiden delta hiç gönderilmiyor, sadece `done` taşıyordu → istemci
@@ -801,7 +839,7 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
             "- Kullanıcıya doğrudan karar aldıracak netlikte; yön, alıcı gücü, tahmin motorlarının genel beklentisi ve risk durumunu sade Türkçe ile özetle.\n"
         )
     system = get_persona(snapshot) + "\n" + TRADE_MANAGER_RULES + "\n" + OUTPUT_RULES + "\nSen Türkçe konuşan bir strateji araştırma asistanısın. ÇALIŞMA KURALI: Düşünce sürecini, ara adımlarını, İngilizce iç konuşmanı, 'Let me...' tarzı ara monologları yanıtta GÖSTERME — kullanıcıya yalnızca nihai yanıtı yaz; nihai yanıtın dili her zaman Türkçe'dir. Yalnızca sağlanan public market verisini yorumla; gerçek emir veya işlem talimatı verme. Coin analizinde kullanıcıyı gösterge detayıyla boğma ama gerekçesiz bırakma: önce durumu, sonra olası senaryoları (yön + seviye + bozulma), sonra tek neden cümlesi, en sonda net sonucu söyle.\n" + skills + plain_turkish_instruction
-    conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Güncel snapshot:\n" + json.dumps(snapshot, ensure_ascii=False, default=str)}]
+    conversation = [{"role": "system", "content": system}, {"role": "user", "content": "Güncel snapshot:\n" + _compact_json_dumps(snapshot)}]
     for item in (messages or [])[-12:]:
         if isinstance(item, dict):
             conversation.append({k: item[k] for k in ("role", "content") if k in item})

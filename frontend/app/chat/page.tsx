@@ -629,9 +629,11 @@ function ChatPageInner() {
     streamAbortRef.current = controller;
     try {
       setMessages([...next, { role: "assistant", content: "", time: nowTime }]);
+      // Token optimizasyonu: Uzun sohbetlerde bağlam şişmesini önlemek için son 10 mesajı gönder
+      const boundedMessages = next.slice(-10);
       await streamChat(
         `${API_BASE}/api/strategies/llm/chat`,
-        next,
+        boundedMessages,
         (delta) =>
           setMessages((current) => [
             ...current.slice(0, -1),
