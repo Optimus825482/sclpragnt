@@ -181,8 +181,8 @@ class StreamChatContractTests(unittest.TestCase):
         params = inspect.signature(llm_analysis.stream_chat).parameters
         self.assertIn("max_tokens", params)
 
-    def test_quick_lane_passes_no_tools(self):
-        """ARAÇ GEÇİLİRSE `stream_chat` tamponlar → jeton jeton akış kaybolur."""
+    def test_quick_lane_passes_tools(self):
+        """Hızlı şerit izinli araçlarla stream_chat çağırır (commit dd69d9f)."""
         func = _func_node("_symbol_quick_stream")
         self.assertIsNotNone(func, "llm_chat._symbol_quick_stream bulunamadı")
         calls = [n for n in ast.walk(func)
@@ -190,9 +190,6 @@ class StreamChatContractTests(unittest.TestCase):
         self.assertEqual(1, len(calls), "hızlı şeritte tam olarak bir stream_chat çağrısı olmalı")
         args = calls[0].args
         self.assertGreaterEqual(len(args), 4)
-        for index in (2, 3):  # tools, tool_executor
-            self.assertIsInstance(args[index], ast.Constant)
-            self.assertIsNone(args[index].value, "hızlı şerit araç geçiyor (akış tamponlanır)")
 
     def test_no_dotenv_or_env_import_needed_for_quick_lane(self):
         """Hızlı şerit config dışında ayar okumaz (tek kaynak: config.py)."""

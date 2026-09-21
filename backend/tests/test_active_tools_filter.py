@@ -9,7 +9,13 @@ Beklenen davranış:
     seçse bile yalnız niyet bayrağıyla (trade_intent) değerlendirilir;
     `_resolve_active_tools` tek başına güvenlik kapısı değildir.
 """
+import pathlib
+import sys
 import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from app.routers import llm_chat
 
