@@ -428,6 +428,11 @@ export default function MonitoringPage() {
   const [historyRows, setHistoryRows] = useState<NotificationRow[] | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
 
+  // Eşik düzenleme modalı (Admin)
+  const [showScoreModal, setShowScoreModal] = useState(false);
+  const [editScoreInput, setEditScoreInput] = useState("70");
+  const [savingScore, setSavingScore] = useState(false);
+
   const stateReqIdRef = useRef(0);
   const stateInFlightRef = useRef(false);
   const scanInFlightRef = useRef(false);
@@ -559,6 +564,34 @@ export default function MonitoringPage() {
     }
   }, [loadSettings, loadState]);
 
+  const handleSaveScore = useCallback(async () => {
+    const val = Number(editScoreInput);
+    if (!Number.isFinite(val) || val < 0 || val > 100) {
+      setSettingsError("Eşik skoru 0 ile 100 arasında olmalıdır.");
+      return;
+    }
+    setSavingScore(true);
+    setSettingsError(null);
+    try {
+      const res = await apiRequest(`${API_BASE}/api/monitoring/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ min_score: val }),
+      });
+      if (!res.ok) throw new HttpStatusError(res.status);
+      const data = await res.json();
+      setShowScoreModal(false);
+      setScanNote(`Bildirim eşik skoru ≥ ${data.min_score ?? val} olarak güncellendi.`);
+      await loadSettings();
+      await loadState();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setSettingsError(`Eşik kaydedilemedi: ${humanizeError(err)}`);
+    } finally {
+      if (mountedRef.current) setSavingScore(false);
+    }
+  }, [editScoreInput, loadSettings, loadState]);
+
   const runScan = useCallback(async () => {
     setScanning(true);
     setScanError(null);
@@ -679,10 +712,24 @@ export default function MonitoringPage() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="ui-button ui-button-secondary pointer-events-none text-xs" title="Radar eşik filtresi">
-            🎯 EŞİK: SKOR ≥ {effThreshold != null ? effThreshold : "—"}
-            {rawThreshold != null ? ` (Ham: ${rawThreshold})` : ""}
-          </span>
+          {isAdmin ? (
+            <button
+              type="button"
+              onClick={() => {
+                setEditScoreInput(String(Math.round(effThreshold ?? 70)));
+                setShowScoreModal(true);
+              }}
+              className="ui-button ui-button-secondary text-xs hover:border-neon-green/60 hover:text-white flex items-center gap-1.5 transition-all cursor-pointer"
+              title="Skor eşiğini değiştirmek için tıklayın"
+            >
+              <span>🎯 EŞİK: SKOR ≥ {effThreshold != null ? effThreshold : "—"}</span>
+              <span className="text-[10px] text-neon-green border border-neon-green/40 px-1 rounded bg-neon-green/10">Düzenle ✎</span>
+            </button>
+          ) : (
+            <span className="ui-button ui-button-secondary pointer-events-none text-xs" title="Radar eşik filtresi">
+              🎯 EŞİK: SKOR ≥ {effThreshold != null ? effThreshold : "—"}
+            </span>
+          )}
 
           {isAdmin ? (
             <button
@@ -1246,6 +1293,90 @@ export default function MonitoringPage() {
 
       {/* DETAY MODALI */}
       {selected && <CandidateDetail c={selected.c} kind={selected.kind} onClose={() => setSelected(null)} />}
+
+      {/* SKOR EŞİĞİ DÜZENLEME MODALI (ADMIN) */}
+      {showScoreModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => setShowScoreModal(false)}
+        >
+          <div
+            className="card max-w-md w-full p-6 rounded-2xl border border-neon-green/40 bg-bunker-950 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-bunker-800 pb-3">
+              <h3 className="font-mono text-base font-black text-white flex items-center gap-2">
+                <span>🎯</span> RADAR BİLDİRİM EŞİĞİ
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowScoreModal(false)}
+                className="text-bunker-muted hover:text-white font-mono text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-bunker-muted leading-relaxed">
+              Bu eşik hem <b>bildirim gönderme şartını</b>, hem <b>Monitoring aday listesini</b> hem de <b>Raporlama merkezindeki başarı takibini</b> doğrudan belirler.
+              Bu skorun altındaki zayıf sinyaller bildirilmez.
+            </p>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-mono text-white font-bold">
+                MİNİMUM SKOR (0 - 100 Panel Puanı):
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={editScoreInput}
+                  onChange={(e) => setEditScoreInput(e.target.value)}
+                  className="w-full bg-bunker-900 border border-bunker-700 rounded-xl px-4 py-2 font-mono text-lg text-white font-bold text-center focus:border-neon-green/50 outline-none"
+                  autoFocus
+                />
+              </div>
+              <div className="flex gap-2 pt-1">
+                {[50, 60, 70, 80, 90].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setEditScoreInput(String(preset))}
+                    className={`flex-1 py-1 rounded-lg border font-mono text-xs transition-colors ${
+                      editScoreInput === String(preset)
+                        ? "border-neon-green/60 bg-neon-green/20 text-neon-green font-bold"
+                        : "border-bunker-800 bg-bunker-900 text-bunker-muted hover:text-white"
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-bunker-800">
+              <button
+                type="button"
+                onClick={() => setShowScoreModal(false)}
+                className="ui-button ui-button-secondary text-xs py-2 px-4"
+              >
+                İPTAL
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveScore}
+                disabled={savingScore}
+                className="ui-button ui-button-primary text-xs py-2 px-5 flex items-center gap-1.5"
+              >
+                {savingScore ? "KAYDEDİLİYOR…" : "KAYDET VE UYGULA"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
+

@@ -1843,7 +1843,11 @@ async def _run_rising_scan() -> dict:
         # BİRLEŞİK SİNYAL (2026-09-17): hızlı-yol/radar yakın zamanda bu sembolü
         # bildirdiyse rising push'u BASTIRILIR (tek bildirim kuralı) — kanıt
         # kaydı (`rising_alerts`) yine yazılır, replay bunu kullanır.
+        # EŞİK KONTROLÜ (2026-09-21): admin min_score altındaki zayıf sinyaller bildirilmez.
+        effective_min_score = _effective_min_score(settings)
+        score_qualifies = float(candidate.get("score") or 0) >= effective_min_score
         fire = (notify_enabled and not is_first_observation
+                and score_qualifies
                 and rising_signals.should_fire(candidate, now)
                 and not (unified_mode and unified_signals.recently_notified(symbol)))
 
@@ -2422,13 +2426,10 @@ async def monitoring_active_notification(symbol: str):
 
 
 @router.get("/api/reports/notifications")
-async def report_notifications(limit: int = 200, day: str = None):
+async def report_notifications(limit: int = 200, day: str = None, min_score: float = None):
     """Radar bildirim raporu - gercek kapannis M1 olcmueye dayali basari.
     day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
-
-    Global admin eşiği altındaki bildirimler NE gösterilir NE başarı hesabına
-    katılır (2026-09-04 kullanıcı kararı; RISK_OFF çarpanı kaldırıldı) — düşük
-    skorlu gürültü başarı oranını yanıltmasın.
+    min_score: Skor eşiği filtresi (opsiyonel; belirtilmezse admin min_score kullanılır).
     """
     limit = max(1, min(int(limit), 1000))
     # R4-01: bozuk `day` parametresi veritabanına ulaşmadan 400 döner (500 üretmez).
@@ -2438,15 +2439,13 @@ async def report_notifications(limit: int = 200, day: str = None):
         except ValueError:
             raise HTTPException(status_code=400, detail="Geçersiz tarih: YYYY-MM-DD bekleniyor")
     settings = await get_user_notification_settings()
-    # Tek eşik ilkesi (2026-09-04 kullanıcı kararı): raporlar da radar/bildirim/
-    # otonom taramayla AYNI etkin eşiği kullanır (admin min_score — RISK_OFF
-    # çarpanı kaldırıldı) — ekranda gösterilen sayı fiilen uygulananla aynıdır.
-    min_score = _effective_min_score(settings)
+    # Tek eşik ilkesi: belirtilmediyse admin etkin eşiği kullanılır.
+    threshold = float(min_score) if min_score is not None else _effective_min_score(settings)
     rows = await database.get_monitoring_velocity_matches(limit=limit, day=day)
     # Eşik filtresi panel (0-100) skoru üzerinden; eski ham kayıtlar tek kez
     # normalize edilir (bkz. _stored_panel_score).
     rows = [r for r in rows
-            if _stored_panel_score(r) >= min_score]
+            if _stored_panel_score(r) >= threshold]
     now = time.time()
     result = []
 
