@@ -132,6 +132,22 @@ export default function ChartsPage() {
         const savedInterval = querySymbol ? "5m" : loadPersisted(LS_INTERVAL, "5m");
         setSymbol(savedSymbol);
         setTf(savedInterval);
+        // Binance TR'deki tüm aktif TRY işlem çiftlerini al (ör. SAGATRY)
+        apiRequest(`${API_BASE}/api/market-symbols`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+                const marketList = d?.symbols;
+                if (Array.isArray(marketList) && marketList.length > 0) {
+                    setSymbols((currentList) => {
+                        const merged = new Set<string>([...currentList, ...marketList]);
+                        if (querySymbol) merged.add(querySymbol);
+                        if (savedSymbol) merged.add(savedSymbol);
+                        return [...merged].sort((a, b) => a.localeCompare(b));
+                    });
+                }
+            })
+            .catch(() => { });
+
         apiRequest(`${API_BASE}/api/config`).then((r) => {
             if (!r.ok) throw new Error(`config HTTP ${r.status}`);
             return r.json();
@@ -141,16 +157,6 @@ export default function ChartsPage() {
             applyCommissionPct(d.commission_pct);
             const active = Array.isArray(d.symbols) && d.symbols.length ? d.symbols : FALLBACK_SYMBOLS;
             // SEMBOL KAÇIRMA DÜZELTMESİ (2026-09-16): kullanıcı ne seçtiyse O KALIR.
-            //
-            // Eski kod `available.includes(current) ? current : active[0]` diyerek
-            // yapılandırılmış listede OLMAYAN bir sembolü SESSİZCE BTCTRY'ye
-            // çeviriyordu (config.SYMBOLS[0] === "BTCTRY"). Radar/velocity adayları
-            // `top_gainers` havuzundan gelir ve config.SYMBOLS alt kümesi DEĞİLDİR →
-            // o sembollerin grafiği açılır açılmaz BTC'ye dönerdi. Kullanıcının
-            // tarif ettiği tam buydu: "grafiğe girince zoom yapınca BTC çıkıyor"
-            // (config yanıtı mount'tan SONRA asenkron çözüldüğü için geçiş, tam
-            // etkileşime başladığı anda fark ediliyordu).
-            //
             // Artık `symbol` state'ine DOKUNULMAZ; yalnız dropdown listesi
             // BİRLEŞTİRİLİR (config + mevcut seçim + ?symbol= değeri).
             setSymbols((currentList) => {
@@ -163,8 +169,6 @@ export default function ChartsPage() {
             loadFromDb(savedSymbol);
         }).catch(() => {
             // Config alınamadı: yine seçime dokunma, yalnız minimum listeyi birleştir.
-            // Eskiden burada liste FALLBACK ile EZİLİYORDU → ?symbol= ile gelmiş
-            // bir sembol dropdown'dan kaybolabiliyordu.
             setSymbols((currentList) => {
                 const merged = new Set<string>([...currentList, ...FALLBACK_SYMBOLS]);
                 if (querySymbol) merged.add(querySymbol);
