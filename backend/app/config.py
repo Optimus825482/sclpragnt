@@ -364,7 +364,10 @@ class Config:
     RISING_COOLDOWN_SEC = float(os.getenv("RISING_COOLDOWN_SEC", "1800"))
     RISING_MAX_PER_SCAN = max(1, int(os.getenv("RISING_MAX_PER_SCAN", "3")))
     # Kullanıcıya push + uygulama-içi dialog (WS `rising_alert`).
-    RISING_NOTIFY_ENABLED = os.getenv("RISING_NOTIFY_ENABLED", "true").lower() == "true"
+    # 2026-09-21 Erkan kararı: Yükseliş Eğilimi bildirimleri KAPALI.
+    # Sadece Ana Radar (Master Surge 4'lü Teyit) bildirim gönderir.
+    # Yükseliş sinyalleri hâlâ tespit edilir ve DB'ye kaydedilir (MFE/self-learning için).
+    RISING_NOTIFY_ENABLED = os.getenv("RISING_NOTIFY_ENABLED", "false").lower() == "true"
     # Otonom paper girişi (kullanıcı kararı 2026-09-14: AÇIK). Kapatma anahtarı:
     # kırılım ÖNCESİ girişin isabeti `rising_alerts` ile ölçülene kadar tek güvence.
     RISING_AUTONOMOUS_ENABLED = os.getenv("RISING_AUTONOMOUS_ENABLED", "true").lower() == "true"
