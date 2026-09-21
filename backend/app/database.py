@@ -5204,11 +5204,12 @@ async def list_auto_paper_trades(status: str | None = None, limit: int = 100, of
     return await _run_db(op)
 
 
-async def get_auto_paper_stats() -> dict:
+async def get_auto_paper_stats(confluence_4way_only: bool = False) -> dict:
     """Otonom paper trade istatistikleri (reset_at sonrasi, SQL agregatı).
 
     Portföy reseti sırasında pnl'siz kapatılan 'reset' satırları hariçtir;
     böylece reset sonrasi win_rate/net PnL eski verilerle kirletilmez.
+    ``confluence_4way_only=True`` ise yalnızca Master Surge (4'lü teyitli) işlemler sayılır.
     """
     def op(conn):
         cutoff = _get_reset_cutoff_sync(conn)
@@ -5217,6 +5218,8 @@ async def get_auto_paper_stats() -> dict:
         if cutoff:
             closed_where += " AND exit_time > ?"
             closed_params.append(cutoff)
+        if confluence_4way_only:
+            closed_where += " AND confluence_4way = TRUE"
         row = conn.execute(
             f"""SELECT COUNT(*) AS closed,
                        COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) AS winning,
@@ -5226,8 +5229,11 @@ async def get_auto_paper_stats() -> dict:
                 FROM auto_paper_trades {closed_where}""",
             closed_params,
         ).fetchone()
+        open_where = "WHERE status='open'"
+        if confluence_4way_only:
+            open_where += " AND confluence_4way = TRUE"
         open_row = conn.execute(
-            "SELECT COUNT(*) AS open FROM auto_paper_trades WHERE status='open'"
+            f"SELECT COUNT(*) AS open FROM auto_paper_trades {open_where}"
         ).fetchone()
         closed = int(row["closed"] or 0)
         winning = int(row["winning"] or 0)

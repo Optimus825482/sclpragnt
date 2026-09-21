@@ -271,6 +271,7 @@ async def get_report_overview():
     """
     decision_summary = await database.get_report_decision_summary()
     ap_stats = await database.get_auto_paper_stats()
+    master_surge_stats = await database.get_auto_paper_stats(confluence_4way_only=True)
     symbols = await database.get_auto_paper_symbol_breakdown()
     try:
         balance = await database.get_wallet_balance("TRY")
@@ -291,6 +292,7 @@ async def get_report_overview():
         "paper_only": True,
         "generated_at": now,
         "overall": overall,
+        "master_surge_stats": master_surge_stats,
         "symbols": symbols,
         "decision_summary": decision_summary[:40],
         "open_positions": [],

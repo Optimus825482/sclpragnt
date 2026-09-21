@@ -2459,10 +2459,17 @@ async def monitoring_active_notification(symbol: str):
 
 
 @router.get("/api/reports/notifications")
-async def report_notifications(limit: int = 200, day: str = None, min_score: float = None):
+async def report_notifications(
+    limit: int = 200,
+    day: str = None,
+    min_score: float = None,
+    confluence_min: int = None,
+    master_surge_only: bool = False,
+):
     """Radar bildirim raporu - gercek kapannis M1 olcmueye dayali basari.
     day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
     min_score: Skor eşiği filtresi (opsiyonel; belirtilmezse admin min_score kullanılır).
+    confluence_min / master_surge_only: Çoklu teyit filtresi (4'lü teyit / Master Surge odaklı).
     """
     limit = max(1, min(int(limit), 1000))
     # R4-01: bozuk `day` parametresi veritabanına ulaşmadan 400 döner (500 üretmez).
@@ -2495,6 +2502,10 @@ async def report_notifications(limit: int = 200, day: str = None, min_score: flo
         except (TypeError, ValueError):
             pass
         return ["velocity"]
+
+    req_conf = 4 if master_surge_only else (int(confluence_min) if confluence_min is not None else 1)
+    if req_conf > 1:
+        rows = [r for r in rows if len(_parse_sources(r.get("sources"))) >= req_conf]
 
     for row in rows:
         symbol = row.get("symbol")
@@ -2569,18 +2580,34 @@ async def report_notifications(limit: int = 200, day: str = None, min_score: flo
     # Yarım-hedef KISMİ sayılır ve başarıya eklenmez ("BAŞARILI" kovası korunur
     # ama boştur — FE uyumluluğu için anahtar silinmedi).
     success = counts["TAMAMEN BAŞARILI"]
-    day_breakdown = {"counts": counts, "evaluated": evaluated,
-                    "success_count": success,
-                    "success_rate": (success / evaluated * 100) if evaluated else None,
-                    "unique_symbols": unique_symbols,
-                    "symbol_counts": symbol_counts,
-                    "dominant_symbol": top_symbol,
-                    "dominant_symbol_count": top_count,
-                    "dominant_symbol_ratio": dominant_ratio,
-                    "dominant_symbol_warning": dominant_warning}
+
+    # 2026-09-21: Kısmi pozitif kazanç ve scalp kâr kilidi metrikleri
+    evaluated_items = [i for i in result if i.get("status") in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ")]
+    mfe_pos_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) > 0)
+    tp1_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) >= 1.2)
+    tp2_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) >= 3.0)
+
+    day_breakdown = {
+        "counts": counts,
+        "evaluated": evaluated,
+        "success_count": success,
+        "success_rate": (success / evaluated * 100) if evaluated else None,
+        "mfe_positive_count": mfe_pos_count,
+        "mfe_positive_rate": (mfe_pos_count / evaluated * 100) if evaluated else None,
+        "tp1_count": tp1_count,
+        "tp1_rate": (tp1_count / evaluated * 100) if evaluated else None,
+        "tp2_count": tp2_count,
+        "tp2_rate": (tp2_count / evaluated * 100) if evaluated else None,
+        "confluence_min": req_conf if req_conf > 1 else None,
+        "unique_symbols": unique_symbols,
+        "symbol_counts": symbol_counts,
+        "dominant_symbol": top_symbol,
+        "dominant_symbol_count": top_count,
+        "dominant_symbol_ratio": dominant_ratio,
+        "dominant_symbol_warning": dominant_warning,
+    }
     # BİRLEŞİK SİNYAL (2026-09-17): hangi tespit algoritması ne kadar yakaladı?
     # Kaynak başına sayım + çok-kaynaklı (birleşik teyit) başarı ayrıca raporlanır
-    # → "motor birleşince başarı düştü mü" sorusu tek bakışta yanıtlanır.
     source_counts: dict[str, int] = {}
     source_success: dict[str, int] = {}
     multi_evaluated = 0
@@ -2605,26 +2632,40 @@ async def report_notifications(limit: int = 200, day: str = None, min_score: flo
     # R4-04: "genel (tüm zamanlar)" artık cap'siz (limit=None) — 1000 satırda sessizce kırpılmaz.
     all_rows = await database.get_monitoring_velocity_matches(limit=None, day=None)
     # Genel başarı da aynı global eşiğe tabi (gürültü oranları dışarıda kalır);
-    # eski kayıtlar için tek kez normalize uygulanır (bkz. _stored_panel_score).
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
+    if req_conf > 1:
+        all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]
+
     all_evaluated = 0
     all_success = 0
+    all_mfe_pos = 0
+    all_tp1 = 0
+    all_tp2 = 0
     for r in all_rows:
         mfe_val = r.get("mfe_pct")
         mfe_f = float(mfe_val) if mfe_val is not None else None
         tch = r.get("touched_target")
         cand_st = str(r.get("candidate_status") or "")
-        tgt = float(r.get("target_pct") or 0)
         if cand_st == "evaluated" and mfe_f is not None:
             all_evaluated += 1
-            # M1/P0 (R3-04): yarım-hedef (mfe >= hedef×0.5) artık başarı SAYILMAZ;
-            # genel başarı da yalnızca GERÇEK dokunuşla hesaplanır.
             if tch:
                 all_success += 1
+            if mfe_f > 0:
+                all_mfe_pos += 1
+            if mfe_f >= 1.2:
+                all_tp1 += 1
+            if mfe_f >= 3.0:
+                all_tp2 += 1
     overall_breakdown = {
         "evaluated": all_evaluated,
         "success_count": all_success,
         "success_rate": (all_success / all_evaluated * 100) if all_evaluated else None,
+        "mfe_positive_count": all_mfe_pos,
+        "mfe_positive_rate": (all_mfe_pos / all_evaluated * 100) if all_evaluated else None,
+        "tp1_count": all_tp1,
+        "tp1_rate": (all_tp1 / all_evaluated * 100) if all_evaluated else None,
+        "tp2_count": all_tp2,
+        "tp2_rate": (all_tp2 / all_evaluated * 100) if all_evaluated else None,
     }
     return {"paper_only": True, "notifications": result, "total": len(result),
             "breakdown": day_breakdown, "overall": overall_breakdown}

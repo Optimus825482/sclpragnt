@@ -109,7 +109,7 @@ function OverviewTab() {
     try {
       const [ovRes, ntRes, apRes] = await Promise.all([
         apiRequest(`${API_BASE}/api/reports/overview`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/reports/notifications?limit=200`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/reports/notifications?limit=200&confluence_min=4`, { cache: "no-store" }),
         apiRequest(`${API_BASE}/api/auto-paper/stats`, { cache: "no-store" }),
       ]);
       const [ov, nt, ap] = await Promise.all([ovRes.json(), ntRes.json(), apRes.json()]);
@@ -142,6 +142,7 @@ function OverviewTab() {
   }
 
   const o = overview?.overall || {};
+  const msStats = overview?.master_surge_stats || null;
   const symbols = overview?.symbols || [];
   const wins = rl(o.winning);
   const total = rl(o.trade_count);
@@ -152,6 +153,20 @@ function OverviewTab() {
 
   return (
     <div className="space-y-6">
+      {/* Master Surge Aktif Bilgi Çubuğu */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3.5 rounded-xl border border-amber-400/40 bg-amber-400/10 text-amber-200 font-mono text-xs shadow-lg">
+        <div className="flex items-center gap-2">
+          <span className="text-base animate-pulse">⚡</span>
+          <div>
+            <strong className="text-amber-300">YENİ SİSTEM AKTİF: Master Surge Engine</strong>
+            <span className="text-bunker-muted ml-1.5 hidden md:inline">4 Katmanlı Teyit, Likidite Koruması ve TP1 (+%1.2) Scalp Kâr Kilidi devrede.</span>
+          </div>
+        </div>
+        <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-amber-400/30 text-amber-300 font-bold">
+          ⚡ 4&apos;lü Teyit Korumalı
+        </span>
+      </div>
+
       {/* Üst Ana Metrikler */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <StatCard label="NET PNL (KÂR / ZARAR)" value={money(o.net_pnl)} tone={pnlTone(o.net_pnl)} sub={`Komisyon: ${plainMoney(o.commission)}`} icon="💰" />
@@ -166,34 +181,34 @@ function OverviewTab() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-bunker-800 pb-3">
             <div>
               <h2 className="font-mono text-base font-black text-neon-green flex items-center gap-2">
-                <span>🎯</span> RADAR BİLDİRİM &amp; HEDEF DOKUNUŞ BAŞARISI
+                <span>⚡</span> MASTER SURGE (4&apos;LÜ TEYİT) BAŞARI PERFORMANSI
               </h2>
               <p className="mt-0.5 text-xs text-bunker-muted">
-                Kapanmış 1 dakikalık mumlar üzerinden ölçülen gerçek MFE ve hedefe ulaşma performansı.
+                Yalnızca 4 katmanlı tam mutabakat sağlayan yüksek hassasiyetli fırsatların gerçekleşen MFE sonuçları.
               </p>
             </div>
             {overall?.success_rate != null && (
-              <span className="rounded-full bg-neon-green/15 border border-neon-green/40 px-3 py-1 font-mono text-xs font-bold text-neon-green">
-                Tüm Zamanlar Başarı: %{overall.success_rate.toFixed(1)}
+              <span className="rounded-full bg-amber-400/15 border border-amber-400/40 px-3 py-1 font-mono text-xs font-bold text-amber-300">
+                4&apos;lü Teyit Başarı: %{overall.success_rate.toFixed(1)}
               </span>
             )}
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <StatCard label="HEDEFE ULAŞTI" value={String(breakdown.counts?.["TAMAMEN BAŞARILI"] || 0)} tone="text-neon-green" icon="✓" />
-            <StatCard label="BAŞARILI" value={String(breakdown.counts?.["BAŞARILI"] || 0)} tone="text-neon-green" />
-            <StatCard label="KISMİ HAREKET" value={String(breakdown.counts?.["KISMİ"] || 0)} tone="text-yellow-300" />
+            <StatCard label="TP1 KÂR KİLİTLENDİ" value={breakdown.tp1_count != null ? `${breakdown.tp1_count}` : String(breakdown.counts?.["BAŞARILI"] || 0)} tone="text-neon-green" sub={breakdown.tp1_rate != null ? `%${breakdown.tp1_rate.toFixed(1)} (≥%1.2)` : undefined} icon="🔒" />
+            <StatCard label="POZİTİF HAREKET" value={breakdown.mfe_positive_count != null ? `${breakdown.mfe_positive_count}` : String(breakdown.counts?.["KISMİ"] || 0)} tone="text-neon-green" sub={breakdown.mfe_positive_rate != null ? `%${breakdown.mfe_positive_rate.toFixed(1)} Kazanç` : undefined} icon="📈" />
+            <StatCard label="TP2 ZİRVE KOŞUSU" value={breakdown.tp2_count != null ? `${breakdown.tp2_count}` : "0"} tone="text-amber-300" sub={breakdown.tp2_rate != null ? `%${breakdown.tp2_rate.toFixed(1)} (≥%3.0)` : undefined} icon="⚡" />
             <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.["BAŞARISIZ"] || 0)} tone="text-neon-red" icon="✗" />
-            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.["BEKLİYOR"] || 0) + (breakdown.counts?.["ÖLÇÜLEMEDİ"] || 0))} sub="Ufku dolmayanlar" />
             <StatCard label="ÖLÇÜLEN BAŞARI" value={overall?.success_rate != null ? `%${overall.success_rate.toFixed(1)}` : "—"} tone="text-sky-300" sub={`${overall?.success_count ?? 0}/${overall?.evaluated ?? 0} Ölçülen`} />
           </div>
 
           {breakdown.multi_source && breakdown.multi_source.evaluated > 0 && (
             <div className="pt-3 border-t border-bunker-800/80 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
-              <div className="rounded-lg border border-neon-green/40 bg-neon-green/10 px-3 py-1.5 text-neon-green font-bold">
-                ⚡ Çoklu Gösterge Teyitli Başarı: %{Number(breakdown.multi_source.success_rate ?? 0).toFixed(1)} ({breakdown.multi_source.success_count}/{breakdown.multi_source.evaluated} Hedefe Ulaşan)
+              <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-1.5 text-amber-300 font-bold">
+                ⚡ 4&apos;lü Gösterge Tam Mutabakat: %{Number(breakdown.multi_source.success_rate ?? 0).toFixed(1)} ({breakdown.multi_source.success_count}/{breakdown.multi_source.evaluated} Hedefe Ulaşan)
               </div>
-              <span className="text-bunker-muted">Tüm teknik göstergelerin (Hacim + MACD + Trend) ortak teyidi</span>
+              <span className="text-bunker-muted">Tüm teknik göstergelerin (Likidite + Volatilite + Balina CVD + Trend) ortak teyidi</span>
             </div>
           )}
         </section>
@@ -327,6 +342,13 @@ interface RadarBreakdown {
   evaluated?: number;
   success_count?: number;
   success_rate?: number | null;
+  mfe_positive_count?: number;
+  mfe_positive_rate?: number | null;
+  tp1_count?: number;
+  tp1_rate?: number | null;
+  tp2_count?: number;
+  tp2_rate?: number | null;
+  confluence_min?: number | null;
   unique_symbols?: number;
   symbol_counts?: SymbolCount[];
   dominant_symbol?: string | null;
@@ -340,6 +362,12 @@ interface RadarOverall {
   evaluated?: number;
   success_count?: number;
   success_rate?: number | null;
+  mfe_positive_count?: number;
+  mfe_positive_rate?: number | null;
+  tp1_count?: number;
+  tp1_rate?: number | null;
+  tp2_count?: number;
+  tp2_rate?: number | null;
 }
 
 function UserRadarTab() {
@@ -351,6 +379,7 @@ function UserRadarTab() {
   const [day, setDay] = useState<string>(() => localDateInput());
   const [search, setSearch] = useState("");
   const [minScore, setMinScore] = useState<number | null>(null);
+  const [confluenceFilter, setConfluenceFilter] = useState<"surge" | "all">("surge");
   const [scoreFilter, setScoreFilter] = useState<"system" | "high" | "all">("system");
   const [sortKey, setSortKey] = useState<string>("detected_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -364,6 +393,9 @@ function UserRadarTab() {
       const params = new URLSearchParams();
       params.set("limit", "1000");
       params.set("day", day);
+      if (confluenceFilter === "surge") {
+        params.set("confluence_min", "4");
+      }
       if (scoreFilter === "all") {
         params.set("min_score", "0");
       } else if (scoreFilter === "high") {
@@ -389,7 +421,7 @@ function UserRadarTab() {
     } finally {
       setLoading(false);
     }
-  }, [day, scoreFilter]);
+  }, [day, scoreFilter, confluenceFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -483,19 +515,23 @@ function UserRadarTab() {
 
           <div className="grid grid-cols-2 gap-3 sm:gap-4">
             <div className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-3 text-right">
-              <p className="eyebrow text-bunker-muted">SEÇİLEN GÜN BAŞARI</p>
-              <p className={`font-mono text-xl font-black ${breakdown?.success_rate != null && breakdown.success_rate >= 50 ? "text-neon-green" : "text-yellow-300"}`}>
-                {breakdown?.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"}
+              <p className="eyebrow text-bunker-muted">SEÇİLEN GÜN (TP1+ BAŞARI)</p>
+              <p className={`font-mono text-xl font-black ${(breakdown?.tp1_rate != null ? breakdown.tp1_rate : breakdown?.success_rate != null ? breakdown.success_rate : 0) >= 50 ? "text-neon-green" : "text-yellow-300"}`}>
+                {breakdown?.tp1_rate != null ? `%${breakdown.tp1_rate.toFixed(1)}` : breakdown?.success_rate != null ? `%${breakdown.success_rate.toFixed(1)}` : "—"}
               </p>
-              <p className="text-[10px] text-bunker-muted font-mono">{breakdown ? `${breakdown.success_count}/${breakdown.evaluated} Ölçülen` : ""}</p>
+              <p className="text-[10px] text-bunker-muted font-mono">
+                {breakdown ? `${breakdown.tp1_count != null ? breakdown.tp1_count : breakdown.success_count}/${breakdown.evaluated} Ölçülen` : ""}
+              </p>
             </div>
 
             <div className="rounded-xl border border-bunker-800 bg-bunker-900/60 p-3 text-right">
-              <p className="eyebrow text-bunker-muted">SİSTEM GENELİ</p>
-              <p className={`font-mono text-xl font-black ${overall?.success_rate != null && overall.success_rate >= 50 ? "text-neon-green" : "text-sky-300"}`}>
-                {overall?.success_rate != null ? `%${overall.success_rate.toFixed(1)}` : "—"}
+              <p className="eyebrow text-bunker-muted">SİSTEM GENELİ (TP1+ BAŞARI)</p>
+              <p className={`font-mono text-xl font-black ${(overall?.tp1_rate != null ? overall.tp1_rate : overall?.success_rate != null ? overall.success_rate : 0) >= 50 ? "text-neon-green" : "text-sky-300"}`}>
+                {overall?.tp1_rate != null ? `%${overall.tp1_rate.toFixed(1)}` : overall?.success_rate != null ? `%${overall.success_rate.toFixed(1)}` : "—"}
               </p>
-              <p className="text-[10px] text-bunker-muted font-mono">{overall ? `${overall.success_count}/${overall.evaluated} Ölçülen` : ""}</p>
+              <p className="text-[10px] text-bunker-muted font-mono">
+                {overall ? `${overall.tp1_count != null ? overall.tp1_count : overall.success_count}/${overall.evaluated} Ölçülen` : ""}
+              </p>
             </div>
           </div>
         </div>
@@ -504,10 +540,10 @@ function UserRadarTab() {
         {breakdown && (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-1">
             <StatCard label="HEDEFE ULAŞTI" value={String(breakdown.counts?.["TAMAMEN BAŞARILI"] || 0)} tone="text-neon-green" icon="✓" />
-            <StatCard label="BAŞARILI" value={String(breakdown.counts?.["BAŞARILI"] || 0)} tone="text-neon-green" />
-            <StatCard label="KISMİ" value={String(breakdown.counts?.["KISMİ"] || 0)} tone="text-yellow-300" />
+            <StatCard label="TP1 KİLİTLENDİ (≥%1.2)" value={String(breakdown.tp1_count || 0)} tone="text-neon-green" sub={`%${(breakdown.tp1_rate || 0).toFixed(1)} Başarı`} />
+            <StatCard label="POZİTİF HAREKET" value={String(breakdown.mfe_positive_count || 0)} tone="text-sky-300" sub={`%${(breakdown.mfe_positive_rate || 0).toFixed(1)} Pozitif MFE`} />
+            <StatCard label="TP2 ZİRVE KOŞUSU" value={String(breakdown.tp2_count || 0)} tone="text-neon-green" sub={`%${(breakdown.tp2_rate || 0).toFixed(1)} Koşu (≥%3)`} />
             <StatCard label="BAŞARISIZ" value={String(breakdown.counts?.["BAŞARISIZ"] || 0)} tone="text-neon-red" icon="✗" />
-            <StatCard label="BEKLİYOR" value={String((breakdown.counts?.["BEKLİYOR"] || 0) + (breakdown.counts?.["ÖLÇÜLEMEDİ"] || 0))} sub="Ölçüm devam ediyor" />
             <StatCard label="FARKLI SEMBOL" value={String(breakdown.unique_symbols ?? 0)} sub={breakdown.dominant_symbol ? `Lider: ${breakdown.dominant_symbol}` : ""} />
           </div>
         )}
@@ -520,14 +556,54 @@ function UserRadarTab() {
             <h2 className="font-mono text-base font-black text-neon-green flex items-center gap-2">
               <span>🎯</span> SİNYAL TESPİT VE SONUÇ LİSTESİ ({filtered.length})
             </h2>
-            {minScore != null && (
-              <p className="mt-0.5 font-mono text-[11px] text-bunker-muted">
-                Filtre: Yalnızca SKOR ≥ {Math.round(minScore)} olan teyitli bildirimler yer alır.
-              </p>
-            )}
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-mono">
+              {confluenceFilter === "surge" ? (
+                <span className="inline-flex items-center gap-1 rounded bg-neon-green/10 px-2 py-0.5 text-neon-green border border-neon-green/30">
+                  ⚡ <strong>Master Surge Aktif</strong>: Yalnızca 4&apos;lü Teyit Sinyalleri
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 rounded bg-amber-400/10 px-2 py-0.5 text-amber-300 border border-amber-400/30">
+                  📋 <strong>Arşiv Modu</strong>: Geçmiş ve eski 3&apos;lü teyitler dahil tüm kayıtlar
+                </span>
+              )}
+              {minScore != null && (
+                <span className="text-bunker-muted">
+                  Eşik: SKOR ≥ {Math.round(minScore)}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Sistem / Arşiv Modu Seçimi */}
+            <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
+              <button
+                type="button"
+                onClick={() => { setConfluenceFilter("surge"); setPage(0); }}
+                className={`rounded-lg px-2.5 py-1 transition-all ${
+                  confluenceFilter === "surge"
+                    ? "bg-neon-green/20 text-neon-green font-bold border border-neon-green/40 shadow-sm"
+                    : "text-bunker-muted hover:text-white"
+                }`}
+                title="Yeni Master Surge mimarisi: 4'lü Teyit ile filtrelenmiş yüksek güvenli sinyaller"
+              >
+                ⚡ 4&apos;lü Teyit (Master Surge)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setConfluenceFilter("all"); setPage(0); }}
+                className={`rounded-lg px-2.5 py-1 transition-all ${
+                  confluenceFilter === "all"
+                    ? "bg-amber-400/20 text-amber-300 font-bold border border-amber-400/40 shadow-sm"
+                    : "text-bunker-muted hover:text-white"
+                }`}
+                title="Geçmiş tüm kayıtlar (Eski 3'lü teyitler silinmez, burada incelenebilir)"
+              >
+                📋 Tüm Kayıtlar (Arşiv)
+              </button>
+            </div>
+
+            {/* Skor Filtresi */}
             <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
               <button
                 type="button"
@@ -537,9 +613,9 @@ function UserRadarTab() {
                     ? "bg-neon-green/20 text-neon-green font-bold border border-neon-green/40 shadow-sm"
                     : "text-bunker-muted hover:text-white"
                 }`}
-                title="Yalnızca sistem eşiği (≥70) ve üstü bildirimler"
+                title="Yalnızca sistem eşiği ve üstü bildirimler"
               >
-                🎯 Eşik (≥{minScore != null ? Math.round(minScore) : 70})
+                🎯 Eşik
               </button>
               <button
                 type="button"
@@ -558,12 +634,12 @@ function UserRadarTab() {
                 onClick={() => { setScoreFilter("all"); setPage(0); }}
                 className={`rounded-lg px-2.5 py-1 transition-all ${
                   scoreFilter === "all"
-                    ? "bg-amber-400/20 text-amber-300 font-bold border border-amber-400/40 shadow-sm"
+                    ? "bg-bunker-800 text-white font-bold border border-bunker-600 shadow-sm"
                     : "text-bunker-muted hover:text-white"
                 }`}
-                title="Tüm sinyal bildirimlerini göster"
+                title="Tüm skor seviyeleri"
               >
-                📋 Tümü
+                Tümü
               </button>
             </div>
 
@@ -643,11 +719,21 @@ function UserRadarTab() {
                           {netPct != null ? `${netPct >= 0 ? "+" : ""}${netPct.toFixed(2)}%` : "—"}
                         </td>
                         <td>
-                          {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">TAMAMEN</Badge>
-                            : n.status === "BAŞARILI" ? <Badge tone="ok">BAŞARILI</Badge>
-                            : n.status === "KISMİ" ? <Badge tone="warn">KISMİ</Badge>
-                            : n.status === "BAŞARISIZ" ? <Badge tone="bad">BAŞARISIZ</Badge>
-                            : <Badge>BEKLİYOR</Badge>}
+                          {n.status === "TAMAMEN BAŞARILI" ? (
+                            <Badge tone="ok">TAMAMEN</Badge>
+                          ) : (mfePct != null && mfePct >= 3.0) ? (
+                            <Badge tone="ok">TP2 KOŞUSU</Badge>
+                          ) : (mfePct != null && mfePct >= 1.2) ? (
+                            <Badge tone="ok">TP1 KİLİTLENDİ</Badge>
+                          ) : n.status === "BAŞARILI" ? (
+                            <Badge tone="ok">BAŞARILI</Badge>
+                          ) : n.status === "KISMİ" ? (
+                            <Badge tone="warn">KISMİ (+{mfePct?.toFixed(1)}%)</Badge>
+                          ) : n.status === "BAŞARISIZ" ? (
+                            <Badge tone="bad">BAŞARISIZ</Badge>
+                          ) : (
+                            <Badge>BEKLİYOR</Badge>
+                          )}
                         </td>
                       </tr>
                     );
@@ -768,23 +854,52 @@ function UserPositionsTab() {
                 <tr>
                   <th>Kapanış Zamanı</th>
                   <th>Sembol</th>
-                  <th>Strateji</th>
+                  <th>Strateji / Teyit</th>
+                  <th>Çıkış Nedeni</th>
                   <th className="text-right">Gerçekleşen K/Z</th>
                   <th className="text-right">K/Z Yüzdesi</th>
                 </tr>
               </thead>
               <tbody>
-                {trades.map((t: any) => (
-                  <tr key={t.id}>
-                    <td className="font-mono text-xs text-bunker-muted">{fmtDt(t.exit_time || t.entry_time)}</td>
-                    <td><SymbolLink symbol={t.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
-                    <td className="font-mono text-xs text-bunker-muted">{strategyLabel(t.strategy)}</td>
-                    <td className={`text-right tabular-nums font-mono text-xs font-bold ${pnlTone(t.pnl)}`}>{money(t.pnl)}</td>
-                    <td className={`text-right tabular-nums font-mono text-xs font-bold ${pnlTone(t.pnl_pct)}`}>
-                      {t.pnl_pct != null ? `${t.pnl_pct >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%` : "—"}
-                    </td>
-                  </tr>
-                ))}
+                {trades.map((t: any) => {
+                  const is4Way = Boolean(t.confluence_4way);
+                  const reason = String(t.exit_reason || "AUTO");
+                  const reasonBadge = reason.includes("TP1") ? (
+                    <Badge tone="ok">TP1 KİLİTLENDİ</Badge>
+                  ) : reason.includes("TP2") || reason.includes("TAKE_PROFIT") ? (
+                    <Badge tone="ok">TP2 HEDEF</Badge>
+                  ) : reason.includes("TRAILING") || reason.includes("BREAKEVEN") ? (
+                    <Badge tone="ok">KÂR KORUMA</Badge>
+                  ) : reason.includes("STOP") ? (
+                    <Badge tone="bad">STOP LOSS</Badge>
+                  ) : reason.includes("TIME") ? (
+                    <Badge tone="warn">ZAMAN AŞIMI</Badge>
+                  ) : (
+                    <Badge>{reason}</Badge>
+                  );
+
+                  return (
+                    <tr key={t.id}>
+                      <td className="font-mono text-xs text-bunker-muted">{fmtDt(t.exit_time || t.entry_time)}</td>
+                      <td><SymbolLink symbol={t.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
+                      <td className="font-mono text-xs text-bunker-muted">
+                        <div className="flex items-center gap-1.5">
+                          <span>{strategyLabel(t.strategy)}</span>
+                          {is4Way && (
+                            <span className="rounded bg-neon-green/15 text-neon-green px-1.5 py-0.2 text-[10px] font-bold border border-neon-green/30">
+                              ⚡ 4&apos;lü
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="font-mono text-xs">{reasonBadge}</td>
+                      <td className={`text-right tabular-nums font-mono text-xs font-bold ${pnlTone(t.pnl)}`}>{money(t.pnl)}</td>
+                      <td className={`text-right tabular-nums font-mono text-xs font-bold ${pnlTone(t.pnl_pct)}`}>
+                        {t.pnl_pct != null ? `${t.pnl_pct >= 0 ? "+" : ""}${Number(t.pnl_pct).toFixed(2)}%` : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
