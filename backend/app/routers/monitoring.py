@@ -1084,6 +1084,13 @@ async def _notify(candidates_list, settings) -> list:
                 continue
         if min_target > 0 and target < min_target:
             continue
+
+        # ANA MOTOR GEÇİŞ KONTROLÜ (2026-09-22 Erkan Kararı):
+        # 3'lü teyitler veya eksik çoklu teyitler ne push atar ne de bildirim üretir!
+        # Çoklu kaynaklı (birleşik sinyal / füzyon) adaylarda 3'lü teyit elenir.
+        sources = c.get("sources") or c.get("unified_sources")
+        if isinstance(sources, list) and 1 < len(sources) < 4:
+            continue
         # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
         # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
         # ayni kayit guncellenir. (monitoring_notifications'ta status kolonu yok;
@@ -1324,16 +1331,11 @@ async def _deliver_scan_notifications(notified: list) -> None:
         logger.info("Monitoring: sessiz saatlerde %d bildirim push kuyruğuna alındı", len(new_notifs))
         for notif in new_notifs:
             _deferred_push.append(notif)
-    # Otonom Paper Trade: YALNIZCA PUSH İLETİLEN bildirimlerde pozisyon aç.
-    # 2026-09-21 Erkan kararı: sent_via_push=True olmayan sinyaller (PANEL UYARISI)
-    # otonom işlem açmaz — yalnızca kullanıcıya push ulaştığında sistem devreye girer.
+    # Otonom Paper Trade: Ana motoru geçip bildirim üreten her geçerli fırsatta pozisyon aç!
+    # (2026-09-22 Erkan Kararı: Bildirim varsa otonom işlem açılır; sent_via_push bağımlılığı kaldırıldı).
     try:
         from app.routers.auto_paper import try_open_from_notification
         for notif in new_notifs:
-            if not notif.get("sent_via_push"):
-                logger.debug("auto_paper atlandı (%s): sent_via_push=False (PANEL UYARISI)",
-                             notif.get("symbol"))
-                continue
             try:
                 await try_open_from_notification(notif)
             except Exception as exc:
@@ -1424,6 +1426,12 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     min_target = float(settings.get("min_target_pct") or 0)
     if min_target > 0 and float(candidate.get("target_pct") or 0) < min_target:
         return None
+
+    # 2026-09-22 Erkan Kararı: 3'lü teyitler ne push atar ne de bildirim üretir!
+    cand_sources = candidate.get("sources") or candidate.get("unified_sources")
+    if isinstance(cand_sources, list) and 1 < len(cand_sources) < 4:
+        return None
+
     # Radar kuralı D-05: tazeliği doğrulanmış ticker yoksa adayın fiyatı.
     tick_px = _ticker_price(sym)
     if tick_px:
@@ -1477,7 +1485,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
         notif["sources"].append(kind)
     vapid_configured = bool(os.getenv("VAPID_PRIVATE_KEY", "").strip())
     sources = notif.get("sources")
-    if vapid_configured and isinstance(sources, list) and len(sources) >= 4:
+    if vapid_configured:
         ok = await _send_push(notif)
         notif["push_success"] = ok
         if ok:
@@ -1492,10 +1500,7 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
         notif["push_success"] = False
     try:
         from app.routers.auto_paper import try_open_from_notification
-        if notif.get("sent_via_push"):
-            await try_open_from_notification(notif)
-        else:
-            logger.debug("fast auto_paper atlandı (%s): sent_via_push=False", sym)
+        await try_open_from_notification(notif)
     except Exception as exc:
         logger.debug("fast auto_paper %s: %s", sym, exc)
     try:
