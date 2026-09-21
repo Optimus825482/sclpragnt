@@ -290,6 +290,12 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
             price_f = float(price) if price is not None else None
         except (TypeError, ValueError):
             price_f = None
+        from app.routers.velocity import dynamic_target_pct
+        target = dynamic_target_pct(
+            score=score,
+            base_target_pct=float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2),
+            panel_score=True,
+        )
         fusion_only.append({
             "symbol": sym,
             "velocity_score": 0.0,
@@ -299,7 +305,7 @@ def enrich_candidates(candidates: list[dict], min_fusion_score: float | None = N
             "source": "fusion",
             "macd_context": context,
             "price": price_f,
-            "target_pct": float(getattr(config, "RISING_TARGET_PCT", 2.0) or 2.0),
+            "target_pct": target,
             "horizon_minutes": 5,
             "mode": "unified",
             "upside_rank": 0.0,
@@ -346,9 +352,15 @@ def build_fusion_candidate(symbol: str, kind: str,
         price_f = float(price) if price is not None else None
     except (TypeError, ValueError):
         price_f = None
-    target = float(getattr(config, "RISING_TARGET_PCT", 2.0) or 2.0)
     if velocity_candidate and velocity_candidate.get("target_pct"):
         target = float(velocity_candidate.get("target_pct"))
+    else:
+        from app.routers.velocity import dynamic_target_pct
+        target = dynamic_target_pct(
+            score=score,
+            base_target_pct=float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2),
+            panel_score=True,
+        )
     return {
         "symbol": sym,
         "unified_score": score,

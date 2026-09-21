@@ -282,19 +282,26 @@ def get_last_fired_detail(symbol: str) -> dict | None:
 
 
 def changed_since_last_fire(candidate: dict, price: float,
-                             min_target_change_pct: float = 0.2,
-                             min_score_change: float = 5.0) -> dict | None:
+                             min_target_change_pct: float = 0.5,
+                             min_score_change: float = 15.0,
+                             min_update_interval_sec: float = 300.0) -> dict | None:
     """Son bildirime göre anlamlı değişim var mı? (UPDATE kararı)
 
-    Dönüş:
-    - None → değişim yok (UPDATE gönderme)
-    - dict → değişim bilgisi (UPDATE mesajına ekle):
-      {"target_delta": ±float, "score_delta": ±float, "reason": str}
+    Spam ve Flood Koruması (2026-09-21):
+    - Son bildirimden bu yana en az `min_update_interval_sec` (5 dk) geçmelidir.
+    - Sadece anlamlı yukarı yönlü güçlenme (score_delta >= 15.0) veya hedef artışı (target_delta >= 0.5)
+      güncelleme tetikleyebilir. Küçük gürültüler veya zayıflamalar push göndermez.
     """
     symbol = str(candidate.get("symbol") or "")
     last = _last_fired_detail.get(symbol)
     if last is None:
         return None
+
+    now = time.time()
+    last_detected = float(last.get("detected_at") or 0.0)
+    if now - last_detected < min_update_interval_sec:
+        return None
+
     new_target = float(candidate.get("target_pct") or 0.0)
     new_score = float(candidate.get("score") or 0.0)
     old_target = float(last.get("target_pct") or 0.0)
@@ -304,12 +311,10 @@ def changed_since_last_fire(candidate: dict, price: float,
     score_delta = new_score - old_score
 
     reasons = []
-    if old_target > 0 and abs(target_delta) >= min_target_change_pct:
-        direction = "arttı ▲" if target_delta > 0 else "azaldı ▼"
-        reasons.append(f"Hedef {direction} %{abs(target_delta):.2f}")
-    if abs(score_delta) >= min_score_change:
-        direction = "güçlendi ▲" if score_delta > 0 else "zayıfladı ▼"
-        reasons.append(f"Sinyal {direction} ({score_delta:+.0f})")
+    if old_target > 0 and target_delta >= min_target_change_pct:
+        reasons.append(f"Hedef arttı ▲ %{target_delta:.2f}")
+    if score_delta >= min_score_change:
+        reasons.append(f"Sinyal güçlendi ▲ (+{score_delta:.0f})")
 
     if not reasons:
         return None
@@ -409,7 +414,7 @@ def _candidate(symbol: str, row: dict, kind: str) -> dict:
         "green": green_count(row),
         "tier": row.get("tier"),
         "signals": _signals_from_row(row),
-        "target_pct": float(getattr(config, "RISING_TARGET_PCT", 2.0) or 2.0),
+        "target_pct": float(getattr(config, "RISING_TARGET_PCT", 2.2) or 2.2),
         "tf": "5m",
         "source": "macd_snapshot",
     }
