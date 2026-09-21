@@ -72,20 +72,16 @@ const SOURCE_BADGE_COMPACT: Record<string, string> = {
 
 function SourceBadges({ sources, compact = false }: { sources?: string[] | null; compact?: boolean }) {
   const list = (sources || []).filter((s) => typeof s === "string" && s);
-  if (!list.length) {
-    return <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${SOURCE_BADGE_META.velocity.cls}`}>RADAR</span>;
+  if (list.length >= 2) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded border border-neon-green/40 bg-neon-green/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-neon-green" title={`Çoklu Gösterge Teyidi: ${list.length} sinyal destekliyor`}>
+        ⚡ {list.length}&apos;li Teyit
+      </span>
+    );
   }
   return (
-    <span className={compact ? "inline-flex flex-wrap items-center gap-1" : "inline-flex flex-wrap gap-1"}>
-      {list.map((s) => {
-        const meta = SOURCE_BADGE_META[s] || { label: s.toUpperCase(), cls: "border-bunker-600 bg-bunker-800/50 text-bunker-muted" };
-        const label = compact ? (SOURCE_BADGE_COMPACT[s] || meta.label) : meta.label;
-        return (
-          <span key={s} title={meta.label} className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-bold ${meta.cls}`}>
-            {label}
-          </span>
-        );
-      })}
+    <span className="inline-flex items-center rounded border border-sky-400/40 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-300">
+      Ana Algoritma
     </span>
   );
 }
@@ -185,23 +181,12 @@ function OverviewTab() {
             <StatCard label="ÖLÇÜLEN BAŞARI" value={overall?.success_rate != null ? `%${overall.success_rate.toFixed(1)}` : "—"} tone="text-sky-300" sub={`${overall?.success_count ?? 0}/${overall?.evaluated ?? 0} Ölçülen`} />
           </div>
 
-          {(breakdown.by_source || breakdown.multi_source) && (
+          {breakdown.multi_source && breakdown.multi_source.evaluated > 0 && (
             <div className="pt-3 border-t border-bunker-800/80 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-bunker-muted">Kaynak Dağılımı:</span>
-                {Object.entries(breakdown.by_source || {}).map(([src, count]) => (
-                  <span key={src} className="flex items-center gap-1.5 bg-bunker-900 border border-bunker-800 rounded-lg px-2 py-1">
-                    <SourceBadges sources={[src]} compact />
-                    <span className="text-white font-bold">{String(count)}</span>
-                  </span>
-                ))}
+              <div className="rounded-lg border border-neon-green/40 bg-neon-green/10 px-3 py-1.5 text-neon-green font-bold">
+                ⚡ Çoklu Gösterge Teyitli Başarı: %{Number(breakdown.multi_source.success_rate ?? 0).toFixed(1)} ({breakdown.multi_source.success_count}/{breakdown.multi_source.evaluated} Hedefe Ulaşan)
               </div>
-
-              {breakdown.multi_source && breakdown.multi_source.evaluated > 0 && (
-                <div className="rounded-lg border border-sky-400/40 bg-sky-400/10 px-3 py-1 text-sky-300 font-bold">
-                  ⚡ Çoklu Kaynak Teyidi: %{Number(breakdown.multi_source.success_rate ?? 0).toFixed(1)} Başarı ({breakdown.multi_source.success_count}/{breakdown.multi_source.evaluated})
-                </div>
-              )}
+              <span className="text-bunker-muted">Tüm teknik göstergelerin (Hacim + MACD + Trend) ortak teyidi</span>
             </div>
           )}
         </section>
@@ -607,7 +592,7 @@ function UserRadarTab() {
                   <tr>
                     <SortHeader label="Zaman" field="time" />
                     <SortHeader label="Sembol" field="symbol" />
-                    <th>Tespit Kaynağı</th>
+                    <th>Algoritma Teyidi</th>
                     <SortHeader label="Giriş Fiyatı" field="price" />
                     <SortHeader label="Skor" field="score" />
                     <SortHeader label="Ufuk" field="horizon_minutes" />

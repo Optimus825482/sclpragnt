@@ -889,9 +889,8 @@ def _build_notification(sym, c, settings, first_price: float | None = None) -> d
     horizon = int(c.get("horizon_minutes", 5) or 5)
     ml_prob = c.get("ml_hit_probability")
     ml_pct_str = f" | ML %{ml_prob * 100:.0f}" if ml_prob is not None else ""
-    src_str = f" | Kaynak: {source_txt}" if source_txt else ""
     message = (
-        f"🎯 {sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str}{src_str} | "
+        f"🎯 {sym} | Skor: {score:.1f} | Potansiyel: +%{target:g} ({horizon}dk){ml_pct_str} | "
         f"Anlık: {base_price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
     )
     return {
@@ -1567,13 +1566,13 @@ def _build_rising_notification(candidate: dict, price: float) -> dict:
     expected_price = price * (1 + target / 100) if price > 0 else 0.0
     now = time.time()
     message = (
-        f"📈 {symbol} | {label} | Skor {score:.0f}{prox_txt} | "
+        f"🎯 {symbol} | Skor: {score:.1f} | Potansiyel: +%{target:g} (5dk){prox_txt} | "
         f"Anlık: {price:.6f} TRY | Beklenen: {expected_price:.6f} TRY"
     )
     return {
         "symbol": symbol,
         "message": message,
-        "title": f"📈 {symbol} · {label}",
+        "title": f"🎯 {symbol} +%{target:g} potansiyel",
         "url": f"/charts?symbol={symbol}",
         "tag": f"rising-{symbol}",
         "detected_at": now,
@@ -2573,7 +2572,7 @@ async def report_notifications(limit: int = 200, day: str = None, min_score: flo
     all_rows = await database.get_monitoring_velocity_matches(limit=None, day=None)
     # Genel başarı da aynı global eşiğe tabi (gürültü oranları dışarıda kalır);
     # eski kayıtlar için tek kez normalize uygulanır (bkz. _stored_panel_score).
-    all_rows = [r for r in all_rows if _stored_panel_score(r) >= min_score]
+    all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
     all_evaluated = 0
     all_success = 0
     for r in all_rows:

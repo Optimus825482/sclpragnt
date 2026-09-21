@@ -2583,7 +2583,7 @@ async def _symbol_quick_context(symbol: str) -> dict | None:
             live_snapshot = await deep_analyze_symbol({"symbol": sym, "timeframe": "5m"})
         except Exception:
             pass
-    if not ticker.get("last_price") and not macd_row and not candidate and not live_snapshot:
+    if not ticker.get("last_price") and not macd_row and not candidate and not (live_snapshot and live_snapshot.get("data_ready")):
         return None
     quick = {
         "quick_lane": True,
