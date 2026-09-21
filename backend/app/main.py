@@ -2348,8 +2348,6 @@ async def binance_account_push_loop():
                     # Bakiye
                     balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
                     non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
-                    # Önbelleği de güncelle (REST fallback için)
-                    _binance_account_cache[api_key] = (time.time() + _BINANCE_ACCOUNT_CACHE_TTL, non_zero)
                     # Pozisyonlar — fiyat tablosu
                     held = []
                     for b in balances:
@@ -2634,29 +2632,15 @@ async def _decrypt_binance_creds(request) -> tuple[str, str]:
     raise HTTPException(status_code=404, detail="Binance API anahtarları yapılandırılmamış — Ayarlar'dan kendi API anahtarlarınızı girin")
 
 
-# Hesap bakiyesi önbelleği: (api_key → (expire_ts, payload))
-# Binance TR rate limit'ten kaynaklanan aralıklı 502'leri önler.
-_binance_account_cache: dict[str, tuple[float, list]] = {}
-_BINANCE_ACCOUNT_CACHE_TTL = 30.0  # saniye
-
 @app.get("/api/binance/account")
 async def binance_account(request: Request):
     """Binance TR hesap bakiyesi (salt okunur, oturum açmış kullanıcı)."""
     api_key, api_secret = await _decrypt_binance_creds(request)
-    now_ts = time.time()
-    cached = _binance_account_cache.get(api_key)
-    if cached and cached[0] > now_ts:
-        return {"balances": cached[1], "cached": True}
     try:
         balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
         non_zero = [b for b in balances if float(b.get("free", 0) or 0) > 0 or float(b.get("locked", 0) or 0) > 0]
-        _binance_account_cache[api_key] = (now_ts + _BINANCE_ACCOUNT_CACHE_TTL, non_zero)
         return {"balances": non_zero}
     except Exception as exc:
-        # Önbellekte eski veri varsa döndür (geçici Binance hatası)
-        if cached:
-            logger.warning("Binance TR hesap bilgisi alınamadı, önbellek kullanılıyor: %s", exc)
-            return {"balances": cached[1], "cached": True, "stale": True}
         raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
 
 @app.get("/api/binance/positions")
@@ -2673,17 +2657,9 @@ async def binance_positions(request: Request):
         raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı")
     user_id = int(user["id"])
     api_key, api_secret = await _decrypt_binance_creds(request)
-    now_ts = time.time()
-    _pos_cache_key = (api_key, user_id)
-    _pos_cached = getattr(app.state, "_binance_positions_cache", {}).get(_pos_cache_key)
-    if _pos_cached and _pos_cached[0] > now_ts:
-        return {"holdings": _pos_cached[1], "cached": True}
     try:
         balances = await asyncio.to_thread(get_account_balance, api_key, api_secret)
     except Exception as exc:
-        if _pos_cached:
-            logger.warning("Binance TR hesap bilgisi alınamadı, pozisyon önbelleği kullanılıyor: %s", exc)
-            return {"holdings": _pos_cached[1], "cached": True, "stale": True}
         raise HTTPException(status_code=502, detail=f"Binance TR hesap bilgisi alınamadı: {exc}")
     holdings: list[dict] = []
     held = []
@@ -2789,12 +2765,7 @@ async def binance_positions(request: Request):
         h["active_tp_price"] = float(tp_order.get("price")) if tp_order else None
 
     holdings.sort(key=lambda h: (h["value_try"] is None, -(h["value_try"] or 0)))
-    result_payload = {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
-    # Önbelleğe kaydet
-    if not hasattr(app.state, "_binance_positions_cache"):
-        app.state._binance_positions_cache = {}
-    app.state._binance_positions_cache[_pos_cache_key] = (time.time() + _BINANCE_ACCOUNT_CACHE_TTL, holdings)
-    return result_payload
+    return {"holdings": holdings, "total_value_try": round(sum(h["value_try"] or 0 for h in holdings), 2)}
 
 
 def _avg_buy_cost(user_id: int, api_key: str, api_secret: str, asset: str, symbol_concat: str, now: float) -> dict | None:
