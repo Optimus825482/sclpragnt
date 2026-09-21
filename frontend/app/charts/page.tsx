@@ -2020,7 +2020,7 @@ export default function ChartsPage() {
                 <button
                     type="button"
                     onClick={() => setAssistantOpen(true)}
-                    className="fixed bottom-5 right-5 z-[80] flex items-center gap-2 rounded-full border border-cyan-400/60 bg-cyan-600/90 hover:bg-cyan-500 text-white px-4 py-2.5 shadow-xl shadow-cyan-950/60 transition-all hover:scale-105 active:scale-95 font-sans font-bold text-xs"
+                    className="fixed bottom-20 md:bottom-5 right-4 md:right-5 z-[80] flex items-center gap-2 rounded-full border border-cyan-400/60 bg-cyan-600/90 hover:bg-cyan-500 text-white px-4 py-2.5 shadow-xl shadow-cyan-950/60 transition-all hover:scale-105 active:scale-95 font-sans font-bold text-xs"
                     title={`${symbol} Grafik Asistanını Aç`}
                 >
                     <span className="text-base">🤖</span>
