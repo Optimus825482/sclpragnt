@@ -368,6 +368,7 @@ function BinanceTrPageInner() {
   }, [configured, refreshAccountData]);
 
   useVisibleInterval(refreshAccountData, configured ? 10_000 : null);
+  useVisibleInterval(loadTrades, configured && tradeDay ? 20_000 : null);
 
   useEffect(() => {
     if (configured && tradeDay) loadTrades();
@@ -2389,6 +2390,7 @@ function BinanceTrPageInner() {
           {chartFor && (
             <BinancePositionChartModal
               holding={chartFor}
+              livePrice={liveTicks[chartFor.asset]?.price ?? null}
               onClose={() => setChartFor(null)}
               onOrderUpdated={() => {
                 loadAcct();
