@@ -165,15 +165,8 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
                         symbol, score, min_score)
             return None
 
-        # Sinyal teyit / gürültü filtresi (P1 - 2026-09-21 Erkan kararı):
-        # Çoklu gösterge teyitlerinde 3'lü teyit ve altındaki sinyallere pozisyon AÇILMAZ.
-        # Yalnızca 4 bağımsız algoritmanın (velocity + jump + early + rising)
-        # tam mutabakat sağladığı 4'lü teyit sinyallerine otonom alım yapılır.
-        sources = notification.get("sources")
-        if sources is not None and isinstance(sources, list) and 1 < len(sources) < 4:
-            logger.info("auto_paper %s: teyit sayısı %d < 4 — yalnızca 4'lü teyit işleme alınır, açılmadı",
-                        symbol, len(sources))
-            return _blocked(symbol, "low_confluence", sources_count=len(sources))
+        # Sinyal teyit kontrolü: Panel veya Push ile gelen tüm geçerli bildirimler
+        # açık pozisyon yoksa otonom işleme alınır (2026-09-22 Erkan Kararı).
 
         # R3-08 (P1): aday PANEL EŞİĞİNİ geçmiş olmalı (passing-only). Monitoring
         # yalnızca passing adayları bildirir; burada `passes` bayrağı açıkça False
