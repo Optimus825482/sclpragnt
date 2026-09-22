@@ -1841,8 +1841,15 @@ function AutoPaperSettingsPanel() {
           <input type="number" min="1" max="30" disabled={pending} value={draft.max_open_positions ?? 8} onChange={(e) => set("max_open_positions", Number(e.target.value))} className="input" />
         </div>
         <div>
+          <label className="text-xs font-mono text-bunker-muted block mb-1">Başabaş (Breakeven) Koruması</label>
+          <select disabled={pending} value={draft.breakeven_enabled ? "1" : "0"} onChange={(e) => set("breakeven_enabled", e.target.value === "1")} className="input">
+            <option value="0">Kapalı (Tavsiye Edilen - Erken Kâr Kapanışını Önler)</option>
+            <option value="1">Açık</option>
+          </select>
+        </div>
+        <div>
           <label className="text-xs font-mono text-bunker-muted block mb-1">Breakeven Tetikleme (%)</label>
-          <input type="number" min="0.5" max="10" step="0.1" disabled={pending} value={draft.breakeven_trigger_pct ?? 1.5} onChange={(e) => set("breakeven_trigger_pct", Number(e.target.value))} className="input" />
+          <input type="number" min="0.5" max="10" step="0.1" disabled={pending || !draft.breakeven_enabled} value={draft.breakeven_trigger_pct ?? 1.5} onChange={(e) => set("breakeven_trigger_pct", Number(e.target.value))} className="input" />
         </div>
         <div className="md:col-span-2 border-t border-bunker-800 pt-3">
           <label className="text-xs font-mono text-neon-green block mb-2">TRAILING STOP MODÜLÜ</label>

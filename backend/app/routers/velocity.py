@@ -37,7 +37,7 @@ router = APIRouter()
 # (`VELOCITY_MIN_ATR_PCT`) > bu sabit. Global eşik için DB anahtarı KALICI
 # YAZILMAZ (yalnızca profil anahtarları `velocity_min_atr_pct_5m/_15m` yazılır);
 # bu yüzden restart'ta env/sabit değerine döner — bilinçli ve belgelenmiş.
-VELOCITY_MIN_ATR_PCT = float(os.getenv("VELOCITY_MIN_ATR_PCT", "0.30"))  # 1m ATR% ≥ 0.30 → yüksek salınım rejimi (her iki mod)
+VELOCITY_MIN_ATR_PCT = float(os.getenv("VELOCITY_MIN_ATR_PCT", "0.25"))  # 1m ATR% ≥ 0.25 → yüksek salınım rejimi (her iki mod)
 VELOCITY_MIN_BB_WIDTH_PCT = 2.5    # Bollinger(20,2) genişliği ≥ %2.5 (d=+0.73, en güçlü)
 VELOCITY_TREND_RSI_MIN = 60.0      # trend-içi mod: RSI ≥ 60 (momentum devam)
 VELOCITY_REVERSAL_RSI_MAX = 35.0   # V-dönüşü mod: RSI ≤ 35 (aşırı satımdan sıçrama)
@@ -411,6 +411,9 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             aroon_up = aroon["up"] if aroon else None
             aroon_down = aroon["down"] if aroon else None
             ret3 = (closes[-1] / closes[-4] - 1) * 100 if len(closes) >= 4 else 0.0
+            ret5 = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0.0
+            short_atr_val = _atr(highs, lows, closes, 3)
+            short_atr_pct = (short_atr_val / price * 100) if (short_atr_val and price) else 0.0
             # Mod tespiti: RSI iki ucundan biri
             if rsi is None:
                 return None
@@ -439,10 +442,18 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             upper_zscore = float(wick_info.get("upper_zscore", 0.0)) if isinstance(wick_info, dict) else 0.0
             rejection_wick = bool(wick_info.get("signal") == "bearish_rejection" or (closes[-1] <= opens[-1] and upper_wick_ratio >= 0.60 and upper_zscore >= 2.0))
 
+            # Kırılma / Ani Volatilite Patlaması Tespiti (2026-09-22):
+            # 14-bar ATR, ani başlayan rallilerde geçmiş durgun/yatay mumlar yüzünden
+            # matematiksel olarak gecikmeli yükselir. Son 3-5 mumda ani patlama varsa
+            # (ret3 >= 1.0% veya ret5 >= 1.8% veya 3-bar ATR >= 0.45%),
+            # sistem bu kırılmayı "ATR yetersiz" diyerek kaçırmaz.
+            is_breakout = bool(ret3 >= 1.0 or ret5 >= 1.8 or short_atr_pct >= 0.45)
+            atr_passes = bool(atr_pct >= prof_atr or (is_breakout and atr_pct >= min(VELOCITY_MIN_ATR_PCT, 0.25)))
+
             # notr modu (RSI 35-60) da aday olabilir: yalnızca yapısal teyit (struct_ok) aranir.
             passes = (exhausted is None and
                       not rejection_wick and
-                      atr_pct >= prof_atr and
+                      atr_passes and
                       bb_width is not None and bb_width >= VELOCITY_MIN_BB_WIDTH_PCT and
                       mode is not None and
                       # ret3 saf yüzde formuyla yukarıda hesaplandı; eski
@@ -457,7 +468,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                     block_reason = exhausted  # örn. mfi_asiri_alim:85
                 elif rejection_wick:
                     block_reason = f"ust_fitil_tuzagi:wick_{upper_wick_ratio:.2f}_z{upper_zscore:.1f}"
-                elif atr_pct < prof_atr:
+                elif not atr_passes:
                     block_reason = f"atr_yetersiz:{atr_pct:.2f}%<{prof_atr:.2f}%"
                 elif bb_width is None or bb_width < VELOCITY_MIN_BB_WIDTH_PCT:
                     block_reason = f"bb_genisligi_yetersiz:{bb_width:.2f}%" if bb_width else "bb_verisi_yok"
@@ -474,10 +485,8 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                                          (aroon_up or 0) / 50.0)
             # Saturation kaldirildi (2026-09-07)
             atr_ratio = (atr_pct / prof_atr) if prof_atr else 0.0
-            # NOT (2026-09-06): ret3 (3 mum) kısa düzeltmelerde negatife dönüp
-            # skoru çökertiyordu. ret5 (5 mum, daha kararlı) da hesaplanıp ikisinin
-            # maksimumu kullanılır — böylece kısa geri çekilme momentum skorunu öldürmez.
-            ret5 = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0.0
+            # Momentum hesabı: ret3 (3 mum) ve ret5 (5 mum) maksimumu kullanılır —
+            # böylece kısa geri çekilme momentum skorunu öldürmez.
             # V-donusu icin slope tabanli momentum (2026-09-07):
             # ret3+ret5 pozitifse momentum devam eder; degilse son 3 bar egimi kullanilir.
             if ret3 > 0 or ret5 > 0:
@@ -870,9 +879,9 @@ _velocity_learning_state = {"last_run_at": None, "measured": 0, "last_error": No
 # çıkınca ±0.05 kayar; bant içinde kalırsa dokunulmaz (salınım önlenir).
 VELOCITY_PROFILE_CALIB = {
     "5m": {"target_low": 0.12, "target_high": 0.30, "step": 0.05,
-           "min_atr": 0.10, "max_atr": 1.00, "min_samples": 30},
+           "min_atr": 0.10, "max_atr": 0.50, "min_samples": 30},
     "15m": {"target_low": 0.15, "target_high": 0.38, "step": 0.05,
-            "min_atr": 0.10, "max_atr": 1.00, "min_samples": 30},
+            "min_atr": 0.10, "max_atr": 0.55, "min_samples": 30},
 }
 _velocity_profile_atr = {"5m": None, "15m": None}  # lazy-loaded per-profile thresholds
 
@@ -952,7 +961,8 @@ async def load_velocity_atr_profiles():
             key = f"velocity_min_atr_pct_{profile}"
             val = await database.get_llm_setting(key, None)
             if val:
-                _velocity_profile_atr[profile] = round(float(val), 2)
+                max_allowed = VELOCITY_PROFILE_CALIB.get(profile, {}).get("max_atr", 0.50)
+                _velocity_profile_atr[profile] = min(max_allowed, round(float(val), 2))
         _velocity_learning_state["active_filters"] = {
             "min_atr_pct": VELOCITY_MIN_ATR_PCT,
             "profile_atr": {k: v for k, v in _velocity_profile_atr.items() if v is not None},
@@ -968,7 +978,7 @@ async def velocity_learning_loop():
     await asyncio.sleep(120)
     global VELOCITY_MIN_ATR_PCT
     # Kalibre edilmiş eşikleri kalıcı depodan geri yükle; aksi halde her restart
-    # öğrenilen değeri fabrika ayarına (0.30) sıfırlıyordu. load_velocity_atr_profiles
+    # öğrenilen değeri fabrika ayarına sıfırlıyordu. load_velocity_atr_profiles
     # startup'ta hemen yükler; buradaki yükleme yedek/güncelleme amaçlıdır.
     try:
         saved = await database.get_llm_setting("velocity_min_atr_pct", None)
@@ -978,7 +988,8 @@ async def velocity_learning_loop():
             key = f"velocity_min_atr_pct_{profile}"
             val = await database.get_llm_setting(key, None)
             if val:
-                _velocity_profile_atr[profile] = round(float(val), 2)
+                max_allowed = VELOCITY_PROFILE_CALIB.get(profile, {}).get("max_atr", 0.50)
+                _velocity_profile_atr[profile] = min(max_allowed, round(float(val), 2))
         _velocity_learning_state["active_filters"] = {
             "min_atr_pct": VELOCITY_MIN_ATR_PCT,
             "profile_atr": {k: v for k, v in _velocity_profile_atr.items() if v is not None},

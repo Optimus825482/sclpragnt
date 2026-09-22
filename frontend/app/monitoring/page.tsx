@@ -282,7 +282,11 @@ const blockReasonLabel = (reason?: string | null) => {
   if (reason.startsWith("mfi_asiri_alim")) return "MFI aşırı alım";
   if (reason.startsWith("mfi_asiri_satim")) return "MFI aşırı satım";
   if (reason.startsWith("rsi_asiri_alim")) return "RSI aşırı alım";
-  if (reason.startsWith("atr_yetersiz")) return "ATR yetersiz";
+  if (reason.startsWith("atr_yetersiz")) {
+    const m = reason.match(/atr_yetersiz:([\d.]+)%<([\d.]+)%/);
+    if (m) return `ATR (%${m[1]} < %${m[2]})`;
+    return "ATR yetersiz";
+  }
   if (reason.startsWith("bb_genisligi_yetersiz") || reason === "bb_verisi_yok") return "Bollinger dar";
   if (reason === "yapisal_teyit_yok") return "Yapısal trend yok";
   if (reason === "diger") return "Kriter altı";
