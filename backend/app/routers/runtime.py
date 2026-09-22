@@ -195,6 +195,8 @@ async def ws_broadcast_loop():
                         "breakeven_activated": bool(t.get("breakeven_activated")),
                         "notification_score": t.get("notification_score"),
                         "notification_target_pct": t.get("notification_target_pct"),
+                        "notification_expected_price": t.get("notification_expected_price"),
+                        "notification_price": t.get("notification_price") or entry,
                         "auto_paper_id": t.get("id"),
                     })
                 total_value += sum(float(a["value"]) for a in auto_positions)

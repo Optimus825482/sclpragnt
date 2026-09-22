@@ -91,8 +91,8 @@ export default function ChartsPage() {
     const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
     const [volumeVisible, setVolumeVisible] = useState(false);
     const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
-    const [showPositions, setShowPositions] = useState(false);
-    const [showStopTakeProfit, setShowStopTakeProfit] = useState(false);
+    const [showPositions, setShowPositions] = useState(true);
+    const [showStopTakeProfit, setShowStopTakeProfit] = useState(true);
     const [showPatterns, setShowPatterns] = useState(false);
     const [showPressure, setShowPressure] = useState(true);
     const [forecast, setForecast] = useState<any>(null);
@@ -560,10 +560,18 @@ export default function ChartsPage() {
                 take_profit: ap.take_profit,
                 stop_loss: ap.stop_loss,
                 _auto_paper_id: ap.id,
+                notification_price: ap.notification_price,
+                notification_expected_price: ap.notification_expected_price,
+                notification_target_pct: ap.notification_target_pct,
+                notification_score: ap.notification_score,
             });
         }
         return result.sort((a, b) => Number(b.entry_time || 0) - Number(a.entry_time || 0));
     }, [positions, autoPaperPositions]);
+
+    const currentAutoTrade = useMemo(() => {
+        return autoPaperPositions.find((p) => p.symbol === symbol && p.status === "open") || null;
+    }, [autoPaperPositions, symbol]);
 
     useEffect(() => {
         fetchPositions();
@@ -700,6 +708,10 @@ export default function ChartsPage() {
                     take_profit: t.take_profit,
                     stop_loss: t.stop,
                     entry_time: t.entry_time,
+                    notification_price: t.notification_price,
+                    notification_expected_price: t.notification_expected_price,
+                    notification_target_pct: t.notification_target_pct,
+                    notification_score: t.notification_score,
                 }));
                 // Kapalı pozisyon WS'te boş liste olarak gelir; boş set
                 // atlanırsa kapanan pozisyon tabloda "açık" kalırdı.
@@ -1069,7 +1081,9 @@ export default function ChartsPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [bars]);
 
-    // Spot pozisyon çizgileri: giriş ve sabit %2 satış hedefi.
+    // Açık pozisyon (otonom paper veya manuel) ve bildirim çizgileri:
+    // Seçili sembolün açık otonom paper işlemi varsa; giriş noktası, stop noktası,
+    // kâr alma noktası ile bildirimin gönderildiği nokta ve bildirimdeki hedef grafiğe yansıtılır.
     useEffect(() => {
         const chart = chartRef.current;
         const series = candleRef.current;
@@ -1084,53 +1098,82 @@ export default function ChartsPage() {
         positionMarkersRef.current?.setMarkers([]);
         positionMarkersRef.current = null;
 
-        const pos = positions.find((p) => p.symbol === symbol);
+        const autoPos = autoPaperPositions.find((p) => p.symbol === symbol && p.status === "open");
+        const standardPos = positions.find((p) => p.symbol === symbol);
+        const pos = autoPos || standardPos;
         if (!pos) return;
 
         const lines: IPriceLine[] = [];
-        const addLine = (price: number, color: string, title: string) => {
-            if (price == null || price <= 0) return;
+        const addLine = (price: number | null | undefined, color: string, title: string, lineStyle: number = 2, lineWidth: number = 2) => {
+            if (price == null || !Number.isFinite(price) || price <= 0) return;
             try {
                 const pl = series.createPriceLine({
-                    price, color, lineWidth: 1, lineStyle: 2,
+                    price, color, lineWidth: lineWidth as 1 | 2 | 3 | 4, lineStyle: lineStyle as any,
                     axisLabelVisible: true, title
                 });
                 lines.push(pl);
             } catch { }
         };
-        if (showPositions) addLine(pos.entry, "#10b981", `GİRİŞ ${formatPrice(pos.entry)}`);
-        if (showStopTakeProfit) {
-            const stop = pos.llm_stop_price ?? pos.stop;
-            const takeProfit = pos.llm_take_profit_price ?? pos.take_profit;
-            addLine(stop, "#ef4444", `SL ${formatPrice(stop)}`);
-            addLine(takeProfit, "#3b82f6", `TP ${formatPrice(takeProfit)}`);
+
+        const isAuto = !!autoPos;
+        const entryPrice = isAuto ? Number(autoPos.entry_price) : Number(standardPos?.entry);
+        const stopPrice = isAuto ? autoPos.stop_loss : (standardPos?.llm_stop_price ?? standardPos?.stop);
+        const tpPrice = isAuto ? autoPos.take_profit : (standardPos?.llm_take_profit_price ?? standardPos?.take_profit);
+
+        // Bildirim verileri: otonom işlem nesnesinden veya monitorNotif'ten
+        const notifPrice = Number(autoPos?.notification_price ?? monitorNotif?.price ?? 0);
+        const notifTarget = Number(autoPos?.notification_expected_price ?? monitorNotif?.expected_price ?? 0);
+        const notifTargetPct = Number(autoPos?.notification_target_pct ?? monitorNotif?.target_pct ?? 0);
+
+        // 1. Giriş Fiyatı Çizgisi (Yeşil #10b981)
+        if (showPositions || isAuto) {
+            addLine(entryPrice, "#10b981", isAuto ? `OTONOM GİRİŞ ${formatPrice(entryPrice)}` : `GİRİŞ ${formatPrice(entryPrice)}`, 0, 2);
+
+            // 2. Bildirimin Gönderildiği Nokta (Sarı #eab308)
+            if (notifPrice > 0) {
+                addLine(notifPrice, "#eab308", `BİLDİRİM / SİNYAL ${formatPrice(notifPrice)}`, 1, 2);
+            }
+
+            // 3. Bildirimde Belirtilen Hedef (Mor #a855f7)
+            if (notifTarget > 0) {
+                const pctLabel = notifTargetPct > 0 ? ` (+%${notifTargetPct.toFixed(1)})` : "";
+                addLine(notifTarget, "#a855f7", `BİLDİRİM HEDEFİ ${formatPrice(notifTarget)}${pctLabel}`, 2, 2);
+            }
         }
+
+        // 4. Stop Loss ve Kâr Alma Çizgileri
+        if (showStopTakeProfit || isAuto) {
+            if (stopPrice != null && Number(stopPrice) > 0) {
+                addLine(Number(stopPrice), "#ef4444", `STOP LOSS ${formatPrice(Number(stopPrice))}`, 2, 2);
+            }
+            if (tpPrice != null && Number(tpPrice) > 0) {
+                addLine(Number(tpPrice), "#3b82f6", `KÂR AL (TP) ${formatPrice(Number(tpPrice))}`, 2, 2);
+            }
+        }
+
         if (lines.length) positionLinesRef.current.set(symbol, lines);
 
-        // giriş noktasına marker ekle (v5 createSeriesMarkers)
-        if (!showPositions) return;
+        // Giriş noktasına mum altına/üstüne marker ekle
+        if (!showPositions && !isAuto) return;
         try {
             const markers = createSeriesMarkers(series, []);
             positionMarkersRef.current = markers;
-            // entry_time backend'de time.time() = saniye; UTCTimestamp de saniye.
-            // Marker zamanı mum zamanıyla EŞLEŞMELİ (skill: misaligned markers dropped silently)
-            // → entry_time'ı seçili interval'in mum başlangıcına yuvarla
             const ms = INTERVAL_MS[interval] || 60_000;
             const entrySec = pos.entry_time ?? Math.floor(Date.now() / 1000);
             const barTime = Math.floor(entrySec / (ms / 1000)) * (ms / 1000);
             markers.setMarkers([{
                 time: barTime as UTCTimestamp,
-                position: pos.side === "LONG" ? "belowBar" : "aboveBar",
-                color: pos.side === "LONG" ? "#10b981" : "#ef4444",
-                shape: pos.side === "LONG" ? "arrowUp" : "arrowDown",
-                text: pos.side === "LONG" ? "LONG" : "SHORT",
+                position: pos.side === "LONG" || isAuto ? "belowBar" : "aboveBar",
+                color: pos.side === "LONG" || isAuto ? "#10b981" : "#ef4444",
+                shape: pos.side === "LONG" || isAuto ? "arrowUp" : "arrowDown",
+                text: isAuto ? "OTONOM AL" : (pos.side === "LONG" ? "LONG" : "SHORT"),
                 size: 1
             }]);
         } catch { /* marker zamanı veri aralığında değilse sessiz geç */ }
-    }, [showPositions, showStopTakeProfit, positions, symbol, bars, interval]);
+    }, [showPositions, showStopTakeProfit, positions, autoPaperPositions, monitorNotif, symbol, bars, interval]);
 
-    // Radar bildirimi çizgileri: bildirim anındaki fiyat + hedef fiyat,
-    // "Grafikte göster" açıkken çizilir; ufuk dolunca (active=false) söner.
+    // Radar bildirimi çizgileri: Pozisyonu olmayan semboller için gelen canlı radar bildirimleri
+    // (fiyat + hedef), "Grafikte göster" açıkken mor ve sarı renkle çizilir.
     useEffect(() => {
         const series = candleRef.current;
         if (!series) return;
@@ -1138,21 +1181,26 @@ export default function ChartsPage() {
             try { series.removePriceLine(l); } catch { }
         });
         monitorLinesRef.current = [];
+
+        // Açık otonom işlem zaten bu sembolde varsa çizgileri positionLinesRef çizer, çakışmayı önle
+        const hasOpenAutoTrade = autoPaperPositions.some((p) => p.symbol === symbol && p.status === "open");
+        if (hasOpenAutoTrade) return;
+
         if (!showMonitoringLines || !monitorNotif?.active) return;
-        const addMonitorLine = (price: number, color: string, title: string) => {
+        const addMonitorLine = (price: number, color: string, title: string, lineStyle: number = 2) => {
             if (price == null || price <= 0) return;
             try {
                 monitorLinesRef.current.push(series.createPriceLine({
-                    price, color, lineWidth: 1, lineStyle: 2,
+                    price, color, lineWidth: 2, lineStyle: lineStyle as any,
                     axisLabelVisible: true, title
                 }));
             } catch { }
         };
         const notifPrice = Number(monitorNotif.price);
         const targetPrice = Number(monitorNotif.expected_price);
-        addMonitorLine(notifPrice, "#eab308", `BİLDİRİM ${formatPrice(notifPrice)}`);
-        addMonitorLine(targetPrice, "#22c55e", `HEDEF ${formatPrice(targetPrice)}`);
-    }, [showMonitoringLines, monitorNotif, bars]);
+        addMonitorLine(notifPrice, "#eab308", `BİLDİRİM ${formatPrice(notifPrice)}`, 1);
+        addMonitorLine(targetPrice, "#a855f7", `HEDEF ${formatPrice(targetPrice)}`, 2);
+    }, [showMonitoringLines, monitorNotif, autoPaperPositions, symbol, bars]);
 
     // Eklenen strateji kategorisi indikatörlerin (EMA Pullback, VWAP+MACD, CMO+CRSI,
     // SlingShot) buy/sell sinyalleri marker olarak gösterilir.
@@ -1812,6 +1860,56 @@ export default function ChartsPage() {
             )}
 
             <div className="chart-card card bg-bunker-950 p-0 overflow-hidden relative">
+                {currentAutoTrade && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-bunker-900/95 border-b border-bunker-800 text-xs font-mono">
+                        <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-neon-green/10 border border-neon-green/30 text-neon-green font-bold text-[11px]">
+                                <span className="w-1.5 h-1.5 rounded-full bg-neon-green animate-pulse" />
+                                AÇIK OTONOM İŞLEM
+                            </span>
+                            {currentAutoTrade.entry_time && (
+                                <span className="text-bunker-muted text-[10px]">
+                                    {new Date(toMs(currentAutoTrade.entry_time)).toLocaleTimeString("tr-TR")}
+                                </span>
+                            )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+                            <span className="flex items-center gap-1 text-[#10b981] font-semibold" title="Otonom Giriş Noktası">
+                                <span className="w-2.5 h-0.5 bg-[#10b981] rounded-full inline-block" />
+                                Giriş: ₺{formatPrice(currentAutoTrade.entry_price)}
+                            </span>
+                            {currentAutoTrade.stop_loss != null && (
+                                <span className="flex items-center gap-1 text-[#ef4444] font-semibold" title="Stop Loss Noktası">
+                                    <span className="w-2.5 h-0.5 bg-[#ef4444] rounded-full inline-block" />
+                                    Stop: ₺{formatPrice(currentAutoTrade.stop_loss)}
+                                </span>
+                            )}
+                            {currentAutoTrade.take_profit != null && (
+                                <span className="flex items-center gap-1 text-[#3b82f6] font-semibold" title="Kâr Alma (TP) Noktası">
+                                    <span className="w-2.5 h-0.5 bg-[#3b82f6] rounded-full inline-block" />
+                                    TP: ₺{formatPrice(currentAutoTrade.take_profit)}
+                                </span>
+                            )}
+                            {Number(currentAutoTrade.notification_price || monitorNotif?.price || 0) > 0 && (
+                                <span className="flex items-center gap-1 text-[#eab308] font-semibold" title="Bildirimin Gönderildiği Nokta (Sinyal Fiyatı)">
+                                    <span className="w-2.5 h-0.5 bg-[#eab308] rounded-full inline-block" />
+                                    Bildirim: ₺{formatPrice(Number(currentAutoTrade.notification_price || monitorNotif?.price))}
+                                </span>
+                            )}
+                            {Number(currentAutoTrade.notification_expected_price || monitorNotif?.expected_price || 0) > 0 && (
+                                <span className="flex items-center gap-1 text-[#a855f7] font-semibold" title="Bildirimde Belirtilen Hedef Fiyat">
+                                    <span className="w-2.5 h-0.5 bg-[#a855f7] rounded-full inline-block" />
+                                    Hedef: ₺{formatPrice(Number(currentAutoTrade.notification_expected_price || monitorNotif?.expected_price))}
+                                    {Number(currentAutoTrade.notification_target_pct || monitorNotif?.target_pct || 0) > 0 && (
+                                        <span className="text-[10px] text-purple-300">
+                                            (+%{Number(currentAutoTrade.notification_target_pct || monitorNotif?.target_pct).toFixed(1)})
+                                        </span>
+                                    )}
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                )}
                 {loading && (
                     <div className="absolute inset-0 flex items-center justify-center z-10 bg-bunker-950/70">
                         <p className="font-mono text-sm text-neon-green animate-pulse">YÜKLENİYOR...</p>
