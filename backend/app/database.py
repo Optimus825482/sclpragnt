@@ -4067,6 +4067,20 @@ async def get_pending_monitoring_notification(symbol: str) -> dict | None:
     return await _run_db(op)
 
 
+async def get_monitoring_notification_by_id(notification_id: int) -> dict | None:
+    """Bildirim ID'sine göre monitoring bildirim kaydını getir."""
+    def op(conn):
+        row = conn.execute(
+            "SELECT id, symbol, score, target_pct, price, expected_price, "
+            "horizon_minutes, detected_at, mode "
+            "FROM monitoring_notifications "
+            "WHERE id=%s",
+            (int(notification_id),)
+        ).fetchone()
+        return dict(row) if row else None
+    return await _run_db(op)
+
+
 async def get_pending_monitoring_notifications(symbols: list[str]) -> dict[str, dict]:
     """Birden fazla sembol icin sonuclanmamis (BEKLIYOR) bildirimlerini tek
     sorguyla getir (N+1 onlemi; 2026-09-05). Her sembol icin en yeni kaydi

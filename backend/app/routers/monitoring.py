@@ -2415,13 +2415,52 @@ async def monitoring_active_notification(symbol: str):
     except Exception as exc:
         logger.warning("aktif bildirim okunamadı %s: %s", sym, exc)
         row = None
+
+    open_trade = None
+    try:
+        open_trade = await database.get_open_auto_paper_trade(sym)
+    except Exception:
+        open_trade = None
+
+    detected_at = float(row.get("detected_at") or 0) if row else 0
+    horizon = int(row.get("horizon_minutes") or 0) if row else 0
+    expires_at = detected_at + (horizon + 2) * 60 if detected_at else 0
+    now = time.time()
+
+    # Eğer radar ufku dolmuş ama otonom paper pozisyonu hâlâ açıksa:
+    # grafikte bildirim/hedef çizgilerini ve paneli işlem boyunca canlı tut.
+    if (not row or now >= expires_at) and open_trade:
+        nid = open_trade.get("notification_id")
+        trade_notif = None
+        if nid:
+            try:
+                trade_notif = await database.get_monitoring_notification_by_id(nid)
+            except Exception:
+                trade_notif = None
+        if trade_notif:
+            row = trade_notif
+            detected_at = float(row.get("detected_at") or open_trade.get("entry_time") or 0)
+            horizon = int(row.get("horizon_minutes") or 15)
+            expires_at = max(now + 60, detected_at + (horizon + 2) * 60)
+        else:
+            row = {
+                "id": open_trade.get("notification_id"),
+                "symbol": sym,
+                "score": open_trade.get("notification_score") or 90.0,
+                "target_pct": open_trade.get("notification_target_pct") or 2.0,
+                "price": open_trade.get("entry_price"),
+                "expected_price": open_trade.get("notification_expected_price"),
+                "horizon_minutes": 15,
+                "detected_at": open_trade.get("entry_time"),
+                "mode": "auto_paper",
+            }
+            detected_at = float(open_trade.get("entry_time") or 0)
+            horizon = 15
+            expires_at = now + 60
+
     if not row:
         return {"symbol": sym, "active": False}
-    detected_at = float(row.get("detected_at") or 0)
-    horizon = int(row.get("horizon_minutes") or 0)
-    expires_at = detected_at + (horizon + 2) * 60
-    now = time.time()
-    if not detected_at or now >= expires_at:
+    if not open_trade and (not detected_at or now >= expires_at):
         return {"symbol": sym, "active": False}
     price = float(row.get("price") or 0)
     expected = float(row.get("expected_price") or 0)

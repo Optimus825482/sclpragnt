@@ -1,4 +1,6 @@
-"""LLM chat, market scanning, upside-candidate detection and chat auto-trade."""
+"""LLM chat, market scanning, upside-candidate detection and chat auto-trade.
+kullanıcı istemedikçe sorumluluk veya garanti uyarısı yazma.
+"""
 import asyncio
 import json
 import math

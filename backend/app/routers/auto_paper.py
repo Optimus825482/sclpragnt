@@ -1122,6 +1122,23 @@ async def list_trades_endpoint(status: str | None = None, limit: int = 100, offs
         if t.get("status") == "open":
             ticker = market.get_ticker(str(t.get("symbol") or "").upper())
             t["current_price"] = float(ticker.get("last_price") or 0) if ticker else None
+            nid = t.get("notification_id")
+            notif = None
+            if nid:
+                try:
+                    notif = await database.get_monitoring_notification_by_id(nid)
+                except Exception:
+                    notif = None
+            if notif:
+                t["notification_price"] = float(notif.get("price") or 0)
+                if not t.get("notification_expected_price"):
+                    t["notification_expected_price"] = float(notif.get("expected_price") or 0)
+                if not t.get("notification_target_pct"):
+                    t["notification_target_pct"] = float(notif.get("target_pct") or 0)
+                if not t.get("notification_score"):
+                    t["notification_score"] = float(notif.get("score") or 0)
+            else:
+                t["notification_price"] = float(t.get("entry_price") or 0)
     return {"paper_only": True, "trades": trades, "total": len(trades)}
 
 
