@@ -774,7 +774,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
 
     # Breakeven kontrolü (isteğe bağlı — erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI, 2026-09-22 Erkan kararı).
-    breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False)))
+    breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", True)))
     BREAKEVEN_TRAIL_GAP_PCT = 0.60
     if breakeven_enabled:
         breakeven_activated = bool(trade.get("breakeven_activated", False))

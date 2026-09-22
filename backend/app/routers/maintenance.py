@@ -917,7 +917,7 @@ async def _run_radar_outcomes_backfill(payload: dict):
             notif_id = item.get("id")
             symbol = str(item.get("symbol") or "").upper()
             detected_at = float(item.get("detected_at") or 0)
-            horizon = int(item.get("horizon_minutes") or 5)
+            horizon = int(item.get("horizon_minutes") or getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60))
             target = float(item.get("target_pct") or 2.0)
             price = float(item.get("price") or 0)
             timestr = time.strftime('%d/%m %H:%M', time.localtime(detected_at))

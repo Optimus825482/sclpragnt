@@ -617,7 +617,7 @@ class Config:
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
     # Başabaş (Breakeven) koruması: erken minik kârla çıkıp ralliyi kaçırmamak için
     # varsayılan KAPALI (2026-09-22 Erkan kararı). Ayarlardan isteğe bağlı açılabilir.
-    AUTO_PAPER_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_BREAKEVEN_ENABLED", "false").lower() == "true"
+    AUTO_PAPER_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_BREAKEVEN_ENABLED", "true").lower() == "true"
     AUTO_PAPER_BREAKEVEN_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_TRIGGER_PCT", "1.5"))
     # Trailing stop modülü (kâr takibi): pozisyon trailing_trigger_pct kadar
     # kara geçince aktifleşir ve fiyatı trailing_gap_pct geriden takip eder.
@@ -651,6 +651,10 @@ class Config:
     # Otonom Paper maksimum pozisyon açık kalma süresi (dakika, 2026-09-21 Erkan kararı).
     # 60 dk sonunda kâr/zarar durumuna bakılmadan pozisyon piyasa fiyatından kapatılır (scalp bakiyesini kilitlemez).
     AUTO_PAPER_MAX_HOLD_MINUTES = float(os.getenv("AUTO_PAPER_MAX_HOLD_MINUTES", "60.0"))
+    # Radar & Sinyal başarı ölçüm penceresi (dakika, 2026-09-22 Erkan kararı).
+    # 5dk'da erken kapatıp hedefe daha sonra ulaşan başarılı sinyalleri ıska saymamak için
+    # otonom işlem maksimum ömrüyle (60 dk) tam senkronize çalışır.
+    MONITORING_OUTCOME_WINDOW_MINUTES = int(os.getenv("MONITORING_OUTCOME_WINDOW_MINUTES", "60"))
 
     # MACD MONITOR / SIRÇRAMA ADAYI ayarları (DB üzerinden değiştirilebilir;
     # burada yalnızca varsayılanlar). Eşik ve alarm/push anahtarları.

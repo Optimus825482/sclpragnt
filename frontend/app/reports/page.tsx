@@ -47,14 +47,14 @@ function StatCard({ label, value, tone = "", sub, icon }: { label: string; value
   );
 }
 
-function Badge({ children, tone = "neutral" }: { children: React.ReactNode; tone?: "ok" | "warn" | "bad" | "neutral" }) {
+function Badge({ children, tone = "neutral", className = "" }: { children: React.ReactNode; tone?: "ok" | "warn" | "bad" | "neutral"; className?: string }) {
   const map: Record<string, string> = {
     ok: "border-neon-green/50 bg-neon-green/15 text-neon-green",
     warn: "border-yellow-400/40 bg-yellow-400/15 text-yellow-300",
     bad: "border-neon-red/40 bg-neon-red/15 text-neon-red",
     neutral: "border-bunker-600 bg-bunker-800/60 text-bunker-muted",
   };
-  return <span className={`rounded-md border px-2 py-0.5 font-mono text-[10px] font-bold tracking-wide uppercase ${map[tone]}`}>{children}</span>;
+  return <span className={`rounded-md border px-2 py-0.5 font-mono text-[10px] font-bold tracking-wide uppercase ${map[tone]} ${className}`}>{children}</span>;
 }
 
 const SOURCE_BADGE_META: Record<string, { label: string; cls: string }> = {
@@ -1099,7 +1099,9 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
                         </td>
                         <td>
                           {n.status === "TAMAMEN BAŞARILI" ? (
-                            <Badge tone="ok">TAMAMEN</Badge>
+                            <Badge tone="ok">
+                              TAMAMEN {n.outcome_details?.touched_at_minute != null ? `(${n.outcome_details.touched_at_minute}. dk)` : ""}
+                            </Badge>
                           ) : (mfePct != null && mfePct >= 3.0) ? (
                             <Badge tone="ok">TP2 KOŞUSU</Badge>
                           ) : (mfePct != null && mfePct >= 1.2) ? (
@@ -1108,10 +1110,14 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
                             <Badge tone="ok">BAŞARILI</Badge>
                           ) : n.status === "KISMİ" ? (
                             <Badge tone="warn">KISMİ (+{mfePct?.toFixed(1)}%)</Badge>
+                          ) : n.outcome_details?.status_reason === "STOPPED_OUT" ? (
+                            <Badge tone="bad">STOP (-%1.5)</Badge>
                           ) : n.status === "BAŞARISIZ" ? (
                             <Badge tone="bad">BAŞARISIZ</Badge>
+                          ) : n.status === "ÖLÇÜLEMEDİ" ? (
+                            <Badge tone="bad">ZAMAN AŞIMI</Badge>
                           ) : (
-                            <Badge>BEKLİYOR</Badge>
+                            <Badge tone="ok" className="animate-pulse">⏳ TAKİPTE (60 dk)</Badge>
                           )}
                         </td>
                       </tr>
