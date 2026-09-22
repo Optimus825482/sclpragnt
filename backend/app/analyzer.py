@@ -784,9 +784,56 @@ class ScalpAnalyzer:
         return prefix + ":" + ",".join(failed or ["unknown"])
 
     async def _refresh_liquidity_snapshot(self, symbol):
-        """Refresh the top-of-book only when the local snapshot cannot gate an entry."""
+        """Refresh the top-of-book, 24h ticker and recent klines when missing or stale."""
         if not self.market:
             return {}
+        symbol = str(symbol).replace("_", "").upper()
+
+        # 1. 24h Ticker hacim kontrolü (Top-Gainer / Radar / Auto-Paper adayları için REST hydration)
+        ticker_24h_map = getattr(self.market, "ticker_24h", None)
+        if isinstance(ticker_24h_map, dict):
+            cached_24h = float(ticker_24h_map.get(symbol, 0) or 0)
+            if cached_24h <= 0:
+                try:
+                    from app.binance_tr_public import ticker_24h as _fetch_ticker_24h
+                    rows = await _fetch_ticker_24h([symbol])
+                    row = next((r for r in (rows or []) if str(r.get("symbol", "")).upper() == symbol), None)
+                    if row:
+                        ticker_24h_map[symbol] = float(row.get("quoteVolume", 0) or 0)
+                        last_price = float(row.get("lastPrice", 0) or 0)
+                        tickers_map = getattr(self.market, "tickers", None)
+                        if last_price > 0 and isinstance(tickers_map, dict) and symbol not in tickers_map:
+                            tickers_map[symbol] = {
+                                "symbol": symbol,
+                                "last_price": last_price,
+                                "timestamp": int(time.time() * 1000),
+                                "source": "binance_tr_rest_hydrate",
+                            }
+                except Exception as exc:
+                    pass
+
+        # 2. 5m Klines geçmişi (volume_ratio hesaplaması için hafızada en az 21 bar 5m gereklidir)
+        klines_dict = getattr(self.market, "klines", None)
+        if isinstance(klines_dict, dict):
+            try:
+                kline_entry = klines_dict.get("5m", {})
+                v_list = (kline_entry.get(symbol) or {}).get("volumes", []) if isinstance(kline_entry, dict) else []
+                if len(v_list) < 21:
+                    from app.binance_tr_public import klines as _fetch_klines
+                    k_rows = await _fetch_klines(symbol, "5m", 30)
+                    if k_rows and len(k_rows) >= 20:
+                        klines_dict.setdefault("5m", {})[symbol] = {
+                            "timestamps": [int(r[0]) for r in k_rows],
+                            "opens": [float(r[1]) for r in k_rows],
+                            "highs": [float(r[2]) for r in k_rows],
+                            "lows": [float(r[3]) for r in k_rows],
+                            "closes": [float(r[4]) for r in k_rows],
+                            "volumes": [float(r[5]) for r in k_rows],
+                        }
+            except Exception as exc:
+                pass
+
+        # 3. Orderbook derinliği ve spread
         flow = self.market.get_orderflow(symbol)
         try:
             freshness = self.market.data_freshness(symbol, "5m")
@@ -905,7 +952,11 @@ class ScalpAnalyzer:
         if order_value < config.MIN_PARTIAL_ORDER_TRY:
             return True, {"skipped": "order_value_below_minimum", "order_value_try": order_value}
         await self._refresh_liquidity_snapshot(symbol)
-        liquid, details = self.market.liquidity_status(symbol, order_value)
+        if strat_name in ("CHAT_PREDICTION", "AUTO_PAPER"):
+            liquid, details = self.market.liquidity_status(
+                symbol, order_value, ignore_ws_freshness=True)
+        else:
+            liquid, details = self.market.liquidity_status(symbol, order_value)
         details = {**details, "order_value_try": order_value}
         if not liquid:
             details["reason"] = self._liquidity_reason(details)
@@ -1154,7 +1205,7 @@ class ScalpAnalyzer:
             flow = self.market.get_orderflow(symbol) or {}
             liquid, details = self.market.liquidity_status(
                 symbol, order_value,
-                ignore_ws_freshness=(strat_name == "CHAT_PREDICTION"))
+                ignore_ws_freshness=(strat_name in ("CHAT_PREDICTION", "AUTO_PAPER")))
             if not liquid:
                 reason = self._liquidity_reason(details, "entry_recheck_failed")
                 ineligible = {"symbol": symbol, "action": "ENTRY_INELIGIBLE", "price": entry_price,

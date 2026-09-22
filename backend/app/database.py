@@ -9,7 +9,7 @@ import time
 import tempfile
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.config import config
 from app.forecast_learning import outcome_window_seconds
@@ -2328,8 +2328,36 @@ def _add_unit_twins(item: dict, source_key: str, ratio_key: str, pct_key: str) -
     item[pct_key] = round(ratio * 100.0, 4)
 
 
-async def get_report_trade_breakdown():
-    """Salt-okunur admin raporu: strateji/sembol bazlı kapanmış işlem özetleri (reset_at sonrasi).
+def _resolve_time_bounds(
+    since: float | None = None,
+    until: float | None = None,
+    day: str | None = None,
+    default_to_today: bool = True,
+) -> tuple[float | None, float | None]:
+    """Tarih parametrelerini (since, until, day) zaman damgalarına dönüştürür (UTC+3)."""
+    if day == "all":
+        return (None, None)
+    if day:
+        try:
+            day_start = datetime.strptime(str(day), "%Y-%m-%d").replace(tzinfo=timezone(timedelta(hours=3)))
+            return (day_start.timestamp(), (day_start + timedelta(days=1)).timestamp())
+        except ValueError:
+            pass
+    if since is not None or until is not None:
+        return (since, until)
+    if default_to_today:
+        today_str = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
+        day_start = datetime.strptime(today_str, "%Y-%m-%d").replace(tzinfo=timezone(timedelta(hours=3)))
+        return (day_start.timestamp(), None)
+    return (None, None)
+
+
+async def get_report_trade_breakdown(
+    since: float | None = None,
+    until: float | None = None,
+    day: str | None = None,
+):
+    """Salt-okunur admin raporu: strateji/sembol bazlı kapanmış işlem özetleri (seçilen gün / reset_at sonrası).
 
     Birim sözleşmesi (V-14): `*_pct` alanları bu satırlarda KESİR taşır
     (`max_favorable_pct`/`max_adverse_pct` = analyzer'da ×100'süz). Eski alanlar
@@ -2337,10 +2365,21 @@ async def get_report_trade_breakdown():
     `avg_max_favorable_ratio` (kesir) + `avg_max_favorable_pct` (yüzde, ×100) ve
     aynı şekilde `avg_max_adverse_*`. `pnl_pct` (varsa) YÜZDE'dir.
     """
+    eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=True)
+
     def op(conn):
         cutoff = _get_reset_cutoff_sync(conn)
-        where = ' WHERE exit_time > %s' if cutoff else ''
-        params = (cutoff,) if cutoff else ()
+        if eff_since is not None:
+            cutoff = max(cutoff or 0.0, float(eff_since))
+        where_clauses = []
+        params = []
+        if cutoff:
+            where_clauses.append("exit_time >= ?")
+            params.append(cutoff)
+        if eff_until:
+            where_clauses.append("exit_time < ?")
+            params.append(eff_until)
+        where = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         strategies = conn.execute(
             "SELECT strategy, COUNT(*) AS trade_count, COALESCE(SUM(pnl), 0) AS net_pnl, "
             "COALESCE(SUM(commission), 0) AS commission, "
@@ -2506,16 +2545,32 @@ async def get_report_decision_summary(symbol: str = "", limit: int = 25):
     return await _run_db(op)
 
 
-async def get_report_symbol_velocity_quality():
+async def get_report_symbol_velocity_quality(
+    since: float | None = None,
+    until: float | None = None,
+    day: str | None = None,
+):
     """Hız avcısı sembol kalite istatistikleri (velocity_candidates, salt okunur)."""
+    eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=True)
     def op(conn):
+        where_clauses = ["status='evaluated'"]
+        params = []
+        if eff_since is not None:
+            where_clauses.append("created_at >= ?")
+            params.append(eff_since)
+        if eff_until is not None:
+            where_clauses.append("created_at < ?")
+            params.append(eff_until)
+        where = " WHERE " + " AND ".join(where_clauses)
         rows = conn.execute(
-            """SELECT symbol,
+            f"""SELECT symbol,
                   COUNT(*) AS evaluated,
                   SUM(CASE WHEN touched_target THEN 1 ELSE 0 END) AS touched,
                   AVG(mfe_pct) AS average_mfe_pct
-               FROM velocity_candidates WHERE status='evaluated'
-               GROUP BY symbol ORDER BY evaluated DESC""").fetchall()
+               FROM velocity_candidates {where}
+               GROUP BY symbol ORDER BY evaluated DESC""",
+            params,
+        ).fetchall()
         return [dict(row) for row in rows]
     return await _run_db(op)
 
@@ -5201,39 +5256,80 @@ async def get_auto_paper_trade(trade_id: int) -> dict | None:
     return await _run_db(op)
 
 
-async def list_auto_paper_trades(status: str | None = None, limit: int = 100, offset: int = 0) -> list[dict]:
-    """Otonom paper trade'leri listele (yeni -> eski). offset pagination destekler."""
+async def list_auto_paper_trades(
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    since: float | None = None,
+    until: float | None = None,
+    day: str | None = None,
+) -> list[dict]:
+    """Otonom paper trade'leri listele (yeni -> eski). offset pagination ve gün filtresi destekler."""
+    eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=False)
     def op(conn):
+        where_clauses = []
+        params = []
         if status:
-            rows = conn.execute(
-                "SELECT * FROM auto_paper_trades WHERE status=? ORDER BY entry_time DESC LIMIT ? OFFSET ?",
-                (status, max(1, min(int(limit), 10000)), max(0, int(offset)))
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM auto_paper_trades ORDER BY entry_time DESC LIMIT ? OFFSET ?",
-                (max(1, min(int(limit), 10000)), max(0, int(offset)))
-            ).fetchall()
+            where_clauses.append("status=?")
+            params.append(status)
+        if eff_since is not None:
+            if status == "closed":
+                where_clauses.append("exit_time >= ?")
+                params.append(eff_since)
+            elif status == "open":
+                where_clauses.append("entry_time >= ?")
+                params.append(eff_since)
+            else:
+                where_clauses.append("((status='closed' AND exit_time >= ?) OR (status='open' AND entry_time >= ?))")
+                params.extend([eff_since, eff_since])
+        if eff_until is not None:
+            if status == "closed":
+                where_clauses.append("exit_time < ?")
+                params.append(eff_until)
+            elif status == "open":
+                where_clauses.append("entry_time < ?")
+                params.append(eff_until)
+            else:
+                where_clauses.append("((status='closed' AND exit_time < ?) OR (status='open' AND entry_time < ?))")
+                params.extend([eff_until, eff_until])
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        sql = f"SELECT * FROM auto_paper_trades {where_sql} ORDER BY entry_time DESC LIMIT ? OFFSET ?"
+        params.extend([max(1, min(int(limit), 10000)), max(0, int(offset))])
+        rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
     return await _run_db(op)
 
 
-async def get_auto_paper_stats(confluence_4way_only: bool = False) -> dict:
-    """Otonom paper trade istatistikleri (reset_at sonrasi, SQL agregatı).
+async def get_auto_paper_stats(
+    confluence_4way_only: bool = False,
+    since: float | None = None,
+    until: float | None = None,
+    day: str | None = None,
+) -> dict:
+    """Otonom paper trade istatistikleri (seçilen gün veya reset_at sonrası, SQL agregatı).
 
     Portföy reseti sırasında pnl'siz kapatılan 'reset' satırları hariçtir;
     böylece reset sonrasi win_rate/net PnL eski verilerle kirletilmez.
     ``confluence_4way_only=True`` ise yalnızca Master Surge (4'lü teyitli) işlemler sayılır.
     """
+    eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=True)
     def op(conn):
         cutoff = _get_reset_cutoff_sync(conn)
+        if eff_since is not None:
+            cutoff = max(cutoff or 0.0, float(eff_since))
+
         closed_where = "WHERE status='closed' AND COALESCE(exit_reason,'') <> 'reset'"
         closed_params: list = []
         if cutoff:
-            closed_where += " AND exit_time > ?"
+            closed_where += " AND exit_time >= ?"
             closed_params.append(cutoff)
+        if eff_until:
+            closed_where += " AND exit_time < ?"
+            closed_params.append(eff_until)
         if confluence_4way_only:
             closed_where += " AND confluence_4way = TRUE"
+
         row = conn.execute(
             f"""SELECT COUNT(*) AS closed,
                        COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) AS winning,
@@ -5243,12 +5339,23 @@ async def get_auto_paper_stats(confluence_4way_only: bool = False) -> dict:
                 FROM auto_paper_trades {closed_where}""",
             closed_params,
         ).fetchone()
+
         open_where = "WHERE status='open'"
+        open_params: list = []
+        if cutoff:
+            open_where += " AND entry_time >= ?"
+            open_params.append(cutoff)
+        if eff_until:
+            open_where += " AND entry_time < ?"
+            open_params.append(eff_until)
         if confluence_4way_only:
             open_where += " AND confluence_4way = TRUE"
+
         open_row = conn.execute(
-            f"SELECT COUNT(*) AS open FROM auto_paper_trades {open_where}"
+            f"SELECT COUNT(*) AS open FROM auto_paper_trades {open_where}",
+            open_params,
         ).fetchone()
+
         closed = int(row["closed"] or 0)
         winning = int(row["winning"] or 0)
         total_pnl = float(row["total_pnl"] or 0.0)
@@ -5266,15 +5373,27 @@ async def get_auto_paper_stats(confluence_4way_only: bool = False) -> dict:
     return await _run_db(op)
 
 
-async def get_auto_paper_symbol_breakdown() -> list[dict]:
-    """Otonom paper trade sembol bazlı özet (reset_at sonrasi, reset kapanışları hariç)."""
+async def get_auto_paper_symbol_breakdown(
+    since: float | None = None,
+    until: float | None = None,
+    day: str | None = None,
+) -> list[dict]:
+    """Otonom paper trade sembol bazlı özet (seçilen gün / reset_at sonrası, reset kapanışları hariç)."""
+    eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=True)
     def op(conn):
         cutoff = _get_reset_cutoff_sync(conn)
+        if eff_since is not None:
+            cutoff = max(cutoff or 0.0, float(eff_since))
+
         where = "WHERE status='closed' AND COALESCE(exit_reason,'') <> 'reset'"
         params: list = []
         if cutoff:
-            where += " AND exit_time > ?"
+            where += " AND exit_time >= ?"
             params.append(cutoff)
+        if eff_until:
+            where += " AND exit_time < ?"
+            params.append(eff_until)
+
         rows = conn.execute(
             f"""SELECT symbol, COUNT(*) AS trade_count,
                        COALESCE(SUM(CASE WHEN COALESCE(pnl,0) > 0 THEN 1 ELSE 0 END),0) AS winning,
@@ -5390,6 +5509,12 @@ async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: fl
             "INSERT INTO signals(timestamp,symbol,action,price,reason,strategy,trade_id) VALUES(?,?,?,?,?,?,?)",
             (now, symbol, "CLOSE_LONG", exit_price,
              f"AUTO_PAPER_{reason.upper()} | PnL={pnl:.2f}TRY", "AUTO_PAPER", f"auto_paper-{trade_id}")
+        )
+        conn.execute(
+            "INSERT INTO decision_logs(timestamp,symbol,strategy,decision,reason,price,metadata) VALUES(?,?,?,?,?,?,?)",
+            (now, symbol, "AUTO_PAPER", f"CLOSE_{reason.upper()}",
+             f"AUTO_PAPER_{reason.upper()} | PnL={pnl:.2f}TRY", exit_price,
+             _json_safe_dumps({"trade_id": trade_id, "pnl": pnl, "pnl_pct": pnl_pct, "reason": reason}, default=str))
         )
         conn.commit()
         return True

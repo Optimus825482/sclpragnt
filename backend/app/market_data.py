@@ -1286,6 +1286,8 @@ class MarketData:
         ratio = current / average if average > 0 else 0.0
         flow = self.get_orderflow(symbol)
         price = float(ticker.get("last_price", 0) or 0)
+        if price <= 0:
+            price = float(flow.get("bid_price", 0) or flow.get("ask_price", 0) or 0)
         depth_try = (float(flow.get("bid_qty", 0) or 0) + float(flow.get("ask_qty", 0) or 0)) * price
         quote_volume = float(self.ticker_24h.get(symbol, 0) or 0)
 

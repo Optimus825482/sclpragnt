@@ -113,7 +113,7 @@ function SourceBadges({ sources, compact = false }: { sources?: string[] | null;
 /* ==========================================================================
    1. GENEL BAKIŞ (OVERVIEW TAB)
    ========================================================================== */
-function OverviewTab() {
+function OverviewTab({ day }: { day?: string }) {
   const [overview, setOverview] = useState<any>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [breakdown, setBreakdown] = useState<any>(null);
@@ -124,10 +124,12 @@ function OverviewTab() {
 
   const load = useCallback(async () => {
     try {
+      const dayParam = day ? (day === "all" ? "?day=all" : `?day=${encodeURIComponent(day)}`) : "";
+      const dayNotif = day ? `&day=${encodeURIComponent(day)}` : "";
       const [ovRes, ntRes, apRes] = await Promise.all([
-        apiRequest(`${API_BASE}/api/reports/overview`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/reports/notifications?limit=200`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/auto-paper/stats`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/reports/overview${dayParam}`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/reports/notifications?limit=500${dayNotif}`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/auto-paper/stats${dayParam}`, { cache: "no-store" }),
       ]);
       const [ov, nt, ap] = await Promise.all([ovRes.json(), ntRes.json(), apRes.json()]);
       if (ovRes.ok) setOverview(ov);
@@ -139,7 +141,7 @@ function OverviewTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [day]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -184,6 +186,9 @@ function OverviewTab() {
           </span>
           <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-neon-green/30 text-neon-green font-bold">
             🤖 Otonom İşlem Aktif
+          </span>
+          <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-neon-green/30 text-white font-bold">
+            📅 {day === "all" ? "Tüm Zamanlar" : (day || "Bugün")}
           </span>
         </div>
       </div>
@@ -626,13 +631,15 @@ interface RadarOverall {
   tp2_rate?: number | null;
 }
 
-function UserRadarTab() {
+function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: string; setDay?: (d: string) => void }) {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [breakdown, setBreakdown] = useState<RadarBreakdown | null>(null);
   const [overall, setOverall] = useState<RadarOverall | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [day, setDay] = useState<string>(() => localDateInput());
+  const [internalDay, setInternalDay] = useState<string>(() => localDateInput());
+  const day = controlledDay !== undefined ? controlledDay : internalDay;
+  const setDay = setControlledDay || setInternalDay;
   const [search, setSearch] = useState("");
   const [minScore, setMinScore] = useState<number | null>(null);
   const [channelFilter, setChannelFilter] = useState<"all" | "push" | "panel">("all");
@@ -1136,7 +1143,7 @@ function UserRadarTab() {
 /* ==========================================================================
    3. OTONOM POZİSYONLAR VE İŞLEMLER (USER POSITIONS TAB)
    ========================================================================== */
-function UserPositionsTab() {
+function UserPositionsTab({ day }: { day?: string }) {
   const [positions, setPositions] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1144,9 +1151,10 @@ function UserPositionsTab() {
 
   const load = useCallback(async () => {
     try {
+      const dayParam = day ? (day === "all" ? "&day=all" : `&day=${encodeURIComponent(day)}`) : "";
       const [posRes, apRes] = await Promise.all([
         apiRequest(`${API_BASE}/api/positions`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=50`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/auto-paper/trades?status=closed&limit=100${dayParam}`, { cache: "no-store" }),
       ]);
       const [pos, ap] = await Promise.all([posRes.json(), apRes.json()]);
       if (posRes.ok) setPositions((pos.positions || []).filter((p: any) => String(p.strategy || "").toUpperCase() === "AUTO_PAPER"));
@@ -1156,7 +1164,7 @@ function UserPositionsTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [day]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1284,26 +1292,29 @@ function UserPositionsTab() {
 /* ==========================================================================
    4. SEMBOL BAZLI RAPOR (SYMBOLS TAB)
    ========================================================================== */
-function SymbolsTab() {
+function SymbolsTab({ day }: { day?: string }) {
   const [symbols, setSymbols] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [q, setQ] = useState("");
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await apiRequest(`${API_BASE}/api/reports/symbols?limit=300`, { cache: "no-store" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        setSymbols(data.symbols || []);
-      } catch {
-        setError("Sembol raporu alınamadı");
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const dayParam = day ? (day === "all" ? "&day=all" : `&day=${encodeURIComponent(day)}`) : "";
+      const res = await apiRequest(`${API_BASE}/api/reports/symbols?limit=300${dayParam}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setSymbols(data.symbols || []);
+    } catch {
+      setError("Sembol raporu alınamadı");
+    } finally {
+      setLoading(false);
+    }
+  }, [day]);
+
+  useEffect(() => { load(); }, [load]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toUpperCase();
@@ -1583,6 +1594,8 @@ export default function ReportsPage() {
   const isAdmin = role === "admin";
   const [tab, setTab] = useState<"overview" | "radar" | "positions" | "symbols" | "advanced">("overview");
   const [advancedSubTab, setAdvancedSubTab] = useState("velocity");
+  const [selectedDay, setSelectedDay] = useState<string>(() => localDateInput());
+  const todayStr = localDateInput();
 
   const MAIN_TABS = [
     { id: "overview", label: "📊 Performans Özeti", icon: "📊" },
@@ -1610,6 +1623,49 @@ export default function ReportsPage() {
         </div>
       </div>
 
+      {/* Dönem / Tarih Filtresi */}
+      <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-2xl border border-bunker-800 bg-bunker-950/80 shadow-md">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-mono text-bunker-muted uppercase tracking-wider mr-1">Dönem:</span>
+          <button
+            type="button"
+            onClick={() => setSelectedDay(todayStr)}
+            className={`rounded-xl px-3 py-1.5 font-mono text-xs font-bold transition-all flex items-center gap-1.5 ${
+              selectedDay === todayStr
+                ? "bg-neon-green/20 text-neon-green border border-neon-green/40 shadow-sm"
+                : "text-bunker-muted hover:text-white bg-bunker-900 border border-bunker-800"
+            }`}
+          >
+            <span className="inline-block w-2 h-2 rounded-full bg-neon-green animate-pulse"></span>
+            <span>🟢 Bugün ({todayStr} — Yeni Sürüm)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedDay("all")}
+            className={`rounded-xl px-3 py-1.5 font-mono text-xs font-bold transition-all flex items-center gap-1.5 ${
+              selectedDay === "all"
+                ? "bg-amber-400/20 text-amber-300 border border-amber-400/40 shadow-sm"
+                : "text-bunker-muted hover:text-white bg-bunker-900 border border-bunker-800"
+            }`}
+          >
+            <span>🌐</span>
+            <span>Tüm Zamanlar (Arşiv)</span>
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-mono text-bunker-muted">📅 Tarih Seç:</span>
+          <input
+            type="date"
+            value={selectedDay === "all" ? "" : selectedDay}
+            onChange={(e) => {
+              if (e.target.value) setSelectedDay(e.target.value);
+            }}
+            className="rounded-xl border border-bunker-700 bg-bunker-900 px-2.5 py-1 text-xs font-mono text-white focus:border-neon-green focus:outline-none"
+          />
+        </div>
+      </div>
+
       {/* Sekmeler */}
       <div className="flex items-center gap-2 overflow-x-auto border-b border-bunker-800 pb-2 no-scrollbar">
         {MAIN_TABS.map((item) => (
@@ -1629,10 +1685,10 @@ export default function ReportsPage() {
       </div>
 
       {/* Sekme İçerikleri */}
-      {tab === "overview" && <OverviewTab />}
-      {tab === "radar" && <UserRadarTab />}
-      {tab === "positions" && <UserPositionsTab />}
-      {tab === "symbols" && <SymbolsTab />}
+      {tab === "overview" && <OverviewTab day={selectedDay} />}
+      {tab === "radar" && <UserRadarTab day={selectedDay} setDay={setSelectedDay} />}
+      {tab === "positions" && <UserPositionsTab day={selectedDay} />}
+      {tab === "symbols" && <SymbolsTab day={selectedDay} />}
       {tab === "advanced" && isAdmin && (
         <div className="space-y-4">
           <AdvancedAdminTabs subTab={advancedSubTab} setSubTab={setAdvancedSubTab} />

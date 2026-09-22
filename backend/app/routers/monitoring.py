@@ -2512,16 +2512,21 @@ async def report_notifications(
     source: 'all', 'velocity', 'jump', 'early', 'rising'.
     """
     limit = max(1, min(int(limit), 1000))
-    # R4-01: bozuk `day` parametresi veritabanına ulaşmadan 400 döner (500 üretmez).
-    if day:
+    if day == "all":
+        effective_day = None
+    elif day:
         try:
             time.strptime(str(day), "%Y-%m-%d")
+            effective_day = str(day)
         except ValueError:
             raise HTTPException(status_code=400, detail="Geçersiz tarih: YYYY-MM-DD bekleniyor")
+    else:
+        from datetime import datetime, timezone, timedelta
+        effective_day = datetime.now(timezone(timedelta(hours=3))).strftime("%Y-%m-%d")
     settings = await get_user_notification_settings()
     # Tek eşik ilkesi: belirtilmediyse admin etkin eşiği kullanılır.
     threshold = float(min_score) if min_score is not None else _effective_min_score(settings)
-    rows = await database.get_monitoring_velocity_matches(limit=limit, day=day)
+    rows = await database.get_monitoring_velocity_matches(limit=limit, day=effective_day)
     # Eşik filtresi panel (0-100) skoru üzerinden; eski ham kayıtlar tek kez
     # normalize edilir (bkz. _stored_panel_score).
     rows = [r for r in rows
@@ -2759,8 +2764,8 @@ async def report_notifications(
         "success_rate": (multi_success / multi_evaluated * 100) if multi_evaluated else None,
     }
 
-    # R4-04: "genel (tüm zamanlar)"
-    all_rows = await database.get_monitoring_velocity_matches(limit=None, day=None)
+    # Seçilen gün / dönem genel başarı dökümü (day=all ise tüm zamanlar)
+    all_rows = await database.get_monitoring_velocity_matches(limit=None, day=effective_day)
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
     if req_conf > 1:
         all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]
@@ -2802,7 +2807,7 @@ async def report_notifications(
         "tp2_count": all_tp2,
         "tp2_rate": (all_tp2 / all_evaluated * 100) if all_evaluated else None,
     }
-    return {"paper_only": True, "notifications": result, "total": len(result),
+    return {"paper_only": True, "day": effective_day or "all", "notifications": result, "total": len(result),
             "breakdown": day_breakdown, "overall": overall_breakdown}
 
 @router.get("/api/monitoring/diagnostics")
