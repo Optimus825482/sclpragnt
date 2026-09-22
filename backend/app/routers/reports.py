@@ -264,15 +264,14 @@ async def get_chat_prediction_replay(lookback_hours: int = 6, horizons: str = "5
 
 
 @router.get("/api/reports/overview")
-async def get_report_overview():
+async def get_report_overview(day: str | None = None):
     """Admin Rapor Merkezi Özet sekmesi: yalnız AUTO_PAPER (monitoring bildiriminden
-    tetiklenen otonom) işlem verilerini gösterir. Diğer stratejiler (LLM_PAPER,
-    GAINER_RADAR, CHAT_PREDICTION, VELOCITY) bu raporda yer almaz — 2026-09-06.
+    tetiklenen otonom) işlem verilerini gösterir. Belirtilen güne (varsayılan: bugün) göre filtrelenir.
     """
     decision_summary = await database.get_report_decision_summary()
-    ap_stats = await database.get_auto_paper_stats()
-    master_surge_stats = await database.get_auto_paper_stats(confluence_4way_only=True)
-    symbols = await database.get_auto_paper_symbol_breakdown()
+    ap_stats = await database.get_auto_paper_stats(day=day)
+    master_surge_stats = await database.get_auto_paper_stats(confluence_4way_only=True, day=day)
+    symbols = await database.get_auto_paper_symbol_breakdown(day=day)
     try:
         balance = await database.get_wallet_balance("TRY")
     except Exception:
@@ -298,6 +297,7 @@ async def get_report_overview():
     return {
         "paper_only": True,
         "generated_at": now,
+        "day": day or "today",
         "overall": overall,
         "master_surge_stats": master_surge_stats,
         "learning_bias": learning_bias_summary,
@@ -333,12 +333,33 @@ async def get_report_rising_signals(limit: int = 100, kind: str | None = None,
 
 
 @router.get("/api/reports/symbols")
-async def get_report_symbols(limit: int = 200):
+async def get_report_symbols(limit: int = 200, day: str | None = None):
     """Sembol bazlı detaylı rapor: net PnL, başarı, MFE/DD ve ilk/son işlem."""
     limit = max(1, min(int(limit) or 200, 500))
-    breakdown = await database.get_report_trade_breakdown()
-    symbols = [row for row in breakdown.get("symbols", [])][:limit]
-    velocity = await database.get_report_symbol_velocity_quality()
+    breakdown = await database.get_report_trade_breakdown(day=day)
+    symbols = [dict(row) for row in breakdown.get("symbols", [])][:limit]
+    
+    # Auto paper sembollerini de ekle / birleştir
+    ap_symbols = await database.get_auto_paper_symbol_breakdown(day=day)
+    existing_syms = {str(s.get("symbol", "")).upper() for s in symbols}
+    for ap in ap_symbols:
+        sym = str(ap.get("symbol", "")).upper()
+        if sym not in existing_syms:
+            symbols.append({
+                "symbol": sym,
+                "trade_count": ap.get("trade_count", 0),
+                "winning": ap.get("winning", 0),
+                "win_rate": ap.get("win_rate", 0.0),
+                "net_pnl": ap.get("net_pnl", 0.0),
+                "commission": ap.get("commission", 0.0),
+                "avg_mfe_pct": None,
+                "avg_dd_pct": None,
+                "first_seen": None,
+                "last_seen": None,
+            })
+            existing_syms.add(sym)
+
+    velocity = await database.get_report_symbol_velocity_quality(day=day)
     velocity_by_symbol = {str(row.get("symbol", "")).upper(): row for row in velocity}
     for row in symbols:
         sym = str(row.get("symbol", "")).upper()
@@ -347,7 +368,7 @@ async def get_report_symbols(limit: int = 200):
         row["velocity_touched"] = int(vrow.get("touched") or 0)
         ev = int(vrow.get("evaluated") or 0)
         row["velocity_touch_rate"] = round(int(vrow.get("touched") or 0) / ev * 100, 2) if ev else None
-    return {"paper_only": True, "symbols": symbols, "total": len(symbols)}
+    return {"paper_only": True, "symbols": symbols, "total": len(symbols), "day": day or "today"}
 
 
 @router.get("/api/reports/autonomous-log")

@@ -102,6 +102,7 @@ const STRATEGY_LABEL: Record<string, string> = {
   CHAT_PREDICTION: "Hız Avcısı (Otonom)",
   LLM_PAPER: "LLM Paper",
   GAINER_RADAR: "Gainer Radar",
+  AUTO_PAPER: "Otonom Paper",
 };
 
 const REASON_LABEL: Record<string, string> = {
@@ -669,7 +670,13 @@ export default function PortfolioPage() {
                   <tr key={d.id}>
                     <td className="font-mono text-xs text-bunker-muted">{fmtDay(d.timestamp)}</td>
                     <td><SymbolLink symbol={d.symbol} className="font-bold text-white hover:text-neon-green" /></td>
-                    <td className={`font-mono text-xs font-bold ${String(d.decision).startsWith("CLOSE") ? "text-neon-red" : "text-neon-green"}`}>
+                    <td className={`font-mono text-xs font-bold ${
+                      String(d.decision).startsWith("CLOSE")
+                        ? "text-neon-red"
+                        : String(d.decision).includes("BLOCKED")
+                        ? "text-yellow-400"
+                        : "text-neon-green"
+                    }`}>
                       {String(d.decision || "—")}
                     </td>
                     <td className="font-mono text-xs">{formatPrice(Number(d.price || 0))}</td>

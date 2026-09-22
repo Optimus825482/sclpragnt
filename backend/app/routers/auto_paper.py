@@ -56,7 +56,46 @@ def _blocked(symbol: str, reason: str, **extra) -> dict:
     """
     block = {"status": "blocked", "reason": reason, "symbol": symbol}
     block.update(extra)
+    try:
+        price = float(extra.get("price") or extra.get("current_price") or 0.0)
+        asyncio.create_task(_log_blocked_decision(symbol, reason, price, dict(extra)))
+    except Exception:
+        pass
     return block
+
+
+async def _log_blocked_decision(symbol: str, reason: str, price: float, extra: dict):
+    """Otonom işlem engellerini decision_logs tablosuna kaydeder (OTONOM KARAR AKIŞI şeffaflığı)."""
+    try:
+        from app import database
+        reason_tr_map = {
+            "stale_ticker": "Taze fiyat alınamadı (REST ve bildirim fiyatı bayat)",
+            "not_passing": "Aday panel kriterlerini karşılamadı (passes=False)",
+            "quiet_hours": "Sessiz saatler devrede",
+            "quiet_hours_query_error": "Sessiz saat kontrol hatası",
+            "max_open": f"Maksimum açık pozisyon sınırına ulaşıldı ({extra.get('open_count')}/{extra.get('max_open')})",
+            "liquidity": "Likidite yetersizliği (derinlik veya 24s hacim)",
+            "cluster": f"Korelasyon küme riski aşıldı (%{extra.get('cluster', {}).get('exposure_pct', 0):.1f})",
+            "order_below_min": f"Bakiye yetersiz ({extra.get('order_value', 0)} TRY < {extra.get('min_order', 0)} TRY)",
+            "score_below_min": f"Skor yetersiz ({extra.get('score')} < {extra.get('min_score')})",
+        }
+        human_reason = reason_tr_map.get(reason, f"Giriş engellendi: {reason}")
+        if reason == "liquidity" and isinstance(extra.get("liquidity"), dict):
+            liq_reason = extra["liquidity"].get("reason")
+            if liq_reason:
+                human_reason += f" ({liq_reason})"
+
+        await database.save_decision_log({
+            "timestamp": time.time(),
+            "symbol": symbol,
+            "strategy": "AUTO_PAPER",
+            "decision": "ENTRY_BLOCKED",
+            "reason": human_reason,
+            "price": price,
+            "metadata": {"blocked_reason": reason, **extra},
+        })
+    except Exception as exc:
+        logger.debug("auto_paper %s log_blocked_decision hatası: %s", symbol, exc)
 
 
 async def _liquidity_cluster_gate(symbol: str, order_value: float, balance: float) -> dict | None:
@@ -69,6 +108,7 @@ async def _liquidity_cluster_gate(symbol: str, order_value: float, balance: floa
     """
     if not analyzer:
         return None
+    sym_price = float((market.get_ticker(symbol) or {}).get("last_price") or 0.0)
     # (a) Likidite kapısı.
     liquid = True
     details = {}
@@ -79,6 +119,7 @@ async def _liquidity_cluster_gate(symbol: str, order_value: float, balance: floa
         logger.warning("auto_paper %s likidite ön-kapı değerlendirmesi atlandı: %s", symbol, exc)
     if not liquid:
         block = _blocked(symbol, "liquidity")
+        block["price"] = sym_price
         block["liquidity"] = details
         return block
     # (b) Korelasyon küme aşımı.
@@ -89,6 +130,7 @@ async def _liquidity_cluster_gate(symbol: str, order_value: float, balance: floa
         cluster = None
     if cluster:
         block = _blocked(symbol, "cluster")
+        block["price"] = sym_price
         block["cluster"] = cluster
         return block
     return None
@@ -212,20 +254,54 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
         # (detected_at anına ait, bayat) düşmek SL/TP çapasını yanlış sabitler.
         # Bildirim fiyatı yalnızca taze bir ticker ile doğrulanınca kullanılır.
         # (Denetim maddesi: otomatik açılışta bayat fiyata çapa riski.)
-        # NOT: `timestamp` ms cinsindendir — `ticker_freshness` dönüşümü ve
-        # `MAX_TICKER_AGE_SEC` toleransını zaten uygular; elle ms/s karışımı
-        # hesaplamak yerine hazır yardımcı kullanılır.
         try:
-            # Otonom akış için 60 sn: global 15 sn toleransı (MAX_TICKER_AGE_SEC)
-            # tarama kadansı + REST tazeleme aralığı içinde sık engel üretirdi;
-            # 60 sn bayat-çapa riskini kabul edilebilir düzeyde tutar.
             freshness = market.ticker_freshness(symbol, max_age_sec=60)
         except Exception:
             freshness = {"fresh": False, "age_sec": None}
+
+        # Eğer hafızada taze ticker yoksa (ör. sembol config.SYMBOLS dışındaki bir radar çiftiyse),
+        # anlık REST ticker ile hafızayı güncelle:
         if not bool(freshness.get("fresh")):
+            try:
+                from app.binance_tr_public import ticker_price as _fetch_ticker_price
+                price_rows = await _fetch_ticker_price([symbol])
+                row = next((r for r in (price_rows or []) if str(r.get("symbol", "")).upper() == symbol), None)
+                if row and float(row.get("price") or 0) > 0:
+                    current_price = float(row["price"])
+                    now_ms = int(time.time() * 1000)
+                    market.tickers[symbol] = {
+                        "symbol": symbol,
+                        "last_price": current_price,
+                        "timestamp": now_ms,
+                        "source": "binance_tr_rest_auto_paper",
+                    }
+                    freshness = {"fresh": True, "age_sec": 0.0}
+            except Exception as exc:
+                logger.warning("auto_paper %s: REST ticker fetch hatası: %s", symbol, exc)
+
+        # Eğer REST de erişilemediyse ama bildirim taze (son 60s) ve fiyatı varsa fallback kullan:
+        if not bool(freshness.get("fresh")):
+            notif_time = float(notification.get("detected_at") or notification.get("timestamp") or 0)
+            if notif_time > 1e11:
+                notif_time /= 1000.0
+            if notif_time > 0 and (time.time() - notif_time) <= 60.0 and float(notification.get("price") or 0) > 0:
+                current_price = float(notification["price"])
+                now_ms = int(time.time() * 1000)
+                market.tickers[symbol] = {
+                    "symbol": symbol,
+                    "last_price": current_price,
+                    "timestamp": now_ms,
+                    "source": "notification_fallback",
+                }
+                freshness = {"fresh": True, "age_sec": round(time.time() - notif_time, 1)}
+
+        if current_price <= 0:
+            current_price = float(notification.get("price") or 0)
+
+        if not bool(freshness.get("fresh")) or current_price <= 0:
             logger.warning("auto_paper %s: taze ticker yok (age=%ss) — bayat fiyata "
                         "açılış engellendi", symbol, freshness.get("age_sec"))
-            return _blocked(symbol, "stale_ticker")
+            return _blocked(symbol, "stale_ticker", price=current_price, age_sec=freshness.get("age_sec"))
 
         notification_id = notification.get("id")
         notification_key = notification.get("notification_key")
@@ -333,7 +409,7 @@ IKI OTONOM YOLUN KAPI/OLCEK KARSILASTIRMASI (R3-08 — DOKUMANTASYON):
             if open_count >= max_open:
                 logger.warning("auto_paper %s: max açık pozisyon (%d/%d) — açılmadı "
                                "(R3-06)", symbol, open_count, max_open)
-                return _blocked(symbol, "max_open", open_count=open_count, max_open=max_open)
+                return _blocked(symbol, "max_open", price=current_price, open_count=open_count, max_open=max_open)
 
         # R3-06 (a/b): girişten önce LİKİDİTE + KORELASYON KÜME kapısı. order_value
         # burada hesaplanıp `_open_new_trade`'e iletilir (tek wallet okuması).
@@ -383,6 +459,7 @@ async def _open_new_trade(symbol: str, notification: dict, current_price: float,
                 "< min emir %.2f TRY) — açılmadı; balance_pct/min_order_try ayarlayın",
                 symbol, balance, balance_pct * 100, order_value, min_order)
             return _blocked(symbol, "order_below_min",
+                            price=current_price,
                             order_value=round(order_value, 2),
                             min_order=min_order,
                             balance=round(balance, 2),
@@ -1112,11 +1189,16 @@ async def update_settings_endpoint(payload: dict, request: Request):
 # Trades API
 # ---------------------------------------------------------------------------
 @router.get("/api/auto-paper/trades")
-async def list_trades_endpoint(status: str | None = None, limit: int = 100, offset: int = 0):
+async def list_trades_endpoint(
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    day: str | None = None,
+):
     """Otonom paper trade kayıtlarını listele. Açık pozisyonlara güncel fiyat eklenir."""
     limit = max(1, min(int(limit), 500))
     offset = max(0, int(offset))
-    trades = await database.list_auto_paper_trades(status=status or None, limit=limit, offset=offset)
+    trades = await database.list_auto_paper_trades(status=status or None, limit=limit, offset=offset, day=day)
     # Açık pozisyonlar için güncel ticker fiyatını ekle (frontend PnL hesabı için)
     for t in trades:
         if t.get("status") == "open":
@@ -1139,15 +1221,16 @@ async def list_trades_endpoint(status: str | None = None, limit: int = 100, offs
                     t["notification_score"] = float(notif.get("score") or 0)
             else:
                 t["notification_price"] = float(t.get("entry_price") or 0)
-    return {"paper_only": True, "trades": trades, "total": len(trades)}
+    return {"paper_only": True, "trades": trades, "total": len(trades), "day": day or "today"}
 
 
 @router.get("/api/auto-paper/stats")
-async def get_stats_endpoint():
-    """Otonom paper trade istatistikleri (reset_at sonrasi; reset kapanışları hariç)."""
-    stats = await database.get_auto_paper_stats()
+async def get_stats_endpoint(day: str | None = None):
+    """Otonom paper trade istatistikleri (seçilen gün / reset_at sonrasi; reset kapanışları hariç)."""
+    stats = await database.get_auto_paper_stats(day=day)
     return {
         "paper_only": True,
+        "day": day or "today",
         "stats": stats,
         "state": dict(_AUTO_PAPER_STATE),
     }
