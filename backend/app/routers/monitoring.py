@@ -1296,13 +1296,7 @@ async def _deliver_scan_notifications(notified: list) -> None:
                 unified_signals.note_notified(sym, score=float(notif.get("score") or 0))
     if new_notifs and not quiet and vapid_configured:
         for notif in new_notifs:
-            # 2026-09-21 Erkan kararı: Çoklu gösterge teyitlerinde 3'lü teyit veya altındaki
-            # sinyallere push bildirimi ATILMAZ. Yalnızca 4'lü teyit (tam mutabakat) bildirilir.
-            sources = notif.get("sources")
-            if isinstance(sources, list) and 1 < len(sources) < 4:
-                logger.info("monitoring push atlandı (%s): teyit sayısı %d < 4 (yalnızca 4'lü teyit bildirilir)",
-                            notif.get("symbol"), len(sources))
-                continue
+
             ok = await _send_push(notif)
             notif["push_success"] = ok
             if ok:
@@ -1326,11 +1320,11 @@ async def _deliver_scan_notifications(notified: list) -> None:
         logger.info("Monitoring: sessiz saatlerde %d bildirim push kuyruğuna alındı", len(new_notifs))
         for notif in new_notifs:
             _deferred_push.append(notif)
-    # Otonom Paper Trade: Ana motoru geçip bildirim üreten her geçerli fırsatta pozisyon aç!
-    # (2026-09-22 Erkan Kararı: Bildirim varsa otonom işlem açılır; sent_via_push bağımlılığı kaldırıldı).
+    # Otonom Paper Trade: Panel uyarısı veya Push ile gelen her geçerli fırsatta pozisyon aç!
+    # (2026-09-22 Erkan Kararı: Panel uyarısında da açık işlem yoksa açılır; sent_via_push zorunluluğu yok).
     try:
         from app.routers.auto_paper import try_open_from_notification
-        for notif in new_notifs:
+        for notif in notified:
             try:
                 await try_open_from_notification(notif)
             except Exception as exc:
@@ -1728,16 +1722,12 @@ async def _rising_deliver(notified: list) -> None:
                         await database.mark_rising_alert_notified(alert_id, False)
                     except Exception as exc:
                         logger.debug("rising bildirim etiketi %s: %s", alert_id, exc)
-    # Otonom paper: YALNIZCA PUSH İLETİLEN sinyallerde. (2026-09-21 Erkan kararı)
-    # sent_via_push=True olmayan yükseliş sinyalleri otonom işlem açmaz.
+    # Otonom paper: Panel uyarısı veya Push bildirimlerinde açık işlem yoksa aç (2026-09-22 Erkan Kararı)
     if bool(getattr(config, "RISING_AUTONOMOUS_ENABLED", True)):
         min_score = float(getattr(config, "RISING_AUTO_MIN_SCORE", 70) or 0)
         try:
             from app.routers.auto_paper import try_open_from_notification
             for notif in notified:
-                if not notif.get("sent_via_push"):
-                    logger.debug("rising auto_paper atlandı (%s): sent_via_push=False", notif.get("symbol"))
-                    continue
                 if float(notif.get("score") or 0) < min_score:
                     continue
                 try:
@@ -2472,11 +2462,15 @@ async def report_notifications(
     min_score: float = None,
     confluence_min: int = None,
     master_surge_only: bool = False,
+    channel: str = "all",
+    source: str = "all",
 ):
-    """Radar bildirim raporu - gercek kapannis M1 olcmueye dayali basari.
+    """Radar bildirim raporu - gercek kapanis M1 olcmeye dayali basari.
     day: YYYY-MM-DD formatinda gun filtresi (opsiyonel).
     min_score: Skor eşiği filtresi (opsiyonel; belirtilmezse admin min_score kullanılır).
-    confluence_min / master_surge_only: Çoklu teyit filtresi (4'lü teyit / Master Surge odaklı).
+    confluence_min / master_surge_only: Çoklu teyit filtresi.
+    channel: 'all', 'push' (sent_via_push=True), 'panel' (sent_via_push=False).
+    source: 'all', 'velocity', 'jump', 'early', 'rising'.
     """
     limit = max(1, min(int(limit), 1000))
     # R4-01: bozuk `day` parametresi veritabanına ulaşmadan 400 döner (500 üretmez).
@@ -2494,7 +2488,6 @@ async def report_notifications(
     rows = [r for r in rows
             if _stored_panel_score(r) >= threshold]
     now = time.time()
-    result = []
 
     def _parse_sources(raw) -> list[str]:
         """DB `sources` kolonunu listeye çevir (NULL/boş → tek kaynak: radar)."""
@@ -2514,7 +2507,41 @@ async def report_notifications(
     if req_conf > 1:
         rows = [r for r in rows if len(_parse_sources(r.get("sources"))) >= req_conf]
 
+    # Kanal filtresi (Push vs Panel)
+    channel_clean = (channel or "all").lower().strip()
+    if channel_clean == "push":
+        rows = [r for r in rows if r.get("sent_via_push")]
+    elif channel_clean == "panel":
+        rows = [r for r in rows if not r.get("sent_via_push")]
+
+    # Kaynak filtresi (velocity, jump, early, rising)
+    source_clean = (source or "all").lower().strip()
+    if source_clean != "all":
+        rows = [r for r in rows if source_clean in _parse_sources(r.get("sources"))]
+
+    # Otonom paper trade eşleştirmesi için son işlemleri çek
+    trades_by_nid = {}
+    trades_by_sym = {}
+    try:
+        def _fetch_trades_op(conn):
+            trades = conn.execute(
+                "SELECT id, symbol, notification_id, status, pnl, pnl_pct, exit_reason, entry_time, exit_time FROM auto_paper_trades ORDER BY entry_time DESC LIMIT 1000"
+            ).fetchall()
+            return [dict(t) for t in trades]
+        t_rows = await database._run_db(_fetch_trades_op)
+        for td in t_rows:
+            nid = td.get("notification_id")
+            if nid and nid not in trades_by_nid:
+                trades_by_nid[nid] = td
+            sym = td.get("symbol")
+            if sym:
+                trades_by_sym.setdefault(sym, []).append(td)
+    except Exception as exc:
+        logger.debug("auto_paper_trades eslesmesi yuklenemedi: %s", exc)
+
+    result = []
     for row in rows:
+        nid = row.get("id")
         symbol = row.get("symbol")
         price = float(row.get("price") or 0)
         target_pct = float(row.get("target_pct") or 0)
@@ -2526,8 +2553,6 @@ async def report_notifications(
         horizon = int(row.get("horizon_minutes") or 0)
         window_closed = bool(detected_at and horizon and (now - detected_at) >= (horizon + 2) * 60)
         # M1/P0 (R3-04): TAMAMEN BAŞARILI YALNIZCA hedefe GERÇEKTEN dokunulduysa.
-        # Yarım-hedef hareketi (mfe >= hedef×0.5) artık "BAŞARILI" DEĞİL → "KISMİ";
-        # eski tanım başarı oranını ~2× şişiriyordu (hedefe değmeden "başarılı").
         if candidate_status == "evaluated" and mfe_pct is not None:
             if touched:
                 status = "TAMAMEN BAŞARILI"
@@ -2539,19 +2564,37 @@ async def report_notifications(
             status = "BEKLİYOR"
         else:
             status = "ÖLÇÜLEMEDİ" if window_closed else "BEKLİYOR"
+
+        # Eşleşen otonom trade var mı?
+        matched_trade = trades_by_nid.get(nid)
+        if not matched_trade and symbol and trades_by_sym.get(symbol):
+            # Zaman penceresi eşleşmesi (±180 sn)
+            for cand_trade in trades_by_sym[symbol]:
+                etime = float(cand_trade.get("entry_time") or 0)
+                if abs(etime - detected_at) <= 180:
+                    matched_trade = cand_trade
+                    break
+
+        trade_info = None
+        if matched_trade:
+            trade_info = {
+                "id": matched_trade.get("id"),
+                "status": matched_trade.get("status"),
+                "pnl": float(matched_trade["pnl"]) if matched_trade.get("pnl") is not None else None,
+                "pnl_pct": float(matched_trade["pnl_pct"]) if matched_trade.get("pnl_pct") is not None else None,
+                "exit_reason": matched_trade.get("exit_reason"),
+            }
+
         result.append({
-            "id": row.get("id"),
+            "id": nid,
             "symbol": symbol,
             "message": row.get("message"),
             "title": row.get("title"),
-            # Panel (0-100) skoru: eski ham kayıtlar da aynı ölçeğe çevrilerek
-            # tabloda tek ölçek gösterilir (2026-09-04).
             "score": _stored_panel_score(row),
             "target_pct": target_pct,
             "price": price,
             "expected_price": row.get("expected_price"),
             "mfe_pct": mfe_pct,
-            # D-06: MFE tepe; exit/net gerçekleşen çıkış ve maliyet sonrası net.
             "exit_pct": (float(row["exit_pct"]) if row.get("exit_pct") is not None else None),
             "net_pct": (float(row["net_pct"]) if row.get("net_pct") is not None else None),
             "touched_target": touched,
@@ -2559,18 +2602,16 @@ async def report_notifications(
             "mode": row.get("mode"),
             "horizon_minutes": horizon,
             "detected_at": detected_at,
-            "sent_via_push": row.get("sent_via_push"),
-            # BİRLEŞİK SİNYAL: bu bildirimi üreten tespit algoritmaları
-            # (["velocity","jump","early"] gibi; eski kayıtlar → ["velocity"]).
+            "sent_via_push": bool(row.get("sent_via_push")),
             "sources": _parse_sources(row.get("sources")),
             "candidate_id": row.get("candidate_id"),
             "ml_hit_probability": row.get("ml_hit_probability"),
-            # D-08: doygunlukta siralama bilgisi panel skordan KAYBOLUR
-            # (100'a kirpilir). Ham skor + kirpilma bayragi tasinir.
             "raw_score": (float(row["raw_score"]) if row.get("raw_score") is not None else None),
             "saturated": _score_is_saturated(row),
+            "trade": trade_info,
         })
-    # SEMA ÇEŞİTLİLİĞİ (R5): seçilen dönemdeki bildirimlerin sembol dağılımı.
+
+    # SEMA ÇEŞİTLİLİĞİ (R5)
     symbol_counter = Counter(item["symbol"] for item in result if item.get("symbol"))
     unique_symbols = len(symbol_counter)
     symbol_counts = [{"symbol": sym, "count": cnt} for sym, cnt in symbol_counter.most_common(5)]
@@ -2583,16 +2624,54 @@ async def report_notifications(
     for item in result:
         counts[item["status"]] = counts.get(item["status"], 0) + 1
     evaluated = sum(counts[k] for k in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ"))
-    # M1/P0 (R3-04): başarı = YALNIZCA gerçek dokunuş (TAMAMEN BAŞARILI).
-    # Yarım-hedef KISMİ sayılır ve başarıya eklenmez ("BAŞARILI" kovası korunur
-    # ama boştur — FE uyumluluğu için anahtar silinmedi).
     success = counts["TAMAMEN BAŞARILI"]
 
-    # 2026-09-21: Kısmi pozitif kazanç ve scalp kâr kilidi metrikleri
+    # Kısmi pozitif kazanç ve scalp kâr kilidi metrikleri
     evaluated_items = [i for i in result if i.get("status") in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ")]
     mfe_pos_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) > 0)
     tp1_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) >= 1.2)
     tp2_count = sum(1 for i in evaluated_items if (i.get("mfe_pct") or 0) >= 3.0)
+
+    # 1. PUSH vs PANEL KANAL İSTATİSTİKLERİ
+    def _compute_channel_stats(items: list[dict]) -> dict:
+        total_cnt = len(items)
+        ev_items = [i for i in items if i.get("status") in ("TAMAMEN BAŞARILI", "BAŞARILI", "KISMİ", "BAŞARISIZ")]
+        ev_cnt = len(ev_items)
+        succ_cnt = sum(1 for i in ev_items if i.get("status") == "TAMAMEN BAŞARILI")
+        tp1_cnt = sum(1 for i in ev_items if (i.get("mfe_pct") or 0) >= 1.2)
+        tp2_cnt = sum(1 for i in ev_items if (i.get("mfe_pct") or 0) >= 3.0)
+        pos_cnt = sum(1 for i in ev_items if (i.get("mfe_pct") or 0) > 0)
+        trades_cnt = sum(1 for i in items if i.get("trade"))
+        trade_pnl = sum(float(i["trade"]["pnl"] or 0) for i in items if i.get("trade") and i["trade"].get("pnl") is not None)
+        return {
+            "count": total_cnt,
+            "evaluated": ev_cnt,
+            "success_count": succ_cnt,
+            "success_rate": (succ_cnt / ev_cnt * 100) if ev_cnt else None,
+            "tp1_count": tp1_cnt,
+            "tp1_rate": (tp1_cnt / ev_cnt * 100) if ev_cnt else None,
+            "tp2_count": tp2_cnt,
+            "tp2_rate": (tp2_cnt / ev_cnt * 100) if ev_cnt else None,
+            "mfe_positive_count": pos_cnt,
+            "mfe_positive_rate": (pos_cnt / ev_cnt * 100) if ev_cnt else None,
+            "trades_opened": trades_cnt,
+            "trade_pnl": round(trade_pnl, 2),
+        }
+
+    push_stats = _compute_channel_stats([i for i in result if i.get("sent_via_push")])
+    panel_stats = _compute_channel_stats([i for i in result if not i.get("sent_via_push")])
+
+    # 2. TEYİT SAYISI (CONFLUENCE) İSTATİSTİKLERİ
+    confluence_stats = {}
+    for c_level in (1, 2, 3, 4):
+        c_items = [i for i in result if (len(i.get("sources") or []) == c_level if c_level < 4 else len(i.get("sources") or []) >= 4)]
+        confluence_stats[str(c_level)] = _compute_channel_stats(c_items)
+
+    # 3. KAYNAK BAZLI İSTATİSTİKLER (Velocity, Jump, Early, Rising)
+    source_stats = {}
+    for s_name in ("velocity", "jump", "early", "rising"):
+        s_items = [i for i in result if s_name in (i.get("sources") or [])]
+        source_stats[s_name] = _compute_channel_stats(s_items)
 
     day_breakdown = {
         "counts": counts,
@@ -2612,9 +2691,13 @@ async def report_notifications(
         "dominant_symbol_count": top_count,
         "dominant_symbol_ratio": dominant_ratio,
         "dominant_symbol_warning": dominant_warning,
+        "push_stats": push_stats,
+        "panel_stats": panel_stats,
+        "confluence_stats": confluence_stats,
+        "source_stats": source_stats,
     }
-    # BİRLEŞİK SİNYAL (2026-09-17): hangi tespit algoritması ne kadar yakaladı?
-    # Kaynak başına sayım + çok-kaynaklı (birleşik teyit) başarı ayrıca raporlanır
+
+    # BİRLEŞİK SİNYAL (2026-09-17)
     source_counts: dict[str, int] = {}
     source_success: dict[str, int] = {}
     multi_evaluated = 0
@@ -2636,12 +2719,18 @@ async def report_notifications(
         "success_count": multi_success,
         "success_rate": (multi_success / multi_evaluated * 100) if multi_evaluated else None,
     }
-    # R4-04: "genel (tüm zamanlar)" artık cap'siz (limit=None) — 1000 satırda sessizce kırpılmaz.
+
+    # R4-04: "genel (tüm zamanlar)"
     all_rows = await database.get_monitoring_velocity_matches(limit=None, day=None)
-    # Genel başarı da aynı global eşiğe tabi (gürültü oranları dışarıda kalır);
     all_rows = [r for r in all_rows if _stored_panel_score(r) >= threshold]
     if req_conf > 1:
         all_rows = [r for r in all_rows if len(_parse_sources(r.get("sources"))) >= req_conf]
+    if channel_clean == "push":
+        all_rows = [r for r in all_rows if r.get("sent_via_push")]
+    elif channel_clean == "panel":
+        all_rows = [r for r in all_rows if not r.get("sent_via_push")]
+    if source_clean != "all":
+        all_rows = [r for r in all_rows if source_clean in _parse_sources(r.get("sources"))]
 
     all_evaluated = 0
     all_success = 0

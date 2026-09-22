@@ -236,14 +236,13 @@ class AutoPaperOpenPositionTpTests(unittest.IsolatedAsyncioTestCase):
 class AutoPaperConfluenceAndProtectionTests(unittest.IsolatedAsyncioTestCase):
     """Teyit filtresi ve kâr koruma tavanı birim testleri (2026-09-21)."""
 
-    async def test_low_confluence_below_4_blocked(self):
-        """Teyit sayısı < 4 olan sinyallerde pozisyon açılmamalı (yalnızca 4'lü teyit)."""
+    async def test_low_confluence_below_4_allowed(self):
+        """Teyit sayısı 2 veya 3 olan sinyallerde de pozisyon açılabilmeli (2026-09-22 Erkan Kararı)."""
         notif = _make_notification(symbol="LOWCONF", score=88.0)
         notif["sources"] = ["velocity", "jump", "early"]  # 3'lü teyit
         res = await auto_paper.try_open_from_notification(notif)
-        self.assertIsNotNone(res)
-        self.assertEqual(res.get("status"), "blocked")
-        self.assertEqual(res.get("reason"), "low_confluence")
+        # low_confluence engeli olmamalı
+        self.assertNotEqual(res.get("reason") if res else None, "low_confluence")
 
     async def test_confluence_4_allowed_with_normal_score(self):
         """4'lü teyit olduğunda min_score üzerindeki sinyal teyit filtresine takılmaz."""

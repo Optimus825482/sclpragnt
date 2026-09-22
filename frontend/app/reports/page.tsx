@@ -70,25 +70,42 @@ const SOURCE_BADGE_COMPACT: Record<string, string> = {
   rising: "YÜKS.",
 };
 
+function ChannelBadge({ sentViaPush }: { sentViaPush?: boolean | null }) {
+  if (sentViaPush) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded border border-sky-400/40 bg-sky-400/10 px-2 py-0.5 font-mono text-[10px] font-bold text-sky-300 shadow-sm" title="Kullanıcı cihazına Push bildirimi olarak iletildi">
+        🔔 PUSH
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 font-mono text-[10px] font-bold text-amber-300 shadow-sm" title="Monitoring web paneline radar uyarısı olarak düştü">
+      🖥️ PANEL
+    </span>
+  );
+}
+
 function SourceBadges({ sources, compact = false }: { sources?: string[] | null; compact?: boolean }) {
   const list = (sources || []).filter((s) => typeof s === "string" && s);
   if (list.length >= 4) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-md border border-amber-400/60 bg-amber-400/20 px-2 py-0.5 font-mono text-[10px] font-black text-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.3)] animate-pulse" title="Master Surge: Ana Tarama Algoritması Tam Onayı">
-        ⚡ Ana Motor (Master Surge)
+      <span className="inline-flex items-center gap-1 rounded-md border border-amber-400/60 bg-amber-400/20 px-2 py-0.5 font-mono text-[10px] font-black text-amber-300 shadow-[0_0_8px_rgba(251,191,36,0.3)] animate-pulse" title="Master Surge: 4 Algoritma Tam Mutabakat">
+        ⚡ 4&apos;lü Teyit
       </span>
     );
   }
   if (list.length >= 2) {
     return (
-      <span className="inline-flex items-center gap-1 rounded border border-bunker-700 bg-bunker-800/80 px-1.5 py-0.5 font-mono text-[10px] text-bunker-muted" title={`Eski sistem kaydı (${list.length}'li Teyit)`}>
-        Eski ({list.length}&apos;li)
+      <span className="inline-flex items-center gap-1 rounded border border-purple-400/40 bg-purple-400/15 px-2 py-0.5 font-mono text-[10px] font-bold text-purple-300" title={`Çoklu Teyit (${list.join(" + ")})`}>
+        🔗 {list.length}&apos;li Teyit
       </span>
     );
   }
+  const s = list[0] || "velocity";
+  const meta = SOURCE_BADGE_META[s] || { label: "RADAR", cls: "border-sky-400/40 bg-sky-400/10 text-sky-300" };
   return (
-    <span className="inline-flex items-center rounded border border-sky-400/40 bg-sky-400/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-300">
-      Temel Radar
+    <span className={`inline-flex items-center rounded border px-2 py-0.5 font-mono text-[10px] font-bold ${meta.cls}`}>
+      {compact ? (SOURCE_BADGE_COMPACT[s] || meta.label) : meta.label}
     </span>
   );
 }
@@ -109,7 +126,7 @@ function OverviewTab() {
     try {
       const [ovRes, ntRes, apRes] = await Promise.all([
         apiRequest(`${API_BASE}/api/reports/overview`, { cache: "no-store" }),
-        apiRequest(`${API_BASE}/api/reports/notifications?limit=200&confluence_min=4`, { cache: "no-store" }),
+        apiRequest(`${API_BASE}/api/reports/notifications?limit=200`, { cache: "no-store" }),
         apiRequest(`${API_BASE}/api/auto-paper/stats`, { cache: "no-store" }),
       ]);
       const [ov, nt, ap] = await Promise.all([ovRes.json(), ntRes.json(), apRes.json()]);
@@ -142,7 +159,6 @@ function OverviewTab() {
   }
 
   const o = overview?.overall || {};
-  const msStats = overview?.master_surge_stats || null;
   const symbols = overview?.symbols || [];
   const wins = rl(o.winning);
   const total = rl(o.trade_count);
@@ -153,18 +169,23 @@ function OverviewTab() {
 
   return (
     <div className="space-y-6">
-      {/* Master Surge Aktif Bilgi Çubuğu */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3.5 rounded-xl border border-amber-400/40 bg-amber-400/10 text-amber-200 font-mono text-xs shadow-lg">
+      {/* Monitoring ve Radar Sistem Bilgi Çubuğu */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3.5 rounded-xl border border-neon-green/40 bg-neon-green/10 text-neon-green font-mono text-xs shadow-lg">
         <div className="flex items-center gap-2">
-          <span className="text-base animate-pulse">⚡</span>
+          <span className="text-base animate-pulse">📡</span>
           <div>
-            <strong className="text-amber-300">YENİ SİSTEM AKTİF: Master Surge Engine</strong>
-            <span className="text-bunker-muted ml-1.5 hidden md:inline">4 Katmanlı Teyit, Likidite Koruması ve TP1 (+%1.2) Scalp Kâr Kilidi devrede.</span>
+            <strong className="text-white">MONITORING &amp; RADAR BAŞARI TAKİP SİSTEMİ</strong>
+            <span className="text-bunker-muted ml-1.5 hidden md:inline">Hız Avcısı, Sıçrama, Erken MACD ve Yükseliş Eğilimi. Push bildirimleri ve Panel uyarıları gerçek MFE ile ölçülür.</span>
           </div>
         </div>
-        <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-amber-400/30 text-amber-300 font-bold">
-          ⚡ 4&apos;lü Teyit Korumalı
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-sky-400/30 text-sky-300 font-bold">
+            🔔 Push + 🖥️ Panel
+          </span>
+          <span className="text-[11px] px-2 py-0.5 rounded bg-bunker-900/80 border border-neon-green/30 text-neon-green font-bold">
+            🤖 Otonom İşlem Aktif
+          </span>
+        </div>
       </div>
 
       {/* Üst Ana Metrikler */}
@@ -181,15 +202,15 @@ function OverviewTab() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-bunker-800 pb-3">
             <div>
               <h2 className="font-mono text-base font-black text-neon-green flex items-center gap-2">
-                <span>⚡</span> MASTER SURGE (4&apos;LÜ TEYİT) BAŞARI PERFORMANSI
+                <span>📡</span> MONITORING RADAR SİNYAL BAŞARISI ({breakdown.evaluated ?? 0} Ölçülen)
               </h2>
               <p className="mt-0.5 text-xs text-bunker-muted">
-                Yalnızca 4 katmanlı tam mutabakat sağlayan yüksek hassasiyetli fırsatların gerçekleşen MFE sonuçları.
+                Monitoring motorundan çıkan tüm sinyallerin (Push &amp; Panel) gerçek mumlardaki tepe noktası (MFE) ve kâr hedefine ulaşma performansı.
               </p>
             </div>
             {overall?.success_rate != null && (
-              <span className="rounded-full bg-amber-400/15 border border-amber-400/40 px-3 py-1 font-mono text-xs font-bold text-amber-300">
-                4&apos;lü Teyit Başarı: %{overall.success_rate.toFixed(1)}
+              <span className="rounded-full bg-neon-green/15 border border-neon-green/40 px-3 py-1 font-mono text-xs font-bold text-neon-green">
+                Genel Hedef İsabeti: %{overall.success_rate.toFixed(1)}
               </span>
             )}
           </div>
@@ -203,12 +224,105 @@ function OverviewTab() {
             <StatCard label="ÖLÇÜLEN BAŞARI" value={overall?.success_rate != null ? `%${overall.success_rate.toFixed(1)}` : "—"} tone="text-sky-300" sub={`${overall?.success_count ?? 0}/${overall?.evaluated ?? 0} Ölçülen`} />
           </div>
 
-          {breakdown.multi_source && breakdown.multi_source.evaluated > 0 && (
-            <div className="pt-3 border-t border-bunker-800/80 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
-              <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-1.5 text-amber-300 font-bold">
-                ⚡ 4&apos;lü Gösterge Tam Mutabakat: %{Number(breakdown.multi_source.success_rate ?? 0).toFixed(1)} ({breakdown.multi_source.success_count}/{breakdown.multi_source.evaluated} Hedefe Ulaşan)
+          {/* İletim Kanalları Karşılaştırması: Push vs Panel */}
+          {(breakdown.push_stats || breakdown.panel_stats) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+              {/* Push Kartı */}
+              <div className="rounded-xl border border-sky-400/30 bg-sky-400/5 p-4 space-y-3">
+                <div className="flex items-center justify-between border-b border-sky-400/20 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🔔</span>
+                    <div>
+                      <h3 className="font-mono text-sm font-black text-sky-300">PUSH BİLDİRİMLERİ</h3>
+                      <p className="text-[11px] text-bunker-muted font-mono">Telefona &amp; Web Push ile anlık iletilen sinyaller</p>
+                    </div>
+                  </div>
+                  <span className="rounded bg-sky-400/20 px-2 py-0.5 text-xs font-mono font-bold text-sky-200">
+                    {breakdown.push_stats?.count ?? 0} Sinyal
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center font-mono">
+                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
+                    <p className="text-[10px] text-bunker-muted">HEDEF BAŞARISI</p>
+                    <p className="text-base font-black text-neon-green">{pct(breakdown.push_stats?.success_rate ? breakdown.push_stats.success_rate / 100 : null)}</p>
+                    <p className="text-[9px] text-bunker-muted">{breakdown.push_stats?.success_count ?? 0}/{breakdown.push_stats?.evaluated ?? 0} Ölçülen</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
+                    <p className="text-[10px] text-bunker-muted">TP1 (≥%1.2)</p>
+                    <p className="text-base font-black text-neon-green">{pct(breakdown.push_stats?.tp1_rate ? breakdown.push_stats.tp1_rate / 100 : null)}</p>
+                    <p className="text-[9px] text-bunker-muted">{breakdown.push_stats?.tp1_count ?? 0} Adet</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
+                    <p className="text-[10px] text-bunker-muted">AÇILAN İŞLEM</p>
+                    <p className="text-base font-black text-white">{breakdown.push_stats?.trades_opened ?? 0}</p>
+                    <p className={`text-[9px] font-bold ${pnlTone(breakdown.push_stats?.trade_pnl)}`}>{money(breakdown.push_stats?.trade_pnl)}</p>
+                  </div>
+                </div>
               </div>
-              <span className="text-bunker-muted">Tüm teknik göstergelerin (Likidite + Volatilite + Balina CVD + Trend) ortak teyidi</span>
+
+              {/* Panel Uyarısı Kartı */}
+              <div className="rounded-xl border border-amber-400/30 bg-amber-400/5 p-4 space-y-3">
+                <div className="flex items-center justify-between border-b border-amber-400/20 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">🖥️</span>
+                    <div>
+                      <h3 className="font-mono text-sm font-black text-amber-300">PANEL UYARILARI</h3>
+                      <p className="text-[11px] text-bunker-muted font-mono">Radar ekranına düşen erken/yükselen fırsatlar</p>
+                    </div>
+                  </div>
+                  <span className="rounded bg-amber-400/20 px-2 py-0.5 text-xs font-mono font-bold text-amber-200">
+                    {breakdown.panel_stats?.count ?? 0} Sinyal
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center font-mono">
+                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
+                    <p className="text-[10px] text-bunker-muted">HEDEF BAŞARISI</p>
+                    <p className="text-base font-black text-neon-green">{pct(breakdown.panel_stats?.success_rate ? breakdown.panel_stats.success_rate / 100 : null)}</p>
+                    <p className="text-[9px] text-bunker-muted">{breakdown.panel_stats?.success_count ?? 0}/{breakdown.panel_stats?.evaluated ?? 0} Ölçülen</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
+                    <p className="text-[10px] text-bunker-muted">TP1 (≥%1.2)</p>
+                    <p className="text-base font-black text-neon-green">{pct(breakdown.panel_stats?.tp1_rate ? breakdown.panel_stats.tp1_rate / 100 : null)}</p>
+                    <p className="text-[9px] text-bunker-muted">{breakdown.panel_stats?.tp1_count ?? 0} Adet</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-bunker-900/60 border border-bunker-800">
+                    <p className="text-[10px] text-bunker-muted">AÇILAN İŞLEM</p>
+                    <p className="text-base font-black text-white">{breakdown.panel_stats?.trades_opened ?? 0}</p>
+                    <p className={`text-[9px] font-bold ${pnlTone(breakdown.panel_stats?.trade_pnl)}`}>{money(breakdown.panel_stats?.trade_pnl)}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Teyit Katmanları Başarısı */}
+          {breakdown.confluence_stats && (
+            <div className="pt-3 border-t border-bunker-800/80 space-y-2">
+              <p className="font-mono text-xs font-bold text-white flex items-center gap-1.5">
+                <span>🔗</span> TEYİT DERECESİNE GÖRE BAŞARI PERFORMANSI
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  { key: "4", label: "⚡ 4'lü Teyit (Master Surge)", border: "border-amber-400/40 bg-amber-400/10 text-amber-300" },
+                  { key: "3", label: "🔗 3'lü Teyit", border: "border-purple-400/40 bg-purple-400/10 text-purple-300" },
+                  { key: "2", label: "🔗 2'li Teyit", border: "border-sky-400/40 bg-sky-400/10 text-sky-300" },
+                  { key: "1", label: "🎯 Tekli Teyit", border: "border-bunker-700 bg-bunker-900/60 text-bunker-muted" },
+                ].map((tier) => {
+                  const s = breakdown.confluence_stats?.[tier.key];
+                  return (
+                    <div key={tier.key} className={`rounded-lg border p-2.5 font-mono text-xs ${tier.border}`}>
+                      <div className="font-bold truncate">{tier.label}</div>
+                      <div className="mt-1 flex items-baseline justify-between">
+                        <span className="text-[11px] text-bunker-muted">{s?.count ?? 0} Sinyal</span>
+                        <span className="font-black text-sm text-neon-green">{s?.success_rate != null ? `%${s.success_rate.toFixed(1)}` : "—"}</span>
+                      </div>
+                      <div className="text-[10px] text-bunker-muted mt-0.5">
+                        TP1: {s?.tp1_rate != null ? `%${s.tp1_rate.toFixed(1)}` : "—"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </section>
@@ -401,20 +515,42 @@ function OverviewTab() {
                   <tr>
                     <th>Zaman</th>
                     <th>Sembol</th>
+                    <th>Kanal</th>
+                    <th>Teyit</th>
                     <th>Hedef</th>
-                    <th>Ölçülen MFE</th>
+                    <th>MFE</th>
+                    <th>Otonom İşlem</th>
                     <th>Sonuç</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {notifications.slice(0, 10).map((n: any) => (
+                  {notifications.slice(0, 15).map((n: any) => (
                     <tr key={`${n.id}-${n.symbol}-${n.detected_at}`}>
-                      <td className="font-mono text-xs text-bunker-muted">{fmtDt(n.detected_at)}</td>
+                      <td className="font-mono text-xs text-bunker-muted whitespace-nowrap">{fmtDt(n.detected_at)}</td>
                       <td><SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" /></td>
+                      <td><ChannelBadge sentViaPush={n.sent_via_push} /></td>
+                      <td><SourceBadges sources={n.sources} compact /></td>
                       <td className={`font-mono text-xs ${n.target_pct ? "text-neon-green font-bold" : "text-bunker-muted"}`}>{n.target_pct ? `+${Number(n.target_pct).toFixed(1)}%` : "—"}</td>
-                      <td className="font-mono text-xs text-white font-bold">{n.mfe_pct != null ? `%${Number(n.mfe_pct).toFixed(2)}` : "—"}</td>
+                      <td className="font-mono text-xs text-white font-bold">{n.mfe_pct != null ? `+${Number(n.mfe_pct).toFixed(2)}%` : "—"}</td>
+                      <td className="font-mono text-xs">
+                        {n.trade ? (
+                          n.trade.status === "open" ? (
+                            <span className="rounded bg-yellow-400/20 border border-yellow-400/40 px-1.5 py-0.5 text-[10px] font-bold text-yellow-300 animate-pulse">
+                              🤖 AÇIK
+                            </span>
+                          ) : (
+                            <span className={`font-bold ${pnlTone(n.trade.pnl)}`}>
+                              {n.trade.pnl != null ? money(n.trade.pnl) : "KAPANDI"}
+                            </span>
+                          )
+                        ) : (
+                          <span className="text-bunker-600">—</span>
+                        )}
+                      </td>
                       <td>
                         {n.status === "TAMAMEN BAŞARILI" ? <Badge tone="ok">TAMAMEN</Badge>
+                          : (n.mfe_pct != null && n.mfe_pct >= 3.0) ? <Badge tone="ok">TP2 KOŞUSU</Badge>
+                          : (n.mfe_pct != null && n.mfe_pct >= 1.2) ? <Badge tone="ok">TP1 KİLİTLENDİ</Badge>
                           : n.status === "BAŞARILI" ? <Badge tone="ok">BAŞARILI</Badge>
                           : n.status === "KISMİ" ? <Badge tone="warn">KISMİ</Badge>
                           : n.status === "BAŞARISIZ" ? <Badge tone="bad">BAŞARISIZ</Badge>
@@ -439,6 +575,20 @@ interface SymbolCount {
   symbol: string;
   count: number;
 }
+interface ChannelStats {
+  count: number;
+  evaluated: number;
+  success_count: number;
+  success_rate?: number | null;
+  tp1_count?: number;
+  tp1_rate?: number | null;
+  tp2_count?: number;
+  tp2_rate?: number | null;
+  mfe_positive_count?: number;
+  mfe_positive_rate?: number | null;
+  trades_opened?: number;
+  trade_pnl?: number;
+}
 interface RadarBreakdown {
   counts?: Record<string, number>;
   evaluated?: number;
@@ -459,6 +609,10 @@ interface RadarBreakdown {
   dominant_symbol_warning?: boolean;
   by_source?: Record<string, number>;
   multi_source?: { evaluated: number; success_count: number; success_rate?: number | null };
+  push_stats?: ChannelStats;
+  panel_stats?: ChannelStats;
+  confluence_stats?: Record<string, ChannelStats>;
+  source_stats?: Record<string, ChannelStats>;
 }
 interface RadarOverall {
   evaluated?: number;
@@ -481,8 +635,11 @@ function UserRadarTab() {
   const [day, setDay] = useState<string>(() => localDateInput());
   const [search, setSearch] = useState("");
   const [minScore, setMinScore] = useState<number | null>(null);
-  const [confluenceFilter, setConfluenceFilter] = useState<"surge" | "all">("surge");
+  const [channelFilter, setChannelFilter] = useState<"all" | "push" | "panel">("all");
+  const [confluenceFilter, setConfluenceFilter] = useState<"all" | "surge" | "multi" | "single">("all");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "velocity" | "jump" | "early" | "rising">("all");
   const [scoreFilter, setScoreFilter] = useState<"system" | "high" | "all">("system");
+  const [statusFilter, setStatusFilter] = useState<"all" | "success" | "tp1" | "partial" | "failed" | "pending">("all");
   const [sortKey, setSortKey] = useState<string>("detected_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(0);
@@ -494,9 +651,13 @@ function UserRadarTab() {
     try {
       const params = new URLSearchParams();
       params.set("limit", "1000");
-      params.set("day", day);
+      if (day) params.set("day", day);
+      if (channelFilter !== "all") params.set("channel", channelFilter);
+      if (sourceFilter !== "all") params.set("source", sourceFilter);
       if (confluenceFilter === "surge") {
         params.set("confluence_min", "4");
+      } else if (confluenceFilter === "multi") {
+        params.set("confluence_min", "2");
       }
       if (scoreFilter === "all") {
         params.set("min_score", "0");
@@ -523,7 +684,7 @@ function UserRadarTab() {
     } finally {
       setLoading(false);
     }
-  }, [day, scoreFilter, confluenceFilter]);
+  }, [day, channelFilter, sourceFilter, confluenceFilter, scoreFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -547,6 +708,32 @@ function UserRadarTab() {
   const filtered = useMemo(() => {
     const q = search.trim().toUpperCase();
     let rows = notifications;
+    if (channelFilter === "push") {
+      rows = rows.filter((n: any) => n.sent_via_push === true);
+    } else if (channelFilter === "panel") {
+      rows = rows.filter((n: any) => !n.sent_via_push);
+    }
+    if (confluenceFilter === "single") {
+      rows = rows.filter((n: any) => (n.sources || []).length <= 1);
+    } else if (confluenceFilter === "multi") {
+      rows = rows.filter((n: any) => (n.sources || []).length >= 2 && (n.sources || []).length < 4);
+    } else if (confluenceFilter === "surge") {
+      rows = rows.filter((n: any) => (n.sources || []).length >= 4);
+    }
+    if (sourceFilter !== "all") {
+      rows = rows.filter((n: any) => (n.sources || []).includes(sourceFilter));
+    }
+    if (statusFilter === "success") {
+      rows = rows.filter((n: any) => n.status === "TAMAMEN BAŞARILI");
+    } else if (statusFilter === "tp1") {
+      rows = rows.filter((n: any) => (n.mfe_pct != null && n.mfe_pct >= 1.2) || n.status === "TAMAMEN BAŞARILI");
+    } else if (statusFilter === "partial") {
+      rows = rows.filter((n: any) => n.status === "KISMİ");
+    } else if (statusFilter === "failed") {
+      rows = rows.filter((n: any) => n.status === "BAŞARISIZ");
+    } else if (statusFilter === "pending") {
+      rows = rows.filter((n: any) => n.status === "BEKLİYOR");
+    }
     if (q) {
       rows = rows.filter((n: any) =>
         String(n.symbol || "").toUpperCase().includes(q) ||
@@ -568,7 +755,7 @@ function UserRadarTab() {
       return String(av).localeCompare(String(bv), "tr-TR") * dir;
     });
     return sorted;
-  }, [notifications, search, sortKey, sortDir]);
+  }, [notifications, search, channelFilter, confluenceFilter, sourceFilter, statusFilter, sortKey, sortDir]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -653,96 +840,15 @@ function UserRadarTab() {
 
       {/* Tablo ve Arama */}
       <section className="card p-5 rounded-2xl border border-bunker-800 bg-bunker-950/60 shadow-xl space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-bunker-800 pb-3">
-          <div>
-            <h2 className="font-mono text-base font-black text-neon-green flex items-center gap-2">
-              <span>🎯</span> SİNYAL TESPİT VE SONUÇ LİSTESİ ({filtered.length})
-            </h2>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] font-mono">
-              {confluenceFilter === "surge" ? (
-                <span className="inline-flex items-center gap-1 rounded bg-neon-green/10 px-2 py-0.5 text-neon-green border border-neon-green/30">
-                  ⚡ <strong>Master Surge Aktif</strong>: Yalnızca 4&apos;lü Teyit Sinyalleri
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 rounded bg-amber-400/10 px-2 py-0.5 text-amber-300 border border-amber-400/30">
-                  📋 <strong>Arşiv Modu</strong>: Geçmiş ve eski 3&apos;lü teyitler dahil tüm kayıtlar
-                </span>
-              )}
-              {minScore != null && (
-                <span className="text-bunker-muted">
-                  Eşik: SKOR ≥ {Math.round(minScore)}
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Sistem / Arşiv Modu Seçimi */}
-            <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
-              <button
-                type="button"
-                onClick={() => { setConfluenceFilter("surge"); setPage(0); }}
-                className={`rounded-lg px-2.5 py-1 transition-all ${
-                  confluenceFilter === "surge"
-                    ? "bg-neon-green/20 text-neon-green font-bold border border-neon-green/40 shadow-sm"
-                    : "text-bunker-muted hover:text-white"
-                }`}
-                title="Yeni Master Surge mimarisi: 4'lü Teyit ile filtrelenmiş yüksek güvenli sinyaller"
-              >
-                ⚡ 4&apos;lü Teyit (Master Surge)
-              </button>
-              <button
-                type="button"
-                onClick={() => { setConfluenceFilter("all"); setPage(0); }}
-                className={`rounded-lg px-2.5 py-1 transition-all ${
-                  confluenceFilter === "all"
-                    ? "bg-amber-400/20 text-amber-300 font-bold border border-amber-400/40 shadow-sm"
-                    : "text-bunker-muted hover:text-white"
-                }`}
-                title="Geçmiş tüm kayıtlar (Eski 3'lü teyitler silinmez, burada incelenebilir)"
-              >
-                📋 Tüm Kayıtlar (Arşiv)
-              </button>
-            </div>
-
-            {/* Skor Filtresi */}
-            <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
-              <button
-                type="button"
-                onClick={() => { setScoreFilter("system"); setPage(0); }}
-                className={`rounded-lg px-2.5 py-1 transition-all ${
-                  scoreFilter === "system"
-                    ? "bg-neon-green/20 text-neon-green font-bold border border-neon-green/40 shadow-sm"
-                    : "text-bunker-muted hover:text-white"
-                }`}
-                title="Yalnızca sistem eşiği ve üstü bildirimler"
-              >
-                🎯 Eşik
-              </button>
-              <button
-                type="button"
-                onClick={() => { setScoreFilter("high"); setPage(0); }}
-                className={`rounded-lg px-2.5 py-1 transition-all ${
-                  scoreFilter === "high"
-                    ? "bg-sky-400/20 text-sky-300 font-bold border border-sky-400/40 shadow-sm"
-                    : "text-bunker-muted hover:text-white"
-                }`}
-                title="Yalnızca çok yüksek güvenli (≥85) bildirimler"
-              >
-                🔥 Yüksek (≥85)
-              </button>
-              <button
-                type="button"
-                onClick={() => { setScoreFilter("all"); setPage(0); }}
-                className={`rounded-lg px-2.5 py-1 transition-all ${
-                  scoreFilter === "all"
-                    ? "bg-bunker-800 text-white font-bold border border-bunker-600 shadow-sm"
-                    : "text-bunker-muted hover:text-white"
-                }`}
-                title="Tüm skor seviyeleri"
-              >
-                Tümü
-              </button>
+        <div className="flex flex-col gap-3 border-b border-bunker-800 pb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="font-mono text-base font-black text-neon-green flex items-center gap-2">
+                <span>🎯</span> MONITORING RADAR SİNYAL LİSTESİ ({filtered.length})
+              </h2>
+              <p className="text-xs text-bunker-muted font-mono mt-0.5">
+                Monitoring motorunun yakaladığı Push ve Panel fırsatları, anlık hedefe dokunma ölçümü ve otonom paper işlem sonuçları.
+              </p>
             </div>
 
             <div className="relative">
@@ -750,11 +856,153 @@ function UserRadarTab() {
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(0); }}
                 placeholder="Sembol, mod ara…"
-                className="w-40 sm:w-48 bg-bunker-900 border border-bunker-700 rounded-xl px-3 py-1.5 font-mono text-xs text-white placeholder-bunker-muted focus:border-neon-green/50 outline-none"
+                className="w-48 sm:w-60 bg-bunker-900 border border-bunker-700 rounded-xl px-3 py-1.5 font-mono text-xs text-white placeholder-bunker-muted focus:border-neon-green/50 outline-none"
               />
               {search && (
                 <button type="button" onClick={() => setSearch("")} className="absolute right-2 top-1.5 text-bunker-muted hover:text-white text-xs">✕</button>
               )}
+            </div>
+          </div>
+
+          {/* Hızlı Filtre Çubukları */}
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {/* 1. Kanal Filtresi */}
+            <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
+              <span className="text-bunker-muted px-1.5 text-[11px]">Kanal:</span>
+              <button
+                type="button"
+                onClick={() => { setChannelFilter("all"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${channelFilter === "all" ? "bg-bunker-700 text-white font-bold" : "text-bunker-muted hover:text-white"}`}
+              >
+                Tümü
+              </button>
+              <button
+                type="button"
+                onClick={() => { setChannelFilter("push"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${channelFilter === "push" ? "bg-sky-400/20 text-sky-300 font-bold border border-sky-400/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                🔔 Push
+              </button>
+              <button
+                type="button"
+                onClick={() => { setChannelFilter("panel"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${channelFilter === "panel" ? "bg-amber-400/20 text-amber-300 font-bold border border-amber-400/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                🖥️ Panel
+              </button>
+            </div>
+
+            {/* 2. Teyit Filtresi */}
+            <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
+              <span className="text-bunker-muted px-1.5 text-[11px]">Teyit:</span>
+              <button
+                type="button"
+                onClick={() => { setConfluenceFilter("all"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${confluenceFilter === "all" ? "bg-bunker-700 text-white font-bold" : "text-bunker-muted hover:text-white"}`}
+              >
+                Tümü
+              </button>
+              <button
+                type="button"
+                onClick={() => { setConfluenceFilter("surge"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${confluenceFilter === "surge" ? "bg-amber-400/20 text-amber-300 font-bold border border-amber-400/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                ⚡ 4&apos;lü Teyit
+              </button>
+              <button
+                type="button"
+                onClick={() => { setConfluenceFilter("multi"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${confluenceFilter === "multi" ? "bg-purple-400/20 text-purple-300 font-bold border border-purple-400/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                🔗 Çoklu (2-3)
+              </button>
+              <button
+                type="button"
+                onClick={() => { setConfluenceFilter("single"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${confluenceFilter === "single" ? "bg-sky-400/20 text-sky-300 font-bold border border-sky-400/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                🎯 Tekli
+              </button>
+            </div>
+
+            {/* 3. Kaynak Filtresi */}
+            <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
+              <span className="text-bunker-muted px-1.5 text-[11px]">Kaynak:</span>
+              <button
+                type="button"
+                onClick={() => { setSourceFilter("all"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${sourceFilter === "all" ? "bg-bunker-700 text-white font-bold" : "text-bunker-muted hover:text-white"}`}
+              >
+                Tümü
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSourceFilter("velocity"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${sourceFilter === "velocity" ? "bg-neon-green/20 text-neon-green font-bold border border-neon-green/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                Radar
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSourceFilter("jump"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${sourceFilter === "jump" ? "bg-sky-400/20 text-sky-300 font-bold border border-sky-400/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                Sıçrama
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSourceFilter("early"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${sourceFilter === "early" ? "bg-violet-400/20 text-violet-300 font-bold border border-violet-400/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                Erken MACD
+              </button>
+              <button
+                type="button"
+                onClick={() => { setSourceFilter("rising"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${sourceFilter === "rising" ? "bg-amber-400/20 text-amber-300 font-bold border border-amber-400/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                Yükseliş
+              </button>
+            </div>
+
+            {/* 4. Sonuç Filtresi */}
+            <div className="flex items-center gap-1 rounded-xl border border-bunker-700 bg-bunker-900 p-1 font-mono text-xs">
+              <span className="text-bunker-muted px-1.5 text-[11px]">Sonuç:</span>
+              <button
+                type="button"
+                onClick={() => { setStatusFilter("all"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${statusFilter === "all" ? "bg-bunker-700 text-white font-bold" : "text-bunker-muted hover:text-white"}`}
+              >
+                Tümü
+              </button>
+              <button
+                type="button"
+                onClick={() => { setStatusFilter("success"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${statusFilter === "success" ? "bg-neon-green/20 text-neon-green font-bold border border-neon-green/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                ✓ Hedef
+              </button>
+              <button
+                type="button"
+                onClick={() => { setStatusFilter("tp1"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${statusFilter === "tp1" ? "bg-neon-green/20 text-neon-green font-bold border border-neon-green/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                🔒 TP1+
+              </button>
+              <button
+                type="button"
+                onClick={() => { setStatusFilter("partial"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${statusFilter === "partial" ? "bg-yellow-400/20 text-yellow-300 font-bold border border-yellow-400/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                Kısmi
+              </button>
+              <button
+                type="button"
+                onClick={() => { setStatusFilter("failed"); setPage(0); }}
+                className={`rounded-lg px-2 py-0.5 transition-all ${statusFilter === "failed" ? "bg-neon-red/20 text-neon-red font-bold border border-neon-red/40" : "text-bunker-muted hover:text-white"}`}
+              >
+                ✗ Başarısız
+              </button>
             </div>
           </div>
         </div>
@@ -777,12 +1025,13 @@ function UserRadarTab() {
                   <tr>
                     <SortHeader label="Zaman" field="time" />
                     <SortHeader label="Sembol" field="symbol" />
-                    <th>Algoritma Teyidi</th>
+                    <th>Kanal</th>
+                    <th>Teyit</th>
                     <SortHeader label="Giriş Fiyatı" field="price" />
                     <SortHeader label="Skor" field="score" />
-                    <SortHeader label="Ufuk" field="horizon_minutes" />
+                    <SortHeader label="Hedef (TP)" field="target_pct" />
                     <SortHeader label="Maksimum (MFE)" field="mfe_pct" />
-                    <SortHeader label="Net Çıkış" field="net_pct" />
+                    <th>Otonom İşlem</th>
                     <th>Sonuç</th>
                   </tr>
                 </thead>
@@ -791,7 +1040,6 @@ function UserRadarTab() {
                     const dt = new Date(toMs(n.detected_at));
                     const timeStr = dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
                     const mfePct = n.mfe_pct != null ? Number(n.mfe_pct) : null;
-                    const netPct = n.net_pct != null ? Number(n.net_pct) : null;
                     const mfeTone = mfePct != null ? (mfePct >= 0 ? "text-neon-green" : "text-neon-red") : "text-bunker-muted";
 
                     return (
@@ -803,6 +1051,9 @@ function UserRadarTab() {
                           <SymbolLink symbol={n.symbol} className="font-mono font-bold text-white hover:text-neon-green" />
                         </td>
                         <td>
+                          <ChannelBadge sentViaPush={n.sent_via_push} />
+                        </td>
+                        <td>
                           <SourceBadges sources={n.sources} compact />
                         </td>
                         <td className="font-mono text-xs text-white">
@@ -811,14 +1062,33 @@ function UserRadarTab() {
                         <td className="font-mono text-xs text-white font-bold">
                           {n.score != null ? Number(n.score).toFixed(1) : "—"}
                         </td>
-                        <td className="font-mono text-xs text-bunker-muted">
-                          {n.horizon_minutes ? `${n.horizon_minutes}dk` : "—"}
+                        <td className={`font-mono text-xs ${n.target_pct ? "text-neon-green font-bold" : "text-bunker-muted"}`}>
+                          {n.target_pct ? `+${Number(n.target_pct).toFixed(1)}%` : "—"}
                         </td>
                         <td className={`font-mono text-xs font-bold ${mfeTone}`}>
                           {mfePct != null ? `+${mfePct.toFixed(2)}%` : "—"}
                         </td>
-                        <td className={`font-mono text-xs font-bold ${netPct == null ? "text-bunker-muted" : netPct >= 0 ? "text-neon-green" : "text-neon-red"}`}>
-                          {netPct != null ? `${netPct >= 0 ? "+" : ""}${netPct.toFixed(2)}%` : "—"}
+                        <td>
+                          {n.trade ? (
+                            n.trade.status === "open" ? (
+                              <span className="rounded bg-yellow-400/20 border border-yellow-400/40 px-1.5 py-0.5 text-[10px] font-mono font-bold text-yellow-300 animate-pulse" title="Otonom paper pozisyon açık">
+                                🤖 AÇIK
+                              </span>
+                            ) : (
+                              <div className="font-mono text-xs">
+                                <span className={`font-bold ${pnlTone(n.trade.pnl)}`}>
+                                  {n.trade.pnl != null ? money(n.trade.pnl) : "KAPANDI"}
+                                </span>
+                                {n.trade.pnl_pct != null && (
+                                  <span className={`block text-[10px] ${pnlTone(n.trade.pnl_pct)}`}>
+                                    {n.trade.pnl_pct >= 0 ? "+" : ""}{n.trade.pnl_pct.toFixed(2)}%
+                                  </span>
+                                )}
+                              </div>
+                            )
+                          ) : (
+                            <span className="text-bunker-600 font-mono text-xs">—</span>
+                          )}
                         </td>
                         <td>
                           {n.status === "TAMAMEN BAŞARILI" ? (
