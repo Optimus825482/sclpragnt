@@ -1085,12 +1085,7 @@ async def _notify(candidates_list, settings) -> list:
         if min_target > 0 and target < min_target:
             continue
 
-        # ANA MOTOR GEÇİŞ KONTROLÜ (2026-09-22 Erkan Kararı):
-        # 3'lü teyitler veya eksik çoklu teyitler ne push atar ne de bildirim üretir!
-        # Çoklu kaynaklı (birleşik sinyal / füzyon) adaylarda 3'lü teyit elenir.
         sources = c.get("sources") or c.get("unified_sources")
-        if isinstance(sources, list) and 1 < len(sources) < 4:
-            continue
         # Bu sembol icin ufku dolmamis (sonucu bekleyen) bildirim var mi kontrol et.
         # Ufuk + 2 dk tolerans dolmussa bildirim sonuclanmis sayilir; aksi halde
         # ayni kayit guncellenir. (monitoring_notifications'ta status kolonu yok;
@@ -1427,10 +1422,6 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     if min_target > 0 and float(candidate.get("target_pct") or 0) < min_target:
         return None
 
-    # 2026-09-22 Erkan Kararı: 3'lü teyitler ne push atar ne de bildirim üretir!
-    cand_sources = candidate.get("sources") or candidate.get("unified_sources")
-    if isinstance(cand_sources, list) and 1 < len(cand_sources) < 4:
-        return None
 
     # Radar kuralı D-05: tazeliği doğrulanmış ticker yoksa adayın fiyatı.
     tick_px = _ticker_price(sym)
