@@ -1009,14 +1009,17 @@ async def velocity_learning_loop():
             async def _fetch_one(candidate: dict):
                 symbol = candidate["symbol"]
                 created_ms = int(float(candidate["created_at"]) * 1000)
-                horizon = 15 if "15dk-%3" in str(candidate.get("candidate_id", "")) else 5
-                due_ms = created_ms + horizon * 60_000
+                max_horizon = int(getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60))
+                now_ms = int(time.time() * 1000)
+                due_ms = created_ms + max_horizon * 60_000
+                fetch_to_ms = min(now_ms, due_ms + 65_000)
+                bars_needed = min(max_horizon + 15, max(5, int((fetch_to_ms - created_ms) / 60_000) + 5))
                 try:
                     async with sem:
                         # D-13: bu REST yolu eskiden limiter'ı atlıyordu; artık
                         # tarama/ölçüm çağrılarıyla AYNI token bucket'tan geçer.
                         await _velocity_rate_acquire()
-                        rows = await fetch_klines(symbol, "1m", horizon + 12, created_ms, due_ms + 65_000)
+                        rows = await fetch_klines(symbol, "1m", bars_needed, created_ms, fetch_to_ms)
                     fetch_results[candidate["candidate_id"]] = rows
                 except Exception:
                     fetch_results[candidate["candidate_id"]] = None
@@ -1031,40 +1034,98 @@ async def velocity_learning_loop():
                     continue
                 symbol = candidate["symbol"]
                 created_ms = int(float(candidate["created_at"]) * 1000)
-                horizon = 15 if "15dk-%3" in candidate_id else 5
-                due_ms = created_ms + horizon * 60_000
+                max_horizon = int(getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60))
+                due_ms = created_ms + max_horizon * 60_000
+                now_ms = int(time.time() * 1000)
+
                 # Tarama anı bir M1 mumun ortasına denk gelebilir; o PARSİYEL mum
                 # "atak öncesi" sayılır ve HARİÇ tutulur (R5-C4.4): aksi halde
-                # mumun tüm dakikaya yayılan high'ı sinyal-öncesi hareketi MFE'ye
-                # katar. Pencere süresi dolduysa ufuk × %60 mum yeterli — aksi
-                # halde kayıt sonsuza dek 'pending' kalıyordu.
-                window = _post_signal_window(rows, created_ms, due_ms)
-                # Ufuk süresi dolmadan değerlendirme yapılmaz
-                if time.time() * 1000 < due_ms:
-                    continue
-                # İllikit sembollerde bazı dakikalarda işlem olmasa dahi eldeki kapanmış barlarla
-                # ölçüm tamamlanır; böylece kayıtlar aylarca 'pending' kalıp 'expired' olmaz.
+                # mumun tüm dakikaya yayılan high'ı sinyal-öncesi hareketi MFE'ye katar.
+                window = _post_signal_window(rows, created_ms, min(now_ms, due_ms))
                 if not window:
                     continue
                 entry = float(candidate["price"])
                 if entry <= 0:
                     continue
-                mfe_pct = _mfe_from_window(window, entry)
-                # D-06: gerçekleşen çıkış + maliyet sonrası net (MFE'ye EK, yerine DEĞİL).
-                exit_pct = _exit_pct_from_window(window, entry)
-                net_pct = (exit_pct - round_trip_cost_pct()) if exit_pct is not None else None
-                touched = mfe_pct >= float(candidate["target_pct"])
+
+                target_pct = float(candidate["target_pct"])
+                sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT", 1.5))
+                cost_pct = round_trip_cost_pct()
+
+                # Gerçekçi işlem yaşam döngüsü: Mum bazlı sıralı TP ve SL kontrolü
+                hit_target = False
+                hit_stop = False
+                touch_bar = None
+                stop_bar = None
+
+                for r in window:
+                    bar_high = float(r[2])
+                    bar_low = float(r[3])
+                    high_gain = (bar_high / entry - 1) * 100
+                    low_dd = (bar_low / entry - 1) * 100
+
+                    if high_gain >= target_pct:
+                        hit_target = True
+                        touch_bar = r
+                        break
+                    elif low_dd <= -sl_pct:
+                        hit_stop = True
+                        stop_bar = r
+                        break
+
+                expired = (now_ms >= due_ms)
+
+                # Ne hedefe ne stop'a dokundu ve henüz maksimum süre (60 dk) dolmadıysa beklemeye devam et
+                if not hit_target and not hit_stop and not expired:
+                    continue
+
+                mfe_pct = _mfe_from_window(window, entry) or 0.0
+                touched = hit_target
+
+                if hit_target:
+                    exit_pct = target_pct
+                    net_pct = exit_pct - cost_pct
+                    touch_sec = max(0, int((int(touch_bar[0]) + 59_999 - created_ms) / 1000)) if touch_bar else None
+                    details = {
+                        "window_bars": len(window),
+                        "entry": entry,
+                        "target_pct": target_pct,
+                        "touch_sec": touch_sec,
+                        "touched_at_minute": round((touch_sec or 0) / 60, 1),
+                        "status_reason": "TARGET_HIT"
+                    }
+                elif hit_stop:
+                    exit_pct = -sl_pct
+                    net_pct = exit_pct - cost_pct
+                    stop_sec = max(0, int((int(stop_bar[0]) + 59_999 - created_ms) / 1000)) if stop_bar else None
+                    details = {
+                        "window_bars": len(window),
+                        "entry": entry,
+                        "target_pct": target_pct,
+                        "stop_sec": stop_sec,
+                        "stopped_at_minute": round((stop_sec or 0) / 60, 1),
+                        "status_reason": "STOPPED_OUT"
+                    }
+                else:  # expired
+                    exit_pct = _exit_pct_from_window(window, entry)
+                    net_pct = (exit_pct - cost_pct) if exit_pct is not None else None
+                    details = {
+                        "window_bars": len(window),
+                        "entry": entry,
+                        "target_pct": target_pct,
+                        "status_reason": "MAX_HORIZON_EXPIRED"
+                    }
+
                 ok = await database.mark_velocity_candidate_evaluated(
                     candidate["candidate_id"], mfe_pct=round(mfe_pct, 4),
                     touched_target=touched,
                     exit_pct=(round(exit_pct, 4) if exit_pct is not None else None),
                     net_pct=(round(net_pct, 4) if net_pct is not None else None),
-                    details={"window_bars": len(window), "entry": entry, "target_pct": candidate["target_pct"]})
+                    details=details)
                 if ok:
                     measured += 1
                     # Sembol bazli adaptif hedef ogrenmesini gercek olcümle guncelle;
-                    # hedefe dokunulduysa basari, dokunulmadiysa basarisiz kaydedilir;
-                    # boylece symbol_target_state hep 0/0 kalmaz (2026-09-03 teshis).
+                    # hedefe dokunulduysa basari, dokunulmadiysa basarisiz kaydedilir
                     try:
                         await database.record_symbol_target_outcome(
                             symbol, success=touched, achieved_pct=round(mfe_pct, 3))
@@ -1220,11 +1281,11 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
     if not candidate:
         raise HTTPException(status_code=404, detail="Kayıt bulunamadı")
     symbol = candidate["symbol"]
-    horizon = 15 if "15dk-%3" in str(candidate.get("candidate_id", "")) else 5
+    max_horizon = int(getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60))
     created_ms = int(float(candidate["created_at"]) * 1000)
-    due_ms = created_ms + horizon * 60_000
+    due_ms = created_ms + max_horizon * 60_000
     try:
-        rows1m = await fetch_klines(symbol, "1m", horizon + 12, created_ms, due_ms + 65_000)
+        rows1m = await fetch_klines(symbol, "1m", max_horizon + 15, created_ms, due_ms + 65_000)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"mum verisi alınamadı: {exc}")
     # R5-C4.4: sinyal anını içeren parsiyel mum HARİÇ (aynı `_post_signal_window`).
@@ -1232,20 +1293,58 @@ async def remeasure_velocity_candidate(candidate_id: str, request: Request = Non
     if len(window) < 3:
         raise HTTPException(status_code=409, detail=f"pencere mumları yetersiz: {len(window)}")
     entry = float(candidate["price"])
-    highs = [float(r[2]) for r in window]
-    mfe_pct = (max(highs) / entry - 1) * 100 if entry > 0 else 0.0
-    touched = mfe_pct >= float(candidate["target_pct"])
-    touch_bar = next((r for r in window if float(r[2]) == max(highs)), None)
-    touch_sec = int((int(touch_bar[0]) + 59_999 - created_ms) / 1000) if touched and touch_bar else None
+    target_pct = float(candidate["target_pct"])
+    sl_pct = float(getattr(config, "AUTO_PAPER_SL_PCT", 1.5))
+    cost_pct = round_trip_cost_pct()
+
+    hit_target = False
+    hit_stop = False
+    touch_bar = None
+    stop_bar = None
+
+    for r in window:
+        bar_high = float(r[2])
+        bar_low = float(r[3])
+        high_gain = (bar_high / entry - 1) * 100
+        low_dd = (bar_low / entry - 1) * 100
+
+        if high_gain >= target_pct:
+            hit_target = True
+            touch_bar = r
+            break
+        elif low_dd <= -sl_pct:
+            hit_stop = True
+            stop_bar = r
+            break
+
+    mfe_pct = _mfe_from_window(window, entry) or 0.0
+    touch_sec = int((int(touch_bar[0]) + 59_999 - created_ms) / 1000) if hit_target and touch_bar else None
+    stop_sec = int((int(stop_bar[0]) + 59_999 - created_ms) / 1000) if hit_stop and stop_bar else None
+
+    if hit_target:
+        exit_pct = target_pct
+        net_pct = exit_pct - cost_pct
+        reason = "TARGET_HIT"
+    elif hit_stop:
+        exit_pct = -sl_pct
+        net_pct = exit_pct - cost_pct
+        reason = "STOPPED_OUT"
+    else:
+        exit_pct = _exit_pct_from_window(window, entry) or 0.0
+        net_pct = exit_pct - cost_pct
+        reason = "MAX_HORIZON_EXPIRED"
+
     await database.mark_velocity_candidate_evaluated(
-        candidate_id, mfe_pct=round(mfe_pct, 4), touched_target=touched,
+        candidate_id, mfe_pct=round(mfe_pct, 4), touched_target=hit_target,
+        exit_pct=round(exit_pct, 4), net_pct=round(net_pct, 4),
         details={"remeasured": True, "window_bars": len(window),
-                  "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
-                  "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
-                  "entry": entry, "target_pct": candidate["target_pct"], "touch_sec": touch_sec},
+                 "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
+                 "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
+                 "entry": entry, "target_pct": candidate["target_pct"], "touch_sec": touch_sec,
+                 "stop_sec": stop_sec, "status_reason": reason},
         force=True)
     return {"ok": True, "paper_only": True, "mfe_pct": round(mfe_pct, 3),
-            "touched_target": touched, "window_bars": len(window),
+            "touched_target": hit_target, "window_bars": len(window),
             "window_first": datetime.fromtimestamp(int(window[0][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
             "window_last": datetime.fromtimestamp(int(window[-1][0]) / 1000, tz=timezone(timedelta(hours=3))).strftime("%H:%M"),
             "touch_sec": touch_sec}
@@ -1354,10 +1453,11 @@ async def get_velocity_live_tracking():
     # Düzeltme (2026-09-12): pencere sabit 5dk DEĞİL — her satırın ufku
     # candidate_id'den okunur (15dk adaylar eskiden 5dk'da "süresi doldu"
     # sayılıyordu). Ufuk okunamazsa 5dk fallback korunur.
+    max_horizon_min = int(getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60))
+    max_horizon_sec = max_horizon_min * 60
     rows = [r for r in rows
             if r["status"] == "pending"
-            or now_ms / 1000 - float(r["created_at"])
-            <= _velocity_horizon_from_candidate_id(r.get("candidate_id")) * 60]
+            or now_ms / 1000 - float(r["created_at"]) <= max_horizon_sec]
     sem = asyncio.Semaphore(6)
     tracked = []
 
@@ -1365,12 +1465,7 @@ async def get_velocity_live_tracking():
         symbol = row["symbol"]
         entry = float(row["price"])
         created_ms = int(float(row["created_at"]) * 1000)
-        # Düzeltme (2026-09-12): pencere ve dokunuş eşiği satırdan okunur;
-        # 5dk-%2 sabiti 15dk adayları yanlış sınıflandırıyordu.
-        # - pencere: horizon_minutes × 60 sn (yoksa 5dk fallback)
-        # - dokunuş: 1 + target_pct/100 (target yoksa 1.02 fallback)
-        horizon_min = _velocity_horizon_from_candidate_id(row.get("candidate_id"))
-        due_ms = created_ms + horizon_min * 60_000
+        due_ms = created_ms + max_horizon_min * 60_000
         try:
             row_target_pct = float(row.get("target_pct"))
         except (TypeError, ValueError):
@@ -1379,9 +1474,10 @@ async def get_velocity_live_tracking():
         # Kapanmış M1 mumlardan pencere içi tepe + dokunuş anı (5 sn çözünürlük için mum üstü)
         best_high, touch_sec = None, None
         try:
-            window_rows = await fetch_klines(symbol, "1m", horizon_min + 12, created_ms, due_ms + 65_000)
+            bars_needed = min(max_horizon_min + 15, max(5, int((now_ms - created_ms) / 60_000) + 5))
+            window_rows = await fetch_klines(symbol, "1m", bars_needed, created_ms, min(now_ms, due_ms + 65_000))
             # R5-C4.4: sinyal anını içeren parsiyel mum HARİÇ (aynı `_post_signal_window`).
-            window = _post_signal_window(window_rows, created_ms, due_ms)
+            window = _post_signal_window(window_rows, created_ms, min(now_ms, due_ms))
             if entry > 0:
                 touched_high = max((float(r[2]) for r in window if float(r[2]) / entry >= touch_ratio), default=None)
                 best_high = max((float(r[2]) for r in window), default=None)

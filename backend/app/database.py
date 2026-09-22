@@ -2365,7 +2365,7 @@ async def get_report_trade_breakdown(
     `avg_max_favorable_ratio` (kesir) + `avg_max_favorable_pct` (yüzde, ×100) ve
     aynı şekilde `avg_max_adverse_*`. `pnl_pct` (varsa) YÜZDE'dir.
     """
-    eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=True)
+    eff_since, eff_until = _resolve_time_bounds(since=since, until=until, day=day, default_to_today=False)
 
     def op(conn):
         cutoff = _get_reset_cutoff_sync(conn)
@@ -3335,9 +3335,9 @@ async def save_velocity_candidates(rows):
 async def get_pending_velocity_candidates(now=None, limit=100):
     now = float(now if now is not None else time.time())
     def op(conn):
-        # Hedef penceresi 5 dakika; tarama anından 5 dk geçenler ölçüme hazır.
+        # Hedef penceresi en az 1 dakika; tarama anından 60 sn geçenler ölçüme hazır.
         rows = conn.execute("""SELECT * FROM velocity_candidates
-            WHERE status='pending' AND created_at <= ? - 300
+            WHERE status='pending' AND created_at <= ? - 60
             ORDER BY created_at ASC LIMIT ?""", (now, max(1, min(int(limit), 500)))).fetchall()
         return [_velocity_row(row) for row in rows]
     return await _run_db(op)
@@ -4004,7 +4004,7 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
             cid_rows = conn.execute(
                 "SELECT candidate_id, symbol, target_pct, passes, status, mfe_pct,"
                 " touched_target, created_at, ml_target_pct, ml_hit_probability,"
-                " exit_pct, net_pct, velocity_score"
+                " exit_pct, net_pct, velocity_score, outcome_details"
                 f" FROM velocity_candidates WHERE candidate_id IN ({cid_placeholders})",
                 explicit_cids).fetchall()
             for candidate in cid_rows:
@@ -4029,7 +4029,7 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
             candidate_rows = conn.execute(
                 "SELECT candidate_id, symbol, target_pct, passes, status, mfe_pct,"
                 " touched_target, created_at, ml_target_pct, ml_hit_probability,"
-                " exit_pct, net_pct, velocity_score"
+                " exit_pct, net_pct, velocity_score, outcome_details"
                 f" FROM velocity_candidates WHERE symbol IN ({placeholders})"
                 " AND created_at >= %s AND created_at <= %s",
                 symbols + [low, high]).fetchall()
@@ -4080,6 +4080,7 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
                 item['candidate_passes'] = bool(best.get('passes')) if best.get('passes') is not None else None
                 item['target_match'] = True
                 item['ml_hit_probability'] = float(best['ml_hit_probability']) if best.get('ml_hit_probability') is not None else None
+                item['outcome_details'] = _json_value(best.get('outcome_details'), {})
             else:
                 item['candidate_id'] = None
                 item['candidate_status'] = None
@@ -4088,6 +4089,7 @@ monitoring_notifications VE velocity_candidates ayni tarama turunda
                 item['net_pct'] = None
                 item['raw_score'] = None
                 item['touched_target'] = None
+                item['outcome_details'] = {}
                 item['candidate_target_pct'] = None
                 item['candidate_passes'] = None
                 item['target_match'] = False

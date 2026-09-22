@@ -1194,11 +1194,14 @@ async def _notify(candidates_list, settings) -> list:
         _monitoring_state["candidate_streak"].pop(sym, None)
         expected_price = float(notif.get("expected_price") or 0)
         horizon_minutes = int(c.get("horizon_minutes") or 5)
+        entry_price = float(notif.get("price") or base_px or 0)
         # `target_pct` pending'e YAZILMAZ: hedef EMA'sı bu yoldan beslenmez
         # (gerçekleşen MFE ölçülemiyor) — 2026-09-17 denetimi.
         if expected_price > 0:
             _monitoring_state["pending_targets"][sym] = {
                 "expected": expected_price,
+                "entry_price": entry_price,
+                "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT", 1.5)),
                 "horizon_minutes": horizon_minutes,
                 "set_at": now,
             }
@@ -1442,6 +1445,8 @@ async def _unified_fast_notify_impl(symbol: str, kind: str, score: float) -> dic
     if expected > 0:
         _monitoring_state["pending_targets"][sym] = {
             "expected": expected,
+            "entry_price": base_px,
+            "sl_pct": float(getattr(config, "AUTO_PAPER_SL_PCT", 1.5)),
             "horizon_minutes": int(candidate.get("horizon_minutes") or 5),
             "set_at": time.time(),
         }
@@ -1990,19 +1995,23 @@ async def _check_pending_targets():
     """Beklenen fiyata ulaşan sembolleri tespit et, pending listesinden çıkar
     ve sembol hedef öğrenme durumunu güncelle.
 
-    Her tarama turunda çağrılır: aday listesindeki sembollerin anlık fiyatı,
-    kayıtlı expected_price'a eşit veya üstüyse hedefe ulaşılmış sayılır.
-    Ufuk süresi + 2 mk tolerans dolduysa da temizlenir (timeout).
+    Her tarama turunda çağrılır:
+    - Fiyat beklenen fiyata eşit veya üstüyse hedefe ulaşıldı sayılır (hit=True).
+    - Fiyat stop-loss seviyesine (varsayılan -%1.5) inerse erken kapatılır (hit=False).
+    - MONITORING_OUTCOME_WINDOW_MINUTES (varsayılan 60 dk) dolduysa zaman aşımıyla kapatılır (hit=False).
+    - Süre dolmadan ve stop loss olmadan bekleyen semboller listede kalır; böylece 5 dk'yı
+      birkaç dakika aşıp 8-15. dakikada hedefe vuran sinyaller haksızca "başarısız" sayılmaz.
     """
     pending = _monitoring_state.get("pending_targets")
     if not pending:
         return
     now = time.time()
+    max_eval_minutes = int(getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60))
     resolved = []
     for sym, info in list(pending.items()):
-        horizon_sec = int(info.get("horizon_minutes", 5) + 2) * 60
+        max_sec = max_eval_minutes * 60
         set_at = float(info.get("set_at", 0))
-        expired = now - set_at >= horizon_sec
+        expired = (now - set_at) >= max_sec
         price = None
         # D-05: bayat ticker ile yanlis "hedefe ulasildi" uretme.
         try:
@@ -2010,18 +2019,29 @@ async def _check_pending_targets():
         except Exception:
             price = None
         expected = float(info.get("expected") or 0)
+        entry_price = float(info.get("entry_price") or 0)
+        sl_pct = float(info.get("sl_pct") or getattr(config, "AUTO_PAPER_SL_PCT", 1.5))
+        sl_price = entry_price * (1.0 - sl_pct / 100.0) if entry_price > 0 else 0
+
         hit = price is not None and price > 0 and expected > 0 and price >= expected
-        if expired or hit:
-            resolved.append((sym, hit))
-            # SELF-LEARNING: radar/velocity sinyal sonucu YALNIZ başarı sayaçlarına
-            # işlenir. Gerçekleşen MFE bu yolda ÖLÇÜLEMEZ (sinyal penceresi
-            # saklanmıyor) → `achieved_pct` GÖNDERİLMEZ. Eskiden isabet `hedef`,
-            # ıska `0.0` olarak gönderiliyordu; uydurma değerler EMA'yı aşağı
-            # sürüklüyor ve %100 isabet eden sembolün hedefi bile düşüyordu
-            # (2026-09-17 denetimi). Hedef EMA'sını gerçek MFE üreten iki yol sürer:
-            # `fill_rising_alert_outcomes` ve `velocity_learning_loop`.
+        stopped = price is not None and price > 0 and sl_price > 0 and price <= sl_price
+
+        if hit:
+            resolved.append((sym, True))
             try:
-                await database.record_symbol_target_outcome(sym, success=hit)
+                await database.record_symbol_target_outcome(sym, success=True)
+            except Exception:
+                logger.debug("pending target öğrenme kaydedilemedi %s", sym, exc_info=True)
+        elif stopped:
+            resolved.append((sym, False))
+            try:
+                await database.record_symbol_target_outcome(sym, success=False)
+            except Exception:
+                logger.debug("pending target öğrenme kaydedilemedi %s", sym, exc_info=True)
+        elif expired:
+            resolved.append((sym, False))
+            try:
+                await database.record_symbol_target_outcome(sym, success=False)
             except Exception:
                 logger.debug("pending target öğrenme kaydedilemedi %s", sym, exc_info=True)
     for sym, _hit in resolved:
@@ -2595,7 +2615,8 @@ async def report_notifications(
         touched = row.get("touched_target")
         candidate_status = str(row.get("candidate_status") or "")
         horizon = int(row.get("horizon_minutes") or 0)
-        window_closed = bool(detected_at and horizon and (now - detected_at) >= (horizon + 2) * 60)
+        max_outcome_min = int(getattr(config, "MONITORING_OUTCOME_WINDOW_MINUTES", 60))
+        window_closed = bool(detected_at and (now - detected_at) >= max_outcome_min * 60)
         # M1/P0 (R3-04): TAMAMEN BAŞARILI YALNIZCA hedefe GERÇEKTEN dokunulduysa.
         if candidate_status == "evaluated" and mfe_pct is not None:
             if touched:
@@ -2653,6 +2674,7 @@ async def report_notifications(
             "raw_score": (float(row["raw_score"]) if row.get("raw_score") is not None else None),
             "saturated": _score_is_saturated(row),
             "trade": trade_info,
+            "outcome_details": row.get("outcome_details") or {},
         })
 
     # SEMA ÇEŞİTLİLİĞİ (R5)
