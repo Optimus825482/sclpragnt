@@ -437,7 +437,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
             wick_info = _wick_rejection_zscore(opens, highs, lows, closes) if len(closes) >= 21 else {}
             upper_wick_ratio = float(wick_info.get("upper_wick_ratio", 0.0)) if isinstance(wick_info, dict) else 0.0
             upper_zscore = float(wick_info.get("upper_zscore", 0.0)) if isinstance(wick_info, dict) else 0.0
-            rejection_wick = bool(wick_info.get("signal") == "bearish_rejection" or (upper_wick_ratio >= 0.45 and upper_zscore >= 1.5))
+            rejection_wick = bool(wick_info.get("signal") == "bearish_rejection" or (closes[-1] <= opens[-1] and upper_wick_ratio >= 0.60 and upper_zscore >= 2.0))
 
             # notr modu (RSI 35-60) da aday olabilir: yalnızca yapısal teyit (struct_ok) aranir.
             passes = (exhausted is None and
@@ -690,9 +690,10 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                             "leading_ok": leading_ok,
                             "base_hit_pct": VELOCITY_BASE_RATE_PCT,
                             "last_closed_at": rows[-1][0]}
-            # KAPİ 2 — ML düşük olasılık: model eğitimliyse ve isabet öngörüsü
-            # MIN altındaysa tuzak sinyaldir → elenir (bildirim/otonom işleme gitmez).
-            if ml_hit_prob is not None and ml_hit_prob > 0 and ml_hit_prob < float(getattr(config, "ML_MIN_EXECUTION_PROB", 0.35)):
+            # KAPİ 2 — ML düşük olasılık: model eğitimliyse ve yapılandırılmış pozitif bir
+            # MIN eşiği varsa tuzak sinyal elenir (varsayılan 0.0 — teknik momentuma izin verilir).
+            _min_exec_prob = float(getattr(config, "ML_MIN_EXECUTION_PROB", 0.0) or 0.0)
+            if _min_exec_prob > 0 and ml_hit_prob is not None and ml_hit_prob > 0 and ml_hit_prob < _min_exec_prob:
                 return {"symbol": symbol, "price": price, "volume_ratio": round(volume_ratio, 2),
                         "atr_pct": round(atr_pct, 3),
                         "bb_width_pct": round(bb_width, 2) if bb_width else None,
@@ -704,7 +705,7 @@ async def detect_velocity_candidates(args: dict | None = None, *, horizon_minute
                         "ml_hit_probability": round(ml_hit_prob, 3),
                         "ret3_pct": round(ret3, 3),
                         "velocity_score": velocity_score, "passes": False,
-                        "block_reason": f"ml_dusuk_olasilik:{ml_hit_prob:.2f}<{getattr(config, 'ML_MIN_EXECUTION_PROB', 0.35):.2f}",
+                        "block_reason": f"ml_dusuk_olasilik:{ml_hit_prob:.2f}<{_min_exec_prob:.2f}",
                         "macd_hist": round(macd_hist, 6) if macd_hist is not None else None,
                         "macd_bullish": macd_bullish,
                         "macd_rising": macd_rising,

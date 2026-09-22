@@ -448,7 +448,7 @@ class Config:
     SCALPING_NET_TARGET_PCT = float(os.getenv("SCALPING_NET_TARGET_PCT", "2.0"))
     DEFAULT_ESTIMATED_SPREAD_PCT = float(os.getenv("DEFAULT_ESTIMATED_SPREAD_PCT", "0.65"))
     MAX_ALLOWABLE_SPREAD_RATIO = float(os.getenv("MAX_ALLOWABLE_SPREAD_RATIO", "0.35"))
-    ML_MIN_EXECUTION_PROB = float(os.getenv("ML_MIN_EXECUTION_PROB", "0.35"))
+    ML_MIN_EXECUTION_PROB = float(os.getenv("ML_MIN_EXECUTION_PROB", "0.0"))
     # Sinyal terfisi (upgrade): yeni sinyal, son bildirim skorundan bu kadar
     # yüksekse cooldown bastırması aşılarak "sinyal güçlendi" push'u izinli olur.
     UNIFIED_UPGRADE_MIN_GAIN = float(os.getenv("UNIFIED_UPGRADE_MIN_GAIN", "10.0"))
