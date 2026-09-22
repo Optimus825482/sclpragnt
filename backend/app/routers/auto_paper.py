@@ -766,77 +766,70 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         await _close_trade(trade_id, symbol, max(current_price, stop_loss), now, "stop_loss")
         return
 
-    # Breakeven kontrolü (trailing + dinamik komisyon + buffer).
-    # Kullanıcı isteği: "breakeven stop'a dinamik komisyon ekle + fiyat yükseldikten
-    # sonra devreye gir". Tasarım:
-    #   - Net taban (floor): entry*(1 + 2*komisyon + buffer) → bu fiyattan satış,
-    #     komisyonlar sonrası daima POZİTİF net verir (sıfırda değil).
-    #   - Trailing: fiyat yükselirken stop, zirvenin BREAKEVEN_TRAIL_GAP_PCT
-    #     gerisinden takip eder; zirveden sonra düşüşte kâr kilitlenir.
-    #   - Stop, güncel fiyatın üstüne çıkarsa (trigger komisyondan küçükse)
-    #     hemen kapanmasın: aktivasyon ertelenir, fiyat biraz daha yükselir.
-    breakeven_activated = bool(trade.get("breakeven_activated", False))
+    # Kâr ve TP oranları
     gross_pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
-
-    # B2: Dynamic profit-lock triggers tied to TP target (Tavan korumalı)
-    dynamic_breakeven_enabled = bool((settings or {}).get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False)))
-    dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False)))
     tp_gain_pct = None
     if take_profit is not None and entry_price > 0 and take_profit > entry_price:
         tp_gain_pct = (take_profit - entry_price) / entry_price * 100
 
-    # Master Surge Dinamik Uyarlanabilir Hedef Kilidi (2026-09-21):
-    # 158 sinyallik testte gözlenen %71 kısmi kazancı (+%1.0-%3.7) korumak için
-    # TP1 seviyesine (+%1.2-%1.8) ulaşıldığında kâr kilidi derhal devreye girer.
-    # Standart (Master Surge olmayan) işlemler gerileme koruması gereği etkilenmez.
-    raw_tp1 = trade.get("tp1_scalp_pct")
-    is_master_surge = bool(trade.get("confluence_4way") or (raw_tp1 is not None and float(raw_tp1) > 0))
-    if is_master_surge:
-        tp1_scalp = float(raw_tp1 or getattr(config, "MASTER_SURGE_TP1_MIN_PCT", 1.2))
-        if gross_pnl_pct >= tp1_scalp:
-            breakeven_trigger_pct = min(breakeven_trigger_pct, tp1_scalp)
-    elif tp_gain_pct is not None and dynamic_breakeven_enabled:
-        breakeven_trigger_pct = min(breakeven_trigger_pct, max(0.8, tp_gain_pct * 0.5))
+    # Breakeven kontrolü (isteğe bağlı — erken minik kârla çıkıp ralliyi kaçırmamak için
+    # varsayılan KAPALI, 2026-09-22 Erkan kararı).
+    breakeven_enabled = bool((settings or {}).get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False)))
+    BREAKEVEN_TRAIL_GAP_PCT = 0.60
+    if breakeven_enabled:
+        breakeven_activated = bool(trade.get("breakeven_activated", False))
 
-    # B4: Narrow breakeven buffer (admin-editable, default 0.02)
-    breakeven_buffer_pct = float((settings or {}).get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02)))
-    # Standart taban açıklık %0.60; Master Surge veya özel tanımlı işlemde sıkı takip (%0.40)
-    custom_gap = trade.get("trailing_gap_pct")
-    if custom_gap is not None and float(custom_gap) > 0:
-        BREAKEVEN_TRAIL_GAP_PCT = float(custom_gap)
-    elif is_master_surge:
-        BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40))
-    else:
-        BREAKEVEN_TRAIL_GAP_PCT = 0.60
-    # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
-    # kontrolü arasında gecikme olmasın.
-    current_breakeven_stop = float(trade.get("breakeven_stop") or 0)
+        # B2: Dynamic profit-lock triggers tied to TP target (Tavan korumalı)
+        dynamic_breakeven_enabled = bool((settings or {}).get("dynamic_breakeven_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_BREAKEVEN_ENABLED", False)))
 
-    if gross_pnl_pct >= breakeven_trigger_pct:
-        # NET taban (2026-09-18 hassasiyeti): gidiş-dönüş komisyon + SATIŞ dolum
-        # kayması dahil (giriş kayması zaten çapa fill_entry'de). Bu fiyattan
-        # satış, `_close_trade` muhasebesi sonrası daima pozitif net verir.
-        exit_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
-        net_floor = entry_price * (1 + 2 * commission_pct + exit_slip + breakeven_buffer_pct / 100)
-        trail_stop = peak_price * (1 - BREAKEVEN_TRAIL_GAP_PCT / 100)
-        new_breakeven = max(net_floor, trail_stop)
-        applied_breakeven = max(new_breakeven, current_breakeven_stop)
-        if applied_breakeven < current_price:
-            if not breakeven_activated or applied_breakeven > current_breakeven_stop:
-                await database.update_auto_paper_breakeven(trade_id, True, applied_breakeven)
-                current_breakeven_stop = applied_breakeven
-                # D-14 (2026-09-12): bayrak YALNIZCA DB yazımı gerçekleştiğinde
-                # set edilir. Eskiden koşulsuz atanıyordu (blok DIŞINDA), DB'de
-                # breakeven_stop 0 kalırken bellek True oluyordu → bellek↔DB
-                # tutarsızlığı ve yanıltıcı log. Artık ikisi aynı anda yazılır.
-                breakeven_activated = True
-                logger.info("auto_paper %s: breakeven stop=%.6f (gross=%+.2f%%)", symbol, applied_breakeven, gross_pnl_pct)
+        # Master Surge Dinamik Uyarlanabilir Hedef Kilidi (2026-09-21):
+        # 158 sinyallik testte gözlenen %71 kısmi kazancı (+%1.0-%3.7) korumak için
+        # TP1 seviyesine (+%1.2-%1.8) ulaşıldığında kâr kilidi derhal devreye girer.
+        # Standart (Master Surge olmayan) işlemler gerileme koruması gereği etkilenmez.
+        raw_tp1 = trade.get("tp1_scalp_pct")
+        is_master_surge = bool(trade.get("confluence_4way") or (raw_tp1 is not None and float(raw_tp1) > 0))
+        if is_master_surge:
+            tp1_scalp = float(raw_tp1 or getattr(config, "MASTER_SURGE_TP1_MIN_PCT", 1.2))
+            if gross_pnl_pct >= tp1_scalp:
+                breakeven_trigger_pct = min(breakeven_trigger_pct, tp1_scalp)
+        elif tp_gain_pct is not None and dynamic_breakeven_enabled:
+            breakeven_trigger_pct = min(breakeven_trigger_pct, max(0.8, tp_gain_pct * 0.5))
 
-    # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil).
-    # D-08: stop dolumu tetik fiyatından (gap-through: max(price, stop)).
-    if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
-        await _close_trade(trade_id, symbol, max(current_price, current_breakeven_stop), now, "breakeven_stop")
-        return
+        # B4: Narrow breakeven buffer (admin-editable, default 0.02)
+        breakeven_buffer_pct = float((settings or {}).get("breakeven_buffer_pct", getattr(config, "AUTO_PAPER_BREAKEVEN_BUFFER_PCT", 0.02)))
+        # Standart taban açıklık %0.60; Master Surge veya özel tanımlı işlemde sıkı takip (%0.40)
+        custom_gap = trade.get("trailing_gap_pct")
+        if custom_gap is not None and float(custom_gap) > 0:
+            BREAKEVEN_TRAIL_GAP_PCT = float(custom_gap)
+        elif is_master_surge:
+            BREAKEVEN_TRAIL_GAP_PCT = float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40))
+        else:
+            BREAKEVEN_TRAIL_GAP_PCT = 0.60
+        # In-memory breakeven stop: DB'ye yazılan değerle aynı turdaki koruma
+        # kontrolü arasında gecikme olmasın.
+        current_breakeven_stop = float(trade.get("breakeven_stop") or 0)
+
+        if gross_pnl_pct >= breakeven_trigger_pct:
+            # NET taban (2026-09-18 hassasiyeti): gidiş-dönüş komisyon + SATIŞ dolum
+            # kayması dahil (giriş kayması zaten çapa fill_entry'de). Bu fiyattan
+            # satış, `_close_trade` muhasebesi sonrası daima pozitif net verir.
+            exit_slip = float(getattr(config, "ESTIMATED_SLIPPAGE_PCT", 0.0) or 0.0)
+            net_floor = entry_price * (1 + 2 * commission_pct + exit_slip + breakeven_buffer_pct / 100)
+            trail_stop = peak_price * (1 - BREAKEVEN_TRAIL_GAP_PCT / 100)
+            new_breakeven = max(net_floor, trail_stop)
+            applied_breakeven = max(new_breakeven, current_breakeven_stop)
+            if applied_breakeven < current_price:
+                if not breakeven_activated or applied_breakeven > current_breakeven_stop:
+                    await database.update_auto_paper_breakeven(trade_id, True, applied_breakeven)
+                    current_breakeven_stop = applied_breakeven
+                    breakeven_activated = True
+                    logger.info("auto_paper %s: breakeven stop=%.6f (gross=%+.2f%%)", symbol, applied_breakeven, gross_pnl_pct)
+
+        # Breakeven stop koruması (in-memory değer kullanılır, DB okuması değil).
+        # D-08: stop dolumu tetik fiyatından (gap-through: max(price, stop)).
+        if breakeven_activated and current_breakeven_stop > 0 and current_price <= current_breakeven_stop:
+            await _close_trade(trade_id, symbol, max(current_price, current_breakeven_stop), now, "breakeven_stop")
+            return
 
     # Trailing stop modülü (kullanıcı isteği 2026-09-08): %trailing_trigger_pct
     # kara geçince fiyatı %trailing_gap_pct geriden takip eder. Varsayılan AÇIK;
@@ -847,6 +840,7 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         trailing_gap_pct = float((settings or {}).get("trailing_gap_pct", config.AUTO_PAPER_TRAILING_GAP_PCT))
 
         # B2: Dynamic trailing trigger tied to TP target (Tavan korumalı)
+        dynamic_trailing_enabled = bool((settings or {}).get("dynamic_trailing_enabled", getattr(config, "AUTO_PAPER_DYNAMIC_TRAILING_ENABLED", False)))
         if tp_gain_pct is not None and dynamic_trailing_enabled:
             trailing_trigger_pct = min(trailing_trigger_pct, max(1.2, tp_gain_pct * 0.6))
 
@@ -854,16 +848,10 @@ async def _manage_single_trade(trade: dict, now: float, breakeven_trigger_pct: f
         if tp_gain_pct is not None and gross_pnl_pct >= tp_gain_pct * 0.9:
             trailing_gap_pct = max(0.2, trailing_gap_pct * 0.5)
 
-        # SHADOW KİLİDİ (2026-09-16): breakeven ratchet açıklığı
-        # (BREAKEVEN_TRAIL_GAP_PCT = %0.60) hem trailing'den (%0.80) DAHA SIKI hem
-        # bu bloktan ÖNCE değerlendiriliyor. Sonuç: trailing'in ayarlanan açıklığı
-        # pratikte hiç uygulanmıyordu — kullanıcının 471 işlemlik gerçek replay
-        # CSV'sinde `trailing_stop` 0 kez tetiklendi (yalnız ~%0.2'lik bir bantta
-        # erişilebilirdi). KURAL: sıkı olan taraf kazanır. Trailing, breakeven'den
-        # daha GEVŞEK olamaz (gevşetmek net-zemin kilidini delip MFE'yi geri verir);
-        # daha SIKI olabilir (ör. 0.3) ve artık gerçekten etki eder. Ayar böylece
-        # sessizce yok sayılmak yerine dürüstçe kırpılır.
-        trailing_gap_pct = min(trailing_gap_pct, BREAKEVEN_TRAIL_GAP_PCT)
+        # Breakeven açıksa trailing gap'i kısıtla; breakeven kapalıysa kullanıcının
+        # belirlediği geniş trailing mesafesine izin ver.
+        if breakeven_enabled:
+            trailing_gap_pct = min(trailing_gap_pct, BREAKEVEN_TRAIL_GAP_PCT)
 
         trailing_activated = bool(trade.get("trailing_activated", False))
         current_trailing_stop = float(trade.get("trailing_stop") or 0)
@@ -1104,6 +1092,7 @@ async def get_default_settings() -> dict:
         "stop_loss_pct": config.AUTO_PAPER_SL_PCT_DEFAULT,
         "default_target_pct": config.AUTO_PAPER_DEFAULT_TARGET_PCT,
         "min_order_try": config.AUTO_PAPER_MIN_ORDER_TRY,
+        "breakeven_enabled": getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False),
         "breakeven_trigger_pct": config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT,
         "trailing_enabled": config.AUTO_PAPER_TRAILING_ENABLED,
         "trailing_trigger_pct": config.AUTO_PAPER_TRAILING_TRIGGER_PCT,
@@ -1144,9 +1133,9 @@ async def update_settings_endpoint(payload: dict, request: Request):
     _require_admin(request)
 
     editable = ("enabled", "min_score", "balance_pct", "stop_loss_pct",
-                "default_target_pct", "min_order_try", "breakeven_trigger_pct",
-                "trailing_enabled", "trailing_trigger_pct", "trailing_gap_pct",
-                "reopen_after_protect_close",
+                "default_target_pct", "min_order_try", "breakeven_enabled",
+                "breakeven_trigger_pct", "trailing_enabled", "trailing_trigger_pct",
+                "trailing_gap_pct", "reopen_after_protect_close",
                 "tp_primary_exit_enabled", "dynamic_breakeven_enabled",
                 "dynamic_trailing_enabled", "breakeven_buffer_pct",
                 "max_open_positions", "max_hold_minutes")
@@ -1160,6 +1149,7 @@ async def update_settings_endpoint(payload: dict, request: Request):
         "stop_loss_pct": max(0.1, min(20.0, float(merged.get("stop_loss_pct", config.AUTO_PAPER_SL_PCT_DEFAULT)))),
         "default_target_pct": max(0.5, min(20.0, float(merged.get("default_target_pct", config.AUTO_PAPER_DEFAULT_TARGET_PCT)))),
         "min_order_try": max(10.0, float(merged.get("min_order_try", config.AUTO_PAPER_MIN_ORDER_TRY))),
+        "breakeven_enabled": bool(merged.get("breakeven_enabled", getattr(config, "AUTO_PAPER_BREAKEVEN_ENABLED", False))),
         "breakeven_trigger_pct": max(0.5, min(10.0, float(merged.get("breakeven_trigger_pct", config.AUTO_PAPER_BREAKEVEN_TRIGGER_PCT)))),
         "trailing_enabled": bool(merged.get("trailing_enabled", config.AUTO_PAPER_TRAILING_ENABLED)),
         "trailing_trigger_pct": max(0.5, min(20.0, float(merged.get("trailing_trigger_pct", config.AUTO_PAPER_TRAILING_TRIGGER_PCT)))),

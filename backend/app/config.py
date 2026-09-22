@@ -615,7 +615,10 @@ class Config:
     AUTO_PAPER_SL_PCT_DEFAULT = float(os.getenv("AUTO_PAPER_SL_PCT", "1.5"))  # Eski varsayılan 3.0 → 1.5 (2026-09-17, Erkan kararı: replay geometrisi + canlı 50 işlem verisi).
     AUTO_PAPER_DEFAULT_TARGET_PCT = float(os.getenv("AUTO_PAPER_DEFAULT_TARGET_PCT", "1.5"))  # Eski varsayılan 2.0 → 1.5 (2026-09-17, Erkan kararı: radar/velocity bildirimlerinin hedefi MFE tavanına otursun; replay geometrisi + canlı 50 işlem verisi).
     AUTO_PAPER_MIN_ORDER_TRY = float(os.getenv("AUTO_PAPER_MIN_ORDER_TRY", "50.0"))
-    AUTO_PAPER_BREAKEVEN_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_TRIGGER_PCT", "1.2"))
+    # Başabaş (Breakeven) koruması: erken minik kârla çıkıp ralliyi kaçırmamak için
+    # varsayılan KAPALI (2026-09-22 Erkan kararı). Ayarlardan isteğe bağlı açılabilir.
+    AUTO_PAPER_BREAKEVEN_ENABLED = os.getenv("AUTO_PAPER_BREAKEVEN_ENABLED", "false").lower() == "true"
+    AUTO_PAPER_BREAKEVEN_TRIGGER_PCT = float(os.getenv("AUTO_PAPER_BREAKEVEN_TRIGGER_PCT", "1.5"))
     # Trailing stop modülü (kâr takibi): pozisyon trailing_trigger_pct kadar
     # kara geçince aktifleşir ve fiyatı trailing_gap_pct geriden takip eder.
     # Varsayılan AÇIK; trailing_enabled=false ile kapatılabilir.
