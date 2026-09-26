@@ -1299,6 +1299,7 @@ export default function MonitoringPage() {
             </h2>
             <p className="mt-1 text-xs text-bunker-muted">
               Akıştan ham momentum. Tarama/teyit beklenmeden gösterilir — gürültülü olabilir.
+              Sembol adına tıklayınca grafik yeni sekmede açılır.
             </p>
           </div>
 
@@ -1316,7 +1317,14 @@ export default function MonitoringPage() {
                     aria-hidden="true"
                     className={`w-1.5 h-1.5 shrink-0 rounded-full ${stale ? "bg-bunker-600" : "bg-sky-400 animate-pulse"}`}
                   />
-                  <span className="font-mono text-sm font-black text-white truncate">{p.symbol}</span>
+                  <Link
+                    href={`/charts?symbol=${encodeURIComponent(p.symbol)}`}
+                    target="_blank"
+                    title="Grafiği yeni sekmede aç"
+                    className="font-mono text-sm font-black text-white truncate hover:text-sky-300 hover:underline underline-offset-4"
+                  >
+                    {p.symbol}
+                  </Link>
                   <span className={pulseReturnColor(p.return_20s_pct)}>
                     20s: <b className="font-bold">{formatPulseReturn(p.return_20s_pct)}</b>
                   </span>
@@ -1346,6 +1354,7 @@ export default function MonitoringPage() {
             </h2>
             <p className="mt-1 text-xs text-bunker-muted">
               Teyit eşiğine yaklaşan semboller. Bu liste işlem sinyali DEĞİLDİR.
+              Sembol adına tıklayınca grafik yeni sekmede açılır.
             </p>
           </div>
 
@@ -1361,7 +1370,14 @@ export default function MonitoringPage() {
                   className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl border border-bunker-800 bg-bunker-900/40 p-3 sm:px-4 font-mono text-xs"
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="font-mono text-sm font-black text-white truncate">{w.symbol}</span>
+                    <Link
+                      href={`/charts?symbol=${encodeURIComponent(w.symbol)}`}
+                      target="_blank"
+                      title="Grafiği yeni sekmede aç"
+                      className="font-mono text-sm font-black text-white truncate hover:text-amber-300 hover:underline underline-offset-4"
+                    >
+                      {w.symbol}
+                    </Link>
                     <span className="shrink-0 rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 font-bold text-amber-300" title="Teyit kapısına yakınlık">
                       %{proximityPct}
                     </span>
