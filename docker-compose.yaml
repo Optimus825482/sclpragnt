@@ -137,14 +137,26 @@ services:
     expose:
       - "8004"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health', timeout=3)"]
-      # Initial history hydration for the full dynamic symbol universe can
-      # exceed the first few probes. Retain fast promotion once ready, while
-      # avoiding an early Compose abort that leaves dependents as "Created".
-      start_period: 90s
+      # 2026-09-26: timeout 3 -> 10 sn. `/health` artık sabit-zamanlı bir
+      # liveness ucu (sembol taraması yok), ama 310 sembollük evrenin WS
+      # + history kurulumu sırasında ilk bağlantılar thread havuzunda
+      # sıraya girebiliyor. 3 sn zaman aşımı bu sırada garanti taşıyordu.
+      # 10 sn hâlâ hızlı bir aralık; deploy'un "unhealthy"a düşmesini önler.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/health', timeout=10)"]
+      # 127.0.0.1 (localhost değil): frontend healthcheck'i de IPv6 loopback
+      # tuzağına düşmemek için 127.0.0.1 kullanıyor — aynı gerekçe.
+      #
+      # 2026-09-26: history backfill'i artık startup'ı BEKLETMİYOR
+      # (`maintenance.backfill_missing_active_history` işleri arka plana
+      # bırakıyor), bu yüzden 90 sn `start_period` artık zorunlu değil.
+      # Yine de WS bağlantıları + sembol evreni kurulumu zaman alıyor;
+      # hızlı tanıtmayı koruyup erken iptal riskini almamak için bırakıldı.
+      start_period: 60s
       interval: 15s
-      timeout: 5s
-      retries: 20
+      # probe komutunun kendi 10 sn timeout'ı ile eşleşir; probe `timeout`
+      # bundan kısa kalırsa komut iptal edilip TimeoutError yazılır.
+      timeout: 12s
+      retries: 10
     logging: *default-logging
 
   frontend:

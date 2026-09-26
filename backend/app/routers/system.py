@@ -32,24 +32,30 @@ _embedding_repair = {"status": "idle", "queued": 0, "message": None}
 
 @router.get("/health")
 async def health():
-    snapshots = {symbol: market.data_freshness(symbol, "5m")
-                 for symbol in market.symbols}
-    ready = [value for value in snapshots.values()
-             if value["ticker"]["fresh"] and value["kline"]["fresh"]]
-    market_healthy = market.running and bool(ready)
+    # 2026-09-26 (deploy düzeltmesi): bu uç container healthcheck'inin
+    # hedefi. Önceden TÜM semboller için `market.data_freshness()` çağırıyordu
+    # (310 sembol × senkron sözlük/len hesabı) ve ayrıca `analyzer.positions`
+    # ile `market.symbols` üzerinde tam tarama yapıyordu. Açılışta history
+    # backfill'i event loop'u meşgul ettiği için bu uç zaman aşımına
+    # uğruyor, container "unhealthy" oluyor ve Coolify deploy'u başarısız
+    # sayıyordu.
+    #
+    # Liveness SÖZLEŞMESİ: bu uç SADECE sürecin ayakta olduğunu ve
+    # market akışının bağlı olup olmadığını bildirir. "Piyasa taze mi"
+    # sorusu bir hazırlık (readiness) sorusudur ve `/api/system/health`
+    # (kimlik doğrulamalı) ile `market.data_freshness` üzerinden verilir.
+    # Liveness, tazelik KOŞULU üzerinden karar verirse, veri geciktiğinde
+    # yeniden başlatma tetiklenir — bu da aracın kurtarılmasını engeller.
     return {
-        "status": "alive" if market_healthy else "degraded",
+        "status": "alive",
         "mode": "paper", "market_data": "binance_tr_public",
-        "history_loaded": market.history_loaded,
-        "fresh_symbols": len(ready), "tracked_symbols": len(snapshots),
-        "rest": {"last_event_at": market.rest_last_event_at, "last_error": market.rest_last_error},
-        "ws": {"last_event_at": market.ws_last_event_at, "last_error": market.ws_last_error,
-               "generation": market.connection_generation},
-        "market_error": market.last_error,
+        "market_running": bool(getattr(market, "running", False)),
+        "history_loaded": bool(getattr(market, "history_loaded", False)),
+        "tracked_symbols": len(getattr(market, "symbols", ()) or ()),
         # G-30: /health kimlik doğrulamasız bir yoldur; açık pozisyon sembolleri
         # (hangi sembollerde pozisyon var) sızdırılmamalı. Yalnız sayı verilir;
         # sembol listesi kimlik doğrulamalı /api/positions'tan alınır.
-        "open_position_count": len(analyzer.positions)
+        "open_position_count": len(getattr(analyzer, "positions", {}) or {}),
     }
 
 @router.get("/api/system/health")
