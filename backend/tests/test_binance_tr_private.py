@@ -13,11 +13,13 @@ def _reset_caches():
                                "filters": {}})
     btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
     btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
+    btp._balance_cache.clear()
     yield
     btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0,
                                "filters": {}})
     btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
     btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
+    btp._balance_cache.clear()
 
 
 def _mock_http(payload):
@@ -435,4 +437,98 @@ def test_cancel_order_sends_cancel_request():
     assert params["orderId"] == 999
     assert params["symbol"] == "BTC_TRY"
     assert res["status"] == "CANCELED"
+
+
+def test_binance_tr_api_error_is_transient():
+    err1008 = btp.BinanceTrApiError(1008, "Unknown error")
+    assert err1008.is_transient is True
+
+    err_busy = btp.BinanceTrApiError(-1008, "Server busy")
+    assert err_busy.is_transient is True
+
+    err_rate = btp.BinanceTrApiError(1003, "Too many requests")
+    assert err_rate.is_transient is True
+
+    err_auth = btp.BinanceTrApiError(2002, "API key expired")
+    assert err_auth.is_transient is False
+
+
+def test_signed_request_retries_on_transient_1008_error():
+    attempts = [0]
+
+    def fake_get(url, headers=None):
+        attempts[0] += 1
+        if attempts[0] == 1:
+            # İlk denemede Binance TR 1008 Unknown error dönsün
+            return {"code": 1008, "msg": "Unknown error", "data": None}
+        return {"code": 0, "msg": "success", "data": {"serverTime": 1700000000000}}
+
+    with mock.patch.object(btp, "_http_get_json", side_effect=fake_get), \
+         mock.patch("time.sleep", return_value=None):
+        res = btp._signed_request("GET", "/open/v1/time", None, "k", "s", idempotent=True)
+    assert attempts[0] == 2
+    assert res == {"serverTime": 1700000000000}
+
+
+def test_get_account_balance_caches_and_deduplicates():
+    calls = [0]
+    payload = {
+        "code": 0, "msg": "success",
+        "data": {
+            "accountAssets": [
+                {"asset": "TRY", "free": "1000", "locked": "0"},
+            ]
+        }
+    }
+
+    def fake_signed(*args, **kwargs):
+        calls[0] += 1
+        return payload["data"]
+
+    with mock.patch.object(btp, "_signed_request", side_effect=fake_signed):
+        b1 = btp.get_account_balance("key1", "sec1")
+        b2 = btp.get_account_balance("key1", "sec1")
+    assert len(b1) == 1
+    assert len(b2) == 1
+    # 5 sn cache sayesinde ikinci çağrı ağ isteği yapmaz
+    assert calls[0] == 1
+
+
+def test_invalidate_account_balance_cache():
+    calls = [0]
+    def fake_signed(*args, **kwargs):
+        calls[0] += 1
+        return {"accountAssets": [{"asset": "BTC", "free": "0.1", "locked": "0"}]}
+
+    with mock.patch.object(btp, "_signed_request", side_effect=fake_signed):
+        btp.get_account_balance("key1", "sec1")
+        assert calls[0] == 1
+        btp.invalidate_account_balance_cache("key1")
+        btp.get_account_balance("key1", "sec1")
+        assert calls[0] == 2
+
+
+def test_open_orders_with_zero_locked_assets_makes_zero_order_requests():
+    # Bakiyede locked == 0 olduğunda /open/v1/orders'a HİÇ istek gitmemeli
+    order_calls = []
+
+    def fake_signed(method, path, params, *args, **kwargs):
+        if path == "/open/v1/account/spot":
+            return {
+                "accountAssets": [
+                    {"asset": "TRY", "free": "5000", "locked": "0"},
+                    {"asset": "BTC", "free": "0.05", "locked": "0"},
+                ]
+            }
+        if path == "/open/v1/orders":
+            order_calls.append(params)
+            return {"list": []}
+        return {}
+
+    with mock.patch.object(btp, "_signed_request", side_effect=fake_signed):
+        orders = btp.get_open_orders("k", "s")
+    assert orders == []
+    # /open/v1/orders'a hiç çağrı gitmedi çünkü locked == 0
+    assert len(order_calls) == 0
+
 
