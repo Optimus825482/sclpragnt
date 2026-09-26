@@ -51,16 +51,19 @@ VERDICT_SCHEMA_HINT = (
 )
 
 SECOND_EYE_PROMPT = FAST_SYSTEM_PROMPT = (
-    "Sen hızlı bir kripto skolp analiz motorusun — İKİNCİ GÖZ. Kural motoru bir yükseliş/"
-    "kırılım sinyali ateşledi; sen bu kırılımın GERÇEK mi FAKE mi olduğunu ve yükselişin "
-    "DEVAM edip etmeyeceğini yalnızca verilen kanıt paketiyle değerlendir. Yeni veri "
-    "uydurma, aritmetik yapma. Kanıtlar ÇELİŞİYORSA (fiyat yükseliyor ama CVD/trade_imbalance "
-    "negatif, whale satıyor, ladder_asymmetry negatif, funding EXTREME_LONG, BTC panik) "
-    "FAKE ihtimali GÜÇLENİR; kanıtlar hemfikirse DEVAM'a eğil; yeterli kanıt yoksa BELIRSIZ. "
-    "ÖNEMLİ: verdict değeri TAM OLARAK şu üç kelimeden biri olmalı: DEVAM, FAKE, BELIRSIZ. "
-    "'GERÇEK', 'REAL', 'YÜKSELİŞ' gibi eş anlamlı kelime YAZMA. Yanıt YALNIZCA JSON olur, "
-    "JSON dışında tek karakter yazma. Şema TAM OLARAK: "
-    + VERDICT_SCHEMA_HINT
+    "TEK GÖREVİN: aşağıdaki şemada JSON döndürmek. Düşünme sürecini, ara cümleleri, "
+    "İngilizce yorumları YAZMA — 'We need to evaluate...' gibi analiz cümleleri yasak. "
+    "İlk karakterin '{' son karakterin '}' olsun. Örnek biçim: "
+    '{"verdict":"DEVAM","confidence":78,"reasons":["cvd_pozitif","derinlik_guclu"],'
+    '"trap_evidence":[],"summary":"Akis teyitli"}\n'
+    "Görev: kural motoru bir yükseliş/kırılım sinyali ateşledi; bu kırılımın GERÇEK mi "
+    "FAKE mi olduğunu ve yükselişin DEVAM edip etmeyeceğini yalnızca verilen kanıt "
+    "paketiyle değerlendir. Yeni veri uydurma, aritmetik yapma. Kanıtlar ÇELİŞİYORSA "
+    "(fiyat yükseliyor ama CVD/trade_imbalance negatif, whale satıyor, ladder_asymmetry "
+    "negatif, funding EXTREME_LONG, BTC panik) FAKE ihtimali GÜÇLENİR; kanıtlar "
+    "hemfikirse DEVAM'a eğil; yeterli kanıt yoksa BELIRSIZ. "
+    "verdict değeri TAM OLARAK şu üç kelimeden biri: DEVAM, FAKE, BELIRSIZ. "
+    "'GERÇEK', 'REAL' gibi eş anlamlı yazma. JSON dışında tek karakter yazma."
 )
 
 
@@ -279,6 +282,8 @@ def parse_verdict(text) -> dict | None:
             raw = raw[4:]
         raw = raw.strip()
     decoded = _json_load_lenient(raw)
+    if not isinstance(decoded, dict):
+        decoded = None  # JSON'suz yanıt → kurtarma yollarına düşer (lenient 'object' döndürebilir)
     if isinstance(decoded, dict) and not decoded.get("verdict"):
         # Tek dict-valued anahtar sarmalanmış olabilir → verdict taşıyan katmana in.
         for value in decoded.values():
@@ -286,12 +291,36 @@ def parse_verdict(text) -> dict | None:
                 decoded = value
                 break
     verdict_raw = str((decoded or {}).get("verdict") or "").strip().upper() if isinstance(decoded, dict) else ""
+    salvaged = False
     if not verdict_raw:
-        # Son çare: yapılandırılmış kurtarma — yalnız "verdict": "..." kalıbı.
+        # Kurtarma 1: JSON cümle içine gömülmüşse "verdict": "..." kalıbını ayıkla.
         import re as _re
         match = _re.search(r'"verdict"\s*:\s*"([^"]{2,24})"', raw, _re.IGNORECASE)
         if match:
             verdict_raw = match.group(1).strip().upper()
+            salvaged = True
+    if not verdict_raw:
+        # Kurtarma 2: model düşünme sürecini sızdırdıysa (canlı örnek: "We should
+        # perhaps DEVAM due strong confluence?") — ŞEMA TOKENLERINI (BÜYÜK HARF,
+        # tam kelime) metinden kurtar; SON geçtiği yer nihai karar sayılır.
+        # Küçük harf eşleşmez ("devam etmez" / "gerçek değil" tuzağına karşı).
+        positions: list[tuple[int, str]] = []
+        for token in ("DEVAM", "FAKE", "BELIRSIZ"):
+            start = 0
+            while True:
+                idx = raw.find(token, start)
+                if idx < 0:
+                    break
+                after = idx + len(token)
+                before_ok = idx == 0 or not (raw[idx - 1].isalnum() or raw[idx - 1] == "_")
+                after_ok = after >= len(raw) or not (raw[after].isalnum() or raw[after] == "_")
+                if before_ok and after_ok:
+                    positions.append((idx, token))
+                start = after
+        if positions:
+            positions.sort()
+            verdict_raw = positions[-1][1]
+            salvaged = True
     aliases = {"DEVAM": "DEVAM", "CONTINUE": "DEVAM", "ONAY": "DEVAM",
                "GERÇEK": "DEVAM", "GERCEK": "DEVAM", "REAL": "DEVAM",
                "YÜKSELİŞ": "DEVAM", "YUKSELIS": "DEVAM", "BULLISH": "DEVAM",
@@ -305,6 +334,19 @@ def parse_verdict(text) -> dict | None:
         confidence = max(0.0, min(100.0, float((decoded or {}).get("confidence") or 0)))
     except (TypeError, ValueError):
         confidence = 0.0
+    if salvaged and confidence == 0.0:
+        # Kurtarılan yanıtta güven alanı yok: metindeki %N'e bak, yoksa nötr 50.
+        import re as _re
+        m_conf = (_re.search(r'(\d{1,3})\s*%', raw)
+                  or _re.search(r'%\s*(\d{1,3})', raw)          # Türkçe: %65
+                  or _re.search(r'"confidence"\s*:\s*(\d{1,3})', raw, _re.IGNORECASE))
+        if m_conf:
+            try:
+                confidence = max(0.0, min(100.0, float(m_conf.group(1))))
+            except ValueError:
+                confidence = 50.0
+        else:
+            confidence = 50.0
 
     def _str_list(value) -> list[str]:
         if not isinstance(value, list):
@@ -322,7 +364,7 @@ def parse_verdict(text) -> dict | None:
         "confidence": round(confidence),
         "reasons": _str_list((decoded or {}).get("reasons") if isinstance(decoded, dict) else None),
         "trap_evidence": _str_list((decoded or {}).get("trap_evidence") if isinstance(decoded, dict) else None),
-        "summary": str(decoded.get("summary") or "").strip()[:300] or None,
+        "summary": str((decoded or {}).get("summary") or "").strip()[:300] or None,
     }
 
 
