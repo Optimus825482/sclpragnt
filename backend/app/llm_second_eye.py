@@ -29,26 +29,25 @@ logger = logging.getLogger("scalper.llm_second_eye")
 COOLDOWN_SEC = float(os.getenv("LLM_SECOND_EYE_COOLDOWN_SEC", "1800") or 1800)
 MIN_INTERVAL_SEC = float(os.getenv("LLM_SECOND_EYE_MIN_INTERVAL_SEC", "45") or 45)
 TIMEOUT_SEC = float(os.getenv("LLM_SECOND_EYE_TIMEOUT_SEC", "75") or 75)
-MIN_SCORE = float(os.getenv("LLM_SECOND_EYE_MIN_SCORE", "50") or 50)
+MIN_SCORE = float(os.getenv("LLM_SECOND_EYE_MIN_SCORE", "0") or 0)
 MAX_PER_HOUR = int(os.getenv("LLM_SECOND_EYE_MAX_PER_HOUR", "15") or 15)
 PROVIDER_MISSING_BACKOFF_SEC = float(os.getenv("LLM_SECOND_EYE_PROVIDER_BACKOFF_SEC", "600") or 600)
 
 VERDICT_SCHEMA_HINT = (
-    '{"verdict":"DEVAM|TUZAK|BELIRSIZ","confidence":<0-100 tam sayı>,'
-    '"reasons":["kısa kanıt etiketi",...],"trap_evidence":["varsa tuzak kanıtları",...],'
+    '{"verdict":"DEVAM|FAKE|BELIRSIZ","confidence":<0-100 tam sayı>,'
+    '"reasons":["kısa kanıt etiketi",...],"trap_evidence":["varsa fake kanıtları",...],'
     '"summary":"tek cümle Türkçe özet"}'
 )
 
 SECOND_EYE_PROMPT = (
-    "Sen kripto skolp sisteminde İKİNCİ GÖZ onay katmanısın. Kural motoru bir yükseliş "
-    "sinyali ateşledi; sen bu yükselişin DEVAM etme olasılığı mı yoksa TUZAK riski mi "
-    "taşıdığını verilen kanıt paketiyle değerlendir. Yalnızca verilen kanıtları kullan; "
-    "yeni veri uydurma; kendi aritmetiğinle skor hesaplama. Kanıtlar ÇELİŞİYORSA "
-    "(örn. fiyat yükseliyor ama CVD/trade_imbalance negatif, whale satıyor, "
-    "ladder_asymmetry negatif, funding EXTREME_LONG, macro BTC panik) tuzak "
-    "ihtimalini GÜÇLENDİR. Kanıtlar hemfiherse (orderflow + derinlik + türev verisi "
-    "yükselişi destekliyorsa) DEVAM'a eğil. Yeterli kanıt yoksa BELIRSIZ ver. "
-    "JSON dışında hiçbir şey yazma. Şema TAM OLARAK: " + VERDICT_SCHEMA_HINT
+    "Sen kripto skolp sisteminde İKİNCİ GÖZ onay katmanısın. Kural motoru bir yükseliş/kırılım "
+    "sinyali ateşledi; sen bu kırılımın GERÇEK mi FAKE mi olduğunu ve yükselişin DEVAM edip "
+    "etmeyeceğini verilen kanıt paketiyle değerlendir. Yalnızca verilen kanıtları kullan; yeni "
+    "veri uydurma; kendi aritmetiğinle skor hesaplama. Kanıtlar ÇELİŞİYORSA (fiyat yükseliyor "
+    "ama CVD/trade_imbalance negatif, whale satıyor, ladder_asymmetry negatif, funding "
+    "EXTREME_LONG, BTC panik) FAKE ihtimali GÜÇLENİR. Kanıtlar hemfikirse DEVAM'a eğil; "
+    "yeterli kanıt yoksa BELIRSIZ ver. JSON dışında hiçbir şey yazma. Şema TAM OLARAK: "
+    + VERDICT_SCHEMA_HINT
 )
 
 
@@ -81,7 +80,12 @@ def enabled_by_env() -> bool:
 
 
 def eligible(notif: dict | None) -> bool:
-    """Bildirim zarfı LLM değerlendirmesine uygun mu? (ucuz, senkron filtre)"""
+    """Bildirim zarfı LLM değerlendirmesine uygun mu? (ucuz, senkron filtre)
+
+    Varsayılan: uygulamadan giden HER push değerlendirilir (MIN_SCORE=0);
+    maliyeti saatlik çağrı kotası + aralık kapısı sınırlar. Skor kapısı
+    istenirse `LLM_SECOND_EYE_MIN_SCORE` ile yeniden sıkılaştırılır.
+    """
     if not enabled_by_env():
         return False
     if not isinstance(notif, dict):
@@ -231,7 +235,7 @@ def parse_verdict(text) -> dict | None:
         return None
     verdict_raw = str(decoded.get("verdict") or "").strip().upper()
     aliases = {"DEVAM": "DEVAM", "CONTINUE": "DEVAM", "ONAY": "DEVAM",
-               "TUZAK": "TUZAK", "TRAP": "TUZAK",
+               "FAKE": "FAKE", "TUZAK": "FAKE", "TRAP": "FAKE", "SAHTE": "FAKE",
                "BELIRSIZ": "BELIRSIZ", "UNCERTAIN": "BELIRSIZ", "NEUTRAL": "BELIRSIZ"}
     verdict = aliases.get(verdict_raw)
     if not verdict:
@@ -262,28 +266,34 @@ def parse_verdict(text) -> dict | None:
 
 
 def build_verdict_notification(notif: dict, verdict: dict) -> dict:
-    """Kararı ekrana/push'a gidecek BİLDİRİM zarfına çevirir."""
+    """Kararı ekrana/push'a gidecek KISA VE NET bildirim zarfına çevirir.
+
+    Başlık = karar + güven; mesaj = tek satır (yönlendirme + en güçlü tek kanıt).
+    """
     import json as _json
 
     sym = str(notif.get("symbol") or "").upper()
     v = verdict["verdict"]
     conf = verdict["confidence"]
     if v == "DEVAM":
-        title = f"🧠 LLM ONAYI ✓ · {sym} yükseliş devam edebilir"
-    elif v == "TUZAK":
-        title = f"🧠⚠ LLM TUZAK RİSKİ · {sym}"
+        title = f"🧠 {sym}: DEVAM ✓ %{conf}"
+        lead = "Kırılım gerçek görünüyor"
+        reasons = verdict.get("reasons") or []
+    elif v == "FAKE":
+        title = f"🧠 {sym}: FAKE ⚠ %{conf}"
+        lead = "Fake kırılım riski"
+        reasons = verdict.get("trap_evidence") or verdict.get("reasons") or []
     else:
-        title = f"🧠 LLM · {sym}: belirsiz"
-    reasons = verdict.get("reasons") or verdict.get("trap_evidence") or []
-    reason_txt = " · ".join(reasons[:2])
-    summary_txt = verdict.get("summary")
-    parts = [f"Karar: {v}", f"Güven: %{conf}"]
+        title = f"🧠 {sym}: BELİRSİZ %{conf}"
+        lead = "Yeterli kanıt yok"
+        reasons = []
+    reason_txt = reasons[0].strip() if reasons and isinstance(reasons[0], str) else ""
+    if not reason_txt and verdict.get("summary"):
+        reason_txt = str(verdict["summary"]).strip()[:80]
+    message = f"🧠 {sym} | {lead}"
     if reason_txt:
-        parts.append(reason_txt)
-    if summary_txt and summary_txt not in reason_txt:
-        parts.append(summary_txt)
-    parts.append(f"Sinyal skoru: {notif.get('score')}")
-    message = f"🧠 {sym} | " + " | ".join(str(p) for p in parts)
+        message += f" · {reason_txt}"
+    message += f" | Güven %{conf}"
     now = time.time()
     return {
         "symbol": sym,

@@ -30,8 +30,12 @@ class ParseVerdictTests(unittest.TestCase):
 
     def test_alias_and_clamping(self):
         parsed = llm_second_eye.parse_verdict('{"verdict":"TRAP","confidence":250,"reasons":["x"]}')
-        self.assertEqual(parsed["verdict"], "TUZAK")
+        self.assertEqual(parsed["verdict"], "FAKE")
         self.assertEqual(parsed["confidence"], 100)
+        tuzak = llm_second_eye.parse_verdict('{"verdict":"TUZAK","confidence":60}')
+        self.assertEqual(tuzak["verdict"], "FAKE")
+        fake = llm_second_eye.parse_verdict('{"verdict":"FAKE","confidence":70}')
+        self.assertEqual(fake["verdict"], "FAKE")
         low = llm_second_eye.parse_verdict('{"verdict":"belirsiz","confidence":-5}')
         self.assertEqual(low["verdict"], "BELIRSIZ")
         self.assertEqual(low["confidence"], 0)
@@ -62,8 +66,11 @@ class EligibleTests(unittest.TestCase):
         self.assertFalse(llm_second_eye.eligible(_notif(source="llm_second_eye")))
 
     def test_low_score_and_bad_shape_skipped(self):
-        self.assertFalse(llm_second_eye.eligible(_notif(score=30.0)))
-        self.assertFalse(llm_second_eye.eligible(_notif(score=None)))
+        # MIN_SCORE varsayılan 0 (her push değerlendirilir); skor'suz/basit
+        # zarflar da uygundur. Kapı yükseltildiğinde düşük skor elenir.
+        with patch.object(llm_second_eye, "MIN_SCORE", 50.0):
+            self.assertFalse(llm_second_eye.eligible(_notif(score=30.0)))
+            self.assertFalse(llm_second_eye.eligible(_notif(score=None)))
         self.assertFalse(llm_second_eye.eligible(_notif(symbol="")))
         self.assertFalse(llm_second_eye.eligible(None))
 
@@ -162,23 +169,36 @@ class EvaluateGuardTests(unittest.TestCase):
 
 
 class VerdictNotificationTests(unittest.TestCase):
-    def test_devam_and_tuzak_titles(self):
+    def test_devam_title_short_and_clear(self):
         devam = llm_second_eye.build_verdict_notification(
             _notif(), {"verdict": "DEVAM", "confidence": 80, "reasons": ["cvd_pozitif"],
                        "trap_evidence": [], "summary": None})
-        self.assertIn("ONAYI", devam["title"])
+        self.assertIn("DEVAM ✓ %80", devam["title"])
         self.assertIn("HEMITRY", devam["title"])
+        self.assertIn("Kırılım gerçek görünüyor", devam["message"])
+        self.assertIn("cvd_pozitif", devam["message"])
         self.assertEqual(devam["mode"], "llm_ikinci_goz")
         self.assertEqual(devam["source"], "llm_second_eye")
         reasons = json.loads(devam["llm_reasons"])
         self.assertEqual(reasons["reasons"], ["cvd_pozitif"])
-        tuzak = llm_second_eye.build_verdict_notification(
-            _notif(), {"verdict": "TUZAK", "confidence": 65, "reasons": [],
+
+    def test_fake_title_and_trap_reason(self):
+        fake = llm_second_eye.build_verdict_notification(
+            _notif(), {"verdict": "FAKE", "confidence": 65, "reasons": [],
                        "trap_evidence": ["whale_satis"], "summary": "dağıtım var"})
-        self.assertIn("TUZAK RİSKİ", tuzak["title"])
-        self.assertIn("Karar: TUZAK", tuzak["message"])
-        self.assertIn("Güven: %65", tuzak["message"])
-        self.assertEqual(tuzak["url"], "/charts?symbol=HEMITRY")
+        self.assertIn("FAKE ⚠ %65", fake["title"])
+        self.assertIn("Fake kırılım riski", fake["message"])
+        self.assertIn("whale_satis", fake["message"])
+        self.assertIn("Güven %65", fake["message"])
+        self.assertEqual(fake["url"], "/charts?symbol=HEMITRY")
+
+    def test_belirsiz_falls_back_to_summary(self):
+        unclear = llm_second_eye.build_verdict_notification(
+            _notif(), {"verdict": "BELIRSIZ", "confidence": 40, "reasons": [],
+                       "trap_evidence": [], "summary": "kanıt yetersiz"})
+        self.assertIn("BELİRSİZ %40", unclear["title"])
+        self.assertIn("Yeterli kanıt yok", unclear["message"])
+        self.assertIn("kanıt yetersiz", unclear["message"])
 
 
 if __name__ == "__main__":
