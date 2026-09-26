@@ -81,15 +81,20 @@ class MacdComponentsTests(unittest.TestCase):
         self.assertEqual({}, comps)
 
     def test_components_read_from_snapshot_row(self):
-        row = {"jump": 70, "early_score": 55, "strength": 6,
+        # 2026-09-26 denetim #3: RISING bileşeni artık rising_signals eşik
+        # kapısından geçer (MIN_STRENGTH/MIN_GREEN). Satır bu nedenle nitelikli
+        # (strength >= 9.8 ve >= 5 yesil TF) — eski "strength: 6, tfs: {}"
+        # satiri kapıyı atlayan örnek olarak test ediliyordu.
+        row = {"jump": 70, "early_score": 55, "strength": 9.9,
                "pre": {"dip": True}, "pre_detail": {"proximity": 0.8},
-               "cvd": {"buy_dominant": True}, "tfs": {}}
+               "cvd": {"buy_dominant": True},
+               "tfs": {tf: {"green": True} for tf in ("1m", "3m", "5m", "15m", "1h")}}
         snapshot = {"symbols": {"BTCTRY": row}, "universe": ["BTCTRY"]}
         with patch.object(us._macd, "_SNAPSHOT", snapshot):
             comps, ctx = us.macd_components("BTCTRY")
         self.assertEqual(70.0, comps["jump"])
         self.assertEqual(55.0, comps["early"])
-        self.assertEqual(60.0, comps["rising"])   # strength 0-10 → ×10
+        self.assertEqual(99.0, comps["rising"])   # strength 0-10 → ×10 (eşik geçildikten sonra)
         self.assertTrue(ctx["dip"])
         self.assertTrue(ctx["buy_dominant"])
 

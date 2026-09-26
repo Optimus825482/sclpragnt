@@ -397,24 +397,36 @@ def calculate_adaptive_targets(
     sc = max(0.0, min(100.0, float(score or 0.0)))
     atr = float(atr_pct) if (atr_pct is not None and float(atr_pct) > 0) else 1.4
 
+    # 2026-09-26 (denetim #2 düzeltmesi): TRY mikro çiftlerin ATR%'si tipik
+    # 0.3-0.9 bandında; eski sabit tabanlar (TP1 ≥ 1.2, TP2 ≥ 3.0, BE ≥ 0.9)
+    # bu rejimde HER ZAMAN bağlanıyordu — "ATR tabanlı uyarlanabilir hedef"
+    # fiilen sabit (1.2 / 3.0 / 0.9) üretiyordu. Artık tabanlar düşük ATR'de
+    # ATR ile ölçeklenir: TP1 tabanı min(1.2, 2×ATR) — 2×ATR, gidiş-dönüş
+    # maliyeti (~%0.45) + marjı her zaman karşılar; ATR ≥ %0.6'da eski
+    # deneysel 1.2 bandı aynen korunur. TP2 tabanı min(3.0, 4×ATR) ve
+    # score_runner da ölçekli tabandan başlar; BE tetiği TP1'in altında
+    # kalır (eski kodda TP1 < 0.9 iken BE tetiği TP1'in ÜSTÜNDE çıkıyordu —
+    # yapısal tutarsızlık).
     tp1_min = float(getattr(config, "MASTER_SURGE_TP1_MIN_PCT", 1.2))
     tp1_max = float(getattr(config, "MASTER_SURGE_TP1_MAX_PCT", 1.8))
     tp2_min = float(getattr(config, "MASTER_SURGE_TP2_MIN_PCT", 3.0))
     tp2_max = float(getattr(config, "MASTER_SURGE_TP2_MAX_PCT", 6.5))
     be_gap = float(getattr(config, "MASTER_SURGE_BE_GAP_PCT", 0.40))
 
-    # TP1: Scalp kilidi (ATR'nin ~%90-%110'u, min 1.2%, max 1.8%)
-    tp1 = round(max(tp1_min, min(tp1_max, atr * 1.0)), 2)
+    # TP1: Scalp kilidi (ATR'nin ~%100'ü; taban min(1.2, 2×ATR), tavan 1.8)
+    tp1 = round(max(min(tp1_min, atr * 2.0), min(tp1_max, atr * 1.0)), 2)
 
-    # TP2: Koşucu hedefi (Skora ve ATR potansiyeline bağlı, min 3.0%, max 6.5%)
+    # TP2: Koşucu hedefi (Skora ve ATR potansiyeline bağlı; taban min(3.0, 4×ATR))
     base_tp2 = float(base_target_pct if base_target_pct is not None else 3.5)
     atr_runner = atr * 2.5
     score_factor = max(0.0, (sc - 50.0) / 50.0)  # 50 ve altı 0, 100'de 1.0
-    score_runner = 3.0 + score_factor * 3.5
-    tp2 = round(max(tp2_min, min(tp2_max, max(base_tp2, atr_runner, score_runner))), 2)
+    tp2_floor = min(tp2_min, atr * 4.0)
+    score_runner = tp2_floor + score_factor * 3.5
+    tp2 = round(max(tp2_floor, min(tp2_max, max(base_tp2, atr_runner, score_runner))), 2)
 
-    # Başabaş tetikleyicisi: TP1'e yaklaştığında (ör. %1.0) maliyet kilitlenir
-    be_trigger = round(max(0.9, min(1.3, tp1 * 0.85)), 2)
+    # Başabaş tetikleyicisi: TP1'e yaklaştığında maliyet kilitlenir; tetik
+    # daima TP1'in altında kalır (taban min(0.9, TP1×0.85)).
+    be_trigger = round(max(min(0.9, tp1 * 0.85), min(1.3, tp1 * 0.85)), 2)
 
     return {
         "tp1_scalp_pct": tp1,

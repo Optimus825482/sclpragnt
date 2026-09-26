@@ -180,10 +180,28 @@ class MasterSurgeAdaptiveTargetsTests(unittest.TestCase):
         self.assertEqual(res_high["tp1_scalp_pct"], 1.8)
         self.assertEqual(res_high["tp2_runner_pct"], 6.5)
 
-        # Extreme low ATR
+        # Extreme low ATR — 2026-09-26 denetim #2: tabanlar artik ATR ile
+        # olceklenir (eskiden sabit 1.2/3.0 baglanip "uyarlanamaz" hale
+        # geliyordu). atr=0.2 -> TP1 tabani min(1.2, 0.4)=0.4; TP2 tabani
+        # min(3.0, 0.8)=0.8, score_runner olcekli tabandan baslar -> 1.0.
         res_low = master_surge.calculate_adaptive_targets(score=40.0, atr_pct=0.2, base_target_pct=1.0)
-        self.assertEqual(res_low["tp1_scalp_pct"], 1.2)
-        self.assertEqual(res_low["tp2_runner_pct"], 3.0)
+        self.assertEqual(res_low["tp1_scalp_pct"], 0.4)
+        self.assertEqual(res_low["tp2_runner_pct"], 1.0)
+        # BE tetigi daima TP1'in altinda kalmali (eski kodda TP1 < 0.9 iken
+        # tetik TP1'in ustune cikiyordu).
+        self.assertLess(res_low["breakeven_trigger_pct"], res_low["tp1_scalp_pct"])
+
+    def test_adaptive_targets_scale_in_low_atr_regime(self):
+        """TRY mikro cift rejimi (ATR% 0.3-0.9): hedefler ATR ile hareket etmeli."""
+        # atr 0.35 -> TP1 = 2xATR = 0.70 (maliyeti karsilar), eski sabit 1.2 degil
+        res_035 = master_surge.calculate_adaptive_targets(score=80.0, atr_pct=0.35, base_target_pct=2.2)
+        self.assertEqual(res_035["tp1_scalp_pct"], 0.7)
+        # atr 0.6 ustunde eski deneysel 1.2 bandi aynen korunur
+        res_08 = master_surge.calculate_adaptive_targets(score=80.0, atr_pct=0.8, base_target_pct=2.2)
+        self.assertEqual(res_08["tp1_scalp_pct"], 1.2)
+        # TP1 arttikca BE tetigi de olceklenir; ikisi de bant icinde
+        self.assertLess(res_08["breakeven_trigger_pct"], res_08["tp1_scalp_pct"])
+        self.assertGreater(res_035["tp1_scalp_pct"], 0.45)  # gidis-donus maliyet ustu
 
 
 class MasterSurgeConfluenceTests(unittest.TestCase):
