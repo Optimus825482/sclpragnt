@@ -33,6 +33,12 @@ _monitoring_state = {
     "notified_symbols": {},       # symbol -> son bildirim zamanı (epoch)
     "watchlist_seen_at": {},      # symbol -> izlemeye alınma zamanı
     "history": [],                # son bildirim geçmişi (yeni -> eski)
+    # Warm listesi (2026-09-26, B-C bağlantısı): velocity taramasının eşik
+    # altı ama eşiğe YAKIN adayları ("ısınıyor" rozeti). GEÇİCİDİR —
+    # _persist_runtime_state / restore_runtime_state'e bilerek EKLENMEDİ;
+    # restart sonrası ilk tarama zaten tazeler, kalıcı hale getirmek bayat
+    # sinyal yayınlamak olur.
+    "warm": [],
     "pending_targets": {},        # symbol -> {"expected": float, "horizon_minutes": int, "set_at": epoch}
     "candidate_streak": {},       # symbol -> ardışık aday tarama sayısı (debounce)
     # D-07 (2026-09-14): symbol -> son YENİ bildirimin taban fiyatı.
@@ -51,10 +57,17 @@ _monitoring_state = {
     "_db_latencies": [],              # notify query gecikmeleri (diagnostics icin, 2026-09-07) (gözlem bayrağı, eşiği etkilemez — 2026-09-04)
 }
 
-# Sunucu tarafı döngü aralıkları: genel tarama 60 sn; izleme listesindeki
+# Sunucu tarafı döngü aralıkları: genel tarama 30 sn; izleme listesindeki
 # semboller her turda zorunlu havuza eklenip yeniden analiz edilir. Böylece
 # PWA kapalı olsa bile tarama ve bildirim sunucudan devam eder.
-SCAN_INTERVAL_SEC = 60.0
+# Ağırlık matematiği (2026-09-26, 60→30 sn): tur başına ~2 profil (5m+15m)
+# × ~105 sembol × kline(weight 2) ≈ 420 ağırlık/tur → 30 sn'de ≈ 840/dk.
+# Binance limiti 6000/dk'dır ve modül rate limiter'ı (`_velocity_rate_acquire`)
+# zaten koruyor; velocity N+1 düzeltmesi (velocity.py, 2026-09-26) tur başına
+# DB sorgusunu 240→2'ye indirdiği için bu frekans güvenlidir. Ortam değişkeni
+# (MONITORING_SCAN_INTERVAL_SEC) operatöre çıkış kapısı verir; 30 sn altı
+# kasıtlı olarak engellenir (rate limiter'ı boşa yormamak için).
+SCAN_INTERVAL_SEC = max(30.0, float(os.getenv("MONITORING_SCAN_INTERVAL_SEC", "30")))
 HISTORY_LIMIT = 60
 NOTIFY_COOLDOWN_SEC = 300.0  # aynı sembol için asgari tekrar bildirim engeli (5 dk)
 # NOT (2026-09-20): eski 5 dk → 1 dk → geri 5 dk. 1 dk cooldown,
@@ -2350,15 +2363,49 @@ async def _run_scan() -> dict:
     # F-16: 5dk ve 15dk taramaları AYNI havuzu bağımsız olarak tarar; seri
     # beklemek gecikmeyi ikiye katlıyordu. Eşzamanlı çalıştırılır (asyncio tek
     # thread olduğu için paylaşılan durumda yarış yok).
-    scan5, scan15 = await asyncio.gather(
-        detect_velocity_candidates({"limit": 10}, horizon_minutes=5, extra_symbols=watch_symbols),
-        detect_velocity_candidates({"limit": 10}, horizon_minutes=15, extra_symbols=watch_symbols),
-    )
+    try:
+        scan5, scan15 = await asyncio.gather(
+            detect_velocity_candidates({"limit": 10}, horizon_minutes=5, extra_symbols=watch_symbols),
+            detect_velocity_candidates({"limit": 10}, horizon_minutes=15, extra_symbols=watch_symbols),
+        )
+    except Exception:
+        # Detect patlarsa mevcut hata davranışı korunur (istisna aynen yukarı
+        # çıkar); yalnızca warm listesi boşaltılır — bayat "ısınıyor" rozeti
+        # yayınlamaktansa boş göstermek doğrudur (2026-09-26).
+        _monitoring_state["warm"] = []
+        raise
 
     candidates5 = scan5.get("candidates", [])
     candidates15 = scan15.get("candidates", [])
     watchlist5 = scan5.get("watchlist", [])
     watchlist15 = scan15.get("watchlist", [])
+
+    # Warm listesi toplama (2026-09-26): velocity taraması dönüşünde artık
+    # "warm" (eşik altı ama yakın) adayları da var. İki profilin warm havuzu
+    # birleştirilir, frontend sözleşmesindeki ALANLARLA (isimler birebir)
+    # yeniden kurulur, warm_proximity'e göre azalan sıralanır ve ilk 12'si
+    # state'e taşınır. Aday sözlüğünde olmayan alanlar `.get()` ile alınır
+    # (None kalabilir). Detect çağrısı patlamadıysa her tur tazelenir.
+    merged_warm: list[dict] = []
+    for _profile_tag, _scan in (("5m", scan5), ("15m", scan15)):
+        for _w in (_scan.get("warm") or []):
+            if not isinstance(_w, dict):
+                continue
+            merged_warm.append({
+                "symbol": _w.get("symbol"),
+                "velocity_score": _w.get("velocity_score"),
+                "warm_reason": _w.get("warm_reason"),
+                "warm_proximity": _w.get("warm_proximity"),
+                "price": _w.get("price"),
+                "change_24h": _w.get("change_24h"),
+                "atr_pct": _w.get("atr_pct"),
+                "target_pct": _w.get("target_pct"),
+                "horizon_minutes": _w.get("horizon_minutes"),
+                "profile": _profile_tag,
+                "detected_at": time.time(),
+            })
+    merged_warm.sort(key=lambda w: _num(w.get("warm_proximity"), 0.0) or 0.0, reverse=True)
+    _monitoring_state["warm"] = merged_warm[:12]
 
     # Sıralama anahtarı: chat upside-scout ile ortak (journal touch oranları +
     # mikro-yapı çarpanı satırların içinde hazır: upside_rank_score hesaplar).
@@ -2647,6 +2694,9 @@ async def monitoring_state():
             "candidates": _monitoring_state["last_candidates"],
             "watchlist": _monitoring_state["last_watchlist"],
             "history": _monitoring_state["history"][:20],
+            # Warm listesi yayını (2026-09-26): "ısınıyor" adayları frontend'e
+            # buradan gider. Geçicidir; persist edilmez.
+            "warm": _monitoring_state.get("warm") or [],
             "settings": settings,
             "scope": "global_admin",
             "risk_off": _monitoring_state["risk_off"],
@@ -3286,6 +3336,7 @@ async def reset_monitoring_notifications(request: Request):
         _monitoring_state.get("notified_prices", {}).clear()  # fiyat değişim gate temizle
         _unified_fast_last.clear()        # #10: hızlı-yol cooldown haritası
         _monitoring_state.get("surge_blocked_symbols", {}).clear()  # Master Surge rozeti
+        _monitoring_state["warm"] = []    # warm rozetleri de geçici durum; tarama tazeler
         _deferred_push.clear()
         await _persist_runtime_state()
     await log_user_action(None, None, "monitoring", "MONITORING_NOTIFICATIONS_RESET",

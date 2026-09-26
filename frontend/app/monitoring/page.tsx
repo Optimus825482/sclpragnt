@@ -55,11 +55,27 @@ type Candidate = {
   master_surge?: any;
 };
 
+/** Teyit eşiğine yaklaşan ("ısınan") sembol — backend `state.warm` sözleşmesi. */
+type WarmCandidate = {
+  symbol: string;
+  velocity_score: number | null;
+  warm_reason: string | null;      // "atr_yaklas" | "bb_yaklas" | "struct_yaklas" | "m1_m3_oncu_atr"
+  warm_proximity: number | null;   // 0..1 (kapıya yakınlık)
+  price: number | null;
+  change_24h: number | null;       // yüzde
+  atr_pct: number | null;
+  target_pct: number | null;
+  horizon_minutes: number | null;
+  profile: "5m" | "15m" | null;
+  detected_at: number | null;      // epoch sn
+};
+
 type MonitoringState = {
   last_scan_at: number | null;
   scan_count: number;
   candidates: Candidate[];
   watchlist: Candidate[];
+  warm?: WarmCandidate[];
 };
 
 type ServerHealth = {
@@ -131,6 +147,47 @@ const parseSettings = (raw: unknown): NotificationSettings | null => {
 };
 
 const SCAN_INTERVAL_MS = 30_000;
+
+/** Isınan sebep kodu → Türkçe etiket (bilinmeyen kod ham haliyle gösterilir). */
+const WARM_REASON_LABEL: Record<string, string> = {
+  atr_yaklas: "ATR eşiğine yaklaşıyor",
+  bb_yaklas: "Bollinger genişliyor",
+  struct_yaklas: "yapısal teyit yaklaşıyor",
+  m1_m3_oncu_atr: "M1/M3 öncü ATR patlaması",
+};
+
+const WARM_PROFILE_LABEL: Record<string, string> = {
+  "5m": "5dk",
+  "15m": "15dk",
+};
+
+/** `state.warm` listesini savunmacı biçimde WarmCandidate[]'e normalize eder. */
+const parseWarmCandidates = (raw: unknown): WarmCandidate[] => {
+  if (!Array.isArray(raw)) return [];
+  const list: WarmCandidate[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const v = item as Record<string, unknown>;
+    if (typeof v.symbol !== "string" || !v.symbol) continue;
+    const reason: string | null = typeof v.warm_reason === "string" && v.warm_reason ? v.warm_reason : null;
+    const profileRaw: unknown = v.profile;
+    const profile: WarmCandidate["profile"] = profileRaw === "5m" || profileRaw === "15m" ? profileRaw : null;
+    list.push({
+      symbol: v.symbol,
+      velocity_score: numOrNull(v.velocity_score),
+      warm_reason: reason,
+      warm_proximity: numOrNull(v.warm_proximity),
+      price: numOrNull(v.price),
+      change_24h: numOrNull(v.change_24h),
+      atr_pct: numOrNull(v.atr_pct),
+      target_pct: numOrNull(v.target_pct),
+      horizon_minutes: numOrNull(v.horizon_minutes),
+      profile,
+      detected_at: numOrNull(v.detected_at),
+    });
+  }
+  return list;
+};
 
 type NotificationRow = {
   symbol?: string;
@@ -391,7 +448,7 @@ const CandidateDetail = ({ c, kind, onClose }: { c: Candidate; kind: "radar" | "
 export default function MonitoringPage() {
   const { role } = useAuth();
   const isAdmin = role === "admin";
-  const [state, setState] = useState<MonitoringState>({ last_scan_at: null, scan_count: 0, candidates: [], watchlist: [] });
+  const [state, setState] = useState<MonitoringState>({ last_scan_at: null, scan_count: 0, candidates: [], watchlist: [], warm: [] });
   const [effectiveMinScore, setEffectiveMinScore] = useState<number | null>(null);
   const [scanning, setScanning] = useState(false);
   const [, setSettings] = useState<NotificationSettings | null>(null);
@@ -442,6 +499,7 @@ export default function MonitoringPage() {
       scan_count: numOrNull(data?.scan_count) ?? 0,
       candidates: Array.isArray(data?.candidates) ? data.candidates : [],
       watchlist: Array.isArray(data?.watchlist) ? data.watchlist : [],
+      warm: parseWarmCandidates(data?.warm),
     });
     setHealth({
       loop_active: boolOrNull(data?.loop_active),
@@ -655,6 +713,9 @@ export default function MonitoringPage() {
   const effThreshold = effectiveMinScore ?? thresholds.panel;
   const rawThreshold = thresholds.raw;
   const candidates = state.candidates;
+  // Backend yakınlığa göre desc sıralı ve max 12 gönderir; sıralamaya dokunulmaz,
+  // yalnızca savunmacı kırpma yapılır.
+  const warmList = (state.warm ?? []).slice(0, 12);
 
   const filteredCandidates = useMemo(() => {
     let list = [...candidates];
@@ -1178,6 +1239,66 @@ export default function MonitoringPage() {
               <span>Durumlar: <b className="text-neon-green">HEDEFE ULAŞTI</b> · <b className="text-yellow-300">KISMI</b> · <b className="text-bunker-muted">BEKLİYOR</b></span>
             </div>
           )}
+        </section>
+      )}
+
+      {/* BÖLÜM 1.5: 🔥 ISINANLAR — ERKEN UYARI (onaylanmadı; yalnız ekranda erken görünürlük) */}
+      {(activeTab === "candidates" || activeTab === "overview") && warmList.length > 0 && (
+        <section aria-labelledby="warm-panel-title" className="card p-5 rounded-2xl border border-amber-400/40 bg-bunker-950/60 shadow-xl space-y-4">
+          <div className="border-b border-bunker-800/80 pb-3">
+            <h2 id="warm-panel-title" className="font-mono text-lg font-black text-amber-300 flex flex-wrap items-center gap-2">
+              <span>🔥</span> ISINANLAR — ERKEN UYARI
+              <span className="rounded-md border border-amber-400/60 bg-amber-400/15 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                ONAYLANMADI
+              </span>
+            </h2>
+            <p className="mt-1 text-xs text-bunker-muted">
+              Teyit eşiğine yaklaşan semboller. Bu liste işlem sinyali DEĞİLDİR.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            {warmList.map((w) => {
+              const proximityPct = Math.round((w.warm_proximity ?? 0) * 100);
+              const reasonLabel = w.warm_reason ? (WARM_REASON_LABEL[w.warm_reason] ?? w.warm_reason) : null;
+              const profileLabel = w.profile ? (WARM_PROFILE_LABEL[w.profile] ?? w.profile) : null;
+              const change = w.change_24h;
+              return (
+                <div
+                  key={w.symbol}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl border border-bunker-800 bg-bunker-900/40 p-3 sm:px-4 font-mono text-xs"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="font-mono text-sm font-black text-white truncate">{w.symbol}</span>
+                    <span className="shrink-0 rounded-md border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 font-bold text-amber-300" title="Teyit kapısına yakınlık">
+                      %{proximityPct}
+                    </span>
+                    {reasonLabel && (
+                      <span
+                        className="rounded-md border border-bunker-700 bg-bunker-900/80 px-2 py-0.5 text-[10px] text-bunker-muted truncate max-w-[190px]"
+                        title={w.warm_reason ?? undefined}
+                      >
+                        {reasonLabel}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:justify-end text-bunker-muted">
+                    {w.price != null && w.price > 0 && <span className="text-white">₺{formatPrice(w.price)}</span>}
+                    <span className={change == null ? "text-bunker-muted" : change >= 0 ? "text-neon-green" : "text-neon-red"}>
+                      24s: {change == null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`}
+                    </span>
+                    <span>
+                      Hedef: <b className={w.target_pct != null ? "text-neon-green" : "text-bunker-muted"}>{w.target_pct != null ? `+${w.target_pct.toFixed(1)}%` : "—"}</b>
+                    </span>
+                    {profileLabel && (
+                      <span className="shrink-0 rounded-md bg-bunker-800 px-2 py-0.5 text-[10px] text-bunker-muted">{profileLabel}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </section>
       )}
 
