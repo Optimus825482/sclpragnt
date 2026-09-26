@@ -15,6 +15,7 @@ Sınırlar:
   (tekrarlanan başarısız çağrı maliyeti/kirliliği yok).
 """
 import asyncio
+import json
 import logging
 import os
 import time
@@ -26,12 +27,16 @@ from app.llm_analysis import _json_load_lenient
 logger = logging.getLogger("scalper.llm_second_eye")
 
 # --- Ayarlar (env ile aynen; testler modül niteliğini değiştirerek kelepçeler) ---
+# HIZ İLKESİ (kullanıcı kararı 2026-09-26): "fırsat kaçmadan" — geç gelen karar
+# değersizdir. Tavan 20 sn; LLM daha yavaşsa karar YOK, kural kararı geçerli.
 COOLDOWN_SEC = float(os.getenv("LLM_SECOND_EYE_COOLDOWN_SEC", "1800") or 1800)
-MIN_INTERVAL_SEC = float(os.getenv("LLM_SECOND_EYE_MIN_INTERVAL_SEC", "45") or 45)
-TIMEOUT_SEC = float(os.getenv("LLM_SECOND_EYE_TIMEOUT_SEC", "75") or 75)
+MIN_INTERVAL_SEC = float(os.getenv("LLM_SECOND_EYE_MIN_INTERVAL_SEC", "15") or 15)
+TIMEOUT_SEC = float(os.getenv("LLM_SECOND_EYE_TIMEOUT_SEC", "20") or 20)
 MIN_SCORE = float(os.getenv("LLM_SECOND_EYE_MIN_SCORE", "0") or 0)
 MAX_PER_HOUR = int(os.getenv("LLM_SECOND_EYE_MAX_PER_HOUR", "15") or 15)
 PROVIDER_MISSING_BACKOFF_SEC = float(os.getenv("LLM_SECOND_EYE_PROVIDER_BACKOFF_SEC", "600") or 600)
+# Hızlı yol: 2 mesaj + tavan 250 token — kısa JSON cevabı saniyeler içinde döner.
+FAST_MAX_TOKENS = int(os.getenv("LLM_SECOND_EYE_MAX_TOKENS", "250") or 250)
 
 VERDICT_SCHEMA_HINT = (
     '{"verdict":"DEVAM|FAKE|BELIRSIZ","confidence":<0-100 tam sayı>,'
@@ -39,19 +44,19 @@ VERDICT_SCHEMA_HINT = (
     '"summary":"tek cümle Türkçe özet"}'
 )
 
-SECOND_EYE_PROMPT = (
-    "Sen kripto skolp sisteminde İKİNCİ GÖZ onay katmanısın. Kural motoru bir yükseliş/kırılım "
-    "sinyali ateşledi; sen bu kırılımın GERÇEK mi FAKE mi olduğunu ve yükselişin DEVAM edip "
-    "etmeyeceğini verilen kanıt paketiyle değerlendir. Yalnızca verilen kanıtları kullan; yeni "
-    "veri uydurma; kendi aritmetiğinle skor hesaplama. Kanıtlar ÇELİŞİYORSA (fiyat yükseliyor "
-    "ama CVD/trade_imbalance negatif, whale satıyor, ladder_asymmetry negatif, funding "
-    "EXTREME_LONG, BTC panik) FAKE ihtimali GÜÇLENİR. Kanıtlar hemfikirse DEVAM'a eğil; "
-    "yeterli kanıt yoksa BELIRSIZ ver. JSON dışında hiçbir şey yazma. Şema TAM OLARAK: "
+SECOND_EYE_PROMPT = FAST_SYSTEM_PROMPT = (
+    "Sen hızlı bir kripto skolp analiz motorusun — İKİNCİ GÖZ. Kural motoru bir yükseliş/"
+    "kırılım sinyali ateşledi; sen bu kırılımın GERÇEK mi FAKE mi olduğunu ve yükselişin "
+    "DEVAM edip etmeyeceğini yalnızca verilen kanıt paketiyle değerlendir. Yeni veri "
+    "uydurma, aritmetik yapma. Kanıtlar ÇELİŞİYORSA (fiyat yükseliyor ama CVD/trade_imbalance "
+    "negatif, whale satıyor, ladder_asymmetry negatif, funding EXTREME_LONG, BTC panik) "
+    "FAKE ihtimali GÜÇLENİR; kanıtlar hemfikirse DEVAM'a eğil; yeterli kanıt yoksa BELIRSIZ. "
+    "Yanıt YALNIZCA JSON olur, JSON dışında tek karakter yazma. Şema TAM OLARAK: "
     + VERDICT_SCHEMA_HINT
 )
 
 
-# --- Çalışma zamanı durumu (tek event loop; korumalı bölüm asyncio.Lock ile) ---
+# --- Çalışma zamanı durumu (tek event loop; kapı bloğu await'siz → yarışsız) ---
 _state = {
     "last_eval_at": 0.0,
     "hour_marks": deque(),
@@ -61,7 +66,6 @@ _state = {
     "skipped": 0,
 }
 _last_eval_per_symbol: dict[str, float] = {}
-_guard_lock = asyncio.Lock()
 
 
 def stats() -> dict:
@@ -164,12 +168,14 @@ def microstructure_evidence(symbol: str) -> dict | None:
 
 
 async def derivatives_evidence(symbol: str) -> dict | None:
-    """Türev kanıtı (funding/OI) — master_surge içinde yoksa cache-first çeker."""
+    """Türev kanıtı (funding/OI) — YALNIZCA önbellekten (90 sn TTL'i aşmışsa da kabul).
+
+    Ağ beklemeye girmez: cache soğuksa kanıtsız devam eder (hız > genişlik —
+    `get_derivatives_intel` 4 sn'ye kadar bloklayabilir, fırsat kaçar).
+    """
     try:
-        from app.derivatives_service import get_cached_derivatives_intel, get_derivatives_intel
-        intel = get_cached_derivatives_intel(symbol)
-        if not isinstance(intel, dict) or not intel:
-            intel = await get_derivatives_intel(symbol)
+        from app.derivatives_service import get_cached_derivatives_intel
+        intel = get_cached_derivatives_intel(symbol, max_age_sec=900)
     except Exception:
         return None
     if not isinstance(intel, dict) or not intel:
@@ -318,9 +324,76 @@ def build_verdict_notification(notif: dict, verdict: dict) -> dict:
     }
 
 
+async def _fast_llm_call(evidence: dict) -> dict:
+    """Küçük TEK-ATIMLIK completion — chat personalı/bellek/araç yükü YOK.
+
+    `llm_analysis.chat` kişisel asistan personalı + bellek talimatlarını da
+    taşıyan onlarca KB'lik system prompt ile çağrı yapıyordu; bu kanal yalnızca
+    2 mesaj + ≤250 token ile saniyeler içinde döner. Sözleşme chat() ile aynı:
+    sağlayıcı yoksa {"enabled": False}; taşıma hatası RuntimeError fırlatır.
+    HTTP tavanı 15 sn — dıştaki `TIMEOUT_SEC` (20 sn) her zaman baskındır.
+    """
+    from urllib.error import HTTPError
+    from urllib.request import Request
+    from app import database
+    from app.llm_analysis import _compact_json_dumps, _decode_provider_response, decrypt_key
+    from app.security import safe_provider_open, validate_provider_url
+
+    cfg = await database.get_active_llm_config()
+    if not cfg:
+        return {"enabled": False, "status": "disabled", "text": None}
+    base_url = await validate_provider_url(cfg["provider"]["base_url"])
+    url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
+    payload = {
+        "model": cfg["model"]["name"],
+        "temperature": 0.1,
+        "max_tokens": FAST_MAX_TOKENS,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": FAST_SYSTEM_PROMPT},
+            {"role": "user", "content": "Kanıt paketi (JSON):\n" + _compact_json_dumps(evidence)},
+        ],
+    }
+    headers = {"Content-Type": "application/json",
+               "Authorization": "Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}
+
+    def _extract(body) -> str | None:
+        try:
+            content = body["choices"][0]["message"]["content"]
+            return str(content or "")
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    def _send() -> Request:
+        return Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
+
+    try:
+        response = await safe_provider_open(_send(), timeout=15)
+        text = _extract(_decode_provider_response(response.read()))
+        if text is None:
+            raise RuntimeError("sağlayıcı yanıtı beklenen biçimde değil")
+        return {"enabled": True, "text": text}
+    except HTTPError as http_error:
+        # json_object reddeden gateway'ler 4xx döner: response_format'sız TEK deneme.
+        if http_error.code // 100 != 4:
+            raise RuntimeError(f"LLM sağlayıcısı reddetti: {http_error}") from http_error
+        payload.pop("response_format", None)
+        try:
+            response = await safe_provider_open(_send(), timeout=15)
+            text = _extract(_decode_provider_response(response.read()))
+            if text is None:
+                raise RuntimeError("sağlayıcı yanıtı beklenen biçimde değil")
+            return {"enabled": True, "text": text}
+        except Exception as exc:
+            raise RuntimeError(f"LLM gateway yanıt vermedi: {exc}") from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"LLM gateway yanıt vermedi: {exc}") from exc
+
+
 async def evaluate(notif: dict) -> dict | None:
     """Uygun bildirim için LLM kararını alıp bildirim zarfı döndürür; atlanırsa None."""
-    from app import llm_analysis
 
     if not eligible(notif):
         return None
@@ -328,42 +401,33 @@ async def evaluate(notif: dict) -> dict | None:
     now = time.time()
     if now < _state["provider_missing_until"]:
         return None
-    async with _guard_lock:
-        try:
-            setting = await database.get_llm_setting("llm_second_eye_enabled", "1")
-        except Exception:
-            setting = "1"
-        if str(setting) != "1":
-            return None
-        if now - _last_eval_per_symbol.get(sym, 0.0) < COOLDOWN_SEC:
-            _state["skipped"] += 1
-            return None
-        if now - _state["last_eval_at"] < MIN_INTERVAL_SEC:
-            _state["skipped"] += 1
-            return None
-        marks = _state["hour_marks"]
-        while marks and now - marks[0] > 3600:
-            marks.popleft()
-        if len(marks) >= MAX_PER_HOUR:
-            _state["skipped"] += 1
-            return None
-        # Kapılar geçildi: kota/kapanı çağrıdan ÖNCE işaretle (burst koruması).
-        _last_eval_per_symbol[sym] = now
-        _state["last_eval_at"] = now
-        marks.append(now)
+    try:
+        setting = await database.get_llm_setting("llm_second_eye_enabled", "1")
+    except Exception:
+        setting = "1"
+    if str(setting) != "1":
+        return None
+    # Kapılar: await'siz senkron blok — tek event loop'ta yarışsız, kilitsiz.
+    if now - _last_eval_per_symbol.get(sym, 0.0) < COOLDOWN_SEC:
+        _state["skipped"] += 1
+        return None
+    if now - _state["last_eval_at"] < MIN_INTERVAL_SEC:
+        _state["skipped"] += 1
+        return None
+    marks = _state["hour_marks"]
+    while marks and now - marks[0] > 3600:
+        marks.popleft()
+    if len(marks) >= MAX_PER_HOUR:
+        _state["skipped"] += 1
+        return None
+    # Kapılar geçildi: kota/kapanı çağrıdan ÖNCE işaretle (burst koruması).
+    _last_eval_per_symbol[sym] = now
+    _state["last_eval_at"] = now
+    marks.append(now)
 
     evidence = await build_evidence(notif)
-    snapshot = {"type": "llm_second_eye", "paper_only": True, "evidence": evidence}
     try:
-        result = await asyncio.wait_for(
-            llm_analysis.chat(
-                snapshot,
-                [{"role": "user", "content": SECOND_EYE_PROMPT}],
-                json_mode=True,
-                max_tokens=600,
-            ),
-            timeout=TIMEOUT_SEC,
-        )
+        result = await asyncio.wait_for(_fast_llm_call(evidence), timeout=TIMEOUT_SEC)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
