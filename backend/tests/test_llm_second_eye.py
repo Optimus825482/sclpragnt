@@ -168,6 +168,25 @@ class EvaluateGuardTests(unittest.TestCase):
             result = asyncio.run(llm_second_eye.evaluate(_notif()))
         self.assertIsNone(result)
         self.assertIn("şemasına uymadı", str(llm_second_eye._state["last_error"]))
+        self.assertEqual(llm_second_eye._state["last_error_kind"], "schema")
+
+    def test_slow_provider_marks_timeout_kind(self):
+        async def _slow(evidence):
+            await asyncio.sleep(0.05)
+            return {"enabled": True, "text": "{}"}
+
+        with self._patch_db("1"), patch.object(llm_second_eye, "_fast_llm_call", _slow), \
+             patch.object(llm_second_eye, "TIMEOUT_SEC", 0.01):
+            result = asyncio.run(llm_second_eye.evaluate(_notif()))
+        self.assertIsNone(result)
+        self.assertEqual(llm_second_eye._state["last_error_kind"], "timeout")
+        self.assertEqual(llm_second_eye._state["error_counts"].get("timeout"), 1)
+
+    def test_stats_exposes_diagnostics(self):
+        stats = llm_second_eye.stats()
+        for key in ("evaluated", "delivered", "skipped", "last_error_kind",
+                    "error_counts", "provider_missing_active", "timeout_sec"):
+            self.assertIn(key, stats)
 
 
 class FastLlmCallTests(unittest.TestCase):
@@ -208,7 +227,7 @@ class FastLlmCallTests(unittest.TestCase):
         self.assertLessEqual(payload["max_tokens"], 250)
         self.assertEqual(payload["response_format"], {"type": "json_object"})
         self.assertIn("HEMITRY", payload["messages"][1]["content"])
-        self.assertEqual(patches[4]["timeout"], 15)
+        self.assertEqual(patches[4]["timeout"], llm_second_eye.HTTP_TIMEOUT_SEC)
 
     def test_gateway_refusing_json_mode_retries_without_response_format(self):
         from urllib.error import HTTPError
