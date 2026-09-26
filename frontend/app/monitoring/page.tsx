@@ -1262,12 +1262,11 @@ export default function MonitoringPage() {
                       <div className="flex items-center gap-2">
                         <Link
                           href={`/charts?symbol=${encodeURIComponent(c.symbol)}`}
-                          target="_blank"
                           onClick={(e) => e.stopPropagation()}
                           className="ui-button ui-button-secondary py-1 px-3 text-xs flex items-center gap-1 hover:border-neon-green/60"
-                          title="Grafiği yeni sekmede aç"
+                          title="Grafiği aç"
                         >
-                          <span>Grafik</span> ↗
+                          <span>Grafik</span>
                         </Link>
                       </div>
                     </div>
@@ -1299,7 +1298,7 @@ export default function MonitoringPage() {
             </h2>
             <p className="mt-1 text-xs text-bunker-muted">
               Akıştan ham momentum. Tarama/teyit beklenmeden gösterilir — gürültülü olabilir.
-              Sembol adına tıklayınca grafik yeni sekmede açılır.
+              Sembol adına veya GRAFİKTE AÇ'a tıklayınca grafik aynı sayfada açılır.
             </p>
           </div>
 
@@ -1319,8 +1318,7 @@ export default function MonitoringPage() {
                   />
                   <Link
                     href={`/charts?symbol=${encodeURIComponent(p.symbol)}`}
-                    target="_blank"
-                    title="Grafiği yeni sekmede aç"
+                    title="Grafiği aç"
                     className="font-mono text-sm font-black text-white truncate hover:text-sky-300 hover:underline underline-offset-4"
                   >
                     {p.symbol}
@@ -1335,6 +1333,13 @@ export default function MonitoringPage() {
                     {p.volume_burst != null ? `${p.volume_burst.toFixed(1)}× hacim` : "— hacim"}
                   </span>
                   <span className="ml-auto text-white">{p.price != null && p.price > 0 ? `₺${formatPrice(p.price)}` : "—"}</span>
+                  <Link
+                    href={`/charts?symbol=${encodeURIComponent(p.symbol)}`}
+                    title="Grafiği aç"
+                    className="ui-button ui-button-secondary shrink-0 py-1 px-2.5 text-[11px]"
+                  >
+                    GRAFİKTE AÇ
+                  </Link>
                 </li>
               );
             })}
@@ -1354,7 +1359,7 @@ export default function MonitoringPage() {
             </h2>
             <p className="mt-1 text-xs text-bunker-muted">
               Teyit eşiğine yaklaşan semboller. Bu liste işlem sinyali DEĞİLDİR.
-              Sembol adına tıklayınca grafik yeni sekmede açılır.
+              Sembol adına veya GRAFİKTE AÇ'a tıklayınca grafik aynı sayfada açılır.
             </p>
           </div>
 
@@ -1372,8 +1377,7 @@ export default function MonitoringPage() {
                   <div className="flex items-center gap-2.5 min-w-0">
                     <Link
                       href={`/charts?symbol=${encodeURIComponent(w.symbol)}`}
-                      target="_blank"
-                      title="Grafiği yeni sekmede aç"
+                      title="Grafiği aç"
                       className="font-mono text-sm font-black text-white truncate hover:text-amber-300 hover:underline underline-offset-4"
                     >
                       {w.symbol}
@@ -1402,6 +1406,13 @@ export default function MonitoringPage() {
                     {profileLabel && (
                       <span className="shrink-0 rounded-md bg-bunker-800 px-2 py-0.5 text-[10px] text-bunker-muted">{profileLabel}</span>
                     )}
+                    <Link
+                      href={`/charts?symbol=${encodeURIComponent(w.symbol)}`}
+                      title="Grafiği aç"
+                      className="ui-button ui-button-secondary shrink-0 py-1 px-2.5 text-[11px]"
+                    >
+                      GRAFİKTE AÇ
+                    </Link>
                   </div>
                 </div>
               );

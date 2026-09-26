@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { API_BASE, apiRequest } from "../lib/api";
 import { useLiveMessages, useLiveStatus } from "../lib/liveSocket";
@@ -76,6 +76,7 @@ function CandleCountdown({ intervalMs }: { intervalMs: number }) {
 
 export default function ChartsPage() {
     const searchParams = useSearchParams();
+    const router = useRouter();
     const [symbol, setSymbol] = useState<string>("BTCTRY");
     const [symbols, setSymbols] = useState<string[]>(FALLBACK_SYMBOLS);
     const [analysisOpen, setAnalysisOpen] = useState(false);
@@ -1531,11 +1532,21 @@ export default function ChartsPage() {
     return (
         <div className="max-w-7xl mx-auto space-y-5">
             <header className="chart-page-header flex flex-wrap items-center justify-between gap-4">
-                <div>
-                    <h1 className="font-mono text-xl font-bold tracking-tight">
-                        <span className="text-neon-green">GRAFİK</span> TERMİNALİ
-                    </h1>
-                    <p className="eyebrow mt-1">Binance public API · son 200 mum</p>
+                <div className="flex items-center gap-3 min-w-0">
+                    <button
+                        type="button"
+                        onClick={() => { if (typeof window !== "undefined" && window.history.length > 1) router.back(); else router.push("/monitoring"); }}
+                        className="shrink-0 rounded-lg border border-bunker-700 bg-bunker-900/60 px-3 py-2 font-mono text-xs text-bunker-muted transition-colors hover:border-bunker-500 hover:text-white"
+                        title="Önceki sayfaya dön"
+                    >
+                        ← GERİ
+                    </button>
+                    <div className="min-w-0">
+                        <h1 className="font-mono text-xl font-bold tracking-tight">
+                            <span className="text-neon-green">GRAFİK</span> TERMİNALİ
+                        </h1>
+                        <p className="eyebrow mt-1">Binance public API · son 200 mum</p>
+                    </div>
                 </div>
             </header>
 
