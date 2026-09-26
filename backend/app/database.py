@@ -316,6 +316,15 @@ async def init_db():
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS llm_verdict TEXT")
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS llm_confidence DOUBLE PRECISION")
         conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS llm_reasons TEXT")
+        # MACD MTF KONFLUANS ÖLÇÜMÜ (2026-09-26): bildirim ANINDAKI konfluans
+        # snapshot'ı + sonuç alanları (hedefe dokunma / MFE / MAE) — rapor
+        # sekmesi GÜÇLÜ/ORTA/ZAYIF gruplarını karşılaştırır.
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS macd_mtf_verdict TEXT")
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS macd_mtf_confluence DOUBLE PRECISION")
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS outcome_status TEXT")
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS mfe_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS mae_pct DOUBLE PRECISION")
+        conn.execute("ALTER TABLE monitoring_notifications ADD COLUMN IF NOT EXISTS outcome_at DOUBLE PRECISION")
         # M4 (R3-09): koruma kapanışı sonrası aynı bildirimin yeniden açılışı için
         # kalıcı "reopen" anahtarı. `notification_id` (bigint) string id taşıyamaz;
         # bu TEXT kolon reopen churn korumasını taşır.
@@ -3948,8 +3957,8 @@ async def save_monitoring_notifications(entries):
                 "INSERT INTO monitoring_notifications"
                 "(symbol,message,title,score,target_pct,price,expected_price,horizon_minutes,mode,detected_at,sent_via_push,created_at,"
                 "ml_target_pct,ml_hit_probability,candidate_id,norm_cap,norm_version,sources,"
-                "llm_verdict,llm_confidence,llm_reasons)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                "llm_verdict,llm_confidence,llm_reasons,macd_mtf_verdict,macd_mtf_confluence)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
                 (
                     str(e.get("symbol") or "?"),
                     str(e.get("message") or ""),
@@ -3968,6 +3977,9 @@ async def save_monitoring_notifications(entries):
                     e.get("llm_verdict") or None,
                     e.get("llm_confidence"),
                     e.get("llm_reasons") or None,
+                    # MACD MTF konfluans snapshot'ı (bildirim anı; opsiyonel).
+                    e.get("macd_mtf_verdict") or None,
+                    e.get("macd_mtf_confluence"),
                 ),
             ).fetchone()
             if row is not None and e.get("id") is None:
@@ -4251,6 +4263,51 @@ async def update_monitoring_notification(
         conn.commit()
         return True
     return await _run_db(op)
+
+async def update_monitoring_notification_outcome(notification_id, status, mfe_pct=None, mae_pct=None):
+    """Bildirim sonucunu kalıcı yaz (MACD MTF konfluans ölçümü — 2026-09-26).
+
+    status: 'HEDEFE_ULTI' | 'STOP' | 'SURE_DOLDU'. mfe_pct/mae_pct: giriş
+    fiyatına göre pencere içi en yüksek/en düşük getiri yüzdesi (MAE negatif).
+    Tekrar çözümleme üstüne yazmaz (COALESCE) — ilk sonuç kalır.
+    """
+    def op(conn):
+        conn.execute(
+            "UPDATE monitoring_notifications SET "
+            "outcome_status=COALESCE(outcome_status, %s), "
+            "mfe_pct=COALESCE(mfe_pct, %s), "
+            "mae_pct=COALESCE(mae_pct, %s), "
+            "outcome_at=COALESCE(outcome_at, %s) "
+            "WHERE id=%s",
+            (status, mfe_pct, mae_pct, time.time(), notification_id),
+        )
+        conn.commit()
+    return await _run_db(op)
+
+
+async def list_macd_mtf_report(days: int = 14, limit: int = 1000):
+    """MACD MTF konfluans raporu satırları (yeni → eski; verdict'sizler dahil).
+
+    Agregasyon rapor ucunda yapılır; burada yalnız ham satırlar okunur.
+    """
+    cutoff = time.time() - max(1, int(days)) * 86400.0
+
+    def op(conn):
+        rows = conn.execute(
+            "SELECT id,symbol,macd_mtf_verdict,macd_mtf_confluence,outcome_status,"
+            "mfe_pct,mae_pct,score,target_pct,horizon_minutes,detected_at,mode,sources "
+            "FROM monitoring_notifications WHERE detected_at >= %s "
+            "ORDER BY detected_at DESC LIMIT %s",
+            (cutoff, max(1, min(int(limit), 2000))),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["detected_at"] = _epoch_value(item.get("detected_at"))
+            result.append(item)
+        return result
+    return await _run_db(op)
+
 
 async def list_monitoring_notifications(limit=50):
     """En son monitoring bildirimlerini döndür (yeni -> eski)."""

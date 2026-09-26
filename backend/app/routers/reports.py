@@ -332,6 +332,75 @@ async def get_report_rising_signals(limit: int = 100, kind: str | None = None,
             "stats": stats, "signals": signals, "live": live}
 
 
+@router.get("/api/reports/macd-mtf")
+async def get_macd_mtf_report(days: int = 14, limit: int = 1000):
+    """MACD MTF konfluans ölçüm raporu (2026-09-26).
+
+    Bildirim ANINDAKI konfluans snapshot'ı (`macd_mtf_verdict/confluence`) ile
+    pencere sonu ölçülen gerçek sonucu (HEDEFE_ULTI/STOP/SURE_DOLDU + MFE/MAE)
+    grup bazında karşılaştırır: kullanıcının "MTF MACD" metodu eşiklere
+    bağlanmadan ÖNCE kanıt üretilir.
+
+    PRE-REGISTERED KARAR KURALI (veri görülmeden önce sabitlendi): GÜÇLÜ
+    grubun dokunma oranı ZAYIF'tan en az +10 puan yüksek VE grup başına
+    >= 30 ölçülmüş olay varsa konfluans eşiklere girer (warm terfisi /
+    fake kapısı); aksi halde yalnız bilgi rozeti olarak kalır.
+    """
+    days = max(1, min(int(days), 60))
+    rows = await database.list_macd_mtf_report(days=days, limit=max(1, min(int(limit), 2000)))
+    order = {"GÜÇLÜ": 0, "ORTA": 1, "ZAYIF": 2, "YOK": 3}
+    groups: dict[str, dict] = {}
+    fake_threshold_pct = -float(getattr(config, "AUTO_PAPER_SL_PCT_DEFAULT", 1.5))
+    for r in rows:
+        verdict = str(r.get("macd_mtf_verdict") or "YOK")
+        g = groups.setdefault(verdict, {
+            "verdict": verdict, "count": 0, "measured": 0, "touched": 0,
+            "stopped": 0, "expired": 0, "_mfe": 0.0, "_mae": 0.0, "_fakes": 0,
+        })
+        g["count"] += 1
+        if not r.get("outcome_status"):
+            continue  # penceresi dolmamış sinyal — henüz ölçülemedi
+        g["measured"] += 1
+        if r["outcome_status"] == "HEDEFE_ULTI":
+            g["touched"] += 1
+        elif r["outcome_status"] == "STOP":
+            g["stopped"] += 1
+        else:
+            g["expired"] += 1
+        mfe, mae = r.get("mfe_pct"), r.get("mae_pct")
+        if mfe is not None:
+            g["_mfe"] += float(mfe)
+        if mae is not None:
+            g["_mae"] += float(mae)
+            if float(mae) <= fake_threshold_pct:
+                g["_fakes"] += 1
+    group_list = []
+    for g in groups.values():
+        measured = g["measured"]
+        group_list.append({
+            "verdict": g["verdict"], "count": g["count"], "measured": measured,
+            "touched": g["touched"], "stopped": g["stopped"], "expired": g["expired"],
+            "touch_rate_pct": round(g["touched"] / measured * 100.0, 1) if measured else None,
+            "avg_mfe_pct": round(g["_mfe"] / measured, 2) if measured else None,
+            "avg_mae_pct": round(g["_mae"] / measured, 2) if measured else None,
+            "fake_rate_pct": round(g["_fakes"] / measured * 100.0, 1) if measured else None,
+        })
+    group_list.sort(key=lambda x: order.get(x["verdict"], 9))
+    recent_keys = ("id", "symbol", "macd_mtf_verdict", "macd_mtf_confluence",
+                   "outcome_status", "mfe_pct", "mae_pct", "score", "target_pct",
+                   "detected_at", "mode")
+    recent = [{k: r.get(k) for k in recent_keys} for r in rows[:30]]
+    return {
+        "paper_only": True,
+        "generated_at": time.time(),
+        "days": days,
+        "total": len(rows),
+        "fake_threshold_pct": fake_threshold_pct,
+        "groups": group_list,
+        "recent": recent,
+    }
+
+
 @router.get("/api/reports/symbols")
 async def get_report_symbols(limit: int = 200, day: str | None = None):
     """Sembol bazlı detaylı rapor: net PnL, başarı, MFE/DD ve ilk/son işlem."""
