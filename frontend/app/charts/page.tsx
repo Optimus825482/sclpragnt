@@ -56,16 +56,15 @@ const pnlTryText = (v?: number | null) => {
  */
 function CandleCountdown({ intervalMs }: { intervalMs: number }) {
     const [remaining, setRemaining] = useState(0);
-    useEffect(() => {
-        const ms = intervalMs > 0 ? intervalMs : 60_000;
-        const tick = () => {
-            const now = Date.now();
-            setRemaining(Math.max(0, Math.ceil(now / ms) * ms - now));
-        };
-        tick();
-        const t = setInterval(tick, 250);
-        return () => clearInterval(t);
-    }, [intervalMs]);
+    const ms = intervalMs > 0 ? intervalMs : 60_000;
+    const tick = useCallback(() => {
+        const now = Date.now();
+        setRemaining(Math.max(0, Math.ceil(now / ms) * ms - now));
+    }, [ms]);
+    // `useVisibleInterval`: sekme arka plandayken 250 ms'lik sayaç döngüsü
+    // durur (görünmeyen bir saniye sayacı saniyede 4 kez render ediyordu).
+    useEffect(() => { tick(); }, [tick]);
+    useVisibleInterval(tick, 250);
     return (
         <span className="text-neon-green font-bold tabular-nums">
             {String(Math.floor(remaining / 60000)).padStart(2, "0")}:{String(Math.floor((remaining % 60000) / 1000)).padStart(2, "0")}
@@ -273,6 +272,31 @@ export default function ChartsPage() {
     );
     const paneKeyByIndexRef = useRef<Map<number, string>>(new Map());
 
+    /**
+     * Pane yüksekliklerini localStorage'a yazar (yalnız değiştiyse).
+     * Ayrı bir `useVisibleInterval` ile 1 sn'de bir çağrılır: sekme gizliyken
+     * grafik zaten görünmüyor, `chartRef.current` da null olduğu için bu tur
+     * tamamen boşa çalışıyordu.
+     */
+    const savePaneHeights = useCallback(() => {
+        if (!chartRef.current) return;
+        // render henüz pane key'lerini doldurmadıysa yazma — yoksa gerçek ama küçük
+        // değerler ilk render öncesi DOM boyutları localStorage'a kaydedilip
+        // chart'ı kalıcı olarak küçültür.
+        if (paneKeyByIndexRef.current.size === 0) return;
+        const heights: Record<string, number> = {};
+        chartRef.current.panes().forEach((p, i) => {
+            const key = paneKeyByIndexRef.current.get(i) || String(i);
+            heights[key] = p.getHeight();
+        });
+        const key = JSON.stringify(heights);
+        if (key !== JSON.stringify(paneHeightsRef.current)) {
+            paneHeightsRef.current = heights;
+            try { localStorage.setItem(LS_PANE_HEIGHTS, key); } catch { }
+        }
+    }, []);
+    useVisibleInterval(savePaneHeights, 1000);
+
     // ana grafik kurulumu (bir kez)
     useEffect(() => {
         if (!containerRef.current) return;
@@ -298,23 +322,9 @@ export default function ChartsPage() {
         chartRef.current = chart;
         candleRef.current = series;
 
-        // pane yüksekliklerini izle: kullanıcı sürükleyince localStorage'a yaz (key bazlı)
-        const saveTimer = setInterval(() => {
-            if (!chartRef.current) return;
-            // render henüz pane key'lerini doldurmadıysa yazma — yoksa gerçek ama küçük değerler
-            // ilk render öncesi DOM boyutları localStorage'a kaydedilip chart'ı küçültür
-            if (paneKeyByIndexRef.current.size === 0) return;
-            const heights: Record<string, number> = {};
-            chartRef.current.panes().forEach((p, i) => {
-                const key = paneKeyByIndexRef.current.get(i) || String(i);
-                heights[key] = p.getHeight();
-            });
-            const key = JSON.stringify(heights);
-            if (key !== JSON.stringify(paneHeightsRef.current)) {
-                paneHeightsRef.current = heights;
-                try { localStorage.setItem(LS_PANE_HEIGHTS, key); } catch { }
-            }
-        }, 1000);
+        // Pane yüksekliklerini izle ve kaydet → bileşen düzeyindeki
+        // `savePaneHeights` + `useVisibleInterval` (chart ömründen bağımsız ve
+        // sekme görünürlüğüne duyarlı).
 
         // pencere boyutu değişince grafiği yeniden boyutlandır (autoSize yerine manuel — pane yükseklikleri sabit)
         const ro = new ResizeObserver(() => {
@@ -338,7 +348,6 @@ export default function ChartsPage() {
         ro.observe(containerRef.current);
 
         return () => {
-            clearInterval(saveTimer);
             ro.disconnect();
             chart.remove();
             chartRef.current = null;
@@ -1187,19 +1196,23 @@ export default function ChartsPage() {
         if (hasOpenAutoTrade) return;
 
         if (!showMonitoringLines || !monitorNotif?.active) return;
-        const addMonitorLine = (price: number, color: string, title: string, lineStyle: number = 2) => {
-            if (price == null || price <= 0) return;
+        const addMonitorLine = (price: number | null | undefined, color: string, title: string, lineStyle: number = 2) => {
+            // Hedef/bildirim fiyatı NULL gelebilir; "0" bir fiyat değil, o yüzden
+            // çizgi üretilmez (grafik ekseni 0'a çekilmez).
+            if (price == null || !Number.isFinite(price) || price <= 0) return;
             try {
                 monitorLinesRef.current.push(series.createPriceLine({
-                    price, color, lineWidth: 2, lineStyle: lineStyle as any,
+                    price: price as number, color, lineWidth: 2, lineStyle: lineStyle as any,
                     axisLabelVisible: true, title
                 }));
             } catch { }
         };
-        const notifPrice = Number(monitorNotif.price);
-        const targetPrice = Number(monitorNotif.expected_price);
-        addMonitorLine(notifPrice, "#eab308", `BİLDİRİM ${formatPrice(notifPrice)}`, 1);
-        addMonitorLine(targetPrice, "#a855f7", `HEDEF ${formatPrice(targetPrice)}`, 2);
+        const notifRaw = monitorNotif.price;
+        const notifPrice = notifRaw == null ? null : Number(notifRaw);
+        const targetRaw = monitorNotif.expected_price;
+        const targetPrice = targetRaw == null ? null : Number(targetRaw);
+        addMonitorLine(notifPrice, "#eab308", `BİLDİRİM ${notifPrice != null ? formatPrice(notifPrice) : "—"}`, 1);
+        addMonitorLine(targetPrice, "#a855f7", `HEDEF ${targetPrice != null ? formatPrice(targetPrice) : "—"}`, 2);
     }, [showMonitoringLines, monitorNotif, autoPaperPositions, symbol, bars]);
 
     // Eklenen strateji kategorisi indikatörlerin (EMA Pullback, VWAP+MACD, CMO+CRSI,
@@ -1497,12 +1510,23 @@ export default function ChartsPage() {
     // ticker'ından taze); hedef kontrolü hem endpoint hem istemci tarafından
     // anlık yapılır — panel SON ufuk dolana kadar kalır, hedefe ulaşıldığında
     // durum rozeti belirir.
+    // Denetim #56: `Number(x) || 0` deseni "hedef yok (null)" ile "hedef = 0"
+    // ayrımını siliyordu; backend `expected_price` NULL dönebiliyor
+    // (`monitoring.py:2486` de `or 0` ile çeviriyor) ve hedef çizgisi 0'a
+    // çizilerek grafik ekseni bozuluyordu. Artık `null` = "hedef yok" ve
+    // çizgi/etiket hiç üretilmiyor; `monitorTargetHit` koruması da
+    // `> 0` kontrolü sayesinde aynı kalıyor.
+    const expectedRaw = monitorNotif?.expected_price;
+    const monitorExpected = (() => {
+        if (!monitorNotif?.active || expectedRaw == null || expectedRaw === "") return null;
+        const n = Number(expectedRaw);
+        return Number.isFinite(n) && n > 0 ? n : null;
+    })();
     const monitorLivePrice = monitorNotif?.active
         ? (bars.length ? (Number(bars[bars.length - 1].close) || Number(monitorNotif.current_price) || 0) : (Number(monitorNotif.current_price) || 0))
         : 0;
-    const monitorExpected = monitorNotif?.active ? Number(monitorNotif.expected_price) || 0 : 0;
     const monitorTargetHit = Boolean(monitorNotif?.active && monitorNotif.target_hit) ||
-        (monitorLivePrice > 0 && monitorExpected > 0 && monitorLivePrice >= monitorExpected);
+        (monitorLivePrice > 0 && monitorExpected != null && monitorLivePrice >= monitorExpected);
 
     return (
         <div className="max-w-7xl mx-auto space-y-5">

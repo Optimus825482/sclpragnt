@@ -65,18 +65,33 @@ class _StubEstimator:
 
 
 def _training_candles(symbols, bars=620):
-    """`train()` icin yeterli (>=500 gecerli ornek) sentetik 5m mumlar."""
+    """`train()` icin yeterli (>=500 gecerli ornek) sentetik 5m mumlar.
+
+    Hacim SABIT 12.0 degil, dalgalanan bir seri olarak uretilir. Nedeni
+    yapilandirilmis bir durum: `vol_z` = (v - mean20)/std20, std20 == 0 iken
+    tanimsizdir (NaN) — bu egittte de, cikarimda da (`_velocity_volume_z`
+    duz hacimde None doner) AYNI sekilde gecerlidir, yani parity bozulmaz.
+    Ama `train()`'in D-10 sonlu-dunya maskesi boyle satirlari eler ve SABIT
+    hacimli bir fixture'da satirlarin %100'u dustugu icin egitim hicbir
+    ufukta ornek bulamaz ("Egitim icin yeterli ornek yok") ve bu test sessizce
+    hicbir sey egitmeden gecerdi. Gercekci (degisken) hacim, maskenin yalniz
+    isiNMA onculu ilk ~25 bari elemesine izin verir.
+    """
     out = {}
     for offset, symbol in enumerate(symbols):
         base = 100.0 + 10.0 * offset
         close = np.array([base + index * 0.3 for index in range(bars)],
                          dtype=np.float64)
+        # Deterministik, pozitif ve herhangi bir 20-bar penceresinde
+        # std20 > 0 olan hacim (test tekrarlanabilirligi icin seed'siz).
+        volume = 12.0 + np.array([(index * 7 + offset * 3) % 11 for index in range(bars)],
+                                 dtype=np.float64)
         out[symbol] = {
             "open_time": np.arange(bars, dtype=np.int64) * 300_000,
             "high": close + 0.4,
             "low": close - 0.3,
             "close": close,
-            "volume": np.full(bars, 12.0, dtype=np.float64),
+            "volume": volume,
         }
     return out
 

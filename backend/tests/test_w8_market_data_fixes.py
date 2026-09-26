@@ -55,13 +55,38 @@ class B01GenerationLoopTests(unittest.IsolatedAsyncioTestCase):
 
     def test_lifetime_expiry_resets_ws_connected_at(self):
         src = inspect.getsource(MarketData.connect)
-        self.assertIn("self.ws_connected_at = 0.0", src,
-                      "24s ömrü dalı ws_connected_at'i sıfırlamalı (aksi halde her nesil yeniden tetikler)")
+        # B-01: 24s ömrü dalı, bağlanma zamanlarını temizlemezse her nesil
+        # aynı koşulu sağlar ve sıcak yeniden bağlanma döngüsü üretir.
+        # B-07: artık tek skaler değil {group_id: ts} sözlüğü tutulduğu için
+        # temizleme sözlük boşaltma şeklindedir.
+        self.assertIn("self.ws_connected_at = {}", src,
+                      "24s ömrü dalı bağlanma zamanlarını temizlemeli "
+                      "(aksi halde her nesil yeniden tetikler)")
         self.assertIn("WS_GENERATION_MIN_INTERVAL_SEC", src,
                       "nesiller arasına asgari bekleme konmalı")
 
     def test_generation_interval_is_positive(self):
         self.assertGreater(MarketData.WS_GENERATION_MIN_INTERVAL_SEC, 0.0)
+
+
+class B07PerGroupLifetimeTests(unittest.TestCase):
+    """B-07: `ws_connected_at` TEK alandı ve tüm WS gruplarınca paylaşılıyordu.
+
+    24 saatlik yaşam süresi kontrolü "son bağlanan grubun" zamanını
+    kullandığı için diğer grupların ömrü sessizce takip edilmiyordu.
+    """
+
+    def test_connection_time_is_tracked_per_group(self):
+        m = MarketData(["BTCTRY", "ETHTRY"])
+        self.assertIsInstance(m.ws_connected_at, dict)
+        src = inspect.getsource(MarketData._run_ws_group)
+        self.assertIn("self.ws_connected_at[group_id]", src)
+
+    def test_lifetime_check_uses_the_oldest_group(self):
+        """Son bağlanan grup taze olduğu için en eski grup tetiklemelidir."""
+        src = inspect.getsource(MarketData.connect)
+        self.assertIn("min(self.ws_connected_at.values())", src,
+                      "ömrü dolan grup 'son bağlanan' değil EN ESKİ olan olmalı")
 
 
 class B03FailoverTests(unittest.IsolatedAsyncioTestCase):
@@ -256,6 +281,101 @@ class B02RestFallbackTests(unittest.TestCase):
         self.assertEqual(len(history["timestamps"]), len(history["closes"]),
                          "desenkronize seri onarılmalı (uzunluklar eşitlenmeli)")
         self.assertEqual([opened], history["timestamps"])
+
+
+class B08TickerCopyTests(unittest.IsolatedAsyncioTestCase):
+    """B-08: her kline olayında `dict(self.tickers)` tam kopya alınıyordu.
+
+    70 elemanlı sözlüğün kopyası, saniyede ~25 olayda ve hepsi event loop'ta
+    alınıyordu (≈100 KB/s saf kopyalama). Tek event loop'ta tek anahtar
+    ataması atomiktir; B-04'ün toplu `{**…, **updates}` deseni ise GERÇEKTEN
+    toplu güncelleme yaptığı için KORUNMALIDIR.
+    """
+
+    def test_hot_paths_no_longer_copy_the_whole_ticker_dict(self):
+        # Yorum satırlarında geçen metin yanıltıcı olmasın diye gerçek
+        # KOD deseni aranır: kopya alan bir atama + geri yazan satır.
+        for method in (MarketData._process_kline, MarketData._handle_ws_frame):
+            src = inspect.getsource(method)
+            code = "\n".join(
+                line for line in src.splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            self.assertNotIn("tickers = dict(", code,
+                             f"{method.__name__} 70 elemanlık sözlüğü kopyalamamalı")
+        self.assertIn("self.tickers[symbol] =",
+                      inspect.getsource(MarketData._process_kline))
+
+    def test_bulk_rest_refresh_keeps_the_merge_pattern(self):
+        """B-04: `{**self.tickers, **updates}` toplu güncellemedir, korunmalı."""
+        src = inspect.getsource(MarketData.refresh_24h_tickers)
+        self.assertIn("{**self.tickers, **updates}", src)
+
+    async def test_kline_updates_tickers_in_place(self):
+        m = MarketData(["BTCTRY"])
+        m.tickers["ETHTRY"] = {"symbol": "ETHTRY", "last_price": 7.0}
+        identity = m.tickers
+        m._process_kline({
+            "e": "kline", "E": 1_700_000_000_000,
+            "k": {"s": "BTCTRY", "i": "1m", "t": 1_700_000_000_000,
+                  "o": "1", "h": "2", "l": "0.5", "c": "1.5", "v": "10", "x": False},
+        })
+        self.assertIs(identity, m.tickers, "sözlük nesnesi değişmemeli")
+        self.assertEqual(1.5, m.tickers["BTCTRY"]["last_price"])
+        # Kopyalama yapılsaydı buradaki diğer semboller kaybolmazdı ama
+        # nesne kimliği değişirdi; korunması gereken sözleşme budur.
+        self.assertEqual(7.0, m.tickers["ETHTRY"]["last_price"])
+
+    async def test_ticker_stream_tolerates_a_non_numeric_close(self):
+        """B-10: `data.get("c") or data.get("wrap")` kopyala-yapıştır artığıydı.
+
+        `wrap` Binance şemasında yok; bozuk değerde `float()` tüm çerçeveyi
+        düşürüyordu. Artık yerel try/except ile korunur.
+        """
+        m = MarketData(["BTCTRY"])
+        payload = json.dumps({"e": "24hrTicker", "s": "BTCTRY", "c": "bozuk-deger",
+                              "E": 1_700_000_000_000})
+        m._handle_ws_frame(payload, 1, "g0")
+        # Çerçeve düşmemeli, sembol de eski fiyatla kalmalı.
+        self.assertNotIn("BTCTRY", m.tickers)
+
+    async def test_ticker_stream_ignores_a_wrap_field(self):
+        """B-10: `wrap` alanı olmayan bir çerçevede fiyat `wrap`'ten gelmez."""
+        m = MarketData(["BTCTRY"])
+        payload = json.dumps({"stream": "btctry@ticker", "data": {
+            "e": "24hrTicker", "s": "BTCTRY", "c": "12.5", "E": 1_700_000_000_000}})
+        m._handle_ws_frame(payload, 1, "g0")
+        self.assertEqual(12.5, m.tickers["BTCTRY"]["last_price"])
+
+    async def test_wrap_only_frame_does_not_invent_a_price(self):
+        m = MarketData(["BTCTRY"])
+        payload = json.dumps({"stream": "btctry@ticker", "data": {
+            "e": "24hrTicker", "s": "BTCTRY", "wrap": "99.9", "E": 1_700_000_000_000}})
+        m._handle_ws_frame(payload, 1, "g0")
+        self.assertNotIn("BTCTRY", m.tickers)
+
+
+class B10FreshnessCleanupTests(unittest.TestCase):
+    """B-10: `... or missing_or_stale` geri-düşüşü temizlemeyi etkisiz bırakıyordu."""
+
+    def test_source_has_no_or_fallback_on_the_cleanup(self):
+        src = None
+        for name in dir(MarketData):
+            if name.startswith("__"):
+                continue
+            attr = getattr(MarketData, name, None)
+            if not callable(attr):
+                continue
+            try:
+                candidate = inspect.getsource(attr)
+            except (TypeError, OSError):
+                continue
+            if "missing_or_stale" in candidate:
+                src = candidate
+                break
+        self.assertIsNotNone(src, "missing_or_stale kullanan metot bulunamadı")
+        self.assertNotIn('if item != "ticker_24h"] or missing_or_stale', src,
+                         "`or` geri-düşüşü temizlemeyi tamamen etkisiz bırakıyor")
 
 
 if __name__ == "__main__":

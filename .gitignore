@@ -36,5 +36,34 @@ docs/*.txt
 
 # Runtime artefaktları
 backend-uvicorn.log
+frontend-build.log
 .pytest_cache/
+.coverage
+coverage.xml
 graf_screenshot.png
+
+# --- 2026-09-26 denetim düzeltmeleri (docs/SISTEM_DENETIMI_2026-09-26.md #73, #88, #90) ---
+# Kök dizindeki ham container log'ları GERÇEK KULLANICI IP'LERİ ve cihaz
+# User-Agent'ları içeriyordu ve repoya commit edilmişti (6dfe441, 2026-09-08).
+# Üç dosya da silindi + `git rm --cached` ile indeksten çıkarıldı.
+# Not: geçmişteki commit'te hâlâ durur; kalıcı temizlik `git filter-repo`
+# veya BFG gerektirir (aşağıdaki AUDIT_NOTE).
+*.log
+*-all-logs-*.txt
+*-all-logs-*
+# Aynı kök dizin scratch kategorisi: düzenleme yardımcıları ve kaza ürünü dosyalar
+apply_edits.mjs
+apply_edits.cmd
+apply_edits_package.json
+RUNME.txt
+EXECUTE.txt
+cleanup_list.txt
+run_steps.txt
+$null
+# Claude Code / harici ajan araç çıktıları
+.commandcode/
+.workbuddy-ai/
+.claude/
+# Ekran görüntüsü kırpıntıları — YALNIZCA repo kökü (frontend/public/*.png
+# gibi gerçek varlıklar etkilenmez; kök ekran görüntüleri araştırma artığı)
+/*.png

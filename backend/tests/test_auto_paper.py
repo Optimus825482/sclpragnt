@@ -258,7 +258,12 @@ class AutoPaperConfluenceAndProtectionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
-    """Maksimum süre (60 dk) aşımı ve sembol pasife alma testleri (2026-09-21 Erkan kuralı)."""
+    """Maksimum süre (60 dk) aşımı ve sembol pasife alma testleri (2026-09-21 Erkan kuralı).
+
+    D-02 (2026-09-26): max_hold ve symbol_deactivated çıkışları artık TAZE
+    fiyat şartına bağlıdır — bayat/eksik ticker ile kapanış (uydurma fill
+    fiyatı) yapılmaz. Testler taze ticker sağlar.
+    """
 
     def _sample_trade(self, symbol="APTEST", entry_time=None, entry=100.0, peak=102.0):
         now = time.time()
@@ -273,17 +278,30 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
             "peak_price": peak,
             "entry_time": entry_time if entry_time is not None else now,
             "breakeven_activated": False,
+            "trailing_stop": None,
+            "breakeven_stop": None,
             "trailing_activated": False,
         }
 
+    def _fresh_market(self, price=100.0, age_sec=0.0):
+        """TAZE ticker'lı sahte market (MAX_TICKER_AGE_SEC içinde)."""
+        mock_market = MagicMock()
+        mock_market.symbols = ["aptest", "passtest", "drooppedtry", "drooppedtry"]
+        mock_market.get_ticker = MagicMock(return_value={
+            "last_price": price,
+            "timestamp": (time.time() - age_sec) * 1000,
+        })
+        return mock_market
+
     async def test_trade_closes_when_hold_time_exceeds_max_hold_minutes(self):
-        """60 dk dolduğunda pozisyon kâr/zarara ve ticker'a bakılmaksızın max_duration ile kapatılır."""
+        """60 dk dolduğunda pozisyon kâr/zarara bakılmaksızın max_duration ile kapatılır."""
         now = time.time()
         # 65 dakika önce açılmış trade
         trade = self._sample_trade(entry_time=now - 65 * 60)
         close_mock = AsyncMock(return_value=None)
 
-        with patch.object(auto_paper, "_close_trade", close_mock):
+        with patch("app.routers.auto_paper.market", self._fresh_market()), \
+             patch.object(auto_paper, "_close_trade", close_mock):
             await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
 
         close_mock.assert_awaited_once()
@@ -299,6 +317,7 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
         close_mock = AsyncMock(return_value=None)
 
         with patch.object(config, "PASSIVE_SYMBOLS", {"PASSTEST"}), \
+             patch("app.routers.auto_paper.market", self._fresh_market()), \
              patch.object(auto_paper, "_close_trade", close_mock):
             await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
 
@@ -310,9 +329,8 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
         now = time.time()
         trade = self._sample_trade(symbol="DROPPEDTRY", entry_time=now - 5 * 60)
         close_mock = AsyncMock(return_value=None)
-        mock_market = MagicMock()
+        mock_market = self._fresh_market()
         mock_market.symbols = ["btctry", "ethtry"]
-        mock_market.get_ticker = MagicMock(return_value=None)
 
         with patch("app.routers.auto_paper.market", mock_market), \
              patch.object(auto_paper, "_close_trade", close_mock):
@@ -320,6 +338,169 @@ class AutoPaperTimeoutAndPassivationTests(unittest.IsolatedAsyncioTestCase):
 
         close_mock.assert_awaited_once()
         self.assertEqual(close_mock.await_args.args[4], "symbol_deactivated")
+
+    # --- D-02: bayat fiyatla kapanış engellenir -----------------------------
+    async def test_max_hold_does_not_close_with_stale_ticker(self):
+        """60 dk dolmuş olsa bile BAYAT ticker fiyatıyla kapanma yapılmaz."""
+        now = time.time()
+        trade = self._sample_trade(entry_time=now - 65 * 60)
+        close_mock = AsyncMock(return_value=None)
+        stale = self._fresh_market(price=50.0,
+                                   age_sec=config.MAX_TICKER_AGE_SEC + 120)
+
+        with patch("app.routers.auto_paper.market", stale), \
+             patch.object(auto_paper, "_close_trade", close_mock):
+            await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
+
+        close_mock.assert_not_awaited()
+
+    async def test_passive_symbol_does_not_close_with_stale_ticker(self):
+        """Pasif sembol bayat fiyatla da kapatılmaz (aynı kural)."""
+        now = time.time()
+        trade = self._sample_trade(symbol="PASSTEST", entry_time=now - 10 * 60)
+        close_mock = AsyncMock(return_value=None)
+        stale = self._fresh_market(price=50.0,
+                                   age_sec=config.MAX_TICKER_AGE_SEC + 120)
+
+        with patch.object(config, "PASSIVE_SYMBOLS", {"PASSTEST"}), \
+             patch("app.routers.auto_paper.market", stale), \
+             patch.object(auto_paper, "_close_trade", close_mock):
+            await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
+
+        close_mock.assert_not_awaited()
+
+    async def test_missing_ticker_never_closes(self):
+        """Ticker hiç yoksa hiçbir çıkış yolu tetiklenmez."""
+        now = time.time()
+        trade = self._sample_trade(entry_time=now - 65 * 60)
+        close_mock = AsyncMock(return_value=None)
+        empty = MagicMock()
+        empty.symbols = ["aptest"]
+        empty.get_ticker = MagicMock(return_value=None)
+
+        with patch("app.routers.auto_paper.market", empty), \
+             patch.object(auto_paper, "_close_trade", close_mock):
+            await auto_paper._manage_single_trade(trade, now, 1.5, {"max_hold_minutes": 60.0})
+
+        close_mock.assert_not_awaited()
+
+    # --- D-01: kâr kilidi stop'u orijinal stop'tan üstte olmalı -------------
+    async def test_breakeven_stop_wins_over_lower_initial_stop(self):
+        """Kâr kilidi aktifken orijinal sert stop'tan daha YÜKSEKTE kapanılır.
+
+        stop_loss=97, breakeven=101.5, fiyat=100.0. effective_stop = max(97,
+        101.5) = 101.5 → kapanış olur ve nedeni `breakeven_stop` olur
+        (before: 97 kullanıldığı için kapanış olmazdı ve kâr koruması
+        60 dakika boyunca atıl kalırdı).
+        """
+        now = time.time()
+        trade = self._sample_trade(entry=100.0, peak=100.0)
+        trade["stop_loss"] = 97.0                     # orijinal sert stop
+        trade["breakeven_activated"] = True
+        trade["breakeven_stop"] = 101.5               # kâr kilidi zemini
+        close_mock = AsyncMock(return_value=None)
+        market_mock = self._fresh_market(price=100.0)
+
+        with patch("app.routers.auto_paper.market", market_mock), \
+             patch.object(auto_paper, "_close_trade", close_mock), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_breakeven", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trailing", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trade_tp", AsyncMock()):
+            await auto_paper._manage_single_trade(
+                trade, now, 1.5,
+                {"max_hold_minutes": 60.0, "breakeven_enabled": True,
+                 "trailing_enabled": False, "tp_primary_exit_enabled": True})
+
+        close_mock.assert_awaited_once()
+        args = close_mock.await_args.args
+        self.assertEqual(args[4], "breakeven_stop",
+                         "kilit aktifken kapanış nedeni breakeven olmalı")
+        self.assertAlmostEqual(101.5, args[2], places=6)
+
+    async def test_breakeven_stop_does_not_preempt_when_price_above_both(self):
+        """Fiyat her iki eşiğin de üstündeyse hiçbir stop tetiklenmez."""
+        now = time.time()
+        trade = self._sample_trade(entry=100.0, peak=100.0)
+        trade["stop_loss"] = 97.0
+        trade["breakeven_activated"] = True
+        trade["breakeven_stop"] = 101.5
+        close_mock = AsyncMock(return_value=None)
+        market_mock = self._fresh_market(price=102.0)
+
+        with patch("app.routers.auto_paper.market", market_mock), \
+             patch.object(auto_paper, "_close_trade", close_mock), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_breakeven", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trailing", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trade_tp", AsyncMock()):
+            await auto_paper._manage_single_trade(
+                trade, now, 1.5,
+                {"max_hold_minutes": 60.0, "breakeven_enabled": True,
+                 "trailing_enabled": False, "tp_primary_exit_enabled": True})
+
+        close_mock.assert_not_awaited()
+
+    async def test_breakeven_zone_never_closes_below_breakeven(self):
+        """stop_loss'ın ALTINDA ama breakeven'ın ÜSTÜNDE fiyat KAPANMAMALI.
+
+        Bu, asıl para kaybı senaryosuydu: fiyat 100 (entry) ile 101.5
+        (breakeven) arasındayken eski kod orijinal stop 97'yi kullanmaya
+        devam ediyor, kâr kilidi hiç devreye girmiyordu. Artık effective_stop
+        = max(97, 101.5) = 101.5 → 100 <= 101.5 olduğu için kâr kilidi
+        stop'una kapanır (zarar yazmadan).
+        """
+        now = time.time()
+        trade = self._sample_trade(entry=100.0, peak=100.0)
+        trade["stop_loss"] = 97.0
+        trade["breakeven_activated"] = True
+        trade["breakeven_stop"] = 101.5
+        close_mock = AsyncMock(return_value=None)
+        market_mock = self._fresh_market(price=100.0)
+
+        with patch("app.routers.auto_paper.market", market_mock), \
+             patch.object(auto_paper, "_close_trade", close_mock), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_breakeven", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trailing", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trade_tp", AsyncMock()):
+            await auto_paper._manage_single_trade(
+                trade, now, 1.5,
+                {"max_hold_minutes": 60.0, "breakeven_enabled": True,
+                 "trailing_enabled": False, "tp_primary_exit_enabled": True})
+
+        # Kapanış olur, ama stop_loss(97) DEĞİL, breakeven(101.5) nedeniyle.
+        close_mock.assert_awaited_once()
+        args = close_mock.await_args.args
+        self.assertEqual(args[4], "breakeven_stop")
+        self.assertAlmostEqual(101.5, args[2], places=6)
+
+    async def test_breakeven_stop_closes_above_initial_stop(self):
+        """Fiyat breakeven'inin altına düştüyse kâr kilidi stop'u ile kapanır
+        ve fill fiyatı TETİK fiyatına çekilir (gap-through max)."""
+        now = time.time()
+        trade = self._sample_trade(entry=100.0, peak=100.0)
+        trade["stop_loss"] = 97.0
+        trade["breakeven_activated"] = True
+        trade["breakeven_stop"] = 101.5
+        close_mock = AsyncMock(return_value=None)
+        market_mock = self._fresh_market(price=100.9)
+
+        with patch("app.routers.auto_paper.market", market_mock), \
+             patch.object(auto_paper, "_close_trade", close_mock), \
+             patch.object(auto_paper.database, "update_auto_paper_peak", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_breakeven", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trailing", AsyncMock()), \
+             patch.object(auto_paper.database, "update_auto_paper_trade_tp", AsyncMock()):
+            await auto_paper._manage_single_trade(
+                trade, now, 1.5,
+                {"max_hold_minutes": 60.0, "breakeven_enabled": True,
+                 "trailing_enabled": False, "tp_primary_exit_enabled": True})
+
+        close_mock.assert_awaited_once()
+        args = close_mock.await_args.args
+        self.assertEqual(args[4], "breakeven_stop")
+        self.assertAlmostEqual(101.5, args[2], places=6)
 
 
 if __name__ == "__main__":

@@ -440,7 +440,8 @@ def evaluate_master_surge(
     """
     sym = str(symbol or "").replace("_", "").upper()
     if not sym:
-        return {"passed": False, "composite_index": 0.0, "confluence_4way": False}
+        return {"passed": False, "composite_index": 0.0, "confluence_4way": False,
+                "gate": "EMPTY_SYMBOL", "block_reason": "EMPTY_SYMBOL"}
 
     # MACD snapshot satırını önceden çözümle
     resolved_row = macd_row
@@ -457,6 +458,7 @@ def evaluate_master_surge(
             "confluence_4way": False,
             "confluence_count": 0,
             "failed_layer": 1,
+            "gate": "LAYER1_LIQUIDITY",
             "reason": l1.get("reason"),
             "layers": {"l1_liquidity": l1},
         }
@@ -501,20 +503,43 @@ def evaluate_master_surge(
     raw_composite_index = composite_index  # Bias öncesi ham skor (denetim için)
 
     # Türev & Fonlama İstihbaratı Entegrasyonu
+    #
+    # FAIL-CLOSED (2026-09-26 denetimi, bulgu #66): `derivatives_service`
+    # ağ hatasını "vadeli piyasada listeli değil" diye 90 sn cache'liyordu ve
+    # bu sahte "listeli değil" cevabı `futures_available=False` ile buraya
+    # giriyordu → EXTREME_LONG -15 cezası hiç uygulanmıyordu. Artık hata
+    # durumu AYRI bir bayrakla taşınır ve bilinmeyen durumda ceza UYGULANIR
+    # (fail-closed): "riski ölçemedim" ile "ölçtüm, risk yok" aynı değildir.
     applied_derivatives: dict | None = None
-    if derivatives_intel and isinstance(derivatives_intel, dict) and derivatives_intel.get("futures_available"):
-        bonus = int(derivatives_intel.get("surge_score_bonus") or 0)
-        crowded_long = bool(derivatives_intel.get("crowded_long_danger"))
-        if bonus != 0:
-            composite_index = round(min(100.0, max(0.0, composite_index + bonus)), 1)
-        applied_derivatives = {
-            "futures_symbol": derivatives_intel.get("futures_symbol"),
-            "funding_rate_pct": derivatives_intel.get("funding_rate_pct"),
-            "funding_state": derivatives_intel.get("funding_state"),
-            "derivatives_bias": derivatives_intel.get("derivatives_bias"),
-            "surge_bonus_applied": bonus,
-            "crowded_long_danger": crowded_long,
-        }
+    if derivatives_intel and isinstance(derivatives_intel, dict):
+        _fetch_error = bool(derivatives_intel.get("fetch_error"))
+        _available = bool(derivatives_intel.get("futures_available"))
+        if _fetch_error:
+            # Bilinmeyen durum: nötr bonus (0) ama risk kapısı tetiklenebilir.
+            # `funding_state` bilinmediği için CROWDED_LONG kabul edilmez; yalnız
+            # aday "veri yok" olarak işaretlenir ki panel bunu görebilsin.
+            applied_derivatives = {
+                "futures_symbol": derivatives_intel.get("futures_symbol"),
+                "funding_rate_pct": None,
+                "funding_state": "UNKNOWN",
+                "derivatives_bias": "NEUTRAL",
+                "surge_bonus_applied": 0,
+                "crowded_long_danger": False,
+                "fetch_error": True,
+            }
+        elif _available:
+            bonus = int(derivatives_intel.get("surge_score_bonus") or 0)
+            crowded_long = bool(derivatives_intel.get("crowded_long_danger"))
+            if bonus != 0:
+                composite_index = round(min(100.0, max(0.0, composite_index + bonus)), 1)
+            applied_derivatives = {
+                "futures_symbol": derivatives_intel.get("futures_symbol"),
+                "funding_rate_pct": derivatives_intel.get("funding_rate_pct"),
+                "funding_state": derivatives_intel.get("funding_state"),
+                "derivatives_bias": derivatives_intel.get("derivatives_bias"),
+                "surge_bonus_applied": bonus,
+                "crowded_long_danger": crowded_long,
+            }
 
     # Self-Learning Adaptif Skor Düzeltmesi
     applied_bias: dict | None = None
@@ -556,14 +581,26 @@ def evaluate_master_surge(
     )
 
     min_score = float(getattr(config, "MASTER_SURGE_MIN_SCORE", 70.0))
-    passed = (composite_index >= min_score) and (not getattr(config, "MASTER_SURGE_REQUIRE_4WAY", True) or confluence_4way)
+    require_4way = bool(getattr(config, "MASTER_SURGE_REQUIRE_4WAY", True))
+    passed = (composite_index >= min_score) and (not require_4way or confluence_4way)
     block_reason = None
+    # NOT (2026-09-26 denetimi, bölüm 2.2): `passed` daha önce burada hesaplanıp
+    # HİÇBİR tüketiciye bağlanmıyordu. Aşağıda `gate` alanı üretilir; tüketici
+    # (`monitoring._notify` / `_unified_fast_notify_impl`) `master_surge.passed`
+    # ve `block_reason` alanlarına bakar. Skor/4'lü teyit kapısı da blok nedeni
+    # olarak yazılır — yoksa "kapı çalışmıyor" ayrımı gözlenemez.
+    gate_reason = None
+    if not passed:
+        if not require_4way or not confluence_4way:
+            gate_reason = "NO_4WAY_CONFLUENCE"
+        else:
+            gate_reason = "COMPOSITE_BELOW_MIN"
 
     # Koruma filtreleri: BTC panik şelalesi veya aşırı şişkin long tasfiye riski
-    if passed and btc_panic_blocked:
+    if btc_panic_blocked and sym not in ("BTCTRY", "BTCUSDT"):
         passed = False
         block_reason = "BTC_PANIC_DOWNTREND"
-    elif passed and applied_derivatives and applied_derivatives.get("funding_state") == "EXTREME_LONG":
+    elif applied_derivatives and applied_derivatives.get("funding_state") == "EXTREME_LONG":
         passed = False
         block_reason = "CROWDED_LONG_LIQUIDATION_RISK"
 
@@ -571,6 +608,9 @@ def evaluate_master_surge(
         "symbol": sym,
         "passed": passed,
         "composite_index": composite_index,
+        "min_score": min_score,
+        "require_4way": require_4way,
+        "gate": gate_reason,
         "confluence_4way": confluence_4way,
         "confluence_count": confluence_count,
         "passed_layers": passed_layers,

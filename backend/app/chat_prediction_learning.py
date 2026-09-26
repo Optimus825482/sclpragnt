@@ -10,6 +10,7 @@ promote itself into an active lesson without a measured outcome underneath.
 
 from __future__ import annotations
 
+import ast
 import json
 from collections import Counter, defaultdict
 
@@ -73,22 +74,57 @@ ANALYSIS_PROMPT = (
 
 
 def parse_analysis_response(text) -> dict | None:
-    """Extract the postmortem JSON; tolerate fenced or prose-wrapped responses."""
+    """Extract the postmortem JSON; tolerate fenced or prose-wrapped responses.
+
+    DENETİM: Ham `raw.find("{")..rfind("}")` kesimi prose içinde geçen bir `{`
+    ile bozulurdu. Artık `llm_analysis._json_load_lenient` kullanılır ( dengeli
+    süslü parantez taraması + sözdizimi onarımı yapar); doğrudan `ast.literal_eval`
+    denemesi için de parça `{`/`[` ile BAŞLAMAK zorunluluğu getirilir (kod
+    çalıştırma riski yok — `literal_eval` güvenlidir, ama alakasız metin
+    üzerinde çalıştırılmamalı).
+    """
     if not text:
         return None
+    from app.llm_analysis import _json_load_lenient
+
     raw = str(text).strip()
     if raw.startswith("```"):
         raw = raw.strip("`")
         if raw.startswith("json"):
             raw = raw[4:]
         raw = raw.strip()
-    start, end = raw.find("{"), raw.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    try:
-        decoded = json.loads(raw[start:end + 1])
-    except json.JSONDecodeError:
-        return None
+
+    decoded = _json_load_lenient(raw)
+    if not isinstance(decoded, dict) or not isinstance(decoded.get("summary"), str):
+        # DENETİM: prose içinde DENGESİZ bir `{` geçtiğinde ilk deneme bozulur;
+        # bu durumda HER `{` başlangıç noktasından dengeli parçayı deneyerek
+        # gerçek JSON nesnesini buluruz. `literal_eval` yalnızca `{`/`[` ile
+        # BAŞLAYAN parçalarda çalışır (kod çalıştırmaz, sadece güvenli literal).
+        fallback = None
+        for start, char in enumerate(raw):
+            if char not in "{[":
+                continue
+            end = raw.rfind("}")
+            while end > start:
+                piece = raw[start:end + 1].strip()
+                if piece.startswith(char):
+                    try:
+                        candidate = ast.literal_eval(piece)
+                    except (SyntaxError, ValueError):
+                        candidate = None
+                    if isinstance(candidate, dict) and isinstance(candidate.get("summary"), str):
+                        fallback = candidate
+                        break
+                    lenient = _json_load_lenient(piece)
+                    if isinstance(lenient, dict) and isinstance(lenient.get("summary"), str):
+                        fallback = lenient
+                        break
+                end = raw.rfind("}", 0, end)
+            if fallback is not None:
+                break
+        if fallback is None:
+            return None
+        decoded = fallback
     if not isinstance(decoded, dict) or not isinstance(decoded.get("summary"), str):
         return None
     def _tags(value, limit=4):

@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { API_BASE, apiRequest } from "../lib/api";
+import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { localDateInput } from "../lib/format";
 import { useLiveMessages } from "../lib/liveSocket";
-import { commissionPct } from "../lib/pnl";
+import { commissionPct, netOpenPnlTry } from "../lib/pnl";
 import { useAuth } from "../lib/auth";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
+import { useModalA11y } from "../lib/useModalA11y";
 import Link from "next/link";
 
 const BinancePositionChartModal = dynamic(() => import("./BinancePositionChartModal"), { ssr: false });
@@ -206,6 +207,25 @@ function BinanceTrPageInner() {
   // Toast Bildirim Sistemi
   const [toast, setToast] = useState<{ id: number; text: string; type: "success" | "error" | "info" } | null>(null);
 
+  // ── Modal erişilebilirliği (odak tuzağı + Escape + aria-label) ────────────
+  // Bu 4 modal GERÇEK Binance TR emri iletir (market sell, market buy,
+  // OCO SL/TP). `role="dialog" aria-modal="true"` tek başına yeterli
+  // DEĞİLDİR: odak arka plandaki sayfada kalırsa klavye kullanıcısı farkında
+  // olmadan arka sayfadaki butonları tetikleyebilir. Tek doğruluk kaynağı
+  // `lib/useModalA11y` (monitoring sayfasındaki doğru desen de buraya taşındı).
+  const sltpA11y = useModalA11y(
+    sltpModalOpen && !!sltpTarget,
+    () => setSltpModalOpen(false),
+    `SL / TP ve OCO emir yönetimi${sltpTarget ? ` — ${sltpTarget.asset}` : ""}`,
+  );
+  const sellA11y = useModalA11y(
+    !!sellFor && sellEnabled,
+    () => { setSellFor(null); setSellMsg(null); setSellDone(null); },
+    `Piyasa satışı onayı${sellFor ? ` — ${sellFor.asset}` : ""}`,
+  );
+  const buyA11y = useModalA11y(buyOpen, () => setBuyOpen(false), "Piyasa alımı onayı");
+  const settingsA11y = useModalA11y(settingsOpen, () => setSettingsOpen(false), "Binance TR API ayarları");
+
   const showToast = (text: string, type: "success" | "error" | "info" = "success") => {
     setToast({ id: Date.now(), text, type });
     setTimeout(() => {
@@ -228,6 +248,11 @@ function BinanceTrPageInner() {
   const pricesRef = useRef<Record<string, number>>({});
   const pendingTicksRef = useRef<{ ticks: Record<string, LiveTick>; dirs: Record<string, "up" | "down"> } | null>(null);
   const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Oturumdaki kullanıcının DB id'si. `binance_account_update` WS mesajı
+  // `user_id` taşıyor ama backend istemci filtresi UYGULAMAZ (denetim #51);
+  // bu ref, başka kullanıcıların bakiye push'larını bu sekmede reddetmemizi
+  // sağlar (istemci tarafı savunma katmanı).
+  const myUserIdRef = useRef<number | null>(null);
 
   const flushTicks = useCallback(() => {
     if (throttleTimerRef.current) {
@@ -267,17 +292,34 @@ function BinanceTrPageInner() {
     }
 
     // Hesap + pozisyon push (REST polling yerine — 15 sn'de bir sunucu iter)
+    //
+    // GÜVENLİK (denetim #51): backend `ws_manager.broadcast(...)` çağırırken
+    // `user_id` filtresi UYGULAMAZ — çok kullanıcılı kurulumda her istemci
+    // herkesin bakiyesini görür. Frontend tarafında tek başına bu sızıntıyı
+    // kapatamaz (asıl düzeltme `main.py:2391`'de), ama en azından istemci
+    // kendi `user_id`'si dışındaki mesajı UYGULAMAZ: sayfa yalnız kendi
+    // hesabını gösterir. Backend düzelene kadar koruma katmanı budur.
     if (message?.type === "binance_account_update") {
       const d = message.data as {
         balances?: typeof balances;
         holdings?: typeof holdings;
-        user_id?: number;
+        user_id?: number | null;
       } | null;
       if (!d) return;
+      if (d.user_id != null && myUserIdRef.current != null && d.user_id !== myUserIdRef.current) return;
       if (d.balances) setBalances(d.balances);
       if (d.holdings) setHoldings(d.holdings);
     }
   });
+
+  // Kendi kullanıcı id'mizi öğren (WS hesap push'unu süzmek için, denetim #51).
+  useEffect(() => {
+    let active = true;
+    getJSON<{ user?: { id?: number } }>("/api/profile")
+      .then((d) => { if (active && typeof d?.user?.id === "number") myUserIdRef.current = d.user.id; })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     const onVisibility = () => {
@@ -388,14 +430,27 @@ function BinanceTrPageInner() {
   }, [configured, tradeDay, loadTrades]);
 
   // Canlı fiyatlarla birleştirilmiş holding listesi
+  //
+  // PnL kaynağı (denetim #44): bu blok eskiden BRÜT hesaplıyordu —
+  // `(price - cost) * total` — ve aynı pozisyon Binance TR sekmesinde brüt,
+  // Portföy/Grafik sekmesinde `lib/pnl.ts` üzerinden NET görünüyordu. Artık
+  // KANONİK yol (`netOpenPnlTry`) kullanılıyor: gidiş-dönüş komisyonu düşülür
+  // ve oran `pnl.ts`'in `commissionPct()`'i ile backend'den gelen değerden
+  // okunur (`applyCommissionPct` WS `portfolio` mesajından senkronlar).
+  // Böylece "Binance TR'de kârdayım, Portföy'de zarardayım" sınıfı belirsizlik
+  // kapanır. Girdi eksikse `netOpenPnlTry` `null` döner (0 DEĞİL) → UI "—".
   const mergedHoldings = useMemo(() => {
     return holdings.map((h) => {
       const t = liveTicks[h.asset];
       const price = h.asset === "TRY" ? 1.0 : Number(t?.price || 0);
       if (!price) return { ...h, volume_try: t?.quote_volume_try ?? null };
-      const cost = h.avg_cost_try;
-      const pnl_try = cost ? (price - cost) * h.total : h.pnl_try;
-      const pnl_pct = cost ? ((price - cost) / cost) * 100 : h.pnl_pct;
+      const net = netOpenPnlTry(h.avg_cost_try, price, h.total);
+      const pnl_try = net !== null ? net : h.pnl_try;
+      const cost = Number(h.avg_cost_try);
+      // Getiri tabanı giriş değeridir (pnl.ts `netOpenPnlPct` ile aynı kural).
+      const pnl_pct = net !== null && Number.isFinite(cost) && cost > 0
+        ? (net / (cost * h.total)) * 100
+        : h.pnl_pct;
       return {
         ...h,
         price_try: price,
@@ -1089,7 +1144,7 @@ function BinanceTrPageInner() {
               <p className={`mt-1 font-mono text-xl font-bold ${totalUnrealizedPnlTry >= 0 ? "text-neon-green" : "text-neon-red"}`}>
                 {totalUnrealizedPnlTry >= 0 ? "+" : "−"}₺{fmtPrice(Math.abs(totalUnrealizedPnlTry))}
               </p>
-              <p className="mt-0.5 text-[11px] text-bunker-muted">anlık fiyatlarla pozisyon kârı</p>
+              <p className="mt-0.5 text-[11px] text-bunker-muted">anlık fiyatlarla, gidiş-dönüş komisyonu düşülmüş (net) pozisyon kârı</p>
             </div>
 
             {/* Günün Gerçekleşen K/Z */}
@@ -1379,7 +1434,7 @@ function BinanceTrPageInner() {
                           <th>Boşta / Kilitli Miktar</th>
                           <th>Alış Maliyeti</th>
                           <th>Güncel Fiyat</th>
-                          <th>Anlık K/Z</th>
+                          <th>Anlık K/Z (net)</th>
                           <th>TRY Değeri</th>
                           <th>SL / TP Durumu</th>
                           <th className="text-right">Aksiyonlar</th>
@@ -1762,8 +1817,8 @@ function BinanceTrPageInner() {
           {/* MODAL: PROFESYONEL SL / TP & OCO YÖNETİMİ                 */}
           {/* ========================================================= */}
           {sltpModalOpen && sltpTarget && (
-            <div className="fixed inset-0 z-[220] grid place-items-center bg-black/85 p-4 overflow-y-auto" role="dialog" aria-modal="true">
-              <section className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-6 shadow-2xl backdrop-blur-xl">
+            <div className="fixed inset-0 z-[220] grid place-items-center bg-black/85 p-4 overflow-y-auto" role="dialog" aria-modal="true" aria-label={sltpA11y.label}>
+              <section ref={sltpA11y.ref} tabIndex={-1} onKeyDown={sltpA11y.onKeyDown} className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-6 shadow-2xl backdrop-blur-xl outline-none">
                 {/* Modal Başlık */}
                 <div className="flex items-center justify-between border-b border-bunker-800 pb-3">
                   <div>
@@ -1775,6 +1830,7 @@ function BinanceTrPageInner() {
                   <button
                     type="button"
                     onClick={() => setSltpModalOpen(false)}
+                    aria-label="SL / TP modalını kapat"
                     className="rounded p-1 text-bunker-muted hover:bg-bunker-800 hover:text-white"
                   >
                     ✕
@@ -2032,8 +2088,8 @@ function BinanceTrPageInner() {
 
           {/* MODAL: SATIŞ ONAY MODALI (MARKET SELL) */}
           {sellFor && sellEnabled && (
-            <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4 overflow-y-auto" role="dialog" aria-modal="true">
-              <section className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
+            <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4 overflow-y-auto" role="dialog" aria-modal="true" aria-label={sellA11y.label}>
+              <section ref={sellA11y.ref} tabIndex={-1} onKeyDown={sellA11y.onKeyDown} className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl outline-none">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="font-mono text-lg font-bold text-white">
                     Piyasa Satışı: <span className="text-neon-red">{sellFor.asset}</span>
@@ -2045,6 +2101,7 @@ function BinanceTrPageInner() {
                       setSellMsg(null);
                       setSellDone(null);
                     }}
+                    aria-label="Piyasa satışı onay penceresini kapat"
                     className="text-bunker-muted hover:text-white"
                   >
                     ✕
@@ -2160,11 +2217,11 @@ function BinanceTrPageInner() {
 
           {/* MODAL: ALIM YAP (BUY) */}
           {buyOpen && (
-            <div className="fixed inset-0 z-[210] grid place-items-center bg-black/80 p-4 overflow-y-auto" role="dialog" aria-modal="true">
-              <section className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
+            <div className="fixed inset-0 z-[210] grid place-items-center bg-black/80 p-4 overflow-y-auto" role="dialog" aria-modal="true" aria-label={buyA11y.label}>
+              <section ref={buyA11y.ref} tabIndex={-1} onKeyDown={buyA11y.onKeyDown} className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl outline-none">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="font-mono text-lg font-bold text-white">Piyasa Alımı Yap</h2>
-                  <button type="button" onClick={() => setBuyOpen(false)} className="text-bunker-muted hover:text-white">✕</button>
+                  <button type="button" onClick={() => setBuyOpen(false)} aria-label="Piyasa alımı penceresini kapat" className="text-bunker-muted hover:text-white">✕</button>
                 </div>
 
                 {buyDone ? (
@@ -2325,11 +2382,11 @@ function BinanceTrPageInner() {
 
           {/* MODAL: AYARLAR (SETTINGS) */}
           {settingsOpen && (
-            <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4 overflow-y-auto" role="dialog" aria-modal="true">
-              <section className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl">
+            <div className="fixed inset-0 z-[200] grid place-items-center bg-black/80 p-4 overflow-y-auto" role="dialog" aria-modal="true" aria-label={settingsA11y.label}>
+              <section ref={settingsA11y.ref} tabIndex={-1} onKeyDown={settingsA11y.onKeyDown} className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-bunker-700 bg-bunker-950 p-5 shadow-2xl outline-none">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="font-mono text-lg font-bold text-white">Binance TR API Ayarları</h2>
-                  <button type="button" onClick={() => setSettingsOpen(false)} className="text-bunker-muted hover:text-white">✕</button>
+                  <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Binance TR API ayarları penceresini kapat" className="text-bunker-muted hover:text-white">✕</button>
                 </div>
 
                 <div className="space-y-3">

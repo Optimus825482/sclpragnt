@@ -6,11 +6,27 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "3"
 
+# 2026-09-26 denetim düzeltmesi (#74): Sembol evreni ~309'a çıkmış durumda;
+# backend tek başına çok sayıda sembol tarıyor. HİÇBİR serviste
+# `mem_limit`/`cpus`/`deploy.resources` yoktu → tek host'ta bir konteynerin
+# OOM'u tüm stack'i (postgres dahil) düşürüyordu, veri erişilemez hale
+# geliyordu. Limitler sembol evreni büyüdükçe gözden geçirilmelidir.
+# NOT: `deploy.resources.limits` Compose v2'de uygulanır ( swarm dışında da
+# `mem_limit`/`cpus` bridge modunda desteklenir; ikisini birlikte yazmak
+# Swarm uyumluluğunu korur).
 services:
   postgres:
     image: pgvector/pgvector:pg17-bookworm
     restart: unless-stopped
     stop_grace_period: 10s
+    # #74: pgvector indeksleri + 3 aylık trade geçmişi. 1G.
+    mem_limit: 1g
+    cpus: 1.0
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-scalper}
       POSTGRES_USER: ${POSTGRES_USER:-scalper}
@@ -30,10 +46,31 @@ services:
       context: ./backend
     restart: unless-stopped
     stop_grace_period: 10s
+    # #74: en yüksek tüketici — 309 sembollük evrende scanner + LLM + WS
+    # yayıncısı aynı süreçte. 2G / 2 CPU.
+    mem_limit: 2g
+    cpus: 2.0
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
     depends_on:
       postgres:
         condition: service_healthy
     environment:
+      # 2026-09-26 (#74/a): BU DEĞİŞKEN HİÇ AYARLANMIYORDU.
+      # `config.py:751` PRODUCTION_MODE'u `SCALPER_ENV > ENVIRONMENT >
+      # "development"` sırasıyla okuyor; varsayılan "development" idi →
+      # `enforce_admin_password_policy(..., production=False)` zayıf admin
+      # parolasını yalnızca UYARI düzeyine indiriyordu ve tüm parola /
+      # placeholder korumaları üretimde fiilen atılıyordu.
+      # NOT: Bu, zayıf `SCALPER_ADMIN_PASSWORD` ile konteynerin açılmayı
+      # REDDETMESİ demektir. Yani production moduna geçmek = parola
+      # politikasının gerçekten uygulanması. Politika:
+      # `config.py:admin_password_policy_message` (>=10 karakter, harf+rakam,
+      # yaygın sözlük değeri).
+      SCALPER_ENV: production
       SCALPER_DB_PATH: /data/scalper_db_v4.sqlite
       # Use the database service in this Compose stack. A stale Coolify
       # DATABASE_URL must not redirect the backend to an unreachable host.
@@ -57,6 +94,36 @@ services:
       TOP_GAINERS_REFRESH_SEC: ${TOP_GAINERS_REFRESH_SEC:-600}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:alerts@example.com}
+    # 2026-09-26 (#75): Aşağıdaki secret'lar plaintext `environment:` ile
+    # veriliyor: POSTGRES_PASSWORD, SCALPER_ADMIN_PASSWORD,
+    # SCALPER_SESSION_SECRET, LLM_ENCRYPTION_KEY. `docker inspect` /
+    # `docker compose config` bunları düz metin gösterir ve CI log'larına
+    # sızabilir.
+    #
+    # ÖNERİLEN GEÇİŞ — Coolify'ta secret mount ile (bilinçli olarak UYGULANMADI;
+    # prod kırılmasın diye dokunulmadı):
+    #
+    #   Coolify → Resource → "Secret Files" bölümünden
+    #     /run/secrets/llm_encryption_key  (64 hex, 32 bayt)
+    #     /run/secrets/scalper_admin_password
+    #     /run/secrets/scalper_session_secret
+    #   dosyaları mount edilir, ardından yukarıdaki satırlar şu hale gelir:
+    #
+    #     secrets:
+    #       - llm_encryption_key
+    #     ...
+    #     LLM_ENCRYPTION_KEY_FILE: /run/secrets/llm_encryption_key
+    #     SCALPER_ADMIN_PASSWORD_FILE: /run/secrets/scalper_admin_password
+    #     SCALPER_SESSION_SECRET_FILE: /run/secrets/scalper_session_secret
+    #
+    #   ...ve dosya-istemcisinin `os.getenv("X") or open(os.getenv("X_FILE"))`
+    #   deseniyle okuması gerekir. BU, `backend/app/config.py` ve
+    #   `docker-compose.yaml` dışında değişiklik gerektirir (config.py başka
+    #   ajanların sahipliğinde) — birlikte planlanmalıdır.
+    #
+    # Aynı desen postgres için de geçerlidir (`POSTGRES_PASSWORD_FILE` resmi
+    # postgres imajı tarafından desteklenir; backend tarafı yine config.py
+    # değişikliği gerektirir).
     volumes:
       - scalper_data:/data
     expose:
@@ -79,6 +146,14 @@ services:
         NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     restart: unless-stopped
     stop_grace_period: 5s
+    # #74: Next.js build sürecinde (node) ve çalışırken 1G / 1 CPU.
+    mem_limit: 1g
+    cpus: 1.0
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
     depends_on:
       backend:
         # The UI shell does not require the API to be healthy at process
@@ -104,6 +179,15 @@ services:
     image: scalperagent-gateway:latest
     restart: unless-stopped
     stop_grace_period: 5s
+    # #74: nginx düşük ayak izli; 1G üst sınır yeterli (rate-limit zone'ları
+    # 10m × 3 = ~30 MB). 1 CPU.
+    mem_limit: 1g
+    cpus: 1.0
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
     depends_on:
       - frontend
       - backend
@@ -114,6 +198,10 @@ services:
     # üretilmez → dışarıdan "no available server". External network adı
     # Coolify kurulumunda varsayılan olarak 'coolify'dır.
     networks:
+      # coolify ağı EXTERNAL: yerelde (`docker compose up` ile) çalıştırmak
+      # İMKANSIZDIR — ağ compose dışında tanımlı olmalıdır:
+      #   docker network create coolify
+      # Coolify kurulumunda ağ zaten vardır. Bilerek değiştirilmedi.
       - default
       - coolify
     healthcheck:
@@ -139,6 +227,15 @@ services:
   db-backup:
     image: pgvector/pgvector:pg17-bookworm
     restart: unless-stopped
+    # #74: pg_dump büyük tablolarda bellek şişebilir; 512M üst sınır yeterli
+    # ve bu konteynerin host'u tüketmesini engeller.
+    mem_limit: 512m
+    cpus: 0.5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
     depends_on:
       backend:
         # Backend ancak migration'ı geçince sağlıklı olur. pg_dump tüm

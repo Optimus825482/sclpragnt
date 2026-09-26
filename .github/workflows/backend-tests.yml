@@ -47,9 +47,57 @@ jobs:
         run: |
           pip install -r backend/requirements.txt
           pip install -r backend/requirements-dev.txt
+
+      # ---------------------------------------------------------------------
+      # 2026-09-26 denetim (#14, #89, #99): CI'da lint ve coverage KAPISI
+      # yoktu. Aşağıdaki adımlar eklendi.
+      #
+      # SERT KAPI: `ruff check` (yapılandırma `backend/ruff.toml`) yalnız
+      # gerçek hata sınıflarını seçer (E9 sözdizimi, F821 tanımsız ad,
+      # F811/F823 yeniden tanım). Tam E/F kural kümesi ~5000 ihlal veriyor
+      # ve kapı olarak konulsaydı CI ilk çalışmada kırılırdı.
+      #
+      # DANIŞMA (advisory): `ruff format --check` ve geniş kural kümesi şu an
+      # kapı DEĞİLDİR (`continue-on-error: true`) — 55 dosyanın 53'ü
+      # biçimlendirme bekliyor; bunu tek seferlik refactor olmadan kapıya
+      # çevirmek gerçekçi değil. Adımlar sonucu raporlar, böylece taban
+      # görünür ve aşağı inmez.
+      - name: Lint (ruff check — hard gate)
+        working-directory: backend
+        run: ruff check app tests scripts
+
+      - name: Lint (ruff check — advisory, geniş kural kümesi)
+        working-directory: backend
+        continue-on-error: true
+        run: ruff check --select E,F,W,I,B,SIM,UP --output-format=concise app tests scripts
+
+      - name: Format check (ruff format — advisory)
+        working-directory: backend
+        continue-on-error: true
+        run: ruff format --check app tests scripts
+
       - name: Run backend test suite
         working-directory: backend
-        run: python -m pytest tests -q
+        # `--cov-fail-under=55`: 2026-09-26'da ÖLÇÜLEN gerçek oran %57.
+        # Eşik bilinçli olarak mevcut oranın ALTINDA — taban aşağı düşerse
+        # yeni testler kazanç, silinen testler sessiz kayıp olur. Eşik
+        # artırıldıkça kapsam genişletilmeli, düşürülmemeli.
+        # Test başına zaman aşımı `pytest.ini`den gelir (120 sn) —
+        # `pytest-timeout` sayesinde kilitlenen test job'ı asılı tutmaz.
+        run: >-
+          python -m pytest tests -q
+          --cov=app
+          --cov-report=term-missing
+          --cov-report=xml
+          --cov-fail-under=55
+
+      - name: Upload coverage report
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: backend/coverage.xml
+          if-no-files-found: ignore
 
   frontend:
     runs-on: ubuntu-latest

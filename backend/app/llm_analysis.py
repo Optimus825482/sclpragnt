@@ -4,7 +4,7 @@ from urllib.request import Request
 from cryptography.fernet import Fernet
 from app import database
 from app.config import config
-from app.security import safe_provider_open, validate_provider_url, _validate_provider_url_sync
+from app.security import safe_provider_open, validate_provider_url, _validate_provider_url_sync, _LLM_EXECUTOR
 
 # BOŞ-YANIT CEVRIMI (2026-09-18 düzeltmesi) bu modülde logger kullanır;
 # eskiden NameError ("name 'logger' is not defined") olarak ortaya çıktı.
@@ -415,6 +415,28 @@ STREAM_TOTAL_TIMEOUT = max(30, int(os.getenv("LLM_STREAM_TOTAL_TIMEOUT", "600"))
 STREAM_OPEN_TIMEOUT = max(5, int(os.getenv("LLM_STREAM_OPEN_TIMEOUT", "120")))
 
 
+def _clamp_max_tokens(value, default=None, cap=None):
+    """DENETİM 3.3 #27: `max_tokens` sunucu tavanını aşamaz.
+
+    `chat()`/`stream_chat()` bu değeri doğrudan provider payload'ına koyuyor.
+    Çağıran yüzeyler (routers/llm_chat.py) kelepçeyi uygular; burada ikinci bir
+    savunma katmanı var: negatif/0/geçersiz → default, aşırı büyük → cap.
+    `cap` verilmezse `CHAT_MAX_TOKENS` (0 ise 4096) kullanılır.
+    """
+    if cap is None:
+        cap = CHAT_MAX_TOKENS or 4096
+    cap = int(cap or 0) or 4096
+    if default is None:
+        default = cap
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return int(default or cap)
+    if parsed <= 0:
+        return int(default or cap)
+    return min(parsed, cap)
+
+
 def _estimate_tokens(conversation):
     total = 0
     for message in conversation:
@@ -611,7 +633,8 @@ async def chat(snapshot, messages, tools=None, tool_executor=None, active_skills
         conversation.append(message)
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation}
     if max_tokens:
-        payload["max_tokens"] = int(max_tokens)
+        # DENETİM 3.3 #27: kelepçe — istemci tavanı aşamaz, negatif/0 default'a düşer.
+        payload["max_tokens"] = _clamp_max_tokens(max_tokens)
     elif CHAT_MAX_TOKENS:
         # LLM-02: üst sınır — provider'ın sınırsız uzun yanıt üretmesini engeller.
         payload["max_tokens"] = CHAT_MAX_TOKENS
@@ -857,11 +880,28 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
             conversation.append({k: item[k] for k in ("role", "content") if k in item})
     payload = {"model": cfg["model"]["name"], "temperature": cfg["model"]["temperature"], "messages": conversation, "stream": True}
     if max_tokens:
-        payload["max_tokens"] = int(max_tokens)
+        # DENETİM 3.3 #27: akış yüzeyinde de aynı kelepçe.
+        payload["max_tokens"] = _clamp_max_tokens(max_tokens)
     elif CHAT_MAX_TOKENS:
         payload["max_tokens"] = CHAT_MAX_TOKENS
     base_url = await validate_provider_url(cfg["provider"]["base_url"])
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
+    # DENETİM 3.4 #38: `try` GİRİŞİNDEN ÖNCE tanımlanır. `reader` ve response
+    # holder'ı aşağıdaki `finally` bloğunda her koşulda kullanılıyor; sağlayıcı
+    # çağrısı daha `open` bile edilmeden patlarsa `finally` bunlara
+    # NameError fırlatmamalı. `reader=None` → kapatılacak aktif iş yok demektir.
+    _response_holder: dict = {"response": None}
+    reader = None
+
+    def _close_stream_response():
+        response = _response_holder.get("response")
+        if response is None:
+            return
+        try:
+            response.close()
+        except Exception:
+            pass
+
     try:
         headers = {"Content-Type": "application/json", "Authorization": "Bearer " + decrypt_key(cfg["provider"]["api_key_encrypted"])}
         import queue
@@ -886,19 +926,39 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
             except Exception as exc:
                 sink.put(("error", str(exc)))
             finally:
+                # DENETİM 3.4 #38: gövde biter bitmez soketi serbest bırak.
+                # `response` her yolda (normal/404/hata) kapatılmalı.
+                try:
+                    response.close()
+                except Exception:
+                    pass
                 sink.put(("done", None))
 
+        # `reader` ve `_close_stream_response` `try` DIŞINDA tanımlı (yukarıda);
+        # burada yalnızca response'u holder'a kaydediyoruz.
         async def read_stream():
             try:
                 request = Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
                 response = await safe_provider_open(request, timeout=STREAM_OPEN_TIMEOUT)
-                await asyncio.to_thread(_drain_response, response, lines)
+                _response_holder["response"] = response
+                # DENETİM 3.4 #38: Uzun süre BLOKLAYAN gövde okuması
+                # `security._LLM_EXECUTOR` (LLM-03) havuzuna alındı — bu havuz
+                # tam olarak provider çağrıları için ayrılmıştı ve
+                # `asyncio.to_thread'in` varsayılan ORTAK havuzunu tıkamaz.
+                # NOT: Aşağıdaki 1 sn'lik kuyruk beklemesi BİLEREK varsayılan
+                # havuzda bırakıldı; `_LLM_EXECUTOR` sınırlıdır (8 worker) ve
+                # her akış bir worker'ı akış boyunca tutar — 8 eşzamanlı akışta
+                # poll'ü de aynı havuza koymak tıkanmaya yol açardı.
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(_LLM_EXECUTOR, _drain_response, response, lines)
             except HTTPError as exc:
                 lines.put(("error", _provider_http_error(exc)))
                 lines.put(("done", None))
             except Exception as exc:
                 lines.put(("error", str(exc)))
                 lines.put(("done", None))
+            finally:
+                _close_stream_response()
 
         reader = asyncio.create_task(read_stream())
         emitted = False
@@ -908,8 +968,12 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
             if time.monotonic() > stream_deadline:
                 # LLM-01: hiç bitmeyen akış bağlantıyı ve okuma thread'ini
                 # sonsuza kadar tutmasın.
+                # DENETİM 3.4 #38: `reader.cancel()` thread'i durdurmuyor;
+                # soket açık kalıyordu. Önce bağlantıyı kapat (drain thread'i
+                # EOF ile döner), sonra iptal et. `gather` BEKLENMEZ: hiç
+                # bitmeyen bir akışta sonsuza dek asılı kalırdı.
+                _close_stream_response()
                 reader.cancel()
-                await asyncio.gather(reader, return_exceptions=True)
                 raise RuntimeError(
                     f"LLM akışı toplam süre sınırını aştı: {STREAM_TOTAL_TIMEOUT} sn")
             # Blocking queue.get yerine asyncio.Queue kullan — event loop'u bloke etme
@@ -918,8 +982,8 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
             except asyncio.TimeoutError:
                 continue
             if kind == "error":
+                _close_stream_response()
                 reader.cancel()
-                await asyncio.gather(reader, return_exceptions=True)
                 raise RuntimeError(raw_line)
             if kind == "done":
                 break
@@ -975,3 +1039,17 @@ async def stream_chat(snapshot, messages, tools=None, tool_executor=None, active
         yield {"event": "done", "data": {"status": "ok", "model": cfg["model"]["name"], "generated_at": time.time(), "provider_stream": True, "emitted": emitted}}
     except Exception as exc:
         yield {"event": "error", "data": {"status": "error", "error": str(exc)}}
+    finally:
+        # DENETİM 3.4 #38: üretici (generator) istemci bağlantısı kopması
+        # yüzünden yarıda kapatılırsa `GeneratorExit` atılır ve `except
+        # Exception` YAKALAMAZ. Burada bağlantıyı her koşulda kapatıyoruz.
+        #
+        # `reader.cancel()` SADECE await noktasında keser; `run_in_executor`
+        # üzerinde çalışan `for raw_line in response:` döngüsü bloklı kaldığı
+        # için task GERÇEKTEN bitmez. Bu yüzden burada `gather` ile BEKLENMEZ —
+        # beklenirse hiç bitmeyen bir akışta generator temizliği sonsuza dek
+        # asılı kalır (regresyon). `response.close()` soketi kapatır, drain
+        # thread'i kendiliğinden `HTTPError`/EOF ile döner ve task tamamlanır.
+        _close_stream_response()
+        if reader is not None and not reader.done():
+            reader.cancel()

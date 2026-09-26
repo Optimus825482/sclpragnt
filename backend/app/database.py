@@ -408,6 +408,12 @@ async def reset_trading_data():
     """
     now = time.time()
     def op(conn):
+        # Denetim 2.6 (2026-09-26): reset cüzdani silip mutlak değerle eziyor ve
+        # pozisyonları toplu siliyor; lock'suzken eşzamanlı bir açılış debiti
+        # sıfırlanan bakiyeye yazılıp kaybolabiliyordu (pozisyon açık kalır, borcu
+        # cüzdanda görünmez). commit_* ile AYNI anahtar; transaction'ın ilk
+        # statement'ı.
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
         # Açık otonom paper pozisyonlarını kapat
         conn.execute(
             "UPDATE auto_paper_trades SET status='closed', exit_time=?, exit_reason='reset', updated_at=? "
@@ -557,6 +563,12 @@ async def reconcile_portfolio():
     auto_paper position is open.
     """
     def op(conn):
+        # Denetim 2.6 (2026-09-26): mutabakat cüzdayı MUTLAK değerle eziyor; lock'suz
+        # çalışırken eşzamanlı `commit_open_position`/`commit_close_position`
+        # (aynı 'paper_portfolio_open' anahtarını kilitler) hesaplanan `after`
+        # değerini debit uygulanmadan yazabiliyor → o açılışın borcu cüzdandan
+        # SİLİNİYORDU. Aynı anahtarla, transaction'ın ilk statement'ı olarak alınır.
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(?))", ("paper_portfolio_open",))
         before_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=?", ("TRY",)).fetchone()
         before = float(before_row[0]) if before_row else 0.0
         # Reset cutoff'u uygula: reset öncesi kapanmış işlemler cüzdana
@@ -721,8 +733,15 @@ async def purge_legacy_trade_records(trade_ids):
             try:
                 conn.execute("DELETE FROM memory_embeddings WHERE memory_document_id IN (SELECT id FROM memory_documents WHERE source_id=? OR source_id=? )", (str(row[0]), str(row[3])))
                 conn.execute("DELETE FROM memory_documents WHERE source_id=? OR source_id=?", (str(row[0]), str(row[3])))
-            except Exception:
-                pass
+            except Exception as exc:
+                # İşlem/sinyal/karar kayıtları bu noktadan ÖNCE silindi. Embedding
+                # temizliği başarısız olursa YARIM SİLME olur: kayıt gitti,
+                # gömülü vektör/belge kaldı. Sessiz `pass` bunu görünmez kılıyordu
+                # (kalıcıyetimsi artık ve kayıt sildiğimizi sandığımız satır
+                # hâlâ atıf yapılabilir durumda kalıyordu) — artık görünür.
+                logger.warning(
+                    "legacy işlem embedding temizliği başarısız (trade_id=%s): %s",
+                    row[3], exc, exc_info=True)
             deleted.append({"trade_id": row[3], "symbol": symbol, "id": row[0]})
         conn.commit()
         return {"deleted": deleted, "deleted_count": len(deleted)}
@@ -2616,8 +2635,12 @@ async def save_signal(sig):
     try:
         from app.embedding_worker import worker, signal_document
         await worker.enqueue_persistent(signal_document(sig))
-    except Exception:
-        pass
+    except Exception as exc:
+        # Sinyal satırı DB'de KALICI (kayıt yukarıda commit oldu); yalnız
+        # embedding/öğrenme belgesi kayboldu. Sessiz `pass` bu kaybı görünmez
+        # kılıyordu — sinyal görünür, arkasındaki öğrenme kaydı sessizce yok.
+        logger.warning("signal embedding kuyruğa alınamadı (sinyal=%s): %s",
+                       sig.get("symbol"), exc, exc_info=True)
 
 
 async def save_decision_log(decision):
@@ -2652,8 +2675,13 @@ async def backfill_replay_parity_observations(limit: int = 20_000, apply: bool =
         conn.execute("ALTER TABLE decision_logs ADD COLUMN IF NOT EXISTS source_decision_id INTEGER")
         try:
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_replay_parity_backfill_source ON decision_logs(strategy, source_decision_id) WHERE source_decision_id IS NOT NULL")
-        except Exception:
-            pass
+        except Exception as exc:
+            # Benzersizlik indeksi kurulamazsa backfill İDEMPOTENT OLMAKTAN
+            # ÇIKAR: aynı karar satırı ikinci koşuda yeniden yazılır (aynı kaynak
+            # için çoklu REPLAY_PARITY kaydı). Sessiz `pass` bunu gizliyordu.
+            logger.warning(
+                "replay parity backfill indeksi kurulamadı (idempotensiz riski): %s",
+                exc, exc_info=True)
         rows = conn.execute(
             """SELECT source.id, source.timestamp, source.symbol, source.strategy,
                       source.decision, source.reason, source.price, source.metadata
@@ -2764,7 +2792,12 @@ async def commit_open_position(symbol, asset, cash_amount, asset_amount, pos, si
     try:
         from app.embedding_worker import worker, trade_document
         await worker.enqueue_persistent(trade_document("entry", symbol, pos, sig))
-    except Exception: pass
+    except Exception as exc:
+        # Pozisyon + sinyal kaydı DB'de KALICI (commit tamam); yalnız embedding
+        # belgesi kayboldu. Para yolu sessizce yutulursa öğrenme setinde boşluk
+        # oluşur ve neden görünmez — gürültü değil, teşhis gerektiren kayıp.
+        logger.warning("açılış embedding kuyruğa alınamadı (sembol=%s): %s",
+                       symbol, exc, exc_info=True)
 
 async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     """Atomically persist close proceeds, trade, position deletion and signal."""
@@ -2808,7 +2841,11 @@ async def commit_close_position(symbol, asset, cash_amount, trade, sig):
     try:
         from app.embedding_worker import worker, trade_document
         await worker.enqueue_persistent(trade_document("exit", symbol, trade, sig))
-    except Exception: pass
+    except Exception as exc:
+        # Kapanış kaydı (pozisyon silme + işlem + sinyal) DB'de KALICI; yalnız
+        # embedding/öğrenme belgesi kayboldu. Sessiz `pass` bu kaybı gizliyordu.
+        logger.warning("kapanış embedding kuyruğa alınamadı (sembol=%s): %s",
+                       symbol, exc, exc_info=True)
 
 
 async def get_signals(limit: int = 100, offset: int = 0, symbol: str | None = None, action: str | None = None, strategy: str | None = None):
@@ -4447,8 +4484,13 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
                         (window,))
                     conn.commit()
                     batch = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-                except Exception:
+                except Exception as exc:
                     conn.rollback()
+                    # Batched DELETE başarısız: bu tablo için budama YARIM
+                    # kaldı (önceki commit'ler geçerli, kalan yığın silinmedi).
+                    # Sessiz `break` tabloda kalıcı şişkinlik bırakıyordu.
+                    logger.warning("retention batched budama durdu (tablo=%s): %s",
+                                   table, exc, exc_info=True)
                     break
                 deleted[table] += batch
                 if batch < 500000:
@@ -4465,11 +4507,14 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
                 cursor = conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff,))
                 conn.commit()
                 deleted[table] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-            except Exception:
+            except Exception as exc:
                 # A missing table or a PG-compat quirk
-                # must not abort the remaining sweeps.
+                # must not abort the remaining sweeps — ama sessiz geçmek
+                # BUDAMANIN HİÇ ÇALIŞMADIĞINI gizler (sessiz veri şişmesi).
                 conn.rollback()
                 deleted[table] = 0
+                logger.warning("retention budama atlandı (tablo=%s): %s",
+                               table, exc, exc_info=True)
         # embedding_jobs.created_at TIMESTAMPTZ'dir (epoch double değil); yıkama
         # sorgusu epoch cutoff ile karşılaştırmak için EXTRACT(EPOCH) kullanır.
         try:
@@ -4477,18 +4522,22 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
                                   (embedding_cutoff,))
             conn.commit()
             deleted["embedding_jobs"] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-        except Exception:
+        except Exception as exc:
             conn.rollback()
             deleted["embedding_jobs"] = 0
+            logger.warning("retention budama atlandı (tablo=embedding_jobs): %s",
+                           exc, exc_info=True)
         # strategy_scan_logs şemada bulunmuyor; velocity_candidates'ı doğru
         # tablo adıyla ele al. Yoksa sessizce geç.
         try:
             cursor = conn.execute("DELETE FROM velocity_candidates WHERE created_at < ?", (cutoff,))
             conn.commit()
             deleted["velocity_candidates"] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-        except Exception:
+        except Exception as exc:
             conn.rollback()
             deleted["velocity_candidates"] = 0
+            logger.warning("retention budama atlandı (tablo=velocity_candidates): %s",
+                           exc, exc_info=True)
         # DECISION-LOGS-01 (2026-09-16): karar günlüğü budama listesinde değildi ve
         # sınırsız büyüyordu (~8.5k satır/gün; `metadata` JSONB yüzünden ölçümde
         # 1.46 GB TOAST). `timestamp` SANİYE'dir (DOUBLE PRECISION) — mum
@@ -4503,9 +4552,11 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
                 (decision_logs_cutoff,))
             conn.commit()
             deleted["decision_logs"] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-        except Exception:
+        except Exception as exc:
             conn.rollback()
             deleted["decision_logs"] = 0
+            logger.warning("retention budama atlandı (tablo=decision_logs): %s",
+                           exc, exc_info=True)
         # MEM-01: `_persist_chat_memory` HER sohbet isteğinde bir
         # `memory_documents` satırı (ve ON DELETE CASCADE ile
         # `memory_embeddings`) yazıyordu; bu tablolar hiç temizlenmiyordu ->
@@ -4524,9 +4575,11 @@ async def prune_retention(days: int = 30, microstructure_days: int = 7,
                     f"DELETE FROM {table} WHERE EXTRACT(EPOCH FROM {column}) < ?", (window,))
                 conn.commit()
                 deleted[table] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-            except Exception:
+            except Exception as exc:
                 conn.rollback()
                 deleted[table] = 0
+                logger.warning("retention budama atlandı (tablo=%s): %s",
+                               table, exc, exc_info=True)
         # BLOATED-01: ölü tuple'ları geri kazan (FULL DEĞİL — kilit tutmaz).
         # `VACUUM` transaction bloğunda çalışamaz → autocommit'e geçici geçilir.
         try:
@@ -5163,6 +5216,15 @@ async def open_auto_paper_trade(trade: dict, signal: dict) -> tuple[dict | None,
             if prior_key and int(prior_key[0] or 0) > 0:
                 return (None, "already_traded")
         # Bakiye kontrolü + düşüm
+        # Komisyon sözleşmesi (denetim 2.5, 2026-09-26) — tam tur TAM OLARAK 2 bacak:
+        #   debit   = order_value_try * (1 + COMMISSION_PCT)   → giriş (AL) bacağı
+        #   proceed = exit_notional    * (1 - COMMISSION_PCT)   → çıkış (SAT) bacağı
+        # Düz fiyat (kâr yok) bir tam turda cüzdan net değişimi -2*notional*COMMISSION_PCT
+        # olur; `auto_paper._close_trade` PnL'i de aynı iki bacağı düştüğü için
+        # cüzdan ile raporlanan PnL ayrışmaz (parity bkz: test_w7_reconcile_parity).
+        # `order_value_try` = `auto_paper.py`nin `max_cost = order_value/(1+commission)`
+        # değeridir; yani risk bütçesinin KENDİSİ (notional + giriş komisyonu)
+        # cüzdandan düşülür — burada ek bir çarpan uygulanmamalıdır.
         cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", ("TRY",)).fetchone()
         current_cash = float(cash_row[0] if cash_row else 0.0)
         order_value = float(trade.get("order_value_try") or 0)
@@ -5497,7 +5559,12 @@ async def close_auto_paper_trade(trade_id: int, exit_price: float, exit_time: fl
                WHERE id=? AND status='open'""",
             (exit_price, exit_time, pnl, pnl_pct, commission, reason, time.time(), trade_id)
         )
-        # Wallet'a iade: pozisyon değeri + kar/zarar (çıkış komisyonu düşülür)
+        # Wallet'a iade: pozisyon değeri + kar/zarar (çıkış komisyonu düşülür).
+        # Denetim 2.5 (2026-09-26): giriş bacağı `open_auto_paper_trade`de
+        # `debit = order_value_try * (1 + COMMISSION_PCT)` ile alınmıştı; buradaki
+        # `proceed = exit_notional * (1 - COMMISSION_PCT)` ikinci bacaktır. Tam turda
+        # cüzdan net değişimi tam olarak 2*COMMISSION_PCT olur (giriş komisyonu ikinci
+        # kez sayılmaz) → `auto_paper._close_trade` PnL'i ile cüzdan ayrışmaz.
         exit_notional = exit_price * quantity
         proceed = exit_notional * (1 - commission_pct)
         cash_row = conn.execute("SELECT amount FROM virtual_wallet WHERE asset=? FOR UPDATE", ("TRY",)).fetchone()

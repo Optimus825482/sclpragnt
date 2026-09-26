@@ -1,4 +1,5 @@
 """binance_tr_private adapter birim testleri (HTTP mock'lu)."""
+import urllib.error
 from unittest import mock
 
 import pytest
@@ -8,11 +9,15 @@ from app import binance_tr_private as btp
 
 @pytest.fixture(autouse=True)
 def _reset_caches():
-    btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0})
-    btp._open_orders_cache.update({"orders": [], "expires": 0.0})
+    btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0,
+                               "filters": {}})
+    btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
+    btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
     yield
-    btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0})
-    btp._open_orders_cache.update({"orders": [], "expires": 0.0})
+    btp._symbols_cache.update({"symbols": [], "underscore_by_concat": {}, "expires": 0.0,
+                               "filters": {}})
+    btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
+    btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
 
 
 def _mock_http(payload):
@@ -124,7 +129,7 @@ def test_open_orders_falls_back_to_symbol_sweep():
                     "data": {"list": [{"symbol": "BTC_USDT"}, {"symbol": "ADA_USDT"}]}}
         return {"code": 4012, "msg": "symbol required", "data": None}
 
-    def fake_signed(method, path, params, api_key, api_secret):
+    def fake_signed(method, path, params, api_key, api_secret, **kwargs):
         assert params["type"] == 1
         if "symbol" not in params:
             # Sembolsüz istek reddediliyor (doküman: symbol zorunlu).
@@ -159,7 +164,186 @@ def test_place_market_sell_sends_side_1_type_2():
     assert params["side"] == 1
     assert params["type"] == 2
     assert params["quantity"] == "0.16"
-    assert result == {"order_id": "42", "symbol": "BTC_USDT", "quantity": "0.16"}
+    # #30 idempotency: emir bir clientOrderId taşır ve POST idempotent=False ile
+    # atılır (timeout sonrası ikinci emir gönderilmez).
+    assert params["clientOrderId"]
+    assert sr.call_args[1].get("idempotent") is False
+    assert result == {"order_id": "42", "symbol": "BTC_USDT", "quantity": "0.16",
+                      "client_order_id": params["clientOrderId"]}
+
+
+def test_place_market_buy_is_idempotent_and_keeps_client_order_id():
+    with mock.patch.object(btp, "_signed_request", return_value={"orderId": "77"}) as sr:
+        btp.place_market_buy("k", "s", "BTC_TRY", 100.0, client_order_id="bu-fixed-1")
+    params = sr.call_args[0][2]
+    # Çağıranın verdiği anahtar korunur → aynı iş mantığının yeniden
+    # denemesi borsada ikinci bir emir oluşturmaz.
+    assert params["clientOrderId"] == "bu-fixed-1"
+    assert sr.call_args[1].get("idempotent") is False
+
+
+def test_signed_post_is_not_retried_after_a_timeout():
+    """#30: borsa emri ALDIĞI HALDE cevap kaybolursa ikinci kez atılmaz."""
+    calls = {"n": 0}
+
+    def timeout(url, headers=None):
+        calls["n"] += 1
+        raise TimeoutError("read timed out")
+
+    with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0), \
+         mock.patch.object(btp, "_http_post_json", side_effect=timeout) as sleeper_spy, \
+         mock.patch.object(btp.time, "sleep"):
+        with pytest.raises(RuntimeError, match="TEKRAR GÖNDERİLMEDİ"):
+            btp._signed_request("POST", "/open/v1/orders", {"symbol": "BTC_TRY"},
+                                "k", "s", idempotent=False)
+    assert calls["n"] == 1
+
+
+def test_signed_post_is_not_retried_after_a_500():
+    """#30: 5xx'te 'emri aldım ama cevabım bozuk' ayırt edilemez."""
+    calls = {"n": 0}
+
+    def server_error(url, headers=None):
+        calls["n"] += 1
+        raise urllib.error.HTTPError(url, 500, "boom", {}, None)
+
+    with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0), \
+         mock.patch.object(btp, "_http_post_json", side_effect=server_error), \
+         mock.patch.object(btp.time, "sleep") as sleeper:
+        with pytest.raises(RuntimeError):
+            btp._signed_request("POST", "/open/v1/orders", {"symbol": "BTC_TRY"},
+                                "k", "s", idempotent=False)
+    assert calls["n"] == 1
+    assert not sleeper.called
+
+
+def test_signed_post_retries_on_429_because_the_exchange_rejected_it():
+    """#30: 429'da borsa isteği ALMAMIŞTIR → yeniden denemek güvenlidir."""
+    calls = {"n": 0}
+
+    def throttled(url, headers=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.HTTPError(url, 429, "rate", {}, None)
+        return {"code": 0, "data": {"orderId": "5"}}
+
+    with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0), \
+         mock.patch.object(btp, "_http_post_json", side_effect=throttled), \
+         mock.patch.object(btp.time, "sleep"):
+        result = btp._signed_request("POST", "/open/v1/orders", {"symbol": "BTC_TRY"},
+                                     "k", "s", idempotent=False)
+    assert result == {"orderId": "5"}
+    assert calls["n"] == 2
+
+
+def test_signed_get_is_still_retried_after_a_timeout():
+    """#30: okuma (GET) idempotenttir — yeniden deneme korunur."""
+    calls = {"n": 0}
+
+    def flaky(url, headers=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("read timed out")
+        return {"code": 0, "data": {"ok": True}}
+
+    with mock.patch.object(btp, "_server_time_offset_ms", return_value=0.0), \
+         mock.patch.object(btp, "_http_get_json", side_effect=flaky), \
+         mock.patch.object(btp.time, "sleep"):
+        result = btp._signed_request("GET", "/open/v1/account/spot", None, "k", "s")
+    assert result == {"ok": True}
+    assert calls["n"] == 2
+
+
+def test_retry_delay_honours_retry_after_without_truncating_it():
+    """#31/#33: Retry-After 4 sn'ye kırpılmaz."""
+    assert btp._private_retry_delay(1, {"Retry-After": "120"}) == 120.0
+    assert btp._private_retry_delay(1, {"Retry-After": "99999"}) == btp.REST_RETRY_AFTER_MAX_SEC
+    # Header yoksa üstel backoff + jitter.
+    assert btp._private_retry_delay(1) < btp.REST_BACKOFF_MAX_SEC
+
+
+def test_ban_backoff_is_minutes_not_seconds():
+    """#32: 418 geri çekilmesi 30/60/90 sn değil, onlarca dakika."""
+    first = btp._private_ban_delay(1)
+    second = btp._private_ban_delay(2)
+    assert first >= 600
+    assert second > first
+    # Sunucunun ipucu varsa esas alınır; ban ipucu 429 tavanından uzun
+    # süre bildirebildiği için ban tavanı (1 saat) uygulanır.
+    assert btp._private_ban_delay(1, {"Retry-After": "900"}) == 900.0
+    assert btp._private_ban_delay(1, {"Retry-After": "999999"}) == btp.REST_BAN_BACKOFF_MAX_SEC
+
+
+def test_recv_window_is_wide_enough_for_clock_drift():
+    """#35: 5 sn'lik pencere saat kaymasında tüm imzalı akışı kırıyordu."""
+    assert btp.RECV_WINDOW_MS >= 10000
+    assert btp._SERVER_TIME_TTL_SEC <= btp.RECV_WINDOW_MS
+
+
+def test_server_time_offset_keeps_the_last_known_value_on_failure():
+    """#35: ölçüm başarısız olursa ofset 0'a DÜŞMEZ."""
+    btp._server_time_cache.update({"at": 0.0, "offset": 1234.0})
+    with mock.patch.object(btp, "_http_get_json", side_effect=TimeoutError("down")):
+        offset = btp._server_time_offset_ms()
+    assert offset == 1234.0
+    btp._server_time_cache.update({"at": 0.0, "offset": 0.0})
+
+
+def test_place_market_sell_rejects_dust_below_min_notional():
+    """#34: 5 TRY'lik toz bakiye borsada filtreye takılıp 502 üretiyordu."""
+    with mock.patch.object(btp, "_signed_request") as sr:
+        with pytest.raises(ValueError, match="minimum emrin altında"):
+            btp.place_market_sell("k", "s", "BTC_TRY", 0.00001,
+                                  min_notional=50.0, last_price=1000.0)
+    assert not sr.called
+
+
+def test_place_market_sell_allows_orders_above_min_notional():
+    with mock.patch.object(btp, "_signed_request", return_value={"orderId": "3"}) as sr:
+        btp.place_market_sell("k", "s", "BTC_TRY", 0.5,
+                              min_notional=50.0, last_price=1000.0)
+    assert sr.call_args[0][2]["quantity"] == "0.5"
+
+
+def test_open_orders_sweep_is_bounded_and_reports_partial(caplog):
+    """#33: tarama sınırlıdır ve hatalar yutulmaz."""
+    symbols = [f"C{i}_TRY" for i in range(btp._OPEN_ORDERS_SWEEP_MAX + 25)]
+    btp._symbols_cache.update({"symbols": symbols, "underscore_by_concat": {},
+                               "expires": 1e12, "filters": {}})
+    btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
+    seen = []
+
+    def fake_signed(method, path, params, api_key, api_secret, **kwargs):
+        if "symbol" not in params:
+            raise RuntimeError("Binance TR API hatası 4012: symbol required")
+        seen.append(params["symbol"])
+        return {"list": []}
+
+    with mock.patch.object(btp, "_signed_request", side_effect=fake_signed):
+        orders = btp.get_open_orders("k", "s")
+    assert orders == []
+    assert len(seen) == btp._OPEN_ORDERS_SWEEP_MAX
+    assert btp.get_open_orders_partial("k", "s") is True
+    assert any("KISMİ" in r.message for r in caplog.records)
+
+
+def test_open_orders_sweep_reports_symbol_failures(caplog):
+    """#33: `except Exception: continue` sessizce eksik liste üretiyordu."""
+    btp._symbols_cache.update({"symbols": ["A_TRY", "B_TRY"], "underscore_by_concat": {},
+                               "expires": 1e12, "filters": {}})
+    btp._open_orders_cache.update({"orders": [], "expires": 0.0, "partial": False})
+
+    def fake_signed(method, path, params, api_key, api_secret, **kwargs):
+        if "symbol" not in params:
+            raise RuntimeError("Binance TR API hatası 4012: symbol required")
+        if params["symbol"] == "A_TRY":
+            raise RuntimeError("Binance TR API hatası 4010: bilinmeyen sembol")
+        return {"list": []}
+
+    with mock.patch.object(btp, "_signed_request", side_effect=fake_signed):
+        btp.get_open_orders("k", "s")
+    assert btp.get_open_orders_partial("k", "s") is True
+    assert any("sorgulanamadı" in r.message for r in caplog.records)
 
 
 def test_get_symbol_filters_parses_lot_size():

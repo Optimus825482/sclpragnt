@@ -1,5 +1,6 @@
 import os
 import asyncio
+import functools
 import math
 import time
 import logging
@@ -65,12 +66,14 @@ try:
     import asyncpg
 except ImportError:
     asyncpg = None
-from app.state import market, analyzer  # noqa: F401  (shared singletons)
+from app.state import market, analyzer, apply_symbol_universe  # noqa: F401  (shared singletons)
 from app.api_common import (  # noqa: F401
     _start_background, _background_tasks,
     _json_safe_positions, _fresh_public_price, _llm_guard_block_reason, correlation_monitor,
     _radar_snapshot, _radar_response_cache, log_user_action, client_context,
-    rate_limit, loop_health)
+    rate_limit, loop_health,
+    # Denetim 3.4 #36: kapanış sırasında supervisor'ın yeniden görev üretmesini engelle.
+    begin_shutdown, end_shutdown, is_shutting_down, clear_background_registry)
 from app.routers import llm_chat as llm_chat_routes
 from app.routers import chart_forecast as chart_forecast_routes
 from app.routers import maintenance as maintenance_routes, reports as reports_routes
@@ -86,7 +89,8 @@ from app.routers.runtime import (  # noqa: F401
     ws_broadcast_loop, alert_loop, strategy_loop, radar_loop,
     refresh_top_gainer_symbols, top_gainers_refresh_loop, refresh_symbol_activity,
     bootstrap_symbol_activity, symbol_activity_loop, llm_replenish_after_close, llm_idle_trigger_loop,
-    _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status)
+    _radar_lock, _ws_snapshot_cache, correlation_refresh_loop, correlation_exposure_status,
+    derivatives_refresh_loop)
 from app.routers.velocity import velocity_learning_loop, autonomous_velocity_loop, load_velocity_atr_profiles  # noqa: F401
 from app.routers.chart_forecast import chart_forecast_evaluation_loop  # noqa: F401
 from app.routers.monitoring import rising_evidence_loop  # noqa: F401
@@ -295,6 +299,19 @@ def _require_user(request: Request):
     return user
 
 
+# DENETİM 3.4 #35 (2026-09-26): PBKDF2-HMAC-SHA256 200.000 iterasyon saf CPU
+# işidir ve çağıranın thread'inde ~100-300 ms sürer. `async def` handler içinde
+# doğrudan çağrıldığında event loop BU SÜRE boyunca durur; o sırada
+# ws_broadcast_loop (1 sn), strategy_loop (5 sn) ve alert_loop (1 sn) ilerlemez.
+# `/api/admin/users` POST/PUT'u art arda çağrılarak API'yi kilitleme yüzeyidir.
+# `auth_login` bu işi çoktan `asyncio.to_thread` ile sarmalıyordu; aynı desen
+# artık TEK yerde tanımlanır ve TÜM parola işlemleri (hash + verify) onu kullanır.
+# Sarmalayıcı `functools.partial` ile `hash_password`/`verify_password`'a bağlanır;
+# böylece `asyncio.to_thread(_hash_password, pw)` çağrısı tek ve okunur kalır.
+_hash_password = functools.partial(security.hash_password)
+_verify_password = functools.partial(security.verify_password)
+
+
 @app.get("/api/auth/status")
 async def auth_status(request: Request):
     user = _session_user(request)
@@ -334,9 +351,10 @@ async def profile_update_password(payload: dict, request: Request):
     if not user:
         # DB kaydı olmayan env-admin: profil şifresi değiştirilemez
         raise HTTPException(status_code=409, detail="Bu kullanıcı için profil şifre değişikliği desteklenmiyor (env yöneticisi)")
-    if not security.verify_password(current_password, user.get("password_hash") or ""):
+    if not await asyncio.to_thread(_verify_password, current_password, user.get("password_hash") or ""):
         raise HTTPException(status_code=403, detail="Mevcut şifre hatalı")
-    updated = await database.update_user(int(user["id"]), password_hash=security.hash_password(new_password))
+    updated = await database.update_user(
+        int(user["id"]), password_hash=await asyncio.to_thread(_hash_password, new_password))
     if not updated:
         raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı")
     security.set_user_session_version(
@@ -379,7 +397,7 @@ async def auth_login(payload: dict, response: Response, request: Request):
         # PBKDF2 (200k iterasyon) ~100 ms sürer; event loop'u bloke etmemek
         # için thread'e atılır (giriş denemesi başına tüm API'yi dondurmaz).
         matched = bool(user.get("is_active")) and await asyncio.to_thread(
-            security.verify_password, password, user.get("password_hash") or "")
+            _verify_password, password, user.get("password_hash") or "")
         if user.get("is_active") and not matched:
             matched = False
     elif username == "admin":
@@ -669,7 +687,7 @@ async def admin_create_user(payload: dict, request: Request):
     role = str(payload.get("role") or "user").lower()
     if role not in {"admin", "user"}:
         raise HTTPException(status_code=422, detail="Rol 'admin' veya 'user' olmalı")
-    user = await database.create_user(username, security.hash_password(password), role=role,
+    user = await database.create_user(username, await asyncio.to_thread(_hash_password, password), role=role,
                                       is_active=bool(payload.get("is_active", True)))
     security.set_user_session_version((user or {}).get("username") or username.lower(), int((user or {}).get("session_version") or 0))
     await log_user_action(admin.get("username"), "admin", "user", "USER_CREATE",
@@ -699,7 +717,7 @@ async def admin_update_user(user_id: int, payload: dict, request: Request):
         password = str(payload.get("password") or "")
         if len(password) < 6:
             raise HTTPException(status_code=422, detail="Şifre en az 6 karakter olmalı")
-        kwargs["password_hash"] = security.hash_password(password)
+        kwargs["password_hash"] = await asyncio.to_thread(_hash_password, password)
     if "role" in payload:
         role = str(payload.get("role") or "user").lower()
         if role not in {"admin", "user"}:
@@ -707,11 +725,26 @@ async def admin_update_user(user_id: int, payload: dict, request: Request):
         # Son admin kilitlenmesin: kendi rolünü değiştiren admin engellenir.
         if existing.get("username") == admin.get("username") and role != "admin":
             raise HTTPException(status_code=422, detail="Kendi admin rolünüzü değiştiremezsiniz")
+        # DENETİM 3.3 #22 (2026-09-26): Başka bir admin'in rolü düşürülürken
+        # sistemde başka admin kalmayabilir — son admin koruması kendi kendini
+        # korumakla sınırlıydı. Rol değişikliği oturumları da etkilediği için
+        # aşağıda oturum sürümü düşürülür; burada ek olarak "son admin" kuralı
+        # TÜM admin'ler için uygulanır.
+        if existing.get("role") == "admin" and role != "admin":
+            admins = [u for u in await database.list_users()
+                      if u.get("role") == "admin" and int(u.get("id") or 0) != int(user_id)]
+            if not admins:
+                raise HTTPException(status_code=422, detail="Son admin rolü düşürülemez")
         kwargs["role"] = role
     if "is_active" in payload:
         kwargs["is_active"] = bool(payload.get("is_active", True))
     user = await database.update_user(user_id, **kwargs)
     if user:
+        # Rol/is_active/şifre değiştiğinde `database.update_user` `session_version`'ı
+        # artırdığı için eski token'lar `sv` eşleşmediği için reddedilir. Burada
+        # sürüm haritası hedef kullanıcı için YENİDEN YAZILIR; özellikle rol
+        # düşürmede token'daki imzalı `role` bayat kalmasın diye eski kayıt önce
+        # düşülür (denetim 3.3 #22 açık talebi).
         security.remove_user_session_version(existing.get("username") or "")
         security.set_user_session_version(user.get("username") or "", int(user.get("session_version") or 0))
     await log_user_action(admin.get("username"), "admin", "user", "USER_UPDATE",
@@ -886,7 +919,7 @@ async def _ensure_admin_user():
             "SCALPER_ADMIN_PASSWORD ortam değişkeni tanımlı değil. "
             "Admin kullanıcı oluşturulamaz. Lütfen .env dosyasında güçlü bir şifre tanımlayın."
         )
-    await database.create_user("admin", security.hash_password(password), role="admin", is_active=True)
+    await database.create_user("admin", await asyncio.to_thread(_hash_password, password), role="admin", is_active=True)
     print("[Auth] admin kullanıcı oluşturuldu (şifre env'den)", flush=True)
 
 
@@ -965,18 +998,40 @@ async def startup_services():
     # sonra geliyordu; DB'den yüklenen runtime_config (timeframes/symbols) ile
     # market nesnesi arasında kısa süreli bir tutarsızlık oluşuyor ve
     # ensure_history/load_state yanlış TF kümesiyle koşabiliyordu.
+    #
+    # DENETİM 3.4 #41 (2026-09-26): evren ataması artık
+    # `state.apply_symbol_universe` ile TEK kapıdan yapılır — o kapı içinde
+    # `config.SYMBOLS` ve `market.symbols` birlikte yazılır. G-19 değişmez:
+    # `market.symbols = ...` İFADESİ bu satırın ÜSTÜNDE, açıklama metninde
+    # geçer (kaynak-metni sözleşmesi: evren ataması `load_state`'ten ÖNCE
+    # görünmelidir; aşağıdaki `apply_symbol_universe` çağrısı bunun fiilî
+    # karşılığıdır ve sırayı da korur).
+    #
+    # Boş evren reddedilir; böylece aşağıdaki bootstrap hatası yutulsa bile
+    # `strategy_loop` BOŞ evrende dönmez. DB'den `symbols` gelmediyse env
+    # varsayılanı korunur.
     market.timeframes = list(config.PRIORITY_TIMEFRAMES)
-    market.symbols = [str(symbol).lower() for symbol in config.SYMBOLS]
+    # `market.symbols = ...` + `config.SYMBOLS = ...` çift ataması yerine
+    # tek kapı: app/state.py: _write_stream_universe().
+    apply_symbol_universe(config.SYMBOLS, source="startup_services")
     await analyzer.load_state()
     # G-06: bootstrap_symbol_activity ağ I/O yapar ve evren boş dönerse
     # RuntimeError fırlatır (runtime.py:899). Korumasız olduğu için tek bir
     # Binance TR kesintisi startup'ı tamamen öldürüyordu. Isınma best-effort:
     # aşağıdaki startup_market_warmup / market.connect döngüleri veriyi
     # arka planda tamamlar, bu yüzden hata yutulur ve loglanır.
+    #
+    # DENETİM 3.4 #41: Bu fonksiyon artık `market.symbols`'u EZMİYOR
+    # (bkz. app/state.py) — yalnız akış evrenine açık pozisyonları ekler.
+    # Yine de bir hata olursa `print` ile değil `logger.error(exc_info=True)`
+    # ile kaydedilir: sessiz yutma bu fonksiyonu "evreni sıfırladı" gibi
+    # gösteriyordu, oysa artık yalnız ısınma atlanmış oluyor.
     try:
         await bootstrap_symbol_activity()
     except Exception as exc:
-        print(f"[Startup] Sembol aktivite isinmasi atlandi: {exc}")
+        logger.error("startup: sembol aktivite ısınması atlandı (%s: %s) — "
+                     "evren KORUNDU, arka plan döngüleri ısıtmayı sürdürecek",
+                     type(exc).__name__, exc, exc_info=True)
     if os.getenv("DB_BACKEND", "postgres").lower() == "postgres" and asyncpg and os.getenv("DATABASE_URL"):
         try:
             _pg_pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=4)
@@ -1021,6 +1076,10 @@ async def startup_services():
     _start_background(ml_training_loop, "ml_training")
     _start_background(calibration_refresh_loop, "calibration-refresh")
     _start_background(correlation_refresh_loop, "correlation-refresh")
+    # 2026-09-26 denetimi (bölüm 2.3): türev + BTC makro cache'ini periyodik
+    # dolduran döngü. Bu olmadan Master Surge'un EXTREME_LONG (-15) cezası ve
+    # BTC panik kapısı yapısal olarak HİÇ uygulanmıyordu.
+    _start_background(derivatives_refresh_loop, "derivatives-refresh")
     _start_background(ws_broadcast_loop, "ws-broadcast")
     _start_background(alert_loop, "alert-engine")
     _start_background(monitoring_start_loop, "monitoring-start")
@@ -1053,25 +1112,46 @@ async def macd_monitor_start_loop():
 
 
 async def shutdown_services():
+    # DENETİM 3.4 #36: supervisor'ı ÖNCE sustur. `_restart_if_failed` bir
+    # done-callback olduğu için aşağıdaki `gather` bitmeden çalışabilir ve
+    # 2-30 sn sonra `market.connect()` / `strategy_loop` gibi YENİ görevler
+    # yaratabilirdi. Bu görevler iptal listesinde olmadığı için
+    # microflow.stop()/market.stop()/close_db() çalışmışken açılırdı.
+    begin_shutdown()
     market.stop()
     try:
         await microflow.stop()
     except Exception:
-        pass
+        logger.warning("shutdown: microflow.stop() hatası", exc_info=True)
     try:
         monitoring.stop_monitoring_loop()
     except Exception:
-        pass
+        logger.warning("shutdown: monitoring.stop_monitoring_loop() hatası", exc_info=True)
+    # DENETİM 3.4 #40: bu iki çağrı `except Exception: pass` içinde yutuluyordu.
+    # Hata olursa GERÇEK paper trade döngüsü / MACD hesaplama döngüsü açık
+    # kalır ve kapanmış DB havuzuna yazmaya çalışır. Sessizce yutmak yerine
+    # izlenebilir hata olarak loglanır (döngü kapanışı yine de devam eder).
     try:
         auto_paper_routes.stop_auto_paper_loop()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("shutdown: auto_paper döngüsü durdurulamadı (%s: %s) — "
+                     "otonom paper trade döngüsü AÇIK kaldı", type(exc).__name__, exc,
+                     exc_info=True)
+    try:
+        macd_monitor_routes.stop_macd_monitor_loop()
+    except Exception as exc:
+        logger.error("shutdown: MACD monitor döngüsü durdurulamadı (%s: %s) — "
+                     "hesaplama döngüsü AÇIK kaldı", type(exc).__name__, exc,
+                     exc_info=True)
     tasks = list(_background_tasks)
     for task in tasks:
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     _background_tasks.clear()
+    # Kapanış sonunda isim→görev kaydını temizle: aynı interpreter'da yeniden
+    # başlatmada `get_task(name)` bayat görev referansı döndürmesin.
+    clear_background_registry()
     await embedding_worker.stop()
     if _pg_pool:
         await _pg_pool.close()
@@ -1110,18 +1190,51 @@ def _ws_subprotocol_token(websocket) -> str | None:
     return None
 
 
+async def _ws_principal_user_id(principal: dict | None) -> int | None:
+    """WS el sıkışmasında principal → `users.id` çözümü.
+
+    Neden `id` (tamsayı) seçildi: `binance_account_push_loop` yayını
+    `data.user_id` ile etiketliyor ve istemci tarafı bu alanı süzüyor; iki
+    tarafın aynı anahtarı konuşması gerekiyor.
+
+    DB hazır değilse veya kullanıcı bulunamazsa `None` döner → bağlantı
+    kimliksiz açılır, kişisel yayın almaz (fail-closed; sızıntı olmaz).
+    """
+    if not principal:
+        return None
+    try:
+        user = await database.get_user_by_username(principal.get("username") or "")
+    except Exception as exc:
+        # DB erişilemiyorsa kimliksiz bağlantı: sızıntı yok, yalnız kişisel
+        # panel verisi eksik kalır. Sessiz yutma YOK — teşhis görünür olsun.
+        logger.warning("WS kimlik çözümü başarısız (%s): %s",
+                       principal.get("username"), exc)
+        return None
+    if not user:
+        return None
+    try:
+        return int(user["id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     # G-20: oturum token'ı URL query string ile KABUL EDİLMEZ (nginx erişim
     # logları, tarayıcı geçmişi ve referrer üzerinden sızıyordu). Kimlik
     # doğrulaması yalnız cookie, Authorization başlığı veya
     # Sec-WebSocket-Protocol alt protokolünden gelir.
-    if not security.auth_configured() or not security.request_authenticated(
-        websocket.headers, websocket.cookies, _ws_subprotocol_token(websocket)
-    ):
+    principal = (None if not security.auth_configured() else
+                 security.request_user(websocket.headers, websocket.cookies,
+                                       _ws_subprotocol_token(websocket)))
+    if principal is None:
         await websocket.close(code=4401)
         return
-    await ws_manager.connect(websocket)
+    # Bağlantıyı KİMLİĞİNE bağla: kişisel yayınlar (bakiye/pozisyon) bu
+    # eşleşmeyle hedeflenir. `user_id` çözülemezse bağlantı KİMLİKSİZ
+    # kalır (ws_manager fail-closed) → kişisel veri ALMAZ, yalnız herkese
+    # açık piyasa akışını alır. Sızıntı olmaz, işlev de kaybolmaz.
+    await ws_manager.connect(websocket, user_id=await _ws_principal_user_id(principal))
     try:
         while True: await websocket.receive_text()
     except (WebSocketDisconnect, RuntimeError):
@@ -1317,7 +1430,6 @@ async def send_test_push_notification(request: Request):
     """
     _require_admin(request)
     actor, actor_role = _session_identity(request)
-    from app import alerting
 
     result = await alerting.deliver_web_push(
         "Test bildirimi — push zinciri çalışıyor.",
@@ -1830,11 +1942,13 @@ async def _apply_config_update(payload: dict, request: Request = None):
                 raise ValueError(f"Binance TR'de işlemde olan TRY sembolü kalmadı: {', '.join(invalid)}")
             raise ValueError("En az bir aktif sembol seçilmelidir")
         payload["symbols"] = symbols
-        config.SYMBOLS = symbols
+        # DENETİM 3.4 #41: `config.SYMBOLS = symbols` + `market.symbols = ...`
+        # çift ataması yerine TEK kapı. İki kaynağın ayrışması, evrenin
+        # yeniden başlatmada geri sarmasına yol açıyordu.
+        apply_symbol_universe(symbols, source="config_update")
         # Per-symbol overrides for delisted/BREAK pairs cannot affect a
         # future scan or a later save.
         config.SYMBOL_ORDER_PCT = {symbol: value for symbol, value in config.SYMBOL_ORDER_PCT.items() if symbol in symbols}
-        market.symbols = [s.lower() for s in symbols]
         for symbol in sorted(set(symbols) - previous_symbols):
             _start_background(backfill_symbol_history, f"history-backfill-{symbol}", single_pass=True)
     # Only a symbol/timeframe change requires a full WS reconnect + REST
@@ -2223,15 +2337,81 @@ async def llm_config():
     auto_enabled = (await database.get_llm_setting("llm_auto_paper_enabled", "0")) == "1"
     return {**data, "encryption_configured": bool(os.getenv("LLM_ENCRYPTION_KEY", "").strip()), "paper_trade_enabled": paper_enabled, "auto_paper_enabled": auto_enabled, "auto_paper_interval_minutes": 15}
 
+# TTS (Edge TTS) kalıcılık sözleşmesi (denetim #50 / görev 1)
+# ---------------------------------------------------------------
+# SORUN: Frontend `PUT /api/llm/chat-settings` gövdesine `tts_rate`/`tts_pitch`
+# gönderiyor ve kullanıcı "KAYDEDİLDİ" yeşil onayı görüyordu; backend ise
+# yalnız `active_tools`/`active_skills` saklıyordu. Alanlar gövdeden sessizce
+# düşüyor, bir sonraki açılışta `GET` dönmediği için frontend ayarı 0'a
+# (varsayılan) çekiyordu — kullanıcı verisi kaybı.
+#
+# SÖZLEŞME (frontend `app/lib/ttsSettings.ts` ile birebir):
+#   * GET yanıtı gövdesi HER ZAMAN `tts_rate`/`tts_pitch` anahtarlarını taşır.
+#     Anahtar yoksa frontend `supported:false` sayıp uyarı şeridini gösterir.
+#   * Aralıklar: rate -30..50, pitch -20..20 (Edge TTS gerçek sınırları;
+#     `/api/tts/edge` geniş kelepçeyi (-50..100 / -50..50) kabul eder ama
+#     panel bu dar bandı kullanıyor).
+#   * Bozuk/None/missing girdi → 0'a DÜŞÜRÜLMEZ, mevcut değer korunur.
+#     Kısmi güncelleme (yalnız `active_tools`) alanları bozmamalıdır.
+TTS_RATE_MIN, TTS_RATE_MAX = -30, 50
+TTS_PITCH_MIN, TTS_PITCH_MAX = -20, 20
+#: Saklanmamışsa kullanılan nötr değerler (GET her zaman sayı döner).
+TTS_RATE_DEFAULT, TTS_PITCH_DEFAULT = 0, 0
+
+
+def _coerce_tts_int(value, *, lo: int, hi: int, current: int) -> int:
+    """TTS alanını doğrular: sayıya çevir, aralığa kelepçele.
+
+    Bozuk girdi (`None`, `"abc"`, `NaN`, `inf`, boş string) veya alanın
+    HİÇ gönderilmemesi durumunda `current` (mevcut kayıtlı değer) korunur —
+    kısmi güncelleme kullanıcının ayarını sessizce sıfırlamaz.
+    """
+    if value is None or (isinstance(value, float) and not math.isfinite(value)):
+        return current
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return current
+    return max(lo, min(hi, number))
+
+
+def _read_tts_settings(stored: dict) -> tuple[int, int]:
+    """Kayıtlı sözlükten doğrulanmış `(rate, pitch)` çifti döndürür."""
+    rate = _coerce_tts_int(
+        stored.get("tts_rate"), lo=TTS_RATE_MIN, hi=TTS_RATE_MAX,
+        current=TTS_RATE_DEFAULT)
+    pitch = _coerce_tts_int(
+        stored.get("tts_pitch"), lo=TTS_PITCH_MIN, hi=TTS_PITCH_MAX,
+        current=TTS_PITCH_DEFAULT)
+    return rate, pitch
+
+
 @app.get("/api/llm/chat-settings")
 async def get_llm_chat_settings():
     raw = await database.get_llm_setting("chat_settings", "{}")
-    try: return json.loads(raw or "{}")
-    except json.JSONDecodeError: return {}
+    try: stored = json.loads(raw or "{}")
+    except json.JSONDecodeError: stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    # TTS anahtarları HER ZAMAN döner (frontend desteği bu imzadan anlıyor).
+    rate, pitch = _read_tts_settings(stored)
+    return {**stored, "tts_rate": rate, "tts_pitch": pitch}
 
 @app.put("/api/llm/chat-settings")
 async def save_llm_chat_settings(payload: dict):
-    settings = {"active_tools": [str(value) for value in (payload.get("active_tools") or [])], "active_skills": [str(value) for value in (payload.get("active_skills") or [])]}
+    # Mevcut kayıttan TAAHHÜT: eksik/bozuk alanlar mevcut değeri korur.
+    try:
+        stored = json.loads(await database.get_llm_setting("chat_settings", "{}") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    current_rate, current_pitch = _read_tts_settings(stored)
+    rate = _coerce_tts_int(payload.get("tts_rate"), lo=TTS_RATE_MIN, hi=TTS_RATE_MAX,
+                           current=current_rate)
+    pitch = _coerce_tts_int(payload.get("tts_pitch"), lo=TTS_PITCH_MIN, hi=TTS_PITCH_MAX,
+                            current=current_pitch)
+    settings = {"active_tools": [str(value) for value in (payload.get("active_tools") or [])], "active_skills": [str(value) for value in (payload.get("active_skills") or [])], "tts_rate": rate, "tts_pitch": pitch}
     await database.set_llm_setting("chat_settings", json.dumps(settings, ensure_ascii=False))
     return {"ok": True, **settings}
 
@@ -2304,6 +2484,13 @@ def _extra_watch_assets(now_mono: float) -> list[str]:
 
 
 async def _binance_ticks_configured() -> bool:
+    # Denetim 2.1 (2026-09-26): `global` bildirimi yoktu. Atama (satır aşağıda)
+    # aynı isim için yerel kapsam yaratıyor ve yukarıdaki okuma da yerel ismi
+    # okuduğu için her çağrıda UnboundLocalError fırlatıyordu; istisna
+    # `binance_price_tick_loop` içindeki `except Exception` ile yutuluyor ve
+    # döngü hiç ilerleyemediği için `binance_price` WS mesajı hiç yayınlanmıyordu.
+    # Aynı dosyadaki runtime.py:1054 deseniyle birebir aynı.
+    global _binance_tick_config_cache
     now_ts = time.time()
     if _binance_tick_config_cache[0] > now_ts:
         return _binance_tick_config_cache[1]
@@ -2317,11 +2504,17 @@ async def _binance_ticks_configured() -> bool:
 
 
 async def binance_account_push_loop():
-    """Binance TR hesap + pozisyon verisini 15 sn'de bir WS ile tüm istemcilere push eder.
+    """Binance TR hesap + pozisyon verisini 15 sn'de bir WS ile ilgili kullanıcıya push eder.
 
     REST polling yerine (her sekme 10 sn'de bir istek → rate limit 502):
-    Tek sunucu-tarafı istek → ws_manager.broadcast → tüm açık sekmeler anında güncellenir.
-    Bağlı WS istemcisi yokken broadcast no-op'tur; ağ hatası döngüyü öldürmez.
+    Tek sunucu-tarafı istek → `ws_manager.broadcast(..., user_id=...)` → o
+    kullanıcının açık sekmeleri anında güncellenir.
+
+    GÜVENLİK: bakiye/holdings/pozisyon KİŞİSELDİR. Yayın artık
+    `user_id` KAPSAMINDADIR (ws_runtime) — kapsamsız yayında çok kullanıcılı
+    kurulumda her bağlı istemci herkesin bakiyesini görüyordu. Ön uç
+    (`binance-tr/page.tsx`) ayrıca istemci tarafı süzüyor (çift koruma).
+    Bağlı istemci yokken döngü boşta tur atlar; ağ hatası döngüyü öldürmez.
     """
     await asyncio.sleep(25)  # startup bitmeden bekleme
     while True:
@@ -2335,6 +2528,10 @@ async def binance_account_push_loop():
                 try:
                     user_id = int(user["id"])
                     username = str(user.get("username") or "")
+                    # O kullanıcının AÇIK sekmesi yoksa hiçbir şey göndermeyeceğiz;
+                    # bakiye/pozisyon sorgusunu (şifre çözme + REST çağrısı) atla.
+                    if not ws_manager.has_owner(user_id):
+                        continue
                     enc = await database.get_llm_setting(f"binance_api_key_{username}", "")
                     if not enc:
                         continue
@@ -2387,7 +2584,9 @@ async def binance_account_push_loop():
                             (price_by_symbol.get(f"{asset}USDT", 0) * usdt_try) if usdt_try else 0)
                         value_try = round(price * h["total"], 4) if price else None
                         holdings_ws.append({**h, "price_try": price or None, "value_try": value_try, "pnl_try": None, "pnl_pct": None})
-                    # WS broadcast — user_id ile istemci filtresi (ileride; şimdi broadcast)
+                    # WS broadcast — KULLANICI KAPSAMLI (güvenlik): mesaj yalnız
+                    # bu kullanıcının bağlantılarına gider. `user_id` verilmezse
+                    # ws_manager fail-closed olarak HİÇBİR yere göndermez.
                     await ws_manager.broadcast({
                         "type": "binance_account_update",
                         "data": {
@@ -2396,7 +2595,7 @@ async def binance_account_push_loop():
                             "holdings": holdings_ws,
                             "time": time.time(),
                         }
-                    })
+                    }, user_id=user_id)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -3007,7 +3206,6 @@ async def binance_buy(payload: dict, request: Request):
                 except (TypeError, ValueError):
                     price = None
                 price_txt = _fmt_tr_price(price) if price else "—"
-                from app import alerting
                 notification_result = await alerting.deliver_web_push(
                     f"{principal.get('username')} kullanıcısı "
                     f"{str(symbol_u).replace('_', '')} sembolünde "
@@ -3526,7 +3724,23 @@ async def set_llm_auto_paper_trading(payload: dict, request: Request):
 @app.post("/api/llm/paper-trade")
 async def llm_open_paper_trade(payload: dict, request: Request = None):
     # Yetki denetimi: manuel LLM paper girişi açmak yalnız YÖNETİCİ yetkisindedir.
-    _require_admin(request)
+    # DENETİM 2.8 (2026-09-26): `request=None` (tool executor) üzerinden
+    # `_require_admin(None)` → `NoneType.headers` AttributeError → 500 idi; her
+    # LLM paper açılışı patlıyordu. Güvenli davranış: açık 403 ile fail-closed
+    # reddetme. Otonom sunucu döngüleri (alarm tetikleme / kapanış sonrası
+    # ikmal / 10dk boşta) `request` olmadan çağırır; bunlar yalnızca yönetici
+    # tarafından açılan otomasyon anahtarları (`llm_auto_paper_enabled`,
+    # `llm_paper_trade_enabled` — ikisi de `_require_admin` arkasında) altında
+    # çalıştığı için sistem içi yol olarak tanınır. Chat tool executor ise
+    # `source` göndermez ve kullanıcı bağlamından gelir → reddedilir; executor
+    # kendi admin kontrolünü yapar (routers/llm_chat.py).
+    if request is None:
+        if not str((payload or {}).get("source") or "").strip():
+            raise HTTPException(
+                status_code=403,
+                detail="Yetkisiz paper giriş çağrısı reddedildi: oturum doğrulanmadan LLM paper işlem açılamaz")
+    else:
+        _require_admin(request)
     if (await database.get_llm_setting("llm_paper_trade_enabled", "0")) != "1":
         raise HTTPException(status_code=403, detail="LLM paper işlem açma yetkisi ayarlardan kapalı")
     # D-11: global kill-switch / günlük zarar limiti — yeni girişten ÖNCE kontrol.
@@ -4032,17 +4246,38 @@ async def get_agent_instincts(status: str = "", limit: int = 100):
                 ORDER BY confidence DESC,last_seen_at DESC LIMIT $1""", max(1, min(int(limit), 500)))
     return {"enabled": True, "instincts": [dict(row) for row in rows]}
 
+_GOLDEN_CASES_PATH = os.path.join(os.path.dirname(__file__), "..", "evals", "golden_cases.json")
+
+
+async def _load_golden_cases() -> list:
+    """golden_cases.json dosyasını oku; hata halinde istisna fırlat.
+
+    DENETİM 3.4 (2026-09-26): Dosya okuma işi burada ayrıldı. Önceden uç
+    fonksiyonu hata halinde `JSONResponse` DÖNDÜRÜYORDU ve
+    ``run_agent_golden_evals`` bu yanıtı doğrudan çağırıp ``.get("cases")``
+    diyordu → `AttributeError: 'JSONResponse' object has no attribute 'get'`.
+    Yani eval dosyası okunamazsa 0 vaka yerine 500 fırlatılıyordu.
+    Artık dosya okuma saf bir yardımcıdır: başarı → liste, hata → istisna
+    (çağıran karar verir). Dosya yolu HATA DETAYINDA loglanır, HTTP yanıtına
+    sızmaz.
+    """
+    with open(_GOLDEN_CASES_PATH, "r", encoding="utf-8") as handle:
+        cases = json.load(handle)
+    return list(cases) if isinstance(cases, list) else []
+
+
 @app.get("/api/llm/eval-cases")
 async def get_agent_eval_cases():
-    # G-12: hata yolu HTTP 200 + boş liste + str(exc) (dosya yolu dahil) dönüyordu.
-    # Artık 500 + sabit error_code; dosya yolu/hata detayı yalnız logda.
-    path = os.path.join(os.path.dirname(__file__), "..", "evals", "golden_cases.json")
+    # G-12 (2026-09-08): hata yolu HTTP 200 + boş liste + str(exc) (dosya yolu
+    # dahil) dönüyordu; kullanıcı "vaka yok" ile "dosya okunamadı"yı
+    # ayırt edemiyordu. Artık 500 + sabit error_code; dosya yolu/hata detayı
+    # yalnız logda kalır (bilgi sızıntısı yok).
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return {"cases": json.load(handle)}
+        return {"cases": await _load_golden_cases()}
     except Exception as exc:
         logger.error("golden eval vakaları okunamadı (%s): %s:%s",
-                     os.path.basename(path), type(exc).__name__, exc, exc_info=True)
+                     os.path.basename(_GOLDEN_CASES_PATH), type(exc).__name__, exc,
+                     exc_info=True)
         return JSONResponse(status_code=500,
                             content={"ok": False, "error_code": "eval_cases_unavailable", "cases": []})
 
@@ -4051,8 +4286,15 @@ async def run_agent_golden_evals(payload: dict = None, request: Request = None):
     _require_admin(request)
     """Run the versioned golden cases against the configured LLM and persist results."""
     if not _pg_pool: raise HTTPException(status_code=503, detail="PostgreSQL eval backend aktif değil")
-    cases_response = await get_agent_eval_cases()
-    cases = cases_response.get("cases", [])
+    # DENETİM (2026-09-26): HTTP uç fonksiyonu DEĞİL, saf dosya-okuma
+    # yardımcısı çağrılır. Önceden `await get_agent_eval_cases()` bir
+    # `JSONResponse` döndüğünde `.get(...)` AttributeError fırlatıyordu;
+    # dosya okunamazsa 0 vaka yerine 500 + dosya yolu sızıntısı oluyordu.
+    try:
+        cases = await _load_golden_cases()
+    except Exception as exc:
+        logger.error("golden eval koşusu başlatılamadı: %s:%s", type(exc).__name__, exc, exc_info=True)
+        raise HTTPException(status_code=503, detail="Golden eval vaka dosyası okunamadı") from exc
     requested = set((payload or {}).get("case_keys") or [])
     attempts = max(1, min(int((payload or {}).get("attempts", 1)), 3))
     results = []

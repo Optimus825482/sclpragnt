@@ -1,4 +1,70 @@
-# PUMP ARAŞTIRMASI — TEST RAPORU (TESTLER.md)
+# TESTLER — Güncel Test Koşumu ve Kalite Kapısı
+
+> **2026-09-26 denetimi ile eklendi (bulgu #110).** Bu dosya tarihsel olarak bir
+> PUMP araştırma raporuydu ve **güncel test koşma komutunu içermiyordu**. Aşağıdaki
+> bölüm test tabanının güncel durumunu tanımlar; altındaki PUMP araştırma
+> içeriği tarihsel kayıt olarak korunmuştur.
+
+## Güncel Durum (2026-09-26)
+
+| Metrik | Değer |
+| --- | --- |
+| Test dosyası | **97** |
+| Toplanan test | **1489** (`pytest --collect-only`) |
+| Kapsama (coverage) | **%57** (`pytest --cov=app`) — CI eşiği `%55` |
+| Frontend test dosyası | 0 (vitest yok) |
+| CI hedef Python | 3.11 (üretim) + 3.13 (uyumluluk) |
+
+## Güncel Koşma Komutları
+
+```powershell
+# Tüm backend testleri
+cd D:\scalperagent_v4\backend
+python -m pytest tests -q
+
+# Coverage ile (CI'daki komut)
+python -m pytest tests -q --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=55
+
+# Lint — SERT KAPI (gerçek hata sınıfları: E9, F821, F811, F823)
+cd D:\scalperagent_v4\backend
+ruff check app tests scripts
+
+# Lint — danışma (geniş kural kümesi, kapı DEĞİLDİR)
+ruff check --select E,F,W,I,B,SIM,UP --output-format=concise app tests scripts
+
+# Biçim kontrolü — danışma (kapı DEĞİLDİR)
+ruff format --check app tests scripts
+```
+
+Yapılandırma: `backend/ruff.toml` (kural kümesi), `backend/pytest.ini` (zaman aşımı), `backend/requirements-dev.txt` (pinned araçlar).
+
+## Test Zaman Aşımı
+
+`backend/pytest.ini` her test için **120 saniye** üst sınır koyar
+(`pytest-timeout`, `timeout_method = thread`). Bu olmadan sonsuza kadar
+bekleyen bir test CI işini job-timeout'a kadar asılı tutar ve nedeni görünmez.
+Tek test için geçersiz kılmak isterseniz:
+
+```powershell
+python -m pytest tests/<dosya>.py -q --timeout=0
+```
+
+## Ortam Gereksinimleri
+
+CI, üretimle **aynı** PostgreSQL imajını kullanır (`pgvector/pgvector:pg17-bookworm`)
+ve şu ortam değişkenlerini bekler:
+
+```
+DATABASE_URL=postgresql://scalper:scalper@localhost:5432/scalper
+DB_BACKEND=postgres
+```
+
+Yerelde Docker yoksa `pytest` yalnız saf birim testlerini koşar; DB'ye bağlanan
+testler atlanır veya hata verir.
+
+---
+
+# PUMP ARAŞTIRMASI — TEST RAPORU (tarihsel bölüm)
 
 **Tarih:** 30–31 Ağustos 2026 · **Kapsam:** ≥%2 M5 pump desenleri, gösterge snapshot analizi, OOS doğrulama, maliyet simülasyonu, v2 aday filtresi
 **Veri:** Binance TR public API · 50 likit TRY sembolü · 7 gün M5 (2.017 mum/sembol) + M1 (10.081 mum/sembol) · PostgreSQL `historical_candles`

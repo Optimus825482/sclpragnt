@@ -1,2 +1,0 @@
-Run: cmd /c D:\scalperagent_v4\apply_edits.cmd
-Then delete this RUNME.txt too.

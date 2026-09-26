@@ -41,6 +41,17 @@ export function commissionPct(): number {
   return _commissionPct;
 }
 
+/**
+ * Komisyon oranını backend varsayılanına döndürür.
+ *
+ * Yalnız TEST izolasyonu içindir: `pnl.test.ts` farklı oranları denedikten
+ * sonra modül durumunu temizlemezse sonraki testler yanlış beklentiyle
+ * çalışır. Üretim kodunda kullanılmaz.
+ */
+export function resetCommissionPct(): void {
+  _commissionPct = COMMISSION_PCT_FALLBACK;
+}
+
 function positive(value: unknown): number | null {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -81,8 +92,17 @@ export function netOpenPnlPct(
   return (net / (e * q)) * 100;
 }
 
-/** Kapalı işlem K/Z'si (backend zaten komisyonlu yazar) — yalnız null-korumalı okuma. */
+/**
+ * Kapalı işlem K/Z'si (backend zaten komisyonlu yazar) — yalnız null-korumalı okuma.
+ *
+ * `null` SÖZLEŞMESİ: `Number(null) === 0` olduğu için eski sürüm `null` girdide
+ * 0 döndürüyordu; bu, dosyanın kendi kuralını ("0 bir fiyat değil, veri yoktur")
+ * ihlal edip panelde başabaş yeşil gösteriyordu. Boş/null/NaN girdi artık
+ * `null` döner. Meşru 0 K/Z ise 0 olarak KORUNUR — başabaş kapanmış bir işlem
+ * gerçekten 0'dır.
+ */
 export function closedPnlTry(value: unknown): number | null {
+  if (value == null || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }

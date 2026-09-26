@@ -1,7 +1,21 @@
 # Scalper Agent V4 — Düzeltme ve İleri Geliştirme Raporu
 
+> ## ⛔ TARİHLENDİRİLMİŞ / BAYAT BELGE (2026-09-26 denetimi, bulgu #110)
+>
+> **Bu rapor 2026-08-25 tarihinde yazıldı ve SAYILARI ARTIK GEÇERLİ DEĞİLDİR.** Aşağıdaki test sayıları o günkü koşuya aittir ve birbirleriyle bile tutarsızdır:
+>
+> - Başlıkta **"Backend 136/136 test OK"**,
+> - Bölüm 2'de **"python -m unittest discover -s tests → 175/175 OK"**,
+> - Oysa gerçek toplam o zaman da 1426 civarındaydı ve bugün daha yüksek.
+>
+> **Neden iki farklı sayı var:** Başlıktaki 136 muhtemelen yalnız *düzeltilen konuya ait* alt kümeyi, Bölüm 2'deki 175 ise `unittest discover`'ın o günkü toplamını sayıyordu. İkisi de "tüm test paketi" anlamına gelmiyor.
+>
+> **Güncel gerçek değerler (2026-09-26, `pytest --collect-only`):** **1489 test / 97 dosya**. Güncel test koşma komutu ve kalite kapısı için bkz. [`../TESTLER.md`](../TESTLER.md) ve [`../backend/pytest.ini`](../backend/pytest.ini).
+>
+> Bu rapor **tarihsel kayıt olarak korunmuştur**; düzeltmelerin ne olduğunu anlatır, ama içindeki sayılar güncel mimariyi tanımlamaz.
+
 **Tarih:** 2026-08-25 · **Kapsam:** 2026-08-25 denetiminde tespit edilen tüm kritik/önemli bulguların düzeltilmesi
-**Doğrulama:** Backend 136/136 test OK · Tüm Python modülleri derleniyor · Frontend production build başarılı (24 rota) · Paper-only sözleşmesi korundu
+**Doğrulama (2026-08-25 itibarıyla, BAYAT):** Backend 136/136 test OK · Tüm Python modülleri derleniyor · Frontend production build başarılı (24 rota) · Paper-only sözleşmesi korundu
 
 ---
 
@@ -122,9 +136,11 @@ Yeni test dosyaları: `test_quality_gates.py` (S1/S2, 7 test), `test_calibration
 
 ## Bölüm 2 — Doğrulama Sonuçları
 
+> ⚠️ **BAYAT (2026-08-25 koşusu).** Aşağıdaki "175/175" yalnız o günkü `unittest discover` çıktısıdır; güncel toplam **1489 test / 97 dosya**dır. Bkz. rapor başındaki not.
+
 ```
 Backend derleme:   py_compile app/*.py scripts/*.py        → OK
-Backend testler:   python -m unittest discover -s tests    → 175/175 OK
+Backend testler:   python -m unittest discover -s tests    → 175/175 OK   [BAYAT — güncel: 1489 test]
 Frontend build:    npm run build                           → EXIT 0, 24 rota
 TS parse kontrolü: 5 düzenlenen .tsx dosyası               → 0 hata
 PUMP replay:       gerçek 48s kline, bar-bar simülasyon    → +550 TL iyileşme; BE trigger 0.3% seçildi

@@ -505,5 +505,186 @@ class AtrSingleSourceTests(unittest.TestCase):
         self.assertIsNone(ScalpAnalyzer.calculate_atr(None, kline, 14))
 
 
+# ---------------------------------------------------------------------------
+# Denetim 2026-09-26 — kâr kilidi kalıcılığı + stop tavanı
+# ---------------------------------------------------------------------------
+class VelocityLockPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    """D-01/2026-09-26: `velocity_protection_armed` ve kilit stop'u kalıcıydı
+    DEĞİLDİ. `database.load_positions` bunları geri yüklemiyor (kolon yok),
+    restart sonrası `armed=False` dönüyor ve no-initial-stop sözleşmesi
+    bozuluyordu. Çözüm: `entry_context` JSONB'nin `_runtime` alt sözlüğü.
+    """
+
+    def _pos(self, entry=12.0, notional=10_000.0):
+        return {
+            "symbol": "TESTTRY", "strategy": "CHAT_PREDICTION", "side": "LONG",
+            "entry_price": entry, "quantity": notional / entry,
+            "entry_time": time.time(),
+            "max_price": entry * 1.006, "min_price": entry,
+            "system_stop_price": None,
+            "take_profit": entry * 1.20,          # TP'ye ulaşılmayacak
+            "system_take_profit_price": entry * 1.20,
+            "entry_context": {"signal_context": {"no_initial_stop": True,
+                                                 "target_pct": 2.0,
+                                                 "exit_model": "plan_tp"}},
+        }
+
+    async def _tick(self, pos, price):
+        analyzer = _new_analyzer()
+        analyzer.positions = {"TESTTRY": pos}
+        analyzer.market = MagicMock()
+        analyzer.market.get_ticker = MagicMock(
+            return_value={"last_price": price, "timestamp": time.time() * 1000})
+        analyzer.market.get_ut_kline = MagicMock(return_value=None)
+        close = AsyncMock(return_value={"ok": True})
+        save = AsyncMock()
+        with patch.object(analyzer, "close_position", close), \
+             patch("app.analyzer.database.save_position", save), \
+             patch("app.analyzer.config.MAX_TICKER_AGE_SEC", 3600):
+            await analyzer._manage_open_position("TESTTRY", price, "CHAT_PREDICTION")
+        return analyzer, close, save
+
+    async def test_lock_is_written_into_entry_context_runtime(self):
+        pos = self._pos()
+        await self._tick(pos, pos["entry_price"] * 1.006)
+        self.assertTrue(pos.get("velocity_protection_armed"))
+        runtime = (pos.get("entry_context") or {}).get("_runtime") or {}
+        self.assertTrue(runtime.get("velocity_protection_armed"),
+                        "kilit bayrağı entry_context._runtime'a yazılmadı")
+        self.assertIsNotNone(runtime.get("system_stop_price"),
+                             "kilit stop'u entry_context._runtime'a yazılmadı")
+
+    async def test_persist_is_actually_called(self):
+        pos = self._pos()
+        _, _, save = await self._tick(pos, pos["entry_price"] * 1.006)
+        save.assert_awaited()
+
+    async def test_restored_position_keeps_lock_after_reload(self):
+        """Restart simülasyonu: yalnız DB'den geri yüklenen pozisyon kilitli
+        kalmalı — emg stop yeniden etkinleşmemeli, stop'suzluk bozulmamalı."""
+        pos = self._pos()
+        _, _, save = await self._tick(pos, pos["entry_price"] * 1.006)
+        lock_stop = pos["system_stop_price"]
+
+        # Bellek alanları SİLİNİR (restart); yalnız entry_context kalır.
+        restored = dict(pos)
+        restored.pop("velocity_protection_armed")
+        restored.pop("system_stop_price")
+        restored["entry_context"] = {
+            "strategy_revision": 1,
+            "signal_context": {"no_initial_stop": True, "target_pct": 2.0},
+            "_runtime": dict(pos["entry_context"]["_runtime"]),
+        }
+        # 1) zeminin ÜSTÜNDE fiyat: açık kalmalı, stop korunmalı.
+        analyzer, close, _ = await self._tick(restored, lock_stop + 0.01)
+        close.assert_not_awaited()
+        self.assertAlmostEqual(restored["system_stop_price"], lock_stop, places=9,
+                               msg="restore sonrası kilit stop kayboldu")
+        # 2) zeminin ALTINDA fiyat: KİLİT stop ile kapanmalı (sert stop değil).
+        _, close, _ = await self._tick(restored, lock_stop - 0.01)
+        close.assert_awaited_once()
+        self.assertEqual("system_stop_loss", close.await_args.args[2])
+
+    async def test_lock_stop_is_ceiling_over_initial_stop(self):
+        """Sert stop (-%2.5) kilit stop'unun (+%0.5) ALTINDA kalıyorsa tavan
+        kilittir; aksi halde kâr koruması ezilir."""
+        from app.config import config
+
+        pos = self._pos()
+        pos["system_stop_price"] = pos["entry_price"] * (1 - config.VELOCITY_AUTO_SL_PCT / 100.0)
+        pos["max_price"] = pos["entry_price"] * 1.006
+        await self._tick(pos, pos["entry_price"] * 1.006)
+        entry = pos["entry_price"]
+        self.assertGreater(pos["system_stop_price"], entry,
+                           "kilit stop girişin altına düştü")
+
+    async def test_no_initial_stop_still_holds_before_lock(self):
+        """Kilit devreye GİRMEDEN önce sert stop konmaz (-%3 acil stop sadece
+        güvenlik ağı olarak kalır)."""
+        from app.config import config
+
+        pos = self._pos()
+        # +%0.4: +%0.5 kilit tetiğinin altında → kilit kurulmaz
+        price = pos["entry_price"] * 1.004
+        pos["max_price"] = price
+        _, close, _ = await self._tick(pos, price)
+        close.assert_not_awaited()
+        self.assertFalse(pos.get("velocity_protection_armed"))
+        self.assertIsNone(pos.get("system_stop_price"),
+                          "kilit öncesi sert stop konmamalı (no_initial_stop)")
+        # -%3 acil stop'un altındaysa hâlâ açık
+        emg = pos["entry_price"] * (1 - config.VELOCITY_EMERGENCY_STOP_PCT / 100.0)
+        self.assertGreater(price, emg)
+
+
+# ---------------------------------------------------------------------------
+# Denetim 2026-09-26 — aynı barda hem stop hem TP tetiklenirse worst-case
+# ---------------------------------------------------------------------------
+class SameBarStopAndTargetTests(unittest.IsolatedAsyncioTestCase):
+    """Aynı tick'te stop ve TP eşiklerinin ikisi de geçilirse hangisi kazanır?
+
+    Merdivende sıralama: acil stop → kâr kilidi kurulumu → `system_stop`
+    kontrolü → plan TP → plan max-hold. Yani STOP, TP'den ÖNCE gelir.
+    Bu, gerçek bar içi sırası bilinmediğinde en kötü senaryoyu (stop)
+    kabul eden worst-case sözleşmedir: kâr koruması TP'ye devredilmez.
+    """
+
+    def _pos(self, entry=100.0, stop=None, tp=102.0, max_price=None):
+        return {
+            "symbol": "TESTTRY", "strategy": "CHAT_PREDICTION", "side": "LONG",
+            "entry_price": entry, "quantity": 1.0, "entry_time": time.time(),
+            "max_price": max_price if max_price is not None else entry,
+            "min_price": entry,
+            "system_stop_price": stop,
+            "system_take_profit_price": tp, "take_profit": tp,
+            "velocity_protection_armed": stop is not None,
+            "entry_context": {"signal_context": {"no_initial_stop": True}},
+        }
+
+    async def _tick(self, pos, price):
+        analyzer = _new_analyzer()
+        analyzer.positions = {"TESTTRY": pos}
+        analyzer.market = MagicMock()
+        analyzer.market.get_ticker = MagicMock(
+            return_value={"last_price": price, "timestamp": time.time() * 1000})
+        analyzer.market.get_ut_kline = MagicMock(return_value=None)
+        close = AsyncMock(return_value={"ok": True})
+        with patch.object(analyzer, "close_position", close), \
+             patch("app.analyzer.database.save_position", AsyncMock()), \
+             patch("app.analyzer.config.MAX_TICKER_AGE_SEC", 3600), \
+             patch("app.analyzer.config.EARLY_FAILURE_SEC", 10 ** 9), \
+             patch("app.analyzer.config.STALE_POSITION_SEC", 10 ** 9):
+            await analyzer._manage_open_position("TESTTRY", price, "CHAT_PREDICTION")
+        return close
+
+    async def test_stop_wins_when_both_thresholds_crossed(self):
+        """stop=101, TP=100.2, fiyat=100.0 → stop VE TP eşiği altında;
+        stop önce değerlendirildiği için kapanış nedeni stop'tur."""
+        pos = self._pos(stop=101.0, tp=100.2)
+        close = await self._tick(pos, 100.0)
+        close.assert_awaited_once()
+        self.assertEqual("system_stop_loss", close.await_args.args[2],
+                         "aynı tick'te stop, TP'den önce gelmeli (worst-case)")
+
+    async def test_tp_closes_when_stop_untouched(self):
+        pos = self._pos(stop=99.0, tp=102.0)
+        close = await self._tick(pos, 103.0)
+        close.assert_awaited_once()
+        self.assertEqual("chat_plan_take_profit", close.await_args.args[2])
+
+    async def test_stop_fill_is_pulled_to_trigger_price(self):
+        """D-08: stop dolumu tetik fiyatına çekilir (gap-through max)."""
+        pos = self._pos(stop=101.0, tp=110.0)
+        close = await self._tick(pos, 100.5)
+        self.assertEqual("system_stop_loss", close.await_args.args[2])
+        self.assertAlmostEqual(101.0, close.await_args.args[1], places=6)
+
+    async def test_tp_fill_is_pulled_to_trigger_price(self):
+        """D-08: TP dolumu tetik fiyatına çekilir (gap-through min)."""
+        pos = self._pos(stop=99.0, tp=102.0)
+        close = await self._tick(pos, 105.0)
+        self.assertAlmostEqual(102.0, close.await_args.args[1], places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

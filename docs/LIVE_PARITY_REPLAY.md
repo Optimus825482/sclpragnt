@@ -1,5 +1,26 @@
 # 72 Saatlik Live-Parity Paper Replay
 
+> # ⛔ RETIRED — 2026-09-26
+>
+> **Bu belgedeki hiçbir komut çalışmaz. Çalıştırmayın.**
+>
+> **Neden (grep ile doğrulandı):**
+> - Belge aktif strateji olarak `BB_MFI_MEAN_REVERSION`'ı donduruyor. Bu strateji **2026-09-04'te koddan kaldırıldı**. `config.py` içinde artık `ACTIVE_STRATEGY` **yok** (0 eşleşme) ve `BB_MFI_*` sabitlerinin **hiçbiri** yok (0 eşleşme).
+> - `run_portfolio_backtest.py:47` bu yüzden `SystemExit` atar: `config.ACTIVE_STRATEGY != "BB_MFI_MEAN_REVERSION"` kontrolü erişimde `AttributeError` verir.
+> - `apply_live_parity_72h_profile()` ayrıca `config.BB_MFI_STOP_LOSS_PCT`, `config.BB_MFI_TAKE_PROFIT_PCT`, `config.BACKTEST_ASSUMED_SPREAD_PCT` ve ~25 `BB_MFI_*` alanına erişir. Hepsi kaldırıldığı için **her biri `AttributeError` verir** — belgedeki **her komut** bu noktada çöker.
+> - `config.py` içinde `SMA_CASCADE_*` sabitleri de yoktur (aynı şekilde kaldırıldı).
+>
+> **Nereye bakmalı (aktif ve çalışan):**
+> - [`docs/api-reference.md`](api-reference.md) — canlı uçlar
+> - `README.md` → "Pozisyon Yönetimi" — aktif stratejiler: `LLM_PAPER` / `CHAT_PREDICTION` / `VELOCITY_AUTO`
+> - Aktif sembol evreni ve stop/TP: `backend/app/config.py` (`SYMBOLS`, `HARD_STOP_LOSS_PCT=0.012`, `SPOT_PROFIT_TARGET_PCT=0.01`)
+>
+> **Bu belgenin statüsü:** Silinmedi, çünkü araştırma geçmişi değerlidir. Ancak **hiçbir talimatı uygulanabilir değildir**. Aktif profille (`VELOCITY_AUTO` + monitoring + `LLM_PAPER`) yeniden yazılması gerekiyorsa sıfırdan yazılmalıdır — aşağıdaki metin yalnız tarihsel kayıttır ve kopyalanmamalıdır.
+
+---
+
+## ⛔ Aşağıdaki içerik RETIRED — tarihsel kayıt, çalıştırma talimatı değildir
+
 Bu araç gerçek emir göndermez. Aktif `BB_MFI_MEAN_REVERSION` ayarlarını bir
 çalışma başında dondurur ve aynı `ScalpAnalyzer` BB-MFI sinyal fonksiyonunu,
 ortak cüzdanı, pozisyon sınırını, katmanlamayı, stop/TP'yi ve komisyonu 72 saat

@@ -1,26 +1,50 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { API_BASE, apiRequest } from "../lib/api";
+import { API_BASE, apiRequest, getJSON } from "../lib/api";
 import { toMs } from "../lib/format";
 import SymbolLink from "../components/SymbolLink";
+import { useLiveMessages } from "../lib/liveSocket";
 import { useVisibleInterval } from "../lib/useVisibleInterval";
 
+type LegacyRecord = { trade_id: string; symbol: string; pnl: number | null };
+type RepairLogLine = { time: number; level: string; message: string };
+type RepairStatus = {
+  status?: string;
+  phase?: string;
+  progress?: number;
+  message?: string;
+  logs?: RepairLogLine[];
+  preview?: {
+    actions?: { assign_trade_ids?: number };
+    requires_confirmation?: boolean;
+    missing_trade_ids?: string[];
+    missing_position_ids?: string[];
+    unmatched_close_logs?: unknown[];
+  };
+};
+
 export default function TradeRepairPage() {
-  const [data, setData] = useState<any>(null);
-  const [legacy, setLegacy] = useState<any[]>([]);
+  const [data, setData] = useState<RepairStatus | null>(null);
+  const [legacy, setLegacy] = useState<LegacyRecord[]>([]);
   const [busy, setBusy] = useState(false);
+  // Yükleme hatası artık yutulmuyor: kullanıcı 401/500'de boş panel değil,
+  // nedeni gösterir (denetim #45).
+  const [loadError, setLoadError] = useState("");
 
   const load = useCallback(() => {
-    return apiRequest(`${API_BASE}/api/trade-repair/status`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then(setData)
-      .catch(() => undefined);
+    return getJSON<RepairStatus>("/api/trade-repair/status")
+      .then((payload) => {
+        setData(payload);
+        setLoadError("");
+      })
+      .catch((e: unknown) => {
+        setLoadError(e instanceof Error ? e.message : "Onarım durumu alınamadı");
+      });
   }, []);
 
   const loadLegacy = useCallback(() => {
-    return apiRequest(`${API_BASE}/api/trade-repair/legacy-cleanup`, { cache: "no-store" })
-      .then((r) => r.json())
+    return getJSON<{ records?: LegacyRecord[] }>("/api/trade-repair/legacy-cleanup")
       .then((x) => setLegacy(x.records || []))
       .catch(() => undefined);
   }, []);
@@ -29,6 +53,15 @@ export default function TradeRepairPage() {
     load();
     loadLegacy();
   }, [load, loadLegacy]);
+
+  // Backend işlem bitince `trade_repair_completed` WS mesajı yayınlıyor
+  // (`main.py:1978, 2002`) ama frontend bu mesajı hiç dinlemiyordu → sayfa
+  // 6 sn'lik yoklamaya düşüyordu. Mesaj geldiğinde anında yeniliyoruz.
+  useLiveMessages((message) => {
+    if (message.type === "trade_repair_completed") {
+      void load();
+    }
+  });
 
   // Çalışma esnasında 1.5s, beklemede 6s görünürlük-farkında yoklama
   const isRunning = busy || (data?.status && data.status !== "idle" && data.status !== "completed");
@@ -104,6 +137,12 @@ export default function TradeRepairPage() {
         </p>
       </div>
 
+      {loadError && (
+        <div role="alert" className="card border-neon-red/40 bg-neon-red/5 text-sm p-4 text-neon-red font-mono">
+          ⚠ Onarım durumu alınamadı: {loadError}
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-3">
         <button onClick={preview} disabled={busy} className="ui-button ui-button-secondary">
           {busy ? "İŞLENİYOR…" : "ÖNİZLEMEYİ ÇALIŞTIR"}
@@ -164,7 +203,7 @@ export default function TradeRepairPage() {
               <span className="text-base font-bold text-white">{p.unmatched_close_logs?.length ?? 0}</span>
             </div>
           </div>
-          {p.unmatched_close_logs?.length > 0 && (
+          {(p.unmatched_close_logs?.length ?? 0) > 0 && (
             <p className="text-yellow-300 text-xs mt-2">
               Eşleşmeyen kapanışlar yalnızca raporlandı; otomatik silinmeyecek.
             </p>
@@ -175,7 +214,7 @@ export default function TradeRepairPage() {
       <div className="card p-5">
         <p className="eyebrow mb-3 text-neon-green">CANLI ONARIM LOGU</p>
         <div className="max-h-80 overflow-auto space-y-1.5 font-mono text-xs rounded border border-bunker-800 bg-bunker-950/60 p-3">
-          {(data?.logs || []).map((l: any, i: number) => (
+          {(data?.logs || []).map((l, i) => (
             <div key={i} className="border-b border-bunker-800/40 pb-1.5 last:border-b-0">
               <span className="text-bunker-muted">{new Date(toMs(l.time)).toLocaleTimeString("tr-TR")}</span>{" "}
               <span className={l.level === "error" ? "text-neon-red font-bold" : l.level === "warning" ? "text-yellow-300 font-bold" : "text-neon-green font-bold"}>

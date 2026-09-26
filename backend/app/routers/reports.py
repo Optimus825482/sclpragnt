@@ -444,7 +444,35 @@ async def get_microstructure_snapshots(symbol: str, limit: int = 500, start: flo
 
 @router.get("/api/research/ma-cascade-shadow")
 async def ma_cascade_shadow_status(limit: int = 200, symbol: str = ""):
-    """Read-only paper research events for the 1m SMA(7/25/99) hypothesis."""
+    """Read-only paper research events for the 1m SMA(7/25/99) hypothesis.
+
+    DENETİM 2.7 (2026-09-26): Bu strateji 2026-09-04'te kaldırıldı; `config.py`
+    içinde `SMA_CASCADE_*` tanımları SİLİNDİ. Endpoint korumasız `config.SMA_...`
+    erişimiyle her çağrıda `AttributeError` → 500 veriyordu. Tanımları
+    `config.py`'ye geri koymak yerine (o dosya başka ajanın sahipliğinde)
+    burada `getattr(..., None)` ile korunur: özellik kapalıysa endpoint 200 döner,
+    `enabled: False` ve boş `events` bildirir — 500 değil.
+    """
+    def _cfg(name, default=None):
+        return getattr(config, name, default)
+
+    shadow_enabled = bool(_cfg("SMA_CASCADE_SHADOW_ENABLED", False))
+    if not shadow_enabled:
+        # Özellik kapalı: gereksiz DB sorgusu yapmadan "kapalı" yanıtı ver.
+        return {
+            "paper_only": True,
+            "enabled": False,
+            "retired": True,
+            "rule": "closed 1m SMA7>SMA25 crossover, then SMA7>SMA99, then SMA25>SMA99 within the configured window",
+            "windows": {
+                "max_sequence_minutes": _cfg("SMA_CASCADE_MAX_SEQUENCE_MINUTES"),
+                "breakout_minutes": _cfg("SMA_CASCADE_BREAKOUT_WINDOW_MINUTES"),
+                "outcome_minutes": _cfg("SMA_CASCADE_OUTCOME_WINDOW_MINUTES"),
+            },
+            "events": [],
+            "note": "SMA_CASCADE stratejisi 2026-09-04'te kaldırıldı; uç nokta hâlâ belgelidir ama kapalıdır.",
+        }
+
     records = await database.get_decision_logs(limit=min(max(1, limit) * 4, 500), symbol=symbol or None,
                                                strategy="SMA_CASCADE_SHADOW")
     records = [row for row in records if str(row.get("decision", "")).upper() in {
@@ -452,12 +480,12 @@ async def ma_cascade_shadow_status(limit: int = 200, symbol: str = ""):
     }]
     return {
         "paper_only": True,
-        "enabled": config.SMA_CASCADE_SHADOW_ENABLED,
+        "enabled": True,
         "rule": "closed 1m SMA7>SMA25 crossover, then SMA7>SMA99, then SMA25>SMA99 within the configured window",
         "windows": {
-            "max_sequence_minutes": config.SMA_CASCADE_MAX_SEQUENCE_MINUTES,
-            "breakout_minutes": config.SMA_CASCADE_BREAKOUT_WINDOW_MINUTES,
-            "outcome_minutes": config.SMA_CASCADE_OUTCOME_WINDOW_MINUTES,
+            "max_sequence_minutes": _cfg("SMA_CASCADE_MAX_SEQUENCE_MINUTES"),
+            "breakout_minutes": _cfg("SMA_CASCADE_BREAKOUT_WINDOW_MINUTES"),
+            "outcome_minutes": _cfg("SMA_CASCADE_OUTCOME_WINDOW_MINUTES"),
         },
         "events": records[:max(1, min(limit, 200))],
     }

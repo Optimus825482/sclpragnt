@@ -208,6 +208,15 @@ export const cmo = (values: number[], period: number): number | null => {
 export const rsiLast = (bars: Bar[], period = 14): number | null => rsi(bars.map((b) => b.close), period);
 
 // MFI: tipik fiyat × hacim akışıyla 0–100 arası para akışı endeksi.
+//
+// BACKEND İLE HİZALI (denetim görev 12): `technical_analysis.py:208-222`
+//   if neg: 100 - 100/(1 + pos/neg)
+//   return 100.0 if pos > 0 else 50.0
+//
+// Önceki sürüm `if (negative === 0) return 100;` idi: hem `pos == 0 && neg == 0`
+// (düz tipik fiyat / sıfır hacim → nötr 50 olmalı, "aşırı alım 100" yanlış
+// sinyal) hem de tüm mumların yükseldiği gerçek "aşırı alım" durumunu AYNI
+// değerle birleştiriyordu. Artık ayrım korunuyor.
 export const mfiLast = (bars: Bar[], period = 14): number | null => {
     if (bars.length < period + 1) return null;
     let positive = 0, negative = 0;
@@ -218,8 +227,10 @@ export const mfiLast = (bars: Bar[], period = 14): number | null => {
         if (current > previous) positive += flow;
         else if (current < previous) negative += flow;
     }
-    if (negative === 0) return 100;
-    return 100 - 100 / (1 + positive / negative);
+    if (negative) return 100 - 100 / (1 + positive / negative);
+    // neg == 0: yalnız `positive > 0` ise gerçek aşırı alım (100). İkisi de 0
+    // ise veri nötr → 50 (backend ile aynı).
+    return positive > 0 ? 100 : 50;
 };
 
 // OBV: kapanış yönüne göre birikimli hacim; mutlak değil değişim hızı anlam taşır.
@@ -241,32 +252,51 @@ export const obvLast = (bars: Bar[]): { value: number | null; deltaPct: number |
     return { value, deltaPct: avgVolume > 0 ? windowDelta / avgVolume : 0 };
 };
 
-// CRSI hesaplama (backend ile aynı: RSI3 + Streak RSI2 + PercentRank50)
+// CRSI hesaplama = (RSI + StreakRSI + PercentRank) / 3
+//
+// BACKEND İLE HİZALI (denetim görev 12): `technical_analysis.py:139-143`.
+// Önceki sürüm üç yerde sapıyordu:
+//
+//  1. STREAK RSİ: backend `streak_rsi = 100.0 if down == 0 and up else 50.0 if
+//     down == 0 else ...`. Yani hem pozitif hem negatif streak 0 ise NÖTR 50
+//     döner. Frontend koşulsuz 100 döndürüyordu → yatay piyasada CRSI ~15
+//     pence yukarıda (fiyat hareketi yokken "aşırı alım" izlenimi).
+//
+//  2. PERCENT RANK: backend FİYAT SEVİYESİ üzerinden hesaplar —
+//     `100 * count(closes[-rankPeriod-1:-1] < closes[-1]) / len(window)`.
+//     Frontend 1-BAR DEĞİŞİMİ üzerinden `count(Δ_i < Δ_current)` sayıyordu.
+//     Bu tamamen farklı bir büyüklük: 1-bar değişim penceresi dar olduğu için
+//     yükselen trendde neredeyse daima %100, düşen trendde %0 dönüyordu ve
+//     percent rank katkısı sabit bir ofset gibi çalışıyordu.
+//
+//  3. KABUL KOŞULU: backend `len(closes) < rank_period + rsi_period + 2` ile
+//     reddeder. Frontend `rsi_period`'ı hiç saymıyordu → yetersiz veriyle
+//     yarım hesaplanmış bir değer üretiyordu.
+//
+// `values` kapanış serisidir (backend `closes`).
 export const crsi = (values: number[], rsiPeriod: number, rankPeriod: number): number | null => {
-    if (values.length < rankPeriod + 2) return null;
+    if (values.length < rankPeriod + rsiPeriod + 2) return null;
     const r = rsi(values, rsiPeriod);
     if (r == null) return null;
-    // streak serisi
+    // streak serisi (backend ile aynı yönlendirme: yukarı pozitif, aşağı negatif)
     const streaks: number[] = [0];
     for (let i = 1; i < values.length; i++) {
-        if (values[i] > values[i - 1]) streaks.push(streaks[i - 1] > 0 ? Math.max(1, streaks[i - 1] + 1) : 1);
-        else if (values[i] < values[i - 1]) streaks.push(streaks[i - 1] < 0 ? Math.min(-1, streaks[i - 1] - 1) : -1);
+        if (values[i] > values[i - 1]) streaks.push(streaks[i - 1] > 0 ? streaks[i - 1] + 1 : 1);
+        else if (values[i] < values[i - 1]) streaks.push(streaks[i - 1] < 0 ? streaks[i - 1] - 1 : -1);
         else streaks.push(0);
     }
-    const up = streaks.slice(-2).filter((s) => s > 0);
-    const down = streaks.slice(-2).filter((s) => s < 0).map((s) => Math.abs(s));
-    const avgUp = up.length ? up.reduce((a, b) => a + b, 0) / up.length : 0;
-    const avgDown = down.length ? down.reduce((a, b) => a + b, 0) / down.length : 0;
-    const streakRsi = avgDown === 0 ? 100 : 100 - 100 / (1 + avgUp / avgDown);
-    // percent rank
-    const currentChange = values[values.length - 1] - values[values.length - 2];
-    const lookback = values.slice(-rankPeriod - 1, -1);
-    let below = 0;
-    for (let i = 1; i < lookback.length; i++) {
-        if (lookback[i] - lookback[i - 1] < currentChange) below++;
-    }
-    const percentRank = lookback.length > 1 ? (below / (lookback.length - 1)) * 100 : 0;
-    return (r + streakRsi + percentRank) / 3;
+    // StreakRSI: son `streakPeriod = 2` streak'in pozitif/negatif toplamları
+    const recent = streaks.slice(-2);
+    const up = recent.reduce((sum, s) => sum + (s > 0 ? s : 0), 0);
+    const down = recent.reduce((sum, s) => sum + (s < 0 ? -s : 0), 0);
+    const streakRsi = down === 0 ? (up > 0 ? 100 : 50) : 100 - 100 / (1 + up / down);
+    // PercentRank: FİYAT SEVİYESİ — son kapanışın, `rankPeriod` geriye
+    // (mevcut mum hariç) kaç kapanışın üzerinde olduğu.
+    const window = values.slice(-rankPeriod - 1, -1);
+    const last = values[values.length - 1];
+    const below = window.reduce((count, x) => count + (x < last ? 1 : 0), 0);
+    const rank = window.length > 0 ? (below / window.length) * 100 : 0;
+    return (r + streakRsi + rank) / 3;
 };
 
 // CMO + CRSI Derin Dip sinyalleri: aşırı düşüş → buy; aşırı yükseliş → sell

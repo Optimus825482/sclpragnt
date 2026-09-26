@@ -280,12 +280,30 @@ def build_symbol_dataset(open_time: np.ndarray, high: np.ndarray, low: np.ndarra
 
     tp = (h + low_ + c) / 3
     flow = tp * v
-    tp_up = np.diff(tp, prepend=tp[0]) > 0
+    # Kanonik `technical_analysis._mfi` ile BİREBİR aynı akış sınıflaması:
+    # tp[i] > tp[i-1] → pozitif; tp[i] < tp[i-1] → negatif; EŞİTLİKTE
+    # akış NE pozitif NE negatife sayılır. (Eski vektörel kod
+    # `np.where(tp_up, 0.0, flow)` yazıyordu → eşitlik durumu negatife
+    # katılıyor, çıkarımla sapma oluyordu.)
+    prev_tp = np.concatenate(([tp[0]], tp[:-1]))
+    tp_up = tp > prev_tp
+    tp_down = tp < prev_tp
     pos_flow = np.where(tp_up, flow, 0.0)
-    neg_flow = np.where(tp_up, 0.0, flow)
+    neg_flow = np.where(tp_down, flow, 0.0)
     pos_sum = _rolling(pos_flow, 14)
     neg_sum = _rolling(neg_flow, 14)
-    mfi = 100 - 100 / (1 + pos_sum / np.where(neg_sum == 0, np.nan, neg_sum))
+    # D-10 (2026-09-26 denetimi, KRİTİK — veri bozulması): eski ifade
+    # `np.where(neg_sum == 0, np.nan, neg_sum)` idi; neg_sum == 0 iken MFI
+    # NaN üretiyordu. Çıkarımda aynı özellik (`technical_analysis._mfi` ve
+    # `velocity._velocity_mfi`) 100.0/50.0 dönüyordu → AYNI AD, İKİ FARKLI
+    # DAĞILIM; eğitimde öğrenilen "MFI yok" deseni çıkarımda hiç üretilmiyordu.
+    # Artık çıkarımla BİREBİR aynı kural: neg>0 → normal formül;
+    # neg==0 && pos>0 → 100.0; ikisi de 0 → nötr 50.0. NaN YOK.
+    mfi = np.full(len(c), np.nan, dtype=np.float64)
+    has_neg = np.isfinite(pos_sum) & np.isfinite(neg_sum) & (neg_sum > 0)
+    mfi[has_neg] = 100 - 100 / (1 + pos_sum[has_neg] / neg_sum[has_neg])
+    zero_neg = np.isfinite(pos_sum) & np.isfinite(neg_sum) & (neg_sum <= 0)
+    mfi[zero_neg] = np.where(pos_sum[zero_neg] > 0, 100.0, 50.0)
 
     vol_z = (v - _rolling(v, 20)) / np.where(_rolling_std(v, 20) == 0, np.nan, _rolling_std(v, 20))
 
@@ -453,8 +471,21 @@ def train(candles: dict[str, dict[str, np.ndarray]], journal_rows: list[dict],
                                   bar_minutes=5)
         for horizon in HORIZONS:
             mfe = ds[f"mfe_{horizon}"]
-            valid = np.isfinite(mfe) & np.isfinite(ds["features"][:, 3])
-            xs[horizon].append(ds["features"][valid])
+            # D-10 (2026-09-26): maske YALNIZCA ATR sütununa bakıyordu.
+            # İlk barlarda ret1/ret3/ret5 NaN olduğu için (prev_close yok)
+            # ATR'siz örnekler — yani fiyat geçmişi olmayan ısınma satırları —
+            # eğitime giriyordu. HistGradientBoosting NaN'ı öğrenilebilir bir
+            # değer olarak işlediği için model "ret yok" desenini fiilen
+            # öğreniyor, çıkarımda ise bu ret'ler tanımlıydı → dağılım kayması.
+            # Düzeltme: model girdisi olan TÜM sütunlar sonlu olmalı
+            # (`symbol_code` hariç — o zaten sabit).
+            features = ds["features"]
+            finite_cols = [i for i in range(features.shape[1])
+                           if FEATURE_NAMES[i] != "symbol_code"]
+            valid = np.isfinite(mfe) & np.isfinite(features[:, 3])
+            if finite_cols:
+                valid &= np.isfinite(features[:, finite_cols]).all(axis=1)
+            xs[horizon].append(features[valid])
             mfe_by_h[horizon].append(mfe[valid])
             times_by_h[horizon].append(ds["open_time"][valid])
 

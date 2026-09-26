@@ -48,6 +48,34 @@ from app.state import market
 
 logger = logging.getLogger("scalper.candles")
 
+# BACKPRESSURE (Görev 11): `_publish` her kline olayında `create_task` ile
+# ayrı bir yayın görevi doğuruyordu (25 olay/sn → görev patlaması). Yayın artık
+# (a) eşzamanlı görev sayısı bir SEMAPHORE ile sınırlı, (b) `ws_runtime`
+# tarafında istemci başına kuyrukta yığılıyor. Aşırı yükte en eski yayın
+# düşürülür — ticker verisi zaten "en son" anlamında.
+_PUBLISH_SEMAPHORE: asyncio.Semaphore | None = None
+_PUBLISH_INFLIGHT = {"now": 0, "dropped": 0}
+
+
+def _publish_semaphore() -> asyncio.Semaphore:
+    """Semaphore event loop'a bağlı olduğu için ilk çağrıda üretilir."""
+    global _PUBLISH_SEMAPHORE
+    if _PUBLISH_SEMAPHORE is None:
+        # Eşzamanlı yayın görevi tavanı: 25 olaviy saniyede işleyebilir,
+        # ama olay anında 25 görev birden yaratılmaz.
+        _PUBLISH_SEMAPHORE = asyncio.Semaphore(4)
+    return _PUBLISH_SEMAPHORE
+
+
+async def _broadcast_now(payload: dict) -> None:
+    """Yayını semaphore sınırlarıyla gerçekleştirir (yavaş istemci izole)."""
+    from app import ws_runtime
+    async with _publish_semaphore():
+        try:
+            await ws_runtime.ws_manager.broadcast(payload)
+        except Exception as exc:  # yayın asla dinleyiciyi düşürmemeli
+            logger.debug("kline yayını başarısız: %s", exc)
+
 # Kapanmış mum başına yayın (WS yeniden bağlanınca aynı mum tekrar gelebilir).
 _last_closed_ms: dict[tuple[str, str], int] = {}
 # Oluşan mumun geriye gitmemesi için son yayınlanan açılış zamanı.
@@ -61,6 +89,8 @@ _viewed_pairs: dict[tuple[str, str], float] = {}
 VIEWED_TTL_SEC = 90.0
 # Oluşan mum için çift başına en kısa yayın aralığı (sn).
 MIN_OPEN_PUBLISH_GAP_SEC = 0.2
+# Görev patlaması tavanı: aynı anda bu kadar çok yayın görevi yaşar (Görev 11).
+_MAX_PUBLISH_INFLIGHT = 8
 
 
 def _key(symbol, timeframe) -> tuple[str, str]:
@@ -91,31 +121,58 @@ def _is_viewed(key: tuple[str, str]) -> bool:
 
 
 def _publish(key: tuple[str, str], bar: dict, closed: bool) -> None:
-    """liveSocket'e tek mum mesajı yayınla (event loop yoksa sessizce atla)."""
-    from app import ws_runtime
+    """liveSocket'e tek mum mesajı yayınla (event loop yoksa sessizce atla).
 
+    Görev patlaması (Görev 11): her kline için `create_task` çağrılıyordu.
+    Artık eşzamanlı yayın görevleri bir semaphore ile SINIRLANIR; kuyruk
+    dolduğunda en eski yayın düşürülür (`_PUBLISH_INFLIGHT` sayacıyla izlenir).
+    Ticker verisi "en son" anlamında olduğu için düşen kare kaybı zararsızdır.
+    """
+    payload = {
+        "type": "kline",
+        "data": {
+            "symbol": key[0],
+            "timeframe": key[1],
+            "time": int(bar.get("time") or 0),
+            "open": float(bar.get("open", 0)),
+            "high": float(bar.get("high", 0)),
+            "low": float(bar.get("low", 0)),
+            "close": float(bar.get("close", 0)),
+            "volume": float(bar.get("volume", 0)),
+            "closed": closed,
+        },
+    }
     try:
-        asyncio.get_running_loop().create_task(
-            ws_runtime.ws_manager.broadcast({
-                "type": "kline",
-                "data": {
-                    "symbol": key[0],
-                    "timeframe": key[1],
-                    "time": int(bar.get("time") or 0),
-                    "open": float(bar.get("open", 0)),
-                    "high": float(bar.get("high", 0)),
-                    "low": float(bar.get("low", 0)),
-                    "close": float(bar.get("close", 0)),
-                    "volume": float(bar.get("volume", 0)),
-                    "closed": closed,
-                },
-            })
-        )
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         # Event loop yok (thread konteksti) → yayın yapılamaz, sessiz geç.
-        pass
+        return
+    if _PUBLISH_INFLIGHT["now"] >= _MAX_PUBLISH_INFLIGHT:
+        _PUBLISH_INFLIGHT["dropped"] += 1
+        return
+    _PUBLISH_INFLIGHT["now"] += 1
+
+    async def _runner():
+        try:
+            await _broadcast_now(payload)
+        finally:
+            _PUBLISH_INFLIGHT["now"] -= 1
+
+    try:
+        loop.create_task(_runner())
+    except RuntimeError:
+        _PUBLISH_INFLIGHT["now"] -= 1
+        return
     except Exception as exc:
+        _PUBLISH_INFLIGHT["now"] -= 1
         logger.debug("kline yayını atlandı: %s", exc)
+
+
+def publish_stats() -> dict:
+    """Yayın backpressure gözlemlenebilirliği."""
+    return {"in_flight": _PUBLISH_INFLIGHT["now"],
+            "dropped": _PUBLISH_INFLIGHT["dropped"],
+            "max_in_flight": _MAX_PUBLISH_INFLIGHT}
 
 
 def _on_bar(symbol: str, timeframe: str, bar: dict) -> None:
