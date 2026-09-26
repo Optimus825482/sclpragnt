@@ -570,6 +570,11 @@ input[type="checkbox"] { accent-color: #79f2b4; width: 1rem; height: 1rem; }
 /* Mobil ve Dokunmatik UX İyileştirmeleri */
 .no-scrollbar::-webkit-scrollbar, .scrollbar-none::-webkit-scrollbar { display: none; }
 .no-scrollbar, .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+/* UX (2026-09-27): mobilde gizli sekmelere kaydırma ipucu — sağ kenar degrade */
+.tab-scroll-fade {
+  -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
+}
 
 
 .touch-target {

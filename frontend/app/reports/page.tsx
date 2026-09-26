@@ -83,15 +83,17 @@ const SOURCE_BADGE_COMPACT: Record<string, string> = {
 };
 
 function ChannelBadge({ sentViaPush }: { sentViaPush?: boolean | null }) {
+  // UX (2026-09-27): kanal rozeti dili Monitoring ile BİRLEŞTİ — PUSH yeşil
+  // (iletildi), PANEL gri (panelde). Eskiden burada mavi/amber'di.
   if (sentViaPush) {
     return (
-      <span className="inline-flex items-center gap-1 rounded border border-sky-400/40 bg-sky-400/10 px-2 py-0.5 font-mono text-[10px] font-bold text-sky-300 shadow-sm" title="Kullanıcı cihazına Push bildirimi olarak iletildi">
+      <span className="inline-flex items-center gap-1 rounded border border-neon-green/40 bg-neon-green/10 px-2 py-0.5 font-mono text-[10px] font-bold text-neon-green" title="Kullanıcı cihazına Push bildirimi olarak iletildi">
         🔔 PUSH
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 font-mono text-[10px] font-bold text-amber-300 shadow-sm" title="Monitoring web paneline radar uyarısı olarak düştü">
+    <span className="inline-flex items-center gap-1 rounded border border-bunker-700 bg-bunker-800 px-2 py-0.5 font-mono text-[10px] font-bold text-bunker-muted" title="Monitoring web paneline radar uyarısı olarak düştü">
       🖥️ PANEL
     </span>
   );
@@ -107,9 +109,11 @@ function SourceBadges({ sources, compact = false }: { sources?: string[] | null;
     );
   }
   if (list.length >= 2) {
+    // UX (2026-09-27): çoklu teyit rozeti Monitoring ile aynı dil — ⚡ + yeşil
+    // (eskiden 🔗 + mor'du; aynı durum iki sayfada farklı renk çiziyordu).
     return (
-      <span className="inline-flex items-center gap-1 rounded border border-purple-400/40 bg-purple-400/15 px-2 py-0.5 font-mono text-[10px] font-bold text-purple-300" title={`Çoklu Teyit (${list.join(" + ")})`}>
-        🔗 {list.length}&apos;li Teyit
+      <span className="inline-flex items-center gap-1 rounded border border-neon-green/50 bg-neon-green/10 px-2 py-0.5 font-mono text-[10px] font-bold text-neon-green" title={`Çoklu Teyit (${list.join(" + ")})`}>
+        ⚡ {list.length}&apos;li Teyit
       </span>
     );
   }
@@ -530,7 +534,7 @@ function OverviewTab({ day }: { day?: string }) {
             <h3 className="font-mono text-sm font-black text-white flex items-center gap-2">
               <span>🔔</span> SON SİNYAL HEDEF DURUMLARI
             </h3>
-            <button onClick={load} className="ui-button ui-button-secondary text-xs py-1 px-2.5">Tazele</button>
+            <button onClick={load} className="ui-button ui-button-secondary text-xs min-h-[36px] py-1 px-3">Tazele</button>
           </div>
 
           {notifications.length === 0 ? (
@@ -806,24 +810,12 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
       {/* Günlük Filtre ve KPI Kartları */}
       <section className="card p-5 rounded-2xl border border-bunker-800 bg-bunker-950/60 shadow-xl space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-bunker-800 pb-4">
+          {/* UX (2026-09-27): tarih seçici sayfa üstündeki tek Dönem şeridine
+              indirildi — aynı `selectedDay` state'ini iki yerden kontrol etmek
+              "hangisi geçerli?" belirsizliği yaratıyordu. Yalnız Yenile kaldı. */}
           <div className="flex flex-wrap items-center gap-2">
-            <div>
-              <p className="eyebrow text-neon-green">RAPOR GÜNÜ</p>
-              <input
-                type="date"
-                value={day}
-                onChange={(e) => { setDay(e.target.value); setPage(0); }}
-                className="bg-bunker-900 border border-bunker-700 rounded-xl px-3 py-1.5 font-mono text-sm text-white mt-1 focus:border-neon-green/50 outline-none"
-              />
-            </div>
-            <div className="pt-4 flex gap-1.5">
-              <button
-                type="button"
-                onClick={() => { setDay(localDateInput()); setPage(0); }}
-                className="ui-button ui-button-secondary text-xs py-1.5 px-3"
-              >
-                Bugün
-              </button>
+            <p className="eyebrow text-neon-green">RAPOR GÜNÜ: {day || "tüm zamanlar"}</p>
+            <div className="flex gap-1.5">
               <button onClick={load} className="ui-button ui-button-primary text-xs py-1.5 px-3">
                 Yenile
               </button>
@@ -1154,10 +1146,10 @@ function UserRadarTab({ day: controlledDay, setDay: setControlledDay }: { day?: 
                 Toplam {filtered.length} Tespit · Sayfa {page + 1} / {totalPages}
               </p>
               <div className="flex items-center gap-1.5">
-                <button disabled={page <= 0} onClick={() => setPage(0)} className="ui-button ui-button-secondary text-xs py-1 px-2.5 disabled:opacity-30">« İlk</button>
-                <button disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))} className="ui-button ui-button-secondary text-xs py-1 px-2.5 disabled:opacity-30">‹ Önceki</button>
-                <button disabled={page >= totalPages - 1} onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} className="ui-button ui-button-secondary text-xs py-1 px-2.5 disabled:opacity-30">Sonraki ›</button>
-                <button disabled={page >= totalPages - 1} onClick={() => setPage(totalPages - 1)} className="ui-button ui-button-secondary text-xs py-1 px-2.5 disabled:opacity-30">Son »</button>
+                <button disabled={page <= 0} onClick={() => setPage(0)} className="ui-button ui-button-secondary text-xs min-h-[36px] py-1 px-3 disabled:opacity-30">« İlk</button>
+                <button disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))} className="ui-button ui-button-secondary text-xs min-h-[36px] py-1 px-3 disabled:opacity-30">‹ Önceki</button>
+                <button disabled={page >= totalPages - 1} onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))} className="ui-button ui-button-secondary text-xs min-h-[36px] py-1 px-3 disabled:opacity-30">Sonraki ›</button>
+                <button disabled={page >= totalPages - 1} onClick={() => setPage(totalPages - 1)} className="ui-button ui-button-secondary text-xs min-h-[36px] py-1 px-3 disabled:opacity-30">Son »</button>
               </div>
             </div>
           </>
@@ -1672,7 +1664,7 @@ export default function ReportsPage() {
             }`}
           >
             <span className="inline-block w-2 h-2 rounded-full bg-neon-green animate-pulse"></span>
-            <span>🟢 Bugün ({todayStr} — Yeni Sürüm)</span>
+            <span>🟢 Bugün ({todayStr})</span>
           </button>
           <button
             type="button"
@@ -1702,7 +1694,7 @@ export default function ReportsPage() {
       </div>
 
       {/* Sekmeler */}
-      <div className="flex items-center gap-2 overflow-x-auto border-b border-bunker-800 pb-2 no-scrollbar">
+      <div className="flex items-center gap-2 overflow-x-auto border-b border-bunker-800 pb-2 no-scrollbar tab-scroll-fade">
         {MAIN_TABS.map((item) => (
           <button
             key={item.id}
